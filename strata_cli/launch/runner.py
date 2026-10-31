@@ -1137,6 +1137,10 @@ class Runner:
             adopted = self.adopt_prepared_files("no Mac model installer in this Terminal")
             if adopted is not None:
                 return adopted
+        if self.intel_chosen():
+            adopted = self.adopt_prepared_files("", chosen=True)
+            if adopted is not None:
+                return adopted
         self.emit("model", f"Preparing {title} from your model files…" if s.model_path else
                   f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
         argv = [self.python, str(cat.src / "setup.py"), *self.setup_args()]
@@ -1258,13 +1262,59 @@ class Runner:
         except (OSError, ValueError):
             return None
 
-    def adopt_prepared_files(self, setup_error: str) -> Path | None:
+    def intel_chosen(self) -> bool:
+        """The engine for this launch is the Intel Arc one (chosen with --backend intel, saved, or the only make here), and the model is one
+        the built-in downloader sets up for NVIDIA and AMD only: Strata prepares the model files itself instead (adopt_prepared_files)."""
+        if self.multi_file() or sys.platform == "darwin" or WINDOWS:
+            return False
+        try:
+            from strata_control import engine_component
+            return engine_component.detect_backend()[0] == "sycl"
+        except Exception:                                        # noqa: BLE001
+            return False
+
+    def prepare_pack(self, model_dir: Path, pack: Path, shards: list) -> None:
+        """Build the pack an Intel Arc run needs from the GGUF files (the step setup.py runs for NVIDIA and AMD cards): setup.py --prepare-pack
+        fetches llama.cpp's gguf-py by itself and runs tools/iq_pack.py. Takes seconds to a few minutes; the draft layer is not built."""
+        cat = self.catalog
+        fam, model = self.s.family, self.s.model
+        try:
+            fam, model = cat.resolve(str(model), None if fam is None else str(fam))      # setup's own spelling (IQ2_XS, not iq2_xs)
+        except Exception:                                    # noqa: BLE001
+            pass
+        self.emit("model", "Preparing the model files for this graphics card (once, a few minutes; nothing is downloaded except a small helper)…", 0)
+        argv = [self.python, str(cat.src / "setup.py"), "--prepare-pack", str(pack), "--gguf-dir", str(model_dir),
+                "--family", str(fam), "--model", str(model)]
+        env = self._env()
+        env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(cat.root), PYTHONNOUSERSITE="1")
+        for k in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+            env.pop(k, None)
+        env["PYTHONPATH"] = str(cat.src)
+        p = self._spawn(argv, env=env, cwd=str(cat.src))
+        lines: list[str] = []
+        for line in self._read_lines(p):
+            if self.cancel.is_set():
+                self._stop_children()
+                raise Cancelled()
+            if line is None:
+                continue
+            line = line.rstrip()
+            if line:
+                lines.append(line)
+                lines[:] = lines[-400:]
+        if p.wait() != 0:
+            err = next((ln.strip()[3:].strip() for ln in reversed(lines) if ln.strip().startswith("[X]")), "")
+            raise LaunchError("Strata could not prepare the model files for this graphics card" + (f": {err}" if err else "."),
+                              "The last lines of the preparation are in " + (self.keep_setup_output(lines) or "the launch log")
+                              + ". If it says the helper could not be downloaded, check the internet connection (proxy: set HTTPS_PROXY) and try again.", 5)
+
+    def adopt_prepared_files(self, setup_error: str, chosen: bool = False) -> Path | None:
         """The installer cannot set this graphics card up (Intel Arc, for one): if the model's files and prepared pack are already on disk,
         write the run config here (strata_cli/launch/adopt.py); else say what is missing."""
         from strata_cli.launch import adopt
         from strata_control import engine_component
         s, cat = self.s, self.catalog
-        if not adopt.setup_cannot_handle_this_card(setup_error):
+        if not chosen and not adopt.setup_cannot_handle_this_card(setup_error):
             return None
         _models, families, _ctx, _src = cat.tables()
         fam = families.get(s.family or "", {})
@@ -1277,11 +1327,19 @@ class Runner:
             backend = engine_component.detect_backend()[0]
         except Exception:                                    # noqa: BLE001
             backend = None
+        pack_dir = data_dir / "packs" / tag.lower()
+        if backend == "sycl" and adopt.find_shards(model_dir) and not (pack_dir / "experts.bin").exists() and not (
+                (pack_dir / "index.txt").exists() and (pack_dir / "tokenizer" / "vocab.json").exists()):
+            self.prepare_pack(model_dir, pack_dir, adopt.find_shards(model_dir))
         cfg, problems = adopt.plan(family=s.family, model=s.model, model_dir=model_dir, data_dir=data_dir, src=cat.src,
                                    context=s.context or 32768, kv=s.kv, model_name=f"{fam.get('name', s.family)}-{s.model.lower()}", family_def=fam,
                                    log=cat.root / f"strata-{tag}.log", backend=backend,
                                    vram_gb=float(cat.computer().main_vram_gb or 0), notes=self.notices, pack_name=tag.lower())
         if cfg is None:
+            if backend == "sycl":
+                raise LaunchError("Strata cannot start this model on the Intel Arc card yet: " + "; ".join(problems) + ".",
+                                  "Give the folder that holds the model's .gguf files with --model-path (Strata prepares them itself). "
+                                  "Intel cards do not download models yet; see docs/INTEL_ARC.md.", 5)
             raise LaunchError("The installer cannot set up this graphics card yet, and the files Strata would need to write the settings itself are not all there: "
                               + "; ".join(problems) + ".",
                               "Use model files that were prepared on this computer already (folder + pack): for an Intel Arc card the steps are in docs/INTEL_ARC.md (the Terminal carries tools/iq_pack.py for the pack). Or install on a computer with an NVIDIA or AMD card.", 5)

@@ -8925,6 +8925,37 @@ def mac_reader(eng: Path, vision: str):
     return r
 
 
+def prepare_pack_only(a) -> int:
+    """setup.py --prepare-pack PACK_DIR --gguf-dir DIR --family F --model M: the pack (index, dense weights, tokenizer) of a model whose GGUF files
+    are in DIR, for a card the built-in downloader does not set up (Intel Arc). llama.cpp's gguf-py is fetched when it is not here (the one
+    download); the model's files are never downloaded or changed."""
+    if not a.gguf_dir:
+        fail("--prepare-pack needs --gguf-dir, the folder with the model's .gguf files")
+    family = a.family or "qwen"
+    if family not in FAMILIES:
+        fail(f"cannot prepare a pack for the family {family}", "choose qwen, swift, coder or gyro")
+    fam, model = FAMILIES[family], a.model
+    if not model:
+        fail("--prepare-pack needs --model, e.g. --model IQ3_XXS")
+    models_dir = Path(a.gguf_dir)
+    files = gguf_dir_shards(models_dir, fam, model)
+    problem = gguf_dir_problem(models_dir, files[0], fam, model)
+    if problem:
+        fail(*problem)
+    pack = Path(a.prepare_pack)
+    step(1, "preparing the model for this graphics card")
+    llama = get_llama_cpp()
+    ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py)")
+    env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
+        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(files[0]), "--out", str(pack),
+             *fam.get("pack_args", [])], env=env)
+    if not (pack / "tokenizer" / "vocab.json").exists():
+        fail("the pack was built but has no tokenizer", "run it again; if it repeats, the model files may be damaged")
+    ok(f"model prepared: {pack}")
+    return 0
+
+
 def mac_control_setup(a) -> int:
     """The app (and the Terminal's `strata launch`) on a Mac, STRATA_CONTROL_INSTALL=1: the same job as on Windows and Linux. It
     downloads and prepares the model files and writes a run config whose engine is "component:strata-engine"; it builds nothing
@@ -9226,6 +9257,9 @@ def main() -> int:
                     help="where the model files come from: auto (default: Hugging Face), huggingface or modelscope "
                          "(mainland China: the same files, checked against ModelScope's published SHA-256; "
                          "STRATA_SOURCE)")
+    ap.add_argument("--prepare-pack", metavar="PACK_DIR",
+                    help="only build the pack of the GGUF files in --gguf-dir into PACK_DIR (what `strata launch` runs for an Intel Arc card): "
+                         "fetches llama.cpp's gguf-py by itself, runs tools/iq_pack.py, changes nothing else")
     ap.add_argument("--inspect", nargs="+", metavar=("SOURCE", "VARIANT"),
                     help="what a GGUF is and whether Strata runs it, from its headers only (no download): a file, a "
                          "folder, a URL, ms:owner/repo (ModelScope) or hf:owner/repo, and optionally a variant name")
@@ -9284,6 +9318,8 @@ def main() -> int:
                                                               if a.model in d["models"]))
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
+    if a.prepare_pack:                                 # an Intel Arc card: the model's pack, nothing else (no engine, no download of the model)
+        return prepare_pack_only(a)
     if a.inspect:                                      # headers only: nothing is installed
         sys.exit(subprocess.run([sys.executable, str(ROOT / "tools" / "strata_inspect.py"), *a.inspect[:2]]).returncode)
     if sys.platform == "darwin" and CONTROL:           # the app on a Mac: model files only; the Metal engine is a component
