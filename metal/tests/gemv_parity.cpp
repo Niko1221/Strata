@@ -288,7 +288,8 @@ int main(int argc, char** argv) {
         const size_t plane = (size_t)4 * s.n_in * MAXT;
         // GEMV_F16=1: gemv16_* over the format's prepared plane converted to half; each tile's rel L2 against the fp32 gemv
         const bool f16 = std::getenv("GEMV_F16") != nullptr;
-        mtl::Buffer xh = cx.alloc(2 * (size_t)s.n_in * MAXT), yr = cx.alloc(4 * (size_t)s.n_out * MAXT);
+        mtl::Buffer xh, yr;
+        if (f16) { xh = cx.alloc(2 * (size_t)s.n_in * MAXT); yr = cx.alloc(4 * (size_t)s.n_out * MAXT); }
         if (f16)   // the half plane from the raw x: the K-quants 2^-8 at odd positions, Q2_0 4^-(i % 4), the rest raw
             for (size_t i = 0; i < (size_t)s.n_in * MAXT; ++i) {
                 const size_t k = i % (size_t)s.n_in;

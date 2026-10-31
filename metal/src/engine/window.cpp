@@ -112,7 +112,7 @@ bool metal_ctab() {
     }();
     return on;
 }
-// STRATA_METAL_F16=1 (opt-in): the decode window's dense GEMVs of Q2_0, the K-quants and IQ4_XS on the fp16 path -
+// STRATA_METAL_F16=1 (opt-in): the decode windows' (resident model, with the head) dense GEMVs of Q2_0, the K-quants and IQ4_XS on the fp16 path -
 // the weights decoded into half, the window's x as half planes the writers of x add (function constant 25), the
 // products of a half unit summed in half, the scales and the units' sum in float (gemv.metal gemv16)
 bool metal_f16() {
@@ -1321,7 +1321,8 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     if (stream_ && !st_->ready() && !stream_arena(err)) return false;
     Cached& cw = wcache_[key];
     rec_ = &cw.qsa;
-    f16_enc_ = metal_f16();
+    f16_enc_ = metal_f16() && head && !stream_ && !rows_;   // decode windows of one resident sequence: not the prompt's,
+                                                            // not streaming, not batch slots
     cuts_ = stream_ ? &cw.cuts : nullptr;
     std::vector<mtl::Dispatch>& ds = cw.ds;
     nb_ = false;

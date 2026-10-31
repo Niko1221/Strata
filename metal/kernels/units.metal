@@ -323,8 +323,9 @@ static inline float unit_combine(thread const float* q, float4 sc, thread const 
 
 #ifdef STRATA_METAL_F16   // window.cpp compiles it in only under STRATA_METAL_F16=1
 // ---- the fp16 window path (opt-in, STRATA_METAL_F16): the same decode into half, the window's x as a half plane, the
-// products of a half unit summed in half (8 at a time), the scales and the sum across units in float.  Only the formats
-// whose prepared x stays normal in half (the 2^-8 kinds and raw x).
+// products of a half unit (16 weights, 8 for Q2_0) summed in half, the scales and the sum across units in float.
+// Unguarded: a product or a half unit's sum past 65504 is inf (IQ4_XS from |x| ~516, Q6_K ~1040, Q5_K ~2113, Q2_0
+// ~21835; up to 8x lower for same-sign runs), and |x| below ~2^-6 (2^-8 kinds) or ~2^-8 (Q2_0's 4^-3) is subnormal.
 static inline void bytes2h(ushort w, thread half* q) {
     q[0] = half(w & 0xFF);
     q[1] = half(w & 0xFF00);
