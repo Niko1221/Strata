@@ -422,6 +422,31 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         }
         return v;
     };
+    // #4578: the CPU id that stands for the physical core - the smallest logical CPU in the core, read from
+    // thread_siblings_list (the CPUs that share one core).  On some aarch64 SoCs (Jetson AGX Thor / Tegra) every
+    // CPU reports core_id 0, so a (package, core) key collapses them to one core and the pool started 1 worker on a
+    // 14-core part; thread_siblings_list is per-CPU there ("5"), and an SMT core's list ("0,16") still names the same
+    // smallest id from both threads.  -1 when the file is absent or unreadable (the caller falls back to (pkg, core)).
+    auto siblings_key = [](int cpu) -> long {
+        char path[96];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+        std::FILE* f = std::fopen(path, "r");
+        if (!f) return -1;
+        char text[512] = {0};
+        const size_t n = std::fread(text, 1, sizeof text - 1, f);
+        std::fclose(f);
+        text[n] = '\0';
+        long lo = -1;
+        for (const char* p = text; *p;) {
+            char* end = nullptr;
+            const long v = std::strtol(p, &end, 10);
+            if (end == p) break;
+            if (lo < 0 || v < lo) lo = v;
+            p = end;
+            while (*p == ',' || *p == '-' || *p == ' ' || *p == '\n') ++p;
+        }
+        return lo;
+    };
 
     // #798: a cpulist ("0-7,16") of one of the hybrid PMU's CPU sets: /sys/devices/cpu_core/cpus and cpu_atom/cpus
     auto cpulist_read = [](const char* path, std::vector<int>& out) -> bool {
@@ -458,10 +483,11 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         long pkg = -1;
         long core = -1;
         long cap = -1;
+        long key = -1;   // the physical core this CPU belongs to (#4578: thread_siblings_list, else pkg*1e6+core)
         bool is_sibling = false;
     };
     std::vector<CoreLinux> all_cpus;
-    std::vector<std::pair<long, long>> seen_phys;
+    std::vector<long> seen_keys;
     long max_cap = 0, min_cap = 1000000;
 
     for (int cpu : allowed) {
@@ -474,12 +500,13 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
             max_cap = (std::max)(max_cap, cl.cap);
             min_cap = (std::min)(min_cap, cl.cap);
         }
-        if (cl.pkg >= 0 && cl.core >= 0) {
-            const std::pair<long, long> key{cl.pkg, cl.core};
-            if (std::find(seen_phys.begin(), seen_phys.end(), key) != seen_phys.end()) {
+        cl.key = siblings_key(cpu);
+        if (cl.key < 0 && cl.pkg >= 0 && cl.core >= 0) cl.key = cl.pkg * 1000000 + cl.core;
+        if (cl.key >= 0) {
+            if (std::find(seen_keys.begin(), seen_keys.end(), cl.key) != seen_keys.end()) {
                 cl.is_sibling = true;
             } else {
-                seen_phys.push_back(key);
+                seen_keys.push_back(cl.key);
             }
         }
         all_cpus.push_back(cl);
@@ -511,16 +538,16 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
             }
         }
     } else {
-        topo.p_cores = (int) seen_phys.size();
+        topo.p_cores = (int) seen_keys.size();
         topo.p_threads = (int) all_cpus.size();
     }
 
-    // the host core's SMT sibling, an allowed CPU of the same (package, core) (--host-core sibling)
+    // the host core's SMT sibling, an allowed CPU with the same physical-core key (--host-core sibling)
     auto sibling_of = [&](int cpu) {
         for (const auto& h : all_cpus)
-            if (h.cpu == cpu && h.pkg >= 0 && h.core >= 0)
+            if (h.cpu == cpu && h.key >= 0)
                 for (const auto& cl : all_cpus)
-                    if (cl.cpu != cpu && cl.pkg == h.pkg && cl.core == h.core) return cl.cpu;
+                    if (cl.cpu != cpu && cl.key == h.key) return cl.cpu;
         return -1;
     };
 
