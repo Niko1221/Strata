@@ -5474,6 +5474,7 @@ class Service:
              declared_only=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
+        ignore_eos = (sampling or {}).get("ignore_eos") is True     # the request's own: see check_ignore_eos
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
         defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
@@ -5543,6 +5544,9 @@ class Service:
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
+        eos_legs = 0                                    # ignore_eos: the passes sent again after a stop token
+        # ... and the control tokens the text leaves out after one, as vLLM's skip_special_tokens does
+        unsaid = {self.tok.encode(x, parse_special=True)[0] for x in self.tok.control_tokens} if ignore_eos else ()
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
         if emb and img_keys:
@@ -5657,6 +5661,7 @@ class Service:
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, sampling, cancel)
                         recover_prompt = None
+                        eos_again = False               # ignore_eos: the engine ended this pass on a stop token
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
                         opens = False                   # the thinking is over: write the forced call's opening
@@ -5665,7 +5670,8 @@ class Service:
                             # whole, once complete) can keep the stream silent for minutes while tokens are
                             # generated; a client's idle timeout then ends the request.  Send the same keep-alive
                             # the engine's heartbeat sends when nothing has gone out for KEEPALIVE_S.
-                            last_out = time.perf_counter()
+                            if not eos_legs:                # ignore_eos: the clock runs on over a new pass, which is short
+                                last_out = time.perf_counter()
                             for t in gen:
                                 if t is None:               # heartbeat while the engine is quiet
                                     last_print = self._progress(last_print, st=st)
@@ -5673,6 +5679,9 @@ class Service:
                                     yield "ping", None
                                     continue
                                 n += 1
+                                if ignore_eos and time.perf_counter() - last_out >= KEEPALIVE_S:
+                                    last_out = time.perf_counter()   # here: stop and control tokens never reach the line below
+                                    yield "ping", None
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
                                     with self.status_lock:
@@ -5687,6 +5696,14 @@ class Service:
                                     if force and parser.state == "reasoning" and parser.buf == THINK_END:
                                         opens = True    # #537: the held </think> was the end: the call opens there
                                         break
+                                    if ignore_eos:
+                                        raw_ids.append(t)
+                                        seg.append(t)   # counted, in the next pass's prompt, never in the text
+                                        run_len = run_len + 1 if t == run_tok else 1
+                                        run_tok = t     # #606: only the stop token, again and again: a pass per token
+                                        repeated = bool(self.repeat_stop_tokens) and run_len >= self.repeat_stop_tokens
+                                        eos_again = not repeated
+                                        break
                                     finish = "stop"
                                     raw_ids.append(t)
                                     break
@@ -5698,6 +5715,8 @@ class Service:
                                 if self.repeat_stop_tokens and run_len >= self.repeat_stop_tokens:
                                     repeated = True     # #606: a degenerate output, not an answer: end it here
                                     break
+                                if eos_legs and t in unsaid:
+                                    continue            # ignore_eos, past a stop token: <|im_start|> is not text
                                 piece = detok.push(t)
                                 tail = (tail + piece)[-2:]
                                 evs = cut(parser.feed(piece))
@@ -5772,6 +5791,10 @@ class Service:
                             segment_done = getattr(self.engine, "last", None)
                             if segment_done is not None and segment_done is not segment_before:
                                 segments.append(dict(segment_done))
+                                if eos_legs:    # ignore_eos: reading again is part of making the reply, not the prompt
+                                    leg = segments[-1]
+                                    leg["decode_ms"] = float(leg.get("decode_ms") or 0.0) + float(leg.get("prompt_ms") or 0.0)
+                                    leg["prompt_ms"] = 0.0
                         if nonfinite and not cancel.is_set():
                             # #879: the engine emitted none of the poisoned window's tokens and reads its next prompt
                             # from token 0.  Nothing sent yet: the same request once more, unseen by the client
@@ -5813,6 +5836,14 @@ class Service:
                             print(f"[strata] repeated reasoning detected at {n} tokens "
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
+                            continue
+                        if eos_again and n < max_new and not cancel.is_set():
+                            # ignore_eos: the engine stops at a stop token by itself, so another pass goes on from
+                            # there: this one's prompt plus what it generated, with the budget that is left.  The
+                            # engine reads again what follows its last checkpoint, counted as decode time above.
+                            # Out of budget, this falls through and ends as "length".
+                            eos_legs += 1
+                            prompt = prompt + seg
                             continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
@@ -5944,6 +5975,10 @@ class Service:
                             rate_txt = f"{rate:.1f} tok/s" if rate is not None else "no speed"
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate_txt}) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                            if ignore_eos:
+                                print(f"[strata] ignore_eos: {eos_legs} passes sent again after a stop token; tokens "
+                                      f"reused+read per pass: {[(s.get('reused'), s.get('prompt_read')) for s in segments]}",
+                                      flush=True)
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
@@ -5987,6 +6022,8 @@ class Service:
                 Path(emb).unlink(missing_ok=True)
         for ev in cut(parser.finish(finish)):
             yield "event", ev
+        if ignore_eos and stops is not None and stops.hit is not None:
+            finish = "stop"         # found only now, in the newlines the parser held back: not a run to the budget
         if parser.rescued or parser.refused:
             self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
@@ -7841,6 +7878,7 @@ def make_handler(svc: Service):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
+            check_ignore_eos(req, max_req, tools, "response_format" if validator is not None else None)
             # No cap of our own on the reply's length when logprobs are asked for: the reply is already bounded by
             # max_tokens (by the rest of the context when it is not sent), which is the only bound OpenAI and vLLM
             # put on it either.  A reply that is not streamed does hold every entry (its token, bytes and up to 20
@@ -8060,6 +8098,7 @@ def make_handler(svc: Service):
                 raise ResponsesError(str(e), "stop") from None
             try:
                 check_request_sampling(req)                   # the request is also the sampling dict (see below)
+                check_ignore_eos(req, req.get("max_output_tokens") or 0, tools, "text.format" if validator is not None else None)
             except ValueError as e:                           # its message starts with the field's name: the param
                 raise ResponsesError(str(e), str(e).partition(":")[0]) from None
             svc.load()
@@ -8111,6 +8150,7 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            check_ignore_eos(req, max_new, tools)
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -8821,6 +8861,32 @@ def check_request_sampling(req) -> None:
             req[key] = value = num
         if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
             raise ValueError(f"{key}: {'an integer' if integer else 'a number'}")
+
+
+def check_ignore_eos(req, budget, tools=None, structured=None) -> None:
+    """vLLM's `ignore_eos`: true runs the reply over the model's stop tokens to its token budget (Service._run).  Any
+    other value but false or null is a 400, and so is true with no budget of `budget` above 0: it would run on to the
+    end of the context window, which vLLM allows and this server does not.  So is true beside what needs the reply to
+    end where the model ends it: the tools offered (`tools`), MCP, and a structured answer (`structured`, the field the
+    route knows it by).  The message starts with the field's name."""
+    value = (req or {}).get("ignore_eos")
+    if value is None or value is False:
+        return
+    if value is not True:
+        raise ValueError("ignore_eos: true or false")
+    if top_logprobs(req) is not None:       # measured: the passes after the first gave 11 entries of 64 tokens
+        raise ValueError("ignore_eos: not available with logprobs, which would cover only a part of the reply")
+    if tools:                               # measured on the mock: a model that repeats its call gives several, ending length
+        raise ValueError("ignore_eos: not available with tools, because a reply that goes on past a stop token can invent "
+                         "more tool calls")
+    if req.get("strata_mcp"):               # measured on the mock: the tools are skipped, as finish is not "stop"
+        raise ValueError("ignore_eos: not available with strata_mcp, because MCP tools only run on a reply that stops")
+    if structured:                          # the reply ends "length", so the check of the answer can only fail, after all of it
+        raise ValueError(f"ignore_eos: not available with {structured}, because a reply that runs to its token budget "
+                         "is not a complete structured answer")
+    if budget <= 0:
+        raise ValueError("ignore_eos: true needs a token budget above 0 (max_tokens, max_completion_tokens, or "
+                         "max_output_tokens on /v1/responses); without one the reply would run to the end of the context")
 
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none

@@ -535,6 +535,19 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `top_k` keeps at most 64 candidates. Penalties (`presence_penalty`, `frequency_penalty`, `repetition_penalty`,
   `penalty_last_n`; llama.cpp's `repeat_penalty` and `repeat_last_n` work too) apply to every token the speculative check
   verifies, as if decoded one at a time, and make a request 1-11% slower because more drafts are rejected.
+- `ignore_eos` (vLLM's field, off by default): `true` runs the reply on to its token budget. The model's stop token no longer
+  ends it, and the reply ends with `length`, or `incomplete` on `/v1/responses`. The stop token counts as output and is not in the
+  text. It works on `/v1/chat/completions`, `/v1/responses` and `/v1/messages`.
+  It needs `max_tokens` (`max_completion_tokens`, `max_output_tokens`) above 0. Without one it is a 400. So it is with `logprobs`,
+  `tools`, `strata_mcp`, and `response_format` or `text.format` other than plain text.
+  An empty `tools` list counts as no tools. A stop string still ends the reply, with `stop`. One repeated token still ends it
+  early as `length` (`repeat_stop_tokens`).
+  The text after the first stop token is whatever the model writes next, usually an empty turn, a run of new lines or `<think>` tags.
+  The server sends the rest as a new pass each time, so it is slower than a plain reply. Do not use it for speed numbers:
+  "Say hi." asked for 1,024 tokens took 30.0-68.1 s against 8.3-9.2 s for a plain essay of that length, and two of its three runs
+  ended early on the repeated-token rule above, at 825 and 919 tokens (RTX 5080 16 GB, Qwen3.8-Flash-Next IQ3_S, engine 0.1.55).
+  On `--parallel` each pass is a new admission, so a normal request beside it takes longer: a 256-token essay took 7.8 s beside
+  one such reply against 4.8 s beside a normal one and 3.2 s alone (10 runs each, same card and engine).
 - Sampling defaults, in order of precedence: the request, the web page's shared Chat settings, the config's `sampling` block,
   then the model card. Without a block, thinking requests get temperature 1.0, top_p 0.95, top_k 20, and non-thinking
   requests get 0.7, 0.8, 20 with presence_penalty 1.5 (Qwen3.6-35B-A3B uses presence_penalty 1.5 in both). Greedy is only for
