@@ -1,0 +1,66 @@
+hashing model file 1/2: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+hashing model file 2/2: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+[1/22] warmup (up to 128 tokens)
+    truncated: prompt 24.416447 tok/s, decode 34.533927 tok/s, first token 3.149519 s
+[2/22] performance-short-r1 (up to 512 tokens)
+    completed: prompt 38.550115 tok/s, decode 37.688584 tok/s, first token 2.034725 s
+[3/22] performance-prompt-4k-r1 (up to 512 tokens)
+    truncated: prompt 697.975819 tok/s, decode 40.931184 tok/s, first token 6.005621 s
+[4/22] performance-prompt-16k-r1 (up to 512 tokens)
+    truncated: prompt 1209.363769 tok/s, decode 37.364626 tok/s, first token 13.745813 s
+[5/22] performance-short-r2 (up to 512 tokens)
+    completed: prompt 34.909553 tok/s, decode 38.48392 tok/s, first token 2.246576 s
+[6/22] performance-prompt-4k-r2 (up to 512 tokens)
+    truncated: prompt 675.590915 tok/s, decode 37.730009 tok/s, first token 6.183202 s
+[7/22] performance-prompt-16k-r2 (up to 512 tokens)
+    truncated: prompt 1221.798064 tok/s, decode 42.093148 tok/s, first token 13.592747 s
+[8/22] performance-short-r3 (up to 512 tokens)
+    completed: prompt 34.988867 tok/s, decode 36.842202 tok/s, first token 2.239894 s
+[9/22] performance-prompt-4k-r3 (up to 512 tokens)
+    truncated: prompt 674.82235 tok/s, decode 41.11327 tok/s, first token 6.184981 s
+[10/22] performance-prompt-16k-r3 (up to 512 tokens)
+    truncated: prompt 1223.577023 tok/s, decode 40.88216 tok/s, first token 13.574076 s
+[11/22] sanity-I1 (up to 2048 tokens)
+    completed: prompt 36.789448 tok/s, decode 46.755544 tok/s, first token 2.266547 s
+[12/22] sanity-I2 (up to 2048 tokens)
+    completed: prompt 43.953897 tok/s, decode 33.812342 tok/s, first token 2.084567 s
+[13/22] sanity-I3 (up to 2048 tokens)
+    completed: prompt 44.793423 tok/s, decode 40.381274 tok/s, first token 1.934588 s
+[14/22] sanity-I4 (up to 2048 tokens)
+    completed: prompt 40.418991 tok/s, decode 37.028466 tok/s, first token 1.793051 s
+[15/22] sanity-R1 (up to 2048 tokens)
+    completed: prompt 1666.666667 tok/s, decode 48.582996 tok/s, first token 5.908166 s
+[16/22] sanity-R2 (up to 2048 tokens)
+    completed: prompt 833.333333 tok/s, decode 50.028185 tok/s, first token 5.722912 s
+[17/22] sanity-R3 (up to 2048 tokens)
+    completed: prompt 454.545455 tok/s, decode 45.682703 tok/s, first token 13.693414 s
+[18/22] sanity-R4 (up to 2048 tokens)
+    completed: prompt 625.0 tok/s, decode 46.861747 tok/s, first token 15.106178 s
+[19/22] sanity-T1 (up to 2048 tokens)
+    completed: prompt 99.103495 tok/s, decode 46.268477 tok/s, first token 3.31848 s
+[20/22] sanity-T2 (up to 2048 tokens)
+    completed: prompt 100.591538 tok/s, decode 37.995825 tok/s, first token 3.367306 s
+[21/22] sanity-T3 (up to 2048 tokens)
+    completed: prompt 110.048146 tok/s, decode 39.000359 tok/s, first token 3.236079 s
+[22/22] sanity-T4 (up to 2048 tokens)
+    completed: prompt 108.013382 tok/s, decode 44.597411 tok/s, first token 3.175722 s
+Strata standard benchmark (strata-qwen38-thinking-v1-draft.1)
+Status: nonconforming. 21 of 21 required requests finished, 0 failed, 0 skipped. Time after the model loaded: 4 min 27 s.
+Machine: NVIDIA GeForce RTX 3070; AMD Ryzen Threadripper 1920X 12-Core Processor; 94 GB RAM; Ubuntu 24.04.4 LTS 6.8.0-138-generic.
+Model: qwen3.8-flash-next-iq3_s, IQ3_S, context 262144; engine 0.1.52; track custom.
+
+Speed (median, min-max, n; the engine's own prompt and decode timings, the client's first-token time):
+  Case        Prompt tok/s                Decode tok/s          TTFT s                   Total s               Capped
+  short       n/a                         37.7 (36.8-38.5) n=3  2.24 (2.03-2.25) n=3     13.1 (10.9-15.1) n=3  0/3
+  prompt-4k   675.6 (674.8-698.0) n=3     40.9 (37.7-41.1) n=3  6.18 (6.01-6.18) n=3     18.6 (18.5-19.7) n=3  3/3
+  prompt-16k  1221.8 (1209.4-1223.6) n=3  40.9 (37.4-42.1) n=3  13.59 (13.57-13.75) n=3  26.1 (25.7-27.4) n=3  3/3
+  short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not shown; read prompt speed from prompt-4k and prompt-16k.
+  Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the time to the cap, not to an answer, and it has no first-answer time when it was still reasoning.
+
+Sanity checks: 12 of 12 passed (instruction 4/4, retrieval 4/4, tool calls 4/4).
+
+Why this is not a complete standard result:
+  - the Strata commit is unknown (not a git checkout and no COMMIT file)
+
+Report: /home/<user>/projects/LLM/pd/std/x1/standard/README.md
+Result: /home/<user>/projects/LLM/pd/std/x1/standard/results.json

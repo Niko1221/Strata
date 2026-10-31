@@ -1,0 +1,13 @@
+[strata] split: prompt 32765 tokens read on the prefill card in 81.4 s, session 702 MiB saved in 1.00 s and restored in 0.88 s; the decode card makes the answer
+[strata] split: prompt 32765 tokens read on the prefill card in 81.6 s, session 702 MiB saved in 1.21 s and restored in 0.99 s; the decode card makes the answer
+[strata] split: prompt 32765 tokens read on the prefill card in 81.0 s, session 702 MiB saved in 1.25 s and restored in 1.11 s; the decode card makes the answer
+[strata] split: prompt 65540 tokens read on the prefill card in 163.4 s, session 1180 MiB saved in 1.83 s and restored in 1.89 s; the decode card makes the answer
+[strata] split: prompt 65540 tokens read on the prefill card in 163.1 s, session 1180 MiB saved in 2.10 s and restored in 1.88 s; the decode card makes the answer
+[strata] split: prompt 65540 tokens read on the prefill card in 164.6 s, session 1180 MiB saved in 2.04 s and restored in 1.87 s; the decode card makes the answer
+[strata] split: prompt 131072 tokens read on the prefill card in 336.3 s, session 2134 MiB saved in 3.44 s and restored in 3.26 s; the decode card makes the answer
+[strata] split: prompt 131072 tokens read on the prefill card in 338.8 s, session 2134 MiB saved in 3.46 s and restored in 3.35 s; the decode card makes the answer
+[strata] split: prompt 131072 tokens read on the prefill card in 337.6 s, session 2134 MiB saved in 3.47 s and restored in 3.34 s; the decode card makes the answer
+[strata] split: prompt 196603 tokens read on the prefill card in 524.3 s, session 3089 MiB saved in 3.54 s and restored in 4.64 s; the decode card makes the answer
+[strata] split: prompt 258030 tokens read on the prefill card in 712.7 s, session 3983 MiB saved in 5.26 s and restored in 5.85 s; the decode card makes the answer
+[strata] split: prompt 258030 tokens read on the prefill card in 715.6 s, session 3983 MiB saved in 4.70 s and restored in 6.28 s; the decode card makes the answer
+[strata] split: prompt 258030 tokens read on the prefill card in 715.7 s, session 3983 MiB saved in 4.66 s and restored in 6.27 s; the decode card makes the answer

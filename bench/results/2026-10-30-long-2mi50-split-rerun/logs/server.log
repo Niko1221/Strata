@@ -1,0 +1,927 @@
+[strata] sampling defaults from the config: temperature=1.0, top_p=0.95, top_k=20, min_p=0.0
+loading the model (the first start takes a minute or two) ...
+[strata] split serving: the prompt is read on card 0, the answer is made on card 1 (prompts with 2048+ new tokens are handed over); the config already names a shared expert arena
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] still starting (31 s) - please wait ...
+[strata] still starting (51 s) - please wait ...
+[strata] still starting (71 s) - please wait ...
+[strata] still starting (91 s) - please wait ...
+[strata] still starting (111 s) - please wait ...
+[strata] still starting (131 s) - please wait ...
+[strata] experts loaded: 46.84 GiB at 0.48 GiB/s (147 s so far)
+[strata] filling the GPU's expert cache (11771 experts, 22.33 GiB of VRAM) ...
+[strata] almost ready ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] still starting (31 s) - please wait ...
+[strata] still starting (51 s) - please wait ...
+[strata] still starting (71 s) - please wait ...
+[strata] still starting (91 s) - please wait ...
+[strata] still starting (111 s) - please wait ...
+[strata] still starting (131 s) - please wait ...
+[strata] experts loaded: 46.84 GiB at 0.50 GiB/s (134 s so far)
+[strata] filling the GPU's expert cache (11771 experts, 22.33 GiB of VRAM) ...
+[strata] almost ready ...
+[strata] slot save/restore on: /dev/shm/pd-slots (session files are kept until deleted: about 1.2 GB per 63K-token conversation; restore only files this server wrote)
+ready: http://127.0.0.1:20090/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens)
+       open http://127.0.0.1:20090/ in a browser to chat; close this window to stop the model
+[strata] reading the prompt: 32,765 tokens, 10 s so far
+[strata] reading the prompt: 32,765 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 32,765 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 50 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 32,765 tokens, 70 s so far
+[strata] reading the prompt: 24,576 of 32,765 tokens, 80 s so far
+[strata] reading the prompt: 32,764 of 32,765 tokens, 81 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 84 s
+[strata] thinking: 40 of max 512 tokens, 38.3 tok/s, 85 s
+[strata] thinking: 81 of max 512 tokens, 38.4 tok/s, 86 s
+[strata] thinking: 111 of max 512 tokens, 35.3 tok/s, 87 s
+[strata] thinking: 146 of max 512 tokens, 34.9 tok/s, 88 s
+[strata] thinking: 180 of max 512 tokens, 34.5 tok/s, 89 s
+[strata] thinking: 217 of max 512 tokens, 34.5 tok/s, 90 s
+[strata] thinking: 254 of max 512 tokens, 34.8 tok/s, 91 s
+[strata] thinking: 289 of max 512 tokens, 34.7 tok/s, 92 s
+[strata] thinking: 322 of max 512 tokens, 34.4 tok/s, 93 s
+[strata] thinking: 357 of max 512 tokens, 34.4 tok/s, 94 s
+[strata] answering: 388 of max 512 tokens, 34.0 tok/s, 95 s
+[strata] answering: 428 of max 512 tokens, 34.5 tok/s, 96 s
+[strata] answering: 465 of max 512 tokens, 34.7 tok/s, 97 s
+[strata] answering: 509 of max 512 tokens, 35.2 tok/s, 98 s
+[strata] split: prompt 32765 tokens read on the prefill card in 81.4 s, session 702 MiB saved in 1.00 s and restored in 0.88 s; the decode card makes the answer
+[strata] done: 512 tokens in 98 s (34.8 tok/s) (length, cancel=False), expert cache 96.3% hit (+0.3% of the routed experts over PCIe)
+[strata] reading the prompt: 32,765 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 32,765 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 32,765 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 39 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 49 s so far
+[strata] reading the prompt: 24,576 of 32,765 tokens, 59 s so far
+[strata] reading the prompt: 24,576 of 32,765 tokens, 69 s so far
+[strata] reading the prompt: 32,760 of 32,765 tokens, 79 s so far
+[strata] reading the prompt: 32,764 of 32,765 tokens, 82 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 84 s
+[strata] thinking: 46 of max 512 tokens, 45.8 tok/s, 85 s
+[strata] thinking: 92 of max 512 tokens, 45.6 tok/s, 86 s
+[strata] thinking: 141 of max 512 tokens, 46.1 tok/s, 87 s
+[strata] thinking: 188 of max 512 tokens, 46.3 tok/s, 88 s
+[strata] thinking: 224 of max 512 tokens, 44.1 tok/s, 89 s
+[strata] thinking: 256 of max 512 tokens, 42.0 tok/s, 90 s
+[strata] answering: 309 of max 512 tokens, 43.2 tok/s, 91 s
+[strata] answering: 363 of max 512 tokens, 44.2 tok/s, 92 s
+[strata] answering: 417 of max 512 tokens, 45.3 tok/s, 93 s
+[strata] answering: 470 of max 512 tokens, 45.8 tok/s, 94 s
+[strata] split: prompt 32765 tokens read on the prefill card in 81.6 s, session 702 MiB saved in 1.21 s and restored in 0.99 s; the decode card makes the answer
+[strata] done: 512 tokens in 95 s (46.2 tok/s) (length, cancel=False), expert cache 97.7% hit (+0.2% of the routed experts over PCIe)
+[strata] reading the prompt: 32,765 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 32,765 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 32,765 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 39 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 49 s so far
+[strata] reading the prompt: 16,384 of 32,765 tokens, 59 s so far
+[strata] reading the prompt: 24,576 of 32,765 tokens, 70 s so far
+[strata] reading the prompt: 24,576 of 32,765 tokens, 80 s so far
+[strata] reading the prompt: 32,764 of 32,765 tokens, 81 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 84 s
+[strata] thinking: 52 of max 512 tokens, 50.6 tok/s, 85 s
+[strata] thinking: 97 of max 512 tokens, 47.1 tok/s, 86 s
+[strata] thinking: 133 of max 512 tokens, 43.4 tok/s, 87 s
+[strata] thinking: 176 of max 512 tokens, 43.1 tok/s, 88 s
+[strata] thinking: 209 of max 512 tokens, 41.0 tok/s, 89 s
+[strata] thinking: 250 of max 512 tokens, 40.9 tok/s, 90 s
+[strata] thinking: 288 of max 512 tokens, 40.4 tok/s, 91 s
+[strata] thinking: 326 of max 512 tokens, 40.1 tok/s, 92 s
+[strata] thinking: 358 of max 512 tokens, 39.0 tok/s, 93 s
+[strata] thinking: 396 of max 512 tokens, 38.8 tok/s, 94 s
+[strata] thinking: 440 of max 512 tokens, 39.2 tok/s, 95 s
+[strata] thinking: 477 of max 512 tokens, 39.0 tok/s, 96 s
+[strata] split: prompt 32765 tokens read on the prefill card in 81.0 s, session 702 MiB saved in 1.25 s and restored in 1.11 s; the decode card makes the answer
+[strata] done: 512 tokens in 97 s (38.6 tok/s) (length, cancel=False), expert cache 97.5% hit (+0.2% of the routed experts over PCIe)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] reading the prompt: 65,540 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 65,540 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 65,540 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 65,540 tokens, 39 s so far
+[strata] reading the prompt: 16,384 of 65,540 tokens, 49 s so far
+[strata] reading the prompt: 16,384 of 65,540 tokens, 59 s so far
+[strata] reading the prompt: 24,576 of 65,540 tokens, 69 s so far
+[strata] reading the prompt: 24,576 of 65,540 tokens, 79 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 90 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 100 s so far
+[strata] reading the prompt: 40,960 of 65,540 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 65,540 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 65,540 tokens, 130 s so far
+[strata] reading the prompt: 49,152 of 65,540 tokens, 140 s so far
+[strata] reading the prompt: 57,344 of 65,540 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 65,540 tokens, 151 s so far
+[strata] reading the prompt: 57,344 of 65,540 tokens, 161 s so far
+[strata] reading the prompt: 65,535 of 65,540 tokens, 163 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 168 s
+[strata] thinking: 40 of max 512 tokens, 38.8 tok/s, 169 s
+[strata] thinking: 88 of max 512 tokens, 42.3 tok/s, 170 s
+[strata] thinking: 125 of max 512 tokens, 40.5 tok/s, 171 s
+[strata] thinking: 160 of max 512 tokens, 38.6 tok/s, 172 s
+[strata] thinking: 205 of max 512 tokens, 39.4 tok/s, 173 s
+[strata] thinking: 242 of max 512 tokens, 39.0 tok/s, 174 s
+[strata] thinking: 281 of max 512 tokens, 38.9 tok/s, 175 s
+[strata] thinking: 315 of max 512 tokens, 38.1 tok/s, 176 s
+[strata] thinking: 361 of max 512 tokens, 38.9 tok/s, 177 s
+[strata] thinking: 402 of max 512 tokens, 39.1 tok/s, 178 s
+[strata] thinking: 437 of max 512 tokens, 38.6 tok/s, 179 s
+[strata] thinking: 473 of max 512 tokens, 38.3 tok/s, 180 s
+[strata] split: prompt 65540 tokens read on the prefill card in 163.4 s, session 1180 MiB saved in 1.83 s and restored in 1.89 s; the decode card makes the answer
+[strata] done: 512 tokens in 181 s (38.5 tok/s) (length, cancel=False), expert cache 98.5% hit (+0.1% of the routed experts over PCIe)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] reading the prompt: 65,540 tokens, 12 s so far
+[strata] reading the prompt: 8,192 of 65,540 tokens, 21 s so far
+[strata] reading the prompt: 8,192 of 65,540 tokens, 31 s so far
+[strata] reading the prompt: 16,384 of 65,540 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 65,540 tokens, 50 s so far
+[strata] reading the prompt: 24,576 of 65,540 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 65,540 tokens, 70 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 79 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 89 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 99 s so far
+[strata] reading the prompt: 40,960 of 65,540 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 65,540 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 65,540 tokens, 131 s so far
+[strata] reading the prompt: 49,152 of 65,540 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 65,540 tokens, 151 s so far
+[strata] reading the prompt: 57,344 of 65,540 tokens, 161 s so far
+[strata] reading the prompt: 65,539 of 65,540 tokens, 163 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 167 s
+[strata] thinking: 41 of max 512 tokens, 39.0 tok/s, 168 s
+[strata] thinking: 82 of max 512 tokens, 39.5 tok/s, 169 s
+[strata] thinking: 116 of max 512 tokens, 37.4 tok/s, 170 s
+[strata] thinking: 147 of max 512 tokens, 35.7 tok/s, 172 s
+[strata] thinking: 186 of max 512 tokens, 36.3 tok/s, 173 s
+[strata] answering: 229 of max 512 tokens, 37.4 tok/s, 174 s
+[strata] answering: 276 of max 512 tokens, 38.6 tok/s, 175 s
+[strata] answering: 328 of max 512 tokens, 40.0 tok/s, 176 s
+[strata] answering: 375 of max 512 tokens, 40.8 tok/s, 177 s
+[strata] answering: 422 of max 512 tokens, 41.3 tok/s, 178 s
+[strata] answering: 466 of max 512 tokens, 41.5 tok/s, 179 s
+[strata] answering: 503 of max 512 tokens, 41.0 tok/s, 180 s
+[strata] split: prompt 65540 tokens read on the prefill card in 163.1 s, session 1180 MiB saved in 2.10 s and restored in 1.88 s; the decode card makes the answer
+[strata] done: 512 tokens in 180 s (41.2 tok/s) (length, cancel=False), expert cache 98.0% hit (+0.2% of the routed experts over PCIe)
+[strata] reading the prompt: 65,540 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 65,540 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 65,540 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 65,540 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 65,540 tokens, 50 s so far
+[strata] reading the prompt: 24,576 of 65,540 tokens, 59 s so far
+[strata] reading the prompt: 24,576 of 65,540 tokens, 69 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 79 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 89 s so far
+[strata] reading the prompt: 32,768 of 65,540 tokens, 99 s so far
+[strata] reading the prompt: 40,960 of 65,540 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 65,540 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 65,540 tokens, 131 s so far
+[strata] reading the prompt: 49,152 of 65,540 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 65,540 tokens, 151 s so far
+[strata] reading the prompt: 57,344 of 65,540 tokens, 161 s so far
+[strata] reading the prompt: 65,539 of 65,540 tokens, 165 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 169 s
+[strata] thinking: 46 of max 512 tokens, 44.9 tok/s, 170 s
+[strata] thinking: 89 of max 512 tokens, 43.9 tok/s, 171 s
+[strata] thinking: 139 of max 512 tokens, 45.5 tok/s, 172 s
+[strata] thinking: 181 of max 512 tokens, 44.1 tok/s, 173 s
+[strata] thinking: 216 of max 512 tokens, 42.1 tok/s, 174 s
+[strata] thinking: 253 of max 512 tokens, 41.1 tok/s, 175 s
+[strata] thinking: 290 of max 512 tokens, 40.4 tok/s, 176 s
+[strata] thinking: 320 of max 512 tokens, 39.2 tok/s, 177 s
+[strata] thinking: 362 of max 512 tokens, 39.2 tok/s, 178 s
+[strata] thinking: 400 of max 512 tokens, 39.1 tok/s, 179 s
+[strata] thinking: 435 of max 512 tokens, 38.7 tok/s, 180 s
+[strata] thinking: 470 of max 512 tokens, 38.4 tok/s, 181 s
+[strata] thinking: 507 of max 512 tokens, 38.2 tok/s, 182 s
+[strata] split: prompt 65540 tokens read on the prefill card in 164.6 s, session 1180 MiB saved in 2.04 s and restored in 1.87 s; the decode card makes the answer
+[strata] done: 512 tokens in 182 s (38.0 tok/s) (length, cancel=False), expert cache 98.2% hit (+0.1% of the routed experts over PCIe)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] reading the prompt: 131,072 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 131,072 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 131,072 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 50 s so far
+[strata] reading the prompt: 24,576 of 131,072 tokens, 59 s so far
+[strata] reading the prompt: 24,576 of 131,072 tokens, 69 s so far
+[strata] reading the prompt: 32,768 of 131,072 tokens, 79 s so far
+[strata] reading the prompt: 32,768 of 131,072 tokens, 89 s so far
+[strata] reading the prompt: 32,768 of 131,072 tokens, 99 s so far
+[strata] reading the prompt: 40,960 of 131,072 tokens, 109 s so far
+[strata] reading the prompt: 40,960 of 131,072 tokens, 119 s so far
+[strata] reading the prompt: 49,152 of 131,072 tokens, 129 s so far
+[strata] reading the prompt: 49,152 of 131,072 tokens, 139 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 140 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 150 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 160 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 161 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 171 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 181 s so far
+[strata] reading the prompt: 73,728 of 131,072 tokens, 192 s so far
+[strata] reading the prompt: 73,728 of 131,072 tokens, 202 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 203 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 213 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 223 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 226 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 236 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 246 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 247 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 257 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 267 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 269 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 279 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 289 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 291 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 301 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 311 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 313 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 323 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 333 s so far
+[strata] reading the prompt: 131,067 of 131,072 tokens, 335 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 344 s
+[strata] thinking: 42 of max 512 tokens, 40.3 tok/s, 345 s
+[strata] thinking: 92 of max 512 tokens, 45.0 tok/s, 346 s
+[strata] thinking: 137 of max 512 tokens, 44.8 tok/s, 347 s
+[strata] thinking: 173 of max 512 tokens, 42.4 tok/s, 348 s
+[strata] thinking: 208 of max 512 tokens, 40.6 tok/s, 349 s
+[strata] thinking: 249 of max 512 tokens, 40.5 tok/s, 350 s
+[strata] thinking: 283 of max 512 tokens, 39.6 tok/s, 351 s
+[strata] thinking: 320 of max 512 tokens, 39.2 tok/s, 352 s
+[strata] thinking: 355 of max 512 tokens, 38.7 tok/s, 353 s
+[strata] thinking: 390 of max 512 tokens, 38.2 tok/s, 354 s
+[strata] thinking: 424 of max 512 tokens, 37.8 tok/s, 355 s
+[strata] thinking: 459 of max 512 tokens, 37.6 tok/s, 356 s
+[strata] thinking: 493 of max 512 tokens, 37.3 tok/s, 357 s
+[strata] split: prompt 131072 tokens read on the prefill card in 336.3 s, session 2134 MiB saved in 3.44 s and restored in 3.26 s; the decode card makes the answer
+[strata] done: 512 tokens in 357 s (37.0 tok/s) (length, cancel=False), expert cache 98.3% hit (+0.1% of the routed experts over PCIe)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] reading the prompt: 131,072 tokens, 13 s so far
+[strata] reading the prompt: 8,192 of 131,072 tokens, 22 s so far
+[strata] reading the prompt: 8,192 of 131,072 tokens, 32 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 41 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 51 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 61 s so far
+[strata] reading the prompt: 24,576 of 131,072 tokens, 71 s so far
+[strata] reading the prompt: 24,576 of 131,072 tokens, 81 s so far
+[strata] reading the prompt: 32,768 of 131,072 tokens, 92 s so far
+[strata] reading the prompt: 32,768 of 131,072 tokens, 102 s so far
+[strata] reading the prompt: 40,960 of 131,072 tokens, 112 s so far
+[strata] reading the prompt: 40,960 of 131,072 tokens, 122 s so far
+[strata] reading the prompt: 49,152 of 131,072 tokens, 132 s so far
+[strata] reading the prompt: 49,152 of 131,072 tokens, 142 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 143 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 153 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 163 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 164 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 174 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 184 s so far
+[strata] reading the prompt: 73,728 of 131,072 tokens, 195 s so far
+[strata] reading the prompt: 73,728 of 131,072 tokens, 205 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 206 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 216 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 226 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 228 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 238 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 248 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 250 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 260 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 270 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 272 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 282 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 292 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 293 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 303 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 313 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 316 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 326 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 336 s so far
+[strata] reading the prompt: 131,067 of 131,072 tokens, 338 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 346 s
+[strata] thinking: 46 of max 512 tokens, 44.3 tok/s, 347 s
+[strata] thinking: 91 of max 512 tokens, 44.0 tok/s, 348 s
+[strata] thinking: 135 of max 512 tokens, 43.2 tok/s, 349 s
+[strata] thinking: 175 of max 512 tokens, 42.4 tok/s, 350 s
+[strata] thinking: 212 of max 512 tokens, 40.9 tok/s, 351 s
+[strata] thinking: 242 of max 512 tokens, 39.0 tok/s, 352 s
+[strata] thinking: 278 of max 512 tokens, 38.6 tok/s, 353 s
+[strata] thinking: 312 of max 512 tokens, 37.9 tok/s, 355 s
+[strata] thinking: 343 of max 512 tokens, 37.1 tok/s, 356 s
+[strata] thinking: 382 of max 512 tokens, 37.2 tok/s, 357 s
+[strata] thinking: 426 of max 512 tokens, 37.6 tok/s, 358 s
+[strata] thinking: 475 of max 512 tokens, 38.4 tok/s, 359 s
+[strata] split: prompt 131072 tokens read on the prefill card in 338.8 s, session 2134 MiB saved in 3.46 s and restored in 3.35 s; the decode card makes the answer
+[strata] done: 512 tokens in 359 s (38.7 tok/s) (length, cancel=False), expert cache 98.4% hit (+0.1% of the routed experts over PCIe)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] reading the prompt: 131,072 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 131,072 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 131,072 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 50 s so far
+[strata] reading the prompt: 16,384 of 131,072 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 131,072 tokens, 70 s so far
+[strata] reading the prompt: 24,576 of 131,072 tokens, 80 s so far
+[strata] reading the prompt: 32,768 of 131,072 tokens, 90 s so far
+[strata] reading the prompt: 32,768 of 131,072 tokens, 100 s so far
+[strata] reading the prompt: 40,960 of 131,072 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 131,072 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 131,072 tokens, 130 s so far
+[strata] reading the prompt: 49,152 of 131,072 tokens, 140 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 142 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 152 s so far
+[strata] reading the prompt: 57,344 of 131,072 tokens, 162 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 163 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 173 s so far
+[strata] reading the prompt: 65,536 of 131,072 tokens, 183 s so far
+[strata] reading the prompt: 73,728 of 131,072 tokens, 194 s so far
+[strata] reading the prompt: 73,728 of 131,072 tokens, 204 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 205 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 215 s so far
+[strata] reading the prompt: 81,920 of 131,072 tokens, 225 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 227 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 237 s so far
+[strata] reading the prompt: 90,112 of 131,072 tokens, 247 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 249 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 259 s so far
+[strata] reading the prompt: 98,304 of 131,072 tokens, 269 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 270 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 280 s so far
+[strata] reading the prompt: 106,496 of 131,072 tokens, 290 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 292 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 302 s so far
+[strata] reading the prompt: 114,688 of 131,072 tokens, 312 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 314 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 324 s so far
+[strata] reading the prompt: 122,880 of 131,072 tokens, 334 s so far
+[strata] reading the prompt: 131,067 of 131,072 tokens, 337 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 345 s
+[strata] thinking: 41 of max 512 tokens, 40.4 tok/s, 346 s
+[strata] thinking: 89 of max 512 tokens, 43.1 tok/s, 347 s
+[strata] thinking: 133 of max 512 tokens, 42.6 tok/s, 348 s
+[strata] thinking: 176 of max 512 tokens, 42.4 tok/s, 349 s
+[strata] thinking: 209 of max 512 tokens, 40.5 tok/s, 350 s
+[strata] thinking: 240 of max 512 tokens, 38.6 tok/s, 351 s
+[strata] thinking: 275 of max 512 tokens, 38.0 tok/s, 352 s
+[strata] thinking: 312 of max 512 tokens, 37.9 tok/s, 353 s
+[strata] thinking: 351 of max 512 tokens, 37.9 tok/s, 354 s
+[strata] thinking: 387 of max 512 tokens, 37.7 tok/s, 355 s
+[strata] thinking: 425 of max 512 tokens, 37.6 tok/s, 356 s
+[strata] answering: 470 of max 512 tokens, 38.1 tok/s, 357 s
+[strata] split: prompt 131072 tokens read on the prefill card in 337.6 s, session 2134 MiB saved in 3.47 s and restored in 3.34 s; the decode card makes the answer
+[strata] done: 512 tokens in 358 s (38.6 tok/s) (length, cancel=False), expert cache 97.4% hit (+0.2% of the routed experts over PCIe)
+[strata] reading the prompt: 196,603 tokens, 12 s so far
+[strata] reading the prompt: 8,192 of 196,603 tokens, 21 s so far
+[strata] reading the prompt: 8,192 of 196,603 tokens, 31 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 50 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 196,603 tokens, 71 s so far
+[strata] reading the prompt: 24,576 of 196,603 tokens, 81 s so far
+[strata] reading the prompt: 32,768 of 196,603 tokens, 91 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 101 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 111 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 121 s so far
+[strata] reading the prompt: 49,152 of 196,603 tokens, 131 s so far
+[strata] reading the prompt: 49,152 of 196,603 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 142 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 152 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 162 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 163 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 173 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 183 s so far
+[strata] reading the prompt: 73,728 of 196,603 tokens, 194 s so far
+[strata] reading the prompt: 73,728 of 196,603 tokens, 204 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 205 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 215 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 225 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 227 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 237 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 247 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 249 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 259 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 269 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 271 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 281 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 291 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 293 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 303 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 313 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 315 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 325 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 335 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 337 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 347 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 357 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 359 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 369 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 379 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 382 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 392 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 402 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 405 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 415 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 425 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 428 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 438 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 448 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 451 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 461 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 471 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 474 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 484 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 494 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 498 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 508 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 518 s so far
+[strata] reading the prompt: 196,598 of 196,603 tokens, 522 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 534 s
+[strata] thinking: 43 of max 512 tokens, 40.7 tok/s, 535 s
+[strata] the engine reported an error: mtp: round capture: out of memory
+[strata] done: 82 tokens in 536 s (43.2 tok/s) (error, cancel=False)
+[strata] reading the prompt: 196,603 tokens, 12 s so far
+[strata] reading the prompt: 8,192 of 196,603 tokens, 21 s so far
+[strata] reading the prompt: 8,192 of 196,603 tokens, 31 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 41 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 51 s so far
+[strata] reading the prompt: 24,576 of 196,603 tokens, 61 s so far
+[strata] reading the prompt: 24,576 of 196,603 tokens, 71 s so far
+[strata] reading the prompt: 32,768 of 196,603 tokens, 80 s so far
+[strata] reading the prompt: 32,768 of 196,603 tokens, 90 s so far
+[strata] reading the prompt: 32,768 of 196,603 tokens, 100 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 111 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 121 s so far
+[strata] reading the prompt: 49,152 of 196,603 tokens, 131 s so far
+[strata] reading the prompt: 49,152 of 196,603 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 152 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 162 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 172 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 183 s so far
+[strata] reading the prompt: 73,728 of 196,603 tokens, 184 s so far
+[strata] reading the prompt: 73,728 of 196,603 tokens, 194 s so far
+[strata] reading the prompt: 73,728 of 196,603 tokens, 204 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 206 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 216 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 226 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 227 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 237 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 247 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 248 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 258 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 268 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 270 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 280 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 290 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 293 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 303 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 313 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 315 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 325 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 335 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 337 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 347 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 357 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 360 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 370 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 380 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 383 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 393 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 403 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 405 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 415 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 425 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 428 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 438 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 448 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 452 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 462 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 472 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 476 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 486 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 496 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 500 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 510 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 520 s so far
+[strata] reading the prompt: 196,598 of 196,603 tokens, 524 s so far
+[strata] reading the prompt: 196,602 of 196,603 tokens, 526 s so far
+[strata] the engine stopped unexpectedly (exit code 1). The engine exited (code 1) after it reported: mtp: round capture: out of memory - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again. Its log: /home/<user>/projects/LLM/pd/bench027/a1sw.decode.log
+[strata] done: 0 tokens in 531 s (no speed) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] still starting (31 s) - please wait ...
+[strata] still starting (51 s) - please wait ...
+[strata] still starting (71 s) - please wait ...
+[strata] still starting (91 s) - please wait ...
+[strata] still starting (111 s) - please wait ...
+[strata] still starting (131 s) - please wait ...
+[strata] experts loaded: 46.84 GiB at 0.50 GiB/s (135 s so far)
+[strata] filling the GPU's expert cache (11771 experts, 22.33 GiB of VRAM) ...
+[strata] almost ready ...
+[strata] the engine is running again
+[strata] reading the prompt: 196,603 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 196,603 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 196,603 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 39 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 50 s so far
+[strata] reading the prompt: 16,384 of 196,603 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 196,603 tokens, 70 s so far
+[strata] reading the prompt: 24,576 of 196,603 tokens, 80 s so far
+[strata] reading the prompt: 32,768 of 196,603 tokens, 90 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 100 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 196,603 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 196,603 tokens, 130 s so far
+[strata] reading the prompt: 49,152 of 196,603 tokens, 140 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 151 s so far
+[strata] reading the prompt: 57,344 of 196,603 tokens, 161 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 162 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 172 s so far
+[strata] reading the prompt: 65,536 of 196,603 tokens, 182 s so far
+[strata] reading the prompt: 73,728 of 196,603 tokens, 193 s so far
+[strata] reading the prompt: 73,728 of 196,603 tokens, 203 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 204 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 214 s so far
+[strata] reading the prompt: 81,920 of 196,603 tokens, 224 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 226 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 236 s so far
+[strata] reading the prompt: 90,112 of 196,603 tokens, 246 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 248 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 258 s so far
+[strata] reading the prompt: 98,304 of 196,603 tokens, 268 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 270 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 280 s so far
+[strata] reading the prompt: 106,496 of 196,603 tokens, 290 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 291 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 301 s so far
+[strata] reading the prompt: 114,688 of 196,603 tokens, 311 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 314 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 324 s so far
+[strata] reading the prompt: 122,880 of 196,603 tokens, 334 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 337 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 347 s so far
+[strata] reading the prompt: 131,072 of 196,603 tokens, 357 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 359 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 369 s so far
+[strata] reading the prompt: 139,264 of 196,603 tokens, 379 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 381 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 391 s so far
+[strata] reading the prompt: 147,456 of 196,603 tokens, 401 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 405 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 415 s so far
+[strata] reading the prompt: 155,648 of 196,603 tokens, 425 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 428 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 438 s so far
+[strata] reading the prompt: 163,840 of 196,603 tokens, 448 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 452 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 462 s so far
+[strata] reading the prompt: 172,032 of 196,603 tokens, 472 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 475 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 485 s so far
+[strata] reading the prompt: 180,224 of 196,603 tokens, 495 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 499 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 509 s so far
+[strata] reading the prompt: 188,416 of 196,603 tokens, 519 s so far
+[strata] reading the prompt: 196,598 of 196,603 tokens, 524 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 534 s
+[strata] thinking: 33 of max 512 tokens, 31.8 tok/s, 535 s
+[strata] thinking: 58 of max 512 tokens, 28.0 tok/s, 536 s
+[strata] thinking: 94 of max 512 tokens, 30.6 tok/s, 537 s
+[strata] thinking: 121 of max 512 tokens, 29.6 tok/s, 538 s
+[strata] thinking: 154 of max 512 tokens, 29.8 tok/s, 539 s
+[strata] thinking: 190 of max 512 tokens, 30.8 tok/s, 540 s
+[strata] thinking: 224 of max 512 tokens, 31.1 tok/s, 541 s
+[strata] thinking: 262 of max 512 tokens, 31.7 tok/s, 542 s
+[strata] thinking: 297 of max 512 tokens, 32.1 tok/s, 543 s
+[strata] answering: 333 of max 512 tokens, 32.3 tok/s, 544 s
+[strata] answering: 378 of max 512 tokens, 33.3 tok/s, 545 s
+[strata] answering: 431 of max 512 tokens, 34.8 tok/s, 546 s
+[strata] answering: 483 of max 512 tokens, 36.1 tok/s, 547 s
+[strata] split: prompt 196603 tokens read on the prefill card in 524.3 s, session 3089 MiB saved in 3.54 s and restored in 4.64 s; the decode card makes the answer
+[strata] done: 512 tokens in 548 s (36.0 tok/s) (length, cancel=False), expert cache 96.4% hit (+0.3% of the routed experts over PCIe)
+[strata] reading the prompt: 258,030 tokens, 11 s so far
+[strata] reading the prompt: 8,192 of 258,030 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 258,030 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 50 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 258,030 tokens, 70 s so far
+[strata] reading the prompt: 24,576 of 258,030 tokens, 80 s so far
+[strata] reading the prompt: 32,768 of 258,030 tokens, 90 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 100 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 258,030 tokens, 130 s so far
+[strata] reading the prompt: 49,152 of 258,030 tokens, 140 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 151 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 161 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 162 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 172 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 182 s so far
+[strata] reading the prompt: 73,728 of 258,030 tokens, 193 s so far
+[strata] reading the prompt: 73,728 of 258,030 tokens, 203 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 204 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 214 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 224 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 226 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 236 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 246 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 248 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 258 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 268 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 270 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 280 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 290 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 291 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 301 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 311 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 314 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 324 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 334 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 337 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 347 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 357 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 359 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 369 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 379 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 381 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 391 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 401 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 405 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 415 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 425 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 428 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 438 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 448 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 451 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 461 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 471 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 475 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 485 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 495 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 499 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 509 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 519 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 523 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 533 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 543 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 547 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 557 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 567 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 571 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 581 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 591 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 596 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 606 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 616 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 621 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 631 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 641 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 646 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 656 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 666 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 671 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 681 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 691 s so far
+[strata] reading the prompt: 253,952 of 258,030 tokens, 696 s so far
+[strata] reading the prompt: 253,952 of 258,030 tokens, 706 s so far
+[strata] reading the prompt: 258,025 of 258,030 tokens, 710 s so far
+[strata] reading the prompt: 258,029 of 258,030 tokens, 713 s so far
+[strata] reading the prompt: 258,029 of 258,030 tokens, 718 s so far
+[strata] reading the prompt: 258,030 tokens, 723 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 725 s
+[strata] thinking: 48 of max 512 tokens, 46.8 tok/s, 726 s
+[strata] thinking: 89 of max 512 tokens, 43.7 tok/s, 727 s
+[strata] thinking: 126 of max 512 tokens, 41.2 tok/s, 728 s
+[strata] thinking: 157 of max 512 tokens, 38.4 tok/s, 729 s
+[strata] thinking: 189 of max 512 tokens, 36.9 tok/s, 730 s
+[strata] thinking: 225 of max 512 tokens, 36.4 tok/s, 731 s
+[strata] thinking: 263 of max 512 tokens, 36.6 tok/s, 732 s
+[strata] thinking: 299 of max 512 tokens, 36.4 tok/s, 733 s
+[strata] thinking: 343 of max 512 tokens, 37.1 tok/s, 734 s
+[strata] thinking: 371 of max 512 tokens, 36.2 tok/s, 735 s
+[strata] answering: 404 of max 512 tokens, 35.8 tok/s, 736 s
+[strata] answering: 451 of max 512 tokens, 36.5 tok/s, 737 s
+[strata] answering: 500 of max 512 tokens, 37.3 tok/s, 738 s
+[strata] split: prompt 258030 tokens read on the prefill card in 712.7 s, session 3983 MiB saved in 5.26 s and restored in 5.85 s; the decode card makes the answer
+[strata] done: 512 tokens in 739 s (37.3 tok/s) (length, cancel=False), expert cache 98.1% hit (+0.1% of the routed experts over PCIe)
+[strata] reading the prompt: 258,030 tokens, 12 s so far
+[strata] reading the prompt: 8,192 of 258,030 tokens, 20 s so far
+[strata] reading the prompt: 8,192 of 258,030 tokens, 30 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 50 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 258,030 tokens, 70 s so far
+[strata] reading the prompt: 24,576 of 258,030 tokens, 80 s so far
+[strata] reading the prompt: 32,768 of 258,030 tokens, 90 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 100 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 258,030 tokens, 130 s so far
+[strata] reading the prompt: 49,152 of 258,030 tokens, 140 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 151 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 161 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 163 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 173 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 183 s so far
+[strata] reading the prompt: 73,728 of 258,030 tokens, 193 s so far
+[strata] reading the prompt: 73,728 of 258,030 tokens, 203 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 204 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 214 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 225 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 226 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 236 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 246 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 248 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 258 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 268 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 270 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 280 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 290 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 292 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 302 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 312 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 314 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 324 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 334 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 337 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 347 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 357 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 359 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 369 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 379 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 382 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 392 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 402 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 405 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 415 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 425 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 428 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 438 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 448 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 452 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 462 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 472 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 475 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 485 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 495 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 499 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 509 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 519 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 523 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 533 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 543 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 547 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 557 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 567 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 571 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 581 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 591 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 596 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 606 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 616 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 621 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 631 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 641 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 646 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 656 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 666 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 671 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 681 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 691 s so far
+[strata] reading the prompt: 253,952 of 258,030 tokens, 697 s so far
+[strata] reading the prompt: 253,952 of 258,030 tokens, 707 s so far
+[strata] reading the prompt: 258,025 of 258,030 tokens, 715 s so far
+[strata] reading the prompt: 258,030 tokens, 725 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 728 s
+[strata] thinking: 41 of max 512 tokens, 39.2 tok/s, 729 s
+[strata] thinking: 78 of max 512 tokens, 38.1 tok/s, 730 s
+[strata] thinking: 113 of max 512 tokens, 36.9 tok/s, 731 s
+[strata] thinking: 143 of max 512 tokens, 35.2 tok/s, 732 s
+[strata] thinking: 174 of max 512 tokens, 34.1 tok/s, 733 s
+[strata] thinking: 207 of max 512 tokens, 33.9 tok/s, 734 s
+[strata] thinking: 245 of max 512 tokens, 34.3 tok/s, 735 s
+[strata] thinking: 281 of max 512 tokens, 34.3 tok/s, 736 s
+[strata] thinking: 318 of max 512 tokens, 34.5 tok/s, 737 s
+[strata] thinking: 358 of max 512 tokens, 34.9 tok/s, 738 s
+[strata] thinking: 388 of max 512 tokens, 34.4 tok/s, 739 s
+[strata] thinking: 426 of max 512 tokens, 34.6 tok/s, 740 s
+[strata] thinking: 457 of max 512 tokens, 34.2 tok/s, 741 s
+[strata] thinking: 491 of max 512 tokens, 34.1 tok/s, 742 s
+[strata] split: prompt 258030 tokens read on the prefill card in 715.6 s, session 3983 MiB saved in 4.70 s and restored in 6.28 s; the decode card makes the answer
+[strata] done: 512 tokens in 743 s (34.3 tok/s) (length, cancel=False), expert cache 98.4% hit (+0.1% of the routed experts over PCIe)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] reading the prompt: 258,030 tokens, 12 s so far
+[strata] reading the prompt: 8,192 of 258,030 tokens, 21 s so far
+[strata] reading the prompt: 8,192 of 258,030 tokens, 31 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 40 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 50 s so far
+[strata] reading the prompt: 16,384 of 258,030 tokens, 60 s so far
+[strata] reading the prompt: 24,576 of 258,030 tokens, 70 s so far
+[strata] reading the prompt: 24,576 of 258,030 tokens, 80 s so far
+[strata] reading the prompt: 32,768 of 258,030 tokens, 90 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 100 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 110 s so far
+[strata] reading the prompt: 40,960 of 258,030 tokens, 120 s so far
+[strata] reading the prompt: 49,152 of 258,030 tokens, 130 s so far
+[strata] reading the prompt: 49,152 of 258,030 tokens, 140 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 141 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 152 s so far
+[strata] reading the prompt: 57,344 of 258,030 tokens, 162 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 163 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 173 s so far
+[strata] reading the prompt: 65,536 of 258,030 tokens, 183 s so far
+[strata] reading the prompt: 73,728 of 258,030 tokens, 194 s so far
+[strata] reading the prompt: 73,728 of 258,030 tokens, 204 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 205 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 215 s so far
+[strata] reading the prompt: 81,920 of 258,030 tokens, 225 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 227 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 237 s so far
+[strata] reading the prompt: 90,112 of 258,030 tokens, 247 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 248 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 258 s so far
+[strata] reading the prompt: 98,304 of 258,030 tokens, 268 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 270 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 280 s so far
+[strata] reading the prompt: 106,496 of 258,030 tokens, 290 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 292 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 302 s so far
+[strata] reading the prompt: 114,688 of 258,030 tokens, 312 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 314 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 324 s so far
+[strata] reading the prompt: 122,880 of 258,030 tokens, 334 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 337 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 347 s so far
+[strata] reading the prompt: 131,072 of 258,030 tokens, 357 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 359 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 369 s so far
+[strata] reading the prompt: 139,264 of 258,030 tokens, 379 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 382 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 392 s so far
+[strata] reading the prompt: 147,456 of 258,030 tokens, 402 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 405 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 415 s so far
+[strata] reading the prompt: 155,648 of 258,030 tokens, 425 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 429 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 439 s so far
+[strata] reading the prompt: 163,840 of 258,030 tokens, 449 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 452 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 462 s so far
+[strata] reading the prompt: 172,032 of 258,030 tokens, 472 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 475 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 485 s so far
+[strata] reading the prompt: 180,224 of 258,030 tokens, 495 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 499 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 509 s so far
+[strata] reading the prompt: 188,416 of 258,030 tokens, 519 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 523 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 533 s so far
+[strata] reading the prompt: 196,608 of 258,030 tokens, 543 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 547 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 557 s so far
+[strata] reading the prompt: 204,800 of 258,030 tokens, 567 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 571 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 581 s so far
+[strata] reading the prompt: 212,992 of 258,030 tokens, 591 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 596 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 606 s so far
+[strata] reading the prompt: 221,184 of 258,030 tokens, 616 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 621 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 631 s so far
+[strata] reading the prompt: 229,376 of 258,030 tokens, 641 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 646 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 656 s so far
+[strata] reading the prompt: 237,568 of 258,030 tokens, 666 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 671 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 681 s so far
+[strata] reading the prompt: 245,760 of 258,030 tokens, 691 s so far
+[strata] reading the prompt: 253,952 of 258,030 tokens, 697 s so far
+[strata] reading the prompt: 253,952 of 258,030 tokens, 707 s so far
+[strata] reading the prompt: 258,025 of 258,030 tokens, 715 s so far
+[strata] reading the prompt: 258,030 tokens, 725 s so far
+[strata] thinking: 1 of max 512 tokens, 4.0 tok/s, 728 s
+[strata] thinking: 39 of max 512 tokens, 39.0 tok/s, 729 s
+[strata] thinking: 89 of max 512 tokens, 43.4 tok/s, 730 s
+[strata] thinking: 132 of max 512 tokens, 42.7 tok/s, 731 s
+[strata] thinking: 170 of max 512 tokens, 41.1 tok/s, 732 s
+[strata] thinking: 201 of max 512 tokens, 38.8 tok/s, 733 s
+[strata] thinking: 242 of max 512 tokens, 38.7 tok/s, 734 s
+[strata] thinking: 273 of max 512 tokens, 37.6 tok/s, 735 s
+[strata] thinking: 307 of max 512 tokens, 37.1 tok/s, 736 s
+[strata] thinking: 338 of max 512 tokens, 36.3 tok/s, 737 s
+[strata] thinking: 369 of max 512 tokens, 35.8 tok/s, 738 s
+[strata] thinking: 405 of max 512 tokens, 35.6 tok/s, 739 s
+[strata] thinking: 450 of max 512 tokens, 36.3 tok/s, 740 s
+[strata] thinking: 481 of max 512 tokens, 35.8 tok/s, 741 s
+[strata] split: prompt 258030 tokens read on the prefill card in 715.7 s, session 3983 MiB saved in 4.66 s and restored in 6.27 s; the decode card makes the answer
+[strata] done: 512 tokens in 742 s (36.1 tok/s) (length, cancel=False), expert cache 98.5% hit (+0.1% of the routed experts over PCIe)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer

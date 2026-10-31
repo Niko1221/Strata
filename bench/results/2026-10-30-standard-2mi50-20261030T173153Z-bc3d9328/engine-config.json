@@ -1,0 +1,49 @@
+{
+ "cwd": "/u",
+ "tokenizer": "/data/packs/iq3_s/tokenizer",
+ "model_name": "qwen3.8-flash-next-iq3_s",
+ "sampling": {
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0
+ },
+ "engine_ready_s": 3600,
+ "exe": "/u/build-906/strata",
+ "log": "/home/<user>/projects/LLM/pd/bench027/a2-dec.log",
+ "lib_dirs": [
+  "/opt/rocm/lib"
+ ],
+ "backend": "hip",
+ "args": [
+  "--pack",
+  "/data/packs/iq3_s",
+  "--native",
+  "/data/gguf/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/data/gguf/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "--expert-profile",
+  "/u/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "/data/mtp/rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "262144",
+  "--shared-expert-arena",
+  "/dev/shm/fn-iq3s.arena",
+  "--expert-cache-device1",
+  "auto",
+  "--remote-expert-opt"
+ ]
+}

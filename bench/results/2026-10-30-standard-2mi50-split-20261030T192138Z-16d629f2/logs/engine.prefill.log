@@ -1,0 +1,89 @@
+[strata] 2026-10-30 19:13:22 engine started: /u/build-906/strata --serve --pack /data/packs/iq3_s --native /data/gguf/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf /data/gguf/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile /u/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp /data/mtp/rt --max-context 262144 --kv int8 --kv-resident 262144 --shared-expert-arena /dev/shm/fn-iq3s.arena --remote-expert-opt
+strata generate: memory guard: limit 94.3 GiB (source: meminfo), current 56.4 GiB, reclaimable cache credited 0.0 GiB; available 37.9 GiB (MemAvailable 37.9 GiB), floor 2560 MiB
+strata generate: PCIe probe: 7.1 GB/s host->device (best of 7.1 7.1 7.1 7.1) -> pcie_frac 0.20 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /data/packs/iq3_s experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.8 s)
+strata generate: 1466 MiB of weights loaded from /data/packs/iq3_s in 3.3 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights, in 4.6 s
+strata generate: PLE direct read probe: 51410 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /u/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of /data/gguf/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 1.96 s (400 MiB/s)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 1.0 s
+strata generate: GPU 0: AMD Radeon Graphics, compute capability 9.0
+strata: pinned-memory headroom: holding 15360 MiB for the buffers allocated after the expert arena (released after it: 12288 MiB; kept until needed: 3072 MiB; STRATA_PIN_RESERVE_MIB changes it)
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata: pinned-memory headroom: 12288 MiB handed back after the expert arena
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_SHARED file /dev/shm/fn-iq3s.arena (pack hash checked)
+strata generate: loaded 46.84 GiB at 0.48 GiB/s
+strata generate: GPU host-callback thread started before host-core pinning
+strata cpu pool: NUMA pool on: 2 NUMA nodes found, one slice of the pool per node (STRATA_NUMA_POOL=0 turns it off)
+strata cpu pool: NUMA split on: slice 0 = node 0 (6 threads), slice 1 = node 1 (6 threads)
+strata generate: CPU pool tasks/phase: 36 (automatic), participating threads: 12
+strata generate: CPU pool: 11 workers by default (12 physical cores, 24 logical processors; bounded by every physical core but the host's)
+strata generate: NUMA split on, but this model's experts come from the arena path: memory is not placed per node (known limitation)
+strata generate: 11 pool workers on logical processors 1,6,2,7,3,8,4,9,5,10,11, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 1,6,2,7,3,8,4,9,5,10,11 (11 workers, one per physical core; host on 0)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 12 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache auto: 23.23 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 9007 slots
+strata generate: expert cache 11771 slots, 22.33 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 11771 of 11771 slots from the profile in 4.2 s (5664 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.52)
+strata generate: token graph hit path: 11771 resident experts, decided on the device
+strata serve: prompt chunk auto: 8192 tokens, a 384-slot ring
+strata serve: the prompt path borrows 2171 CUDA0 cache slots (4.12 GiB)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 75.9 MiB of device buffers
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: conversation cache sized from the free RAM: 8192 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+strata serve: adaptive tier: blocking, and the asynchronous tier is tried once the session shows the swaps hold the windows up (--adapt-async 0 or STRATA_ADAPT_ASYNC=0: never)
+strata serve: 588 MiB of VRAM free with everything loaded
+strata verify: capturing the 4-token window (542 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 13540 ms (302.3 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 96 missed experts skipped (112 entries) since the start
+strata serve: WARNING: only 498 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 768 to the config's args, or lower --max-context / --batch
+strata serve: session saved 4092 tokens, 1 of 1 checkpoints, 298627096 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-1.session in 894.0 ms (state 419.1 ms)
+strata serve: conversation cache: parked 4092 tokens in 254.0 ms; parked=1 bytes=298630376 evictions=0 snapshot_bytes=298630376 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 40597 ms (403.6 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 203 missed experts skipped (232 entries) since the start
+strata serve: session saved 16386 tokens, 1 of 1 checkpoints, 486405448 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-2.session in 908.9 ms (state 369.1 ms)
+strata serve: conversation cache: parked 16386 tokens in 424.5 ms; parked=2 bytes=785039104 evictions=0 snapshot_bytes=486408728 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 12600 ms (324.9 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 301 missed experts skipped (347 entries) since the start
+strata serve: session saved 4092 tokens, 1 of 1 checkpoints, 298627096 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-3.session in 782.7 ms (state 318.8 ms)
+strata serve: conversation cache: parked 4092 tokens in 246.2 ms; parked=3 bytes=1083669480 evictions=0 snapshot_bytes=298630376 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 41469 ms (395.2 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 405 missed experts skipped (464 entries) since the start
+strata serve: session saved 16386 tokens, 1 of 1 checkpoints, 486405448 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-4.session in 1059.1 ms (state 320.0 ms)
+strata serve: conversation cache: parked 16386 tokens in 520.2 ms; parked=4 bytes=1570078208 evictions=0 snapshot_bytes=486408728 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 12698 ms (322.3 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 503 missed experts skipped (577 entries) since the start
+strata serve: session saved 4092 tokens, 1 of 1 checkpoints, 298627096 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-5.session in 892.1 ms (state 414.5 ms)
+strata serve: conversation cache: parked 4092 tokens in 194.5 ms; parked=4 bytes=1570078208 evictions=1 snapshot_bytes=298630376 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 41447 ms (395.4 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 610 missed experts skipped (697 entries) since the start
+strata serve: session saved 16386 tokens, 1 of 1 checkpoints, 486405448 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-6.session in 1078.0 ms (state 347.6 ms)
+strata serve: conversation cache: parked 16386 tokens in 280.1 ms; parked=4 bytes=1570078208 evictions=2 snapshot_bytes=486408728 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 11248 ms (363.5 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 738 missed experts skipped (845 entries) since the start
+strata serve: session saved 4088 tokens, 1 of 1 checkpoints, 298566008 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-7.session in 709.7 ms (state 298.2 ms)
+strata serve: conversation cache: parked 4088 tokens in 194.3 ms; parked=4 bytes=1570017120 evictions=3 snapshot_bytes=298569288 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 12387 ms (330.1 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 864 missed experts skipped (982 entries) since the start
+strata serve: session saved 4088 tokens, 1 of 1 checkpoints, 298566008 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-8.session in 716.2 ms (state 301.4 ms)
+strata serve: conversation cache: parked 4088 tokens in 128.3 ms; parked=4 bytes=1382177680 evictions=4 snapshot_bytes=298569288 reused_kv_bytes=0
+strata serve: prompt 16382 tokens = 0 reused + 16382 read in 41399 ms (395.7 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: route tail skip: 976 missed experts skipped (1109 entries) since the start
+strata serve: session saved 16381 tokens, 1 of 1 checkpoints, 486344352 bytes to /dev/shm/strata-split-uf3ayozd/handover-1-9.session in 980.1 ms (state 305.1 ms)
+strata serve: conversation cache: parked 16381 tokens in 387.2 ms; parked=4 bytes=1569894936 evictions=5 snapshot_bytes=486347632 reused_kv_bytes=0
+prefill gemm: cublasGemmEx f16: cuBLAS status 6

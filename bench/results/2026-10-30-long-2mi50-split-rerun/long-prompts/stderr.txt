@@ -1,0 +1,2 @@
+failed: {'kind': 'server_error', 'message': 'mtp: round capture: out of memory'}
+failed: {'kind': 'server_error', 'message': 'the engine stopped unexpectedly (exit code 1); the next request restarts it'}

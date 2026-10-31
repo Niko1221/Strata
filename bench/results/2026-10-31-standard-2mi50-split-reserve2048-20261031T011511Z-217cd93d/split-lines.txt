@@ -1,0 +1,6 @@
+[strata] split: prompt 4093 tokens read on the prefill card in 16.7 s, session 285 MiB saved in 0.88 s and restored in 0.42 s; the decode card makes the answer
+[strata] split: prompt 16387 tokens read on the prefill card in 41.5 s, session 464 MiB saved in 1.05 s and restored in 0.76 s; the decode card makes the answer
+[strata] split: prompt 4093 tokens read on the prefill card in 12.6 s, session 285 MiB saved in 0.89 s and restored in 0.43 s; the decode card makes the answer
+[strata] split: prompt 16387 tokens read on the prefill card in 41.5 s, session 464 MiB saved in 1.06 s and restored in 0.77 s; the decode card makes the answer
+[strata] split: prompt 4093 tokens read on the prefill card in 11.5 s, session 285 MiB saved in 0.91 s and restored in 0.42 s; the decode card makes the answer
+[strata] split: prompt 16387 tokens read on the prefill card in 41.5 s, session 464 MiB saved in 1.08 s and restored in 0.78 s; the decode card makes the answer
