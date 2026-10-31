@@ -554,7 +554,7 @@ def make_guard(ctx: Context) -> str | None:
     may go on."""
     hw = ctx.hardware
     want = hw.get("backend")
-    if want not in GPU_MAKES or hw.get("backend_source") in ("environment", "requested", "installed engine"):
+    if want not in GPU_MAKES or hw.get("backend_source") in ("environment", "requested", "installed engine", "saved choice"):
         return None
     have = installed_gpu_makes(ctx.components, hw.get("platform"))
     if not have or want in have:
@@ -614,10 +614,10 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
         if bad and bad.get("manifest_sha256") == offered.manifest_sha256:
             report["status"] = "failed-before"
             report["note"] = (f"{offered.version} failed its test start on {bad.get('at', 'an earlier try')} ({bad.get('reason')}); "
-                              "run with --force to try it again")
+                              "run `strata update --force` to try it again")
         elif offered.version in (section.get("skipped") or []):
             report["status"] = "skipped"
-            report["note"] = f"{offered.version} was rolled back from; run with --force to install it again"
+            report["note"] = f"{offered.version} was rolled back from, so an update leaves it alone; run `strata update --force` to install it again"
     return report, offered
 
 
@@ -1049,7 +1049,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         return result
     root = ctx.components
     have_makes = installed_gpu_makes(root, pkg.platform)
-    if pkg.backend in GPU_MAKES and have_makes and pkg.backend not in have_makes and ctx.hardware.get("backend_source") not in ("environment", "requested"):
+    if pkg.backend in GPU_MAKES and have_makes and pkg.backend not in have_makes and ctx.hardware.get("backend_source") not in ("environment", "requested", "saved choice"):
         raise UpdateError(f"the {pkg.label} engine is for another make of graphics card than the installed one; nothing was staged", 5)
     _warn_if_deep(ctx, ec.engine_dir(root) / folder_name(pkg), longpath.LONGEST_IN_PACKAGE.get(pkg.backend, longpath.LONGEST_IN_PACKAGE_DEFAULT) + 1)
     _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "engine")
@@ -1256,7 +1256,11 @@ def rollback_engine(ctx: Context) -> dict:
             section.pop("pinned", None)
             state.save()
             raise UpdateError(f"the previous engine does not fit this PC any more: {exc}", 5) from None
-        if current and current.version != target.version:
+        forward = bool(current) and feedmod.version_key(target.version) > feedmod.version_key(current.version)
+        if forward:
+            # the second rollback goes back to the newer engine: it is no longer one the person left, so a later update may offer it
+            section["skipped"] = [v for v in section.get("skipped", []) if v != target.version]
+        elif current and current.version != target.version:
             skip = section.setdefault("skipped", [])
             if current.version not in skip:
                 skip.append(current.version)
@@ -1266,7 +1270,7 @@ def rollback_engine(ctx: Context) -> dict:
         state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "rollback-engine",
                        "from": current.version if current else None, "to": target.version, "ok": True})
         state.save()
-        return {"component": "engine", "status": "rolled-back", "from": current.version if current else None,
+        return {"component": "engine", "status": "rolled-forward" if forward else "rolled-back", "from": current.version if current else None,
                 "to": target.version, "folder": previous, "presets_marked": bool(mark)}
 
 

@@ -742,6 +742,22 @@ class Cli(UpdaterCase):
         code, out, _ = self.cli("components", "rollback", "--json", *self.common())
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["to"], "0.1.46", "rolling back twice goes forward again")
+        self.assertEqual(json.loads(out)["status"], "rolled-forward", "and it says so")
+        self.assertEqual(updater.State(self.components).section("engine").get("skipped") or [], [], "the newer engine is no longer one that was left")
+        code, text, _ = self.cli("components", "rollback", *self.common())     # back to 0.1.45 once more
+        self.assertIn("Engine rolled back: 0.1.46 -> 0.1.45", text)
+        code, text, _ = self.cli("update", "--check", *self.common())
+        self.assertIn("run `strata update --force`", text)
+        self.assertNotIn("run with --force", text)
+        code, text, _ = self.cli("components", "rollback", *self.common())
+        self.assertIn("Engine moved to the newer version: 0.1.45 -> 0.1.46", text)
+        self.assertNotIn("rolled back", text)
+
+    def test_a_first_install_does_not_claim_a_previous_engine_is_kept(self):
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        code, text, _ = self.cli("update", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("previous engine version is kept", text)
 
     def test_a_failed_test_start_exits_6_and_says_the_old_engine_is_unchanged(self):
         self.install_current()

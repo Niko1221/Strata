@@ -57,7 +57,7 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 In the **desktop app** and the **Terminal**. What does not fit in memory is read from your SSD, so it needs a lot of free
 disk space.
 
-| Set (IST-DAS) | Download | Free disk needed |
+| Set (ISTA-DAS) | Download | Free disk needed |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | about 245 GB |
 | 2.00 bpw | 257 GB | about 265 GB |

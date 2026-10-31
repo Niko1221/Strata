@@ -160,7 +160,7 @@ class Links(Base):
 
 
 class IntegerTensors(Base):
-    """The IST-DAS DeepSeek-V4.1 first shard keeps the Engram's hash parameters as integer tensors instead of metadata
+    """The ISTA-DAS DeepSeek-V4.1 first shard keeps the Engram's hash parameters as integer tensors instead of metadata
     (tools/dsv41/pack_gguf.py: I32 and I64), so the table in front of setup and the app sizes them instead of refusing the file."""
 
     def test_a_tensor_directory_with_integer_tensors_is_read(self):

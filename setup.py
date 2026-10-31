@@ -192,6 +192,19 @@ def source_hint(url: str) -> str:
     return ""
 
 
+def model_alias(name: str) -> str:
+    """The set is named ISTA-DAS on screen; its ids keep the first spelling (--model IST-DAS-2.25bpw), and the new one is accepted too."""
+    return re.sub(r"(?i)^ista-das(?=-\d)", "IST-DAS", name) if isinstance(name, str) else name
+
+
+def proxy_hint() -> str:
+    """The next step when a download cannot reach its server: behind a proxy, the variables below are what Strata (and pip, git) read."""
+    names = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+    if any(os.environ.get(n) for n in names):
+        return "; a proxy is set in this terminal (HTTPS_PROXY): check that it is the right one and that it is running"
+    return "; behind a company or school proxy, set HTTPS_PROXY (for example HTTPS_PROXY=http://host:port) in this terminal first"
+
+
 def ms_file(url: str):
     """(repo, path) when `url` is a Hugging Face file of a repository setup knows (HF_REVISIONS), else None."""
     m = HF_FILE.match(url)
@@ -682,7 +695,7 @@ DSV41_FILES = {
     "dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf": (7976914240, "6ba6ac1b331c540691a209e7fc97dec2a24e295acb1e755c84c7d24a4373927a"),
     "mmproj-BF16.gguf": (972208288, "9a1ef7c40d0d702c7ed8c5f863f60abae64091387ba3fce0ad19ce9beeda3bf9"),
 }
-# The two OFFICIAL IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF at the revision above, a flat repository; Hub LFS sha256 = what the
+# The two OFFICIAL ISTA-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF at the revision above, a flat repository; Hub LFS sha256 = what the
 # files hash to): IQ2_XXS is the 2.00 bpw set, IQ2_XS the 2.25 bpw set and IQ1_M the 1.75 bpw set, 4 shards each, plus ONE Engram table (110.6 GB, the same file for both sets:
 # downloaded once into the shared folder) and the DSpark drafter and the 5.8 MB metadata shard of Unsloth's set that pack_gguf --engram-meta reads
 # (both pinned in DSV41_FILES above).  This is the set a normal PC runs (64 GB RAM + a 12 GB card; docs/DEEPSEEK41.md); the UD-Q8_K_XL entry stays
@@ -775,7 +788,7 @@ DSV41_SHARED = {
 }
 # Unsloth's own low-bit sets (2026-10-30, unsloth/DeepSeek-V4.1-Flash-1017-GGUF, UD-IQ1_S and UD-IQ1_M): shard 1 = metadata, shards 2-4 = the model, shard 5 = the
 # Engram table (IQ4_NL, 110.6 GB; its data is byte-identical to ISTA's Engram file, so an ISTA Engram already here is used instead of fetching shard 5).
-# Same tensor names as the IST-DAS six-shard layout; dense weights in Q6_K / Q8_0 / Q5_K, router F32.  Opt-in model names, not the download default.
+# Same tensor names as the ISTA-DAS six-shard layout; dense weights in Q6_K / Q8_0 / Q5_K, router F32.  Opt-in model names, not the download default.
 DSV41_UD_SHARD = "DeepSeek-V4.1-Flash-1017-{quant}-{i:05d}-of-00005.gguf"
 DSV41_UD_FILES = {
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00001-of-00005.gguf": (5780868, "5197c309479c7be06e3612dc696d7f18e13e5942cfe52e70c3c586b7e585a5ac"),
@@ -795,7 +808,7 @@ DSV41_PROFILES = ROOT / "data" / "dsv41"           # the shipped hot-expert prof
 DSV41_CONTEXT = 8192          # the context the engine was checked at (4096 and 8192; 64K is not tried yet)
 DSV41_MAC_VISION = False      # an Apple Silicon Mac: the Metal engine has not run DeepSeek's picture tower (0.2.7.1), so pictures stay off there
 MULTI_FILE_FAMILIES = {
-    "deepseek41": {"title": "DeepSeek-V4.1-Flash", "by": "DeepSeek; the 2-bit GGUFs by IST-DAS, UD-Q8_K_XL by Unsloth", "arch": "deepseek41",
+    "deepseek41": {"title": "DeepSeek-V4.1-Flash", "by": "DeepSeek; the 2-bit GGUFs by ISTA-DAS, UD-Q8_K_XL by Unsloth", "arch": "deepseek41",
                    "about": "a big model that runs on a PC with a 12 GB card and 64 GB of RAM (the two official 2-bit versions: 257 or "
                             "274 GB of disk, about 5-7 tokens a second) or, in Unsloth's 508 GB version, on several graphics cards",
                    "hf": hf(DSV41_REPO) + "UD-Q8_K_XL/", "tag": "deepseek-v4.1-flash-", "name": "deepseek-v4.1-flash",
@@ -809,7 +822,7 @@ MULTI_FILE_FAMILIES = {
 # (and in a --gguf-dir folder), the files shared with the other set ("shared"), the pack recipe and the shipped expert profile.
 MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
     "IST-DAS-2.00bpw": {
-        "label": "IST-DAS 2.00 bpw",
+        "label": "ISTA-DAS 2.00 bpw",
         "about": "the smaller official version: 138 GB of model + 111 GB n-gram table + 8 GB drafter (257 GB of disk). Runs on a PC with "
                  "a 12 GB card and 40-64 GB of RAM at about 5-7 tokens a second; quality about 15.5% above the original model's "
                  "perplexity (code and agent work 5-9%)",
@@ -818,7 +831,7 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "shards6": [DSV41_ISTA6_SHARD.format(quant="IQ2_XXS", i=i) for i in range(1, DSV41_ISTA6_SHARDS + 1)],
         "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
     "IST-DAS-2.25bpw": {
-        "label": "IST-DAS 2.25 bpw",
+        "label": "ISTA-DAS 2.25 bpw",
         "about": "the better official version: 155 GB of model + 111 GB n-gram table + 8 GB drafter (274 GB of disk, 17 GB more than "
                  "2.00). About the same speed; quality about 7.3% above the original model's perplexity (code and agent work 2-3%)",
         "ram_gb": 44, "recipe": "ista", "subdir": None, "legacy_subdir": "2.25bpw", "profile": "profile-2.25.bin", "hf": hf(DSV41_ISTA_REPO),
@@ -826,7 +839,7 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "shards6": [DSV41_ISTA6_SHARD.format(quant="IQ2_XS", i=i) for i in range(1, DSV41_ISTA6_SHARDS + 1)],
         "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
     "IST-DAS-1.75bpw": {
-        "label": "IST-DAS 1.75 bpw",
+        "label": "ISTA-DAS 1.75 bpw",
         "about": "the smallest official version: 121 GB of model + 111 GB n-gram table + 8 GB drafter (239 GB of disk, 18 GB less than 2.00). Runs "
                  "where 2.00 is tight (a 12 GB card and 32-40 GB of RAM). Smallest: fine for code and agent work, noticeably weaker on plain prose; pick 2.00 if it fits",
         "ram_gb": 34, "recipe": "ista", "subdir": None, "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_ISTA_REPO),
@@ -835,14 +848,14 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
     "UD-IQ1_S": {
         "label": "Unsloth UD-IQ1_S",
-        "about": "Unsloth's smallest dynamic version: 122 GB of model (experts in IQ1_S / IQ2_XXS, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as IST-DAS 1.75 bpw. A 1-bit version: expect weaker answers than the 2.00 and 2.25 versions on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet). Pick 2.00 or 2.25 if they fit",
+        "about": "Unsloth's smallest dynamic version: 122 GB of model (experts in IQ1_S / IQ2_XXS, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as ISTA-DAS 1.75 bpw. A 1-bit version: expect weaker answers than the 2.00 and 2.25 versions on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet). Pick 2.00 or 2.25 if they fit",
         "ram_gb": 36, "recipe": "udlow", "subdir": "UD-IQ1_S", "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_REPO) + "UD-IQ1_S/",
         "shards": [DSV41_UD_SHARD.format(quant="UD-IQ1_S", i=i) for i in range(1, 5)],
         "engram_shard": DSV41_UD_SHARD.format(quant="UD-IQ1_S", i=5),
         "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]},
     "UD-IQ1_M": {
         "label": "Unsloth UD-IQ1_M",
-        "about": "Unsloth's next dynamic version: 140 GB of model (experts in IQ1_S / IQ2_XXS / IQ2_XS / IQ2_S, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as IST-DAS 2.00 bpw. Part of its experts are 1-bit: expect somewhat weaker answers than the 2.25 version on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet)",
+        "about": "Unsloth's next dynamic version: 140 GB of model (experts in IQ1_S / IQ2_XXS / IQ2_XS / IQ2_S, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as ISTA-DAS 2.00 bpw. Part of its experts are 1-bit: expect somewhat weaker answers than the 2.25 version on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet)",
         "ram_gb": 40, "recipe": "udlow", "subdir": "UD-IQ1_M", "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_REPO) + "UD-IQ1_M/",
         "shards": [DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=i) for i in range(1, 5)],
         "engram_shard": DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=5),
@@ -965,6 +978,9 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
                 Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (ROOT / "tools" / "dsv41").resolve()):
             raise acquisition.AcquisitionRefused("the desktop app's installer only runs its bundled preparation tools; "
                                                  + " ".join(argv[:2]))
+    gguf_py = (env or {}).get("STRATA_GGUF_PY")
+    if gguf_py and not Path(gguf_py).is_dir() and Path(gguf_py).parent == home() / "third_party" / "llama.cpp":
+        get_llama_cpp()                                # the preparation tools read GGUF files with it: fetched now (the one place github.com is needed)
     say("  > " + " ".join(str(c) for c in cmd))
     env = dict(os.environ if env is None else env)
     env.setdefault("STRATA_EXIT_WITH_PARENT", "1")     # tools/mtp_fetch.py ends when setup ends (#3257: a cancel left it writing)
@@ -1004,18 +1020,52 @@ def out(cmd):
         return ""
 
 
+def _kept_mark(path: Path) -> Path | None:
+    """Where the finish mark of a file in a folder Strata cannot write to is kept instead: marks/<hash>.done under Strata's own folder.  The hash is of
+    the file's full path, size and modification time, so a file that changed (or a different file at the same place) has no mark."""
+    try:
+        st = path.stat()
+        key = f"{path.resolve()}|{st.st_size}|{st.st_mtime_ns}"
+    except OSError:
+        return None
+    return ROOT / "marks" / (hashlib.sha1(key.encode("utf-8", "replace")).hexdigest()[:24] + ".done")
+
+
+def mark_text(path: Path) -> str | None:
+    """The text of the finish mark of `path` (beside it, else the kept one), or None when it has none."""
+    for m in (path.with_name(path.name + ".done"), _kept_mark(path)):
+        try:
+            if m is not None and m.exists():
+                return m.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    return None
+
+
 def done(path: Path) -> bool:
     """A step's finish mark: <path>.done exists (written only after the step completed)."""
-    return path.with_name(path.name + ".done").exists()
+    return mark_text(path) is not None
 
 
 def mark(path: Path, text=""):
-    """Write the finish mark.  A folder that cannot be written (--gguf-dir on a read-only share, #570) only costs the
-    mark: setup says so and goes on (the step is repeated on the next run), it does not stop."""
+    """Write the finish mark.  A folder that cannot be written (--gguf-dir on a read-only share, #570, a read-only model disk) keeps the mark
+    in Strata's own folder instead (marks/), so a 110 GB Engram is hashed once, not on every launch; only when that cannot be written either
+    does setup say so and go on (the step is repeated on the next run), it does not stop."""
+    text = text or time.strftime("%Y-%m-%d %H:%M")
     try:
-        path.with_name(path.name + ".done").write_text(text or time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+        path.with_name(path.name + ".done").write_text(text, encoding="utf-8")
+        return
     except OSError as e:
-        warn(f"the finish mark of {path.name} cannot be written ({e}): the next run does this step again")
+        beside = e
+    kept = _kept_mark(path)
+    try:
+        if kept is not None:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            kept.write_text(text, encoding="utf-8")
+            return
+    except OSError:
+        pass
+    warn(f"the finish mark of {path.name} cannot be written ({beside}): the next run does this step again")
 
 
 # ------------------------------------------------------------------------------------------------ the PC
@@ -3012,6 +3062,15 @@ def download(url, dst: Path, what=None):
     if dst.exists() and done(dst):
         ok(f"{what or dst.name} already downloaded")
         return
+    pin_here = file_pin(url) if url.startswith(("http://", "https://")) else None
+    if pin_here and dst.is_file() and dst.stat().st_size == pin_here[0] and not dst.with_name(dst.name + ".part").exists():
+        # a file copied in by hand (or whose mark was lost) that is the pinned size: check it here, no network, so a PC with every file
+        # but no internet can start
+        say(f"  checking {dst.name} (SHA-256) ...")
+        if _hash_file(dst, pin_here[0]) == pin_here[1]:
+            mark(dst, f"sha256 {pin_here[1]}")
+            ok(f"{what or dst.name} is already here (checked)")
+            return
     acquisition.require(what or dst.name)
     if not url.startswith(("http://", "https://")):
         src = Path(url[7:] if url.startswith("file://") else url)
@@ -3049,14 +3108,14 @@ def download(url, dst: Path, what=None):
                 continue
             if attempt == 4:
                 fail(f"cannot reach {url.split('/')[2]} ({e})",
-                     "check your internet connection and run it again" + source_hint(url))
+                     "check your internet connection and run it again" + proxy_hint() + source_hint(url))
             time.sleep(5)
         except tls.CertificateProblem as e:           # the same answer five times: no retry
             fail(f"cannot download from {url.split('/')[2]}: its security certificate was not accepted", str(e))
         except OSError as e:
             if attempt == 4:
                 fail(f"cannot reach {url.split('/')[2]} ({e})",
-                     "check your internet connection and run it again" + source_hint(url))
+                     "check your internet connection and run it again" + proxy_hint() + source_hint(url))
             time.sleep(5)
     if not total:
         total = range_total(url)
@@ -3221,7 +3280,8 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
     piece by piece and only the damaged pieces are written again, then it is checked a second time.
     `also`: other SHA-256 values that are the same file for Strata's purposes (the Engram ISTA-DASLab converted in place on 2026-10-27, DSV41_SHA_ALSO)."""
     m = s.with_name(s.name + ".done")
-    if m.exists() and any(f"sha256 {x}" in m.read_text(encoding="utf-8", errors="replace") for x in (sha, *also)):
+    kept = mark_text(s)
+    if kept is not None and any(f"sha256 {x}" in kept for x in (sha, *also)):
         return
     have = s.stat().st_size if s.exists() else -1
     if own and have > 0 and have != size and own_gguf_is_whole(s):
@@ -3314,9 +3374,8 @@ def ready_paths(model: str, models_dir: Path) -> dict:
 
 def ready_verified(p: Path, sha: str) -> bool:
     """Downloaded whole and checked: its finish mark holds the pinned SHA-256 (verify_sha256)."""
-    m = p.with_name(p.name + ".done")
     try:
-        return p.is_file() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace")
+        return p.is_file() and f"sha256 {sha}" in (mark_text(p) or "")
     except OSError:
         return False
 
@@ -3459,6 +3518,17 @@ def check_shards(shards):
             # damaged or wrong file that the engine would refuse at start ("PLE table size mismatch")
             fail(f"{s.name} is longer than its tensor: {have:,} bytes, {need:,} expected ({have - need:,} extra)",
                  f"delete {s.name} and its .done mark and run setup again")
+
+
+def llama_cpp_if_here():
+    """The llama.cpp source folder, fetched only when a model has to be prepared (run() fetches it then): a PC with every file and no internet
+    starts a model that is already prepared without reaching github.com."""
+    llama = home() / "third_party" / "llama.cpp"
+    if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
+        ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
+    else:
+        say("  llama.cpp source: only needed to prepare a model; it is downloaded then, if that is needed")
+    return llama
 
 
 def get_llama_cpp():
@@ -7739,8 +7809,7 @@ def control_engine_step(gpu, vision):
     names "component:strata-engine" and the engine is looked up when the model is loaded. llama.cpp's source zip is fetched
     for gguf-py only (the preparation tools), as setup always did: no git, no compiler."""
     from strata_control import engine_component as EC
-    llama = get_llama_cpp()
-    ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
+    llama = llama_cpp_if_here()
     try:
         found = EC.resolve(full=False)
         eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local"}
@@ -8342,9 +8411,9 @@ def dsv41_pack_has_tower(pack: Path) -> bool:
 
 
 def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, meta: Path, dspark: Path, pack: Path, mmproj: Path | None = None) -> list:
-    """The pack recipe for an official IST-DAS set - this and nothing else: another one (--skip-tensors / --dense-override + engram_fold)
+    """The pack recipe for an official ISTA-DAS set - this and nothing else: another one (--skip-tensors / --dense-override + engram_fold)
     packs without an error and gives garbage text (P2003, 2026-10-23).  The drafter's noise token (128799) and markov rank (256) are stated:
-    the IST-DAS GGUFs do not carry them, and a pack with noise id 0 drafts deep less often (decode ~10% slower with DSpark).  --shards names the four files, so an Engram or another
+    the ISTA-DAS GGUFs do not carry them, and a pack with noise id 0 drafts deep less often (decode ~10% slower with DSpark).  --shards names the four files, so an Engram or another
     set in the same folder is not read as part of the model."""
     return [sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--shards", *[Path(n).name for n in shards],
             "--engram", str(engram), "--engram-meta", str(meta), "--dspark-gguf", str(dspark),
@@ -8521,11 +8590,11 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         fail(dsv41_fit.not_here(model), "choose --model IST-DAS-2.00bpw or --model IST-DAS-2.25bpw (their files work with --gguf-dir too); nothing has been downloaded")
     ok(f"size: {model}")
     md = fam["models"][model]
-    say("  Its GGUF files: " + ("IST-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter and a small metadata file from Unsloth"
+    say("  Its GGUF files: " + ("ISTA-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter and a small metadata file from Unsloth"
                               if md.get("recipe") == "ista" else
-                              "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF); the Engram table is the same data as IST-DAS's, so a copy of it already here is used"
+                              "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF); the Engram table is the same data as ISTA-DAS's, so a copy of it already here is used"
                               if md.get("recipe") == "udlow" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)"))
-    udlow = md.get("recipe") == "udlow"          # Unsloth's UD-IQ1_S / UD-IQ1_M: packed and checked like the IST-DAS sets; shard 5 is the Engram
+    udlow = md.get("recipe") == "udlow"          # Unsloth's UD-IQ1_S / UD-IQ1_M: packed and checked like the ISTA-DAS sets; shard 5 is the Engram
     ista = md.get("recipe") in ("ista", "udlow")
     tag = fam["tag"] + model
     named = cards_named(a, hip)
@@ -8570,7 +8639,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     else:
         say("  Nothing to download: the files are already here.")
     unchecked = [f for f in [*shards, *shared] if f.exists() and not any(
-        f"sha256 {x}" in (f.with_name(f.name + ".done").read_text(encoding="utf-8", errors="replace") if done(f) else "")
+        f"sha256 {x}" in (mark_text(f) or "")
         for x in (fam['sha256'][f.name][1], *DSV41_SHA_ALSO.get(f.name, ())))]
     if unchecked:
         gb = sum(fam["sha256"][f.name][0] for f in unchecked) / 1e9
@@ -8620,7 +8689,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     if (exe is None and not getattr(a, "dsv41_package", None) and not dsv41_engine_pending(eng) and not local_feed(getattr(a, "feed", None))
         and not github_reachable()):
         fail("Strata can't reach GitHub to download the DeepSeek engine.",
-             "Check the internet connection and run the same command again. " + dsv41_manual_steps(eng))
+             "Check the internet connection and run the same command again. " + proxy_hint()[2:3].upper() + proxy_hint()[3:] + ". " + dsv41_manual_steps(eng))
     if exe is None and not getattr(a, "build", False):
         get_dsv41_engine(eng, hip, getattr(a, "dsv41_package", None), getattr(a, "feed", None),
                          archs=[c.get("arch") for c in cards if c.get("arch")] if hip else None)
@@ -8856,6 +8925,37 @@ def mac_reader(eng: Path, vision: str):
     return r
 
 
+def prepare_pack_only(a) -> int:
+    """setup.py --prepare-pack PACK_DIR --gguf-dir DIR --family F --model M: the pack (index, dense weights, tokenizer) of a model whose GGUF files
+    are in DIR, for a card the built-in downloader does not set up (Intel Arc). llama.cpp's gguf-py is fetched when it is not here (the one
+    download); the model's files are never downloaded or changed."""
+    if not a.gguf_dir:
+        fail("--prepare-pack needs --gguf-dir, the folder with the model's .gguf files")
+    family = a.family or "qwen"
+    if family not in FAMILIES:
+        fail(f"cannot prepare a pack for the family {family}", "choose qwen, swift, coder or gyro")
+    fam, model = FAMILIES[family], a.model
+    if not model:
+        fail("--prepare-pack needs --model, e.g. --model IQ3_XXS")
+    models_dir = Path(a.gguf_dir)
+    files = gguf_dir_shards(models_dir, fam, model)
+    problem = gguf_dir_problem(models_dir, files[0], fam, model)
+    if problem:
+        fail(*problem)
+    pack = Path(a.prepare_pack)
+    step(1, "preparing the model for this graphics card")
+    llama = get_llama_cpp()
+    ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py)")
+    env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
+        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(files[0]), "--out", str(pack),
+             *fam.get("pack_args", [])], env=env)
+    if not (pack / "tokenizer" / "vocab.json").exists():
+        fail("the pack was built but has no tokenizer", "run it again; if it repeats, the model files may be damaged")
+    ok(f"model prepared: {pack}")
+    return 0
+
+
 def mac_control_setup(a) -> int:
     """The app (and the Terminal's `strata launch`) on a Mac, STRATA_CONTROL_INSTALL=1: the same job as on Windows and Linux. It
     downloads and prepares the model files and writes a run config whose engine is "component:strata-engine"; it builds nothing
@@ -8909,7 +9009,7 @@ def mac_control_setup(a) -> int:
 
     step(4, "the Strata engine (Metal)")
     from strata_control import engine_component as EC
-    llama = get_llama_cpp()                            # gguf-py for the preparation tools only: no git, no compiler
+    llama = llama_cpp_if_here()                        # gguf-py for the preparation tools only (fetched when one runs): no git, no compiler
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     reader = None
     try:
@@ -9072,7 +9172,7 @@ def main() -> int:
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
                          "several requests at once with --parallel; docs/QWEN36.md), deepseek41 = DeepSeek-V4.1-Flash "
                          "(the official 1.75 / 2.00 / 2.25 bpw versions, 239 / 257 / 274 GB; docs/DEEPSEEK41.md)")
-    ap.add_argument("--model", choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
+    ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"]),
                                                           *(m for f in MULTI_FILE_FAMILIES.values() for m in f["models"])])))
     ap.add_argument("--context", type=int)
@@ -9157,6 +9257,9 @@ def main() -> int:
                     help="where the model files come from: auto (default: Hugging Face), huggingface or modelscope "
                          "(mainland China: the same files, checked against ModelScope's published SHA-256; "
                          "STRATA_SOURCE)")
+    ap.add_argument("--prepare-pack", metavar="PACK_DIR",
+                    help="only build the pack of the GGUF files in --gguf-dir into PACK_DIR (what `strata launch` runs for an Intel Arc card): "
+                         "fetches llama.cpp's gguf-py by itself, runs tools/iq_pack.py, changes nothing else")
     ap.add_argument("--inspect", nargs="+", metavar=("SOURCE", "VARIANT"),
                     help="what a GGUF is and whether Strata runs it, from its headers only (no download): a file, a "
                          "folder, a URL, ms:owner/repo (ModelScope) or hf:owner/repo, and optionally a variant name")
@@ -9215,6 +9318,8 @@ def main() -> int:
                                                               if a.model in d["models"]))
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
+    if a.prepare_pack:                                 # an Intel Arc card: the model's pack, nothing else (no engine, no download of the model)
+        return prepare_pack_only(a)
     if a.inspect:                                      # headers only: nothing is installed
         sys.exit(subprocess.run([sys.executable, str(ROOT / "tools" / "strata_inspect.py"), *a.inspect[:2]]).returncode)
     if sys.platform == "darwin" and CONTROL:           # the app on a Mac: model files only; the Metal engine is a component
@@ -9724,6 +9829,10 @@ def main() -> int:
     elif not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
     ok(f"size: {model}")
+    from strata_control import gpu_fit
+    _q4 = gpu_fit.strix_q4_stall_note(model, [gpu] if isinstance(gpu, dict) else (gpu or []))   # REMOVE with the Strix stall fix (see gpu_fit.STRIX_Q4_NOTE)
+    if _q4:
+        warn(_q4)
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script

@@ -49,13 +49,31 @@ export const AGENT_PROMPT = [
 ].join('\n\n');
 
 /**
+ * The one sentence that says which computer this is. The Harness's own runtime context is off (see `includeRuntimeContext` below), so without it
+ * a model on Windows spent its first steps on `ls`, `uname` and `wc` before trying PowerShell commands (and some ran out of steps first).
+ */
+export const OS_LINES = {
+  win32: 'This computer runs Windows and the shell tool is PowerShell: uname, wc and grep do not exist here; use Get-ChildItem, Get-Content, Select-String and Measure-Object. There is no need to check which system this is.',
+  darwin: 'This computer runs macOS and the shell tool is a Unix shell. There is no need to check which system this is.',
+  linux: 'This computer runs Linux and the shell tool is a Unix shell. There is no need to check which system this is.',
+};
+
+/** AGENT_PROMPT with the sentence for `platform` after its first line. */
+export function agentPromptFor(platform = process.platform) {
+  const line = OS_LINES[platform];
+  if (!line) return AGENT_PROMPT;
+  const [first, ...rest] = AGENT_PROMPT.split('\n\n');
+  return [first, line, ...rest].join('\n\n');
+}
+
+/**
  * @param {{platform?: string, search?: boolean}} [options]
  * @returns {object} the `config` of the `preset-standard` row
  */
 export function standardPreset({ platform = process.platform, search = false, off = new Set(), skillsDir = null, compaction = [] } = {}) {
   const windows = platform === 'win32';
   const plugins = [
-    { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: AGENT_PROMPT, complete: true, includeRuntimeContext: false } },
+    { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: agentPromptFor(platform), complete: true, includeRuntimeContext: false } },
     { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
     { id: 'time-context', name: '@deepseek-ai/dsh-time-context' },
     windows
