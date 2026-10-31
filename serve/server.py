@@ -1910,6 +1910,13 @@ class StrataEngine:
             cancel._strata_lp_lines = LPLines(cancel)
         out: list[int] = []
         pending: list[int] = []
+        began, first_at = time.time(), None     # the request's own clocks: a slot's live view shows them in every leg
+                                                # (a leg after another one starts with the reply so far)
+        def arrived(t):
+            nonlocal first_at
+            if first_at is None:
+                first_at = time.time()
+            pending.append(t)
         prompt, left = list(ids), int(max_new)
         reused0 = None      # the first read's reused tokens: a continued leg's count includes this request's own output
         carry = {}          # #1869: the figures of the legs that ended in a hand-back to the solo path (the final DONE adds to them)
@@ -1967,7 +1974,7 @@ class StrataEngine:
                                     self.slot_claims.add(reserved)
                             if reserved is not None:
                                 self._send(f"BYIELD {reserved}")
-                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way,
+                    for x in self._control(cancel, arrived, stop_when=others, on_quiet=give_way,
                                            want_lp=want_lp):
                         while pending:
                             t = pending.pop(0)
@@ -2069,7 +2076,7 @@ class StrataEngine:
                     head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
                     live = {"slot": slot, "request_id": getattr(cancel, "_strata_request_id", None),
                             "state": "reading", "prompt_tokens": len(prompt), "prompt_read": 0, "generated": 0,
-                            "started": time.time(), "first_token": None}
+                            "started": began, "first_token": None}
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
@@ -2101,7 +2108,7 @@ class StrataEngine:
                         if self.progress and live["state"] == "reading":
                             live["prompt_read"] = self.progress[0]
                     try:
-                        for x in self._control(cancel, pending.append, on_quiet=lambda: (ask(), note_progress()),
+                        for x in self._control(cancel, arrived, on_quiet=lambda: (ask(), note_progress()),
                                                want_lp=want_lp):
                             while pending:
                                 t = pending.pop(0)
@@ -2145,7 +2152,7 @@ class StrataEngine:
                 holding = False
                 if not cont:
                     return
-                live.update(state="decoding", first_token=time.time(), generated=len(out))
+                live.update(state="decoding", first_token=first_at or time.time(), generated=len(out))
                 gen0 = len(out) - 1                         # the admission's own token: the slot feeds it first
                 going_solo = False
                 while True:
