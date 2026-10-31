@@ -1212,6 +1212,8 @@ private:
     bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered
     bool complement_registered_ = false;      ///< the arena is ordinary memory registered with cudaHostRegister (not cudaHostAlloc)
     uint64_t complement_pin_limit_ = 0;
+    std::vector<uint64_t> complement_slices_; ///< STRATA_PARTIAL_PIN_SLICED: offsets of each registered slice (empty: one registration)
+    std::vector<const uint8_t*> complement_slice_dev_;   ///< and each slice's device alias (WDDM: not its host address)
     uint64_t complement_lock_off_ = 0;        ///< the working-set lock covers [lock_off, lock_off + locked)
     bool complement_ready_ = false;
     uint64_t complement_locked_ = 0;          ///< bytes held in the working set (pin refused)

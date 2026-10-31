@@ -1573,7 +1573,10 @@ void FileExpertSource::close() {
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
         else {
-            if (complement_registered_) (void) cudaHostUnregister(complement_arena_);
+            if (complement_registered_) {
+                if (complement_slices_.empty()) (void) cudaHostUnregister(complement_arena_);
+                else for (uint64_t off : complement_slices_) (void) cudaHostUnregister((uint8_t*) complement_arena_ + off);
+            }
             if (complement_locked_ > 0)
                 strata::platform::unlock_resident((uint8_t*) complement_arena_ + complement_lock_off_, complement_locked_);
             std::free(complement_arena_);
@@ -1601,6 +1604,8 @@ void FileExpertSource::close() {
     complement_partial_ = false;
     complement_registered_ = false;
     complement_pin_limit_ = 0;
+    complement_slices_.clear();
+    complement_slice_dev_.clear();
     complement_lock_off_ = 0;
     complement_ready_ = false;
     complement_locked_ = 0;
@@ -3733,6 +3738,8 @@ bool FileExpertSource::pin_cache_complement(
     uint64_t locked = 0;
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
+    std::vector<uint64_t> pin_slices;   ///< STRATA_PARTIAL_PIN_SLICED: the prefix registered slice by slice
+    std::vector<const uint8_t*> pin_slice_dev;   ///< each slice's device alias
     std::string note;
 #if defined(__linux__)
     NumaComplementPlacement numa;   ///< STRATA_NUMA_SPLIT step B; inert unless the live pool split on real nodes
@@ -3741,7 +3748,10 @@ bool FileExpertSource::pin_cache_complement(
         if (arena == nullptr) return;
         if (pinned_ok) (void) cudaFreeHost(arena);
         else {
-            if (partial_pin > 0) (void) cudaHostUnregister(arena);
+            if (partial_pin > 0) {
+                if (pin_slices.empty()) (void) cudaHostUnregister(arena);
+                else for (uint64_t off : pin_slices) (void) cudaHostUnregister((uint8_t*) arena + off);
+            }
             if (locked > 0) strata::platform::unlock_resident((uint8_t*) arena + lock_off, locked);
             std::free(arena);
         }
@@ -3908,6 +3918,11 @@ bool FileExpertSource::pin_cache_complement(
                     const char* v = std::getenv("STRATA_PARTIAL_PIN_GIB");
                     return (uint64_t) ((v != nullptr && std::atof(v) > 0 ? std::atof(v) : 24.0) * 1073741824.0);
                 }();
+                // STRATA_PARTIAL_PIN_SLICED=1 (with STRATA_PARTIAL_PIN=1): the same prefix, registered in slices
+                static const bool sliced_on = [] {
+                    const char* v = std::getenv("STRATA_PARTIAL_PIN_SLICED");
+                    return v != nullptr && std::atoi(v) != 0;
+                }();
                 if (paced) {
                     // #1250: the pages are taken in 1 GiB steps by ordinary page faults (which reclaim file cache as
                     // they need to), each only while the RAM available (the cgroup's room included) stays above the
@@ -3972,6 +3987,56 @@ bool FileExpertSource::pin_cache_complement(
                     // judged on the final state: registered pages no longer move; before the copy fills them
                     if (numa.place) numa.report((const uint8_t*) arena, got, partial_pin, bytes, stop);
 #endif
+                } else if (budget_bytes > 0 && partial_on && sliced_on) {
+                    // STRATA_PARTIAL_PIN_SLICED=1: WDDM refuses one registration past ~20 GiB but takes far more in
+                    // smaller ones (the expert arena pins 41 GiB in 1 GiB slices), so the hottest prefix is registered
+                    // slice by slice, each cut at an expert boundary (a blob never straddles two registrations), until
+                    // the cap or the first refusal.  Under WDDM a slice's device alias is not its host address, so each
+                    // slice keeps its own (device_alias() picks the slice of a blob, as ArenaExpertSource does).
+                    const uint64_t limit = std::min(bytes, pin_cap);
+                    const uint64_t slice = [] {
+                        const char* v = std::getenv("STRATA_PARTIAL_PIN_SLICE_MIB");
+                        const double mib = v != nullptr && std::atof(v) >= 64 ? std::atof(v) : 1024.0;
+                        return (uint64_t) (mib * 1048576.0);
+                    }();
+                    const char* stop = nullptr;
+                    uint64_t at = 0;
+                    while (at < limit) {
+                        const uint64_t want = std::min(limit, at + slice);
+                        uint64_t w = want;
+                        for (size_t i = 0; i < offsets.size() && want < bytes; ++i) {
+                            if (offsets[i] == kNoComplement) continue;
+                            const uint64_t b = layer_blob_bytes_[i / (size_t) n_expert_];
+                            if (offsets[i] < want && offsets[i] + b > want) { w = offsets[i]; break; }
+                        }
+                        if (w <= at) { stop = "a slice smaller than one expert"; break; }
+                        uint8_t* p = (uint8_t*) arena + at;
+                        if (cudaHostRegister(p, (size_t) (w - at), cudaHostRegisterMapped | cudaHostRegisterPortable) !=
+                            cudaSuccess) {
+                            (void) cudaGetLastError();
+                            stop = "the driver refused the next slice";
+                            break;
+                        }
+                        void* alias = nullptr;
+                        if (cudaHostGetDevicePointer(&alias, p, 0) != cudaSuccess || alias == nullptr) {
+                            (void) cudaGetLastError();
+                            (void) cudaHostUnregister(p);
+                            stop = "no device alias for the next slice";
+                            break;
+                        }
+                        pin_slices.push_back(at);
+                        pin_slice_dev.push_back((const uint8_t*) alias);
+                        at = w;
+                    }
+                    if (!pin_slices.empty()) {
+                        device = pin_slice_dev.front();   // non-null: the PCIe path is on; device_alias() maps per slice
+                        partial_pin = at;
+                    }
+                    char msg[240];
+                    std::snprintf(msg, sizeof msg, "%.2f GiB of it registered for the GPU in %zu slices (the hottest)%s%s",
+                                  (double) partial_pin / 1073741824.0, pin_slices.size(), stop ? ", stopped: " : "",
+                                  stop ? stop : "");
+                    note += std::string("; ") + msg;
                 } else if (budget_bytes > 0 && partial_on) {
                     const uint64_t step = 2ull << 30;
                     for (uint64_t want = std::min(bytes, pin_cap); want >= step; want = want > step ? want - step : 0) {
@@ -4163,6 +4228,8 @@ bool FileExpertSource::pin_cache_complement(
     complement_pinned_ = (pinned_ok || partial_pin > 0) && bytes > 0;
     complement_pin_limit_ = pinned_ok ? bytes : partial_pin;
     complement_registered_ = !pinned_ok && partial_pin > 0;
+    complement_slices_ = std::move(pin_slices);
+    complement_slice_dev_ = std::move(pin_slice_dev);
     // a paced registration that covers the whole arena is as good as a cudaHostAlloc'd one
     complement_partial_ = complement_registered_ && !(paced && partial_pin >= bytes);
     complement_locked_ = locked;
@@ -4695,7 +4762,14 @@ const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) con
     if (!soft_in_.empty() && soft_in_[index] != SIZE_MAX)   // soft_commit_exchanges: out is read from its exchange buffer
         return override_.empty() || override_[index] == nullptr || xstage_dev_ == nullptr
                    ? nullptr : xstage_dev_ + (size_t) (override_[index] - xstage_);
-    return complement_device_ + (size_t) complement_offsets_[index];
+    const uint64_t off = complement_offsets_[index];
+    if (!complement_slices_.empty()) {   // STRATA_PARTIAL_PIN_SLICED: the blob's slice base + its offset inside it
+        const auto it = std::upper_bound(complement_slices_.begin(), complement_slices_.end(), off);
+        if (it == complement_slices_.begin()) return nullptr;
+        const size_t k = (size_t) (it - complement_slices_.begin()) - 1;
+        return complement_slice_dev_[k] + (size_t) (off - complement_slices_[k]);
+    }
+    return complement_device_ + (size_t) off;
 }
 
 bool FileExpertSource::pcie_layer(int64_t layer) const {
