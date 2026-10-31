@@ -144,6 +144,7 @@ See [model discovery](TERMINAL_LAUNCH.md#models-you-already-have).
 
 - [Docker](DOCKER.md)
 - [Build or run from a source checkout](SOURCE_INSTALL.md)
-- [Multiple GPUs](MULTI_GPU.md)
+- [Multiple GPUs](MULTI_GPU.md); two AMD cards of different families on Bazzite or another read-only-image Fedora need
+  one extra step ([BAZZITE.md](BAZZITE.md))
 - [Troubleshooting and logs](TROUBLESHOOTING.md)
 - [Model compatibility](MODELS.md)
