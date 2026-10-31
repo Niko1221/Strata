@@ -784,8 +784,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         return best;
     };
     // the state as the read keeps it at a shared start: kept apart (a copy of it), unless it already is
-    const auto prefix_keep = [&]() {
-        const std::vector<int32_t>& t = m.tokens();
+    // (at > 0: the state as it stood at that restore point of the read, which went on past it - no stop at the start)
+    const auto prefix_keep = [&](size_t at = 0) {
+        const std::vector<int32_t> t = at > 0 ? std::vector<int32_t>(m.tokens().begin(), m.tokens().begin() + (long) at)
+                                              : m.tokens();
         if (prefix_max <= 0 || t.size() < prefix_min) return;
         for (Prefix& p : prefixes)
             if (p.tokens == t) {
@@ -795,7 +797,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const auto t0 = std::chrono::steady_clock::now();
         Prefix p;
         std::string e;
-        const uint64_t bytes = m.slot_save(p.data, e);
+        const uint64_t bytes = m.slot_save(p.data, e, at > 0 ? (int64_t) at : -1);
         if (bytes == 0) {
             std::fprintf(stderr, "ds4: keeping the shared start failed (%s)\n", e.c_str());
             return;
@@ -1200,7 +1202,12 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             //  shared start a read from token 0 reaches first: the read stops there and prefix_keep keeps its state)
             std::vector<std::pair<int64_t, bool>> inner;
             const size_t rest = total - done;
-            const bool start_kept = prefix_max > 0 && from == 0 && next_cut == 0 && next_cut < cuts.size() &&
+            // (a shared start a read from token 0 reaches first is kept from the one read too - its mark, then the state at
+            //  it saved apart - unless STRATA_DS4_PREFIX_STOP=1 stops the read there as before)
+            static const bool start_stop = std::getenv("STRATA_DS4_PREFIX_STOP") != nullptr;
+            const bool start_kept = start_stop && prefix_max > 0 && from == 0 && next_cut == 0 && next_cut < cuts.size() &&
+                                    cuts[0].shared && (size_t) cuts[0].pos >= prefix_min;
+            const bool keep_start = !start_stop && prefix_max > 0 && from == 0 && next_cut == 0 && next_cut < cuts.size() &&
                                     cuts[0].shared && (size_t) cuts[0].pos >= prefix_min;
             if (next_cut < cuts.size() && !last_window && !start_kept && piece >= rest && rest <= (size_t) m.feed_unit()) {
                 std::vector<int64_t> rel;
@@ -1217,6 +1224,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             if (!inner.empty()) {
                 ok = m.feed_marks(r.ids.data() + done, (int) n, 1, 1, inner, err);
                 if (ok) next_cut = cuts.size();   // (the points the read went past: kept by it)
+                if (ok && keep_start && inner.front().second && (int64_t) inner.front().first == cuts[0].pos) {
+                    bool pic = false;
+                    for (const Pic& q : pics) pic = pic || (int64_t) q.start < cuts[0].pos;
+                    if (!pic) prefix_keep((size_t) cuts[0].pos);
+                }
             } else if (fin && last_window) {
                 ok = (n < 2 || m.feed(r.ids.data() + done, (int) n - 1, 0, err));
                 if (ok && n >= 2 && (size_t) m.fed() < n - 1) took = (size_t) m.fed();

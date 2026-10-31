@@ -5471,8 +5471,8 @@ class Service:
         user_id, system_id = self.deepseek_turn_ids()
         pts = deepseek_restore_points(ids, user_id, system_id, tail)
         pref = req.get("strata_prefix")
-        if isinstance(pref, dict) and pref.get("tokens"):
-            pts.pop("shared", None)
+        if (isinstance(pref, dict) and pref.get("tokens")) or os.environ.get("STRATA_DS4_RESTORE_SHARED") == "0":
+            pts.pop("shared", None)   # (the system prompt is already the pin's, or STRATA_DS4_RESTORE_SHARED=0: no shared mark)
         if pts:
             req["_restore"] = pts
 

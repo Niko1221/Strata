@@ -7090,11 +7090,12 @@ struct Model::Impl {
     }
     // the checkpoints a slot keeps, as best_check() numbers them (each with its role: 0, 1, the anchor, a mark)
     // (the marks least recently used first: a slot taken back keeps that order)
-    std::vector<int> slot_checks() const {
+    std::vector<int> slot_checks(int64_t upto = -1) const {
+        if (upto < 0) upto = pos;
         std::vector<int> v, m;
         for (int i = 0; i < 3 + (int) mk.size(); ++i) {
             const Check& c = check_at(i);
-            if (c.pos > 0 && c.pos <= pos && c.win.size() == L.size()) (i < 3 ? v : m).push_back(i);
+            if (c.pos > 0 && c.pos <= upto && c.win.size() == L.size()) (i < 3 ? v : m).push_back(i);
         }
         std::stable_sort(m.begin(), m.end(), [this](int a, int b) { return check_at(a).used < check_at(b).used; });
         v.insert(v.end(), m.begin(), m.end());
@@ -7148,19 +7149,35 @@ struct Model::Impl {
     // is not a slot (the Engram history's rows are the tokens' again, no -1 among them).
     static constexpr uint64_t kSlotMagic = 0x31544f4c53345344ull;   // "DS4SLOT1" (little endian)
 
-    int64_t src_rows(const Src& s) const { return pos / std::max(1, s.ratio); }
+    int64_t src_rows(const Src& s, int64_t at = -1) const { return (at < 0 ? pos : at) / std::max(1, s.ratio); }
 
     // the slot's bytes: the header, the tokens, every layer's ring and partial group, every source's rows, the end
-    size_t slot_bytes() const {
-        size_t n = 8 + 8 + slot_identity().size() + 8 + (size_t) pos * 4;
+    size_t slot_bytes(int64_t at = -1) const {
+        const int64_t ep = at < 0 ? pos : at;
+        size_t n = 8 + 8 + slot_identity().size() + 8 + (size_t) ep * 4;
         for (const Layer& l : L) n += 8 + (size_t) g.win * win_rb() + 8 + (l.c_kv ? 2 * (size_t) l.ratio * g.hd * 4 : 0);
-        for (const Src& s : srcs) n += 8 + (size_t) src_rows(s) * (ckv_rb() + ik_rb());
-        n += 8 + slot_checks().size() * check_bytes();   // (the checkpoints: what the slot can be taken back at)
+        for (const Src& s : srcs) n += 8 + (size_t) src_rows(s, ep) * (ckv_rb() + ik_rb());
+        n += 8 + slot_checks(ep).size() * check_bytes();   // (the checkpoints: what the slot can be taken back at)
         return n + 8;
     }
 
-    uint64_t slot_save(std::vector<uint8_t>& out, std::string& err) {
-        if (slot_held) {
+    // `at` >= 0: the conversation as it stood at its restore point `at` (a mark it keeps, shared or not), though it has been read
+    // on past it - the window rings and partial groups from that mark, the compressed KV and index keys of rows 0 .. at / ratio
+    // (the rows a position completed never change), the tokens up to it.  The mark stays; the slot holds the checkpoints
+    // at or before it.  (A shared start kept from a read that went on past it: #607 without a stop at the start.)
+    uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1) {
+        const Check* at_mark = nullptr;
+        if (at >= 0 && at != pos) {
+            for (const Check& x : mk)
+                if (x.pos == at && x.win.size() == L.size()) at_mark = &x;
+            if (at_mark == nullptr || at > pos) {
+                err = "no restore point at that position";
+                return 0;
+            }
+        } else
+            at = -1;
+        const int64_t ep = at < 0 ? pos : at;
+        if (slot_held && at < 0) {
             err = "it is already set aside";
             return 0;
         }
@@ -7177,14 +7194,14 @@ struct Model::Impl {
             return 0;
         }
         const std::string id = slot_identity();
-        out.assign(slot_bytes(), 0);
+        out.assign(slot_bytes(at), 0);
         uint8_t* p = out.data();
         size_t off = 0;
         const auto put = [&](const void* s, size_t b) {
             std::memcpy(p + off, s, b);
             off += b;
         };
-        const uint64_t il = id.size(), n = (uint64_t) pos;
+        const uint64_t il = id.size(), n = (uint64_t) ep;
         put(&kSlotMagic, 8);
         put(&il, 8);
         put(id.data(), (size_t) il);
@@ -7200,7 +7217,9 @@ struct Model::Impl {
             cudaSetDevice(d.id);
             const uint64_t wb = (uint64_t) g.win * win_rb();
             put(&wb, 8);
-            if (cudaMemcpy(p + off, l.win, (size_t) wb, cudaMemcpyDeviceToHost) != cudaSuccess) {
+            if (at_mark != nullptr) {   // (the ring and the partial group as the mark kept them)
+                std::memcpy(p + off, at_mark->win[i].data(), (size_t) wb);
+            } else if (cudaMemcpy(p + off, l.win, (size_t) wb, cudaMemcpyDeviceToHost) != cudaSuccess) {
                 err = l.name + "window ring: " + cudaGetErrorString(cudaGetLastError());
                 return 0;
             }
@@ -7209,8 +7228,11 @@ struct Model::Impl {
             put(&cn, 8);
             if (cn > 0) {
                 const size_t cb = (size_t) cn * 4;
-                if (cudaMemcpy(p + off, l.c_kv, cb, cudaMemcpyDeviceToHost) != cudaSuccess ||
-                    cudaMemcpy(p + off + cb, l.c_score, cb, cudaMemcpyDeviceToHost) != cudaSuccess) {
+                if (at_mark != nullptr) {
+                    std::memcpy(p + off, at_mark->comp[2 * i].data(), cb);
+                    std::memcpy(p + off + cb, at_mark->comp[2 * i + 1].data(), cb);
+                } else if (cudaMemcpy(p + off, l.c_kv, cb, cudaMemcpyDeviceToHost) != cudaSuccess ||
+                           cudaMemcpy(p + off + cb, l.c_score, cb, cudaMemcpyDeviceToHost) != cudaSuccess) {
                     err = l.name + "compressor's group: " + cudaGetErrorString(cudaGetLastError());
                     return 0;
                 }
@@ -7218,7 +7240,7 @@ struct Model::Impl {
             }
         }
         for (const Src& s : srcs) {
-            const uint64_t rows = (uint64_t) src_rows(s);
+            const uint64_t rows = (uint64_t) src_rows(s, ep);
             put(&rows, 8);
             if (rows == 0) continue;
             const int di = L[(size_t) s.layer].dev;
@@ -7238,7 +7260,7 @@ struct Model::Impl {
             off += cb + ib;
         }
         {
-            const std::vector<int> cs = slot_checks();
+            const std::vector<int> cs = slot_checks(ep);
             const uint64_t nc = cs.size();
             put(&nc, 8);
             for (int k : cs) {   // (a role: 0, 1, the anchor 2; a mark 3, a shared start's mark 4)
@@ -7260,7 +7282,7 @@ struct Model::Impl {
             return 0;
         }
         put(&kSlotMagic, 8);
-        slot_held = true;
+        if (at < 0) slot_held = true;   // (a slot of an earlier point leaves the conversation as it is)
         return (uint64_t) off;
     }
 
@@ -14772,7 +14794,7 @@ bool Model::restore(int64_t limit) { return p_->restore(limit); }
 void Model::pin() { p_->pin(); }
 std::vector<int64_t> Model::check_positions() const { return p_->check_positions(); }
 int64_t Model::restorable(int64_t limit) const { return p_->restorable(limit); }
-uint64_t Model::slot_save(std::vector<uint8_t>& out, std::string& err) { return p_->slot_save(out, err); }
+uint64_t Model::slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at) { return p_->slot_save(out, err, at); }
 bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
     return p_->slot_load(data, bytes, n_pos, err);
 }
