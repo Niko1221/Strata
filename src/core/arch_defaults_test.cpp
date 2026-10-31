@@ -108,6 +108,15 @@ int main() {
         unset("STRATA_QFUSE");
         unset("STRATA_TSUM");
     }
+    // AMD-Q: the CPU prefill share is a default of a gfx12 card only (the caller adds single card / experts missing)
+    unset("STRATA_GFX12_DEFAULTS");
+    CHECK(gfx12_prefill_share_default("gfx1201", false) && gfx12_prefill_share_default("gfx1200", false) &&
+          gfx12_prefill_share_default("gfx1201:sramecc-:xnack-", false));
+    CHECK(!gfx12_prefill_share_default("gfx1201", true));   // STRATA_DEFAULTS=026
+    for (const char* a : {"gfx1151", "gfx1150", "gfx1103", "gfx1100", "gfx1030", "gfx906", "gfx90a", ""}) CHECK(!gfx12_prefill_share_default(a, false));
+    put("STRATA_GFX12_DEFAULTS", "0");
+    CHECK(!gfx12_prefill_share_default("gfx1201", false));
+    unset("STRATA_GFX12_DEFAULTS");
     // gfx12: the five prompt switches and seven bit-identical decode switches, no bit-changing one
     unset("STRATA_GFX12_DEFAULTS");
     for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {

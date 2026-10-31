@@ -97,6 +97,16 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
     return t;
 }
 
+bool gfx12_prefill_share_default(const char* gcn_arch, bool defaults026) {
+    if (defaults026 || !strata::kernels::gfx_arch_is_gfx12(gcn_arch)) return false;
+    const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
+    return !(off12 != nullptr && off12[0] == '0');
+}
+
+bool gfx12_prefill_share_default(const char* gcn_arch) {
+    return gfx12_prefill_share_default(gcn_arch, strata::qwen_defaults_026());
+}
+
 bool igpu_prompt_defaults_arch(const char* gcn_arch) {
     return strata::kernels::gfx_arch_is(gcn_arch, "gfx1103") || strata::kernels::gfx_arch_is(gcn_arch, "gfx1150") ||
            strata::kernels::gfx_arch_is(gcn_arch, "gfx1151");
