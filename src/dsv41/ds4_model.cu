@@ -277,6 +277,15 @@ size_t uma_free(int dev, size_t fr) {
 #endif
     return fr;
 }
+// cudaMemGetInfo for the current device, with uma_free's view on an integrated GPU (Maya v1.1.20's mem_info; the Windows APU
+// dedicated-memory clamp (strata/platform/dedicated.hpp) is not ported: commit_charged covers that PC here)
+cudaError_t mem_info(size_t* free_b, size_t* total_b) {
+    int dev = 0;
+    (void) cudaGetDevice(&dev);
+    const cudaError_t e = cudaMemGetInfo(free_b, total_b);
+    if (e == cudaSuccess) *free_b = uma_free(dev, *free_b);
+    return e;
+}
 
 float bf16_to_f32(uint16_t b) {
     uint32_t u = (uint32_t) b << 16;
@@ -4952,7 +4961,7 @@ struct Model::Impl {
             Chunk& c = *chunks[di];
             cudaSetDevice(d.id);
             size_t fr = 0, tot = 0;
-            CK(cudaMemGetInfo(&fr, &tot));
+            CK(mem_info(&fr, &tot));
             const double room_e = std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
             const size_t need = lay_chunk(c, chunk, nullptr, 2);
             if (room_e >= 2.0 * (double) need) continue;   // (the chunk default's own bound: at most half the room)
@@ -5725,7 +5734,7 @@ struct Model::Impl {
                     }
             size_t fr = 0, tot = 0;
             cudaSetDevice(d.id);
-            cudaMemGetInfo(&fr, &tot);
+            mem_info(&fr, &tot);
             const size_t gsz = groups.empty() ? 1 : groups[(size_t) d.grp].mem.size();
             char tp[64] = "";
             if (gsz > 1) std::snprintf(tp, sizeof tp, " (tensor parallel %zu, part %d)", gsz, d.mi);
@@ -8453,7 +8462,7 @@ struct Model::Impl {
             if (stride == 0) continue;
             CK(cudaSetDevice(d.id));
             size_t fr = 0, tot = 0;
-            CK(cudaMemGetInfo(&fr, &tot));
+            CK(mem_info(&fr, &tot));
             const double room = std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
             if (exp_b <= room) continue;   // (every expert of its layers fits)
             if (ln_force.empty() && pcie::cal_get(ln_file, lane_dev_key((int) di) + " | lane") == "off") continue;
@@ -11278,6 +11287,12 @@ struct Model::Impl {
         for (const std::string& e : errs)   // (a device's failure first: a Stop's early end is not one)
             if (!e.empty() && e != kHalted) {
                 err = e;
+                return false;
+            }
+        for (const std::string& e : errs)
+            if (e == kHalted) {
+                halted = true;
+                err = "stopped while reading the prompt";
                 return false;
             }
         borrow_end();   // (before the cache looks at the slots again)
