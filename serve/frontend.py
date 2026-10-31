@@ -147,8 +147,9 @@ def use_family(family: str | None) -> None:
     """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER)."""
     global _NUMERIC_EFFORT
     EFFORT.clear()
-    EFFORT.update(EFFORT_DEEPSEEK if family == "deepseek41" else _EFFORT_QWEN)
-    _NUMERIC_EFFORT = family == "deepseek41"
+    is_ds = family in ("deepseek41", "deepseek4")
+    EFFORT.update(EFFORT_DEEPSEEK if is_ds else _EFFORT_QWEN)
+    _NUMERIC_EFFORT = is_ds
 
 
 def effort_kwargs(value) -> dict:
@@ -1333,6 +1334,10 @@ class OutputParser:
         after = self.buf[i + len(THINK_END):]
         if not after:
             return None
+        if before in ('"', "'") and after[0] != before:
+            prefix = self.buf[:i].rsplit("\n", 1)[-1] if "\n" in self.buf[:i] else self.line + self.buf[:i]
+            if prefix.count(before) % 2 == 0:
+                return False
         return after[0] not in "\r\n"
 
     def _stray_think_at(self) -> int:

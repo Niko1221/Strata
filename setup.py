@@ -855,6 +855,23 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "shared": []},
 }
 
+MULTI_FILE_FAMILIES["deepseek4"] = {
+    "title": "DeepSeek-V4-Flash", "by": "DeepSeek / antirez / Unsloth (0731 release)", "arch": "deepseek4",
+    "about": "DeepSeek-V4-Flash 0731 (antirez/deepseek-v4-gguf or unsloth/DeepSeek-V4-Flash-0731-GGUF) using strata-dsv41 without Engram table",
+    "hf": hf("antirez/deepseek-v4-gguf"), "tag": "deepseek-v4-flash-", "name": "deepseek-v4-flash",
+    "license": "DeepSeek Model License",
+    "models": {
+        "antirez-q2": {
+            "label": "antirez IQ2XXS (ds4)",
+            "about": "antirez/deepseek-v4-gguf single file Q2-imatrix (~80 GB). Optimized for 10-12GB GPU + 64GB RAM",
+            "ram_gb": 40, "recipe": "dsv4_single", "subdir": None,
+            "shards": ["DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"],
+            "shared": []
+        }
+    },
+    "sha256": {}, "vision": False
+}
+
 # Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
 # checks the file against it as soon as it is whole (a wrong file is deleted and setup stops), and stops before the
 # download when the server's size is not the pinned one.  The files are fetched from the commits in HF_REVISIONS.

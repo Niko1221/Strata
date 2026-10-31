@@ -284,6 +284,7 @@ struct Req {
                             // tools): the state at N is kept as a checkpoint, so another agent behind the same start
                             // goes back to it instead of reading it again
     float cum = -1.0f;      // dspark_cum=F: the cut on the product of the confidences (-1: the engine's, dspark_cum_default)
+    float route_prior = -1.0f;
     std::string file;   // GENI: the pictures
     std::vector<int> ids;
 };
@@ -381,6 +382,7 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
         else if (k == "dspark_conf") r.conf = std::strtof(v.c_str(), nullptr);
         else if (k == "pin") r.pin = std::atoll(v.c_str());
         else if (k == "dspark_cum" || k == "spec_cum") r.cum = std::strtof(v.c_str(), nullptr);
+        else if (k == "route_prior") r.route_prior = std::strtof(v.c_str(), nullptr);
     }
     return !r.ids.empty() && (!geni || !r.file.empty());
 }
@@ -732,15 +734,27 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         settle_cancel.store(false, std::memory_order_release);
         settle_th = std::thread([&m, &settle_cancel] { m.settle_idle(settle_cancel); });
     };
+    struct RoutePriorGuard {
+        strata::ds4::Model& m;
+        float old_v;
+        ~RoutePriorGuard() { m.set_route_prior(old_v); }
+    };
     for (;;) {
         settle_start();   // (nothing in flight: this is the idle)
         const bool have_line = in.next(line);
         settle_stop();    // (a line arrived, or the input closed)
         if (!have_line) break;
         if (line == "QUIT") break;
+        if (line.rfind("ROUTE_PRIOR ", 0) == 0) {
+            const float v = std::strtof(line.c_str() + 12, nullptr);
+            m.set_route_prior(v);
+            std::printf("OK route_prior=%.4f\n", v);
+            std::fflush(stdout);
+            continue;
+        }
         const bool geni = line.rfind("GENI ", 0) == 0;
         if (!geni && line.rfind("GEN ", 0) != 0) {
-            std::printf("ERR unsupported command '%s' (GEN, GENI, STOP and QUIT)\n", line.substr(0, line.find(' ')).c_str());
+            std::printf("ERR unsupported command '%s' (GEN, GENI, ROUTE_PRIOR, STOP and QUIT)\n", line.substr(0, line.find(' ')).c_str());
             std::fflush(stdout);
             continue;
         }
@@ -750,6 +764,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             std::printf("ERR expected: GEN <max_new> [keys] <id,id,...> or GENI <max_new> [keys] <file> <id,id,...>\n");
             std::fflush(stdout);
             continue;
+        }
+        std::unique_ptr<RoutePriorGuard> rpg;
+        if (r.route_prior >= 0.0f) {
+            rpg = std::make_unique<RoutePriorGuard>(RoutePriorGuard{m, m.route_prior()});
+            m.set_route_prior(r.route_prior);
         }
         const double t0 = now_ms();
         std::vector<Pic> pics;
@@ -1358,6 +1377,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--temperature") temp = (float) std::atof(val("--temperature").c_str());
         else if (a == "--seed") cli_seed = std::strtoull(val("--seed").c_str(), nullptr, 10);
+        else if (a == "--route-prior") o.route_prior = (float) std::atof(val("--route-prior").c_str());
         else if (a == "--verbose" || a == "-v") {
             o.verbose = true;
             std::fprintf(stderr, "ds4: build %s (%s)\n", DS4_BUILD_ID, STRATA_VERSION);
