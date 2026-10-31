@@ -1199,13 +1199,6 @@ void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
 // ------------------------------------------------------------------------------------------------ the engine
 float* dalloc(size_t n) {
     float* p = nullptr;
-    if (std::getenv("STRATA_Q36_ALLOC_DEBUG") && n * 4 > (8u << 20)) {
-        static int idx = 0;
-        size_t a = 0, b = 0;
-        cudaMemGetInfo(&a, &b);
-        std::fprintf(stderr, "  alloc #%d %.1f MiB (free %.0f MiB)\n", ++idx, (double) n * 4 / (1 << 20),
-                     (double) a / (1 << 20));
-    }
     const cudaError_t e = cudaMalloc(&p, n * 4);
     if (e != cudaSuccess)
         std::fprintf(stderr, "strata-q36: dalloc(%zu floats = %.1f MiB) failed: %s\n", n, (double) n * 4 / (1 << 20),
@@ -4010,9 +4003,6 @@ int strata::qwen35::run(int argc, char** argv) {
     E.draft_n = std::max(0, draft_vocab);
     E.bmtp = (batch_mtp || (std::getenv("STRATA_BATCH_MTP") != nullptr && std::string(std::getenv("STRATA_BATCH_MTP")) != "0")) && E.n_sess > 1 && E.mtp_d > 0;
     if (batch_mtp && !E.bmtp) std::fprintf(stderr, "strata-q36: --batch-mtp needs --batch N (2 or more) and --mtp N: ignored\n");
-    // TODO(dense): the warm-up leaves state that the next reset() does not clear, and the first real prompt after it comes
-    // out wrong (token 760 -> 89342 instead of 2614).  Off for the dense family until that gap is found; the same reset
-    // runs between two sequences, so this is a correctness item, not only a warm-up one.
     if (warm) E.warmup();
     if (serve_mode) return serve(E);
     if (bench_pp > 0 || bench_tg > 0) {
