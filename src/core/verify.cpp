@@ -808,8 +808,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     return strata::metal_engine::window_init(metal_, g, ss, max_t, ss.qsa_states[ss.qsa_primary()].max_cells, &n_vocab_,
                                              err);
 #endif
-    if (max_t < 2 || max_t > strata::kernels::kVerifyMaxT) {   // (the CPU experts take a wider window as jobs of at most cpu::MAXT tokens)
-        err = "verify: the window must hold 2.." + std::to_string(strata::kernels::kVerifyMaxT) + " tokens";
+    // a window past kVerifyMaxT tokens runs as two token groups of at most kVerifyMaxT (record_window): the CPU experts
+    // see one group at a time (and take a wider group as jobs of at most cpu::MAXT tokens)
+    if (max_t < 2 || max_t > strata::kernels::kVerifyLongT) {
+        err = "verify: the window must hold 2.." + std::to_string(strata::kernels::kVerifyLongT) + " tokens";
         return false;
     }
     if (hits.d_res == nullptr || hits.cache_base == nullptr || hits.blob <= 0) {
@@ -860,7 +862,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
               mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
               mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
-              mapped((size_t) strata::kernels::kVerifyMaxT * strata::kernels::kNonfiniteBlocks * 4, (void**) &h_nf_,
+              mapped((size_t) strata::kernels::kVerifyLongT * strata::kernels::kNonfiniteBlocks * 4, (void**) &h_nf_,
                      (void**) &m_nf_) &&
               mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
               mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
@@ -958,9 +960,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
         inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
         lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
-        xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
-        sh_xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
-        xil_ = b.take<uint8_t>(strata::kernels::native_q8_1_il_bytes(max_in, std::max(4, (int) T)));   // 147-verify: 5-8 columns too
+        // the q8_1 activations of one token group (or one column chunk of the head): at most kVerifyMaxT columns
+        const int qcols = (int) std::min<uint64_t>(T, (uint64_t) strata::kernels::kVerifyMaxT);
+        xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, qcols));
+        sh_xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, qcols));
+        xil_ = b.take<uint8_t>(strata::kernels::native_q8_1_il_bytes(max_in, std::max(4, qcols)));   // 147-verify: 5-8 columns too
         qkv_L_ = b.take<float>(nG * T * C); h_L_ = b.take<float>(nG * T * C);
         gate_L_ = b.take<float>(nG * T * HV); beta_L_ = b.take<float>(nG * T * HV);
         z_ = b.take<float>(T * ZV); y_ = b.take<float>(T * ZV); y_dummy_ = b.take<float>(T * ZV);
@@ -1237,7 +1241,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int64_t TS = (s.idx_block - 1) * ID;
     const bool ple_on = ss.ple.ready() && ple_stage();
     auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
-    const int G = (split_ && T >= 2 && !batch_rec_) ? 2 : 1;   // a batch window is one group
+    // a batch window is one group; a window past kVerifyMaxT tokens is always two (--lookup-max-t: each group holds
+    // at most kVerifyMaxT, what the per-group kernels and the CPU experts take)
+    const int G = ((split_ && T >= 2) || T > kVerifyMaxT) && !batch_rec_ ? 2 : 1;
     // Pipelined windows must wait for the host verdict/snapshot fence before mutating state.
     const bool self_commit = T == 1 && !always_publish_ && !batch_rec_ && !g_qfuse() && one_token_self_commit();   // see Verifier::commit
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
@@ -2410,12 +2416,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         return true;
     }
 
-    // ---- the head, T columns, and the argmax of each
+    // ---- the head, T columns, and the argmax of each.  The final mixer and the head matvec take at most
+    // kFusedGrMaxT columns a launch: a longer window (--lookup-max-t) runs them in chunks of that many columns (one
+    // chunk - the same launches as before - for every window up to kFusedGrMaxT tokens)
     stamp(g.n_layers, 0, 0);
     {
         const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
                         *hu = wt.find("output_hc_up.weight");
         if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
+      for (int h0 = 0; h0 < T; h0 += kFusedGrMaxT) {
+        const int HT = std::min(T - h0, kFusedGrMaxT);   // this chunk's columns: h0 .. h0 + HT
         // S25 (STRATA_HC_Q8=1): the final mixer from the GGUF's Q8_0 projections too, through the same multi read
         // (no pending write, no inject)
         const bool mix_q8 = hd->hc_q8 != nullptr && hu->hc_q8 != nullptr && head_ != nullptr && head_->loaded();
@@ -2423,9 +2433,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (head_ != nullptr && head_->loaded())   // the head matrix itself is counted by native_mmvq / native_mmvq_il (n_out = the vocabulary)
             strata::dispatch::notef("head: type %ld, T=%ld columns, vocabulary %ld", (long) head_->type(), (long) T, (long) n_vocab_);
         if (mix_q8) {
-            FusedGrArgs fa[kFusedGrWideT];
-            for (int t = 0; t < T; ++t) {
-                FusedGrArgs& a = fa[t];
+            FusedGrArgs fa[kFusedGrMaxT];
+            for (int t = h0; t < h0 + HT; ++t) {
+                FusedGrArgs& a = fa[t - h0];
                 a.R = Rt(t); a.R_out = Rt(t); a.apply = false;
                 a.w_norm = (const float*) hn->data; a.w_down = (const uint16_t*) hd->data;
                 a.w_up = (const uint16_t*) hu->data; a.w_inject = nullptr;
@@ -2433,12 +2443,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
                 a.mixed = head_mixed_ + t * N;
             }
-            fused_gr_read_multi(fa, T, xn_, cs);
+            fused_gr_read_multi(fa, HT, xn_ + (size_t) h0 * HC * N, cs);
         }
         else if (fuse_head_gr) {
-            FusedGrArgs fa[kFusedGrWideT];
-            for (int t = 0; t < T; ++t) {
-                FusedGrArgs& a = fa[t];
+            FusedGrArgs fa[kFusedGrMaxT];
+            for (int t = h0; t < h0 + HT; ++t) {
+                FusedGrArgs& a = fa[t - h0];
                 a.R = Rt(t); a.R_out = Rt(t); a.apply = true;
                 a.bo_prev = bo_ + t * N; a.inj_prev = inj2_ + t * HC;
                 a.w_norm = (const float*) hn->data;
@@ -2451,7 +2461,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.inject_out = head_inj_;
                 a.mixed = head_mixed_ + t * N;
             }
-            fused_gr_read_multi(fa, T, xn_, cs);
+            fused_gr_read_multi(fa, HT, xn_ + (size_t) h0 * HC * N, cs);
         } else if (head_mix_multi_enabled() && head_ != nullptr && head_->loaded()) {
             // the final mixer, the window's tokens in one read (fused_gr_read_multi without the pending write: the
             // last layer's write was done above; its sums are gr_read's)
@@ -2459,16 +2469,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 err = "verify: the output_hc_* weights have the wrong engine forms";
                 return false;
             }
-            FusedGrArgs fa[kFusedGrWideT];
-            for (int t = 0; t < T; ++t) {
-                fa[t].R = Rt(t); fa[t].R_out = Rt(t); fa[t].apply = false;
-                fa[t].w_norm = (const float*) hn->data; fa[t].w_down = (const uint16_t*) hd->data;
-                fa[t].w_up = (const uint16_t*) hu->data; fa[t].eps = EPS;
-                fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC; fa[t].mixed = head_mixed_ + t * N;
+            FusedGrArgs fa[kFusedGrMaxT];
+            for (int t = h0; t < h0 + HT; ++t) {
+                FusedGrArgs& a = fa[t - h0];
+                a.R = Rt(t); a.R_out = Rt(t); a.apply = false;
+                a.w_norm = (const float*) hn->data; a.w_down = (const uint16_t*) hd->data;
+                a.w_up = (const uint16_t*) hu->data; a.eps = EPS;
+                a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC; a.mixed = head_mixed_ + t * N;
             }
-            fused_gr_read_multi(fa, T, xn_, cs);
+            fused_gr_read_multi(fa, HT, xn_ + (size_t) h0 * HC * N, cs);
         } else {
-            for (int t = 0; t < T; ++t) {
+            for (int t = h0; t < h0 + HT; ++t) {
                 BlockBuffers bb = ss.block;
                 bb.R = Rt(t);
                 bb.mixed = head_mixed_ + t * N;
@@ -2481,18 +2492,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (head_ != nullptr && head_->loaded()) {
             try {
-                native_quantize_q8_1(head_mixed_, xq_, (int) N, T, cs);
-                if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) T, (int) n_vocab_)) {
-                    if (T >= 2) strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, (int) T, cs);
-                    strata::kernels::native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, head_logits_, (int) N,
-                                                    (int) n_vocab_, (int) T, cs);
+                float* const hl = head_logits_ + (size_t) h0 * (size_t) n_vocab_;
+                native_quantize_q8_1(head_mixed_ + (size_t) h0 * N, xq_, (int) N, HT, cs);
+                if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) HT, (int) n_vocab_)) {
+                    if (HT >= 2) strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, (int) HT, cs);
+                    strata::kernels::native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, hl, (int) N,
+                                                    (int) n_vocab_, (int) HT, cs);
                 } else
-                native_mmvq(head_->type(), head_->weights(), xq_, head_logits_, (int) N, (int) n_vocab_, T, cs);
+                native_mmvq(head_->type(), head_->weights(), xq_, hl, (int) N, (int) n_vocab_, HT, cs);
             } catch (const std::exception& e) {
                 err = std::string("verify head: ") + e.what();
                 return false;
             }
         }
+      }   // the head's column chunks
         // Greedy, the default, is recorded here as before (no extra launch or sync per window). A request that
         // samples or penalizes is sampled again host-side after the replay (run()) with its own parameters and a
         // fresh draw counter: a captured sampler would bake them in and replay the same draws forever.
@@ -2850,6 +2863,12 @@ bool Verifier::capture_commit(std::string& err) {
             } else if (!is_qsa_layer(g, l) && gdn_batched) {
                 ++gdn_index;
             } else if (!is_qsa_layer(g, l)) {
+                if (MT > kVerifyMaxT) {   // gdn_step_norm_multi takes kVerifyMaxT tokens; gdn_commit_layers takes more
+                    err = "verify commit: windows past " + std::to_string(kVerifyMaxT) + " tokens (--lookup-max-t) need "
+                          "the batched GDN commit (unset STRATA_COMMIT_BATCH=0, STRATA_GDN_SPLIT, STRATA_GDN_COMMIT_SPLIT=0)";
+                    ok = false;
+                    break;
+                }
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
                 if (!wnm) { ok = false; break; }
                 float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
@@ -3096,6 +3115,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const OnDevice on_device(device_);
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    // a layer split's hand-off buffers hold kVerifyMaxT rows
+    if (T > kVerifyMaxT && (next_ != nullptr || lb_ > 0)) { err = "verify: windows past 8 tokens need one stage"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -3121,7 +3142,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (!pre && !staged_) stage_inputs(T, tokens, pos0);
     staged_ = false;
     const bool do_ple = ss.ple.ready() && ple_stage();
-    uint32_t ple_rows[kVerifyMaxT * PLE_N_HEADS];
+    uint32_t ple_rows[kVerifyLongT * PLE_N_HEADS];
     if (do_ple) {
         int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
         for (int t = 0; t < T; ++t) {
@@ -4303,6 +4324,7 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
     // find no VRAM left: free the least recently used layouts until it fits (they are captured again when needed)
     // (into a local: what a failed instantiate leaves in the output is not specified, and `ex` is a member that
     // capture() reads as "captured" when it is not null)
+    capture_oom_ = false;
     cudaGraphExec_t got = nullptr;
     cudaError_t ie = cudaGraphInstantiate(&got, graph, flags);
     int freed = 0;
@@ -4332,6 +4354,8 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
                              "sizes (they are captured again when used; a larger --vram-reserve-mib or "
                              "--vram-reserve-later-mib keeps them)\n", keep_t, freed_sizes);
     if (ie != cudaSuccess) {
+        capture_oom_ = ie == cudaErrorMemoryAllocation;
+        if (capture_oom_) (void) cudaGetLastError();
         got = nullptr;
         err = std::string(what) + cudaGetErrorString(ie);
         return false;
@@ -4340,12 +4364,32 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
     return true;
 }
 
+bool Verifier::prepare(int T, bool& no_vram, std::string& err) {
+    no_vram = false;
+#if defined(STRATA_GPU_METAL)
+    (void) T;
+    (void) err;
+    return true;
+#else
+    if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    if (next_ != nullptr || lb_ > 0) return true;
+    const OnDevice on_device(device_);
+    refresh_ar();
+    if ((ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T]) != nullptr) return true;
+    capture_oom_ = false;
+    if (capture(T, err)) return true;
+    no_vram = capture_oom_;
+    return false;
+#endif
+}
+
 bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
                            std::string& err) {
     using namespace strata::kernels;
     // the row layout: a slot may own a contiguous group of rows (--batch-mtp), also across the stages of a layer split,
-    // whose hand-off buffers hold kVerifyNarrowT rows, or set_handoff_rows' (a stage that hands rows on or takes them)
-    if (const char* why = batch_rows_error(rows, S, pos, (int) slots_.size(), max_t_, hbase,
+    // whose hand-off buffers hold kVerifyNarrowT rows, or set_handoff_rows' (a stage that hands rows on or takes them); a
+    // batch window keeps kVerifyMaxT rows (the row tables below) when max_t is longer (--lookup-max-t)
+    if (const char* why = batch_rows_error(rows, S, pos, (int) slots_.size(), std::min(max_t_, kVerifyMaxT), hbase,
                                            next_ != nullptr || lb_ > 0, handoff_rows_ > 0 ? handoff_rows_ : kVerifyNarrowT)) {
         err = why;
         return false;
@@ -4906,7 +4950,7 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     const OnDevice on_device(device_);
     if (fl_active_) { err = "verify: a window is already in flight on this verifier"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
-    if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    if (T < 1 || T > max_t_ || T > strata::kernels::kVerifyMaxT) { err = "verify: window size out of range"; return false; }
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
     const int sl = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;   // the variant this window's context pays off with
