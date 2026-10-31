@@ -1462,8 +1462,8 @@ class Runner:
         self.parallel_dropped = False
         if cfg.get("arch") != "deepseek41" or not (self.s.parallel and self.s.parallel > 1):
             return
-        from strata_control import dsv41_engine
-        if dsv41_engine.takes_parallel(cfg.get("exe")) is False:
+        from strata_control import dsv41_flags
+        if dsv41_flags.takes_parallel(cfg.get("exe")) is False:
             self.parallel_dropped = True
             text = (f"This DeepSeek engine ({Path(str(cfg.get('exe'))).parent.name or 'installed'}) is from before --parallel, so it answers one request at "
                     f"a time and --parallel {self.s.parallel} is not used. Update the engine with `strata update` and start again to answer several at once.")

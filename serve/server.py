@@ -3435,8 +3435,8 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
         # experts' room; their tokens are decoded together).  Not --batch: that is the Qwen engine's slots.
         # An engine package from before this flag would stop at the start on it ("unknown option"): asked of the engine itself, and said.
         try:
-            from strata_control import dsv41_engine
-            old_engine = dsv41_engine.takes_parallel(cfg.get("exe")) is False
+            from strata_control import dsv41_flags
+            old_engine = dsv41_flags.takes_parallel(cfg.get("exe")) is False
         except Exception:                                # noqa: BLE001 - a probe that fails decides nothing
             old_engine = False
         if old_engine:

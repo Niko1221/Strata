@@ -21,7 +21,7 @@ from strata_cli.launch import settings as S
 from strata_cli.launch import store
 from strata_cli.launch.catalog import Catalog
 from strata_cli.launch.runner import Runner
-from strata_control import dsv41_engine, dsv41_parallel
+from strata_control import dsv41_flags, dsv41_parallel
 from tests.terminal.launch_support import HW_12, Home, catalog, run_cli
 
 R9700 = {"name": "AMD Radeon AI PRO R9700", "vram_gb": 32.0, "usable": True, "vendor": "amd", "arch": "gfx1201"}
@@ -199,7 +199,7 @@ class TheEngineInUse(Base):
 
     def test_an_engine_from_before_the_flag_is_asked_and_the_launch_goes_on_one_at_a_time(self):
         s, r = self._runner(4)
-        with mock.patch.object(dsv41_engine, "takes_parallel", return_value=False):
+        with mock.patch.object(dsv41_flags, "takes_parallel", return_value=False):
             r.gate_parallel(self._cfg())
         self.assertTrue(r.parallel_dropped)
         self.assertTrue(any("is from before --parallel" in n for n in r.notices), r.notices)
@@ -208,14 +208,14 @@ class TheEngineInUse(Base):
     def test_a_current_engine_or_an_engine_that_cannot_be_asked_goes_on(self):
         for answer in (True, None):
             _s, r = self._runner(4)
-            with mock.patch.object(dsv41_engine, "takes_parallel", return_value=answer):
+            with mock.patch.object(dsv41_flags, "takes_parallel", return_value=answer):
                 r.gate_parallel(self._cfg())
             self.assertFalse(r.parallel_dropped, answer)
             self.assertEqual(r.notices, [])
 
     def test_without_the_flag_the_engine_is_not_even_asked(self):
         _s, r = self._runner(None)
-        with mock.patch.object(dsv41_engine, "takes_parallel", side_effect=AssertionError("asked")):
+        with mock.patch.object(dsv41_flags, "takes_parallel", side_effect=AssertionError("asked")):
             r.gate_parallel(self._cfg())
         self.assertFalse(r.parallel_dropped)
 
@@ -227,22 +227,22 @@ class TheEngineInUse(Base):
             exe.parent.mkdir()
             exe.write_text("x" * (n + 1), encoding="utf-8")
             with mock.patch("subprocess.run", return_value=mock.Mock(stdout="", stderr=text, returncode=0)) as run:
-                self.assertIs(dsv41_engine.takes_parallel(exe), want, text)
-                self.assertIs(dsv41_engine.takes_parallel(exe), want, text)
+                self.assertIs(dsv41_flags.takes_parallel(exe), want, text)
+                self.assertIs(dsv41_flags.takes_parallel(exe), want, text)
                 self.assertEqual(run.call_count, 1)                  # asked once per file
                 self.assertEqual(run.call_args[0][0], [str(exe), "--help"])
-        self.assertIsNone(dsv41_engine.takes_parallel(Path(self.home.base) / "no" / "such" / "strata-dsv41"))
+        self.assertIsNone(dsv41_flags.takes_parallel(Path(self.home.base) / "no" / "such" / "strata-dsv41"))
 
     def test_the_server_leaves_the_flag_out_for_an_engine_from_before_it(self):
         from serve.server import parallel_args
         cfg = {"arch": "deepseek41", "exe": "/x/strata-dsv41", "parallel": 4}
-        with mock.patch.object(dsv41_engine, "takes_parallel", return_value=False), contextlib.redirect_stdout(io.StringIO()) as out:
+        with mock.patch.object(dsv41_flags, "takes_parallel", return_value=False), contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(parallel_args(cfg, []), [])
         self.assertIn("from before --parallel", out.getvalue())
         for answer in (True, None):
-            with mock.patch.object(dsv41_engine, "takes_parallel", return_value=answer):
+            with mock.patch.object(dsv41_flags, "takes_parallel", return_value=answer):
                 self.assertEqual(parallel_args(cfg, []), ["--parallel", "4"])
-        with mock.patch.object(dsv41_engine, "takes_parallel", return_value=True), contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(dsv41_flags, "takes_parallel", return_value=True), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(parallel_args({**cfg, "parallel": 12}, []), ["--parallel", "8"])
 
 
