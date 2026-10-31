@@ -1126,9 +1126,12 @@ node, each with its own task counter, and each node's half of every CPU-side exp
 default worker count under the split is the physical cores of both sockets minus the host core (minus one more from 16 workers
 on, at most 32). An explicit `--pool-workers N` is spread alternately across the sockets.
 
-- It runs when Linux has exactly 2 nodes holding the pool's threads, balanced slices, pinned threads and no
-  `STRATA_EXCHANGE_ROTATE=1`; otherwise the log says `NUMA pool off: <reason>` and the pool runs as before. One node is exactly
-  the pool as before and logs nothing. Windows reads the node count but does not split yet.
+- It runs when Linux has exactly 2 nodes holding the pool's threads, balanced slices, pinned threads, no
+  `STRATA_EXCHANGE_ROTATE=1` and experts not on the arena path; otherwise the log says `NUMA pool off: <reason>` and the pool
+  runs as before. One node is exactly the pool as before and logs nothing. Windows reads the node count but does not split yet.
+- The arena path places no memory per node, so there the split only adds remote reads: 2x Xeon Gold 6226R with every expert in
+  VRAM measured 3.7K-prompt prefill 7% slower and decode at 40-60 tok/s run to run with it, parity with 0.2.1 without it
+  (#3708). `STRATA_NUMA_SPLIT=1` still forces it.
 - `STRATA_NUMA_POOL=0` turns it off (also `off`, `false`, `no`) and wins over `STRATA_NUMA_SPLIT=1`. `STRATA_NUMA_SPLIT=1` asks for
   the split on any machine; `=0` is off; `=test` builds the slices on any machine for scheduling tests, not for speed.
 - Only native expert layers are split. If a node lacks free memory for its half, the log warns `NUMA placement at risk` and
