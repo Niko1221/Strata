@@ -47,7 +47,7 @@ __device__ __forceinline__ float mmvf_warp_sum(float value) {
 
 template <int BLOCK_SIZE>
 __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t* __restrict__ w,
-                                    float* __restrict__ y, int n_in) {
+                                    float* __restrict__ y, int n_in, int fast) {
     const int t = threadIdx.x;
     const uint16_t* row = w + (size_t) blockIdx.x * n_in;
     const uint32_t* weights2 = reinterpret_cast<const uint32_t*>(row);
@@ -56,6 +56,19 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
     if (t < 32) partials[t] = 0.0f;
     __syncthreads();
     float acc = 0.0f;
+    if (BLOCK_SIZE == 256 && fast != 0 && n_in == 2560) {
+        // STRATA_SMALL_UNR bit 0: the router-shaped single-column read, five passes of one weight pair each (all in range), constant
+        // trip count so the weight and activation loads of the five passes are in flight together.  The same FMAs in the same order.
+        uint32_t wv[5];
+        float2 xv[5];
+#pragma unroll
+        for (int qq = 0; qq < 5; ++qq) { wv[qq] = weights2[t + qq * BLOCK_SIZE]; xv[qq] = inputs2[t + qq * BLOCK_SIZE]; }
+#pragma unroll
+        for (int qq = 0; qq < 5; ++qq) {
+            acc = __fmaf_rn(f32_from_bf16((uint16_t) wv[qq]), xv[qq].x, acc);
+            acc = __fmaf_rn(f32_from_bf16((uint16_t) (wv[qq] >> 16)), xv[qq].y, acc);
+        }
+    } else
     for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
         const uint32_t weight = weights2[pair];
         const float2 input = inputs2[pair];
@@ -412,7 +425,7 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         throw std::invalid_argument("bf16_gemv_fp32_mmvf: null or misaligned pointer");
     const cudaStream_t st = (cudaStream_t) stream;
 #define STRATA_MMVF_CASE(N) case N: \
-    bf16_f32_mmvf_kernel<N><<<(unsigned) n_out, N, 0, st>>>(x, w, y, (int) n_in); break
+    bf16_f32_mmvf_kernel<N><<<(unsigned) n_out, N, 0, st>>>(x, w, y, (int) n_in, mmvf_fast()); break
     switch (mmvf_block_size(n_in)) {
         STRATA_MMVF_CASE(32);
         STRATA_MMVF_CASE(64);
