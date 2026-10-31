@@ -10,6 +10,26 @@ const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLo
 const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
+// one integer split feeds the legend column and the centre: rows rounded on their own would not sum (48 518 + 82 554 reads "49k" beside a "131k" centre); the residual goes on the biggest row; below 10k both sides fall back to plain kfmt
+const ksplitKs = (parts) => { const big = parts.map(v => (v === 0 || v >= 10000) ? Math.round(v / 1000) : -1); if (big.some(v => v < 0)) return null; const ks = big.slice(); const m = ks.indexOf(Math.max(...ks)); ks[m] += Math.round(parts.reduce((s, v) => s + v, 0) / 1000) - ks.reduce((s, v) => s + v, 0); return ks; };
+const ksplit = (parts) => { const ks = ksplitKs(parts); return ks ? ks.map((v, i) => v <= 0 ? kfmt(parts[i]) : `${fmt(v, 0)}k`) : parts.map((v) => kfmt(v)); };
+// an honest percentage, floored to a tenth: 99.977 -> "99.9", never a rounded-up false 100
+const pctFloor = (x) => `${(Math.floor(1000 * x + 1e-9) / 10).toFixed(1)}%`;
+// hover accuracy: a <title> child on each SVG arc
+const setSvgTitle = (el, text) => {
+  if (!el) return;
+  let t = el.querySelector("title");
+  if (!t) {
+    t = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    el.appendChild(t);
+  }
+  t.textContent = text;
+};
+
+// the single deterministic legend lamp: a RESUME flash wins, then Reading, then Generating, else Free
+const kvLamp = (fsm, hasReuse, readingStarted, resumeFlash) => resumeFlash ? "reuse" : fsm.isReading ? (hasReuse && !readingStarted ? "reuse" : "prefill") : fsm.isGenerating ? "decode" : "free";
+// the one reading-arc arithmetic: the engine's prompt_read is an inclusive position (the PP protocol counts the RESUME prefix): subtract it; nothing is confirmed before the first reported chunk, the arc only grows
+const kvRead = (p, reused, read) => { const r = Math.min(reused || 0, p), rem = Math.max(0, p - r); return !read ? 0 : Math.min(Math.max(0, read - r), rem); };
 const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
 
 const store = {
@@ -140,8 +160,8 @@ $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
     <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
     ${m.key === "speed" ? `<div class="speed-values">
-      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
-      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
+      <div class="sv" id="sv-speed"><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
+      <div class="sv" id="sv-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
     </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>`}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
@@ -366,7 +386,7 @@ function render(m) {
   }
   modelButton(live);
   if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept, m.time);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
 }
@@ -408,12 +428,129 @@ function renderTotals(t) {
   if (!t || !t.requests) return "";
   const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
   const read = t.prompt_tokens - t.reused;
-  const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
-  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
+  // aggregate speeds are named as the table's own Prefill and Decode columns — the totals line never reads as one undivided speed
+  const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} Prefill t/s` : "";
+  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} Decode t/s` : "";
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+// synthetic row of a running request, replaced by the DONE row the moment it is written: metrics() carries no live request id, so the engine state IS the dedup; unreported fields keep the dash, never a fake 0
+function liveRequestRow(live, fsm, serverTime) {
+  const start = ((serverTime || Date.now() / 1000) - (live.elapsed_s || 0)) * 1000;
+  const t = new Date(start).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+  const reading = fsm.isReading;
+  const cls = reading ? "st-badge--reading" : "st-badge--generating";
+  // one-word badges, uniform with "Reading…": the engine phase maps to short words through the chat's own TOOL_STATE vocabulary
+  const word = !live.phase ? "Generating"
+    : live.phase.startsWith("writing a tool call") ? "Writing"
+    : live.phase.startsWith("tool call complete") ? "Running"
+    : ({thinking: "Thinking", answering: "Answering"})[live.phase] || "Generating";
+  const text = reading ? "Reading…" : word + "…";
+  // a reused figure this request has not reported yet is not a fact about it: 0 before the RESUME line is not shown
+  const reused = live.reused > 0 ? fmt(live.reused) : "–";
+  // prefill is a finished-phase rate the server reports from the first PP line: shown whenever reported, the dash only before the first report
+  const prefill = live.prefill_tok_s_mean != null ? fmt(live.prefill_tok_s_mean) : "–";
+  const decode = !reading && live.tok_s != null ? fmt(live.tok_s, 1) : "–";
+  const dur = live.elapsed_s == null ? "–" : `${fmt(live.elapsed_s, 1)} s`;
+  return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span></td>
+    <td class="num">${fmt(live.prompt_tokens)}</td><td class="num">${reused}</td>
+    <td class="num">${reading ? "–" : fmt(live.generated)}</td>
+    <td class="num">${prefill}</td><td class="num">${decode}</td><td class="num">–</td><td class="num">${dur}</td></tr>`;
+}
+// stage-latch: /metrics is sampled once per second and a sub-second RESUME can fall between samples — the rising edge of live.reused latches the REUSE lamp for a short flash
+let resumeWasAnnounced = false, resumeFlashUntil = 0;
+let lastReusePct = "";   // the last honest % the running request showed; the merged quiet keeps quoting it while the cache is kept
+function renderKvDonut(fsm, live, eng, last, requests) {
+  // context fill as a KV donut of max_context: REUSE is the RESUME prefix, READING extends with reported progress, GENERATING extends token by token, FREE is the true remainder; on the quiet the kept context is one merged REUSE arc (per-request anatomy stays in the history)
+  const ctx = eng.max_context || 0;
+  // the ring's token counts answer strictly to the FSM: prompt_tokens is set at admission, so a real RESUME reuse is never zeroed; without a kept context the widget paints an empty ring
+  let segReuse = 0, segRead = 0, segGen = 0, used = 0, eff = 0, merged = false;
+  if (fsm.isReading) {
+    const p = live.prompt_tokens || 0;
+    segReuse = Math.min(live.reused || 0, p);                                        // the prefix already in VRAM
+    segRead = kvRead(p, live.reused, live.prompt_read);                             // the prefix is not recounted; the arc extends with the engine's real reported progress
+    used = segReuse + segRead;
+    eff = p ? segReuse / p : 0;
+  } else if (fsm.isGenerating) {
+    const p = live.prompt_tokens || 0;                       // prefill finished: the prompt is entirely in the ring
+    segReuse = Math.min(live.reused || 0, p);
+    segRead = Math.max(0, p - segReuse);
+    segGen = Math.max(0, live.generated || 0);                                      // extends token by token, forward
+    used = p + segGen;
+    eff = p ? segReuse / p : 0;
+  } else if (fsm.isIdle) {
+    // the quiet: what the slot keeps in VRAM is the kept context as a whole, one merged arc
+    used = (last ? (last.prompt_tokens || 0) + (last.output_tokens || 0) : 0);
+    segReuse = used;
+    merged = true;
+  }
+  const free = Math.max(0, ctx - used);
+  // a request larger than the window scales every segment by ctx/used — the ring stays an honest mirror
+  const scale = ctx > 0 && used > ctx ? ctx / used : 1;
+  const R = 46.5;                                                       // 22 units at r 46.5 paints a 155 px ring in the 157 px box; the markup carries the geometry, only the dash is computed
+  const C = 2 * Math.PI * R;                                           // the whole circle: the four segments sum to it or to less
+  // shared seams: independent per-segment rounding (toFixed on each arc separately) left every junction up to 0.1 units of gap or overlap — measured live: the free arc overlapped the decode tail by 0.131 px, shifting every poll (the "sparkle" during inference).
+  // each junction is quantized exactly once: an arc ends at exactly the seam the next arc begins, in both attributes — zero gap by construction
+  let edge = 0;                                                     // the raw running arc length in dash units; only the junctions are quantized
+  for (const [id, v] of [["kv-seg-reuse", segReuse], ["kv-seg-prefill", segRead], ["kv-seg-decode", segGen], ["kv-seg-free", free]]) {
+    const seam = Math.round(edge * 1000) / 1000;                   // the single quantized number both sides of this junction read
+    edge += ctx ? (v * scale / ctx) * C : 0;                       // no context reported: an empty ring, no NaN; with a scale the segments always sum to at most C
+    const end = Math.round(edge * 1000) / 1000;                   // the same quantization the next arc's seam uses — the two arcs butt-joint exactly
+    const el = $(id);
+    el.setAttribute("stroke-dasharray", `${(end - seam).toFixed(3)} ${C.toFixed(1)}`);
+    el.setAttribute("stroke-dashoffset", `${(-seam).toFixed(3)}`);
+  }
+  const usedPct = ctx ? Math.floor(100 * used / ctx) : 0;   // the centre count: the true share, rounded down — 131000 of 131072 is 99 %, not a false 100 %
+  $("kv-pct").textContent = ctx ? `${usedPct}%` : "–";
+  // saturation tones from the kit's own tokens: warn at >= 85 %, danger only on a real overflow against a known window (a zero ctx is "no context reported", never an overflow)
+  $("kv-pct").dataset.tone = ctx > 0 && used > ctx ? "danger" : usedPct >= 85 ? "warn" : "";
+  $("kv-pct").title = ctx ? `${used.toLocaleString()} / ${ctx.toLocaleString()} tokens` : "";
+  // with an integer split (every non-zero row ≥ 10k) the centre is exactly the sum of the three rows above it; without one both sides fall back to plain kfmt
+  const legKs = ksplitKs([segReuse, segRead, segGen, free]);
+  const usedShown = legKs ? kfmt((legKs[0] + legKs[1] + legKs[2]) * 1000) : kfmt(used);   // no integer split: the true count
+  $("kv-sub").textContent = ctx ? `${usedShown} / ${ctxfmt(ctx)}` : "–";
+  // exact counts live in the arc hover titles; the arcs are never dimmed — the phase story rides the legend rows' .dim and the lamp
+  // never a false 100 % while the tail is still being read: the engine publishes the cached prefix (reused) as soon as it is busy, before any read progress arrives — "100 %" belongs only to a prefix that covers the whole prompt (eff >= 1), floored to a tenth otherwise
+  const effPct = (segRead === 0 && eff >= 1) ? "100%"
+               : eff > 0 ? pctFloor(eff)
+               : "0%";
+  // the merged ring keeps no per-request eff — it says only what it knows for sure
+  setSvgTitle($("kv-seg-reuse"), ctx ? `Cached (prefix): ${segReuse.toLocaleString()} tokens${merged ? "" : ` (${effPct} of prompt)`}` : "");
+  setSvgTitle($("kv-seg-prefill"), ctx ? `Reading (prefill): ${segRead.toLocaleString()} tokens` : "");
+  setSvgTitle($("kv-seg-decode"), ctx ? `Generating (decode): ${segGen.toLocaleString()} tokens` : "");
+  setSvgTitle($("kv-seg-free"), ctx ? `Free headroom: ${free.toLocaleString()} tokens` : "");
+  // merged legend: the whole kept volume under REUSE, the rest 0; the percent cell shows only when the arc really holds the cache (the quiet keeps quoting the last honest number); a zero-reuse request clears it
+  if (!merged && segReuse > 0) lastReusePct = effPct;
+  if (segReuse === 0) lastReusePct = "";
+  // one split, four cells: the tok column and the centre agree by construction (see ksplit above)
+  const legVals = ksplit([segReuse, segRead, segGen, free]);
+  $("kv-leg-reuse").textContent = legVals[0];
+  // the quiet percent quotes the newest history record that really got a cached prefix; same arithmetic as effPct, browser memory only as fallback
+  const cachedHit = requests.find(r => (r.reused || 0) > 0 && (r.prompt_tokens || 0) > 0);
+  const quietPct = cachedHit ? (cachedHit.reused >= cachedHit.prompt_tokens ? "100%"
+                         : pctFloor(cachedHit.reused / cachedHit.prompt_tokens))
+                         : lastReusePct;
+  $("kv-leg-reuse-pct").textContent = segReuse > 0 ? (merged ? quietPct : effPct) : "";
+  $("kv-leg-prefill").textContent = legVals[1];
+  $("kv-leg-decode").textContent = legVals[2];
+  $("kv-leg-free").textContent = legVals[3];
+  // the legend rows are phase lamps in the engine's chronology: RESUME first (the rising edge latches a flash — a sub-second hit falls between samples), then Reading, Generating, Free in the quiet
+  const resumedVal = live.reused || 0;
+  if (resumedVal > 0 && !resumeWasAnnounced) resumeFlashUntil = Date.now() + 1500;
+  resumeWasAnnounced = resumedVal > 0;
+  const resumeFlash = Date.now() < resumeFlashUntil;
+  const lamp = kvLamp(fsm, segReuse > 0, !!live.prompt_read, resumeFlash);
+  for (const k of ["reuse", "prefill", "decode", "free"]) $(`kv-leg-${k}`).closest("li").classList.toggle("dim", k !== lamp);
+}
+function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, serverTime) {
+  // one FSM descriptor of what the engine is doing: the phase widgets (donut, speed cards, live row) obey fsm, none reaches for live.state; the model-state card keeps its own engine-start machinery outside the FSM
+  const fsm = {
+    isIdle:       live.state === "idle" && !!last,
+    isReading:    live.state === "reading",
+    isGenerating: live.state === "generating",
+    isQueued:     live.state === "queued" || (live.queued > 0),
+    state:        live.state || "idle"
+  };
   // model state
   // A local turn keeps metrics on "unloaded" for the whole engine start.
   const imageNow = imageLive(live);
@@ -463,14 +600,17 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("state-detail").textContent = detail;
   $("state-bar").style.width = `${pct}%`;
 
-  // the eight cards
-  const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
-  setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
-  const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
+  // only generating lights Decode, only reading lights Prefill; every other state keeps both counters dim under their "last …" captions
+  const speed = fsm.isGenerating ? live.tok_s : last ? last.decode_tok_s : null;
+  setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s", fsm.isGenerating ? "Generating now" : last ? "Last decode" : "Decode");
+  const prefill = (fsm.isReading || fsm.isGenerating) ? live.prefill_tok_s_mean
                 : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
-  setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+  setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s", fsm.isReading ? "Reading now" : fsm.isGenerating ? "Prefill this request" : last ? "Last prefill" : "Prefill");
+  // the phase colour belongs only to the phase that is actually running
+  $("sv-speed").classList.toggle("sv--generating", fsm.isGenerating);
+  $("sv-prefill").classList.toggle("sv--reading", fsm.isReading);
+  $("sv-speed").classList.toggle("dim", !fsm.isGenerating);
+  $("sv-prefill").classList.toggle("dim", !fsm.isReading);
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
@@ -504,16 +644,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   }
   spark("sp-disk", h.disk_read_mb);
 
-  // context fill: the running request, else the last one
-  const ctx = eng.max_context || 0;
-  let used = 0;
-  if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
-  else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
-  const frac = ctx ? Math.min(1, used / ctx) : 0;
-  $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
-  $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
-  $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  renderKvDonut(fsm, live, eng, last, requests);
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
@@ -524,15 +655,17 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
 
-  // recent requests
+  // recent requests — the live row first: while the engine works on a request the table shows it with the
+  // streaming counters, and the real row takes its place the moment DONE appends the history entry
   const body = $("req-body");
-  if (!requests.length) {
+  const liveRow = (fsm.isReading || fsm.isGenerating) ? liveRequestRow(live, fsm, serverTime) : "";
+  if (!requests.length && !liveRow) {
     body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"],
-                   timeout: ["st-badge--queued", "Timeout"]};
-    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
+                   timeout: ["st-badge--queued", "Timeout"]};                        // a timed-out finish gets the calm warn badge, never raw text
+    body.innerHTML = liveRow + requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;

@@ -88,8 +88,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .state-card__head { display: flex; align-items: center; gap: var(--st-s-4); flex-wrap: wrap; }
 .state-card, .metric-card, .req-card, .ctx-card, .cc-card, .mcp-card { min-width: 0; }
 .badges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }
-.badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }
-.badges .st-badge.on { opacity: 1; }
+/* inactive Model-state pill: a transparent body on the card, the calm AA text of its state (the dark literals
+   below), the state dot — never a bright badge seen through 38 % opacity; active is exactly the kit's badge */
+.badges .st-badge:not(.on) { background: transparent; border-color: var(--st-line); }
 .state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--st-s-4); }
@@ -101,17 +102,60 @@ main { flex: 1; min-height: 0; display: flex; }
 .speed-values > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .speed-values > div:last-child { text-align: right; }
 .speed-values .st-metric__value { font-size: clamp(20px, 2.2vw, var(--st-fs-stat)); }
-.st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
+/* speed counters wear the colour of their own running phase; a phase not running dims to its own hue mixed toward
+   the card surface at per-family WCAG-solved keeps (--dim-* in the scoping blocks) — never opacity, never white */
+.speed-values .sv .st-metric__value, .speed-values .sv .st-metric__sub, .speed-values .sv .st-metric__value small { transition: color var(--st-dur); }
+.speed-values #sv-speed.dim .st-metric__value { color: color-mix(in srgb, var(--st-accent-text) var(--dim-accent-value), var(--st-surface)); }
+.speed-values #sv-prefill.dim .st-metric__value { color: color-mix(in srgb, var(--st-info-text) var(--dim-info-value), var(--st-surface)); }
+.speed-values #sv-speed.dim .st-metric__sub { color: color-mix(in srgb, var(--st-accent-text) var(--dim-accent-caption), var(--dim-caption-partner)); }
+.speed-values #sv-prefill.dim .st-metric__sub { color: color-mix(in srgb, var(--st-info-text) var(--dim-info-caption), var(--st-surface)); }
+.speed-values .sv.dim .st-metric__value small { color: color-mix(in srgb, var(--st-ink-muted) var(--dim-unit), var(--st-surface)); }
+.speed-values .sv--reading .st-metric__value { color: var(--st-info-text); }
+.speed-values .sv--reading .st-metric__sub { color: var(--st-info-text); }
+.speed-values .sv--generating .st-metric__value { color: var(--st-accent-text); }
+.speed-values .sv--generating .st-metric__sub { color: var(--st-accent-text); }
+.st-metric__spark .speed-prefill { color: var(--st-info); }   /* the Reading line blue, the Decode line keeps the card's green — no green-on-green */
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
 .monitor-row { display: grid; grid-template-columns: minmax(min(260px, 100%), 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
-.ctx-gauge { position: relative; width: 150px; max-width: 100%; aspect-ratio: 1; height: auto; margin: var(--st-s-2) auto var(--st-s-3); }
-.ctx-gauge .st-gauge { width: 100%; height: 100%; }
-.ctx-gauge .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease); }
-.ctx-gauge__label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-                    font-size: var(--st-fs-xs); }
-.ctx-gauge__pct { font-weight: var(--st-fw-black); font-size: var(--st-fs-xl); line-height: 1.1; font-variant-numeric: tabular-nums; }
+/* the KV donut: what the KV cache holds now - Cached (prefix) | Reading | Generating | Free (the closed rest of the circle) */
+.kv-wrap { position: relative; width: 157px; height: 157px; margin: 3px auto var(--st-s-3); }   /* 157 px box paints a 155 px ring */
+.kv-ring { width: 157px; height: 157px; }
+/* no dash transition on the arcs: four adjacent arcs share quantized seams, and a 400 ms dash re-interpolation moves each arc toward its own new endpoints independently, opening those seams mid-animation (measured 4.4-9.5 units of junction divergence with it, zero without); the arcs move only with real polled data */
+.kv-seg { stroke-linecap: butt; }   /* zero-bleed joints */
+/* arc colours are the Model state's own tokens, theme-adaptive with no literals of ours: Reading var(--st-info) (same token as the Reading pill — arc and state can never desync), decode the accent token, Cached --kv-cached (quotes var(--st-line), palette T2 below), Free the card surface */
+.kv-seg--reuse { stroke: var(--kv-cached); } .kv-seg--prefill { stroke: var(--st-info); }
+.kv-seg--decode { stroke: var(--st-accent); } .kv-seg--free { stroke: var(--st-surface); }
+/* the frame along both band edges (outer r 58.3, inner r 34.7 ≈ 2 px), in var(--kv-cached) — continuous with the Cached arc */
+.kv-frame { stroke: var(--kv-cached); }
+.kv-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+             font-size: var(--st-fs-xs); }   /* the text shares the ring's centre */
+.kv-pct { font-weight: var(--st-fw-black); font-size: var(--st-fs-xl); line-height: 1.1; font-variant-numeric: tabular-nums; }
+/* saturation tones from the kit's own tokens: --st-warn from 85 %, --st-danger at overflow */
+.kv-pct[data-tone="warn"] { color: var(--st-warn); }
+.kv-pct[data-tone="danger"] { color: var(--st-danger); }
+.kv-center #kv-sub { font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
+.kv-legend { list-style: none; margin: 0 auto; max-width: 340px; width: 100%; box-sizing: border-box; padding: 0; display: grid; gap: var(--st-s-2); }
+.kv-legend li { display: flex; align-items: center; gap: var(--st-s-2); font-size: var(--st-fs-sm);
+                font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
+/* the row carrying real tokens is full bright; every other row's text dims toward the card surface at the solved
+   --dim-legend keep — never by opacity, so dim text stays AA-readable; colour squares never dim, idle alike */
+.kv-legend li span:not(.kv-key) { transition: color var(--st-dur); }
+/* the live row's number burns with its label (--st-ink), never a gray count beside a lit name */
+.kv-legend li:not(.dim) .muted { color: var(--st-ink); }
+/* the legend is one fixed column grid for header and rows: label in the flexible middle, percents and tokens right-aligned; lit and dim rows share one typography */
+.kv-leg-head { display: flex; align-items: center; gap: var(--st-s-2); width: 100%; box-sizing: border-box;
+              margin: 0 auto; max-width: 340px; font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
+.kv-leg-head > span:nth-child(2), .kv-legend li > span:nth-child(2) { flex: 1 1 auto; min-width: 0; }
+.kv-key-space { width: 10px; flex: none; }
+.kv-legend .kv-col, .kv-leg-head .kv-col { min-width: 40px; text-align: right; font-weight: inherit; margin-left: 0; color: inherit; }
+.kv-legend li.dim span:not(.kv-key), .kv-leg-head .kv-col { color: color-mix(in srgb, var(--st-ink) var(--dim-legend), var(--st-surface)); }
+/* swatch chips are framed in the card's line colour (2px var(--st-line)); each chip draws the same token as its arc */
+.kv-key { width: 10px; height: 10px; border-radius: 3px; flex: none; box-shadow: 0 0 0 2px var(--st-line); }
+.kv-key--reuse { background: var(--kv-cached); } .kv-key--prefill { background: var(--st-info); }
+/* the Cached label carries no rule of its own — an # id selector would outrank the dim rules; it follows its row's rules like Reading and Generating */
+.kv-key--decode { background: var(--st-accent); } .kv-key--free { background: var(--st-surface); }
 .bar-row { display: flex; justify-content: space-between; font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium);
            margin-top: var(--st-s-2); font-variant-numeric: tabular-nums; }
 .req-card { display: flex; flex-direction: column; gap: var(--st-s-3); min-width: 0; }
@@ -144,6 +188,47 @@ main { flex: 1; min-height: 0; display: flex; }
 .mcp-server__tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .mcp-server__tools .chip { height: 26px; padding: 0 10px; font-family: var(--st-font-mono); }
 .mcp-note { margin: 0; }
+
+/* palette scoping: contrast figures are measured per theme surface — the literals are dark-scoped, the light theme
+   keeps the kit's own colour tokens. Dimming is colour work, not opacity: --dim-* keeps are per-family
+   WCAG-solved mixes (each keeps its own hue at the highest share that clears 4.5 text / 3.0 graphics).
+   --kv-cached quotes var(--st-line) exactly in both themes — the accepted exception, deliberately matching the
+   table's badge outlines below the graphics threshold (recorded in the contrast layer's known exceptions) */
+[data-theme="dark"] {
+  --st-accent: #6AD09D;
+  --st-accent-text: #6AD09D;
+  --st-accent-tint: rgba(106, 208, 157, .12);
+  --st-info-text: var(--st-info);   /* Reading-family text tracks --st-info's live value; light keeps its own token */
+  /* palette T1: per-family dim keeps (WCAG-solved on #161a1d, rounded up) */
+  --dim-accent-value: 47%;
+  --dim-accent-caption: 65%;
+  --dim-info-value: 56%;
+  --dim-info-caption: 77%;
+  --dim-unit: 84%;
+  --dim-legend: 49%;
+  --dim-caption-partner: var(--st-surface);
+  /* palette T2: the Cached family quotes the card's line token exactly — a deliberate match with the request-table frames, accepted below the graphics threshold */
+  --kv-cached: var(--st-line);
+}
+[data-theme="light"] {
+  /* palette T1 light: keeps solved on #ffffff; the kit's own colour tokens are not touched */
+  --dim-accent-value: 78%;
+  --dim-accent-caption: 95%;  /* colour decision (accepted): the light green caption mixes toward --st-ink */
+  --dim-info-value: 68%;
+  --dim-info-caption: 89%;
+  --dim-unit: 96%;
+  --dim-legend: 62%;
+  --dim-caption-partner: var(--st-ink);
+  /* palette T2: same direct card-line quote in the light theme */
+  --kv-cached: var(--st-line);
+}
+/* inactive Model-state pills: readable text in the state's own hue (AA on the card surface); accent green means "writing now" and only that */
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="idle"] { color: #7E868D; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="reading"] { color: #6C8AA8; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="queued"] { color: #98875A; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="error"] { color: #A67B82; }
+[data-theme="dark"] .badges .st-badge:not(.on)[data-s="generating"] { color: #5D8D75; }
+/* the dark Speed numbers, their captions and the ESP badge carry no literal of their own — every colour resolves through the phase tokens above */
 
 /* ---------------------------------------------------------------- about */
 .about { max-width: min(100%, 1100px); }
