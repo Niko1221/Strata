@@ -52,8 +52,12 @@ T* dev(size_t n) {
 
 int main(int argc, char** argv) {
     const bool off = argc > 1 && std::strcmp(argv[1], "--off") == 0;
+#if defined(_WIN32)
+    if (_putenv_s("STRATA_HC_PERSIST", off ? "" : "1") != 0) return 2;
+#else
     if (off) unsetenv("STRATA_HC_PERSIST");
     else setenv("STRATA_HC_PERSIST", "1", 1);
+#endif
     k::fused_gr_check();
     k::fused_gr_persist_init();
 
