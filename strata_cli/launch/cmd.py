@@ -854,6 +854,15 @@ def run_launch(a: argparse.Namespace) -> int:
         try:
             result = runner.run()
         except LaunchError as e:
+            if a.save_preset and runner.config_path is not None:
+                # the choices were written and may have been tuned (a measuring that takes up to two hours): a start that fails afterwards keeps the
+                # launch preset the person asked for, so `strata launch --preset NAME` starts it again without the tuning (#4824)
+                try:
+                    saved = store.save(s, s.name)
+                    if not machine:
+                        _say(f"Your choices were saved as the launch preset {saved.name}; start it again with `strata launch --preset {saved.name}`.")
+                except Exception:                            # noqa: BLE001 - saving is a convenience; the start error below is the news
+                    pass
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         if a.save_preset:
             saved = store.save(s, s.name)

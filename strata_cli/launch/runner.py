@@ -1632,13 +1632,17 @@ class Runner:
         from strata_control.profiles import ProfileError
         self.stop_others()
         try:
-            serving = runtime.status(self.profile).get("state") in ("ready", "starting")
+            state = runtime.status(self.profile).get("state")
         except Exception:                                    # noqa: BLE001 - no state to read: nothing of ours is running
             return
-        if not serving:
+        if state not in LEFTOVER_STATES:
             return
-        self.emit("tune", "Stopping the model to measure; it starts again afterwards." if self.restart_after
-                  else "Stopping the model to measure.", 0)
+        if state in ("ready", "starting"):
+            self.emit("tune", "Stopping the model to measure; it starts again afterwards." if self.restart_after
+                      else "Stopping the model to measure.", 0)
+        else:
+            # a server that already stopped but whose manager is still open (#4824): it would refuse the start that comes after the measuring
+            self.emit("tune", "Clearing a stopped server of this preset before measuring.", 0)
         try:
             runtime.stop(self.profile, timeout=120)
         except ProfileError as e:
@@ -1793,8 +1797,11 @@ class Runner:
         name = self.profile
         self.stop_others()
         st = runtime.status(name)
-        if st.get("state") in ("ready", "starting"):
-            self.emit("start", "A server for this preset is already running; restarting it with these choices…")
+        if st.get("state") in LEFTOVER_STATES:
+            if st.get("state") in ("ready", "starting"):
+                self.emit("start", "A server for this preset is already running; restarting it with these choices…")
+            else:
+                self.emit("start", "A server of this preset stopped earlier and was never cleared; clearing it before the start…")
             try:
                 runtime.stop(name, timeout=120)
             except ProfileError as e:
@@ -2456,14 +2463,18 @@ def _log_sentence(log: str | None) -> str:
     return " The engine's log has the reason (strata logs, or the log named in the run config)."
 
 
+#: the states of a launch's own runtime that must be ended before a new start: a server that runs, and one that stopped but whose host is still
+#: alive ("failed", "stale"); `strata launch --stop` ends all four, and a start refuses the profile while any of them is left (#4824).
+LEFTOVER_STATES = ("ready", "starting", "failed", "stale")
+
 #: what the runtime says when another host still owns the profile: the start never began, so there is no engine log to read.
 PROFILE_BUSY = re.compile(r"already has a live managed runtime", re.I)
 
 
 def _log_hint(config: Path | None, error: object = None) -> str:
     if PROFILE_BUSY.search(str(error or "")):
-        return ("Another Strata server for this preset is still running or starting, so this start never began and there is no engine log for it. "
-                "Run the command again; if it repeats, `strata launch --stop` ends the other server first.")
+        return ("Another Strata server for this preset is still running or starting, or one that stopped has not been cleared, so this start never began "
+                "and there is no engine log for it. Run `strata launch --stop`, then start again without --retune: a tuning that finished is kept and is not measured again.")
     log = None
     if config:
         try:
