@@ -76,6 +76,10 @@ DEEPSEEK3_PATTERNS = (
     r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+"
     r"| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
 )
+# The GGUF `tokenizer.ggml.pre` values llama.cpp gives that same sequence (src/llama-vocab.cpp: LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM,
+# HUNYUAN_DENSE, JOYAI_LLM and HY_V4 share one regex list).  DeepSeek-V4-Flash-0731 states "joyai-llm", so matching only
+# "deepseek" would split its text with the Qwen pattern and produce ids the model was not trained on.
+DEEPSEEK3_PRES = ("deepseek", "joyai", "hunyuan-dense", "hy_v4")
 
 
 def _sequence_findall(patterns, text: str) -> list[str]:
@@ -119,7 +123,7 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        if str(pre).startswith("deepseek"):
+        if str(pre).startswith(DEEPSEEK3_PRES):
             seq = [regex.compile(x) for x in DEEPSEEK3_PATTERNS]
             self._split = lambda text: _sequence_findall(seq, text)
         else:
