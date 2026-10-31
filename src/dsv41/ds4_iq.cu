@@ -1355,6 +1355,15 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel2(const uint8_t* __res
     }
 }
 
+// The row-per-lane dq_rows_kernel is only for a type its staging serves: a codebook-free type whose 32 sub-blocks (4 blocks of 256 values) are
+// at most the 44-uint4 (704 byte) shared buffer a warp has and a multiple of 16 bytes (Q4_K 576, Q5_K 704, Q2_K 336).  Q6_K (840) overflowed the
+// buffer into the next warp's and gave wrong, run-to-run varying rows on a gfx11 device (UD-IQ1_S: garbage on every chunked prompt); every
+// other type reads through dq_rows_kernel2, whatever the device or DS4_DQ_OLD says.
+template <int T>
+constexpr bool dq_old_ok() {
+    return Ty<T>::TAB == 0 && (kQK<T> == 32 ? 32 : 4) * Ty<T>::B <= 44 * 16 && ((kQK<T> == 32 ? 32 : 4) * Ty<T>::B) % 16 == 0;
+}
+
 template <int T>
 __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __restrict__ raw, size_t ld, int k, int n,
                                                            uint16_t* __restrict__ dst, bool bf16) {
@@ -1372,7 +1381,7 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __rest
     // (a codebook table already fills shared for the i-quants.  The staging buffer is 44 uint4 a warp (704 bytes) and is read as uint4:
     // Q6_K's 4 blocks are 840 bytes, which overflowed it into the next warp's and gave NaN rows on a gfx11 device (UD-IQ1_S, whose dense
     // attention is Q6_K: garbage on every chunked prompt) - a type whose span does not fit or is not 16-byte sized reads its own blocks)
-    constexpr bool kCanStage = Ty<T>::TAB == 0 && kSpan <= 44 * 16 && kSpan % 16 == 0;
+    constexpr bool kCanStage = dq_old_ok<T>();
     const bool staged = (nsb % 32 == 0) && kCanStage;
     __shared__ uint4 sin4[kCanStage ? (kThreads / 32) * 44 : 1];
     const int lane32 = threadIdx.x & 31, wq = threadIdx.x >> 5;
@@ -1421,14 +1430,13 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __rest
 }  // namespace
 
 // Which dense dequantizer: dq_rows_kernel2 (the coalesced transpose, 0.2.7 DS Support: 566 -> 592 ppts on the R9700, ids identical) or the
-// row-per-lane dq_rows_kernel, which main's fd33cb6ee gave 16-byte stores and a staged input: the Strix Halo (gfx11) 4K
-// prompt 79.5 -> 88.5 tok/s with it, so a gfx11 device defaults to it.  DS4_DQ_OLD=1 forces it anywhere, DS4_DQ_OLD=0 forces kernel2
-// anywhere.  The detection is the device's gcnArchName (HIP only; a CUDA build has no gfx11).  Decided once per device.
-static bool dq_use_old_kernel() {
-    const char* dq_env = std::getenv("DS4_DQ_OLD");
-    const int env = dq_env != nullptr && *dq_env != '\0' ? (std::atoi(dq_env) != 0 ? 1 : 0) : -1;
-    const bool v026 = strata::ds4::defaults_026();   // DS4_DEFAULTS=026: 0.2.6's row-per-lane dequantizer (the same values, bit for bit)
-    if (env >= 0 || v026) return strata::ds4::dq_old_default(env, false, v026);
+// row-per-lane dq_rows_kernel, which main's fd33cb6ee gave 16-byte stores and a staged input.  That kernel gave different dense weights on
+// every run on a gfx11 device (Strix Halo: layer 0 of a 200-token prompt differed by 27% between two runs of the same engine on the 2.25
+// pack, 26% on UD-IQ1_S, where its Q6_K matrices also overflowed the staging buffer), so a gfx11 device no longer defaults to it - it
+// was picked there for speed (4K prompt 79.5 -> 88.5 tok/s) - and DS4_DEFAULTS=026 does not reach it there either.  DS4_DQ_OLD=1 still
+// forces it, and only for the types its staging serves (dq_old_ok); anywhere else DS4_DQ_OLD=0 forces kernel2 and DS4_DEFAULTS=026 /
+// DS4_DQ_OLD=1 keep 0.2.6's kernel.  The detection is the device's gcnArchName (HIP only; a CUDA build has no gfx11).
+static bool dq_device_is_gfx11() {
 #if defined(STRATA_USE_HIP)
     static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
     int dev = 0;
@@ -1446,13 +1454,20 @@ static bool dq_use_old_kernel() {
     return false;
 #endif
 }
+static bool dq_use_old_kernel() {
+    const char* dq_env = std::getenv("DS4_DQ_OLD");
+    const int env = dq_env != nullptr && *dq_env != '\0' ? (std::atoi(dq_env) != 0 ? 1 : 0) : -1;
+    if (dq_device_is_gfx11()) return env == 1;
+    const bool v026 = strata::ds4::defaults_026();   // DS4_DEFAULTS=026: 0.2.6's row-per-lane dequantizer (the same values, bit for bit)
+    return strata::ds4::dq_old_default(env, false, v026);
+}
 
 bool dequant_rows(int type, const void* raw, size_t ld, int k, int n, uint16_t* dst, bool bf16, cudaStream_t s) {
     if (raw == nullptr || k % 256 != 0 || n <= 0) return false;
     const unsigned blocks = (unsigned) std::min<size_t>(((size_t) n * (size_t) (k / 32) + kThreads - 1) / kThreads, 65535);
     const bool old = dq_use_old_kernel();
 #define DS4_DQ(T) do {                                                                                    \
-        if (old)                                                                                          \
+        if (old && dq_old_ok<T>())                                                                        \
             strata_ds4_launch(dq_rows_kernel<T>, blocks, kThreads, 0, s, (const uint8_t*) raw, ld, k, n, dst, bf16);      \
         else                                                                                              \
             strata_ds4_launch(dq_rows_kernel2<T>, blocks, kThreads, 0, s, (const uint8_t*) raw, ld, k, n, dst, bf16);     \
