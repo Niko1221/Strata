@@ -59,3 +59,6 @@ MAYA-PAR (2026-10-31, branch f-041-maya-par), DeepSeek `--parallel`:
   (`StrataEngine` reading the tagged lines, `parallel_args`, `serve/test_ds_parallel.py`) is written for Strata's server.
 - #609 (mw00, 2e0d2f9 and 4b76907): the prompt ring sized by the GPU's measured host link (`ds4_ring_link.hpp`, `link_h2d`,
   `tests/dsv41/ring_link_test.cpp`); in Strata opt-in, `DS4_RING_MB=link`.
+
+MAYA-PORT2 (2026-10-31, branch f-041-maya-port2), DeepSeek `--parallel` scheduling:
+- #587 (mrsirg97-rgb, a73bdbc): the serve loop on an event queue (`ds4_evt.hpp`, `tests/dsv41/evt_test.cpp`), a prompt read in three steps (begin, piece, end), `Model::set_yield` / `fed` / `prompt_chunk` / `pipeline_stages` (a read alone ends at a chunk every stage reaches once a request waits). Prompts take turns a piece each with the answers' tokens between only with `STRATA_DS4_READ_PIECES=1`; off by default.

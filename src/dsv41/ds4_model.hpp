@@ -174,6 +174,15 @@ public:
     /// prompt's start is then not usable: restore() a checkpoint kept before the feed, or reset().
     void set_cancel(std::function<bool()> f);
     bool cancelled() const;   // the last feed() / feed_mark() ended early on a Stop
+    /// Asked while a run of chunks goes through the layers: true (a yield) ends it at a chunk every GPU reaches, as a
+    /// Stop does, but keeps the chunks read - feed() / feed_mark() return true having taken fed() of their tokens (the
+    /// rest a later feed's; feed_mark's checkpoint then not kept).  Not on a run that goes layer by layer (Project Maya #587).
+    void set_yield(std::function<bool()> f);
+    int fed() const;   // the tokens the last feed() / feed_mark() took (all of them unless a yield)
+    /// The chunked prompt path's chunk (0: windows), and the split's pipeline stages (its groups of GPUs, one after
+    /// another): a read of that many chunks keeps them all busy - --parallel's prompt pieces are that many chunks.
+    int prompt_chunk() const;
+    int pipeline_stages() const;
     /// A request starts (before its prompt): DISK_SKIP_AUTO may switch back on here, never mid-answer.
     void begin_request();
     int64_t pos() const;
