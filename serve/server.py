@@ -5168,9 +5168,14 @@ class Service:
                             raise ValueError("offline mode cannot download an image URL")
                         if src.startswith(("http://", "https://")):
                             src = fetched[item["source"]] = Vision.download(src)   # outside the FIFO, as in prepare()
+                        if hasattr(self.vision, "cached") and self.vision.cached(src) is not None:
+                            continue    # already encoded: readable, and a known picture never wakes the encoder
                         with self._turn(cancel):  # the encoder takes its turn with the requests (see below)
                             self._vision_up()         # an elastic encoder is not running until a picture needs it
-                            self.vision.encode(src)
+                            try:                  # the elastic encoder starts with its picture, as prepare() does: it
+                                self.vision.encode(src)  # had stopped after elastic_idle_s, and encode died on the
+                            finally:              # missing pipe; the idle timer counts this turn too, so the sweep
+                                self.last_image_at = time.time()  # does not reclaim the encoder this picture started
                     except (ValueError, OSError, RuntimeError) as e:    # RuntimeError: the encoder did not start
                         why = str(e)
                 if why is not None:
