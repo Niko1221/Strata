@@ -3435,6 +3435,12 @@ def gpu_speed_scores(indices: list[int]) -> dict[int, float] | None:
     return got if all(i in got and got[i] > 0 for i in indices) else None
 
 
+
+def _read_lines(path: str):
+    """The lines of `path`, with the file closed when the caller is done (the HIP properties probe reads two)."""
+    with open(path) as fh:
+        return fh.readlines()
+
 def hip_speed_scores(indices: list[int], root: str = "/sys/class/kfd/kfd/topology/nodes") -> dict[int, float] | None:
     """AMD on Linux: SIMDs x max engine clock of each card, from the KFD topology (the order setup and the engine use
     for "gpu" there: the GPU nodes in node order).  None when the files are not there (Windows, no ROCm driver)."""
@@ -3445,7 +3451,7 @@ def hip_speed_scores(indices: list[int], root: str = "/sys/class/kfd/kfd/topolog
     cards = []
     for n in nodes:
         try:
-            props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+            props = dict(line.split() for line in _read_lines(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
             simd, clk = int(props.get("simd_count", 0)), int(props.get("max_engine_clk_fcompute", 0))
         except (OSError, ValueError):
             continue
@@ -3482,7 +3488,7 @@ def hip_gpu_archs(root: str = "/sys/class/kfd/kfd/topology/nodes") -> dict[int, 
     out: dict[int, str] = {}
     for n in nodes:
         try:
-            props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+            props = dict(line.split() for line in _read_lines(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
             ver, simd = int(props.get("gfx_target_version", 0)), int(props.get("simd_count", 0))
         except (OSError, ValueError):
             continue
