@@ -20,6 +20,8 @@
 
 #include <cuda_runtime.h>
 
+#include "strata/core/dispatch_stats.hpp"
+
 #include <utility>
 
 namespace strata::kernels {
@@ -77,7 +79,9 @@ template <typename... KArgs, typename... Args>
 inline void launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t stream,
                        Args&&... args) {
 #if !defined(__HIPCC__)
+    // BW-MEASURE: inside the verify recorder with STRATA_DF_PDL on, the two notes below say whether a launch got the programmatic edge
     if (pdl_scope() && pdl_launch_ok((const void*) kernel, stream)) {
+        strata::dispatch::note("pdl: launch with a programmatic edge");
         cudaLaunchConfig_t cfg = {};
         cfg.gridDim = grid;
         cfg.blockDim = block;
@@ -91,6 +95,7 @@ inline void launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_t s
         (void) cudaLaunchKernelEx(&cfg, kernel, std::forward<Args>(args)...);
         return;
     }
+    if (pdl_scope()) strata::dispatch::note("pdl: ordinary launch inside a PDL window (kernel not sm_90 code, or a predecessor is not a kernel)");
 #endif
     kernel<<<grid, block, smem, stream>>>(std::forward<Args>(args)...);
 }

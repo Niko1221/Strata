@@ -30,6 +30,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
+#include "strata/core/dispatch_stats.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "s26_tsum.cuh"
 #if !defined(__HIPCC__)
@@ -3541,6 +3542,7 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
         }
         return;
     }
+    strata::dispatch::kernel(strata::dispatch::kDense, 0, ggml_type, n_in, n_out, ncols);   // BW-MEASURE: the multi-column MMVQ kernels
     switch (ggml_type) {
     case 2: native_q4_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 6: native_q5_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
@@ -3940,6 +3942,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
         return;
     }
     const int r = g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out);
+    strata::dispatch::kernel(strata::dispatch::kDense, 10 + r, ggml_type, n_in, n_out, ncols);   // BW-MEASURE: the interleaved MMVQ, r rows a warp
     validate_shape(n_in, ncols, QK);
     validate_pointer(weights);
     if (ncols == 1) x_il = x_q8_1;   // one column: the plain blocks, no interleaved copy
