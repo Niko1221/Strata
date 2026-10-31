@@ -321,6 +321,27 @@ def _placement_lines(placement: dict | None) -> None:
             _say("      " + w)
 
 
+def _broken_nvidia_note(comp) -> str | None:
+    """A PC with an NVIDIA card whose driver does not answer (nvidia-smi fails: a driver and library out of step after an update) and working
+    Intel Arc cards: the engine choice says NVIDIA (the card is there), so the launch would try the NVIDIA engine and fail. Say what is wrong and
+    the one next step. Warn only."""
+    try:
+        from strata_control import engine_component as ec
+        backend, how = ec.detect_backend()
+        if backend != "cuda" or how in ("environment", "saved choice"):
+            return None
+        if any(str(c.get("vendor")) == "nvidia" for c in comp.gpus) or "cuda" not in ec.gpu_makes_present():
+            return None
+        arc = [c for c in comp.gpus if str(c.get("vendor")) == "intel"]
+        if not arc:
+            return None
+    except Exception:                                    # noqa: BLE001 - a hint only
+        return None
+    return ("This PC has an NVIDIA card, but its driver does not answer (nvidia-smi fails), so the NVIDIA engine cannot start. "
+            f"The Intel Arc card{'s' if len(arc) > 1 else ''} here work: add --backend intel to use {'them' if len(arc) > 1 else 'it'} "
+            "(it is remembered), or repair the NVIDIA driver.")
+
+
 def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list[S.Notice]]:
     """Fill what was left open with the recommendation for this computer, and collect warnings (never errors for a bad fit)."""
     notices: list[S.Notice] = []
@@ -334,6 +355,9 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         else:
             notices.append(S.Notice("error", "No model fits this computer by Strata's rules, and none was chosen.",
                                     "Name one with --model (strata launch --help lists them); a bigger one will run slowly."))
+    broken = _broken_nvidia_note(comp)
+    if broken:
+        notices.append(S.Notice("warn", broken, ""))
     if s.family and s.model:
         if s.context is None:
             s.context = catalog.max_context(s.family, s.model, hw)

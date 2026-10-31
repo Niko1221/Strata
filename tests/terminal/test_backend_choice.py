@@ -66,5 +66,18 @@ class Notes(unittest.TestCase):
         self.assertIsNone(gpu_fit.other_vendor_note(ARC, "intel"))
 
 
+class BrokenNvidia(unittest.TestCase):
+    def test_says_what_is_wrong_and_the_next_step_only_when_it_is(self):
+        from strata_cli.launch import cmd
+        comp = mock.Mock(gpus=list(ARC))
+        with mock.patch.object(ec, "detect_backend", lambda *a, **k: ("cuda", "sysfs pci vendor")),                 mock.patch.object(ec, "gpu_makes_present", lambda: {"cuda", "sycl"}):
+            note = cmd._broken_nvidia_note(comp)
+            self.assertIn("driver does not answer", note)
+            self.assertIn("--backend intel", note)
+            self.assertIsNone(cmd._broken_nvidia_note(mock.Mock(gpus=[NV, *ARC])), "a working NVIDIA card: nothing to say")
+        with mock.patch.object(ec, "detect_backend", lambda *a, **k: ("sycl", "saved choice")),                 mock.patch.object(ec, "gpu_makes_present", lambda: {"cuda", "sycl"}):
+            self.assertIsNone(cmd._broken_nvidia_note(comp), "the person already chose")
+
+
 if __name__ == "__main__":
     unittest.main()
