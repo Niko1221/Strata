@@ -13819,10 +13819,21 @@ int main(int argc, char** argv) {
             // reports the token it sampled, after temperature and truncation, and nothing at all for the prompt.
             // Output: one `SL <pos> <logprob>` per scored position, then `SSUM <sum> <n> <ms> <head_ms> <rows>`.
             // The run consumes the session the way a prompt read does, so no conversation survives it.
+            // `SCORE + <ids>` / `SCORE - <ids>` read the same sequence through the loaded adapter with the sign taken
+            // off it: -(B A x) instead of +(B A x), which is theta - eps of a zeroth-order step whose direction the
+            // adapter holds.  One step is therefore two calls that differ in one character, and neither re-uploads
+            // tables nor rebuilds a graph.
             if (line.rfind("SCORE ", 0) == 0) {
+                const char* srest = line.c_str() + 6;
+                int ssign = 0;
+                if ((*srest == '+' || *srest == '-') && (srest[1] == ' ' || srest[1] == '\t')) {
+                    ssign = *srest == '+' ? 1 : -1;
+                    ++srest;   // past the sign, then past the blanks it is followed by
+                    while (*srest == ' ' || *srest == '\t') ++srest;
+                }
                 std::vector<int64_t> sids;
                 std::string se;
-                if (!parse_i64_list(line.c_str() + 6, sids, se) || sids.size() < 2) {
+                if (!parse_i64_list(srest, sids, se) || sids.size() < 2) {
                     std::printf("ERR score: %s\n", sids.size() < 2 ? "two ids at least" : se.c_str());
                     std::fflush(stdout);
                     continue;
@@ -13860,7 +13871,12 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 const auto t_score = std::chrono::steady_clock::now();
-                if (!scorer->run(sids.data(), n, stg.data(), slp.data(), se)) {
+                const bool sign_flip = strata::kernels::lora().loaded && ssign != 0 &&
+                                       strata::kernels::lora_polarity() != ssign;
+                if (sign_flip) strata::kernels::lora_set_polarity(ssign);
+                const bool s_ok = scorer->run(sids.data(), n, stg.data(), slp.data(), se);
+                if (sign_flip) strata::kernels::lora_set_polarity(1);   // `lora=1` keeps meaning +eps
+                if (!s_ok) {
                     std::printf("ERR score: %s\n", se.c_str());
                     std::fflush(stdout);
                     continue;

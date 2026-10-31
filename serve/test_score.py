@@ -21,10 +21,11 @@ class ScoreEngine(ResidentEngine):
     """The resident test engine, plus the SCORE command: `map` over the ids, position t scored against ids[t+1]."""
     def __init__(self, tok):
         super().__init__(tok)
-        self.calls, self.fail = [], None
+        self.calls, self.lora_calls, self.fail = [], [], None
 
-    def score(self, ids, timeout=21600.0):
+    def score(self, ids, timeout=21600.0, lora=0):
         self.calls.append(list(ids))
+        self.lora_calls.append(lora)
         if self.fail is not None:
             raise self.fail
         lp = [float(i) - float(len(ids)) for i in range(len(ids) - 1)]   # distinct per position, order visible
@@ -49,6 +50,19 @@ class EngineCommand(unittest.TestCase):
         self.assertEqual(e.proc.stdin.getvalue(), "SCORE 1,2,220\n")
         self.assertEqual(out["logprobs"], [-1.881845, -17.509408])
         self.assertEqual((out["sum"], out["n"], out["ms"], out["head_ms"], out["rows"]), (-19.391253, 2, 264.2, 5.3, 1024))
+
+    def test_the_sign_reaches_the_engine(self):
+        # theta +- eps is one sequence read twice with the sign taken off the adapter: the line carries it, so the
+        # two reads are one command apart and no table moves between them.
+        e = self.engine(["SL 0 -1.0\n", "SSUM -1.0 1 5.0 0.5 1024\n"])
+        e.score([1, 2], lora=-1)
+        self.assertEqual(e.proc.stdin.getvalue(), "SCORE - 1,2\n")
+        e = self.engine(["SL 0 -1.0\n", "SSUM -1.0 1 5.0 0.5 1024\n"])
+        e.score([1, 2], lora=1)
+        self.assertEqual(e.proc.stdin.getvalue(), "SCORE + 1,2\n")
+        e = self.engine(["SL 0 -1.0\n", "SSUM -1.0 1 5.0 0.5 1024\n"])
+        e.score([1, 2])
+        self.assertEqual(e.proc.stdin.getvalue(), "SCORE 1,2\n")
 
     def test_a_nan_position_survives(self):                  # a target of -1 comes back as nan: kept, not dropped
         e = self.engine(["SL 0 -1.0\n", "SL 1 nan\n", "SSUM -1.0 2 5.0 0.5 1024\n"])
@@ -113,6 +127,14 @@ class Route(unittest.TestCase):
         self.assertEqual(code, 200, body)
         self.assertEqual(body["tokens"], [97, 98])
         self.assertEqual(self.engine.calls, [[97, 98]])
+
+    def test_the_lora_sign_reaches_the_engine(self):
+        code, body = self.request("/v1/score", {"tokens": [1, 2, 3], "lora": -1})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.engine.lora_calls, [-1])
+        code, body = self.request("/v1/score", {"tokens": [1, 2, 3]})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.engine.lora_calls, [-1, 0])    # absent: whatever the adapter's setting is
 
     def test_messages_are_rendered_without_a_generation_prompt(self):
         code, body = self.request("/v1/score", {"messages": [{"role": "user", "content": "ab"}]})

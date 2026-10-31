@@ -1404,7 +1404,7 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
-    def score(self, ids, timeout: float = 21600.0) -> dict:
+    def score(self, ids, timeout: float = 21600.0, lora: int = 0) -> dict:
         """`SCORE <id,id,...>`: a log-probability for EVERY position of a token sequence the caller chose -
         log p(ids[t+1] | ids[0..t]) - which is what a zeroth-order optimiser needs and what generation cannot give
         (it reports the token it sampled, after temperature and truncation, and nothing for the prompt).
@@ -1413,11 +1413,15 @@ class StrataEngine:
         <rows>`.  A scoring run reads the prompt from position 0 and advances the session the way a prompt read
         does, so it ends whatever conversation was live: callers take the service's FIFO first.
 
+        `lora` is +1 or -1 to read the sequence through the loaded adapter with that sign, which is theta + eps and
+        theta - eps of a zeroth-order step over one random direction (0: the adapter's current setting).
+
         The timeout is generous because a 128K prompt is a long prompt read (~280 s at the measured 465 tok/s,
         and a 2x4 layer-split or a cold expert cache is slower still)."""
         if not self.alive():
             raise EngineDied("the engine is not running")
-        self.proc.stdin.write("SCORE " + ",".join(str(int(t)) for t in ids) + "\n")
+        head = "SCORE " if not lora else f"SCORE {'+' if lora > 0 else '-'} "
+        self.proc.stdin.write(head + ",".join(str(int(t)) for t in ids) + "\n")
         self.proc.stdin.flush()
         lps: list[float] = []
         deadline = time.time() + timeout
@@ -4612,8 +4616,15 @@ class Service:
         because a score comes from the prompt path and a generation's logprob from the decode path (different
         activation formats: about 0.2 nats apart on this model).  A difference of two scores is unaffected.
 
-        The run reads from position 0, so it ends whatever conversation was live: callers take the engine's turn."""
+        The run reads from position 0, so it ends whatever conversation was live: callers take the engine's turn.
+
+        `"lora": 1 | -1` reads the sequence through the loaded adapter with that sign: theta + eps and theta - eps
+        of a zeroth-order step, whose direction the adapter holds.  Two calls differing only in that key are one
+        MeZO step, and neither re-uploads tables nor rebuilds a graph."""
         ids = self._score_ids(req)
+        lora = req.get("lora")
+        lora = int(lora) if isinstance(lora, (int, float)) and not isinstance(lora, bool) else 0
+        lora = 1 if lora > 0 else (-1 if lora < 0 else 0)
         ctx = self.reported_ctx()
         if ctx and len(ids) > ctx:
             raise ValueError(f"the sequence is {len(ids)} tokens; this server holds {ctx}")
@@ -4630,7 +4641,8 @@ class Service:
             raise ModelBusy("another request is running; try again when it has finished")
         try:
             self.ensure_loaded()
-            out = self.engine.score(ids, timeout=self.score_timeout_s)
+            out = (self.engine.score(ids, timeout=self.score_timeout_s, lora=lora) if lora
+                   else self.engine.score(ids, timeout=self.score_timeout_s))
         finally:
             if ctl is not None:
                 ctl.release()
