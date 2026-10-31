@@ -1,0 +1,883 @@
+"""serve/jev.py - the jev decision endpoint (M3.0 of the jevstrata port): POST /v1/systemone.
+
+Renders the frozen decision prompt (DECISIONS.md D3 - do not edit), appends each question's
+suffix, decodes one step per branch through the engine turn, reads the final-row logits, and
+answers with the jev readout math (jevref/jmath.py, M1 identity calibration).
+
+Readout boundary: an engine method `final_row_logits(prompt_ids) -> {token_id: logit}` - the
+final position's logits row (the real engine's Verifier::head_logits_ window, served by a BROW
+wire line in the M3.0 engine commit).  Engines without it get 503, never a fabricated answer.
+"""
+from __future__ import annotations
+
+import contextlib
+import json
+import math
+import threading
+import time
+
+from pathlib import Path
+
+from serve import jev_calib
+
+# jevcpp's frozen decision prompt (DECISIONS.md D3; byte-frozen - reopening forces recalibration).
+SYSTEM_V1 = ("You are a precise decision engine. Read the state, then answer the question "
+             "with a single label and nothing else.")
+
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"           # legacy render: "upper" (the default, byte-identical)
+DIGIT_LOWER = "0123456789abcdefghijklmnopqrstuvwxyz"   # leonardomurillo's scheme on #3643
+
+
+def _label_scheme() -> str:
+    """How `choice` options are rendered and read.
+
+    "upper" (default) - A..Z, what every calibrator on disk was fitted against.
+    "digit-lower"     - 0-9 up to ten options, then a-z to twenty-six (the maintainer's shared
+                        scheme, so a text multi-field path can route to his token-path scorer).
+    Unknown values fail closed at import, like STRATA_JEV_MODES.
+    """
+    import os
+    raw = os.environ.get("STRATA_JEV_LABELS", "upper").strip().lower()
+    if raw in ("upper", "a-z", "az"):
+        return "upper"
+    if raw in ("digit-lower", "digit_lower", "digitlower", "0-9a-z"):
+        return "digit-lower"
+    raise ValueError(f"STRATA_JEV_LABELS: unknown scheme {raw!r}; valid: upper, digit-lower")
+
+
+LABEL_SCHEME = _label_scheme()
+
+
+def choice_labels(n: int) -> list:
+    """The rendered labels for an n-option choice (the tokens the readout compares)."""
+    if n < 2 or n > 26:
+        raise ValueError(f"choice needs 2..26 options, got {n}")
+    if LABEL_SCHEME == "upper":
+        return [LETTERS[i] for i in range(n)]
+    return list(DIGIT_LOWER[:n])
+
+
+# ---- the jev readout math (a line-for-line port of jevref/jmath.py, M1 identity) ----
+
+def log_softmax_masked(logits, usable=None):
+    if usable is None:
+        usable = [True] * len(logits)
+    mx = -math.inf
+    for z, u in zip(logits, usable):
+        if u and z > mx:
+            mx = z
+    acc = 0.0
+    for z, u in zip(logits, usable):
+        if u:
+            acc += math.exp(z - mx)
+    lse = math.log(acc) + mx
+    return [z - lse if u else -math.inf for z, u in zip(logits, usable)], lse
+
+
+def softmax(scores):
+    mx = max(scores)
+    e = [math.exp(x - mx) for x in scores]
+    t = sum(e)
+    return [x / t for x in e]
+
+
+def sigmoid(x):
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def confidence(p):
+    k = len(p)
+    if k < 2:
+        return 0.0
+    v = (k * max(p) - 1.0) / (k - 1)
+    return min(1.0, max(0.0, v))
+
+
+def readout_scores(row: dict, variants: list[list[int]]) -> list[float]:
+    """Label log-scores from a logits row.  The LSE constant cancels in softmax(scores) and
+    sigma(d) (jmath's verified invariance), so normalizing over the label set alone gives the
+    same probabilities as the full masked vocab."""
+    zs = []
+    for vs in variants:
+        z = row.get(vs[0])
+        if z is None:
+            raise ValueError(f"logits row has no token {vs[0]}")
+        zs.append(z)
+    logps, _ = log_softmax_masked(zs)
+    return logps
+
+
+def answers_from_scores(qtype: str, scores: list[float]) -> dict:
+    """Identity (uncalibrated) answers - kept for the battery and offline replay."""
+    if qtype == "noul":
+        d = scores[1] - scores[0]                       # [No, Yes] order
+        return {"type": "noul", "noul": sigmoid(d)}
+    p = softmax(scores)
+    if qtype == "choice":
+        best = max(range(len(p)), key=lambda i: p[i])
+        return {"type": "choice", "choice": best, "probabilities": p, "confidence": confidence(p)}
+    if qtype == "score":
+        sc = sum(i * pi for i, pi in enumerate(p))
+        return {"type": "score", "score": sc, "probabilities": p, "confidence": confidence(p)}
+    raise ValueError(qtype)
+
+
+def answers_from_calibrated(qtype: str, pr: list[float], calib_id: str) -> dict:
+    """Answers from calibrated label probabilities (donor order: rounded pr -> calib ->
+    answers).  `pr` is already calibrated and renormalized; `scores` for noul is
+    recovered as the pair's log-odds so the sigmoid path stays exact.
+    `margin` = top1−top2 probability (the cascade-routing number: separates
+    'confident' from 'no-alternatives'; classifier literature standard)."""
+    if qtype == "noul":
+        p = min(max(pr[1] if len(pr) > 1 else 0.0, 1e-9), 1 - 1e-9)
+        return {"type": "noul", "noul": p, "margin": abs(pr[1] - pr[0]) if len(pr) > 1 else 1.0,
+                "calib": calib_id}
+    best = max(range(len(pr)), key=lambda i: pr[i])
+    srt = sorted(pr, reverse=True)
+    margin = round(srt[0] - srt[1], 6) if len(srt) > 1 else 1.0
+    if qtype == "choice":
+        return {"type": "choice", "choice": best, "probabilities": pr,
+                "confidence": confidence(pr), "margin": margin, "calib": calib_id}
+    if qtype == "score":
+        sc = sum(i * pi for i, pi in enumerate(pr))
+        return {"type": "score", "score": sc, "probabilities": pr,
+                "confidence": confidence(pr), "margin": margin, "calib": calib_id}
+    raise ValueError(qtype)
+
+
+
+# ---- request validation (the donor's 422-with-field contract) ----
+
+def _err(field: str, message: str) -> tuple[int, dict]:
+    return 422, {"error": {"field": field, "message": message}}
+
+
+def parse_questions(questions) -> tuple[list | None, dict]:
+    """-> (qdefs, err_body): qdefs is None on error; [{id, type, instructions, labels}] on success."""
+    if not isinstance(questions, dict) or not questions:
+        return None, _err("questions", "must be a non-empty map")
+    qdefs = []
+    for qid, v in questions.items():
+        if not isinstance(v, dict):
+            return None, _err(f"questions.{qid}", "must be an object")
+        qtype = v.get("type")
+        if qtype not in ("noul", "choice", "score"):
+            return None, _err(f"questions.{qid}.type", "must be noul|choice|score")
+        ins = v.get("instructions")
+        if not isinstance(ins, str) or not ins:
+            ins_text = json.dumps(ins, indent=2) if not isinstance(ins, str) else ins
+            if not isinstance(ins, (str, dict, list)) or ins_text.strip() == "":
+                return None, _err(f"questions.{qid}.instructions", "required")
+            ins = ins_text
+        criteria = v.get("criteria")
+        descriptions: list[str] = []
+        if qtype == "choice":
+            if criteria is None:
+                return None, _err(f"questions.{qid}.criteria", "required for choice")
+            if isinstance(criteria, dict):
+                labels = list(criteria.keys())
+                descriptions = [": " + str(criteria[k]) if criteria[k] is not None else ""
+                                for k in labels]
+            elif isinstance(criteria, list):
+                labels = [str(x) for x in criteria]
+                descriptions = [""] * len(labels)
+            else:
+                return None, _err(f"questions.{qid}.criteria", "must be object or array")
+            if len(labels) < 2:
+                return None, _err(f"questions.{qid}.criteria", "need >= 2 options")
+            if len(labels) > 26:
+                return None, _err(f"questions.{qid}.criteria",
+                                            ">26 options need the numeric-label trie (not in this build)")
+            render_labels = choice_labels(len(labels))
+        elif qtype == "score":
+            if not isinstance(criteria, list) or len(criteria) < 2 or len(criteria) > 10:
+                return None, _err(f"questions.{qid}.criteria", "must be an array of 2..10 levels")
+            labels = [str(x) for x in criteria]
+            descriptions = [""] * len(labels)
+            render_labels = [str(i) for i in range(len(labels))]
+        else:
+            labels, render_labels = ["No", "Yes"], ["No", "Yes"]
+            if isinstance(criteria, dict):
+                true_d = criteria.get("true")
+                false_d = criteria.get("false")
+                # labels are [No, Yes]: descriptions follow the SAME order.  The old
+                # code also baked ': ' in here AND in question_block (doubled) and
+                # question_block unpacked them as (true, false) - Yes showed No's
+                # meaning (found by the image suite + Opus, 2026-10-15).
+                descriptions = [false_d, true_d]
+            else:
+                descriptions = ["", ""]
+        qdefs.append({"id": qid, "type": qtype, "instructions": ins,
+                      "labels": labels, "render_labels": render_labels,
+                      "descriptions": descriptions})
+    return qdefs, (200, {})
+
+
+def _label_token_problem(svc, qdefs):
+    """-> (qid, label, ntokens) for the first rendered label that is NOT exactly one token, else None.
+
+    leonardomurillo (#3643): every label must be a single token in the vocabulary, and a request whose
+    labels are not is REFUSED rather than scored on a longer path.  The readout encodes each label and
+    takes `[:1]`, which silently scored a truncated multi-token label - the failure this refuses.
+    """
+    for q in qdefs:
+        # score labels are rendered as "0".."9" and read the same way (encode, then [:1]), so they need
+        # the same guarantee: a label that is not one token used to be scored on its first token here too
+        if q["type"] not in ("choice", "score"):
+            continue
+        for lbl in q["render_labels"]:
+            n = len(svc.tok.encode(lbl, parse_special=True))
+            if n != 1:
+                return q["id"], lbl, n
+    return None
+
+
+def render_state(state) -> str:
+    """The state's serialized text - the DONOR'S render (server.cpp:266-268):
+    string states pass through verbatim; objects pretty-print as sorted JSON."""
+    if isinstance(state, str):
+        return state
+    return json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False)
+
+
+def parse_context(req) -> tuple[str, tuple[int, dict] | None]:
+    """Opt-in request `context`: caller-supplied text rendered between the state and the
+    question block (#3743: a derived binary field asked without its sibling categories lets
+    the model answer the everyday meaning - 65 of our 67 banking77 is_card errors were
+    false positives; the group prompt, which shows the taxonomy, was right where is_card
+    was wrong on 40 items.  The catalogue context pins the taxonomy meaning).
+
+    Accepts a string or a list of strings (joined by newlines); empty text is treated as
+    absent.  Rendered VERBATIM - no wording is added, so the caller owns the experiment.
+    With no `context` the rendered prompt is byte-identical to the donor's frozen shape, so
+    every calibrator fitted on that render still applies; a context-bearing request reads
+    from a shifted distribution and should be calibrated for its own use.
+    """
+    ctx = req.get("context")
+    if ctx is None:
+        return "", None
+    if isinstance(ctx, str):
+        lines = [ctx]
+    elif isinstance(ctx, list) and all(isinstance(x, str) for x in ctx):
+        lines = ctx
+    else:
+        return "", _err("context", "must be a string or a list of strings")
+    text = "\n".join(x for x in (line.strip() for line in lines) if x)
+    return text, None
+
+
+def user_turn(state_text: str, context_text: str, block: str) -> str:
+    """The user turn: state, then the optional context, then the question block."""
+    return "\n\n".join(part for part in (state_text, context_text, block) if part)
+
+
+def question_block(qdef) -> str:
+    """The question's rendered suffix - the DONOR'S render (server.cpp render_qblock),
+    frozen D3 shape: the full option list is always shown to the model."""
+    q = f"Question: {qdef['instructions']}\n"
+    if qdef["type"] == "choice":
+        q += "Options:\n"
+        for letter, label, desc in zip(qdef["render_labels"], qdef["labels"], qdef["descriptions"]):
+            q += f"{letter}. {label}{desc}\n"
+        q += "Reply with the label of the best option.\n"
+    elif qdef["type"] == "score":
+        q += "Levels (0 is lowest):\n"
+        for i, label in enumerate(qdef["labels"]):
+            q += f"{i}. {label}\n"
+        q += "Reply with the level number.\n"
+    else:
+        no_d, yes_d = qdef["descriptions"]        # [No, Yes] order (was unpacked reversed)
+        if yes_d:
+            q += f"Yes means: {yes_d}\n"
+        if no_d:
+            q += f"No means: {no_d}\n"
+        q += "Reply Yes or No.\n"
+    q += "Answer:"
+    return q
+
+
+def question_head(qdef) -> str:
+    """V-mode shared head (donor render_qhead, server.cpp:337-347): the option list as
+    plain bullets - the branches below it each propose one option."""
+    q = f"Question: {qdef['instructions']}\nOptions:\n"
+    for label, desc in zip(qdef["labels"], qdef["descriptions"]):
+        q += f"- {label}{desc}\n"
+    return q
+
+
+def v_branch(qdef, key: str) -> str:
+    """V-mode per-option branch (donor render_vbranch, server.cpp:349-353)."""
+    return (f"Proposed answer: {key}\n"
+            f"Is the proposed answer the best option? Reply Yes or No.\n"
+            f"Answer:")
+
+
+VISION_PROMPT_DEFAULT = "Describe this game screen:"
+
+
+def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tuple[int, dict]:
+    """image_mode: "direct" — the RAW image tokens decide, no summary in between
+    (the donor's V2 idea, safe on Strata because the readout is BROW on the final
+    row, never a seq fork): one prompt = [image] + question_block, one decode step,
+    label logits off that row.  The image rides the user turn via Strata's normal
+    vision path (svc.prepare encodes + expands the pads); the question text sits
+    AFTER the image so the readout position attends the full image."""
+    data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
+    answers, in_tokens, readouts = {}, 0, 0
+    # no outer fifo hold: svc.prepare takes its own engine turn for the encode,
+    # and each generate() call is its own turn (same as the chat path)
+    for qdef in qdefs:
+        messages = [{"role": "system", "content": SYSTEM_V1},
+                    {"role": "user",
+                     "content": [{"type": "image", "source": data_uri},
+                                 {"type": "text",
+                                  "text": question_block(qdef)}]}]
+        try:
+            ids, _, max_new = svc.prepare(messages, tools=None,
+                                          kwargs={"enable_thinking": False}, max_new=1)
+        except (ValueError, OSError) as e:
+            return 400, {"error": {"type": "invalid_request_error", "param": "image_b64",
+                                   "message": f"vision: {e}"}}
+        variants = [svc.tok.encode(lbl, parse_special=True)[:1]
+                    for lbl in qdef["render_labels"]]
+        cancel = threading.Event()
+        emb = getattr(svc.embeddings, "path", None)   # this qdef's prepare() staged it
+        svc.embeddings.path = None
+        try:
+            for _ in svc.engine.generate(ids, 1, {}, cancel, embeddings=emb):
+                pass                                 # the one decode step past the image
+        finally:
+            if emb:
+                with contextlib.suppress(OSError):
+                    Path(emb).unlink(missing_ok=True)
+        tokens = sorted({t for v in variants for t in v})
+        row = svc.engine.final_row_logits(ids, tokens)
+        try:
+            scores = readout_scores(row, variants)
+        except ValueError as e:
+            return _err("image_b64", f"logits readout failed: {e}")
+        # the direct image readout is the D tuple: same order as every other path, one implementation
+        answers[qdef["id"]] = _finish_answer(qdef, scores, image_state=True, mode_letter="D")
+        in_tokens += len(ids)
+        readouts += 1
+    return 200, {"answers": answers,
+                 "usage": {"prompt_tokens": in_tokens, "readout_tokens": readouts},
+                 "stages_used": ["image-direct"]}
+
+
+def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
+    """POST /v1/systemone with image_b64 — M3.8 two-call pattern, ONE request on the wire:
+    (1) the image is encoded and a bounded summary generated through Strata's existing
+    per-preset vision path (svc.prepare does the encode + image-pad expansion), then
+    (2) the summary becomes the decision STATE and the standard /v1/systemone readout
+    (L or V mode) answers the questions.  Donor contract (server.cpp:2419-2603):
+    image_b64 + optional vision_prompt (default 'Describe this game screen:') ->
+    image_summary + answers + stages_used ['vision', 'decision']."""
+    if not isinstance(req, dict) or "questions" not in req or not req.get("image_b64"):
+        return _err("image_b64", "required for the image decision path")
+    b64 = req["image_b64"]
+    if not isinstance(b64, str) or len(b64) < 64:
+        return _err("image_b64", "too short")
+    if svc.vision is None:
+        return 400, {"error": {"type": "invalid_request_error",
+                               "param": "image_b64",
+                               "message": "vision not loaded on this server (no vision entry in the config)"}}
+    qdefs, err_body = parse_questions(req["questions"])
+    if qdefs is None:
+        return err_body
+    bad = _label_token_problem(svc, qdefs)
+    if bad:
+        qid, lbl, ntok = bad
+        return _err(f"questions.{qid}.criteria",
+                    f"label {lbl!r} encodes to {ntok} tokens; every label must be one token "
+                    f"(refused rather than scored on a truncated path)")
+    vprompt = req.get("vision_prompt") or VISION_PROMPT_DEFAULT
+    image_mode = req.get("image_mode", "summary")
+    if image_mode not in ("summary", "direct"):
+        return _err("image_mode", "must be 'summary' (two-call) or 'direct' (one readout)")
+
+    if image_mode == "direct":
+        if mode == "V":
+            # P0-3 (Opus plan): D-V does not exist; refuse loudly, not silently
+            return 422, {"error": {"type": "invalid_request_error", "field": "X-Jev-Mode",
+                                   "message": "X-Jev-Mode: V is not supported with image_mode "
+                                              "'direct' (the yes/no branch readout needs a text "
+                                              "state); use image_mode 'summary' or omit the header"}}
+        return _handle_image_direct(svc, req, mode, qdefs, b64)
+
+    # ---- stage 1: vision summary (Strata's existing path, engine FIFO held) ----
+    data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
+    messages = [{"role": "user",
+                 "content": [{"type": "image", "source": data_uri},
+                             {"type": "text", "text": vprompt}]}]
+    try:
+        ids, _, max_new = svc.prepare(messages, tools=None,
+                                      kwargs={"enable_thinking": False}, max_new=160)
+    except (ValueError, OSError) as e:
+        return 400, {"error": {"type": "invalid_request_error", "param": "image_b64",
+                               "message": f"vision: {e}"}}
+    cancel = threading.Event()
+    out = []
+    from serve.server import Detokenizer              # late import: server.py loads jev first
+    detok = Detokenizer(svc.tok)
+    parts = []
+    emb = getattr(svc.embeddings, "path", None)       # prepare() staged it; run() passes the
+    svc.embeddings.path = None                        # same to generate as GENI (else: black image)
+    try:
+        with svc.fifo:
+            for tok in svc.engine.generate(ids, min(max_new, 160), {}, cancel, embeddings=emb):
+                if tok is None or tok < 0:            # engine sentinel ids (verification artifacts)
+                    continue
+                out.append(tok)
+                piece = detok.push(tok)
+                if piece:
+                    parts.append(piece)
+                if len(out) >= 160:
+                    break
+    finally:
+        if emb:
+            with contextlib.suppress(OSError):
+                Path(emb).unlink(missing_ok=True)     # run() deletes its own; we are the run here
+    summary = "".join(parts).split("<|im_end|>")[0].strip()
+
+    # ---- stage 2: decision on the summary state (the standard readout) ----
+    sub = {k: v for k, v in req.items() if k not in ("image_b64", "vision_prompt")}
+    sub["state"] = {"image_summary": summary} if summary else summary
+    if not summary:
+        return 502, {"error": {"type": "server_error",
+                               "message": "vision stage produced an empty summary; "
+                                          "the decision stage was not run (fail-closed)"}}
+    code, body = handle(svc, sub, mode)
+    if code != 200:
+        return code, body
+    body["image_summary"] = summary
+    body["stages_used"] = ["vision", "decision"]
+    return code, body
+
+
+THEN_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
+
+
+def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
+    """POST /v1/systemone with "then": {"generate": {...}} — amendment 7 mode 1:
+    decide first (the standard readout on this request's state/questions), then
+    generate with the answers folded into the LAST USER TURN as
+    'Jev decisions (JSON): {...}' (a trailing system message throws in this chat
+    template - donor folds it too).  Response = decision body + then {text,
+    finish_reason, usage}.  Sampling mirrors the chat endpoint (donor defaults
+    temp 0.6, top_p 0.95, top_k 20; max_tokens default 512)."""
+    gen = ((req or {}).get("then") or {}).get("generate")
+    if "chat" not in jev_calib.MODES:      # A0.1: then.generate is generation — chat-gated
+        return 404, {"error": {"type": "not_found_error",
+                               "message": "generation surface not enabled on this instance"}}
+    if not isinstance(gen, dict) or not gen.get("messages"):
+        return _err("then.generate.messages", "required non-empty array")
+    sub = {k: v for k, v in req.items() if k != "then"}
+    code, dec = handle(svc, sub, mode)
+    if code != 200:
+        return code, dec
+    answers = dec.get("answers", {})
+
+    messages = [m for m in gen["messages"] if isinstance(m, dict) and m.get("role")]
+    injected = False
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            text = messages[i].get("content") if isinstance(messages[i].get("content"), str) else \
+                "".join(p.get("text", "") for p in (messages[i].get("content") or [])
+                        if isinstance(p, dict) and p.get("type") == "text")
+            messages[i] = {**messages[i],
+                           "content": text + "\n\nJev decisions (JSON): " + json.dumps(answers, indent=2)}
+            injected = True
+            break
+    if not injected:
+        messages.append({"role": "user",
+                         "content": "Jev decisions (JSON): " + json.dumps(answers, indent=2)})
+
+    sampling = {**THEN_SAMPLING}
+    for k in ("temperature", "top_p", "top_k", "min_p", "seed"):
+        if isinstance(gen.get(k), (int, float)) and not isinstance(gen[k], bool):
+            sampling[k] = gen[k]
+    max_tokens = gen.get("max_tokens") if isinstance(gen.get("max_tokens"), int) else 512
+    max_tokens = max(1, max_tokens)
+    stops = gen.get("stop")
+    stops = ([stops] if isinstance(stops, str) else
+             [s for s in stops if isinstance(s, str)] if isinstance(stops, list) else [])
+
+    prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
+    ids = svc.tok.encode(prompt, parse_special=True)
+    if not ids:
+        return 400, {"error": {"type": "invalid_request_error",
+                               "message": "then.generate: prompt tokenization failed"}}
+    cancel = threading.Event()
+    out = []
+    finish = "stop"
+    from serve.server import Detokenizer              # late import: server.py loads jev first
+    detok = Detokenizer(svc.tok)                      # the server's incremental decoder
+    text_parts = []
+    with svc.fifo:
+        for tok in svc.engine.generate(ids, max_tokens, sampling, cancel):
+            if tok is None or tok < 0:              # engine sentinel ids (verification artifacts)
+                continue
+            out.append(tok)
+            piece = detok.push(tok)
+            if piece:
+                text_parts.append(piece)
+                tail = "".join(text_parts[-8:])
+                if any(st and st in tail for st in stops):
+                    break
+            if len(out) >= max_tokens:
+                finish = "length"
+    text = "".join(text_parts).strip()
+    for st in stops:
+        if st in text:
+            text = text.split(st)[0]
+    dec["then"] = {"text": text, "finish_reason": finish,
+                   "usage": {"prompt_tokens": len(ids), "completion_tokens": len(out)}}
+    return 200, dec
+
+
+def _finish_answer(qdef, scores: list, image_state: bool, mode_letter: str | None = None) -> dict:
+    """The donor order once the logits are in hand (server.cpp:1134-1142): unrounded softmax for the
+    the calib log, round 4dp, renormalise, THEN the per-tuple calibrator.  One place, so the text and the
+    image paths cannot drift apart in the order they apply it."""
+    pr_raw = softmax(scores)
+    pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
+    t = sum(pr)
+    if t > 0:
+        pr = [x / t for x in pr]
+    letter = mode_letter or ("S" if image_state else "L")
+    pr, calib_id = jev_calib.apply(qdef["type"], pr, letter)
+    # M2 B1.1 log row (unrounded raw_p; donor schema minus label_mass, BROW is sparse)
+    jev_calib.log_enqueue({
+        "ts": int(time.time()),
+        "tuple": jev_calib.tuple_of(letter, qdef["type"]),
+        "qid": qdef["id"],
+        "type": qdef["type"],
+        "raw_p": pr_raw,
+    })
+    return answers_from_calibrated(qdef["type"], pr, calib_id)
+
+
+def _hybrid_enabled() -> bool:
+    """M3.1 hybrid (pin + jevpos): per-field prompts (so nothing contaminates a later field and the readout
+    position stays M3.0's) with the shared prefix pinned (so the state is read once) AND the cue row captured
+    during that read (so the readout is the decode step's own row, read back by position).  It is INERT unless pinning is also
+    on (it needs a pinned shared prefix to capture from), so STRATA_JEV_HYBRID=1 with STRATA_JEV_PIN=0 does
+    nothing - the condition is explicit below rather than left to be discovered.  Off by default until the accuracy /
+    confidence comparison against C says the prompt-window row is as good.  STRATA_JEV_HYBRID=1 turns it on."""
+    import os
+    return os.environ.get("STRATA_JEV_HYBRID", "0") not in ("0", "false", "False", "off", "")
+
+
+def _pin_enabled() -> bool:
+    """M3.1 fix C (state parking): tell the engine where the fields' shared prefix ends so it reads that
+    prefix once, pins the checkpoint there, and every later field reads only its own turn.  The prompts
+    stay byte-identical to M3.0, so the readout position - and the calibration fitted on it - is unchanged;
+    this is a caching hint, never a change to what the model sees.  STRATA_JEV_PIN=0 turns it off."""
+    import os
+    return os.environ.get("STRATA_JEV_PIN", "1") not in ("0", "false", "False", "off", "")
+
+
+def _shared_prefix_len(svc, texts: list) -> int:
+    """The longest token prefix every one of `texts` renders to (0 when they share nothing).
+
+    Each text is rendered and encoded exactly as the request will render it, then the ids are compared
+    position by position - so the number is the real shared prefix, not an estimate from the string
+    lengths (a BPE merge at a seam would make those differ).  A value of 0 means "do not pin".
+    """
+    if len(texts) < 2:
+        return 0
+    encoded = []
+    for text in texts:
+        prompt = svc.template.render([{"role": "system", "content": SYSTEM_V1},
+                                      {"role": "user", "content": text}],
+                                     add_generation_prompt=True, enable_thinking=False)
+        ids = svc.tok.encode(prompt, parse_special=True)
+        if not ids:
+            return 0
+        encoded.append(ids)
+    limit = min(len(x) for x in encoded)
+    n = 0
+    while n < limit and all(x[n] == encoded[0][n] for x in encoded):
+        n += 1
+    return n
+
+
+def _request_keys(pin: int) -> dict:
+    """The engine keys a decision request carries.
+
+    `pin: N` -> the first N prompt tokens are a shared read-only prefix: the engine reads it once and
+    pins its checkpoint, so the fields after the first resume from it instead of re-reading the state.
+
+    Do NOT add `strata_checkpoint: False` here: measured 2026-10-23, ckpt=0 on every field left nothing
+    to pin (`pin ignored: ckpt=0 keeps no checkpoint`) and made three fields 1906 ms against 1593 ms.
+    """
+    keys = {}
+    if pin > 0:
+        keys["pin"] = pin
+    return keys
+
+
+def _row_readout_enabled() -> bool:
+    """M3.1 fix B (jevpos): ONE prompt, N rows.  Off by default: fields 2..N read their cue from a window that
+    also carries the earlier questions - the same cue position, a different context - so this stays opt-in
+    until the accuracy/Brier A/B says the shift is free.  STRATA_JEV_ROWS=1 turns it on."""
+    import os
+    return os.environ.get("STRATA_JEV_ROWS", "0") not in ("0", "false", "False", "off", "")
+
+
+MAX_NAMED_ROWS = 32          # the engine's cap: a list longer than this is refused WHOLE, so the request
+                             # must not use the row path at all (>32 fields => one prompt per field)
+
+
+def _row_capture(engine) -> bool:
+    """Can the engine keep head rows at named ABSOLUTE prompt positions?
+
+    fix B sends ONE prompt for N fields and then reads each field's cue row by its absolute position.
+    That only works because the same request also names those positions (`jevpos=`), and the engine
+    copies each named row out of whichever verify window happens to cover it while the prompt is read
+    (`Verifier::capture_window_rows`).  BROWAT then addresses the kept rows by absolute position and
+    REFUSES a position the request never ran, by name - it never falls back to the last window, whose
+    rows are numbered from that window's first token and would answer a different question.
+
+    The capability is advertised in the engine's INFO line (`jevpos=1`); an engine that does not
+    advertise it (an older build, or one started without --jev-brow) is never sent this path at all,
+    so an absolute position can never reach a window-relative read.
+    """
+    return getattr(engine, "info", {}).get("jevpos") == 1
+
+
+def _captured_count(engine):
+    """How many head rows the last request actually kept, or None when the engine cannot say."""
+    fn = getattr(engine, "captured_rows", None)
+    if not callable(fn):
+        return None
+    return int(fn())
+
+
+def _captured(engine, want: int) -> bool:
+    """True only when the engine kept EXACTLY the rows this request named.
+
+    BROWAT addresses captured rows by absolute position but falls back to addressing the last window when
+    nothing was captured - and a window index read from a prompt position is a neighbouring row, answered
+    silently.  Naming N positions and verifying N were kept is the only thing that keeps that impossible.
+
+    A COUNT is also an IDENTITY check here: the engine only ever captures positions it was asked for
+    (`capture_window_rows` iterates the named list), so captured ⊆ named and |captured| == |named| implies
+    captured == named.  If that subset property ever weakens, this must become a set comparison.
+    """
+    return _captured_count(engine) == want
+
+
+def consolidated_rows(svc, state_text: str, qdefs: list, context_text: str = ""):
+    """Render ONE prompt for all the questions and return (ids, rows) - the absolute prompt position of each
+    field's cue - or None when the prefix cannot be kept exact.
+
+    Field 1's turn is exactly what M3.0 renders for it, so field 1's row is byte-identical to M3.0's.  Each
+    further field is its own user turn after the earlier fields' answer turns, so the state is read once and
+    every field still ends at an assistant cue.
+
+    The placeholder answer "-" is never decoded and never read: it exists because the frontend drops a
+    COMPLETED EMPTY assistant turn (#843), which would delete the next field's cue with it.  It is a real
+    token, so fields 2..N carry the earlier questions - the shift this path's A/B has to price.
+
+    The prefix check compares encoded ids rather than trusting the template: a BPE merge at a seam moves every
+    later position by a token, and a row read one token off answers the wrong question while looking fine.
+    """
+    units = []
+    for i, qdef in enumerate(qdefs):
+        content = user_turn(state_text, context_text, question_block(qdef)) if i == 0 else question_block(qdef)
+        messages = [{"role": "system", "content": SYSTEM_V1}]
+        for prev in units:
+            messages.append({"role": "user", "content": prev["content"]})
+            messages.append({"role": "assistant", "content": "-"})   # never decoded; see above
+        messages.append({"role": "user", "content": content})
+        prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
+        ids = svc.tok.encode(prompt, parse_special=True)
+        if not ids:
+            return None
+        if units and units[-1]["ids"] != ids[:len(units[-1]["ids"])]:
+            return None                                            # seam moved: no row numbers to trust
+        units.append({"content": content, "ids": ids})
+    return units[-1]["ids"], [len(u["ids"]) - 1 for u in units]
+
+
+def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
+    """POST /v1/systemone -> (HTTP status, body).  The whole inference holds the engine turn
+    (svc.fifo), like every other engine-touching path."""
+    if not isinstance(req, dict) or "state" not in req:
+        return _err("state", "required")
+    if "questions" not in req:
+        return _err("questions", "required")
+    qdefs, err_body = parse_questions(req["questions"])
+    if qdefs is None:
+        return err_body                            # already (422, {...})
+    bad = _label_token_problem(svc, qdefs)
+    if bad:
+        qid, lbl, ntok = bad
+        return _err(f"questions.{qid}.criteria",
+                    f"label {lbl!r} encodes to {ntok} tokens; every label must be one token "
+                    f"(refused rather than scored on a truncated path)")
+
+    context_text, ctx_err = parse_context(req)
+    if ctx_err is not None:
+        return ctx_err
+
+    engine = svc.engine
+    if not hasattr(engine, "final_row_logits"):
+        return 503, {"error": {"message": "systemone needs an engine with a logits readout "
+                                           "(the M3.0 engine commit adds BROW)"}}
+
+    state_text = render_state(req["state"])
+    v_mode = mode == "V"
+    image_state = isinstance(req.get("state"), dict) and "image_summary" in req.get("state", {})
+    answers, in_tokens, readouts = {}, 0, 0
+    # M3.1 fix C (state parking): N fields on one state share the system + state prefix.  Pin it once
+    # (see _pin_enabled) so each field reads only its own question turn.  Computed from the rendered
+    # prompts, so the number is the real shared prefix; 0 = no pin (one field, or pinning off).
+    l_qdefs = [q for q in qdefs if not (v_mode and q["type"] == "choice")]
+    l_pin = 0
+    if len(l_qdefs) > 1 and not image_state and _pin_enabled():
+        l_pin = _shared_prefix_len(svc, [user_turn(state_text, context_text, question_block(q)) for q in l_qdefs])
+    with svc.fifo:                                       # the engine turn: one request at a time
+        # M3.1 fix B (jevpos, opt-in): text L-mode with more than one field - ONE prompt read, one head row
+        # kept per field, instead of one prompt per field.  Falls back to the per-question path whenever the
+        # engine cannot serve it (no jevpos, a template whose seam moves, a tokenizer that merges).
+        if (_row_readout_enabled() and 1 < len(qdefs) <= MAX_NAMED_ROWS and not v_mode and not image_state
+                and _row_capture(engine) and hasattr(engine, "row_logits_at")
+                and hasattr(engine, "captured_rows")):
+            # CANONICAL FIELD ORDER.  One consolidated prompt lets each later field see the earlier ones, so the
+            # caller's key order would otherwise change the answers for the same set of questions (measured live
+            # 2026-10-23 on 200 banking77 items: reversing the two fields flipped 52 one way against 1 the other,
+            # McNemar p=0.0008).  Rendering in a fixed order makes the same set render the same prompt and answer
+            # the same whoever asks.  The answers are keyed by qid, so nothing about the response changes.
+            ordered = sorted(qdefs, key=lambda q: q["id"])
+            plan = consolidated_rows(svc, state_text, ordered, context_text)
+            rows = None
+            if plan is not None:
+                ids, rows = plan
+                cancel = threading.Event()
+                # one read, and the rows named in the same request; nothing extends this turn, so no checkpoint
+                for _ in engine.generate(ids, 1, {"jevpos": rows, "strata_checkpoint": False}, cancel):
+                    pass
+                if not _captured(engine, len(rows)):
+                    # the named rows were NOT kept (a dropped list, or a position no window ran): BROWAT
+                    # would address the last window instead and answer a neighbouring row, so do not read
+                    print(f"[jev-rows] falling back to one prompt per field: the engine kept "
+                          f"{_captured_count(engine)} rows for {len(rows)} named positions", flush=True)
+                    rows = None
+            if plan is not None and rows is not None:
+                for qdef, row_at in zip(ordered, rows):
+                    variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
+                    tokens = sorted({t for v in variants for t in v})
+                    try:
+                        scores = readout_scores(engine.row_logits_at(row_at, tokens), variants)
+                    except ValueError as e:
+                        return _err("state", f"logits readout failed: {e}")
+                    answers[qdef["id"]] = _finish_answer(qdef, scores, image_state)
+                return 200, {"answers": answers,
+                             "usage": {"prompt_tokens": len(ids), "readout_tokens": len(qdefs)}}
+        l_seen = 0
+        for qdef in qdefs:
+            use_v = v_mode and qdef["type"] == "choice"   # X-Jev-Mode scopes to choice (donor :767)
+            if use_v:
+                # ---- V mode (A2.6): shared head, one yes/no branch per option ----
+                head = question_head(qdef)
+                yes_no = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in ("No", "Yes")]
+                v_pin = 0
+                if len(qdef["labels"]) > 1 and _pin_enabled():
+                    v_pin = _shared_prefix_len(
+                        svc, [user_turn(state_text, context_text, head + v_branch(qdef, k)) for k in qdef["labels"]])
+                d_scores = []
+                for bi, key in enumerate(qdef["labels"]):
+                    prompt = svc.template.render(
+                        [{"role": "system", "content": SYSTEM_V1},
+                         {"role": "user", "content": user_turn(state_text, context_text, head + v_branch(qdef, key))}],
+                        add_generation_prompt=True,
+                        enable_thinking=False)
+                    ids = svc.tok.encode(prompt, parse_special=True)
+                    if not ids:
+                        return _err("state", "tokenization failed")
+                    cancel = threading.Event()
+                    for _ in engine.generate(ids, 1, _request_keys(v_pin), cancel):
+                        pass
+                    tokens = sorted({t for v in yes_no for t in v})
+                    row = engine.final_row_logits(ids, tokens)
+                    try:
+                        s = readout_scores(row, yes_no)    # [logp(No), logp(Yes)]
+                    except ValueError as e:
+                        return _err("state", f"logits readout failed: {e}")
+                    d_scores.append(s[1] - s[0])           # d_i = s_yes - s_no
+                    in_tokens += len(ids)
+                    readouts += 1
+                # p = softmax(d) (donor :1150-1163: round 4dp, renormalize)
+                mx = max(d_scores)
+                pr_raw = [math.exp(x - mx) for x in d_scores]
+                z = sum(pr_raw)
+                pr_raw = [x / z for x in pr_raw]
+                pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
+                t = sum(pr)
+                if t > 0:
+                    pr = [x / t for x in pr]
+                # donor V applies the choice temperature to softmax(d) (calib_apply :617)
+                pr, calib_id = jev_calib.apply("choice", pr, "V")   # P0-1: per-tuple
+                best = max(range(len(pr)), key=lambda i: pr[i])
+                probs = {name: pr[i] for i, name in enumerate(qdef["labels"])}
+                answers[qdef["id"]] = {
+                    "type": "choice", "choice": qdef["labels"][best],
+                    "probabilities": probs, "confidence": confidence(pr),
+                    "calib": calib_id}
+                jev_calib.log_enqueue({
+                    "ts": int(time.time()),
+                    "tuple": jev_calib.tuple_of("V", "choice"),
+                    "qid": qdef["id"], "type": "choice",
+                    "raw_p": pr_raw, "v_d": d_scores})
+                continue
+            prompt = svc.template.render(
+                [{"role": "system", "content": SYSTEM_V1},
+                 {"role": "user", "content": user_turn(state_text, context_text, question_block(qdef))}],
+                add_generation_prompt=True,
+                enable_thinking=False)   # D3 (frozen): the readout position must predict the label, not open <think>
+            ids = svc.tok.encode(prompt, parse_special=True)
+            if not ids:
+                return _err("state", "tokenization failed")
+            variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
+            keys = _request_keys(l_pin)
+            # STATE PARKING, fields 2..N: a field that resumes from the checkpoint the pin marks has nothing
+            # to park, and parking one is real work (~75 ms per field on the 3090: measured 2026-10-23,
+            # three reps, medians, five fields 1527 ms with the park against 1214 ms without, on
+            # byte-identical prompts).  Answers move by one item in 200 (is_card 199/200 agreement against
+            # the fully unpinned read, mean |dp_yes| .0104) - the band the pin itself was accepted on, so
+            # this is a caching change and not a readout change.  Field 1 must keep parking - it is the one
+            # the pin marks, so suppressing it there would leave nothing for the later fields to resume from.
+            if l_pin > 0 and l_seen > 0:
+                keys["strata_checkpoint"] = False
+            # M3.1 hybrid: name this field's cue so the ONE decode step this field already runs is the read
+            # (the decode is not skipped - max_new stays 1; the row it computes is simply read back by
+            # position instead of being the implicit readout).
+            cue = None
+            if (_hybrid_enabled() and l_pin > 0 and not image_state
+                    and _row_capture(engine) and hasattr(engine, "row_logits_at")):
+                cue = len(ids) - 1
+                keys["jevpos"] = [cue]
+            cancel = threading.Event()
+            for _ in engine.generate(ids, 1, keys, cancel):
+                pass                                     # the one decode step; its logits row is the readout
+            tokens = sorted({t for v in variants for t in v})
+            # The cue is the prompt's last token, named to the same request that reads the prompt, so the
+            # engine keeps that row (`jevpos=`) and BROWAT reads it back by absolute position.  If the
+            # engine cannot capture (`_row_capture` false) this branch is not taken at all.
+            use_cue = cue is not None and _captured(engine, 1)
+            row = (engine.row_logits_at(cue, tokens) if use_cue
+                   else engine.final_row_logits(ids, tokens))   # captured row, or BROW on the decode window
+            try:
+                scores = readout_scores(row, variants)
+            except ValueError as e:
+                return _err("state", f"logits readout failed: {e}")
+            # ---- donor order (server.cpp:1134-1142): round 4dp, renormalize, THEN calibrate ----
+            answers[qdef["id"]] = _finish_answer(qdef, scores, image_state)
+            l_seen += 1
+            in_tokens += len(ids)
+            readouts += 1
+    return 200, {"answers": answers,
+                 "usage": {"prompt_tokens": in_tokens, "readout_tokens": readouts}}
