@@ -170,6 +170,12 @@ public:
     // PLE history, each QSA layer's indexer tail and tail-block key); the KV and pooled keys are positional
     bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
     bool checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err);
+    // Conversation parking reads the K/V from the session's QsaStates.  On Metal the K/V lives only in this window's buffers
+    // (the session's own pools are never written), so each owned QsaState is pointed at the window's buffers: the same
+    // cell-major layout the generic snapshot copies as byte prefixes (kq/vq cells*512 B, scales cells*16 B, pooled rows*512 B).
+    void bind_session(strata::core::SessionState& ss);
+    void bind_draft(strata::core::QsaState& st);
+    bool mtp_ready() const { return mtp_on_; }
     void reset();   // a new sequence (session_zero): the running state zeroed
     // ---- batch slots (--batch N): each slot is another sequence's running state (GDN recurrence and conv history, the PLE
     // history, each QSA layer's K/V, indexer tail and pooled keys).  The live members always hold ONE sequence's state (the
@@ -670,6 +676,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             pooled_.push_back(SV(pooledBig_, 4 * (size_t) MB * 128, st_pooled_));
         }
     }
+    bind_session(ss);
     // ---- the HC read in Q8_0 (the owner's default on Metal, as STRATA_HC_Q8 on gfx12): the BF16 down / up / inject
     // matrices quantized once at load (ggml's q8_0 rule, ref_quant), read by gr_down_q8 / gr_up_q8
     {
@@ -1843,6 +1850,39 @@ bool Window::slot_copy(bool into_slot, int b, int64_t upto, bool kv_only, std::s
     return true;
 }
 
+namespace { strata::core::QsaState* g_draft_state = nullptr; }   // the drafter's QsaState (MtpDrafter::kv_state), bound once the window has the draft layer
+
+static void bind_qsa(strata::core::QsaState& st, const mtl::Buffer& kq, const mtl::Buffer& vq, const mtl::Buffer& ksc,
+                     const mtl::Buffer& vsc, const mtl::Buffer* pooled, const mtl::Buffer* tail, const mtl::Buffer* dead,
+                     int64_t cells) {
+    const int64_t page = strata::kernels::qsa_real_shapes().page_size;
+    st.kv_int8 = true; st.kv_q4 = false; st.kv_hybrid = false; st.kv_rot = false;
+    st.k_q = (int8_t*) kq.ptr; st.v_q = (int8_t*) vq.ptr;
+    st.k_scale = (uint16_t*) ksc.ptr; st.v_scale = (uint16_t*) vsc.ptr;
+    st.k_pool = nullptr; st.v_pool = nullptr;
+    st.kv_mode = 0;
+    st.n_pages = cells / page; st.n_slots = st.n_pages;
+    st.max_cells = std::min<int64_t>(st.max_cells > 0 ? st.max_cells : cells, st.n_pages * page);
+    if (pooled) { st.idx_pooled = (float*) pooled->ptr; st.idx_pooled_rows = (int64_t) (pooled->bytes / 512); }
+    if (tail) st.idx_tail = (float*) tail->ptr;
+    if (dead) st.idx_dead = (float*) dead->ptr;
+}
+
+void Window::bind_session(strata::core::SessionState& ss) {
+    if (!ss.qsa_states) return;
+    const int64_t n = ss.qsa_alloc, o = ss.qsa_ord0;
+    if (n != (int64_t) kq_.size() || o != 0) return;   // a carved session: not this window's whole model
+    for (int64_t j = 0; j < n; ++j)
+        bind_qsa(ss.qsa_states[(size_t) (o + j)], kq_[(size_t) j], vq_[(size_t) j], ksc_[(size_t) j], vsc_[(size_t) j],
+                 &pooled_[(size_t) j], &tail_[(size_t) j], &dead_[(size_t) j], max_cells_);
+}
+
+void Window::bind_draft(strata::core::QsaState& st) {
+    if (mkq_.empty()) return;
+    // the draft layer has no indexer (the snapshot saves no pooled rows for it); its tail/dead ring is not part of the image
+    bind_qsa(st, mkq_[0], mvq_[0], mksc_[0], mvsc_[0], nullptr, nullptr, nullptr, max_cells_);
+}
+
 bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
     (void) err;
     if (pend_fold_ > 0) {   // the last commit's fold first: the checkpoint is the state after it
@@ -1852,7 +1892,11 @@ bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::strin
         cx_->run_graph(ds);
         pend_fold_ = 0;
     }
-    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
+    // The checkpoint is the shared contract (core/conversation_state.cpp's conversation_state_sizes), the one the CUDA indexer
+    // keeps: the raw tail is idx_block - 1 = 3 rows a layer and block_pos is a scratch int32 a layer.  This window's ring has
+    // 4 rows (slot = cell % 4), but row 3 is written by the cell that completes the block before it is read, so it never
+    // has to survive a checkpoint: rows 0..2 are the whole state (the means are identical, qsa.metal qsa_prep).
+    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 3 * 4 * 128, dsz = 4 * 128;
     c.gdn.resize(gst_.size() * (gs + hs));
     for (size_t i = 0; i < gst_.size(); ++i) {
         std::memcpy(c.gdn.data() + i * (gs + hs), gst_[i].ptr, gs);
@@ -1862,10 +1906,10 @@ bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::strin
     c.tails.resize(tail_.size() * ts);
     c.dead.resize(dead_.size() * dsz);
     for (size_t j = 0; j < tail_.size(); ++j) {
-        std::memcpy(c.tails.data() + j * ts, tail_[j].ptr, ts);
+        std::memcpy(c.tails.data() + j * ts, tail_[j].ptr, ts);   // rows 0..2 of the 4-row ring
         std::memcpy(c.dead.data() + j * dsz, dead_[j].ptr, dsz);
     }
-    c.block_pos.clear();
+    c.block_pos.assign(tail_.size() * sizeof(int32_t), 0);   // scratch on every backend: written before it is read
     return true;
 }
 
@@ -1890,9 +1934,9 @@ void Window::reset() {
 }
 
 bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
-    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
+    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 3 * 4 * 128, tsw = 4 * 4 * 128, dsz = 4 * 128;
     if (c.gdn.size() != gst_.size() * (gs + hs) || c.ple.size() != (size_t) 4 * 9 * 10240 ||
-        c.tails.size() != tail_.size() * ts || c.dead.size() != dead_.size() * dsz) {
+        (c.tails.size() != tail_.size() * ts && c.tails.size() != tail_.size() * tsw) || c.dead.size() != dead_.size() * dsz) {
         err = "metal window: the checkpoint is not this engine's (sizes differ)";
         return false;
     }
@@ -1903,8 +1947,10 @@ bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, s
         std::memcpy(ghist_[hp_][i].ptr, c.gdn.data() + i * (gs + hs) + gs, hs);
     }
     std::memcpy(pleHist_.ptr, c.ple.data(), c.ple.size());
+    const size_t cts = c.tails.size() / std::max<size_t>(tail_.size(), 1);   // 3 rows (the shared contract) or 4 (an older image)
     for (size_t j = 0; j < tail_.size(); ++j) {
-        std::memcpy(tail_[j].ptr, c.tails.data() + j * ts, ts);
+        std::memset(tail_[j].ptr, 0, tsw);
+        std::memcpy(tail_[j].ptr, c.tails.data() + j * cts, cts);
         std::memcpy(dead_[j].ptr, c.dead.data() + j * dsz, dsz);
     }
     return true;
@@ -2047,6 +2093,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         }
     }
     mtp_on_ = true;
+    if (g_draft_state) bind_draft(*g_draft_state);
     {
         const int ty = T("token_embd.weight").type;
         const int ok_types[] = {30, 8, 2, 6, 20, 23, 42, 21, 11, 12, 13, 14, 18};
@@ -3040,6 +3087,10 @@ bool mtp_load(const std::string& rt_dir, int max_t, std::string& err) {
     g_mtp_path = path;
     g_mtp_max_t = max_t;
     return true;
+}
+void mtp_bind_state(strata::core::QsaState& st) {
+    g_draft_state = &st;
+    if (g_the_window && g_the_window->mtp_ready()) g_the_window->bind_draft(st);
 }
 bool mtp_load_pending(Window* w, std::string& err) {
     return g_mtp_path.empty() || w->mtp_load(g_mtp_path, g_mtp_max_t, err);
