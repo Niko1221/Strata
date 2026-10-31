@@ -18037,8 +18037,12 @@ int main(int argc, char** argv) {
                             if (!zero_at(((pg * qc.n_head_kv + h) * ps) + (c0 - pg * ps), (e - c0))) return false;
                         }
                     }
-                    if (a1 >= a0 + ps && !zero_at(a0 * qc.n_head_kv * ps, (a1 - a0) * qc.n_head_kv * ps)) return false;
-                    if (a1 > a0 && a1 < c1) {   // the partial page at the end
+                    // whole pages [a0, a1): page a0 / ps starts at cell index (a0 / ps) * n_head_kv * ps = a0 * n_head_kv
+                    // (review 10-28: this was a0 * n_head_kv * ps, page_size times too far and too long - a clean of
+                    // [c0, c1) zeroed [~4 c0, ~4 c1) instead, i.e. the whole window from 0, and past the array's end
+                    // for a cold read beyond max_cells / 4)
+                    if (a1 >= a0 + ps && !zero_at(a0 * qc.n_head_kv, (a1 - a0) * qc.n_head_kv)) return false;
+                    if (a1 >= a0 && a1 < c1) {   // the partial page at the end (a1 == a0: c0 on a page start)
                         for (int64_t h = 0; h < qc.n_head_kv; ++h) {
                             const int64_t pg = a1 / ps;
                             if (!zero_at(((pg * qc.n_head_kv + h) * ps), (c1 - a1))) return false;
@@ -18067,9 +18071,7 @@ int main(int argc, char** argv) {
                     //     and how many of its guesses were right, is the window depth's business - so the same reply at
                     //     depth 2 and depth 3 holds different K/V in every cell the last windows' chains wrote.  A
                     //     drafter that had never speculated holds zeros there (that is what the prompt pass leaves
-                    //     below first_needed()), so the clean is zeros; it costs no draft, a resumed session's window is
-                    //     refilled by its own prompt pass (measured: drafts accepted on the cache-tail pass 403 of 428
-                    //     fresh vs 404 of 428 resumed, decode 99.8 vs 99.5 tok/s).
+                    //     below first_needed()), so the clean is zeros - over which cells: see 4.
                     const int64_t mtp_end = std::min<int64_t>(Lc, ms.max_cells);
                     const int64_t mtp_win0 = std::max<int64_t>(0, md.first_needed());
                     int64_t mtp_c0 = mtp_end, mtp_c1 = mtp_end;
@@ -18081,6 +18083,17 @@ int main(int argc, char** argv) {
                     //   window that ended the reply still differed between depth 2 and 3.
                     // 3 (experiment): only the last 16 cells, the reach of one chain; keeps the drafter's prompt cache
                     //   (measured insufficient too).
+                    // 4 (the clean to ship, review 10-28): 1 costs the next turn its drafts - a resumed request's prompt
+                    //   pass writes only its new cells (prefill.cpp: rows from max(first_needed, cell0)) and kv_restore
+                    //   refills the ring from the host copy, so its drafter would attend to zeros over the window below
+                    //   the reused prefix - and 1.4 s at 141K cells.  Every reply cell but the last windows' is
+                    //   already what a prompt pass writes: each round rewrites its window's rows [p, p + a] from the
+                    //   verified rows' hidden state.  So only two ranges are cleaned:
+                    //   - [pp_from, first_needed): the cells this request neither reused nor wrote, i.e. what the
+                    //     memory held from an earlier session (the long reads' difference under 2);
+                    //   - [L - tail, L): the last windows' rows, which no round caught up (STRATA_STATE_CLEAN_TAIL,
+                    //     default 32 = four windows of kMaxRows).
+                    int64_t mtp_g0 = mtp_end, mtp_g1 = mtp_end;
                     if (state_clean == 1)
                         mtp_c0 = 0;
                     else if (state_clean == 2)
@@ -18088,13 +18101,24 @@ int main(int argc, char** argv) {
                                                    std::max<int64_t>(0, mtp_end - strata::pl::kMaxRows));
                     else if (state_clean == 3)
                         mtp_c0 = std::max<int64_t>(0, mtp_end - 16);
+                    else if (state_clean == 4) {
+                        static const int64_t tail = [] {
+                            const char* v = std::getenv("STRATA_STATE_CLEAN_TAIL");
+                            return v != nullptr ? (int64_t) std::max(0, std::atoi(v)) : (int64_t) 32;
+                        }();
+                        mtp_g0 = std::min<int64_t>(std::max<int64_t>(0, pp_from), mtp_end);
+                        mtp_g1 = std::min<int64_t>(std::max<int64_t>(mtp_g0, md.first_needed()), mtp_end);
+                        mtp_c0 = std::max<int64_t>(0, mtp_end - tail);
+                    }
                     std::vector<std::pair<void*, int64_t>> arr;
                     const int mode = cell_arrays(ms, arr);
-                    for (const auto& [p, per] : arr) clean_ok = clean_ok && wipe(p, per, mtp_c0, mtp_c1, mode);
+                    for (const auto& [p, per] : arr)
+                        clean_ok = clean_ok && wipe(p, per, mtp_g0, mtp_g1, mode) && wipe(p, per, mtp_c0, mtp_c1, mode);
                     if (std::getenv("STRATA_STATE_CLEAN_LOG") != nullptr)
-                        std::fprintf(stderr, "strata state clean: L=%lld mode=%d qsa=[%lld,%lld) mtp=[%lld,%lld) pool=%lld"
-                                             " first_needed=%lld ms=%.1f\n",
+                        std::fprintf(stderr, "strata state clean: L=%lld mode=%d qsa=[%lld,%lld) mtp=[%lld,%lld)+[%lld,%lld) "
+                                             "pool=%lld first_needed=%lld ms=%.1f\n",
                                      (long long) Lc, state_clean, (long long) Lc, (long long) endc,
+                                     (long long) mtp_g0, (long long) mtp_g1,
                                      (long long) mtp_c0, (long long) mtp_c1, (long long) mtp_end,
                                      (long long) md.first_needed(),
                                      std::chrono::duration<double, std::milli>(Clock::now() - clean_t0).count());
