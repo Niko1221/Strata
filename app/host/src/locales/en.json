@@ -3629,5 +3629,6 @@
   "modelPortActive": "Active model port: {0}.",
   "modelPortHint": "The starting port local model servers use (default 18500). Leave empty for automatic; Strata avoids probing port 8080 so it does not conflict with other local apps such as Spring Boot. Applies the next time a model loads.",
   "promptCacheSpreadLabel": "Spread prompt cache checkpoints",
-  "promptCacheSpreadHint": "Passes --prompt-cache-spread to local models so saved checkpoints thin out back through long conversations instead of clustering at the end. Uses the same RAM and cuts compaction re-read time on hybrid models. Applies the next time a model loads."
+  "promptCacheSpreadHint": "Passes --prompt-cache-spread to local models so saved checkpoints thin out back through long conversations instead of clustering at the end. Uses the same RAM and cuts compaction re-read time on hybrid models. Applies the next time a model loads.",
+"s9160": "Staged to GPU {0} MB/s{1}"
 }

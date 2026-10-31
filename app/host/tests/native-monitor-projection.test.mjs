@@ -19,6 +19,17 @@ test('model scope filters requests and does not add system RAM once per model',(
  const data=nativeMonitorData({instances:[instance,other],hardware:{gpus:[{index:0}]}},inventory,'one');assert.equal(data.requests.length,1);assert.equal(data.requests[0].instanceId,'one');assert.equal(data.hardware.ramUsedGb,20);
 });
 
+test("a Linux AMD card has no PCIe traffic counter: the engine's staged bytes fill the tile and its history",()=>{
+ const staged={...instance,metrics:{...instance.metrics,hardware:{...instance.metrics.hardware,gpu_pcie_gen:4,gpu_pcie_width:16,pcie_engine_mb:412.5},history:{...instance.metrics.history,pcie_engine_mb:[300,412.5]}}};
+ const data=nativeMonitorData({instances:[staged],hardware:{gpus:[{index:0}]}},inventory);
+ assert.equal(data.hardware.pcieRxMbs,412.5);assert.equal(data.hardware.pcieEngineFigure,true,'the wording says the engine staged it');
+ assert.equal(data.hardware.gpus[0].pcieRxMbs,412.5);
+ assert.deepEqual(data.history.map(sample=>sample.pcieRxMbs),[null,300,412.5]);
+ const driver={...instance,metrics:{...instance.metrics,hardware:{...instance.metrics.hardware,gpu_pcie_rx_mb:1200,pcie_engine_mb:400},history:{...instance.metrics.history,gpu_pcie_rx_mb:[1100,1200],pcie_engine_mb:[300,400]}}};
+ const counted=nativeMonitorData({instances:[driver],hardware:{gpus:[{index:0}]}},inventory);
+ assert.equal(counted.hardware.pcieRxMbs,1200);assert.equal(counted.hardware.pcieEngineFigure,undefined);
+ assert.deepEqual(counted.history.map(sample=>sample.pcieRxMbs),[null,1100,1200]);
+});
 test('GPU histories retain their device scope and never spread one card reading across multiple GPUs',()=>{
  const two={...inventory,gpus:[...inventory.gpus,{id:'gpu1',index:1,vramGb:24,unified:false}]};
  const data=nativeMonitorData({instances:[instance],hardware:{gpus:[{index:0},{index:1}]}},two);

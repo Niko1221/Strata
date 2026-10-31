@@ -3629,5 +3629,6 @@
   "modelPortActive": "Porta de modelo ativa: {0}.",
   "modelPortHint": "A porta inicial usada pelos servidores de modelos locais (padrão 18500). Deixe vazio para automático; o Strata evita sondar a porta 8080 para não entrar em conflito com outros aplicativos locais, como o Spring Boot. Aplica-se na próxima vez que um modelo for carregado.",
   "promptCacheSpreadLabel": "Distribuir pontos de verificação do cache de prompt",
-  "promptCacheSpreadHint": "Passa --prompt-cache-spread para modelos locais para que os pontos de verificação fiquem distribuídos ao longo de conversas longas em vez de concentrados no final. Usa a mesma RAM e reduz o tempo de releitura na compactação em modelos híbridos. Aplica-se na próxima vez que um modelo for carregado."
+  "promptCacheSpreadHint": "Passa --prompt-cache-spread para modelos locais para que os pontos de verificação fiquem distribuídos ao longo de conversas longas em vez de concentrados no final. Usa a mesma RAM e reduz o tempo de releitura na compactação em modelos híbridos. Aplica-se na próxima vez que um modelo for carregado.",
+"s9160": "Carregado para a GPU: {0} MB/s{1}"
 }

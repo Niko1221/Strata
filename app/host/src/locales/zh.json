@@ -3629,5 +3629,6 @@
   "modelPortActive": "当前模型端口：{0}。",
   "modelPortHint": "本地模型服务器使用的起始端口（默认 18500）。留空为自动；Strata 会避免探测 8080 端口，以免与 Spring Boot 等本地应用冲突。下次加载模型时生效。",
   "promptCacheSpreadLabel": "分散提示缓存检查点",
-  "promptCacheSpreadHint": "向本地模型传递 --prompt-cache-spread，使保存的检查点在长对话中向后稀疏分布而不是集中在末尾。内存占用不变，并可大幅减少混合模型压缩重读时间。下次加载模型时生效。"
+  "promptCacheSpreadHint": "向本地模型传递 --prompt-cache-spread，使保存的检查点在长对话中向后稀疏分布而不是集中在末尾。内存占用不变，并可大幅减少混合模型压缩重读时间。下次加载模型时生效。",
+"s9160": "已预载至 GPU {0} MB/s{1}"
 }
