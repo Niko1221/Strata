@@ -31,7 +31,17 @@ namespace strata::kernels::cpu {
 namespace {
 
 // fp16 -> fp32 without F16C (the written-out conversion, subnormals included; iq_avx1.cpp's copy).
+// fp16 -> fp32 without F16C.  The normal-exponent case (every real quantized scale) is branchless:
+// (E<<10|M)<<13 + 0x38000000 == (E+112)<<23 | M<<13, the exact fp32 bits.  Zero, subnormal, inf and nan
+// keep the full converter (bit-identical, off the hot path).
 inline float h2f(uint16_t h) {
+    const uint32_t e = h & 0x7C00u;
+    if (e && e != 0x7C00u) {
+        const uint32_t f = ((uint32_t) (h & 0x7FFFu) << 13) + 0x38000000u | (uint32_t) (h & 0x8000u) << 16;
+        float out;
+        std::memcpy(&out, &f, 4);
+        return out;
+    }
     const uint32_t sign = (uint32_t) (h >> 15) & 1u;
     uint32_t exp = (h >> 10) & 0x1Fu, man = h & 0x3FFu, f;
     if (exp == 0) {
