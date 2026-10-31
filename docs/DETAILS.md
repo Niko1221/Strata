@@ -834,7 +834,7 @@ endpoints are refused with an error that says so.
 | `input` as a string or items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)` |
 | `instructions` | The system message (with leading `developer` messages) |
 | `tools` | `function`, `namespace` and `custom` tools. Hosted tools (`web_search`, `file_search`, ...) are left out because the model cannot run them |
-| `tool_choice` | `"none"` hides the tools; anything else lets the model choose (it cannot be forced) |
+| `tool_choice` | `"none"` hides the tools. `"auto"`, or no choice, lets the model choose. `"required"` and `{"type": "function", "name": N}` force a call, as on the chat route: the server writes the call's opening, and nothing checks what the model writes after it. A namespaced tool is named `namespace.name`. The chat and Anthropic spellings of these choices also work. A choice the server cannot honour acts as `"auto"`, with a line in the log: `allowed_tools`, `{"type": "custom", ...}`, a name that is not a tool of the request, or `"required"` when the request has no tool the model can call |
 | `reasoning.effort` | `none`/`minimal`, `low`, `medium`, `high`/`xhigh`; without it the config's `reasoning_effort`, else the model's default |
 | `max_output_tokens` | The output cap, thinking included. Running out ends the response `incomplete`. `0` and `-1` (or leaving it out) mean no cap, as for `max_tokens`; anything below `-1` is a 400 |
 | `text.format` | `json_schema` and `json_object` use the JSON formats above (checked, not constrained) |
