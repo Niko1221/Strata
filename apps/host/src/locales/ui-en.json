@@ -8,5 +8,10 @@
  "ui07": "The buttons below wait until this finishes.",
  "ui08": "API base URL on this computer",
  "ui09": "Address for other devices",
- "ui10": "Other devices use this address. It has its own port, separate from the one Strata's window uses, because only the model's API is shared on the network, not the app."
+ "ui10": "Other devices use this address. It has its own port, separate from the one Strata's window uses, because only the model's API is shared on the network, not the app.",
+ "ui11": "INT8 is the standard: good quality and a medium amount of memory.",
+ "ui12": "Q4 uses about half the memory of INT8, but is less precise on very long documents.",
+ "ui13": "K8 / V4 uses about a quarter less memory than INT8 and is more precise than Q4. Prompts are 2 to 5% slower.",
+ "ui14": "The model did not fit in your graphics card’s memory.",
+ "ui15": "Lower the conversation context, or set Context memory to Q4 in Expert settings, then try again."
 }

@@ -8,5 +8,10 @@
  "ui07": "Les boutons ci-dessous attendent la fin de cette opération.",
  "ui08": "URL de base de l’API sur cet ordinateur",
  "ui09": "Adresse pour les autres appareils",
- "ui10": "Les autres appareils utilisent cette adresse. Elle a son propre port, distinct de celui de la fenêtre de Strata, car seule l’API du modèle est partagée sur le réseau, pas l’application."
+ "ui10": "Les autres appareils utilisent cette adresse. Elle a son propre port, distinct de celui de la fenêtre de Strata, car seule l’API du modèle est partagée sur le réseau, pas l’application.",
+ "ui11": "INT8 est le réglage standard : bonne qualité et une consommation de mémoire moyenne.",
+ "ui12": "Q4 utilise environ moitié moins de mémoire que INT8, mais il est moins précis sur de très longs documents.",
+ "ui13": "K8 / V4 utilise environ un quart de mémoire en moins que INT8 et est plus précis que Q4. Les prompts sont 2 à 5 % plus lents.",
+ "ui14": "Le modèle ne tenait pas dans la mémoire de votre carte graphique.",
+ "ui15": "Réduisez le contexte de la conversation, ou réglez « Mémoire de contexte » sur Q4 dans Réglages experts, puis réessayez."
 }

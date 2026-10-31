@@ -8,5 +8,10 @@
  "ui07": "Die Schaltflächen unten warten, bis das fertig ist.",
  "ui08": "API-Basis-URL auf diesem Computer",
  "ui09": "Adresse für andere Geräte",
- "ui10": "Andere Geräte verwenden diese Adresse. Sie hat einen eigenen Port, getrennt von dem des Strata-Fensters, weil im Netzwerk nur die API des Modells freigegeben wird, nicht die App."
+ "ui10": "Andere Geräte verwenden diese Adresse. Sie hat einen eigenen Port, getrennt von dem des Strata-Fensters, weil im Netzwerk nur die API des Modells freigegeben wird, nicht die App.",
+ "ui11": "INT8 ist der Standard: gute Qualität und mittlerer Speicherbedarf.",
+ "ui12": "Q4 braucht etwa halb so viel Speicher wie INT8, ist aber bei sehr langen Dokumenten weniger genau.",
+ "ui13": "K8 / V4 braucht etwa ein Viertel weniger Speicher als INT8 und ist genauer als Q4. Prompts sind 2 bis 5 % langsamer.",
+ "ui14": "Das Modell hat nicht in den Speicher deiner Grafikkarte gepasst.",
+ "ui15": "Verkleinere den Gesprächskontext oder stelle in den Experteneinstellungen „Kontextspeicher“ auf Q4 und versuche es erneut."
 }

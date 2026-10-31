@@ -8,5 +8,10 @@
  "ui07": "Os botões abaixo esperam até isto terminar.",
  "ui08": "URL base da API neste computador",
  "ui09": "Endereço para outros dispositivos",
- "ui10": "Os outros dispositivos usam este endereço. Ele tem a própria porta, separada da que a janela do Strata usa, porque só a API do modelo é compartilhada na rede, não o aplicativo."
+ "ui10": "Os outros dispositivos usam este endereço. Ele tem a própria porta, separada da que a janela do Strata usa, porque só a API do modelo é compartilhada na rede, não o aplicativo.",
+ "ui11": "INT8 é o padrão: boa qualidade e uso médio de memória.",
+ "ui12": "Q4 usa cerca de metade da memória do INT8, mas é menos preciso em documentos muito longos.",
+ "ui13": "K8 / V4 usa cerca de um quarto a menos de memória que o INT8 e é mais preciso que o Q4. Os prompts ficam de 2 a 5 % mais lentos.",
+ "ui14": "O modelo não coube na memória da sua placa de vídeo.",
+ "ui15": "Reduza o contexto da conversa ou defina «Memória de contexto» como Q4 em Configurações avançadas e tente de novo."
 }

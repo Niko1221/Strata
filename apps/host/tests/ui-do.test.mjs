@@ -255,3 +255,35 @@ test('#3723 only a first start is detected: a saved language, even English, is k
   assert.match(src('components/GuidedSetup.tsx'), /step === 1 \? <FirstRunLanguage\/> : null/);
   assert.match(src('components/FirstRunLanguage.tsx'), /setLanguage\(value as Language\)/);
 });
+
+test('#3723 Context memory has one line per format, from the documented memory figures', () => {
+  const models = src('components/NativeModels.tsx');
+  assert.match(models, /KV_CHOICES\.map\(c => \(\{ value: c\.value, label: c\.label, title: c\.hint \}\)\)/);
+  for (const text of ['INT8 is the standard: good quality and a medium amount of memory.', 'Q4 uses about half the memory of INT8, but is less precise on very long documents.', 'K8 / V4 uses about a quarter less memory than INT8 and is more precise than Q4. Prompts are 2 to 5% slower.']) assert.ok(models.includes(text), text);
+  // The figures are the ones of docs/DETAILS.md and of native-fit.ts: q4_0 576 and k8v4 816 against int8 1056 bytes per token and layer.
+  const fit = src('lib/native-fit.ts');
+  assert.match(fit, /int8: 1056, q4_0: 576, k8v4: 816/);
+  assert.ok(Math.abs(576 / 1056 - 0.55) < 0.06 && Math.abs(1 - 816 / 1056 - 0.23) < 0.01);
+});
+
+test('#3723 a start that ran out of graphics memory says so, with the engine\'s own words under Details', async () => {
+  const { plainFailure } = await withI18n('plain-errors.ts');
+  const reported = "server_exited (exit code 1): EngineDied: the engine exited before it was ready | the engine process ended: exit code 1: \nthe engine log's last lines:\n  strata generate: expert cache auto: 1.92 GiB free, 2048 MiB reserved (+184 MiB for the draft head) -> 0 slots\n  strata generate: no VRAM is left for the expert cache: it needs at least 332 slots (737 MiB), about 1000 MiB more than this card has free.";
+  const r = plainFailure(reported);
+  assert.equal(r.kind, 'vram');
+  assert.equal(r.message, 'The model did not fit in your graphics card’s memory.');
+  assert.match(r.next, /Context memory to Q4/);
+  assert.equal(r.detail, reported, 'the original text stays for Details');
+  // Other stops are not taken for it.
+  assert.equal(plainFailure('server_exited (exit code 1): EngineDied: the engine exited before it was ready').kind, 'start-failed');
+  assert.equal(plainFailure('out of memory').kind, 'memory');
+  assert.equal(plainFailure('0xC0000135 DLL not found').kind, 'dll-missing');
+});
+
+test('#3723 the new sentences are translated in every language', async () => {
+  const { tr, setTranslationLanguage, plainFailure } = await withI18n('plain-errors.ts');
+  const lines = ['INT8 is the standard: good quality and a medium amount of memory.', 'Q4 uses about half the memory of INT8, but is less precise on very long documents.', 'K8 / V4 uses about a quarter less memory than INT8 and is more precise than Q4. Prompts are 2 to 5% slower.', 'The model did not fit in your graphics card’s memory.', 'Lower the conversation context, or set Context memory to Q4 in Expert settings, then try again.'];
+  for (const l of languages.slice(1)) { setTranslationLanguage(l); for (const text of lines) assert.notEqual(tr(text), text, `${l}: ${text}`); }
+  setTranslationLanguage('en');
+  void plainFailure;
+});

@@ -7547,3 +7547,6 @@ textarea {
 @media (prefers-reduced-motion: reduce) { .native-progress__spin { animation: none; border-color: var(--st-accent); } }
 /* ---- Serving: the second address and the one line that says why it is not the same (#4798) ---- */
 .serving-two-addresses { margin: 6px 0 0; max-width: 60ch; }
+
+/* ---- Context memory: the one line under the chosen format (#3723) ---- */
+.native-kv-hint { display: block; margin-top: 6px; line-height: 1.5; }

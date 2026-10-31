@@ -455,6 +455,49 @@ cases.firstrun = async () => {
   await setupStep(true);
 };
 
+cases.kv = async () => {
+  const t = await tuneHost();
+  await t.mode('ok');
+  const sessions = [chat('s1', 'KV', [user('u1', 'Hi'), reply('a1', 'Hello there.')])];
+  for (const scheme of ['light', 'dark']) for (const [sizeName, [w, h]] of Object.entries(sizes)) {
+    const tag = `${scheme}-${sizeName}`;
+    const page = await open(scheme, w, h, sessions, { hash: '#/models', origin: t.origin });
+    await page.route(/\/api\/native(\?.*)?$/, async route => {
+      const r = await route.fetch(); const j = await r.json();
+      j.jobs = [...(j.jobs ?? []), { id: 'job-f', kind: 'load', model: 'iq2_xs', state: 'error', startedAt: new Date().toISOString(), summary: 'Load failed', error: "server_exited (exit code 1): EngineDied: the engine exited before it was ready | the engine process ended: exit code 1: \nthe engine log's last lines:\n  strata generate: expert cache auto: 1.92 GiB free, 2048 MiB reserved -> 0 slots\n  strata generate: no VRAM is left for the expert cache: it needs at least 332 slots (737 MiB), about 1000 MiB more than this card has free.", result: null, progress: null }];
+      return route.fulfill({ response: r, json: j });
+    });
+    await page.reload();
+    const expert = page.getByRole('button', { name: 'Expert mode' });
+    await expert.waitFor({ timeout: 20000 });
+    await page.waitForTimeout(1500);
+    await expert.click();
+    const sel = page.getByRole('combobox', { name: 'Native KV format' });
+    if (!await sel.isVisible().catch(() => false)) { await page.waitForTimeout(800); if (!await sel.isVisible().catch(() => false)) await page.getByRole('button', { name: /expert mode/i }).first().click(); }
+    await sel.waitFor({ timeout: 10000 });
+    const hint = page.locator('.native-kv-hint');
+    check(/INT8 is the standard/.test(await hint.innerText()), `${tag}: Context memory: one line says what the chosen format is`);
+    await sel.click();
+    check(await page.getByRole('option').count() === 3, `${tag}: Context memory: three options`);
+    const titles = await page.locator('.select__option-label').evaluateAll(els => els.map(e => e.getAttribute('title')));
+    check(titles.length === 3 && titles.every(x => x && x.length > 20), `${tag}: Context memory: each option carries its line`, JSON.stringify(titles));
+    await page.getByRole('option', { name: 'Q4' }).click();
+    await page.waitForTimeout(300);
+    check(/Q4 uses about half the memory/.test(await hint.innerText()), `${tag}: Context memory: the line follows the choice`);
+    await hint.scrollIntoViewIfNeeded();
+    await shot(page, `3723-${tag}-kv`);
+    const notice = page.locator('.error-notice');
+    await notice.first().waitFor({ timeout: 10000 });
+    const said = await notice.first().innerText();
+    check(/did not fit in your graphics card.s memory/.test(said) && /Context memory to Q4/.test(said), `${tag}: a start that ran out of graphics memory says so in plain words`, said.replace(/\n+/g, ' | ').slice(0, 200));
+    await notice.first().scrollIntoViewIfNeeded();
+    await shot(page, `3723-${tag}-vram`);
+    check((await page.evaluate(() => document.documentElement.scrollWidth)) <= w, `${tag}: no sideways scroll`);
+    check(page.problems.length === 0, `${tag}: no page error`, page.problems.join('; '));
+    await page.context().close();
+  }
+};
+
 /* ------------------------------------------------------------------------------------------------------------------ run */
 let ran = 0;
 for (const [name, fn] of Object.entries(cases)) {
