@@ -517,8 +517,9 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   its last streamed chunk, and in the `message_delta` event and the message of `/v1/messages`; up to five names). A client that
   wants to recover can answer the model with the tool names it does have and ask again; Strata never runs or forwards a call for a
   tool the request did not declare. The server window prints the same names (`N <tool_call> block(s) ... went back as text`), and
-  `/metrics/prometheus` counts the blocks in `strata:tool_calls_unread_total`. A block that is malformed (not an undeclared name) is counted
-  there and in the window, but has no name to list.
+  `/metrics/prometheus` counts the blocks in `strata:tool_calls_unread_total`. The reason is `"in_code"` when the block sits inside
+  a code fence or inline code for a declared tool (#1058 keeps it text as the quoted example it may be) and `"malformed"` when it
+  opened like a call with no name to read; a malformed block is counted there and in the window but has no name to list (#4071).
 - JSON output: `response_format: {"type":"json_object"}` or `{"type":"json_schema", ...}` on `/v1/chat/completions`. The schema
   must accept only JSON objects at its root (`"type":"object"`, or `anyOf`/`oneOf` of object schemas). Local `#` references
   work and remote ones are refused. This is schema prompting followed by server validation, not grammar-constrained

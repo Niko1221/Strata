@@ -1128,6 +1128,10 @@ class OutputParser:
                         if len(names) == 1 and alias not in self.schemas}
         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
         self.unread_names: list[str] = []   # the names (first few) of those that named a tool the request did not declare
+        # #4071: the same first-few list with the reason each block went back as text: "undeclared" (a name the request
+        # did not offer) or "in_code" (a call-shaped block inside a code fence - #1058's quote rule, but a client that
+        # declares no tools cannot tell the model meant a call from a quoted example without being told).
+        self.unread_info: list[dict] = []
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
@@ -1157,6 +1161,16 @@ class OutputParser:
         """Nothing is held back: a clean point to stop the thinking at (a parser that rewrites the model's text, as
         serve/dsml.py's does, also counts what it holds)."""
         return not self.buf
+
+    def _mark_unread(self, name: str, reason: str) -> None:
+        """#3441/#4071: count a `<tool_call>` block that is going back as text, naming it (first few only)
+        and saying why: 'undeclared' (a name the request did not offer) or 'in_code' (a call-shaped block inside a
+        code fence - #1058's quote rule, invisible to the client without this)."""
+        self.unread += 1
+        if name and len(self.unread_names) < 5:
+            self.unread_names.append(name[:80])
+        if name and len(self.unread_info) < 5:
+            self.unread_info.append({"name": name[:80], "reason": reason})
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
@@ -1664,6 +1678,26 @@ class OutputParser:
                 in_code = self._in_code()
                 self._restore(snap)
                 if in_code:
+                    # #1058: inside a fence or inline code a call stays text (a quoted example).  #4071: it is still
+                    # a call-shaped block the client gets as text, so name it - the toolless client cannot tell a
+                    # meant call from a quoted example without being told.  The name held until complete like a
+                    # partial tag, so whole and streamed outputs count the same blocks.
+                    after_ic = self.buf[i + len(CALL_START):].lstrip()
+                    ic = re.match(r"<function=(\s*[^<>\s]+\s*)>", after_ic)
+                    if ic is None and (not after_ic or FUNC_START.startswith(after_ic)
+                                       or re.fullmatch(r"<function=\s*[^<>\s]*\s*", after_ic)):
+                        j = i
+                        while j > 0 and self.buf[j - 1] == "\n":
+                            j -= 1
+                        if j > 0:
+                            out.append(Event("content", self._track(self.buf[:j])))
+                            self.buf = self.buf[j:]
+                        return out
+                    if ic is not None:
+                        nm = ic.group(1).strip()
+                        self._mark_unread(nm, "in_code" if self._callable(nm) else "undeclared")
+                    elif after_ic.startswith("<"):
+                        self._mark_unread("", "in_code")
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
                     continue
@@ -1688,7 +1722,7 @@ class OutputParser:
                 kind = self._follower(after) if self.recover else None
                 if (after.startswith("<") and kind is None and not FUNC_START.startswith(after)
                         and not after.startswith(FUNC_START)):
-                    self.unread += 1
+                    self._mark_unread("", "malformed")     # opened like a call, no <function= name to read
                 if kind in ("param", "json"):
                     if i and self.buf[:i].strip():
                         out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
@@ -1734,9 +1768,8 @@ class OutputParser:
                             self.buf = self.buf[j:]
                         return out
                     if gt >= 0 and (nl < 0 or gt < nl) and not self._callable(after[len(FUNC_START):gt].strip()):
-                        self.unread += 1                 # logged by the server: otherwise "the model ignored my tool" is the only clue
-                        if len(self.unread_names) < 5:
-                            self.unread_names.append(after[len(FUNC_START):gt].strip()[:80])
+                        # logged by the server: otherwise "the model ignored my tool" is the only clue
+                        self._mark_unread(after[len(FUNC_START):gt].strip(), "undeclared")
                         out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                         self.buf = self.buf[i + len(CALL_START):]
                         continue
