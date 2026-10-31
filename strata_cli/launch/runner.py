@@ -1511,14 +1511,14 @@ class Runner:
             profiles.save(name, {**cur, "overrides": want}, expected_revision=rev)
 
     def multi_file(self) -> bool:
-        """The chosen model is DeepSeek-V4.1-Flash (setup.py MULTI_FILE_FAMILIES): nine shards, its own engine; no tuning and no parallel slots."""
+        """The chosen model is DeepSeek-V4.1-Flash (setup.py MULTI_FILE_FAMILIES): nine shards, its own engine; its own short tuner, and several conversations at once only when --parallel N is asked for."""
         try:
             return bool(self.s.family and self.catalog.strata.multi_family(self.s.family))
         except Exception:                                    # noqa: BLE001
             return False
 
     def catalog_parallel(self) -> int | None:
-        if self.multi_file():                                # the DeepSeek engine answers one request at a time: no --batch to pass
+        if self.multi_file():                                # DeepSeek: one at a time unless --parallel N is asked for (never fitted to the card; and never --batch)
             return None
         try:
             comp = self.catalog.computer()
