@@ -42,6 +42,7 @@ MTP draft layer and the context and KV questions are setup's own.
 | Fit rule | A model that does not fit the card at the default context gets a context down the ladder 32K, 16K, 8K, a smaller prompt chunk and a lower reserve until it does. Setup prints one plain line per change. |
 | Prompt chunk | 4,096 tokens; 8,192 on a Battlemage card with 24 GB or more above 32K context. A `--prefill` in the config is kept. |
 | Alchemist (A-series) | A different config: [Arc A750 and the other Alchemist cards](#arc-a750-and-the-other-alchemist-cards). |
+| Integrated Arc (`xe`, e.g. the Arc 140T) | No Docker: the engine runs on the PC's own oneAPI. A RAM fit rule instead of the VRAM one; see [Integrated Arc](#integrated-arc-the-arc-140t). |
 | Engine settings | The config's `"env"` block reaches the engine. `strata-sycl.sh` forwards every `STRATA_`, `ONEAPI_`, `UR_`, `IGC_`, `SYCL_` and `ZES_` variable and sets `STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1` and `STRATA_STAGER_THREADS=12` unless the environment says otherwise (for example `"env": {"STRATA_VERIFY_NO_HOST": "0"}`). A value of `0` is not passed on, because the engine tests these switches by presence. |
 
 The models, packs and checkout must sit under the folder `strata-sycl.sh` mounts at `/work` (the one above the checkout, or
@@ -293,6 +294,85 @@ The Battlemage AOT build compiles with the trellis kernels and was not run.
 
 Decode is bound by the CPU pool and the PCIe link (10.4 GB/s), not by the card's kernels. `--prefill 1024` gave +13% decode and
 -24% prompt speed; the default stays `--prefill auto`.
+
+## Integrated Arc: the Arc 140T
+
+An integrated Arc has no VRAM of its own: its memory is the system RAM. The engine runs on the PC's own oneAPI, without
+Docker. Only the Arc 140T (PCI id 7d51, Xe-LPG+) on the `xe` driver was tested.
+
+| | Arc Pro B70 (`xe`, 32 GB) | Arc 140T (`xe`, integrated) |
+| --- | --- | --- |
+| Where the engine runs | In the `strata-sycl-dev` image (`sycl/serve/strata-sycl.sh`) | On the PC's own oneAPI (`sycl/serve/strata-sycl-native.sh`) |
+| Build | AOT `bmg-g31` | JIT (`BUILD_DIR=build-sycl bash sycl/tools/build.sh`) |
+| Experts | `--stream-experts`: from the GGUF into VRAM, the rest in a pinned RAM mirror | The same flags; the cache and the mirror are both in the RAM |
+| Size of the cache | The card's free VRAM | `MemAvailable` from `/proc/meminfo` (`STRATA_SYCL_FREE_MIB` overrides it) |
+| Prompt-slot borrowing | From 32K up | Off |
+| `STRATA_WINDOW_SYNC` | 0 | 1 |
+| `SYCL_CACHE_PERSISTENT` | 0 (it crashed on Xe2) | 1 works: 7 s to start instead of 79 s from the second start on (0.1.40) |
+
+- **The driver.** On a kernel that binds the iGPU to `i915`, `i915.force_probe=!7d51 xe.force_probe=7d51` on the kernel
+  command line moves it to `xe`.
+- **Build.** Install the oneAPI Base Toolkit (Intel's installer, into `/opt/intel/oneapi`) and the distribution's GPU compute
+  runtime (Fedora 44: `intel-compute-runtime`, `intel-level-zero`, `oneapi-level-zero`, `cmake`, `ninja-build`). Then, in the
+  checkout, `BUILD_DIR=build-sycl bash sycl/tools/build.sh` (it sources `setvars.sh` itself). The build ends with `BUILD EXIT 0`.
+- **Free memory.** The 140T has no `ext_intel_free_memory`, also with `ZES_ENABLE_SYSMAN=1`, so the engine got 0 and the expert
+  cache refused to start. On a device with `host_unified_memory` it now reads `MemAvailable`. The `xe` driver keeps memory a GPU
+  program freed in its own pool, which `MemAvailable` does not count until a reboot: on the first start after a boot all 12,288
+  experts were cached, on later starts 10,496 to 10,870 (the rest mirrored).
+- **No prompt-slot borrowing.** With it, the answer after a prompt that borrowed the cache's slots was token 0 (every expert
+  activation NaN from the second prompt chunk; 0.1.40, any context). Borrowing saved about 7% of prompt time in a test without
+  the bug (112 against 105 tok/s, 0.1.40).
+- **The first decode window stalled** on every request with `STRATA_WINDOW_SYNC=0`: 10 of 10 in 0.1.43, 6 of 6 in 0.1.47.
+- **What fits.** The experts' file (shard 1) has to fit in the RAM beside everything else. The Coder IQ1_M and the IQ2_XS (shard 1
+  36.5 GiB) ran with 10 to 13 GiB of RAM left; the IQ3_XXS (43.8 GiB) left 3 to 4 GiB and did not run well (0.1.40). Programs
+  that use the GPU's memory (another model server) take from the same RAM: stop them first.
+- **The launcher.** `sycl/serve/strata-sycl-native.sh` is the config's `exe`. It sources oneAPI, sets the port's defaults
+  (`STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1`, `STRATA_STAGER_THREADS=12`, `STRATA_NO_MULTI_GR=1`), each one
+  overridden by the config's `"env"` (`0` turns one off), and gives the engine an OOM score of 1000, so that a PC out of memory
+  loses the engine and not the desktop. `STRATA_SYCL_BIN` names another binary (relative to the checkout or absolute).
+
+**With setup.** `./setup.sh --backend sycl` finds the integrated GPU in sysfs (an Intel GPU at PCI `00:02.0` on `xe`). It needs
+oneAPI in `/opt/intel/oneapi` (or `ONEAPI_ROOT`) and the engine in `build-sycl` (or `build-sycl-aot`); Docker is not used. What
+changes from a card:
+
+| Part | On an integrated Arc |
+| --- | --- |
+| Which size fits | A model needs its shard 1 plus 20 GiB of RAM (the 14 GiB the measured runs used beside shard 1, and 6 GiB more). The size menu marks the sizes that need more, recommends the first one that fits, and asks before it installs one that does not (`--model X --yes` installs it anyway). `--check` says the same per model; a Gyro size is "not tested". |
+| Config | As the one below: the launcher as `exe`, the PC's own paths, `--stream-experts`, no KV streaming (the KV is in the same RAM either way), the VRAM reserve as on a card (1,024 MiB up to 32K, 2,048 above), `--draft-vocab en`, and `SYCL_CACHE_PERSISTENT=1` on the 140T only (it crashed on Xe2). An AOT build adds `STRATA_SYCL_BIN`. |
+| n-gram table | Read from the SSD: setup's `--ple-io ram` is left out, because here the RAM is the GPU's memory. A `--ple-io ram` you give is kept. |
+| Pictures | Off (nobody has run them on an integrated GPU yet); `--vision yes` turns them on. |
+| `i915` | Setup stops and names the kernel command line that moves the GPU to `xe`. |
+
+On the 140T, `./setup.sh --backend sycl --family coder --model IQ1_M --context 98304 --no-start --yes` wrote the config below
+(less `"fit_max_tokens"`) and `run-coder-iq1_m.sh`.
+
+**Running it by hand.** A config like this, started with
+`.venv/bin/python sycl/serve/server_intel.py --engine strata --config strata-coder-iq1_m.json --port 8080`:
+
+```json
+{"exe": "<checkout>/sycl/serve/strata-sycl-native.sh",
+ "args": ["--pack", "<data>/packs/coder-iq1_m", "--native", "<data>/models/coder-IQ1_M/<shard 1>.gguf",
+          "--ple-gguf", "<data>/models/coder-IQ1_M/<shard 2>.gguf", "--expert-profile", "<checkout>/data/expert-profile-coder.bin",
+          "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", "<data>/mtp/rt",
+          "--max-context", "98304", "--kv", "int8", "--stream-experts", "--vram-reserve-mib", "2048"],
+ "cwd": "<checkout>", "tokenizer": "<data>/packs/coder-iq1_m/tokenizer", "model_name": "qwen3.8-flash-next-coder-iq1_m",
+ "log": "<checkout>/strata-coder-iq1_m.log", "port": 8080, "backend": "sycl", "draft_vocab": "en", "fit_max_tokens": true,
+ "env": {"SYCL_CACHE_PERSISTENT": "1"}}
+```
+
+> **Measured on:** Arc 140T of a Core Ultra 9 285H, 62 GiB RAM, Fedora 44 (kernel 7.2.9, `xe`), oneAPI 2026.0, Coder IQ1_M,
+> through the server, greedy, thinking off, `STRATA_WINDOW_SYNC=1`; engine 0.1.43 (2026-10-12) and 0.1.47 (2026-10-22).
+
+| Workload | Result |
+| --- | --- |
+| Decode, 100-token answers to short questions, 0.1.43 | 12.0-17.4 tok/s all experts cached, 11.5-17.2 with 1,792 mirrored |
+| The same, 0.1.47 (four runs of 10, 1,915-2,660 experts mirrored) | 8.4-15.2 tok/s; two runs of one config gave 8.5-13.3 and 10.6-15.2 |
+| Prompt, 72,648 tokens, 0.1.43 | 156.5 tok/s (7 min 44 s), the fact at its start recalled |
+| Prompt, 74,939 tokens, 0.1.47 | 149.9 tok/s (8 min 20 s), the fact at its start recalled |
+| Prompt, 24 tokens | 1.2 s (0.1.43), 2.3 s (0.1.47) |
+| Read bandwidth (own probe, 2026-10-05) | 90.5 GB/s from device memory, 76.1 GB/s from host memory |
+
+Where a decode round's time goes is not profiled yet.
 
 ## Pictures on an Arc
 

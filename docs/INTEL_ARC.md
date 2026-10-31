@@ -166,8 +166,9 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 Two cards on `xe` (2x Arc Pro B70, IQ3_S, 0.1.44): `--layer-split auto` picked a split at about 11 tok/s where
 `--layer-split 30` ran about 54. The auto choice now prefers the split with the most VRAM headroom (above).
 
-**Not tested by anyone:** Windows (no native build path), Arc on WSL2 with the current engine, integrated Arc GPUs (the B390 /
-Panther Lake in #515; shared-memory planning does not exist), and pictures on a Battlemage card with a GPU reader. Pictures work
+**Not tested by anyone:** Windows (no native build path), Arc on WSL2 with the current engine, integrated Arc GPUs other than the Arc 140T
+on Linux (the B390 / Panther Lake on Windows in #515; shared-memory planning does not exist; the 140T: [INTEL.md](INTEL.md#integrated-arc-the-arc-140t)),
+and pictures on a Battlemage card with a GPU reader. Pictures work
 on the A750 (on by default, read on the CPU). See [INTEL.md](INTEL.md#pictures-on-an-arc).
 
 ## Windows
