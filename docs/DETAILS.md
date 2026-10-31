@@ -831,9 +831,9 @@ endpoints are refused with an error that says so.
 
 | Request | What Strata does |
 | --- | --- |
-| `input` as a string or items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)` |
+| `input` as a string or items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)`, `tool_search_call` / `tool_search_output` (Codex's tool search, below) |
 | `instructions` | The system message (with leading `developer` messages) |
-| `tools` | `function`, `namespace` and `custom` tools. Hosted tools (`web_search`, `file_search`, ...) are left out because the model cannot run them |
+| `tools` | `function`, `namespace` and `custom` tools, and a client-side `tool_search` (below). Hosted tools (`web_search`, `file_search`, a `tool_search` some other host runs, ...) are left out because the model cannot run them |
 | `tool_choice` | `"none"` hides the tools; anything else lets the model choose (it cannot be forced) |
 | `reasoning.effort` | `none`/`minimal`, `low`, `medium`, `high`/`xhigh`; without it the config's `reasoning_effort`, else the model's default |
 | `max_output_tokens` | The output cap, thinking included. Running out ends the response `incomplete`. `0` and `-1` (or leaving it out) mean no cap, as for `max_tokens`; anything below `-1` is a 400 |
@@ -877,6 +877,18 @@ non-compaction prompt (`session_id` and `thread_id`) and the tools it was render
 that same conversation with them. It is one entry, replaced by each such prompt. A compaction of another conversation, a
 request without that metadata or a restart renders the request as sent. The prompt of a compaction then differs from the one
 the client sent, which is why it is off by default.
+
+**Codex's tool search** (#1917). With `"supports_search_tool": true` for the model in Codex's model catalog
+(`model_catalog_json`), Codex keeps its MCP and app tools out of the request and declares
+`{"type": "tool_search", "execution": "client", ...}` instead. The model gets it as the function `tool_search`; its call comes
+back as a `tool_search_call` item (`execution: "client"`, `arguments` as an object, no argument deltas), Codex runs the search
+itself and sends the tools it found in a `tool_search_output` item. Strata declares those tools in that item's tool result, in
+the template's `<tools>` form, and not in the tool list at the top of the prompt: the prompt before the search stays as it was,
+so the conversation cache holds, and the found tools can be called from there on. A namespace's description is said once in
+the conversation, before its first found tools (not before each of them), and a tool an earlier search already declared is
+only named. On two real Codex Desktop threads this kept the search results at 3,768 and 4,449 tokens, where declaring every
+find in full with its namespace text took 36,003 and 8,036 (the first thread found Blender's 12 tools twice). A request that
+declares no client-side `tool_search` renders as before.
 
 ---
 
