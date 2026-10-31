@@ -16338,6 +16338,9 @@ int main(int argc, char** argv) {
             bool first_window = true;
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
+            // #3862 phase 3 (STRATA_GRAMMAR_CHAIN_STATS=1): how often a drafted window broke the grammar chain, and at
+            // which row - the ceiling a masked drafter can recover (gram_lost: rows discarded from the break on)
+            int64_t gram_windows = 0, gram_short = 0, gram_lost = 0, gram_rows = 0, gram_break[9] = {};
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
             int64_t dp_tested[8] = {}, dp_ok[8] = {};   // STRATA_SPEC_DEPTH=1: MTP drafts tested / accepted by depth
             std::vector<int32_t> cbuf((size_t) S, 0), ctail;
@@ -17301,6 +17304,13 @@ int main(int argc, char** argv) {
                         }
                         if (grammar_debug_on()) std::fprintf(stderr, "gdbg draft t=%d tok=%d\n", t, (int) window[(size_t) t]);
                     }
+                    ++gram_windows;
+                    gram_rows += T - 1;
+                    if (chain_t < T) {   // a draft the grammar cannot take: rows chain_t.. are wasted
+                        ++gram_short;
+                        gram_lost += T - chain_t;
+                        ++gram_break[std::min(chain_t, 8)];
+                    }
                     for (int t = chain_t; t < T; ++t) {
                         if (cudaMemcpy(grammar_ring.row(t), grammar_ring.row(chain_t - 1),
                                        (size_t) grammar_ring.words * sizeof(uint32_t),
@@ -17994,6 +18004,16 @@ int main(int argc, char** argv) {
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
                              (long long) sfx_windows, (long long) sfx_ok, (long long) sfx_drafts);
+            if (gram_windows > 0 && std::getenv("STRATA_GRAMMAR_CHAIN_STATS") != nullptr) {
+                std::fprintf(stderr, "strata serve: grammar chain: %lld windows, %lld broke (%lld rows lost, %.1f%% of the "
+                                     "window rows)", (long long) gram_windows, (long long) gram_short,
+                             (long long) gram_lost, 100.0 * (double) gram_lost /
+                                 (double) std::max<int64_t>(1, gram_rows));
+                std::fprintf(stderr, "strata serve: grammar chain break row:");
+                for (int i = 0; i < 9; ++i)
+                    if (gram_break[i] > 0) std::fprintf(stderr, " %d:%lld", i, (long long) gram_break[i]);
+                std::fprintf(stderr, "\n");
+            }
             if (o.lookup_chain > 0)
                 std::fprintf(stderr, "strata serve: lookup chain: %lld of %lld windows, %lld of %lld chained drafts accepted\n",
                              (long long) chain_windows, (long long) dec_windows, (long long) chain_ok, (long long) chain_drafts);

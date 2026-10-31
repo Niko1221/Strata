@@ -59,7 +59,11 @@ def wanted(path: Path) -> bool:
     name = path.name.lower()
     return (name.endswith((".dll", ".so", ".dylib", ".metallib")) or ".so." in name or name == "build.json"
             or name.startswith("license") or name in ("strata-vision", "strata-vision.exe", "strata-vision-hip", "strata-vision-hip.exe",
-                                                       DSV41_EXE, DSV41_EXE + ".exe"))   # the picture readers (CPU, AMD GPU) and the DeepSeek-V4.1 engine beside the engine
+                                                       DSV41_EXE, DSV41_EXE + ".exe",
+                                                       # #3862: the JSON Schema -> GBNF converter.  serve/grammar_schema.py runs it
+                                                       # from beside the engine and, without it, takes the prompt-path fallback -
+                                                       # the answer is then only validated after the fact, never constrained.
+                                                       "grammar_schema", "grammar_schema.exe"))   # the picture readers (CPU, AMD GPU) and the DeepSeek-V4.1 engine beside the engine
 
 
 READER_NAMES = ("strata-vision", "strata-vision.exe")
