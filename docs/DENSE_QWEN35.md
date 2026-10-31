@@ -1,6 +1,8 @@
 # Dense `qwen35` (Qwen3.5 / Qwen3.8 4B) — port plan
 
-Status: plan, no code yet. Fork of `niko1221/strata` (upstream stays `origin`; this fork is `fork`).
+Status: **M0 done** (guard, geometry, layout tables, family switch; 37/37 unit checks, and the real
+`Qwen3.8-4B-Q4_K_M` header reads as 32+1 MTP layers, 0 experts, FF 9216). Fork of `niko1221/strata` (upstream stays
+`origin`; this fork is `fork`).
 
 ## Why this is small (and why it is not free)
 
@@ -37,8 +39,10 @@ Unit tests: `tests/core/model_family_test.cpp`, layout shapes.
 **M1 — loader.** Dense branch in `src/qwen35/q36_engine.cu` load: `sh_gate/up/down ← ffn_*`,
 `n_ff_shexp ← n_ff`, skip router/expert blobs, head from `output.weight` else `token_embd.weight`.
 
-**M2 — one token.** Greedy continuation for a fixed prompt vs `llama.cpp` (`llama-cli -p … -n 32 --temp 0`,
-build `b10387` here already knows `LLM_ARCH_QWEN35`). Top-1 agreement token by token; that is the real gate.
+**M2 — one token.** Greedy continuation for a fixed prompt, **through `pi`** (the harness we actually use), against the
+same request sent to `llama.cpp`'s server (build `b10387` here already knows `LLM_ARCH_QWEN35`). Two comparisons: the
+prompt's **token count** must match exactly (that proves template and tokenizer), then the greedy text. `llama.cpp` is
+the reference engine, not the harness. Top-1 agreement token by token is the gate.
 
 **M3 — prefill + MTP.** Batch path parity, then `--mtp` on/off (a community distill's `nextn` block may be a
 donor head: keep `--mtp` optional per model, never default on).
@@ -50,6 +54,24 @@ donor head: keep `--mtp` optional per model, never default on).
 
 **M5 — shrink the diff.** Re-read upstream `CONTRIBUTING.md`, keep the patch upstream-shaped (one family, no
 kernel changes), open a PR if it lands cleanly; otherwise this branch is the only owner.
+
+## Reuse (prefix cache) — checked before the port
+
+The `qwen35` engine path keeps conversation state **in RAM, per session/slot**: `match_len()` (`q36_engine.cu:3394`)
+requires the held tokens to be a proper prefix of the new prompt *and* the same image keys; `pick_session()` (`:3407`)
+takes the longest match, else an empty slot, else the LRU. Any divergence gives `reuse = 0` and `E.reset()` — the whole
+prompt is read again. It is append-only by construction ("the recurrent state cannot step back", `:3509`).
+
+No disk checkpoints and no `--prompt-cache*` flags on this path; those belong to the Flash-Next engine
+(`src/core/conversation_*`, geometry-keyed). So a restart, an evicted slot, or a rewritten history (a harness's
+compaction) is a cold read. Flash-Next's cache writes `geometry_key()` (18 fields) and refuses a zero in any field but
+the layer count (`conversation_state.cpp:20-118`), so a dense family (`n_expert = 0`) cannot use that machinery without
+a family-aware rule — noted, not planned.
+
+The port touches none of this; the dense family inherits the same append-only, in-RAM reuse. Gate for M2/M3: a 3-turn
+conversation through `pi` must show `reused` > 0 on turns 2..N (the server prints `prompt N tokens = M reused + K
+read`); `tools/harness_reuse_probe.py` measures the interleaved-conversation case. The second-brain workload gets its
+own benchmark, separate from this gate.
 
 ## Risks
 
