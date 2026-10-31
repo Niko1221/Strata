@@ -1049,6 +1049,7 @@ class StrataEngine:
     gpu_busy = None                      # #1317: () -> bool, "the GPU is working" (the telemetry's reading); a GPU at work is not frozen
     last_err = None                      # #997: an ERR that was its last stdout line (death_note says it)
     batch = 0                            # --batch: the engine's batch slots (0: one request at a time)
+    multi = 0                            # DeepSeek --parallel (READY ... multi=N): conversations the engine holds at once (batch = N too)
 
     # `last`: the figures of the engine's last DONE line.  With batch slots several requests run at once, each on its
     # own thread, so each one reads its own request's figures (Service.run records them); one at a time, the one dict.
@@ -1161,6 +1162,7 @@ class StrataEngine:
                 f = line.split()
                 self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
+                self.multi = next((int(x[6:]) for x in f[2:] if x.startswith("multi=") and x[6:].isdigit()), 0)
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1222,6 +1224,8 @@ class StrataEngine:
         # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
         asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
         self.batch = int(self.info.get("batch_slots") or 0)
+        if self.multi:                                  # DeepSeek --parallel: several requests at once, in its own protocol
+            self.batch = self.multi                     # (the server's parallel paths key on it: no FIFO, a request's own figures)
         if asked and self.batch != asked:
             print(f"[strata] parallel requests: {asked} asked, the engine runs {self.batch or 'one at a time'} "
                   "(its log says why)", flush=True)
@@ -1266,6 +1270,11 @@ class StrataEngine:
             self.arrivals = collections.deque(maxlen=64)   # monotonic times of the last requests that came for the control lines (STRATA_COALESCE_*)
             self.ctl_epoch = 0                          # how often the control lines were taken
             self.ctl = threading.Lock()                 # one admission or solo request on the control lines at a time
+        if "rid_lock" not in self.__dict__:
+            self.rid_lock = threading.Lock()
+            self.rid_n = 0                              # --parallel requests' ids (rid=): never reused, a restart goes on from here
+        self.rid_q: dict[int, queue.Queue] = {}         # this process's: rid -> that request's lines (T / PP / DONE / ERR, rid taken out)
+        self.multi_stat = ""                            # the engine's last STAT line over everything it wrote
         self.gen = self.__dict__.get("gen", 0) + 1      # which engine process this is (a request notes its own)
         self._ctl_erred = False                         # #1059: the control lines ended on an ERR
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
@@ -1276,6 +1285,8 @@ class StrataEngine:
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
+        rid_q = self.rid_q
+        multi = self.multi
         line = None
         for line in proc.stdout:
             # checked before batch routing: a fatal line is never a slot's own
@@ -1300,6 +1311,17 @@ class StrataEngine:
                 if sample is not None and self.proc is proc:
                     self.terminal_stage_sample = {**sample, "observed_monotonic": time.monotonic()}
                 continue
+            if multi:                                   # DeepSeek --parallel: `T <rid> <id>`, `PP <rid> ...`, `DONE <rid> ...`, `ERR <rid> ...`
+                head, _, rest = line.partition(" ")
+                if head in ("T", "PP", "DONE", "ERR") and rest[:1].isdigit():
+                    rid_s, _, tail = rest.partition(" ")
+                    rq = rid_q.get(int(rid_s))
+                    if rq is not None:                  # (a request that has ended: its late lines go nowhere)
+                        rq.put(head + (" " + tail if tail else "\n"))
+                    continue
+                if head == "STAT":                      # over everything the engine wrote, not one request's
+                    self.multi_stat = line
+                    continue
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     slot_q[int(line.split()[1])].put(line)
@@ -1313,6 +1335,8 @@ class StrataEngine:
                 self.last_err = line[4:].strip()        # (a failed batch window: every request reads its slot)
         lines.put(None)
         for q in slot_q:
+            q.put(None)
+        for q in list(rid_q.values()):
             q.put(None)
 
     def death_note(self) -> str:
@@ -2403,11 +2427,21 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
-        if getattr(self, "batch", 0):
+        if getattr(self, "batch", 0) and not self.multi:
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
+        # DeepSeek --parallel: the engine holds several conversations; this request is one of them (GEN ... rid=<id>), its
+        # lines come on a queue of their own and its STOP names it.  One at a time (self.multi 0): the one queue, as before.
+        rid, lines_q, stop_line = None, self.lines, "STOP\n"
+        if self.multi:
+            with self.rid_lock:
+                self.rid_n += 1
+                rid = self.rid_n
+            lines_q = queue.Queue()
+            self.rid_q[rid] = lines_q
+            stop_line = f"STOP {rid}\n"
         # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same
         # flush), read here before the token is yielded, so whoever takes the token finds its line in
         # lp_lines.  Not asked for = the deque stays empty and nothing on this path changes.
@@ -2415,16 +2449,22 @@ class StrataEngine:
         self.lp_lines = LPLines(cancel)
         carry = NO_LINE                  # a line read for a token's LP line, held until it is used
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
-        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
-            f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
+        rid_key = f" rid={rid}" if rid is not None else ""
+        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings else \
+            f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key}"
         if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
             if embeddings or int(max_new) != 0:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
-            head = "GEN 0 prefill=1"
+            head = f"GEN 0 prefill=1{rid_key}"
         try:
-            self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
-            self.proc.stdin.flush()
-        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            if rid is not None:                          # several requests write to the engine at once
+                self._send(f"{head} {','.join(str(int(t)) for t in ids)}")
+            else:
+                self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
+                self.proc.stdin.flush()
+        except (OSError, EngineDied):                    # the pipe is gone: the engine died (not the client)
+            if rid is not None:
+                self.rid_q.pop(rid, None)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
         # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
@@ -2448,7 +2488,7 @@ class StrataEngine:
                     if carry is not NO_LINE:              # the line read after a token for its LP line
                         line, carry = carry, NO_LINE
                     else:
-                        line = self.lines.get(timeout=min(wait, 0.5))
+                        line = lines_q.get(timeout=min(wait, 0.5))
                 except queue.Empty:
                     if cancel.is_set():
                         return
@@ -2480,7 +2520,7 @@ class StrataEngine:
                         # the engine writes the token and its `LP` line in one flush, so the line is
                         # here now; an engine without logprobs leaves the next line a normal one
                         try:
-                            carry = self.lines.get(timeout=0.5)
+                            carry = lines_q.get(timeout=0.5)
                         except queue.Empty:
                             carry = NO_LINE
                         if isinstance(carry, str) and carry.startswith("LP "):
@@ -2518,7 +2558,7 @@ class StrataEngine:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
                 if self.can_stop:
                     try:
-                        self.proc.stdin.write("STOP\n")
+                        self.proc.stdin.write(stop_line)
                         self.proc.stdin.flush()
                     except OSError:
                         pass
@@ -2534,7 +2574,7 @@ class StrataEngine:
                         elif left is not None and left <= 0:
                             raise queue.Empty
                         else:
-                            line = self.lines.get(timeout=left)
+                            line = lines_q.get(timeout=left)
                     except queue.Empty:
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
@@ -2545,6 +2585,8 @@ class StrataEngine:
                         break
                     if not self.can_stop:
                         heard = time.monotonic()
+            if rid is not None:                           # this request's lines are over (a late one goes nowhere)
+                self.rid_q.pop(rid, None)
 
     def _activity(self) -> tuple[float, int] | None:
         """#1317: (CPU seconds, I/O bytes) the engine process has used so far, or None when they cannot be read."""
@@ -3376,7 +3418,8 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
     """#465 (opt-in): "parallel": N in the config - up to N requests decode together in the engine's batch slots
     (--batch N); more wait their turn.  1 or absent: one request at a time, as before.  A value the engine cannot use
     is said and passed on: the engine warns and adjusts (recommend, never force)."""
-    if "--batch" in args or "--slots" in args:
+    ds = (cfg.get("arch") or "") == "deepseek41"
+    if "--batch" in args or "--slots" in args or (ds and "--parallel" in args):
         return []
     n = cfg.get("parallel")
     if n is None or n is False:
@@ -3387,6 +3430,13 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
         return []
     if n <= 1:
         return []
+    if ds:
+        # DeepSeek: --parallel N (the engine holds N conversations at once, each its own rings and KV in VRAM, taken out of the
+        # experts' room; their tokens are decoded together).  Not --batch: that is the Qwen engine's slots.
+        if n > PARALLEL_MAX:
+            print(f'[strata] "parallel": {n} - the DeepSeek engine runs at most {PARALLEL_MAX} conversations at once; it will use '
+                  f"{PARALLEL_MAX}", flush=True)
+        return ["--parallel", str(min(n, PARALLEL_MAX))]
     # (on a layer split the pipelined groups each hold up to 8 slots - 16 in a HIP engine with wide windows - so more than 8 is
     # not a limit there: the engine says how many slots it runs, INFO batch_slots)
     if (n > PARALLEL_MAX and "--batch-mtp" not in args and os.environ.get("STRATA_BATCH_MTP", "0") in ("", "0")
