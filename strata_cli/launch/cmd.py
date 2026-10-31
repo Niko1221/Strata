@@ -337,6 +337,10 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
     if s.family and s.model:
         if s.context is None:
             s.context = catalog.max_context(s.family, s.model, hw)
+        from strata_control import gpu_fit as _gf
+        _q4 = _gf.strix_q4_stall_note(s.model, comp.gpus)       # REMOVE with the Strix stall fix (gpu_fit.STRIX_Q4_NOTE)
+        if _q4:
+            notices.append(S.Notice("warn", _q4, ""))
         rows = [r for r in catalog.rows(hw) if r.family == s.family and r.model == s.model]
         if rows:
             r = rows[0]
