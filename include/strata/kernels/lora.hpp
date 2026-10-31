@@ -51,6 +51,12 @@ const Lora& lora();
 /// before any graph is captured (the graphs hold the tables' addresses).
 bool lora_upload(const std::vector<LoraLayerHost>& layers, std::string& err);
 
+/// Replace every table's contents in place (same per-layer rank / n_in / n_out; a different shape is an error, not a
+/// re-upload).  The addresses stay, so the graphs already captured keep working: a zeroth-order step reads
+/// theta +- eps over a FRESH random direction every step, and one direction per process would make the engine
+/// useful for exactly one step.
+bool lora_update(const std::vector<LoraLayerHost>& layers, std::string& err);
+
 /// A layer split: put the loaded adapter's tables on the CURRENT device too (lora_apply uses the tables of the
 /// device it runs on).  No-op without an adapter or when this device has them already.
 bool lora_replicate(std::string& err);
@@ -59,6 +65,13 @@ bool lora_replicate(std::string& err);
 /// it between requests.
 void lora_set_enabled(bool on);
 bool lora_enabled();
+
+/// The same switch with a sign: 0 = off (the projection's output is untouched, bit-identical to no adapter),
+/// +1 = apply the adapter as loaded, -1 = SUBTRACT it (-(B A x) instead of +(B A x)).  MeZO's two reads of one step
+/// are theta + eps and theta - eps along one random direction, which is this adapter with the two signs - no second
+/// set of tables, and the same captured graph answers both.  Synchronizes like `lora_set_enabled`.
+void lora_set_polarity(int sign);
+int lora_polarity();
 
 /// Device bytes of the tables on one device (the VRAM a layer split's stage pays for them).
 uint64_t lora_device_bytes();

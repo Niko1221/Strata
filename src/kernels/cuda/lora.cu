@@ -27,7 +27,10 @@ constexpr int TILE = 64, TK = 16, TILE_THREADS = 256;
 constexpr int kMaxSplits = 32, kSplitBlocks = 512;   // the tiled A x: K split until about this many blocks
 
 Lora g_lora;
-bool g_on_host = false;
+// The adapter's setting, host side: 0 off, +1 on, -1 on with the sign flipped (MeZO's theta - eps over the same
+// tables).  The device copies are ints read by every kernel; nothing in flight may see it change, so the setter
+// synchronizes.
+int g_polarity_host = 0;
 constexpr int kDevices = 64;
 // a: rank x n_in, bt: rank x n_out (B transposed), h: the small path's A x (SMALL_N x rank).  h is per layer: two
 // streams of one device never run the same layer at once, but a layer split with both stages on one card reads a
@@ -59,7 +62,7 @@ void free_tables(DevTables& t) {
 bool upload_here(std::string& err) {
     DevTables& t = g_dev[cur_device()];
     if (t.ready()) return true;
-    const int flag = g_on_host ? 1 : 0;
+    const int flag = g_polarity_host;
     t.layers.assign(g_host.size(), LayerDev{});
     bool ok = cudaMalloc(&t.on, sizeof(int)) == cudaSuccess &&
               cudaMemcpy(t.on, &flag, sizeof(int), cudaMemcpyHostToDevice) == cudaSuccess;
@@ -125,7 +128,8 @@ template <int NT>
 __global__ void __launch_bounds__(UP_THREADS) lora_up_kernel(const float* __restrict__ bt, const float* __restrict__ h,
                                                              float* __restrict__ y, int64_t ldy, int rank, int n_out,
                                                              const int* __restrict__ on) {
-    if (*on == 0) return;
+    const float sg = (float) *on;   // 0: off, +1: theta + eps, -1: theta - eps
+    if (sg == 0.0f) return;
     extern __shared__ float hs[];   // NT x rank
     for (int i = threadIdx.x; i < NT * rank; i += UP_THREADS) hs[i] = h[i];
     __syncthreads();
@@ -141,7 +145,7 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_kernel(const float* __rest
         for (int t = 0; t < NT; ++t) acc[t] = fmaf(bv, hs[t * rank + r], acc[t]);
     }
 #pragma unroll
-    for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += acc[t];
+    for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += sg * acc[t];
 }
 
 // The up kernel when B fits in registers (rank <= PDL_RANK) and the device has programmatic dependent launch: the
@@ -157,7 +161,8 @@ template <int NT>
 __global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __restrict__ bt, const float* h,
                                                                  float* __restrict__ y, int64_t ldy, int rank, int n_out,
                                                                  const int* __restrict__ on) {
-    if (*on == 0) return;
+    const float sg = (float) *on;
+    if (sg == 0.0f) return;
     extern __shared__ float hs[];   // NT x rank
     const int o = blockIdx.x * UP_THREADS + threadIdx.x;
     float bv[PDL_RANK];
@@ -180,7 +185,7 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __
         }
     }
 #pragma unroll
-    for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += acc[t];
+    for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += sg * acc[t];
 }
 
 template <typename XT, int NT>
@@ -217,6 +222,9 @@ __global__ void __launch_bounds__(TILE_THREADS) lora_tiled_kernel(const XT* __re
                                                                   float* __restrict__ C, int64_t ldc, int T, int N, int K,
                                                                   int kc, int64_t split_stride, int add,
                                                                   const int* __restrict__ on) {
+    // The sign lands on the ACCUMULATING pass only: this kernel is run twice per adapter (A x into the scratch, then
+    // += h B^T into y), and applying it twice would square it back to +1.
+    const float sg = add ? (float) *on : 1.0f;
     if (*on == 0) return;
     const int kb = blockIdx.z * kc, ke = min(K, kb + kc);
     C += blockIdx.z * split_stride;
@@ -259,7 +267,7 @@ __global__ void __launch_bounds__(TILE_THREADS) lora_tiled_kernel(const XT* __re
             const int nn = n0 + tx + 16 * j;
             if (nn >= N) continue;
             float* c = C + (int64_t) t * ldc + nn;
-            *c = add ? *c + acc[i][j] : acc[i][j];
+            *c = add ? *c + sg * acc[i][j] : acc[i][j];
         }
     }
 }
@@ -310,7 +318,7 @@ void apply(int64_t layer, const XT* x, int64_t ldx, int64_t n, float* y, int64_t
             }
         }
     } else {
-        if (!g_on_host) return;   // eager: the host flag is the device flag
+        if (g_polarity_host == 0) return;   // eager: the host flag is the device flag
         float* hs = nullptr;
         {
             std::lock_guard<std::mutex> lock(g_scratch_mu);
@@ -348,10 +356,10 @@ void apply(int64_t layer, const XT* x, int64_t ldx, int64_t n, float* y, int64_t
 
 const Lora& lora() { return g_lora; }
 
-bool lora_upload(const std::vector<LoraLayerHost>& layers, std::string& err) {
-    if (g_lora.loaded) { err = "lora: an adapter is already loaded"; return false; }
-    g_host.assign(layers.size(), LayerHost{});
-    Lora l;
+// The loader's tables -> the shapes the kernels index, plus the layers the adapter covers.  Host only: the upload
+// below copies `out` out, `lora_update` compares it against the tables already on the devices.
+static bool build_host(const std::vector<LoraLayerHost>& layers, std::vector<LayerHost>& out, Lora& l, std::string& err) {
+    out.assign(layers.size(), LayerHost{});
     l.adapted.assign(layers.size(), false);
     for (size_t i = 0; i < layers.size(); ++i) {
         const LoraLayerHost& src = layers[i];
@@ -359,10 +367,9 @@ bool lora_upload(const std::vector<LoraLayerHost>& layers, std::string& err) {
         if (src.rank < 0 || src.rank > kLoraMaxRank || src.n_in < 1 || src.n_out < 1 ||
             src.a.size() != (size_t) (src.rank * src.n_in) || src.b.size() != (size_t) (src.n_out * src.rank)) {
             err = "lora: bad tables for layer " + std::to_string(i);
-            g_host.clear();
             return false;
         }
-        LayerHost& h = g_host[i];
+        LayerHost& h = out[i];
         h.rank = src.rank; h.n_in = src.n_in; h.n_out = src.n_out;
         h.a = src.a;
         h.bt.resize(src.b.size());
@@ -371,21 +378,66 @@ bool lora_upload(const std::vector<LoraLayerHost>& layers, std::string& err) {
         l.adapted[i] = true;
         l.rank_max = std::max(l.rank_max, src.rank);
     }
-    if (l.rank_max == 0) { err = "lora: the adapter covers no layer"; g_host.clear(); return false; }
-    g_on_host = true;
+    if (l.rank_max == 0) { err = "lora: the adapter covers no layer"; return false; }
+    return true;
+}
+
+bool lora_upload(const std::vector<LoraLayerHost>& layers, std::string& err) {
+    if (g_lora.loaded) { err = "lora: an adapter is already loaded"; return false; }
+    std::vector<LayerHost> host;
+    Lora l;
+    if (!build_host(layers, host, l, err)) return false;
+    g_host = std::move(host);
+    g_polarity_host = 1;
     if (!upload_here(err)) { g_host.clear(); return false; }
     l.loaded = true;
     g_lora = l;
     return true;
 }
 
-bool lora_replicate(std::string& err) { return !g_lora.loaded || upload_here(err); }
-
-void lora_set_enabled(bool on) {
-    if (!g_lora.loaded || on == g_on_host) return;
+bool lora_update(const std::vector<LoraLayerHost>& layers, std::string& err) {
+    if (!g_lora.loaded) { err = "lora: no adapter is loaded"; return false; }
+    std::vector<LayerHost> host;
+    Lora l = g_lora;
+    if (!build_host(layers, host, l, err)) return false;
+    if (host.size() != g_host.size()) { err = "lora: the update names other layers than the loaded adapter"; return false; }
+    for (size_t i = 0; i < host.size(); ++i) {
+        const LayerHost& a = host[i];
+        const LayerHost& b = g_host[i];
+        if (a.rank != b.rank || a.n_in != b.n_in || a.n_out != b.n_out) {
+            err = "lora: layer " + std::to_string(i) + " changed shape (the tables' addresses are held by captured graphs)";
+            return false;
+        }
+    }
     int prev = 0;
     cudaGetDevice(&prev);
-    const int v = on ? 1 : 0;
+    for (int d = 0; d < kDevices; ++d) {
+        if (!g_dev[d].ready()) continue;
+        cudaSetDevice(d);
+        cudaDeviceSynchronize();   // nothing queued may still read the tables
+        for (size_t i = 0; i < host.size(); ++i) {
+            if (host[i].rank == 0) continue;
+            const LayerDev& dv = g_dev[d].layers[i];
+            if (cudaMemcpy(dv.a, host[i].a.data(), host[i].a.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
+                cudaMemcpy(dv.bt, host[i].bt.data(), host[i].bt.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess) {
+                cudaSetDevice(prev);
+                err = "lora: table upload failed (the adapter is now half-updated)";
+                return false;
+            }
+        }
+    }
+    cudaSetDevice(prev);
+    g_host = std::move(host);
+    return true;
+}
+
+bool lora_replicate(std::string& err) { return !g_lora.loaded || upload_here(err); }
+
+void lora_set_polarity(int sign) {
+    const int v = sign < 0 ? -1 : (sign > 0 ? 1 : 0);
+    if (!g_lora.loaded || v == g_polarity_host) return;
+    int prev = 0;
+    cudaGetDevice(&prev);
     for (int d = 0; d < kDevices; ++d) {
         if (!g_dev[d].ready()) continue;
         cudaSetDevice(d);
@@ -393,10 +445,14 @@ void lora_set_enabled(bool on) {
         cudaMemcpy(g_dev[d].on, &v, sizeof(int), cudaMemcpyHostToDevice);
     }
     cudaSetDevice(prev);
-    g_on_host = on;
+    g_polarity_host = v;
 }
 
-bool lora_enabled() { return g_lora.loaded && g_on_host; }
+void lora_set_enabled(bool on) { lora_set_polarity(on ? 1 : 0); }
+
+bool lora_enabled() { return g_lora.loaded && g_polarity_host != 0; }
+
+int lora_polarity() { return g_lora.loaded ? g_polarity_host : 0; }
 
 uint64_t lora_device_bytes(const std::vector<LoraLayerHost>& layers) {
     uint64_t b = sizeof(int);

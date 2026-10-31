@@ -4,6 +4,8 @@
 //   3. switched off: y BITWISE unchanged, eager and replayed from a graph captured while on (the flag is read on
 //      the device); switched on again, the same graph adds the adapter again.
 //   4. a layer without an adapter is untouched; a captured call of more than kLoraCaptureTokens tokens throws.
+//   5. the sign (-1 = theta - eps over the SAME tables): the mirror image about y0, eager and from the graph, and
+//      `lora_update` replacing the direction in place without moving the addresses the graph holds.
 
 #include "strata/kernels/lora.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -98,23 +100,25 @@ int main() {
     up(dx, x);
     up(dx16, x16);
 
-    // reference y0 + B (A x) in double, from the fp32 or the fp16-rounded x
-    auto reference = [&](int64_t n, bool f16) {
+    // reference y0 + sign * B (A x) in double, from the fp32 or the fp16-rounded x.  `t` overrides the tables
+    // (lora_update's new direction); the default is the one uploaded above.
+    auto reference = [&](int64_t n, bool f16, int sign = 1, const k::LoraLayerHost* t = nullptr) {
+        const k::LoraLayerHost& tb = t != nullptr ? *t : h;
         std::vector<double> want((size_t) (n * NOUT));
         std::vector<double> hv((size_t) R);
-        for (int64_t t = 0; t < n; ++t) {
+        for (int64_t tt = 0; tt < n; ++tt) {
             for (int64_t r = 0; r < R; ++r) {
                 double acc = 0.0;
                 for (int64_t i = 0; i < NIN; ++i) {
-                    const float xv = f16 ? strata::kernels::f32_from_f16(x16[(size_t) (t * LDX + i)]) : x[(size_t) (t * LDX + i)];
-                    acc += (double) h.a[(size_t) (r * NIN + i)] * xv;
+                    const float xv = f16 ? strata::kernels::f32_from_f16(x16[(size_t) (tt * LDX + i)]) : x[(size_t) (tt * LDX + i)];
+                    acc += (double) tb.a[(size_t) (r * NIN + i)] * xv;
                 }
                 hv[(size_t) r] = acc;
             }
             for (int64_t o = 0; o < NOUT; ++o) {
-                double acc = y0[(size_t) (t * LDY + o)];
-                for (int64_t r = 0; r < R; ++r) acc += (double) h.b[(size_t) (o * R + r)] * hv[(size_t) r];
-                want[(size_t) (t * NOUT + o)] = acc;
+                double acc = y0[(size_t) (tt * LDY + o)];
+                for (int64_t r = 0; r < R; ++r) acc += (double) sign * tb.b[(size_t) (o * R + r)] * hv[(size_t) r];
+                want[(size_t) (tt * NOUT + o)] = acc;
             }
         }
         return want;
@@ -228,6 +232,66 @@ int main() {
     if (g2) cudaGraphDestroy(g2);
     cudaGetLastError();
     check(threw, "captured call above kLoraCaptureTokens throws");
+
+    std::printf("5. the sign: theta - eps over the same tables\n");
+    for (const int64_t n : {1, 8, 300}) {
+        for (const bool f16 : {false, true}) {
+            k::lora_set_polarity(1);
+            up(dy, y0);
+            if (f16) k::lora_apply_f16(kLayer, dx16, LDX, n, dy, LDY, nullptr);
+            else k::lora_apply(kLayer, dx, LDX, n, dy, LDY, nullptr);
+            ck(cudaDeviceSynchronize(), "apply +");
+            const std::vector<float> plus = down(dy, y0.size());
+            k::lora_set_polarity(-1);
+            up(dy, y0);
+            if (f16) k::lora_apply_f16(kLayer, dx16, LDX, n, dy, LDY, nullptr);
+            else k::lora_apply(kLayer, dx, LDX, n, dy, LDY, nullptr);
+            ck(cudaDeviceSynchronize(), "apply -");
+            const std::vector<float> minus = down(dy, y0.size());
+            const double ep = rel_err(plus, reference(n, f16, 1), n, NOUT, LDY);
+            const double em = rel_err(minus, reference(n, f16, -1), n, NOUT, LDY);
+            double mirror = 0.0;   // (plus - y0) == -(minus - y0): one direction, two signs
+            for (int64_t t = 0; t < n; ++t)
+                for (int64_t o = 0; o < NOUT; ++o) {
+                    const size_t i = (size_t) (t * LDY + o);
+                    const double d = (double) plus[i] - y0[i];
+                    mirror = std::max(mirror, std::fabs(d + ((double) minus[i] - y0[i])) / std::max(1.0, std::fabs(d)));
+                }
+            char what[128];
+            std::snprintf(what, sizeof what, "%3lld tokens, %s: +%.0e / -%.0e, mirror %.0e", (long long) n,
+                          f16 ? "fp16" : "fp32", ep, em, mirror);
+            check(ep < 1e-4 && em < 1e-4 && mirror < 1e-3, what);
+        }
+    }
+    {   // the graph captured while on answers the other sign too: nothing was baked in at capture
+        k::lora_set_polarity(-1);
+        up(dy, y0);
+        ck(cudaGraphLaunch(exec, s), "launch -");
+        ck(cudaStreamSynchronize(s), "sync -");
+        check(rel_err(down(dy, y0.size()), reference(8, false, -1), 8, NOUT, LDY) < 1e-4,
+              "the graph captured at +1, replayed at -1: theta - eps");
+        k::lora_set_polarity(1);
+    }
+    {   // lora_update: a new direction in the same tables, addresses untouched
+        k::LoraLayerHost h2 = h;
+        for (float& v : h2.a) v *= -0.5f;
+        for (float& v : h2.b) v *= 0.25f;
+        std::vector<k::LoraLayerHost> next = layers;
+        next[(size_t) kLayer] = h2;
+        next[5] = h2;
+        std::string ue;
+        check(k::lora_update(next, ue), "lora_update: a new direction in place");
+        up(dy, y0);
+        k::lora_apply(kLayer, dx, LDX, 300, dy, LDY, nullptr);
+        ck(cudaDeviceSynchronize(), "apply updated");
+        check(rel_err(down(dy, y0.size()), reference(300, false, 1, &h2), 300, NOUT, LDY) < 1e-4,
+              "lora_update: the new direction, not the old one");
+        up(dy, y0);
+        ck(cudaGraphLaunch(exec, s), "launch updated graph");
+        ck(cudaStreamSynchronize(s), "sync updated");
+        check(rel_err(down(dy, y0.size()), reference(8, false, 1, &h2), 8, NOUT, LDY) < 1e-4,
+              "lora_update: the graph captured before it reads the new tables");
+    }
 
     cudaGraphExecDestroy(exec);
     cudaGraphDestroy(graph);
