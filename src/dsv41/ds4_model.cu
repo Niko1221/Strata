@@ -1138,7 +1138,7 @@ struct Model::Impl {
     // a window of one through moe_gate_up / moe_down (DS4_MOE_TOKEN=0: win_experts, whose down rows run
     // before the wait for the CPU lane - the same bits, no faster)
     bool moe_token_path = std::getenv("DS4_MOE_TOKEN") == nullptr || std::atoi(std::getenv("DS4_MOE_TOKEN")) != 0;
-    int async_max_t = std::getenv("DS4_ASYNC_T") ? std::atoi(std::getenv("DS4_ASYNC_T")) : 16;   // windows up to this (16 = every window: a row's bits no longer depend on its window's size; 8 before - windows of 9-16 took the host-routed path, another rounding; Project Maya #608, mw00)
+    int async_max_t = std::getenv("DS4_ASYNC_T") ? std::atoi(std::getenv("DS4_ASYNC_T")) : 8;   // windows up to this (DS4_ASYNC_T=16 is Project Maya #608: windows of 9-16 rows on the async path too; not made the default - the logits test on p620 (phaseA-tests/maya-port/A2) still showed window-size dependence)
     // lookahead: while layer L runs, the device guesses the next layer's picks (its gate on L's FFN input, the same
     // choice) and publishes them with L's routing; the CPU lane asks for the guessed experts it will read from the files
     // at once (a thread of its own, os::prefetch), so the SSD reads them while L computes instead of on the next

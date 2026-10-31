@@ -30,3 +30,4 @@ Port of Project Maya's DeepSeek restore points into `src/dsv41` (0.2.9.x, branch
 
 Taken from Project Maya v1.1.35 to v1.1.42 on branch f-040-maya-ds:
 - the thread pool's generation fence (#618, Cody Harrison).
+- Small items (A2 slice): #619 sampler error ends the request and `logits()` copies on the head stream (Cody Harrison, 2040174), #620 CPU-lane layers that cannot compute stop the engine instead of answering zeros (Cody Harrison, e598716), #676 `bf16_rn` by arithmetic (rilken, 79628d7), #608 `DS4_ASYNC_T=16` as an opt-in value (mw00, b9c07e7).
