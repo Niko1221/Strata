@@ -11,6 +11,7 @@
 #endif
 #include <hip/hip_runtime.h>
 #include <hip/hip_version.h>
+#include "strata/platform/hip_host_lock.hpp"   // cudaHostRegister / cudaHostAlloc + mlock on Linux
 // Do not let HIP's legacy macro corrupt libstdc++ attribute names.
 #ifdef __noinline__
 #undef __noinline__
@@ -44,11 +45,7 @@
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaEvent_t hipEvent_t
 #define cudaFree hipFree
-#if HIP_VERSION_MAJOR < 7
-#define cudaFreeHost hipHostFree
-#else
-#define cudaFreeHost hipFreeHost
-#endif
+#define cudaFreeHost ::strata::hip_compat::host_free   // + munlock (host_lock_detail below)
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
 #define cudaFuncAttributePreferredSharedMemoryCarveout hipFuncAttributePreferredSharedMemoryCarveout
 #define cudaGetDevice hipGetDevice
@@ -63,7 +60,7 @@
 #define cudaGraphLaunch hipGraphLaunch
 #define cudaGraphUpload hipGraphUpload
 #define cudaGraph_t hipGraph_t
-#define cudaHostAlloc hipHostMalloc
+#define cudaHostAlloc ::strata::hip_compat::host_alloc   // + mlock
 #if HIP_VERSION_MAJOR < 7
 #define cudaHostAllocDefault hipHostMallocDefault
 #define cudaHostAllocMapped hipHostMallocMapped
@@ -74,11 +71,11 @@
 #define cudaHostAllocPortable hipHostAllocPortable
 #endif
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
-#define cudaHostRegister hipHostRegister
+#define cudaHostRegister ::strata::hip_compat::host_register   // + mlock
 #define cudaHostRegisterMapped hipHostRegisterMapped
 #define cudaHostRegisterPortable hipHostRegisterPortable
 #define cudaHostRegisterReadOnly hipHostRegisterReadOnly
-#define cudaHostUnregister hipHostUnregister
+#define cudaHostUnregister ::strata::hip_compat::host_unregister   // + munlock
 #define cudaLaunchHostFunc hipLaunchHostFunc
 #define cudaMalloc hipMalloc
 #define cudaMallocHost(...) (::strata::hip_compat::malloc_host(__VA_ARGS__))
@@ -127,7 +124,7 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 namespace strata::hip_compat {
 template <typename T>
 inline hipError_t malloc_host(T** pointer, size_t bytes) {
-    return hipHostMalloc(reinterpret_cast<void**>(pointer), bytes, hipHostMallocDefault);
+    return host_alloc(pointer, bytes, hipHostMallocDefault);
 }
 }  // namespace strata::hip_compat
 
