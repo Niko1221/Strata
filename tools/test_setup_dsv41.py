@@ -77,6 +77,11 @@ class Entries(unittest.TestCase):
 
 
 class Fit(unittest.TestCase):
+    def setUp(self):                                  # the AMD rules below are the Linux ones, whatever box the test runs on
+        p = mock.patch.object(dsv41_fit, "_on_windows", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_the_numbers_of_the_model(self):
         self.assertAlmostEqual(dsv41_fit.WEIGHTS_GB, 305.6, delta=0.1)
         self.assertAlmostEqual(dsv41_fit.EXPERTS_GB, 288.8, delta=0.1)
@@ -301,6 +306,11 @@ class Install(unittest.TestCase):
 
 
 class Catalog(unittest.TestCase):
+    def setUp(self):                                  # the AMD rules below are the Linux ones, whatever box the test runs on
+        p = mock.patch.object(dsv41_fit, "_on_windows", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_the_mcp_catalog_lists_the_size(self):
         import strata_mcp as M
         s = M.Strata(ROOT)

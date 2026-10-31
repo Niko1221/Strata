@@ -193,11 +193,14 @@ def install_root(explicit: str | os.PathLike | None = None, src: str | os.PathLi
     return discovery.find_install(here=installer_folder(src))[0]
 
 
-# Intel Arc cards by PCI id: (name, memory in GB).  The kernel does not tell an ordinary user how much memory the card has, so the common
-# cards are listed; an id that is not here is shown as "Intel Arc" with no size and is treated as a small card.  (A770: the 8 GB model shares
-# the id of the 16 GB one, so the smaller figure is used.)
+# Intel Arc cards by PCI id: (name, memory in GB).  The kernel does not tell an ordinary user how much memory the card has, so the discrete
+# cards are listed (the same ids as sycl/setup_intel.py; tests/terminal/test_intel_cards_029.py keeps the two in step).  An id that is not
+# here is NOT counted: it is skipped, because an Intel chip built into the processor shares this vendor id and must never be named as a card.
+# (A770: the 8 GB model shares the id of the 16 GB one, so the smaller figure is used.)
 INTEL_ARC = {"0x56a1": ("Arc A750", 8.0), "0x56a2": ("Arc A580", 8.0), "0x56a0": ("Arc A770", 8.0), "0x56a5": ("Arc A380", 6.0),
-             "0x56a6": ("Arc A310", 4.0), "0xe20b": ("Arc B580", 12.0), "0xe20c": ("Arc B570", 10.0), "0xe223": ("Arc Pro B70", 32.0)}
+             "0x56a6": ("Arc A310", 4.0), "0x5690": ("Arc A770M", 16.0), "0xe20b": ("Arc B580", 12.0), "0xe20c": ("Arc B570", 10.0),
+             "0xe223": ("Arc Pro B70", 32.0), "0xe222": ("Arc Pro B65", 32.0), "0xe221": ("Arc Pro B60", 24.0), "0xe211": ("Arc Pro B60", 24.0),
+             "0xe212": ("Arc B50", 16.0)}
 
 
 def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
