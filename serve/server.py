@@ -3677,6 +3677,9 @@ PARALLEL_STACK_ENV = {
     "STRATA_SLOT_COPY_BATCHSYNC": "1", "STRATA_BATCH_GDN_GROUPS": "1", "STRATA_BATCH_ATTN_ROWS": "1",
     "STRATA_BATCH_SELF_COMMIT": "1", "STRATA_QSA_SLOTS": "1",
 }
+# 0.2.9.1: the two parts that need the card's free VRAM are the ENGINE's own, never an environment variable of ours: the FP16 weight
+# cache (bit-exact; takes only VRAM beyond 3 GiB kept free) and no loan of cache slots (only when every expert is resident and the
+# prompt path's own buffers fit beside 3 GiB; KL 0.006, QUAL-PAR2).  STRATA_PF_W16_CACHE_MIB=0 and STRATA_AUTO_NOBORROW=0 turn them off.
 # Only where the stack was run alone: Linux CUDA, all nine.  HIP got no measurement without replicas (its only run was inside the
 # replica config), Windows none at all (its host-arena / pinned-memory path differs): nothing there.
 
