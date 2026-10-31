@@ -672,7 +672,11 @@ names the architecture and version (`STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1a
 solution rocBLAS refuses at run time falls back to the default kernel for that call, and after three refusals for good.
 `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set) is the smoke test.
 
-Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured on an RX 6900 XT.
+Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured on an RX 6900 XT, and `gfx1030-rocblas-5.2.0.dabb6df2b98-dirty.txt` (Arch Linux's ROCm 7.2.4 packages; prompts below 1,152 tokens 12-18% faster on one RX 6900 XT, [data](../bench/results/2026-10-24-rdna2-rocblas-table-rocm72/README.md)).
+The engine takes a table only for the exact version string its rocBLAS reports: AMD's Ubuntu packages of the same ROCm
+7.2.4 report `5.2.0.dabb6df2b9` and need their own table. Point `STRATA_ROCBLAS_TUNING` at the directory, as setup does,
+so each GPU of a split loads the file for its own architecture and version. On a two-card layer split, where expert
+streaming and the hand-off dominate the prompt, a table of this kind made no end-to-end difference (#3924).
 Other gfx1030 cards run it too, but a table calibrated for them may pick differently; `tune_rocblas` makes one in about 5
 minutes. Data: [2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md).
 
