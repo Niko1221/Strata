@@ -7840,7 +7840,7 @@ def make_handler(svc: Service):
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
-            max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
+            max_req = max_new = check_token_limit(req, "max_completion_tokens", "max_tokens")   # 0/-1: the rest
             # No cap of our own on the reply's length when logprobs are asked for: the reply is already bounded by
             # max_tokens (by the rest of the context when it is not sent), which is the only bound OpenAI and vLLM
             # put on it either.  A reply that is not streamed does hold every entry (its token, bytes and up to 20
@@ -8107,7 +8107,7 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
             force = svc.force_text(forced_call(req.get("tool_choice"), tools))        # "any" / {"type": "tool", "name": N}
-            max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
+            max_new = check_token_limit(req, "max_tokens")             # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
@@ -8826,6 +8826,38 @@ def check_request_sampling(req) -> None:
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
 FAMILY_MODEL_NAMES = {"qwen4exp": "qwen3.8-flash-next", "qwen35moe": "qwen3.6-35b-a3b",
                       "deepseek41": "deepseek-v4.1-flash"}
+
+
+def check_token_limit(req, *names) -> int:
+    """The output cap a request asked for, as a whole number of tokens; a boolean or a fractional value is a 400.
+
+    int(True) is 1 and int(2.5) is 2, so both used to become a generation budget nobody asked for (#4037): a chat
+    request with "max_tokens": true answered one token, one with 2.5 answered two, and "max_tokens": false fell
+    through to 0, which Service.prepare reads as the rest of the context and lets a long answer finish. The
+    documented sentinels keep their meaning: 0 and -1 are the rest of the context, an absent field is 0 as before,
+    and a numeric string is still read (int("192")), which clients that send numbers as strings rely on. The first
+    field that names a non-zero cap wins, as the `or` chain this replaces did."""
+    for name in names:
+        value = req.get(name) if isinstance(req, dict) else None
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            raise ValueError(f"{name}: a whole number of tokens (true and false are not)")
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError(f"{name}: a whole number of tokens (not {value})")
+            value = int(value)
+        elif isinstance(value, str):
+            try:
+                value = int(value.strip())
+            except ValueError:
+                raise ValueError(f"{name}: a whole number of tokens") from None
+        elif not isinstance(value, int):
+            raise ValueError(f"{name}: a whole number of tokens")
+        if value == 0:
+            continue                    # 0 is "the rest of the context": the next field, or no cap, decides
+        return value
+    return 0
 
 
 # The sampling each model card recommends ("Best Practices"), used when neither the request, the Chat settings nor the
