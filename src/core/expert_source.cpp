@@ -5027,6 +5027,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++entries;
                 }
             ++d.pcie_experts;
+            d.pcie_bytes += bb;      // the link carries the whole blob: the staging copy, or the GPU's read of it
         }
         P.start2[fetches] = entries;
         P.counts[0] = groups;

@@ -2524,6 +2524,11 @@ int64_t Prefill::chain_experts_streamed() const {
     for (const Prefill* p = this; p != nullptr; p = p->next_) sum += p->stats_.experts_streamed;
     return sum;
 }
+int64_t Prefill::chain_experts_streamed_bytes() const {
+    int64_t sum = 0;
+    for (const Prefill* p = this; p != nullptr; p = p->next_) sum += p->stats_.experts_streamed_bytes;
+    return sum;
+}
 
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk, bool src) {
     return bytes_needed_impl(g, ss, chunk, false, src);
@@ -3449,6 +3454,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 m.stage_live[sl] = true;
                 stats_.ms_experts_host += ms_since(th);
                 ++stats_.experts_streamed;
+                stats_.experts_streamed_bytes += (int64_t) bytes;
                 ++issued;
             }
         };
@@ -3463,7 +3469,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         std::atomic<size_t> a_issued{0}, a_consumed{0};
         std::atomic<bool> a_stop{false};
         double iss_ms = 0;
-        int64_t iss_streamed = 0, iss_dma = 0;
+        int64_t iss_streamed = 0, iss_dma = 0, iss_bytes = 0;
         std::thread issuer;
         struct IssuerJoin {
             std::atomic<bool>* stop;
@@ -3557,6 +3563,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     m.stage_live[sl] = true;
                     iss_ms += ms_since(th);
                     ++iss_streamed;
+                    iss_bytes += (int64_t) bytes;
                     a_issued.store(idx + 1, std::memory_order_release);
                 }
             });
@@ -5163,6 +5170,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             stage_of[j] = sl;
                             stats_.ms_experts_host += ms_since(th);
                             ++stats_.experts_streamed;
+                            stats_.experts_streamed_bytes += (int64_t) lay.blob_bytes(l);
                             return true;
                         };
                         // In the streamed walk an MMQ group is gathered in ONE launch, after ONE wait on its last
@@ -5625,6 +5633,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             issuer.join();
             stats_.ms_experts_host += iss_ms;
             stats_.experts_streamed += iss_streamed;
+            stats_.experts_streamed_bytes += iss_bytes;
             stats_.experts_dma += iss_dma;
             if (copy_wait_dedupe && pt.on)
                 std::fprintf(stderr, "strata prefill copies: %lld slot waits, %lld skipped as the same release event\n",
@@ -6568,6 +6577,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
             stage_of[u] = sl;
             stats_.ms_experts_host += ms_since(tq);
             ++stats_.experts_streamed;
+            stats_.experts_streamed_bytes += (int64_t) lay.blob_bytes(l);
             ++lm_streamed;
             lm_bytes += (uint64_t) lay.blob_bytes(l);
             return true;

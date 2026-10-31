@@ -35,6 +35,7 @@ struct PrefillStats {
     double ms_total = 0;
     double ms_experts_host = 0;     ///< host time staging non-resident experts
     int64_t experts_streamed = 0;   ///< expert blobs copied host -> device
+    int64_t experts_streamed_bytes = 0;   ///< ...their size: the bytes those copies carried (docs/AMD_HIP.md)
     int64_t experts_dma = 0;        ///< ...of which straight from the pinned arena (no CPU copy)
     int64_t experts_resident = 0;   ///< expert-layer groups served from the VRAM tier
     int64_t experts_direct = 0;     ///< ...of which MMQ read in their cache slots, not gathered (STRATA_MMQ_DIRECT=1)
@@ -125,6 +126,8 @@ public:
     static void log_plan(int64_t n, int64_t chunk, int stages);
     /// The expert blobs this stage and the later ones copied host -> device so far (PrefillStats::experts_streamed).
     int64_t chain_experts_streamed() const;
+    /// The same blobs in bytes (PrefillStats::experts_streamed_bytes): what they crossed the PCIe link with.
+    int64_t chain_experts_streamed_bytes() const;
     /// #340: the streamed ring's slot count for chunks that stream every expert, instead of the pinned-share rule
     /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
     static void set_ring_override(int slots);

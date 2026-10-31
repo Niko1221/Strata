@@ -489,10 +489,14 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
+  // the driver's link counter where it has one; otherwise what Strata's engine staged onto the link (AMD/Intel on
+  // Linux have no PCIe traffic counter), said as the engine's figure rather than as the link's
+  const pcieStaged = hw.gpu_pcie_rx_mb == null && hw.pcie_engine_mb != null;
+  const pcieVal = pcieStaged ? hw.pcie_engine_mb : hw.gpu_pcie_rx_mb;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
+            pcieVal == null ? "" : `${pcieStaged ? "staged to GPU" : "to GPU"} ${fmt(pcieVal, pcieVal < 10 ? 1 : 0)} MB/s` +
             (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
-  spark("sp-pcie", h.gpu_pcie_rx_mb);
+  spark("sp-pcie", pcieStaged ? h.pcie_engine_mb : h.gpu_pcie_rx_mb);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {

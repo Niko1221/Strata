@@ -291,6 +291,10 @@ CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > co
 # token (the Monitor showed five-digit numbers) and then undershoots for the first second of every answer.
 RATE_WINDOW_S = 2.0
 RATE_MIN_SPAN_S = 0.25      # younger than this there is no rate yet: the mean so far, with the span floored here
+PCIE_WINDOW_S = 120.0       # the window the Monitor's PCIe figure averages over when the engine only reports its
+                            # bytes at the end of a request (an engine without the once-a-second "PCIE" line)
+PCIE_LIVE_WINDOW_S = 10.0   # the live "PCIE" line gives a rate of its own: the window it is averaged over
+PCIE_LIVE_STALE_S = 5.0     # no "PCIE" line for this long: the request ended, so the link carries nothing now
 # #481: a running request whose engine prints nothing (no T, PP or any other line) for this long has lost step with the
 # server (the engine's main thread waits, untimed, for its next command): the engine is ended and the request fails;
 # the next request starts it again.  The config's "engine_silence_s" sets it (0: wait forever, as before).
@@ -1071,6 +1075,12 @@ class StrataEngine:
             pin["preexec_fn"] = lambda: (say_nice() if say_nice else None, os.nice(nice))[0]
             print(f"[strata] engine priority: nice +{nice} (this PC has built-in Radeon graphics that usually draw the desktop; "
                   "STRATA_ENGINE_NICE=0 turns it off)", flush=True)
+        # the Monitor's link graph: ask the engine for its expert bytes once a second ("PCIE <read> <staged>" lines;
+        # the engine prints them on the cards whose driver has no link counter).  An
+        # engine that predates them ignores the variable and prints nothing, and the server measures the link from the
+        # request's DONE line instead; STRATA_LINK_STATS=0 in the environment keeps the engine's output as it was.
+        if (env or {}).get("STRATA_LINK_STATS") != "0":
+            env = {**(env if env is not None else os.environ), "STRATA_LINK_STATS": "1"}
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         spawned_at = time.monotonic()
         try:
@@ -1164,6 +1174,11 @@ class StrataEngine:
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
+        # the link's expert bytes as they cross it: (monotonic, bytes read back by the decode so far, bytes staged
+        # host -> device so far), said by the engine about once a second while a request runs (STRATA_LINK_STATS, which
+        # start() asks for); an engine that prints one total is one that stages nothing for the figure
+        self.pcie_live: collections.deque = collections.deque(maxlen=240)
+        self.pcie_lock = threading.Lock()         # the pump thread writes it, the Monitor's thread reads it
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
         # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
         asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
@@ -1245,6 +1260,21 @@ class StrataEngine:
                 sample = parse_stage_in_flight_sample(line)
                 if sample is not None and self.proc is proc:
                     self.terminal_stage_sample = {**sample, "observed_monotonic": time.monotonic()}
+                continue
+            if line.startswith("PCIE "):
+                # the engine's running totals of the expert bytes over the link: what its decode read back and what its
+                # prompt staged host -> device.  The Monitor turns the steps between two of these into the PCIe rate
+                # its graph draws.  An engine that prints one number staged nothing (the gfx1100 line prints two).
+                f = line.split()
+                try:
+                    totals = [int(x) for x in f[1:3]]
+                except ValueError:
+                    continue
+                if not totals:
+                    continue
+                if self.proc is proc:
+                    with self.pcie_lock:
+                        self.pcie_live.append((time.monotonic(), *totals))
                 continue
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
@@ -1383,7 +1413,7 @@ class StrataEngine:
             self.last.update(offloaded=int(f[15]))
         for tok in f[16:]:                                # key=value fields after the positional ones (the prompt's
             key, eq, value = tok.partition("=")           # first chunk and its streamed expert blobs)
-            if eq and key in ("chunk", "experts_streamed"):
+            if eq and key in ("chunk", "experts_streamed", "pcie_bytes", "staged_bytes"):
                 try:
                     self.last[key] = int(value)
                 except ValueError:
@@ -4236,7 +4266,13 @@ class Service:
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
-                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
+                       "drafts_offered": 0, "drafts_accepted": 0,
+                       "pcie_bytes": 0,      # the expert bytes the engine's decode read back over the link, summed
+                       "staged_bytes": 0}   # ...and the bytes its prompt staged host -> device (0: an engine that does
+                                          # not report either, or a card that crossed nothing)
+        # the requests that reported those bytes, as (started, ended, bytes): the source of the Monitor's PCIe rate
+        self.pcie_log = collections.deque(maxlen=200)
+        self.pcie_reported = False                       # did any engine here ever say its link bytes (else: missing)
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         # /metrics/prometheus' two throughput gauges need the totals as they stood at the last scrape, because
         # llama.cpp averages them over the window between two scrapes (#2341).
@@ -4876,7 +4912,11 @@ class Service:
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
             self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
-                                                    "prefill_tok_s_mean": self._prefill_tok_s_mean()},
+                                                    "prefill_tok_s_mean": self._prefill_tok_s_mean(),
+                                                    # what the engine itself moved over the link: the figure the Monitor
+                                                    # shows where the driver has no PCIe traffic counter
+                                                    "pcie_engine_mb": self._pcie_mb_s(),
+                                                    "pcie_engine_total_mb": self._pcie_total_mb()},
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
@@ -4920,6 +4960,52 @@ class Service:
         with self.status_lock:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
+
+    def _pcie_mb_s(self):
+        """MiB/s of expert bytes crossing the link to the graphics card - the Monitor's PCIe figure on a card whose
+        driver has no traffic counter (an AMD card on Linux reads its load, VRAM, temperature and power from sysfs but
+        has no PCIe counter; an Apple Silicon GPU has no link at all).
+        The engine says its running totals - the bytes its decode read back over the link and the bytes its prompt
+        staged host -> device - about once a second while a request runs, so the graph follows the traffic as it
+        happens, including while a long prompt is still being staged.  An engine that does not say them is measured
+        from its DONE line instead: those bytes are spread over the seconds the request ran, which is why an old
+        engine's line moves only when a request ends.
+        None when no engine that reports the counter has run (the Monitor says "missing", not "idle"); 0.0 while the
+        engine is idle, and when a request crossed nothing (every routed expert was already in VRAM)."""
+        now = time.monotonic()
+        live = getattr(self.engine, "pcie_live", None)
+        if live is not None:
+            with self.engine.pcie_lock:
+                samples = list(live)
+            if samples:
+                if now - samples[-1][0] > PCIE_LIVE_STALE_S:
+                    return 0.0                    # the engine stopped saying: the request ended, the link is idle
+                first = next((i for i, (t, *_) in enumerate(samples)
+                              if now - t <= PCIE_LIVE_WINDOW_S), len(samples) - 1)
+                window = samples[first:]
+                carried = sum(max(0, sum(window[i][1:]) - sum(window[i - 1][1:])) for i in range(1, len(window)))
+                span = max(window[-1][0] - window[0][0], RATE_MIN_SPAN_S)
+                return round(carried / span / 2 ** 20, 1)
+        now = time.time()
+        with self.status_lock:
+            log = [x for x in self.pcie_log if x[1] >= now - PCIE_WINDOW_S]
+        if not log:
+            return 0.0 if self.pcie_reported else None      # idle since the last request, not a missing counter
+        start = max(now - PCIE_WINDOW_S, min(t0 for t0, _, _ in log))
+        # a request shorter than RATE_MIN_SPAN_S has no rate of its own yet, so its span is floored there - as the
+        # token rates above do - and a request that answered in a millisecond does not print a link speed
+        # no PCIe generation could reach
+        wide = [(t0, t0 + max(t1 - t0, RATE_MIN_SPAN_S), b) for t0, t1, b in log]
+        span = sum(max(0.0, min(t1, now) - max(t0, start)) for t0, t1, _ in wide)
+        if span <= 0.0:
+            return None
+        carried = sum(b * (max(0.0, min(t1, now) - max(t0, start)) / (t1 - t0))
+                      for t0, t1, b in wide if t1 > t0)
+        return round(carried / span / 2 ** 20, 1)
+
+    def _pcie_total_mb(self):
+        """The expert bytes that crossed the link since the server started (MiB), as the engine counted them."""
+        return round(((self.totals.get("pcie_bytes") or 0) + (self.totals.get("staged_bytes") or 0)) / 2 ** 20, 1)
 
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
@@ -5913,6 +5999,10 @@ class Service:
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                                 if n and (last.get("generated") or 0) >= 2 and last.get("decode_ms") else None,
                                 "hit_rate": hit_rate, "pcie_share": pcie_share, "ram_blobs": last.get("ram_blobs"),
+                                # the expert bytes the engine counted on the link (None: an engine that does not say):
+                                # what its decode read back over it, and what its prompt staged host -> device
+                                "pcie_bytes": last.get("pcie_bytes"),
+                                "staged_bytes": last.get("staged_bytes"),
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
@@ -5926,6 +6016,15 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                            # the link's own traffic, when the engine reports it: the run's total and the window the
+                            # Monitor's PCIe rate is computed over (the request ran from `started` to now)
+                            pcie_b = last.get("pcie_bytes")
+                            staged_b = last.get("staged_bytes")
+                            t["pcie_bytes"] = t.get("pcie_bytes", 0) + (pcie_b or 0)
+                            t["staged_bytes"] = t.get("staged_bytes", 0) + (staged_b or 0)
+                            if pcie_b is not None or staged_b is not None:
+                                self.pcie_reported = True
+                                self.pcie_log.append((started, time.time(), (pcie_b or 0) + (staged_b or 0)))
                             ft0 = st.get("first_token")             # this request's own (#465: one per request)
                             self.latencies.observe(ft0 - started if ft0 else None, n,
                                                    (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
@@ -6103,7 +6202,8 @@ def request_stats(segments: list[dict]) -> dict:
         else:
             result.pop(key, None)
     for key in ("prompt_ms", "decode_ms", "generated", "drafts_offered", "drafts_accepted",
-                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb", "experts_streamed"):
+                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb", "experts_streamed",
+                "pcie_bytes", "staged_bytes"):
         if any(segment.get(key) is not None for segment in segments):
             result[key] = sum(segment.get(key) or 0 for segment in segments)
     return result
