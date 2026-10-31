@@ -197,6 +197,17 @@
         <span class="card-title">Model and engine</span>
         <dl class="facts" id="facts-engine"></dl>
       </div>
+      <div class="st-card model-card">
+        <span class="card-title">Load a model</span>
+        <p class="muted small">Switch the running model in place &mdash; it unloads the current one and loads another's
+          weights (a minute or two; clients get 503 until it is ready). Only models whose weights are already on this
+          PC are listed.</p>
+        <div class="model-row">
+          <select class="st-input" id="model-select" aria-label="Model to load"></select>
+          <button class="st-btn st-btn--primary" id="model-load" type="button" disabled>Load</button>
+        </div>
+        <p class="muted small" id="model-status" role="status"></p>
+      </div>
       <div class="st-card">
         <span class="card-title">This PC</span>
         <dl class="facts" id="facts-hw"></dl>

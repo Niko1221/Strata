@@ -81,7 +81,7 @@ function showTab(name) {
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
-  if (tab === "about") loadConfig();
+  if (tab === "about") { loadConfig(); loadModels(); }
   if (lastMetrics) render(lastMetrics);
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
@@ -592,6 +592,51 @@ function renderAbout(eng, hw, st) {
     ["Model name", eng.model, true],
   ]);
 }
+// ------------------------------------------------------------------ Load a model (POST /v1/models/<name>/load)
+// Runtime hot-swap: loads another model's weights into the running server in place, no restart. The list is every
+// model with a run config next to this server's; a swap takes a minute or two, so clients get 503 until it clears.
+let modelNames = [];
+async function loadModels() {
+  let r;
+  try { r = await fetch("v1/models/available", {headers: headers()}); } catch (e) { return; }
+  if (!r.ok) return;
+  const data = (await r.json()).models || [];
+  modelNames = data.map((m) => m.name);
+  const sel = $("model-select"), st = $("model-status");
+  if (!sel) return;
+  sel.innerHTML = data.map((m) =>
+    `<option value="${esc(m.name)}"${m.current ? " selected" : ""}>${esc(m.name)}${m.current ? " (running)" : ""}</option>`).join("");
+  if (st) st.textContent = data.some((m) => m.swapping) ? "a model is loading…" : "";
+  if (modelNames.length > 1) $("model-load").disabled = false;
+}
+async function loadModel() {
+  const name = $("model-select")?.value, st = $("model-status");
+  if (!name) return;
+  $("model-load").disabled = true;
+  let r;
+  try { r = await fetch(`v1/models/${encodeURIComponent(name)}/load`, {method: "POST", headers: headers(true)}); }
+  catch (e) { st.textContent = "could not reach the server"; $("model-load").disabled = false; return; }
+  if (r.status === 409) { st.textContent = "a model is already loading; wait for it to finish."; $("model-load").disabled = false; return; }
+  if (!r.ok) { st.textContent = `load failed (${r.status})`; $("model-load").disabled = false; return; }
+  toast("loading", "Switching models", `${name} is loading; clients get 503 until it is ready.`, 6000);
+  st.textContent = `Loading ${name} …`;
+  let tries = 0;
+  const iv = setInterval(async () => {
+    tries++;
+    let s;
+    try { s = await (await fetch("v1/status", {headers: headers()})).json(); } catch (e) { return; }
+    if (!s || (!s.swapping && tries > 1)) {
+      clearInterval(iv);
+      $("model-load").disabled = false;
+      await loadModels();
+      const cur = s?.model_config || name;
+      st.textContent = `Now running ${cur}`;
+      toast("done", "Model loaded", `${cur} is loaded and serving.`, 4000);
+    }
+  }, 3000);
+}
+const _mlBtn = $("model-load");
+if (_mlBtn) _mlBtn.addEventListener("click", loadModel);
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
   if (b) copyText(b.dataset.copy, b);

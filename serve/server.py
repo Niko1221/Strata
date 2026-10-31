@@ -4226,6 +4226,12 @@ class Service:
         self.queue_timeouts = 0
         self.client_disconnect_cancels = 0
         self.draining = False
+        # runtime model hot-swap (opt-in, POST /v1/models/<name>/load): a swap runs in a background thread and the
+        # per-model refs are mid-change while it does, so every request answers 503 until it clears.
+        self.swapping = False
+        self.swap_target = None
+        self.swap_note = ""
+        self._swap_thread = None
         self.active_cancels: set[threading.Event] = set()
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
@@ -4496,6 +4502,150 @@ class Service:
         Other names are still served, as before."""
         asked = req.get("model") if isinstance(req, dict) else None
         return asked if isinstance(asked, str) and asked in self.aliases else self.model
+
+    # --- runtime model hot-swap (opt-in: POST /v1/models/<name>/load). The other model's engine is built with the
+    # same helpers main() uses (serve/server.py ~7883-8013), so that path is untouched and the default serve stays
+    # byte-identical. A swap is minutes-long, so it runs in a background thread and requests 503 until it clears. ---
+    def model_config_dir(self) -> Path:
+        return Path(self.config_path).parent if self.config_path else ROOT
+
+    def current_config_name(self) -> str | None:
+        """The running model's CONFIG name (strata-<name>.json) — what available_models() lists. Differs from
+        self.model, the model's own name (e.g. iq3_s vs qwen3.8-flash-next-iq3_s)."""
+        if not self.config_path:
+            return None
+        stem = Path(self.config_path).stem
+        return stem[len("strata-"):] if stem.startswith("strata-") else stem
+
+    def available_models(self) -> list[str]:
+        """Model names with a run config (strata-<name>.json) next to this server's own config; the current one
+        first. GET /v1/models and the dashboard picker list these."""
+        names = sorted(p.stem[len("strata-"):] for p in self.model_config_dir().glob("strata-*.json")
+                       if p.stem.startswith("strata-"))
+        cur = self.current_config_name()
+        if cur and cur in names:
+            names.remove(cur)
+            names.insert(0, cur)
+        return names
+
+    def start_swap(self, name: str) -> str:
+        """Start an in-process swap to model `name` in a background thread. -> "" on success, else an error string
+        the caller maps to a 4xx. While a swap runs every request answers 503 until it clears."""
+        if self.swapping or (self._swap_thread and self._swap_thread.is_alive()):
+            return "a model swap is already in progress"
+        if name not in self.available_models():
+            return f"model not found: {name}"
+        if self.fifo.locked() or self.status.get("busy") or self.status.get("queued"):
+            return "a request is running or queued; try again when the server is idle"
+        self.swapping = True
+        self.swap_target = name
+        self.swap_note = f"loading {name} ..."
+        self._swap_thread = threading.Thread(target=self._do_swap, args=(name,), daemon=True, name="model-swap")
+        self._swap_thread.start()
+        return ""
+
+    def _finish_swap(self, ok: bool, note: str) -> None:
+        with self.status_lock:
+            self.swapping = False
+            self.swap_note = note
+            self.swap_target = None
+
+    def _do_swap(self, name: str) -> None:
+        """Background worker of start_swap: free the card, build the other model's engine the way main() does, then
+        adopt it atomically. Never raises; on failure the old model keeps serving (its config is not replaced until
+        the swap succeeds, and the next request reloads it)."""
+        acquired = False
+        try:
+            acquired = self.fifo.acquire(timeout=120)          # wait out an in-flight turn before touching the engine
+            if not acquired:
+                self._finish_swap(False, "a request was still running; try again when it is idle")
+                return
+            with self.status_lock:
+                if self.status.get("busy") or self.status.get("queued"):
+                    self._finish_swap(False, "a request is running; try again")
+                    return
+            config_path = self.model_config_dir() / f"strata-{name}.json"
+            # free VRAM/RAM for the new model first; requests 503 meanwhile (the swapping guard in do_POST)
+            if hasattr(self.engine, "alive") and self.engine.alive():
+                self.engine.unload()
+            if self.vision is not None and hasattr(self.vision, "unload"):
+                self.vision.unload()
+            # ---- build the new model (minutes) with main()'s helpers ----
+            cfg = with_component_engine(parse_config_text(config_path.read_text(encoding="utf-8-sig"), str(config_path)))
+            env = child_env(cfg, offline=getattr(self, "offline", False))
+            lazy = cfg.get("lazy_load") is True
+            tok = ByteTokenizer()
+            tpath = Path(cfg.get("tokenizer") or "")
+            if (tpath / "vocab.json").exists():
+                import strata_tokenizer as ST
+                vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
+                tokens = [None] * len(vocab)
+                for t, i in vocab.items():
+                    tokens[i] = t
+                merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
+                types = json.loads((tpath / "token_type.json").read_text())
+                tok = ST.Tokenizer(tokens, merges, types)
+            vision = None
+            if cfg.get("vision"):
+                vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
+                            if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
+                        for k, v in cfg["vision"].items() if not (k == "exe" and engine_component.is_reference(v))}
+                vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
+                                env=vision_env(cfg, env), lazy=lazy)
+            if engine_component.is_reference(cfg["exe"]):
+                exe = _component_exe(cfg["exe"], cfg)
+            else:
+                exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
+            effort_end = effort_end_args(cfg, exe, tok) or []
+            from serve import replicas as rp
+            if rp.gpu_groups(cfg):                              # tensor/layer split across cards: not swapped in v1
+                raise RuntimeError("replica / layer-split configs are not hot-swappable yet; restart the server with that model")
+            new_engine = StrataEngine(exe, engine_args(cfg) + effort_end, cwd=cfg.get("cwd"),
+                                      log=cfg.get("log"), env=env, lazy=lazy)
+            new_engine.silence_s = engine_silence_s(cfg)
+            tpl = tpath / "chat_template.jinja"
+            new_template = ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja")
+            # ---- adopt it atomically under the status lock ----
+            with self.status_lock:
+                self.engine = new_engine
+                self.tok = tok
+                self.template = new_template
+                # the swap must rebuild every tokenizer-derived cache, not just self.tok/self.template:
+                # encode_prompt prefers self.prompts when it is not None, and it wraps a tokenizer (PromptEncoder.tok);
+                # leaving the startup one would tokenize the new model's template with the old tokenizer (#537 cache).
+                self.stop_ids = set(tok.encode(IM_END, parse_special=True) +
+                                    tok.encode("", parse_special=True))
+                self.prompts = None
+                if hasattr(tok, "encode_marked") and hasattr(tok, "max_special_len"):
+                    from strata_tokenizer import PromptEncoder
+                    slots = conversation_slots(self.engine)
+                    self.prompts = PromptEncoder(tok, keep=slots) if slots is not None and slots > 0 \
+                        else PromptEncoder(tok)
+                self.vision = vision
+                self.model = default_model_name(cfg)
+                self.aliases = []
+                try:
+                    self.set_aliases(cfg.get("aliases"))
+                except ValueError:
+                    self.aliases = []
+                self.model_arch = cfg.get("arch") or "qwen4exp"
+                self.sampling_defaults = sampling_defaults_from_config(cfg)
+                self.answer_room = cfg.get("answer_room") is not False
+                self.config_path = str(config_path)
+                self.config_effort = None
+                if cfg.get("reasoning_effort") is not None:
+                    try:
+                        self.config_effort = clean_shared_defaults({"reasoning_effort": cfg["reasoning_effort"]}).get("reasoning_effort")
+                    except ValueError:
+                        self.config_effort = None
+                self.literals = literal_tags(getattr(tok, "control_tokens", ()))
+                self.swap_note = f"now serving {self.model}"
+            self._finish_swap(True, f"now serving {self.model}")
+        except Exception as e:                                  # noqa: BLE001 - a swap must never crash the server
+            self._finish_swap(False, f"could not load {name}: {e}")
+        finally:
+            if acquired:
+                self.fifo.release()
 
     def reported_ctx(self) -> int:
         """The context the endpoints report (/v1/status, /v1/models, /props, /health, /slots, /metrics): the engine's,
@@ -5068,6 +5218,10 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
+            # the run config in use (strata-<name>.json) — distinguishes same-named variants (e.g. iq3_s vs
+            # iq3_s-nativecut, which share the model name); a runtime swap changes it. swapping/swap_*: a live swap.
+            "model_config": self.current_config_name(), "swapping": self.swapping,
+            "swap_target": self.swap_target, "swap_note": self.swap_note,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -7378,6 +7532,11 @@ def make_handler(svc: Service):
                         data.append({"id": svc.images.model, "object": "model", "status": {"value": "loaded"},
                                      "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
                     self._json(200, {"object": "list", "data": data})
+            elif path == "/v1/models/available":     # runtime model load: the models the picker can switch to
+                if self._authorized():
+                    self._json(200, {"models": [
+                        {"name": n, "current": n == svc.current_config_name(), "config": f"strata-{n}.json"}
+                        for n in svc.available_models()]})
             elif path == "/props":
                 if self._authorized():
                     self._props()
@@ -7452,6 +7611,11 @@ def make_handler(svc: Service):
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                                headers={"Retry-After": int(ra)} if ra else None)
                 return
+            if svc.swapping and path in ("/v1/chat/completions", "/v1/messages", "/v1/responses",
+                                         "/load", "/v1/load", "/v1/unload", "/v1/vram"):
+                self._json(503, {"error": {"type": "server_error", "code": "swapping",
+                                           "message": "this server is switching models; retry shortly"}})
+                return
             reserved = False
             try:
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
@@ -7476,6 +7640,15 @@ def make_handler(svc: Service):
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
                     self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
                                                          "whole conversation to POST /v1/responses", code="not_found"))
+                    return
+                if path.startswith("/v1/models/") and path.endswith("/load"):   # runtime model hot-swap (opt-in):
+                    name = path[len("/v1/models/"):-len("/load")]               #   swap the resident engine in place
+                    err = svc.start_swap(name)                                  #   (background; returns 202 now)
+                    if err:
+                        code = 404 if "not found" in err else 409
+                        self._json(code, {"error": {"type": "server_error", "code": "model_swap", "message": err}})
+                    else:
+                        self._json(202, {"status": "swapping", "target": name, **svc.v1_status()})
                     return
                 if path in ("/v1/load", "/v1/unload"):
                     if not self._own_page("the model can be loaded or unloaded"):
