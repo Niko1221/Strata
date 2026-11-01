@@ -1754,7 +1754,7 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         if constexpr (NCOLS > 1) {
-            static const bool shape_grf = strata::bm_default_on("STRATA_Q6_SHAPE_GRF", s->get_device());
+            static const bool shape_grf = strata::bm_default_on("STRATA_Q6_SHAPE_GRF", s->get_device(), false);
             const bool eligible = (n_in == 6144 && n_out == 2560) ||
                 (n_in == 2560 && (n_out == 512 || n_out == 640)) ||
                 (NCOLS >= 3 && n_in == 2560 && n_out == 6144) ||
