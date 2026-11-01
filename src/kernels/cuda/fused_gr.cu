@@ -2722,11 +2722,7 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
         float* ssg = xn_scratch + (size_t) n_tok * HC * 2 * PR;   // room for S = 2
         const size_t sm = (size_t) n_tok * (N / split) * sizeof(float);
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, stream);
-        int pfm = g_v3_pf_force >= 0 ? g_v3_pf_force : v3_pf_mask();
-        // T = 5 only: the down kernel with two rows a warp (gr_r2) is 0.7 us faster than the batched-staging variant (screen, cold weights: 15.5 against 16.2 us; at T 6-8 the variant wins by 1-1.7 us);
-        // bitwise the same dots.  An explicit STRATA_GR_V3_PF or fused_gr_v3_pf keeps what it asked for.
-        static const bool pf_env_set = std::getenv("STRATA_GR_V3_PF") != nullptr;
-        if (n_tok == 5 && g_v3_pf_force < 0 && !pf_env_set && (pfm & 3) == 1) pfm &= ~3;
+        const int pfm = g_v3_pf_force >= 0 ? g_v3_pf_force : v3_pf_mask();
         if (split == 2) gr_down_v3_kernel<2><<<dim3(LR / WARPS + 1, HC * 2), THREADS, sm, st>>>(m, part, ssg);
         else if (((pfm >> 4) & 3) == 1 && gr_down_r2_dispatch_k<2>(n_tok, m, part, ssg, st)) {}
         else if (((pfm >> 4) & 3) == 2 && gr_down_r2_dispatch_k<4>(n_tok, m, part, ssg, st)) {}
