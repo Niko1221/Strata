@@ -778,11 +778,14 @@ class MacCatalog(unittest.TestCase):
         self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
         self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
 
-    def test_deepseek_on_a_mac_offers_the_two_sets_that_were_run_with_the_mac_words(self):
+    def test_deepseek_on_a_mac_offers_the_sets_that_were_run_with_the_mac_words(self):
         s, hw = self.hw(128)
         ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
         by = {x["model"]: x for x in ds["sizes"]}
-        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw"], "the 1.75 bpw set was never run on a Mac")
+        # The two IST-DAS sets were run on an M5 Max; UD-IQ1_S was too (2026-10-30, its own measured line), and UD-IQ1_M
+        # is offered with a plain "not run on a Mac yet" line: strata_control/dsv41_fit.py MAC_SET_PACK / MAC_MEASURED_PACK.
+        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"],
+                         "the 1.75 bpw set was never run on a Mac and is not offered there")
         for x in by.values():
             self.assertTrue(x["multi_file"] and not x["images"])
             self.assertTrue(x["on_this_pc"].startswith("runs on this Mac's memory"), x["on_this_pc"])
