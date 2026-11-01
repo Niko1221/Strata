@@ -240,21 +240,28 @@ __global__ void copy_rows_from_mapped_kernel(float4* __restrict__ dst, const vol
                                              const volatile uint32_t* wait_flag = nullptr, uint32_t wait_value = 0) {
     const int row = blockIdx.x;
     __shared__ int hit;
-    if (threadIdx.x == 0) {
-        if (wait_flag != nullptr) {   // 143-amdk: the wait_flag_ge launch folded in
-            while (*wait_flag < wait_value) strata_spin_pause();
-            __threadfence_system();
+    const int c = *count;
+    if (c >= (int) gridDim.x) {
+        if (threadIdx.x == 0) hit = 1;
+    } else {
+        if (threadIdx.x == 0) hit = 0;
+        __syncthreads();
+        for (int i = threadIdx.x; i < c; i += blockDim.x) {
+            if (hit_rows[i] == row) hit = 1;
         }
-        int h = 0;
-        const int c = *count;
-        for (int i = 0; i < c; ++i) h |= hit_rows[i] == row;
-        hit = h;
     }
     __syncthreads();
     float4* d = dst + (int64_t) row * row4;
     if (hit) {
         for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     } else {
+        if (wait_flag != nullptr) {   // 143-amdk: the wait_flag_ge launch folded in (only CPU miss rows wait on m_flag_)
+            if (threadIdx.x == 0) {
+                while (*wait_flag < wait_value) strata_spin_pause();
+                __threadfence_system();
+            }
+            __syncthreads();
+        }
         const volatile float4* sr = src + (int64_t) row * row4;
         for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = const_cast<const float4*>(sr)[i];
     }

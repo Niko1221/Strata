@@ -4903,6 +4903,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // Distinct experts in routing order; resident ones and the last pcie_num/256 of the missed ones go to the GPU.
     const int64_t n = n_tok * k;
     int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe
+    int64_t planned_vram_entries = -1, planned_gpu_entries = -1;
     if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
         int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
         int16_t next_same[kMaxWindowEntries], tail_same[kMaxWindowEntries], cnt_same[kMaxWindowEntries];
@@ -5059,6 +5060,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             for (int idx = 0; idx < vram_n; ++idx) emit_vram_group(idx);
         }
         P.start[groups] = entries;
+        planned_vram_entries = entries;
         const uint64_t bb = lay.blob_bytes(d.layers);
         for (int q = 0; q < fetches; ++q) {       // the PCIe groups: staging slot q, entries after the VRAM ones
             const int64_t i0 = pcie_i0[q];
@@ -5073,6 +5075,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++d.pcie_experts;
         }
         P.start2[fetches] = entries;
+        planned_gpu_entries = entries;
         P.counts[0] = groups;
         P.counts[1] = entries;
         P.counts[2] = fetches;
@@ -5116,6 +5119,19 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // copy_or_zero_from_mapped copies every row, so there the host still zeroes them
     static const bool device_plan = [] { const char* v = std::getenv("STRATA_VERIFY_DEVICE_PLAN"); return v != nullptr && std::atoi(v) != 0; }();
     const bool gpu_zeroes_hits = (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap && dec_batch && !device_plan);
+    if (gpu_zeroes_hits && planned_vram_entries >= 0 && planned_gpu_entries == n &&
+        d.peer == nullptr && d.remote_count == 0) {
+        d.cache_hits += planned_vram_entries;
+        d.offload_entries += planned_gpu_entries - planned_vram_entries;
+        d.plan->cpu_jobs = 0;
+        pt("run", 0);
+        pt("ran");
+        const auto c_end = std::chrono::steady_clock::now();
+        d.ms_plan += std::chrono::duration<double, std::milli>(c_end - c0).count();
+        ++d.layers;
+        d.experts += n_tok * k;
+        return;
+    }
     bool any_cpu = false;
     for (int64_t i = 0; i < n; ++i)
         if (kind[i] == -1) { any_cpu = true; break; }   // -2: skipped (STRATA_ROUTE_TAIL_SKIP), no work
@@ -5338,9 +5354,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     d.ms_actq += ms(c1, c2);
     d.ms_jobs += ms(c2, c3);
     d.ms_run += ms(c3, c4);
-    for (int64_t i = 0; i < n_tok * k; ++i) {
-        const int64_t e = ids[i];
-        if (e >= 0 && e < d.n_expert) d.job_of[(size_t) e] = -1;
+    if (njobs > 0 && npend == 0) {
+        for (int64_t i = 0; i < n_tok * k; ++i) {
+            const int64_t e = ids[i];
+            if (e >= 0 && e < d.n_expert) d.job_of[(size_t) e] = -1;
+        }
     }
     d.multi_misses += njobs;
     ++d.layers;
