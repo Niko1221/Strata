@@ -708,6 +708,32 @@ body {
   translate: 0 -50%;
   transition: opacity var(--st-t-micro) var(--st-ease-standard);
 }
+/* A chat that has a turn running while the person is elsewhere: a small ring turns in the same gutter as the unread dot (it takes the dot's place: a
+   working chat is not "unread" yet). Info colour and a slow turn keep it calm; reduced motion holds it still. */
+.ws__session .navsession__working {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--st-info-tint);
+  border-top-color: var(--st-info);
+  border-radius: 50%;
+  translate: 0 -50%;
+  animation: st-spin 1400ms linear infinite;
+  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+}
+.navsession[data-working] .navsession__title {
+  color: var(--st-ink);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws__session .navsession__working {
+    animation: none;
+  }
+}
+html[data-motion='reduced'] .ws__session .navsession__working {
+  animation: none;
+}
 .ws__session .session-overflow {
   position: absolute;
   top: 50%;
@@ -725,6 +751,7 @@ body {
   pointer-events: auto;
 }
 .ws__session:hover .navsession__time,
+.ws__session:hover .navsession__working,
 .ws__session:hover .navsession__unread {
   opacity: 0;
 }

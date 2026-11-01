@@ -34,6 +34,12 @@ add("This much context takes about {0} GB of graphics memory and leaves little r
     "이 정도의 컨텍스트는 그래픽 메모리를 약 {0} GB 사용하며 이 카드에서는 모델이 쓸 공간이 거의 남지 않습니다. Strata가 시도하지만 시작되지 않으면 더 짧은 컨텍스트를 선택하세요.",
     "Ce contexte occupe environ {0} Go de mémoire graphique et laisse peu de place au modèle sur cette carte. Strata va essayer ; s'il ne démarre pas, choisissez un contexte plus court.")
 
+# 9: a chat that is working while the person is elsewhere (the ring on its row, and the model chip's line)
+add("Working · {0}",
+    "进行中 · {0}", "作業中 · {0}", "In Arbeit · {0}", "Trabajando · {0}", "В работе · {0}", "Trabalhando · {0}", "작업 중 · {0}", "En cours de travail · {0}")
+add("{0} chats working",
+    "{0} 个对话进行中", "{0} 件のチャットが作業中", "{0} Chats in Arbeit", "{0} chats trabajando", "В работе чатов: {0}", "{0} chats trabalhando", "대화 {0}개 작업 중", "{0} conversations en cours")
+
 #@@MORE@@
 
 here = Path(__file__).resolve().parent.parent / "src" / "locales"

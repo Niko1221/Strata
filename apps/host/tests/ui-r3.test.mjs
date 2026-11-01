@@ -105,3 +105,16 @@ test('13: Load model has no pop-up: the size and the warnings are in the page, a
   assert.match(models, /fitState === 'ssd' \? <p className="small muted native-spill-note"><Icon name="disk" size=\{16\}\/>/);
   assert.match(models, /fitState === 'no' \? <p className="small muted native-spill-note"><Icon name="warning" size=\{16\}\/>/);
 });
+
+test('9: a chat that is working shows it on its sidebar row, and the model chip says which chat when it is elsewhere', () => {
+  const bar = read('src/app/Sidebar.tsx'), css = read('src/styles/liquid.css');
+  assert.match(bar, /const working = new Set\(liveCount \? liveChatIds\(\) : \[\]\)/, 'the same list of running turns the board reads');
+  assert.match(bar, /data-working=\{working\.has\(s\.id\) \|\| undefined\}/);
+  assert.match(bar, /working\.has\(s\.id\) \? <span className="navsession__working" role="img" aria-label=\{tr\("Working"\)\}/, 'a labelled cue, not only colour');
+  assert.match(bar, /: isUnread\(s, activeSession\) \? <span className="navsession__unread"/, 'a working chat is not also shown as unread');
+  assert.match(bar, /\{workingLine \?\? modelQuant\}/, 'the model chip names the working chat');
+  assert.match(bar, /!\(location\.route === 'chat' && id === activeSession\)/, 'no line for the chat that is in front of the person');
+  assert.match(css, /\.ws__session \.navsession__working \{[^}]*border-top-color: var\(--st-info\);[^}]*animation: st-spin 1400ms linear infinite;/, 'existing tokens, one slow turn');
+  assert.match(css, /prefers-reduced-motion: reduce\) \{\s*\.ws__session \.navsession__working \{\s*animation: none;/, 'reduced motion holds it still');
+  assert.match(css, /html\[data-motion='reduced'\] \.ws__session \.navsession__working \{\s*animation: none;/);
+});
