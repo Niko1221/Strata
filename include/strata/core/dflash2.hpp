@@ -122,6 +122,9 @@ public:
     /// positions >= prefix_len (a branch this park took past the resumed checkpoint) are zeroed, every
     /// slot keeps the absolute position it was written at, `have_ctx_` becomes prefix_len.
     bool restore_state(const std::vector<uint8_t>& in, int64_t prefix_len, std::string& err);
+    /// Copies `from_slot`'s ring up to `prefix_len` directly into `to_slot` on the device (`cs_`), avoiding a
+    /// host `save_state`/`restore_state` round-trip on batch admission and slot restore.
+    bool copy_slot(int from_slot, int to_slot, int64_t prefix_len, std::string& err);
     int64_t have_ctx() const { return cur().have_ctx_; }
 
     // ---- one drafter, several conversations (sizing and the cap in dflash2_slots.hpp) ------------------

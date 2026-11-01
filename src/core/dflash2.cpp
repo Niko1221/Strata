@@ -1122,6 +1122,77 @@ bool Dflash2Drafter::restore_state(const std::vector<uint8_t>& in, int64_t prefi
     return true;
 }
 
+bool Dflash2Drafter::copy_slot(int from_slot, int to_slot, int64_t prefix_len, std::string& err) {
+    if (!bound_) { err = "dflash2: copy_slot before load"; return false; }
+    if (from_slot < 0 || from_slot >= (int) slots_.size() || to_slot < 0 || to_slot >= (int) slots_.size()) {
+        err = "dflash2: copy_slot: slot out of range";
+        return false;
+    }
+    const OnDevice on_device(device_);
+    const Slot& src = *slots_[(size_t) from_slot];
+    Slot& dst = *slots_[(size_t) to_slot];
+    const int64_t end = prefix_len >= 0 ? std::min(prefix_len, src.have_ctx_) : src.have_ctx_;
+    const int64_t begin = std::max<int64_t>(0, end - ring_slots_);
+    if (from_slot == to_slot) {
+        const int saved = cur_;
+        cur_ = to_slot;
+        rewind(end);
+        cur_ = saved;
+        return true;
+    }
+    const size_t eb = ring_elem_bytes();
+    const size_t slot_bytes = (size_t) HD_ * eb;
+    const size_t head_stride = (size_t) ring_slots_ * slot_bytes;
+    const size_t ring_bytes = (size_t) NKV_ * head_stride;
+
+    bool any_dropped = false;
+    dst.ring_pos_.assign((size_t) ring_slots_, -1);
+    for (int s = 0; s < ring_slots_; ++s) {
+        const int64_t p = src.ring_pos_[(size_t) s];
+        if (p >= begin && p < end && end > begin) {
+            dst.ring_pos_[(size_t) s] = p;
+        } else if (p >= 0) {
+            any_dropped = true;
+        }
+    }
+
+    for (int l = 0; l < L_; ++l) {
+        if (end <= begin) {
+            (void) cudaMemsetAsync(dst.kring_[l], 0, ring_bytes, cs_);
+            (void) cudaMemsetAsync(dst.vring_[l], 0, ring_bytes, cs_);
+            continue;
+        }
+        if (!any_dropped) {
+            (void) cudaMemcpyAsync(dst.kring_[l], src.kring_[l], ring_bytes, cudaMemcpyDeviceToDevice, cs_);
+            (void) cudaMemcpyAsync(dst.vring_[l], src.vring_[l], ring_bytes, cudaMemcpyDeviceToDevice, cs_);
+            continue;
+        }
+        (void) cudaMemsetAsync(dst.kring_[l], 0, ring_bytes, cs_);
+        (void) cudaMemsetAsync(dst.vring_[l], 0, ring_bytes, cs_);
+        for (int s0 = 0; s0 < ring_slots_;) {
+            if (dst.ring_pos_[(size_t) s0] < 0) { ++s0; continue; }
+            int s1 = s0 + 1;
+            while (s1 < ring_slots_ && dst.ring_pos_[(size_t) s1] >= 0) ++s1;
+            const size_t off = (size_t) s0 * slot_bytes;
+            const size_t width = (size_t) (s1 - s0) * slot_bytes;
+            (void) cudaMemcpy2DAsync((uint8_t*) dst.kring_[l] + off, head_stride,
+                                     (const uint8_t*) src.kring_[l] + off, head_stride,
+                                     width, (size_t) NKV_, cudaMemcpyDeviceToDevice, cs_);
+            (void) cudaMemcpy2DAsync((uint8_t*) dst.vring_[l] + off, head_stride,
+                                     (const uint8_t*) src.vring_[l] + off, head_stride,
+                                     width, (size_t) NKV_, cudaMemcpyDeviceToDevice, cs_);
+            s0 = s1;
+        }
+    }
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = "dflash2: copy_slot: device copy failed";
+        return false;
+    }
+    dst.have_ctx_ = prefix_len >= 0 ? prefix_len : end;
+    err.clear();
+    return true;
+}
+
 void Dflash2Drafter::reset() {
     Slot& sl = cur();   // a new request on the active slot; the other slots keep their conversations
     sl.have_ctx_ = 0;
