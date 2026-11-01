@@ -6807,6 +6807,16 @@ int main(int argc, char** argv) {
     }
     strata::core::ArenaExpertSource arena_src;
     strata::core::ExpertSource* srcp = nullptr;
+    // #4846 (owner 11-01): the arena first, and when the RAM is still short after the wait and the give-back, the --mmap-experts source
+    // for this run (o.mmap_experts is set here, before anything below sizes the experts' tier from it; nothing was sized for the arena
+    // by now: the PLE table's lock, priced against it, was just given back).  A hand-set `--ple-io ram` and a shared arena file are kept
+    // as asked (warn only), STRATA_ARENA_RAM_FALLBACK=0 is the old behaviour.  Two passes at most; the second only after the first chose
+    // the file, and if the file cannot be opened the arena is tried again the old way (a start never ends in a refusal for this).
+    const bool ram_fallback_ok = strata::core::arena_ram_fallback_allowed(
+        std::getenv("STRATA_ARENA_RAM_FALLBACK"), o.ple_io_explicit && o.ple_io == "ram", !o.shared_expert_arena.empty());
+    bool ram_fallback_taken = false, ram_fallback_failed = false;
+    for (bool again = true; again;) {
+    again = false;
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
         // built with `tools/iq_pack.py --experts-bin` (the per-layer blob sizes of its layout, PR #121).  The low-RAM
@@ -6818,10 +6828,20 @@ int main(int argc, char** argv) {
         if (const char* v = std::getenv("STRATA_FETCH_THREADS"); v != nullptr && std::atoi(v) > 0)
             src.set_fetch_threads(std::atoi(v));
         if (!src.open(o.pack, g.n_layers, g.n_expert, err)) {
+            if (ram_fallback_taken) {   // #4846: the file cannot be opened either; the arena, loaded the old way, is what is left
+                std::fprintf(stderr, "strata generate: the experts cannot be read from the file either (%s): loading the expert arena "
+                                     "as before, short of RAM\n", err.c_str());
+                o.mmap_experts = false;
+                ram_fallback_taken = false;
+                ram_fallback_failed = true;
+                again = true;
+                continue;
+            }
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
-        std::fprintf(stderr, "strata generate: experts via mmap (--mmap-experts; %s)\n",
+        std::fprintf(stderr, "strata generate: experts via mmap (%s; %s)\n",
+                     ram_fallback_taken ? "not enough RAM for the expert arena: the same source as --mmap-experts" : "--mmap-experts",
                      src.gguf_mode() ? "the GGUF shards in place, no experts.bin" : "the A/B arm of R2.1");
         // #286: with a RAM budget the hottest experts live in it, and the rest are read from the drive unbuffered
         // when the file cache could not keep them beside the budget anyway (a 32 GB PC) - the mapped reads' page
@@ -7012,11 +7032,22 @@ int main(int argc, char** argv) {
                 return held;
             };
         strata::core::pin_reserve_take();
+        arena_src.fall_back_when_ram_short = ram_fallback_ok && !ram_fallback_failed;
         const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                                              o.shared_expert_arena);
         strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
         strata::core::pin_sim_report("after the expert arena");
         strata::core::pin_reserve_release_soft();
+        if (!arena_ok && arena_src.ram_short()) {
+            // one plain line, one next step; the numbers are in err
+            std::fprintf(stderr, "strata generate: not enough RAM for the expert arena (%s): this run reads the experts from the "
+                                 "file, like --mmap-experts (slower; the answers are the same). To get the arena back, free that RAM "
+                                 "and start again\n", err.c_str());
+            o.mmap_experts = true;
+            ram_fallback_taken = true;
+            again = true;
+            continue;
+        }
         if (!arena_ok) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -7061,6 +7092,7 @@ int main(int argc, char** argv) {
 #endif
         srcp = &arena_src;
     }
+    }   // the arena / file pass loop (#4846)
 #if defined(__linux__)
     // 0.1.43.1: on by default (STRATA_ADAPT_CALLBACK_WARMUP=0 turns it off).  Linux threads inherit the creator's CPU mask, and
     // the host pins itself to one CPU later; a callback thread the driver creates lazily after that would run on the

@@ -3,6 +3,7 @@
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/ple_residency.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -5860,12 +5861,20 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // certain to end that way: refused, with the numbers.  Less RAM available than the arena (another program, an
     // engine still exiting) is only a warning - the OS may make room - per the recommend-not-force rule.
     ram_warning_.clear();
+    ram_short_ = false;
     // (a shared arena, --shared-expert-arena, may already be in RAM for another engine: not checked)
     if (detail::HostMemory hm; shared_arena_file.empty() && detail::host_available_memory(hm)) {
         const uint64_t need = want + (uint64_t) blob;
         const double gib = 1073741824.0;
         char buf[512];
-        if (hm.cgroup_limit < need) {
+        if (arena_ram_verdict(need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
+            if (fall_back_when_ram_short) {   // #4846: the caller reads the experts from the file instead of refusing
+                std::snprintf(buf, sizeof buf, "it needs %.2f GiB and this process's memory limit is %.2f GiB",
+                              (double) need / gib, (double) hm.cgroup_limit / gib);
+                err = buf;
+                ram_short_ = true;
+                return false;
+            }
             std::snprintf(buf, sizeof buf,
                           "ArenaExpertSource: the expert arena needs %.2f GiB of RAM but this process's memory limit "
                           "(cgroup memory.max / memory.limit_in_bytes) is %.2f GiB: it would be killed while loading. "
@@ -5878,7 +5887,8 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         if (hm.available < need) {
             // #4051: the shortfall is often an engine that was still exiting (the code's own example), a few seconds
             // from giving its RAM back: wait for it, not for ever, and say so.  STRATA_ARENA_RAM_WAIT_S changes the
-            // seconds (0 loads at once, as before this wait).  The load then goes on either way - it only warns.
+            // seconds (0 loads at once, as before this wait).  Still short after it (and after the give-back below): the caller's
+            // --mmap-experts fallback (#4846) when it asked for one, otherwise the load goes on and only warns.
             double wait_s = 20.0;
             if (const char* w = std::getenv("STRATA_ARENA_RAM_WAIT_S"); w != nullptr && w[0] != '\0') {
                 char* end = nullptr;
@@ -5917,6 +5927,17 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                         hm.available = h2.available;
                     }
                 }
+            }
+            if (arena_ram_verdict(need, hm.available, ~uint64_t{0}, fall_back_when_ram_short) == ArenaRamVerdict::FallBack) {
+                // #4846 (owner 11-01): still short after the wait and the give-back.  Registering anyway can stall the whole host in
+                // reclaim until it is power-cycled: nothing is allocated, the caller takes the --mmap-experts source for this run.
+                std::snprintf(buf, sizeof buf,
+                              "it needs %.2f GiB and %.2f GiB is available (%.2f GiB short%s)",
+                              (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "");
+                err = buf;
+                ram_short_ = true;
+                return false;
             }
             if (hm.available < need) {
                 std::snprintf(buf, sizeof buf,
