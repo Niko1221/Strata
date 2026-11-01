@@ -5912,8 +5912,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                     detail::HostMemory h2;
                     if (detail::host_available_memory(h2)) {
                         std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM and %.2f GiB was available: "
-                                             "gave back %.2f GiB of locked RAM, %.2f GiB is available now
-",
+                                             "gave back %.2f GiB of locked RAM, %.2f GiB is available now\n",
                                      (double) need / gib, (double) hm.available / gib, (double) freed / gib, (double) h2.available / gib);
                         hm.available = h2.available;
                     }
