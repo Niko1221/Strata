@@ -29,6 +29,7 @@
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #if defined(STRATA_USE_HIP)
+#include "strata/core/lookup_default.hpp"
 #include "strata/core/serve_stop_bound.hpp"
 #endif
 #include "strata/core/conversation_file.hpp"
@@ -1079,7 +1080,7 @@ void usage() {
                  "  --suffix-draft N     prompt lookup: draft from an earlier repeat of the last N+ tokens of context\n"
                  "                       when it pays (default 3; 0 = MTP only)\n"
                  "  --mtp-max-t M        cap the MTP's windows at M tokens (0 = --spec; longer ones come from suffixes)\n"
-                 "  --lookup-max-t N     prompt-lookup windows up to N (<= 16) tokens (default 12 on one GPU in the 8-row build; 0 = off);\n"
+                 "  --lookup-max-t N     prompt-lookup windows up to N (<= 16) tokens (default 12 on one GPU in the 8-row CUDA build, not Metal; 0 = off);\n"
                  "                       copy-heavy edits gain, each extra window size costs a graph (~20-35 MiB of VRAM)\n"
                  "  --lookup-sizes A,B   the lookup window sizes past the MTP's (default: MTP+1, MTP+2 and N)\n"
                  "  --spec N             the MTP drafter's verify window: how many tokens it proposes per check (setup\n"
@@ -4051,8 +4052,14 @@ int main(int argc, char** argv) {
         const char* lme = std::getenv("STRATA_LOOKUP_MAX_T");
         const bool env_off = lme != nullptr && lme[0] == '0';
         const bool narrow = strata::kernels::kVerifyMaxT == strata::kernels::kVerifyNarrowT;
-        o.lookup_max_t = !env_off && narrow && o.serve && !multi_gpu && o.layer_split.empty() && o.batch <= 1 && o.draft != "dflash2" &&
-                                 o.lookup_chain <= 0 && o.suffix_draft > 0 && o.spec >= 2 ? 12 : 0;
+        strata::core::LookupDefaultIn ld;
+        ld.env_off = env_off, ld.narrow_window = narrow, ld.serve = o.serve, ld.multi_gpu = multi_gpu;
+        ld.layer_split = !o.layer_split.empty(), ld.batch = o.batch > 1, ld.dflash2 = o.draft == "dflash2";
+        ld.lookup_chain = o.lookup_chain > 0, ld.suffix_draft = o.suffix_draft > 0, ld.spec_at_least_2 = o.spec >= 2;
+#if defined(STRATA_GPU_METAL)
+        ld.metal_build = true;   // (Metal's windows hold 8 rows and it has no 12-row window: "metal window: window size out of range")
+#endif
+        o.lookup_max_t = strata::core::default_lookup_max_t(ld);
     }
     if (o.lookup_max_t > 0 && o.suffix_draft > 0 && o.spec >= 2) {
         if (o.mtp_max_t == 0) o.mtp_max_t = o.spec;
