@@ -475,8 +475,8 @@ def uses_integrated_gpu(computer, s: "S.LaunchSettings") -> bool:
 
 
 def faster_by_default(computer, s: "S.LaunchSettings") -> bool:
-    """The engine's `--experts auto` rule: Faster (5 experts) on an integrated GPU, or when the cards used total 16 GiB or less."""
-    return uses_integrated_gpu(computer, s) or S.faster_default(used_vram_gb(computer, s))
+    """The engine's `--experts auto` rule: Faster (5 experts) on an integrated GPU, on a single RDNA4 card, or when the cards used total 16 GiB or less."""
+    return uses_integrated_gpu(computer, s) or S.single_rdna4(used_cards(computer, s)) or S.faster_default(used_vram_gb(computer, s))
 
 
 EXPERTS_LINE = re.compile(r"experts per word: (\d+)")

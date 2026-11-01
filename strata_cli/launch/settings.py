@@ -41,6 +41,17 @@ def faster_default(total_vram_gb: float | None) -> bool:
     return bool(total_vram_gb) and round(float(total_vram_gb) * 1024) <= round(FASTER_VRAM_GIB * 1024)
 
 
+RDNA4_ARCHS = ("gfx1200", "gfx1201")          # Radeon AI PRO R9700, RX 9070 / 9060 (the engine's rdna4())
+
+
+def single_rdna4(cards) -> bool:
+    """Mirrors the engine's single-RDNA4-card rule (src/dsv41/ds4_experts_rule.hpp): exactly one card is used and it is an RDNA4 Radeon, so the CPU lane
+    does most of the experts and `--experts auto` is 5 whatever the card's memory (1 x R9700, 2.25 bpw: decode +16%, agent loop -24%, KL against the
+    original model +0.004).  Two or more RDNA4 cards are the engine's other rule (the cards hold half of the experts), which the screens do not mirror."""
+    cards = list(cards or [])
+    return len(cards) == 1 and str(cards[0].get("vendor") or "").lower() == "amd" and str(cards[0].get("arch") or "").lower().startswith(RDNA4_ARCHS)
+
+
 def speed_words(speed: str, default: bool) -> str:
     """The plain words for the chosen speed, for --plan and the summary."""
     if speed == "faster":
