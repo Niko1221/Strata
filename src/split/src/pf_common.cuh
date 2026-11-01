@@ -101,6 +101,12 @@ static __global__ void k_pfr_add(const __half2* __restrict__ in, const float2* _
         out[e] = __floats2half2_rn(v.x, v.y);
     }
 }
+// FNX_HOSTRING: a finished part from this card's gather buffer to the next card's, both in host memory, copied by a kernel. A host-to-host
+// cudaMemcpyAsync blocks the calling thread until the stream has caught up, and the prompt path enqueues the cards one after the other on
+// one thread: card 0's copy waits for a flag only card 1's (not yet enqueued) work sets, so the first read stalled. A kernel does not block.
+static __global__ void k_pfr_copy(const uint4* __restrict__ src, uint4* __restrict__ dst, size_t n16) {
+    for (size_t e = blockIdx.x * (size_t) blockDim.x + threadIdx.x; e < n16; e += (size_t) gridDim.x * blockDim.x) dst[e] = src[e];
+}
 static __global__ void k_pfr_out(const __half2* __restrict__ ag, float2* __restrict__ x, int n2) {
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) x[e] = __half22float2(ag[e]);
 }
@@ -142,7 +148,12 @@ inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned
                 break;
             case PfRingOp::ADD: add(r.in[o.hop][set], o.part, o.fin ? r.ag[set] + (size_t) r0(o.part) * N : r.send); break;
             case PfRingOp::SEND: copy(r.nin[o.hop][set], r.send, rows(o.part)); break;
-            case PfRingOp::PASS: copy(r.nag[set] + (size_t) r0(o.part) * N, r.ag[set] + (size_t) r0(o.part) * N, rows(o.part)); break;
+            case PfRingOp::PASS:
+                if (rows(o.part) > 0)
+                    k_pfr_copy<<<grid_for((size_t) rows(o.part) * N / 8), 256, 0, s>>>((const uint4*) (r.ag[set] + (size_t) r0(o.part) * N),
+                                                                                  (uint4*) (r.nag[set] + (size_t) r0(o.part) * N),
+                                                                                  (size_t) rows(o.part) * N / 8);
+                break;
             case PfRingOp::SIGNAL: signal(o.step); break;
             case PfRingOp::WAIT: wait(o.step); break;
             case PfRingOp::OUT:
