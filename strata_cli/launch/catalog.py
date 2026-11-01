@@ -370,6 +370,11 @@ class Catalog:
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
 
+    def own_files_verdict(self, hw: dict | None, model: str) -> tuple[str, str]:
+        """DeepSeek-V4.1-Flash with the person's own files used where they are (--model-path): nothing is downloaded or copied, so the disk
+        part of the menu row (which counts the whole download of a set that is not in Strata's folder) does not apply: the memory words alone."""
+        return verdict(self.strata._dsv41_memory_words(hw or self.hardware(), model))
+
     def resolve(self, model: str, family: str | None = None) -> tuple[str, str]:
         """`iq3_xxs` or `IQ3_XXS` (and an optional family) -> (family, model); raises ValueError with the closest match."""
         models, families, _ctx, _src = self.tables()

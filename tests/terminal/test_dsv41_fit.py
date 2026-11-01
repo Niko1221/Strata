@@ -77,3 +77,46 @@ class UnifiedMemoryPlan(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeasuredCardAccounting(unittest.TestCase):
+    """The plan's "experts on the cards" against what the engine's own startup line reported (f-042-maya-rc d93547aed, 2026-11-01): the
+    old plan said 2,947 for one R9700 (the engine held 2,366-2,566) and 13,180 for four (it held 12,147-12,192).  Within 3% of the
+    engine's counts on the R9700s; the other cards (boston 2 x A6000, an A4000, an RTX 5070) within 8%."""
+
+    @staticmethod
+    def cards(n, gb, vendor):
+        return [{"index": i, "name": "card", "vram_gb": gb, "vendor": vendor, "arch": "gfx1201"} for i in range(n)]
+
+    def plan(self, n, gb, vendor, model="IST-DAS-2.25bpw", ram=251.0):
+        orig = F._on_windows
+        F._on_windows = lambda: False
+        try:
+            return F.plan(self.cards(n, gb, vendor), ram, 500.0, model=model, vendor=vendor)
+        finally:
+            F._on_windows = orig
+
+    def test_one_r9700_holds_what_the_engine_holds(self):
+        got = self.plan(1, 32.0, "amd", ram=126.0)["experts_in_vram"]
+        self.assertAlmostEqual(got, 2566, delta=2566 * 0.03)        # rc, the borrowed prompt slots; the 0.1.55 engine held 2,366
+        self.assertLess(got, 2947)
+
+    def test_four_r9700_hold_what_the_engine_holds(self):
+        p = self.plan(4, 32.0, "amd")
+        self.assertAlmostEqual(p["experts_in_vram"], 12192, delta=12192 * 0.03)
+        self.assertLess(p["experts_in_vram"], 13180)
+        self.assertEqual(len(p["cards"]), 4)
+
+    def test_other_cards(self):
+        self.assertAlmostEqual(self.plan(2, 48.0, "nvidia", ram=125.0)["experts_in_vram"], 8804, delta=8804 * 0.08)
+        self.assertAlmostEqual(self.plan(1, 16.0, "nvidia", ram=64.0)["experts_in_vram"], 750, delta=750 * 0.08)
+        self.assertAlmostEqual(self.plan(1, 12.0, "nvidia", ram=64.0)["experts_in_vram"], 287, delta=287 * 0.08)
+
+    def test_the_cpu_share_follows_the_cards_share(self):
+        p = self.plan(1, 32.0, "amd", ram=126.0)
+        self.assertAlmostEqual(p["vram_experts_gb"] + p["cpu_experts_gb"], 149.06, delta=0.2)
+
+    def test_the_bigger_dense_weights_of_an_unsloth_set_leave_less_room_for_experts(self):
+        a = self.plan(1, 32.0, "amd", model="IST-DAS-2.25bpw", ram=126.0)["vram_experts_gb"]
+        b = self.plan(1, 32.0, "amd", model="UD-IQ1_M", ram=126.0)["vram_experts_gb"]      # 7.6 GB of dense weights against 5.9
+        self.assertLess(b, a)
