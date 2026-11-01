@@ -81,10 +81,10 @@ export function VersionPicker({ versions, models, selectedId, hardware, onSelect
     return <button key={v.id} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>
       <span className="version-row__check">{tr(on ? <Icon name="check" size={14}/> : null)}</span>
       <span className="version-row__body">
-        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(word ? <span className="version-row__word">{word}</span> : null)}{tr(v.id === pickId ? <span className="version-tag version-tag--pick">{tr("Recommended")}</span> : null)}{tr(downloaded?.has(v.id) ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}{tr(slow ? <span className="version-row__slow">{tr("Slower on this computer")}</span> : null)}</span>
+        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(word ? <span className="version-row__word">{word}</span> : null)}{tr(v.id === pickId || downloaded?.has(v.id) ? <span className="version-row__tags">{tr(v.id === pickId ? <span className="version-tag version-tag--pick">{tr("Recommended")}</span> : null)}{tr(downloaded?.has(v.id) ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}</span> : null)}{tr(slow ? <span className="version-row__slow">{tr("Slower on this computer")}</span> : null)}</span>
         {tr(details ? <span className="version-row__tech">{technical}{tr(note ? <><br/>{note}</> : null)}</span> : null)}
       </span>
-      <span className="version-row__size">{tr("{0} download", [gb(v.download_gb)])}</span>
+      <span className="version-row__size">{downloaded?.has(v.id) ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>
     </button>;
   };
   // The open menu opens on the chosen version, not at the top of a long list.
@@ -96,7 +96,7 @@ export function VersionPicker({ versions, models, selectedId, hardware, onSelect
       <span className="version-trigger__need muted">{tr(shown ? need(shown, details) : '')}</span>
       <Icon name="chevron" size={14} className="version-trigger__chev"/>
     </button>
-    {tr(open ? <FloatingMenu anchor={trigger.current} title={tr("Model version")} width={480} onClose={() => setOpen(false)}>
+    {tr(open ? <FloatingMenu anchor={trigger.current} title={tr("Model version")} width={520} onClose={() => setOpen(false)}>
       <div className="version-menu" ref={menu}>
         {tr(sections.map(s => <div className="version-section" role="group" aria-label={s.title || tr("Model version")} key={s.id}>
           {tr(s.title ? <div className="version-section__title" aria-hidden="true">{s.title}</div> : null)}

@@ -7048,6 +7048,7 @@ textarea {
 .version-row__tech { font-size: var(--st-fs-sm); line-height: 1.4; color: var(--st-ink-muted); }
 .version-row__size { font-size: var(--st-fs-sm); line-height: 20px; color: var(--st-ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .version-row__slow { font-size: var(--st-fs-xs); color: var(--st-warn-text); }
+.version-row__tags { display: inline-flex; flex-wrap: nowrap; gap: 6px; white-space: nowrap; }
 .version-tag { padding: 0 8px; border-radius: var(--st-r-pill); font-size: var(--st-fs-xs); font-weight: 600; line-height: 20px; white-space: nowrap; }
 .version-tag--pick { background: var(--st-accent-tint); color: var(--st-accent-text); }
 .version-tag--have { box-shadow: inset 0 0 0 1px var(--st-line); color: var(--st-ink-soft); }
