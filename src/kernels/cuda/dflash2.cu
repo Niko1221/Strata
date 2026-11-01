@@ -301,14 +301,20 @@ __global__ void attn_merge_kernel(const float* __restrict__ part, int8_t* __rest
 struct Df2Seg { const int8_t* q; const __half* d; float* y; int n_out; int row0; };
 struct Df2Segs { Df2Seg s[3]; int n; };
 
+// The matrix a warp's rows belong to.  Constant indices only: a loop over segs.s[si] makes the by-value parameter struct live in local memory (STACK 104 in the spill guard).
+__device__ __forceinline__ Df2Seg df2_pick(const Df2Segs& segs, int row_g) {
+    Df2Seg sg = segs.s[0];
+    if (segs.n > 1 && row_g >= segs.s[1].row0) sg = segs.s[1];
+    if (segs.n > 2 && row_g >= segs.s[2].row0) sg = segs.s[2];
+    return sg;
+}
+
 template <int WARPS, bool COMPUTE, int UNR = 2>
 __global__ void __launch_bounds__(WARPS * 32) gemm8_kernel(Df2Segs segs, const int8_t* __restrict__ xq, const float* __restrict__ xd, int n_in, int ncols) {
     constexpr int R = 8;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int row_g = (blockIdx.x * WARPS + warp) * R;   // first row of this warp's group, over all the launch's matrices
-    int si = 0;
-    while (si + 1 < segs.n && row_g >= segs.s[si + 1].row0) ++si;
-    const Df2Seg sg = segs.s[si];
+    const Df2Seg sg = df2_pick(segs, row_g);
     const int row0 = row_g - sg.row0;
     const int nb = n_in / 32, steps = nb / 16;
     const int4* wq = reinterpret_cast<const int4*>(sg.q + (size_t) row0 * n_in) + lane;
@@ -372,9 +378,7 @@ __global__ void __launch_bounds__(WARPS * 32) gemm_rows_kernel(Df2Segs segs, con
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int wi = blockIdx.x * WARPS + warp;
     const int row_g = (wi / SUBS) * 8, sub = wi % SUBS;
-    int si = 0;
-    while (si + 1 < segs.n && row_g >= segs.s[si + 1].row0) ++si;
-    const Df2Seg sg = segs.s[si];
+    const Df2Seg sg = df2_pick(segs, row_g);
     const int row0 = row_g - sg.row0;
     const int nb = n_in / 32, steps = nb / 16;
     const int4* wq = reinterpret_cast<const int4*>(sg.q + (size_t) row0 * n_in) + lane + sub * R * 32;
@@ -436,9 +440,7 @@ __global__ void __launch_bounds__(WARPS * 32) gemm4_kernel(Df2Segs segs, const i
     constexpr int R = 8;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int row_g = (blockIdx.x * WARPS + warp) * R;
-    int si = 0;
-    while (si + 1 < segs.n && row_g >= segs.s[si + 1].row0) ++si;
-    const Df2Seg sg = segs.s[si];
+    const Df2Seg sg = df2_pick(segs, row_g);
     const int row0 = row_g - sg.row0;
     const int nb = n_in / 32, steps = nb / 16;
     const uint2* wq = reinterpret_cast<const uint2*>(sg.q + (size_t) row0 * (n_in / 2)) + lane;
