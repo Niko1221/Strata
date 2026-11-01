@@ -979,7 +979,7 @@ void df2_gemm_variant(int v) { g_gemm_variant = v; }
 void df2_attention_variant(int v) { g_attn_variant = v; }
 
 #ifndef DF2_Q4_AUTO
-#define DF2_Q4_AUTO(rows) 1
+#define DF2_Q4_AUTO(rows) ((rows) <= 1024 ? 20 : 11)   // rows a warp by matrix size (dflash2_gemm_bench q4, srv118 and l620): 1 warp row-group of 4 warps x 2 rows for the large matrices, 4 warps x 1 row with 8-step unroll for the 640-row and 256-row ones
 #endif
 void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_in, int ncols, void* stream) {
     if (n < 1 || n > 3 || n_in % 512 != 0 || ncols < 1 || ncols > 8) throw std::invalid_argument("df2_gemm: unsupported shape");
