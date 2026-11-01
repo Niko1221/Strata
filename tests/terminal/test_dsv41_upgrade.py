@@ -146,17 +146,11 @@ class LaunchChoice(unittest.TestCase):
                 self.assertEqual(self.runner().upgrade_dsv41_engine(found), found)
             self.assertEqual(self.runner().upgrade_dsv41_engine(Path("/x/engine/strata-dsv41")), Path("/x/engine/strata-dsv41"))     # not a package folder
 
-    def test_an_unreachable_feed_does_not_start_an_upgrade(self):
+    def test_a_launch_never_starts_an_upgrade_whatever_the_feed_says(self):
+        """Owner, 11-01: an engine update is the person's choice (`strata update`), never a side effect of a launch."""
         found = Path("/x/engine-dsv41/0.1.49-a/strata-dsv41")
-        with mock.patch.object(dsv41_engine, "source_reachable", return_value=False), \
-                mock.patch.object(dsv41_engine, "upgrade", side_effect=AssertionError("must not run")):
+        with mock.patch.object(dsv41_engine, "source_reachable", return_value=True),                 mock.patch.object(dsv41_engine, "upgrade", side_effect=AssertionError("a launch must not upgrade")):
             self.assertEqual(self.runner().upgrade_dsv41_engine(found), found)
-
-    def test_a_newer_package_replaces_the_choice(self):
-        found = Path("/x/engine-dsv41/0.1.49-a/strata-dsv41")
-        new = Path("/x/engine-dsv41/0.1.49.1-a/strata-dsv41")
-        with mock.patch.object(dsv41_engine, "source_reachable", return_value=True), mock.patch.object(dsv41_engine, "upgrade", return_value=new):
-            self.assertEqual(self.runner().upgrade_dsv41_engine(found), new)
 
 
 class SetupPathLines(unittest.TestCase):

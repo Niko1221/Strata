@@ -119,8 +119,13 @@ strata update
 strata --version
 ```
 
-Stop models first. The next Terminal command uses the updated Control component. The app, Control and engine have
-separate version numbers, so they can differ.
+With a model loaded, `strata update` says which model, asks before it stops it, downloads the new engine while the model keeps
+serving, stops it cleanly, updates, and asks whether to start it again with the same settings (answer no and it stays stopped;
+the start line is printed). If the update fails the old engine stays in use and the model can be started again. The launch
+monitor and the start screen show one quiet line when a newer engine is available; press `u` in the monitor to update.
+In a script nothing is asked: `--yes` alone never stops a model (exit 7, nothing changed); `--stop-model` lets the update stop it
+and `--start-again` starts it again afterwards (exit 8 if it did not start again). The next Terminal command uses the updated
+Control component. The app, Control and engine have separate version numbers, so they can differ.
 
 Use `strata components rollback` to return to the previous engine. See [update details](../packaging/UPDATES.md).
 Source checkouts have a [separate update workflow](SOURCE_INSTALL.md#updating).

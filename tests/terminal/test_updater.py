@@ -332,15 +332,27 @@ class EngineUpdate(UpdaterCase):
     def test_nothing_is_replaced_while_an_engine_serves(self):
         self.install_current()
         self.publish(("0.1.46", fx.GOOD_ENGINE))
-        out = updater.run_update(self.ctx(serving=lambda: [{"profile": "app-1", "state": "ready"}]), control=False)
-        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (7, "failed"))
-        self.assertIn("app-1 is serving", out["results"][0]["error"])
+        with self.assertRaises(updater.Busy) as caught:                 # refused up front: nothing is downloaded, staged or test-started
+            updater.run_update(self.ctx(serving=lambda: [{"profile": "app-1", "state": "ready"}]), control=False)
+        self.assertEqual(caught.exception.exit_code, 7)
+        self.assertIn("app-1 is serving", str(caught.exception))
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertFalse((self.root / "ran.txt").exists(), "no test start while another engine serves")
-        # the download was not wasted: the next try reuses the verified archive
+        self.assertEqual(self.archive_requests(), [], "no download beside a loaded model")
         done = updater.run_update(self.ctx(), control=False)
         self.assertEqual(done["results"][0]["status"], "updated")
         self.assertEqual(len(self.archive_requests()), 1)
+
+    def test_a_model_that_starts_during_the_download_stops_the_update_and_the_archive_is_kept(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        answers = [[], [{"profile": "app-1", "state": "ready"}], [{"profile": "app-1", "state": "ready"}]]
+        out = updater.run_update(self.ctx(serving=lambda: answers.pop(0) if len(answers) > 1 else answers[0]), control=False)
+        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (7, "failed"))
+        self.assertEqual(self.resolved(), "0.1.45")
+        done = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(done["results"][0]["status"], "updated")
+        self.assertEqual(len(self.archive_requests()), 1, "the verified archive was reused")
 
     def test_waiting_for_the_engine_to_stop(self):
         self.install_current()
