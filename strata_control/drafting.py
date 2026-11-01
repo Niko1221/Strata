@@ -37,7 +37,8 @@ DRAFTERS = ("mtp", "dflash2", "off")
 # Evidence so far (phaseA-tests/notes-dflash2-p1.md, -p02.md, -ports.md; DFlash2 against MTP, tokens per second, same prompts and flags):
 #   strix_halo  Radeon 8060S (gfx1151): faster on chat, code and json, SLOWER on tool_call (-6%).
 #   blackwell   RTX 5070 (sm_120, 12 GB): faster on code, SLOWER on chat (-1%).
-#   rdna4       Radeon AI PRO R9700 (gfx1201): slower on every prompt.
+#   rdna4       Radeon AI PRO R9700 (gfx1201): faster on 18 of 19 short prompts (+7.2% geomean) and +1.35% on 4 long thinking prompts (4 rounds,
+#               phaseA-tests/blackwell/RESULTS-DF2HIP.md); slower on chat_advice (-3.7%) and long-edit (-2.5%).
 #   ampere      RTX 3060 (sm_86, 12 GB): slower on every prompt.
 #   other       not measured.
 
@@ -52,7 +53,7 @@ class Suggestion:
 SUGGESTED: dict[str, Suggestion] = {
     "strix_halo": Suggestion("mtp", False, "gfx1151: faster on chat, code and json; slower on tool_call (-6%)"),
     "blackwell": Suggestion("mtp", False, "sm_120 (RTX 5070, 12 GB): faster on code; slower on chat (-1%)"),
-    "rdna4": Suggestion("mtp", False, "gfx1201 (R9700): slower on every prompt"),
+    "rdna4": Suggestion("mtp", False, "gfx1201 (R9700): +7.2% on short prompts, +1.35% on long thinking; slower on chat_advice (-3.7%) and long-edit (-2.5%)"),
     "ampere": Suggestion("mtp", False, "sm_86 (RTX 3060, 12 GB): slower on every prompt"),
     "other": Suggestion("mtp", False, "not measured on this kind of card"),
 }
@@ -108,8 +109,8 @@ class Support:
     line: str            # plain words for the person ("" when there is nothing to say)
 
 
-_TESTED = {("cuda", "sm_120"), ("cuda", "sm_121"), ("hip", "gfx1151")}
-_SLOWER = {("cuda", "sm_86"), ("hip", "gfx1201")}
+_TESTED = {("cuda", "sm_120"), ("cuda", "sm_121"), ("hip", "gfx1151"), ("hip", "gfx1201")}
+_SLOWER = {("cuda", "sm_86")}
 
 
 _HARDWARE: list = []
@@ -172,7 +173,18 @@ VRAM_GB = 0.8                # what the drafter needs in graphics memory: the en
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
 SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
 MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
-DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this
+DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this (the card holds most experts)
+
+# --draft-conf by how many expert slots the card holds once the drafter's 0.8 GB is taken (RESULTS-DF2Q4.md, fork F's mimic on l620, IQ3_S, 7 classes
+# at 9,300 / 5,000 slots and 5 classes at 1,000 / 300, 3 launches per cell; the DFlash2 engine holds the drafter, so it had 420 slots fewer than MTP).
+# Speed against MTP spec 4 by confidence 0.35 / 0.6 / 0.7 / 0.8:  9,300 slots +4.3 / +5.2 / +2.1 / +0.7%;  5,000: -4.7 / -0.3 / +1.6 / -0.7%;
+# 1,000: -10.0 / -2.8 / -2.5 / +0.2%;  300: -14.0 / -10.4 / -7.6 / -7.5%.  R9700 at 12,570 slots measured +7.2% at 0.35 (RESULTS-DF2HIP.md).
+# Steps, rounded: the more experts come over PCIe, the dearer a row, the shorter the window should be.
+CONF_STEPS = ((9000, 0.35), (3000, 0.7), (0, 0.8))      # (slots at least, --draft-conf)
+SLOT_MIB = 1.95              # one expert slot of Qwen3.8-Flash-Next IQ3_S: the engine's "46.84 GiB for 24576 slots" (l620) and 23.87 GiB for 12570 (R9700)
+SLOT_BASE_MIB = 3800         # dense weights and the engine's fixed buffers beyond vram_fit's own terms, from the R9700 start (128K context, 12570 slots on 32 GiB)
+SLOT_RESERVE_MIB = 700       # the engine's default --vram-reserve-mib
+DEFAULT_CONTEXT = 131072     # --max-context when the arguments name none (the 128K default)
 
 #: model families (strata launch --family) the drafter was trained for and measured on: Qwen3.8-Flash-Next and its Gyro build.
 SUPPORTED_FAMILIES = ("qwen", "gyro")
@@ -252,6 +264,43 @@ def mtp_line(reason: str) -> str:
 def engine_flags(pack: str | Path) -> tuple[str, ...]:
     """The engine arguments of a DFlash2 start: the drafter, its file, the window and the confidence."""
     return ("--draft", "dflash2", "--draft-model", str(pack), "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
+
+
+def conf_for_slots(slots: int | float | None) -> float:
+    """The ``--draft-conf`` for a card that holds ``slots`` experts (CONF_STEPS); DRAFT_CONF when the number is unknown."""
+    if slots is None:
+        return DRAFT_CONF
+    for at_least, conf in CONF_STEPS:
+        if slots >= at_least:
+            return conf
+    return CONF_STEPS[-1][1]
+
+
+def expected_slots(vram_mib: float, args: list[Any]) -> int:
+    """The expert slots a card of ``vram_mib`` MiB is expected to hold with the drafter on, the same arithmetic as strata_control/vram_fit.py (the card, the
+    runtime's gap, the dense weights, the KV session of ``--max-context`` / ``--kv``, the prompt buffers, the reserve) minus the drafter's 0.8 GB,
+    over one slot. An estimate good to about 10% (two engine starts); the steps of CONF_STEPS are wider than that."""
+    from strata_control import vram_fit
+    ctx = _flag_value(args, "--max-context")
+    ctx = int(ctx) if ctx and ctx.isdigit() else DEFAULT_CONTEXT
+    kv = _flag_value(args, "--kv") or "int8"
+    reserve = _flag_value(args, "--vram-reserve-mib")
+    reserve = int(reserve) if reserve and reserve.isdigit() else SLOT_RESERVE_MIB
+    prefill = _flag_value(args, "--prefill")
+    chunk = vram_fit.chunk_of(prefill.split(":")[-1] if prefill else "auto")
+    free = (float(vram_mib) - vram_fit.GAP_OTHER_MIB - SLOT_BASE_MIB - vram_fit.session_mib(ctx, kv) - vram_fit.HEAD_MIB - reserve
+            - (vram_fit.PROMPT_BASE_MIB + vram_fit.PROMPT_PER_TOKEN_MIB * chunk) - VRAM_GB * 1024)
+    return max(0, int(free / SLOT_MIB))
+
+
+def slots_of(args: list[Any], vram_mib: float | None = None) -> int | None:
+    """How many expert slots this start holds: the person's own ``--expert-cache N``, else the estimate for the card (``vram_mib``), else None."""
+    given = _flag_value(args, "--expert-cache")
+    if given is not None and given.isdigit():
+        return int(given)
+    if vram_mib:
+        return expected_slots(vram_mib, args)
+    return None
 
 
 def decide(mode: Any, *, klass: str, model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
@@ -344,9 +393,11 @@ def _without_flag(args: list[str], flag: str) -> list[str]:
 
 
 def apply(cfg: dict[str, Any], *, klass: str, data_dir: str | Path | None = None, family: str | None = None,
-          backend: str | None = None, archs: Any = None) -> Decision:
+          backend: str | None = None, archs: Any = None, vram_mib: float | None = None) -> Decision:
     """Put the config's ``"drafting"`` choice on its engine arguments (in place). ``off`` is the draft layer's own switch (``"mtp": false``).
-    DFlash2 sets the window (``--spec 6``) and the confidence (``--draft-conf 0.35``) unless the person set either one by hand in ``user_args``."""
+    DFlash2 sets the window (``--spec 6``) and the confidence unless the person set either one by hand in ``user_args``. The confidence is
+    ``--draft-conf 0.35`` where the card holds most experts and a higher one where fewer slots fit (conf_for_slots): from the person's own
+    ``--expert-cache N``, else from ``vram_mib``, the memory of the one card (None: several cards, a shared-memory chip, unknown: 0.35)."""
     from strata_control import draft_layer
     decision = decide(cfg.get("drafting"), klass=klass, model_name=cfg.get("model_name"), family=family, data_dir=data_dir, backend=backend, archs=archs)
     if cfg.get("drafting") is None and decision.drafter == "mtp":
@@ -365,6 +416,8 @@ def apply(cfg: dict[str, Any], *, klass: str, data_dir: str | Path | None = None
         if decision.drafter == "dflash2":
             if kept_conf is not None:
                 flags[flags.index("--draft-conf") + 1] = kept_conf
+            else:
+                flags[flags.index("--draft-conf") + 1] = f"{conf_for_slots(slots_of(args, vram_mib)):g}"
             if _flag_value(mine, "--spec") is None:
                 # The person's own --spec stays; otherwise the window is the DFlash2 one. If the engine then falls back to the MTP (the card is too
                 # full for the drafter), the MTP must run its usual window, not DFlash2's: --draft-mtp-spec names it (the engine uses it for that).

@@ -32,8 +32,8 @@ class WhereTheEngineCanRunIt(unittest.TestCase):
         h = drafting.hardware_support
         for backend in ("metal", "sycl", "", None, "cpu"):
             self.assertEqual(h(backend, ["sm_120"]), drafting.Support(False, "none", ""), backend)
-        self.assertEqual((h("cuda", ["sm_120"]).level, h("cuda", ["sm_121"]).level, h("hip", ["gfx1151"]).level), ("tested",) * 3)
-        self.assertEqual((h("cuda", ["sm_86"]).level, h("hip", ["gfx1201"]).level), ("slower",) * 2)
+        self.assertEqual((h("cuda", ["sm_120"]).level, h("cuda", ["sm_121"]).level, h("hip", ["gfx1151"]).level, h("hip", ["gfx1201"]).level), ("tested",) * 4)
+        self.assertEqual(h("cuda", ["sm_86"]).level, "slower")
         for backend, arch in (("cuda", "sm_75"), ("cuda", "sm_89"), ("cuda", "sm_90"), ("cuda", "sm_61"), ("hip", "gfx1100"), ("hip", "gfx1030"), ("cuda", None)):
             support = h(backend, [arch] if arch else [])
             self.assertEqual((support.can_run, support.level, support.line), (True, "untested", drafting.LINE_UNTESTED), (backend, arch))
@@ -77,12 +77,63 @@ class WhereTheEngineCanRunIt(unittest.TestCase):
     def test_the_plan_reports_whether_this_computer_can_run_it(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        for hardware, serves, level in ((("cuda", ["sm_120"]), True, "tested"), (("metal", []), False, "none"), (("hip", ["gfx1201"]), True, "slower")):
+        for hardware, serves, level in ((("cuda", ["sm_120"]), True, "tested"), (("metal", []), False, "none"), (("hip", ["gfx1201"]), True, "tested")):
             with mock.patch.object(drafting, "detect_hardware", return_value=hardware):
                 code, out, err = run_cli(["drafting", "plan", "--data-dir", tmp.name, "--mode", "auto", "--output", "json"])
             self.assertEqual(code, 0, err)
             payload = json.loads(out)
             self.assertEqual((payload["serves"], payload["support"]), (serves, level), hardware)
+
+
+class ConfidenceFollowsTheSlots(unittest.TestCase):
+    """--draft-conf by the expert slots the card holds once the drafter's 0.8 GB is taken (drafting.CONF_STEPS, measured on l620 and the R9700)."""
+
+    def make(self, args, user_args=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pack = drafting.pack_path(tmp.name)
+        pack.parent.mkdir(parents=True)
+        pack.write_bytes(b"x" * (2 << 20))
+        c = {"model_name": GYRO, "drafting": "dflash2", "args": list(args), "user_args": list(user_args or [])}
+        return c, tmp.name
+
+    def conf(self, args, vram_mib=None, user_args=None, backend="cuda", archs=("sm_120",)):
+        c, data = self.make(args, user_args)
+        with serving_dflash2(), mock.patch.object(drafting, "detect_hardware", return_value=(backend, list(archs))):
+            drafting.apply(c, klass="blackwell", data_dir=data, backend=backend, archs=list(archs), vram_mib=vram_mib)
+        self.assertEqual(c["args"].count("--draft-conf"), 1)
+        return c["args"][c["args"].index("--draft-conf") + 1]
+
+    def test_the_steps(self):
+        f = drafting.conf_for_slots
+        self.assertEqual([f(n) for n in (24576, 12570, 9000, 8999, 5000, 3000, 2999, 1000, 300, 0)], [0.35, 0.35, 0.35, 0.7, 0.7, 0.7, 0.8, 0.8, 0.8, 0.8])
+        self.assertEqual(f(None), 0.35, "unknown: today's value")
+
+    def test_an_explicit_expert_cache_decides(self):
+        base = ["--spec", "4"]
+        for given, want in (("1000", "0.8"), ("300", "0.8"), ("5000", "0.7"), ("12570", "0.35"), ("24576", "0.35")):
+            self.assertEqual(self.conf([*base, "--expert-cache", given]), want, given)
+        self.assertEqual(self.conf([*base, "--expert-cache", "auto"]), "0.35", "auto with no card reading: today's value")
+        self.assertEqual(self.conf(base), "0.35", "nothing known: today's value")
+
+    def test_the_card_decides_when_the_cache_is_auto(self):
+        args = ["--expert-cache", "auto", "--max-context", "131072", "--kv", "int8"]
+        for vram, want in ((8192, "0.8"), (12288, "0.8"), (16384, "0.7"), (24564, "0.7"), (32768, "0.35"), (49152, "0.35"), (73415, "0.35")):
+            self.assertEqual(self.conf(args, vram_mib=vram), want, vram)
+        self.assertEqual(self.conf(args, vram_mib=32768, backend="hip", archs=("gfx1201",)), "0.35", "the R9700 (12,570 slots measured) keeps 0.35")
+
+    def test_the_estimate_matches_the_two_measured_starts(self):
+        n = drafting.expected_slots(32768, ["--max-context", "131072", "--kv", "int8"])
+        self.assertAlmostEqual(n, 12570 - 420, delta=0.1 * 12570)        # the R9700 start, less the drafter's 420 slots
+        self.assertEqual(drafting.expected_slots(4096, []), 0, "a card that cannot hold the rest never goes negative")
+
+    def test_the_persons_own_confidence_stays(self):
+        self.assertEqual(self.conf(["--expert-cache", "300", "--draft-conf", "0.5"], user_args=["--draft-conf", "0.5"]), "0.5")
+
+    def test_a_smaller_context_leaves_more_room(self):
+        big = drafting.expected_slots(16384, ["--max-context", "131072"])
+        small = drafting.expected_slots(16384, ["--max-context", "32768"])
+        self.assertGreater(small, big)
 
 
 class OfflineAndReuse(unittest.TestCase):
