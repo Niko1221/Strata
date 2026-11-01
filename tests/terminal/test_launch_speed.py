@@ -136,9 +136,28 @@ class Resolve(unittest.TestCase):
         for other in ({**r9700, "arch": "gfx1100"}, {**r9700, "vendor": "nvidia"}, {k: v for k, v in r9700.items() if k != "arch"}):
             self.assertFalse(S.single_rdna4([other]), other)
             self.assertFalse(faster_by_default(mock.Mock(usable_gpus=[other]), s), other)
-        two = mock.Mock(usable_gpus=[r9700, {**r9700, "index": 1}])
-        self.assertFalse(faster_by_default(two, s))
+        two = mock.Mock(usable_gpus=[r9700, {**r9700, "index": 1}], engine_vendor="amd")
+        self.assertFalse(faster_by_default(two, s))                                        # no model chosen yet: the old rule
+        with mock.patch("strata_control.dsv41_fit._on_windows", lambda: False):
+            self.assertFalse(faster_by_default(two, S.LaunchSettings(model="IST-DAS-2.25bpw")), "2 x R9700 hold about 40% of the 2.25 set: the engine says 6")
+        with mock.patch("strata_control.dsv41_fit._on_windows", lambda: True):         # Windows runs one AMD card: a single RDNA4 card, the engine says 5
+            self.assertTrue(faster_by_default(two, S.LaunchSettings(model="IST-DAS-2.25bpw")))
         self.assertTrue(faster_by_default(two, S.LaunchSettings(gpus=[1])))                # one of the two named: a single card
+
+    def test_several_rdna4_cards_holding_half_of_the_experts_are_faster_by_default(self):   # 4 x R9700: the engine says 5, so the screens must not say Full quality
+        r9700 = {"index": 0, "vram_gb": 32, "vendor": "amd", "arch": "gfx1201", "name": "Radeon AI PRO R9700"}
+        cards = lambda n: mock.Mock(usable_gpus=[{**r9700, "index": i} for i in range(n)], engine_vendor="amd")
+        s = lambda **kw: S.LaunchSettings(family="deepseek41", model=kw.pop("model", "IST-DAS-2.25bpw"), **kw)
+        with mock.patch("strata_control.dsv41_fit._on_windows", lambda: False):
+            self.assertTrue(faster_by_default(cards(4), s()))
+            self.assertTrue(faster_by_default(cards(3), s()))
+            self.assertFalse(faster_by_default(cards(2), s()))
+            self.assertFalse(faster_by_default(cards(2), s(model="UD-IQ1_S")), "2 x R9700 hold 47% of the smallest-but-one set: still under half")
+            self.assertTrue(faster_by_default(cards(3), s(model="UD-IQ1_M")))
+            self.assertTrue(faster_by_default(cards(4), s(gpus=[0])), "one card named: a single RDNA4 card")
+            self.assertFalse(faster_by_default(cards(2), s(model=None)))
+            nv = mock.Mock(usable_gpus=[{**r9700, "vendor": "nvidia", "index": i} for i in range(4)], engine_vendor="nvidia")
+            self.assertFalse(faster_by_default(nv, s()))
 
     def test_only_the_cards_the_launch_uses_are_summed(self):
         comp = mock.Mock(usable_gpus=[{"index": 0, "vram_gb": 12}, {"index": 1, "vram_gb": 24}])

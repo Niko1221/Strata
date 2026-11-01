@@ -93,7 +93,7 @@ strata launch --family deepseek41 --model ist-das-2.00bpw
 
 **Speed: Faster or Full quality.** The app asks, and the Terminal takes `--speed faster|full` (or `--full-quality`). Faster uses 5 of the
 model's 6 experts per word, a small quality change that is usually not noticeable. It is the default on a PC with 16 GB of graphics
-memory or less, on a Ryzen AI Max, and on a single Radeon RX 9000 / AI PRO R9700 card (and on several of them when they hold half of the experts). Full quality uses all 6. It needs DeepSeek engine 0.1.50 or newer, which the app and `strata launch` fetch.
+memory or less, on a Ryzen AI Max, and on a single Radeon RX 9000 / AI PRO R9700 card, and on several of them when together they hold half of the experts (three or more R9700 cards; two hold about 40% of the 2.25 set, so they keep 6). Full quality uses all 6. It needs DeepSeek engine 0.1.50 or newer, which the app and `strata launch` fetch.
 
 **Measured on:** ISTA-DAS 2.00 bpw, Strata 0.2.4 (before the Speed choice).
 

@@ -107,7 +107,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "(not enough graphics memory, or a model it is not for) the MTP is used and the start says why")
     g.add_argument("--speed", type=_choice("a speed", S.SPEED_MODES), metavar="faster|full",
                    help="DeepSeek: faster uses 5 of 6 experts per word (a small quality change, usually not noticeable; the default on a PC with 16 GB "
-                        "of graphics memory or less, and on a single Radeon RX 9000 / AI PRO R9700 card), full uses all 6")
+                        "of graphics memory or less, and on a single Radeon RX 9000 / AI PRO R9700 card, or several that hold half of the experts), full uses all 6")
     g.add_argument("--full-quality", action="store_true", help="DeepSeek: all 6 experts per word (the same as --speed full), for scripts")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
     g.add_argument("--backend", metavar="nvidia|amd|intel|auto",

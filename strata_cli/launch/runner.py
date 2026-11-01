@@ -476,7 +476,16 @@ def uses_integrated_gpu(computer, s: "S.LaunchSettings") -> bool:
 
 def faster_by_default(computer, s: "S.LaunchSettings") -> bool:
     """The engine's `--experts auto` rule: Faster (5 experts) on an integrated GPU, on a single RDNA4 card, or when the cards used total 16 GiB or less."""
-    return uses_integrated_gpu(computer, s) or S.single_rdna4(used_cards(computer, s)) or S.faster_default(used_vram_gb(computer, s))
+    cards = used_cards(computer, s)
+    if uses_integrated_gpu(computer, s) or S.single_rdna4(cards) or S.faster_default(used_vram_gb(computer, s)):
+        return True
+    if len(cards) < 2 or not s.model:
+        return False
+    from strata_control import dsv41_fit                 # several RDNA4 cards: the engine's other rule (they hold half of the experts), the plan's numbers
+    try:
+        return dsv41_fit.rdna4_faster(cards, s.model, getattr(computer, "engine_vendor", None), named=bool(s.gpus or s.gpu_roles))
+    except Exception:                                    # noqa: BLE001 - the screens' words must not break a launch; the engine says what it did
+        return False
 
 
 EXPERTS_LINE = re.compile(r"experts per word: (\d+)")

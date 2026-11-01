@@ -120,3 +120,42 @@ class MeasuredCardAccounting(unittest.TestCase):
         a = self.plan(1, 32.0, "amd", model="IST-DAS-2.25bpw", ram=126.0)["vram_experts_gb"]
         b = self.plan(1, 32.0, "amd", model="UD-IQ1_M", ram=126.0)["vram_experts_gb"]      # 7.6 GB of dense weights against 5.9
         self.assertLess(b, a)
+
+
+class Rdna4Faster(unittest.TestCase):
+    """rdna4_faster: the engine's `--experts auto` on RDNA4 cards, said by the screens and the app (ds4_experts_rule.hpp single_rdna4 / multi_rdna4)."""
+
+    @staticmethod
+    def cards(n, vendor="amd", arch="gfx1201", gb=32.0):
+        return [{"index": i, "name": "card", "vram_gb": gb, "vendor": vendor, "arch": arch} for i in range(n)]
+
+    def test_one_card_yes_two_no_three_and_four_yes_on_linux(self):
+        orig = F._on_windows
+        F._on_windows = lambda: False
+        try:
+            for model in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"):
+                self.assertTrue(F.rdna4_faster(self.cards(1), model, "amd"), model)
+                self.assertFalse(F.rdna4_faster(self.cards(2), model, "amd"), model)     # 37-47% of the experts on two cards
+                self.assertTrue(F.rdna4_faster(self.cards(3), model, "amd"), model)
+                self.assertTrue(F.rdna4_faster(self.cards(4), model, "amd"), model)
+        finally:
+            F._on_windows = orig
+
+    def test_not_for_other_cards_or_an_unknown_model(self):
+        orig = F._on_windows
+        F._on_windows = lambda: False
+        try:
+            self.assertFalse(F.rdna4_faster(self.cards(4, vendor="nvidia"), "IST-DAS-2.25bpw", "nvidia"))
+            self.assertFalse(F.rdna4_faster(self.cards(4, arch="gfx1100"), "IST-DAS-2.25bpw", "amd"))
+            self.assertFalse(F.rdna4_faster(self.cards(4), None, "amd"))
+            self.assertFalse(F.rdna4_faster([], "IST-DAS-2.25bpw", "amd"))
+        finally:
+            F._on_windows = orig
+
+    def test_windows_runs_one_amd_card(self):
+        orig = F._on_windows
+        F._on_windows = lambda: True
+        try:
+            self.assertTrue(F.rdna4_faster(self.cards(2), "IST-DAS-2.25bpw", "amd"))     # one card of the two: the single-card rule
+        finally:
+            F._on_windows = orig
