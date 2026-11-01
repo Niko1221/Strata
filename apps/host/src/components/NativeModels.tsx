@@ -14,6 +14,7 @@ import { DownloadParts } from './DownloadParts';
 import { useElapsed } from '../lib/use-elapsed';
 import { EngineWarning } from './EngineWarning';
 import { EngineUpdateCard } from './EngineUpdateCard';
+import { EngineUpdateDialog } from './EngineUpdateDialog';
 import { duration, sizeGb } from '../lib/format';
 import { NativeDeleteDialog } from './NativeDelete';
 import { plainFailureText } from '../lib/plain-errors';
@@ -223,6 +224,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      </> : null)}
      <EngineWarning native={native}/>
      <EngineUpdateCard native={native} busy={!!active}/>
+     <EngineUpdateDialog open={false} onClose={() => {}}/>
      {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
      {tr(active ? <p className="small muted native-wait-note">{tr("The buttons below wait until this finishes.")}</p> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}

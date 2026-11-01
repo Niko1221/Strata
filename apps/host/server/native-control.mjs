@@ -63,13 +63,15 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  const updateLog=line=>{try{console.log(`update · ${line}`);}catch{/* no console */}};
  const NO_INSTALL='Installing, updating, tuning with calibration or rolling back model files and engines happens from the Terminal (strata install), never while the app runs.';
  let defaultId=null,timer=null,closing=false,polling=false;
+ /* Models the engine update stopped (with the person's yes): kept so the app can offer to start them again with the same settings. */
+ let stoppedForUpdate=null;
  const emit=()=>{const value=state();writeFileSync(join(directory,'native-jobs.json'),JSON.stringify(value.jobs),{mode:0o600});changed(value);};
  const append=(instanceId,line)=>{logs.push({at:new Date().toISOString(),instanceId,line:String(line).slice(0,2000)});if(logs.length>400)logs.shift();};
  function diskSpace(path){try{const s=statfsSync(path);return {free:Number(s.bavail)*Number(s.bsize),total:Number(s.blocks)*Number(s.bsize)};}catch{return null;}}
  /* Does the engine in this release serve DFlash2? Control knows (strata_control/drafting.py); asked once, false until it answers. The Models screen offers the choice only when true. */
  let dflash2Served=null,dflash2Support=null;
  function probeDrafting(){if(!packaged||dflash2Served!==null||typeof control.draftingPlan!=='function')return;dflash2Served=false;control.draftingPlan({mode:'auto'}).then(p=>{dflash2Served=p.serves===true;dflash2Support=p.serves===true&&p.support&&p.support_line?{level:p.support,line:p.support_line}:null;emit();}).catch(()=>{});}
- function state(){const folder=preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),space=folder?diskSpace(folder):null;return {...snapshot,downloadDirectory:folder,downloadFreeBytes:space?.free??null,downloadTotalBytes:space?.total??null,fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,mcpServers,...i})=>structuredClone(i)),defaultId,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false,dflash2:dflash2Served===true,dflash2Support}};}
+ function state(){const folder=preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),space=folder?diskSpace(folder):null;return {...snapshot,downloadDirectory:folder,downloadFreeBytes:space?.free??null,downloadTotalBytes:space?.total??null,fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,mcpServers,...i})=>structuredClone(i)),defaultId,stoppedForUpdate:stoppedForUpdate?{updated:stoppedForUpdate.updated,at:stoppedForUpdate.at,models:stoppedForUpdate.instances.map(i=>({id:i.id,label:i.label}))}:null,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false,dflash2:dflash2Served===true,dflash2Support}};}
  let sourceCache={path:'',time:0,text:''};
  function sourceText(){try{const path=join(packaged?control.control.dir:preferences.repo,'serve/server.py'),time=statSync(path).mtimeMs;if(sourceCache.path===path&&sourceCache.time===time)return sourceCache.text;sourceCache={path,time,text:readFileSync(path,'utf8')};return sourceCache.text;}catch{return '';}}
  function nativeFields(){const source=sourceText();return NATIVE_FIELDS.map(field=>({...field,supported:APP_OWNED_FIELDS.includes(field.id)||field.id.startsWith('vision_')||field.id.startsWith('mcp_')||field.id==='vram_reserve_mib'||source.includes(field.id)}));}
@@ -419,7 +421,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     shell's signed Tauri updater. Models are not part of any of it. */
  async function componentProgram(job,args={}){
   if(!COMPONENT_KINDS.includes(job.kind)||typeof control.update!=='function')throw new Error(NO_INSTALL);
-  if(instances.size)throw new Error('Unload native models before changing engine files.');
+  if(instances.size&&!(job.kind==='update-engine'&&args.stopModel===true))throw new Error('Unload native models before changing engine files.');
   job.abort=new AbortController();
   const subject=job.kind==='update-strata'?'Strata':'engine';
   try{return await componentSteps(job,subject,args);}catch(error){updateLog(`${job.kind} failed: ${String(error?.message??error).slice(0,400)}`);throw error?.details!==undefined&&error.message?error:plainError(error,subject,args?.firstRun===true?'Continue':undefined);}
@@ -434,7 +436,13 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   updateLog(`${job.kind} started (app ${thisAppVersion()??'unknown'})`);
   if(job.kind==='install-engine-file'){if(typeof args.path!=='string'||!args.path)throw new Error('Choose the engine file first.');let done;try{done=await control.installEngineFile(args.path,{onEvent,signal:job.abort.signal});}finally{try{const own=resolve(directory,'incoming-engine')+sep;if(resolve(args.path).startsWith(own))rmSync(args.path,{force:true});}catch{/* the copy in the host's own folder; a leftover is harmless */}}return {summary:updateSummary(done)==='Everything is already up to date.'?(done.results?.[0]?.note??'Nothing was changed.'):updateSummary(done),result:done};}
   if(job.kind==='rollback'){const done=await control.rollbackEngine();return {summary:'The previous engine is back. Your models and settings are unchanged.',result:done};}
-  if(job.kind==='update-engine'){const done=await control.update({engine:true,control:false,onEvent,signal:job.abort.signal});return {summary:updateSummary(done),result:done};}
+  if(job.kind==='update-engine'){
+   /* A model is loaded and the person said yes to stopping it (the dialog names it): Control downloads while it serves, stops it cleanly, updates, and leaves it stopped.
+      Whatever the result, the models it stopped are kept so the app offers to start them again, on the new engine or, after a failed update, on the old one. */
+   const gate=args.stopModel===true&&instances.size?updateGate(job):null;
+   try{const done=await control.update({engine:true,control:false,stopModel:!!gate,onEvent:gate?e=>{onEvent(e);gate.event(e);}:onEvent,signal:job.abort.signal});gate?.finish(true);return {summary:updateSummary(done),result:done};}
+   catch(error){gate?.finish(false);if(gate?.refusal)throw Object.assign(new Error(gate.refusal),{details:`Running outside this app: ${gate.outside.join(', ')}`});throw error;}
+  }
   const done=await control.update({engine:false,control:true,onEvent,signal:job.abort.signal});
   updateLog(`Control step finished: ${updateSummary(done)}`);
   const notes=[updateSummary(done)];
@@ -447,6 +455,46 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   }
   return {summary:notes.filter(Boolean).join(' '),result:done};
  }
+ /* The engine update with a model loaded (strata update --stop-model --output jsonl). The `models` events say what Control is doing to the models; this turns them into the app's own
+    state: the model leaves the list when it is stopped, and a model the app did not start is never stopped (the update is ended before anything is downloaded). */
+ function updateGate(job){
+  const mine=new Map([...instances.values()].filter(i=>i.profile).map(i=>[i.profile,i])),stopped=[],gate={refusal:null,event(e){
+   if(e.event!=='models')return;
+   const models=Array.isArray(e.models)?e.models:[],label=m=>mine.get(m.profile)?.label??m.name??'The model';
+   if(e.phase==='consent'){
+    const other=models.filter(m=>!mine.has(m.profile));
+    if(other.length){gate.refusal='A model that was not started from this app is running, so nothing was changed. Stop it, then update the engine again.';gate.outside=other.map(label);job.abort.abort();return;}
+    job.step='getting-ready';job.models=models.map(label);job.summary=`Getting the new engine ready. ${job.models.join(' and ')} keeps running until it is ready.`;
+   }
+   else if(e.phase==='stopping'){for(const m of models){const i=mine.get(m.profile);if(i)i.status='unloading';}job.step='stopping';job.models=models.map(label);job.summary=`Stopping ${job.models.join(' and ')}. Answers in progress finish first.`;}
+   else if(e.phase==='stopped'){for(const m of models){const i=mine.get(m.profile);if(i&&instances.get(i.id)===i){instances.delete(i.id);stopped.push(i);if(defaultId===i.id)defaultId=instances.keys().next().value??null;}}job.step='stopped';job.models=models.map(label);job.summary=`${job.models.join(' and ')} stopped. Updating the engine…`;}
+   emit();
+  },finish(updated){stoppedForUpdate=stopped.length?{updated,at:new Date().toISOString(),instances:stopped}:null;emit();}};
+  return gate;
+ }
+ /* "Start again with the same settings": the stopped model's saved profile (the run file it was started with) is started again; the engine in use is whichever Control has primary now. */
+ async function restartStopped(job){
+  const offer=stoppedForUpdate;if(!offer?.instances?.length)throw new Error('There is no stopped model to start again.');
+  stoppedForUpdate=null;emit();
+  const labels=[];
+  for(const old of offer.instances){
+   const instance={...old,status:'loading',phase:'loading',error:null,metrics:null,loadedAt:new Date().toISOString()};
+   instances.set(instance.id,instance);if(!defaultId||!instances.has(defaultId))defaultId=instance.id;job.summary=`Starting ${instance.label}. Loading can take a few minutes.`;emit();
+   let wait=960;try{const {config,entry}=record(instance.model);wait=startWaitFor(config,entry,instance.model);}catch{/* the usual wait */}
+   try{
+    await control.start(instance.profile,{waitSeconds:wait});
+    const deadline=Date.now()+300000;let ready=false;
+    while(!ready&&Date.now()<deadline&&job.state==='running'){try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${instance.key}`},signal:AbortSignal.timeout(2000)});ready=response.ok;}catch{/* not yet */}if(!ready)await new Promise(resolve=>setTimeout(resolve,1200));}
+    if(!ready)throw new Error('Loading took more than five minutes. Check the engine log and free memory.');
+    instance.status='ready';instance.phase='idle';ensurePoll();emit();labels.push(instance.label);
+   }catch(error){
+    await control.stop(instance.profile).catch(()=>{});
+    instance.status='error';instance.error=humanStartError(error);emit();throw new Error(`${instance.label} did not start again. ${instance.error}`);
+   }
+  }
+  return {summary:`${labels.join(' and ')} ${labels.length>1?'are':'is'} running again with the same settings.`};
+ }
+ function dismissRestart(){stoppedForUpdate=null;emit();return state();}
  function updateSummary(done){const r=(done.results??[]).filter(x=>x.status==='updated').map(x=>x.component==='engine'||x.component==='dsv41'?'The engine is updated and ready.':'Strata is updated. It takes effect the next time you open the app.');return r.length?r.join(' '):'Everything is already up to date.';}
  function execute(cmd,args,cwd){return new Promise((resolve,reject)=>{let output='';const process=spawnProcess(cmd,args,{cwd,stdio:['ignore','pipe','pipe']});process.stdout.on('data',c=>{output+=c;if(output.length>100000)process.kill();});process.stderr.on('data',c=>append('update',c.toString()));process.on('error',reject);process.on('exit',code=>code===0?resolve(output):reject(new Error('Git could not update this installation. Open diagnostics.')));});}
  /* Every write of a model's run config keeps the person's options: those they wrote into "args" or "user_args" since the file was last written are read from the file itself, go over what the caller built, and "args_written" is refreshed. */
@@ -492,7 +540,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const room=args.resourceProfile==='work';
   return autotuner.start(job,job.kind==='recheck'?'recheck':'tune',{configPath:path,presetId:args.presetId,mode:args.mode,use:args.use,goal:room?'room':'speed',leaveRam:room?20:0,allowSmallDifferences:args.allowSmallDifferences===true,name:args.name},{onProgress:p=>{job.summary=p.text??job.summary;emit();}});
  }
- function operation(kind,args={}){if(!['install','load','benchmark','tune','autotune','recheck','calibrate','update-engine','update-strata','rollback','install-engine-file','remove'].includes(kind))throw new Error('Choose a supported native operation.');if(!snapshot.available&&!(packaged&&COMPONENT_KINDS.includes(kind)))throw new Error(snapshot.error??'Connect the native Strata installation first.');if(kind==='install'||kind==='load'){const refusal=engineRefusal(snapshot.catalog,args.model,snapshot.engineInfo);if(refusal)throw new Error(refusal);}return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='autotune'||kind==='recheck'?autotune(job,args):kind==='remove'?removeModel(job,args):program(job,args),{guided:args.guided===true,model:args.model,...(args.family?{family:args.family}:{})});}
+ function operation(kind,args={}){if(!['install','load','benchmark','tune','autotune','recheck','calibrate','update-engine','update-strata','rollback','install-engine-file','remove','restart-models'].includes(kind))throw new Error('Choose a supported native operation.');if(kind==='restart-models'&&!packaged)throw new Error('Choose a supported native operation.');if(!snapshot.available&&!(packaged&&(COMPONENT_KINDS.includes(kind)||kind==='restart-models')))throw new Error(snapshot.error??'Connect the native Strata installation first.');if(kind==='install'||kind==='load'){const refusal=engineRefusal(snapshot.catalog,args.model,snapshot.engineInfo);if(refusal)throw new Error(refusal);}return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='autotune'||kind==='recheck'?autotune(job,args):kind==='remove'?removeModel(job,args):kind==='restart-models'?restartStopped(job):program(job,args),{guided:args.guided===true,model:args.model,...(args.family?{family:args.family}:{})});}
  /* ---- The models folder card (0.2.2): what a picked folder means, and the three choices. The copying is Control's (strata models move). ---- */
  const currentModelsFolder=()=>preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder)??null;
  const moveFile=()=>join(directory,'models-move.cancel');
@@ -592,7 +640,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  // Remove nonserializable process references from public jobs.
  const publicState=()=>{const value=state();value.jobs=value.jobs.map(({process,engineAbort,rawResult,...job})=>job);return value;};
  async function localPreview(path){if(!packaged)throw new Error('Checking local model files is part of the Strata app.');if(typeof path!=='string'||!path.trim()||[...path].some(c=>c.charCodeAt(0)<32))throw new Error('Choose a folder.');return control.importPlan(path.trim());}
- return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
+ return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,dismissRestart,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
 }
 /* A DeepSeek config on AMD written by setup 0.2.8 or earlier names ONE card and marks it "asked", though setup picked it itself (strata_control/gpu_pick.py): it must not stop the app's recommended cards from applying. A card setup named for itself is the first of the usable cards, largest memory first; another card number was the person's. Roles and a "gpus_by" marker are always honoured. */
 export function setupPickedOneCard(config,hardware){
