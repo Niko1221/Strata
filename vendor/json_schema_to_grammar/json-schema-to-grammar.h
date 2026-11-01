@@ -19,8 +19,12 @@ struct common_grammar_builder {
 
 struct common_grammar_options {
     bool dotall = false;
+    bool tool_value = false;                 // root tool strings are raw, unlike nested JSON strings
+    std::string forbidden_sequence;          // never emit this raw inside serialized JSON strings
 };
 
+std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf,
+                                   const common_grammar_options & options);
 std::string gbnf_format_literal(const std::string & literal);
 
 std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options = {});

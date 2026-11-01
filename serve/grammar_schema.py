@@ -26,19 +26,25 @@ def converter_exe(exe_dir) -> Path:
     return Path(exe_dir) / name
 
 
-def schema_to_grammar(exe_dir, schema: dict) -> str:
-    """Convert with the grammar_schema CLI.  Raises ValueError on any failure (no exe, schema the
-    converter refuses); the caller decides the fallback."""
+def schema_to_grammar(exe_dir, schema: dict, *, tool_value=False, forbidden_sequence=None) -> str:
+    """Convert a schema. Tool-value mode preserves the template's unquoted root strings and rejects
+    unsupported string constraints instead of allowing a prompt-path fallback to weaken them."""
     key = schema_text(schema)
+    cache_key = (key, bool(tool_value), forbidden_sequence or "")
     with _lock:
-        if key in _cache:
-            _cache.move_to_end(key)
-            return _cache[key]
+        if cache_key in _cache:
+            _cache.move_to_end(cache_key)
+            return _cache[cache_key]
     exe = converter_exe(exe_dir) if exe_dir is not None else None
     if exe is None or not exe.exists():
         raise ValueError(f"the schema converter is not installed next to the engine ({exe})")
+    args = [str(exe)]
+    if tool_value:
+        args.append("--tool-value")
+    if forbidden_sequence:
+        args.extend(("--forbid-sequence", forbidden_sequence))
     try:
-        proc = subprocess.run([str(exe)], input=key, capture_output=True, text=True,
+        proc = subprocess.run(args, input=key, capture_output=True, text=True,
                               encoding="utf-8", timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         raise ValueError(f"schema converter failed to run: {e}") from e
@@ -46,7 +52,7 @@ def schema_to_grammar(exe_dir, schema: dict) -> str:
         raise ValueError("schema conversion failed: " + ((proc.stderr or "").strip()[:200] or f"exit {proc.returncode}"))
     text = proc.stdout
     with _lock:
-        _cache[key] = text
+        _cache[cache_key] = text
         if len(_cache) > CACHE_CAP:
             _cache.popitem(last=False)
     return text
@@ -88,10 +94,7 @@ def plan_response_format(engine, response_format, messages, with_tools=False, al
         elif kind == "json_schema":
             spec = response_format.get("json_schema")
             if isinstance(spec, dict) and isinstance(spec.get("schema"), dict):
-                try:
-                    grammar_text = schema_to_grammar(exe_dir_of(engine), spec["schema"])
-                except ValueError:
-                    grammar_text = None       # the converter refused: the prompt path knows what to do
+                grammar_text = schema_to_grammar(exe_dir_of(engine), spec["schema"])
     messages, validator = prepare_format(response_format, messages, with_tools=with_tools)   # shape checks + validator
     if grammar_text is not None:
         messages = original                    # the constraint rides in the sampler, not in the prompt

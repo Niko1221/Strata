@@ -7,6 +7,7 @@
 #include "unicode.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <regex>
@@ -315,6 +316,26 @@ static std::string format_literal(const std::string & literal) {
 
 std::string gbnf_format_literal(const std::string & literal) { return format_literal(literal); }
 
+// JSON strings embedded in a tool parameter are later parsed by the chat-template
+// parser.  Keep protocol marker characters out of the serialized JSON text while
+// preserving their decoded value.  The converter's ordinary response-format path
+// must retain its historical output, so this is selected only by tool options.
+static std::string format_json_literal(const std::string & literal, bool protect_angle) {
+    if (!protect_angle) {
+        return format_literal(literal);
+    }
+    std::string escaped;
+    escaped.reserve(literal.size());
+    for (char c : literal) {
+        if (c == '<') {
+            escaped += "\\u003c";
+        } else {
+            escaped.push_back(c);
+        }
+    }
+    return format_literal(escaped);
+}
+
 static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
     if (pos + 1 >= pattern.length() || pattern[pos] != '\\') {
         return 0;
@@ -346,6 +367,8 @@ class common_chat_schema_converter {
 private:
     friend std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options);
     bool _dotall;
+    bool _tool_value;
+    std::string _forbidden_sequence;
     std::map<std::string, std::string> _rules;
     std::unordered_set<std::string> _refs_being_resolved;
     std::vector<std::string> _errors;
@@ -393,10 +416,18 @@ private:
     std::string _visit_pattern(const std::string & pattern, const std::string & name) {
         auto rules_snapshot = _rules;
         try {
+            if (!_forbidden_sequence.empty()) {
+                throw unsupported_pattern("patterns are not supported with protected tool parameter delimiters");
+            }
             return _pattern_to_rule(pattern, name);
         } catch (const unsupported_pattern & err) {
-            // revert rules
+            // Revert rules. In strict tool mode, widening an unsupported pattern to any string would
+            // silently defeat the schema, so report an error instead of accepting a weaker grammar.
             _rules = std::move(rules_snapshot);
+            if (!_forbidden_sequence.empty()) {
+                _errors.push_back("Pattern " + pattern + " is not supported for a protected tool value (" + err.what() + ")");
+                return "";
+            }
             _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
             return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
         } catch (const invalid_pattern & err) {
@@ -709,14 +740,16 @@ private:
         std::vector<std::string> optional_props;
         std::unordered_map<std::string, std::string> prop_kv_rule_names;
         std::vector<std::string> prop_names;
+        if (_forbidden_sequence.empty() == false && additional_properties) {
+            _errors.push_back("additionalProperties are not supported for protected tool values");
+        }
         for (const auto & kv : properties) {
             const auto &prop_name = kv.first;
             const auto &prop_schema = kv.second;
-
             std::string prop_rule_name = visit(*prop_schema, name + (name.empty() ? "" : "-") + prop_name);
             prop_kv_rule_names[prop_name] = _add_rule(
                 name + (name.empty() ? "" : "-") + prop_name + "-kv",
-                format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+                format_json_literal(json(prop_name).dump(), !_forbidden_sequence.empty()) + " space \":\" space " + prop_rule_name
             );
             if (required.find(prop_name) != required.end()) {
                 required_props.push_back(prop_name);
@@ -796,8 +829,158 @@ private:
         return rule;
     }
 
+    static std::string _class_escape(char c) {
+        switch (c) {
+            case '\\': return "\\\\";
+            case ']': return "\\]";
+            case '-': return "\\-";
+            case '\\n': return "\\n";
+            case '\\r': return "\\r";
+            case '\\t': return "\\t";
+            default: return std::string(1, c);
+        }
+    }
+
+    int _forbidden_next(size_t state, char ch) const {
+        std::string candidate = _forbidden_sequence.substr(0, state);
+        candidate.push_back(ch);
+        if (candidate.size() >= _forbidden_sequence.size() &&
+            candidate.compare(candidate.size() - _forbidden_sequence.size(), _forbidden_sequence.size(), _forbidden_sequence) == 0) {
+            return -1;
+        }
+        const size_t max_size = std::min(_forbidden_sequence.size() - 1, candidate.size());
+        for (size_t size = max_size; size > 0; --size) {
+            if (candidate.compare(candidate.size() - size, size, _forbidden_sequence, 0, size) == 0) {
+                return (int) size;
+            }
+        }
+        return 0;
+    }
+
+    // A JSON escape branch that spells exactly one decoded character per branch: the simple escapes do,
+    // and "\\uXXXX" does unless it opens a surrogate PAIR (two escapes, one character).  The pair is not
+    // admitted, so a guarded string's grammar count equals the schema's character count; an astral
+    // character is written as itself instead.
+    static const std::string & _protected_json_escape() {
+        static const std::string escaped =
+            "[\\\\] ( [\"\\\\bfnrt]"
+            " | \"u\" ( [0-9a-cA-Ce-fE-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]"
+            "         | [dD] [0-7c-fC-F] [0-9a-fA-F] [0-9a-fA-F] ) )";
+        return escaped;
+    }
+
+    std::string _guarded_string(const std::string & rule_name, int min_len, int max_len, bool raw) {
+        if (_forbidden_sequence.empty()) {
+            _errors.push_back("raw tool string conversion requires a forbidden parameter delimiter");
+            return "";
+        }
+        // llama.cpp's rule for the same problem, which this mirrors: a lower bound above the threshold is
+        // refused ("number of repetitions exceeds sane defaults"), an upper bound above it becomes unbounded
+        // (src/llama-grammar.cpp, MAX_REPETITION_THRESHOLD).  Our engine's GBNF parser carries the same
+        // threshold and the same clamp, so a schema behaves here as it does on the ordinary path.
+        constexpr int MAX_GUARDED_STRING_LENGTH = 2000;
+        // An upper bound the chain need not count to is unbounded in practice: the state machine exists to count
+        // characters, while the property this mode guarantees (the value never spells the delimiter) holds in
+        // every state.  Client schemas ask for maxLength 65535 / 1000000 to mean "a lot"; counting that far would
+        // mean tens of thousands of rules for no added guarantee, so the bound is dropped - as llama.cpp does -
+        // rather than the whole request refused.
+        if (max_len > MAX_GUARDED_STRING_LENGTH) {
+            max_len = -1;
+        }
+        if (min_len < 0 || max_len < -1 || min_len > MAX_GUARDED_STRING_LENGTH ||
+            (max_len >= 0 && min_len > max_len)) {
+            _errors.push_back("string length bounds are too large or invalid for a protected tool value (" +
+                              rule_name + ": minLength " + std::to_string(min_len) + ", maxLength " +
+                              std::to_string(max_len) + "; this converter counts length characters up to " +
+                              std::to_string(MAX_GUARDED_STRING_LENGTH) + ")");
+            return "";
+        }
+
+        const int count_limit = max_len < 0 ? min_len : max_len;
+        using state_key = std::pair<size_t, int>;
+        std::map<state_key, int> ids;
+        std::vector<state_key> states;
+        std::vector<std::string> names;
+        auto add_state = [&](state_key key) {
+            auto it = ids.find(key);
+            if (it != ids.end()) return it->second;
+            const int id = (int) states.size();
+            ids.emplace(key, id);
+            states.push_back(key);
+            std::string candidate = rule_name + "-guard-state-" + std::to_string(id);
+            while (_rules.find(candidate) != _rules.end() ||
+                   std::find(names.begin(), names.end(), candidate) != names.end()) {
+                candidate += "-x";
+            }
+            names.push_back(candidate);
+            return id;
+        };
+        add_state({0, 0});
+
+        // one branch per decoded character: the simple escapes spell one each, and "\uXXXX" is admitted
+        // only outside the high-surrogate range, whose PAIR would spell one character with two escapes
+        // and let a length-bounded string decode shorter than its grammar count
+        const std::string json_escape = _protected_json_escape();
+        const std::string alphabet = [&]() {
+            std::string out;
+            for (char c : _forbidden_sequence) {
+                if (out.find(c) == std::string::npos) out.push_back(c);
+            }
+            return out;
+        }();
+        for (size_t id = 0; id < states.size(); ++id) {
+            const auto [matched, count] = states[id];
+            const bool can_more = max_len < 0 || count < max_len;
+            const int next_count = max_len < 0 ? std::min(count + 1, count_limit) : count + 1;
+            std::vector<std::string> branches;
+            std::string refused;
+            for (char c : alphabet) {
+                if (!raw && c == '<') {
+                    refused += _class_escape(c);
+                    continue;
+                }
+                const int next = _forbidden_next(matched, c);
+                if (next < 0 || next > 0 || !can_more) {
+                    refused += _class_escape(c);
+                }
+                if (next >= 0 && next > 0 && can_more) {
+                    const int next_id = add_state({(size_t) next, next_count});
+                    branches.push_back(format_literal(std::string(1, c)) + " " + names[next_id]);
+                }
+            }
+            std::string body;
+            if (can_more) {
+                std::string cls;
+                if (raw) {
+                    cls = refused.empty() ? "[\\U00000000-\\U0010FFFF]" : "[^" + refused + "]";
+                } else {
+                    cls = "[^\"\\\\\\x7F\\x00-\\x1F" + refused + "]";
+                }
+                const int free_id = add_state({0, next_count});
+                body = cls + " " + names[free_id];
+                if (!raw) {
+                    body += " | " + json_escape + " " + names[free_id];
+                }
+                for (const auto & branch : branches) body += " | " + branch;
+            }
+            if (count >= min_len) body += (body.empty() ? "" : " | ") + std::string("\"\"");
+            if (body.empty()) {
+                _errors.push_back("protected string schema has no accepting production");
+                body = "\"\"";
+            }
+            _rules[names[id]] = body;
+        }
+        const int start_id = ids.at({0, 0});
+        const std::string framed = raw ? names[start_id] : format_literal("\"") + " " + names[start_id] + " " + format_literal("\"");
+        return _add_rule(rule_name, framed);
+    }
+
     std::string _add_primitive(const std::string & name, const BuiltinRule & rule) {
-        auto n = _add_rule(name, rule.content);
+        BuiltinRule effective = rule;
+        if (name == "char" && !_forbidden_sequence.empty()) {
+            effective.content = "[^\"\\\\\\x7F\\x00-\\x1F<] | " + _protected_json_escape();
+        }
+        auto n = _add_rule(name, effective.content);
         for (const auto & dep : rule.deps) {
             BuiltinRule dep_rule;
             auto it = PRIMITIVE_RULES.find(dep);
@@ -816,16 +999,38 @@ private:
     }
 
 public:
-    explicit common_chat_schema_converter(bool dotall) : _dotall(dotall) {
+    explicit common_chat_schema_converter(bool dotall, bool tool_value = false, std::string forbidden_sequence = {})
+        : _dotall(dotall), _tool_value(tool_value), _forbidden_sequence(std::move(forbidden_sequence)) {
         _rules["space"] = SPACE_RULE;
+        if (_tool_value && _forbidden_sequence.empty()) {
+            _errors.push_back("tool-value conversion requires a forbidden parameter delimiter");
+        }
+        if (!_forbidden_sequence.empty()) {
+            if (_forbidden_sequence.front() != '<') {
+                _errors.push_back("protected tool delimiters must begin with '<'");
+            }
+            for (unsigned char c : _forbidden_sequence) {
+                if (c >= 0x80) {
+                    _errors.push_back("protected tool delimiters must be ASCII");
+                    break;
+                }
+            }
+        }
     }
 
     std::string add_schema(const std::string & name, const common_chat_schema & schema) {
         return visit(schema, name);
     }
 
-    static std::string _generate_constant_rule(const json & value) {
-        return format_literal(value.dump());
+    std::string _generate_constant_rule(const json & value, bool raw = false) {
+        if (raw && value.is_string()) {
+            const std::string text = value.get<std::string>();
+            if (!_forbidden_sequence.empty() && text.find(_forbidden_sequence) != std::string::npos) {
+                _errors.push_back("string constants containing the protected parameter closer are not supported");
+            }
+            return format_literal(text);
+        }
+        return format_json_literal(value.dump(), !_forbidden_sequence.empty());
     }
 
     std::string _visit_primitive(const std::string & rule_name, const std::string & type) {
@@ -882,24 +1087,54 @@ public:
         std::string sub_name  = name + (name.empty() ? "" : "-");
 
         switch (schema.kind()) {
-            case common_chat_schema::KIND_REF:
-                return _add_rule(rule_name, _resolve_ref(as<common_chat_schema_ref>(schema)));
+            case common_chat_schema::KIND_REF: {
+                const auto & ref = as<common_chat_schema_ref>(schema);
+                // --tool-value never arrives here (the strict preflight refuses $ref), and a root
+                // dereference would walk a self-referential schema without a recursion guard
+                return _add_rule(rule_name, _resolve_ref(ref));
+            }
             case common_chat_schema::KIND_ANY_OF:
+                if (_tool_value && name.empty()) {
+                    _errors.push_back("tool parameter root unions are not supported in strict mode");
+                    return "";
+                }
                 return _add_rule(rule_name, _generate_union_rule(name, as<common_chat_schema_any_of>(schema).children));
             case common_chat_schema::KIND_ALL_OF:
+                if (_tool_value && name.empty()) {
+                    _errors.push_back("tool parameter root allOf schemas are not supported in strict mode");
+                    return "";
+                }
                 return _visit_all_of(as<common_chat_schema_all_of>(schema), name, rule_name);
             case common_chat_schema::KIND_CONST:
+                if (_tool_value && name.empty() && as<common_chat_schema_const>(schema).value.is_string()) {
+                    return _add_rule(rule_name, _generate_constant_rule(as<common_chat_schema_const>(schema).value, true));
+                }
                 return _add_rule(rule_name, _generate_constant_rule(as<common_chat_schema_const>(schema).value));
             case common_chat_schema::KIND_ENUM: {
+                const auto & values = as<common_chat_schema_enum>(schema).values;
+                bool any_string = false;
+                bool all_string = !values.empty();
+                for (const auto & v : values) {
+                    any_string = any_string || v.is_string();
+                    all_string = all_string && v.is_string();
+                }
+                if (_tool_value && name.empty() && any_string && !all_string) {
+                    _errors.push_back("tool parameter root enum cannot mix raw strings with JSON values");
+                    return "";
+                }
                 std::vector<std::string> enum_values;
-                for (const auto & v : as<common_chat_schema_enum>(schema).values) {
-                    enum_values.push_back(_generate_constant_rule(v));
+                for (const auto & v : values) {
+                    enum_values.push_back(_generate_constant_rule(v, _tool_value && name.empty() && all_string));
                 }
                 return _add_rule(rule_name, "(" + string_join(enum_values, " | ") + ")");
             }
             case common_chat_schema::KIND_OBJECT: {
                 const auto & obj = as<common_chat_schema_object>(schema);
                 if (obj.properties.empty() && obj.additional_properties && obj.additional_properties->kind() == common_chat_schema::KIND_ANY) {
+                    if (!_forbidden_sequence.empty()) {
+                        _errors.push_back("unconstrained objects are not supported in protected tool values");
+                        return "";
+                    }
                     return _add_rule(rule_name, _add_primitive("object", PRIMITIVE_RULES.at("object")));
                 }
                 std::vector<std::pair<std::string, const common_chat_schema *>> properties;
@@ -927,6 +1162,10 @@ public:
             case common_chat_schema::KIND_ARRAY: {
                 const auto & arr = as<common_chat_schema_array>(schema);
                 if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+                    if (!_forbidden_sequence.empty()) {
+                        _errors.push_back("unconstrained arrays are not supported in protected tool values");
+                        return "";
+                    }
                     return _visit_primitive(rule_name, "array");
                 }
                 std::string item_rule_name = visit(*arr.items, sub_name + "item");
@@ -935,6 +1174,18 @@ public:
             }
             case common_chat_schema::KIND_STRING: {
                 const auto & str = as<common_chat_schema_string>(schema);
+                const bool raw_root = _tool_value && name.empty();
+                if (raw_root) {
+                    if (!str.pattern.empty() || str.format != common_chat_schema::FORMAT_NONE) {
+                        _errors.push_back("tool parameter root patterns and formats are not supported in strict mode");
+                        return "";
+                    }
+                    return _guarded_string(rule_name, str.min_length, str.max_length, true);
+                }
+                if (!_forbidden_sequence.empty() && !str.pattern.empty()) {
+                    _errors.push_back("nested string patterns are not supported in protected tool values");
+                    return "";
+                }
                 if (!str.pattern.empty()) {
                     return _visit_pattern(str.pattern, rule_name);
                 }
@@ -942,8 +1193,15 @@ public:
                     return _visit_primitive(rule_name, "uuid");
                 }
                 if (str.format != common_chat_schema::FORMAT_NONE) {
+                    if (!_forbidden_sequence.empty()) {
+                        _errors.push_back("nested string formats are not supported in protected tool values");
+                        return "";
+                    }
                     std::string prim_name = std::string(str.format == common_chat_schema::FORMAT_DATE ? "date" : str.format == common_chat_schema::FORMAT_TIME ? "time" : "date-time") + "-string";
                     return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
+                }
+                if (!_forbidden_sequence.empty()) {
+                    return _guarded_string(rule_name, str.min_length, str.max_length, false);
                 }
                 if (str.min_length > 0 || str.max_length >= 0) {
                     std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
@@ -952,6 +1210,7 @@ public:
                 }
                 return _visit_primitive(rule_name, "string");
             }
+
             case common_chat_schema::KIND_INTEGER: {
                 const auto & i = as<common_chat_schema_integer>(schema);
                 if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
@@ -970,6 +1229,11 @@ public:
             case common_chat_schema::KIND_NULL:
                 return _visit_primitive(rule_name, "null");
             case common_chat_schema::KIND_ANY:
+                // any depth: an unconstrained value can spell the parameter closer inside a JSON string
+                if (_tool_value) {
+                    _errors.push_back("protected tool schemas need a concrete string, enum, const, object, array, number, boolean or null type");
+                    return "";
+                }
                 return _add_rule(rule_name, _add_primitive("value", PRIMITIVE_RULES.at("value")));
         }
         return "";
@@ -993,19 +1257,191 @@ public:
     }
 };
 
-std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf) {
+static void validate_protected_schema(const common_json & schema, const std::string & path = "#") {
+    if (!schema.is_object()) {
+        throw std::invalid_argument(path + ": schema must be an object");
+    }
+    static const std::unordered_set<std::string> annotations = {
+        "$schema", "title", "description", "$comment", "default", "examples", "deprecated", "readOnly", "writeOnly",
+    };
+    for (const auto & [key, value] : schema.items()) {
+        (void) value;
+        if (annotations.count(key)) continue;
+        if (key == "$ref" || key == "anyOf" || key == "oneOf" || key == "allOf" || key == "not" || key == "if" ||
+            key == "then" || key == "else" || key == "pattern" || key == "format" || key == "patternProperties" ||
+            key == "propertyNames" || key == "contains" || key == "prefixItems" || key == "unevaluatedProperties" ||
+            key == "unevaluatedItems" || key == "dependentSchemas" || key == "dependencies" || key == "multipleOf" ||
+            key == "minProperties" || key == "maxProperties" || key == "minContains" || key == "maxContains") {
+            throw std::invalid_argument(path + ": keyword '" + key + "' is not supported in strict tool mode");
+        }
+        static const std::unordered_set<std::string> supported = {
+            "type", "enum", "const", "properties", "required", "additionalProperties", "items", "minItems", "maxItems",
+            "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+        };
+        if (!supported.count(key)) {
+            throw std::invalid_argument(path + ": unknown keyword '" + key + "' is not supported in strict tool mode");
+        }
+    }
+
+    if (schema.contains("$ref")) {
+        throw std::invalid_argument(path + ": $ref is not supported in strict tool mode");
+    }
+    if (schema.contains("enum") || schema.contains("const")) {
+        if (schema.contains("enum") && schema.contains("const")) {
+            throw std::invalid_argument(path + ": enum and const cannot be combined in strict tool mode");
+        }
+        for (const auto & [key, value] : schema.items()) {
+            if (!annotations.count(key) && key != "type" && key != "enum" && key != "const") {
+                throw std::invalid_argument(path + ": enum/const cannot be combined with '" + key + "' in strict tool mode");
+            }
+        }
+        const common_json & values = schema.contains("enum") ? schema.at("enum") : schema.at("const");
+        if (schema.contains("enum") && (!values.is_array() || values.empty())) {
+            throw std::invalid_argument(path + ": enum must be a non-empty array");
+        }
+        auto value_type = [](const common_json & value) {
+            if (value.is_string()) return std::string("string");
+            if (value.is_boolean()) return std::string("boolean");
+            if (value.is_null()) return std::string("null");
+            if (value.is_array()) return std::string("array");
+            if (value.is_object()) return std::string("object");
+            if (value.is_number_integer()) return std::string("integer");
+            if (value.is_number()) return std::string("number");
+            return std::string("invalid");
+        };
+        std::string expected = schema.contains("enum") ? value_type(values.at(0)) : value_type(values);
+        if (expected == "invalid") throw std::invalid_argument(path + ": invalid enum/const value");
+        if (schema.contains("enum")) {
+            for (const auto & value : values) {
+                if (value_type(value) != expected) {
+                    throw std::invalid_argument(path + ": mixed-type enums are not supported in strict tool mode");
+                }
+            }
+        }
+        if (schema.contains("type")) {
+            if (!schema.at("type").is_string()) throw std::invalid_argument(path + ": type must be a string");
+            const std::string declared = schema.at("type").get<std::string>();
+            if (declared != expected && !(declared == "number" && expected == "integer")) {
+                throw std::invalid_argument(path + ": enum/const values do not match the declared type");
+            }
+        }
+        return;
+    }
+
+    if (!schema.contains("type") || !schema.at("type").is_string()) {
+        throw std::invalid_argument(path + ": strict tool schemas require a concrete string type");
+    }
+    const std::string type = schema.at("type").get<std::string>();
+    auto only = [&](std::initializer_list<const char *> keys) {
+        for (const auto & [key, value] : schema.items()) {
+            (void) value;
+            if (annotations.count(key)) continue;
+            if (std::find_if(keys.begin(), keys.end(), [&](const char * allowed) { return key == allowed; }) == keys.end()) {
+                throw std::invalid_argument(path + ": keyword '" + key + "' is invalid for type " + type);
+            }
+        }
+    };
+    if (type == "string") {
+        only({"type", "minLength", "maxLength"});
+        for (const char * key : {"minLength", "maxLength"}) {
+            if (schema.contains(key) && (!schema.at(key).is_number_integer() || schema.at(key).get<int64_t>() < 0)) {
+                throw std::invalid_argument(path + ": string length bounds must be non-negative integers");
+            }
+        }
+        if (schema.contains("minLength") && schema.contains("maxLength") && schema.at("minLength").get<int64_t>() > schema.at("maxLength").get<int64_t>()) {
+            throw std::invalid_argument(path + ": minLength exceeds maxLength");
+        }
+        return;
+    }
+    if (type == "object") {
+        only({"type", "properties", "required", "additionalProperties"});
+        if (schema.contains("additionalProperties") && schema.at("additionalProperties") != false) {
+            throw std::invalid_argument(path + ": additionalProperties must be false in strict tool mode");
+        }
+        if (schema.contains("properties")) {
+            const auto & props = schema.at("properties");
+            if (!props.is_object()) throw std::invalid_argument(path + "/properties must be an object");
+            for (const auto & [name, child] : props.items()) validate_protected_schema(child, path + "/properties/" + name);
+        }
+        if (schema.contains("required")) {
+            const auto & required = schema.at("required");
+            if (!required.is_array()) throw std::invalid_argument(path + "/required must be an array");
+            for (const auto & key : required) {
+                if (!key.is_string() || !schema.contains("properties") || !schema.at("properties").contains(key.get<std::string>())) {
+                    throw std::invalid_argument(path + ": required names must refer to declared properties");
+                }
+            }
+        }
+        return;
+    }
+    if (type == "array") {
+        only({"type", "items", "minItems", "maxItems"});
+        if (!schema.contains("items")) throw std::invalid_argument(path + ": array schemas require an items schema in strict tool mode");
+        validate_protected_schema(schema.at("items"), path + "/items");
+        for (const char * key : {"minItems", "maxItems"}) {
+            if (schema.contains(key) && (!schema.at(key).is_number_integer() || schema.at(key).get<int64_t>() < 0)) {
+                throw std::invalid_argument(path + ": item bounds must be non-negative integers");
+            }
+        }
+        if (schema.contains("minItems") && schema.contains("maxItems") && schema.at("minItems").get<int64_t>() > schema.at("maxItems").get<int64_t>()) {
+            throw std::invalid_argument(path + ": minItems exceeds maxItems");
+        }
+        return;
+    }
+    if (type == "integer") {
+        only({"type", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"});
+        if (schema.contains("minimum") && schema.contains("exclusiveMinimum")) throw std::invalid_argument(path + ": minimum and exclusiveMinimum cannot be combined");
+        if (schema.contains("maximum") && schema.contains("exclusiveMaximum")) throw std::invalid_argument(path + ": maximum and exclusiveMaximum cannot be combined");
+        // the schema builder rounds every bound towards the integers it still admits, so a value it
+        // cannot represent (not a number, not finite, past int64) must be refused here, before rounding
+        auto bound = [&](const char * key) {
+            const common_json & value = schema.at(key);
+            if (!value.is_number()) throw std::invalid_argument(path + ": " + key + " must be a number");
+            const double d = value.is_number_integer() ? (double) value.get<int64_t>() : value.get<double>();
+            if (!std::isfinite(d) || d <= -9.2e18 || d >= 9.2e18) {
+                throw std::invalid_argument(path + ": " + key + " is outside the integer range this converter can spell");
+            }
+            return d;
+        };
+        const bool has_min = schema.contains("minimum") || schema.contains("exclusiveMinimum");
+        const bool has_max = schema.contains("maximum") || schema.contains("exclusiveMaximum");
+        const double lo = schema.contains("minimum") ? bound("minimum") : schema.contains("exclusiveMinimum") ? bound("exclusiveMinimum") + 1.0 : 0.0;
+        const double hi = schema.contains("maximum") ? bound("maximum") : schema.contains("exclusiveMaximum") ? bound("exclusiveMaximum") - 1.0 : 0.0;
+        if (has_min && has_max && lo > hi) {
+            throw std::invalid_argument(path + ": the integer bounds admit no value");
+        }
+        return;
+    }
+    if (type == "number" || type == "boolean" || type == "null") {
+        only({"type"});
+        return;
+    }
+    throw std::invalid_argument(path + ": unsupported type '" + type + "' in strict tool mode");
+}
+
+std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf, const common_grammar_options & options) {
 #ifdef LLAMA_USE_LLGUIDANCE
-    if (!force_gbnf) {
+    if (!force_gbnf && !options.tool_value && options.forbidden_sequence.empty()) {
         return "%llguidance {}\nstart: %json " + schema.dump();
     }
 #else
-    (void)force_gbnf;
+    (void) force_gbnf;
 #endif // LLAMA_USE_LLGUIDANCE
     try {
-        return json_schema_to_grammar(common_chat_schema_from_json(schema));
+        if (options.tool_value) {
+            validate_protected_schema(schema);
+        }
+        common_chat_schema_converter converter(false, options.tool_value, options.forbidden_sequence);
+        converter.visit(*common_chat_schema_from_json(schema).root, "");
+        converter.check_errors();
+        return converter.format_grammar();
     } catch (const std::runtime_error & e) {
         throw std::invalid_argument(std::string("JSON schema conversion failed:\n") + e.what());
     }
+}
+
+std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf) {
+    return json_schema_to_grammar(schema, force_gbnf, {});
 }
 
 std::string json_schema_to_grammar(const common_chat_schema_document & schema) {
@@ -1016,7 +1452,7 @@ std::string json_schema_to_grammar(const common_chat_schema_document & schema) {
 }
 
 std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options) {
-    common_chat_schema_converter converter(options.dotall);
+    common_chat_schema_converter converter(options.dotall, options.tool_value, options.forbidden_sequence);
     common_grammar_builder builder {
         /* .add_rule = */ [&](const std::string & name, const std::string & rule) {
             return converter._add_rule(name, rule);

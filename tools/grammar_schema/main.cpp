@@ -8,7 +8,19 @@
 #include <iostream>
 #include <string>
 
-int main() {
+int main(int argc, char ** argv) {
+    common_grammar_options options;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--tool-value") {
+            options.tool_value = true;
+        } else if (arg == "--forbid-sequence" && i + 1 < argc) {
+            options.forbidden_sequence = argv[++i];
+        } else {
+            std::cerr << "grammar_schema: unknown argument: " << arg << "\\n";
+            return 1;
+        }
+    }
     std::string text;
     {
         char buf[65536];
@@ -25,7 +37,11 @@ int main() {
     }
 
     try {
-        std::string gbnf = json_schema_to_grammar(schema, /* force_gbnf= */ true);
+        if (options.tool_value && options.forbidden_sequence.empty()) {
+            std::cerr << "grammar_schema: --tool-value requires --forbid-sequence\\n";
+            return 1;
+        }
+        std::string gbnf = json_schema_to_grammar(schema, /* force_gbnf= */ true, options);
         std::cout << gbnf;
         if (!gbnf.empty() && gbnf.back() != '\n') std::cout << "\n";
     } catch (const std::exception & e) {

@@ -306,14 +306,12 @@ class GrammarConverter(unittest.TestCase):
         self.assertIsNone(off)
         self.assertTrue(any("JSON" in str(m.get("content", "")) for m in messages))   # the directive rides along
 
-    def test_a_missing_converter_falls_back_to_the_prompt_path(self):
+    def test_a_missing_converter_fails_closed_for_a_capable_engine(self):
         fmt = {"type": "json_schema", "json_schema": {"name": "s", "schema": SCHEMA}}
-        messages, validator = None, None
         engine = MockEngine(ByteTokenizer(), "{}")
-        engine.info = {"grammar": 1}                    # capable, but no spawn: no converter to be found
-        grammar_text, messages, validator = grammar_conv.plan_response_format(engine, fmt, [{"role": "user", "content": "x"}])
-        self.assertIsNone(grammar_text)                 # the prompt path takes the turn
-        self.assertIsNotNone(validator)
+        engine.info = {"grammar": 1}                    # capable, but no converter: do not downgrade
+        with self.assertRaisesRegex(ValueError, "schema converter is not installed"):
+            grammar_conv.plan_response_format(engine, fmt, [{"role": "user", "content": "x"}])
 
 
 class GrammarWire(unittest.TestCase):

@@ -7,7 +7,7 @@ The named-grammar check is structural: Python has no grammar core, so the assert
 import unittest
 
 from serve.frontend import ChatTemplate
-from serve.grammar_tools import build_tool_grammar, gbnf_escape, tool_grammar_choice, with_think_prologue
+from serve.grammar_tools import build_tool_grammar, exclude_seq, gbnf_escape, tool_grammar_choice, with_think_prologue
 from pathlib import Path
 
 TOOLS = [{"name": "get_weather",
@@ -21,23 +21,35 @@ TOOLS = [{"name": "get_weather",
                                         "urgent": {"type": "boolean"}}}}]
 
 
+def _advance(seq: str, state: int, ch: str):
+    candidate = seq[:state] + ch
+    if candidate.endswith(seq):
+        return None
+    for size in range(min(len(seq) - 1, len(candidate)), 0, -1):
+        if candidate.endswith(seq[:size]):
+            return size
+    return 0
+
+
 def chain_accept(seq: str, text: str) -> bool:
-    """Mirror of exclude_seq's chain: state k consumes seq[k] to advance, restarts at 0 on a mismatch,
-    and the last state refuses the completing character."""
-    k = 0
-    for c in text:
-        if c == seq[k]:
-            k += 1
-            if k == len(seq):
-                return False
-        else:
-            k = 0
+    """Reference KMP-style overlap-aware exclusion automaton used by grammar generation."""
+    if not seq:
+        raise ValueError("an excluded sequence cannot be empty")
+    state = 0
+    for ch in text:
+        state = _advance(seq, state, ch)
+        if state is None:
+            return False
     return True
 
 
-def convert(sub):
+def convert(sub, raw_string=False, forbidden_sequence=None):
     if sub.get("type") == "boolean":
         return 'root ::= boolean\nboolean ::= "true" | "false"\n'
+    if sub.get("type") == "string":
+        rules = []
+        text = exclude_seq(forbidden_sequence or "</parameter>", "text", rules)
+        return "\n".join([f"root ::= {text}", *rules]) + "\n"
     raise AssertionError(f"unexpected subschema {sub}")
 
 
@@ -51,6 +63,7 @@ class Prose(unittest.TestCase):
             self.assertTrue(chain_accept("<tool_call>", ok), ok)
         for bad in ("<tool_call>", "x<tool_call>", "<tool_call>\n<function=a>"):
             self.assertFalse(chain_accept("<tool_call>", bad), bad)
+        self.assertFalse(chain_accept("</parameter>", "safe <</parameter>"))
 
     def test_the_auto_root_offers_prose_and_calls(self):
         g = build("auto")
@@ -70,11 +83,11 @@ class Named(unittest.TestCase):
         call = [line for line in lines if line.startswith("call-get-weather-0 ::=")][0]
         # the template's literals, in its order: open, required parameter, optional parameter, close
         self.assertIn('"<tool_call>\\n<function=get_weather>\\n"', call)
-        self.assertIn("call-get-weather-0-city ", call)        # the required parameter, in schema order
+        self.assertIn("call-get-weather-0-param-0 ", call)   # the required parameter, in schema order
         self.assertIn('"<parameter=city>\\n"', g)
         self.assertIn('"\\n</parameter>\\n"', g)
         self.assertIn('"</function>\\n</tool_call>"', call)
-        self.assertIn("( call-get-weather-0-unit )?", call)   # "unit" is not required
+        self.assertIn("( call-get-weather-0-param-1 )?", call)   # "unit" is not required
         # the other tool's rules are built (they ride the shared calls list) but nothing reaches them:
         # the answer is the named call, and only the "required" roots open calls-one
         self.assertEqual(answer, "answer ::= call-get-weather-0")
@@ -83,12 +96,12 @@ class Named(unittest.TestCase):
     def test_the_string_value_rule_refuses_the_parameter_end(self):
         g = build("named", name="get_weather")
         self.assertIn('"\\n</parameter>\\n"', g)                # the parameter tail the value must not write
-        self.assertIn("[^\\n]", g)                             # chain state 0 refuses the newline...
-        self.assertIn("[^>]", g)                               # ... and the last state the closing bracket
+        self.assertIn("call-get-weather-0-param-0-text ::= [^<]", g)
+        self.assertIn("call-get-weather-0-param-0-text-state-11 ::= [^<>]", g)
 
     def test_a_non_string_parameter_inlines_the_converter_under_a_namespace(self):
         g = build("named", name="send_sms")
-        self.assertIn("call-send-sms-1-urgent-boolean ::=", g)   # renamed, literals kept
+        self.assertIn("call-send-sms-1-param-2-boolean ::=", g)   # renamed, literals kept
         self.assertIn('"true"', g)
 
     def test_the_template_renders_exactly_what_the_grammar_demands(self):
@@ -144,13 +157,13 @@ class ThinkPrologue(unittest.TestCase):
     def test_the_answer_grammar_becomes_the_region_after_the_closer(self):
         g = with_think_prologue('root ::= "a" | "b"\n')
         self.assertIn('root ::= reason "</think>\\n" answer', g)
-        self.assertIn("answer ::= ws ( fenced | answer-root )", g)
-        self.assertIn('fenced ::= "```json" ws answer-root ws "```"', g)   # the habit is legal, canary strips it
-        self.assertIn('ws ::= ( " " | ', g)                               # free whitespace, zero or more
+        self.assertIn("answer ::= ws answer-root", g)
+        self.assertNotIn("fenced", g)
+        self.assertIn('ws ::= ( " " | ', g)                               # bounded whitespace
         self.assertIn('answer-root ::= "a" | "b"', g)
         self.assertIn('reason ::= ', g)                            # free text that never spells the closer
-        self.assertIn('"<" reason-1-0', g)                     # the closer chain
-        self.assertIn('"`" reason-0-1', g)                     # the fenced-answer habit is refused too
+        self.assertIn('"<" reason-state-', g)                  # the closer chain
+        self.assertIn('"`" reason-state-', g)                  # the fenced-answer habit is refused too
 
 
 if __name__ == "__main__":

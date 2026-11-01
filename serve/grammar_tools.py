@@ -1,14 +1,5 @@
-"""#3862: tool-call grammars. The template serialization (chat_template.jinja, assistant tool_calls) is a
-rigid shape - "<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>" -
-so a grammar can carry it token by token: a constrained model cannot write a broken call, invent a tool,
-or drop a required parameter. The builder emits exactly the template's literals; the routing in server.py
-hands it the schema converter (convert=...) and passes the result to the engine under a content hash.
-
-The prose guard (the "auto" alternation) excludes the literal "<tool_call>": prose may contain any text
-that never spells it, so a model that starts a call is bound to finish it. The exclusion is a chain of
-rules - one state per character of the forbidden sequence - and it is exact for the sequences used here,
-which carry no border: no proper suffix of a prefix repeats the sequence's start, so a mismatched
-character always restarts the chain at state 0."""
+"""#3862: tool-call grammars. The template envelope and each parameter schema are constrained
+by overlap-aware automata, with generated rule names independent of user-provided properties."""
 import re
 
 # the vendored converter's literal escapes (json-schema-to-grammar.cpp GRAMMAR_LITERAL_ESCAPES);
@@ -29,127 +20,110 @@ def _rule_name(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9-]+", "-", text.lower()).strip("-") or "x"
 
 
-def _inject_char(body: str, ch: str) -> str:
-    """`body` with `ch` added to every negated character class (`[^...]`) it holds.  A rule that is a
-    negated class stands for "any character except these"; subtracting one more is adding it here."""
-    out, i = [], 0
-    while i < len(body):
-        if body[i] == "[" and i + 1 < len(body) and body[i + 1] == "^":
-            j = i + 2
-            while j < len(body) and body[j] != "]":
-                j += 2 if body[j] == "\\" else 1     # a `\]` inside the class is not its end
-            out.append(body[i:j] + _CLASS_ESCAPES.get(ch, ch) + "]")
-            i = j + 1
-        else:
-            out.append(body[i])
-            i += 1
-    return "".join(out)
+def _rule_heads(rules: list) -> set[str]:
+    return {line.partition(" ::= ")[0] for line in rules if " ::= " in line}
 
 
-def exclude_seq_in(seq: str, ns: str, rules: list) -> None:
-    """Refuse `seq` inside the JSON the converter produced under the namespace `ns`.
+def _fresh_rule_name(base: str, rules: list) -> str:
+    heads = _rule_heads(rules)
+    name, suffix = base, 0
+    while any(head == name or head.startswith(name + "-") or name.startswith(head + "-") for head in heads):
+        name = f"{base}-generated-{suffix}"
+        suffix += 1
+    return name
 
-    A non-string parameter's value is the converter's JSON grammar, whose strings are spelled by a
-    `char` rule that admits `<` - so `"</parameter>"` inside an argument value was legal, and
-    frontend.param_end (which ends a value at any `</parameter>` followed by `<parameter=`,
-    `</function>` or `</tool_call>`) cut the call there, dropping every parameter after it.  Measured:
-    a nested object argument arrived as a string and the parameter following it disappeared.
 
-    The fix is the same shape as the top-level one (llama.cpp caps both with `until(param_closer)`):
-    every string in this namespace now reads its characters through the exclusion chain instead of
-    `char*`.  The chain needs a deterministic character set per state, so each state's restart branch
-    is the converter's own `char` body with that state's advancing character injected into its
-    negated class (see _inject_char); refusing `<` outright would be simpler and wrong, since a value
-    may hold one.  A schema whose JSON has no string needs nothing and returns unchanged."""
-    char_name, string_name = f"{ns}-char", f"{ns}-string"
-    char_body = None
-    for line in rules:
-        head, _, body = line.partition(" ::= ")
-        if head == char_name:
-            char_body = body
-            break
-    if char_body is None:
-        return                      # no string in this value's JSON: nothing can spell the closer
-    chain = f"{ns}-text"
-    for k, ch in enumerate(seq):
-        wide = f"{chain}-any-{k}"
-        rules.append(f"{wide} ::= {_inject_char(char_body, ch)}")
-        head = chain if k == 0 else f"{chain}-{k}"
-        if k == len(seq) - 1:
-            rules.append(f'{head} ::= {wide} {chain} | ""')
-        else:
-            rules.append(f'{head} ::= {wide} {chain} | {_lit(ch)} {chain}-{k + 1} | ""')
-    # the string rule reads through the chain; `char*` was the only spelling of a string's body
-    for i, line in enumerate(rules):
-        head, _, body = line.partition(" ::= ")
-        if head == string_name and f"{char_name}*" in body:
-            rules[i] = f"{head} ::= {body.replace(f'{char_name}*', chain)}"
+def _check_unique_rules(rules: list) -> None:
+    names = [line.partition(" ::= ")[0] for line in rules if " ::= " in line]
+    if len(names) != len(set(names)):
+        raise ValueError("the generated tool grammar contains duplicate rule names")
+
+
+def _advance_exclusion(seq: str, state: int, ch: str) -> int | None:
+    """Return the longest suffix that is a prefix of seq; None means seq completed."""
+    candidate = seq[:state] + ch
+    if candidate.endswith(seq):
+        return None
+    for size in range(min(len(seq) - 1, len(candidate)), 0, -1):
+        if candidate.endswith(seq[:size]):
+            return size
+    return 0
 
 
 def exclude_seq(seq: str, name: str, rules: list) -> str:
-    """Rules for any text that never spells `seq`; the rule named `name` is state 0. One rule per
-    character: [^c] restarts the chain, "c" advances it; the last state simply refuses the final
-    character, so the sequence can never complete. Returns the entry rule name."""
-    for k, ch in enumerate(seq):
-        cls = f"[^{_CLASS_ESCAPES.get(ch, ch)}]"
-        head = name if k == 0 else f"{name}-{k}"
-        if k == len(seq) - 1:
-            rules.append(f'{head} ::= {cls} {name} | ""')
-        else:
-            rules.append(f'{head} ::= {cls} {name} | {_lit(ch)} {name}-{k + 1} | ""')
+    """Emit a DFA grammar that refuses any text containing `seq`, including overlapping matches."""
+    if not seq:
+        raise ValueError("an excluded sequence cannot be empty")
+    name = _fresh_rule_name(name, rules)
+
+    states = [0]
+    seen = {0}
+    emitted = {}
+    alphabet = sorted(set(seq))
+    for state in states:
+        transitions, refused = [], set()
+        for ch in alphabet:
+            nxt = _advance_exclusion(seq, state, ch)
+            if nxt is None:
+                refused.add(ch)
+            elif nxt:
+                refused.add(ch)
+                if nxt not in seen:
+                    seen.add(nxt)
+                    states.append(nxt)
+                transitions.append((ch, nxt))
+        cls = "".join(_CLASS_ESCAPES.get(ch, ch) for ch in sorted(refused))
+        head = name if state == 0 else f"{name}-state-{state}"
+        body = [f"[^{cls}] {name}"] if cls else [f"[\\U00000000-\\U0010FFFF] {name}"]
+        body.extend(f"{_lit(ch)} {name}-state-{nxt}" for ch, nxt in transitions)
+        emitted[state] = f'{head} ::= ' + " | ".join(body) + ' | ""'
+    rules.extend(emitted[state] for state in states)
     return name
 
 
 def exclude_seqs(seqs: list, name: str, rules: list) -> str:
-    """Rules for any text that never spells any of `seqs` - the product of the per-sequence
-    restart chains, one rule per reachable state (the entry rule is `name`; the others are
-    `name-<i>-<j>...`). A character that advances an axis takes only its tracking branch (so a
-    completing character is refused by that state alone); a character that completes a sequence
-    is refused by the state before it; every other character - including one that merely restarts
-    a partial match - rides the free class and the text flows as it would unconstrained. Returns
-    the entry rule name.
+    """Emit a product DFA that refuses any of the sequences, preserving overlapping prefixes."""
+    seqs = list(dict.fromkeys(s for s in seqs if s))
+    if not seqs:
+        raise ValueError("at least one excluded sequence is required")
+    name = _fresh_rule_name(name, rules)
+    alphabet = sorted({ch for seq in seqs for ch in seq})
+    start = (0,) * len(seqs)
+    states, seen, emitted = [start], {start}, {}
 
-    The single-sequence shape is exactly exclude_seq's chain; use this for the think prologue,
-    which must refuse both the template's closer and the model's fenced-JSON answer habit
-    (measured on the rig: the habit pours out as free reasoning and the answer never starts).
-    """
-    lens = [len(s) for s in seqs]
+    def transition(state, ch):
+        out = []
+        for seq, matched in zip(seqs, state):
+            nxt = _advance_exclusion(seq, matched, ch)
+            if nxt is None:
+                return None
+            out.append(nxt)
+        return tuple(out)
 
-    def nxt(v, ch):
-        # a mismatch restarts that axis to 0, as the single-sequence chain does; this keeps every
-        # transition off its own state, which the grammar parser demands
-        return tuple(j + 1 if ch == s[j] else 0 for j, s in zip(v, seqs))
+    def label(state):
+        return name if state == start else f"{name}-state-{state_ids[state]}"
 
-    def label(v):
-        return name if not any(v) else name + "-" + "-".join(str(x) for x in v)
-
-    chars = sorted({c for s in seqs for c in s})
-    entry = (0,) * len(seqs)
-    states, order = {entry}, [entry]
-    heads = {}
-    for v in order:
+    state_ids = {start: 0}
+    for state in states:
         branches, refused = [], set()
-        for ch in chars:
-            w = nxt(v, ch)
-            if any(w[k] == lens[k] for k in range(len(seqs))):
-                refused.add(ch)                    # completing a sequence: the state refuses the char
-            elif w != entry:
-                if w not in states:
-                    states.add(w)
-                    order.append(w)
-                branches.append((ch, w))
-                refused.add(ch)                    # advancing: only its tracking branch may take it, so the
-                                                   # refusal of a completing char cannot leak through a
-                                                   # parallel restart stack
-            # else: the char restarts every axis and rides the free class (any text stays legal - the bug
-            # that excluded these made a bare "h" or "t" in the reasoning unmatchable and starved the
-            # model's thinking down to letter-free loops)
-        cls = "".join(_CLASS_ESCAPES.get(c, c) for c in sorted(refused))
-        body = [f"[^{cls}] {label(entry)}"] + [f"{_lit(ch)} {label(w)}" for ch, w in branches]
-        heads[v] = f'{label(v)} ::= ' + " | ".join(body) + ' | ""'
-    for v in order:
-        rules.append(heads[v])
+        for ch in alphabet:
+            nxt = transition(state, ch)
+            if nxt is None:
+                refused.add(ch)
+            elif nxt != start:
+                refused.add(ch)
+                if nxt not in seen:
+                    seen.add(nxt)
+                    state_ids[nxt] = len(state_ids)
+                    states.append(nxt)
+                branches.append((ch, nxt))
+        cls = "".join(_CLASS_ESCAPES.get(ch, ch) for ch in sorted(refused))
+        body = [f"[^{cls}] {label(start)}"] if cls else [f"[\\U00000000-\\U0010FFFF] {label(start)}"]
+        body.extend(f"{_lit(ch)} {label(nxt)}" for ch, nxt in branches)
+        emitted[state] = f'{label(state)} ::= ' + " | ".join(body) + ' | ""'
+    rules.extend(emitted[state] for state in states)
     return name
+
 
 
 # the exact strings the template writes around a call (verbatim, keep them in sync with chat_template.jinja)
@@ -228,6 +202,9 @@ def _inline(grammar_text: str, ns: str, rules: list) -> str:
         out.append(body[pos:])
         return "".join(out)
 
+    old_names = [old for old, _ in parsed]
+    if len(old_names) != len(set(old_names)):
+        raise ValueError("the schema converter produced duplicate rule names")
     for old, body in parsed:
         rules.append(f"{ns}-{old} ::= {rename(body)}")
     return f"{ns}-root"
@@ -242,22 +219,17 @@ def _call_rule(tool: dict, idx: int, rules: list, convert) -> str:
     props = schema.get("properties") if isinstance(schema, dict) else None
     required = set(schema.get("required") or []) if isinstance(schema, dict) else set()
     parts = [_lit(CALL_HEAD + name + ">\n")]
-    for key, sub in (props or {}).items():
-        pns = f"{ns}-{_rule_name(key)}"
-        if isinstance(sub, dict) and sub.get("type") == "string":
-            # the value refuses the whole closer, as llama.cpp's `until(param_closer)` does.  Refusing only
-            # the template's own "\n</parameter>" left the newline-less form legal, and frontend.param_end
-            # ends a value at ANY "</parameter>" that is followed by "<parameter=", "</function>" or
-            # "</tool_call>" - so a value holding "</parameter></tool_call>" ended the call early and the
-            # parameters after it were dropped (measured: write_file arrived without its last argument).
-            value = exclude_seq(PARAM_END, f"{pns}-text", rules)
-        else:
-            value = _inline(convert(sub if isinstance(sub, dict) else {}), pns, rules)
-            # the JSON this value is spelled with admits "<" inside its strings, so the closer could be
-            # spelled there too (see exclude_seq_in); same rule as the plain-string branch above
-            exclude_seq_in(PARAM_END, pns, rules)
+    for prop_idx, (key, sub) in enumerate((props or {}).items()):
+        pns = f"{ns}-param-{prop_idx}"
+        sub = sub if isinstance(sub, dict) else {}
+        # The converter applies raw framing only to a string/const/enum root; object, array,
+        # and scalar roots retain their ordinary JSON spelling. Passing tool mode for every
+        # parameter lets it resolve a root $ref before choosing that representation and fail
+        # closed for ambiguous schemas instead of silently switching to prompt validation.
+        value = _inline(convert(sub, True, PARAM_END), pns, rules)
         rules.append(f"{pns} ::= {_lit(PARAM_HEAD + key + '>\n')} {value} {_lit(PARAM_TAIL)}")
         parts.append(pns if key in required else f"( {pns} )?")
+
     parts.append(_lit(CALL_TAIL))
     rules.append(f"{ns} ::= " + " ".join(parts))
     return ns
@@ -304,6 +276,7 @@ def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, conv
         rules.append(f"root ::= {reason} {_lit(THINK_CLOSE)} ws answer")
     else:
         rules.append("root ::= answer")
+    _check_unique_rules(rules)
     return "\n".join(rules) + "\n"
 
 
@@ -333,8 +306,8 @@ def plan_tool_grammar(engine, tools, tool_choice, mcp, thinking, allow=True):
 
     grammar_text is the call grammar to register (None: the prompt path takes the turn);
     declared_method is what a prompt-path response says it did (MCP: the case an operator
-    asked about). A missing converter is not an error - the prompt path has always served
-    tool calls - so it quietly yields the prompt path too.
+    asked about). A capable engine with a missing or insufficient converter fails closed so
+    a strict tool request cannot silently downgrade to prompt-only validation.
 
     `allow` is the caller's per-request opt-out (`strata_grammar: false`): route to the prompt
     path even though the engine could spell the call.  Same switch as plan_response_format's."""
@@ -345,13 +318,11 @@ def plan_tool_grammar(engine, tools, tool_choice, mcp, thinking, allow=True):
         return None, None
     if kind == "prompt":
         return None, ("prompt_and_validate" if mcp and grammar_conv.grammar_ok(engine) else None)
-    try:
-        exe_dir = grammar_conv.exe_dir_of(engine)
-        text = build_tool_grammar(
-            tools, gkind, gname, thinking,
-            lambda sub: grammar_conv.schema_to_grammar(exe_dir, sub))
-    except ValueError:
-        return None, None           # the prompt path serves the call, as it always did
+    exe_dir = grammar_conv.exe_dir_of(engine)
+    text = build_tool_grammar(
+        tools, gkind, gname, thinking,
+        lambda sub, raw_string, forbidden: grammar_conv.schema_to_grammar(
+            exe_dir, sub, tool_value=raw_string, forbidden_sequence=forbidden))
     return text, None
 
 

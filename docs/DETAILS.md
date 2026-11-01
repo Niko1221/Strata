@@ -773,17 +773,38 @@ pointer: no allocation, no upload, byte-identical sampling).
 - A bare `grammar` parameter on `POST /v1/chat/completions` is the client's own GBNF text (up to 1 MiB). It
   requires a grammar-capable engine (400 without one) and refuses to combine with tools/MCP.
 - Tool calls (OpenAI, Responses and Anthropic routes) ride the grammar when the engine is capable and MCP is
-  off: the grammar spells the chat template's exact call serialization, so a constrained model cannot write a
-  broken call, invent a tool, or drop a required parameter. `tool_choice` "required" and a named function allow
-  only calls; "auto" adds a prose branch whose grammar refuses the literal call opener `\n<tool_call>`:
-  the opening `\n` is the template's, so prose may start a call only to finish it. Parallel calls and the
-  `\n</think>` prologue are carried. The forced-prefix
+  off: the grammar spells the chat template's exact call serialization - the call wrapper, the tool names a
+  request declares, the parameter names each schema declares, and a typed value for every parameter. A tool
+  the request does not declare cannot be called, a parameter the schema does not declare cannot be written,
+  a required one cannot be dropped, and a value's type is the schema's (`line` bound as an integer arrives as
+  `42`, never `"42"`). `tool_choice` "required" and a named function allow only calls; "auto" adds a prose
+  branch whose grammar refuses the literal call opener `\n<tool_call>`: the opening `\n` is the template's, so
+  prose may start a call only to finish it. Parallel calls and the `\n</think>` prologue are carried. The forced-prefix
   mechanism is skipped on this path: the grammar opens the call. MCP requests stay on the prompt path (the
   hosted tools' schemas are not validated here) and the reply declares the method under
   `strata.structured_output.method`.
 - A request can turn the constraint off with `strata_grammar: false` (chat, Responses and Anthropic routes):
   the request then runs the prompt path, exactly as it did before this branch. The bare `grammar` parameter is
   always honoured.
+
+**Strict tool schemas.** A tool parameter's schema is converted by `grammar_schema` in a strict mode that
+refuses anything it cannot spell exactly instead of widening it: a request whose tools use a refused schema
+fails with `400` naming the schema path, rather than running with a weakened constraint (the vendored
+converter's own habit is to print a warning and fall back to "any string" for an unsupported `pattern`, which
+would silently unconstrain the value). Supported per property: `type` (`string`, `integer`, `number`,
+`boolean`, `null`, `object`, `array`), `enum`, `const`, a nested `properties`/`required`/`additionalProperties:
+false` object, an `items` array with `minItems`/`maxItems`, `minLength`/`maxLength` on strings, and
+`minimum`/`maximum` (or the `exclusive` pair) on integers. Refused: `$ref`, `anyOf`/`oneOf`/`allOf`/`not`,
+conditionals, `pattern` and `format`, `patternProperties`/`propertyNames`, `prefixItems`/`contains`, dynamic or
+non-`false` `additionalProperties`, `multipleOf`, property-count bounds, unknown keywords, an untyped schema,
+a mixed-type `enum`, and bounds that admit no value. Two consequences worth knowing: a `string` parameter with a
+`pattern` is refused (client schemas that bound a string by regex need to send `enum` or plain bounds instead),
+and every `object` in a schema needs `additionalProperties: false`. String length bounds follow llama.cpp's rule
+for the same problem (`src/llama-grammar.cpp`, `MAX_REPETITION_THRESHOLD` 2000, which this engine's own GBNF
+parser carries too): a `maxLength` above the threshold is treated as unbounded - client schemas write 65535 or
+1000000 to mean "a lot", and the delimiter guarantee holds in every state of the chain - while a `minLength`
+above it is refused, because dropping a lower bound would let a value come out shorter than the schema says. The
+`400` names the property and the bound.
 
 Two clause shapes keep the constrained text and the reply parser in agreement, and both exist because the parser
 is a separate implementation from the grammar (llama.cpp gets this for free: one PEG definition spells both):
@@ -792,13 +813,23 @@ parameter's JSON strings. `serve/frontend.py`'s `param_end` ends a value at any 
 by `<parameter=`, `</function>` or `</tool_call>`, so a value that could spell one let the parse cut the call
 there and drop every parameter after it (measured: a nested object argument arrived as a string and the
 parameter following it disappeared, 8 of 12 closer-inviting requests). llama.cpp caps the same hole with
-`until(param_closer)`; here the exclusion is a per-character chain, and inside JSON it rides the converter's own
-`char` class with the advancing character injected per state (a chain over GBNF's bare "any character" would let
-that character through its restart branch). The reasoning region refuses `<tool_call>` too - a call written
+`until(param_closer)`; here both sides run overlap-aware automata: the exclusion is a KMP state machine rather
+than a per-character chain, because a chain that restarts at zero after a mismatch lets `safe <</parameter>`
+through (the second `<` reopens the closer while the chain is mid-prefix). A raw string parameter's grammar is
+the raw template text, so the same automaton counts its characters directly. Inside a serialized JSON string no
+raw `<` is admitted at all; a literal `<` is written as the JSON escape `\u003c`, which decodes to the same text
+for the client while never spelling the closer in the protocol stream, and fixed literals, property keys and
+constant values are emitted the same way. Each escape branch spells exactly one decoded character (a surrogate
+pair is not admitted), so `minLength`/`maxLength` inside a nested schema count characters rather than bytes.
+The reasoning region refuses `<tool_call>` too - a call written
 there has no schema to constrain it, yet the parser rescued it as a real action. The answer region admits no
 ` ```json ` fence (a fenced answer fails every client's `json.loads`, while the canary's `extract_json` strips
 it and called it conforming), and the whitespace after `</think>` is bounded (`{0,24}`): unbounded, a masked
 backtick left the model walking whitespace until the budget ran out (76,096 characters measured).
+
+Rule names generated on either side are checked for collisions before a grammar is registered (a duplicate head
+would let one rule silently overwrite another), and the converter's own names are prefixed per parameter, so two
+parameters of the same shape cannot shadow each other.
 
 Registration: the server sends each grammar text once per engine generation (`GRAMMAR <sha16> <len> <text>`),
 keyed by the SHA-256 of the text; the engine keeps at most 64 parsed grammars and a mask cache per grammar.
@@ -815,8 +846,11 @@ silently off for a constrained request (its proposals do not come from a model t
 layer split the pipelined windows decode a constrained request serially (the chain rides the serial windows,
 as penalties do). DFlash2 (`--draft dflash2`) drafts only in the CLI run in this build, so serving never
 meets it. The mask lives in the CUDA/HIP sampler kernels (the SYCL tree mirrors the per-row reads; its
-program side has no grammar wiring); Metal/CPU engines report no capability and keep the old paths. The GBNF
-feature surface is exactly the vendored llama.cpp converter's (commit `3cf03257`).
+program side has no grammar wiring); Metal/CPU engines report no capability and keep the old paths. A bare
+`grammar` and a `json_object`/`json_schema` `response_format` convert with the vendored llama.cpp converter's
+original behaviour (commit `3cf03257`), including its warning-and-widen fallback for an unsupported `pattern`;
+only tool schemas use the strict mode described above, because only there does a widened constraint silently
+reintroduce the broken-call failure the branch exists to remove.
 
 A continuation pass (a thinking wrap-up, a close retry, a forced call, a batch slot handed back to solo) resends
 the prompt with what it generated and names the tail with `gseed=<n>`: the engine replays those tokens through
@@ -824,22 +858,31 @@ the grammar so the state (and mask) continue where the last pass left off - with
 `</think>` would never reach it, and the rest of the reply would sample from the open reasoning mask. A tail
 that does not fit the grammar is refused (400), never silently unconstrained.
 
-Measured cost on the RTX 4090 rig (Swift IQ3_S, engine 0.1.47 build, 2026-10-24,
-`bench/results/2026-10-24-1332-grammar-4090`): one 400-token answer at effort none ran at a median of
-84.8 tok/s plain vs 82.6 tok/s constrained (-2.6%); a session's first constrained request pays a one-time
-mask-kernel warm-up (26.9 tok/s once, 89.0 and 82.6 after). With 6 concurrent slots the aggregate fell from
-172.1 to 140.1 tok/s (-18.6%) - the per-slot mask upload rides every generated token. The same run answered
-50/50 JSON-schema requests inside their schemas and parsed 30/30 tool calls with 0 failures
-(reasoning_effort low, temperature 0.6, arrays bounded as real schemas bound them).
+Measured cost on the RTX 4090 rig (Swift IQ3_S, IQ3_S experts, `--spec 4 --spec-min-p 0.5`, temperature 0, five
+paired iterations taking the median, `STRATA_SPEC_PROB=1`, `--pcie-frac 0 --adapt-swaps 0` so the probabilistic
+draft acceptance is actually on - with the default `--adapt-swaps 96` it silently is not): **169.8 tok/s
+constrained vs 182.1 tok/s plain, -6.8%**. The measurement is the grammar mask's own cost, not the drafter's:
+draft acceptance was 91.8% constrained vs 90.5% plain (the constraint slightly *raises* it), and the grammar
+refused a draft row in only 1.8% of window rows, so the chain almost never truncates. The cost therefore lives
+in the per-window chain walk (`grammar_chain_step` per row, serially on the CPU) and the per-row mask upload,
+not in lost draft work - which is why masking the drafter's sampling distribution was measured as not worth
+building (its ceiling is that 1.8%). Longer answers pay relatively more: -7.2% at 2400 output tokens, -13.9% at
+4000 (single samples, cold-start dominated at the short end). Tool calls validated 5/5 (right tool, arguments
+parse as JSON, `finish_reason: tool_calls`) with the constraint on.
 
-With the MTP drafter on (the same rig and model, engine args `--spec 2 --mtp <rt>`,
-`bench/results/p1-mtp-grammar-4090`, same day): plain 121.9 tok/s median vs constrained 123.1 - the
-drafting eats the mask cost (within the run-to-run spread), 50/50 JSON-schema and 30/30 tool calls held with
-the chain active, and the first constrained request still paid the one-time mask-kernel warm-up (30.2 tok/s
-once). Single-stream plain vs plain+MTP the same day (`bench/results/p0-mtp-ab`): 94.1 vs 121.1 tok/s
-median (+28.7%) - the speed a constrained request now shares in. With `--batch 2 --batch-mtp` two slots
-decoded together, a constrained slot's window drafts accepted 52 of 70, and 6/6 concurrent replies
-(constrained and plain mixed) validated (`bench/results/p2-batch-mtp-smoke`).
+Two earlier numbers in this section deserve a correction rather than a footnote. The -2.6% / -18.6% figures and
+the "50/50 JSON-schema, 30/30 tool calls" validation came from a build in which `grammar_schema.exe` was never
+built or packaged, so `response_format` and tool schemas had been **silently falling back to the prompt path
+plus post-hoc validation**; those runs measured the mask cost of the paths that did constrain (bare `grammar`,
+`json_object`), and the "conforming" replies there were produced by prompting, not by a grammar. A packaged
+engine now carries `grammar_schema` (it is on the packaging whitelist). When measuring this feature, prove the
+constraint is live before trusting any number: a request with a literal-forcing grammar such as
+`root ::= "ZZZ-CONSTRAINED-OK"` must produce exactly that text.
+
+With the MTP drafter on (`--mtp <rt>`), a constrained window records its chain into the mask rows before the
+window samples, so a request keeps drafting at full depth; the 91.8% acceptance above is that path. With
+`--batch 2 --batch-mtp` two slots decoded together, a constrained slot's window drafts accepted 52 of 70, and
+6/6 concurrent replies (constrained and plain mixed) validated.
 
 ### The web page (Chat, Images, Monitor, About)
 

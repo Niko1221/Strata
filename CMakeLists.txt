@@ -442,6 +442,14 @@ target_include_directories(strata_json_schema PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 add_executable(grammar_schema tools/grammar_schema/main.cpp)
 target_link_libraries(grammar_schema PRIVATE strata_json_schema)
 
+if(STRATA_BUILD_TESTS)
+  # the strict tool-value grammars through the engine's own parser: overlap-safe closers, escaped
+  # literals, decoded-character length bounds, and the schemas strict mode must refuse (no model, no GPU)
+  add_executable(grammar_strict_test tools/grammar_strict_test.cpp)
+  target_link_libraries(grammar_strict_test PRIVATE strata_grammar strata_json_schema)
+  add_test(NAME grammar_strict_test COMMAND grammar_strict_test)
+endif()
+
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
