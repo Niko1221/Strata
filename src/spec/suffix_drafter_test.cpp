@@ -176,6 +176,35 @@ void unit_tests() {
         check(bad == 0, "randomized proposals are real continuations within bounds");
         check(proposals > 1000, "randomized test exercised proposals");
     }
+    {   // C1: configure() changes the match thresholds after default construction (the batch per-slot
+        // co-drafter is default-constructed in BSlot and then configured from --batch-suffix-draft).
+        // The index is trigram-based, so the minimum matchable length is 3; configure(min_match) raises
+        // the floor above that (a match shorter than min_match proposes nothing).
+        SuffixDrafter d;   // default: min_match=3
+        const std::vector<int32_t> doc = {10, 20, 30, 40, 50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30};
+        d.append(doc.data(), doc.size());
+        int32_t out[8];
+        // With the default min_match=3, the suffix trigram [10, 20, 30] matches (it occurred at the start)
+        // and proposes the continuation [40, 50, ...].
+        const int n = d.propose(5, out);
+        check(n >= 2 && out[0] == 40 && out[1] == 50, "default min_match=3 matches a 3-token suffix");
+        // Configure with min_match=4: the 3-token match is now too short and proposes nothing.
+        d.configure(4, 32);
+        check(d.propose(5, out) == 0, "configure(min_match=4) ignores a 3-token suffix");
+        // Configure back to min_match=3: the match is accepted again.
+        d.configure(3, 32);
+        const int n2 = d.propose(5, out);
+        check(n2 >= 2 && out[0] == 40 && out[1] == 50, "configure(min_match=3) restores the 3-token match");
+        // A longer match: a 4-token suffix that occurred earlier.
+        SuffixDrafter d3;
+        const std::vector<int32_t> doc3 = {1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4};
+        d3.append(doc3.data(), doc3.size());
+        int32_t out3[8];
+        const int n3 = d3.propose(5, out3);
+        check(n3 >= 1 && out3[0] == 5, "a 4-token suffix matches");
+        d3.configure(5, 32);
+        check(d3.propose(5, out3) == 0, "configure(min_match=5) ignores a 4-token suffix");
+    }
     std::printf("suffix_drafter unit tests: %s\n", g_fail ? "FAILED" : "OK");
 }
 }  // namespace

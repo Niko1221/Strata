@@ -22,6 +22,13 @@ public:
 
     explicit SuffixDrafter(int min_match = 3, int max_match = 32, size_t capacity_tokens = 1u << 19);
 
+    /// Reconfigure the match thresholds after default construction (the batch per-slot co-drafter is
+    /// default-constructed in BSlot and then configured from --batch-suffix-draft; the capacity stays as set).
+    void configure(int min_match, int max_match) {
+        min_match_ = min_match;
+        max_match_ = max_match;
+    }
+
     void reset();
     /// Add tokens to the history (the prompt, then every accepted token).
     void append(const int32_t* tokens, size_t n);

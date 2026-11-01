@@ -46,7 +46,7 @@ inline bool pipe_adapt_due(const PipeAdapt& p) {
 }
 
 /// What kept `auto` from pipelining.
-enum class Serial { None, BatchMtp, AdaptAsync, TwoCardsSerialFaster };
+enum class Serial { None, BatchMtp, AdaptAsync, TwoCardsSerialFaster, Dflash2 };
 
 struct Input {
     bool set = false;          ///< --batch-groups was given (a number or `auto`)
@@ -56,6 +56,7 @@ struct Input {
     int later_stages = 0;      ///< the layer split's stages after CUDA0 (0: no layer split)
     bool batch_mtp = false;    ///< --batch-mtp is on (it passed the gates that do not concern the groups)
     bool adapt_async = false;  ///< --adapt-async 1 was asked for
+    bool dflash2 = false;      ///< --draft dflash2: runs in the serial batch windows across the layer split
     bool mtp_serial = false;   ///< STRATA_BATCH_MTP_SERIAL=1: --batch-mtp with no --batch-groups runs one serial group (0.1.43)
     bool nv_serial_faster = false;   ///< opt-in (see nv_serial_wanted): NVIDIA build, two cards, STRATA_BATCH_GROUPS_NV_SERIAL=1 or STRATA_DEFAULTS=026 - one serial group, the 0.2.1-0.2.6 default
     bool mtp_piped = false;    ///< STRATA_PIPED_MTP=1: the pipelined groups draft too (each group carries its slots' rows)
@@ -100,6 +101,7 @@ inline Result resolve(const Input& in) {
         r.groups = r.would_be;
         if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
             if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
+            else if (in.dflash2) r.serial = Serial::Dflash2;
             else if (in.nv_serial_faster && in.later_stages == 1 && !in.batch_mtp && !in.adapt_async) r.serial = Serial::TwoCardsSerialFaster;
             else if (in.adapt_async) r.serial = Serial::AdaptAsync;
             if (r.serial != Serial::None) r.groups = 1;
@@ -117,6 +119,7 @@ inline Result resolve(const Input& in) {
 
 inline const char* serial_what(Serial s) {
     return s == Serial::BatchMtp ? "--batch-mtp" : s == Serial::AdaptAsync ? "--adapt-async 1"
+         : s == Serial::Dflash2 ? "--draft dflash2"
          : s == Serial::TwoCardsSerialFaster ? "serial windows (STRATA_BATCH_GROUPS_NV_SERIAL=1 or STRATA_DEFAULTS=026 asked for them on two NVIDIA cards; --batch-groups auto pipelines)" : "";
 }
 

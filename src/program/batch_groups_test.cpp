@@ -146,6 +146,19 @@ int main() {
         const auto r = bg::resolve(i);
         check(r.groups == 1 && r.serial == bg::Serial::AdaptAsync, "--adapt-async 1, nothing given: one group");
     }
+    {   // --draft dflash2 with --batch on a layer split: defaults to 1 serial group so tap rows hand across stages
+        bg::Input i = in(4, 1);
+        i.dflash2 = true;
+        auto r = bg::resolve(i);
+        check(r.groups == 1 && r.from_auto && r.serial == bg::Serial::Dflash2 && r.would_be == 2,
+              "--draft dflash2, 2 cards, 4 slots, nothing given: one serial group");
+        check(bg::serial_what(r.serial)[0] == '-', "the reason names --draft dflash2");
+        i.set = true;
+        i.auto_given = true;
+        r = bg::resolve(i);
+        check(r.groups == 2 && r.serial == bg::Serial::None,
+              "--draft dflash2 with explicit --batch-groups auto: keeps 2 groups (generate.cpp refuses DFlash2 there)");
+    }
     {
         bg::Input i = in(2, 1);
         i.batch_mtp = true;
