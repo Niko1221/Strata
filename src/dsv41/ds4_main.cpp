@@ -1973,7 +1973,7 @@ struct ScoreSeg {
     std::vector<int> ids;
 };
 
-bool read_score_ids(const std::string& path, std::vector<ScoreSeg>& segs, std::string& err) {
+bool read_score_ids(const std::string& path, std::vector<ScoreSeg>& segs, std::string& err, int vocab = 0) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (f == nullptr) {
         err = path + ": cannot open";
@@ -2004,13 +2004,23 @@ bool read_score_ids(const std::string& path, std::vector<ScoreSeg>& segs, std::s
         err = path + ": no segments (expected quant_quality.py's ids file)";
         return false;
     }
+    // an ids file made with another model's tokenizer (the committed data/quant_quality/v1/set.ids.json is Qwen's: ids up to 248,069)
+    // reads as nonsense here, or fails deep in a run: refuse it up front, naming the segment (the model's vocabulary: m.vocab())
+    for (const ScoreSeg& g : segs)
+        for (size_t i = 0; vocab > 0 && i < g.ids.size(); ++i)
+            if (g.ids[i] < 0 || g.ids[i] >= vocab) {
+                err = path + ": segment '" + g.name + "' has token id " + std::to_string(g.ids[i]) + " at position " + std::to_string(i) +
+                      ", outside this model's vocabulary (0.." + std::to_string(vocab - 1) +
+                      "): the ids file was made with another tokenizer (DeepSeek ids: tools/quant_quality.py ids with the pack's tokenizer folder)";
+                return false;
+            }
     return true;
 }
 
 int score(strata::ds4::Model& m, const std::string& ids_path, const std::string& out_path, int window, int eos) {
     std::vector<ScoreSeg> segs;
     std::string err;
-    if (!read_score_ids(ids_path, segs, err)) {
+    if (!read_score_ids(ids_path, segs, err, m.vocab())) {
         std::fprintf(stderr, "strata-dsv41: %s\n", err.c_str());
         return 1;
     }
@@ -2105,7 +2115,7 @@ int score(strata::ds4::Model& m, const std::string& ids_path, const std::string&
 int profile_run(strata::ds4::Model& m, const std::string& ids_path, int window) {
     std::vector<ScoreSeg> segs;
     std::string err;
-    if (!read_score_ids(ids_path, segs, err)) {
+    if (!read_score_ids(ids_path, segs, err, m.vocab())) {
         std::fprintf(stderr, "strata-dsv41: %s\n", err.c_str());
         return 1;
     }
@@ -2136,7 +2146,7 @@ int profile_run(strata::ds4::Model& m, const std::string& ids_path, int window) 
 int spec_eval(strata::ds4::Model& m, const std::string& ids_path, int n, int window, float conf_min, bool spec) {
     std::vector<ScoreSeg> segs;
     std::string err;
-    if (!read_score_ids(ids_path, segs, err)) {
+    if (!read_score_ids(ids_path, segs, err, m.vocab())) {
         std::fprintf(stderr, "strata-dsv41: %s\n", err.c_str());
         return 1;
     }
