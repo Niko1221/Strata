@@ -291,7 +291,7 @@ bool pipe_byield_nodrain_env() {
     }();
     return on;
 }
-// STRATA_ADMIT_MERGE_FIRST=1 (read once; off by default): a batch admission reads the last prompt tokens of its last
+// STRATA_ADMIT_MERGE_FIRST=1 (read once; default on, 0 to disable): a batch admission reads the last prompt tokens of its last
 // windowed part (up to a window's max_t, the last prompt token included) and its first token in ONE window instead of
 // the part's last windows and a window of the last token alone.  A row computes what it computes in any window while
 // every expert is in VRAM, and row T-1 is the first window's position with its history and its Philox draw, so the
@@ -299,11 +299,11 @@ bool pipe_byield_nodrain_env() {
 bool admit_merge_first_env() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_ADMIT_MERGE_FIRST");
-        return v && v[0] != '0';
+        return v == nullptr || v[0] == '\0' || v[0] != '0';
     }();
     return on;
 }
-// STRATA_CKPT_POOL=1 (read once; off by default): the serve loop keeps the running-state vectors of the conversation
+// STRATA_CKPT_POOL=1 (read once; default on, 0 to disable): the serve loop keeps the running-state vectors of the conversation
 // checkpoints it drops (evicted, pruned, a batch slot's old one) and saves the next checkpoint into them, so a save
 // resizes nothing (no zero-fill of ~118 MB of fresh vectors) and a slot's copy reuses their pages.  Every byte is
 // overwritten by the copy, so the checkpoints are the same
@@ -314,7 +314,7 @@ bool park_async_env() {   // STRATA_PARK_ASYNC (strata/core/conversation_snapsho
 bool ckpt_pool_env() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_CKPT_POOL");
-        return v && v[0] != '0';
+        return v == nullptr || v[0] == '\0' || v[0] != '0';
     }();
     return on;
 }
@@ -342,7 +342,7 @@ bool ckpt_threads_env() {
     }();
     return on;
 }
-// STRATA_SLOT_CKPT_MOVE=1 (read once; off by default): a batch admission MOVES its own turn checkpoint into the slot
+// STRATA_SLOT_CKPT_MOVE=1 (read once; default on, 0 to disable): a batch admission MOVES its own turn checkpoint into the slot
 // instead of copying it (~112 MB of host vectors).  The main session's chain no longer holds it, so the request path
 // looks for it in the slots' checkpoints too: while the main session's cells still hold its tokens it is restored there
 // as before (no K/V copy), else an active slot holding it gives it back like an idle one (a second request with the
@@ -351,18 +351,18 @@ bool ckpt_threads_env() {
 bool slot_ckpt_move_env() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_SLOT_CKPT_MOVE");
-        return v && v[0] != '0';
+        return v == nullptr || v[0] == '\0' || v[0] != '0';
     }();
     return on;
 }
-// STRATA_SLOT_COPY_BATCHSYNC=1 (read once; off by default): the direct slot copy (STRATA_SLOT_COPY_DIRECT) only queues
+// STRATA_SLOT_COPY_BATCHSYNC=1 (read once; default on, 0 to disable): the direct slot copy (STRATA_SLOT_COPY_DIRECT) only queues
 // its copies on each device's private copy stream and synchronizes every device once at the end, instead of waiting
 // for each of its ~116 copies.  A streamed K/V state's residency refresh waits for its copies through an event.  The
 // same copies in the same order on one stream, so the slot holds the same bytes
 bool slot_copy_batchsync_env() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_SLOT_COPY_BATCHSYNC");
-        return v && v[0] != '0';
+        return v == nullptr || v[0] == '\0' || v[0] != '0';
     }();
     return on;
 }
@@ -15645,7 +15645,13 @@ int main(int argc, char** argv) {
             // read batched and its header still goes through the windows.  Picture rows need the batched path.
             // STRATA_CKPT_REREAD compares a restored checkpoint with a batched re-read, so it keeps every read batched.
             static const bool no_short = std::getenv("STRATA_CKPT_REREAD") != nullptr;
+            static const int64_t batch_verify_prefill = []() -> int64_t {
+                const char* v = std::getenv("STRATA_BATCH_VERIFY_PREFILL");
+                return v != nullptr ? std::max<int64_t>(0, std::atoll(v)) : 96;
+            }();
             int64_t req_short_read = o.short_read;   // STRATA_PIPELINE_SWITCH may set it per request (short_read=)
+            if (o.batch > 0 && (admit_slot >= 0 || batch_on()) && req_short_read == 64 && batch_verify_prefill > 0)
+                req_short_read = std::max(req_short_read, batch_verify_prefill);
             if (short_read_off_once) {   // #3465: the request after non-finite logits in a prompt window
                 short_read_off_once = false;
                 req_short_read = 0;
@@ -16887,16 +16893,23 @@ int main(int argc, char** argv) {
                 if (to != n - 1 || to == turn_at || to == root_at || to == message_at || to == pin_at) return -1;
                 if (!req_imgs.empty() || kvg.on || peer.valid() || remote_caches || remote_opt || fs_swap) return -1;
                 if (std::getenv("STRATA_LOGPOS") != nullptr) return -1;
-                if (host_res.empty() || !pending.empty() ||
-                    std::any_of(host_res.begin(), host_res.end(), [](int32_t r) { return r < 0; }))
-                    return -1;
                 int mt = strata::kernels::kVerifyMaxT;
+                bool all_ar = !host_res.empty() && pending.empty() &&
+                              std::none_of(host_res.begin(), host_res.end(), [](int32_t r) { return r < 0; });
                 for (int k = 0; k < n_pipe; ++k) {
-                    if (!stage_verifier(k).ar_live()) return -1;
+                    if (!stage_verifier(k).ar_live()) all_ar = false;
                     mt = std::min(mt, stage_verifier(k).max_t());
                 }
                 if (mt < 2) return -1;
-                return std::max(a0, n - mt);
+                if (all_ar) return std::max(a0, n - mt);
+                if (n_pipe == 1 && o.pcie_frac <= 0.0f) {
+                    const int64_t win_w = std::min<int64_t>(S, mt);
+                    if (win_w >= 2) {
+                        const int64_t rem = (to - a0) % win_w;
+                        if (rem > 0 && rem < win_w) return to - rem;
+                    }
+                }
+                return -1;
             };
 #if defined(STRATA_HAVE_DFLASH2)
             if (has_dflash && !peer.valid() && !remote_caches && !remote_opt) {
