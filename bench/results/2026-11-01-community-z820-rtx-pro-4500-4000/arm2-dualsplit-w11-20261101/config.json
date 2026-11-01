@@ -1,0 +1,38 @@
+{
+  "engine_options": {
+    "--pack": "unsloth-ud-iq4_xs",
+    "--native": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--spec": "4",
+    "--spec-min-p": "0.5",
+    "--mtp": "rt",
+    "--max-context": "262144",
+    "--kv": "int8",
+    "--ple-io": "ram",
+    "--kv-resident": "32768",
+    "--resident-budget-gib": "55",
+    "--vision": true,
+    "--vram-reserve-mib": "700",
+    "--pool-workers": "11",
+    "--layer-split": "auto"
+  },
+  "other_engine_options": {
+    "--pack": "unsloth-ud-iq4_xs",
+    "--native": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "--max-context": "262144",
+    "--ple-io": "ram",
+    "--resident-budget-gib": "55",
+    "--vision": true
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 262144,
+  "source": "effective engine arguments of the profile"
+}
