@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -1035,15 +1036,49 @@ def lenient_json(text: str):
     return v
 
 
-def coerce_value(value: str, declared, notes: list | None = None):
-    """A non-string parameter's text -> its value by the tool's declared type: JSON when it parses; else an array or an
-    object read with lenient_json (a note says so in `notes`); else the text itself, as before.  An array or object that
-    arrived as a JSON string of itself is decoded once more."""
-    if declared == "string":
+NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+
+def literal_value(value: str, prop: dict | None):
+    """A scalar the model wrote Python-style or loosely (`True`, `None`, `+10`) -> its value, when the property's
+    declared type allows it; None when it does not (the caller keeps the text).  Booleans and None are also read
+    for a property with no schema at all; a schema without a top-level type (enum, anyOf, $ref) keeps the text."""
+    declared = (prop or {}).get("type")
+    types = declared if isinstance(declared, list) else [declared]
+    if "string" in types:
+        return None
+    v = value.strip()
+    low = v.lower()
+    if ("boolean" in types or not prop) and low in ("true", "false"):
+        return (low == "true",)
+    if ("null" in types or not prop) and low in ("null", "none"):
+        return (None,)
+    if "integer" in types and re.fullmatch(r"[+-]?[0-9]+", v):
+        try:
+            return (int(v),)
+        except ValueError:          # more digits than Python converts (sys.int_info.default_max_str_digits)
+            return None
+    if "number" in types and NUMBER_RE.fullmatch(v):
+        n = float(v)
+        if math.isfinite(n):
+            return (n,)
+    return None
+
+
+def coerce_value(value: str, prop: dict | None, notes: list | None = None):
+    """A non-string parameter's text -> its value by the tool's property schema `prop`: JSON when it parses; else a
+    boolean, None or number written Python-style (literal_value); else an array or an object read with lenient_json
+    (a note says so in `notes`); else the text itself, as before.  An array or object that arrived as a JSON string
+    of itself is decoded once more."""
+    declared = (prop or {}).get("type")
+    if declared in ("string", ["string"]):
         return value
     try:
         v = json.loads(value)
     except ValueError:
+        lit = literal_value(value, prop)
+        if lit is not None:
+            return lit[0]
         if not value.lstrip().startswith(("[", "{", "`")) or (isinstance(declared, list) and "string" in declared):
             return value
         try:
@@ -1057,14 +1092,14 @@ def coerce_value(value: str, declared, notes: list | None = None):
         try:
             return json.loads(v)
         except ValueError:
-            return coerce_value(v, declared, notes)
+            return coerce_value(v, prop, notes)
     return v
 
 
 def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
-    objects/arrays/numbers/booleans)."""
+    objects/arrays/numbers/booleans); a Python-style literal such as `False` is read by the declared type (coerce_value)."""
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
@@ -1083,7 +1118,7 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
             value = value[1:]
         if value.endswith("\n"):
             value = value[:-1]
-        args[pname] = coerce_value(value, (props.get(pname) or {}).get("type"), notes)
+        args[pname] = coerce_value(value, props.get(pname), notes)
     return ToolCall(name=name, arguments=args)
 
 
@@ -1370,6 +1405,7 @@ class OutputParser:
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.sprops = {}
         self.spname = None
         self.svstart = 0
 
@@ -1409,6 +1445,7 @@ class OutputParser:
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
                 self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
+                self.sprops = props
                 out.append(Event("tool_start", call=self.scall))
                 args("{")
                 self.sp += b + 1
@@ -1425,7 +1462,7 @@ class OutputParser:
                     self.sfirst = False
                     self.sp += b + 1
                     self.spname = pname.strip()
-                    if self.sdeclared.get(pname) == "string":
+                    if self.sdeclared.get(pname) in ("string", ["string"]):
                         args('"')
                         self.ss, self.sval_started = "str", False
                     else:
@@ -1472,7 +1509,7 @@ class OutputParser:
                     value = value[1:]
                 if value.endswith("\n"):
                     value = value[:-1]
-                v = coerce_value(value, self.sdeclared.get(self.spname))    # the note comes with the final call (parse_tool_call)
+                v = coerce_value(value, self.sprops.get(self.spname))    # the note comes with the final call (parse_tool_call)
                 args(json.dumps(v, ensure_ascii=False))
                 self.sp += end + len(PARAM_END)
                 self.ss = "between"
