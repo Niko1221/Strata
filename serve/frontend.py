@@ -169,6 +169,39 @@ def effort_kwargs(value) -> dict:
     return {"enable_thinking": False} if level is None else {"reasoning_effort": level}
 
 
+def _flag(value) -> bool:
+    """A boolean a client may write as `true`/`false` or as the text "true"/"false"/"1"/"0".
+
+    `chat_template_kwargs` reaches this function from JSON, where a real boolean is usual, but a client that builds
+    the body by hand writes the text form.  Anything unrecognised reads as off, the safe reading of an explicit
+    opt-in."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def preserve_kwargs(chat_template_kwargs) -> dict:
+    """`preserve_thinking` / `preserve_reasoning` -> the template's kwargs, under BOTH names.
+
+    Two names exist for one thing and the templates differ: llama.cpp's `--reasoning-preserve` /
+    `--no-reasoning-preserve` set `preserve_reasoning` (common/arg.cpp), while Qwen's own templates test
+    `preserve_thinking`; the fixed Qwen templates accept either.  Both are set to the same value, so a request
+    means the same thing whichever template the pack carries.
+
+    False drops the reasoning of the turns BEFORE the current one and keeps the current turn's (the tool-call loop
+    the model is in the middle of).  A request that says nothing gets the template's own default (preserve), which
+    is also llama.cpp's default, so this only ever narrows."""
+    if not isinstance(chat_template_kwargs, dict):
+        return {}
+    for key in ("preserve_reasoning", "preserve_thinking"):
+        if key in chat_template_kwargs:
+            keep = _flag(chat_template_kwargs[key])
+            return {"preserve_thinking": keep, "preserve_reasoning": keep}
+    return {}
+
+
 def budget_effort(tokens) -> dict:
     """Anthropic's thinking budget (budget_tokens) -> a level: under 2K low, under 8K medium, else high."""
     try:
@@ -615,6 +648,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
+    kwargs.update(preserve_kwargs(req.get("chat_template_kwargs")))
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
@@ -716,6 +750,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
+    kwargs.update(preserve_kwargs(req.get("chat_template_kwargs")))
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 

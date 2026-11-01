@@ -3276,6 +3276,62 @@ class ConfigReasoningEffort(unittest.TestCase):
         self.assertEqual(cfg, {"args": ["--ctx", "4096"]})
 
 
+class SharedPreserveReasoning(unittest.TestCase):
+    """The shared Chat settings can set `preserve_thinking` / `preserve_reasoning`, so a client that never sends
+    the kwarg still gets the behaviour asked for in the config's `.shared-settings.json`.
+
+    Before this, the key was not in `clean_shared_defaults`' whitelist: the file was read into ValueError and the
+    `except (OSError, ValueError)` at start-up emptied EVERY shared setting, `reasoning_effort` included."""
+
+    def svc(self, shared=None):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.shared = shared or {}
+        return svc
+
+    def test_the_key_is_accepted_and_validated(self):
+        from serve.server import clean_shared_defaults
+        for key in ("preserve_thinking", "preserve_reasoning"):
+            for value in (True, False):
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(clean_shared_defaults({key: value}), {key: value})
+            for bad in ("false", 0, 1, None):
+                with self.subTest(key=key, bad=bad):
+                    if bad is None:                      # None is "unset", not an error
+                        self.assertEqual(clean_shared_defaults({key: bad}), {})
+                    else:
+                        with self.assertRaises(ValueError):
+                            clean_shared_defaults({key: bad})
+
+    def test_it_fills_a_request_that_names_none(self):
+        for api in ("openai", "anthropic"):
+            with self.subTest(api=api):
+                out = self.svc({"preserve_thinking": False}).with_shared({"messages": []}, api)
+                self.assertEqual(out["chat_template_kwargs"], {"preserve_thinking": False})
+
+    def test_it_does_not_touch_a_request_without_it(self):
+        req = {"messages": []}
+        out = self.svc({"reasoning_effort": "medium"}).with_shared(req, "openai")
+        self.assertNotIn("chat_template_kwargs", out)
+
+    def test_a_requests_own_value_wins(self):
+        svc = self.svc({"preserve_thinking": False})
+        for own in ({"preserve_thinking": True}, {"preserve_reasoning": True}):
+            with self.subTest(own=own):
+                out = svc.with_shared({"messages": [], "chat_template_kwargs": dict(own)}, "openai")
+                self.assertEqual(out["chat_template_kwargs"], own)
+
+    def test_the_other_request_kwargs_are_kept(self):
+        out = self.svc({"preserve_thinking": False}).with_shared(
+            {"messages": [], "chat_template_kwargs": {"enable_thinking": True}}, "openai")
+        self.assertEqual(out["chat_template_kwargs"],
+                         {"enable_thinking": True, "preserve_thinking": False})
+
+    def test_reasoning_wins_over_thinking(self):
+        svc = self.svc({"preserve_reasoning": True, "preserve_thinking": False})
+        self.assertEqual(svc.with_shared({}, "openai")["chat_template_kwargs"], {"preserve_thinking": True})
+
+
 class JoinedEngineArgs(unittest.TestCase):
     """#2267: "--ple-io mmap" written as one element of the config's args reached the engine as one argument."""
 

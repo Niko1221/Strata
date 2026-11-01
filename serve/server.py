@@ -4858,6 +4858,15 @@ class Service:
         req = dict(req)
         if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
             req["max_tokens"] = s["max_tokens"]
+        keep = shared_preserve(s)
+        if keep is not None:
+            # The Chat settings ask for it and the request does not: fill the gap only.  A client that sends its own
+            # chat_template_kwargs keeps it (both names are checked, as the templates accept either).
+            ctk = req.get("chat_template_kwargs")
+            ctk = dict(ctk) if isinstance(ctk, dict) else {}
+            if "preserve_thinking" not in ctk and "preserve_reasoning" not in ctk:
+                ctk["preserve_thinking"] = keep
+                req["chat_template_kwargs"] = ctk
         if effort:
             if api == "openai":
                 ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
@@ -8467,7 +8476,20 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
 
 
 SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
-               "experimental_speed_projection")
+               "preserve_thinking", "preserve_reasoning", "experimental_speed_projection")
+
+
+def shared_preserve(shared: dict) -> bool | None:
+    """The preserve-reasoning default in the shared Chat settings, or None when they say nothing about it.
+
+    `preserve_reasoning` (llama.cpp's name) wins over `preserve_thinking` (Qwen's), the same order the fixed Qwen
+    templates use.  Read by `Service.with_shared`, which fills it into a request that does not name one itself."""
+    if not isinstance(shared, dict):
+        return None
+    for key in ("preserve_reasoning", "preserve_thinking"):
+        if key in shared:
+            return bool(shared[key])
+    return None
 
 
 def clean_shared_defaults(d) -> dict:
@@ -8502,6 +8524,12 @@ def clean_shared_defaults(d) -> dict:
             if not number or value != int(value) or value < 0:
                 raise ValueError("reasoning_budget_tokens: a whole number of tokens (0: no budget)")
             value = int(value)
+        elif key in ("preserve_thinking", "preserve_reasoning"):
+            # Whether the chat template keeps the reasoning of the EARLIER turns in the prompt (the current turn's
+            # is always kept - that is the tool-call loop the model is in).  A default here, for clients that do
+            # not send the kwarg themselves; a request's own value wins (with_shared only fills a gap).
+            if not isinstance(value, bool):
+                raise ValueError(f"{key}: true or false")
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
                 raise ValueError("experimental_speed_projection: true or false")
