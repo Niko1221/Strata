@@ -192,6 +192,37 @@ predictor prices decode and says as much in the log — worth knowing if you hav
 - **Not comparable to this machine's own October history**: different engine (0.1.41 vs 0.1.55),
   greedy sampling instead of temp 1.0 / xhigh, different prompts, and NVMe rather than SATA.
 
+## How it's configured for this machine
+
+Strata's default path assumes AVX2 and a fast disk. Four changes make it run here.
+
+**1. Build with the ISA floor at AVX.** The default build carries AVX2 kernels this CPU cannot
+execute. `STRATA_ISA_FLOOR=avx` produces the older-CPU build, and the engine uses its AVX1
+128-bit expert kernels instead. Without this the binary does not start.
+
+**2. Pin the experts in RAM instead of reading the file.** `--low-ram resident` keeps the expert
+set page-locked in DDR3 and swaps it against the GPU caches, rather than reading experts from the
+GGUF on disk. Setup derives the budget from the model, not the RAM: `--resident-budget-gib 55`
+comes from UD-IQ4_XS's 59.5 GB arena (`59.5 / 1.0737`), so the cap is the model's size, not this
+machine's 252 GiB. This is the mode that makes the SATA drive irrelevant.
+
+**3. Keep resident mode across the layer split.** Historically `--resident-experts` and multiple
+GPUs were mutually exclusive: setup *silently rewrote* the resident flag to `--mmap-experts`,
+which reads experts through the OS file cache instead of pinned RAM. On a SATA drive that is the
+worst possible outcome. Engines from 0.1.40 (`RESIDENT_SPLIT_ENGINE`) support the pair; this runs
+0.1.55, so the machine keeps pinned RAM **and** two cards. On an older engine, check which flag
+setup actually wrote before trusting a result from this kind of machine.
+
+**4. Do not use `numactl`.** The engine builds its own NUMA-aware pool: 22 workers, 12 on node 0
+and 11 on node 1, host on core 0, one worker per physical core. Pinning the process to a single
+socket with `numactl` cuts throughput — arm 1 is the unwrapped baseline and measures faster than
+the earlier wrapped configuration.
+
+Beyond that: the layer split exists because 32 + 24 GB of VRAM is smaller than the 55 GiB arena,
+so the experts are divided across two unequal cards with the 4500 as main (head, draft and
+verify). KV is int8 with 32,768 resident cells, which is what makes 262,144 tokens of context fit
+in 32 GB of VRAM.
+
 ## Reproducing
 
 ```sh
