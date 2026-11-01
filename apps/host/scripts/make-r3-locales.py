@@ -40,6 +40,10 @@ add("Working · {0}",
 add("{0} chats working",
     "{0} 个对话进行中", "{0} 件のチャットが作業中", "{0} Chats in Arbeit", "{0} chats trabajando", "В работе чатов: {0}", "{0} chats trabalhando", "대화 {0}개 작업 중", "{0} conversations en cours")
 
+# 10: the size line of a file being written
+add("{0} lines",
+    "{0} 行", "{0} 行", "{0} Zeilen", "{0} líneas", "{0} строк", "{0} linhas", "{0}줄", "{0} lignes")
+
 #@@MORE@@
 
 here = Path(__file__).resolve().parent.parent / "src" / "locales"

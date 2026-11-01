@@ -26,7 +26,7 @@ import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
 import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
-import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
+import { ActivityLine, DraftLines, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
@@ -752,7 +752,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePrevi
           card stays only for what needs the person: a question waiting, a denied or failed call. A card that came and went above the text moved the whole reply. */}
       {tr((m.tools ?? []).filter(t => !grouped || t.state === 'proposed' || t.state === 'denied' || t.state === 'error').map((t) => (<ToolCard key={t.id} tool={t}/>)))}
 
-      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
+      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus || !!m.drafts?.length) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
         {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} previewId={`${m.id}-b${i}`} onPreview={onPreview} onClosePreview={onClosePreview}/>) : null)}
@@ -761,8 +761,10 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePrevi
             <i />
             <i />
           </span>) : null)}
+        {/* a file or command the model is writing right now: its name, growing size and the last lines of it (live data from the host, see ToolDraft) */}
+        {tr(m.streaming && m.drafts?.length && !planCard ? <DraftLines drafts={m.drafts} sessionId={activeSession ?? ''} onPreview={onPreview}/> : null)}
         {/* the caret follows the text being written; after an activity line it hung on a row of its own and the reply jumped when the text went on */}
-        {tr(m.streaming && m.content && (!grouped || m.blocks!.at(-1)?.kind === 'text') ? <span className="caret" aria-hidden="true"/> : null)}
+        {tr(m.streaming && m.content && !m.drafts?.length && (!grouped || m.blocks!.at(-1)?.kind === 'text') ? <span className="caret" aria-hidden="true"/> : null)}
       </div> : null)}
       {tr(m.skills?.length && !m.streaming ? <SkillsUsed skills={m.skills}/> : null)}
       {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></div> : null)}

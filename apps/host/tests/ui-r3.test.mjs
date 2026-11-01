@@ -128,7 +128,7 @@ test('10 (visual): the reply stays still while it streams, one live cue per step
   // In a reply with activity lines the line is the one live cue for a tool; the running card above the text is gone.
   assert.match(chat, /filter\(t => !grouped \|\| t\.state === 'proposed' \|\| t\.state === 'denied' \|\| t\.state === 'error'\)/);
   // The caret follows text, never an activity line.
-  assert.match(chat, /m\.streaming && m\.content && \(!grouped \|\| m\.blocks!\.at\(-1\)\?\.kind === 'text'\) \? <span className="caret"/);
+  assert.match(chat, /m\.streaming && m\.content && !m\.drafts\?\.length && \(!grouped \|\| m\.blocks!\.at\(-1\)\?\.kind === 'text'\) \? <span className="caret"/);
   // A slot for what the host knows while a run is open (AGENT-LOST feeds it): read, shown, dropped at close.
   const { readGroup } = await lib('src/lib/deliverables.ts');
   const open = readGroup({ id: 'g', closed: false, line: 'Writing pagoda.html', live: { label: 'Writing pagoda.html', output: 'a\nb\n412 lines written\n' } });
@@ -196,4 +196,27 @@ test('owner 11-01 (second decision): 128K on every card, in first-run setup, and
   const guided = read('src/components/GuidedSetup.tsx');
   assert.ok(!/fixedContext/.test(guided) && !/\[8192\]/.test(guided), 'DeepSeek is no longer fixed at 8K in first-run setup');
   assert.match(guided, /options=\{contextList\.map\(n =>/);
+});
+
+test('10 (live file write): message.drafts is drawn through the open activity line: file, growing size, the tail only if it reads well, no jumps', async () => {
+  const { draftSize, draftTail, groupFromDraft } = await lib('src/lib/draft-view.ts');
+  assert.equal(draftSize(0), '0 KB'); assert.equal(draftSize(80), '80 B'); assert.equal(draftSize(7800), '7.8 KB'); assert.equal(draftSize(18720), '19 KB', 'the same thousands as the cut sentence');
+  const code = ['<!doctype html>', '<html lang="en">', '<head><meta charset="utf-8"></head>', '<script type="module">', 'const scene = new THREE.Scene();'].join('\n');
+  assert.deepEqual(draftTail(code), ['<head><meta charset="utf-8"></head>', '<script type="module">', 'const scene = new THREE.Scene();'], 'the last three lines');
+  assert.deepEqual(draftTail(''), [], 'nothing yet');
+  assert.deepEqual(draftTail('\u00e9\u0001\u0002 \u0003\u0004\u0005\u0006\u0007\u0008\u000b\u000c\u000e\u000f'), [], 'a wall of control characters is not shown');
+  assert.deepEqual(draftTail('{"a":1,"b":2,"c":3,"d":4,"e":5}'), [], 'a line without words is not shown');
+  const draft = { id: 't1', name: 'write_file', target: 'pagoda.html', bytes: 7800, lines: 165, preview: code, scope: 'write', verb: 'Writing' };
+  const g = groupFromDraft(draft, 'Writing · pagoda.html');
+  assert.equal(g.closed, false); assert.equal(g.live.bytes, 7800); assert.equal(g.live.lines, 165); assert.match(g.live.tail, /THREE\.Scene/);
+  assert.equal(groupFromDraft({ ...draft, scope: 'edit' }, 'x').live.tail, undefined, 'a tool that is not a write or a command has no text box');
+  assert.equal(groupFromDraft({ ...draft, preview: '' }, 'x').live.tail, '', 'the box is kept from the start (empty) so it does not appear later and push the text down');
+  const deliver = read('src/components/Deliverables.tsx'), chat = read('src/screens/Chat.tsx'), app = read('src/styles/app.css');
+  assert.match(deliver, /useThrottled\(drafts, 350,/, 'about five frames a second are drawn about three times a second');
+  assert.match(deliver, /<div className="act__tail" aria-hidden="true">/);
+  assert.match(chat, /m\.streaming && m\.drafts\?\.length && !planCard \? <DraftLines drafts=\{m\.drafts\}/);
+  assert.match(chat, /\|\| !!m\.drafts\?\.length\) \? <div className="st-bubble">/, 'the reply shows before any text, as soon as a file starts');
+  assert.match(chat, /!m\.drafts\?\.length && \(!grouped/, 'no caret while a file is being written');
+  assert.match(app, /\.act__tail \{[^}]*height: calc\(3 \* 1\.45 \* var\(--st-fs-xs\) \+ 16px\);[^}]*overflow: hidden;/, 'a box that is always three lines high');
+  assert.ok(!/animation|transition/.test(app.slice(app.indexOf('.act__meta {'), app.indexOf('.act__output {'))), 'nothing in the write line animates, so reduced motion has nothing to hold still');
 });

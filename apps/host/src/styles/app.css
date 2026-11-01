@@ -7446,6 +7446,11 @@ textarea {
 .act__live { width: 6px; height: 6px; border-radius: 50%; background: var(--st-accent); animation: st-pulse 1.6s var(--st-ease-in-out) infinite; }
 /* The step that is running reads as the current one (ink, not the muted past-tense of the lines above it) and its last output sits under it on one fixed line. */
 .act[data-live] .act__line { color: var(--st-ink); }
+/* A file the model is writing right now: its size beside the name (figures do not jitter), and the last three lines in a box that is always three lines
+   high, the newest line at the bottom, so nothing under it moves while the text grows. Nothing here animates (the one dot pulse is gated already). */
+.act__meta { color: var(--st-ink-muted); font-size: var(--st-fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.act__tail { display: flex; flex-direction: column; justify-content: flex-end; gap: 0; box-sizing: border-box; max-width: 72ch; height: calc(3 * 1.45 * var(--st-fs-xs) + 16px); margin: -2px 0 8px; padding: 8px 12px; overflow: hidden; border-radius: var(--st-r-md); background: var(--st-surface-2); font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.45; color: var(--st-ink-muted); }
+.act__tail > span { display: block; flex: none; overflow: hidden; white-space: pre; text-overflow: ellipsis; }
 .act__output { margin: -4px 0 8px; padding-left: 1px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.4; color: var(--st-ink-muted); }
 .act__thumb { width: 44px; height: 30px; object-fit: cover; border-radius: 6px; border: 1px solid var(--st-line); cursor: pointer; }
 .act__files { flex-basis: 100%; list-style: none; margin: 0; padding: 0 0 0 4px; display: flex; flex-direction: column; }

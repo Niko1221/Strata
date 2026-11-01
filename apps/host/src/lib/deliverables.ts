@@ -13,7 +13,9 @@ export interface Deliverable { path: string; abs: string; name: string; kind: De
 export interface GroupFile { path: string; name: string; kind: DeliverableKind; status: string; added: number; removed: number }
 /** What is happening in a run right now (the host sends it while the group is open and drops it when the group closes): `label` is the step in plain words
  *  ("Writing pagoda.html"), `output` the last line the step printed or the progress it can name ("412 lines written"). Optional: a group without it draws as before. */
-export interface GroupLive { label?: string; output?: string }
+export interface GroupLive { label?: string; output?: string;
+  /** A file being written right now (from `message.drafts`): characters so far, lines so far and the last lines of the text. */
+  bytes?: number; lines?: number; tail?: string }
 export interface ActivityGroup { id: string; closed: boolean; line: string; added: number; removed: number; files: GroupFile[]; live?: GroupLive }
 export type MessageBlock = { kind: 'text'; text: string } | ({ kind: 'group' } & ActivityGroup);
 
@@ -133,3 +135,4 @@ export const fileAction = {
 };
 
 export const rawUrlOf = (sessionId: string, path: string) => `/api/files/raw?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`;
+
