@@ -23,6 +23,17 @@ add("SSD streaming · will run slower",
     "SSD 流式读取 · 运行会更慢", "SSD ストリーミング · 動作は遅くなります", "SSD-Streaming · läuft langsamer", "Streaming desde el SSD · irá más lento", "Потоковая подгрузка с SSD · будет работать медленнее",
     "Streaming do SSD · vai rodar mais devagar", "SSD 스트리밍 · 더 느리게 실행됩니다", "Streaming depuis le SSD · plus lent")
 
+# 6: the warning under the conversation context when a long context leaves little graphics memory for the model (nothing is refused or lowered)
+add("This much context takes about {0} GB of graphics memory and leaves little room for the model on this card. Strata will try it; if it does not start, choose a shorter context.",
+    "这么长的上下文大约占用 {0} GB 显存，留给模型的空间很少。Strata 会尝试运行；如果无法启动，请选择更短的上下文。",
+    "このコンテキストはグラフィックスメモリーを約 {0} GB 使い、このカードではモデルに残る余裕がわずかです。Strata は試しますが、起動しない場合はより短いコンテキストを選んでください。",
+    "So viel Kontext belegt etwa {0} GB Grafikspeicher und lässt auf dieser Karte wenig Platz für das Modell. Strata versucht es; startet es nicht, wähle einen kürzeren Kontext.",
+    "Este contexto ocupa unos {0} GB de memoria gráfica y deja poco espacio para el modelo en esta tarjeta. Strata lo intentará; si no arranca, elige un contexto más corto.",
+    "Такой контекст занимает около {0} ГБ видеопамяти и оставляет модели мало места на этой карте. Strata попробует запустить; если не получится, выберите контекст короче.",
+    "Esse contexto ocupa cerca de {0} GB de memória gráfica e deixa pouco espaço para o modelo nesta placa. O Strata vai tentar; se não iniciar, escolha um contexto menor.",
+    "이 정도의 컨텍스트는 그래픽 메모리를 약 {0} GB 사용하며 이 카드에서는 모델이 쓸 공간이 거의 남지 않습니다. Strata가 시도하지만 시작되지 않으면 더 짧은 컨텍스트를 선택하세요.",
+    "Ce contexte occupe environ {0} Go de mémoire graphique et laisse peu de place au modèle sur cette carte. Strata va essayer ; s'il ne démarre pas, choisissez un contexte plus court.")
+
 #@@MORE@@
 
 here = Path(__file__).resolve().parent.parent / "src" / "locales"

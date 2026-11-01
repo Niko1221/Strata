@@ -5,7 +5,7 @@ import { FloatingMenu } from './FloatingMenu';
 import { cx } from '../lib/format';
 import { versionNote, type CatalogVersion } from '../lib/native-catalog';
 import { nvfp4Version } from '../lib/native-names';
-import { fitOn, recommendedVersions, versionFit, versionGroups, type FitHardware, type PcPick } from '../lib/native-fit';
+import { fitOn, recommendedVersions, versionFit, versionGroups, type CacheChoice, type FitHardware, type PcPick } from '../lib/native-fit';
 
 /** The name a version goes by in the list: the quantization, with the maker only where the quantization alone would be ambiguous. */
 export function versionName(v: CatalogVersion): string {
@@ -32,7 +32,7 @@ const whole = (n: number) => `${Math.round(n)} GB`;
  * memory it needs and the SSD figure are behind "Show details" (open from the start in Expert mode). The other base models are not in this list: they
  * appear when picked at the top of the page.
  */
-export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick, details: detailsOpen = false }: {
+export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick, cache, details: detailsOpen = false }: {
   /** The versions of the chosen base model. */
   versions: CatalogVersion[];
   selectedId: string;
@@ -47,6 +47,8 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   moreLabel?: string;
   /** The engine's own pick for this PC (catalog.recommendation). */
   pick?: PcPick | null;
+  /** The conversation context and cache format the person chose: the fit words follow them, as the This computer card does. */
+  cache?: CacheChoice | null;
   /** Start with the technical detail shown (Expert mode). */
   details?: boolean;
 }) {
@@ -66,14 +68,14 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   const foldedOpen = moreOpen || !top.length || more.some(v => v.id === selectedId);
 
   const need = (v: CatalogVersion, technical: boolean) => {
-    const fit = fitOn(v, hardware);
+    const fit = fitOn(v, hardware, true, cache);
     if (technical) return v.multi_file && v.disk_gb ? tr("{0} RAM + VRAM, plus about {1} GB of disk", [gb(fit.memoryGb), Math.round(v.disk_gb)]) : tr("{0} RAM + VRAM", [gb(fit.memoryGb)]);
     return v.multi_file && v.disk_gb ? tr("Needs {0} of memory and about {1} GB of disk", [whole(fit.memoryGb), Math.round(v.disk_gb)]) : tr("Needs {0} of memory", [whole(fit.memoryGb)]);
   };
   const row = (v: CatalogVersion) => {
-    const fit = fitOn(v, hardware);
+    const fit = fitOn(v, hardware, true, cache);
     const on = v.id === selectedId, have = !!downloaded?.has(v.id), recommended = recommendedIds.includes(v.id);
-    const state = versionFit(v, hardware);
+    const state = versionFit(v, hardware, cache);
     const technical = [MAKERS[v.sourceFamily], need(v, true), state === 'ssd' ? tr("Uses SSD {0} GB", [Math.round(fit.spillGb)]) : ''].filter(Boolean).join(' · ');
     const note = versionNote(v.model);
     return <button key={v.id} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>

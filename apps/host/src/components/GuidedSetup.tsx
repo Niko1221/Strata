@@ -14,6 +14,7 @@ import type { LocalModelFolder, SetupState } from '../lib/types';
 import { downloadCounter, modelFolderLabel, onboardingError } from '../lib/onboarding-download';
 import { installProgress, installStage, stageText, useDownloadEta } from '../lib/download-eta';
 import { VersionPicker } from './VersionPicker';
+import { contextIsTight, defaultContext, DEFAULT_CONTEXT, OLD_DEFAULT_CONTEXT } from '../lib/default-context';
 import { FirstRunLanguage } from './FirstRunLanguage';
 import { DownloadParts } from './DownloadParts';
 import { EngineWarning } from './EngineWarning';
@@ -44,7 +45,11 @@ export function GuidedSetup() {
     const start = startingChoice(families, (native?.installed?.models ?? []).filter(m => m.ready).map(m => m.model), native?.catalog?.recommendation);
     const family = chosenFamily || start?.family || native?.catalog?.recommendation?.family || families[0]?.family || '';
     const size = chosenSize || start?.size || '';
-    const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation?.context ?? 32768);
+    /* 128K for every configuration unless the person picks another. This first step has no room for the memory warning the Models page gives, so a card
+       that a 128K cache would leave under 1 GB for the model starts at the 32K the engine was set up for. */
+    const topCardGb = Math.max(0, ...(native?.hardware?.gpus ?? []).filter(g => g.usable !== false).map(g => g.vram_gb));
+    const [pickedContext, setContext] = useState<number | undefined>(saved?.context);
+    const context = pickedContext ?? (contextIsTight(topCardGb, DEFAULT_CONTEXT) ? OLD_DEFAULT_CONTEXT : defaultContext(native?.catalog?.contexts));
     const [vision, setVision] = useState(saved?.vision ?? true), [directory, setDirectory] = useState(saved?.directory ?? '');
     const [profile, setProfile] = useState<'work' | 'performance'>(saved?.profile ?? 'work');
     const [installJobId, setInstallJobId] = useState(saved?.installJobId ?? ''), [tuneJobId, setTuneJobId] = useState(saved?.tuneJobId ?? '');

@@ -19,7 +19,8 @@ export interface Fit {
   known: boolean;
 }
 
-const DENSE_GB = 5, SYSTEM_ROOM_GB = 10, DENSE_EXTRA_GB = 1;
+export const DENSE_GB = 5;
+const SYSTEM_ROOM_GB = 10, DENSE_EXTRA_GB = 1;
 /** The draft layer (MTP) takes about 1 GB of graphics memory (786 MiB of files + the draft head's ~218 MiB); it comes out of the expert cache while MTP is on (setup.py MTP_VRAM_GB). */
 export const MTP_VRAM_GB = 1;
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -33,7 +34,8 @@ export function memoryNeeded(v: FitInput): number {
 /** The conversation cache of Flash-Next: 13 attention layers, bytes per token per layer by cache format, 5.4% over the bare cache
  *  (strata_control/vram_fit.py KV_BYTES, KV_MEASURED_FACTOR; setup.py UD_FIT_KV_BYTES). */
 const KV_BYTES: Record<string, number> = { fp16: 2112, int8: 1056, q4_0: 576, k8v4: 816 };
-const KV_LAYERS = 13, KV_FACTOR = 1.054, BASE_CONTEXT = 32768;
+const KV_LAYERS = 13, KV_FACTOR = 1.054;
+export const BASE_CONTEXT = 32768;
 export function cacheGb(context: number, kv = 'int8'): number {
   return (121 + context * KV_LAYERS * (KV_BYTES[String(kv).toLowerCase()] ?? KV_BYTES.int8) * KV_FACTOR / 2 ** 20) / 1024;   // 121 MiB fixed per session
 }
@@ -131,11 +133,11 @@ export function versionGroups<V extends { id: string; download_gb: number }>(ver
  */
 export type VersionFit = 'fits' | 'ssd' | 'no' | 'unknown';
 export const MIN_RUN_GB = 16;
-export function versionFit(v: FitInput & { on_this_pc?: string | null }, hw: FitHardware | null | undefined): VersionFit {
+export function versionFit(v: FitInput & { on_this_pc?: string | null }, hw: FitHardware | null | undefined, cache?: CacheChoice | null): VersionFit {
   const words = String(v.on_this_pc ?? '').trim().toLowerCase();
   const engineNo = words.startsWith('does not fit');
   if (/needs? (one or more|a) graphics cards?/.test(words)) return 'no';
-  const fit = fitOn(v, hw);
+  const fit = fitOn(v, hw, true, cache);
   if (!fit.known) return engineNo ? 'no' : 'unknown';
   if (engineNo && Number(hw?.ram_gb) < MIN_RUN_GB) return 'no';
   return fit.spillGb >= 1 ? 'ssd' : 'fits';
