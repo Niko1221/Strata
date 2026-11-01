@@ -1522,7 +1522,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             il_ready = false;
         };
         auto mm = [&](const WeightRef* w, float* out, int n_in, int n_out) {
-            if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(w->native_type, n, n_out)) {
+            if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(w->native_type, n, n_out, n_in)) {
                 if (!il_ready && n >= 2) {   // one column reads the plain q8_1 blocks
                     strata::kernels::native_q8_1_interleave(xq_, xil_, n_in, n, cs);
                     il_ready = true;
@@ -1564,7 +1564,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     // the branch reads F4's interleaved copy too (written on cs before the fork; bitwise native_mmvq's
                     // output), and qkv is recorded before the branch's launch, so its grid is dispatched first and the
                     // conv / recurrence that wait for it start sooner (z is read only after the recurrence)
-                    const bool g_il = g_mmvq_il() && strata::kernels::native_mmvq_il_supported(wg->native_type, n, (int) ZV);
+                    const bool g_il = g_mmvq_il() && strata::kernels::native_mmvq_il_supported(wg->native_type, n, (int) ZV, (int) N);
                     if (g_il && !il_ready && n >= 2) {
                         strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, n, cs);
                         il_ready = true;
@@ -1805,7 +1805,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // F4's kernel too, its copy written on cs before the fork - bitwise the same), the q/gate
                 // split with norm and RoPE, the rotation
                 const bool q_il = side_proj && g_mmvq_il() &&
-                                  strata::kernels::native_mmvq_il_supported(wq->native_type, n, (int) (NH * 2 * HD));
+                                  strata::kernels::native_mmvq_il_supported(wq->native_type, n, (int) (NH * 2 * HD), (int) N);
                 auto q_chain = [&](cudaStream_t ns) -> bool {
                     if (ns == cs) mm(wq, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD));
                     else if (q_il) strata::kernels::native_mmvq_il(wq->native_type, wq->native_data, xq_, xil_,
@@ -2468,7 +2468,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (head_ != nullptr && head_->loaded()) {
             try {
                 native_quantize_q8_1(head_mixed_, xq_, (int) N, T, cs);
-                if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) T, (int) n_vocab_)) {
+                if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) T, (int) n_vocab_, (int) N)) {
                     if (T >= 2) strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, (int) T, cs);
                     strata::kernels::native_mmvq_il(head_->type(), head_->weights(), xq_, xil_, head_logits_, (int) N,
                                                     (int) n_vocab_, (int) T, cs);

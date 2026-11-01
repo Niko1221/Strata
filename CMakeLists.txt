@@ -1272,7 +1272,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
 #endif
 ")
       target_compile_options(mmvq_il_parity PRIVATE
-        "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${_strata_il_parity_hip_l2}>")
+        "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include \"${_strata_il_parity_hip_l2}\">")
     endif()
     if(STRATA_ENABLE_CUDA)
       # sm_89's opt-in tables (#3453, STRATA_MMVQ_IL_89=1): the table check only (no case matches MMVQ_IL_ONLY)

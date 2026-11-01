@@ -4058,7 +4058,19 @@ int il_cc() {
     }
     return cc[dev];
 }
-int il_rows(int type, int ncols, int n_out) { return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out); }
+int il_rows(int type, int ncols, int n_out) {
+#if defined(__HIPCC__)
+    // Only gfx12 (1202) was measured on AMD: any other HIP card keeps the plain kernels unless an explicit
+    // STRATA_MMVQ_IL_* row override names this type and column count.
+    if (il_cc() != 1202) {
+        bool forced = false;
+        for (const IlEnvRow& e : il_env_rows())
+            if (e.type == type && e.ncols == ncols) forced = true;
+        if (!forced) return 0;
+    }
+#endif
+    return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out);
+}
 int il_pf_table(int type, int ncols, int n_out) {
     if (il_cc() != 80 || ncols < 2 || ncols > 8) return 0;   // only the CMP 170HX measured one
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
@@ -4093,6 +4105,11 @@ bool il_arch_ok() {
     static int ok[16] = {};   // 0 unknown, 1 yes, -1 no, by device ordinal
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return false;
+#if defined(STRATA_HIP_GFX906)
+    // gfx906's default wave64 layout (native_mmvq_wave_kernel) sums in a different tree than the IL kernels, so IL
+    // would change output bits; only STRATA_MMVQ_WAVE=0 (the CUDA layout) is bitwise equal.
+    if (!g_wave_off) return false;
+#endif
     if (ok[dev] == 0) {
         int major = 0;
         int minor = 0;
@@ -4105,22 +4122,22 @@ bool il_arch_ok() {
 }
 }  // namespace
 
-bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
-    if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
-    return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
-           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11 ||
-            ggml_type == 21 || ggml_type == 18);
-}
-
 // IQ3 IL only fires for n_in <= 4096: that is the range the parity gate covers and where the R9700 bench wins sit.
 // (IQ3 uses kIlSingleStream, so the accumulation order matches at any size; the cap is a coverage boundary, not a
 // rounding one.) Past it the call takes the plain kernel.
 constexpr int kIq3IlMaxNIn = 4096;
 
+bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out, int n_in) {
+    if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
+    if ((ggml_type == 18 || ggml_type == 21) && n_in > kIq3IlMaxNIn) return false;
+    return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
+           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11 ||
+            ggml_type == 21 || ggml_type == 18);
+}
+
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream) {
-    const bool iq3 = ggml_type == 18 || ggml_type == 21;
-    if (!native_mmvq_il_supported(ggml_type, ncols, n_out) || (iq3 && n_in > kIq3IlMaxNIn)) {
+    if (!native_mmvq_il_supported(ggml_type, ncols, n_out, n_in)) {
         native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
         return;
     }

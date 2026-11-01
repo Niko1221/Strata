@@ -58,7 +58,7 @@ std::size_t native_q8_1_bytes(int n_in, int ncols) {
     return std::size_t(ncols) * std::size_t(n_in / Q8K) * kQ81Block;
 }
 std::size_t native_q8_1_il_bytes(int n_in, int ncols) { return native_q8_1_bytes(n_in, ncols) * 2; }
-bool native_mmvq_il_supported(int, int, int) { return false; }
+bool native_mmvq_il_supported(int, int, int, int) { return false; }
 bool native_q8_0_packed_eligible(int, int) { return false; }
 bool native_q8_0_packed_enabled() { return false; }
 bool native_q6_k_packed_enabled() { return false; }
