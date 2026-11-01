@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
     cudaEventCreate(&a);
     cudaEventCreate(&b);
     std::vector<unsigned char> ref_q, ref_d;
-    for (int v : {0, 4, 1, 2, 3}) {
+    for (int v : {0, 1, 2, 3}) {
         df2_attention_variant(v);
         df2_attention(q, kr, vr, kb, vb, pos, ring, 2048, part, out, xdb, nullptr);
         cudaDeviceSynchronize();

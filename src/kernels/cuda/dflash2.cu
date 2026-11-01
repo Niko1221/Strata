@@ -183,36 +183,6 @@ __global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict_
         }
         fetch(k0, vreg, vring, vblk);   // this tile's V, hidden behind the S stage and the softmax
         __syncthreads();
-        if (variant & 4) {   // S tile on all 128 threads: 2 queries x 4 keys per thread, every element the same sequential sum over d as below
-            const int qg = tid >> 3, kg = tid & 7;
-            float acc[2][4];
-#pragma unroll
-            for (int i = 0; i < 2; ++i)
-#pragma unroll
-                for (int j = 0; j < 4; ++j) acc[i][j] = 0.0f;
-#pragma unroll 4
-            for (int d = 0; d < HD; d += 4) {
-                float4 qv[2], kv[4];
-#pragma unroll
-                for (int i = 0; i < 2; ++i) qv[i] = *reinterpret_cast<const float4*>(&Qs[(qg * 2 + i) * AS + d]);
-#pragma unroll
-                for (int j = 0; j < 4; ++j) kv[j] = *reinterpret_cast<const float4*>(&Ks[(kg * 4 + j) * AS + d]);
-#pragma unroll
-                for (int i = 0; i < 2; ++i)
-#pragma unroll
-                    for (int j = 0; j < 4; ++j)
-                        acc[i][j] += qv[i].x * kv[j].x + qv[i].y * kv[j].y + qv[i].z * kv[j].z + qv[i].w * kv[j].w;
-            }
-#pragma unroll
-            for (int i = 0; i < 2; ++i)
-#pragma unroll
-                for (int j = 0; j < 4; ++j) {
-                    const int qi = qg * 2 + i, t = kg * 4 + j, k = k0 + t, row = qi >> 2;
-                    bool ok = k < nkeys;
-                    if (ok && k < nctx) ok = (lo + k) > (s + row - window) && kvalid[t];
-                    Sc[qi * 33 + t] = ok ? acc[i][j] : -INFINITY;
-                }
-        } else
         if (tid < 64) {   // S tile: 4 queries x 4 keys per thread
             const int qg = tid >> 3, kg = tid & 7;
             float acc[4][4];
