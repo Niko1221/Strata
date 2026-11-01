@@ -147,9 +147,9 @@ test('the DFlash2 drafter is fetched only by the Models screen own Load: a resta
   assert.doesNotMatch(tune, /values:/, 'the tuning run loads without a choice');
 });
 
-test('the paragraph under the dropdown quotes the measurements without a verdict', () => {
+test('the paragraph under the dropdown is gone (owner, 11-01: people who care know what to do); the catalog words carry no verdict', () => {
   const screen = read('../src/components/NativeModels.tsx');
-  for (const part of ['7.8% faster than MTP on 19 short prompts', '1.1% faster on long thinking', 'faster on 21 of 23 prompts', 'the answers were identical']) assert.ok(screen.includes(part), part);
+  for (const part of ['7.8% faster than MTP on 19 short prompts', '1.1% faster on long thinking', 'faster on 21 of 23 prompts', 'the answers were identical']) assert.ok(!screen.includes(part), part);
   const en = JSON.parse(read('../src/locales/df2-en.json'));
   for (const text of Object.values(en)) for (const word of ['recommend', 'best ', 'better', 'should']) assert.ok(!text.toLowerCase().includes(word), `${word} in "${text.slice(0, 50)}"`);
 });

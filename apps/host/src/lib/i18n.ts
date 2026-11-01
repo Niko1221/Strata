@@ -86,6 +86,15 @@ import upd_ru from '../locales/upd-ru.json';
 import upd_pt from '../locales/upd-pt.json';
 import upd_ko from '../locales/upd-ko.json';
 import upd_fr from '../locales/upd-fr.json';
+import r3_en from '../locales/r3-en.json';
+import r3_zh from '../locales/r3-zh.json';
+import r3_ja from '../locales/r3-ja.json';
+import r3_de from '../locales/r3-de.json';
+import r3_es from '../locales/r3-es.json';
+import r3_ru from '../locales/r3-ru.json';
+import r3_pt from '../locales/r3-pt.json';
+import r3_ko from '../locales/r3-ko.json';
+import r3_fr from '../locales/r3-fr.json';
 import base_zh from '../locales/zh.json';
 import base_ja from '../locales/ja.json';
 import base_de from '../locales/de.json';
@@ -100,8 +109,8 @@ export type Language=typeof LANGUAGES[number]['value'];
 /* The Tune model dialog's strings live in tune-<lang>.json (apps/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
 /* The tool-server, picture and agent-result strings of the tools and images fixes live in tools-<lang>.json for the same reason. */
 /* The strings that had no key in the files above (#3479, #3825) and the 0.2.4.3 fixes live in fix-<lang>.json (scripts/make-fix-locales.py). */
-const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en,...ui_en,...engine_en,...pick_en,...df2_en,...upd_en};
-const [zh,ja,de,es,ru,pt,ko,fr]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh,...gh_zh,...ui_zh,...engine_zh,...pick_zh,...df2_zh,...upd_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja,...gh_ja,...ui_ja,...engine_ja,...pick_ja,...df2_ja,...upd_ja},{...base_de,...tune_de,...tools_de,...fix_de,...gh_de,...ui_de,...engine_de,...pick_de,...df2_de,...upd_de},{...base_es,...tune_es,...tools_es,...fix_es,...gh_es,...ui_es,...engine_es,...pick_es,...df2_es,...upd_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru,...gh_ru,...ui_ru,...engine_ru,...pick_ru,...df2_ru,...upd_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt,...gh_pt,...ui_pt,...engine_pt,...pick_pt,...df2_pt,...upd_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko,...gh_ko,...ui_ko,...engine_ko,...pick_ko,...df2_ko,...upd_ko},{...base_fr,...tune_fr,...tools_fr,...fix_fr,...gh_fr,...ui_fr,...engine_fr,...pick_fr,...df2_fr,...upd_fr}] as Record<string,string>[];
+const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en,...ui_en,...engine_en,...pick_en,...df2_en,...upd_en,...r3_en};
+const [zh,ja,de,es,ru,pt,ko,fr]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh,...gh_zh,...ui_zh,...engine_zh,...pick_zh,...df2_zh,...upd_zh,...r3_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja,...gh_ja,...ui_ja,...engine_ja,...pick_ja,...df2_ja,...upd_ja,...r3_ja},{...base_de,...tune_de,...tools_de,...fix_de,...gh_de,...ui_de,...engine_de,...pick_de,...df2_de,...upd_de,...r3_de},{...base_es,...tune_es,...tools_es,...fix_es,...gh_es,...ui_es,...engine_es,...pick_es,...df2_es,...upd_es,...r3_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru,...gh_ru,...ui_ru,...engine_ru,...pick_ru,...df2_ru,...upd_ru,...r3_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt,...gh_pt,...ui_pt,...engine_pt,...pick_pt,...df2_pt,...upd_pt,...r3_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko,...gh_ko,...ui_ko,...engine_ko,...pick_ko,...df2_ko,...upd_ko,...r3_ko},{...base_fr,...tune_fr,...tools_fr,...fix_fr,...gh_fr,...ui_fr,...engine_fr,...pick_fr,...df2_fr,...upd_fr,...r3_fr}] as Record<string,string>[];
 const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,fr,es,ru,pt,ko};
 const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
 const decode=(text:string)=>text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(whole,key:string)=>key[0]==='#'?String.fromCodePoint(key[1].toLowerCase()==='x'?parseInt(key.slice(2),16):parseInt(key.slice(1),10)):entities[key]??whole);
