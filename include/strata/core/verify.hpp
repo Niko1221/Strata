@@ -631,6 +631,8 @@ private:
     int32_t* h_pos_ = nullptr;   int32_t* m_pos_ = nullptr;     // T * n_head
     int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
     float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
+    uint32_t ple_rows_b_[strata::kernels::kVerifyMaxT * strata::kernels::PLE_N_HEADS] = {};
+    bool ple_pending_b_ = false;
     int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids
     // STRATA_TAP_FILE (off by default; nothing is allocated or captured without it): the DFlash2 experiment's hook.
     // After each layer in STRATA_TAP_LAYERS (default 5,15,25,35,45) the window copies the layer's completed output

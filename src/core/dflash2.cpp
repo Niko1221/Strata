@@ -808,12 +808,11 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     return true;
 }
 
-bool Dflash2Drafter::draft_batch(const BatchItem* items, int n_items, float* stage_taps, size_t stage_stride, std::string& err) {
+bool Dflash2Drafter::draft_batch_begin(const BatchItem* items, int n_items, float* stage_taps, size_t stage_stride, std::string& err) {
     if (!bound_) { err = "dflash2: not bound"; return false; }
     if (n_items == 0) return true;
     if (items == nullptr || n_items < 0 || n_items > kDf2MaxSlots) { err = "dflash2: invalid batch items"; return false; }
     const OnDevice on_device(device_);
-    const Clock::time_point t0 = Clock::now();
     const int saved_cur = cur_;
 
     int total_rows = 0;
@@ -910,7 +909,7 @@ bool Dflash2Drafter::draft_batch(const BatchItem* items, int n_items, float* sta
             if (!skip_part("head")) {
                 bool use_il = (head_il != 0) && native_mmvq_il_supported(head_type_, nc, (int) n_dvocab_);
                 bool tuned_il = false;
-                if (!use_il && head_il == 1) {
+                if (!use_il && head_il != 0) {
                     native_mmvq_il_tune(4);
                     use_il = native_mmvq_il_supported(head_type_, nc, (int) n_dvocab_);
                     tuned_il = use_il;
@@ -939,6 +938,13 @@ bool Dflash2Drafter::draft_batch(const BatchItem* items, int n_items, float* sta
 
     if (timing_) cudaEventRecord(ev_b_, cs_);
     (void) cudaStreamQuery(cs_);
+    return true;
+}
+
+bool Dflash2Drafter::draft_batch_end(const BatchItem* items, int n_items, std::string& err) {
+    if (!bound_) { err = "dflash2: not bound"; return false; }
+    if (n_items == 0) return true;
+    const OnDevice on_device(device_);
     if (cudaStreamSynchronize(cs_) != cudaSuccess) {
         err = std::string("dflash2 draft_batch: ") + cudaGetErrorString(cudaGetLastError());
         return false;
@@ -956,8 +962,16 @@ bool Dflash2Drafter::draft_batch(const BatchItem* items, int n_items, float* sta
         float ms = 0;
         if (cudaEventElapsedTime(&ms, ev_a_, ev_b_) == cudaSuccess) ms_gpu += ms;
     }
-    ms_draft += ms_since(t0);
     rounds += n_items;
+    return true;
+}
+
+bool Dflash2Drafter::draft_batch(const BatchItem* items, int n_items, float* stage_taps, size_t stage_stride, std::string& err) {
+    const Clock::time_point t0 = Clock::now();
+    if (!draft_batch_begin(items, n_items, stage_taps, stage_stride, err) ||
+        !draft_batch_end(items, n_items, err))
+        return false;
+    ms_draft += ms_since(t0);
     return true;
 }
 

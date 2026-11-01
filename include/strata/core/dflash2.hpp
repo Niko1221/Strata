@@ -92,6 +92,10 @@ public:
     /// transformer body run on its own captured body graph (`Slot::body_exec_[n_new]`) into a packed batch buffer,
     /// then the draft head GEMM, top-16 reduction, and candidate selector run together across all slots with a
     /// single stream synchronization at the end.  Bitwise equal to calling draft() on each slot for `k_want` rows.
+    /// `draft_batch_begin` queues all GPU work onto `stream()` without blocking the host; `draft_batch_end` waits
+    /// for `stream()` and copies the selected tokens and probabilities into `items[idx].drafts` / `probs`.
+    bool draft_batch_begin(const BatchItem* items, int n_items, float* stage_taps, size_t stage_stride, std::string& err);
+    bool draft_batch_end(const BatchItem* items, int n_items, std::string& err);
     bool draft_batch(const BatchItem* items, int n_items, float* stage_taps, size_t stage_stride, std::string& err);
 
     /// Captures the eight round graphs (n_new = 1..8) on `taps` now, so no round pays for a capture.

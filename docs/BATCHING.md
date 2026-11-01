@@ -566,10 +566,13 @@ back: `--dflash-no-mtp` leaves no MTP layer behind, so a drafter that cannot dra
 windows with no drafts at all, and that reads like a run that drafts. The pruned vocabulary is required for
 this flag for the same reason - the head rows it drops are the bytes the slots' rings and graphs need.
 
-On one gfx1201 card with 4 concurrent slots (`W=8, depth=1`, pruned 16,384-token draft vocab), the batched DFlash2
-co-drafter (`STRATA_DF2_BATCHHEAD=1`) cuts co-draft time from `9.49` to `7.34 ms/win` (`51.87 ms/win` total window,
-`142.3 rows/s`, `118.4 tok/s` HTTP wall vs `82.14 ms/win`, `129.2 rows/s` at `W=16, depth=3`). The flag makes the
-set one flag to type; a run without it is byte-identical to the one before.
+On one gfx1201 card with 4 concurrent slots (`W=8, depth=1`, 106,299-token draft vocab), the batched DFlash2
+co-drafter (`STRATA_DF2_BATCHHEAD=1`) together with multi-row QSA/GDN batching (`STRATA_BATCH_ATTN_ROWS=1`,
+`STRATA_BATCH_GDN_GROUPS=1`), batched per-slot KV/indexer appends, Layer-0 async PLE gather, and async commit +
+co-draft overlap cuts 4-slot window time from `49.20` to `44.98 ms/win` (`163.3 rows/s`, `136.1 tok/s` HTTP wall =
+`34.0 tok/s/slot` at `c=4`) and 2-slot window time from `43.46` to `39.99 ms/win` (`157.7 rows/s`, `132.7 tok/s` HTTP
+wall = `66.4 tok/s/slot` at `c=2`). The flag makes the set one flag to type; a run without it is byte-identical to the
+one before.
 
 ## Windows of 16 rows, and the four-card AMD profile
 
