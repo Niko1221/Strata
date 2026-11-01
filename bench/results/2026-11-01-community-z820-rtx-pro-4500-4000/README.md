@@ -51,9 +51,9 @@ out to be load-bearing:
 | CPU too old | Ivy Bridge, **no AVX2 at all** | AVX1 128-bit kernels, 22 workers; 105–113 tok/s |
 | Not enough VRAM | 45 GiB across two unequal cards | 252 GB DDR3 absorbs the overflow |
 
-Why DDR3 is not the handicap it sounds like: this box has **16 DIMMs across 8 channels**
-(4 per socket, DDR3-1866) for ~119 GB/s aggregate — more memory bandwidth than a current
-consumer DDR5-6000 dual-channel desktop, and the capacity to hold 37 GiB of experts pinned.
+DDR3 is not the handicap it sounds like. Eight channels of it deliver more aggregate bandwidth
+(~119 GB/s) than a current consumer DDR5-6000 dual-channel desktop (~96 GB/s), and the capacity
+pins 37 GiB of experts outright.
 
 **The practical consequence: a Z620/Z820/Z840, an X79 or X99 board, or a retired dual-socket
 server can host a current pro GPU and deliver usable throughput.** Strata's RAM-resident expert
@@ -83,7 +83,9 @@ engine supports**, sustained by 22 workers on two 2013 sockets running 128-bit k
 - **GPU 0:** NVIDIA RTX PRO 4500 Blackwell, 32 GB (31.9 GiB usable), sm_120 — 82 SMs @ 2.41 GHz
 - **GPU 1:** NVIDIA RTX PRO 4000 Blackwell, 24 GB (23.1 GiB usable), sm_120 — 70 SMs @ 2.06 GHz
 - **CPU:** 2x Intel Xeon E5-2697 v2 @ 2.70 GHz, 24 cores / 48 threads, **no AVX2, no AVX-512**
-- **RAM:** 251.8 GiB DDR3 — a load-bearing component here, not a spec-sheet number
+- **RAM:** 251.8 GiB usable of 256 GB installed — **16 x 16 GB DDR3-1866 ECC**, 4 channels
+  per socket (8 channels total, one slice per NUMA node), ~119 GB/s theoretical aggregate.
+  A load-bearing component here, not a spec-sheet number.
 - **Storage:** `/dev/sdb3`, 1.9 TB **SATA** SSD. Slow on purpose; see above for why it doesn't matter.
 - **OS:** Fedora Linux 43 (Workstation Edition), kernel 7.0.14-101.fc43.x86_64
   (generated READMEs render this as `Linux 43 (Workstation Edition)` with a literal `<host>`
