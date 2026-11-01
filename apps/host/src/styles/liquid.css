@@ -349,12 +349,14 @@ body {
   }
 }
 
-/* The one action under the model-files card read as a centred footer because a
-   stretched control centres its label. It sits at the card's left edge now, as
-   a quiet text action under the thing it belongs to. */
-.other-models {
-  align-self: flex-start;
-  padding-left: 12px;
+/* "Other local models..." is part of the Model files card, beside "Storage settings"
+   (owner, 11-01), as a quiet text action. */
+.model-files__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.model-files__actions .other-models {
   font-weight: 500;
 }
 

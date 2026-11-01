@@ -64,3 +64,11 @@ test('6: the conversation context opens at 128K for every configuration, or the 
   const guided = read('src/components/GuidedSetup.tsx');
   assert.match(guided, /pickedContext \?\? \(contextIsTight\(topCardGb, DEFAULT_CONTEXT\) \? OLD_DEFAULT_CONTEXT : defaultContext\(native\?\.catalog\?\.contexts\)\)/);
 });
+
+test('7 and 8: Model files has no explanatory sentence and holds "Other local models..." beside Storage settings', () => {
+  const card = models.slice(models.indexOf('<h2 className="h4">{tr("Model files")}</h2>'), models.indexOf('</aside>'));
+  assert.ok(!/Strata prepares all shards/.test(models), 'the sentence is gone');
+  assert.ok(!/<p className="small muted">/.test(card), 'the card holds no paragraph');
+  assert.match(card, /<div className="model-files__actions"><Btn[\s\S]*?>\{tr\("Storage settings"\)\}<\/Btn><Btn[^>]*onClick=\{onOtherModels\}[^>]*>\{tr\("Other local models\\u2026"\)\}<\/Btn><\/div><\/section>/, 'inside the card, after Storage settings');
+  assert.ok(!/<\/section><Btn[^>]*other-models/.test(models), 'not a separate control under the card');
+});
