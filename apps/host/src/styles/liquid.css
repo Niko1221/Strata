@@ -1144,3 +1144,28 @@ body {
   }
 }
 
+/* Code blocks: a block is a figure inside the answer, so it gets room before and
+   after, and it is lighter than the text around it — a 34px bar, 10px of padding,
+   code at the reading step below the body (12px minimum at the default size: pass 37's
+   floor stays; 13px against 16px body at the larger sizes). */
+.st-bubble .st-code {
+  margin: 16px 0 20px;
+}
+.st-bubble .st-code:first-child {
+  margin-top: 0;
+}
+.st-bubble .st-code:last-child {
+  margin-bottom: 0;
+}
+.st-code__head {
+  min-height: 34px;
+  padding-block: 2px;
+}
+.st-code pre {
+  padding: 10px 14px;
+  line-height: 1.5;
+}
+.st-code .st-btn--icon {
+  width: 28px;
+  height: 28px;
+}
