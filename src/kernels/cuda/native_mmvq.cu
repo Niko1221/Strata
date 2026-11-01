@@ -2151,7 +2151,9 @@ __global__ void native_mmvq_il_pf_kernel(const typename I::F::Block* __restrict_
     }
 }
 
-template <typename I, int NC, int R>
+// NOUT < NC (BW-NEXT, STRATA_IL_PAD): the kernel of NC columns computes a column that is not wanted and stores only the first NOUT; each column's value is
+// its own sum, so the stored ones are bitwise those of the NOUT-column kernel.  5 columns of IQ4_XS run as 6 (the 5-column instantiation is 15-40% slower).
+template <typename I, int NC, int R, int NOUT = NC>
 __launch_bounds__(4 * WARP)
 __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w, const int* __restrict__ xq,
                                       const float* __restrict__ xd, float* __restrict__ y, int n_in, int n_out) {
@@ -2199,7 +2201,7 @@ __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w
                 s += acc[2][i][c];
                 s += acc[3][i][c];
                 s = warp_sum(s);
-                if (lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
+                if (c < NOUT && lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
             }
     }
 }
@@ -2222,10 +2224,10 @@ int il_pf_for(int type, int ncols, int n_out, int* rows) {
     return t >> 4;
 }
 // one (type, columns, rows) launch: today's kernel, or the variant il_pf_for names for a type that has them
-template <typename I, int NC, int R>
+template <typename I, int NC, int R, int NOUT = NC>
 void launch_il_one(unsigned blocks, const typename I::F::Block* w, const int* xq, const float* xd, float* y, int n_in, int n_out,
                    cudaStream_t s, int pf) {
-    if constexpr (I::HAS_PF) {
+    if constexpr (I::HAS_PF && NOUT == NC) {
         switch (pf) {
         case 6: native_mmvq_il_pf_kernel<I, NC, R, 0, 4, false><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
         case 2: native_mmvq_il_pf_kernel<I, NC, R, 2, 4, true><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
@@ -2235,7 +2237,13 @@ void launch_il_one(unsigned blocks, const typename I::F::Block* w, const int* xq
         default: break;
         }
     }
-    native_mmvq_il_kernel<I, NC, R><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out);
+    native_mmvq_il_kernel<I, NC, R, NOUT><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out);
+}
+
+// STRATA_IL_PAD (bit 0: IQ4_XS 5 columns as 6; default on, 0 off): bitwise, see native_mmvq_il_kernel
+int il_pad() {
+    static const int v = [] { const char* e = std::getenv("STRATA_IL_PAD"); return e != nullptr ? std::atoi(e) : 1; }();
+    return v;
 }
 
 template <typename I, int R>
@@ -2255,8 +2263,16 @@ void launch_il(const void* weights, const void* x_il, float* y, int n_in, int n_
 #undef STRATA_IL_CASE
         // 147-verify: 5..8 columns (the cp = 8 copy) at 1 or 2 rows a warp; launch_il_rows maps 4 rows to 2 there
 #define STRATA_IL_CASE(N) case N: if constexpr (R <= 2) launch_il_one<I, N, R>(blocks, w, xq, xd, y, n_in, n_out, s, pf); break;
-        STRATA_IL_CASE(5) STRATA_IL_CASE(6) STRATA_IL_CASE(7) STRATA_IL_CASE(8)
+        STRATA_IL_CASE(6) STRATA_IL_CASE(7) STRATA_IL_CASE(8)
 #undef STRATA_IL_CASE
+    case 5:
+        if constexpr (R <= 2) {
+            if constexpr (std::is_same_v<I, IlIQ4XS>) {
+                if ((il_pad() & 1) != 0) { launch_il_one<I, 6, R, 5>(blocks, w, xq, xd, y, n_in, n_out, s, 0); break; }
+            }
+            launch_il_one<I, 5, R>(blocks, w, xq, xd, y, n_in, n_out, s, pf);
+        }
+        break;
         default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 8");
     }
 }

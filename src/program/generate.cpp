@@ -12434,6 +12434,7 @@ int main(int argc, char** argv) {
         // --draft auto: a request that drafts with the MTP layer has its own widest window (the MTP loses to itself above 4 on Blackwell), the DFlash2 requests S_mtp_wide
         const int S_mtp_narrow = o.draft_auto ? std::min(S_mtp_wide, std::max(2, o.draft_mtp_spec)) : S_mtp_wide;
         int S_mtp = S_mtp_wide;   // this request's (set when it starts)
+        int S_look = S;   // --draft auto: the widest window a prompt-lookup draft may make for this request (the MTP requests keep the MTP's width, as without DFlash2)
         if (use_mtp && S_mtp < S) mtp.set_max_drafts(S_mtp - 1);
         // --pipeline-windows 2 loads the drafter with 8 rows: the serial loop's chain keeps its own length
         else if (use_mtp && mtp.max_t() > S_mtp) mtp.set_max_drafts(S_mtp - 1);
@@ -14096,6 +14097,7 @@ int main(int argc, char** argv) {
                 if (!req_df2 && !req_min_p_set && o.draft_mtp_min_p >= 0.0) req_spec_min_p = o.draft_mtp_min_p;
                 if (req_df2 != policy_is_df2) { std::swap(policy, policy_idle); policy_is_df2 = req_df2; }
                 S_mtp = req_df2 ? S_mtp_wide : S_mtp_narrow;
+                S_look = req_df2 ? S : std::min(S, S_mtp_narrow);
                 if (use_mtp) mtp.set_max_drafts(S_mtp - 1);
             }
             if (req_prefill_only && (geni || o.batch > 0 || n < 2)) {
@@ -16941,7 +16943,7 @@ int main(int argc, char** argv) {
                     // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
                     // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
                     if (o.suffix_draft > 0 && !first_window) {
-                        const int k = sfx.propose(S - 1, sbuf.data());
+                        const int k = sfx.propose(S_look - 1, sbuf.data());
                         sfx_match = sfx.last_match();
                         // a probabilistic window must not condition the source on the draw: the policy copy fixed at the request's start
                         // chooses, and the lookup is taken without asking whether the MTP's first guess agrees
@@ -16960,7 +16962,7 @@ int main(int argc, char** argv) {
                     int csrc = -1;
                     const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
                     chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
-                                                                 std::min(o.lookup_chain, S - T), o.lookup_chain_min,
+                                                                 std::min(o.lookup_chain, S_look - T), o.lookup_chain_min,
                                                                  cbuf.data(), &cm, &csrc);
                     // the policy keeps the chained tokens that pay at this machine's measured window costs
                     if (chain_n > 0 && !chain_fixed) {
