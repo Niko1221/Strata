@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cutserver.py PORT DIR [NAME BYTES]: serve DIR over http on 127.0.0.1; the file called NAME is cut after BYTES bytes (the connection breaks part-way),
+"""cutserver.py PORT DIR [NAMES BYTES]: serve DIR over http on 127.0.0.1; each file called in NAMES (comma separated) is cut after BYTES bytes (the connection breaks part-way),
 every other file is served whole.  For the real-package flow tests (update_model_flow.sh): a download that fails.  Standard library only."""
 import functools
 import sys
@@ -7,11 +7,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 
 class Handler(SimpleHTTPRequestHandler):
-    cut_name = None
+    cut_names = []
     cut_bytes = 0
 
     def do_GET(self):
-        if self.cut_name and self.path.rsplit("/", 1)[-1] == self.cut_name:
+        if self.path.rsplit("/", 1)[-1] in self.cut_names:
             path = self.translate_path(self.path)
             with open(path, "rb") as f:
                 size = f.seek(0, 2)
@@ -33,7 +33,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     port, directory = int(sys.argv[1]), sys.argv[2]
-    Handler.cut_name = sys.argv[3] if len(sys.argv) > 3 else None
+    Handler.cut_names = (sys.argv[3] if len(sys.argv) > 3 else "").split(",")
     Handler.cut_bytes = int(sys.argv[4]) if len(sys.argv) > 4 else 0
     server = ThreadingHTTPServer(("127.0.0.1", port), functools.partial(Handler, directory=directory))
     server.serve_forever()
