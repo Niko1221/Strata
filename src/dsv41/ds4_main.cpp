@@ -25,6 +25,7 @@
 #include <libproc.h>   // proc_pid_rusage: the bytes this process had the storage read (io_read_bytes)
 #endif
 #include "ds4_launch.h"   // ds4_dbg
+#include "strata/platform/numa_balancing.hpp"
 #include "ds4_model.hpp"
 #include "ds4_experts_rule.hpp"
 #include "ds4_os.hpp"
@@ -1282,6 +1283,9 @@ int spec_eval(strata::ds4::Model& m, const std::string& ids_path, int n, int win
 #include "sampler_stat.inc"
 #endif
 int main(int argc, char** argv) {
+    // Linux: keep the kernel's NUMA scanner off the memory the GPU reads (include/strata/platform/numa_balancing.hpp)
+    if (const std::string numa = strata::platform::numa_balancing::keep_scanner_off(); !numa.empty())
+        std::fprintf(stderr, "%s\n", numa.c_str());
     strata::ds4::os::fine_timer();
 #if defined(STRATA_METAL)
     if (argc > 1 && std::string(argv[1]) == "--sampler-test") return sampler_stat::run(argc - 1, argv + 1);   // (the sampler's statistics harness)
