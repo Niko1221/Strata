@@ -3,6 +3,7 @@
  * retry with one when a load with several slots fails. Nothing here starts an engine; Control is a fake that records what
  * the host saved and asked it to start.
  */
+import './helpers/isolate-profile.mjs';   // a test run never writes the owner's real Strata profile
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -167,4 +168,13 @@ test('a load that fails even with one slot reports the failure, and a chosen num
     assert.equal(job.state, 'error', 'the person asked for 3: no quiet fallback');
     assert.equal(chosen.saved.length, 1);
   } finally { await chosen.native.close(); chosen.cleanup(); }
+});
+
+test('the draft layer (MTP) is part of what the card is sized for; switched off, its 1 GB goes to the slots', () => {
+  if (PARALLEL_POLICY !== 'fit') return;
+  const slots = (gb, extra = {}, args) => chooseParallel({ config: { ...cfg(32768, extra), ...(args ? { args } : {}) }, hardware: hw(gb) }).slots;
+  assert.equal(slots(26.5), 3, 'MTP on (the default): the measured sizing stands');
+  assert.equal(slots(26.5, { mtp: false }), 4, 'a card with the draft layer off has 1 GB more cache');
+  assert.equal(slots(26.5, {}, ['--max-context', '32768', '--spec', '4']), 4, 'no draft layer in the arguments');
+  assert.equal(slots(12, { mtp: false }), 1, 'a 12 GB card still gets one request at a time');
 });

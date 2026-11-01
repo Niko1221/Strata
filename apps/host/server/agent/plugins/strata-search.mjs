@@ -16,7 +16,7 @@ export const inject = ['web'];
 export function apply(ctx, config = {}) {
   const keyOf = () => (config.keyEnv ? process.env[config.keyEnv] ?? '' : '');
   // Tests only (the bridge option `searchMock`): the same search code on a pretend web, so nothing leaves the machine.
-  const pretend = config.mock === 'limited' ? { fetch: async url => new Response('<html>please verify you are human: captcha</html>', { status: /duckduckgo/.test(String(url)) ? 202 : 429 }) } : null;
+  const pretend = config.mock === 'offline' ? { fetch: async () => { throw new TypeError('fetch failed'); } } : config.mock === 'limited' ? { fetch: async url => new Response('<html>please verify you are human: captcha</html>', { status: /duckduckgo/.test(String(url)) ? 202 : 429 }) } : null;
   const provider = pretend ? createDuckDuckGoSearch(pretend)
     : config.provider === 'exa' ? createExaSearch({ key: keyOf })
     : config.provider === 'perplexity' ? createPerplexitySearch({ key: keyOf })

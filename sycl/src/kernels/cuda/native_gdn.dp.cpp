@@ -25,6 +25,7 @@
 // SOFTWARE.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
@@ -133,8 +134,8 @@ void native_gdn_step(float* state, const float* q, const float* k, const float* 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<dpct_kernel_name<class step_134598>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class step_134598>>(
                 sycl::nd_range<3>(sycl::range(S / 4, 1, unsigned(shape.h_v)) *
                                       sycl::range(1, 4, 32),
                                   sycl::range(1, 4, 32)),

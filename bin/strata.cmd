@@ -6,6 +6,8 @@ rem   2. <root>\python\python.exe              the private runtime shipped in th
 rem   3. <root>\.venv\Scripts\python.exe       a source checkout set up by SETUP.bat
 rem   4. py -3 / python on PATH, 3.10 or newer a developer convenience, never a requirement
 setlocal
+rem UTF-8 text in Python, not the Windows code page: folders with Cyrillic or other letters stay intact (#3202)
+set "PYTHONUTF8=1"
 set "HERE=%~dp0"
 for %%I in ("%HERE%..") do set "ROOT=%%~fI"
 if exist "%HERE%strata.py" set "ROOT=%HERE%"

@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import { probe, which } from './util.mjs';
 import { classifyRunning, describeConnector, otherTunnelMessage, ownTunnelMessage } from './cloudflared-find.mjs';
 
+/** A tunnel without a key is allowed (owner decision, 0.2.2); because the link is public the warning is stronger than the local one. */
+export const NO_KEY_TUNNEL_WARNING = 'No API key is set, so anyone who finds this link can use your model from the internet. Create an API key to protect it.';
 export function tunnelHostname(value) {
   const hostname = String(value ?? '').trim().toLowerCase();
   if (hostname.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) throw new Error('Enter a hostname such as ai.example.com, without https:// or a path.');
@@ -13,7 +15,7 @@ export function createCloudflare({ origin, originUrl, hasKey, changed = () => {}
   let value = { status: 'idle', mode: null, url: null, error: null };
   const state = () => {
     const info = binary ? connectorInfo() : null;
-    return { ...value, installed: !!binary, originUrl, connector: info ? { path: info.path, version: info.version, source: info.source, label: info.label, summary: describeConnector(info) } : null, external: other?.running ? externalState() : null };
+    return { ...value, warning: value.status === 'connected' && !hasKey() ? NO_KEY_TUNNEL_WARNING : null, installed: !!binary, originUrl, connector: info ? { path: info.path, version: info.version, source: info.source, label: info.label, summary: describeConnector(info) } : null, external: other?.running ? externalState() : null };
   };
   const update = patch => { value = { ...value, ...patch }; changed(state()); };
   function externalState(token = '') {
@@ -52,7 +54,6 @@ export function createCloudflare({ origin, originUrl, hasKey, changed = () => {}
   }
   async function start(body) {
     if (busy || ['starting', 'connected', 'stopping'].includes(value.status)) throw new Error('Stop the current tunnel before starting another.');
-    if (!hasKey()) throw new Error('Create a Strata API key before connecting Cloudflare.');
     if (!['quick', 'domain'].includes(body.mode)) throw new Error('Choose a temporary URL or your own domain.');
     const hostname = body.mode === 'domain' ? tunnelHostname(body.hostname) : null;
     const token = body.mode === 'domain' ? String(body.token ?? '').trim() : '';

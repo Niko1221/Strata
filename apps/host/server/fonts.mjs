@@ -1,5 +1,6 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {utf8Script} from './powershell-utf8.mjs';
 const execute=promisify(execFile);
 let cached=null;
 export async function systemFonts({platform=process.platform,run=execute}={}){
@@ -11,7 +12,7 @@ export async function systemFonts({platform=process.platform,run=execute}={}){
    const {stdout}=await read('/usr/sbin/system_profiler',['SPFontsDataType','-json','-detailLevel','mini']);
    const collect=value=>{if(!value||typeof value!=='object')return;if(typeof value.family==='string')names.push(value.family);for(const nested of Object.values(value))if(typeof nested==='object')collect(nested);};collect(JSON.parse(stdout));
   }else if(platform==='win32'){
-   const {stdout}=await read('powershell.exe',['-NoProfile','-NonInteractive','-Command','Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name | ConvertTo-Json -Compress']);
+   const {stdout}=await read('powershell.exe',['-NoProfile','-NonInteractive','-Command',utf8Script('Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name | ConvertTo-Json -Compress')]);
    const result=JSON.parse(stdout.replace(/^\uFEFF/,''));names=Array.isArray(result)?result:[result];
   }else{
    const {stdout}=await read('fc-list',['-f','%{family}\n']);names=stdout.split(/[\n,]/);

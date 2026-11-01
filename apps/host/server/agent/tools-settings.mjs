@@ -13,6 +13,7 @@
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GROUP_IDS, TOOL_GROUPS } from './tools-catalog.mjs';
+import { SHELLS, clampTimeoutSec } from './custom-command-run.mjs';
 
 export const SEARCH_PROVIDERS = ['builtin', 'exa', 'perplexity', 'deepseek'];
 const KINDS = ['instructions', 'command', 'server'];
@@ -32,10 +33,14 @@ function normalize(raw) {
     off: [...new Set((Array.isArray(r.off) ? r.off : []).filter(id => GROUP_IDS.includes(id)))],
     search: { provider: SEARCH_PROVIDERS.includes(search.provider) ? search.provider : 'builtin', key: typeof search.key === 'string' ? search.key : '' },
     browser: { enabled: r.browser?.enabled === true },
+    // Manual mode asks once per chat before the first web search or page. This switch (off unless the person turned it on) skips that question.
+    webWithoutAsking: r.webWithoutAsking === true,
     custom: (Array.isArray(r.custom) ? r.custom : []).filter(t => t && NAME.test(t.name ?? '') && KINDS.includes(t.kind)).slice(0, MAX_CUSTOM).map(t => ({
       id: String(t.id), name: String(t.name), about: clean(t.about, 300), kind: t.kind, enabled: t.enabled !== false,
       instructions: clean(t.instructions, 20000), command: clean(t.command, 2000), address: clean(t.address, 2000),
       args: (Array.isArray(t.args) ? t.args : []).slice(0, 50).map(a => clean(a, 1000)),
+      // a command tool's folder, shell and time allowed (custom-command-run.mjs); '' / 'auto' / 120 when not set
+      cwd: clean(t.cwd, 1000).trim(), shell: SHELLS.includes(t.shell) ? t.shell : 'auto', timeoutSec: clampTimeoutSec(t.timeoutSec),
     })),
   };
 }
@@ -47,7 +52,7 @@ function validateCustom(body, existing) {
   if (!about) throw new Error('Say what the tool does, in a sentence. The assistant reads this to decide when to use it.');
   const kind = body?.kind;
   if (!KINDS.includes(kind)) throw new Error('Choose how the tool works.');
-  const out = { name, about, kind, instructions: '', command: '', address: '', args: [] };
+  const out = { name, about, kind, instructions: '', command: '', address: '', args: [], cwd: '', shell: 'auto', timeoutSec: clampTimeoutSec(undefined) };
   if (kind === 'instructions') {
     out.instructions = clean(body.instructions, 20000).trim();
     if (!out.instructions) throw new Error('Write the instructions the assistant should follow when it uses this tool.');
@@ -55,6 +60,14 @@ function validateCustom(body, existing) {
     out.command = clean(body.command, 2000).trim();
     if (!out.command) throw new Error('Enter the command to run.');
     if (/[\r\n]/.test(out.command)) throw new Error('Put the command on one line.');
+    // The edit form of Settings does not send these three: an edit keeps what the tool had.
+    const before = existing.find(t => t.id === body.id && t.kind === 'command');
+    out.cwd = body.cwd !== undefined ? clean(body.cwd, 1000).trim() : before?.cwd ?? '';
+    if (/[\r\n]/.test(out.cwd)) throw new Error('Put the folder on one line.');
+    if (body.shell !== undefined && !SHELLS.includes(body.shell)) throw new Error('Choose how the command runs: automatic, cmd, PowerShell, bash or sh.');
+    out.shell = body.shell !== undefined ? body.shell : before?.shell ?? 'auto';
+    if (body.timeoutSec !== undefined && !(Number(body.timeoutSec) >= 1 && Number(body.timeoutSec) <= 3600)) throw new Error('Give the time allowed in seconds, from 1 to 3600.');
+    out.timeoutSec = body.timeoutSec !== undefined ? clampTimeoutSec(body.timeoutSec) : before?.timeoutSec ?? clampTimeoutSec(undefined);
   } else {
     out.address = clean(body.address, 2000).trim();
     if (!out.address) throw new Error('Enter the tool server’s web address, or the program that starts it.');
@@ -89,7 +102,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
     for (const t of s.custom.filter(t => t.enabled)) {
       const key = t.id;
       if (t.kind === 'instructions') instructions[key] = { description: t.about, text: t.instructions };
-      else if (t.kind === 'command') commands[key] = { description: t.about, command: t.command };
+      else if (t.kind === 'command') commands[key] = { description: t.about, command: t.command, cwd: t.cwd, shell: t.shell, timeoutSec: t.timeoutSec };
     }
     mkdirSync(join(dataDir, 'agent'), { recursive: true });
     const tmp = `${filePath}.tmp`;
@@ -106,12 +119,14 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
     return {
       groups: TOOL_GROUPS.map(g => ({ id: g.id, name: g.name, about: g.about, area: g.area, asks: g.asks, enabled: !s.off.includes(g.id) })),
       search: { provider: s.search.provider, keySet: !!s.search.key },
+      webWithoutAsking: s.webWithoutAsking,
       // `found` means the browser tool can run: a browser on this computer AND the tool server in the agent component.
       browser: { enabled: s.browser.enabled, found: !!(probe.found && probe.cli), name: probe.name ?? null, ...(probe.found && !probe.cli ? { missing: 'component' } : {}) },
       custom: s.custom.map(t => ({
         id: t.id, name: t.name, about: t.about, kind: t.kind, enabled: t.enabled,
         summary: t.kind === 'instructions' ? t.instructions.slice(0, 80) : t.kind === 'command' ? t.command : t.address,
         instructions: t.instructions, command: t.command, address: t.address, args: t.args,
+        ...(t.kind === 'command' ? { cwd: t.cwd, shell: t.shell, timeoutSec: t.timeoutSec } : {}),
       })),
     };
   }
@@ -131,6 +146,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
       return {
         off: new Set(s.off),
         search: s.search,
+        webWithoutAsking: s.webWithoutAsking,
         browserEnabled: s.browser.enabled && !!(browser().found && browser().cli),
         browserPath: browser().path ?? null,
         browserCli: browser().cli ?? null,
@@ -160,6 +176,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
           s.search = { ...s.search, key };
         }
       }
+      if (typeof change?.webWithoutAsking === 'boolean') s.webWithoutAsking = change.webWithoutAsking;
       if (change?.browser && typeof change.browser.enabled === 'boolean') s.browser = { enabled: change.browser.enabled };
       if (change?.custom) {
         for (const [id, on] of Object.entries(change.custom)) {

@@ -5,10 +5,11 @@ import { FloatingMenu } from './FloatingMenu';
 import { DictationControl } from './DictationControl';
 import { Btn, Dialog, Icon, ErrorNotice } from './ui';
 import { MOD } from '../lib/commands';
-import { setChatPreferences, useStore } from '../lib/store';
+import { pushToast, setChatPreferences, useStore } from '../lib/store';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 import type { ChatMode, Session } from '../lib/types';
 import { attachChatPhoto } from '../lib/chat-photos';
+import { uploadChatFile, FILE_ACCEPT } from '../lib/chat-attach-file';
 import { useNative } from '../lib/native';
 import { pictureStatus } from '../lib/pictures';
 const modes: {
@@ -91,6 +92,12 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
                     await attachChatPhoto(file, session?.id);
                     continue;
                 }
+                if (!directory && session?.id && /\.pdf$/i.test(file.name) && file.size <= 12 * 1024 * 1024) {
+                    // A PDF goes to the chat's folder and is named in the next message; "Open a file" still previews it.
+                    const saved = await uploadChatFile(file, session.id);
+                    pushToast('success', 'PDF added', `${saved.name} is in this chat. Ask about it in your next message.`);
+                    continue;
+                }
                 if (!directory && (photoTypes.test(file.name) || /\.pdf$/i.test(file.name))) {
                     await openFile(file);
                     if (photoTypes.test(file.name))
@@ -157,7 +164,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     return <>
     {tr(!remoteModel && nativeModel?.metrics?.mcp?.servers?.length ? <button className="composer-choice" aria-label={tr("Use connected MCP tools")} aria-pressed={session?.preferences?.useTools === true} onClick={() => session?.preferences?.useTools ? setChatPreferences(session.id, { useTools: false }) : setToolsOpen(true)}><Icon name="skills" size={16}/>{tr("Tools")}{tr(session?.preferences?.useTools ? ' on' : '')}</button> : null)}
     <Dialog open={toolsOpen} compact title={tr("Enable connected tools?")} onClose={() => setToolsOpen(false)} actions={<><Btn onClick={() => setToolsOpen(false)}>{tr("Keep tools off")}</Btn><Btn variant="primary" onClick={() => { setChatPreferences(session?.id, { useTools: true, mode: 'bypass' }); setToolsOpen(false); }}>{tr("Enable tools")}</Btn></>}><p>{tr("Connected servers can act on the resources you configured. Calls run automatically when the model chooses them, and their results appear in chat.")}</p><p className="small muted">{tr("This switches this conversation to Bypass permissions. Servers: ")}{tr((nativeModel?.metrics?.mcp?.servers ?? []).map((s: any) => s.name).join(', '))}.</p></Dialog>
-    <input ref={files} type="file" multiple hidden accept="image/*,.pdf,.txt,.md,.markdown,.csv,.ts,.tsx,.js,.jsx,.py,.json,.css,.rs,.go,.sh,.html,.htm,.yaml,.yml,.toml,.xml,.log" onChange={e => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }}/>
+    <input ref={files} type="file" multiple hidden accept={FILE_ACCEPT} onChange={e => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }}/>
     <input ref={folder} type="file" multiple hidden onChange={e => { void addFiles(Array.from(e.target.files ?? []), true); e.target.value = ''; }}/>
     <input ref={previewFile} type="file" hidden onChange={e => { void openFile(e.target.files?.[0]); e.target.value = ''; }}/>
     <button ref={trigger} className="composer-add" aria-label={tr("Add or open")} title={tr("Add or open")} disabled={reading || streaming} aria-haspopup="menu" aria-expanded={menu} onClick={() => { setPreferences(null); setMenu(v => !v); }}><Icon name="plus" size={22}/></button>

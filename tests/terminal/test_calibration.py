@@ -326,6 +326,13 @@ class CalibrationFlowTests(unittest.TestCase):
                          ["engine.calibrate.rollback", "engine.calibrate.apply",
                           "engine.calibrate.measure"])
 
+    def test_missing_report_folder_is_refused_before_the_sweep(self):
+        # #3187: the sweep takes ~19 minutes; the folder check must not wait until after it
+        for output in (self.root / "no-such-dir" / "report.json", self.config / "report.json"):
+            with self.assertRaisesRegex(profiles.ProfileError, "report output directory does not exist"):
+                calibration.measure("local", output, exclusive_ack=True,
+                                    runner=lambda *_a, **_k: self.fail("the sweep must not start"))
+
     def test_calibration_rechecks_reviewed_digests_inside_operation_lock(self):
         report_path = self.root / "pinned-calibration.json"
         with self.assertRaisesRegex(profiles.ProfileError, "source changed after review"):

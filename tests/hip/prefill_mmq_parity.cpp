@@ -330,7 +330,8 @@ int main(int argc, char ** argv) {
                 if (!supported((int) t)) { std::cout << "type " << (int) t << ": no MMQ instance in this build\n"; continue; }
                 const std::vector<int> counts{2, 3};
                 const auto src = permutation(5, 1, false), dst = permutation(5, 2, true);
-                const std::string tn = ggml_type_name(t);
+                const char* known = ggml_type_name(t);   // null when this ggml has no name for the id (no trellis types in it): #3358
+                const std::string tn = known ? known : "type" + std::to_string((int) t);
                 const char* rep = std::getenv("MMQ_PARITY_REPEAT");   // repeat each product (flakiness screen)
                 const int reps = rep ? std::max(1, std::atoi(rep)) : 1;
                 const auto wgu = synthetic_q2(2, 1280, 2560, 5, t), wd = synthetic_q2(2, 2560, 640, 6, t);

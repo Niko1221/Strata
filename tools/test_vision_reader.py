@@ -35,6 +35,28 @@ class Choose(unittest.TestCase):
                                   ("no", 32, "none"), ("off", 12, "none")):
             self.assertEqual(VR.wanted(asked, vram), want, (asked, vram))
 
+    def test_an_intel_arc_keeps_the_cpu_reader_by_default_and_gpu_is_asked_for(self):
+        """The one exception to the 24 GB rule: the SYCL reader has run on a 8 GB A750 only (INTEL_GPU_READER_BY_DEFAULT)."""
+        self.assertFalse(VR.INTEL_GPU_READER_BY_DEFAULT)
+        for vram in (8, 16, 24, 32):
+            self.assertEqual(VR.default_mode(vram, "intel"), "cpu")
+            self.assertEqual(VR.wanted("yes", vram, "intel"), "cpu")
+            self.assertEqual(VR.wanted("gpu", vram, "intel"), "gpu")
+        self.assertEqual(VR.wanted("yes", 32), "gpu")                        # other makes: unchanged
+        with mock.patch.object(VR, "INTEL_GPU_READER_BY_DEFAULT", True):
+            self.assertEqual(VR.default_mode(32, "intel"), "gpu")
+            self.assertEqual(VR.default_mode(8, "intel"), "cpu")              # with the exception off, the 24 GB rule is the same as for every make
+
+    def test_the_sycl_reader_is_the_gpu_reader_of_an_intel_folder(self):
+        d = folder("strata-vision", "strata-vision-sycl")
+        r = VR.choose(d, "gpu", windows=False)
+        self.assertEqual((r.mode, r.exe.name, r.cpu_exe.name), ("gpu", "strata-vision-sycl", "strata-vision"))
+        self.assertEqual(VR.vision_section(r, {"mmproj": "m"})["gpu"], True)
+        r = VR.choose(folder("strata-vision"), "gpu", windows=False)         # no SYCL reader built: the CPU one, said
+        self.assertEqual((r.mode, r.exe.name), ("cpu", "strata-vision"))
+        self.assertIn("no GPU picture reader", r.note)
+        self.assertEqual(VR.choose(d, "cpu", windows=False).exe.name, "strata-vision")
+
     def test_hip_present_gives_the_gpu_reader_with_the_cpu_one_to_fall_back_on(self):
         d = folder("strata-vision", "strata-vision-hip")
         for ask in ("yes", "on", "gpu"):
@@ -102,6 +124,48 @@ class Choose(unittest.TestCase):
         self.assertIsNone(VR.cpu_fallback(cpu_only))
         self.assertIsNone(VR.cpu_fallback({**sec, "cpu_exe": ""}))
         self.assertIsNone(VR.cpu_fallback({"exe": "strata-vision", "gpu": True}))   # an NVIDIA config has no fallback
+
+
+class MacReader(unittest.TestCase):
+    """A Mac has one picture program, strata-vision with Metal built in: --gpu reads on the GPU, without it on the CPU."""
+
+    def test_a_mac_reads_on_the_gpu_by_default_whatever_its_memory(self):
+        for ram in (16, 32, 64, 128, None):
+            self.assertEqual(VR.default_mode(ram, unified=True), "gpu", ram)
+            self.assertEqual(VR.wanted(None, ram, unified=True), "gpu", ram)
+            self.assertEqual(VR.wanted("yes", ram, unified=True), "gpu", ram)
+        self.assertEqual(VR.wanted("cpu", 32, unified=True), "cpu")             # asked for: kept
+        self.assertEqual(VR.wanted("off", 32, unified=True), "none")
+        self.assertEqual(VR.default_mode(16), "cpu")                           # a 16 GB card of a PC still follows the 24 GB rule
+
+    def test_the_one_program_is_both_readers_and_its_own_fallback(self):
+        d = folder("strata", "strata-vision")
+        for ask in ("yes", "on", "gpu"):
+            r = VR.choose(d, ask, windows=False, mac=True)
+            self.assertEqual((r.mode, r.exe.name, r.cpu_exe.name, r.note), ("gpu", "strata-vision", "strata-vision", ""), ask)
+        sec = VR.vision_section(VR.choose(d, "yes", windows=False, mac=True), {"mmproj": "m.gguf", "model": "t.gguf", "max_tokens": 1024})
+        self.assertTrue(sec["gpu"])
+        self.assertEqual(sec["exe"], sec["cpu_exe"])
+        fallback = VR.cpu_fallback(sec)
+        self.assertFalse(fallback["gpu"])
+        self.assertEqual(fallback["exe"], sec["exe"])
+
+    def test_cpu_asked_is_kept_with_the_time_it_takes(self):
+        r = VR.choose(folder("strata-vision"), "cpu", windows=False, mac=True)
+        self.assertEqual((r.mode, r.exe.name, r.cpu_exe), ("cpu", "strata-vision", None))
+        self.assertIn("50 seconds", r.note)
+        self.assertFalse(VR.vision_section(r, {})["gpu"])
+
+    def test_an_engine_without_the_reader_gets_pictures_off(self):
+        for ask in ("yes", "gpu", "cpu"):
+            r = VR.choose(folder("strata"), ask, windows=False, mac=True)
+            self.assertEqual(r.mode, "none", ask)
+            self.assertIn("no picture reader", r.note)
+        self.assertEqual(VR.choose(folder("strata-vision"), "off", windows=False, mac=True).mode, "none")
+
+    def test_a_hip_program_is_not_a_mac_reader(self):
+        r = VR.choose(folder("strata-vision-hip"), "yes", windows=False, mac=True)
+        self.assertEqual(r.mode, "none")
 
 
 class FakeProc:

@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 import time
+from strata_control import atomic as _atomic_mod
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,7 @@ def _private_write(path: Path, payload: bytes) -> None:
             os.chmod(tmp, 0o600)
         except OSError:
             pass
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -62,6 +63,13 @@ def _private_write(path: Path, payload: bytes) -> None:
 def now_text() -> str:
     now = time.time()
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)) + f".{int((now % 1) * 1000000):06d}"
+
+
+def check_name(name: str) -> None:
+    """The error `save` would raise for this name, without writing anything."""
+    if not (name or "").strip():
+        raise PresetError("A preset needs a name.")
+    _path(name.strip())
 
 
 def save(settings: LaunchSettings, name: str | None = None) -> LaunchSettings:
@@ -138,5 +146,5 @@ def touch_used(name: str) -> None:
 def summary(s: LaunchSettings) -> dict[str, Any]:
     """The columns of the start screen."""
     return {"name": s.name, "model": s.model or ("own files" if s.model_path else "-"),
-            "context": s.context, "parallel": s.parallel, "tuned": bool(s.tuned_preset), "tuned_at": s.tuned_at,
+            "context": s.context, "parallel": s.parallel, "tuned": s.is_tuned, "tuned_at": s.tuned_at,
             "last_used": s.last_used, "access": s.access}

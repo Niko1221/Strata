@@ -340,3 +340,51 @@ edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
 edit("include/strata/core/mtp.hpp", lambda s: s.replace(
     "    dpct::queue_ptr cs_ = &dpct::get_in_order_queue();\n",
     "    dpct::queue_ptr cs_ = nullptr;   // load() creates it; not the device's queue, which ~MtpDrafter would destroy\n"))
+
+# `strata --version` must print before any GPU is touched (the engine smoke test of `strata update` runs it, and a user outside the
+# `render` group has no usable device). Two things in dpct's helper headers looked up the SYCL devices before main:
+# 1. blas::descriptor's `static inline queue_ptr _saved_queue_ptr = &get_default_queue();` (an inline variable): the default is
+#    looked up in get_saved_queue() instead.
+def lazy_saved_queue(s):
+    s = s.replace("  static inline ::dpct::cs::queue_ptr _saved_queue_ptr =\n      &::dpct::cs::get_default_queue();",
+                  "  static inline ::dpct::cs::queue_ptr _saved_queue_ptr = nullptr;")
+    return s.replace("  static inline sycl::queue &get_saved_queue() noexcept {\n    return *_saved_queue_ptr;",
+                     "  static inline sycl::queue &get_saved_queue() noexcept {\n"
+                     "    if (!_saved_queue_ptr) _saved_queue_ptr = &::dpct::cs::get_default_queue();\n"
+                     "    return *_saved_queue_ptr;")
+edit("include/dpct/blas_utils.hpp", lazy_saved_queue)
+
+# 2. dpct::device_memory (global_memory / constant_memory) sized its per-device pointer table, and so built mem_mgr and dev_mgr, in its
+#    constructor. The engine's namespace-scope tables (iq4nl_values, c_codes) are heap objects built before main. Both now happen at the
+#    first get_ptr_impl(); the destruction order the original comment protected does not arise for objects that are never freed.
+def lazy_device_memory(s):
+    s = s.replace("        _host_ptr(nullptr), _device_ptrs(get_ptrs_size(), nullptr) {\n", "        _host_ptr(nullptr) {\n")
+    s = s.replace("    // Make sure that singleton class mem_mgr and dev_mgr will destruct later\n    // than this.\n"
+                  "    detail::mem_mgr::instance();\n    dev_mgr::instance();\n  }\n",
+                  "    // Strata: the pointer table, mem_mgr and dev_mgr are made at the first get_ptr_impl() (sycl/tools/fixups.py)\n  }\n")
+    s = s.replace("  std::vector<value_t *> _device_ptrs;\n  sycl::queue _q;\n};",      # a default-built sycl::queue picks a device
+                  "  std::vector<value_t *> _device_ptrs;\n  std::optional<sycl::queue> _q;   // Strata: a default-built sycl::queue picks a device (sycl/tools/fixups.py)\n};")
+    return s.replace("  value_t *get_ptr_impl(sycl::queue &q) {\n#ifdef DPCT_USM_LEVEL_NONE\n",
+                     "  value_t *get_ptr_impl(sycl::queue &q) {\n"
+                     "    if (_device_ptrs.empty()) {\n      detail::mem_mgr::instance();\n      dev_mgr::instance();\n"
+                     "      _device_ptrs.assign(get_ptrs_size(), nullptr);\n    }\n#ifdef DPCT_USM_LEVEL_NONE\n")
+edit("include/dpct/detail/memory_detail.hpp", lazy_device_memory)
+
+# 3. the migrated generate.cpp has no `--version` (src/program/generate.cpp answers it before any GPU is touched): the engine printed its
+#    usage and exited 2. Same lines as the CUDA tree, at the top of main().
+def version_flag(s):
+    if '"--version"' in s:
+        return s
+    return s.replace("    std::setvbuf(stdout, nullptr, _IONBF, 0);\n#if (defined(STRATA_USE_HIP)",
+                     "    std::setvbuf(stdout, nullptr, _IONBF, 0);\n"
+                     "    // `strata --version` / `-V` (also `strata generate --version`): the version and nothing else, before any GPU is touched, as the CUDA\n"
+                     "    // and HIP engines have answered it. `strata update` runs it as the engine's smoke test, and the Intel package build runs it with\n"
+                     "    // an empty environment.\n"
+                     "    for (int i = 1; i < argc && i < 3; ++i) {\n"
+                     "        if (std::strcmp(argv[i], \"--version\") == 0 || std::strcmp(argv[i], \"-V\") == 0) {\n"
+                     "            std::printf(\"strata %s\\n\", STRATA_VERSION);\n"
+                     "            return 0;\n"
+                     "        }\n"
+                     "    }\n"
+                     "#if (defined(STRATA_USE_HIP)", 1)
+edit("src/program/generate.cpp", version_flag)

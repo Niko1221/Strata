@@ -17,7 +17,7 @@ test('new native downloads use the selected model root without adding a legacy s
 
 test('work profile reserves GPU memory and CPU workers while preserving model arguments',()=>{
  const hardware={cpu:{cores:10},gpus:[{index:0,vram_gb:24}]};
- const original={gpu:0,args:['--max-context','32768','--pool-workers','10','--vram-reserve-mib','700'],vision:{gpu:0}};
+ const original={gpu:0,args:['--max-context','32768','--pool-workers','10','--vram-reserve-mib','700'],vision:{gpu:true}};
  const work=resourceSettings(original,hardware,'work');
  assert.deepEqual(work.args.slice(0,2),['--max-context','32768']);
  assert.equal(work.args[work.args.indexOf('--pool-workers')+1],'8');
@@ -100,7 +100,7 @@ test('the consumer can change resource preference later and restore full perform
   const performance=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',resourceProfile:'performance'}).id);
   assert.equal(performance.state,'done',performance.error);assert.equal(f.control.state().instances.length,1);
   const config=JSON.parse(readFileSync(join(f.repo,'strata-iq2_xs.json')));
-  assert.equal(config.ui_resource_profile,'performance');assert.equal(config.vram_reserve_mib,2048);
+  assert.equal(config.ui_resource_profile,'performance');assert.equal(config.vram_reserve_mib,1024); // the fixture's picture reader is the CPU one (gpu:0): no VRAM, so the 24 GB card's 1024 floor
   assert.equal(config.args.includes('--pool-workers'),false);
  }finally{await f.cleanup();}
 });
@@ -163,4 +163,13 @@ test('download-and-load prepares vision automatically while loading text only wh
   assert.equal(f.control.state().instances[0].vision,false);
   assert.deepEqual(JSON.parse(readFileSync(join(f.repo,'strata-iq2_xs.json'))).vision,{gpu:0});
  }finally{await f.cleanup();}
+});
+
+test('a card that shares the PC memory does not hold back a fifth of the shared pool as graphics memory (#3510)',()=>{
+ const original={gpu:0,args:['--max-context','131072','--pool-workers','10'],vision:{gpu:true}};
+ const shared={cpu:{cores:16},ram_gb:128,gpus:[{index:0,vram_gb:82,uma:true,name:'AMD Radeon 8060S'}]};
+ const apu=resourceSettings(original,shared,'work');
+ assert.equal(apu.vram_reserve_mib,2048,'the display floor with pictures, not 20% of 82 GB (16 GB)');
+ const discrete=resourceSettings(original,{cpu:{cores:16},ram_gb:128,gpus:[{index:0,vram_gb:82,name:'a card'}]},'work');
+ assert.equal(discrete.vram_reserve_mib,Math.floor(82*1024*.2),'a card with its own memory keeps its fifth');
 });

@@ -52,6 +52,7 @@ from typing import Any, Iterable, Sequence
 SCHEMA_VERSION = 1
 
 from strata_control.targets import BACKEND_MATRIX, ComponentError, backend_supported, host_platform  # noqa: E402,F401
+from strata_control import atomic as _atomic_mod
 #: Component kinds, so a manifest cannot claim a role the architecture does not have.
 KINDS = ("application", "runtime", "agent-runtime", "tuning", "engine", "prepared-data")
 
@@ -426,7 +427,7 @@ class ComponentStore:
     def _save_state(self, data: dict[str, Any]) -> None:
         temp = self.state_path.parent / (self.state_path.name + ".tmp")
         temp.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(temp, self.state_path)
+        _atomic_mod.replace(temp, self.state_path)
 
     # ------------------------------------------------------------------ cache and installation
 
@@ -487,7 +488,7 @@ class ComponentStore:
                            indent=1) + "\n", encoding="utf-8")
             if destination.exists():
                 shutil.rmtree(destination, ignore_errors=True)
-            os.replace(staging, destination)
+            _atomic_mod.replace(staging, destination)
         except BaseException:
             # Leave nothing that looks complete.
             shutil.rmtree(staging, ignore_errors=True)
@@ -531,6 +532,8 @@ class ComponentStore:
         acquisition.require(f"the download of {artifact.name}", "strata install")
         import urllib.error
         import urllib.request
+        from strata_control import tls
+        tls.install()
         partial = self.root / "partial" / artifact.name
         have = partial.stat().st_size if partial.exists() else 0
         if have > artifact.bytes:
@@ -552,6 +555,8 @@ class ComponentStore:
                             break
                         out.write(block)
         except (urllib.error.URLError, OSError) as e:
+            if tls.is_certificate_error(e):
+                raise ComponentError(f"the download of {artifact.name} stopped. " + tls.explain(tls.host_of(artifact.url))) from e
             raise ComponentError(
                 f"the download of {artifact.name} was interrupted after "
                 f"{partial.stat().st_size if partial.exists() else 0} of {artifact.bytes} bytes; "
@@ -590,7 +595,7 @@ class ComponentStore:
         if active.exists():
             if previous.exists():
                 shutil.rmtree(previous, ignore_errors=True)
-            os.replace(active, previous)
+            _atomic_mod.replace(active, previous)
             moved_aside = str(previous)
 
         # Record what is being displaced BEFORE the activation, so a crash between the two leaves a
@@ -611,7 +616,7 @@ class ComponentStore:
         if incoming.exists():
             shutil.rmtree(incoming, ignore_errors=True)
         shutil.copytree(source, incoming, symlinks=False)
-        os.replace(incoming, active)
+        _atomic_mod.replace(incoming, active)
 
         state = self.state()
         entry = state["components"].setdefault(component.id, {})
@@ -636,8 +641,8 @@ class ComponentStore:
             abandoned = self.root / "previous" / f"{component_id}.replaced"
             if abandoned.exists():
                 shutil.rmtree(abandoned, ignore_errors=True)
-            os.replace(active, abandoned)
-        os.replace(previous, active)
+            _atomic_mod.replace(active, abandoned)
+        _atomic_mod.replace(previous, active)
         state = self.state()
         entry = state["components"].get(component_id, {})
         restored = entry.get("rollback", {})

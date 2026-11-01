@@ -58,6 +58,7 @@ bool Window::pc_setup(int C) {
         b.k4 = coop_k4();
     }
     b = PromptBufs{b.lib, b.lgdn, b.lqsa, b.k4};   // (re)allocated below for the larger chunk
+    b.v3e = b.k4 && T("blk.0.ffn_gate_exps.weight").type < 144;   // the trellis experts have the v2 kernels only
     b.C = C;
     const size_t MT = (size_t) C;
     const int MB = (int) max_cells_ / 4 + 2;
@@ -67,7 +68,14 @@ bool Window::pc_setup(int C) {
     auto F16 = [&](size_t n) { return cx_->alloc(2 * n); };
     b.R = F32(MT * HC * N); b.bo = F32(MT * N); b.inj[0] = F32(MT * HC); b.inj[1] = F32(MT * HC); b.xn = F32(MT * HC * N);
     b.xnh = F16(MT * HC * N); b.V = F32(MT * (LR + HC)); b.loh = F16(MT * LR); b.mixed = F32(MT * N); b.mixh = F16(MT * N);
-    b.qkv = F32(MT * 10240); b.z = F32(MT * 6144); b.al = F32(MT * 48); b.be = F32(MT * 48); b.yg = F32(MT * 6144);
+    b.fused = gdn_fused_inputs(cx_->device_name());
+    if (b.fused) {   // the four GDN input projections as one GEMM: [qkv | z | alpha | beta] rows of 16480 floats
+        b.yf = F32(MT * 16480);
+        b.qkv = F32(1); b.z = F32(1); b.al = F32(1); b.be = F32(1);
+    } else {
+        b.qkv = F32(MT * 10240); b.z = F32(MT * 6144); b.al = F32(MT * 48); b.be = F32(MT * 48);
+    }
+    b.yg = F32(MT * 6144);
     b.ygh = F16(MT * 6144); b.gqn = F32(MT * 16 * 128); b.gkn = F32(MT * 16 * 128); b.gvc = F32(MT * 6144);
     b.ggb = F32(MT * 48 * 2); b.gkq = F32(MT * 16); b.go = F32(MT * 6144);
     b.qfull = F32(MT * 12288); b.kcur = F32(MT * 512); b.vcur = F32(MT * 512); b.iqr = F32(MT * 512); b.ikr = F32(MT * 128);
@@ -80,21 +88,28 @@ bool Window::pc_setup(int C) {
     b.stok = cx_->alloc(4 * (size_t) b.maxrows); b.sw = F32(b.maxrows); b.pos = cx_->alloc(4 * MT * TOPK);
     b.XS = F16((size_t) b.maxrows * N); b.HS = F16((size_t) b.maxrows * NFF); b.YE = F32((size_t) b.maxrows * N);
     b.yr = F32(MT * N); b.gsh = F32(MT * NFF); b.ush = F32(MT * NFF); b.hh = F16(MT * NFF); b.ys = F32(MT * N); b.sgv = F32(MT);
-    b.WD = F16((size_t) (LR + HC) * HC * N); b.WU = F16((size_t) HC * N * LR); b.Wqkv = F16((size_t) 10240 * N);
-    b.Wz = F16((size_t) 6144 * N); b.Wal = F16((size_t) 48 * N); b.Wbe = F16((size_t) 48 * N); b.Wout = F16((size_t) N * 6144);
+    b.WD = F16((size_t) (LR + HC) * HC * N); b.WU = F16((size_t) HC * N * LR);
+    if (b.fused) {
+        b.Wcat = F16((size_t) 16480 * N);
+        b.Wqkv = F16(1); b.Wz = F16(1); b.Wal = F16(1); b.Wbe = F16(1);
+    } else {
+        b.Wqkv = F16((size_t) 10240 * N); b.Wz = F16((size_t) 6144 * N); b.Wal = F16((size_t) 48 * N); b.Wbe = F16((size_t) 48 * N);
+    }
+    b.Wout = F16((size_t) N * 6144);
     b.Wq = F16((size_t) 12288 * N); b.Wk = F16((size_t) 512 * N); b.Wv = F16((size_t) 512 * N); b.Wiq = F16((size_t) 512 * N);
     b.Wik = F16((size_t) 128 * N); b.Wr = F16((size_t) NEXP * N); b.Wsg = F16((size_t) N); b.Wshg = F16((size_t) NFF * N);
     b.Wshu = F16((size_t) NFF * N); b.Wshd = F16((size_t) N * NFF);
     // the PLE block's rows and projections
     b.pemb = F32(MT * N); b.pembh = F16(MT * N); b.pkey = F32(MT * 10240); b.pval = F32(MT * N); b.keyn = F32(MT * 10240);
     b.qn = F32(MT * 10240); b.gated = F32(MT * 10240); b.normW = F32(MT * 10240);
+    if (had_on_) b.mixr = F32(MT * N);
     b.Wpk = F16((size_t) 10240 * N); b.Wpv = F16((size_t) N * N);
     // the expert GEMM tiles (prompt_chain's defaults): v3 gate/up 16,32,32,4 and down 16,64,32,2 with the M5 layout,
     // else v2
     b.gu3[0] = 16; b.gu3[1] = 32; b.gu3[2] = 32; b.gu3[3] = 4;
     b.dn3[0] = 16; b.dn3[1] = 64; b.dn3[2] = 32; b.dn3[3] = 2;
-    b.meta.as<uint32_t>()[2] = b.k4 ? NFF / (b.gu3[1] * b.gu3[3]) : NFF / 64;
-    b.meta.as<uint32_t>()[5] = b.k4 ? N / (b.dn3[1] * b.dn3[3]) : N / 64;
+    b.meta.as<uint32_t>()[2] = b.v3e ? NFF / (b.gu3[1] * b.gu3[3]) : NFF / 64;
+    b.meta.as<uint32_t>()[5] = b.v3e ? N / (b.dn3[1] * b.dn3[3]) : N / 64;
     std::fprintf(stderr, "strata metal: prompt kernels (mac-kern's prompt chain) for chunks of %d rows, %s, ready in %.0f ms\n",
                  C, b.k4 ? "matrix-unit register operands (COOP_K4)" : "the older expert / attention kernels (no M5 layout)",
                  now_ms() - t0);
@@ -148,7 +163,8 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         ds.push_back(std::move(d));
     };
     auto gemm = [&](const mtl::Buffer& A, const mtl::Buffer& B, const mtl::Buffer& Y, int M, int Nn, int K) {
-        const int tm = 64, tn = Nn <= 64 ? 32 : 64;
+        int tm = 64, tn = Nn <= 64 ? 32 : 64;
+        gemm_tile(cx_->device_name(), Nn, K, tm, tn);
         const std::string fn = "gemm_f16_" + std::to_string(tm) + "_" + std::to_string(tn) + "_4";
         PcGemmArgs g{M, Nn, K, 0};
         D(P_(b.lib, fn), {mtl::Arg::B(A), mtl::Arg::B(B), mtl::Arg::B(Y), mtl::Arg::V(g)}, (Nn + tn - 1) / tn, (M + tm - 1) / tm, 128);
@@ -189,29 +205,50 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         const std::string bl = "blk." + std::to_string(l) + ".";
         hc_read(bl + "hc_attn", l > 0 && !(l == 1 && ple_on_));
         if (l % 4 != 3) {
-            dq(T(bl + "attn_qkv.weight"), b.Wqkv);
-            dq(T(bl + "attn_gate.weight"), b.Wz);
-            dq(T(bl + "ssm_alpha.weight"), b.Wal);
-            dq(T(bl + "ssm_beta.weight"), b.Wbe);
             dq(T(bl + "ssm_out.weight"), b.Wout);
-            gemm(b.mixh, b.Wqkv, b.qkv, nT, 10240, N);
-            gemm(b.mixh, b.Wz, b.z, nT, 6144, N);
-            gemm(b.mixh, b.Wal, b.al, nT, 48, N);
-            gemm(b.mixh, b.Wbe, b.be, nT, 48, N);
             PcGdnPArgs ga{(uint32_t) nT, 16, 48, 10240, eps_, 0};
-            D(P_(b.lgdn, "gdn_pre"),
-              {mtl::Arg::B(b.qkv), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(W_, T(bl + "ssm_conv1d.weight").offset),
-               mtl::Arg::B(b.al), mtl::Arg::B(b.be), mtl::Arg::B(W_, T(bl + "ssm_dt.bias").offset),
-               mtl::Arg::B(W_, T(bl + "ssm_a").offset), mtl::Arg::B(b.gqn), mtl::Arg::B(b.gkn), mtl::Arg::B(b.gvc),
-               mtl::Arg::B(b.ggb), mtl::Arg::B(b.gkq), mtl::Arg::B(ghist_[1 - hp][(size_t) gi]), mtl::Arg::V(ga)},
-              16 + 24, nT, 256);
-            D(P_(b.lgdn, "gdn_scanr_4", mtl::Constants().i(6, 0)),
+            if (b.fused) {
+                dq(T(bl + "attn_qkv.weight"), b.Wcat, 0);
+                dq(T(bl + "attn_gate.weight"), b.Wcat, (size_t) 2 * 10240 * N);
+                dq(T(bl + "ssm_alpha.weight"), b.Wcat, (size_t) 2 * (10240 + 6144) * N);
+                dq(T(bl + "ssm_beta.weight"), b.Wcat, (size_t) 2 * (10240 + 6144 + 48) * N);
+                gemm(b.mixh, b.Wcat, b.yf, nT, 16480, N);
+                D(P_(b.lgdn, "gdn_pre", mtl::Constants().i(7, 16480), "gdn_pre_f"),
+                  {mtl::Arg::B(b.yf), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(W_, T(bl + "ssm_conv1d.weight").offset),
+                   mtl::Arg::B(b.yf, (size_t) 4 * (10240 + 6144)), mtl::Arg::B(b.yf, (size_t) 4 * (10240 + 6144 + 48)),
+                   mtl::Arg::B(W_, T(bl + "ssm_dt.bias").offset), mtl::Arg::B(W_, T(bl + "ssm_a").offset), mtl::Arg::B(b.gqn),
+                   mtl::Arg::B(b.gkn), mtl::Arg::B(b.gvc), mtl::Arg::B(b.ggb), mtl::Arg::B(b.gkq),
+                   mtl::Arg::B(ghist_[1 - hp][(size_t) gi]), mtl::Arg::V(ga)},
+                  16 + 24, nT, 256);
+            } else {
+                dq(T(bl + "attn_qkv.weight"), b.Wqkv);
+                dq(T(bl + "attn_gate.weight"), b.Wz);
+                dq(T(bl + "ssm_alpha.weight"), b.Wal);
+                dq(T(bl + "ssm_beta.weight"), b.Wbe);
+                gemm(b.mixh, b.Wqkv, b.qkv, nT, 10240, N);
+                gemm(b.mixh, b.Wz, b.z, nT, 6144, N);
+                gemm(b.mixh, b.Wal, b.al, nT, 48, N);
+                gemm(b.mixh, b.Wbe, b.be, nT, 48, N);
+                D(P_(b.lgdn, "gdn_pre"),
+                  {mtl::Arg::B(b.qkv), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(W_, T(bl + "ssm_conv1d.weight").offset),
+                   mtl::Arg::B(b.al), mtl::Arg::B(b.be), mtl::Arg::B(W_, T(bl + "ssm_dt.bias").offset),
+                   mtl::Arg::B(W_, T(bl + "ssm_a").offset), mtl::Arg::B(b.gqn), mtl::Arg::B(b.gkn), mtl::Arg::B(b.gvc),
+                   mtl::Arg::B(b.ggb), mtl::Arg::B(b.gkq), mtl::Arg::B(ghist_[1 - hp][(size_t) gi]), mtl::Arg::V(ga)},
+                  16 + 24, nT, 256);
+            }
+            D(P_(b.lgdn, gdn_scan_name(cx_->device_name(), nT), mtl::Constants().i(6, 0)),
               {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(b.gqn), mtl::Arg::B(b.gkn), mtl::Arg::B(b.gvc), mtl::Arg::B(b.ggb),
                mtl::Arg::B(b.gkq), mtl::Arg::B(b.go), mtl::Arg::V(ga)},
               48 * 4, 1, 32 * 4);
-            D(P_(b.lgdn, "gdn_post"), {mtl::Arg::B(b.go), mtl::Arg::B(b.z), mtl::Arg::B(W_, T(bl + "ssm_norm.weight").offset),
-                                      mtl::Arg::B(b.ygh), mtl::Arg::B(b.yg), mtl::Arg::V(ga)},
-              48, nT, 128);
+            if (b.fused)
+                D(P_(b.lgdn, "gdn_post", mtl::Constants().i(7, 16480), "gdn_post_f"),
+                  {mtl::Arg::B(b.go), mtl::Arg::B(b.yf, (size_t) 4 * 10240), mtl::Arg::B(W_, T(bl + "ssm_norm.weight").offset),
+                   mtl::Arg::B(b.ygh), mtl::Arg::B(b.yg), mtl::Arg::V(ga)},
+                  48, nT, 128);
+            else
+                D(P_(b.lgdn, "gdn_post"), {mtl::Arg::B(b.go), mtl::Arg::B(b.z), mtl::Arg::B(W_, T(bl + "ssm_norm.weight").offset),
+                                          mtl::Arg::B(b.ygh), mtl::Arg::B(b.yg), mtl::Arg::V(ga)},
+                  48, nT, 128);
             gemm(b.ygh, b.Wout, b.bo, nT, N, 6144);
             ++gi;
         } else {
@@ -290,16 +327,18 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         ma.d_stride = (uint64_t) ma.d_row * N;
         const size_t ebase = moe_rebase(ma.gate_off, ma.up_off, ma.down_off);
         const uint32_t ne = N;
+        const bool hg = had_gu(l), hd = had_dn(l);
+        if (hg) had_rows(ds, b.lib, "pc:", b.mixed, 0, b.mixr, 0, nT, N, hsx_.handle ? &hsx_ : nullptr, false);
         mtl::Dispatch g;
         g.p = P_(b.lib, "mm_gather");
-        g.args = {mtl::Arg::B(b.mixed), mtl::Arg::B(b.stok), mtl::Arg::B(b.XS), mtl::Arg::V(ne)};
+        g.args = {mtl::Arg::B(hg ? b.mixr : b.mixed), mtl::Arg::B(b.stok), mtl::Arg::B(b.XS), mtl::Arg::V(ne)};
         g.tg[0] = 256;
         g.indirect = &b.meta;
         g.ind_off = 8 * 4;
         ds.push_back(g);
         auto tl3 = [](const int* t) { return std::to_string(t[0]) + "_" + std::to_string(t[1]) + "_" + std::to_string(t[2]) + "_" + std::to_string(t[3]); };
         mtl::Dispatch gu;
-        if (b.k4) {
+        if (b.v3e) {
             const std::string fn = "mm_gu3_" + std::to_string(eg.type) + "_" + tl3(b.gu3);
             gu.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
@@ -307,19 +346,20 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             gu.p = P_(b.lib, fn, mtl::Constants().i(5, 0), fn + "#p0");
         }
         gu.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
-        gu.tg[0] = b.k4 ? 32 * b.gu3[3] : 64;
+        gu.tg[0] = b.v3e ? 32 * b.gu3[3] : 64;
         gu.indirect = &b.meta;
         gu.ind_off = 2 * 4;
         ds.push_back(gu);
+        if (hd) had_rows_ind(ds, b.lib, "pc:", b.HS, b.meta);
         mtl::Dispatch dn;
-        if (b.k4) {
+        if (b.v3e) {
             const std::string fn = "mm_down3_" + std::to_string(ed.type) + "_" + tl3(b.dn3);
             dn.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
             dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2_tile(ed.type));
         }
         dn.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.HS), mtl::Arg::B(b.YE), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
-        dn.tg[0] = b.k4 ? 32 * b.dn3[3] : 64;
+        dn.tg[0] = b.v3e ? 32 * b.dn3[3] : 64;
         dn.indirect = &b.meta;
         dn.ind_off = 5 * 4;
         ds.push_back(dn);

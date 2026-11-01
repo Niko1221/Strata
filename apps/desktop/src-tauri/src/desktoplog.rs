@@ -8,11 +8,21 @@
 //!
 //! `strata-desktop --save-logs` puts the newest crash log, the tails of the newest shell logs and the engine server logs into one text file
 //! in the Downloads folder. The same pieces go into Settings > Engine > Diagnostics > Save logs (the host reads this folder).
+//!
+//! Windows and macOS (one process owns the host and the window) use the same folder and file names for what happens while the app starts:
+//! `init_startup` opens the run log first thing in `main`, before anything that can fail, and installs a panic hook; a start that fails
+//! (the host does not come up, the window cannot be made, any panic) ends in `startup_failed`: the reason goes into the run log and a
+//! `desktop-crash-` file, and the person sees a plain message box instead of a process that vanished with no trace. On Windows the folder
+//! is `%LOCALAPPDATA%\Strata\logs`, next to the components folder.
+
+// Linux uses the shell log, the crash log and --save-logs; Windows and macOS use the start-up half. Each side leaves the other unused.
+#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const KEEP: usize = 10;
@@ -23,6 +33,23 @@ pub fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("STRATA_DESKTOP_DATA_DIR") {
         return PathBuf::from(dir);
     }
+    platform_data_dir()
+}
+
+/// Windows: `%LOCALAPPDATA%\Strata`, the folder the host and Control already use for the components and the install.
+#[cfg(windows)]
+fn platform_data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("AppData").join("Local")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Strata")
+}
+
+/// Linux and macOS: `$XDG_DATA_HOME/strata`, usually `~/.local/share/strata`.
+#[cfg(not(windows))]
+fn platform_data_dir() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -105,8 +132,11 @@ impl Log {
         log
     }
     pub fn line(&self, who: &str, text: &str) {
-        if let Some(f) = self.file.lock().unwrap().as_mut() {
-            let _ = writeln!(f, "[{who}] {text}");
+        // never panics: this runs inside the panic hook too
+        if let Ok(mut guard) = self.file.lock() {
+            if let Some(f) = guard.as_mut() {
+                let _ = writeln!(f, "[{who}] {text}");
+            }
         }
     }
 }
@@ -311,8 +341,180 @@ pub fn save_logs(out_dir: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Start-up failures (Windows and macOS)
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+/// The run log and whether a failure may show a message box. Set once, first thing in `main`.
+struct Run {
+    log: Log,
+    dialog: bool,
+}
+
+static RUN: OnceLock<Run> = OnceLock::new();
+/// One message box per run: a failure inside the panic hook and the abort that follows must not show two.
+static REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// This run's log, once `init_startup` has opened it.
+pub fn run_log() -> Option<Log> {
+    RUN.get().map(|r| r.log.clone())
+}
+
+/// Open the run log and install the panic hook. Call it first in `main`: nothing that can fail runs before it. `dialog` is false for
+/// the self-test (no person to read a message box); `STRATA_NO_DIALOG` does the same for scripted runs.
+pub fn init_startup(dialog: bool) {
+    let dialog = dialog && std::env::var_os("STRATA_NO_DIALOG").is_none();
+    let log = Log::open();
+    log.line("shell", &system_line());
+    if RUN.set(Run { log, dialog }).is_ok() {
+        install_panic_hook();
+    }
+}
+
+/// "Windows 10.0.26300 (64-bit)" or the name of the system; one line for the log and the crash file.
+pub fn system_line() -> String {
+    format!("System: {} {}", std::env::consts::OS, system_version())
+}
+
+#[cfg(windows)]
+fn system_version() -> String {
+    #[repr(C)]
+    struct OsVersionInfo {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
+    }
+    let mut info = OsVersionInfo { size: std::mem::size_of::<OsVersionInfo>() as u32, major: 0, minor: 0, build: 0, platform: 0, csd: [0; 128] };
+    // RtlGetVersion reports the real version (GetVersionEx lies to apps without a manifest entry)
+    if unsafe { RtlGetVersion(&mut info) } == 0 {
+        format!("{}.{}.{}", info.major, info.minor, info.build)
+    } else {
+        "version unknown".into()
+    }
+}
+
+#[cfg(not(windows))]
+fn system_version() -> String {
+    first_line("/etc/os-release").unwrap_or_default()
+}
+
+/// What to tell a person, in plain words, for a technical reason. Always ends with the one next step.
+pub fn plain_reason(detail: &str) -> String {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("webview2") || lower.contains("webview") {
+        "Strata shows its window with Microsoft's WebView2 component, and it could not be started. \
+         Update or repair \"Microsoft Edge WebView2 Runtime\" (Settings > Apps > Installed apps), or install it from \
+         https://go.microsoft.com/fwlink/p/?LinkId=2124703, then start Strata again."
+            .into()
+    } else if lower.contains("app host") || lower.contains("node runtime") || lower.contains("could not start the app host") {
+        "Strata's background program did not start. Security software may have blocked a file in the Strata folder. \
+         Allow the Strata folder in it (or reinstall Strata) and start Strata again."
+            .into()
+    } else {
+        "Strata stopped while it was starting. Starting it again may work; if it does not, please send us the log file named below.".into()
+    }
+}
+
+/// The text of the crash file for a failed start, as text (so it can be tested without a failure).
+pub fn startup_report(detail: &str, app_version: &str, log_path: Option<&Path>) -> String {
+    let mut t = String::new();
+    t.push_str("Strata app start failure\n========================\n\n");
+    t.push_str(&format!("When:     {} UTC\n", stamp(SystemTime::now())));
+    t.push_str(&format!("App:      Strata desktop {app_version}\n"));
+    t.push_str(&format!("{}\n", system_line()));
+    t.push_str(&format!("What:     {detail}\n"));
+    t.push_str(&format!("Meaning:  {}\n", plain_reason(detail)));
+    if let Some(p) = log_path {
+        t.push_str(&format!("\nFull log of this run: {}\n", p.display()));
+    }
+    t
+}
+
+/// Write the crash file of a failed start into `dir`; returns where it is.
+pub fn write_startup_failure(dir: &Path, detail: &str, log_path: Option<&Path>) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    prune(dir, "desktop-crash-", false);
+    let path = dir.join(format!("desktop-crash-{}.log", stamp(SystemTime::now())));
+    std::fs::write(&path, startup_report(detail, env!("CARGO_PKG_VERSION"), log_path)).ok()?;
+    Some(path)
+}
+
+/// The message box (Windows). Elsewhere the text goes to the terminal only.
+#[cfg(windows)]
+fn show_error(text: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(window: *mut std::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    }
+    const MB_ICONERROR: u32 = 0x10;
+    const MB_SETFOREGROUND: u32 = 0x1_0000;
+    const MB_TOPMOST: u32 = 0x4_0000;
+    let wide = |s: &str| std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (text, caption) = (wide(text), wide("Strata"));
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+    }
+}
+
+#[cfg(not(windows))]
+fn show_error(text: &str) {
+    eprintln!("[strata] {text}");
+}
+
+/// Record a failed start (run log and crash file) and tell the person. Runs inside the panic hook as well, so it cannot panic.
+fn report_failure(detail: &str) {
+    let Some(run) = RUN.get() else {
+        eprintln!("[strata] {detail}");
+        return;
+    };
+    run.log.line("shell", &format!("START FAILED: {detail}"));
+    let dir = logs_dir();
+    let saved = write_startup_failure(&dir, detail, run.log.path.as_deref());
+    if let Some(p) = &saved {
+        run.log.line("shell", &format!("The crash file is {}", p.display()));
+    }
+    if run.dialog && !REPORTED.swap(true, Ordering::SeqCst) {
+        let short: String = detail.chars().take(400).collect();
+        let place = saved.or_else(|| run.log.path.clone()).map(|p| p.display().to_string()).unwrap_or_else(|| dir.display().to_string());
+        show_error(&format!("Strata could not start.\n\n{}\n\nWhat happened: {short}\n\nA log was saved here, please send it to us:\n{place}", plain_reason(detail)));
+    }
+}
+
+/// A start that cannot go on: say why (log, crash file, message box) and end the process with a failure code. Never returns.
+pub fn startup_failed(detail: &str) -> ! {
+    report_failure(detail);
+    std::process::exit(1)
+}
+
+/// Every panic in the app (a Tauri setup error is one) ends in an abort with panic = "abort", which Windows reports as 0xc0000409 with
+/// nothing else. The hook runs before the abort: it writes what the panic said and where, and shows the message box.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "a panic without a message".to_string()
+        };
+        let place = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "an unknown place".into());
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+        report_failure(&format!("the app stopped unexpectedly: {message} (at {place}, thread {thread})"));
+    }));
+}
+
 pub fn downloads_dir() -> PathBuf {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(std::env::temp_dir)
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(std::env::temp_dir)
 }
 
 #[cfg(test)]
@@ -370,5 +572,29 @@ mod tests {
         assert!(text.contains("crash 13") && text.contains("run 13") && text.contains("engine line"));
         std::env::remove_var("STRATA_DESKTOP_DATA_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_failed_start_is_explained_in_plain_words_and_written_to_a_crash_file() {
+        let webview = plain_reason("Failed to setup app: error encountered during setup hook: WebView2 error: 0x8007139F");
+        assert!(webview.contains("WebView2") && webview.contains("go.microsoft.com"));
+        assert!(plain_reason("the Strata App Host did not become healthy at http://127.0.0.1:47831/api/health").contains("background program"));
+        assert!(plain_reason("something else").contains("log file"));
+        let dir = std::env::temp_dir().join(format!("strata-startlog-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = write_startup_failure(&dir, "the app stopped unexpectedly: boom (at main.rs:1, thread main)", Some(Path::new("/x/desktop-1.log"))).unwrap();
+        assert!(path.file_name().unwrap().to_string_lossy().starts_with("desktop-crash-"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        for needle in ["boom", "main.rs:1", "/x/desktop-1.log", "0.2.0", "System:", "Meaning:"] {
+            assert!(text.contains(needle), "{needle}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_the_logs_sit_in_the_local_app_data_strata_folder() {
+        let dir = platform_data_dir();
+        assert!(dir.ends_with("Strata"), "{}", dir.display());
+        assert!(system_version().split('.').count() == 3, "{}", system_version());
     }
 }

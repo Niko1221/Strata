@@ -47,9 +47,10 @@ class BenchTips(unittest.TestCase):
         self.assertEqual([t for t in tips(res, {"STRATA_RESIDENT_HEADROOM_GIB": "8"}, ram=32) if "HEADROOM" in t], [])
         self.assertEqual([t for t in tips(BASE, ram=32) if "HEADROOM" in t], [])   # not a resident config
 
-    def test_conversation_cache_for_agents(self):
-        self.assertTrue(any("--conversation-cache-mib 8192" in t for t in tips(ram=64, model=40)))
-        self.assertEqual([t for t in tips(ram=64, model=41) if "conversation" in t], [])      # < 24 GB left
+    def test_no_conversation_cache_tip_the_engine_sizes_it_itself(self):
+        # 0.2.3 (#3493): the engine sizes the conversation cache from the free RAM when no value is given, so setup no longer tips about it
+        for ram, model in ((64, 40), (64, 41), (128, 40)):
+            self.assertEqual([t for t in tips(ram=ram, model=model) if "conversation" in t], [])
         self.assertEqual([t for t in tips([*BASE, "--conversation-cache-mib", "4096"], ram=128) if "conversation" in t], [])
 
     def test_vision_cpu_on_small_cards(self):

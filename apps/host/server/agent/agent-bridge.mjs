@@ -22,13 +22,15 @@ import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
 import { StatusReporter } from './status.mjs';
-import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf } from './profile.mjs';
+import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf, localOutputBudget, compactionHeadroom } from './profile.mjs';
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
 import { nearestBudget } from './llm-shape.mjs';
 import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
+import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
+import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped } from './context-fit.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
@@ -110,11 +112,12 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string|null} [options.componentsDir]         where installed components live
  * @param {() => Array} options.localInstances          ready local instances (see profile.mjs)
  * @param {() => Array} options.connections             saved API connections WITH their keys (host-internal)
+ * @param {() => (string|null)} [options.defaultLocalId]  the local instance the chat runs on: its tool servers are the agent's (T5)
  * @param {NodeJS.ProcessEnv} [options.env]
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -170,7 +173,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** The agent's profile now, plus where its shaped routes really lead (read by the forwarding endpoint). */
   let shapeTargets = {};
   function buildProfileNow() {
-    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir(), proxyBase, searchMock });
+    const profile = buildProfile({ local: localInstances(), connections: connections(), gate, tools: tools(), skillsDir: skillsDir(), proxyBase, searchMock, defaultLocalId: defaultLocalId() });
     shapeTargets = profile.shapeTargets ?? {};
     return profile;
   }
@@ -192,6 +195,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       harness: { version: h.version },
       runtime: rt?.hp.running ? { pid: rt.hp.pid, generation: rt.generation } : null,
       routes: profile.routes.map(({ route, kind, modelId, name, contextWindow }) => ({ route, kind, modelId, name, contextWindow })),
+      // tool servers that could not be wired (a name the rule does not allow, no program or address): the chat says so
+      skippedServers: profile.mcpSkipped ?? [],
       activeTurns: activeTurns(),
       pendingApprovals: pending.size,
     };
@@ -226,6 +231,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     lastError = null;
     log(`agent · Harness ${h.version ?? ''} ready (pid ${hp.pid}, ${profile.routes.length} route(s))`);
     return next;
+  }
+
+  /** The local engine's own speed for this turn's requests (null when it cannot be read: the stream's estimate stays). */
+  async function engineSpeedOf(route, projector) {
+    const inst = localInstances().find(i => i.id === route.instanceId);
+    if (!inst) return null;
+    return turnEngineSpeed({ baseUrl: inst.baseUrl, key: inst.key, since: projector.startedAt, attempts: projector.streams.size, timeoutMs: 800 });
   }
 
   /** Make sure a runtime exists that knows the route this turn needs. */
@@ -398,7 +410,27 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const appliedMode = planTask ? 'plan' : modeOf(mode);
     await applyMode(runtime, sessionId, appliedMode);
 
-    const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval });
+    // Does the message fit the model's window? Asked before anything is sent, with the model server's own count (context-fit.mjs). A message
+    // that fits once the older messages are a summary is sent after a summary; one that can never fit is not sent, and the person is told
+    // plainly and offered the two ways out. Whatever cannot be counted goes through: the Harness recovers from a refusal by itself.
+    if (!goal && route.kind === 'local') {
+      const fit = await fitCheck({ runtime, route, sessionId, fresh, history, message }).catch(() => null);
+      if (fit?.action === 'too-large') {
+        reporter.clear();
+        const values = [grouped(fit.tokens), grouped(fit.window)];
+        const text = fill(FIT_TEXT.tooLarge, values);
+        emit({ type: 'error', message: text, key: FIT_TEXT.tooLarge, values, code: 'CONTEXT_MESSAGE_TOO_LARGE', tokens: fit.tokens, window: fit.window });
+        return { error: text };
+      }
+      if (fit?.action === 'summarize') {
+        reporter.set({ phase: 'compacting', code: 'compacting', text: FIT_TEXT.summarizing, key: FIT_TEXT.summarizing, values: [] });
+        const done = await compactChat(runtime, sessionId);
+        reporter.clear();
+        if (done.ok) emit(summarizedNote(done.before, done.after, fit.window));
+      }
+    }
+
+    const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval, window: route.contextWindow });
     if (!goal) guard = new TurnGuard({ plan: !!planTask, contextMax: route.kind === 'local' ? route.contextWindow : 0 });   // a saved connection's window is often only assumed: never judged by a guess
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
@@ -407,7 +439,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
       children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
-      plan: null, advancing: false, goalRun: false, lastActivity: Date.now(), watchdog: null,
+      plan: null, advancing: false, goalRun: false, lastActivity: Date.now(), heard: Date.now(), engineMark: null, watchdog: null,
       research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null,
     };
     c.turn = turn;
@@ -420,6 +452,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (turn.finished || turn.stopping) return;
       const toolRunning = [...projector.tools.values()].some(x => x.card?.state === 'running' || x.card?.state === 'proposed') || pending.size > 0 && pendingFor(chatId).length > 0;
       const limit = toolRunning ? stallToolMs : stallMs;
+      // A local engine reading a long prompt sends the Harness nothing for minutes (#3623). Its /metrics progress counts as activity,
+      // for at most engineGraceMs after the Harness last spoke: progress for another chat cannot keep a lost turn alive forever.
+      if (turn.route?.kind === 'local' && Date.now() - turn.heard < engineGraceMs) {
+        let mark = null;
+        try { mark = engineProgress(turn.route.instanceId); } catch { /* no progress known: the Harness alone decides */ }
+        if (mark != null && mark !== turn.engineMark) { turn.engineMark = mark; turn.lastActivity = Date.now(); return; }
+      }
       if (Date.now() - turn.lastActivity < limit) return;
       turn.stalledFor = Math.round((Date.now() - turn.lastActivity) / 1000);
       turn.stopping = true;
@@ -429,7 +468,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       turn.finish(`The assistant stopped answering for ${mins > 1 ? mins + ' minutes' : 'a minute'}, so I ended this turn. Anything it already finished is kept. Send your message again to go on.`);
     }, Math.min(15_000, Math.max(200, Math.floor(stallMs / 4))));
     turn.watchdog.unref?.();
-    function finishTurn(failure) {
+    async function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
       clearTimeout(turn.settleTimer);
@@ -450,7 +489,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       }
       if (noteReason && !extra.some(f => f.type === 'plan' && f.event === 'proposed')) { const note = guardNote(noteReason); if (note) extra.push(note); }
       for (const f of extra) emit(f);
-      const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow });
+      // The answer speed of a turn on this computer is the engine's own (tokens it produced over its decode time, as the Monitor shows it).
+      const engine = !failure && route.kind === 'local' ? await engineSpeedOf(route, projector) : null;
+      const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow, engine });
       for (const f of frames.slice(0, -1)) emit(f);
       // Messages typed while the goal ran and not delivered between steps go back to the page now, to be sent as ordinary messages.
       if (turn.goalRun && attached) {
@@ -491,6 +532,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     function handle(item) {
       if (turn.finished) return;
       turn.lastActivity = Date.now();
+      turn.heard = turn.lastActivity;
       if (item.type === 'event') {
         const e = item.event;
         if (e.seq <= turn.lastSeq) return;
@@ -528,7 +570,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       emitRow(child, true);
       const fold = item => {
         if (turn.finished) return;
-        turn.lastActivity = Date.now();
+        turn.lastActivity = turn.heard = Date.now();
         // A helper that finishes before its throttled "working" row went out would show queued -> completed and never "working": send the held row first.
         if (item.type === 'event' && item.event.type === 'turn/end' && child.rowPending) emitRow(child, true);
         const { frames, row } = cp.consume(item);
@@ -941,6 +983,16 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
   // -- /plan -----------------------------------------------------------------------------------------------
 
+  /** A short answer in the chat that the page translates (the sentence is in the interface catalog, "values" fill its slots). */
+  function sayKey(options, template, values = []) {
+    const { onFrame } = options;
+    onFrame({ type: 'queued', requestId: 'compact-' + randomUUID() });
+    onFrame({ type: 'start', model: '', contextMax: 0, demo: false, remoteModel: false, agent: true, mode: modeOf(options.mode), skills: [] });
+    onFrame({ type: 'delta', text: fill(template, values), key: template, values });
+    onFrame({ type: 'done', finishReason: 'stop', tokensIn: null, tokensOut: null, usageSource: 'unavailable', durationMs: 0 });
+    return { compact: true };
+  }
+
   /** A short answer in the chat (no model): the same frames a turn sends. */
   function sayOnce(options, reply) {
     const { onFrame } = options;
@@ -1140,6 +1192,93 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
    * Stop one chat's turn. Resolves only once the turn has ended (or the wait times out), because the
    * Harness acknowledges a cancel as admitted, not as done.
    */
+  /** What the chat holds now and the model's window, as the context plugin measures them (null when it cannot be read). */
+  async function contextOf(runtime, sessionId) {
+    try {
+      const r = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: '/strata-context', submittedAttachments: [] });
+      if (r?.result?.kind !== 'success') return null;
+      const v = JSON.parse(String(r.result.text));
+      return Number.isFinite(v.tokens) ? { tokens: Math.round(v.tokens), window: Number(v.window) > 0 ? Math.round(v.window) : 0 } : null;
+    } catch { return null; }
+  }
+
+  /** The decision of context-fit.mjs for the message about to be sent, or null when the model server cannot count it. */
+  async function fitCheck({ runtime, route, sessionId, fresh, history, message }) {
+    const inst = localInstances().find(i => i.id === route.instanceId);
+    if (!inst || !(route.contextWindow > 0)) return null;
+    const carried = fresh && history.length ? withEarlierConversation(history, message) : message;
+    if (carried.length < COUNT_ABOVE_CHARS) return null;
+    const count = text => countTokens({ baseUrl: inst.baseUrl, key: inst.key, model: inst.modelId, text });
+    let tokens = await count(carried);
+    if (tokens == null) return null;
+    const now = fresh ? null : await contextOf(runtime, sessionId);
+    const window = now?.window || route.contextWindow;
+    const pressure = now?.tokens ?? 0;
+    // Where the Harness starts summarising by itself on this window (profile.mjs: the reply keeps its room, then the headroom).
+    const reply = localOutputBudget(window);
+    const threshold = Math.floor(Math.min(window * 0.8, window - reply - compactionHeadroom(window, reply)));
+    let verdict = decideFit({ window, pressure, messageTokens: tokens, threshold });
+    // The earlier conversation carried into a fresh session is what pushed it over: send the message alone instead.
+    if (verdict.action === 'too-large' && carried !== message) {
+      const alone = await count(message);
+      if (alone != null) { tokens = alone; verdict = decideFit({ window, pressure, messageTokens: alone, threshold }); }
+    }
+    return { ...verdict, tokens, window, pressure };
+  }
+
+  /**
+   * Summarise the older part of a chat with the Harness's /compact and say what happened. Never throws.
+   * ok:true carries the figures before and after; ok:false says why (nothing to summarise, busy, failed).
+   */
+  async function compactChat(runtime, sessionId) {
+    const before = await contextOf(runtime, sessionId);
+    let result;
+    try { result = (await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: '/compact', submittedAttachments: [] }))?.result; }
+    catch (e) { return { ok: false, reason: /not.found|no such/i.test(String(e.message)) ? 'nothing' : 'failed', before, text: String(e.message ?? e) }; }
+    const text = String(result?.text ?? '');
+    log('agent · compact: ' + (result?.kind ?? 'none') + ' ' + text.slice(0, 140));
+    if (result?.kind === 'success' && /^Compacted/i.test(text)) return { ok: true, before, after: await contextOf(runtime, sessionId) };
+    if (result?.kind === 'success') return { ok: false, reason: 'nothing', before, text };
+    if (/active compaction|not idle/i.test(text)) return { ok: false, reason: 'busy', before, text };
+    // The Harness cannot make a summary smaller than what is left when the chat holds little beyond its first prompt: that is nothing to summarise, not a failure.
+    const little = before && before.window > 0 && before.tokens - BASE_TOKENS < before.window * 0.25;
+    return { ok: false, reason: little && /useful summary|not smaller/i.test(text) ? 'nothing' : 'failed', before, text };
+  }
+
+  /** The line in the chat that explains why the context meter fell: how full it was and how full it is. */
+  function summarizedNote(before, after, window) {
+    const w = after?.window || before?.window || window || 0;
+    const pct = v => Math.max(0, Math.min(100, Math.round(100 * v.tokens / w)));
+    const known = w > 0 && before && after;
+    const template = known ? FIT_TEXT.summarized : FIT_TEXT.summarizedShort;
+    const values = known ? [pct(before), pct(after)] : [];
+    return { type: 'delta', own: true, text: '\n\n' + fill(template, values), key: template, values, noteReason: 'compacted' };
+  }
+
+  /** "/compact": summarise the older messages of this chat now, and say in plain words what happened. */
+  async function compactCommand(options) {
+    const { chatId, choice, signal } = options;
+    const c = chat(chatId);
+    const say = (template, values = []) => sayKey(options, template, values);
+    if (c.turn || c.starting) return say(FIT_TEXT.compactBusy);
+    const known = sessionMap[chatId]?.sessionId;
+    if (!known) return say(FIT_TEXT.noChatYet);
+    let runtime;
+    try { ({ rt: runtime } = await ensureRuntime(choice, signal)); } catch { return say(FIT_TEXT.compactFailed); }
+    const done = await compactChat(runtime, known);
+    if (done.ok) {
+      const note = summarizedNote(done.before, done.after, 0);
+      return say(note.key, note.values);
+    }
+    if (done.reason === 'busy') return say(FIT_TEXT.compactBusy);
+    if (done.reason === 'nothing') {
+      const w = done.before?.window || 0;
+      const pct = w > 0 && done.before ? Math.round(100 * done.before.tokens / w) : 0;
+      return say(pct >= 60 ? FIT_TEXT.nothingFull : FIT_TEXT.nothingToSummarize, pct >= 60 ? [pct] : []);
+    }
+    return say(FIT_TEXT.compactFailed);
+  }
+
   /** Summarise the older part of a session with the Harness's own /compact. Best effort: the next message compacts again by itself when it must. */
   async function compactSession(runtime, sessionId) {
     try {
@@ -1180,6 +1319,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       .map(p => (p.sessionId === sessionId ? p : { ...p, callId: `${p.sessionId}:${p.callId}` })).map(({ callId, tool, reason, at }) => ({ callId, tool, reason, at }));
   }
 
+  /** Every chat that has an approval waiting, for the task board: the chat, its working folder and what is waiting (same items as pendingFor). */
+  function pendingAll() {
+    if (!pending.size) return [];
+    return Object.keys(sessionMap).map(chatId => ({ chatId, folder: sessionMap[chatId]?.cwd ?? null, pending: pendingFor(chatId) })).filter(c => c.pending.length);
+  }
+
   async function close() {
     const r = rt; rt = null;
     if (r) { r.events?.close(); r.gw.close(); await r.hp.stop(); }
@@ -1188,7 +1333,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { compactCommand, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

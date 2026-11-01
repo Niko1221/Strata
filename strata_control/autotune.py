@@ -37,6 +37,10 @@ EARLY_DROP = 0.05                  # a candidate this much slower than its own r
 STAGE_GAP_NOISY = 0.04             # an A/A gap above this: the machine is noisy (6.5)
 
 
+STAGNANT_WAIT_S = 60.0          # free memory that has not grown by STAGNANT_MIB after this long is not going to
+STAGNANT_MIB = 512
+
+
 class Cancelled(Exception):
     """The user stopped the tune; what was measured so far is kept in the result."""
 
@@ -193,6 +197,7 @@ class Tuner:
         self.progress = progress or (lambda p: None)
         self.cancel = cancel or threading.Event()
         self.history_bad = history_bad or set()
+        self._ram_gave_up: tuple[float, float] | None = None
         self.clock = clock
         self.sleep = sleep
         self.system = system or session.system
@@ -261,8 +266,10 @@ class Tuner:
         return None
 
     def _ram_guard(self, delta_mib: int, label: str, wait_s: float | None = None) -> str | None:
-        """None when a start fits; otherwise the plain reason it does not."""
+        """None when a start fits; otherwise the plain reason it does not. Waiting ends early when the free memory does not
+        grow (a loaded model keeps it): ten minutes per candidate made a tuning run last for hours (#3490)."""
         waited = 0.0
+        first_avail: float | None = None
         while True:
             mem = self.system().get("memory", {})
             avail = mem.get("available_mib")
@@ -276,10 +283,19 @@ class Tuner:
                 need = max(need, self.o.min_free_ram_mib)
             if avail >= need:
                 return None
-            if waited >= (self.o.wait_ram_s if wait_s is None else wait_s):
-                return (f"not enough free memory to start it safely ({avail / 1024:.1f} GiB free, "
-                        f"{need / 1024:.1f} GiB needed)")
-            self._say("waiting", f"Waiting for memory to be freed before trying {label}")
+            reason = (f"not enough free memory to start it safely ({avail / 1024:.1f} GiB free, "
+                      f"{need / 1024:.1f} GiB needed)")
+            prior = self._ram_gave_up
+            if prior is not None and need >= prior[0] and avail <= prior[1] + STAGNANT_MIB:
+                return reason                     # an earlier wait found nothing freed and this needs no less
+            if first_avail is None:
+                first_avail = avail
+            stagnant = waited >= STAGNANT_WAIT_S and avail <= first_avail + STAGNANT_MIB
+            if stagnant or waited >= (self.o.wait_ram_s if wait_s is None else wait_s):
+                self._ram_gave_up = (need, avail)
+                return reason
+            self._say("waiting", f"Waiting for memory to be freed before trying {label} "
+                                 f"({avail / 1024:.1f} GiB free, {need / 1024:.1f} GiB needed)")
             self._check_cancel()
             self.sleep(10.0)
             waited += 10.0

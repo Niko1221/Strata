@@ -68,6 +68,19 @@ class GpuFitRule(unittest.TestCase):
         self.assertEqual([c["index"] for c in keep], [0] if keep[0]["name"] == "RTX 3070 Ti" else [])
         self.assertEqual(len(ignored), 1)
 
+    def test_a_strix_halo_counts_its_memory_once(self):
+        """The 'shared' pool of an APU is the RAM: a 70 GB model on a 128 GB Strix Halo with a 2 GB carve-out is RAM-resident, not 'VRAM + RAM'."""
+        igpu = {"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 66.0, "dedicated_gb": 2.0, "uma": True, "usable": True}
+        self.assertEqual(G.own_memory_gb(igpu), 2.0)
+        self.assertEqual(G.own_memory_gb({"index": 1, "vram_gb": 32.0}), 32.0)
+        self.assertEqual(G.own_memory_gb({"index": 0, "vram_gb": 66.0, "uma": True}), 0.0)          # no carve-out figure: none counted
+        # 64 GB PC, a 90 GB model: counted twice (66 GB 'VRAM' + 54 GB RAM) it looked like it fit; once, 36 GB come from the SSD
+        r = G.options(90.0, 64.0, [dict(igpu, vram_gb=34.0)])
+        self.assertEqual(r["options"][0]["verdict"], "spills")
+        self.assertGreater(r["options"][0]["spill_gb"], 30.0)
+        # 128 GB, 90 GB model: fits in RAM
+        self.assertEqual(G.options(90.0, 128.0, [dict(igpu, vram_gb=66.0)])["options"][0]["verdict"], "fits")
+
     def test_an_unusable_card_is_ignored_with_its_own_reason(self):
         r = G.options(44.0, 62.0, [card(0, "RTX 3070 Ti", 8), card(1, "GTX 1060", 6, usable=False, problem="older than the RTX 20 series")])
         self.assertEqual([o["key"] for o in r["options"]], ["single"])

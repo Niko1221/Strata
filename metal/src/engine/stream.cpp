@@ -183,6 +183,9 @@ bool ExpertStream::load_dense(gguf::File& f, mtl::Context& cx, const std::vector
     for (auto& kv : f.tensors) {
         gguf::Tensor& t = kv.second;
         if (t.name.find("_exps") != std::string::npos) continue;
+        // the n-gram table is read by the host from the SSD, a few rows at a time (src/ngram/ple_reader.cpp).  It is its own shard in
+        // the ISTA / Unsloth files; in agentionai's Gyro files it is the first 28.8 GB of the one file, and must not be read in here
+        if (t.name == "per_layer_token_embd.weight") continue;
         if (std::find(skip.begin(), skip.end(), t.name) != skip.end()) { t.offset = 0; continue; }
         ts.push_back(&t);
         tot += (t.bytes + 255) / 256 * 256;

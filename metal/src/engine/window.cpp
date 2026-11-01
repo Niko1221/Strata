@@ -23,6 +23,8 @@
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
+#include "strata/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -48,7 +50,45 @@ namespace strata::gpu { uint64_t purge_device_allocations(size_t min_bytes); }  
 
 namespace strata::metal_engine {
 
+// The prompt GDN scan kernel, chosen by chip and prompt length (gdn_prompt.metal, gdn_scan_r<IB, TB>; every choice is
+// bit-identical to gdn_scanr_4: the token order and the arithmetic are the same, only the staged block size TB changes, which
+// changes the threadgroup memory a core can hold at once).  Measured by metal/tests/gdn_chunk_bench:
+//   Apple M4 (the base chip): gdn_scanr_4_8, 1.16x on the scan, 1.11x on the GDN prompt stage, T 512..32K
+//   Apple M5 Max: gdn_scanr_4_4 from T >= 4096 (1.04x at 4K, 1.10x at 16K); below that the default is as fast
+//   anything else (other chips, unknown names): gdn_scanr_4 as before
+// STRATA_METAL_GDN_SCAN=<gdn_scanr_4 | gdn_scanr_4_8 | gdn_scanr_4_4 | gdn_scanr_4_2> forces a kernel (A/B and diagnosis).
+static const char* gdn_scan_name(const std::string& device, int T) {
+    static const std::string forced = [] {
+        const char* e = std::getenv("STRATA_METAL_GDN_SCAN");
+        const std::string s = e ? e : "";
+        return (s == "gdn_scanr_4" || s == "gdn_scanr_4_8" || s == "gdn_scanr_4_4" || s == "gdn_scanr_4_2") ? s : std::string();
+    }();
+    if (!forced.empty()) return forced.c_str();
+    if (device == "Apple M4") return "gdn_scanr_4_8";
+    if (device == "Apple M5 Max" && T >= 4096) return "gdn_scanr_4_4";
+    return "gdn_scanr_4";
+}
+
+// The M5 family's dense GEMM tiles for the prompt (bit-identical to the 64 x 64 tile: the tile only splits the output; measured on
+// an M5 Max, T = 2048 / 4096): the GDN out projection (N 2560, K 6144) 64 x 128 (1.17 -> 0.99 ms), the wide input projections
+// (N >= 6144) 128 x 64.  Other chips keep 64 x 64 (M4: no gain).  STRATA_METAL_GEMM_TILES=0 keeps the old tiles everywhere.
+static void gemm_tile(const std::string& device, int Nn, int K, int& tm, int& tn) {
+    static const bool off = [] { const char* e = std::getenv("STRATA_METAL_GEMM_TILES"); return e && std::string(e) == "0"; }();
+    if (off || device.rfind("Apple M5", 0) != 0) return;
+    if (Nn == 2560 && K == 6144) { tm = 64; tn = 128; }
+    else if (Nn >= 6144) { tm = 128; tn = 64; }
+}
+// The four GDN input projections (qkv, z, alpha, beta) as ONE GEMM with a 16480 float output row (M5 family: 3.09 -> 2.87 ms a layer at
+// T = 2048; gdn_pre / gdn_post read the pieces at that stride, function constant 7).  Bit-identical to the separate GEMMs.
+// STRATA_METAL_GDN_FUSE=0 keeps the separate ones.
+static bool gdn_fused_inputs(const std::string& device) {
+    static const bool off = [] { const char* e = std::getenv("STRATA_METAL_GDN_FUSE"); return e && std::string(e) == "0"; }();
+    return !off && device.rfind("Apple M5", 0) == 0;
+}
+
 namespace {
+
+int g_slot_cap = 0;   // --batch N: the window keeps N + 1 sequences' running states side by side (set_batch_slots)
 
 constexpr int N = 2560, HC = 4, LR = 320, NFF = 640, TOPK = 10, NEXP = 512, MAXT = 8, NVOCAB_MAX = 248320;
 constexpr int P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE, P_ETOK = P_GSTART + P_MAXE + 4,
@@ -97,13 +137,15 @@ double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::
 struct PromptBufs {
     int lib = -1, lgdn = -1, lqsa = -1;
     bool k4 = false;
+    bool v3e = false;
+    bool fused = false;          // the GDN input projections as one GEMM (gdn_fused_inputs)            // the M5's expert kernels (v3): not for the trellis types, which have only v2
     int C = 0, maxrows = 0;
     double gpu_ms = 0, host_ms = 0, mtp_ms = 0;
     int gu3[4] = {}, dn3[4] = {};
     mtl::Buffer R, bo, inj[2], xn, xnh, V, loh, mixed, mixh, qkv, z, al, be, yg, ygh, gqn, gkn, gvc, ggb, gkq, go, qfull,
         kcur, vcur, iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta,
         stok, sw, pos, XS, HS, YE, yr, gsh, ush, hh, ys, sgv, WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr,
-        Wsg, Wshg, Wshu, Wshd, pemb, pembh, pkey, pval, keyn, qn, gated, normW, Wpk, Wpv;
+        Wsg, Wshg, Wshu, Wshd, yf, Wcat, pemb, pembh, pkey, pval, keyn, qn, gated, normW, Wpk, Wpv, mixr;
 };
 
 // The vision path (--vision, GENI requests), from the shared host code: the image rows of the prompt being read
@@ -129,6 +171,21 @@ public:
     bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
     bool checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err);
     void reset();   // a new sequence (session_zero): the running state zeroed
+    // ---- batch slots (--batch N): each slot is another sequence's running state (GDN recurrence and conv history, the PLE
+    // history, each QSA layer's K/V, indexer tail and pooled keys).  The live members always hold ONE sequence's state (the
+    // main one between calls); a slot's lives in a stash and is swapped in for its window (activate): the buffer objects stay
+    // where they are (the cached dispatches point at them), only their contents are exchanged.
+    bool slots_init(const std::vector<strata::core::SessionState*>& slots, std::string& err);
+    int n_slots() const { return sets_.empty() ? 0 : (int) sets_.size() - 1; }
+    int set_of(const strata::core::SessionState* s) const {
+        auto it = set_of_ss_.find(s);
+        return it == set_of_ss_.end() ? 0 : it->second;
+    }
+    // one window of S one-token rows, row t = slot rows[t] at position pos[t]: each runs and commits in its own state
+    bool run_slots(const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err);
+    // slot b's state <-> the main one (the GPU is idle between windows): the running state and the first `upto` cells of K/V
+    bool slot_copy(bool into_slot, int b, int64_t upto, bool kv_only, std::string& err);
+    void activate(int set);
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
     bool mtp_load(const std::string& gguf, int max_t, std::string& err);
@@ -204,7 +261,8 @@ private:
         return it->second;
     }
 
-    strata::core::SessionState* ss_ = nullptr;
+    strata::core::SessionState* ss_ = nullptr;        // the session whose sequence the live state is (the main one, or a batch slot's)
+    strata::core::SessionState* main_ss_ = nullptr;   // the main session: it owns the PLE table (read by every slot)
     gguf::File f_;
     std::unique_ptr<mtl::Context> cx_;
     mtl::Buffer W_;
@@ -231,6 +289,40 @@ private:
     int cur_inj_ = 0;
     // state
     std::vector<mtl::Buffer> gst_, ghist_[2], kq_, vq_, ksc_, vsc_, tail_, dead_, pooled_;
+    // --batch N: every one of those is a view of set 0 in a bigger buffer holding all N + 1 sets (the slots' running states side
+    // by side), so ONE dispatch can address any slot (rinfo_: the strides and each row's slot / cell / history parity)
+    bool bigs_ok_ = false;
+    std::vector<mtl::Buffer> gstBig_, hbBig_, kqBig_, vqBig_, kscBig_, vscBig_, tailBig_, deadBig_, pooledBig_;
+    mtl::Buffer pleBig_, rinfo_;
+    size_t st_gst_ = 0, st_hist_ = 0, st_kq_ = 0, st_sc_ = 0, st_tail_ = 0, st_dead_ = 0, st_pooled_ = 0, st_ple_ = 0;   // bytes between sets
+    bool rows_ = false;       // the window being built / run holds one token of each of rows_n_ DIFFERENT sequences (batch slots)
+    int rows_n_ = 0;
+    strata::core::SessionState* rows_ss_[MAXT] = {};
+    int rows_set_[MAXT] = {};
+    static mtl::Buffer view_of(const mtl::Buffer& big, size_t off, size_t bytes) {
+        mtl::Buffer v = big;
+        v.ptr = (char*) big.ptr + off;
+        v.bias = big.bias + off;
+        v.bytes = bytes;
+        return v;
+    }
+    bool run_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err);
+    bool finish_rows(int S, const int32_t* tokens, int32_t* out, double t0);
+    struct SeqSet {
+        std::vector<mtl::Buffer> gst, gh0, gh1, kq, vq, ksc, vsc, tail, dead, pooled;
+        mtl::Buffer pleHist;
+        std::vector<float> ple_hist;
+        std::vector<float> last_norm;
+        int hp = 0, pend_fold = 0, last_T = 0;
+        bool last_head = true;
+        int32_t last_tokens[MAXT] = {};
+        strata::core::SessionState* ss = nullptr;
+    };
+    std::vector<std::unique_ptr<SeqSet>> sets_;     // [0] the spare the main state is exchanged with, [b + 1] slot b
+    std::map<const strata::core::SessionState*, int> set_of_ss_;
+    int active_ = 0;
+    void swap_state(SeqSet& o);
+    void alloc_set(SeqSet& o, bool real, int idx = 0);
     int hp_ = 0;                     // which of the two history buffers holds the committed conv history (all layers)
     // commit(n) of a window of several tokens: the GDN fold of the kept prefix waits for the next window and runs at
     // the start of its command buffer (one submit and wait less a round).  Nothing else reads the GDN state between
@@ -331,6 +423,20 @@ public:
     void prof_add(bool draft, double ms) { Prof& x = draft ? dprof_ : cprof_; ++x.n; x.all += ms; }
 private:
     // the Q8_0 copies of the hyper-connection matrices (the default; STRATA_HC_Q8=0: the BF16 originals)
+    // Gyro (agentionai's Hadamard-folded trellis experts, native_experts.txt v5 + hadamard.txt): the gate/up input is
+    // H (s * x) and the down input H h, per block of 128; XR_ holds the rotated rows, hsx_/hsh_ the +/-1 signs
+    bool had_on_ = false;
+    int had_block_ = 128;
+    bool gyro_dense_ = false;   // a trellis-expert file: its dense K-quants get their own GEMV tiles (gemv() below)
+    bool had_gu(int l) const { return had_on_ && strata::kernels::cpu::hadamard_spec().gu(l); }
+    bool had_dn(int l) const { return had_on_ && strata::kernels::cpu::hadamard_spec().down(l); }
+    mtl::Buffer XR_, hsx_, hsh_;
+    // one rotation dispatch: rows of `width` values (a multiple of 128) in place or from x to y; f16 = half rows
+    void had_rows(std::vector<mtl::Dispatch>& ds, int lib, const std::string& pfx, const mtl::Buffer& x, size_t x_off,
+                  const mtl::Buffer& y, size_t y_off, int rows, int width, const mtl::Buffer* signs, bool f16);
+    // the prompt's h rows (half, padded rows of the expert tiles, their count in meta[8]): rotated in place, one
+    // threadgroup a row through the indirect grid
+    void had_rows_ind(std::vector<mtl::Dispatch>& ds, int lib, const std::string& pfx, const mtl::Buffer& h, const mtl::Buffer& meta);
     bool hc_q8_ = false;
     mtl::Buffer Q8_;
     std::map<std::string, size_t> q8off_;
@@ -418,6 +524,7 @@ long repack_pid_running(const std::string& model_file) {
 bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, const std::string& shard1,
                   int max_t, int64_t max_cells, std::string& err) {
     ss_ = &ss;
+    main_ss_ = &ss;
     max_t_ = std::min(max_t, MAXT);
     max_cells_ = max_cells;
     if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_ff != NFF || g.n_expert != NEXP || g.n_layers != 48) {
@@ -439,11 +546,24 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         st_ = std::make_unique<ExpertStream>();
         if (!st_->open(f_, err)) return false;
     } else {
-        madvise(f_.map, f_.map_bytes, MADV_WILLNEED);
+        {   // read ahead the weights, not the n-gram table: in a Gyro file it is 28.8 GB in the middle of the one file, read by the host from
+            // the SSD a few rows at a time (src/ngram/ple_reader.cpp), and must not fill the page cache
+            const gguf::Tensor* ple = f_.find("per_layer_token_embd.weight");
+            if (ple == nullptr) {
+                madvise(f_.map, f_.map_bytes, MADV_WILLNEED);
+            } else {
+                const size_t page = 16384;
+                const size_t lo = (size_t) ple->offset / page * page, hi = ((size_t) (ple->offset + ple->bytes) + page - 1) / page * page;
+                if (lo > 0) madvise(f_.map, lo, MADV_WILLNEED);
+                if (hi < f_.map_bytes) madvise((uint8_t*) f_.map + hi, f_.map_bytes - hi, MADV_WILLNEED);
+            }
+        }
         // the chunks of a model bigger than one Metal buffer overlap by the largest range bound at one offset: a tensor,
         // or a layer's routed experts (gate, up and down, bound together at the first of them: moe_rebase)
         size_t span = 0;
-        for (const auto& kv : f_.tensors) span = std::max<size_t>(span, kv.second.bytes);
+        // (not the n-gram table: the host reads it from the SSD, the GPU never binds it - in a Gyro file it is 28.8 GB of the one file)
+        for (const auto& kv : f_.tensors)
+            if (kv.first != "per_layer_token_embd.weight") span = std::max<size_t>(span, kv.second.bytes);
         for (int l = 0; l < 48; ++l) {
             const std::string b = "blk." + std::to_string(l) + ".";
             const gguf::Tensor *g = f_.find(b + "ffn_gate_exps.weight"), *u = f_.find(b + "ffn_up_exps.weight"),
@@ -457,6 +577,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         if (W_.handle == nullptr) { err = "metal window: cannot wrap " + shard1 + " as a Metal buffer"; return false; }
     }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
+    if (const gguf::Tensor* e0 = f_.find("blk.0.ffn_gate_exps.weight")) gyro_dense_ = e0->type >= 144;
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
                          "glue.metal"});
     rcounter_ = cx_->alloc(16);
@@ -484,9 +605,44 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     zL_ = A(4 * (size_t) 36 * MAXT * 6144); ydump_ = A(4 * MAXT * 6144);
     keyn_ = A(4 * MAXT * 10240); qn_ = A(4 * MAXT * 10240); gated_ = A(4 * MAXT * 10240); normW_ = A(4 * MAXT * 10240);
     mrope_ = A(12 * (size_t) (MAXC + 16));
-    pleHist_ = A(4 * 9 * 10240);
+    bigs_ok_ = g_slot_cap > 0;
+    const size_t NSET = 1 + (size_t) std::max(0, g_slot_cap);
+    auto R256 = [](size_t b) { return (b + 255) / 256 * 256; };
+    st_gst_ = R256(4 * 128 * 48 * 128); st_hist_ = R256(4 * 10240 * 3); st_kq_ = R256((size_t) MAXC * 2 * 256);
+    st_sc_ = R256(2 * (size_t) MAXC * 2 * 4); st_tail_ = R256(4 * 4 * 128); st_dead_ = R256(4 * 128);
+    st_pooled_ = R256(4 * (size_t) MB * 128); st_ple_ = R256(4 * 9 * 10240);
+    // the set-0 view of a new buffer of `bytes` per set (or a plain buffer when there are no batch slots)
+    auto SV = [&](std::vector<mtl::Buffer>& bigs, size_t bytes, size_t stride, size_t per = 1, size_t which = 0) {
+        if (!bigs_ok_) { bigs.push_back(mtl::Buffer()); return A(bytes); }
+        if (which == 0) bigs.push_back(A(stride * per * NSET));
+        return view_of(bigs.back(), which * stride, bytes);
+    };
+    if (bigs_ok_) { pleBig_ = A(st_ple_ * NSET); pleHist_ = view_of(pleBig_, 0, 4 * 9 * 10240); } else pleHist_ = A(4 * 9 * 10240);
+    rinfo_ = A(4 * (8 + 4 * MAXT));
     auto act = [&](int n) { Act a; a.n = n; a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return a; };
     XA_ = act(N); XF_ = act(N); XY_ = act(6144); XQ_ = act(6144); XH_ = act(NFF); XE_ = act(N);
+    {   // Gyro (native_experts.txt v5 + hadamard.txt): the rotation's signs and the rotated gate/up input
+        const auto& hs = strata::kernels::cpu::hadamard_spec();
+        had_on_ = hs.any();
+        if (had_on_) {
+            had_block_ = hs.block;
+            if (had_block_ != 128) {
+                err = "metal window: the pack's Hadamard block is " + std::to_string(had_block_) + "; the Metal rotation takes 128";
+                return false;
+            }
+            XR_ = A(4 * MAXT * N);
+            auto upload = [&](int w, mtl::Buffer& b) {
+                if (const float* sg = strata::kernels::cpu::hadamard_signs(w)) {
+                    b = A(4 * (size_t) w);
+                    std::memcpy(b.ptr, sg, 4 * (size_t) w);
+                }
+            };
+            upload(N, hsx_);
+            upload(NFF, hsh_);
+            std::fprintf(stderr, "strata metal: Hadamard-folded experts (block %d): the gate/up and down inputs are rotated on the GPU\n",
+                         had_block_);
+        }
+    }
     // RoPE: cos/sin [pos][32] for the first 64 dims, NEOX pairs (i, i + 32), in double as build_rope_table
     const double base = f_.meta_num.count("qwen4exp.rope.freq_base") ? f_.meta_num["qwen4exp.rope.freq_base"] : 1e7;
     for (int p = 0; p < MAXC + 16; ++p)
@@ -499,17 +655,17 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
     for (int l = 0; l < 48; ++l) {
         if (l % 4 != 3) {
-            gst_.push_back(A(4 * 128 * 48 * 128));
-            ghist_[0].push_back(A(4 * 10240 * 3));
-            ghist_[1].push_back(A(4 * 10240 * 3));
+            gst_.push_back(SV(gstBig_, 4 * 128 * 48 * 128, st_gst_));
+            ghist_[0].push_back(SV(hbBig_, 4 * 10240 * 3, st_hist_, 2, 0));   // [set][parity]: the two parities side by side
+            ghist_[1].push_back(SV(hbBig_, 4 * 10240 * 3, st_hist_, 2, 1));
         } else {
-            kq_.push_back(A((size_t) MAXC * 2 * 256));
-            vq_.push_back(A((size_t) MAXC * 2 * 256));
-            ksc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-            vsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-            tail_.push_back(A(4 * 4 * 128));
-            dead_.push_back(A(4 * 128));
-            pooled_.push_back(A(4 * (size_t) MB * 128));
+            kq_.push_back(SV(kqBig_, (size_t) MAXC * 2 * 256, st_kq_));
+            vq_.push_back(SV(vqBig_, (size_t) MAXC * 2 * 256, st_kq_));
+            ksc_.push_back(SV(kscBig_, 2 * (size_t) MAXC * 2 * 4, st_sc_));
+            vsc_.push_back(SV(vscBig_, 2 * (size_t) MAXC * 2 * 4, st_sc_));
+            tail_.push_back(SV(tailBig_, 4 * 4 * 128, st_tail_));
+            dead_.push_back(SV(deadBig_, 4 * 128, st_dead_));
+            pooled_.push_back(SV(pooledBig_, 4 * (size_t) MB * 128, st_pooled_));
         }
     }
     // ---- the HC read in Q8_0 (the owner's default on Metal, as STRATA_HC_Q8 on gfx12): the BF16 down / up / inject
@@ -518,13 +674,16 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         const char* e = std::getenv("STRATA_HC_Q8");
         hc_q8_ = !(e && std::string(e) == "0");
     }
-    if (hc_q8_) {
+    {
         const double tq = now_ms();
         size_t tot = 0;
         std::vector<std::string> names;
         for (const auto& kv : f_.tensors) {
             const gguf::Tensor& x = kv.second;
-            if (x.type != ref::BF16 || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
+            // BF16 (when the Q8_0 read is on) and, whatever the setting, the Gyro file's Q6_K / IQ4_NL ones: the decode window's
+            // hyper-connection kernels read BF16 or Q8_0 only
+            const bool conv = (x.type == ref::BF16 && hc_q8_) || x.type == ref::Q6_K || x.type == ref::IQ4_NL;
+            if (!conv || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
             uint64_t ne = 1;
             for (uint64_t d : x.shape) ne *= d;
             q8off_[x.name] = tot;
@@ -549,7 +708,11 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                         if (!st_->read(raw.data(), x.bytes, x.offset)) { std::fprintf(stderr, "strata metal: read failed\n"); std::exit(6); }
                         src = raw.data();
                     }
-                    ref::dequant(ref::BF16, src, tmp.data(), ne);
+                    ref::dequant(x.type, src, tmp.data(), ne);
+                    // a Q6_K / IQ4_NL matrix (Gyro) goes through BF16 first: the form the pack gives the CUDA engine
+                    // (tools/iq_pack.py --compat-bf16), so the Q8_0 copy below is made from the same numbers
+                    if (x.type != ref::BF16)
+                        for (uint64_t i = 0; i < ne; ++i) tmp[i] = ref::bf16_to_f32(ref::f32_to_bf16(tmp[i]));
                     ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
                 }
             });
@@ -593,6 +756,15 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
     if (n_in >= 6144) { L = 32; Rr = 1; S = 8; K = 2; }
     else if (n_in == 640) { L = 8; Rr = 1; S = 4; K = 1; }
     else if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) { L = 32; Rr = 1; S = 4; K = 1; }
+    static const bool gyro_tiles = !(std::getenv("STRATA_METAL_GYRO_TILES") && std::string(std::getenv("STRATA_METAL_GYRO_TILES")) == "0");   // off: the A/B arm
+    if (gyro_dense_ && gyro_tiles && ntok >= 2) {
+        // Gyro's dense weights are Q5_K / Q6_K / Q8_0 (3.6 GB a token).  gemv_parity --one on the M4, 2 tokens: Q5_K 2560->10240
+        // 261 us with 16,1,4,1 against 210 with 2,1,4,1 (-20%), 2560->6144 158 -> 129, 6144->2560 162 -> 139, 2560->12288
+        // 313 -> 247, and the shared down Q8_0 640->2560 36 -> 19 us with 4,2,4,1.  (The tile changes the order of the lane sums.)
+        if (ty == ref::Q5_K && n_in == 2560 && n_out >= 6144) { L = 2; Rr = 1; S = 4; K = 1; }
+        else if (ty == ref::Q5_K && n_in == 6144) { L = 2; Rr = 1; S = 4; K = 1; }
+        else if (ty == ref::Q8_0 && n_in == 640) { L = 4; Rr = 2; S = 4; K = 1; }
+    }
     {
         // windows of several tokens: NR rows a lane share each x load (the window's cost is its x traffic).  The sums
         // run in the same order for any NR, so the answers do not change.  STRATA_METAL_GEMV_NR (1, 2): the tile.
@@ -676,6 +848,35 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     cur_inj_ = 1 - cur_inj_;
 }
 
+namespace {
+struct HadArgs { uint32_t width, x_stride, y_stride; float scale; uint32_t has_signs, pad; };   // quant.metal
+}
+// y = H (s * x) per block of 128 values of `rows` rows of `width` (x_off / y_off: byte offsets; f16: half rows, no signs)
+void Window::had_rows(std::vector<mtl::Dispatch>& ds, int lib, const std::string& pfx, const mtl::Buffer& x, size_t x_off,
+                      const mtl::Buffer& y, size_t y_off, int rows, int width, const mtl::Buffer* signs, bool f16) {
+    HadArgs a{(uint32_t) width, (uint32_t) width, (uint32_t) width, 1.0f / std::sqrt((float) had_block_), signs ? 1u : 0u, 0u};
+    const char* fn = f16 ? "had128_f16" : "had128_f32";
+    mtl::Dispatch d;
+    d.p = P(lib, fn, {}, pfx + fn);
+    d.args = {mtl::Arg::B(x, x_off), mtl::Arg::B(y, y_off), mtl::Arg::B(signs ? *signs : x), mtl::Arg::V(a)};
+    d.grid[0] = width / 128;
+    d.grid[1] = rows;
+    d.tg[0] = 128;
+    push(ds, d);
+}
+
+void Window::had_rows_ind(std::vector<mtl::Dispatch>& ds, int lib, const std::string& pfx, const mtl::Buffer& h,
+                          const mtl::Buffer& meta) {
+    HadArgs a{(uint32_t) NFF, (uint32_t) NFF, (uint32_t) NFF, 1.0f / std::sqrt((float) had_block_), hsh_.handle ? 1u : 0u, 0u};
+    mtl::Dispatch d;
+    d.p = P(lib, "had128_f16_rows", {}, pfx + "had128_f16_rows");
+    d.args = {mtl::Arg::B(h), mtl::Arg::B(h), mtl::Arg::B(hsh_.handle ? hsh_ : h), mtl::Arg::V(a)};
+    d.tg[0] = 128;
+    d.indirect = &meta;
+    d.ind_off = 8 * 4;   // (rows, 1, 1): the padded rows of the tiles
+    push(ds, d);
+}
+
 void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0) {
     const std::string b = "blk." + std::to_string(l) + ".";
     // ---- the mixer: layer 1's read after the PLE is not applied again (its pending write was applied before it)
@@ -698,6 +899,22 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, ntok), "gdn_step#" + std::to_string(ntok));
         const int hp = hp_;
+        if (rows_) {   // each row is a different sequence: its own state, parity and conv history (rinfo_), one grid row each
+            d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, 1).b(31, true), "gdn_step#rows");
+            GdnArgs ar{16, 48, 10240, 1u, eps_, fuse_ ? (uint32_t) (MAXT * 6144) : 0u};
+            d.args = {mtl::Arg::B(gstBig_[(size_t) gi]), mtl::Arg::B(hbBig_[(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
+                      mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
+                      mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset),
+                      mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, T(b + "ssm_a").offset),
+                      mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset), mtl::Arg::B(fuse_ ? XY_.b : yg_), mtl::Arg::V(ar),
+                      mtl::Arg::B(hbBig_[(size_t) gi]), mtl::Arg::B(rinfo_)};
+            d.grid[0] = 48;
+            d.grid[1] = (uint32_t) rows_n_;
+            d.tg[0] = 512;
+            push(ds, d);
+            if (!fuse_) xprep(ds, yg_, XY_, 6144);
+            gemv(ds, T(b + "ssm_out.weight"), XY_, bo_, N, ntok);
+        } else {
         d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
                   mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
                   mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset),
@@ -710,6 +927,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         (void) self_commit;   // the history ping-pong turns after the window (run) or at commit
         if (!fuse_) xprep(ds, yg_, XY_, 6144);
         gemv(ds, T(b + "ssm_out.weight"), XY_, bo_, N, ntok);
+        }
     } else {
         const int qi = l / 4;
         gemv(ds, T(b + "attn_q.weight"), XA_, qfull_, 12288, ntok);
@@ -723,23 +941,34 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "indexer.k_proj.weight"), XA_, ikr_, 128, ntok);
         QsaArgs a{(uint32_t) pos0, 0, (uint32_t) max_cells_, (uint32_t) ntok, eps_};
         mtl::Dispatch d;
-        d.p = P(lqsa_, "qsa_prep", qsa_c(), qsa_k());
+        const bool rw = rows_;   // (batch slots: pos0 is the highest row's cell, the rows have their own in rinfo_)
+        const mtl::Constants rc = mtl::Constants().b(30, true);
+        const mtl::Buffer& KQ = rw ? kqBig_[(size_t) qi] : kq_[(size_t) qi];
+        const mtl::Buffer& VQ = rw ? vqBig_[(size_t) qi] : vq_[(size_t) qi];
+        const mtl::Buffer& KS = rw ? kscBig_[(size_t) qi] : ksc_[(size_t) qi];
+        const mtl::Buffer& VS = rw ? vscBig_[(size_t) qi] : vsc_[(size_t) qi];
+        const mtl::Buffer& TL = rw ? tailBig_[(size_t) qi] : tail_[(size_t) qi];
+        const mtl::Buffer& DD = rw ? deadBig_[(size_t) qi] : dead_[(size_t) qi];
+        const mtl::Buffer& PL = rw ? pooledBig_[(size_t) qi] : pooled_[(size_t) qi];
+        d.p = rw ? P(lqsa_, "qsa_prep", rc, "qsa_prep#rows") : P(lqsa_, "qsa_prep", qsa_c(), qsa_k());
         d.args = {mtl::Arg::B(qfull_), mtl::Arg::B(kcur_), mtl::Arg::B(vcur_), mtl::Arg::B(iqr_), mtl::Arg::B(ikr_),
                   mtl::Arg::B(W_, T(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, T(b + "attn_k_norm.weight").offset),
                   mtl::Arg::B(W_, T(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, T(b + "indexer.k_norm.weight").offset),
-                  mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(kq_[(size_t) qi]),
-                  mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
-                  mtl::Arg::B(tail_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]),
+                  mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(KQ),
+                  mtl::Arg::B(VQ), mtl::Arg::B(KS), mtl::Arg::B(VS),
+                  mtl::Arg::B(TL), mtl::Arg::B(DD), mtl::Arg::B(PL),
                   mtl::Arg::V(a), mtl::Arg::B(mrope_)};
+        if (rw) d.args.push_back(mtl::Arg::B(rinfo_));
         d.grid[0] = 33;
         d.grid[1] = ntok;
         d.tg[0] = 256;
         push(ds, d);
         if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch s;
-        s.p = P(lqsa_, "qsa_score", {}, "qsa_score");
-        s.args = {mtl::Arg::B(qidx_), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(scores_),
+        s.p = rw ? P(lqsa_, "qsa_score", rc, "qsa_score#rows") : P(lqsa_, "qsa_score", {}, "qsa_score");
+        s.args = {mtl::Arg::B(qidx_), mtl::Arg::B(PL), mtl::Arg::B(DD), mtl::Arg::B(scores_),
                   mtl::Arg::V(a)};
+        if (rw) s.args.push_back(mtl::Arg::B(rinfo_));
         s.grid[0] = (uint32_t) (((pos0 + ntok) / 4 + 1 + 7) / 8);
         s.grid[1] = ntok;
         s.tg[0] = 256;
@@ -749,8 +978,9 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             if (rec_) rec_->push_back({(int) ds.size() - 1, 2});
         }
         mtl::Dispatch k;
-        k.p = P(lqsa_, "qsa_topk2", {}, "qsa_topk");
+        k.p = rw ? P(lqsa_, "qsa_topk2", rc, "qsa_topk#rows") : P(lqsa_, "qsa_topk2", {}, "qsa_topk");
         k.args = {mtl::Arg::B(scores_), mtl::Arg::B(qids_), mtl::Arg::V(a)};
+        if (rw) k.args.push_back(mtl::Arg::B(rinfo_));
         k.grid[0] = ntok;
         k.tg[0] = 1024;
         if (sel) {
@@ -758,9 +988,10 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         }
         mtl::Dispatch at;
-        at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
-        at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
-                   mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(qids_), mtl::Arg::B(part_), mtl::Arg::V(a)};
+        at.p = rw ? P(lqsa_, "qsa_attn", rc, "qsa_attn#rows") : P(lqsa_, "qsa_attn", {}, "qsa_attn");
+        at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(KQ), mtl::Arg::B(VQ), mtl::Arg::B(KS),
+                   mtl::Arg::B(VS), mtl::Arg::B(qids_), mtl::Arg::B(part_), mtl::Arg::V(a)};
+        if (rw) at.args.push_back(mtl::Arg::B(rinfo_));
         at.grid[0] = 33;
         at.grid[1] = 2;
         at.grid[2] = ntok;
@@ -768,10 +999,11 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         push(ds, at);
         if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch m;
-        m.p = P(lqsa_, "qsa_merge", {}, "qsa_merge");
+        m.p = rw ? P(lqsa_, "qsa_merge", rc, "qsa_merge#rows") : P(lqsa_, "qsa_merge", {}, "qsa_merge");
         QsaArgs am = a;
         am.n_tok = MAXT;   // the plane stride
         m.args = {mtl::Arg::B(part_), mtl::Arg::B(qfull_), mtl::Arg::B(XQ_.b), mtl::Arg::V(am)};
+        if (rw) m.args.push_back(mtl::Arg::B(rinfo_));
         m.grid[0] = 24;
         m.grid[1] = ntok;
         m.tg[0] = 256;
@@ -826,7 +1058,10 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         a.topk = TOPK;
         a.n_expert = NEXP;
         const bool dq2 = td.type == ref::Q2_0;
-        const int gl = 32, gr = 1, gs = 4, ds_ = 4;
+        // the trellis gate/up: 16 lanes a row, 2 rows a lane (expert_parity --bench --sweep, M4, TQK6, 10 experts: 166.6 us a layer
+        // against 174.5 for 32,2,4 and 196.8 for 32,1,4; also the fastest at 2 and 3 tokens)
+        const bool tq_ = tg_.type >= 144;
+        const int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
@@ -874,8 +1109,10 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         ac.b(23, ct);
         const std::string ak = std::string(stream_ ? "#arena" : "") + (ct ? "#ct" : "");
         g.p = P(lib_, gun, ac, gun + ak);
-        g.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
-                  mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
+        const bool hg = had_gu(l), hd = had_dn(l);
+        if (hg) had_rows(ds, lib_, "d:", XF_.b, 0, XR_, 0, ntok, N, hsx_.handle ? &hsx_ : nullptr, false);   // before the host's turn
+        g.args = {mtl::Arg::B(EW, ebase), hg ? mtl::Arg::B(XR_) : mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_),
+                  mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
         if (stream_)
             for (int c = -1; c < 3; ++c)
                 g.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
@@ -886,6 +1123,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         push(ds, g);
         nb_ = true;
         gemv(ds, T(b + "ffn_down_shexp.weight"), XH_, ysh_, N, ntok);
+        if (hd) had_rows(ds, lib_, "d:", h_, 0, h_, 0, ntok * TOPK, NFF, hsh_.handle ? &hsh_ : nullptr, false);   // H h, in place
         mtl::Dispatch dd;
         dd.p = P(lib_, dnn, ac, dnn + ak);
         dd.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(h_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(h_)};
@@ -990,11 +1228,11 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         uint32_t rows[MAXT * strata::kernels::PLE_N_HEADS];
         int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
         for (int t = 0; t < Tn; ++t) {
-            strata::kernels::ngram_rows(&tokens[t], prev, 1, ss.ple.consts, rows + t * strata::kernels::PLE_N_HEADS);
-            prev[0] = prev[1];
-            prev[1] = tokens[t];
+            if (rows_) { prev[0] = rows_ss_[t]->ple_prev[0]; prev[1] = rows_ss_[t]->ple_prev[1]; }   // (batch slots: each row its own sequence)
+            strata::kernels::ngram_rows(&tokens[t], prev, 1, main_ss_->ple.consts, rows + t * strata::kernels::PLE_N_HEADS);
+            if (!rows_) { prev[0] = prev[1]; prev[1] = tokens[t]; }
         }
-        if (!ss.ple.table->gather_batch(rows, (size_t) Tn, emb_.as<float>(), err)) return false;
+        if (!main_ss_->ple.table->gather_batch(rows, (size_t) Tn, emb_.as<float>(), err)) return false;
     }
     tp_pre_ = now_ms();
     const bool sel = !(fuse_ && pos0 + Tn <= 2051);
@@ -1004,8 +1242,9 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
         qdirty_ = false;
     }
-    const int key = (((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0)) * 2 +
-                    (mrope_on() ? 1 : 0);
+    const int key = rows_ ? 1000000 + Tn * 2 + (sel ? 1 : 0) + (int) (pend_fold_ * 100)
+                          : (((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0)) * 2 +
+                                (mrope_on() ? 1 : 0);
     mrope_sync(pos0, Tn);
     const int fold_n = pend_fold_;
     pend_fold_ = 0;
@@ -1034,7 +1273,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         }
         tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();
-        return finish(Tn, tokens, pos0, head, out, t0);
+        return rows_ ? finish_rows(Tn, tokens, out, t0) : finish(Tn, tokens, pos0, head, out, t0);
     }
     if (stream_ && !st_->ready() && !stream_arena(err)) return false;
     Cached& cw = wcache_[key];
@@ -1081,9 +1320,10 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
                    mtl::Arg::B(gated_), mtl::Arg::B(normW_), mtl::Arg::V(pa)};
         g3.grid[0] = HC; g3.grid[1] = Tn; g3.tg[0] = 256;
         push(ds, g3);
-        g4.p = P(lple_, "ple_conv_add", {}, "ple_conv_add");
-        g4.args = {mtl::Arg::B(pleHist_), mtl::Arg::B(normW_), kw_arg(),
+        g4.p = rows_ ? P(lple_, "ple_conv_add", mtl::Constants().b(32, true), "ple_conv_add#rows") : P(lple_, "ple_conv_add", {}, "ple_conv_add");
+        g4.args = {mtl::Arg::B(rows_ ? pleBig_ : pleHist_), mtl::Arg::B(normW_), kw_arg(),
                    mtl::Arg::B(gated_), mtl::Arg::B(R_), mtl::Arg::V(pa)};
+        if (rows_) g4.args.push_back(mtl::Arg::B(rinfo_));
         g4.grid[0] = HC * N / 256; g4.grid[1] = Tn; g4.tg[0] = 256;
         push(ds, g4);
     }
@@ -1113,7 +1353,56 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     last_gpu_ms_ = 1000.0 * run_ds(cw);
     tp_rg_ = now_ms() - r0;
     last_n_disp_ = (int) ds.size();
-    return finish(Tn, tokens, pos0, head, out, t0);
+    return rows_ ? finish_rows(Tn, tokens, out, t0) : finish(Tn, tokens, pos0, head, out, t0);
+}
+
+bool Window::run_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err) {
+    if (S < 1 || S > MAXT || S > max_t_) { err = "metal window: batch window size out of range"; return false; }
+    if (active_ != 0) activate(0);
+    uint32_t* ri = rinfo_.as<uint32_t>() + 8;
+    int64_t maxpos = 0;
+    for (int t = 0; t < S; ++t) {
+        if (rows[t] < 0 || rows[t] >= n_slots()) { err = "metal window: a batch row names a slot that does not exist"; return false; }
+        for (int u = 0; u < t; ++u)
+            if (rows[u] == rows[t]) { err = "metal window: two rows of one batch window are the same slot"; return false; }
+        const int set = rows[t] + 1;
+        rows_ss_[t] = sets_[(size_t) set]->ss;
+        rows_set_[t] = set;
+        ri[4 * t] = (uint32_t) set;
+        ri[4 * t + 1] = (uint32_t) pos[t];
+        ri[4 * t + 2] = (uint32_t) sets_[(size_t) set]->hp;
+        ri[4 * t + 3] = 0;
+        maxpos = std::max<int64_t>(maxpos, pos[t]);
+    }
+    rows_ = true;
+    rows_n_ = S;
+    const bool ok = run(S, tokens, maxpos, true, out, err);
+    rows_ = false;
+    return ok;
+}
+
+// the end of a window of batch slots: the picks, and each slot's commit (a one-token step committed its row: the other history
+// parity is the committed one; the PLE history takes the row's normalized values; the session's token pair advances)
+bool Window::finish_rows(int Tn, const int32_t* tokens, int32_t* out, double t0) {
+    ++win_n_[Tn];
+    win_ms_[Tn] += now_ms() - t0;
+    win_gpu_[Tn] += last_gpu_ms_;
+    for (int t = 0; t < Tn; ++t) out[t] = tokout_.as<int32_t>()[t];
+    for (int t = 0; t < Tn; ++t) {
+        SeqSet& s = *sets_[(size_t) rows_set_[t]];
+        s.hp = 1 - s.hp;
+        if (ple_on_) {
+            const float* norm = normW_.as<float>() + (size_t) t * strata::kernels::NG_HC_DIM;
+            for (int c = 0; c < strata::kernels::NG_HC_DIM; ++c) {
+                float* col = s.pleHist.as<float>() + (size_t) c * strata::kernels::NG_HIST;
+                for (int r = 0; r + 1 < strata::kernels::NG_HIST; ++r) col[r] = col[r + 1];
+                col[strata::kernels::NG_HIST - 1] = norm[c];
+            }
+        }
+        s.ss->ple_prev[0] = s.ss->ple_prev[1];
+        s.ss->ple_prev[1] = tokens[t];
+    }
+    return true;
 }
 
 double Window::run_ds(Cached& c) {
@@ -1182,7 +1471,7 @@ bool Window::stream_arena(std::string& err) {
         if (sysctlbyname("vm.vm_page_filecache_min", &pages, &pl, nullptr, 0) == 0) am.filecache_min = (double) pages * (double) vm_page_size;
     }
     am.available = avail_now();
-    if (ss_ && ss_->ple.table && ss_->ple.table->mode() == strata::kernels::PleIo::Mmap)
+    if (main_ss_ && main_ss_->ple.table && main_ss_->ple.table->mode() == strata::kernels::PleIo::Mmap)
         am.ple_mapped = (double) ss_->ple.table->rows() * 192.0;   // a row is at most 192 bytes (Q8_0 + its scale)
     if (const char* e = std::getenv("STRATA_METAL_KEEP_FREE_GB")) am.keep_gb = std::atof(e);
     if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) am.arena_gb = std::atof(e);
@@ -1393,6 +1682,154 @@ void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
         push(ds, d);
     }
     nb_ = false;   // what follows reads the folded state: a barrier
+}
+
+void Window::swap_state(SeqSet& o) {
+    auto sw = [](std::vector<mtl::Buffer>& a, std::vector<mtl::Buffer>& b) {
+        for (size_t i = 0; i < a.size() && i < b.size(); ++i) std::swap(a[i], b[i]);
+    };
+    sw(gst_, o.gst); sw(ghist_[0], o.gh0); sw(ghist_[1], o.gh1); sw(kq_, o.kq); sw(vq_, o.vq); sw(ksc_, o.ksc); sw(vsc_, o.vsc);
+    sw(tail_, o.tail); sw(dead_, o.dead); sw(pooled_, o.pooled);
+    std::swap(pleHist_, o.pleHist);
+    ple_hist_.swap(o.ple_hist);
+    last_norm_.swap(o.last_norm);
+    std::swap(hp_, o.hp); std::swap(pend_fold_, o.pend_fold); std::swap(last_T_, o.last_T); std::swap(last_head_, o.last_head);
+    for (int t = 0; t < MAXT; ++t) std::swap(last_tokens_[t], o.last_tokens[t]);
+    std::swap(ss_, o.ss);
+}
+
+// the buffers of one sequence's running state, shaped like the live ones (real: allocated and zero; else empty placeholders)
+void Window::alloc_set(SeqSet& o, bool real, int idx) {
+    const size_t MAXC = (size_t) max_cells_, MB = MAXC / 4 + 2;
+    if (real && bigs_ok_) {   // set idx's part of the big buffers
+        for (size_t i = 0; i < gst_.size(); ++i) {
+            o.gst.push_back(view_of(gstBig_[i], (size_t) idx * st_gst_, 4 * 128 * 48 * 128));
+            o.gh0.push_back(view_of(hbBig_[i], ((size_t) idx * 2 + 0) * st_hist_, 4 * 10240 * 3));
+            o.gh1.push_back(view_of(hbBig_[i], ((size_t) idx * 2 + 1) * st_hist_, 4 * 10240 * 3));
+        }
+        for (size_t j = 0; j < kq_.size(); ++j) {
+            o.kq.push_back(view_of(kqBig_[j], (size_t) idx * st_kq_, MAXC * 2 * 256));
+            o.vq.push_back(view_of(vqBig_[j], (size_t) idx * st_kq_, MAXC * 2 * 256));
+            o.ksc.push_back(view_of(kscBig_[j], (size_t) idx * st_sc_, 2 * MAXC * 2 * 4));
+            o.vsc.push_back(view_of(vscBig_[j], (size_t) idx * st_sc_, 2 * MAXC * 2 * 4));
+            o.tail.push_back(view_of(tailBig_[j], (size_t) idx * st_tail_, 4 * 4 * 128));
+            o.dead.push_back(view_of(deadBig_[j], (size_t) idx * st_dead_, 4 * 128));
+            o.pooled.push_back(view_of(pooledBig_[j], (size_t) idx * st_pooled_, 4 * MB * 128));
+        }
+        o.pleHist = view_of(pleBig_, (size_t) idx * st_ple_, 4 * 9 * 10240);
+        o.ple_hist.assign(ple_hist_.size(), 0.0f);
+        return;
+    }
+    auto A = [&](size_t bytes) { return real ? cx_->alloc(bytes) : mtl::Buffer(); };
+    for (size_t i = 0; i < gst_.size(); ++i) {
+        o.gst.push_back(A(4 * 128 * 48 * 128));
+        o.gh0.push_back(A(4 * 10240 * 3));
+        o.gh1.push_back(A(4 * 10240 * 3));
+    }
+    for (size_t j = 0; j < kq_.size(); ++j) {
+        o.kq.push_back(A(MAXC * 2 * 256));
+        o.vq.push_back(A(MAXC * 2 * 256));
+        o.ksc.push_back(A(2 * MAXC * 2 * 4));
+        o.vsc.push_back(A(2 * MAXC * 2 * 4));
+        o.tail.push_back(A(4 * 4 * 128));
+        o.dead.push_back(A(4 * 128));
+        o.pooled.push_back(A(4 * MB * 128));
+    }
+    o.pleHist = A(4 * 9 * 10240);
+    if (real) o.ple_hist.assign(ple_hist_.size(), 0.0f);
+}
+
+bool Window::slots_init(const std::vector<strata::core::SessionState*>& slots, std::string& err) {
+    if (!sets_.empty()) return true;   // (asked once)
+    if (cx_ == nullptr) { err = "metal window: slots before the window is up"; return false; }
+    std::vector<std::unique_ptr<SeqSet>> v;
+    v.push_back(std::make_unique<SeqSet>());
+    alloc_set(*v[0], false);
+    v[0]->ss = ss_;
+    set_of_ss_[ss_] = 0;
+    uint64_t bytes = 0;
+    for (size_t b = 0; b < slots.size(); ++b) {
+        if ((int) b >= g_slot_cap) bigs_ok_ = false;   // more slots than the window was sized for: serial windows only
+        auto x = std::make_unique<SeqSet>();
+        alloc_set(*x, true, (int) b + 1);
+        x->ss = slots[b];
+        for (auto* vec : {&x->gst, &x->gh0, &x->gh1, &x->kq, &x->vq, &x->ksc, &x->vsc, &x->tail, &x->dead, &x->pooled})
+            for (const auto& bf : *vec) bytes += bf.bytes;
+        set_of_ss_[slots[b]] = (int) b + 1;
+        v.push_back(std::move(x));
+    }
+    sets_ = std::move(v);
+    active_ = 0;
+    if (bigs_ok_) {   // the strides the row kernels need (elements of each array's type)
+        uint32_t* h = rinfo_.as<uint32_t>();
+        h[0] = (uint32_t) st_kq_; h[1] = (uint32_t) (st_sc_ / 2); h[2] = (uint32_t) (st_tail_ / 4); h[3] = (uint32_t) (st_dead_ / 4);
+        h[4] = (uint32_t) (st_pooled_ / 4); h[5] = (uint32_t) (st_gst_ / 4); h[6] = (uint32_t) (st_hist_ / 4); h[7] = (uint32_t) (st_ple_ / 4);
+    }
+    std::fprintf(stderr, "strata metal: %zu batch slots, each with its own running state and K/V (%.2f GB each, %.2f GB in all)\n",
+                 slots.size(), slots.empty() ? 0.0 : (double) bytes / (double) slots.size() / 1e9, (double) bytes / 1e9);
+    return true;
+}
+
+// Makes `set` the live state.  The live members and the stashes exchange contents (two swaps through the active set's own stash).
+void Window::activate(int set) {
+    if (set == active_ || set < 0 || set >= (int) sets_.size()) return;
+    swap_state(*sets_[(size_t) active_]);   // the stash of the active one now holds its state, the live members the spare
+    swap_state(*sets_[(size_t) set]);       // ... and now the wanted one
+    active_ = set;
+}
+
+bool Window::run_slots(const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err) {
+    if (sets_.empty()) { err = "metal window: no batch slots"; return false; }
+    static const bool one_window = !(std::getenv("STRATA_METAL_BATCH_ROWS") && std::string(std::getenv("STRATA_METAL_BATCH_ROWS")) == "0");
+    if (one_window && bigs_ok_) {
+        activate(0);
+        return run_rows(rows, S, tokens, pos, out, err);
+    }
+    bool ok = true;
+    for (int t = 0; t < S && ok; ++t) {
+        if (rows[t] < 0 || rows[t] >= n_slots()) { err = "metal window: a batch row names a slot that does not exist"; ok = false; break; }
+        activate(rows[t] + 1);
+        // a one-token window commits its row in its own step; commit(1) adds the PLE history and the session's token pair,
+        // which read buffers the next window rewrites
+        ok = run(1, tokens + t, pos[t], true, out + t, err) && commit(1, err);
+    }
+    activate(0);
+    return ok;
+}
+
+bool Window::slot_copy(bool into_slot, int b, int64_t upto, bool kv_only, std::string& err) {
+    if (b < 0 || b >= n_slots()) { err = "metal window: no such batch slot"; return false; }
+    activate(0);
+    SeqSet& o = *sets_[(size_t) b + 1];
+    if (pend_fold_ > 0 || o.pend_fold > 0) { err = "metal window: a slot copy with a fold pending"; return false; }
+    const size_t cells = (size_t) std::max<int64_t>(0, std::min<int64_t>(upto, max_cells_));
+    auto cp = [&](const mtl::Buffer& live, const mtl::Buffer& stash, size_t n) {
+        n = std::min({n, live.bytes, stash.bytes});
+        if (into_slot) std::memcpy(stash.ptr, live.ptr, n); else std::memcpy(live.ptr, stash.ptr, n);
+    };
+    const int hs = into_slot ? hp_ : o.hp;   // the committed history parity of the source
+    if (!kv_only) {
+    if (into_slot) o.hp = hp_; else hp_ = o.hp;
+    for (size_t i = 0; i < gst_.size(); ++i) {
+        cp(gst_[i], o.gst[i], gst_[i].bytes);
+        cp(ghist_[hs][i], hs ? o.gh1[i] : o.gh0[i], ghist_[hs][i].bytes);
+    }
+    }
+    for (size_t j = 0; j < kq_.size(); ++j) {
+        cp(kq_[j], o.kq[j], cells * 512);
+        cp(vq_[j], o.vq[j], cells * 512);
+        cp(ksc_[j], o.ksc[j], cells * 16);
+        cp(vsc_[j], o.vsc[j], cells * 16);
+        cp(pooled_[j], o.pooled[j], ((cells + 3) / 4 + 2) * 512);
+        if (kv_only) continue;
+        cp(tail_[j], o.tail[j], tail_[j].bytes);
+        cp(dead_[j], o.dead[j], dead_[j].bytes);
+    }
+    if (kv_only) return true;
+    cp(pleHist_, o.pleHist, pleHist_.bytes);
+    if (into_slot) { o.ple_hist = ple_hist_; o.ss->ple_prev[0] = ss_->ple_prev[0]; o.ss->ple_prev[1] = ss_->ple_prev[1]; }
+    else { ple_hist_ = o.ple_hist; ss_->ple_prev[0] = o.ss->ple_prev[0]; ss_->ple_prev[1] = o.ss->ple_prev[1]; }
+    return true;
 }
 
 bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
@@ -2023,6 +2460,7 @@ struct Window::PromptGemm {
         iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta, stok, sw, pos,
         XS, HS, YE, yr, gsh, ush, hh, ys, sgv, emb, embh, pkey, pval, keyn, qn, gated, normW;
     mtl::Buffer WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr, Wsg, Wshg, Wshu, Wshd, Wpk, Wpv;
+    mtl::Buffer mixr;   // Gyro: the rotated gate/up input rows [MT][N]
 };
 
 int Window::prompt_chunk_rows() const { return pg_ ? pg_->MT : 0; }
@@ -2063,6 +2501,7 @@ bool Window::prompt_gemm_init(std::string& err) {
     p.k4 = ::coop_k4(*cx_);
     const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)
     p.gu_v3 = p.dn_v3 = eg ? std::string(eg) == "v3" : p.k4;
+    if (T("blk.0.ffn_gate_exps.weight").type >= 144) p.gu_v3 = p.dn_v3 = false;   // the trellis experts have the v2 kernels only
     const char* eq = std::getenv("STRATA_METAL_PROMPT_QSA");       // v1 | flash (default: flash with the M5's layout)
     p.flash = eq ? std::string(eq) == "flash" : p.k4;
     const size_t MT = (size_t) C;
@@ -2102,6 +2541,7 @@ bool Window::prompt_gemm_init(std::string& err) {
         p.stok = AB(4 * mr); p.sw = F32(mr); p.pos = AB(4 * MT * TOPK); p.XS = F16(mr * N); p.HS = F16(mr * NFF);
         p.YE = F32(mr * N); p.yr = F32(MT * N); p.gsh = F32(MT * NFF); p.ush = F32(MT * NFF); p.hh = F16(MT * NFF);
         p.ys = F32(MT * N); p.sgv = F32(MT);
+        if (had_on_) p.mixr = F32(MT * N);
         p.WD = F16((size_t) (LR + HC) * HC * N); p.WU = F16((size_t) HC * N * LR); p.Wqkv = F16((size_t) 10240 * N);
         p.Wz = F16((size_t) 6144 * N); p.Wal = F16((size_t) 48 * N); p.Wbe = F16((size_t) 48 * N); p.Wout = F16((size_t) N * 6144);
         p.Wq = F16((size_t) 12288 * N); p.Wk = F16((size_t) 512 * N); p.Wv = F16((size_t) 512 * N); p.Wiq = F16((size_t) 512 * N);
@@ -2251,7 +2691,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
                mtl::Arg::B(p.al), mtl::Arg::B(p.be), mtl::Arg::B(W_, TN(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, TN(b + "ssm_a").offset),
                mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb), mtl::Arg::B(p.gkq),
                mtl::Arg::B(ghist_[1 - hp_][(size_t) gi]), mtl::Arg::V(ga)}, 16 + 24, T, 256);
-            D(PP(p.lgdn, "gdn_scanr_4", mtl::Constants().i(6, 0), "gdn_scanr_4"),
+            D(PP(p.lgdn, gdn_scan_name(cx_->device_name(), T), mtl::Constants().i(6, 0), gdn_scan_name(cx_->device_name(), T)),
               {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb),
                mtl::Arg::B(p.gkq), mtl::Arg::B(p.go), mtl::Arg::V(ga)}, 48 * 4, 1, 32 * 4);
             D(PP(p.lgdn, "gdn_post"), {mtl::Arg::B(p.go), mtl::Arg::B(p.z), mtl::Arg::B(W_, TN(b + "ssm_norm.weight").offset),
@@ -2339,10 +2779,12 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         if (stream_) { ma.gate_off = 0; ma.up_off = st_->up_in_slot(l); ma.down_off = st_->down_in_slot(l); }
         const size_t ebase = moe_rebase(ma.gate_off, ma.up_off, ma.down_off);
         const uint32_t ne_ = N;
+        const bool hg = had_gu(l), hd = had_dn(l);
+        if (hg) had_rows(ds, p.lib, "pg:", p.mixed, 0, p.mixr, 0, T, N, hsx_.handle ? &hsx_ : nullptr, false);
         {
             mtl::Dispatch g;
             g.p = PP(p.lib, "mm_gather");
-            g.args = {mtl::Arg::B(p.mixed), mtl::Arg::B(p.stok), mtl::Arg::B(p.XS), mtl::Arg::V(ne_)};
+            g.args = {mtl::Arg::B(hg ? p.mixr : p.mixed), mtl::Arg::B(p.stok), mtl::Arg::B(p.XS), mtl::Arg::V(ne_)};
             g.tg[0] = 256;
             g.indirect = &p.meta;
             g.ind_off = 8 * 4;
@@ -2375,6 +2817,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         gu.ind_off = 2 * 4;
         if (stream_) cuts.push_back((int) ds.size());   // the host's turn: this layer's experts put in place
         push(ds, gu);
+        if (hd) had_rows_ind(ds, p.lib, "pg:", p.HS, p.meta);
         mtl::Dispatch dn;
         if (p.dn_v3) {
             const std::string fn = "mm_down3_" + std::to_string(ed.type) + "_16_64_32_2";
@@ -2475,6 +2918,7 @@ std::string g_shard1;
 void window_register(void* w);
 bool mtp_load_pending(Window* w, std::string& err);
 void set_model_shard(const char* shard1) { g_shard1 = shard1 ? shard1 : ""; }
+void set_batch_slots(int n) { g_slot_cap = n > 0 ? std::min(n, 8) : 0; }
 
 // One decode window per process: the prompt path (Prefill::init) may bring it up before the Verifier does.
 namespace {
@@ -2518,16 +2962,38 @@ bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, 
     static const bool logpos = std::getenv("STRATA_LOGPOS") != nullptr;
     return ((Window*) w)->run(T, tokens, pos0, head || logpos, out, err);
 }
-void window_reset() {
-    if (g_the_window != nullptr && g_the_window->ready()) g_the_window->reset();
+void window_reset(const strata::core::SessionState* ss) {
+    if (g_the_window == nullptr || !g_the_window->ready()) return;
+    g_the_window->activate(g_the_window->set_of(ss));
+    g_the_window->reset();
+    g_the_window->activate(0);
 }
-bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
+bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, const strata::core::SessionState* ss, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
-    return g_the_window->checkpoint_save(c, err);
+    g_the_window->activate(g_the_window->set_of(ss));   // a batch slot's session: that slot's running state
+    const bool ok = g_the_window->checkpoint_save(c, err);
+    g_the_window->activate(0);
+    return ok;
 }
-bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
+bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, const strata::core::SessionState* ss, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
-    return g_the_window->checkpoint_restore(c, err);
+    g_the_window->activate(g_the_window->set_of(ss));
+    const bool ok = g_the_window->checkpoint_restore(c, err);
+    g_the_window->activate(0);
+    return ok;
+}
+bool window_init_slots(void* w, const std::vector<strata::core::SessionState*>& slots, std::string& err) {
+    return ((Window*) w)->slots_init(slots, err);
+}
+bool window_run_slots(void* w, const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err) {
+    const double t0 = now_ms();
+    const bool ok = ((Window*) w)->run_slots(rows, S, tokens, pos, out, err);
+    ((Window*) w)->prof_add(true, now_ms() - t0);
+    return ok;
+}
+bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only, std::string& err) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    return g_the_window->slot_copy(into_slot, slot, upto, kv_only, err);
 }
 bool window_commit(void* w, int n_keep, std::string& err) {
     const double t0 = now_ms();
