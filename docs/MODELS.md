@@ -60,6 +60,7 @@ It uses its own engine, a separate download that the app and `strata launch` fet
 | 1.75 bpw | 239 GB | perplexity +21%; code and agent text +8.9% and +10.2%; weaker on plain prose |
 | 2.00 bpw | 257 GB | perplexity +16%; code and agent text +8.5% and +5.9% |
 | 2.25 bpw | 274 GB | perplexity +7.7% to +8.3%; code and agent text +3.5% and +2.5% |
+| ISTA-DAS Coder | 191 GB | ISTA-DAS's coding version: 192 of the 384 experts in every layer kept (72 GB of model instead of 138 GB); numbers against the original model are in [DEEPSEEK41.md](DEEPSEEK41.md#the-ista-das-coder) |
 
 The download includes the shared n-gram (Engram) table and the DSpark drafter. Pick 2.25 for coding and agent work if
 you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lower is closer to the original.

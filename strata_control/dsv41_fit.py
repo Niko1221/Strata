@@ -106,7 +106,7 @@ if CODER:
     _coder_bytes = sum(int(CODER["files"][n][0]) for n in CODER["shards"])
     ISTA_SETS[CODER_MODEL] = {
         "title": CODER.get("label", "ISTA-DAS Coder"), "set_bytes": _coder_bytes, "experts_gb": 66.04, "dense_gb": 6.08, "profile": CODER.get("profile", "profile-coder.bin"),
-        "meta_bytes": 0, "experts_per_layer": int(CODER["experts_per_layer"]), "ppl": "?", "ram_ok_gb": 24.0,
+        "meta_bytes": 0, "experts_per_layer": int(CODER["experts_per_layer"]), "ppl": "48%", "ram_ok_gb": 24.0,
         # measured 11-01 on r9700 (one Radeon AI PRO R9700, 251 GB RAM, this branch's engine, packaged Terminal, 128K context, 5 experts a word): the whole run in a user scope with MemoryMax
         # and no swap; decode median of 3 prompts x 200 tokens, one run each: no cap 25.6 tok/s, 40 GB 20.9, 32 GB 18.5, 24 GB 15.0, 16 GB 8.0; four cards, no cap: 59.0 (all experts in graphics memory)
         "measured": "one Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: answers about 26 tokens a second, a 93,000-token prompt read in 78 s; four of them: about 59 tokens a second",
@@ -116,7 +116,7 @@ if CODER:
         "spill_short": "slow here: this computer has {ram:.0f} GB of RAM and the set was measured down to 16 GB (about 8 tokens a second on one R9700); it can still be installed",
         "unproven_uma": "Not run on a Ryzen AI Max (Strix Halo) or a DGX Spark yet: the sizes above are exact, the speed is not measured on a shared-memory computer.",
         "disk_total": round((_coder_bytes + ISTA_ENGRAM_BYTES + ISTA_DSPARK_BYTES) / GB),
-        "quality": "ISTA-DAS's coding version, half of the model's experts removed (192 of 384 in every layer); not measured against the original model here yet"}
+        "quality": "ISTA-DAS's coding version, half of the model's experts removed (192 of 384 in every layer); against the original model perplexity +48% and KL 0.40 (code and agent work: KL 0.23 and 0.20; 2.00 bpw 0.10 and 0.11)"}
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
 ISTA_DENSE_ON_GPU_GB = 4.5            # (the old plan's figure, kept for the Unsloth Q8 plan above; the official sets use the measured ones below)
 # What the engine really puts on a card, from its own startup line ("CUDA0 layers [0, 39] + head: weights 5.86 GB, experts 25.29 GB (2566 of 15360 in

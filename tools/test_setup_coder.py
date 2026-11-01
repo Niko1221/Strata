@@ -231,6 +231,7 @@ class Plan(unittest.TestCase):
         self.assertTrue(row["images"] and row["multi_file"])
         self.assertEqual(row["disk_gb"], round(row["download_gb"] + dsv41_fit.DISK_HEADROOM_GB, 1))
         self.assertIn("192", row["about"])
+        self.assertNotIn("not measured", row["about"])
         self.assertTrue(row["on_this_pc"].startswith("fits"))
 
 
