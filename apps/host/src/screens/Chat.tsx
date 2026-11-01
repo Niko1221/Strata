@@ -10,7 +10,7 @@ import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
-import { setSelectedPreviewId } from '../lib/code-preview';
+import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { PreviewResizeHandle } from '../components/PreviewResizeHandle';
 import { DEFAULT_PREVIEW_FRACTION, PREVIEW_SPLIT_KEY, previewWidth } from '../lib/preview-layout';
@@ -197,7 +197,8 @@ export function ChatScreen() {
         replyWasStreaming.current.set(lastReply.id, !!lastReply.streaming);
         if (before !== true || lastReply.streaming || lastReply.error) return;
         const main = mainResult(lastReply.deliverables, lastReply.content);
-        if (!main) return;
+        // No file to open: one whole HTML page in the answer goes to the sidebar too (a snippet keeps its preview button).
+        if (!main) { const page = lastReply.blocks?.some(b => b.kind === 'group') ? null : mainCodePreview(lastReply.id, lastReply.content); if (page) openPreview(page); return; }
         const sessionId = session.id;
         void previewOf(sessionId, main).then(item => { if (session.id === sessionId) openPreview(item); }, () => { });
     }, [lastReply?.id, lastReply?.streaming]);

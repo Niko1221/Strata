@@ -1059,6 +1059,7 @@ body {
   line-height: 1.2;
   padding-top: 2px;
 }
+
 /* ------------------------------------------------ 17. the motion system -----
    One scale (app.css section 1: micro 100, control 160, local 240, surface 320,
    choreo 460ms; standard / enter / exit curves) and three habits, so the app
@@ -1175,6 +1176,45 @@ body {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 45%, transparent);
 }
 
+/* The sidebar preview arrives from the right with a short rise and fade, the
+   chosen file's content crossfades when you switch tabs, and a closed panel
+   leaves the same way (a bare shell over the column it vacated; the page itself
+   is already gone, so nothing heavy is animated). */
+.chatsplit .artifact-panel {
+  animation: st-panel-in var(--st-t-surface) var(--st-ease-enter) both;
+}
+.chatsplit .artifact-panel[data-leaving] {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(48%, 640px);
+  z-index: 3;
+  pointer-events: none;
+  animation: st-panel-out var(--st-t-local) var(--st-ease-exit) both;
+}
+.artifact-content {
+  animation: st-enter var(--st-t-control) var(--st-ease-enter) both;
+  --st-from-y: 4px;
+}
+@keyframes st-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--st-panel-shift));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes st-panel-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--st-panel-shift));
+  }
+}
 .st-code__actions {
   display: inline-flex;
   align-items: center;
