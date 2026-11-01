@@ -89,6 +89,7 @@ export function TuneOutcomeCard({ outcome, details }: { outcome: Outcome; detail
     <div className="tune-outcome__body" role="status">
       <h3>{headline}</h3>
       <p>{lead}</p>
+      {details && (o.code === 'failed' || o.code === 'busy_pc') ? <p className="small muted">{tr("Open Details to see why.")}</p> : null}
       {facts.length ? <dl className="tune-outcome__facts">{facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl> : null}
       {details ? <details className="tune-outcome__details"><summary>{tr('Details')}</summary><pre>{details}</pre></details> : null}
     </div>

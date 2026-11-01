@@ -421,7 +421,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(instances.size)throw new Error('Unload native models before changing engine files.');
   job.abort=new AbortController();
   const subject=job.kind==='update-strata'?'Strata':'engine';
-  try{return await componentSteps(job,subject,args);}catch(error){updateLog(`${job.kind} failed: ${String(error?.message??error).slice(0,400)}`);throw error?.details!==undefined&&error.message?error:plainError(error,subject);}
+  try{return await componentSteps(job,subject,args);}catch(error){updateLog(`${job.kind} failed: ${String(error?.message??error).slice(0,400)}`);throw error?.details!==undefined&&error.message?error:plainError(error,subject,args?.firstRun===true?'Continue':undefined);}
  }
  async function componentSteps(job,subject,args={}){
   const onEvent=event=>{
