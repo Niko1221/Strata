@@ -60,6 +60,24 @@ __global__ void rope_table_kernel(const int32_t* __restrict__ pos, int rows, flo
     table[(r * 2 + 1) * 64 + i] = s;
 }
 
+__global__ void rope_inv_kernel(float theta, double* __restrict__ inv) {
+    const int i = threadIdx.x;   // 64 threads
+    inv[i] = pow((double) theta, -(double) (2 * i) / (double) HD);
+}
+
+__global__ void rope_table_inv_kernel(const int32_t* __restrict__ pos, int rows, const double* __restrict__ inv_tab, float* __restrict__ table) {
+    const int r = blockIdx.x, i = threadIdx.x;   // 64 threads
+    if (r >= rows) return;
+    const double inv = inv_tab[i];
+    double ang = (double) pos[r] * inv;
+    const double two_pi = 6.283185307179586476925286766559;
+    ang -= two_pi * rint(ang / two_pi);   // [-pi, pi]
+    float s, c;
+    sincosf((float) ang, &s, &c);
+    table[(r * 2 + 0) * 64 + i] = c;
+    table[(r * 2 + 1) * 64 + i] = s;
+}
+
 // one block per (row, head), 128 threads: out = rope(rmsnorm(in) * gamma)
 __global__ void norm_rope_kernel(const float* __restrict__ in, int in_stride, const float* __restrict__ gamma, const int32_t* __restrict__ pos,
                                  const float* __restrict__ table, float* __restrict__ out, int slot_mod, int heads, float eps) {
@@ -165,6 +183,36 @@ __global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict_
         }
         fetch(k0, vreg, vring, vblk);   // this tile's V, hidden behind the S stage and the softmax
         __syncthreads();
+        if (variant & 4) {   // S tile on all 128 threads: 2 queries x 4 keys per thread, every element the same sequential sum over d as below
+            const int qg = tid >> 3, kg = tid & 7;
+            float acc[2][4];
+#pragma unroll
+            for (int i = 0; i < 2; ++i)
+#pragma unroll
+                for (int j = 0; j < 4; ++j) acc[i][j] = 0.0f;
+#pragma unroll 4
+            for (int d = 0; d < HD; d += 4) {
+                float4 qv[2], kv[4];
+#pragma unroll
+                for (int i = 0; i < 2; ++i) qv[i] = *reinterpret_cast<const float4*>(&Qs[(qg * 2 + i) * AS + d]);
+#pragma unroll
+                for (int j = 0; j < 4; ++j) kv[j] = *reinterpret_cast<const float4*>(&Ks[(kg * 4 + j) * AS + d]);
+#pragma unroll
+                for (int i = 0; i < 2; ++i)
+#pragma unroll
+                    for (int j = 0; j < 4; ++j)
+                        acc[i][j] += qv[i].x * kv[j].x + qv[i].y * kv[j].y + qv[i].z * kv[j].z + qv[i].w * kv[j].w;
+            }
+#pragma unroll
+            for (int i = 0; i < 2; ++i)
+#pragma unroll
+                for (int j = 0; j < 4; ++j) {
+                    const int qi = qg * 2 + i, t = kg * 4 + j, k = k0 + t, row = qi >> 2;
+                    bool ok = k < nkeys;
+                    if (ok && k < nctx) ok = (lo + k) > (s + row - window) && kvalid[t];
+                    Sc[qi * 33 + t] = ok ? acc[i][j] : -INFINITY;
+                }
+        } else
         if (tid < 64) {   // S tile: 4 queries x 4 keys per thread
             const int qg = tid >> 3, kg = tid & 7;
             float acc[4][4];
@@ -341,6 +389,68 @@ __global__ void __launch_bounds__(WARPS * 32) gemm8_kernel(Df2Segs segs, const i
             v += __shfl_xor_sync(0xffffffffu, v, 2);
             v += __shfl_xor_sync(0xffffffffu, v, 1);
             if (lane == 0 && c < ncols) sg.y[(size_t) c * sg.n_out + row0 + r] = v;
+        }
+}
+
+// The same GEMM with R rows a warp instead of 8 (R = 4, 2, 1): a group of 8 rows is shared by 8 / R warps, each reading only its rows' weights.  Every output keeps
+// the arithmetic of gemm8_kernel (lane l's partial sums run over the same steps in the same order, the same shuffle tree), so the result is bitwise the same;
+// what changes is the number of warps in flight: the small matrices (fc 2560 rows = 320 groups, the 640-row convolution kernels) fill only a third of the
+// card with one warp per group, and a warp that waits for its 4 KB step per row stalls the group.
+template <int WARPS, int R, int UNR>
+__global__ void __launch_bounds__(WARPS * 32) gemm_rows_kernel(Df2Segs segs, const int8_t* __restrict__ xq, const float* __restrict__ xd, int n_in, int ncols) {
+    constexpr int SUBS = 8 / R;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int wi = blockIdx.x * WARPS + warp;
+    const int row_g = (wi / SUBS) * 8, sub = wi % SUBS;
+    int si = 0;
+    while (si + 1 < segs.n && row_g >= segs.s[si + 1].row0) ++si;
+    const Df2Seg sg = segs.s[si];
+    const int row0 = row_g - sg.row0;
+    const int nb = n_in / 32, steps = nb / 16;
+    const int4* wq = reinterpret_cast<const int4*>(sg.q + (size_t) row0 * n_in) + lane + sub * R * 32;
+    const __half* wd = sg.d + (size_t) row0 * nb + (lane >> 1) + sub * R * 16;
+    const int4* xv = reinterpret_cast<const int4*>(xq) + lane;
+    float acc[R][8];
+#pragma unroll
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int c = 0; c < 8; ++c) acc[r][c] = 0.0f;
+#pragma unroll UNR
+    for (int st = 0; st < steps; ++st) {
+        int4 w[R];
+        float dw[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            w[r] = wq[(size_t) st * 256 + r * 32];
+            dw[r] = __half2float(wd[(size_t) st * 128 + r * 16]);
+        }
+        float xs[8];
+#pragma unroll
+        for (int c = 0; c < 8; ++c) xs[c] = xd[(size_t) c * nb + st * 16 + (lane >> 1)];
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            const int4 x = xv[(size_t) c * (n_in / 16) + st * 32];
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                int isum = STRATA_DP4A(w[r].x, x.x, 0);
+                isum = STRATA_DP4A(w[r].y, x.y, isum);
+                isum = STRATA_DP4A(w[r].z, x.z, isum);
+                isum = STRATA_DP4A(w[r].w, x.w, isum);
+                acc[r][c] = fmaf(dw[r] * xs[c], (float) isum, acc[r][c]);
+            }
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            float v = acc[r][c];
+            v += __shfl_xor_sync(0xffffffffu, v, 16);
+            v += __shfl_xor_sync(0xffffffffu, v, 8);
+            v += __shfl_xor_sync(0xffffffffu, v, 4);
+            v += __shfl_xor_sync(0xffffffffu, v, 2);
+            v += __shfl_xor_sync(0xffffffffu, v, 1);
+            if (lane == 0 && c < ncols) sg.y[(size_t) c * sg.n_out + row0 + sub * R + r] = v;
         }
 }
 
@@ -721,6 +831,16 @@ void df2_kv_ring(const float* kin, const float* vin, const float* gk, const int3
     check("kv_ring");
 }
 
+void df2_rope_inv(float theta, double* inv, void* stream) {
+    rope_inv_kernel<<<1, 64, 0, (cudaStream_t) stream>>>(theta, inv);
+    check("rope_inv");
+}
+
+void df2_rope_table_inv(const int32_t* pos, int rows, const double* inv, float* table, void* stream) {
+    rope_table_inv_kernel<<<rows, 64, 0, (cudaStream_t) stream>>>(pos, rows, inv, table);
+    check("rope_table_inv");
+}
+
 void df2_gemm_variant(int v) { g_gemm_variant = v; }
 void df2_attention_variant(int v) { g_attn_variant = v; }
 
@@ -737,8 +857,29 @@ void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_
     segs.n = n;
     const int8_t* xqp = static_cast<const int8_t*>(xq);
     cudaStream_t st = (cudaStream_t) stream;
-    const int variant = g_gemm_variant != 0 ? g_gemm_variant : (rows % 32 == 0 ? 1 : 2);
+    static const int tune = [] { const char* e = std::getenv("STRATA_DF2_GEMM"); return e ? std::atoi(e) : 1; }();   // 1 (default): rows a warp by matrix size, bitwise the same results; 0: 8 rows a warp as before
+    const int variant = g_gemm_variant != 0 ? g_gemm_variant
+                        : tune == 0         ? (rows % 32 == 0 ? 1 : 2)
+                        : rows <= 1024      ? 20
+                        : rows <= 3072      ? 13
+                        : rows >= 15000     ? 10
+                                            : (rows % 32 == 0 ? 1 : 2);
+#define DF2_ROWS_CASE(V, W, R, U) case V: gemm_rows_kernel<W, R, U><<<(rows / 8) * (8 / R) / W, W * 32, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
     switch (variant) {
+        DF2_ROWS_CASE(10, 4, 4, 2)
+        DF2_ROWS_CASE(11, 4, 2, 2)
+        DF2_ROWS_CASE(12, 4, 1, 2)
+        DF2_ROWS_CASE(13, 8, 2, 2)
+        DF2_ROWS_CASE(14, 8, 1, 2)
+        DF2_ROWS_CASE(15, 4, 2, 4)
+        DF2_ROWS_CASE(16, 4, 1, 4)
+        DF2_ROWS_CASE(17, 2, 2, 2)
+        DF2_ROWS_CASE(18, 8, 1, 4)
+        DF2_ROWS_CASE(19, 4, 4, 4)
+        DF2_ROWS_CASE(20, 4, 1, 8)
+        DF2_ROWS_CASE(21, 8, 1, 8)
+        DF2_ROWS_CASE(22, 8, 2, 4)
+        DF2_ROWS_CASE(23, 2, 1, 4)
         case 3: gemm8_kernel<2, false><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
         case 4: gemm8_kernel<1, true, 2><<<rows / 8, 32, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
         case 5: gemm8_kernel<2, true, 1><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols); break;

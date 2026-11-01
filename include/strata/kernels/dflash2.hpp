@@ -6,6 +6,7 @@
 // the given stream, allocate nothing and are graph-capturable.  Layouts are row-major f32 unless noted.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace strata::kernels {
@@ -49,6 +50,9 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
 /// xq is int8 [col][n_in] (8 columns of n_in bytes), xd float [col][n_in / 32].  Up to 3 matrices that share the input run in one launch; y (matrix i)
 /// is [ncols][n_out].  n_in a multiple of 512, n_out of 16, ncols 1..8 (the other columns of xq are read and dropped).
 /// Bench only: pick a GEMM kernel variant (0 = the default).
+/// df2_rope_table with the inverse frequencies computed once (df2_rope_inv: the same double-precision pow per i), so a round pays no pow: the same table, bitwise.
+void df2_rope_inv(float theta, double* inv, void* stream);
+void df2_rope_table_inv(const int32_t* pos, int rows, const double* inv, float* table, void* stream);
 void df2_gemm_variant(int v);
 /// Bench only: attention variants (bit 0 skips Q K^T, bit 1 skips P V).
 void df2_attention_variant(int v);

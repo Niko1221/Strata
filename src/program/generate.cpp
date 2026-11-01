@@ -10246,6 +10246,7 @@ int main(int argc, char** argv) {
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) {   // DFlash2 in the serve loop: one card, one request at a time (--batch, a layer split and --pipeline-windows keep the MTP)
             std::string why_not;
+            df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
             if (!ver.tapping()) why_not = "the verifier keeps no taps here";
             else if (!df2.bind(wt, &native_head, o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab, why_not) ||
                      !df2.prepare(ver.tap_dev(), why_not) ||
@@ -18345,6 +18346,7 @@ int main(int argc, char** argv) {
                                  "to the CPU). The MTP drafts instead.\n", err.c_str());
             use_df2 = false;
         }
+        if (use_df2) df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
         if (use_df2 && !df2.prepare(ver.tap_dev(), err)) {
             std::fprintf(stderr, "strata generate: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (the pack 0.76 GiB, buffers and K/V ring "
                                  "0.25 GiB, a draft head 0.2 GiB); --vram-reserve-mib 1900 keeps it (the expert cache gives up about 2.5%% of its experts "
