@@ -120,7 +120,7 @@ kernel void df2_attn_part(device const float* q [[buffer(0)]], device const floa
     threadgroup float Ls[32];
     const uint kvh = tg.x, chunk = tg.y;
     const int s = *anchor_pos;
-    const int lo = max(0, s - (int(a.window) - 1));
+    const int lo = max(max(0, s - (int(a.window) - 1)), anchor_pos[1]);   // anchor_pos[1]: first position whose ring slot belongs to this request's lineage
     const int nctx = s - lo;
     const int nkeys = nctx + AROWS;
     const int k_begin = int(chunk) * AK;
@@ -201,7 +201,7 @@ kernel void df2_attn_merge(device const float* part [[buffer(0)]], device const 
                            constant AttnArgs& a [[buffer(3)]], uint3 tg [[threadgroup_position_in_grid]], ushort d [[thread_index_in_threadgroup]]) {
     const uint kvh = tg.x >> 5, qi = tg.x & 31;
     const int s = *anchor_pos;
-    const int lo = max(0, s - (int(a.window) - 1));
+    const int lo = max(max(0, s - (int(a.window) - 1)), anchor_pos[1]);   // anchor_pos[1]: first position whose ring slot belongs to this request's lineage
     const int nchunks = ((s - lo) + AROWS + AK - 1) / AK;
     float M = -INFINITY;
     for (int c = 0; c < nchunks; ++c) M = max(M, part[(((uint(c) * 8 + kvh) * 32) + qi) * 130]);

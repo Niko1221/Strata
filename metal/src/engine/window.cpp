@@ -236,6 +236,9 @@ public:
     bool df2_ensure(const std::string& path, std::string& err);
     bool df2_bind(const std::string& vocab_file, std::string& err);
     bool df2_context_ptr(const float* taps, int64_t n, int64_t pos0, std::string& err);
+    bool df2_prepare(std::string& err);
+    void df2_set_cap(int n);
+    void df2_set_floor(int64_t pos);
     bool df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
     uint64_t df2_bytes() const;
     double df2_gpu_ms() const;
@@ -333,7 +336,8 @@ private:
     void df2_ctx_list(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& taps, size_t taps_off, int n, const mtl::Buffer& pos, size_t pos_off, const mtl::Buffer& rt, size_t rt_off);
     void df2_block_list(std::vector<mtl::Dispatch>& ds);
     void df2_mm(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size_t qs_off, const mtl::Buffer& sc, size_t sc_off, uint32_t K, uint32_t rows, const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y, size_t y_off, uint32_t y_stride, int ncol);
-    void df2_mmn(std::vector<mtl::Dispatch>& ds, const std::string& name, const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y, uint32_t y_stride, int ncol);
+    void df2_mmn(std::vector<mtl::Dispatch>& ds, const std::string& name, const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y, uint32_t y_stride, int ncol, bool reuse = false);
+    void df2_mm4(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size_t qs_off, const mtl::Buffer& sc, size_t sc_off, uint32_t K, uint32_t rows, const mtl::Buffer& x, size_t x_off, const mtl::Buffer& y, uint32_t y_stride, int ncol, bool reuse);
     void df2_rms(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const mtl::Buffer& y, const char* wname, int rows);
     void df2_free();
     void df2_dump_rows(const mtl::Buffer& taps, size_t taps_off, int64_t n, int64_t pos0);

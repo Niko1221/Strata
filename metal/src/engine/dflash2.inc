@@ -76,6 +76,9 @@ constexpr int DF2_RING = 2064, DF2_ROWS = 8, DF2_DRAFTS = 7, DF2_CTX_MAX = 2048,
 struct Window::Df2 {
     // the pack
     std::string path;
+    mtl::Buffer xh;                             // half copy of the activation a matrix kernel reads (df2_f16)
+    int64_t floor = 0;                          // first ring position that belongs to the current request (a restarted lineage)
+    int ndraft = DF2_DRAFTS;                    // DF-04: candidates the head, top-k and selector work on (the verify prefix)
     mtl::Buffer pack, wq;                       // pack: the f32 / bf16 tensors; wq: the Q8_0 matrices repacked (int8 [rows][K], then half [rows][K / 32])
     std::map<std::string, gguf::Tensor> ten;    // offset = into wq for a matrix, into pack otherwise
     std::map<std::string, uint64_t> scoff;      // a matrix's scales in wq
@@ -143,7 +146,7 @@ bool df2_read_index(const std::string& path, std::vector<int>& taps, std::map<st
             gguf::Tensor t;
             t.name = a;
             const std::string dt = b;
-            t.type = dt == "q8_0" ? ref::Q8_0 : dt == "f32" ? ref::F32 : dt == "bf16" ? ref::BF16 : -1;
+            t.type = dt == "q8_0" ? ref::Q8_0 : dt == "q4_0" ? ref::Q4_0 : dt == "f32" ? ref::F32 : dt == "bf16" ? ref::BF16 : -1;
             t.shape = {(uint64_t) v2, (uint64_t) v1};   // ggml order: [in][out]
             t.offset = (uint64_t) v3;
             t.bytes = (uint64_t) v4;
@@ -192,7 +195,12 @@ bool Window::df2_load_pack(std::string& err) {
     uint64_t wq_bytes = 0, misc_bytes = 0;
     std::map<std::string, uint64_t> woff, soff, moff;
     for (const auto& [n, t] : ten) {
-        if (t.type == ref::Q8_0) {
+        if (t.type == ref::Q4_0) {
+            const uint64_t K = t.shape[0], rows = t.shape[1];
+            if (K % 32 != 0 || rows % 8 != 0) { err = "dflash2: " + n + " is not a whole number of 8-row, 32-column Q4_0 tiles"; return false; }
+            woff[n] = wq_bytes; wq_bytes += up256(rows * K / 2);                  // fragment-order words: [row tile][block][lane] uint32
+            soff[n] = wq_bytes; wq_bytes += up256(rows * (K / 32) * 2);           // half scales [row tile][block][8 rows]
+        } else if (t.type == ref::Q8_0) {
             const uint64_t K = t.shape[0], rows = t.shape[1];
             if (K % 512 != 0) { err = "dflash2: " + n + " has K = " + std::to_string(K) + ", not a multiple of 512"; return false; }
             woff[n] = wq_bytes; wq_bytes += up256(rows * K);
@@ -211,7 +219,31 @@ bool Window::df2_load_pack(std::string& err) {
         tmp.resize(t.bytes);
         fseeko(f, (off_t) (data_off + t.offset), SEEK_SET);
         if (std::fread(tmp.data(), 1, t.bytes, f) != t.bytes) { std::fclose(f); err = "dflash2: the pack is shorter than its index"; return false; }
-        if (t.type == ref::Q8_0) {
+        if (t.type == ref::Q4_0) {
+            // Q4_0 blocks (half d, 16 bytes: byte j = element j low nibble, element j + 16 high nibble) -> the matrix units' fragment order (df2_mma4s):
+            // for a tile of 8 rows and one block, lane l (fragment row fm, columns fn, fn + 1) holds the codes of W[fm][8 s + fn + e] as nibble 2 s + e
+            const uint64_t K = t.shape[0], rows = t.shape[1], nb = K / 32, nrt = rows / 8;
+            uint32_t* qw = (uint32_t*) (d.wq.as<uint8_t>() + woff[n]);
+            uint16_t* sc = (uint16_t*) (d.wq.as<uint8_t>() + soff[n]);
+            auto code = [&](uint64_t r, uint64_t b, int j) -> uint32_t {   // element j (0..31) of block b of row r
+                const uint8_t* blk = tmp.data() + (r * nb + b) * 18;
+                return j < 16 ? (blk[2 + j] & 15u) : (blk[2 + j - 16] >> 4);
+            };
+            for (uint64_t rt = 0; rt < nrt; ++rt)
+                for (uint64_t b = 0; b < nb; ++b) {
+                    for (int lane = 0; lane < 32; ++lane) {
+                        const int qid = lane >> 2, fm = (qid & 4) + ((lane >> 1) & 3), fn = (qid & 2) * 2 + (lane & 1) * 2;
+                        const uint64_t r = rt * 8 + fm;
+                        uint32_t w = 0;
+                        for (int s2 = 0; s2 < 4; ++s2)
+                            for (int e = 0; e < 2; ++e) w |= code(r, b, 8 * s2 + fn + e) << (4 * (2 * s2 + e));
+                        qw[(rt * nb + b) * 32 + lane] = w;
+                    }
+                    for (int r8 = 0; r8 < 8; ++r8) std::memcpy(&sc[(rt * nb + b) * 8 + r8], tmp.data() + ((rt * 8 + r8) * nb + b) * 18, 2);
+                }
+            t.offset = woff[n];
+            d.scoff[n] = soff[n];
+        } else if (t.type == ref::Q8_0) {
             const uint64_t K = t.shape[0], rows = t.shape[1], nb = K / 32;
             int8_t* qs = (int8_t*) (d.wq.as<uint8_t>() + woff[n]);
             uint16_t* sc = (uint16_t*) (d.wq.as<uint8_t>() + soff[n]);
@@ -268,8 +300,9 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
         // cycles per round than the engine's GEMV on the Q6_K rows (STRATA_DF2_HEAD=native keeps those).  The logits differ by the Q8_0 rounding.
         const size_t rb = ref::row_bytes(out_t.type, N);
         const uint64_t nrow = (uint64_t) d.nd, nb = N / 32;
-        d.hq = A(nrow * N + 4096);
-        d.hsc = A(nrow * nb * 2 + 4096);
+        const uint64_t nrt = (nrow + 7) / 8;
+        d.hq = A(nrt * nb * 32 * 8 + 4096);       // fragment order: [row tile][block][lane] 8 int8 (uint2)
+        d.hsc = A(nrt * nb * 8 * 2 + 4096);       // half scales [row tile][block][8 rows]
         std::vector<std::thread> th;
         const unsigned nth = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
         for (unsigned k = 0; k < nth; ++k)
@@ -280,9 +313,18 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
                     const uint64_t tok = vocab.empty() ? i : (uint64_t) vocab[i];
                     ref::dequant(out_t.type, (const uint8_t*) W_.ptr + out_t.offset + tok * rb, tmpf.data(), N);
                     ref::quantize_q8_0(tmpf.data(), N, blk.data());
+                    // this row's fm in its tile; the 8 rows of a tile are written by whichever thread owns each row: lane words are filled byte by byte
+                    const uint64_t rt = i / 8, fmr = i % 8;
                     for (uint64_t b = 0; b < nb; ++b) {
-                        std::memcpy(d.hsc.as<uint8_t>() + (i * nb + b) * 2, blk.data() + b * 34, 2);
-                        std::memcpy(d.hq.as<uint8_t>() + i * N + b * 32, blk.data() + b * 34 + 2, 32);
+                        std::memcpy(d.hsc.as<uint8_t>() + ((rt * nb + b) * 8 + fmr) * 2, blk.data() + b * 34, 2);
+                        const int8_t* q8 = (const int8_t*) (blk.data() + b * 34 + 2);
+                        for (int lane = 0; lane < 32; ++lane) {
+                            const int qid = lane >> 2, fm = (qid & 4) + ((lane >> 1) & 3), fn = (qid & 2) * 2 + (lane & 1) * 2;
+                            if ((uint64_t) fm != fmr) continue;
+                            int8_t* dst = (int8_t*) (d.hq.as<uint8_t>() + ((rt * nb + b) * 32 + lane) * 8);
+                            for (int s2 = 0; s2 < 4; ++s2)
+                                for (int e = 0; e < 2; ++e) dst[2 * s2 + e] = q8[8 * s2 + fn + e];
+                        }
                     }
                 }
             });
@@ -323,8 +365,9 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
     d.h = A(4 * B * N); d.xn = A(4 * B * N); d.xc = A(4 * B * N); d.dyn = A(4 * B * 640);
     d.q = A(4 * B * 4096); d.qn = A(4 * B * 4096); d.k = A(4 * B * 1024); d.v = A(4 * B * 1024); d.kblk = A(4 * B * 1024);
     d.ao = A(4 * B * 4096); d.o = A(4 * B * N); d.gate = A(4 * B * d.I); d.up = A(4 * B * d.I); d.sw = A(4 * B * d.I);
-    d.mlp = A(4 * B * N); d.fn = A(4 * (B + 1) * N); d.hsel = A(4 * DF2_DRAFTS * 256);
-    d.logits = A(4 * (size_t) DF2_DRAFTS * (size_t) d.nd);
+    d.mlp = A(4 * B * N); d.fn = A(4 * (B + 1) * N); d.hsel = A(4 * 8 * 256);
+    d.xh = A(2 * (size_t) 8 * 12800 + 4096);
+    d.logits = A(4 * (size_t) 8 * (size_t) d.nd);
     d.topval = A(4 * DF2_DRAFTS * 16); d.toptok = A(4 * DF2_DRAFTS * 16);
     d.tkv = A(4 * (size_t) DF2_DRAFTS * DF2_TOPB * 16); d.tki = A(4 * (size_t) DF2_DRAFTS * DF2_TOPB * 16);
     d.part = A(4 * (size_t) DF2_MAXCH * 8 * 32 * 130);
@@ -372,10 +415,37 @@ void Window::df2_mm(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size_
     push(ds, dd);
 }
 
+// Q4_0 (fragment order) x up to 8 float columns on the matrix units: the activation is rounded to half once (df2_f16, skipped when `reuse`: the previous
+// call read the same x), then df2_mma4s (split-K over the simdgroups of a threadgroup, 2 row tiles per threadgroup, 8 simdgroups)
+void Window::df2_mm4(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size_t qs_off, const mtl::Buffer& sc, size_t sc_off, uint32_t K, uint32_t rows,
+                     const mtl::Buffer& x, size_t x_off, const mtl::Buffer& y, uint32_t y_stride, int ncol, bool reuse) {
+    Df2& d = *df2_;
+    if (!reuse) {
+        const uint32_t n = (uint32_t) ncol * K;
+        mtl::Dispatch c;
+        c.p = P(ldf2_, "df2_f16", {}, "df2_f16");
+        c.args = {mtl::Arg::B(x, x_off), mtl::Arg::B(d.xh), mtl::Arg::V(n)};
+        c.grid[0] = (n + 255) / 256;
+        c.tg[0] = 256;
+        push(ds, c);
+    }
+    struct MmaQArgs { uint32_t K, rows, y_stride, x_stride; } a{K, rows, y_stride, K};
+    mtl::Dispatch dd;
+    dd.p = P(ldf2_, "df2_mma4s_2_8", {}, "df2_mma4s_2_8");
+    dd.args = {mtl::Arg::B(qs, qs_off), mtl::Arg::B(sc, sc_off), mtl::Arg::B(d.xh), mtl::Arg::B(y), mtl::Arg::V(a)};
+    dd.grid[0] = ((rows + 7) / 8 + 1) / 2;
+    dd.tg[0] = 8 * 32;
+    push(ds, dd);
+}
+
 void Window::df2_mmn(std::vector<mtl::Dispatch>& ds, const std::string& name, const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y,
-                     uint32_t y_stride, int ncol) {
+                     uint32_t y_stride, int ncol, bool reuse) {
     Df2& d = *df2_;
     const gguf::Tensor& t = d.ten.at(name);
+    if (t.type == ref::Q4_0) {
+        df2_mm4(ds, d.wq, t.offset, d.wq, d.scoff.at(name), (uint32_t) t.shape[0], (uint32_t) t.shape[1], x, x_off, y, y_stride, ncol, reuse);
+        return;
+    }
     df2_mm(ds, d.wq, t.offset, d.wq, d.scoff.at(name), (uint32_t) t.shape[0], (uint32_t) t.shape[1], x, x_off, x_stride, y, 0, y_stride, ncol);
 }
 
@@ -399,9 +469,9 @@ void Window::df2_ctx_list(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& tap
     df2_rms(ds, d.fcy, d.hctx, "hidden_norm.weight", n);
     for (int l = 0; l < d.L; ++l) {
         const std::string p = "layers." + std::to_string(l) + ".";
-        df2_mmn(ds, p + "self_attn.k_proj.weight", d.hctx, 0, N, d.kc, 1024, n);
+        df2_mmn(ds, p + "self_attn.k_proj.weight", d.hctx, 0, N, d.kc, 1024, n, l > 0);
         nb_ = true;   // the V projection reads the same rows
-        df2_mmn(ds, p + "self_attn.v_proj.weight", d.hctx, 0, N, d.vc, 1024, n);
+        df2_mmn(ds, p + "self_attn.v_proj.weight", d.hctx, 0, N, d.vc, 1024, n, true);
         struct NrArgs { uint32_t in_stride, slot_mod, heads; float eps; uint32_t has_rope; } na{1024, (uint32_t) DF2_RING, 8, d.eps, 1};
         mtl::Dispatch kn;
         kn.p = P(ldf2_, "df2_norm_rope", {}, "df2_norm_rope");
@@ -443,9 +513,9 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
         conv(d.xn, d.dyn, 0, base_a, nullptr, d.xc);
         df2_mmn(ds, p + "self_attn.q_proj.weight", d.xc, 0, N, d.q, 4096, B);
         nb_ = true;
-        df2_mmn(ds, p + "self_attn.k_proj.weight", d.xc, 0, N, d.k, 1024, B);
+        df2_mmn(ds, p + "self_attn.k_proj.weight", d.xc, 0, N, d.k, 1024, B, true);
         nb_ = true;
-        df2_mmn(ds, p + "self_attn.v_proj.weight", d.xc, 0, N, d.v, 1024, B);
+        df2_mmn(ds, p + "self_attn.v_proj.weight", d.xc, 0, N, d.v, 1024, B, true);
         {
             struct NrArgs { uint32_t in_stride, slot_mod, heads; float eps; uint32_t has_rope; } qa{4096, 0, 32, d.eps, 1}, ka{1024, 0, 8, d.eps, 1};
             mtl::Dispatch qd, kd;
@@ -480,7 +550,7 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
         conv(d.xn, d.dyn, 0, base_m, nullptr, d.xc);
         df2_mmn(ds, p + "mlp.gate_proj.weight", d.xc, 0, N, d.gate, d.I, B);
         nb_ = true;
-        df2_mmn(ds, p + "mlp.up_proj.weight", d.xc, 0, N, d.up, d.I, B);
+        df2_mmn(ds, p + "mlp.up_proj.weight", d.xc, 0, N, d.up, d.I, B, true);
         {
             struct SwArgs { uint32_t n; } sa{(uint32_t) (B * d.I)};
             mtl::Dispatch sd;
@@ -494,8 +564,24 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
         conv(d.mlp, d.dyn, 320 * 4, base_m + 2 * N * 4, &d.h, d.h);
     }
     df2_rms(ds, d.h, d.fn, "norm.weight", B);
+    const int ND = d.ndraft;
     if (d.head_q8) {
-        df2_mm(ds, d.hq, 0, d.hsc, 0, N, (uint32_t) d.nd, d.fn, (size_t) N * 4, N, d.logits, 0, (uint32_t) d.nd, DF2_DRAFTS);   // rows 1..7
+        {   // rows 1..ND of fn to half, then the Q8_0 head rows on the matrix units (8 columns wide whatever ND is: the cap saves top-k and selector work)
+            const uint32_t n = (uint32_t) ND * N;
+            mtl::Dispatch c;
+            c.p = P(ldf2_, "df2_f16", {}, "df2_f16");
+            c.args = {mtl::Arg::B(d.fn, (size_t) N * 4), mtl::Arg::B(d.xh), mtl::Arg::V(n)};
+            c.grid[0] = (n + 255) / 256;
+            c.tg[0] = 256;
+            push(ds, c);
+            struct MmaQArgs { uint32_t K, rows, y_stride, x_stride; } ha{(uint32_t) N, (uint32_t) d.nd, (uint32_t) d.nd, (uint32_t) N};
+            mtl::Dispatch h8;
+            h8.p = P(ldf2_, "df2_mma8_2_4", {}, "df2_mma8_2_4");
+            h8.args = {mtl::Arg::B(d.hq), mtl::Arg::B(d.hsc), mtl::Arg::B(d.xh), mtl::Arg::B(d.logits), mtl::Arg::V(ha)};
+            h8.grid[0] = (((uint32_t) d.nd + 7) / 8 + 7) / 8;
+            h8.tg[0] = 4 * 32;
+            push(ds, h8);
+        }
     } else {
         mtl::Dispatch xd;
         xd.p = P(lib_, "xprep", {}, "xprep");
@@ -504,25 +590,25 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
         xd.tg[0] = 256;
         xd.grid[0] = (N / 16 * MAXT + 255) / 256;
         push(ds, xd);
-        gemv(ds, d.head_t, d.A_fn, d.logits, (size_t) d.nd, DF2_DRAFTS, 0, d.head_buf);
+        gemv(ds, d.head_t, d.A_fn, d.logits, (size_t) d.nd, ND, 0, d.head_buf);
     }
     {
         struct TkArgs { int32_t n; } ta{(int32_t) d.nd};
         mtl::Dispatch tp, tm;
         tp.p = P(ldf2_, "df2_topk_part", {}, "df2_topk_part");
         tp.args = {mtl::Arg::B(d.logits), mtl::Arg::B(d.tkv), mtl::Arg::B(d.tki), mtl::Arg::V(ta)};
-        tp.grid[0] = DF2_DRAFTS; tp.grid[1] = DF2_TOPB; tp.tg[0] = 256;
+        tp.grid[0] = ND; tp.grid[1] = DF2_TOPB; tp.tg[0] = 256;
         push(ds, tp);
         struct TkMArgs { int32_t use_map; } tma{d.use_map ? 1 : 0};
         tm.p = P(ldf2_, "df2_topk_merge", {}, "df2_topk_merge");
         tm.args = {mtl::Arg::B(d.tkv), mtl::Arg::B(d.tki), mtl::Arg::B(d.vmap), mtl::Arg::B(d.topval), mtl::Arg::B(d.toptok), mtl::Arg::V(tma)};
-        tm.grid[0] = DF2_DRAFTS; tm.tg[0] = 256;
+        tm.grid[0] = ND; tm.tg[0] = 256;
         push(ds, tm);
     }
     // the selector's hidden projection over the same 7 rows (it reads rows 1..7 of fn)
-    df2_mmn(ds, "candidate_selector.hidden_projection.weight", d.fn, (size_t) N * 4, N, d.hsel, 256, DF2_DRAFTS);
+    df2_mmn(ds, "candidate_selector.hidden_projection.weight", d.fn, (size_t) N * 4, N, d.hsel, 256, ND, d.head_q8);   // (the head just rounded rows 1..ND to half)
     {
-        struct SelArgs { uint32_t rank, rows; } sa{(uint32_t) d.rank, (uint32_t) DF2_DRAFTS};
+        struct SelArgs { uint32_t rank, rows; } sa{(uint32_t) d.rank, (uint32_t) ND};
         mtl::Dispatch sd;
         sd.p = P(ldf2_, "df2_select", {}, "df2_select");
         sd.args = {mtl::Arg::B(d.hsel), mtl::Arg::B(d.topval), mtl::Arg::B(d.toptok),
@@ -599,6 +685,7 @@ bool Window::df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts,
     int32_t* an = d.anchor.as<int32_t>();
     an[0] = anchor;
     an[1] = (int32_t) s;
+    an[2] = (int32_t) d.floor;
     df2_rope_rows(dp, 8, d.theta, d.rtd.as<float>());
     df2_rope_rows(bp, 8, d.theta, d.rtb.as<float>());
     float* h = d.h.as<float>();
@@ -624,7 +711,7 @@ bool Window::df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts,
         d.build_ms += d.last_build_ms;
     }
     int32_t* ot = d.outbuf.as<int32_t>();
-    for (int i = 0; i < DF2_DRAFTS; ++i) ot[i] = -1;
+    for (int i = 0; i < DF2_DRAFTS; ++i) ot[i] = -1;   // (draft ids past the cap stay -1)
     const double tr = now_ms();
     const double g = cx_->run_graph(d.list[n_new]);
     const double wall = now_ms() - tr;
@@ -633,8 +720,8 @@ bool Window::df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts,
     static const bool prof = std::getenv("STRATA_DF2_PROF") != nullptr;
     if (prof && d.rounds == 10) df2_prof(d.list[n_new]);
     for (int i = 0; i < DF2_DRAFTS; ++i) {
-        drafts[i] = ot[i];
-        if (probs) probs[i] = d.outbuf.as<float>()[16 + i];
+        drafts[i] = i < d.ndraft ? ot[i] : 0;                 // DF-04: past the cap token 0 with probability 0
+        if (probs) probs[i] = i < d.ndraft ? d.outbuf.as<float>()[16 + i] : 0.0f;
     }
     if (!d.dump_path.empty() && d.rounds == d.dump_round) { df2_dump_write(s, anchor); d.dump_path.clear(); }
     ++d.rounds;
@@ -693,6 +780,27 @@ void Window::df2_free() {
     delete df2_;
     df2_ = nullptr;
 }
+
+bool Window::df2_prepare(std::string& err) {
+    if (df2_ == nullptr || !df2_->bound) { err = "dflash2: not bound"; return false; }
+    Df2& d = *df2_;
+    for (int n = 1; n <= DF2_ROWS; ++n)
+        if (!d.built[n]) {
+            const double tb = now_ms();
+            nb_ = false;
+            df2_ctx_list(d.list[n], tap_dec_, 0, n, d.dpos, 0, d.rtd, 0);
+            df2_block_list(d.list[n]);
+            d.built[n] = true;
+            d.build_ms += now_ms() - tb;
+        }
+    return true;
+}
+void Window::df2_set_cap(int n) {
+    if (df2_ == nullptr || n == df2_->ndraft) return;
+    df2_->ndraft = n;
+    for (int i = 0; i <= DF2_ROWS; ++i) { df2_->built[i] = false; df2_->list[i].clear(); }
+}
+void Window::df2_set_floor(int64_t pos) { if (df2_) df2_->floor = pos; }
 
 uint64_t Window::df2_bytes() const { return df2_ ? df2_->bytes : 0; }
 double Window::df2_gpu_ms() const { return df2_ ? df2_->gpu_ms : 0.0; }
@@ -787,6 +895,7 @@ bool Dflash2Drafter::context(const float* taps, int64_t n, int64_t pos0, std::st
     }
     if (!w->df2_context_ptr(taps, n, pos0, err)) return false;
     have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n);
+    ring_hi_ = std::max<int64_t>(ring_hi_, pos0 + n);
     return true;
 }
 
@@ -800,8 +909,50 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     ms_gpu = w->df2_gpu_ms();
     ++rounds;
     have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n_new);
+    ring_hi_ = std::max<int64_t>(ring_hi_, pos0 + n_new);
     return true;
 }
+
+bool Dflash2Drafter::prepare(const float*, std::string& err) {
+    strata::metal_engine::Window* w = strata::metal_engine::g_window;
+    if (w == nullptr || !bound_) { err = "dflash2: not bound"; return false; }
+    return w->df2_prepare(err);
+}
+
+void Dflash2Drafter::set_max_drafts(int n) {
+    n = std::max(1, std::min(n, (int) kDrafts));
+    ndraft_ = n;
+    if (strata::metal_engine::Window* w = strata::metal_engine::g_window) w->df2_set_cap(n);
+}
+
+// Serve: the same bookkeeping as the CUDA drafter (src/core/dflash2.cpp).  The ring has no slot tags here: a lineage change moves a floor instead,
+// the first position written after the restart (attention never looks below it).
+bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume, bool* cold) {
+    (void) n;
+    resume = std::max<int64_t>(0, std::min(resume, n));
+    int64_t lcp = 0;
+    const int64_t lim = std::min<int64_t>((int64_t) hist_.size(), resume);
+    while (lcp < lim && hist_[(size_t) lcp] == ids[lcp]) ++lcp;
+    const bool stale = ring_hi_ > lcp && lcp < resume;
+    if (stale) {
+        ++epoch_;
+        ring_hi_ = 0;
+        if (strata::metal_engine::Window* w = strata::metal_engine::g_window) w->df2_set_floor(resume);   // rows [0, resume) are another lineage's
+    }
+    if (cold) *cold = stale;
+    hist_.assign(ids, ids + resume);
+    return true;
+}
+
+void Dflash2Drafter::note_rows(const int32_t* toks, int64_t n, int64_t pos0) {
+    if (pos0 < 0) return;
+    if ((int64_t) hist_.size() > pos0) hist_.resize((size_t) pos0);
+    if ((int64_t) hist_.size() < pos0) return;
+    hist_.insert(hist_.end(), toks, toks + n);
+}
+
+bool Dflash2Drafter::context_async(const float* taps, int64_t n, int64_t pos0, std::string& err) { return context(taps, n, pos0, err); }   // (no overlap on Metal yet)
+bool Dflash2Drafter::context_wait(std::string&) { return true; }
 
 bool Dflash2Drafter::debug_rows(std::vector<float>& rows, std::string& err) {
     err = "dflash2: debug_rows is not on Metal";
