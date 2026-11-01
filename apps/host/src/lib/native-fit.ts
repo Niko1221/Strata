@@ -102,15 +102,27 @@ export function recommendedVersions<V extends { sourceFamily: string; model: str
 }
 
 /**
- * The version list as the menu shows it: one section per model (a single unnamed one without `models`), each version exactly once, in order of
- * download size with the pick for this PC first; the versions in `hidden` (shown elsewhere) are left out. A model with nothing to show has no section.
+ * The version list as the menu shows it, for one base model: first the versions to look at (the pick for this PC, then the ones already on this
+ * computer, each by download size), then every other version by download size. A version is in exactly one of the two, so none is shown twice
+ * and none is lost; the ones in `hidden` (shown elsewhere, as on the first-run page) are left out.
  */
-export function versionSections<V extends { id: string; download_gb: number }>(versions: V[], models: { family: string; title: string; sizes: V[] }[] | undefined, hidden: ReadonlySet<string>, pickId?: string): { id: string; title: string; versions: V[] }[] {
-  const rank = (v: V) => v.id === pickId ? -1 : v.download_gb;
+export function versionGroups<V extends { id: string; download_gb: number }>(versions: V[], hidden: ReadonlySet<string>, downloaded: ReadonlySet<string> | undefined, pickId?: string): { top: V[]; more: V[] } {
   const seen = new Set<string>();
-  return (models ?? [{ family: 'all', title: '', sizes: versions }])
-    .map(m => ({ id: m.family, title: models && models.length > 1 ? m.title : '', versions: m.sizes.filter(v => !hidden.has(v.id) && !seen.has(v.id) && !!seen.add(v.id)).map((v, at) => ({ v, at })).sort((a, b) => rank(a.v) - rank(b.v) || a.at - b.at).map(x => x.v) }))
-    .filter(s => s.versions.length);
+  const list = versions.filter(v => !hidden.has(v.id) && !seen.has(v.id) && !!seen.add(v.id));
+  const bySize = (a: V, b: V) => a.download_gb - b.download_gb;
+  const pick = list.find(v => v.id === pickId);
+  const have = list.filter(v => v.id !== pickId && downloaded?.has(v.id)).sort(bySize);
+  const top = [...(pick ? [pick] : []), ...have];
+  const inTop = new Set(top.map(v => v.id));
+  return { top, more: list.filter(v => !inTop.has(v.id)).sort(bySize) };
+}
+
+/** What a version is on this computer, in the words the list shows: from the same fit figures the card uses, and the engine's own "does not fit". */
+export type VersionFit = 'fits' | 'ssd' | 'no' | 'unknown';
+export function versionFit(v: FitInput & { on_this_pc?: string | null }, hw: FitHardware | null | undefined): VersionFit {
+  if (v.on_this_pc === 'does not fit') return 'no';
+  const fit = fitOn(v, hw);
+  return !fit.known ? 'unknown' : fit.spillGb >= 1 ? 'ssd' : 'fits';
 }
 
 /** A card as the installer's hardware report lists it. */

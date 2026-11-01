@@ -3,9 +3,9 @@ import { tr } from '../lib/i18n';
 import { Icon } from './ui';
 import { FloatingMenu } from './FloatingMenu';
 import { cx } from '../lib/format';
-import { nativeVersionLabel, versionNote, type CatalogVersion } from '../lib/native-catalog';
+import { versionNote, type CatalogVersion } from '../lib/native-catalog';
 import { nvfp4Version } from '../lib/native-names';
-import { fitOn, recommendedVersions, versionSections, PICK_NOTE, type FitHardware, type PcPick } from '../lib/native-fit';
+import { fitOn, recommendedVersions, versionFit, versionGroups, PICK_NOTE, type FitHardware, type PcPick } from '../lib/native-fit';
 
 /** The name a version goes by in the list: the quantization, with the maker only where the quantization alone would be ambiguous. */
 export function versionName(v: CatalogVersion): string {
@@ -24,22 +24,16 @@ const MAKERS: Record<string, string> = { qwen: 'GSQ-RCO', coder: 'GSQ-RCO', swif
 const gb = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)} GB`;
 const whole = (n: number) => `${Math.round(n)} GB`;
 
-/** A short plain word for the version ("High quality"), empty where the name is all there is. */
-function plainLabel(v: CatalogVersion): string {
-  const label = nativeVersionLabel(v.model);
-  return label && label !== v.model && label !== versionName(v) ? label : '';
-}
-
 /**
- * Where the versions are listed: one row per version, each exactly once. The name is the main thing, with a plain word beside it
- * ("High quality") and small tags (Recommended, Downloaded); under it, what it costs: the download and the memory it needs. The maker,
- * the RAM + VRAM split and the SSD figure are behind "Show details" (open from the start in Expert mode). Rows are in order of size
- * inside each model (by download size), and the pick for this PC comes first. With more than one model the sections carry the model name, small and quiet.
+ * Where the versions of the chosen base model are listed, each exactly once. At the top: our recommendation for this PC and the versions already
+ * downloaded (a downloaded version carries "Downloaded", and "Recommended" only while it is not yet downloaded). Below, folded under "More
+ * versions": all the others. A row is the name, small tags, whether it fits this PC ("Fits", "Fits with SSD streaming", "Doesn't fit": from the
+ * same fit figures as the This computer card) and the size. The maker, the memory it needs and the SSD figure are behind "Show details"
+ * (open from the start in Expert mode). The other base models are not in this list: they appear when picked at the top of the page.
  */
-export function VersionPicker({ versions, models, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick, details: detailsOpen = false }: {
+export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick, details: detailsOpen = false }: {
+  /** The versions of the chosen base model. */
   versions: CatalogVersion[];
-  /** The models the versions belong to, in the order shown (each version appears under exactly one); without it the versions are one list. */
-  models?: { family: string; title: string; sizes: CatalogVersion[] }[];
   selectedId: string;
   hardware: FitHardware | null | undefined;
   onSelect: (id: string) => void;
@@ -50,7 +44,7 @@ export function VersionPicker({ versions, models, selectedId, hardware, onSelect
   showRecommended?: boolean;
   /** What the button says while the selected version is one of the recommended ones shown elsewhere. */
   moreLabel?: string;
-  /** The engine's own pick for this PC (catalog.recommendation); it comes first, tagged Recommended. */
+  /** The engine's own pick for this PC (catalog.recommendation). */
   pick?: PcPick | null;
   /** Start with the technical detail shown (Expert mode). */
   details?: boolean;
@@ -64,8 +58,11 @@ export function VersionPicker({ versions, models, selectedId, hardware, onSelect
   const rows = recommendedVersions(versions, pick);
   const apart = new Set(showRecommended ? [] : rows.map(x => x.v.id));
   const pickId = rows.find(x => x.r.note === PICK_NOTE)?.v.id;
-  const sections = versionSections(versions, models, apart, pickId);
+  const { top, more } = versionGroups(versions, apart, downloaded, pickId);
   const shown = selected && !apart.has(selected.id) ? selected : undefined;
+  // The folded part opens by itself when it holds the chosen version or when there is nothing above it.
+  const [moreOpen, setMoreOpen] = useState(false);
+  const foldedOpen = moreOpen || !top.length || more.some(v => v.id === selectedId);
 
   const need = (v: CatalogVersion, technical: boolean) => {
     const fit = fitOn(v, hardware);
@@ -74,17 +71,18 @@ export function VersionPicker({ versions, models, selectedId, hardware, onSelect
   };
   const row = (v: CatalogVersion) => {
     const fit = fitOn(v, hardware);
-    const on = v.id === selectedId;
-    const word = plainLabel(v), note = versionNote(v.model);
-    const slow = fit.known && fit.spillGb >= 1;
-    const technical = [MAKERS[v.sourceFamily], need(v, true), slow ? tr("Uses SSD {0} GB", [Math.round(fit.spillGb)]) : ''].filter(Boolean).join(' · ');
+    const on = v.id === selectedId, have = !!downloaded?.has(v.id), recommended = v.id === pickId && !have;
+    const state = versionFit(v, hardware);
+    const technical = [MAKERS[v.sourceFamily], need(v, true), state === 'ssd' ? tr("Uses SSD {0} GB", [Math.round(fit.spillGb)]) : ''].filter(Boolean).join(' · ');
+    const note = versionNote(v.model);
     return <button key={v.id} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>
       <span className="version-row__check">{tr(on ? <Icon name="check" size={14}/> : null)}</span>
       <span className="version-row__body">
-        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(word ? <span className="version-row__word">{word}</span> : null)}{tr(v.id === pickId || downloaded?.has(v.id) ? <span className="version-row__tags">{tr(v.id === pickId ? <span className="version-tag version-tag--pick">{tr("Recommended")}</span> : null)}{tr(downloaded?.has(v.id) ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}</span> : null)}{tr(slow ? <span className="version-row__slow">{tr("Slower on this computer")}</span> : null)}</span>
+        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(recommended || have ? <span className="version-row__tags">{tr(recommended ? <span className="version-tag version-tag--pick">{tr("Recommended")}</span> : null)}{tr(have ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}</span> : null)}</span>
+        {tr(state !== 'unknown' ? <span className="version-row__fit" data-fit={state}>{tr(state === 'fits' ? 'Fits' : state === 'ssd' ? 'Fits with SSD streaming' : "Doesn't fit")}</span> : null)}
         {tr(details ? <span className="version-row__tech">{technical}{tr(note ? <><br/>{note}</> : null)}</span> : null)}
       </span>
-      <span className="version-row__size">{downloaded?.has(v.id) ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>
+      <span className="version-row__size">{have ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>
     </button>;
   };
   // The open menu opens on the chosen version, not at the top of a long list.
@@ -98,10 +96,11 @@ export function VersionPicker({ versions, models, selectedId, hardware, onSelect
     </button>
     {tr(open ? <FloatingMenu anchor={trigger.current} title={tr("Model version")} width={520} onClose={() => setOpen(false)}>
       <div className="version-menu" ref={menu}>
-        {tr(sections.map(s => <div className="version-section" role="group" aria-label={s.title || tr("Model version")} key={s.id}>
-          {tr(s.title ? <div className="version-section__title" aria-hidden="true">{s.title}</div> : null)}
-          {tr(s.versions.map(row))}
-        </div>))}
+        {tr(top.length ? <div className="version-section" role="group" aria-label={tr("Model version")}>{tr(top.map(row))}</div> : null)}
+        {tr(more.length ? <div className="version-section" role="group" aria-label={tr("More versions")}>
+          {tr(top.length ? <button role="menuitem" className="version-more" aria-expanded={foldedOpen} onClick={() => setMoreOpen(!foldedOpen)}><span>{tr("More versions")} <span className="muted">{more.length}</span></span><Icon name="chevron" size={14} className={cx('version-more__chev', foldedOpen && 'is-open')}/></button> : null)}
+          {tr(foldedOpen ? <div className="version-more__rows">{tr(more.map(row))}</div> : null)}
+        </div> : null)}
         <div className="version-foot">
           <button role="menuitem" className="version-foot__btn" onClick={() => { setOpen(false); onOwnGguf(); }}><Icon name="folder" size={14}/>{tr("Use your own GGUF…")}</button>
           <button role="menuitem" className="version-foot__btn" aria-pressed={details} onClick={() => setDetails(d => !d)}>{tr(details ? "Hide details" : "Show details")}</button>
