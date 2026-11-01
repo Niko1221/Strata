@@ -362,20 +362,26 @@ body {
    "New chat" is the one action on every screen, so it has to read as a control
    without becoming the brightest object in the window.
 
-   Light mode keeps the accent at full strength with the dark accent ink, which
-   is the pairing the accent-ink correction documented (6.37:1): over a #f9fafb
-   page a full #10b981 fill is only 2.5:1 from its background, so it reads as a
-   confident control rather than glare, and the near-black label carries the
-   legibility. Dark mode takes the tinted accent material instead, because a
-   large saturated fill on a near-black page is the one thing that actually
-   glares (9.86:1 against the page; see interaction-guidelines §12).
+   Light mode used to give it the full #10b981 fill with the near-black accent
+   ink. The owner asked for white or green text instead, and white on #10b981 is
+   2.54:1 (it failed `npm run contrast`, passes 1 and 7 of the pass log). White
+   needs a deeper green behind it, but every other primary in light mode is the
+   tinted accent surface with deep-green text (New skill, Run now, Connect an
+   app...), so a deep solid button would be the one object in the app that
+   looked different. It takes the same tinted surface and green text as they do:
+   #086a4a on the 20% tint is 5.47:1, and the hover and edge come from the same
+   tokens, so there is one primary button, not two.
+
+   Dark mode takes the tinted accent material below, because a large saturated
+   fill on a near-black page is the one thing that actually glares (9.86:1
+   against the page; see interaction-guidelines §12).
 
    Both carry the specular top edge, so the control is lit the same way as every
    other surface in the shell. */
 .nav-new.st-btn--primary {
-  background: var(--st-accent);
-  border: 1px solid color-mix(in srgb, var(--st-accent) 70%, var(--st-accent-ink));
-  color: var(--st-accent-ink);
+  background: var(--st-accent-surface);
+  border: 1px solid var(--st-accent-surface-edge);
+  color: var(--st-accent-surface-ink);
   box-shadow:
     inset 0 1px 0 var(--st-specular),
     var(--st-sh-card);
@@ -384,11 +390,10 @@ body {
     box-shadow var(--st-t-control) var(--st-ease-standard);
 }
 .nav-new.st-btn--primary:hover:not(:disabled) {
-  background: var(--st-accent-hover);
-  border-color: color-mix(in srgb, var(--st-accent-hover) 70%, var(--st-accent-ink));
+  background: var(--st-accent-surface-hover);
 }
 .nav-new.st-btn--primary:active:not(:disabled) {
-  background: color-mix(in srgb, var(--st-accent) 88%, var(--st-accent-ink));
+  background: color-mix(in srgb, var(--st-accent) 36%, var(--st-surface));
 }
 [data-theme='dark'] .nav-new.st-btn--primary {
   background: color-mix(in srgb, var(--st-accent) 22%, var(--st-surface));
