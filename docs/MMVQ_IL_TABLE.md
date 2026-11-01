@@ -4,9 +4,9 @@ The decode and verify windows run their dense projections (2 to 8 tokens at a ti
 interleaved copy of the q8_1 activations. Every choice it makes gives the same bits as the plain kernels
 (`STRATA_MMVQ_IL=0` turns the whole path off); only the speed differs. How many matrix rows one warp takes
 (1, 2 or 4, or 0 = use the plain kernel) is a table in `src/kernels/cuda/native_mmvq.cu`, indexed by the
-quantisation type (IQ4_XS, Q4_K, Q5_K, Q6_K, Q3_K), the token count (2-4) and the matrix's row count (five classes).
-Windows of 5 to 8 tokens have a second table (`kIlRows58_<cc>`, 1 or 2 rows a warp); only sm_120 has one so far (measured on
-the RTX PRO 5000: e.g. the Q5_K head at 5 tokens 899 -> 491 us), every other card keeps the plain kernels there.
+quantisation type (IQ4_XS, Q4_K, Q5_K, Q6_K, Q3_K, IQ3_S, IQ3_XXS; IQ3_S and IQ3_XXS for `n_in <= 4096`), the token count (2-4) and the matrix's row count (five classes).
+Windows of 5 to 8 tokens have a second table (`kIlRows58_<cc>`, 1 or 2 rows a warp); `sm_80`, `sm_120` (measured on
+the RTX PRO 5000: e.g. the Q5_K head at 5 tokens 899 -> 491 us), and `1202` (`gfx12` AMD RDNA4, measured on the Radeon AI PRO R9700) have one so far; every other card keeps the plain kernels there.
 `STRATA_MMVQ_IL_WIDE=0` turns the 5-8 token path off. `--emit-table` prints both tables.
 
 Which table a card gets:
@@ -15,6 +15,7 @@ Which table a card gets:
 |---|---|
 | sm_86 (Ampere consumer) and sm_120 cards with fewer than 80 SMs (RTX 5070 and smaller) | `kIlRowsShared`, measured on an RTX 3060 and an RTX 5070 together (a cell is non-zero only if the worse of the two cards still gains 3%) |
 | sm_120 cards with 80 or more SMs (RTX PRO 5000 / 6000 Blackwell, RTX 5080 / 5090) | `kIlRows_120`, measured on an RTX PRO 5000 Blackwell (110 SMs); `STRATA_MMVQ_IL_120=0` gives them the shared table |
+| gfx12 AMD RDNA4 (key `1202`, e.g. Radeon AI PRO R9700 `gfx1201`) | `kIlRows_1202`, `kIlRows58_1202` and `kIl1Rows_1202`, measured across two `mmvq_il_parity --bench --emit-table` runs on a Radeon AI PRO R9700 (32 wave32 CUs); a cell is kept only where both runs agree, else 0 (includes `IQ3_S` and `IQ3_XXS` rows for `n_in <= 4096`) |
 | sm_89 (Ada) | `kIlRows_89`, ON by default on compute capability 8.9 cards only (0.2.7): the cells where an RTX 4070 (46 SMs) and an RTX 4080 (48 SMs) community run gave the same rows count, else 0 (the plain kernel); one column: Q3_K only. `STRATA_MMVQ_IL_89=0` or `STRATA_DEFAULTS=026` gives the shared table (`kIlRowsShared`) again, as in 0.2.6; an explicit `STRATA_MMVQ_IL_89=1` wins over the master switch. The output is bitwise the same either way (a table only changes how many rows a warp takes). Not measured on an Ada card by us: no sm_89 card has run `mmvq_il_parity` on this code, and the issue saw no end-to-end decode change on a 4090 or a 4080 (issue 3453), so the gain may be a microbenchmark one. The reporter tests 0.2.7 and reports back. No 5-8 column table: the 4080's changed in 10-14 of 20 entries between runs of the same card. To check a card: run `mmvq_il_parity` on it (it must end with `OK`) and an interleaved decode A/B with the variable at 1 and 0. |
 | sm_80 (A100, A30, CMP 170HX) | `kIlRows_80`, `kIlRows58_80` and `kIl1Rows_80`, read off `--emit-table` by the author of PR #3779 on one CMP 170HX (not an A100: re-measure there); `STRATA_MMVQ_IL_SM80=0` or `STRATA_DEFAULTS=026` gives the card the shared table again |
 | every other sm_80+ card | `kIlRowsShared` |
