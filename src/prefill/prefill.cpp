@@ -7,6 +7,7 @@
 #endif
 #include "strata/prefill/warm_policy.hpp"
 #include "strata/prefill/share_rules.hpp"
+#include "strata/core/arch_defaults.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
 #define STRATA_ATOMIC_WAIT 1   // #1488: std::atomic::wait / notify_all are a GCC 11 library feature; GCC 10 spins instead
@@ -239,7 +240,7 @@ inline int64_t stream_all_min() {
 // behaves as `auto` with STRATA_PREFILL_CPU_SHARE_MAX=1024 (chunks below 1024 tokens: -20..-35% at 512 and 1000 tokens
 // on an RTX 3060, a Tesla P100 and an RTX 5070, 8/8 pairs each; mean KL against the share off about 0.004).
 // STRATA_PREFILL_CPU_SHARE=0 turns it off: the output is then the 0.1.40.3 bytes.  g_share_default is set by
-// Prefill::arm_cpu_share(.., true) from the paths that qualify; the layer split, batch slots and HIP stay off.
+// Prefill::arm_cpu_share(.., true) from the paths that qualify; the layer split and batch slots stay off, and HIP except a single gfx12 card (AMD-Q, arm_cpu_share).
 bool g_share_default = false;
 inline double cpu_share_explicit() {   // -2: the variable is not set; -1: measured
     static const double v = [] {
@@ -258,6 +259,7 @@ inline bool cpu_share_on() { return cpu_share_env() != 0.0; }
 // STRATA_PREFILL_CPU_SHARE_MAX (default 3072, at least 1024): with the share on, chunks below it are staged after their
 // routing - so they can hand the CPU its share - instead of streaming every expert the cards do not hold.  The share pays
 // on chunks up to ~3K tokens, where few tokens route to many of the streamed experts; 1024 keeps the old limit.
+int64_t g_share_limit_arch = 0;   // AMD-Q: the default limit of a gfx12 card (share_rules::gfx12_share_limit), set by arm_cpu_share
 inline int64_t cpu_share_max() {
     static const int64_t v = [] {
         const char* e = std::getenv("STRATA_PREFILL_CPU_SHARE_MAX");
@@ -265,7 +267,7 @@ inline int64_t cpu_share_max() {
     }();
     static const bool explicit_max = std::getenv("STRATA_PREFILL_CPU_SHARE_MAX") != nullptr;
     if (g_share_default && cpu_share_explicit() == -2.0 && !explicit_max)   // the default-armed share: share_rules::default_share_limit (STRATA_PREFILL_CPU_SHARE_MAX=1024 restores the old 1,024)
-        return strata::prefill::share_rules::default_share_limit();
+        return g_share_limit_arch > 0 ? g_share_limit_arch : strata::prefill::share_rules::default_share_limit();
     return v;
 }
 // On a layer split every stage may have the pool (set_cpu_pool), and the stages read different chunks at the same time:
@@ -2793,6 +2795,21 @@ void Prefill::arm_cpu_share(bool applies, bool by_default) {
                              "takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, "
                              "mean KL ~0.004 below 1024 tokens, ~0.011 at 1-3K). STRATA_PREFILL_CPU_SHARE=0 turns it off, "
                              "STRATA_PREFILL_CPU_SHARE_MAX=1024 keeps the old limit.\n", (long long) cpu_share_max());
+    }
+#elif defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    // AMD-Q (owner decision 10-31): the same default on a single gfx12 card (arch_defaults.hpp: gfx12_prefill_share_default); every other AMD family stays off
+    if (applies && by_default && cpu_share_explicit() == -2.0 && !g_share_default) {
+        int dev = 0;
+        cudaDeviceProp prop;
+        if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+            strata::core::gfx12_prefill_share_default(prop.gcnArchName)) {
+            g_share_default = true;
+            g_share_limit_arch = strata::prefill::share_rules::gfx12_share_limit(fused::gfx12_iq2s_default());
+            std::fprintf(stderr, "prefill: the CPU share is ON by default for prompt chunks up to %lld tokens on this gfx12 card (the idle CPU "
+                                 "takes some of the experts the GPU would stream; answers can differ slightly: first-token KL ~0.02 at 1K tokens, "
+                                 "prompts of 500-1,000 tokens +18..+31%%, 2K and up unchanged). STRATA_PREFILL_CPU_SHARE=0 or STRATA_GFX12_DEFAULTS=0 turns it off, "
+                                 "STRATA_PREFILL_CPU_SHARE_MAX=1024 keeps a 1,024 limit.\n", (long long) cpu_share_max());
+        }
     }
 #else
     (void) by_default;

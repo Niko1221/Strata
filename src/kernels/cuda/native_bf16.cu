@@ -6,6 +6,7 @@
 #include "strata/kernels/pdl.hpp"
 
 #include <cuda_runtime.h>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
@@ -45,6 +46,18 @@ __device__ __forceinline__ float mmvf_warp_sum(float value) {
     return value;
 }
 
+// STRATA_MMVF_CHECK=1 (diagnostic): the constant-trip fast path also runs the plain loop with volatile loads (so the loads happen again, later) and
+// compares each thread's accumulator bit for bit: g_mmvf_chk[0] checks, [1] differing accumulators, [2..4] block / thread / n_in of the first one.
+// A difference means the activations or weights changed between the early and the late loads (no arithmetic differs between the two loops).
+__device__ unsigned long long g_mmvf_chk[8];
+__device__ __forceinline__ void mmvf_chk_note(float a, float b, int blk, int t, int n_in) {
+    atomicAdd(&g_mmvf_chk[0], 1ull);
+    if (__float_as_uint(a) != __float_as_uint(b)) {
+        if (atomicAdd(&g_mmvf_chk[1], 1ull) == 0ull) { g_mmvf_chk[2] = (unsigned long long) blk; g_mmvf_chk[3] = (unsigned long long) t; g_mmvf_chk[4] = (unsigned long long) n_in;
+                                                       g_mmvf_chk[5] = __float_as_uint(a); g_mmvf_chk[6] = __float_as_uint(b); }
+    }
+}
+
 template <int BLOCK_SIZE>
 __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t* __restrict__ w,
                                     float* __restrict__ y, int n_in, int fast) {
@@ -67,6 +80,17 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
         for (int qq = 0; qq < 5; ++qq) {
             acc = __fmaf_rn(f32_from_bf16((uint16_t) wv[qq]), xv[qq].x, acc);
             acc = __fmaf_rn(f32_from_bf16((uint16_t) (wv[qq] >> 16)), xv[qq].y, acc);
+        }
+        if (fast == 2) {
+            float acc2 = 0.0f;
+            for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
+                const uint32_t weight = *(const volatile uint32_t*) (weights2 + pair);
+                const volatile float* ip = reinterpret_cast<const volatile float*>(inputs2 + pair);
+                const float2 input = make_float2(ip[0], ip[1]);
+                acc2 = __fmaf_rn(f32_from_bf16((uint16_t) weight), input.x, acc2);
+                acc2 = __fmaf_rn(f32_from_bf16((uint16_t) (weight >> 16)), input.y, acc2);
+            }
+            mmvf_chk_note(acc, acc2, (int) blockIdx.x, t, n_in);
         }
     } else
     for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
@@ -136,6 +160,22 @@ __global__ void bf16_f32_mmvf_multi_kernel(const float* x_, int64_t ldx, const u
                 if (EXACT_T || k < n_tok) {
                     acc[k] = __fmaf_rn(w0, xin[k][qq].x, acc[k]);
                     acc[k] = __fmaf_rn(w1, xin[k][qq].y, acc[k]);
+                }
+            }
+        }
+        if (fast == 2) {
+#pragma unroll
+            for (int k = 0; k < NT; ++k) {
+                if (EXACT_T || k < n_tok) {
+                    float acc2 = 0.0f;
+                    for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
+                        const uint32_t weight = *(const volatile uint32_t*) (weights2 + pair);
+                        const volatile float* ip = reinterpret_cast<const volatile float*>(reinterpret_cast<const float2*>(x + (size_t) k * ldx) + pair);
+                        const float2 input = make_float2(ip[0], ip[1]);
+                        acc2 = __fmaf_rn(f32_from_bf16((uint16_t) weight), input.x, acc2);
+                        acc2 = __fmaf_rn(f32_from_bf16((uint16_t) (weight >> 16)), input.y, acc2);
+                    }
+                    mmvf_chk_note(acc[k], acc2, (int) blockIdx.x, t, n_in);
                 }
             }
         }
@@ -292,8 +332,13 @@ void launch_rows(const float* x, int64_t ldx, const uint16_t* w, float* y, int64
     else bf16_f32_mmvf_rows_kernel<B, 8, RPB><<<nb, B, 0, st>>>(x, ldx, w, y, ldy, n_in, n_out, n_tok);
 }
 
+void mmvf_chk_report() {
+    unsigned long long h[8] = {};
+    if (cudaMemcpyFromSymbol(h, g_mmvf_chk, sizeof(h)) != cudaSuccess) return;
+    std::fprintf(stderr, "strata mmvf check: %llu accumulators compared, %llu differ; first: block %llu thread %llu n_in %llu fast %08llx plain %08llx\n", h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
+}
 // BW-DENSE STRATA_SMALL_UNR bit 0: see bf16_f32_mmvf_multi_kernel (bw_dense_defaults.hpp: on for a 12.0 card, else off; the variable wins)
-int mmvf_fast() {
+int mmvf_fast_bit() {
     static int per_dev[64];   // 0 unknown, else bit + 1
     const char* e = std::getenv("STRATA_SMALL_UNR");
     if (e != nullptr) return std::atoi(e) & 1;
@@ -311,6 +356,18 @@ int mmvf_fast() {
     }
     return per_dev[dev] - 1;
 #endif
+}
+// AMD-Q STRATA_MMVF_CHECK=1 (with the switch on): the kernel also computes the plain read and counts the accumulators that differ (2 = check mode)
+int mmvf_fast() {
+    const int b = mmvf_fast_bit();
+    if (b == 0) return 0;
+    static const bool chk = [] {
+        const char* c = std::getenv("STRATA_MMVF_CHECK");
+        const bool on = c != nullptr && c[0] == '1';
+        if (on) std::atexit(mmvf_chk_report);
+        return on;
+    }();
+    return chk ? 2 : b;
 }
 int mmvf_block_size(int64_t n_in) {
     int best = 32;

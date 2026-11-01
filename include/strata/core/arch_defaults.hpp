@@ -27,6 +27,15 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool defaults026, bool windows);
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
 
+/// AMD-Q (owner decision 10-31): the CPU prefill share (prefill.cpp, STRATA_PREFILL_CPU_SHARE) is armed by default for single-card serve on gfx12
+/// (R9700 / RX 9070 / RX 9060, gfx1200 / gfx1201), with the CUDA change's limit (share_rules::default_share_limit: staged chunks up to 3,072 tokens).
+/// Measured on an R9700 (p620, IQ3_S, 13,325 of 24,576 experts resident, 30 pool workers): prompt 500 +18.3%, 1K +30.6%, 2K -0.19%, 4K and 8K unchanged;
+/// first-token KL 0.022 at 1K, top-1 29 of 29.  Pure architecture rule: false for gfx11 (Strix Halo gfx1151, 780M gfx1103, RX 7000), every other
+/// family and a CUDA build; STRATA_GFX12_DEFAULTS=0 and STRATA_DEFAULTS=026 (`defaults026`) turn it off, and STRATA_PREFILL_CPU_SHARE=0 / auto /
+/// a number still decide before it.  The caller adds the single-card, no-batch-slot and "experts are missing" conditions.
+bool gfx12_prefill_share_default(const char* gcn_arch, bool defaults026);
+bool gfx12_prefill_share_default(const char* gcn_arch);
+
 /// The integrated Radeons (Phoenix / Hawk Point 780M gfx1103, Strix Point 890M / 880M gfx1150, Strix Halo gfx1151) whose
 /// matrix-core prompt set is offered (opt-in; 021-minipc).  Pure architecture-name test; the caller adds the UMA test.
 bool igpu_prompt_defaults_arch(const char* gcn_arch);

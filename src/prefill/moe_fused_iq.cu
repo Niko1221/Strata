@@ -1973,6 +1973,17 @@ int pick_ww(int64_t n, int n_expert) {
 
 }  // namespace
 
+bool gfx12_iq2s_default() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PF_FUSED_IQ2S");
+        const char* all = std::getenv("STRATA_PF_FUSED");
+        // OPT-IN (STRATA_PF_FUSED_IQ2S=1): the quick quality suite lost 2 of 19 tasks with it on (summ-M-d14 one unsupported name, code-S-d04 a syntax error)
+        // while the same two OFF runs agree; the owner decides on the full suite.  Flip the default here: `!(v != nullptr && v[0] == '0')`.
+        return strata::core::kGfx12PromptDefaultsOn && v != nullptr && v[0] == '1' && !(all != nullptr && all[0] == '0');
+    }();
+    return on;
+}
+
 bool native_supported(int gu_type, int d_type) {
     static const bool off = [] {   // STRATA_PF_FUSED_NATIVE=0: the native packs keep MMQ under STRATA_PF_FUSED=1 (A/B)
         const char* v = std::getenv("STRATA_PF_FUSED_NATIVE");
@@ -2006,8 +2017,12 @@ bool native_supported(int gu_type, int d_type) {
     }
     if (gu_type == T_Q2_0 && d_type != T_Q2_0) return false;   // the opt-in (STRATA_PF_FUSED=1 as well) takes the Q2_0 / Q2_0 pair only
 #endif
-    // default: only these three; the Q2_0 one (148-amd) is on Linux only: on Windows it is opt-in (STRATA_PF_FUSED=1) until tested there
-    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS && !(gu_type == T_Q2_0 && strata::core::kGfx12PromptDefaultsOn)) return false;
+    // default: only these three; the Q2_0 one (148-amd) is on Linux only: on Windows it is opt-in (STRATA_PF_FUSED=1) until tested there.
+    // AMD-Q (owner decision 10-31): the IQ2_S and IQ4_XS gate/up layers too (the IQ3_S pack's 21 layers that kept MMQ), Linux only like the Q2_0 entry.
+    // R9700 (p620, IQ3_S, serve, 3 interleaved pairs): prompt 2K +9.7%, 8K +12.2%, 32K +8.8%; first-token KL against the MMQ default 0.017 (29 prompts of
+    // 1,025 tokens, top-1 28 of 29), the answers are not the MMQ bytes.  STRATA_PF_FUSED_IQ2S=1 turns it on (opt-in until the full quality suite has run); STRATA_PF_FUSED=0 turns all fused kernels off.
+    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS && !(gu_type == T_Q2_0 && strata::core::kGfx12PromptDefaultsOn) &&
+        !(gfx12_iq2s_default() && (gu_type == T_IQ2_S || gu_type == T_IQ4_XS))) return false;
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
     if (d.t75 && (gu_type != T_Q2_0 || d_type != T_Q2_0)) return false;
