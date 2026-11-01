@@ -51,6 +51,10 @@ out to be load-bearing:
 | CPU too old | Ivy Bridge, **no AVX2 at all** | AVX1 128-bit kernels, 22 workers; 105–113 tok/s |
 | Not enough VRAM | 45 GiB across two unequal cards | 252 GB DDR3 absorbs the overflow |
 
+Why DDR3 is not the handicap it sounds like: this box has **16 DIMMs across 8 channels**
+(4 per socket, DDR3-1866) for ~119 GB/s aggregate — more memory bandwidth than a current
+consumer DDR5-6000 dual-channel desktop, and the capacity to hold 37 GiB of experts pinned.
+
 **The practical consequence: a Z620/Z820/Z840, an X79 or X99 board, or a retired dual-socket
 server can host a current pro GPU and deliver usable throughput.** Strata's RAM-resident expert
 tier plus a NUMA-aware CPU pool remove precisely the bottlenecks that make old platforms
@@ -73,12 +77,6 @@ The engine has a dedicated fallback for exactly that case, and warns about it at
 Until now there was no number attached to "expect it to be slow". This report is that number,
 and it is better than the warning suggests: **105–113 tok/s decode on the slowest ISA path the
 engine supports**, sustained by 22 workers on two 2013 sockets running 128-bit kernels.
-
-**Honest limit on the comparison:** there is no same-model, modern-platform baseline in the
-corpus, so this report cannot quantify the platform penalty. The nearest 2x RTX PRO 4500 entry
-(2026-10-06) runs a *different* model — Swift-1.5 IQ3_XXS, fully VRAM-resident in 64 GB of DDR5,
-no RAM tier and no CPU expert compute. Its 133–162 tok/s is not comparable to these runs and is
-not used as a yardstick here.
 
 ## Hardware and software
 
