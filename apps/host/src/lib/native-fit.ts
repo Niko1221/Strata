@@ -101,6 +101,18 @@ export function recommendedVersions<V extends { sourceFamily: string; model: str
   return [...out, ...rest.filter(x => x.v !== gyroM)];
 }
 
+/**
+ * The version list as the menu shows it: one section per model (a single unnamed one without `models`), each version exactly once, in order of
+ * download size with the pick for this PC first; the versions in `hidden` (shown elsewhere) are left out. A model with nothing to show has no section.
+ */
+export function versionSections<V extends { id: string; download_gb: number }>(versions: V[], models: { family: string; title: string; sizes: V[] }[] | undefined, hidden: ReadonlySet<string>, pickId?: string): { id: string; title: string; versions: V[] }[] {
+  const rank = (v: V) => v.id === pickId ? -1 : v.download_gb;
+  const seen = new Set<string>();
+  return (models ?? [{ family: 'all', title: '', sizes: versions }])
+    .map(m => ({ id: m.family, title: models && models.length > 1 ? m.title : '', versions: m.sizes.filter(v => !hidden.has(v.id) && !seen.has(v.id) && !!seen.add(v.id)).map((v, at) => ({ v, at })).sort((a, b) => rank(a.v) - rank(b.v) || a.at - b.at).map(x => x.v) }))
+    .filter(s => s.versions.length);
+}
+
 /** A card as the installer's hardware report lists it. */
 export interface RunCard { index: number; name: string; vram_gb: number; usable?: boolean; vendor?: string; uma?: boolean; integrated?: boolean; unified_gb?: number }
 

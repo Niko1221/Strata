@@ -67,6 +67,7 @@ test('the Models screen passes the set\'s disk to the card, and the version line
   const screen = read('../src/components/NativeModels.tsx');
   assert.match(screen, /<PcFitCard [^>]*diskGb=\{selectedSize\?\.multi_file \? selectedSize\.disk_gb \?\? selectedSize\.download_gb : null\}/);
   const picker = read('../src/components/VersionPicker.tsx');
-  assert.match(picker, /tr\("\{0\} RAM \+ VRAM, plus about \{1\} GB of disk", \[gb\(fit\.memoryGb\), Math\.round\(selected\.disk_gb\)\]\)/);
-  assert.match(picker, /: fit \? `\$\{gb\(fit\.memoryGb\)\} RAM \+ VRAM` : ''/, 'every other model keeps its line');
+  assert.match(picker, /v\.multi_file && v\.disk_gb \? tr\("\{0\} RAM \+ VRAM, plus about \{1\} GB of disk", \[gb\(fit\.memoryGb\), Math\.round\(v\.disk_gb\)\]\)/, 'Details: the disk of the set for DeepSeek');
+  assert.match(picker, /v\.multi_file && v\.disk_gb \? tr\("Needs \{0\} of memory and about \{1\} GB of disk"/, 'plain: the disk for DeepSeek only');
+  assert.match(picker, /: tr\("Needs \{0\} of memory", \[whole\(fit\.memoryGb\)\]\)/, 'every other model keeps its line');
 });
