@@ -3388,6 +3388,20 @@ def drafting_card_class() -> str:
     return _CARD_CLASS[0]
 
 
+def drafting_vram_mib(cfg: dict, backend: str | None, archs) -> float | None:
+    """MiB of graphics memory of the ONE card DFlash2 would run on, for the drafter's confidence (drafting.expected_slots); None for several cards, a
+    chip that shares the computer's memory (Strix Halo, the Spark: their experts are all "resident") or a card the driver does not answer for."""
+    try:
+        gl = gpu_list(cfg)
+        arch = str((list(archs or [""]) or [""])[0]).lower()
+        if len(gl) > 1 or arch in HIP_IGPU_ARCHS or arch == "sm_121":
+            return None
+        got = gpu_vram_mib(gl or [0], hip=(backend == "hip"))
+        return float(next(iter(got.values()))) if got else None
+    except Exception:                                        # noqa: BLE001 - an unreadable card keeps the plain 0.35, never stops a start
+        return None
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
@@ -3402,13 +3416,14 @@ def engine_args(cfg: dict) -> list[str]:
     if cfg.get("drafting") is not None or drafting.suggest(drafting_card_class()) != "mtp":
         shaped = {**cfg, "args": args}
         backend, archs = drafting.detect_hardware()
-        decision = drafting.apply(shaped, klass=drafting_card_class(), data_dir=drafting.data_dir_of(args), backend=backend, archs=archs)
+        decision = drafting.apply(shaped, klass=drafting_card_class(), data_dir=drafting.data_dir_of(args), backend=backend, archs=archs,
+                                  vram_mib=drafting_vram_mib(cfg, backend, archs))
         args = shaped["args"]
         drafting.remember_note(decision.note)
         if decision.note:
             print(f"[strata] drafting: {decision.note}", flush=True)
         elif decision.flags:
-            print(f"[strata] drafting: DFlash2 ({' '.join(decision.flags[:2])})", flush=True)
+            print(f"[strata] drafting: DFlash2 ({' '.join(decision.flags[:2])}, --draft-conf {args[args.index('--draft-conf') + 1] if '--draft-conf' in args else '-'})", flush=True)
     # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
     # that writes --mtp back into the args cannot undo it, because this is applied at every start.
     if draft_layer.is_off(cfg):

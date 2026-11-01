@@ -63,7 +63,8 @@ class SuggestionTable(unittest.TestCase):
         self.assertIn("tool_call", text["strix_halo"])
         self.assertIn("-1%", text["blackwell"])
         self.assertIn("chat", text["blackwell"])
-        self.assertIn("every prompt", text["rdna4"])
+        self.assertIn("+7.2%", text["rdna4"])
+        self.assertIn("chat_advice", text["rdna4"])
         self.assertIn("every prompt", text["ampere"])
 
     def test_cards_are_classified_by_their_architecture(self):
@@ -244,9 +245,18 @@ class EngineArguments(unittest.TestCase):
         from serve.server import engine_args
         pack = drafting.pack_path(Path("/d"))
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), serving_dflash2(), \
+                mock.patch("serve.server.drafting_vram_mib", return_value=None), \
                 mock.patch.object(drafting, "pack_ready", return_value=True), mock.patch.object(drafting, "data_dir_of", return_value=Path("/d")):
             args = engine_args(self.cfg(drafting="dflash2"))
             self.assertEqual(args[-10:], ["--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35", "--draft-mtp-spec", "4"])
+        # a 16 GB card holds about 3,700 slots with the drafter on: the server passes its memory and the confidence follows (drafting.CONF_STEPS)
+        with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), serving_dflash2(), \
+                mock.patch("serve.server.drafting_vram_mib", return_value=16384.0), \
+                mock.patch.object(drafting, "pack_ready", return_value=True), mock.patch.object(drafting, "data_dir_of", return_value=Path("/d")):
+            args = engine_args(self.cfg(drafting="dflash2"))
+            self.assertEqual(args[args.index("--draft-conf") + 1], "0.7")
+            args = engine_args(self.cfg(drafting="dflash2", args=[*self.ARGS, "--expert-cache", "1000"]))
+            self.assertEqual(args[args.index("--draft-conf") + 1], "0.8", "the cache the person asked for decides, not the card")
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
             self.assertEqual(engine_args(self.cfg()), self.ARGS, "no choice: nothing changes")
             off = engine_args(self.cfg(drafting="off"))
