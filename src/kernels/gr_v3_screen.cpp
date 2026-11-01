@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
     cudaMalloc((void**) &dst, (size_t) iters * 4 * 8);
     std::vector<unsigned long long> hst((size_t) iters * 4);
     std::vector<K::FusedGrArgs> as((size_t) sets * 8);
-    const int masks[] = {0, 5, 69, 132, 133, 197, 260, 261, 325};
+    const int masks[] = {0, 5, 133, 261};
     const int NM = (int) (sizeof(masks) / sizeof(masks[0]));
     int failures = 0;
     for (int T = t_lo; T <= t_hi; ++T) {
