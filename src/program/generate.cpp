@@ -6976,6 +6976,14 @@ int main(int argc, char** argv) {
         // The arena pins until the OS refuses; on Windows that leaves no page-locked memory for the small buffers the
         // engine allocates after it (the verify window's staging: "mapped staging allocation failed", exit 1).  Keep a
         // reserve while the arena pins and hand it back after (pin_budget.hpp).
+        if (ple_lock_by_policy)   // #4846: the residency policy priced the table against the arena before the rest of the start took its RAM
+            arena_src.give_back_ram = [&]() -> uint64_t {
+                if (!ple_table.locked()) return 0;
+                const uint64_t held = ple_table.table_bytes();
+                if (!ple_table.unlock()) return 0;
+                ple_lock_by_policy = false;   // (given back: the conversation cache's give-back has nothing left to do)
+                return held;
+            };
         strata::core::pin_reserve_take();
         const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                                              o.shared_expert_arena);
