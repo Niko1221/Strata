@@ -7078,6 +7078,30 @@ class SystemRemindersTail(unittest.TestCase):
         # both past turns byte-stable, and each block once on the last turn, in the order it was sent
         self.assertEqual(users, ["a", "c", "e\n" + a + "\n" + b])
 
+    def test_a_turn_that_is_only_a_block_keeps_it(self):
+        """A client sends a turn that is nothing but a reminder block for a date or a mode change.  Clearing it
+        left an empty turn, and the chat template renders that as it stands (<|im_start|>user\n<|im_end|>): the
+        empty assistant turns a reply does not need are dropped by ChatTemplate.render (#843), a user turn is not.
+        The model is then asked to answer nothing, which is a worse risk to the reply than the one re-read a block
+        left in place can cost - so such a turn is not touched, and its block is not copied to the tail either."""
+        rem = "<system-reminder>\nToday's date is now: Mon Nov 02 2026\n</system-reminder>"
+        msgs = [{"role": "user", "content": "fix the styles"}, {"role": "assistant", "content": "looking"},
+                {"role": "user", "content": rem}, {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "now the buttons"}]
+        users = self.user_contents(msgs, True)
+        self.assertEqual(users, ["fix the styles", rem, "now the buttons"])   # no empty turn, no moved copy
+        self.assertTrue(all(u.strip() for u in users))
+
+    def test_a_block_in_a_turn_with_text_still_moves_from_a_reminder_only_turn_behind_it(self):
+        """The rule is per turn: a turn that is only a block keeps it, and a later turn that has text of its own
+        is still cleared and moved, so the fix does not stop the cache-stability work elsewhere."""
+        only = "<system-reminder>\nmode: plan\n</system-reminder>"
+        moved = "<system-reminder>\nAGENTS rules\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + moved}, {"role": "assistant", "content": "b"},
+                {"role": "user", "content": only}, {"role": "assistant", "content": "c"},
+                {"role": "user", "content": "d"}]
+        self.assertEqual(self.user_contents(msgs, True), ["a", only, "d\n" + moved])
+
     def test_the_responses_route_moves_the_block_too(self):
         """#451: /v1/responses builds its messages in serve/responses.py and never runs the chat route's
         converter, so the rule has to be passed there.  Codex CLI is the client that switches modes."""

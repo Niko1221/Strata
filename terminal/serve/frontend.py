@@ -616,7 +616,9 @@ def tail_system_reminders(messages: list[dict]) -> list[dict]:
     block is the newest thing the model sees, and every later turn keeps its shared prefix.  Opt-in: the config's
     "system_reminders": "tail" (default "keep" renders the history exactly as the client sent it).  Runs after
     _env_to_user, the same class of fix at the prompt's start: the <env> block stays at the front of the first
-    user turn, the reminder blocks land at the end of the last, so both keep the shared prefix."""
+    user turn, the reminder blocks land at the end of the last, so both keep the shared prefix.  One exception: a
+    turn whose content is nothing but a reminder block is left exactly as the client sent it, because emptying it
+    puts an empty turn in the prompt (see the note in the loop)."""
     last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
     if last_user < 0 or not isinstance(messages[last_user].get("content"), str):
         return messages
@@ -627,8 +629,14 @@ def tail_system_reminders(messages: list[dict]) -> list[dict]:
         found = [b for b in REMINDER.findall(m["content"]) if b not in tail]
         if not found:
             continue
+        rest = REMINDER.sub("", m["content"]).strip()
+        if not rest:      # a turn that is only a reminder block keeps it: emptying it puts an empty turn in the
+            continue      # prompt (<|im_start|>user\n<|im_end|>), which the template renders as it stands (render
+                          # drops empty assistant turns, #843, not a user one) and which the model has no reason
+                          # to answer.  A block that stays where it is can cost one re-read; an empty turn costs
+                          # the reply.  A client sends such a turn for a date or a mode change, so it is common.
         moved.extend(found)
-        m["content"] = REMINDER.sub("", m["content"]).strip()
+        m["content"] = rest
         tail = "\n".join([tail] + found)      # only this turn's blocks: tail already holds the earlier ones
     if not moved:
         return messages
