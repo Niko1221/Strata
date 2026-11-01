@@ -11,7 +11,7 @@ from strata_control import dsv41_sets, models
 T = dsv41_sets.tables()
 
 
-ISTA = [m for m in T["sets"] if m.startswith("ISTA-DAS")]      # the Unsloth UD-IQ1 sets have no legacy, six-shard or re-published layouts (tools/test_setup_udlow.py)
+ISTA = [m for m in T["sets"] if m.startswith("IST-DAS-")]      # the Unsloth UD-IQ1 sets have no legacy, six-shard or re-published layouts (tools/test_setup_udlow.py)
 
 def files_of(model, legacy=False, engram="official", drop=(), wrong=(), layout=None):
     entry = T["sets"][model]
@@ -37,7 +37,7 @@ class DeepSeekPreview(unittest.TestCase):
                 return models.plan_import(str(target)), folder
 
     def test_the_tables_come_from_setup_and_cover_the_three_official_sizes(self):
-        self.assertEqual(sorted(T["sets"]), ["IST-DAS-1.75bpw", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_M", "UD-IQ1_S"])
+        self.assertEqual(sorted(T["sets"]), ["IST-DAS-1.75bpw", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_M", "UD-IQ1_S"])
         self.assertEqual(len(T["engram"]), 2)
 
     def test_each_official_set_is_recognised_with_its_size_name(self):

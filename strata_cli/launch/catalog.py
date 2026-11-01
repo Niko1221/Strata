@@ -394,6 +394,7 @@ class Catalog:
                 names += [m for m in self.strata.sizes_of(models, fam_name) if m not in names]
         import re
         wanted = re.sub(r"(?i)^ista-das(?=-\d)", "IST-DAS", model)     # the set's name on screen is ISTA-DAS; its ids keep the first spelling
+        wanted = re.sub(r"(?i)^ist-das(?=-coder$)", "ISTA-DAS", wanted)  # (the Coder has only the longer spelling; the shorter one is accepted)
         match = next((n for n in names if n.lower() == wanted.lower()), None)
         if match is None:
             near = S.closest(model, names)

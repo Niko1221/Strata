@@ -1403,7 +1403,13 @@ class Runner:
             subs = [d.get("subdir"), d.get("legacy_subdir"), m]
             folders = [p, *[p / x for x in subs if x]] if p.is_dir() else [p.parent]
             names = [n for s in d["shards"] for n in (s, legacy.get(s)) if n] + list(d.get("shards6") or [])      # (+ the six-shard layout of 2026-10-27)
-            folder = next((f for f in folders if any((f / n).exists() for n in names)), None)
+            sizes = getattr(mod, "DSV41_ALL_FILES", {})
+
+            def there(f, n):      # a set whose files have generic names (model-00002-of-00004.gguf: the ISTA-DAS Coder's) is only claimed by files of the pinned size
+                if not (f / n).exists():
+                    return False
+                return not d.get("generic_names") or ((f / n).is_file() and n in sizes and (f / n).stat().st_size == sizes[n][0])
+            folder = next((f for f in folders if any(there(f, n) for n in names)), None)
             if folder is not None:
                 return m, d, folder
         return None

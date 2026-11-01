@@ -778,16 +778,19 @@ class MacCatalog(unittest.TestCase):
         self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
         self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
 
-    def test_deepseek_on_a_mac_offers_the_two_sets_that_were_run_with_the_mac_words(self):
+    def test_deepseek_on_a_mac_offers_the_sets_with_the_mac_words(self):
         s, hw = self.hw(128)
         ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
         by = {x["model"]: x for x in ds["sizes"]}
-        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw"], "the 1.75 bpw set was never run on a Mac")
+        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M"], "the 1.75 bpw set was never run on a Mac; the Coder, UD-IQ1_S and UD-IQ1_M are offered with a plain note")
         for x in by.values():
             self.assertTrue(x["multi_file"] and not x["images"])
+            self.assertGreater(x["disk_gb"], x["download_gb"])
+            if x["model"] == "ISTA-DAS-Coder":      # 66 GB of experts: all of them stay in a 128 GB Mac's memory
+                self.assertTrue(x["on_this_pc"].startswith("fits: every expert stays"), x["on_this_pc"])
+                continue
             self.assertTrue(x["on_this_pc"].startswith("runs on this Mac's memory"), x["on_this_pc"])
             self.assertIn("read from the SSD", x["on_this_pc"])
-            self.assertGreater(x["disk_gb"], x["download_gb"])
         s, hw = self.hw(32)
         ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
         for x in ds["sizes"]:                           # a small Mac: said plainly, never refused

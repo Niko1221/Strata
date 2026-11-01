@@ -194,6 +194,8 @@ def source_hint(url: str) -> str:
 
 def model_alias(name: str) -> str:
     """The set is named ISTA-DAS on screen; its ids keep the first spelling (--model IST-DAS-2.25bpw), and the new one is accepted too."""
+    if isinstance(name, str) and re.fullmatch(r"(?i)ista?-das-coder", name):
+        return DSV41_CODER_MODEL                      # (the Coder has only ever had the longer spelling; the shorter one is accepted)
     return re.sub(r"(?i)^ista-das(?=-\d)", "IST-DAS", name) if isinstance(name, str) else name
 
 
@@ -803,7 +805,33 @@ DSV41_UD_FILES = {
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00005-of-00005.gguf": (110595290592, "771805301e695d72d268151dfc43043581ba904298574aa879d4349cbe67b020"),
 }
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
-DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES}
+# The ISTA-DAS Coder (2026-11-01): ISTA-DAS's coding variant of this model, "the layout of the IQ2_XXS set with half of the experts removed": 192 routed experts a layer
+# instead of 384 (the router, the experts and the routing biases are narrower; every other tensor has the 2.00 set's name, shape and type).  Four files: shard 1 = the metadata,
+# shards 2-3 = the model, shard 4 = the Engram table (the same single tensor as ISTA-DAS's Engram file), and a picture file (mmproj-BF16.gguf).  Its repository id, commit, file
+# names, sizes and SHA-256 are in ONE place, data/dsv41/coder-set.json, written by tools/dsv41/pin_coder.py from the Hub: a new repository is `pin_coder.py NEW/REPO` and
+# nothing else (strata_control/dsv41_fit.py and the app read the same file).  The repository's name was a temporary one when this was pinned.
+DSV41_CODER_JSON = ROOT / "data" / "dsv41" / "coder-set.json"
+try:
+    DSV41_CODER = json.loads(DSV41_CODER_JSON.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    DSV41_CODER = {}                    # a checkout or a package without the file: the set is simply not offered
+DSV41_CODER_REPO = DSV41_CODER.get("repo", "")
+DSV41_CODER_FILES = {n: (int(v[0]), str(v[1])) for n, v in (DSV41_CODER.get("files") or {}).items()}
+DSV41_CODER_MODEL = DSV41_CODER.get("name", "ISTA-DAS-Coder")
+if DSV41_CODER_REPO:
+    HF_REVISIONS[DSV41_CODER_REPO] = DSV41_CODER["revision"]
+# the Coder repository's own picture file has Unsloth's tensors under another header (and so another size and SHA-256): a copy of it already here is accepted as the shared
+# picture file (find_shared / verify_sha256), and nothing is fetched under its name
+DSV41_ALT_FILES = {DSV41_MMPROJ: [DSV41_CODER_FILES[DSV41_CODER["mmproj"]]]} if DSV41_CODER_REPO else {}
+DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES,
+                   **{n: v for n, v in DSV41_CODER_FILES.items() if n != DSV41_CODER.get("mmproj")}}
+
+
+def dsv41_also(name: str) -> tuple:
+    """The other SHA-256 values that are the same file as `name` (DSV41_SHA_ALSO) and the other published copies of it (DSV41_ALT_FILES)."""
+    return (*DSV41_SHA_ALSO.get(name, ()), *(v[1] for v in DSV41_ALT_FILES.get(name, ())))
+
+
 DSV41_PROFILES = ROOT / "data" / "dsv41"           # the shipped hot-expert profiles (profile-2.00.bin, profile-2.25.bin, + .sha256)
 DSV41_MAC_CONTEXT = 8192        # DeepSeek on a Mac keeps the 8K it was run at (the owner's 128K decision is for cards; nothing was run on a Mac at 128K)
 DSV41_CONTEXT = 131072        # 128K like every model (owner, 2026-11-01; strata_control/default_context.py); the engine was checked at 4096 and 8192 before, INT3 checks 128K on real cards
@@ -847,6 +875,15 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "shards": [DSV41_ISTA_SHARD.format(quant="IQ1_M", i=i) for i in range(1, 5)],
         "shards6": [DSV41_ISTA6_SHARD.format(quant="IQ1_M", i=i) for i in range(1, DSV41_ISTA6_SHARDS + 1)],
         "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
+    **({DSV41_CODER_MODEL: {
+        "label": DSV41_CODER.get("label", "ISTA-DAS Coder"),
+        "about": "ISTA-DAS's coding version of DeepSeek-V4.1-Flash: %d of the model's 384 experts in every layer are kept, the rest removed, with the 2.00 version's file layout and "
+                 "tensor types: %.0f GB of model + 111 GB n-gram table + 8 GB drafter (about %.0f GB of disk). Not run on a Mac or a Ryzen AI Max yet. Its quality is not measured "
+                 "against the original model yet" % (DSV41_CODER["experts_per_layer"], sum(DSV41_CODER_FILES[n][0] for n in DSV41_CODER["shards"]) / 1e9,
+                                                      (sum(DSV41_CODER_FILES[n][0] for n in DSV41_CODER["shards"]) + 110_595_290_816 + 7_976_914_240) / 1e9 + 6),
+        "ram_gb": 24, "recipe": "coder", "subdir": None, "legacy_subdir": None, "profile": DSV41_CODER.get("profile", "profile-coder.bin"), "hf": hf(DSV41_CODER_REPO),
+        "shards": list(DSV41_CODER["shards"]), "engram_shard": DSV41_CODER["engram_shard"], "experts": DSV41_CODER["experts_per_layer"], "generic_names": True,
+        "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]}} if DSV41_CODER_REPO else {}),
     "UD-IQ1_S": {
         "label": "Unsloth UD-IQ1_S",
         "about": "Unsloth's smallest dynamic version: 122 GB of model (experts in IQ1_S / IQ2_XXS, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as ISTA-DAS 1.75 bpw. A 1-bit version: expect weaker answers than the 2.00 and 2.25 versions on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet). Pick 2.00 or 2.25 if they fit",
@@ -8430,11 +8467,21 @@ def dsv41_find_shared(a, name: str, folder: Path, shared: Path, alt: tuple = ())
             for n in names:
                 f = k / n
                 try:
-                    if f.is_file() and f.stat().st_size == DSV41_ALL_FILES[n][0]:
+                    if f.is_file() and f.stat().st_size in (DSV41_ALL_FILES[n][0], *(v[0] for v in DSV41_ALT_FILES.get(n, ()))):
                         return f
                 except OSError:
                     pass
     return shared / name
+
+
+def dsv41_pin_of(f: Path, pin: tuple) -> tuple:
+    """The (bytes, sha256) a shared file is checked against: the pinned one, or the other published copy of the same file (DSV41_ALT_FILES: the Coder repository's
+    picture file) when that is the size it has."""
+    try:
+        size = f.stat().st_size
+    except OSError:
+        return pin
+    return next((p for p in (pin, *DSV41_ALT_FILES.get(f.name, ())) if p[0] == size), pin)
 
 
 def dsv41_pack_has_tower(pack: Path) -> bool:
@@ -8629,9 +8676,11 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     say("  Its GGUF files: " + ("ISTA-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter and a small metadata file from Unsloth"
                               if md.get("recipe") == "ista" else
                               "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF); the Engram table is the same data as ISTA-DAS's, so a copy of it already here is used"
-                              if md.get("recipe") == "udlow" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)"))
-    udlow = md.get("recipe") == "udlow"          # Unsloth's UD-IQ1_S / UD-IQ1_M: packed and checked like the ISTA-DAS sets; shard 5 is the Engram
-    ista = md.get("recipe") in ("ista", "udlow")
+                              if md.get("recipe") == "udlow" else
+                              f"{DSV41_CODER_REPO} (huggingface.co); its last file is the Engram table, the same data as ISTA-DAS's, so a copy of it already here is used"
+                              if md.get("recipe") == "coder" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)"))
+    udlow = md.get("recipe") in ("udlow", "coder")     # Unsloth's UD-IQ1_S / UD-IQ1_M and the ISTA-DAS Coder: packed and checked like the ISTA-DAS sets; the set's last file is the Engram
+    ista = md.get("recipe") in ("ista", "udlow", "coder")
     tag = fam["tag"] + model
     named = cards_named(a, hip)
     cards = dsv41_cards(gpu, all_cards, named)
@@ -8676,7 +8725,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         say("  Nothing to download: the files are already here.")
     unchecked = [f for f in [*shards, *shared] if f.exists() and not any(
         f"sha256 {x}" in (mark_text(f) or "")
-        for x in (fam['sha256'][f.name][1], *DSV41_SHA_ALSO.get(f.name, ())))]
+        for x in (fam['sha256'][f.name][1], *dsv41_also(f.name)))]
     if unchecked:
         gb = sum(fam["sha256"][f.name][0] for f in unchecked) / 1e9
         say(f"  The files already here ({gb:.0f} GB) are checked against their SHA-256 once, now: about {max(1, round(gb / 55))} minutes on a fast "
@@ -8777,7 +8826,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             ok(f"{f.name} already here ({f.parent})")
         else:
             download(DSV41_SHARED[f.name] + f.name, f)
-        verify_sha256(f, *fam["sha256"][f.name], own=own_files[f], also=DSV41_SHA_ALSO.get(f.name, ()))
+        verify_sha256(f, *dsv41_pin_of(f, fam["sha256"][f.name]), own=own_files[f], also=dsv41_also(f.name))
     ok(f"model files: {folder} ({len(shards)} shards" + (f"; shared files: {shared_dir if any(not own_files[f] for f in shared) else shared[0].parent}" if shared else "") + ")")
 
     step(6, "preparing the model for Strata")
@@ -8845,7 +8894,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     # A Mac (0.2.7.1): the drafter is not loaded at all (--dspark none). It was exact there but not faster (15.1 and 11.0 tokens/s against 15.3
     # without it on the M5 Max), and the engine's "auto" would load it on a 128 GB Mac: its 7 GB of experts take memory the trunk's experts need.
     args = ["--pack", str(pack), "--max-context", str(ctx), "--eos", "1", "--vision", ds_vision, "--dspark", "none" if mac else "auto",
-            *(["--dspark-conf", "0.65"] if md.get("recipe") == "ista" and not mac else []), *dsv41_prefill_chunk_args(cards, ram),
+            *(["--dspark-conf", "0.65"] if md.get("recipe") in ("ista", "coder") and not mac else []), *dsv41_prefill_chunk_args(cards, ram),
             *plan["args"]]
     env = dsv41_config_env(cards)
     cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
