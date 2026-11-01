@@ -61,13 +61,13 @@ unset STRATA_NO_ACQUIRE STRATA_COMPONENTS_DIR STRATA_API_KEY STRATA_UPDATE_FEED 
 mkdir -p "$HOME"
 COMP="$XDG_DATA_HOME/strata/components"
 
-serve() {          # serve DIR on a free port, log the requests; prints the port
+serve() {          # serve DIR on a free port, log the requests; sets PORT and SERVER_PID (not run in a subshell, so the pid survives)
   local dir="$1" log="$2" port
   port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
   python3 -m http.server "$port" --bind 127.0.0.1 --directory "$dir" > "$log" 2>&1 &
   SERVER_PID=$!; PIDS+=("$SERVER_PID")
   for _ in $(seq 1 50); do curl -fs -o /dev/null "http://127.0.0.1:$port/strata-feed.json" && break; sleep 0.2; done
-  echo "$port"
+  PORT="$port"
 }
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 engines_json() { "$S" components engines --output json; }
@@ -76,13 +76,13 @@ folders() { ls "$COMP/engine" 2>/dev/null | grep -v '^\.' | sort | tr '\n' ' '; 
 engine_gets() { grep -c "GET /$1" "$2" || true; }
 
 say "step 1: 0.2.8 feed -> engine 0.1.54"
-P28=$(serve "$W/rel28" "$W/server28.log"); PID28=$SERVER_PID
+serve "$W/rel28" "$W/server28.log"; P28=$PORT; PID28=$SERVER_PID
 "$S" update --feed "http://127.0.0.1:$P28/strata-feed.json" --no-control --backend cuda 2>&1 | tail -8
 check "0.1.54 is the engine in use" "[ \"\$(active_version)\" = 0.1.54 ]"
 kill "$PID28"; wait "$PID28" 2>/dev/null
 
 say "step 2: 0.2.9 feed -> engine 0.1.55; the old engine is KEPT"
-P29=$(serve "$W/rel29" "$W/server29.log"); PID29=$SERVER_PID
+serve "$W/rel29" "$W/server29.log"; P29=$PORT; PID29=$SERVER_PID
 "$S" update --feed "http://127.0.0.1:$P29/strata-feed.json" --no-control --backend cuda 2>&1 | tail -8
 check "0.1.55 is the engine in use" "[ \"\$(active_version)\" = 0.1.55 ]"
 echo "folders: $(folders)"
