@@ -2,18 +2,22 @@ import type { RunCard } from './native-fit';
 
 /**
  * DeepSeek's Speed default, said the way the engine decides it (`--experts auto`, src/dsv41/ds4_experts_rule.hpp): Faster (5 experts a word) when
- * a card in use is an integrated / unified-memory GPU (Strix Halo, gfx1151: the model shares the PC's memory), or when the cards in use total
- * 16 GiB or less; otherwise Full quality (6). The app never decides: the engine does; this only names the same default beside the choice.
+ * a card in use is an integrated / unified-memory GPU (Strix Halo, gfx1151: the model shares the PC's memory), when the one card in use is an
+ * RDNA4 Radeon (gfx1200 / gfx1201: the CPU lane does most of the experts), or when the cards in use total 16 GiB or less; otherwise Full quality (6). The app never decides: the engine does; this only names the same default beside the choice.
  * The total is compared in whole MiB (a 16 GB card reports 16376 MiB = 15.99 GiB and counts as 16 GiB or less).
  */
 export const FASTER_MIB = 16 * 1024;
 
 export const isIntegrated = (card: RunCard) => !!(card.uma || card.integrated || (card.unified_gb ?? 0) > 0);
 
+/** One RDNA4 Radeon (gfx1200 / gfx1201: Radeon AI PRO R9700, RX 9070 / 9060). */
+export const isRdna4 = (card: RunCard) => (card.vendor ?? '').toLowerCase() === 'amd' && /^gfx120[01]/i.test(card.arch ?? '');
+
 export function fasterByDefault(cards: readonly RunCard[] | null | undefined): boolean {
   const used = (cards ?? []).filter(card => card.usable !== false);
   if (!used.length) return false;
   if (used.some(isIntegrated)) return true;
+  if (used.length === 1 && isRdna4(used[0])) return true;
   const mib = used.reduce((sum, card) => sum + Math.round((card.vram_gb ?? 0) * 1024), 0);
   return mib > 0 && mib <= FASTER_MIB;
 }
