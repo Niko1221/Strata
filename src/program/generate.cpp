@@ -11765,7 +11765,7 @@ int main(int argc, char** argv) {
         const bool serial_windows = !pipe && !piped_groups;
         const bool tier_lags = !drive.d.usage.empty() && (adapt_nowait() || adapt_lag() > 1);
         drive.d.evict_sync = serial_windows && tier_lags && adapt_evict_sync();
-        if (piped_groups && tier_lags && adapt_evict_sync()) {
+        if ((piped_groups && tier_lags && adapt_evict_sync()) || drive.d.lookahead != nullptr) {
             ver.set_always_publish(true);
             for (auto& st : stages) st->ver.set_always_publish(true);
         }

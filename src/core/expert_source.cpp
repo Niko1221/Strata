@@ -4902,11 +4902,15 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // ---- plan v0.3 P6: the GPU's share, decided and published FIRST so the GPU starts while the CPU works.
     // Distinct experts in routing order; resident ones and the last pcie_num/256 of the missed ones go to the GPU.
     const int64_t n = n_tok * k;
+    int32_t lid[kMaxWindowEntries];
+    for (int64_t i = 0; i < n; ++i) lid[i] = ids[i];
+    ids = lid;
     int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe
     int64_t planned_vram_entries = -1, planned_gpu_entries = -1;
     if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
         int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
         int16_t next_same[kMaxWindowEntries], tail_same[kMaxWindowEntries], cnt_same[kMaxWindowEntries];
+        int minr_i0[kMaxWindowEntries];
         int nd = 0, nmiss = 0;
         // a helper GPU (RemoteExperts) holding the expert computes it in its own VRAM once begin() claims the row: like
         // the peer tier's, such an expert is no miss of this plan and never part of the PCIe share, which would read it
@@ -4920,13 +4924,18 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (int64_t i = 0; i < n; ++i) {
             first_of[i] = i;
             next_same[i] = -1;
-            for (int64_t j = 0; j < i; ++j)
-                if (ids[j] == ids[i]) { first_of[i] = first_of[j]; break; }
+            const int32_t ei = lid[i];
+            for (int q = 0; q < nd; ++q) {
+                const int64_t j = distinct[q];
+                if (lid[j] == ei) { first_of[i] = j; break; }
+            }
+            const int rk = (int) (i % k);
             if (first_of[i] == i) {
                 tail_same[i] = (int16_t) i;
                 cnt_same[i] = 1;
+                minr_i0[i] = rk;
                 distinct[nd++] = i;
-                const int32_t e = ids[i];
+                const int32_t e = ei;
                 if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
                     !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e)) ++nmiss;
             } else {
@@ -4934,6 +4943,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 next_same[tail_same[i0]] = (int16_t) i;
                 tail_same[i0] = (int16_t) i;
                 ++cnt_same[i0];
+                if (rk < minr_i0[i0]) minr_i0[i0] = rk;
             }
         }
         // STRATA_ROUTE_TAIL_SKIP=R (default 7 on CUDA serve, =0 off; changes the output): a missed expert that EVERY token of the window routes
@@ -4943,16 +4953,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         bool skip_d[kMaxWindowEntries];
         for (int q = 0; q < nd; ++q) skip_d[q] = false;
         if (tail_rank > 0 && d.peer == nullptr && d.remote_count == 0) {
-            int minr[kMaxWindowEntries];
-            for (int q = 0; q < nd; ++q) minr[q] = 99;
-            for (int64_t i = 0; i < n; ++i) {
-                int q = 0;
-                while (q < nd && distinct[q] != first_of[i]) ++q;
-                if (q < nd) minr[q] = std::min(minr[q], (int) (i % k));
-            }
             for (int q = 0; q < nd; ++q) {
-                const int32_t e = ids[distinct[q]];
-                if (e < 0 || e >= d.n_expert || minr[q] < tail_rank) continue;
+                const int64_t i0 = distinct[q];
+                const int32_t e = lid[i0];
+                if (e < 0 || e >= d.n_expert || minr_i0[i0] < tail_rank) continue;
                 if (d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) continue;   // resident
                 skip_d[q] = true;
                 --nmiss;

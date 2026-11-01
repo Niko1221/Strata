@@ -359,14 +359,49 @@ __global__ void doorbell_publish_kernel(const float* __restrict__ x, const int32
 __global__ void doorbell_publish_res_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
                                             const int32_t* __restrict__ d_res, int n_expert, int n, int k,
                                             float* x_out, int32_t* ids_out, uint32_t* seq) {
-    int any_miss = 0;
+    __shared__ uint32_t tok_miss;
+    if (threadIdx.x == 0) tok_miss = 0u;
+    __syncthreads();
+    const bool per_tok = (k > 0 && (k % 10) == 0 && (k / 10) <= 32 && (n % (k / 10)) == 0);
     if ((int) threadIdx.x < k) {
         const int32_t id = ids[threadIdx.x];
         ids_out[threadIdx.x] = id;
-        if (d_res == nullptr || id < 0 || id >= n_expert || d_res[id] < 0) any_miss = 1;
+        if (d_res == nullptr || id < 0 || id >= n_expert || d_res[id] < 0)
+            atomicOr(&tok_miss, per_tok ? (1u << ((int) threadIdx.x / 10)) : 0xFFFFFFFFu);
     }
-    if (__syncthreads_or(any_miss)) {
-        for (int i = threadIdx.x; i < n; i += blockDim.x) x_out[i] = x[i];
+    __syncthreads();
+    const uint32_t mask = tok_miss;
+    if (mask != 0u) {
+        const bool aligned4 = ((n & 3) == 0) && (((uintptr_t) x | (uintptr_t) x_out) & 15u) == 0;
+        if (!per_tok || mask == 0xFFFFFFFFu || mask == ((1u << (k / 10)) - 1u)) {
+            if (aligned4) {
+                const float4* x4 = reinterpret_cast<const float4*>(x);
+                float4* xo4 = reinterpret_cast<float4*>(x_out);
+                const int n4 = n >> 2;
+                for (int i = threadIdx.x; i < n4; i += blockDim.x) xo4[i] = x4[i];
+            } else {
+                for (int i = threadIdx.x; i < n; i += blockDim.x) x_out[i] = x[i];
+            }
+        } else {
+            const int n_tok = k / 10;
+            const int N = n / n_tok;
+            if (aligned4 && (N & 3) == 0) {
+                const int N4 = N >> 2;
+                for (int t = 0; t < n_tok; ++t) {
+                    if (!((mask >> t) & 1u)) continue;
+                    const float4* xt4 = reinterpret_cast<const float4*>(x + t * N);
+                    float4* xot4 = reinterpret_cast<float4*>(x_out + t * N);
+                    for (int i = threadIdx.x; i < N4; i += blockDim.x) xot4[i] = xt4[i];
+                }
+            } else {
+                for (int t = 0; t < n_tok; ++t) {
+                    if (!((mask >> t) & 1u)) continue;
+                    const float* xt = x + t * N;
+                    float* xot = x_out + t * N;
+                    for (int i = threadIdx.x; i < N; i += blockDim.x) xot[i] = xt[i];
+                }
+            }
+        }
         __threadfence_system();
     } else if ((int) threadIdx.x < k) {
         __threadfence_system();
