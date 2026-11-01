@@ -118,3 +118,29 @@ test('9: a chat that is working shows it on its sidebar row, and the model chip 
   assert.match(css, /prefers-reduced-motion: reduce\) \{\s*\.ws__session \.navsession__working \{\s*animation: none;/, 'reduced motion holds it still');
   assert.match(css, /html\[data-motion='reduced'\] \.ws__session \.navsession__working \{\s*animation: none;/);
 });
+
+test('10 (visual): the reply stays still while it streams, one live cue per step, a slot for the host to feed live output, a slower preview panel', async () => {
+  const chat = read('src/screens/Chat.tsx'), css = read('src/styles/annotation-fixes.css'), app = read('src/styles/app.css'), liquid = read('src/styles/liquid.css');
+  // Stop and Send are one height, so the message box no longer moves 5px when a reply starts and ends.
+  assert.match(css, /\.st-composer__bar > \.st-btn:not\(\.st-btn--icon\) \{ height: 32px; min-height: 32px; box-sizing: border-box; \}/);
+  // In a reply with activity lines the line is the one live cue for a tool; the running card above the text is gone.
+  assert.match(chat, /filter\(t => !grouped \|\| t\.state === 'proposed' \|\| t\.state === 'denied' \|\| t\.state === 'error'\)/);
+  // The caret follows text, never an activity line.
+  assert.match(chat, /m\.streaming && m\.content && \(!grouped \|\| m\.blocks!\.at\(-1\)\?\.kind === 'text'\) \? <span className="caret"/);
+  // A slot for what the host knows while a run is open (AGENT-LOST feeds it): read, shown, dropped at close.
+  const { readGroup } = await lib('src/lib/deliverables.ts');
+  const open = readGroup({ id: 'g', closed: false, line: 'Writing pagoda.html', live: { label: 'Writing pagoda.html', output: 'a\nb\n412 lines written\n' } });
+  assert.deepEqual(open.live, { label: 'Writing pagoda.html', output: '412 lines written' }, 'the last line only, one fixed row');
+  assert.equal(readGroup({ id: 'g', closed: true, line: 'Wrote a file', live: { label: 'x', output: 'y' } }).live, undefined, 'a closed group has no live part');
+  assert.equal(readGroup({ id: 'g', closed: false, line: 'Ran a command' }).live, undefined, 'without data it draws as before');
+  const deliver = read('src/components/Deliverables.tsx');
+  assert.match(deliver, /live && group\.live\?\.output \? <p className="act__output"/);
+  assert.match(app, /\.act\[data-live\] \.act__line \{ color: var\(--st-ink\); \}/);
+  // The sidebar preview opens and closes in 460 ms (the motion scale's own step, existing easings); reduced motion makes it 1 ms.
+  assert.match(liquid, /animation: st-panel-in var\(--st-t-choreo\) var\(--st-ease-enter\) both;/);
+  assert.match(liquid, /animation: st-panel-out var\(--st-t-choreo\) var\(--st-ease-exit\) both;/);
+  assert.match(app, /--st-t-choreo: 460ms;/);
+  assert.match(app, /@media \(prefers-reduced-motion: reduce\) \{\s*:root \{[^}]*--st-t-choreo: 1ms;/);
+  assert.match(app, /\[data-motion='reduced'\] \{[^}]*--st-t-choreo: 1ms;/);
+  assert.match(read('src/components/ArtifactPanel.tsx'), /setTimeout\(\(\) => setLeaving\(false\), 520\)/, 'the leaving shell stays for the whole 460 ms');
+});

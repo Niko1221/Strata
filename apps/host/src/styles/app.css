@@ -7157,7 +7157,7 @@ textarea {
 .tool-summary > div { margin-top: 6px; padding-left: 20px; }
 
 /* ---- the live status line ---- */
-.live-status { display: grid; grid-template-columns: 14px minmax(0, 24ch) 6ch minmax(0, auto); align-items: center; column-gap: 10px; min-height: 28px; margin-top: 6px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+.live-status { display: grid; grid-template-columns: 14px minmax(0, 32ch) 6ch minmax(0, auto); align-items: center; column-gap: 10px; min-height: 28px; margin-top: 6px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
 /* the word has its own area: the timer and the token count stay where they are while the word changes length */
 .live-status__verb { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .live-status__time, .live-status__tokens { font-variant-numeric: tabular-nums; color: var(--st-ink-muted); white-space: nowrap; }
@@ -7444,6 +7444,9 @@ textarea {
 .act__chev { color: var(--st-icon); transition: transform var(--st-t-local) var(--st-ease-standard); }
 .act[data-open] .act__chev { transform: rotate(180deg); }
 .act__live { width: 6px; height: 6px; border-radius: 50%; background: var(--st-accent); animation: st-pulse 1.6s var(--st-ease-in-out) infinite; }
+/* The step that is running reads as the current one (ink, not the muted past-tense of the lines above it) and its last output sits under it on one fixed line. */
+.act[data-live] .act__line { color: var(--st-ink); }
+.act__output { margin: -4px 0 8px; padding-left: 1px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.4; color: var(--st-ink-muted); }
 .act__thumb { width: 44px; height: 30px; object-fit: cover; border-radius: 6px; border: 1px solid var(--st-line); cursor: pointer; }
 .act__files { flex-basis: 100%; list-style: none; margin: 0; padding: 0 0 0 4px; display: flex; flex-direction: column; }
 .act__skill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--st-ink-soft); }

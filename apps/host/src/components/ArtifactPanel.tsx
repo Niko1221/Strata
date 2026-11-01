@@ -69,9 +69,10 @@ export function ArtifactPanel({ items, selected, onSelect, onClose, onCloseTab, 
         if (current) { hadCurrent.current = true; setLeaving(false); return; }
         if (!hadCurrent.current || !inline) return;
         hadCurrent.current = false;
-        if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        if (matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'reduced') return;
         setLeaving(true);
-        const timer = setTimeout(() => setLeaving(false), 260);
+        // The leaving shell takes the 460 ms step of the motion scale (liquid.css); it is removed just after.
+        const timer = setTimeout(() => setLeaving(false), 520);
         return () => clearTimeout(timer);
     }, [!!current, inline]);
     if (!current)

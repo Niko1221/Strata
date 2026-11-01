@@ -80,13 +80,17 @@ export function ActivityLine({ group, sessionId, onPreview }: { group: ActivityG
   const picture = group.files.find(f => f.kind === 'image');
   // The host's sentence may end with the numbers ("… +225 −0"): they are drawn as figures instead.
   const sentence = group.line.replace(/\s*\+\d+\s*[−-]\s*\d+\s*$/, '');
-  return <div className="act" data-open={open || undefined}>
+  // While the run is open this is the live step: the host's own words for it when it sends them, else the line it already had.
+  const live = !group.closed;
+  return <><div className="act" data-open={open || undefined} data-live={live || undefined}>
     <button type="button" className="act__line" aria-expanded={open} disabled={!group.files.length} onClick={() => setOpen(v => !v)}>
-      <span>{sentence}</span>{group.added || group.removed ? <Plusminus added={group.added} removed={group.removed}/> : null}
+      <span>{live && group.live?.label ? group.live.label : sentence}</span>{group.added || group.removed ? <Plusminus added={group.added} removed={group.removed}/> : null}
       {group.files.length ? <Icon name="chevron" size={14} className="act__chev"/> : null}
       {!group.closed ? <span className="act__live" aria-hidden="true"/> : null}
     </button>
     {picture ? <img className="act__thumb" src={rawUrlOf(sessionId, picture.path)} alt="" loading="lazy" onClick={() => void showOf(picture, sessionId, onPreview)}/> : null}
     {open ? <ul className="act__files">{group.files.map(f => <li key={f.path}><button type="button" onClick={() => void showOf(f, sessionId, onPreview, f.kind)}><Icon name="file" size={14}/>{f.name}{f.added || f.removed ? <Plusminus added={f.added} removed={f.removed}/> : null}</button></li>)}</ul> : null}
-  </div>;
+  </div>
+    {live && group.live?.output ? <p className="act__output" title={group.live.output}>{group.live.output}</p> : null}
+  </>;
 }

@@ -1205,12 +1205,15 @@ html[data-motion='reduced'] .ws__session .navsession__working {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 45%, transparent);
 }
 
-/* The sidebar preview arrives from the right with a short rise and fade, the
+/* The sidebar preview arrives from the right with a rise and fade, the
    chosen file's content crossfades when you switch tabs, and a closed panel
    leaves the same way (a bare shell over the column it vacated; the page itself
-   is already gone, so nothing heavy is animated). */
+   is already gone, so nothing heavy is animated). Both take the 460 ms step of
+   the motion scale (`--st-t-choreo`), slower than a menu or a drawer so the
+   panel arrives and leaves calmly, with the same easings as before; reduced
+   motion makes the step 1 ms. */
 .chatsplit .artifact-panel {
-  animation: st-panel-in var(--st-t-surface) var(--st-ease-enter) both;
+  animation: st-panel-in var(--st-t-choreo) var(--st-ease-enter) both;
 }
 .chatsplit .artifact-panel[data-leaving] {
   position: absolute;
@@ -1218,7 +1221,7 @@ html[data-motion='reduced'] .ws__session .navsession__working {
   width: min(48%, 640px);
   z-index: 3;
   pointer-events: none;
-  animation: st-panel-out var(--st-t-local) var(--st-ease-exit) both;
+  animation: st-panel-out var(--st-t-choreo) var(--st-ease-exit) both;
 }
 .artifact-content {
   animation: st-enter var(--st-t-control) var(--st-ease-enter) both;

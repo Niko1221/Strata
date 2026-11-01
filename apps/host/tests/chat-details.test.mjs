@@ -54,8 +54,8 @@ test('code blocks have room after them and are lighter than the text; the 12px f
 });
 
 test('the sidebar preview comes in and goes out with motion, from the one motion scale, and the reduced-motion gate zeroes the distance', () => {
-  assert.match(liquid, /\.chatsplit \.artifact-panel \{\s*animation: st-panel-in var\(--st-t-surface\) var\(--st-ease-enter\) both;/);
-  assert.match(liquid, /\[data-leaving\] \{[^}]*animation: st-panel-out var\(--st-t-local\) var\(--st-ease-exit\) both;/);
+  assert.match(liquid, /\.chatsplit \.artifact-panel \{\s*animation: st-panel-in var\(--st-t-choreo\) var\(--st-ease-enter\) both;/);
+  assert.match(liquid, /\[data-leaving\] \{[^}]*animation: st-panel-out var\(--st-t-choreo\) var\(--st-ease-exit\) both;/);
   assert.match(liquid, /@media \(prefers-reduced-motion: reduce\) \{\s*:root \{ --st-press-scale: 1; --st-panel-shift: 0px; \}/);
 });
 

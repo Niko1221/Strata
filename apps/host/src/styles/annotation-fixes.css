@@ -129,6 +129,8 @@ html[data-motion='reduced'] .tunnel-automatic .tunnel-stage__symbol .st-icon, ht
 .composer::before, .composer::after { display: none; }
 .st-composer__bar, .chatsplit[data-preview='true'] .st-composer__bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .st-composer__bar > .spacer, .chatsplit[data-preview='true'] .st-composer__bar > .spacer { display: block; flex: 1; min-width: 0; }
+/* Stop and Send are the same height: Stop (secondary) was 38px and Send (primary) 32px, so the whole message box moved 5px every time a reply started or ended. */
+.st-composer__bar > .st-btn:not(.st-btn--icon) { height: 32px; min-height: 32px; box-sizing: border-box; }
 .composer-mic { display: grid; place-items: center; flex: none; width: 32px; height: 34px; border: 0; border-radius: 9px; background: transparent; color: var(--st-ink-muted); cursor: pointer; }
 .composer-mic:hover, .composer-mic[aria-pressed='true'] { color: var(--st-accent-text); background: var(--st-surface-2); }
 .composer-mode { max-width: 170px; }
