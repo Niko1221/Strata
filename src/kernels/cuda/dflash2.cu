@@ -979,7 +979,7 @@ void df2_gemm_variant(int v) { g_gemm_variant = v; }
 void df2_attention_variant(int v) { g_attn_variant = v; }
 
 #ifndef DF2_Q4_AUTO
-#define DF2_Q4_AUTO(rows) ((rows) <= 1024 ? 20 : 11)   // by matrix size (dflash2_gemm_bench q4): 4 warps x 2 rows for the large matrices, 4 warps x 1 row with an 8-step unroll for the 640-row and 256-row ones
+#define DF2_Q4_AUTO(rows) 28   // one warp a row, 8-step pairs (dflash2_gemm_bench q4 on srv118: every matrix at or under the other variants)
 #endif
 void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_in, int ncols, void* stream) {
     if (n < 1 || n > 3 || n_in % 512 != 0 || ncols < 1 || ncols > 8) throw std::invalid_argument("df2_gemm: unsupported shape");
@@ -1014,6 +1014,18 @@ void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_
             DF2_ROWS4_CASE(21, 8, 1, 8)
             DF2_ROWS4_CASE(22, 8, 2, 4)
             DF2_ROWS4_CASE(23, 2, 1, 4)
+            DF2_ROWS4_CASE(24, 1, 2, 2)
+            DF2_ROWS4_CASE(25, 1, 4, 2)
+            DF2_ROWS4_CASE(26, 2, 2, 1)
+            DF2_ROWS4_CASE(27, 2, 4, 2)
+            DF2_ROWS4_CASE(28, 1, 1, 2)
+            DF2_ROWS4_CASE(29, 1, 2, 4)
+            DF2_ROWS4_CASE(30, 2, 2, 4)
+            DF2_ROWS4_CASE(31, 1, 1, 1)
+            DF2_ROWS4_CASE(32, 1, 1, 4)
+            DF2_ROWS4_CASE(33, 1, 1, 8)
+            DF2_ROWS4_CASE(34, 2, 1, 2)
+            DF2_ROWS4_CASE(35, 4, 1, 2)
             case 2: gemm4_kernel<2><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
             default: if (rows % 32 == 0) gemm4_kernel<4><<<rows / 32, 128, 0, st>>>(segs, xqp, xd, n_in, ncols);
                      else gemm4_kernel<2><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols);

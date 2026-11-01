@@ -48,7 +48,9 @@ int main(int argc, char** argv) {
             cudaMemcpy(xd, ones.data(), ones.size() * 4, cudaMemcpyHostToDevice);
         }
         std::vector<float> yref;
-        for (int var : {1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}) {
+        std::vector<int> vars = {1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23};
+        if (q4) for (int v = 24; v <= 35; ++v) vars.push_back(v);
+        for (int var : vars) {
             strata::kernels::df2_gemm_variant(var);
             const int ncols = 8;
             const size_t ny = (size_t) 8 * sh.n_out * (sh.mats == 3 ? 3 : sh.mats);
