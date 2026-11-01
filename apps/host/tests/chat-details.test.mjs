@@ -50,7 +50,7 @@ test('code blocks have room after them and are lighter than the text; the 12px f
   assert.match(liquid, /\.st-bubble \.st-code \{\s*margin: 16px 0 20px;/);
   assert.match(liquid, /\.st-code__head \{\s*min-height: 34px;/);
   const app = await read('src/styles/app.css');
-  assert.match(app, /--st-fs-read-sm: max\(12px, calc\(var\(--st-content-fs, 14px\) \* \.8125\)\);/);
+  assert.match(app, /--st-fs-read-sm: max\(12px, calc\(var\(--st-content-fs, 12px\) \* \.8125\)\);/);
 });
 
 test('the sidebar preview comes in and goes out with motion, from the one motion scale, and the reduced-motion gate zeroes the distance', () => {

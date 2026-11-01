@@ -56,13 +56,13 @@
   /* Type inside a conversation follows the reader's text size. The ratios are
      declared once here, so a rule that scales with the prose uses a token
      instead of a bespoke calc that the type audit cannot check. */
-  --st-fs-read-lg: calc(var(--st-content-fs, 14px) * 1.125);
-  /* The small ratio has a floor: at the default 14px reading size, 0.8125
-     would put code and tables at 11.4px, which is below what a table of
+  --st-fs-read-lg: calc(var(--st-content-fs, 12px) * 1.125);
+  /* The small ratio has a floor: at any reading size up to 14px, 0.8125
+     would put code and tables under 12px (9.75px at the default 12px), which is below what a table of
      numbers should ask of a reader. */
-  --st-fs-read-sm: max(12px, calc(var(--st-content-fs, 14px) * .8125));
-  --st-fs-math: calc(var(--st-content-fs, 14px) * 1.08);
-  --st-fs-math-source: calc(var(--st-content-fs, 14px) * .9);
+  --st-fs-read-sm: max(12px, calc(var(--st-content-fs, 12px) * .8125));
+  --st-fs-math: calc(var(--st-content-fs, 12px) * 1.08);
+  --st-fs-math-source: calc(var(--st-content-fs, 12px) * .9);
 }
 
 /* Two shared recipes replace the nine bespoke entrance keyframes this file used
@@ -465,11 +465,11 @@
    target is 45–75, verified by `npm run measure`). */
 .app[data-focus='true'] .slashmenu,
 .app[data-focus='true'] .chat__inner {
-  font-size: var(--st-content-fs, 14px);
+  font-size: var(--st-content-fs, 12px);
   max-width: calc(var(--st-measure) + 72px);
 }
 .app[data-focus='true'] .composer__inner {
-  font-size: var(--st-content-fs, 14px);
+  font-size: var(--st-content-fs, 12px);
   /* the same column, less the transcript's 28px padding on each side */
   max-width: calc(var(--st-measure) + 2.5em - 56px);
 }
@@ -488,8 +488,8 @@
    — the same scoping DSH uses for its 10–22px content setting. */
 .st-msg--assistant .st-bubble,
 .st-msg--user .st-bubble {
-  font-size: var(--st-content-fs, 14px);
-  line-height: calc(var(--st-content-fs, 14px) * 1.62);
+  font-size: var(--st-content-fs, 12px);
+  line-height: calc(var(--st-content-fs, 12px) * 1.62);
 }
 
 /* Density — the difference between scanning data and reading it. */
@@ -7017,7 +7017,7 @@ textarea {
 .error-notice .error-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); max-height: 3.3em; overflow-y: auto; }
 .error-detail-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); }
 /* What you type and the small print under each message follow the reading size too, so the whole conversation changes together. */
-.st-composer textarea { font-size: var(--st-content-fs, 14px); }
+.st-composer textarea { font-size: var(--st-content-fs, 12px); }
 .st-msg__meta, .st-msg__meta time { font-size: var(--st-fs-read-sm); }
 
 /* What an approval is about, shown without opening the card: the file or the command. */
