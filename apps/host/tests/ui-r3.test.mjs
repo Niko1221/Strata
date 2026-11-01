@@ -78,7 +78,7 @@ test('12: with no subagents the dropdown is one row, "No subagents recorded" and
   assert.match(bar, /title=\{tr\(session\?\.agents\?\.length \? "Subagents" : "No subagents recorded"\)\}/, 'the empty state is the title');
   assert.ok(!/subagents-empty|Subagents that run in this conversation/.test(bar), 'no icon, no explanatory text');
   assert.ok(!/subagents-empty/.test(read('src/styles/annotation-fixes.css')), 'no dead rule');
-  assert.match(read('src/styles/app.css'), /\.telepop__head:last-child \{ padding-bottom: 0; margin-bottom: 0; border-bottom: 0; \}/, 'no empty body under the title');
+  assert.match(read('src/styles/app.css'), /\.telepop__head:last-child \{ align-items: center; padding-bottom: 0; margin-bottom: 0; border-bottom: 0; \}/, 'no empty body under the title');
 });
 
 test('14: the Board and Schedule help lines sit in the Tasks header after the title, smaller, and wrap rather than being cut', () => {
@@ -143,4 +143,17 @@ test('10 (visual): the reply stays still while it streams, one live cue per step
   assert.match(app, /@media \(prefers-reduced-motion: reduce\) \{\s*:root \{[^}]*--st-t-choreo: 1ms;/);
   assert.match(app, /\[data-motion='reduced'\] \{[^}]*--st-t-choreo: 1ms;/);
   assert.match(read('src/components/ArtifactPanel.tsx'), /setTimeout\(\(\) => setLeaving\(false\), 520\)/, 'the leaving shell stays for the whole 460 ms');
+});
+
+test('the new words are in all nine languages with the same slots', () => {
+  const en = JSON.parse(read('src/locales/r3-en.json'));
+  assert.ok(Object.keys(en).length >= 5);
+  for (const lang of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) {
+    const cat = JSON.parse(read(`src/locales/r3-${lang}.json`));
+    assert.deepEqual(Object.keys(cat), Object.keys(en), lang);
+    for (const [id, text] of Object.entries(en)) {
+      assert.ok(cat[id] && cat[id] !== text, `${lang} ${id} is translated`);
+      assert.deepEqual((cat[id].match(/\{\d+\}/g) ?? []).sort(), (text.match(/\{\d+\}/g) ?? []).sort(), `${lang} ${id} slots`);
+    }
+  }
 });

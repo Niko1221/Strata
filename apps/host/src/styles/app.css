@@ -7332,7 +7332,7 @@ textarea {
 .telepop__head > .st-btn { align-self: center; margin-left: auto; }
 .telepop__detail + .st-btn { margin-left: 0; }
 /* a popover with nothing under its title (Subagents, none recorded) is one row: no rule and no space below it */
-.telepop__head:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
+.telepop__head:last-child { align-items: center; padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
 
 /* the way back to the newest message: a small round arrow, shown only while scrolled up */
 .jumplatest-row { position: relative; height: 0; flex: none; z-index: 3; }

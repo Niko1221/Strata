@@ -19,9 +19,9 @@ function FreeMeter({ label, total, free }: { label: string; total: number; free:
 
 /**
  * "This computer": how much graphics memory and RAM is free right now. While a model is loaded that is all the card shows: the hardware line, the model's
- * name, "Loaded", what it takes and the SSD line are gone (owner, 11-01: the page already says what is loaded), except one calm sentence when the loaded
- * model really reads part of itself from the SSD. Before anything is loaded the card says what the chosen version would take, and the SSD only where the
- * version does not fit in memory (how much is read from it); a version that fits says nothing. (The n-gram table, which always sits on the SSD, is not counted.)
+ * name, "Loaded", what it takes and the SSD line are gone (owner, 11-01: the page already says what is loaded); only while the loaded model really reads
+ * from the SSD, how fast it reads right now. Before anything is loaded the card says what the chosen version would take. That a version does not fit in
+ * memory is said once, under the version picker ("SSD streaming · will run slower"), not again here. (The n-gram table, which always sits on the SSD, is not counted.)
  */
 export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = null, live = null, loaded = [], selectedLoaded = false }: { gpuName?: string | null; ramGb: number | null; vramGb: number; fit: Fit | null; inUse?: { ramGb: number; vramGb: number } | null; diskGb?: number | null; live?: PcLive | null; loaded?: PcLoaded[]; selectedLoaded?: boolean }) {
   const showFit = !!fit?.known && !selectedLoaded;
@@ -35,10 +35,9 @@ export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = 
       {tr(live.freeVramGb !== null && vramGb > 0 ? <FreeMeter label="Graphics memory" total={live.vramTotalGb ?? vramGb} free={live.freeVramGb}/> : null)}
       {tr(live.freeRamGb !== null && ramGb ? <FreeMeter label="RAM" total={ramGb} free={live.freeRamGb}/> : null)}
     </div> : null)}
-    {tr(isLoaded && streamed >= 1 ? <p className="pc-note">{tr("About {0} GB will be read from the SSD, so answers can be a little slower.", [Math.round(streamed)])}{tr(live?.diskReadGbs && live.diskReadGbs >= 0.05 ? tr(" Reading from your SSD now: {0}", [`${live.diskReadGbs.toFixed(1)} GB/s`]) : '')}</p> : null)}
+    {tr(isLoaded && streamed >= 1 && live?.diskReadGbs && live.diskReadGbs >= 0.05 ? <p className="pc-note">{tr("Reading from your SSD now: {0}", [`${live.diskReadGbs.toFixed(1)} GB/s`])}</p> : null)}
     {tr(inUse ? <p className="xs muted">{tr("Models that stay loaded use about {0} GB of RAM and {1} GB of this card’s memory.", [inUse.ramGb, inUse.vramGb])}</p> : null)}
     {tr(showFit && !isLoaded && fit!.vramUseGb + fit!.ramUseGb > 0 ? <p className="pc-note">{tr("This version would take about {0} of graphics memory and {1} of RAM.", [about(fit!.vramUseGb), about(fit!.ramUseGb)])}</p> : null)}
     {tr(diskGb ? <p className="pc-note">{tr("Needs about {0} GB of free disk space. What does not fit in memory is read from your SSD.", [Math.round(diskGb)])}</p> : null)}
-    {tr(showFit && fit!.spillGb >= 1 ? <p className="pc-note">{tr("About {0} GB will be read from the SSD, so answers can be a little slower.", [Math.round(fit!.spillGb)])}</p> : null)}
   </section>;
 }

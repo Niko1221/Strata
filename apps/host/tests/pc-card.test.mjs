@@ -27,11 +27,12 @@ test('free graphics memory and free RAM come first, as real readings', () => {
   assert.doesNotMatch(card({ fit: fit(0), live: null }), /Free right now/, 'no readings: no invented numbers');
 });
 
-test('the SSD appears only when the model does not fit in memory, with how much is read from it; a version that fits says nothing', () => {
+test('the card does not repeat the SSD warning the version picker already gives; a version that fits says nothing either', () => {
   setTranslationLanguage('en');
   assert.doesNotMatch(card({ fit: fit(0), live }), /SSD/);
   assert.doesNotMatch(card({ fit: fit(0), live }), /Fits fully in memory/, 'no "Fits" words (owner, 11-01)');
-  assert.match(card({ fit: fit(30), live }), /About 30 GB will be read from the SSD/);
+  assert.doesNotMatch(card({ fit: fit(30), live }), /read from the SSD/, 'said once, under the picker');
+  assert.match(card({ fit: fit(30), live }), /This version would take about 12 GB of graphics memory and 44 GB of RAM\./);
 });
 
 test('a loaded model leaves the free memory and nothing else: no hardware line, no name, no Loaded, no "It takes about", no numbers, no SSD line', () => {
@@ -41,9 +42,9 @@ test('a loaded model leaves the free memory and nothing else: no hardware line, 
   assert.match(fits, /Free right now/);
   assert.match(fits, /Graphics memory<\/span><b>10\.3 GB free<\/b>/);
   for (const gone of [/RTX 5070/, /graphics memory · /, /Qwen3\.8-Flash-Next/, /Loaded/, /It takes about/, /<dl/, /<dt>/, /SSD/, /pc-loaded/]) assert.doesNotMatch(fits, gone, String(gone));
-  // A loaded model that really streams from the SSD keeps one calm sentence; nothing else comes back.
+  // A loaded model that really streams from the SSD keeps how fast it reads right now; nothing else comes back.
   const spills = card({ fit: fit(18), live: { ...live, diskReadGbs: 1.2 }, loaded: [{ id: 'q', label: 'Qwen3.8-Flash-Next · UD-Q4_K_XL', fit: fit(18, 12, 53) }], selectedLoaded: true });
-  assert.match(spills, /About 18 GB will be read from the SSD/);
+  assert.doesNotMatch(spills, /About 18 GB will be read/);
   assert.match(spills, /Reading from your SSD now: 1\.2 GB\/s/);
   for (const gone of [/<dl/, /<dt>/, /Loaded/, /It takes about/, /RTX 5070/]) assert.doesNotMatch(spills, gone, String(gone));
   assert.doesNotMatch(spills, /This version would take/);
