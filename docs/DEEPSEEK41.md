@@ -80,9 +80,9 @@ and its 7 GB of experts take the graphics memory); the RAM store sizes itself. L
 ## Install
 
 ```
-./setup.sh --family deepseek41 --model IST-DAS-2.00bpw   # 257 GB: the official 2.00 set + Engram + drafter (resumable, SHA-256 checked)
-./setup.sh --family deepseek41 --model IST-DAS-2.25bpw   # 274 GB (the Engram is shared with 2.00)
-./setup.sh --family deepseek41 --model IST-DAS-1.75bpw   # 239 GB, the smallest
+./setup.sh --family deepseek41 --model ISTA-DAS-2.00bpw   # 257 GB: the official 2.00 set + Engram + drafter (resumable, SHA-256 checked)
+./setup.sh --family deepseek41 --model ISTA-DAS-2.25bpw   # 274 GB (the Engram is shared with 2.00)
+./setup.sh --family deepseek41 --model ISTA-DAS-1.75bpw   # 239 GB, the smallest
 ./setup.sh --family deepseek41 --model UD-Q8_K_XL        # Unsloth's 508 GB set, for hundreds of GB of RAM or several cards
 ./setup.sh --family deepseek41 --gguf-dir DIR            # files you already have: the shards (or the folder with 2.00bpw / 2.25bpw / UD-Q8_K_XL inside); the Engram and drafter are looked for beside them
 strata launch --model ist-das-2.00bpw --plan             # where it would go on this computer, nothing changed
@@ -212,7 +212,7 @@ option a DeepSeek build is made for 86, 89 and 120. On Windows, `packaginguild_
 on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into the `engine` folder of your Strata install (next to `strata`); setup finds it there and does not download an engine:
 
 ```
-python setup.py --family deepseek41 --model IST-DAS-2.00bpw
+python setup.py --family deepseek41 --model ISTA-DAS-2.00bpw
 ```
 
 `strata-dsv41 --version` prints the commit it was built from. A build you made yourself is not signed by Strata, which is fine for your own computer.
