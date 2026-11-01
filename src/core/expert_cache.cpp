@@ -641,6 +641,7 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
     // R4.2g: each layer starts at the bottom of its own range.  Built here rather than lazily so `admit`
     // stays allocation-free on the token path.
     layer_next_.assign((size_t) (n_layers > 0 ? n_layers : 0), 0);
+    layer_count_.assign((size_t) (n_layers > 0 ? n_layers : 0), 0);
     for (int64_t l = 0; l < n_layers; ++l) {
         int64_t lo = 0, hi = 0;
         layer_slot_range(l, lo, hi);
@@ -676,6 +677,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     // #369: each layer's cursor at the bottom of its own range, as open() seeds it - open() above ran on byte-sized
     // "slots", so its seeds are not slot indices
     layer_next_.assign((size_t) (n_layers > 0 ? n_layers : 0), 0);
+    layer_count_.assign((size_t) (n_layers > 0 ? n_layers : 0), 0);
     for (int64_t l = 0; l < n_layers; ++l) {
         int64_t lo = 0, hi = 0;
         layer_slot_range(l, lo, hi);
@@ -712,6 +714,7 @@ void ExpertCache::close() {
     admitted_ = 0;
     sealed_ = false;
     layer_next_.clear();
+    layer_count_.clear();
 }
 
 /// R4.2g.  Layer `l` owns `[l*q, (l+1)*q)` with `q = slots_ / n_layers_`; the LAST layer takes whatever is
@@ -738,6 +741,23 @@ int32_t ExpertCache::admit(int64_t layer, int64_t expert) {
     // R4.2g: THE PER-LAYER PATH.  Same "no eviction" rule, but the ceiling is this layer's own range rather
     // than one counter shared by all 48 - which is what confined the measured hit rate to 2.97%.
     if (per_layer_) {
+        if (per_layer_rank_major_) {
+            if (layer_count_.empty() || n_layers_ <= 0 || slots_ <= 0) return kNotResident;
+            const int64_t q = slots_ / n_layers_;
+            const int64_t r = (int64_t) layer_count_[(size_t) layer];
+            int64_t slot = -1;
+            if (r < q) {
+                slot = r * n_layers_ + layer;
+            } else if (layer == n_layers_ - 1 && q * n_layers_ + (r - q) < slots_) {
+                slot = q * n_layers_ + (r - q);
+            } else {
+                return kNotResident;
+            }
+            ++layer_count_[(size_t) layer];
+            residency_[at] = (int32_t) slot;
+            ++admitted_;
+            return residency_[at];
+        }
         if (layer_next_.empty()) return kNotResident;
         int64_t lo = 0, hi = 0;
         layer_slot_range(layer, lo, hi);

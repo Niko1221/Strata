@@ -39,6 +39,36 @@ int main() {
             }
         }
     }
+    // Rank-major per-layer admission: slot = rank * n_layers + layer, so borrowing the tail [slots() - n_layers, slots())
+    // takes only the coldest rank (rank = q - 1) from each layer instead of wiping out the last layer.
+    {
+        strata::core::ExpertCache cache;
+        std::vector<int64_t> sizes = {1024, 1536, 2048, 1024, 1536, 2048};
+        if (!cache.open_sized(sizes, 3, 4, err)) {
+            std::fprintf(stderr, "open_sized rank-major: %s\n", err.c_str());
+            return 1;
+        }
+        cache.set_per_layer_admission(true);
+        cache.set_per_layer_rank_major(true);
+        for (int64_t r = 0; r < 3; ++r) {
+            for (int64_t l = 0; l < 3; ++l) {
+                const int32_t slot = cache.admit(l, r);
+                const int32_t want = r < 2 ? (int32_t) (r * 3 + l) : strata::core::kNotResident;
+                if (slot != want) {
+                    std::fprintf(stderr, "rank-major: layer %lld rank %lld got slot %d, want %d\n",
+                                 (long long) l, (long long) r, slot, want);
+                    return 1;
+                }
+            }
+        }
+        // Borrowing the last 3 slots (slots 3, 4, 5) leaves rank 0 (slots 0, 1, 2) resident in all 3 layers.
+        for (int64_t l = 0; l < 3; ++l) {
+            if (cache.slot_of(l, 0) >= 3 || cache.slot_of(l, 1) < 3) {
+                std::fprintf(stderr, "rank-major tail loan balance failed on layer %lld\n", (long long) l);
+                return 1;
+            }
+        }
+    }
     std::puts("expert cache per-layer admission: uniform and sized caches passed");
     return 0;
 }

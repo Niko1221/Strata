@@ -7274,6 +7274,10 @@ int main(int argc, char** argv) {
     // one layer can land in another layer's slot. Every expert in a layer is one size, so the per-layer list is
     // `quota` copies of that layer's own blob, in layer order. `--expert-cache N` stays the budget of N largest
     // blobs, and the quota is however many copies of every layer fit in it.
+    static const bool per_layer_rank_major = [] {
+        const char* v = std::getenv("STRATA_PER_LAYER_RANK_MAJOR");
+        return v == nullptr || v[0] == '\0' || v[0] != '0';
+    }();
     std::vector<int64_t> sized_slots;
     uint64_t per_layer_bytes = 0;
     if (native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
@@ -7291,9 +7295,15 @@ int main(int argc, char** argv) {
         if (q > 0) {
             per_layer_bytes = sum;
             sized_slots.reserve((size_t) q * (size_t) g.n_layers);
-            for (int64_t l = 0; l < g.n_layers; ++l) {
-                const int64_t b = (int64_t) nib::slot_bytes(l);
-                for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+            if (per_layer_rank_major) {
+                for (int64_t s = 0; s < q; ++s)
+                    for (int64_t l = 0; l < g.n_layers; ++l)
+                        sized_slots.push_back((int64_t) nib::slot_bytes(l));
+            } else {
+                for (int64_t l = 0; l < g.n_layers; ++l) {
+                    const int64_t b = (int64_t) nib::slot_bytes(l);
+                    for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+                }
             }
             o.expert_cache = (int) sized_slots.size();
             std::fprintf(stderr, "strata generate: per-layer slots use each layer's blob: %d uniform slots "
@@ -7366,9 +7376,15 @@ int main(int argc, char** argv) {
                 if (q > g.n_expert) q = g.n_expert;
                 sized_slots.clear();
                 if (q <= 0) { o.expert_cache = 0; return false; }
-                for (int64_t l = 0; l < g.n_layers; ++l) {
-                    const int64_t b = (int64_t) nib::slot_bytes(l);
-                    for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+                if (per_layer_rank_major) {
+                    for (int64_t s = 0; s < q; ++s)
+                        for (int64_t l = 0; l < g.n_layers; ++l)
+                            sized_slots.push_back((int64_t) nib::slot_bytes(l));
+                } else {
+                    for (int64_t l = 0; l < g.n_layers; ++l) {
+                        const int64_t b = (int64_t) nib::slot_bytes(l);
+                        for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+                    }
                 }
                 o.expert_cache = (int) sized_slots.size();
                 return true;
@@ -7466,6 +7482,7 @@ int main(int argc, char** argv) {
                      (long long) xcache.slots(), xcache.gib());
         mem_mark("opening the expert cache");
         xcache.set_per_layer_admission(o.expert_cache_per_layer);
+        xcache.set_per_layer_rank_major(o.expert_cache_per_layer && per_layer_rank_major);
         // Round 328 warned here that the GPU hit path was wrong (tokens diverged from a cache-off run from
         // token 0). That fault was fixed long since (native_expert_parity, expert_parity, the grouped kernels'
         // tests), and the warning outlived it (issue #23). What remains is rounding: a GPU expert and the CPU's

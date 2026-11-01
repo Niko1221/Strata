@@ -184,6 +184,10 @@ public:
     /// caller that predates this flag is bit-for-bit unaffected.
     void set_per_layer_admission(bool on) { per_layer_ = on; }
     bool per_layer_admission() const { return per_layer_; }
+    /// Interleaves per-layer slots rank-major (`slot = rank * n_layers + layer`) so prefill tail loans (`[slots() - need, slots())`)
+    /// borrow the coldest ranks evenly across all layers rather than wiping out the highest-numbered layers.
+    void set_per_layer_rank_major(bool on) { per_layer_rank_major_ = on; }
+    bool per_layer_rank_major() const { return per_layer_rank_major_; }
     /// The slot range layer `l` may admit into under per-layer admission.  Exposed so a test can check it.
     void layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) const;
 
@@ -273,7 +277,9 @@ private:
     /// R4.2g.  `per_layer_` off (the default) leaves `next_free_` as the only admission counter, so the
     /// pre-existing path is untouched.
     bool per_layer_ = false;
+    bool per_layer_rank_major_ = false;
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
+    std::vector<int32_t> layer_count_;  ///< [n_layers] -> count admitted in that layer (rank-major mode)
     std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
     int64_t admitted_ = 0;
     bool sealed_ = false;               ///< STRATA_EXPERT_NIBBLE: `seal` was called (no slot is written after it)
