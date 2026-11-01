@@ -2233,7 +2233,7 @@ async function staticFile(req, res, path) {
   if (!existsSync(DIST)) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(
-      `<!doctype html><meta charset="utf-8"><title>Strata host</title>
+      `<!doctype html><meta charset="utf-8"><title>Strata</title>
        <body style="font:16px/1.6 -apple-system,system-ui;background:#0e1113;color:#eef1f3;padding:48px">
        <h1 style="margin:0 0 8px">Strata host is running</h1>
        <p style="color:#8e979f">No built web app found at <code>${DIST}</code>.</p>
