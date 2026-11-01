@@ -1950,12 +1950,17 @@ __device__ __forceinline__ wh8 i8_to_h(const uint32_t* x) {   // PA_KL codes, ex
 // SPLIT = true (default): q and p carried as FP16 hi + lo pairs (two WMMAs each: FP32-level). S23 (opt-in
 // STRATA_PA_FAST=1): SPLIT = false, one FP16 image each - half the matrix work, rounding-level (FP16 attention as the
 // usual flash-attention kernels), quality-gated
-template <bool SPLIT>
+// GATE = true (STRATA_QSA_FUSE_GATE): the attention output gate of the QSA layer in the epilogue - o16[qi * ld16 + h * HD + d] =
+// half(a * (1 / (1 + expf(-qf[qi * n_head * 2 * HD + h * 2 * HD + HD + d])))) with a the value `attn` would have held: the
+// expressions of the prefill's gate_attn_kernel, so the FP16 image is the same bits and `attn` is neither written nor read back.
+template <bool SPLIT, bool GATE = false>
 __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                                    const int32_t* __restrict__ ids,
                                                                    const int32_t* __restrict__ steps, int n_kv_heads,
                                                                    int page_size, float scale_log2,
-                                                                   float* __restrict__ attn, int cap) {
+                                                                   float* __restrict__ attn, int cap,
+                                                                   const float* __restrict__ qf = nullptr,
+                                                                   uint16_t* __restrict__ o16 = nullptr, int64_t ld16 = 0) {
 #if STRATA_PA_WMMA
     __shared__ SmemW S;
     const int qi = blockIdx.x, kvh = blockIdx.y;
@@ -2174,7 +2179,16 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #pragma unroll
         for (int i = 0; i < 8; ++i) {
             const int row = PA_ROW(i, half);
-            if (row < G) attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
+            if (row < G) {
+                if constexpr (GATE) {
+                    const int h = kvh * G + row, d = dim0 + j * 16 + col;
+                    const float a = acc[j][i] * inv[i];
+                    o16[(size_t) qi * ld16 + (size_t) h * HD + d] =
+                        __half_as_ushort(__float2half_rn(a * (1.0f / (1.0f + expf(-qf[(size_t) qi * n_head * 2 * HD + (size_t) h * 2 * HD + HD + d])))));
+                } else {
+                    attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
+                }
+            }
         }
 #else
     __builtin_trap();
@@ -2244,7 +2258,8 @@ bool hip_wmma_usable(int64_t n_q, int64_t cap) {
 }
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
-                 const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
+                 const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st, const float* gate_qf = nullptr,
+                 uint16_t* gate_o16 = nullptr, int64_t gate_ld = 0) {
     {   // STRATA_QSA_STAT=1 (diagnostic): how much consecutive queries' selections overlap (the row-union attention's sharing factor)
         static const bool stat_on = std::getenv("STRATA_QSA_STAT") != nullptr;
         static int stat_calls = 0;
@@ -2278,7 +2293,19 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
         static const bool fast = [] { const char* e = std::getenv("STRATA_PA_FAST"); return e != nullptr && e[0] == '1'; }();
         static const int64_t min_t = [] { const char* e = std::getenv("STRATA_PF_SWITCH_MIN_T"); return e ? (int64_t) std::atoll(e) : (int64_t) 0; }();
-        if (fast && n_q >= min_t)
+        if (gate_qf != nullptr) {   // STRATA_QSA_FUSE_GATE: the gated FP16 image straight from the epilogue (the same SPLIT choice)
+            const dim3 grid((unsigned) nb, (unsigned) s.n_head_kv);
+            const float* qfq = gate_qf + (size_t) q0 * s.n_head * 2 * HD;
+            uint16_t* o16q = gate_o16 + (size_t) q0 * gate_ld;
+            if (fast && n_q >= min_t)
+                prompt_attn_wmma_kernel<false, true><<<grid, THREADS, 0, st>>>(
+                    q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+                    (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
+            else
+                prompt_attn_wmma_kernel<true, true><<<grid, THREADS, 0, st>>>(
+                    q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+                    (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
+        } else if (fast && n_q >= min_t)
             prompt_attn_wmma_kernel<false><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, 0, st>>>(
                 q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
                 (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
@@ -2366,6 +2393,21 @@ bool qsa_prompt_attn_matrix_cores_requested() {
 }
 
 bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
+
+bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& s, const float* qf, uint16_t* o16, int64_t ld16, int64_t n_q,
+                                 void* stream) {
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    if (n_q <= 0 || qf == nullptr || o16 == nullptr || ld16 < s.n_head * HD) return false;
+    if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
+        pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
+        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
+        return launch_wmma(q, pools, ids, steps, cap, s, nullptr, n_q, (cudaStream_t) stream, qf, o16, ld16);
+#else
+    (void) q; (void) pools; (void) ids; (void) steps; (void) cap; (void) s; (void) qf; (void) o16; (void) ld16; (void) n_q; (void) stream;
+#endif
+    return false;
+}
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
