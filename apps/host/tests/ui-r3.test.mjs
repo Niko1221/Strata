@@ -89,3 +89,19 @@ test('14: the Board and Schedule help lines sit in the Tasks header after the ti
   assert.match(css, /\.main__title-detail:has\(\.tasks-note\) \{ white-space: normal; overflow: visible;/, 'wraps instead of being cut at narrow widths');
   assert.match(css, /\.main__head:has\(\.tasks-note\) \{ height: auto; \}/, 'the header grows to hold it');
 });
+
+test('13: Load model has no pop-up: the size and the warnings are in the page, a disk that is too small stops it there', () => {
+  assert.ok(!/<Dialog open=\{!!plan\}/.test(models), 'the download and prepare dialog is gone');
+  assert.ok(!/Download and prepare|Apply settings and load|Apply & load/.test(models), 'none of its words are left');
+  // The press is the yes: the plan is read (Control checks the free disk), a short disk is said inline and nothing starts, otherwise the install starts at once.
+  const load = models.slice(models.indexOf('async function load()'), models.indexOf('/* Unload / Use in chat'));
+  assert.match(load, /api\.post<Record<string, any>>\('\/api\/native\/plan', downloadValues\)/);
+  assert.match(load, /if \(planned\?\.plan\?\.disk_short\) \{\s*setPlan\(planned\);\s*return;\s*\}/, 'safety: not enough disk, nothing starts');
+  assert.match(load, /kind: 'install', args: downloadValues/, 'otherwise it starts at once');
+  assert.match(models, /\{tr\(plan\?\.plan\?\.disk_short \? <ErrorNotice message=\{plan\.plan\.disk_short\}\/> : null\)\}/, 'the disk message is in the page');
+  assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\("Choosing DFlash2 also downloads its drafter/, 'the extra download is said in the page while it runs');
+  assert.match(models, /className="native-download-size small muted">\{tr\("\{0\} download", \[sizeGb\(selectedSize\.download_gb\)\]\)\}/, 'the download size sits beside the button');
+  // The warnings for a version that does not fit stay inline (item 5): SSD streaming and Doesn't fit under the version list.
+  assert.match(models, /fitState === 'ssd' \? <p className="small muted native-spill-note"><Icon name="disk" size=\{16\}\/>/);
+  assert.match(models, /fitState === 'no' \? <p className="small muted native-spill-note"><Icon name="warning" size=\{16\}\/>/);
+});

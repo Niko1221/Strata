@@ -648,6 +648,9 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .native-gpu-options input { accent-color:var(--st-accent); }
 .native-gpu-options small { display:block; margin-top:5px; color:var(--st-ink-muted); }
 .native-model-actions { display:flex; gap:16px; justify-content:flex-end; border-top:1px solid var(--st-line); padding-top:20px; }
+/* Load model has no pop-up: what the download is sits beside the button that starts it */
+.native-model-actions { align-items:center; }
+.native-download-size { margin-right:auto; font-variant-numeric:tabular-nums; }
 .native-path { display:block; font-size:11px; line-height:1.8; overflow-wrap:anywhere; margin:16px 0; }
 .native-settings { margin-top:24px; border-top:1px solid var(--st-line-soft); padding-top:20px; }
 .native-settings>summary, .native-progress summary,.native-generation>summary { font-size:13px; font-weight:600; cursor:pointer; }
