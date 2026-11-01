@@ -889,7 +889,7 @@ struct MtpFiles {
         // experts-q4_0.bin, made from the BF16 checkpoint; the same VRAM either way. Q8_0 drafted exactly as Q4_0 did
         // for ~420 MiB more a card, which the arena's reserve does not count: not offered.
         const char* ex_s = std::getenv("FNX_MTP_EXPERTS");
-        const std::string ex = ex_s ? ex_s : "q4_0";
+        const std::string ex = ex_s ? ex_s : "q2_0";   // strata-split: Strata's draft-layer files (mtp/rt), no download; FNX_MTP_EXPERTS=q4_0 for sFNX's
         if (ex == "q2_0") experts(dir + "/experts.bin");
         else if (ex == "q4_0") experts_blocks(dir + "/experts-q4_0.bin", T_Q4_0, 18);
         else throw std::runtime_error("mtp: FNX_MTP_EXPERTS=" + ex + ": q2_0 or q4_0");
