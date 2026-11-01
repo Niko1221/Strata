@@ -44,7 +44,7 @@ test('switch: asks Control for the chosen engine only, and answers at once with 
 
 test('only a family and a plain folder name from the list are accepted: a path, a hidden folder or another family is refused before Control is asked', async () => {
   const control = { useEngine: async () => assert.fail('must not be called'), removeEngine: async () => assert.fail('must not be called') };
-  for (const body of [{ family: 'x', folder: 'a' }, { family: 'qwen', folder: '../a' }, { family: 'qwen', folder: 'a/b' }, { family: 'qwen', folder: 'a\\b' }, { family: 'qwen', folder: '.rejected' }, { family: 'qwen' }, {}]) {
+  for (const body of [{ family: 'x', folder: 'a' }, { family: 'qwen', folder: '../a' }, { family: 'qwen', folder: 'a/b' }, { family: 'qwen', folder: 'a\\b' }, { family: 'qwen', folder: '.rejected' }, { family: 'qwen', folder: '--force' }, { family: 'qwen', folder: '-x' }, { family: 'qwen', folder: 'a b' }, { family: 'qwen' }, {}]) {
     for (const action of ['use', 'remove']) assert.equal((await changeEngine(control, action, body)).status, 400, JSON.stringify(body));
   }
   assert.equal((await changeEngine({}, 'use', { family: 'qwen', folder: 'a' })).status, 501);
