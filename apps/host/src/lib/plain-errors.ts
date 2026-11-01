@@ -51,13 +51,40 @@ const RULES: Rule[] = [
 
 /** The message as a person should read it, its next step, and the original text for the Details disclosure. */
 export function plainFailure(raw: string | null | undefined): PlainFailure {
-  const text = String(raw ?? '').replace(/^\s*Fixture:\s*/i, '').trim();
+  const text = unwrapErrorPayload(String(raw ?? '').replace(/^\s*Fixture:\s*/i, '').trim());
   for (const rule of RULES) {
     const m = text.match(rule.match);
     if (!m) continue;
     return { kind: rule.kind, message: typeof rule.message === 'function' ? rule.message(m) : rule.message, next: rule.next, detail: rule.detail ? rule.detail(m, text) : text };
   }
   return { kind: 'plain', message: text.replace(/^./, c => c.toUpperCase()) };
+}
+
+/**
+ * Reduce an error body to the sentence inside it.
+ *
+ * The host answers a refused request with `{"error":"…"}` and the fetch layer
+ * forwards `HTTP 400: {"error":"…"}`; both reached the screen verbatim, so a
+ * person was shown a JSON object where a sentence belonged. The wrapper is
+ * peeled here — before the rules run, so a wrapped message still matches its
+ * own rule — and anything that is not a recognisable error body is returned
+ * untouched.
+ */
+function unwrapErrorPayload(text: string): string {
+  // `HTTP 400: {…}` or a bare `{…}` body.
+  const body = text.replace(/^HTTP\s+\d{3}\s*:\s*/i, '').trim();
+  if (!body.startsWith('{')) return text;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    // FastAPI and the host both use `detail`/`error`/`message`, and `detail`
+    // is itself sometimes an object with a `message`.
+    const detail = parsed.detail;
+    const candidate = [parsed.error, parsed.message, typeof detail === 'string' ? detail : (detail as Record<string, unknown> | undefined)?.message]
+      .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    return candidate ? candidate.trim() : text;
+  } catch {
+    return text;
+  }
 }
 
 /** Translated copy of a failure, ready to show. */
