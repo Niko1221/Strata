@@ -29,6 +29,14 @@ endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
+# PR #4185 (glorysdj): the packed Q2 / IQ4 lookup / IQ3_S sign arithmetic of the mixed-IQ3 decode kernels. Integer arithmetic with the
+# same results as the code it replaces (bit-exact, checked end to end on 2x Arc Pro B65), faster on Battlemage; ON by default in every
+# build, including the JIT release package. -DSTRATA_SYCL_IQ_DECODE_FAST=OFF builds the earlier helpers.
+option(STRATA_SYCL_IQ_DECODE_FAST "Packed IQ/Q2 decode helpers (bit-exact integer arithmetic, faster on Battlemage)" ON)
+if(STRATA_SYCL_IQ_DECODE_FAST)
+  add_compile_definitions(STRATA_Q2_WORD_FAST=1 STRATA_IQ4NL_LUT_SWAR=1 STRATA_IQ4XS_LUT_SWAR=1
+                         STRATA_IQ4_LUT_SWAR=1 STRATA_IQ3S_SIGN_FAST=1 STRATA_IQ3S_SIGN_APPLY_FAST=1)
+endif()
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
 # time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
 # bound for every device in this build.
@@ -401,11 +409,12 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
   add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
   set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
-  # the prompt-attention parity takes a context length, not --selftest, and needs the tensor-core kernel (not
-  # ported yet: it reports "refused the pools" here). Built, not registered.
+  # the prompt-attention parity takes a context length, not --selftest: the XMX prompt kernel (opt-in in the engine;
+  # it refuses Q4_0 pools) and the prompt path's per-cell kernel, both against the warp kernel and FP64
   strata_resolve(_src src/kernels/qsa_prompt_attn_parity.cpp)
   add_executable(qsa_prompt_attn_parity ${_src})
   target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels)
+  add_test(NAME qsa_prompt_attn_parity COMMAND qsa_prompt_attn_parity 8192 512 2)
   # the hybrid K8V4 KV test (upstream 0.1.27) passes its appends, gathers and attention here and fails only its
   # last step, the same tensor-core prompt kernel. Built, not registered, until that kernel is ported.
   strata_resolve(_src src/kernels/kv_hybrid_parity.cpp)
@@ -424,6 +433,8 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  add_executable(fused_gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/fused_gr_bench.cpp)
+  target_link_libraries(fused_gr_bench PRIVATE strata_kernels)
   add_executable(sycl_router_fast ${CMAKE_CURRENT_SOURCE_DIR}/probe/router_fast.cpp)
   target_link_libraries(sycl_router_fast PRIVATE strata_kernels)
   add_test(NAME sycl_router_fast COMMAND sycl_router_fast)
