@@ -514,6 +514,7 @@ void Dflash2Drafter::note_rows(const int32_t* toks, int64_t n, int64_t pos0) {
 }
 
 bool Dflash2Drafter::context(const float* taps, int64_t n, int64_t pos0, std::string& err) {
+    if (!context_wait(err)) return false;
     const OnDevice on_device(device_);
     const int tap_n = (int) taps_.size() * N_;
     for (int64_t r0 = 0; r0 < n; r0 += kRows) {
@@ -530,8 +531,32 @@ bool Dflash2Drafter::context(const float* taps, int64_t n, int64_t pos0, std::st
     return true;
 }
 
+bool Dflash2Drafter::context_async(const float* taps, int64_t n, int64_t pos0, std::string& err) {
+    if (n < 1 || n > kRows) { err = "dflash2: context_async rows out of range"; return false; }
+    if (!context_wait(err)) return false;   // h_meta_ is read by the queued copy: the previous call must be done
+    const OnDevice on_device(device_);
+    for (int i = 0; i < (int) n; ++i) h_meta_[i] = (int32_t) (pos0 + i);
+    h_meta_[18] = epoch_;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
+    if (!record_context(taps, (int) n, cs_, err)) return false;
+    ctx_pending_ = true;
+    have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n);
+    ring_hi_ = std::max<int64_t>(ring_hi_, pos0 + n);
+    return true;
+}
+
+bool Dflash2Drafter::context_wait(std::string& err) {
+    if (!ctx_pending_) return true;
+    ctx_pending_ = false;
+    const OnDevice on_device(device_);
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+    return true;
+}
+
 bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err) {
     if (!bound_) { err = "dflash2: not bound"; return false; }
+    if (!context_wait(err)) return false;
     if (n_new < 1 || n_new > kRows) { err = "dflash2: draft rows out of range"; return false; }
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
