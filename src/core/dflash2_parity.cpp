@@ -90,6 +90,34 @@ int main(int argc, char** argv) {
         if (!d.draft(last, 1, n_ctx - 1, anchor, drafts, probs, err)) { std::fprintf(stderr, "draft: %s\n", err.c_str()); return 1; }
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / rounds;
     std::printf("tokens equal %d of 7; %.3f ms per round (1 context row + the block), GPU %.3f ms\n", same, ms, d.rounds > 0 ? d.ms_gpu / (double) d.rounds : 0.0);
+
+    // draft_batch parity: 2 slots primed with the same context must match solo draft() bit for bit
+    if (!d.set_n_slots(2, err)) { std::fprintf(stderr, "set_n_slots: %s\n", err.c_str()); return 1; }
+    if (!d.set_slot(1, err) || !d.context(d_taps, n_ctx - 1, 0, err) || !d.set_slot(0, err)) {
+        std::fprintf(stderr, "slot 1 context: %s\n", err.c_str());
+        return 1;
+    }
+    int32_t b_drafts0[7] = {}, b_drafts1[3] = {};
+    float b_probs0[7] = {}, b_probs1[3] = {};
+    Dflash2Drafter::BatchItem bitems[2];
+    bitems[0] = {0, last, 1, n_ctx - 1, anchor, 7, b_drafts0, b_probs0};
+    bitems[1] = {1, last, 1, n_ctx - 1, anchor, 3, b_drafts1, b_probs1};
+    if (!d.draft_batch(bitems, 2, nullptr, (size_t) tapn, err)) {
+        std::fprintf(stderr, "draft_batch: %s\n", err.c_str());
+        return 1;
+    }
+    for (int i = 0; i < 7; ++i) {
+        if (b_drafts0[i] != drafts[i] || b_probs0[i] != probs[i]) {
+            std::printf("FAIL: draft_batch slot 0 row %d (%d, %g) != solo (%d, %g)\n", i, b_drafts0[i], b_probs0[i], drafts[i], probs[i]);
+            ++bad;
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (b_drafts1[i] != drafts[i] || b_probs1[i] != probs[i]) {
+            std::printf("FAIL: draft_batch slot 1 row %d (%d, %g) != solo (%d, %g)\n", i, b_drafts1[i], b_probs1[i], drafts[i], probs[i]);
+            ++bad;
+        }
+    }
     std::printf(bad ? "dflash2_parity: FAIL\n" : "dflash2_parity: ok\n");
     return bad ? 1 : 0;
 }

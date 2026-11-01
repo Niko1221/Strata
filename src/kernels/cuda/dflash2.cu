@@ -1,5 +1,6 @@
 // src/kernels/cuda/dflash2.cu - the small kernels of the DFlash2 drafter.  See include/strata/kernels/dflash2.hpp.
 #include "strata/kernels/dflash2.hpp"
+#include "strata/kernels/f16_bits.hpp"
 
 #include "strata/kernels/dp4a.hpp"
 
@@ -94,13 +95,56 @@ __global__ void copy_rows_kernel(const float* __restrict__ in, float* __restrict
     out[slot_mod > 0 ? ((size_t) (c / HD) * slot_mod + slot) * HD + c % HD : (size_t) slot * cols + c] = in[i];
 }
 
-// ---- attention.  grid (8 K/V heads, kDf2MaxChunks), 128 threads.  The 32 queries (4 heads x 8 rows) of a K/V head share each key tile;
+// ---- attention.  grid (8 K/V heads, active chunks for the selected window), 128 threads.  The 32 queries (4 heads x 8 rows) of a K/V head share each key tile;
 // S = Q K^T in 4 x 4 register tiles (64 threads), the online softmax per query, O += P V in 4 x 8 register tiles (128 threads).
 constexpr int AS = 132;   // smem row stride of the Q / K / V tiles (float4 aligned, conflict-free for the 4 x 4 tiles)
 constexpr int PS = 36;    // stride of the transposed probabilities P[key][query]
-__global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict__ q, const float* __restrict__ kring, const float* __restrict__ vring,
+
+__device__ __forceinline__ float4 load_ring_float4(const float* p) {
+    return *reinterpret_cast<const float4*>(p);
+}
+__device__ __forceinline__ float4 load_ring_float4(const uint16_t* p) {
+    const uint2 raw = *reinterpret_cast<const uint2*>(p);
+    return make_float4(__half2float(__ushort_as_half((uint16_t) (raw.x & 0xffffu))),
+                       __half2float(__ushort_as_half((uint16_t) (raw.x >> 16))),
+                       __half2float(__ushort_as_half((uint16_t) (raw.y & 0xffffu))),
+                       __half2float(__ushort_as_half((uint16_t) (raw.y >> 16))));
+}
+__device__ __forceinline__ uint2 pack_f16x4(float4 v) {
+    return make_uint2((uint32_t) __half_as_ushort(__float2half_rn(v.x)) | ((uint32_t) __half_as_ushort(__float2half_rn(v.y)) << 16),
+                      (uint32_t) __half_as_ushort(__float2half_rn(v.z)) | ((uint32_t) __half_as_ushort(__float2half_rn(v.w)) << 16));
+}
+__device__ __forceinline__ float4 unpack_f16x4(uint2 raw) {
+    return make_float4(__half2float(__ushort_as_half((uint16_t) (raw.x & 0xffffu))),
+                       __half2float(__ushort_as_half((uint16_t) (raw.x >> 16))),
+                       __half2float(__ushort_as_half((uint16_t) (raw.y & 0xffffu))),
+                       __half2float(__ushort_as_half((uint16_t) (raw.y >> 16))));
+}
+__device__ __forceinline__ void store_ring_elem(float* dst, size_t at, float v) { dst[at] = v; }
+__device__ __forceinline__ void store_ring_elem(uint16_t* dst, size_t at, float v) { dst[at] = f16_from_f32(v); }
+
+template <typename RingT> struct RegTraits;
+template <> struct RegTraits<float> {
+    using Reg = float4;
+    static __device__ __forceinline__ Reg zero() { return make_float4(0.f, 0.f, 0.f, 0.f); }
+    static __device__ __forceinline__ Reg load_ring(const float* p) { return *reinterpret_cast<const float4*>(p); }
+    static __device__ __forceinline__ Reg load_blk(const float* p) { return *reinterpret_cast<const float4*>(p); }
+    static __device__ __forceinline__ float4 unpack(Reg r) { return r; }
+};
+template <> struct RegTraits<uint16_t> {
+    using Reg = uint2;
+    static __device__ __forceinline__ Reg zero() { return make_uint2(0u, 0u); }
+    static __device__ __forceinline__ Reg load_ring(const uint16_t* p) { return *reinterpret_cast<const uint2*>(p); }
+    static __device__ __forceinline__ Reg load_blk(const float* p) { return pack_f16x4(*reinterpret_cast<const float4*>(p)); }
+    static __device__ __forceinline__ float4 unpack(Reg r) { return unpack_f16x4(r); }
+};
+
+template <typename RingT>
+__global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict__ q, const RingT* __restrict__ kring, const RingT* __restrict__ vring,
                                                        const float* __restrict__ kblk, const float* __restrict__ vblk,
                                                        const int32_t* __restrict__ anchor_pos, int ring_slots, int window, float* __restrict__ part, int variant) {
+    using Traits = RegTraits<RingT>;
+    using Reg = typename Traits::Reg;
     __shared__ __align__(16) float Qs[32 * AS];
     __shared__ __align__(16) float Ks[32 * AS];   // the K tile, then the V tile
     __shared__ __align__(16) float Ps[32 * PS];
@@ -134,24 +178,32 @@ __global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict_
     const int qg_pv = tid >> 4, dg_pv = tid & 15;   // PV: queries qg*4 .. +3, dims dg*8 .. +7
     const int k_end = min(k_begin + kDf2Chunk, nkeys);
     // a tile is 32 keys x 128 dims = 1024 float4: eight per thread, loaded into registers ahead of their use
-    auto fetch = [&](int k0, float4 (&reg)[8], const float* ring, const float* blk) {
+    auto fetch = [&](int k0, Reg (&reg)[8], const RingT* ring, const float* blk) {
+        if (k0 + 32 <= nctx) {
 #pragma unroll
-        for (int u = 0; u < 8; ++u) {
-            const int i = tid + u * 128, t = i / (HD / 4), d4 = i % (HD / 4), k = k0 + t;
-            float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
-            if (k < nctx) v = *reinterpret_cast<const float4*>(ring + ((size_t) kvh * ring_slots + (lo + k) % ring_slots) * HD + d4 * 4);
-            else if (k < nkeys) v = *reinterpret_cast<const float4*>(blk + ((size_t) (k - nctx) * kDf2Kv + kvh) * HD + d4 * 4);
-            reg[u] = v;
+            for (int u = 0; u < 8; ++u) {
+                const int i = tid + u * 128, t = i / (HD / 4), d4 = i % (HD / 4), k = k0 + t;
+                reg[u] = Traits::load_ring(ring + ((size_t) kvh * ring_slots + (lo + k) % ring_slots) * HD + d4 * 4);
+            }
+        } else {
+#pragma unroll
+            for (int u = 0; u < 8; ++u) {
+                const int i = tid + u * 128, t = i / (HD / 4), d4 = i % (HD / 4), k = k0 + t;
+                Reg v = Traits::zero();
+                if (k < nctx) v = Traits::load_ring(ring + ((size_t) kvh * ring_slots + (lo + k) % ring_slots) * HD + d4 * 4);
+                else if (k < nkeys) v = Traits::load_blk(blk + ((size_t) (k - nctx) * kDf2Kv + kvh) * HD + d4 * 4);
+                reg[u] = v;
+            }
         }
     };
-    auto put = [&](const float4 (&reg)[8]) {
+    auto put = [&](const Reg (&reg)[8]) {
 #pragma unroll
         for (int u = 0; u < 8; ++u) {
             const int i = tid + u * 128, t = i / (HD / 4), d4 = i % (HD / 4);
-            *reinterpret_cast<float4*>(&Ks[t * AS + d4 * 4]) = reg[u];
+            *reinterpret_cast<float4*>(&Ks[t * AS + d4 * 4]) = Traits::unpack(reg[u]);
         }
     };
-    float4 kreg[8], vreg[8];
+    Reg kreg[8], vreg[8];
     fetch(k_begin, kreg, kring, kblk);
     for (int k0 = k_begin; k0 < k_end; k0 += 32) {
         __syncthreads();   // Ks free (the last tile's V reads done); Qs / m_s written on the first pass
@@ -249,13 +301,13 @@ __global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict_
 
 __device__ __forceinline__ void quant_block(float v, int blk, int col, int K, int8_t* __restrict__ xq, float* __restrict__ xd);
 
-__global__ void attn_merge_kernel(const float* __restrict__ part, int8_t* __restrict__ xq, float* __restrict__ xd) {
+__global__ void attn_merge_kernel(const float* __restrict__ part, int n_chunks, int8_t* __restrict__ xq, float* __restrict__ xd) {
     const int a = blockIdx.x;                      // kvh * 32 + qi
     const int kvh = a >> 5, qi = a & 31, d = threadIdx.x;
     float M = -INFINITY;
-    for (int c = 0; c < kDf2MaxChunks; ++c) M = fmaxf(M, part[(((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130]);
+    for (int c = 0; c < n_chunks; ++c) M = fmaxf(M, part[(((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130]);
     float L = 0.0f, o = 0.0f;
-    for (int c = 0; c < kDf2MaxChunks; ++c) {
+    for (int c = 0; c < n_chunks; ++c) {
         const float* p = part + (((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130;
         const float mc = p[0];
         const float w = (mc == -INFINITY) ? 0.0f : __expf(mc - M);
@@ -464,8 +516,9 @@ __global__ void norm_rope_qk_kernel(const float* __restrict__ q, const float* __
 }
 
 // the context update's ring write: K norm + rope of (row, head) and the V copy, both into the head-major ring slot pos % slots
+template <typename RingT>
 __global__ void kv_ring_kernel(const float* __restrict__ kin, const float* __restrict__ vin, const float* __restrict__ gk, const int32_t* __restrict__ pos,
-                               const float* __restrict__ table, float* __restrict__ kring, float* __restrict__ vring, int slots, int heads, float eps) {
+                               const float* __restrict__ table, RingT* __restrict__ kring, RingT* __restrict__ vring, int slots, int heads, float eps) {
     const int r = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
     __shared__ float red[4];
     __shared__ float y[HD];
@@ -481,8 +534,8 @@ __global__ void kv_ring_kernel(const float* __restrict__ kin, const float* __res
     const float c = table[(r * 2 + 0) * 64 + i], sn = table[(r * 2 + 1) * 64 + i];
     const int slot = (int) (pos[r] % slots);
     const size_t at = ((size_t) h * slots + slot) * HD + d;
-    kring[at] = d < 64 ? v * c - y[d + 64] * sn : v * c + y[d - 64] * sn;
-    vring[at] = vin[((size_t) r * heads + h) * HD + d];
+    store_ring_elem(kring, at, d < 64 ? v * c - y[d + 64] * sn : v * c + y[d - 64] * sn);
+    store_ring_elem(vring, at, vin[((size_t) r * heads + h) * HD + d]);
 }
 
 // silu(gate) * up then the planar quantization: grid (ceil(I / 32 / 8), rows), 256 threads
@@ -587,15 +640,15 @@ __global__ void topk_merge_kernel(const float* __restrict__ cval, const int32_t*
     }
 }
 
-// ---- the selector's walk: one block of 256 threads
-__global__ void select_kernel(const float* __restrict__ hp, const float* __restrict__ unary, const int32_t* __restrict__ tok,
-                              const uint16_t* __restrict__ pred_cb, const uint16_t* __restrict__ succ_cb, int rank, int rows,
-                              const int32_t* __restrict__ anchor_tok, int32_t* __restrict__ out_tok, float* __restrict__ out_prob) {
+// ---- the selector's walk: one block of 256 threads per slot
+__device__ void select_slot_walk(const float* __restrict__ hp, const float* __restrict__ unary, const int32_t* __restrict__ tok,
+                                 const uint16_t* __restrict__ pred_cb, const uint16_t* __restrict__ succ_cb, int rank, int rows,
+                                 int prev0, int32_t* __restrict__ out_tok, float* __restrict__ out_prob) {
     __shared__ float vp[256];
     __shared__ float sc[kDf2TopK];
     __shared__ int prev;
     const int tid = threadIdx.x, w = tid >> 5, lane = tid & 31;
-    if (tid == 0) prev = *anchor_tok;
+    if (tid == 0) prev = prev0;
     __syncthreads();
     for (int i = 0; i < rows; ++i) {
         vp[tid] = bf16f(pred_cb[(size_t) prev * rank + tid]) * hp[(size_t) i * rank + tid];
@@ -627,6 +680,33 @@ __global__ void select_kernel(const float* __restrict__ hp, const float* __restr
         }
         __syncthreads();
     }
+}
+
+__global__ void select_kernel(const float* __restrict__ hp, const float* __restrict__ unary, const int32_t* __restrict__ tok,
+                              const uint16_t* __restrict__ pred_cb, const uint16_t* __restrict__ succ_cb, int rank, int rows,
+                              const int32_t* __restrict__ anchor_tok, int32_t* __restrict__ out_tok, float* __restrict__ out_prob) {
+    select_slot_walk(hp, unary, tok, pred_cb, succ_cb, rank, rows, *anchor_tok, out_tok, out_prob);
+}
+
+__global__ void select_multi_kernel(const float* __restrict__ hp, const float* __restrict__ unary, const int32_t* __restrict__ tok,
+                                    const uint16_t* __restrict__ pred_cb, const uint16_t* __restrict__ succ_cb, int rank,
+                                    const int32_t* __restrict__ batch_meta, int32_t* __restrict__ out_tok, float* __restrict__ out_prob) {
+    const int s = blockIdx.x;
+    const int row_off = batch_meta[s * 4 + 0];
+    const int rows = batch_meta[s * 4 + 1];
+    const int prev0 = batch_meta[s * 4 + 2];
+    select_slot_walk(hp + (size_t) row_off * rank, unary + (size_t) row_off * kDf2TopK, tok + (size_t) row_off * kDf2TopK,
+                     pred_cb, succ_cb, rank, rows, prev0, out_tok + s * 8, out_prob + s * 8);
+}
+
+__global__ void pack_head_rows_kernel(const float* __restrict__ fn_in, const float* __restrict__ hsel_in,
+                                      float* __restrict__ fn_out, float* __restrict__ hsel_out, int N, int rank) {
+    const int i = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
+    const int r = blockIdx.y;
+    if (i < N)
+        fn_out[(size_t) r * N + i] = fn_in[(size_t) r * N + i];
+    else if (i < N + rank)
+        hsel_out[(size_t) r * rank + (i - N)] = hsel_in[(size_t) r * rank + (i - N)];
 }
 
 __global__ void tap_rows_kernel(const float* __restrict__ R, float* __restrict__ out, int64_t out_stride, int64_t n, int hc) {
@@ -687,9 +767,24 @@ void df2_copy_rows(const float* in, float* out, const int32_t* pos, int slot_mod
 
 void df2_attention(const float* q, const float* kring, const float* vring, const float* kblk, const float* vblk, const int32_t* anchor_pos,
                    int ring_slots, int window, float* part, void* xq, float* xd, void* stream) {
-    attn_part_kernel<<<dim3(kDf2Kv, kDf2MaxChunks), 128, 0, (cudaStream_t) stream>>>(q, kring, vring, kblk, vblk, anchor_pos, ring_slots, window, part, g_attn_variant);
+    if (window < 1 || window > kDf2MaxWindow || ring_slots < window + 8)
+        throw std::invalid_argument("df2_attention: unsupported sliding-window/ring geometry");
+    const int n_chunks = df2_attention_chunks(window);
+    attn_part_kernel<float><<<dim3(kDf2Kv, n_chunks), 128, 0, (cudaStream_t) stream>>>(q, kring, vring, kblk, vblk, anchor_pos, ring_slots, window, part, g_attn_variant);
     check("attn_part");
-    attn_merge_kernel<<<kDf2Kv * 32, HD, 0, (cudaStream_t) stream>>>(part, static_cast<int8_t*>(xq), xd);
+    attn_merge_kernel<<<kDf2Kv * 32, HD, 0, (cudaStream_t) stream>>>(part, n_chunks, static_cast<int8_t*>(xq), xd);
+    check("attn_merge");
+}
+
+void df2_attention_f16(const float* q, const void* kring, const void* vring, const float* kblk, const float* vblk, const int32_t* anchor_pos,
+                       int ring_slots, int window, float* part, void* xq, float* xd, void* stream) {
+    if (window < 1 || window > kDf2MaxWindow || ring_slots < window + 8)
+        throw std::invalid_argument("df2_attention_f16: unsupported sliding-window/ring geometry");
+    const int n_chunks = df2_attention_chunks(window);
+    attn_part_kernel<uint16_t><<<dim3(kDf2Kv, n_chunks), 128, 0, (cudaStream_t) stream>>>(
+        q, static_cast<const uint16_t*>(kring), static_cast<const uint16_t*>(vring), kblk, vblk, anchor_pos, ring_slots, window, part, g_attn_variant);
+    check("attn_part_f16");
+    attn_merge_kernel<<<kDf2Kv * 32, HD, 0, (cudaStream_t) stream>>>(part, n_chunks, static_cast<int8_t*>(xq), xd);
     check("attn_merge");
 }
 
@@ -708,8 +803,15 @@ void df2_norm_rope_qk(const float* q, const float* k, const float* gq, const flo
 
 void df2_kv_ring(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, float* kring, float* vring, int slots, int rows,
                  int heads, float eps, void* stream) {
-    kv_ring_kernel<<<dim3(rows, heads), HD, 0, (cudaStream_t) stream>>>(kin, vin, gk, pos, table, kring, vring, slots, heads, eps);
+    kv_ring_kernel<float><<<dim3(rows, heads), HD, 0, (cudaStream_t) stream>>>(kin, vin, gk, pos, table, kring, vring, slots, heads, eps);
     check("kv_ring");
+}
+
+void df2_kv_ring_f16(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, void* kring, void* vring, int slots, int rows,
+                     int heads, float eps, void* stream) {
+    kv_ring_kernel<uint16_t><<<dim3(rows, heads), HD, 0, (cudaStream_t) stream>>>(
+        kin, vin, gk, pos, table, static_cast<uint16_t*>(kring), static_cast<uint16_t*>(vring), slots, heads, eps);
+    check("kv_ring_f16");
 }
 
 void df2_gemm_variant(int v) { g_gemm_variant = v; }
@@ -784,6 +886,21 @@ void df2_select(const float* hp, const float* unary, const int32_t* tok, const u
     if (rank != 256) throw std::invalid_argument("df2_select: the selector rank must be 256");
     select_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(hp, unary, tok, pred_cb, succ_cb, rank, rows, anchor_tok, out_tok, out_prob);
     check("select");
+}
+
+void df2_select_multi(const float* hp, const float* unary, const int32_t* tok, const uint16_t* pred_cb, const uint16_t* succ_cb, int rank,
+                      const int32_t* batch_meta, int n_items, int32_t* out_tok, float* out_prob, void* stream) {
+    if (rank != 256) throw std::invalid_argument("df2_select_multi: the selector rank must be 256");
+    if (n_items <= 0) return;
+    select_multi_kernel<<<n_items, 256, 0, (cudaStream_t) stream>>>(hp, unary, tok, pred_cb, succ_cb, rank, batch_meta, out_tok, out_prob);
+    check("select_multi");
+}
+
+void df2_pack_head_rows(const float* fn_in, const float* hsel_in, float* fn_out, float* hsel_out, int rows, int N, int rank, void* stream) {
+    if (rows <= 0) return;
+    pack_head_rows_kernel<<<dim3((unsigned) ((N + rank + 255) / 256), (unsigned) rows), 256, 0, (cudaStream_t) stream>>>(
+        fn_in, hsel_in, fn_out, hsel_out, N, rank);
+    check("pack_head_rows");
 }
 
 void df2_tap_rows(const float* R, float* out, int64_t out_stride, int64_t n_embd, int hc, int rows, void* stream) {

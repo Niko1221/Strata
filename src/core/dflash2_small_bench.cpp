@@ -74,6 +74,63 @@ int main(int argc, char** argv) {
     time("rope_table (8)", [&] { df2_rope_table(pos, 8, 10000.0f, tab, nullptr); });
     time("topk (7 x 106299)", [&] { df2_topk(lg, 106299, nullptr, 7, reinterpret_cast<uint32_t*>(scr), tv, tok, nullptr); });
     time("select (7 rows)", [&] { df2_select(hp, tv, tok, cb, cb, 256, 7, tok, outt, outp, nullptr); });
+    int32_t h_bmeta[16] = {0, 3, 100, 0,  0, 3, 100, 0,  0, 3, 100, 0,  0, 3, 100, 0};
+    int32_t* d_bmeta;
+    cudaMalloc((void**) &d_bmeta, sizeof(h_bmeta));
+    cudaMemcpy(d_bmeta, h_bmeta, sizeof(h_bmeta), cudaMemcpyHostToDevice);
+    time("select_multi (4 x 3 rows)", [&] { df2_select_multi(hp, tv, tok, cb, cb, 256, d_bmeta, 4, outt, outp, nullptr); });
+    time("pack_head_rows (3 rows)", [&] { df2_pack_head_rows(h, hp, xn, hp, 3, N, 256, nullptr); });
+    {
+        // Bitwise parity check: df2_pack_head_rows + df2_select_multi across 4 slots (k = 7, 3, 1, 5; R = 16) vs 4 solo df2_select calls
+        const int ks[4] = {7, 3, 1, 5};
+        const int prevs[4] = {3, 7, 1, 11};
+        const int R = 16;
+        float *fn_s[4], *hs_s[4], *fn_b, *hs_b, *tv_b = dev(R * 16, 0.2f), *ref_p, *got_p;
+        int32_t *tk_b, *ref_t, *got_t, *d_prev;
+        cudaMalloc((void**) &fn_b, (size_t) R * N * 4);
+        cudaMalloc((void**) &hs_b, (size_t) R * 256 * 4);
+        cudaMalloc((void**) &tk_b, (size_t) R * 16 * 4);
+        cudaMalloc((void**) &ref_t, 32 * 4);
+        cudaMalloc((void**) &got_t, 32 * 4);
+        cudaMalloc((void**) &ref_p, 32 * 4);
+        cudaMalloc((void**) &got_p, 32 * 4);
+        cudaMalloc((void**) &d_prev, 4);
+        std::vector<int32_t> h_tk(R * 16);
+        for (int i = 0; i < R * 16; ++i) h_tk[i] = (i * 7 + 3) % 64;
+        cudaMemcpy(tk_b, h_tk.data(), h_tk.size() * 4, cudaMemcpyHostToDevice);
+        int off = 0;
+        int32_t meta4[16] = {};
+        for (int s = 0; s < 4; ++s) {
+            fn_s[s] = dev(7 * N, 0.1f * (s + 1));
+            hs_s[s] = dev(7 * 256, 0.15f * (s + 1));
+            df2_pack_head_rows(fn_s[s], hs_s[s], fn_b + (size_t) off * N, hs_b + (size_t) off * 256, ks[s], N, 256, nullptr);
+            cudaMemcpy(d_prev, &prevs[s], 4, cudaMemcpyHostToDevice);
+            df2_select(hs_s[s], tv_b + off * 16, tk_b + off * 16, cb, cb, 256, ks[s], d_prev, ref_t + s * 8, ref_p + s * 8, nullptr);
+            meta4[s * 4 + 0] = off;
+            meta4[s * 4 + 1] = ks[s];
+            meta4[s * 4 + 2] = prevs[s];
+            off += ks[s];
+        }
+        cudaMemcpy(d_bmeta, meta4, sizeof(meta4), cudaMemcpyHostToDevice);
+        df2_select_multi(hs_b, tv_b, tk_b, cb, cb, 256, d_bmeta, 4, got_t, got_p, nullptr);
+        cudaDeviceSynchronize();
+        int32_t ht_ref[32] = {}, ht_got[32] = {};
+        float hp_ref[32] = {}, hp_got[32] = {};
+        cudaMemcpy(ht_ref, ref_t, sizeof(ht_ref), cudaMemcpyDeviceToHost);
+        cudaMemcpy(ht_got, got_t, sizeof(ht_got), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hp_ref, ref_p, sizeof(hp_ref), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hp_got, got_p, sizeof(hp_got), cudaMemcpyDeviceToHost);
+        for (int s = 0; s < 4; ++s) {
+            for (int i = 0; i < ks[s]; ++i) {
+                if (ht_ref[s * 8 + i] != ht_got[s * 8 + i] || hp_ref[s * 8 + i] != hp_got[s * 8 + i]) {
+                    std::fprintf(stderr, "FAIL: select_multi slot %d row %d (%d, %g) != solo (%d, %g)\n",
+                                 s, i, ht_got[s * 8 + i], hp_got[s * 8 + i], ht_ref[s * 8 + i], hp_ref[s * 8 + i]);
+                    return 1;
+                }
+            }
+        }
+        std::printf("select_multi + pack_head_rows parity (4 slots, k={7,3,1,5}): PASS\n");
+    }
     time("conv (resid)", [&] { df2_conv(o, dyn, 640, base, h, h, B, N, 16, nullptr); });
     time("attention merge+quant only", [&] { df2_attention(q, kr, vr, kr, vr, pos, 2064, 2048, part, xq, xd, nullptr); });
     Df2Mat m{w, y, 640};
