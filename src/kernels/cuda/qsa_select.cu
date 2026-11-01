@@ -6,6 +6,7 @@
 #include <cstring>
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/gfx_arch.hpp"
+#include "strata/core/amd_community.hpp"
 
 #include <cuda_runtime.h>
 
@@ -2215,10 +2216,14 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
     // warp kernel, so the default keeps the warp kernel).  RX 6900 XT, 256 queries at 128K: 2.71 -> 0.587 ms
     // STRATA_SELECT_SIMT=2 (#2071): block_scores_simt2_kernel, 32 x 128 tiles with the next K chunk in registers (the same
     // bits as =1), as on CUDA.  RX 6900 XT, 2x, 32K / 128K prompt: +1% over =1 (E457)
-    static const int simt_v = [] {
+    // unset: -1.  The community switch (strata/core/amd_community.hpp, STRATA_AMD_COMMUNITY_TUNING, on by default) makes mode 2
+    // the default on gfx103x only (RX 6000, where #3073's contributor measured it: 119K prompt -6.5%); any value of the variable wins.
+    static const int simt_env = [] {
         const char* v = std::getenv("STRATA_SELECT_SIMT");
-        return v == nullptr ? 0 : v[0] == '1' ? 1 : v[0] == '2' ? 2 : 0;
+        return v == nullptr ? -1 : v[0] == '1' ? 1 : v[0] == '2' ? 2 : 0;
     }();
+    static const bool community_on = strata::amd_community::tuning_on();
+    const int simt_v = simt_env >= 0 ? simt_env : (community_on && sel_gfx103_device() ? 2 : 0);
     if (simt_v != 0 && !(wmma_on && sel_gfx12_device())) {
         const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
         const bool rdna2 = sel_gfx103_device();

@@ -84,12 +84,22 @@ int main() {
         CHECK(text.find("!defined(STRATA_GFX1012_PORTABLE_DOT)") != std::string::npos);
     }
 
-    // the log line: only gfx1010 / gfx1030, and it says what the switch does
+    // #3073: the simt2 selector is the default of gfx103x only, and only with the switch on
+    unset(kSwitch);
+    CHECK(ac::select_simt2_default("gfx1030") && ac::select_simt2_default("gfx1031:xnack-") && ac::select_simt2_default("gfx1032"));
+    CHECK(!ac::select_simt2_default("gfx1201") && !ac::select_simt2_default("gfx1100") && !ac::select_simt2_default("gfx906") &&
+          !ac::select_simt2_default("gfx1010") && !ac::select_simt2_default("") && !ac::select_simt2_default(nullptr));
+    put(kSwitch, "0");
+    CHECK(!ac::select_simt2_default("gfx1030"));
+    unset(kSwitch);
+
+    // the log line: only gfx1010 / gfx103x, and it says what the switch does
     unset(kSwitch);
     CHECK(ac::startup_line("gfx1201").empty());
     CHECK(ac::startup_line("gfx1100").empty());
     CHECK(ac::startup_line("gfx1012").empty());
-    CHECK(ac::startup_line("gfx1031").empty());
+    CHECK(ac::startup_line("gfx1031").find("simt2") != std::string::npos);   // gfx1031: the selector default only
+    CHECK(ac::startup_line("gfx1030").find("simt2") != std::string::npos);
     CHECK(ac::startup_line("").empty());
     CHECK(ac::startup_line(nullptr).empty());
     CHECK(ac::startup_line("gfx1030:xnack-").find("on:") != std::string::npos);

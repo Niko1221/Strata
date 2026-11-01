@@ -686,9 +686,8 @@ minutes. Data: [2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna
 
 ### Community-made AMD changes (`STRATA_AMD_COMMUNITY_TUNING`, on by default)
 
-Three changes were made and measured by contributors on cards we do not have (no gfx1010 and no gfx1030 here). They are on by default
-under one switch, `STRATA_AMD_COMMUNITY_TUNING`, and each one applies only to the card or the exact library build it was made for. `STRATA_AMD_COMMUNITY_TUNING=0` turns the
-tables off. On a gfx1010 or gfx1030 card the engine prints one line saying what is active. If one of them hurts on your card, set the switch to 0 and
+Four changes were made and measured by contributors on cards we do not have (no gfx1010 and no gfx1030 here). They are on by default
+under one switch, `STRATA_AMD_COMMUNITY_TUNING`, and each one applies only to the card or the exact library build it was made for. `STRATA_AMD_COMMUNITY_TUNING=0` turns the tables and the selector default off. On a gfx1010 or gfx103x card the engine prints one line saying what is active. If one of them hurts on your card, set the switch to 0 and
 tell us. The numbers below are the contributors', not ours.
 
 | Change | Applies to | Contributor's numbers (theirs, not reproduced here) |
@@ -696,6 +695,7 @@ tell us. The numbers below are the contributors', not ours.
 | Integer dot product through the SDWA byte-select sequence, as gfx1012 already had (#4855, Keoian) | gfx1010 only (RX 5700 / 5700 XT), device code | 2x RX 5700 XT, Qwen3.8-Flash-Next Q2_0, decode 22.38 -> 28.77 tok/s (12 of 12 pairs faster), identical greedy text in 6 of 6 fixed-placement runs |
 | `gfx1030-rocblas-5.4.0.ad84daa81c.txt` (#3343, elightcap) | gfx1030, the rocBLAS build `5.4.0.ad84daa81c` (TheRock `gfx103X-all` 7.13.0a20260515 wheels) | RX 6900 XT, UD-Q4_K_XL, `STRATA_HIP_PROMPT_F16=1`: 268-395-token follow-up on a cached conversation 1,851 -> 1,635 ms (median), fresh 745-1,569 tokens -3.3%, fresh 4,859-6,690 tokens -1.0% |
 | `gfx1030-rocblas-5.2.0.dabb6df2b98-dirty.txt` (#3924, schmittcn) | gfx1030, the rocBLAS build `5.2.0.dabb6df2b98-dirty` (Arch Linux ROCm 7.2.4) | RX 6900 XT, Coder IQ1_M, GPU timeline of prompts below 1,152 tokens 12-18% shorter, 1.3K-1.5K tokens 2-4%, 11K-12K tokens 4-9%; 11 of 12 answers identical (one differs by FP16 rounding of a different kernel) |
+| `STRATA_SELECT_SIMT=2` (the simt2 QSA block scorer) as the default (#3073, Vop3p) | gfx103x (RX 6000) only; any `STRATA_SELECT_SIMT` value you set wins, `=0` keeps the warp kernel | 2x RX 6900 XT, IQ3_S, prompt time -1.35% at 31K and -6.53% at 119K tokens (10 of 10 interleaved cold-start pairs each); another summation order than the warp kernel, so values change in the last bits (their KL against a double-precision reference 0.0220, against main 0.0256) |
 
 What the exact-build rule leaves out: a table loads only when the architecture and the full rocBLAS version string of the running library match the table's header.
 So these two tables do nothing on a gfx1031 / gfx1032 / other card, on AMD's own Ubuntu ROCm 7.2.4 packages (they report `5.2.0.dabb6df2b9`), on a later TheRock nightly, on

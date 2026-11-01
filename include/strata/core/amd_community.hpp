@@ -1,6 +1,6 @@
 // include/strata/core/amd_community.hpp - the AMD changes that came from the community and that we have no card to test.
 //
-// Three changes, one switch.  STRATA_AMD_COMMUNITY_TUNING is on unless it is set to 0 (or "off"/"false"/"no").  Each change
+// Four changes, one switch.  STRATA_AMD_COMMUNITY_TUNING is on unless it is set to 0 (or "off"/"false"/"no").  Each change
 // is limited to the card or the exact library build it was made for, so nothing here touches any other card:
 //
 //   1. gfx1010 (RX 5700 / 5700 XT) integer dot product: the SDWA byte-select sequence gfx1012 already used instead of the portable
@@ -10,6 +10,9 @@
 //      set to 0 on a gfx1010 build that has the SDWA sequence.
 //   2. rocBLAS solution table gfx1030 / rocBLAS 5.4.0.ad84daa81c (TheRock gfx103X-all 7.13.0a20260515 wheels; #3343, elightcap).
 //   3. rocBLAS solution table gfx1030 / rocBLAS 5.2.0.dabb6df2b98-dirty (Arch Linux ROCm 7.2.4; #3924, schmittcn).
+//   4. QSA block-score selector mode 2 (the simt2 scorer, STRATA_SELECT_SIMT=2) as the default on gfx103x (#3073, Vop3p).  Another
+//      summation order than the warp kernel, so values change in the last bits (the contributor's KL 0.0256 against main).  Any
+//      STRATA_SELECT_SIMT value the user sets wins (=0 / =1 keep the warp kernel / mode 1).  Not a default on any other card.
 //
 // The tables take effect only through the existing loader (src/prefill/rocblas_tuning.hpp), which refuses a table whose architecture
 // or full rocBLAS version string differs from the running library's; with the switch off the community tables are not loaded either.
@@ -69,11 +72,17 @@ inline bool rocblas_table_allowed(const std::string& arch, const std::string& ve
     return !is_community_rocblas_table(arch, version) || tuning_on();
 }
 
+/// #3073: is the simt2 selector the default of this device?  gfx103x only (RX 6000), with the switch on.
+inline bool select_simt2_default(const char* gcn_arch) {
+    return tuning_on() && gcn_arch != nullptr && std::strncmp(gcn_arch, "gfx103", 6) == 0;
+}
+
 /// The one engine-log line.  Empty for every card the changes do not concern (anything but gfx1010 and gfx1030), so other cards log nothing.
 inline std::string startup_line(const char* gcn_arch) {
     const bool g1010 = strata::kernels::gfx_arch_is(gcn_arch, "gfx1010");
     const bool g1030 = strata::kernels::gfx_arch_is(gcn_arch, "gfx1030");
-    if (!g1010 && !g1030) return {};
+    const bool g103x = gcn_arch != nullptr && std::strncmp(gcn_arch, "gfx103", 6) == 0;
+    if (!g1010 && !g103x) return {};
     std::string s = "strata: AMD community tuning (STRATA_AMD_COMMUNITY_TUNING=0 turns it off): ";
     if (g1010) {
         if (!dot4_gfx1010_built())
@@ -82,12 +91,15 @@ inline std::string startup_line(const char* gcn_arch) {
             s += "set to 0, but this gfx1010 build has the SDWA dot4 compiled in; rebuild with -DSTRATA_AMD_COMMUNITY_TUNING=OFF to drop it";
         else
             s += "gfx1010 dot4 uses the SDWA sequence (#4855, community-tested only)";
+    } else if (!g1030) {   // gfx1031 / gfx1032: only the selector default applies
+        s += tuning_on() ? "on: the simt2 QSA selector is the default (STRATA_SELECT_SIMT=0 or 1 overrides) (#3073, community-tested only)"
+                         : "off: the selector keeps the warp kernel";
     } else {
         if (!tuning_on())
-            s += "off: the community rocBLAS tables (gfx1030, rocBLAS 5.4.0.ad84daa81c and 5.2.0.dabb6df2b98-dirty) are not loaded";
+            s += "off: the community rocBLAS tables (gfx1030, rocBLAS 5.4.0.ad84daa81c and 5.2.0.dabb6df2b98-dirty) are not loaded and the QSA selector keeps the warp kernel";
         else
             s += "on: community rocBLAS tables for gfx1030 are loaded when the running rocBLAS is exactly 5.4.0.ad84daa81c or "
-                 "5.2.0.dabb6df2b98-dirty and STRATA_ROCBLAS_TUNING points at them (#3343/#3924, community-tested only)";
+                 "5.2.0.dabb6df2b98-dirty and STRATA_ROCBLAS_TUNING points at them (#3343/#3924); the simt2 QSA selector is the default (STRATA_SELECT_SIMT=0 or 1 overrides) (#3073); community-tested only";
     }
     return s;
 }
