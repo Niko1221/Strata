@@ -109,5 +109,58 @@ class PrefillCount(unittest.TestCase):
         self.assertEqual(svc._sample_aggregate(now=101.0)[1], 3000.0)
 
 
+class HeldUntilReallyZero(unittest.TestCase):
+    """A rate stays on the Monitor until it has been 0 for AGG_HOLD_S seconds; prefill, which lands a whole chunk
+    at a time, stays up for as long as a prompt is still being read."""
+
+    def reading(self, svc, on):
+        svc.status.update(busy=on, first_token=None if on else 1.0)
+
+    def test_decode_holds_through_a_short_gap_then_drops(self):
+        svc = service()
+        st = {"generated": 0}
+        svc._sample_aggregate(now=100.0)
+        svc._note(30, [], st=st, rate=[])
+        self.assertEqual(svc._sample_aggregate(now=101.0)[0], 30.0)
+        self.assertEqual(svc._sample_aggregate(now=102.0)[0], 30.0)   # 1 s of nothing: still shown
+        self.assertEqual(svc._sample_aggregate(now=103.0)[0], 30.0)
+        self.assertEqual(svc._sample_aggregate(now=104.0)[0], 0.0)    # 3 s of nothing: 0
+
+    def test_prefill_is_the_chunk_over_its_read_time_and_stays_up_between_chunks(self):
+        svc = service()
+        svc.engine.prefill_read_total = 0
+        svc._sample_aggregate(now=100.0)
+        self.reading(svc, True)
+        for t in range(101, 108):                                     # the first chunk is being read: no count yet
+            self.assertEqual(svc._sample_aggregate(now=float(t))[1], 0.0)
+        svc.engine.prefill_read_total = 8192
+        self.assertEqual(svc._sample_aggregate(now=108.0)[1], 1024.0)  # 8,192 tokens over the 8 s since reading began
+        for t in range(109, 125):                                     # the next chunk: 16 s, and the value stays up
+            self.assertEqual(svc._sample_aggregate(now=float(t))[1], 1024.0)
+        svc.engine.prefill_read_total = 16384
+        self.assertEqual(svc._sample_aggregate(now=125.0)[1], 481.9)   # 8,192 over 17 s
+        self.reading(svc, False)                                      # the first token: reading is over
+        self.assertEqual(svc._sample_aggregate(now=126.0)[1], 481.9)
+        self.assertEqual(svc._sample_aggregate(now=127.0)[1], 481.9)
+        self.assertEqual(svc._sample_aggregate(now=128.0)[1], 0.0)
+
+    def test_streams_reading_together_add_up(self):
+        svc = service()
+        svc.engine.prefill_read_total = 0
+        svc._sample_aggregate(now=100.0)
+        self.reading(svc, True)
+        svc.engine.prefill_read_total = 8192                          # stream A's chunk after 4 s
+        svc._sample_aggregate(now=104.0)
+        svc.engine.prefill_read_total = 16384                         # stream B's 2 s later
+        self.assertEqual(svc._sample_aggregate(now=106.0)[1], 4096.0)
+
+    def test_a_short_prompt_read_inside_one_second(self):
+        svc = service()
+        svc.engine.prefill_read_total = 0
+        svc._sample_aggregate(now=100.0)
+        svc.engine.prefill_read_total = 500
+        self.assertEqual(svc._sample_aggregate(now=101.0)[1], 500.0)
+
+
 if __name__ == "__main__":
     unittest.main()
