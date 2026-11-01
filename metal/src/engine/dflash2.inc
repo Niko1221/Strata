@@ -286,6 +286,16 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
         }
     }
     if (vocab.empty() && vocab_file != "full") vocab = dvocab_;   // the MTP's list (may be empty: the whole head)
+    if (vocab.empty() && vocab_file != "full") {   // no MTP loaded (--draft-fallback none) and no <mtp>/rt/draft_vocab.bin: the repository's list, as the MTP's loader falls back to
+        std::string vp = std::getenv("STRATA_METAL_DRAFT_VOCAB") ? std::getenv("STRATA_METAL_DRAFT_VOCAB")
+                                                                  : strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
+        if (vp != "full")
+            if (std::FILE* vf = std::fopen(vp.c_str(), "rb")) {
+                int32_t id;
+                while (std::fread(&id, 4, 1, vf) == 1) if (id >= 0 && id < n_vocab_) vocab.push_back(id);
+                std::fclose(vf);
+            }
+    }
     const gguf::Tensor& out_t = T("output.weight");
     {
         const char* hm = std::getenv("STRATA_DF2_HEAD");
