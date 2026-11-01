@@ -6,6 +6,8 @@
 #   REL28 / REL29  the real, signed release files (read only): strata-feed.json(.sig) and strata-engine-<ver>-linux-x86_64-cuda-cuda13.tar.gz of v0.2.8
 #                  (engine 0.1.54) and v0.2.9 (engine 0.1.55); each feed is served from 127.0.0.1 (the box needs no internet).
 #   MODEL          a Qwen model folder the engine can load (the flow passes it as --model-path).
+#   DATA           (optional) a data folder that already holds what setup would download (tokenizer, picture reader, draft layer, the prepared pack):
+#                  a box without internet cannot fetch them. Default: a new folder inside $W.
 #   stage A        0.1.54 installed, the model loaded and answering; the notice; a script is refused; "no"; a failed download; "yes" + start again
 #                  on 0.1.55 and a real answer from it.
 #   stage B        (needs stage A's HOME) back on 0.1.54: "yes" + "no" to start again, started by hand; then an engine that passes its checks but
@@ -62,7 +64,7 @@ engine_pid() { local p exe; for p in /proc/[0-9]*; do exe=$(readlink "$p/exe" 2>
 active_version() { "$S" components engine --output json --backend cuda | json "(d.get('engine') or {}).get('version')"; }
 answers() { python3 "$HERE/prompt_check.py" "$PORT_MODEL"; }
 launch_model() {   # strata launch with the same choices every time (the 'same settings' the update must bring back)
-  "$S" launch --family qwen --model iq3_s --model-path "$MODEL" --data-dir "$W/home/data" --port "$PORT_MODEL" --no-api-key --context 8k --yes --no-tui --feed "$1" 2>&1 | tail -12
+  "$S" launch --family qwen --model iq3_s --model-path "$MODEL" --data-dir "${DATA:-$W/home/data}" --port "$PORT_MODEL" --no-api-key --context 8k --yes --no-tui --feed "$1" 2>&1 | tail -12
   return "${PIPESTATUS[0]}"
 }
 engine_gets() { grep -c "GET /$1" "$2" || true; }
