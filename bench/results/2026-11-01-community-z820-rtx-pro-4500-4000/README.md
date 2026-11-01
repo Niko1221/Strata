@@ -1,12 +1,12 @@
 # Community benchmark on RTX PRO 4500 32 GB + RTX PRO 4000 24 GB in a dual Xeon E5-2697 v2 (HP Z820)
 
-Measured on 2026-11-01 by Jack Kenner (jkenner111). Tested: UD-IQ4_XS at 262,144 context in four
-configurations — an RTX PRO 4500 alone, both cards layer-split at the automatic boundary (layer 13),
-both cards at an explicit layer 10, and a pool-worker comparison at 11 instead of 22. All runs used
-`--low-ram resident` and an AVX1 source build. Main limitations: draft protocol; 5 of 9 performance
-requests reached the 512-token cap on the dual-card arm and 6 of 9 on the other three arms; the short
-case was not cap-limited in any arm; `--source-revision` not passed. No published result in this
-corpus runs a pre-AVX2 CPU, and this adds one.
+Measured on 2026-11-01 by Jack Kenner (jkenner111). No published result runs a CPU without AVX2.
+This adds one: an HP Z820 with 2x Xeon E5-2697 v2 (AVX, no AVX2 and no AVX-512), 251.8 GiB of
+DDR3-1866, and RTX PRO 4500 32 GB + RTX PRO 4000 24 GB. Tested UD-IQ4_XS at 262,144 context in four
+configurations — the 4500 alone, both cards layer-split at the automatic boundary (layer 13), both at
+an explicit layer 10, and a pool-worker comparison at 11 instead of 22. All runs used `--low-ram
+resident` and an AVX1 source build. Main limitations: draft protocol; the 512-token cap, in the
+per-arm counts below; `--source-revision` not passed.
 
 ## Hardware and software
 
@@ -37,9 +37,8 @@ corpus runs a pre-AVX2 CPU, and this adds one.
   MTP on (`--spec 4 --spec-min-p 0.5`, `--mtp rt`); `--vram-reserve-mib 700`.
 - Sampling fixed by the protocol: temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, penalties
   0.0 / 1.0, `reasoning_effort: xhigh`, thinking on with `preserve_thinking`.
-- `STRATA_HC_Q8=1` is set: setup writes it on CUDA for the UD files, so the hyper-connection
-  projections are read as the file's own Q8_0 instead of the pack's BF16 rounding. It is a setup
-  default here, not a tuning choice. It changes bits.
+- `STRATA_HC_Q8=1`: setup writes it on CUDA for the UD files, so it is a setup default rather than a
+  tuning choice. It reads the file's own Q8_0 hyper-connection projections and changes bits.
 
 Effective engine arguments, single-card run:
 
@@ -55,16 +54,14 @@ The dual-card runs use the same arguments with `"gpu": [1, 0]` (helper first, ma
 and draft; the 4000 takes layers 0–12. The split is used because 32 + 24 GB of VRAM is smaller than
 the 55 GiB expert arena.
 
-### Local deviations from the default path
+### Deviations from the default path
 
-- Build with `STRATA_ISA_FLOOR=avx` — this CPU has no AVX2.
-- `--low-ram resident`: experts are page-locked in RAM and swapped against the GPU caches instead of
-  read from the GGUF on disk. Setup computed `--resident-budget-gib 55` from the model's 59.5 GB
-  arena, not from installed RAM.
-- Resident mode retained across the layer split, supported from engine 0.1.40
-  (`RESIDENT_SPLIT_ENGINE`). Engines before that rewrite `--resident-experts` to `--mmap-experts`,
-  which reads experts through the OS file cache.
-- No `numactl`. The engine builds its own NUMA-aware pool.
+Two changes matter: the AVX1 build floor, because this CPU has no AVX2, and `--low-ram resident`,
+which page-locks experts in RAM and swaps them against the GPU caches instead of reading the GGUF
+from disk. Setup computed `--resident-budget-gib 55` from the model's 59.5 GB arena, not from
+installed RAM. Resident mode survives the layer split on engine ≥ 0.1.40 (`RESIDENT_SPLIT_ENGINE`);
+earlier engines rewrite `--resident-experts` to `--mmap-experts`. No `numactl` — the engine builds
+its own NUMA-aware pool.
 
 ## Method
 
@@ -155,8 +152,7 @@ are not cap-limited. On the 4K and 16K cases, decode is measured to the cap on t
 ## Limitations
 
 - Draft protocol (`strata-qwen38-thinking-v1-draft.1`); outside the standard manifest.
-- Output-cap accounting is in the table above: 6/9 performance requests reached the 512-token cap on
-  three arms and 5/9 on dual layer 13. The short case was not cap-limited in any arm.
+- Output-cap counts are in the table above.
 - `--source-revision` not passed; base-model revision verified out of band and recorded as null.
 - Single-card run logged VRAM headroom of 502 MiB and 372 MiB at request start, below the engine's
   512 MiB threshold where the driver may page GPU memory to host RAM. Decode did not degrade
@@ -166,7 +162,6 @@ are not cap-limited. On the 4K and 16K cases, decode is measured to the cap on t
   applies to load time only.
 - Not comparable to this machine's October results: engine 0.1.41 vs 0.1.55, greedy sampling vs
   temperature 1.0 with `reasoning_effort: xhigh`, different prompts, NVMe vs SATA.
-- No AVX2 or AVX-512 path was measured; this hardware has neither.
 
 ## Reproducing
 
