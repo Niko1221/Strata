@@ -97,6 +97,9 @@ public:
     bool draft_batch_begin(const BatchItem* items, int n_items, float* stage_taps, size_t stage_stride, std::string& err);
     bool draft_batch_end(const BatchItem* items, int n_items, std::string& err);
     bool draft_batch(const BatchItem* items, int n_items, float* stage_taps, size_t stage_stride, std::string& err);
+    /// Precomputes the window's DFlash2 context projections (`fc.weight` + 5-layer `k_proj`/`v_proj`) on `cs_` as soon
+    /// as the target verifier finishes its last tap layer (layer 36), overlapping with target layers 37..47.
+    void precompute_batch_context(const float* taps, int n_rows, const int64_t* pos);
 
     /// Captures the eight round graphs (n_new = 1..8) on `taps` now, so no round pays for a capture.
     bool prepare(const float* taps_dev, std::string& err);
@@ -240,6 +243,9 @@ private:
     cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr, ev_ctx_[8] = {};
     bool fork_ = false;             ///< recording the forked graph: layer l's attention waits for ev_ctx_[l]
     float *fcy_ = nullptr, *hctx_ = nullptr, *kc_ = nullptr, *vc_ = nullptr;
+    const float* precomp_taps_ = nullptr;
+    int precomp_rows_ = 0;
+    int64_t precomp_pos_[32] = {};
     float *h_ = nullptr, *xn_ = nullptr, *xc_ = nullptr, *dyn_ = nullptr, *q_ = nullptr, *qn_ = nullptr, *k_ = nullptr, *v_ = nullptr, *kblk_ = nullptr;
     float *ao_ = nullptr, *o_ = nullptr, *gate_ = nullptr, *up_ = nullptr, *mlp_ = nullptr, *part_ = nullptr, *fn_ = nullptr;
     float *fn_batch_ = nullptr, *hsel_batch_ = nullptr;

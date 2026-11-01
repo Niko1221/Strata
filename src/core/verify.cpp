@@ -4588,6 +4588,10 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         const Clock::time_point b = Clock::now();
         cur_layer_ = want - 1;
         set_plan_slot(0);
+        if (taps_ready_cb_ != nullptr && tap_on_ && !tap_layers_.empty() &&
+            l == (int64_t) tap_layers_.back() + 1) {
+            taps_ready_cb_(taps_ready_user_, tap_dev_, S, pos);
+        }
         progress_at("verify batch: the CPU experts of layer", l);
         // The recorded graph consumes the helper mask and weighted sum just as
         // the solo graph does. Reset both and supply this layer's routing weights.

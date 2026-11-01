@@ -367,6 +367,8 @@ public:
     const float* tap_dev() const { return tap_dev_; }
     const float* final_tap_dev() const { return next_ ? next_->final_tap_dev() : tap_dev_; }
     bool tapping() const { return tap_on_ && (next_ == nullptr || next_->tapping()); }
+    using TapsReadyFn = void (*)(void* user, const float* tap_dev, int n_rows, const int64_t* pos);
+    void set_taps_ready(TapsReadyFn fn, void* user) { taps_ready_cb_ = fn; taps_ready_user_ = user; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -648,6 +650,8 @@ private:
     float* h_tap_ = nullptr;     float* m_tap_ = nullptr;       ///< the mapped copy of tap_dev_
     std::FILE* tap_file_ = nullptr;
     void tap_write(int T, const int32_t* tokens, int64_t pos0);
+    TapsReadyFn taps_ready_cb_ = nullptr;
+    void* taps_ready_user_ = nullptr;
     uint32_t* h_nf_ = nullptr;   uint32_t* m_nf_ = nullptr;     // #879: kVerifyMaxT * kNonfiniteBlocks flags
     int nf_row_ = -1;                     ///< nonfinite_row()
     int64_t nf_pos_ = -1;                 ///< nonfinite_pos()

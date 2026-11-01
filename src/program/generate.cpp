@@ -10451,7 +10451,16 @@ int main(int argc, char** argv) {
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp || (has_dflash && o.batch > 0)) ver.set_batch_graph_limit(64);   // slot rotation makes many layouts (LRU); 0.1.39 keeps all
 #if defined(STRATA_HAVE_DFLASH2)
-        if (use_df2) ver.set_taps(df2.tap_layers());
+        if (use_df2) {
+            ver.set_taps(df2.tap_layers());
+            if (n_stages == 1) {
+                ver.set_taps_ready(
+                    [](void* user, const float* tap_dev, int n_rows, const int64_t* pos) {
+                        static_cast<strata::core::Dflash2Drafter*>(user)->precompute_batch_context(tap_dev, n_rows, pos);
+                    },
+                    &df2);
+            }
+        }
 #endif
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_max_t(), err) ||
