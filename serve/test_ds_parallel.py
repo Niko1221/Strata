@@ -25,9 +25,10 @@ from serve.server import ByteTokenizer, Service, StrataEngine, parallel_args, se
 # One token every STEP seconds per active request (a multi step serves every active request at once).  A request's
 # reply is the byte of its first prompt id six times, then 257 (<|im_end|> in the ByteTokenizer), or "ok, done." then
 # 257 for a longer prompt (a chat's).
-FAKE_DS = r'''import queue, sys, threading, time
+FAKE_DS = r'''import os, queue, sys, threading, time
 args = sys.argv[1:]
 n = int(args[args.index("--parallel") + 1]) if "--parallel" in args else 1
+n = min(n, int(os.environ.get("FAKE_CAP", "99")))   # (the engine runs fewer when the cards hold fewer)
 log = open(args[args.index("--log") + 1], "a") if "--log" in args else None
 STEP = 0.03
 lines = queue.Queue()
@@ -140,6 +141,14 @@ class Engine(unittest.TestCase):
                 g.close()
                 break
         out.append((got, dict(self.engine.last)))
+
+    def test_an_engine_that_runs_fewer_than_asked_is_said(self):
+        import contextlib, io
+        with mock.patch.dict("os.environ", {"FAKE_CAP": "2"}), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.start(4)
+        self.assertEqual(self.engine.multi, 2)
+        self.assertEqual(self.engine.batch, 2)
+        self.assertIn("parallel requests: 4 asked, the engine runs 2", out.getvalue())
 
     def test_ready_multi_makes_the_engine_parallel(self):
         self.start(3)

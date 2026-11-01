@@ -44,6 +44,21 @@ STREAM_COPY_GAIN = "decoding about 15%, prompts about 25%"   # without the exper
 # (UD-Q5_K_XL, story: 28 tok/s without MTP, 41.8 at --spec 2, 50.6 at --spec 3). Smaller Macs stream without it.
 STREAM_MTP_FROM_GB = 96
 STREAM_SPEC = 3
+# A resident IQ3_S or Q2_0 pack runs a 3-token window with --spec-min-p 0.5 (the draft layer extends the window only when sure):
+# M5 Max, MTP, 5 interleaved pairs, identical tokens, over --spec 2: IQ3_S story / code / JSON / agent turn -0.9% / +2.5% / +16.7% /
+# +4.9%; Q2_0 +0.4% / +11.5% / +6.3% / +1.9% (phaseA-tests/mac-q/RESULTS.md sections 14 and 15).  Other sets are not measured: --spec 2.
+SPEC3_MODELS = ("IQ3_S", "Q2_0")
+SPEC3_MIN_P = "0.5"
+
+
+def spec_args(model: str, stream: bool, mtp: bool) -> list[str]:
+    """The window flags for a Mac config: --spec 3 --spec-min-p 0.5 for a resident IQ3_S or Q2_0 pack, STREAM_SPEC when the model
+    streams from the SSD with the draft layer, else --spec 2."""
+    if stream and mtp:
+        return ["--spec", str(STREAM_SPEC)]
+    if mtp and not stream and (model or "").upper() in SPEC3_MODELS:
+        return ["--spec", "3", "--spec-min-p", SPEC3_MIN_P]
+    return ["--spec", "2"]
 # beside the mapped file: the prompt kernels' buffers (chunks of 2,048 rows), the KV cache, the draft layer, the
 # Q8_0 copies of the hyper-connection matrices and the macOS desktop
 OVERHEAD_GB = 8.0
@@ -188,7 +203,7 @@ def stream_mtp(stream: bool, ram_gb: float) -> bool:
 
 
 def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
-                profile: Path | str = "data/expert-profile.bin") -> list[str]:
+                profile: Path | str = "data/expert-profile.bin", model: str = "") -> list[str]:
     """The Metal defaults: --spec 2 with the MTP draft layer (measured best on the M5 Max, docs/MAC.md) and the Q8_0
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
@@ -199,7 +214,7 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
         args += ["--native-dense-gguf", str(shards[0])]
     args += [
             "--expert-profile", str(profile), "--expert-cache", "64",
-            "--prefill", "auto", "--spec", str(STREAM_SPEC if stream and mtp else 2)]
+            "--prefill", "auto", *spec_args(model, stream, mtp)]
     args += ["--suffix-draft", "0"] if stream else []
     args += ["--mtp", str(rt)] if mtp else []
     return args + ["--max-context", str(ctx),

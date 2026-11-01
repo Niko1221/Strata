@@ -6,6 +6,7 @@ import { api } from '../lib/client';
 import { useDownloadEta } from '../lib/download-eta';
 import type { NativeJob } from '../lib/native';
 import { megabytes } from '../lib/format';
+import { FirstRunLanguage } from './FirstRunLanguage';
 
 /** What the host says about this PC's engine (GET /api/engine/first-run). */
 export interface FirstRunInfo {
@@ -169,5 +170,5 @@ export function EngineFirstRun({ onDone }: { onDone: () => void }) {
             {problem ? <div className="onboard-error" style={{ maxWidth: 560, margin: '0 auto' }}><p role="alert" className="small inline-error">{problem}</p></div> : null}
             <footer className="onboard-footer onboard-footer--welcome">{actions}</footer></>;
     }
-    return <div className="setup guided-onboarding" data-step="engine">{hidden}<header className="onboard-header"><Brand variant="lockup" height={22}/></header>{body}</div>;
+    return <div className="setup guided-onboarding" data-step="engine">{hidden}<header className="onboard-header"><Brand variant="lockup" height={22}/><FirstRunLanguage/></header>{body}</div>;
 }

@@ -151,6 +151,14 @@ source-checkout option for developers, not a way to start the released app.
 - **VRAM budget:** `hipMemGetInfo` on Windows does not subtract what the desktop and other programs hold. The engine lowers
   the free figure by what Windows' video memory budget for the process withholds (logged once). `STRATA_WDDM_BUDGET=0` turns
   that off.
+- **Pinned expert arena (#3431):** the HIP runtime gives each page-locked range of the arena a second address for the GPU, and
+  it takes any pointer of the process inside that range for the arena. Through engine 0.1.54 about one start in ten on an RX
+  7900 XTX had the engine thread's stack there (the same symptom was reported on an R9700): every long prompt was then read
+  wrong until a restart, with no error (the log shows `KV streaming: 100.00% of 0 block reads` for each long prompt). The
+  engine now keeps the address space below 1 TiB reserved, so its stacks and other memory are placed above the GPU addresses,
+  and it reserves each GPU address range while the arena is pinned. When a range's GPU address still covers memory in use,
+  that range and the ones after it stay unpinned and the log says so (`strata pin: ... (#3431)`); that start reads prompts more
+  slowly but correctly. `STRATA_STACK_ISOLATE=0` runs the engine as before, without the reservation below 1 TiB.
 - **WMMA prompt attention** is opt-in on Windows (`STRATA_HIP_WMMA=1`); it is the default on gfx12 on Linux.
 
 **Reporting a Windows AMD run.** Give your card, the driver version (AMD Software > System), the output of the two commands

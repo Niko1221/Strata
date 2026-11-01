@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {resourceSettings} from '../server/native-resources.mjs';
-import {runtimeVision} from '../server/native-vision.mjs';
+import {markPictures,runtimeVision} from '../server/native-vision.mjs';
 import {nativeFixture,finishJob} from './helpers/native-fixture.mjs';
 
 test('new native downloads use the selected model root without adding a legacy subfolder',async()=>{
@@ -172,4 +172,17 @@ test('a card that shares the PC memory does not hold back a fifth of the shared 
  assert.equal(apu.vram_reserve_mib,2048,'the display floor with pictures, not 20% of 82 GB (16 GB)');
  const discrete=resourceSettings(original,{cpu:{cores:16},ram_gb:128,gpus:[{index:0,vram_gb:82,name:'a card'}]},'work');
  assert.equal(discrete.vram_reserve_mib,Math.floor(82*1024*.2),'a card with its own memory keeps its fifth');
+});
+
+test('picture readiness: Qwen needs strata-vision in the engine folder, DeepSeek carries its own tower (#4772)',()=>{
+ const catalog={families:[
+  {family:'flash-next',images:true,sizes:[{id:'q',images:true,multi_file:false}]},
+  {family:'deepseek-v4.1-flash',images:true,sizes:[{id:'d',images:true,multi_file:true}]},
+  {family:'text',images:false,sizes:[{id:'t',images:false}]}]};
+ const without=markPictures(catalog,false).families, withReader=markPictures(catalog,true).families;
+ assert.deepEqual(without.map(f=>f.sizes[0].images),[false,true,false]);
+ assert.deepEqual(without.map(f=>f.sizes[0].imagesCapable),[true,true,false]);
+ assert.deepEqual(without.map(f=>f.images),[false,true,false]);
+ assert.deepEqual(withReader.map(f=>f.sizes[0].images),[true,true,false]);
+ assert.equal(markPictures(null,true),null);
 });

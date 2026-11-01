@@ -1,4 +1,4 @@
-"""The app's "I already have the model" preview recognises an official DeepSeek-V4.1-Flash set (IST-DAS 1.75 / 2.00 / 2.25 bpw), under the
+"""The app's "I already have the model" preview recognises an official DeepSeek-V4.1-Flash set (ISTA-DAS 1.75 / 2.00 / 2.25 bpw), under the
 official file names or the first release's, from the pinned names and sizes; since 0.2.8.1 also the four-shard files as ISTA-DASLab re-published
 their shard 1 on 2026-10-26 (#4237) and ISTA-DASLab's six-shard layout of 2026-10-27. Qwen previews are unchanged (tests/terminal/test_models*.py)."""
 import tempfile
@@ -11,7 +11,7 @@ from strata_control import dsv41_sets, models
 T = dsv41_sets.tables()
 
 
-ISTA = [m for m in T["sets"] if m.startswith("IST-DAS")]      # the Unsloth UD-IQ1 sets have no legacy, six-shard or re-published layouts (tools/test_setup_udlow.py)
+ISTA = [m for m in T["sets"] if m.startswith("ISTA-DAS")]      # the Unsloth UD-IQ1 sets have no legacy, six-shard or re-published layouts (tools/test_setup_udlow.py)
 
 def files_of(model, legacy=False, engram="official", drop=(), wrong=(), layout=None):
     entry = T["sets"][model]

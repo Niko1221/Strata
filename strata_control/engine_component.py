@@ -445,6 +445,46 @@ def split_backend(value) -> tuple[str, str]:
     return name, ""
 
 
+BACKEND_ALIASES = {"nvidia": "cuda", "amd": "hip", "intel": "sycl", "arc": "sycl"}
+SAVED_KEY = "engine_backend"
+
+
+def clean_backend_name(value) -> str:
+    """What the person typed for --backend, as an engine family name: 'intel' -> 'sycl', 'NVIDIA' -> 'cuda'; '' when it names none."""
+    name = str(value or "").strip().lower()
+    name = BACKEND_ALIASES.get(name, name)
+    return name if name in ("cuda", "hip", "sycl") else ""
+
+
+def saved_backend(environ=None) -> str | None:
+    """The engine family the person chose with `strata launch --backend` (kept in the settings file), or None. It is ignored when this PC
+    has no card of that make (the choice was made on other hardware): the PC's own detection then decides again."""
+    try:
+        from strata_control import discovery
+        value = clean_backend_name(discovery._read_json(discovery.own_settings_file(environ)).get(SAVED_KEY))        # noqa: SLF001
+    except Exception:                                    # noqa: BLE001 - a settings file that cannot be read is no choice
+        return None
+    if not value:
+        return None
+    here = gpu_makes_present()
+    return value if (not here or value in here) else None
+
+
+def save_backend(value, environ=None) -> Path | None:
+    """Keep (or, with a falsy value, forget) the person's engine family choice in the settings file, leaving every other key as it is."""
+    from strata_control import discovery
+    path = discovery.own_settings_file(environ)
+    data = discovery._read_json(path)                    # noqa: SLF001
+    name = clean_backend_name(value)
+    if name:
+        data[SAVED_KEY] = name
+    else:
+        data.pop(SAVED_KEY, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return path
+
+
 def detect_backend(environ=None) -> tuple[str | None, str]:
     """(backend, how) for this machine: the engine family its GPU needs. Bounded, read-only probes of tools that are
     already installed; ``STRATA_ENGINE_BACKEND`` overrides (the tests and the support desk use it)."""
@@ -454,6 +494,9 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
         if forced not in BACKEND_MATRIX:
             raise ComponentProblem(f"{ENV_BACKEND}={forced!r} is not one of {', '.join(sorted(BACKEND_MATRIX))}")
         return forced, "environment"
+    chosen = saved_backend(environ)
+    if chosen:
+        return chosen, "saved choice"
     if host_platform().startswith("macos"):
         return "metal", "platform"
     # Windows: the display adapters are the machine's own statement about which cards it has, so they decide first. A leftover

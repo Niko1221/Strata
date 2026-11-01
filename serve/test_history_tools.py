@@ -40,9 +40,66 @@ class HistoryTools(unittest.TestCase):
         self.assertEqual(server.with_history_tools([], history("Bash")), [])
         self.assertIsNone(server.with_history_tools(None, history("Bash")))
 
+    def test_anthropic_tool_use_blocks_count(self):
+        req = {"messages": [{"role": "user", "content": "go"},
+                            {"role": "assistant", "content": [{"type": "text", "text": "ok"},
+                                                              {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}]}
+        names, answer = run(server.with_history_tools([TODO], req))
+        self.assertEqual(names, ["Bash"])
+        self.assertEqual(answer, "")
+
+    def test_responses_function_call_items_count(self):
+        req = {"input": [{"type": "message", "role": "user", "content": "go"},
+                         {"type": "function_call", "name": "Bash", "call_id": "c1", "arguments": "{}"}]}
+        names, answer = run(server.with_history_tools([TODO], req))
+        self.assertEqual(names, ["Bash"])
+        self.assertEqual(answer, "")
+
+    def test_responses_namespace_is_part_of_the_name(self):
+        req = {"input": [{"type": "function_call", "namespace": "mcp", "name": "Bash", "call_id": "c1", "arguments": "{}"}]}
+        self.assertEqual([t["name"] for t in server.with_history_tools([TODO], req)], ["TodoWrite", "mcp.Bash"])
+
+    def test_the_other_routes_without_history_stay_text(self):
+        names, answer = run(server.with_history_tools([TODO], {"input": [{"type": "message", "role": "user", "content": "go"}]}))
+        self.assertEqual(names, [])
+        self.assertIn("<tool_call>", answer)
+
     def test_odd_requests_are_left_alone(self):
         self.assertEqual(server.with_history_tools([TODO], None), [TODO])
         self.assertEqual(server.with_history_tools([TODO], {"messages": [None, {"role": "assistant", "tool_calls": [None, {}]}]}), [TODO])
+
+
+
+class PrefixedNames(unittest.TestCase):
+    """#4751: `tools.write` for a declared `write` (a programmatic-tool-calling harness shows the model `tools.write(...)`)."""
+
+    WRITE = {"name": "write", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}}}
+    TEXT = ("<tool_call>\n<function=tools.write>\n<parameter=file_path>/a/b.py</parameter>\n"
+            "<parameter=content>x = 1\n</parameter>\n</function>\n</tool_call>")
+
+    def calls(self, tools, text=None):
+        p = OutputParser(thinking=False, tools=tools, stream_tools=True, recover=True, declared_only=True)
+        evs = p.feed(text or self.TEXT) + p.finish("stop")
+        return [e.call for e in evs if e.kind == "tool_call"], "".join(e.text for e in evs if e.kind == "content")
+
+    def test_the_prefix_is_read_as_the_declared_tool(self):
+        calls, answer = self.calls([self.WRITE])
+        self.assertEqual([(c.name, c.arguments["file_path"]) for c in calls], [("write", "/a/b.py")])
+        self.assertEqual(answer, "")
+
+    def test_functions_prefix_too(self):
+        calls, _ = self.calls([self.WRITE], self.TEXT.replace("tools.write", "functions.write"))
+        self.assertEqual([c.name for c in calls], ["write"])
+
+    def test_an_undeclared_name_stays_text(self):
+        calls, answer = self.calls([self.WRITE], self.TEXT.replace("tools.write", "tools.delete"))
+        self.assertEqual(calls, [])
+        self.assertIn("<tool_call>", answer)
+
+    def test_a_declared_dotted_name_wins(self):
+        dotted = {"name": "tools.write", "parameters": self.WRITE["parameters"]}
+        calls, _ = self.calls([self.WRITE, dotted])
+        self.assertEqual([c.name for c in calls], ["tools.write"])
 
 
 if __name__ == "__main__":

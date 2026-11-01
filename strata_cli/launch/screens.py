@@ -1123,10 +1123,23 @@ class ParallelScreen(Base):
         yield Static(Text("How many requests at the same time?", style=f"bold {ACCENT}"), markup=False)
         yield Menu(id="menu")
 
+    def deepseek(self) -> bool:
+        """DeepSeek answers one request at a time unless the person asks for more (strata_control/dsv41_parallel.py): Qwen's fit-to-the-card rule does not apply."""
+        s = self.ctx.settings
+        return bool(s.family) and bool(self.ctx.catalog.strata.multi_family(s.family))
+
     def on_mount(self) -> None:
         vram = self.ctx.computer.main_vram_gb
         self.fit = S.fit_parallel(vram) if vram else 1
         s = self.ctx.settings
+        if self.deepseek():
+            items = [Item(["One at a time", Cell("default", "")], key=None)]
+            items += [Item([f"{n} requests at the same time", Cell("", "")], key=n) for n in (2, 3, 4)]
+            sel = 0 if not s.parallel or s.parallel < 2 else min(4, s.parallel) - 1
+            self.query_one(Menu).columns = [("", 36), ("", 0)]
+            self.query_one(Menu).set_items(items, sel)
+            self.paint()
+            return
         items = [Item([f"Fit to my graphics card ({self.fit})", Cell("recommended", "")], key=None)]
         for n in (1, 2, 3, 4):
             note, style = "", ""
@@ -1140,6 +1153,10 @@ class ParallelScreen(Base):
 
     def explain(self) -> Text:
         vram = self.ctx.computer.main_vram_gb
+        if self.deepseek():
+            from strata_control import dsv41_parallel
+            return Text("Several conversations at once (chats, agents, sub-agents): each answer is slower while the others run, and each extra one takes "
+                        "graphics memory the experts would use. " + dsv41_parallel.SPEED_LINES[0] + " " + dsv41_parallel.SPEED_LINES[1], style=MUTE)
         return Text(f"Your card has {vram:.0f} GB of graphics memory, which fits {self.fit} at once by Strata's rule "
                     "(12 GB: 1, 20 GB: 2, 24 GB: 3, 32 GB or more: 4). One person: pick 1. A team or several coding agents: more. "
                     "More than fits still starts, only slower." if vram else

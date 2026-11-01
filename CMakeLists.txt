@@ -391,10 +391,22 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
 
+  # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
+  # (header-only, no GPU)
+  add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)
+  target_include_directories(routed_stream_test PRIVATE include)
+  target_link_libraries(routed_stream_test PRIVATE Threads::Threads)
+  add_test(NAME routed_stream_test COMMAND routed_stream_test)
+
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
   add_test(NAME host_limits_test COMMAND host_limits_test)
+  # #4733: an engine started at Low I/O priority goes back to Normal (Windows; else skips)
+  add_executable(io_priority_test tests/platform/io_priority_test.cpp src/platform/io_priority.cpp)
+  target_include_directories(io_priority_test PRIVATE include)
+  add_test(NAME io_priority_test COMMAND io_priority_test)
+  set_tests_properties(io_priority_test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -410,7 +422,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
-  add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
+  add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/platform/io_priority.cpp src/core/graph.cpp src/core/weights.cpp
                                src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
@@ -917,7 +929,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(strata_dsv41_kernels PUBLIC ${_strata_gpu_runtime_target})
     add_executable(strata-dsv41 src/dsv41/ds4_main.cpp src/dsv41/ds4_model.cu src/dsv41/ds4_kernels.cu src/dsv41/ds4_vision.cu
                    src/dsv41/ds4_gguf.cu src/dsv41/ds4_gguf_cpu.cpp src/dsv41/ds4_iq.cu src/dsv41/ds4_iq_cpu.cpp
-                   src/dsv41/ds4_tq.cu src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp src/dsv41/ds4_packinfo.cpp)
+                   src/dsv41/ds4_tq.cu src/dsv41/ds4_tq_cpu.cpp src/dsv41/ds4_gg_cpu.cpp src/dsv41/ds4_packinfo.cpp src/platform/io_priority.cpp)
     # the commit the binary was built from, readable with --version (set -DSTRATA_BUILD_ID=... for a tree without .git)
     if(NOT STRATA_BUILD_ID AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/BUILD_ID)   # (a git archive has no .git: the packer writes the commit here)
       file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/BUILD_ID STRATA_BUILD_ID LIMIT_COUNT 1)
@@ -1372,6 +1384,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(lm_kernels_parity PRIVATE strata_prefill )
     add_test(NAME lm_kernels_parity COMMAND lm_kernels_parity)
     set_tests_properties(lm_kernels_parity PROPERTIES SKIP_RETURN_CODE 77)
+    # hc_q8_to_bf16 on the stream it is given: the layer-major prompt walk expanded a STRATA_HC_REQ8
+    # hyper-connection projection on the default stream while its GEMMs read another.  Synthetic, no model.
+    add_executable(hc_q8_stream_test tests/cuda/hc_q8_stream_test.cu)
+    target_link_libraries(hc_q8_stream_test PRIVATE strata_prefill )
+    add_test(NAME hc_q8_stream COMMAND hc_q8_stream_test)
+    set_tests_properties(hc_q8_stream PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
   endif()
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
@@ -1413,6 +1431,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(verify_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     add_test(NAME verify_parity COMMAND verify_parity --selftest)
   endif()
+  # BW-DENSE: the v3 read's weight-prefetch variants against the plain v3 read, bit for bit, and their cold-weight time
+  add_executable(gr_v3_screen src/kernels/gr_v3_screen.cpp)
+  target_include_directories(gr_v3_screen PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(gr_v3_screen PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_executable(mmvf_unr_hash src/kernels/mmvf_unr_hash.cpp)
+  target_include_directories(mmvf_unr_hash PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(mmvf_unr_hash PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_executable(fused_gr_bench src/kernels/fused_gr_bench.cpp)
   target_include_directories(fused_gr_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(fused_gr_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1691,6 +1716,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(pin_budget_test PRIVATE strata_core ${_strata_gpu_runtime_target})
   add_test(NAME pin_budget_test COMMAND pin_budget_test)
 
+  # #3431: the expert arena's registered ranges keep their GPU aliases clear of the process's own memory (Windows HIP; else skips)
+  add_executable(pinned_alias_test src/core/pinned_alias_test.cpp)
+  target_link_libraries(pinned_alias_test PRIVATE strata_core ${_strata_gpu_runtime_target})
+  add_test(NAME pinned_alias_test COMMAND pinned_alias_test)
+  set_tests_properties(pinned_alias_test PROPERTIES SKIP_RETURN_CODE 77)
+
   # #3350 / #3470: the conversation copy streams and events are pooled across short-lived threads (needs a device, else skips)
   add_executable(conversation_copy_streams_test src/core/conversation_copy_streams_test.cpp)
   target_include_directories(conversation_copy_streams_test PRIVATE include)
@@ -1854,6 +1885,10 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(coupled_draft_test src/core/coupled_draft_test.cpp)
   target_include_directories(coupled_draft_test PRIVATE include)
   add_test(NAME coupled_draft_test COMMAND coupled_draft_test)
+  # #4590: the penalty window is the current reply by default, STRATA_PENALTY_PROMPT=1 the old prompt + reply window (header-only, CPU)
+  add_executable(penalty_window_test src/kernels/penalty_window_test.cpp)
+  target_include_directories(penalty_window_test PRIVATE include)
+  add_test(NAME penalty_window_test COMMAND penalty_window_test)
   # probabilistic draft acceptance (STRATA_SPEC_PROB): rejection sampling preserves p - chi-square over 2M trials per case (CPU)
   add_executable(spec_prob_test src/core/spec_prob_test.cpp)
   target_include_directories(spec_prob_test PRIVATE include)

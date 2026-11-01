@@ -123,7 +123,39 @@ picture reader). The server decodes each picture, brings it to a size the tower 
 tokens) and hands it to the engine; it needs Pillow for that (`python -m pip install pillow`; setup installs it). `--vision no` in `strata launch`
 (or `--vision off` for the engine) turns them off; a request with a picture then gets a 400 that says so.
 
-Not in this version: several requests at once (`--parallel` is ignored with a warning).
+## Several conversations at once (`--parallel`)
+
+Off by default: requests take turns, as before. `--parallel N` (2 to 8) lets the engine answer N conversations at the same time: several chats, an agent with sub-agents,
+or a few people on one server. Ask for it where you start the model:
+
+| Where | How |
+| --- | --- |
+| `strata launch` | `strata launch --family deepseek41 --model ist-das-2.25bpw --parallel 4`; `--save-preset NAME` keeps the number for the next start. The guided screens have the same choice in the Parallel step. |
+| `strata serve` | `strata serve --profile NAME --parallel 4`, or `"parallel": 4` in the run config. |
+| the app | Expert settings, "Concurrent requests" (the setting the other models have). |
+| Docker | `PARALLEL=4`. |
+
+`--plan` with the flag says what it does and what it was measured on. A number above 8 is run as 8. If the graphics cards cannot hold the buffers of every
+conversation, the engine runs as many as they can hold and says so in its log (`the graphics memory holds the buffers of N conversations ... running N at once`). A DeepSeek
+engine from before the flag answers one request at a time; `strata launch` says so and goes on, and `strata update` fetches the newer engine.
+
+What it does:
+
+- Each conversation has its own attention memory in graphics memory. One extra conversation takes about 0.01 GB at 8K context, 0.05 GB at 32K, 0.17 GB at 128K and 0.68 GB at
+  512K (the engine prints the total at start). That memory comes out of the room the experts would use. Measured on 2 RTX A6000 (48 GB each); the engine's line for 8
+  conversations at 1M context was 9.47 GB for the 7 extra.
+- Several long answers at once. 4 R9700 cards, answers of 150 tokens: one answer alone wrote 41 tokens a second; 2 together 53 tokens a second in all (each at 30), 4 together
+  73 (each at 21). 2 RTX A6000: one alone 42, 2 together 52 (each at 31); 4 together 48 to 62 (each at 14 to 19, two runs). The median wait for the first word, with 4
+  sessions asking at once, was 0.9 s instead of 8.0 s (4 R9700), because requests no longer queue.
+- An agent load: 4 sessions of 5 requests, each reading 2,500 characters of file text and answering 40 tokens. The whole load took 55 to 56 s instead of 64 to 65 s on 4 R9700
+  (13% less), 91 s instead of 102 s on 2 RTX A6000 (11% less), and 205 to 216 s instead of 256 to 261 s on a DGX Spark (17 to 20% less).
+- One conversation alone: a five-turn chat took 23.3 to 24.9 s with `--parallel 4` and 23.4 to 24.4 s without on 4 R9700, and 34.9 to 35.9 s against 35.2 to 35.6 s on 2 RTX A6000.
+- Answers are the same as when each runs alone: 12 combinations of 2 to 4 conversations, with and without the drafter, were identical to the last bit of the model's
+  output on a DGX Spark and on 2 RTX A6000, and 6 prompts at once through the server had the same text as alone (greedy), also when a client dropped its connection.
+
+Where it was run: Linux, with 4 Radeon AI PRO R9700 (gfx1201), 1 R9700, 2 RTX A6000 (sm_86) and a DGX Spark (sm_121). Not run: Windows (the engine builds with it, a
+Windows run has not been done), a Mac (Metal; the code adds no Metal kernel of its own, nothing has started it there), Ryzen AI Max, cards under 24 GB, other AMD
+families. `strata launch` warns for these and still starts. If the engine stops at the start or an answer looks wrong, start without `--parallel`.
 
 ## Speed: Faster or Full quality
 

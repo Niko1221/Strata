@@ -57,7 +57,7 @@ Najpierw polecamy **ISTA-DASLab**, potem **Unsloth** i innych dostawców — o i
 W **aplikacji na komputer** i w **Terminalu**. To, co nie mieści się w pamięci, jest czytane z dysku SSD, więc potrzebujesz
 dużo wolnego miejsca na dysku.
 
-| Zestaw (IST-DAS) | Do pobrania | Potrzebne wolne miejsce |
+| Zestaw (ISTA-DAS) | Do pobrania | Potrzebne wolne miejsce |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | około 245 GB |
 | 2.00 bpw | 257 GB | około 265 GB |

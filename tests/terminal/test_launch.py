@@ -144,7 +144,7 @@ class CatalogRules(unittest.TestCase):
         with Home():
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two IST-DAS sets run on a Mac, UD-IQ1_S since f-039
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two ISTA-DAS sets run on a Mac, UD-IQ1_S since f-039
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
                 self.assertEqual(rows[name].family, "deepseek41")
@@ -456,6 +456,21 @@ class SetupArgs(unittest.TestCase):
             self.assertEqual(s.vision, "gpu")                                 # what was asked for is kept
             s, _ = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="off"), cat)
             self.assertEqual(s.vision, "off")
+
+    def test_a_disk_warning_is_not_shown_for_files_used_where_they_are_and_reads_once(self):
+        import dataclasses
+        from strata_cli.launch.cmd import apply_defaults
+        with Home():
+            cat = catalog(HW_12)
+            real = cat.rows()
+            rows = [dataclasses.replace(r, verdict="tight", words="tight: needs more disk space") for r in real]
+            with mock.patch.object(type(cat), "rows", lambda self, *a, **k: rows):
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", model_path="/x"), cat)
+                self.assertFalse([n for n in notes if "tight" in n.text], notes)
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS"), cat)
+                text = " ".join(n.text for n in notes)
+                self.assertIn("is a tight fit: needs more disk space.", text)
+                self.assertNotIn("tight: tight", text)
 
     def test_the_apps_own_installer_arguments(self):
         import tempfile

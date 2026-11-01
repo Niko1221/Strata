@@ -262,10 +262,13 @@ class Catalog:
             return hw
         hw = dict(self.strata.hardware(fresh=fresh))
         hw["gpus"] = self._admit_old_nvidia(list(hw.get("gpus") or []))
-        if not hw.get("gpus") and not str(hw.get("os", "")).startswith("Windows"):
+        if not str(hw.get("os", "")).startswith("Windows"):
             arc = intel_arc_cards()
             if arc:
-                hw["gpus"] = arc                       # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here
+                # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here, also beside other makes (the plan then says the
+                # Intel cards exist and how to use them: --backend intel); their numbers are the Intel engine's own (0, 1, ...)
+                have = list(hw.get("gpus") or [])
+                hw["gpus"] = have + arc
         return hw
 
     @staticmethod
@@ -307,9 +310,16 @@ class Catalog:
     def engine_vendor(self, hw: dict | None = None) -> str | None:
         """The make of card the engine drives: the installed engine's; with none installed, the engine setup would fetch (NVIDIA first when the
         computer has several makes)."""
-        from strata_control import gpu_fit
+        from strata_control import engine_component as ec, gpu_fit
         hw = hw if hw is not None else self.hardware()
-        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), self.installed_backend())
+        chosen = None
+        try:
+            backend, how = ec.detect_backend()
+            if how in ("environment", "saved choice"):          # the person's own choice (--backend, STRATA_ENGINE_BACKEND) beats the installed engine
+                chosen = backend
+        except Exception:                                      # noqa: BLE001
+            pass
+        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), chosen or self.installed_backend())
 
     # ---- the tables
     def tables(self):
@@ -377,7 +387,9 @@ class Catalog:
         for fam_name, fam_d in families.items():       # DeepSeek-V4.1-Flash's size is not one of setup's MODELS
             if fam_d.get("multi_file"):
                 names += [m for m in self.strata.sizes_of(models, fam_name) if m not in names]
-        match = next((n for n in names if n.lower() == model.lower()), None)
+        import re
+        wanted = re.sub(r"(?i)^ista-das(?=-\d)", "IST-DAS", model)     # the set's name on screen is ISTA-DAS; its ids keep the first spelling
+        match = next((n for n in names if n.lower() == wanted.lower()), None)
         if match is None:
             near = S.closest(model, names)
             raise ValueError(f"There is no model called '{model}'." + (f" Did you mean '{near}'?" if near else "")
