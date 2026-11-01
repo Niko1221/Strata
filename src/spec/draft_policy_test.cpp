@@ -194,6 +194,19 @@ int main() {
         }
         check(cok, "sizes: a chained window's total is an allowed size");
     }
+    {
+        // --lookup-long-match: a window past 8 rows only for a long enough match
+        DraftPolicy p(16);
+        p.set_sizes((1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 8) | (1u << 16));
+        for (int i = 0; i < 50; ++i) p.observe(false, 4, 3, 0, cost(4));
+        for (int i = 0; i < 40; ++i) p.observe(true, 16, 15, 40, 19.0 + 3.0 * 15);
+        for (int i = 0; i < 40; ++i) p.observe(true, 8, 7, 40, 19.0 + 3.0 * 7);
+        check(p.choose(4, 15, 40).lookup && p.choose(4, 15, 40).t == 16, "gate off: the 16-token window is taken");
+        p.set_long_gate(8, 24);
+        check(p.choose(4, 15, 40).t == 16, "gate on, long match (40): the 16-token window is still taken");
+        const DraftPolicy::Pick s = p.choose(4, 15, 10);
+        check(!s.lookup || s.t <= 8, "gate on, short match (10): no window past 8 rows");
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }
