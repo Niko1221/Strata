@@ -642,6 +642,12 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
     const planCard = !!m.planId && storedPlan?.id === m.planId;
     // A reply with activity lines is drawn piece by piece in the order it came; one without is the plain text it always was.
     const grouped = !!m.blocks?.some(b => b.kind === 'group');
+    // Finished tool rows stay where the work happened (above the reply). Only a waiting or running
+    // card sits after the latest output so Approve does not hide under thought.
+    const tools = m.tools ?? [];
+    const settledTools = tools.filter(t => t.state !== 'proposed' && t.state !== 'running' && (!grouped || t.state !== 'done'));
+    const liveTools = tools.filter(t => t.state === 'proposed' || t.state === 'running');
+    const showBubble = !(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !!m.blocks?.length || !m.streaming || !liveStatus);
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
     if (m.role === 'user') {
         return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
@@ -662,11 +668,9 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
     }
     return (<div className="st-msg st-msg--assistant" data-error={m.error ? 'true' : undefined}>
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
+      {tr(settledTools.map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
 
-
-      {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
-
-      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
+      {tr(showBubble ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
         {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
@@ -680,6 +684,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
       {tr(m.skills?.length && !m.streaming ? <SkillsUsed skills={m.skills}/> : null)}
       {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></div> : null)}
       {tr(m.streaming && isLast && !m.timeSkipId ? <StatusLine sessionId={activeSession} startedAt={Date.parse(m.at) || Date.now()} tokens={m.tokens}/> : null)}
+      {tr(liveTools.map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
 
       {tr(m.timeSkipId && timeSkipReal && !timeSkipDone && timeSkipRun ? <TimeSkipWorking run={timeSkipRun} sessionId={activeSession ?? ''}/> : m.timeSkipId && (!timeSkipReal || (timeSkipRun?.job?.files?.length ?? 0) > 0) ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
       {tr(m.media?.length ? <ChatMedia items={m.media} onPreview={onPreview}/> : null)}

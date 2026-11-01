@@ -7,13 +7,34 @@
  * Starts the engine host (:8791) and the Vite dev server (:5199), prefixes their
  * output, and shuts both down together. Vite proxies /api to the host, so the
  * browser only ever talks to one origin — the same shape as the packaged app.
+ *
+ * If STRATA_HARNESS_DIR is unset, a Harness already installed with the desktop
+ * app (Windows: %LocalAppData%\\Programs\\Strata\\harness) is used so Manual
+ * approvals work without a separate checkout.
  */
+import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const HOST_PORT = process.env.STRATA_PORT ?? '8791';
+
+/** A production Harness left by the desktop installer, when one is on this machine. */
+function installedHarnessDir() {
+  if (process.platform === 'win32') {
+    const local = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
+    return join(local, 'Programs', 'Strata', 'harness');
+  }
+  if (process.platform === 'darwin') return '/Applications/Strata.app/Contents/Resources/harness';
+  return null;
+}
+
+function harnessReady(dir) {
+  if (!dir) return false;
+  return existsSync(join(dir, 'lib', 'bin.js')) || existsSync(join(dir, 'apps', 'cli', 'lib', 'bin.js'));
+}
 
 const palette = { host: '\u001b[38;5;114m', web: '\u001b[38;5;111m', dim: '\u001b[2m', off: '\u001b[0m' };
 
@@ -58,9 +79,17 @@ function shutdown(code = 0) {
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
+const hostEnv = { STRATA_PORT: HOST_PORT };
+if (!process.env.STRATA_HARNESS_DIR) {
+  const installed = installedHarnessDir();
+  if (harnessReady(installed)) {
+    hostEnv.STRATA_HARNESS_DIR = installed;
+    console.log(`${palette.dim}strata dev · harness ${installed}${palette.off}`);
+  }
+}
 console.log(`${palette.dim}strata dev · host :${HOST_PORT} · web :5199${palette.off}`);
 // --watch restarts the host on server edits without taking the web server down.
-run('host', process.execPath, ['--watch', join(ROOT, 'server', 'index.mjs')], { STRATA_PORT: HOST_PORT });
+run('host', process.execPath, ['--watch', join(ROOT, 'server', 'index.mjs')], hostEnv);
 run('web', process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js')], {
   STRATA_HOST: `http://127.0.0.1:${HOST_PORT}`,
 });
