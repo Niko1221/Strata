@@ -7500,12 +7500,12 @@ textarea {
 
 /* ---- the approval dock: a question for the person stays above the message box while a long reply scrolls (#4725) ---- */
 .approvaldock { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; margin: 0 0 10px; }
-.approvaldock > .askcard, .approvaldock > .toolcard { margin: 0; flex: none; border-color: var(--st-accent); box-shadow: var(--st-sh-bar); }
+.approvaldock > .askcard, .approvaldock > .toolcard { margin: 0; flex: none; border-color: var(--st-accent); }
 .approval-wait { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 
 /* ---- a Copy control shows that it worked: a check mark for a moment, and the action row it sits in stays visible meanwhile (#4748) ---- */
 .st-btn--icon[data-copied] { color: var(--st-accent-text); background: var(--st-accent-tint); }
-.st-code .st-btn--icon[data-copied] { color: var(--st-accent); background: rgba(255, 255, 255, .08); }
+.st-code .st-btn--icon[data-copied] { color: var(--st-accent); background: color-mix(in srgb, var(--st-code-ink) 8%, transparent); }
 .menu__item[data-copied] { color: var(--st-accent-text); }
 .st-msg__actions:has([data-copied]) { opacity: 1; }
 
@@ -7513,7 +7513,7 @@ textarea {
 .tune-why { flex: 1 1 200px; min-width: 0; margin: 0; align-self: center; text-align: left; }
 
 /* ---- the progress card of a download, load or tuning: it stands out from the page and shows that it is alive (#4802) ---- */
-.native-progress { border: 1.5px solid var(--st-accent); background: linear-gradient(var(--st-accent-tint), var(--st-accent-tint)), var(--st-surface); box-shadow: var(--st-sh-pop); }
+.native-progress { border: 1.5px solid var(--st-accent); background: var(--st-accent-tint); }
 .native-progress > .section-toolbar > h2 { display: flex; align-items: center; gap: 10px; }
 .native-progress__spin { flex: none; width: 16px; height: 16px; border-color: var(--st-accent-tint); border-top-color: var(--st-accent); }
 .native-progress__alive { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
@@ -7549,7 +7549,7 @@ textarea {
 
 /* ---- the agent's own question: the approval card with options (#4244) ---- */
 .askq { display: flex; flex-direction: column; gap: 4px; padding-bottom: 10px; }
-.approvaldock > .askq { border-color: var(--st-accent); box-shadow: var(--st-sh-bar); margin: 0; flex: none; }
+.approvaldock > .askq { border-color: var(--st-accent); margin: 0; flex: none; }
 .askq__item { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 6px 0; }
 .askq__item + .askq__item { border-top: 1px solid var(--st-line-soft); padding-top: 8px; }
 .askq__detail { margin: 2px 0 0; }

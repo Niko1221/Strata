@@ -104,6 +104,7 @@ const ELEVATION_ALLOWED = new Set([
   // The jump-to-latest pill sits above a scrolling transcript, so it genuinely
   // overlaps moving content — the same test the other entries pass.
   '.jumplatest',
+  '.quote-selection', // the Quote button that floats beside selected words (#4785)
   '.st-btn--primary', // the accent fill's own lift
   '.st-slider::-webkit-slider-thumb', // a control affordance: the thumb needs to read against its track
   '.st-toggle::after', // same: the knob needs to read against its track
