@@ -114,6 +114,7 @@ void prep_group(const GuardTab&, size_t, void*, void*, size_t, void*) {}
 // #136: the fused int8 experts are CUDA-only (HIP and builds without MMQ keep the MMQ / FP16 paths)
 namespace strata::prefill::fused {
 bool built() { return false; }
+bool gfx12_iq2s_default() { return false; }   // AMD-Q: a HIP build without the fused kernels (STRATA_PREFILL_MMQ off) still links prefill.cpp's share-limit call
 bool available() { return false; }
 bool enabled() { return false; }
 bool requested() { return false; }
