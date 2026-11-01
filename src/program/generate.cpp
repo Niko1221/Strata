@@ -15930,9 +15930,6 @@ int main(int argc, char** argv) {
             ver.set_sampling(req_sp);
             if (pipe) ver_b.set_sampling(req_sp);   // (reaches the later stage's odd verifier)
             if (use_mtp) mtp.set_draft_sampling(req_sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
-#if defined(STRATA_HAVE_DFLASH2)
-            if (use_df2) df2.set_sampling(req_sp);   // STRATA_DF2_COUPLED=1: the selector's picks drawn with the target's uniform (a no-op otherwise)
-#endif
             const bool gated_proposal = use_mtp && mtp.prob() && strata::core::spec_gate_pick() &&
                 gated_proposal_usable(o.pipeline_windows < 2 && o.batch == 0 && n_stages == 1 && !multi_gpu && drive.d.remote_count == 0,
                                       o.lookup_chain, o.adapt_swaps, req_pcie_frac != 0.0 || o.pcie_frac_auto, spec_cost, S,
@@ -18387,9 +18384,6 @@ int main(int argc, char** argv) {
         mem_mark("the verifier and the drafter's binding");
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here
         if (use_mtp) mtp.set_draft_sampling(sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
-#if defined(STRATA_HAVE_DFLASH2)
-        if (use_df2) df2.set_sampling(sp);   // STRATA_DF2_COUPLED=1: the selector's picks drawn with the target's uniform (a no-op otherwise)
-#endif
         ver.set_split(o.spec_split);
         // auto: the copy kernel for every pack.  DMA (the native packs' default until 0.1.13) has the host call
         // cudaMemcpyAsync + cudaLaunchHostFunc inside a verify window while the GPU spins on the flag they raise;

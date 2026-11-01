@@ -238,7 +238,7 @@ bool Dflash2Drafter::alloc(std::string& err) {
         return true;
     };
     const size_t B = kRows;
-    bool ok = dev(&d_meta_, kMeta) && dev(&xq_, kernels::native_q8_1_bytes(N_, kRows) + 4096) && dev(&xil_, kernels::native_q8_1_il_bytes(N_, kRows) + 4096) && dev(&xqp_, (size_t) 5 * N_ * 8 + 4096) && dev(&xdp_, (size_t) 5 * N_ / 32 * 8 + 64) && dev(&xqc_, (size_t) 5 * N_ * 8 + 4096) && dev(&xdc_, (size_t) 5 * N_ / 32 * 8 + 64) && dev(&rt_ctx_, 2 * B * 128) && dev(&rope_inv_, 64) &&
+    bool ok = dev(&d_meta_, 32) && dev(&xq_, kernels::native_q8_1_bytes(N_, kRows) + 4096) && dev(&xil_, kernels::native_q8_1_il_bytes(N_, kRows) + 4096) && dev(&xqp_, (size_t) 5 * N_ * 8 + 4096) && dev(&xdp_, (size_t) 5 * N_ / 32 * 8 + 64) && dev(&xqc_, (size_t) 5 * N_ * 8 + 4096) && dev(&xdc_, (size_t) 5 * N_ / 32 * 8 + 64) && dev(&rt_ctx_, 2 * B * 128) && dev(&rope_inv_, 64) &&
               dev(&fcy_, B * N_) && dev(&hctx_, B * N_) && dev(&kc_, B * NKV_ * HD_) && dev(&vc_, B * NKV_ * HD_) && dev(&h_, B * N_) && dev(&xn_, B * N_) &&
               dev(&xc_, B * N_) && dev(&dyn_, B * 640) && dev(&q_, B * NH_ * HD_) && dev(&qn_, B * NH_ * HD_) && dev(&k_, B * NKV_ * HD_) && dev(&v_, B * NKV_ * HD_) &&
               dev(&kblk_, B * NKV_ * HD_) && dev(&ao_, B * NH_ * HD_) && dev(&o_, B * N_) && dev(&gate_, B * I_) && dev(&up_, B * I_) && dev(&mlp_, B * N_) &&
@@ -248,10 +248,9 @@ bool Dflash2Drafter::alloc(std::string& err) {
     if (!ok) { err = "dflash2: the drafter's buffers do not fit in VRAM"; return false; }
     void* hd = nullptr;
     void* dd = nullptr;
-    if (!mapped(kMeta * 4, (void**) &hd, &dd)) { err = "dflash2: mapped staging"; return false; }
+    if (!mapped(32 * 4, (void**) &hd, &dd)) { err = "dflash2: mapped staging"; return false; }
     h_meta_ = (int32_t*) hd;
     m_meta_ = (int32_t*) dd;
-    std::memset(h_meta_, 0, kMeta * 4);
     if (!mapped(64 * 4, &hd, &dd)) { err = "dflash2: mapped output"; return false; }
     h_out_ = (int32_t*) hd;
     out_tok_ = (int32_t*) dd;            // the select kernel writes the 7 picks here (host-visible) ...
@@ -458,7 +457,7 @@ bool Dflash2Drafter::record_block(cudaStream_t cs, std::string& err, bool rope) 
         stamp("gemm:candidate_selector.hidden_projection");
         df2_select(hsel_, topval_, toptok_, reinterpret_cast<const uint16_t*>(blob_ + find("candidate_selector.predecessor_codebook").off),
                    reinterpret_cast<const uint16_t*>(blob_ + find("candidate_selector.successor_codebook").off), rank_, ndraft_, d_meta_ + 16, out_tok_,
-                   out_prob_, cs, d_meta_ + 32);
+                   out_prob_, cs);
     } catch (const std::exception& e) {
         err = e.what();
         return false;
@@ -469,7 +468,7 @@ bool Dflash2Drafter::record_block(cudaStream_t cs, std::string& err, bool rope) 
 bool Dflash2Drafter::capture(int n, const float* taps, std::string& err) {
     if (exec_[n]) return true;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "dflash2: begin capture"; return false; }
-    kernels::copy_i32_from_mapped(d_meta_, m_meta_, kMeta, cs_);
+    kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
     kernels::df2_rope_table_inv(d_meta_, 16, rope_inv_, rt_ctx_, cs_);   // the context rows' and the block rows' tables in one launch, before the branches split
     // the context update (fc, the keys and values) and the block's front run side by side: they meet before each layer's attention
     // measured: -0.3 ms a round on an RTX 3060, +0.0..0.7 on a Strix Halo (gfx1151), so the HIP builds keep one stream (STRATA_DF2_FORK=1 / 0 overrides)
@@ -560,7 +559,7 @@ bool Dflash2Drafter::context(const float* taps, int64_t n, int64_t pos0, std::st
         for (int i = 0; i < m; ++i) h_meta_[i] = (int32_t) (pos0 + r0 + i);
         h_meta_[18] = epoch_;
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        kernels::copy_i32_from_mapped(d_meta_, m_meta_, kMeta, cs_);
+        kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
         if (!record_context(taps + (size_t) r0 * (size_t) tap_n, m, cs_, err)) return false;
         if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2: ") + cudaGetErrorString(cudaGetLastError()); return false; }
     }
@@ -576,7 +575,7 @@ bool Dflash2Drafter::context_async(const float* taps, int64_t n, int64_t pos0, s
     for (int i = 0; i < (int) n; ++i) h_meta_[i] = (int32_t) (pos0 + i);
     h_meta_[18] = epoch_;
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    kernels::copy_i32_from_mapped(d_meta_, m_meta_, kMeta, cs_);
+    kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
     if (!record_context(taps, (int) n, cs_, err)) return false;
     ctx_pending_ = true;
     have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n);
@@ -612,16 +611,6 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     h_meta_[17] = (int32_t) s;
     h_meta_[24] = anchor;
     for (int i = 1; i < 8; ++i) h_meta_[24 + i] = mask_token_;
-    h_meta_[32] = coupled_on_ ? 1 : 0;
-    if (coupled_on_) {
-        h_meta_[33] = (int32_t) (uint32_t) c_seed_;
-        h_meta_[34] = (int32_t) (uint32_t) (c_seed_ >> 32);
-        h_meta_[35] = c_topk_;
-        std::memcpy(&h_meta_[36], &c_temp_, 4);
-        std::memcpy(&h_meta_[37], &c_topp_, 4);
-        std::memcpy(&h_meta_[38], &c_minp_, 4);
-        h_meta_[39] = (int32_t) s;   // the anchor's position: draft i is checked by the verify row that draws Philox(seed, s + i)
-    }
     for (int i = 0; i < kDrafts; ++i) { ((volatile int32_t*) h_out_)[i] = -1; }
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (timing_) cudaEventRecord(ev_a_, cs_);
@@ -630,7 +619,7 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
         for (cudaEvent_t e : prof_->ev) cudaEventDestroy(e);   // the stamps of context() calls are not a round
         prof_->ev.clear();
         prof_->name.clear();
-        kernels::copy_i32_from_mapped(d_meta_, m_meta_, kMeta, cs_);
+        kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
         stamp("start");
         if (!record_context(taps, n_new, cs_, err) || !record_block(cs_, err)) return false;
         prof_collect();
@@ -653,19 +642,6 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     ms_draft += ms_since(t0);
     ++rounds;
     return true;
-}
-
-void Dflash2Drafter::set_sampling(const strata::kernels::SamplerParams& sp) {
-    static const bool env = [] { const char* e = std::getenv("STRATA_DF2_COUPLED"); return e != nullptr && *e != '\0' && std::strcmp(e, "0") != 0; }();
-    static const float dt = [] { const char* e = std::getenv("STRATA_DF2_COUPLED_DT"); const float v = e != nullptr ? (float) std::atof(e) : 1.0f; return v > 0.0f ? v : 1.0f; }();
-    const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
-    coupled_on_ = env && !sp.greedy && sp.temperature > 0.0f && !pen && sp.logit_bias == nullptr && !sp.gumbel;
-    if (!coupled_on_) return;
-    c_seed_ = sp.seed;
-    c_topk_ = sp.top_k;
-    c_temp_ = sp.temperature * dt;
-    c_topp_ = sp.top_p;
-    c_minp_ = sp.min_p;
 }
 
 bool Dflash2Drafter::debug_rows(std::vector<float>& rows, std::string& err) {
