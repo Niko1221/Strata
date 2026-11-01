@@ -169,7 +169,13 @@ RouteResidentCfg& route_resident_cfg() {
 }
 inline bool g_lfuse_gate() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE_GATE"); return v == nullptr || v[0] != '0'; }(); return on; }
 inline bool g_lfuse_pair() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE_PAIR"); return v == nullptr || v[0] != '0'; }(); return on; }
-inline bool g_qdedup() { static const bool on = [] { const char* v = std::getenv("STRATA_VERIFY_QDEDUP"); return v != nullptr && std::atoi(v) != 0; }(); return on; }
+inline bool g_qdedup(bool q8_ffn_ready = false) {
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_VERIFY_QDEDUP");
+        return (v != nullptr && v[0] != '\0') ? (std::atoi(v) != 0 ? 1 : 0) : -1;
+    }();
+    return env >= 0 ? (env != 0) : q8_ffn_ready;
+}
 // S26 STRATA_QFUSE=1: activation q8_1 images written by their producers (the GDN output norm) - the same bytes
 // fork F4 (Eddoursul): 2-4 token dense projections read an interleaved copy of the q8_1 activations (bitwise the same
 // outputs); STRATA_MMVQ_IL=0 keeps native_mmvq's multi-column kernels
@@ -2218,10 +2224,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             nsw.up_type = wsu->native_type; nsw.up_data = wsu->native_data;
             nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
             nsw.q8_1 = sh_fork ? sh_xq_ : xq_;
-            // STRATA_VERIFY_QDEDUP=1 (not with the forked shared-expert stream, which quantizes into its own buffer): the
-            // experts' q8_1 image of xm is made first and the shared expert's gate/up read it (quantize_q8_1_rows and
-            // native_quantize_q8_1 write the same bytes)
-            qdedup = g_qdedup() && !sh_fork && strata::kernels::cpu::expert_layout().native;
+            // STRATA_VERIFY_QDEDUP=1 (or by default when STRATA_QFUSE_HC already wrote nat_xq_ in gr_read_group and the
+            // shared expert runs on the same stream): the shared expert's gate/up reuse nat_xq_ directly instead of
+            // launching a second native_quantize_q8_1(xm) pass per layer (quantize_q8_1_rows and native_quantize_q8_1
+            // write the same bytes)
+            qdedup = g_qdedup(q8_ffn) && !sh_fork && strata::kernels::cpu::expert_layout().native;
             if (qdedup && !q8_ffn) quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
             if (!shared_expert_native_bf16_enabled()) {
                 if (dec_batch) f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream);   // contiguous rows

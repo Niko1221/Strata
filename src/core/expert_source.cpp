@@ -4899,15 +4899,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     pt("begin");
     d.src->begin_layer(d.layers, ids, n_tok * k);
     pt("begun");
-    if (!d.usage.empty())
-        for (int64_t i = 0; i < n_tok * k; ++i)
-            if (ids[i] >= 0 && ids[i] < d.n_expert) d.usage[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] += 1.0f;
     // ---- plan v0.3 P6: the GPU's share, decided and published FIRST so the GPU starts while the CPU works.
     // Distinct experts in routing order; resident ones and the last pcie_num/256 of the missed ones go to the GPU.
     const int64_t n = n_tok * k;
     int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe
     if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
         int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
+        int16_t next_same[kMaxWindowEntries], tail_same[kMaxWindowEntries], cnt_same[kMaxWindowEntries];
         int nd = 0, nmiss = 0;
         // a helper GPU (RemoteExperts) holding the expert computes it in its own VRAM once begin() claims the row: like
         // the peer tier's, such an expert is no miss of this plan and never part of the PCIe share, which would read it
@@ -4920,13 +4918,21 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         };
         for (int64_t i = 0; i < n; ++i) {
             first_of[i] = i;
+            next_same[i] = -1;
             for (int64_t j = 0; j < i; ++j)
                 if (ids[j] == ids[i]) { first_of[i] = first_of[j]; break; }
             if (first_of[i] == i) {
+                tail_same[i] = (int16_t) i;
+                cnt_same[i] = 1;
                 distinct[nd++] = i;
                 const int32_t e = ids[i];
                 if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
                     !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e)) ++nmiss;
+            } else {
+                const int64_t i0 = first_of[i];
+                next_same[tail_same[i0]] = (int16_t) i;
+                tail_same[i0] = (int16_t) i;
+                ++cnt_same[i0];
             }
         }
         // STRATA_ROUTE_TAIL_SKIP=R (default 7 on CUDA serve, =0 off; changes the output): a missed expert that EVERY token of the window routes
@@ -4959,19 +4965,25 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         // decode step; with >= 2 misses give it at least one (the last in routing order).  It only flies if its blob is
         // pinned (the fetch below checks), else it stays a CPU miss exactly as before.  Read once.
         static const bool pcie_min1 = [] { const char* v = std::getenv("STRATA_PCIE_MIN1"); return v && std::atoi(v) != 0; }();
+        static const bool bucket_plan = [] {
+            const char* v = std::getenv("STRATA_MOE_BUCKET_PLAN");
+            return v == nullptr || v[0] == '\0' || std::atoi(v) != 0;
+        }();
         if (pcie_min1 && pcie_ok && m < 1 && nmiss >= 2) m = 1;
         int miss_rank = 0, groups = 0, entries = 0, fetches = 0;
         GpuPlanSink& P = *d.plan;
         const uint8_t* dma_src[64];
         int64_t pcie_i0[64];
+        unsigned long long vram_ptr[kMaxWindowEntries];
+        int16_t vram_i0[kMaxWindowEntries];
+        int vram_n = 0;
         for (int q = 0; q < nd; ++q) {
             const int64_t i0 = distinct[q];
             const int32_t e = ids[i0];
             int kd = -1;
             unsigned long long ptr = 0;
             if (skip_d[q]) {                       // STRATA_ROUTE_TAIL_SKIP: neither copied nor computed
-                for (int64_t i = i0; i < n; ++i)
-                    if (first_of[i] == i0) kind[i] = -2;
+                for (int16_t i = (int16_t) i0; i >= 0; i = next_same[i]) kind[i] = -2;
                 continue;
             }
             if (e >= 0 && e < d.n_expert) {
@@ -5000,18 +5012,37 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++miss_rank;
                 }
             }
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) kind[i] = kd;
+            for (int16_t i = (int16_t) i0; i >= 0; i = next_same[i]) kind[i] = kd;
             if (kd != 0) continue;                 // the VRAM groups first; the PCIe groups below
-            P.ptr[groups] = ptr;
+            vram_ptr[vram_n] = ptr;
+            vram_i0[vram_n] = (int16_t) i0;
+            ++vram_n;
+        }
+        // STRATA_MOE_BUCKET_PLAN=1 (default): emit multi-token resident groups (M_e >= 2, descending M_e) before M_e == 1
+        // groups so the GPU's first wave schedules the widest expert groups first while single-token groups backfill tail CUs.
+        // Each group writes to its own disjoint ent_dst[e] rows in ascending token order, so outputs are bitwise identical.
+        auto emit_vram_group = [&](int idx) {
+            const int16_t i0 = vram_i0[idx];
+            P.ptr[groups] = vram_ptr[idx];
             P.start[groups] = entries;
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) {
-                    P.dst[entries] = (int32_t) i;
-                    P.tok[entries] = (int32_t) (i / k);
-                    ++entries;
-                }
+            for (int16_t i = i0; i >= 0; i = next_same[i]) {
+                P.dst[entries] = (int32_t) i;
+                P.tok[entries] = (int32_t) (i / k);
+                ++entries;
+            }
             ++groups;
+        };
+        if (bucket_plan && vram_n > 1) {
+            int max_me = 1;
+            for (int idx = 0; idx < vram_n; ++idx)
+                max_me = std::max(max_me, (int) cnt_same[vram_i0[idx]]);
+            for (int me = max_me; me >= 2; --me)
+                for (int idx = 0; idx < vram_n; ++idx)
+                    if (cnt_same[vram_i0[idx]] == me) emit_vram_group(idx);
+            for (int idx = 0; idx < vram_n; ++idx)
+                if (cnt_same[vram_i0[idx]] == 1) emit_vram_group(idx);
+        } else {
+            for (int idx = 0; idx < vram_n; ++idx) emit_vram_group(idx);
         }
         P.start[groups] = entries;
         const uint64_t bb = lay.blob_bytes(d.layers);
@@ -5020,12 +5051,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             P.ptr2[q] = P.pcie_mode != 0 ? (unsigned long long) d.src->device_alias(d.layers, ids[i0])
                                  : P.staging + (unsigned long long) q * (unsigned long long) bb;
             P.start2[q] = entries;
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) {
-                    P.dst[entries] = (int32_t) i;
-                    P.tok[entries] = (int32_t) (i / k);
-                    ++entries;
-                }
+            for (int16_t i = (int16_t) i0; i >= 0; i = next_same[i]) {
+                P.dst[entries] = (int32_t) i;
+                P.tok[entries] = (int32_t) (i / k);
+                ++entries;
+            }
             ++d.pcie_experts;
         }
         P.start2[fetches] = entries;
@@ -5045,6 +5075,9 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     : (e >= 0 && e < d.n_expert && d.peer != nullptr && d.peer->has(d.layers, e)) ? 2 : -1;
         }
     }
+    if (!d.usage.empty())
+        for (int64_t i = 0; i < n; ++i)
+            if (ids[i] >= 0 && ids[i] < d.n_expert) d.usage[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] += 1.0f;
     if (d.peer != nullptr) {                 // multi-GPU: start the second GPU's share before the CPU's own work
         std::string perr;
         if (!d.peer->launch(d.layers, x_f, ids, n_tok, k, kind, perr, out)) {
@@ -5081,10 +5114,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     const auto c1 = std::chrono::steady_clock::now();
     if (any_cpu) {
-        // #578 --remote-expert-opt: a token whose experts all run on a GPU (CUDA0 or a helper) needs no CPU activation
-        const bool ep = d.remote_count > 0 && d.remote[0]->optimized_decode();
+        // Any token whose routed experts all run on a GPU (kind >= 0) or are tail-skipped (kind == -2) has no local CPU
+        // expert job (kind == -1) and never reads act_multi[t] / nact_multi[t]; skip quantizing its row over PCIe.
         for (int64_t t = 0; t < n_tok; ++t) {
-            if (ep && std::all_of(kind + t * k, kind + (t + 1) * k, [](int32_t v) { return v >= 0; })) continue;
+            if (std::none_of(kind + t * k, kind + (t + 1) * k, [](int32_t v) { return v == -1; })) continue;
             if (native && strata::kernels::cpu::q2_native_kernels(lay.fmt[(size_t) d.layers].gu_type))   // a native Q2_0 pack: the Q2_0 kernels' activations
                 act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
             else if (native)
