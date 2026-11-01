@@ -916,8 +916,6 @@ struct Options {
     int lookup_max_t = 0;
     /// --lookup-sizes A,B,.. : the lookup window sizes above the MTP's (default with --lookup-max-t N: MTP+1, MTP+2, N)
     std::string lookup_sizes;
-    /// --lookup-long-match N (opt-in, 0 = off): a lookup window longer than 8 rows only where the matched context is N tokens or more
-    int lookup_long_match = 0;
     /// --mtp-hnorm stream (opt-in): the draft layer's pre_fc_norm_hidden normalizes each hyper-connection stream on
     /// its own (llama.cpp's qwen4exp MTP graph) instead of one RMS over all four (the default, tools/mtp_probe.py).
     bool mtp_hnorm_stream = false;
@@ -1074,7 +1072,6 @@ void usage() {
                  "  --lookup-max-t N     opt-in: prompt-lookup windows up to N (<= 16) tokens (the MTP keeps --spec); copy-heavy\n"
                  "                       edits gain, each extra window size costs a graph (~20-35 MiB of VRAM)\n"
                  "  --lookup-sizes A,B   the lookup window sizes past the MTP's (default: MTP+1, MTP+2 and N)\n"
-                 "  --lookup-long-match N  opt-in: a lookup window past 8 tokens only where the matched context is N tokens or more\n"
                  "  --spec N             the MTP drafter's verify window: how many tokens it proposes per check (setup\n"
                  "                       writes 4; --suffix-draft lets it grow by 2, up to 8, where a repeat is likely)\n"
                  "  --spec-min-p P       how sure the draft layer must be to extend a verify window by another guess\n"
@@ -3471,7 +3468,6 @@ int main(int argc, char** argv) {
         else if (a == "--mtp-max-t") o.mtp_max_t = std::max(0, std::atoi(next("--mtp-max-t")));
         else if (a == "--lookup-max-t") o.lookup_max_t = std::max(0, std::atoi(next("--lookup-max-t")));
         else if (a == "--lookup-sizes") o.lookup_sizes = next("--lookup-sizes");
-        else if (a == "--lookup-long-match") o.lookup_long_match = std::max(0, std::atoi(next("--lookup-long-match")));
         else if (a == "--lookup-chain") o.lookup_chain = std::clamp(std::atoi(next("--lookup-chain")), 0, 7);
         else if (a == "--lookup-chain-min") o.lookup_chain_min = std::max(3, std::atoi(next("--lookup-chain-min")));
         else if (a == "--mtp-hnorm") {
@@ -12743,7 +12739,6 @@ int main(int argc, char** argv) {
                 return k;
             });
         policy.set_sizes(lookup_size_mask(o));
-        if (o.lookup_long_match > 0) policy.set_long_gate((int) strata::kernels::kVerifyNarrowT, o.lookup_long_match);
         // a layer split's hand-off buffers hold kVerifyNarrowT rows: its windows stay at that
         if (n_stages > 1) policy.set_sizes(policy.sizes() & ((2u << strata::kernels::kVerifyNarrowT) - 1u));
         if (o.lookup_max_t > 0)
@@ -18925,7 +18920,6 @@ int main(int argc, char** argv) {
                 return k;
             });
         policy.set_sizes(lookup_size_mask(o));
-        if (o.lookup_long_match > 0) policy.set_long_gate((int) strata::kernels::kVerifyNarrowT, o.lookup_long_match);
         std::vector<int32_t> sbuf((size_t) o.spec, 0);
         int64_t sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
         int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts

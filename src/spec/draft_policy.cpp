@@ -142,16 +142,14 @@ DraftPolicy::Pick DraftPolicy::choose(int t_mtp, int lookup_k, int match) const 
     const double q = lookup_rate(match);
     double e = 1.0, qi = 1.0, best = 0.0;
     int best_t = 0;
-    // copy-heavy gate: without a long enough match the lookup window stops at long_from_ rows
-    const int cap_t = (long_match_ > 0 && match < long_match_) ? std::min(max_t_, long_from_) : max_t_;
-    for (int k = 1; k <= std::min(lookup_k, cap_t - 1); ++k) {
+    for (int k = 1; k <= std::min(lookup_k, max_t_ - 1); ++k) {
         qi *= q;
         e += qi;
         if (!allowed(k + 1)) continue;
         const double r = e / cost_ms(k + 1);
         if (r > best) { best = r; best_t = k + 1; }
     }
-    const int t_full = fit(std::min(lookup_k, cap_t - 1) + 1);
+    const int t_full = fit(std::min(lookup_k, max_t_ - 1) + 1);
     if (best_t > 0 && best > base * (1.0 + margin_)) {
         p.lookup = true;
         p.t = best_t;

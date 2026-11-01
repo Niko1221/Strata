@@ -81,10 +81,6 @@ public:
 
     /// The window sizes a lookup or chained window may use, as a bit mask (bit t = size t; bit 1 is always kept).
     void set_sizes(unsigned mask);
-    /// Copy-heavy gate (--lookup-long-match N, opt-in): a lookup window longer than `from_t` rows is taken only when the
-    /// matched context is at least `min_match` tokens (a rewrite or a repeat; a list or ordinary prose matches short), so
-    /// the wide sizes cost nothing on text that does not copy.  0: no gate.
-    void set_long_gate(int from_t, int min_match) { long_from_ = std::max(2, from_t); long_match_ = std::max(0, min_match); }
     void disable(int t);                   // drop one size (its window graph did not fit)
     bool allowed(int t) const { return t >= 1 && t <= max_t_ && ((sizes_ >> t) & 1u); }
     /// The largest allowed size <= t (1 if none).
@@ -117,7 +113,6 @@ private:
 
     int max_t_;
     double margin_;
-    int long_from_ = 8, long_match_ = 0;                   // set_long_gate
     unsigned sizes_ = ~0u;                                 // allowed window sizes (bit t)
     std::array<std::array<double, kMaxT + 1>, kCtxBuckets> cost_{}, cost_n_{};   // round ms by context bucket and window size
     int bk_ = 0;                                           // the current context bucket
