@@ -1131,6 +1131,10 @@ class Runner:
             self.emit("model", "The model already installed here is somewhere else than the folder you gave, so Strata uses the folder you gave "
                                "and points this launch at it.", 0)
         title = f"{s.family} {s.model}"
+        try:                                                 # the name on screen (DeepSeek's sets are ISTA-DAS there, their ids keep the first spelling)
+            title = next((r.title for r in self.catalog.rows() if r.family == s.family and r.model == s.model), title)
+        except Exception:                                    # noqa: BLE001 - a label only
+            pass
         if sys.platform == "darwin" and not (cat.src / "strata_control" / "mac_fit.py").is_file():
             # a Terminal from before the Mac rules moved into strata_control/mac_fit.py: setup.py cannot install a Mac model in its Control
             # mode (no source build, no setup_mac.py), so use model files prepared on this Mac. Every other Terminal installs through setup.py.
@@ -2401,7 +2405,7 @@ class Runner:
             ver = next((part for part in (found.parent.name.split("-")[0], ) if part[:1].isdigit()), "")
             p["lines"].append("DeepSeek engine: installed" + (f", {ver}" if ver else "") + ".")
         if engine is False:
-            warnings.append("DeepSeek runs on its own engine package (about 70 MB, separate from the Strata engine): setup downloads it first. "
+            warnings.append("DeepSeek runs on its own engine package (about 430 MB, separate from the Strata engine): setup downloads it first. "
                             "If it cannot be fetched, setup stops with a message before the model is downloaded.")
         return {"verdict": p["verdict"], "lines": p["lines"], "warnings": warnings, "cards": p["cards"], "args": p["args"],
                 "engine_has_dsv41": engine,
