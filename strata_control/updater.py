@@ -284,6 +284,12 @@ def _recover_stale_runtime(runtime, item: dict) -> bool:
     running, an unreadable record) - that one is a real engine and may be serving."""
     from strata_control import profiles
     try:
+        current = runtime.status(item["profile"])       # the record may have changed since the list was read
+    except (profiles.ProfileError, OSError):
+        return False
+    if current.get("state") != "stale":
+        return False                                    # a host came back or the record is gone: report it as it is
+    try:
         outcome = runtime.stop(item["profile"], timeout=30)
     except (profiles.ProfileError, OSError):
         return False
