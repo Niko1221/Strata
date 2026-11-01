@@ -107,6 +107,7 @@ if CODER:
     ISTA_SETS[CODER_MODEL] = {
         "title": CODER.get("label", "ISTA-DAS Coder"), "set_bytes": _coder_bytes, "experts_gb": 66.04, "dense_gb": 6.08, "profile": CODER.get("profile", "profile-coder.bin"),
         "meta_bytes": 0, "experts_per_layer": int(CODER["experts_per_layer"]), "ppl": "?", "ram_ok_gb": 24.0, "measured": "",
+        "unproven_uma": "Not run on a Ryzen AI Max (Strix Halo) or a DGX Spark yet: the sizes above are exact, the speed is not measured on a shared-memory computer.",
         "disk_total": round((_coder_bytes + ISTA_ENGRAM_BYTES + ISTA_DSPARK_BYTES) / GB),
         "quality": "ISTA-DAS's coding version, half of the model's experts removed (192 of 384 in every layer); not measured against the original model here yet"}
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
@@ -444,7 +445,7 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
         "experts_total": n_experts, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
         "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(dense_gb_v),
         "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
-        "measured": UMA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
+        "measured": "" if v.get("unproven_uma") else UMA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
         "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
         "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
         "uma": True, "streamed_gb": _round1(streamed), "ram_needed_gb": _round1(total), "spill_gb": _round1(streamed),
@@ -460,13 +461,17 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
         lines.append(f"{name} shares this PC's memory: the RAM and the GPU's BIOS carve-out are one pool of {total:.0f} GB. About "
                      f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {dense_gb_v:.1f} GB of "
                      f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for Windows; the other {streamed:.0f} GB are read from the SSD while it answers.")
-        lines.append(f"Measured on this kind of PC: {UMA_MEASURED}.")
+        if not v.get("unproven_uma"):                   # (these speeds are the 2.00 set's: a set not run there says so below instead)
+            lines.append(f"Measured on this kind of PC: {UMA_MEASURED}.")
     else:       # a DGX Spark's GB10: one memory for the CPU and the GPU, nothing set aside in a BIOS, Linux
         lines.append(f"{name} shares this computer's memory: the CPU and the GPU are one pool of {total:.0f} GB. About "
                      f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {dense_gb_v:.1f} GB of "
                      f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for the system; the other {streamed:.0f} GB are read from the SSD while it answers.")
-        lines.append(f"Measured on this kind of computer: {UMA_MEASURED_GB10}.")
-        out["measured"] = UMA_MEASURED_GB10
+        if not v.get("unproven_uma"):
+            lines.append(f"Measured on this kind of computer: {UMA_MEASURED_GB10}.")
+        out["measured"] = "" if v.get("unproven_uma") else UMA_MEASURED_GB10
+    if v.get("unproven_uma"):
+        lines.append(v["unproven_uma"])
     if streamed > 0.5:
         lines.append("Keep the model files on the NVMe drive and the machine otherwise idle while it answers: every word reads experts from it.")
     if streamed <= 0.5:
