@@ -168,6 +168,69 @@ class OneRequestAtATime(unittest.TestCase):
             self.assertFalse(want("dflash2", model_name=GYRO, backend="cuda", archs=["sm_121"]), "while the engine does not serve it")
 
 
+class TheQ4Pack(unittest.TestCase):
+    """The owner chose the Q4_0 pack (522 MB, same speed as Q8, less memory): made on the person's computer from the pinned download, checked, and an old Q8 pack keeps working."""
+
+    def test_the_pins(self):
+        self.assertEqual(drafting.PACK_NAME, "qwen3.8-flash-next-dflash2.q4_0.pack")
+        self.assertEqual(drafting.PACK_BYTES, 522458112)
+        self.assertEqual(len(drafting.PACK_SHA256), 64)
+        self.assertEqual(drafting.PACK_GB, 0.52)
+        self.assertEqual(drafting.LEGACY_PACK_NAME, "qwen3.8-flash-next-dflash2.q8.pack")
+
+    def test_an_old_q8_pack_is_used_and_never_fetched_again(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name) / drafting.FOLDER
+        folder.mkdir()
+        old = folder / drafting.LEGACY_PACK_NAME
+        old.write_bytes(b"x" * (2 << 20))
+        self.assertEqual(drafting.pack_path(tmp.name), old)
+        self.assertTrue(drafting.pack_ready(tmp.name))
+        with serving_dflash2():
+            self.assertFalse(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=tmp.name))
+            self.assertEqual(drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=tmp.name).flags[3], str(old))
+        with mock.patch.object(drafting_fetch.transfer, "download", side_effect=AssertionError("no download for a pack that is here")):
+            self.assertEqual(drafting_fetch.ensure(tmp.name), old)
+        self.assertEqual(drafting.target_path(tmp.name), folder / drafting.PACK_NAME, "a new fetch would write the Q4_0 name")
+        (folder / drafting.PACK_NAME).write_bytes(b"y" * (2 << 20))
+        self.assertEqual(drafting.pack_path(tmp.name), folder / drafting.PACK_NAME, "when both are there, the Q4_0 pack is the one used")
+
+    def test_the_pack_is_made_q4_and_checked_against_its_pins(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        spec = importlib.util.spec_from_file_location("t_pack3", ROOT / "tools" / "test_dflash2_pack.py")
+        synth = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(synth)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        synth.write_safetensors(d / "m.safetensors", synth.tensors())
+        (d / "c.json").write_text(json.dumps(synth.CFG))
+        files = tuple((n, (d / f).stat().st_size, hashlib.sha256((d / f).read_bytes()).hexdigest()) for n, f in (("config.json", "c.json"), ("model.safetensors", "m.safetensors")))
+        src = d / "data" / drafting.FOLDER / "src"
+        src.mkdir(parents=True)
+        (src / "config.json").write_bytes((d / "c.json").read_bytes())
+        (src / "model.safetensors").write_bytes((d / "m.safetensors").read_bytes())
+        # not the real pinned files (files=...): the pack is made Q4_0 but the real pins do not apply
+        with mock.patch.object(drafting, "pack_ready", lambda x: False):
+            out = drafting_fetch.ensure(d / "data", files=files)
+        blob = out.read_bytes()
+        self.assertEqual(out.name, drafting.PACK_NAME)
+        self.assertIn(b"q4_0", blob[:4096])
+        # with the real list (files=None) a pack whose bytes are not the pinned ones is deleted and the words are plain
+        (d / "data2").mkdir()
+        with mock.patch.object(drafting_fetch, "_present", lambda folders, spec: {"config.json": d / "c.json", "model.safetensors": d / "m.safetensors"}),                 mock.patch.object(drafting, "pack_ready", lambda x: False):
+            with self.assertRaises(drafting_fetch.DraftingError) as ctx:
+                drafting_fetch.ensure(d / "data2")
+        self.assertIn("did not pass the safety check", str(ctx.exception))
+        self.assertFalse(drafting.target_path(d / "data2").exists())
+        self.assertFalse(drafting.target_path(d / "data2").with_suffix(".tmp").exists())
+        # and with the pins set to what this pack really is, it is kept
+        pins = {"PACK_BYTES": len(blob), "PACK_SHA256": hashlib.sha256(blob).hexdigest()}
+        with mock.patch.object(drafting_fetch, "_present", lambda folders, spec: {"config.json": d / "c.json", "model.safetensors": d / "m.safetensors"}),                 mock.patch.object(drafting, "pack_ready", lambda x: False), mock.patch.multiple(drafting, **pins):
+            self.assertEqual(drafting_fetch.ensure(d / "data2").read_bytes(), blob)
+
+
 class TheTerminalStep(unittest.TestCase):
     """strata launch: the Drafting step exists only where there is something to choose, like the DeepSeek-only Speed step."""
 

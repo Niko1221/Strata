@@ -5,7 +5,8 @@
 
 Only an explicit command reaches the network (strata_control/acquisition.py): a start never downloads. The drafter is
 incoai/Qwen3.8-Flash-Next-DFlash2 at one revision (strata_control/drafting.py has the revision, the file sizes and hashes). The 1.2 GB
-safetensors file is packed (tools/dflash2_pack.py, numpy only) into the engine's 0.76 GB runtime file and then removed.
+safetensors file is packed (tools/dflash2_pack.py --q4_0, numpy only) into the engine's 0.52 GB runtime file, which is checked against its pinned size and
+SHA-256, and the download is then removed. A Q8 pack from an earlier Strata is used as it is.
 """
 
 from __future__ import annotations
@@ -103,10 +104,10 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     """Make the packed drafter exist under ``data_dir`` and return its path. A pack that is there is kept. Resumable: an interrupted
     download is continued, a file whose hash differs is deleted and the person is told. ``base_url`` / ``files`` are for tests."""
     report = progress or (lambda *_: None)
-    out = drafting.pack_path(data_dir)
+    out = drafting.target_path(data_dir)
     if drafting.pack_ready(data_dir):
         report("The DFlash2 drafter is ready.", 1, 1)
-        return out
+        return drafting.pack_path(data_dir)
     acquisition.require("the DFlash2 drafter", "strata drafting fetch")
     folder = out.parent
     src = folder / "src"
@@ -135,7 +136,12 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     report("Packing the DFlash2 drafter for the engine…", total, total)
     tmp = out.with_suffix(".tmp")
     try:
-        _packer().pack(str(have["model.safetensors"]), str(have["config.json"]), str(tmp), say=lambda *_: None)
+        _packer().pack(str(have["model.safetensors"]), str(have["config.json"]), str(tmp), say=lambda *_: None, q4=True)
+        if files is None:                                # the real pinned files: the pack must be the exact bytes we measured (tests pack a small synthetic file)
+            if tmp.stat().st_size != drafting.PACK_BYTES or transfer.sha256_file(tmp) != drafting.PACK_SHA256:
+                tmp.unlink(missing_ok=True)
+                raise DraftingError("The DFlash2 drafter was prepared but did not pass the safety check, so it was deleted. The model keeps using the MTP. "
+                                    "Try again; if it keeps happening, update Strata.")
         os.replace(tmp, out)
     except DraftingError:
         raise
