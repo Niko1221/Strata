@@ -25,6 +25,7 @@ import datetime as dt
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -282,6 +283,9 @@ def start_hint(model: RunningModel) -> str:
 
 # ---------------------------------------------------------------------------------------------------- the gate
 
+SETTLE_SECONDS = 20.0            # how long, after stopping a model, the update waits for its runtime host to let go of the engine lease
+
+
 class Declined(updater.UpdateError):
     """The person said no: nothing was changed.  Exit 0."""
 
@@ -360,6 +364,15 @@ class ModelGate:
             if m.profile not in {s.profile for s in self.stopped}:
                 self.stopped.append(m)
             self.emit({"event": "models", "phase": "stopped", "models": [m.to_dict()], "message": f"{m.label} is stopped"})
+        self._settle(serving_now)
+
+    def _settle(self, serving_now: Callable[[], list[dict]]) -> None:
+        """A stopped model's runtime host ends a moment after the stop returns, and until then it still holds the shared engine lease: the update's
+        "nothing may still be serving" check would call that "a running Strata server" and refuse (found on a real host: the model was stopped, the
+        update then failed). Wait, briefly, for the lease to be free; if something is still there after SETTLE_SECONDS the check says so as before."""
+        deadline = time.monotonic() + SETTLE_SECONDS
+        while serving_now() and time.monotonic() < deadline:
+            time.sleep(0.25)
 
     # -- after the update, whatever happened
     def finish(self, update_ok: bool) -> bool:
