@@ -1,0 +1,6 @@
+date,config,prompt_tokens_approx,prefill_toks_per_s,prefill_seconds,decode_toks_per_s,main_vram_gb,main_expert_slots,helper_slots,helper_cache_gib,notes
+2026-11-01,single-card-final,100000,1515,66.6,39.8,15.5,3120,,,paired run; helper card idle (driver holds ~0.92 GB)
+2026-11-01,helper-ab,100000,616,163.6,33.6,15.2,2016,2185,6.37,helper=RTX 3060 Ti 8GB (7.8 GB used); main cache -35%; prefill waits on helper
+# engine-measured path rates on this box (startup log lines):
+# cpu_pool_expert_bytes_GBps = 34.0 ; pcie_link_GBps = 24.4 ; expert slot size ~= 2.97 MiB (UD-Q4_K_XL)
+# resident_experts_GiB = 71.7 ; hit share during real use = 0.80-0.94
