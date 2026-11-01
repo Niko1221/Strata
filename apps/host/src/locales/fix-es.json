@@ -83,5 +83,7 @@
  "fx82": "Respuestas más rápidas en tarjetas NVIDIA de 12 GB",
  "fx83": "Prefiere las partes del modelo que ya están en la tarjeta gráfica, lo que hace las respuestas más rápidas en tarjetas de 12 GB. Desactivado por defecto: en sesiones largas de agente puede repetirse y dar resultados más débiles. Actívalo si sobre todo chateas y quieres la velocidad.",
  "fx84": "El archivo se descargó. «Continuar» vuelve a intentar la instalación.",
- "fx85": "Abre «Detalles» para ver el motivo."
+ "fx85": "Abre «Detalles» para ver el motivo.",
+ "fxec1": "Hay un motor más nuevo para este ordenador. Sus modelos y ajustes se conservan.",
+ "fxec2": "Descargue primero los modelos en ejecución."
 }
