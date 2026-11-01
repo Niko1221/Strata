@@ -6237,8 +6237,10 @@ int main(int argc, char** argv) {
         // (--batch-mtp and STRATA_PIPED_MTP draft with the draft layer's kernels, built for the narrow window: their windows
         // stay at most kVerifyNarrowT rows; only the plain batch windows are wide)
 #if defined(STRATA_HAVE_DFLASH2)
-        // --batch --draft dflash2: the DFlash2 windows take the --batch-draft-window rows (8, opt-in 16)
-        if (use_df2 && o.batch > 0) return std::max(o.spec, o.batch_draft_window);
+        // --batch --draft dflash2: on one card, initialize Verifier with kVerifyMaxT (16) so read_windows runs 16-row
+        // prefill windows while DFlash2 batch decode windows remain capped at --batch-draft-window (8).
+        if (use_df2 && o.batch > 0) return stages.empty() ? (int) strata::kernels::kVerifyMaxT
+                                                          : std::max(o.spec, o.batch_draft_window);
 #endif
         if (batch_mtp && !piped_mtp) return (int) strata::kernels::kVerifyNarrowT;
         const int plain = std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT));
@@ -10193,9 +10195,11 @@ int main(int argc, char** argv) {
         // the widest window; a request without penalties gets a null buffer and takes the byte-for-byte
         // neutral path (no upload, no buffer handed to the sampler).
         constexpr int kPenaltyWindowCap = 4096;
-        // (the widest window the run can have: a batch of more than kVerifyNarrowT slots is the only way to a wider one)
+        // (the widest window the run can have: a batch of more than kVerifyNarrowT slots or one-card DFlash2 batch)
         const size_t kHistSlots = (size_t) kPenaltyWindowCap *
-            (size_t) (o.batch > strata::kernels::kVerifyNarrowT ? strata::kernels::kVerifyMaxT : strata::kernels::kVerifyNarrowT);
+            (size_t) std::max(batch_max_t(),
+                              (int) (o.batch > strata::kernels::kVerifyNarrowT ? strata::kernels::kVerifyMaxT
+                                                                               : strata::kernels::kVerifyNarrowT));
         int32_t* d_hist = nullptr;
         std::vector<int32_t> hist_stage(kHistSlots, -1);
         const int hist_dev = last_st ? last_st->dev : -1;   // with the head: the last stage's device
@@ -13300,17 +13304,18 @@ int main(int argc, char** argv) {
             if (df2_win) {
                 // Every selected slot keeps its anchor row; the window's spare rows go round-robin to the slots with
                 // a draft ready (batch_spec_slots.hpp).  More active slots than the window has rows: take the first
-                // `cap` in the rotation order, so each window serves a fair subset of the slots rather than none.
+                // `df2_cap` in the rotation order, so each window serves a fair subset of the slots rather than none.
                 //
                 // --batch-draft-depth N trades that breadth for depth: at N the window runs only the slots that still
                 // leave N proposal rows each (an 8-row window: 4 slots at 1 proposal, 2 slots at 3), and the slots
                 // that wait keep their drafted chains for their turn.  Nothing about the answers changes: a proposal
                 // the target did not pick is never emitted, and a row's sample is tied to its position, not the
                 // window's shape (Verifier's Philox(seed, position) draws).
+                const int df2_cap = std::min(cap, o.batch_draft_window);
                 int n_active = 0;
                 for (int b = 0; b < (int) bs.size(); ++b)
                     if (bs[(size_t) b].active) ++n_active;
-                df2_plan = strata::core::df2_window_plan(cap, n_active, dflash_k, df2_want_depth);
+                df2_plan = strata::core::df2_window_plan(df2_cap, n_active, dflash_k, df2_want_depth);
                 const int run = df2_plan.n_sel < 1 ? 1 : df2_plan.n_sel;
                 bool ready[strata::kernels::kVerifyMaxT] = {};
                 int max_d[strata::kernels::kVerifyMaxT] = {};
@@ -13330,8 +13335,8 @@ int main(int argc, char** argv) {
                 if (A > 0) next_slot = ((size_t) active[(size_t) A - 1] + 1) % bs.size();
                 int rows_sel[strata::kernels::kVerifyMaxT] = {}, ntok_sel[strata::kernels::kVerifyMaxT] = {};
                 const int S_all = df2_depth_on
-                    ? strata::core::batch_spec_slot_rows(cap, A, max_d, rows_sel, ntok_sel, ema_sel)
-                    : strata::core::batch_spec_slot_rows(cap, A, ready, df2_plan.depth, rows_sel, ntok_sel);
+                    ? strata::core::batch_spec_slot_rows(df2_cap, A, max_d, rows_sel, ntok_sel, ema_sel)
+                    : strata::core::batch_spec_slot_rows(df2_cap, A, ready, df2_plan.depth, rows_sel, ntok_sel);
                 df2_stats.note_plan(A, df2_plan.depth);
                 // a slot stores the drafts its last round gave it: take no more proposal rows than it has
                 int t = 0;
@@ -13349,13 +13354,13 @@ int main(int argc, char** argv) {
                 }
                 S = t;
                 if (const char* bad = strata::core::batch_rows_error(rows, S, pos, (int) bs.size(), ver.max_t(), 0,
-                                                                     n_stages > 1, cap)) {
+                                                                     n_stages > 1, df2_cap)) {
                     // the split is the window's own law's output, so this is a bug in the row builder: say it, and run
                     // the window with anchor rows only (plain --batch) rather than a layout the verifier would reject
                     static int64_t df2_layout_warn = 0;
                     if (++df2_layout_warn <= 5)
                         std::fprintf(stderr, "strata batch: DFlash2 window layout refused (%s; %d of %d rows): the window runs "
-                                             "anchor rows only%s\n", bad, S_all, cap,
+                                             "anchor rows only%s\n", bad, S_all, df2_cap,
                                              df2_layout_warn == 5 ? " (further ones silent)" : "");
                     S = 0;
                     for (int a = 0; a < A; ++a) {
@@ -15792,12 +15797,13 @@ int main(int argc, char** argv) {
                     explicit NoHeadSampling(strata::core::Verifier& x) : v(x) { v.set_head_sampling(false); }
                     ~NoHeadSampling() { v.set_head_sampling(true); }
                 } no_head_sampling(ver);
-                std::vector<int32_t> win((size_t) S), outw((size_t) S), nxt((size_t) S);
+                const int W = (!use_mtp && !pipe) ? std::max(S, ver.max_t()) : S;
+                std::vector<int32_t> win((size_t) W), outw((size_t) W), nxt((size_t) W);
                 pp_exact = true;   // between windows the session is exactly at `a`
                 for (int64_t q = a; q < b;) {
                     if (stop_req.load()) { e = "cancelled"; return false; }
                     pp_exact = false;   // until this window and the drafter's rows are in
-                    const int T = (int) std::min<int64_t>(S, b - q);
+                    const int T = (int) std::min<int64_t>(W, b - q);
                     for (int t = 0; t < T; ++t) {
                         win[(size_t) t] = (int32_t) cur[(size_t) (q + t)];
                         nxt[(size_t) t] = (int32_t) cur[(size_t) (q + t + 1)];
