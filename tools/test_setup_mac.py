@@ -275,6 +275,18 @@ class RepackGuard(unittest.TestCase):
                     M.start(cfg, None, False)
             self.assertIn("repack is still running", fail.call_args[0][0])
 
+    def test_only_this_users_engine_stops_setup(self):
+        """On a shared Mac another user's engine is not ours to stop: pgrep is asked for this user's uid only."""
+        seen = []
+
+        def run(cmd, **kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "4242 ", "")
+        with mock.patch.object(M.os, "getuid", return_value=501, create=True):
+            self.assertEqual(M.engine_pids(run), [4242])
+        self.assertEqual(seen, [["pgrep", "-u", "501", "-x", "strata"]])
+        self.assertEqual(M.engine_pids(lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "")), [])
+
     def test_the_repack_writes_in_bounded_pieces(self):
         src = (ROOT / "metal" / "tools" / "metal_repack.py").read_text(encoding="utf-8")
         self.assertIn("SYNC_EVERY = 1 << 30", src)                  # flushed every GiB
