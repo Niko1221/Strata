@@ -79,7 +79,6 @@ export function EngineUpdateDialog({ open, onClose }: { open: boolean; onClose: 
     return <Dialog open compact title={tr(done ? 'The engine is updated' : "The engine was not updated")} onClose={close}
       actions={<><Btn onClick={() => void notNow()}>{tr("Not now")}</Btn><Btn variant="primary" onClick={() => void startAgain()}>{tr("Start again")}</Btn></>}>
       <p>{done ? tr("The engine is updated. Start {0} again with the same settings?", [names]) : tr("The update didn't finish. Your old engine is unchanged and still works. Start {0} again on it?", [names])}</p>
-      {!done && job?.error ? <p className="small muted">{tr(job.error)}</p> : null}
       {!done && job ? details(job) : null}
       {error ? <p className="small inline-error" role="alert">{tr(error)}</p> : null}
     </Dialog>;
@@ -88,7 +87,7 @@ export function EngineUpdateDialog({ open, onClose }: { open: boolean; onClose: 
   if (restarting) {
     return <Dialog open compact title={tr("Starting {0} again", [names])} onClose={onClose}>
       <p role="status">{tr("Starting {0}. Loading can take a few minutes.", [names])}</p>
-      <Bar value={0} indeterminate label={tr("Starting {0} again", [names])}/>
+      <div className="engine-update-progress"><Bar value={0} indeterminate label={tr("Starting {0} again", [names])}/></div>
     </Dialog>;
   }
   if (failedRestart) {
@@ -105,7 +104,7 @@ export function EngineUpdateDialog({ open, onClose }: { open: boolean; onClose: 
         : step === 'stopped' ? tr("{0} is stopped. Updating the engine…", [label])
         : step === 'getting-ready' ? tr("Getting the new engine ready. {0} keeps working until it is ready.", [label])
         : tr(job.summary || 'Starting…')}</p>
-      {step === 'getting-ready' && Number.isFinite(percent) ? <Bar value={percent} label={tr("Downloading…")}/> : <Bar value={0} indeterminate label={tr("Updating the engine")}/>}
+      <div className="engine-update-progress">{step === 'getting-ready' && Number.isFinite(percent) ? <Bar value={percent} label={tr("Downloading…")}/> : <Bar value={0} indeterminate label={tr("Updating the engine")}/>}</div>
     </Dialog>;
   }
   // The update ended without stopping anything (declined, refused, or failed before the model was touched).
