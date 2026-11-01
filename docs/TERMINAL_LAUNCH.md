@@ -211,6 +211,13 @@ models), else Strata's default.
 installs, also under another name when the header matches. It says which run config, prepared pack, draft layer and picture reader
 already exist. Nothing is copied or moved.
 
+`strata models explain NAME` says why a model is, or is not, found under `models/` in the data folder. It prints the two folder names
+the launch lookup tries — setup's spelling (`models/IQ3_S`) and the lower-case run-config tag (`models/iq3_s`) — whether each one exists,
+which folder the launch uses and why (the exact spelling, the lower-case tag, a folder that differs only in letter case, or the fallback),
+and how many `.gguf` files and bytes are in it. When nothing is found it lists the closest folder names that are there instead.
+`--data-dir` asks about another data folder, `--family`/`FAMILY/NAME` picks a size offered by several families, and `--output json`
+gives the same report as data. It only lists folders and reads file sizes: it downloads nothing and changes no settings or model files.
+
 ## When there is no engine for this computer
 
 `strata launch` does not refuse. It says "Strata couldn't find an engine for this computer" with the reason, asks whether to go on
