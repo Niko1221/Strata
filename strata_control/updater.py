@@ -277,16 +277,42 @@ def detect_hardware(environ=None) -> dict:
 
 # ---------------------------------------------------------------------------------------------- serving
 
+def _recover_stale_runtime(runtime, item: dict) -> bool:
+    """Recover one managed-runtime record whose owner host is gone (`state == "stale"`) the way `strata runtime stop`
+    does: the recorded server and engine are verified (PID, start time, command line) and ended, then the private state
+    is cleared. True when the record is gone, False when something of it is still there (a recorded child that is still
+    running, an unreadable record) - that one is a real engine and may be serving."""
+    from strata_control import profiles
+    try:
+        outcome = runtime.stop(item["profile"], timeout=30)
+    except (profiles.ProfileError, OSError):
+        return False
+    return bool(outcome.get("ok"))
+
+
 def serving_now() -> list[dict]:
     """Engines that are serving: managed instances of the owner runtime and anything holding the shared activity lease
-    (`strata serve`, a runtime host). Empty when nothing is. The exclusive lease is only tried, never kept."""
+    (`strata serve`, a runtime host). Empty when nothing is. The exclusive lease is only tried, never kept.
+
+    A managed-runtime record whose owner host is gone is not a model that is running: nothing is serving it, and
+    reporting it as serving made `strata update` refuse with "a model is running" although nothing was loaded, for
+    as long as the leftover record stayed (#3977, #4872). Such a record is recovered here; only a record whose
+    recorded child is still there is reported (that engine may still be serving)."""
     from strata_control import profiles, runtime
     try:
         managed = runtime.active_managed_instances()
     except (profiles.ProfileError, OSError):
         managed = []
-    if managed:
-        return managed
+    serving = [item for item in managed if item.get("state") != "stale"]
+    if serving:
+        return serving
+    for item in managed:
+        if item.get("state") != "stale" or not isinstance(item.get("profile"), str):
+            continue
+        if not _recover_stale_runtime(runtime, item):
+            serving.append(item)
+    if serving:
+        return serving
     try:
         descriptor = runtime.acquire_activity_lease(shared=False)
     except profiles.ProfileError as exc:
