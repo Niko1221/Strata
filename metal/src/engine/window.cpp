@@ -1722,6 +1722,31 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
         static int nprof = 0;
         if (++nprof % 100 == 0) print_prof(true);   // cumulative; the serve loop may leave without a destructor
     }
+    {   // STRATA_METAL_NFCHECK=1 (test tooling): every head window's logits scanned for non-finite values and the largest |logit| kept;
+        // a line for the first five bad windows, and a count every 500 head windows and at the 5000th (the numeric health of STRATA_METAL_F16 and the like)
+        static const bool nfc = std::getenv("STRATA_METAL_NFCHECK") != nullptr;
+        if (nfc && head) {
+            static long long nwin = 0, nbad_win = 0, nbad_val = 0;
+            static float maxabs = 0.0f;
+            long long bad = 0;
+            for (int t = 0; t < Tn; ++t) {
+                const float* row = lm_.as<float>() + (size_t) t * n_vocab_;
+                for (int64_t i = 0; i < n_vocab_; ++i) {
+                    if (!std::isfinite(row[i])) ++bad;
+                    else maxabs = std::max(maxabs, std::fabs(row[i]));
+                }
+            }
+            ++nwin;
+            if (bad) {
+                ++nbad_win; nbad_val += bad;
+                if (nbad_win <= 5)
+                    std::fprintf(stderr, "strata metal: NFCHECK non-finite logits: %lld values in a %d-token window at position %lld\n", bad, Tn, (long long) pos0);
+            }
+            if (nwin % 500 == 0 || nwin == 5000)
+                std::fprintf(stderr, "strata metal: NFCHECK %lld head windows, %lld with non-finite logits (%lld values), largest |logit| %.2f\n",
+                             nwin, nbad_win, nbad_val, (double) maxabs);
+        }
+    }
     logpos(Tn, tokens, pos0, head);
     if (Tn == 1 || partial_) hp_ = 1 - hp_;   // the window committed its first row (or all of them) in the step
     last_head_ = head;
