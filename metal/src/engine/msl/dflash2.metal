@@ -506,3 +506,150 @@ kernel void df2_mm4(device const uchar* qs [[buffer(0)]], device const half* sc 
 
 #define DF2MM4(R, S) template [[host_name("df2_mm4_" #R "_" #S)]] kernel decltype(df2_mm4<R, S>) df2_mm4<R, S>;
 DF2MM4(1, 4) DF2MM4(1, 8) DF2MM4(2, 4) DF2MM4(2, 8) DF2MM4(2, 16) DF2MM4(4, 4) DF2MM4(4, 8) DF2MM4(4, 16) DF2MM4(8, 4) DF2MM4(8, 8)
+
+// ---- Q4_0 matrix x 8 float columns on the simdgroup matrix units (df2_mma4).  The pack is repacked at load into FRAGMENT ORDER: for a tile of 8 rows
+// and one Q4_0 block (32 values) the 32 lanes read 32 consecutive uint32; lane l holds the eight 4-bit codes of the weights W[row fm(l)][8 s + fn(l) + e]
+// for s = 0..3 (the four k steps of the block) and e = 0..1 (the two columns of its fragment), code number 2 s + e at bits 4 (2 s + e).  fm / fn are the
+// fragment coordinates of simdgroup_matrix 8x8 (row fm, columns fn and fn + 1 of lane l).  The scales: half [row tile][block][8 rows].
+// y[t][row] = sum over blocks of d(row, block) * sum_k (code - 8) * x[t][k], the integer part on the matrix units in half operands with float
+// accumulation (codes - 8 are exact in half; the activations are rounded to half).
+struct MmaQArgs { uint K; uint rows; uint y_stride; uint x_stride; };
+
+template <int RT, int SG>
+kernel void df2_mma4(device const uint* qw [[buffer(0)]], device const half* sc [[buffer(1)]], device const half* xh [[buffer(2)]],
+                     device float* y [[buffer(3)]], constant MmaQArgs& a [[buffer(4)]], uint3 tg [[threadgroup_position_in_grid]],
+                     ushort sgi [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    const uint nb = a.K / 32;
+    const uint nrt_total = (a.rows + 7) / 8;
+    const uint rt0 = (tg.x * SG + sgi) * RT;
+    if (rt0 >= nrt_total) return;
+    const uint qid = uint(lane) >> 2;
+    const uint fm = (qid & 4) + ((uint(lane) >> 1) & 3);
+    const uint fn = (qid & 2) * 2 + (uint(lane) & 1) * 2;
+    float acc0[RT], acc1[RT];
+    for (int r = 0; r < RT; ++r) { acc0[r] = 0.0f; acc1[r] = 0.0f; }
+    device const uint* wp[RT];
+    device const half* sp[RT];
+    for (int r = 0; r < RT; ++r) {
+        const uint rt = min(rt0 + uint(r), nrt_total - 1);
+        wp[r] = qw + (ulong(rt) * nb) * 32 + lane;
+        sp[r] = sc + (ulong(rt) * nb) * 8 + fm;
+    }
+    uint wcur[RT]; half dcur[RT];
+    for (int r = 0; r < RT; ++r) { wcur[r] = wp[r][0]; dcur[r] = sp[r][0]; }
+    for (uint b = 0; b < nb; ++b) {
+        uint wn[RT]; half dn[RT];
+        const bool more = b + 1 < nb;
+        if (more)
+            for (int r = 0; r < RT; ++r) { wn[r] = wp[r][(b + 1) * 32]; dn[r] = sp[r][(b + 1) * 8]; }
+        simdgroup_half8x8 B0, B1, B2, B3;
+        simdgroup_load(B0, xh + b * 32 + 0, a.x_stride, ulong2(0, 0), true);
+        simdgroup_load(B1, xh + b * 32 + 8, a.x_stride, ulong2(0, 0), true);
+        simdgroup_load(B2, xh + b * 32 + 16, a.x_stride, ulong2(0, 0), true);
+        simdgroup_load(B3, xh + b * 32 + 24, a.x_stride, ulong2(0, 0), true);
+        for (int r = 0; r < RT; ++r) {
+            const uint w = wcur[r];
+            simdgroup_half8x8 A0, A1, A2, A3;
+            A0.thread_elements()[0] = half(int((w >> 0) & 15) - 8);  A0.thread_elements()[1] = half(int((w >> 4) & 15) - 8);
+            A1.thread_elements()[0] = half(int((w >> 8) & 15) - 8);  A1.thread_elements()[1] = half(int((w >> 12) & 15) - 8);
+            A2.thread_elements()[0] = half(int((w >> 16) & 15) - 8); A2.thread_elements()[1] = half(int((w >> 20) & 15) - 8);
+            A3.thread_elements()[0] = half(int((w >> 24) & 15) - 8); A3.thread_elements()[1] = half(int((w >> 28) & 15) - 8);
+            simdgroup_float8x8 C = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+            simdgroup_multiply_accumulate(C, A0, B0, C);
+            simdgroup_multiply_accumulate(C, A1, B1, C);
+            simdgroup_multiply_accumulate(C, A2, B2, C);
+            simdgroup_multiply_accumulate(C, A3, B3, C);
+            const float d = float(dcur[r]);
+            acc0[r] = fma(d, C.thread_elements()[0], acc0[r]);
+            acc1[r] = fma(d, C.thread_elements()[1], acc1[r]);
+        }
+        if (more)
+            for (int r = 0; r < RT; ++r) { wcur[r] = wn[r]; dcur[r] = dn[r]; }
+    }
+    for (int r = 0; r < RT; ++r) {
+        const uint row = (rt0 + uint(r)) * 8 + fm;
+        if (rt0 + uint(r) < nrt_total && row < a.rows) {
+            y[ulong(fn) * a.y_stride + row] = acc0[r];
+            y[ulong(fn + 1) * a.y_stride + row] = acc1[r];
+        }
+    }
+}
+
+#define DF2MMA4(R, S) template [[host_name("df2_mma4_" #R "_" #S)]] kernel decltype(df2_mma4<R, S>) df2_mma4<R, S>;
+DF2MMA4(1, 2) DF2MMA4(1, 4) DF2MMA4(1, 8) DF2MMA4(2, 2) DF2MMA4(2, 4) DF2MMA4(4, 2) DF2MMA4(4, 4)
+
+kernel void df2_f16(device const float* x [[buffer(0)]], device half* y [[buffer(1)]], constant uint& n [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+    if (i < n) y[i] = half(x[i]);
+}
+
+// split-K variant of df2_mma4: the SG simdgroups of a threadgroup work on the SAME RT row tiles, each on its own range of blocks (the weights stream in
+// parallel from SG places, so a small matrix still fills the GPU), then add their partial sums through threadgroup memory.  Block loop unrolled by 2.
+template <int RT, int SG>
+kernel void df2_mma4s(device const uint* qw [[buffer(0)]], device const half* sc [[buffer(1)]], device const half* xh [[buffer(2)]],
+                      device float* y [[buffer(3)]], constant MmaQArgs& a [[buffer(4)]], uint3 tg [[threadgroup_position_in_grid]],
+                      ushort sgi [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float part[SG][RT][2][32];
+    const uint nb = a.K / 32;
+    const uint nrt_total = (a.rows + 7) / 8;
+    const uint rt0 = tg.x * RT;
+    const uint qid = uint(lane) >> 2;
+    const uint fm = (qid & 4) + ((uint(lane) >> 1) & 3);
+    const uint fn = (qid & 2) * 2 + (uint(lane) & 1) * 2;
+    const uint b0 = nb * uint(sgi) / SG, b1 = nb * (uint(sgi) + 1) / SG;
+    float acc0[RT], acc1[RT];
+    for (int r = 0; r < RT; ++r) { acc0[r] = 0.0f; acc1[r] = 0.0f; }
+    device const uint* wp[RT];
+    device const half* sp[RT];
+    for (int r = 0; r < RT; ++r) {
+        const uint rt = min(rt0 + uint(r), nrt_total - 1);
+        wp[r] = qw + (ulong(rt) * nb) * 32 + lane;
+        sp[r] = sc + (ulong(rt) * nb) * 8 + fm;
+    }
+    for (uint b = b0; b < b1; b += 2) {
+        const bool two = b + 1 < b1;
+        uint w0[RT], w1[RT]; half d0[RT], d1[RT];
+        for (int r = 0; r < RT; ++r) {
+            w0[r] = wp[r][b * 32]; d0[r] = sp[r][b * 8];
+            w1[r] = two ? wp[r][(b + 1) * 32] : 0u; d1[r] = two ? sp[r][(b + 1) * 8] : half(0);
+        }
+        for (int h = 0; h < (two ? 2 : 1); ++h) {
+            const uint bb = b + uint(h);
+            simdgroup_half8x8 B0, B1, B2, B3;
+            simdgroup_load(B0, xh + bb * 32 + 0, a.x_stride, ulong2(0, 0), true);
+            simdgroup_load(B1, xh + bb * 32 + 8, a.x_stride, ulong2(0, 0), true);
+            simdgroup_load(B2, xh + bb * 32 + 16, a.x_stride, ulong2(0, 0), true);
+            simdgroup_load(B3, xh + bb * 32 + 24, a.x_stride, ulong2(0, 0), true);
+            for (int r = 0; r < RT; ++r) {
+                const uint w = h == 0 ? w0[r] : w1[r];
+                simdgroup_half8x8 A0, A1, A2, A3;
+                A0.thread_elements()[0] = half(int((w >> 0) & 15) - 8);  A0.thread_elements()[1] = half(int((w >> 4) & 15) - 8);
+                A1.thread_elements()[0] = half(int((w >> 8) & 15) - 8);  A1.thread_elements()[1] = half(int((w >> 12) & 15) - 8);
+                A2.thread_elements()[0] = half(int((w >> 16) & 15) - 8); A2.thread_elements()[1] = half(int((w >> 20) & 15) - 8);
+                A3.thread_elements()[0] = half(int((w >> 24) & 15) - 8); A3.thread_elements()[1] = half(int((w >> 28) & 15) - 8);
+                simdgroup_float8x8 C = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+                simdgroup_multiply_accumulate(C, A0, B0, C);
+                simdgroup_multiply_accumulate(C, A1, B1, C);
+                simdgroup_multiply_accumulate(C, A2, B2, C);
+                simdgroup_multiply_accumulate(C, A3, B3, C);
+                const float d = float(h == 0 ? d0[r] : d1[r]);
+                acc0[r] = fma(d, C.thread_elements()[0], acc0[r]);
+                acc1[r] = fma(d, C.thread_elements()[1], acc1[r]);
+            }
+        }
+    }
+    for (int r = 0; r < RT; ++r) { part[sgi][r][0][lane] = acc0[r]; part[sgi][r][1][lane] = acc1[r]; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sgi == 0) {
+        for (int r = 0; r < RT; ++r) {
+            float t0 = 0.0f, t1 = 0.0f;
+            for (int g = 0; g < SG; ++g) { t0 += part[g][r][0][lane]; t1 += part[g][r][1][lane]; }
+            const uint row = (rt0 + uint(r)) * 8 + fm;
+            if (rt0 + uint(r) < nrt_total && row < a.rows) {
+                y[ulong(fn) * a.y_stride + row] = t0;
+                y[ulong(fn + 1) * a.y_stride + row] = t1;
+            }
+        }
+    }
+}
+#define DF2MMA4S(R, S) template [[host_name("df2_mma4s_" #R "_" #S)]] kernel decltype(df2_mma4s<R, S>) df2_mma4s<R, S>;
+DF2MMA4S(1, 2) DF2MMA4S(1, 4) DF2MMA4S(1, 8) DF2MMA4S(2, 4) DF2MMA4S(2, 8)

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -54,7 +55,7 @@ float h2f(uint16_t h) {
     float f; std::memcpy(&f, &x, 4); return f;
 }
 
-struct Mat { mtl::Buffer qs, sc; int rows, K; bool q8; bool native = false; };
+struct Mat { mtl::Buffer qs, sc; int rows, K; bool q8; bool native = false; bool frag = false; };
 struct MmaArgs { uint32_t n_in, n_out, row_bytes, x_stride, y_stride; };
 }  // namespace
 
@@ -64,6 +65,7 @@ int main(int argc, char** argv) {
     std::printf("device %s\n", cx.device_name().c_str());
     const int lib = cx.compile({"dflash2.metal"}, "#define NO_GGML_COMMON 1\n");
     const bool NATIVE = std::getenv("DF2B_KIND") && std::string(std::getenv("DF2B_KIND")) == "mma";   // the engine's gemv_mma (mma.metal) over the pack's own 18-byte Q4_0 blocks
+    const bool FRAG = std::getenv("DF2B_KIND") && std::string(std::getenv("DF2B_KIND")) == "frag";   // df2_mma4: fragment-order Q4_0 on the matrix units
     int lib2 = -1;
     if (NATIVE) {
         const std::string ed = std::getenv("DF2B_ENGINE_KERNELS") ? std::getenv("DF2B_ENGINE_KERNELS") : "";
@@ -92,7 +94,9 @@ int main(int argc, char** argv) {
     };
 
     // ---- weights: random bytes in the pack's sizes (Q4_0 repacked: nibbles [rows][K/32][16] + half scales [rows][K/32])
+    std::function<Mat(int, int)> make_frag_fn;
     auto make_q4 = [&](int rows, int K) {
+        if (FRAG) return make_frag_fn(rows, K);
         if (NATIVE) {
             Mat m; m.rows = rows; m.K = K; m.q8 = false; m.native = true;
             const size_t nbk = (size_t) rows * (K / 32);
@@ -129,7 +133,7 @@ int main(int argc, char** argv) {
     };
 
     // ---- mm4 against the CPU: 3 columns, 300 rows, K = 2560
-    if (!NATIVE) {
+    if (!NATIVE && !FRAG) {
         const int rows = 300, K = 2560, nc = 3;
         Mat m = make_q4(rows, K);
         mtl::Buffer x = fbuf((size_t) nc * K), y = cx.alloc((size_t) nc * rows * 4);
@@ -157,6 +161,69 @@ int main(int argc, char** argv) {
             }
         std::printf("df2_mm4_%s check: max |gpu - cpu| %.3g (max |value| %.3g)%s\n", var.c_str(), maxe, maxv, maxe < 1e-3 * maxv ? "  OK" : "  FAIL");
         if (maxe >= 1e-3 * maxv) return 1;
+    }
+
+
+    // ---- fragment-order Q4_0 for df2_mma4: logical codes -> lanes' words
+    auto frag_coord = [](int lane, int& fm, int& fn) { const int qid = lane >> 2; fm = (qid & 4) + ((lane >> 1) & 3); fn = (qid & 2) * 2 + (lane & 1) * 2; };
+    auto pack_frag = [&](const std::vector<uint8_t>& codes, const std::vector<float>& d, int rows, int K) {
+        Mat m; m.rows = rows; m.K = K; m.q8 = false; m.frag = true;
+        const int nrt = (rows + 7) / 8, nb = K / 32;
+        m.qs = cx.alloc((size_t) nrt * nb * 32 * 4); m.sc = cx.alloc((size_t) nrt * nb * 8 * 2);
+        uint32_t* w = m.qs.as<uint32_t>(); uint16_t* sc = m.sc.as<uint16_t>();
+        for (int rt = 0; rt < nrt; ++rt)
+            for (int b = 0; b < nb; ++b) {
+                for (int lane = 0; lane < 32; ++lane) {
+                    int fm, fn; frag_coord(lane, fm, fn);
+                    const int row = std::min(rt * 8 + fm, rows - 1);
+                    uint32_t word = 0;
+                    for (int s = 0; s < 4; ++s)
+                        for (int e = 0; e < 2; ++e) word |= (uint32_t) (codes[(size_t) row * K + b * 32 + 8 * s + fn + e] & 15) << (4 * (2 * s + e));
+                    w[((size_t) rt * nb + b) * 32 + lane] = word;
+                }
+                for (int r = 0; r < 8; ++r) sc[((size_t) rt * nb + b) * 8 + r] = f2h(d[(size_t) std::min(rt * 8 + r, rows - 1) * nb + b]);
+            }
+        return m;
+    };
+    auto make_frag = [&](int rows, int K) {
+        std::vector<uint8_t> codes((size_t) rows * K); std::vector<float> d((size_t) rows * (K / 32));
+        for (auto& c : codes) c = (uint8_t) (rnd() & 15);
+        for (auto& v : d) v = 0.01f + 0.01f * (rnd() & 255) / 255.0f;
+        return pack_frag(codes, d, rows, K);
+    };
+    make_frag_fn = make_frag;
+    const std::string mmav = std::getenv("DF2B_MMAV") ? std::getenv("DF2B_MMAV") : "2_4";
+    const std::string mmak = std::getenv("DF2B_MMAK") ? std::getenv("DF2B_MMAK") : "df2_mma4";
+    const bool splitk = mmak == "df2_mma4s";
+    std::map<const void*, mtl::Buffer> xhalf;
+    if (FRAG) {   // check against the CPU: 304 rows, K = 2560, 8 columns
+        const int rows = 304, K = 2560;
+        std::vector<uint8_t> codes((size_t) rows * K); std::vector<float> d((size_t) rows * (K / 32));
+        for (auto& c : codes) c = (uint8_t) (rnd() & 15);
+        for (auto& v : d) v = 0.01f + 0.01f * (rnd() & 255) / 255.0f;
+        Mat m = pack_frag(codes, d, rows, K);
+        mtl::Buffer x = fbuf((size_t) 8 * K), xh = cx.alloc((size_t) 8 * K * 2), y = cx.alloc((size_t) 8 * rows * 4);
+        {   uint32_t n = 8 * K; mtl::Dispatch c; c.p = pipe("df2_f16", 0); c.args = {mtl::Arg::B(x), mtl::Arg::B(xh), mtl::Arg::V(n)}; c.grid[0] = (n + 255) / 256; c.tg[0] = 256; cx.run({c}); }
+        int R, S; parse_rs(mmav, R, S);
+        MmArgs a{(uint32_t) K, (uint32_t) rows, (uint32_t) rows, (uint32_t) K};
+        mtl::Dispatch g; g.p = pipe(mmak + "_" + mmav, 0);
+        g.args = {mtl::Arg::B(m.qs), mtl::Arg::B(m.sc), mtl::Arg::B(xh), mtl::Arg::B(y), mtl::Arg::V(a)};
+        g.grid[0] = splitk ? ((rows + 7) / 8 + R - 1) / R : ((rows + 7) / 8 + R * S - 1) / (R * S); g.tg[0] = 32 * S;
+        cx.run({g});
+        double maxe = 0, maxv = 0;
+        for (int t = 0; t < 8; ++t)
+            for (int r = 0; r < rows; ++r) {
+                double acc = 0;
+                for (int b = 0; b < K / 32; ++b) {
+                    double s2 = 0;
+                    for (int j = 0; j < 32; ++j) s2 += (codes[(size_t) r * K + b * 32 + j] - 8) * (double) h2f(f2h(x.as<float>()[(size_t) t * K + b * 32 + j]));
+                    acc += (double) h2f(f2h(d[(size_t) r * (K / 32) + b])) * s2;
+                }
+                const double g2 = y.as<float>()[(size_t) t * rows + r];
+                maxe = std::max(maxe, std::fabs(g2 - acc)); maxv = std::max(maxv, std::fabs(acc));
+            }
+        std::printf("%s check: max |gpu - cpu| %.3g (max |value| %.3g)%s\n", (mmak + "_" + mmav).c_str(), maxe, maxv, maxe < 2e-3 * maxv ? "  OK" : "  FAIL");
+        if (maxe >= 2e-3 * maxv) return 1;
     }
 
     struct Layer { Mat q, k, v, o, g, u, dn, akp, mkp; mtl::Buffer in_ln, post_ln, qn, kn, base_a, base_m; };
@@ -201,10 +268,26 @@ int main(int argc, char** argv) {
     anchor_pos.as<int32_t>()[0] = POS; anchor_tok.as<int32_t>()[0] = 77;
     for (int i = 0; i < 8 * 16; ++i) toptok.as<int32_t>()[i] = (int32_t) (rnd() % VOCAB);
 
-    auto mm = [&](std::vector<mtl::Dispatch>& ds, const Mat& m, const mtl::Buffer& x, const mtl::Buffer& y, int ncol, bool barrier, const std::string& vv) {
+    auto mm = [&](std::vector<mtl::Dispatch>& ds, const Mat& m, const mtl::Buffer& x, const mtl::Buffer& y, int ncol, bool barrier, const std::string& vv, bool conv = true) {
         int R, S; parse_rs(vv, R, S);
         static const bool skipmm = std::getenv("DF2B_SKIP") && std::string(std::getenv("DF2B_SKIP")) == "mm";   // the small kernels alone
         if (skipmm) return;
+        if (m.frag) {
+            if (conv) {
+                auto it = xhalf.find(x.ptr);
+                if (it == xhalf.end()) it = xhalf.emplace(x.ptr, cx.alloc(x.bytes / 2)).first;
+                uint32_t n = (uint32_t) (x.bytes / 4);
+                mtl::Dispatch c; c.p = pipe("df2_f16", 0); c.args = {mtl::Arg::B(x), mtl::Arg::B(it->second), mtl::Arg::V(n)};
+                c.grid[0] = (n + 255) / 256; c.tg[0] = 256; c.barrier = barrier; ds.push_back(c);
+            }
+            int R2, S2; parse_rs(mmav, R2, S2);
+            MmArgs fa{(uint32_t) m.K, (uint32_t) m.rows, (uint32_t) m.rows, (uint32_t) m.K};
+            mtl::Dispatch d; d.p = pipe(mmak + "_" + mmav, 0);
+            d.args = {mtl::Arg::B(m.qs), mtl::Arg::B(m.sc), mtl::Arg::B(xhalf.at(x.ptr)), mtl::Arg::B(y), mtl::Arg::V(fa)};
+            d.grid[0] = splitk ? ((m.rows + 7) / 8 + R2 - 1) / R2 : ((m.rows + 7) / 8 + R2 * S2 - 1) / (R2 * S2); d.tg[0] = 32 * S2; d.barrier = conv ? true : barrier;
+            ds.push_back(d);
+            return;
+        }
         if (m.native) {
             const std::string vn = std::getenv("DF2B_MMASG") ? std::getenv("DF2B_MMASG") : "4";
             MmaArgs ma{(uint32_t) m.K, (uint32_t) m.rows, (uint32_t) (m.K / 32 * 18), (uint32_t) m.K, (uint32_t) m.rows};
@@ -248,8 +331,8 @@ int main(int argc, char** argv) {
         mm(ds, fc, taps, fcy, nn, true, var);   // taps [nn][5 * 2560] -> fc -> [nn][2560]
         rmsd(ds, fcy, hidden_norm, hctx, nn);
         for (int l = 0; l < L; ++l) {
-            mm(ds, lay[l].k, hctx, kc, nn, l == 0, var);
-            mm(ds, lay[l].v, hctx, vc, nn, false, var);
+            mm(ds, lay[l].k, hctx, kc, nn, l == 0, var, l == 0);
+            mm(ds, lay[l].v, hctx, vc, nn, false, var, false);
             nrd(ds, kc, lay[l].kn, ctxpos, rtctx, kring[l], nn, NKV, KV, RING, true);
             CopyArgs ca{(uint32_t) RING, (uint32_t) nn, (uint32_t) KV}; mtl::Dispatch d; d.p = pipe("df2_copy_rows", 0);
             d.args = {mtl::Arg::B(vc), mtl::Arg::B(vring[l]), mtl::Arg::B(ctxpos), mtl::Arg::V(ca)}; d.grid[0] = (nn * KV + 255) / 256; d.tg[0] = 256; d.barrier = false; ds.push_back(d);
@@ -267,7 +350,7 @@ int main(int argc, char** argv) {
             Layer& y = lay[l];
             mm(ds, y.akp, xn, dyn, B, true, var);
             convd(ds, xn, dyn, 0, y.base_a, 0, nullptr, xn);
-            mm(ds, y.q, xn, q, B, true, var); mm(ds, y.k, xn, k, B, false, var); mm(ds, y.v, xn, v, B, false, var);
+            mm(ds, y.q, xn, q, B, true, var); mm(ds, y.k, xn, k, B, false, var, false); mm(ds, y.v, xn, v, B, false, var, false);
             nrd(ds, q, y.qn, ctxpos, rtb, qn, B, NH, KQ, 0, true);
             nrd(ds, k, y.kn, ctxpos, rtb, kblk, B, NKV, KV, 0, false);
             {   // attention
@@ -282,7 +365,7 @@ int main(int argc, char** argv) {
             rmsd(ds, h, y.post_ln, xn, B);
             mm(ds, y.mkp, xn, dyn, B, true, var);
             convd(ds, xn, dyn, 0, y.base_m, 0, nullptr, xn);
-            mm(ds, y.g, xn, gate, B, true, var); mm(ds, y.u, xn, up, B, false, var);
+            mm(ds, y.g, xn, gate, B, true, var); mm(ds, y.u, xn, up, B, false, var, false);
             { SwArgs sa{(uint32_t) (B * I)}; mtl::Dispatch d; d.p = pipe("df2_swiglu", 0);
               d.args = {mtl::Arg::B(gate), mtl::Arg::B(up), mtl::Arg::B(sw), mtl::Arg::V(sa)}; d.grid[0] = (B * I + 255) / 256; d.tg[0] = 256; ds.push_back(d); }
             mm(ds, y.dn, sw, mlp, B, true, var);
@@ -293,7 +376,7 @@ int main(int argc, char** argv) {
     };
     auto build_head = [&]() {
         std::vector<mtl::Dispatch> ds;
-        const int nd = 7;
+        const int nd = std::getenv("DF2B_ND") ? std::atoi(std::getenv("DF2B_ND")) : 7;   // DF-04: head / top-k / selector rows = the verify prefix (candidate cap)
         mtl::Buffer* dummy = nullptr; (void) dummy;
         mm(ds, head, fn, logits, nd, true, hvar);   // rows 1..7 of fn (the engine passes an offset; the cost is the same)
         { TkArgs ta{NDV}; mtl::Dispatch d; d.p = pipe("df2_topk_part", 0);
@@ -331,6 +414,16 @@ int main(int argc, char** argv) {
         return std::make_pair(med(gpu), med(wall));
     };
     std::printf("config: pos %d, mm4 variant %s, head variant %s, host gap %.2f ms, iters %d\n", POS, var.c_str(), hvar.c_str(), GAPMS, ITERS);
+    if (only == "soak") {   // GPU clock/power state: the stand-in graph back to back for DF2B_SECS seconds, GPU ms per iteration by 5-second bucket
+        const double secs = std::getenv("DF2B_SECS") ? std::atof(std::getenv("DF2B_SECS")) : 60.0;
+        const double t0 = mtl::now_s();
+        std::vector<double> b; double bt = t0;
+        while (mtl::now_s() - t0 < secs) {
+            b.push_back(cx.run_graph(standin) * 1000.0);
+            if (mtl::now_s() - bt >= 5.0) { std::printf("t=%3.0fs  stand-in graph GPU median %.3f ms (n=%zu)\n", mtl::now_s() - t0, med(b), b.size()); std::fflush(stdout); b.clear(); bt = mtl::now_s(); }
+        }
+        return 0;
+    }
     if (only == "ctx") { for (int nn : {1, 3, 8}) { char nm[64]; std::snprintf(nm, sizeof nm, "context update, %d rows", nn); time_it(nm, build_ctx(nn)); } return 0; }
     if (only == "block") { time_it("block (8 rows, 5 layers)", build_block()); return 0; }
     if (only == "head") { time_it("head + top-16 + selector", build_head()); return 0; }
