@@ -3810,7 +3810,13 @@ struct Model::Impl {
     std::atomic<bool> flow_used{false};
     std::thread warm_bg;
     void start_warm() {
-        if (chunk <= 0 || (std::getenv("DS4_WARM") && std::atoi(std::getenv("DS4_WARM")) == 0)) return;
+#if defined(STRATA_METAL)
+        // Not on Metal: warm_flow() calls cublasSgemm / cublasGemmEx on tiny scratch inputs, and the Metal compatibility layer
+        // (metal/include/metal_compat/cublas_v2.h) has only the dispatches the real flow uses; a warm-up call it cannot place
+        // ("sgemm_tn has no host view") aborts the engine at start.  Metal has no BLAS library start to pay either.
+        return;
+#endif
+        if (chunk <= 0 ||(std::getenv("DS4_WARM") && std::atoi(std::getenv("DS4_WARM")) == 0)) return;
         warm_bg = std::thread([this] {
             std::lock_guard<std::mutex> lk(warm_mu);
             if (flow_used.load() || quit.load()) return;
