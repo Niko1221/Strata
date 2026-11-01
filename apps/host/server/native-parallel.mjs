@@ -19,6 +19,8 @@
  */
 
 export const DEFAULT_SLOTS = 4;
+/** What the person is told when DFlash2 is chosen and nobody picked a number of requests (strata_control/drafting.py ONE_REQUEST_NOTE). */
+export const DFLASH2_NOTE = 'DFlash2 answers one request at a time, so Strata set this model to one request at a time.';
 /** The most the engine's batch window holds without grouped MTP. */
 export const MAX_SLOTS = 8;
 /**
@@ -108,6 +110,8 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
     const wantMtp = (values.batchMtp ?? config.batchMtp) === true && !facts.batchMtp && facts.mtp && facts.gpus.length === 1 && (slots ?? 0) > 1;
     return { slots: slots ?? 0, batchMtp: wantMtp, explicit: true, requested, note: null, slotGb: slot };
   }
+  // DFlash2 chosen on purpose: it answers one request at a time, and request slots would keep the MTP (the engine says "not --batch"). Nobody chose a number here, so one.
+  if ((values.drafting ?? config.drafting) === 'dflash2') return { slots: 1, batchMtp: false, explicit: false, requested, note: DFLASH2_NOTE, slotGb: slot };
   const cards = (hardware?.gpus ?? []).filter(g => facts.gpus.includes(g.index)).map(g => Number(g.vram_gb)).filter(n => Number.isFinite(n) && n > 0);
   // Without a hardware read nothing can be sized: one at a time is the safe default (a number can still be chosen).
   if (!cards.length) return { slots: PARALLEL_POLICY === 'fixed' ? requested : 1, batchMtp: false, explicit: false, requested, note: null, slotGb: slot };

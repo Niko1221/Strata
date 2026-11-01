@@ -36,6 +36,46 @@ import gh_ru from '../locales/gh-ru.json';
 import gh_pt from '../locales/gh-pt.json';
 import gh_ko from '../locales/gh-ko.json';
 import gh_fr from '../locales/gh-fr.json';
+/* The strings of the 0.2.9.1 interface changes (ui-<lang>.json, scripts/make-ui-locales.py). */
+import ui_en from '../locales/ui-en.json';
+import ui_zh from '../locales/ui-zh.json';
+import ui_ja from '../locales/ui-ja.json';
+import ui_de from '../locales/ui-de.json';
+import ui_es from '../locales/ui-es.json';
+import ui_ru from '../locales/ui-ru.json';
+import ui_pt from '../locales/ui-pt.json';
+import ui_ko from '../locales/ui-ko.json';
+import ui_fr from '../locales/ui-fr.json';
+/* The strings of Settings > Engine (engine-<lang>.json, scripts/make-engine-locales.py). */
+import engine_en from '../locales/engine-en.json';
+import engine_zh from '../locales/engine-zh.json';
+import engine_ja from '../locales/engine-ja.json';
+import engine_de from '../locales/engine-de.json';
+import engine_es from '../locales/engine-es.json';
+import engine_ru from '../locales/engine-ru.json';
+import engine_pt from '../locales/engine-pt.json';
+import engine_ko from '../locales/engine-ko.json';
+import engine_fr from '../locales/engine-fr.json';
+/* The strings of the model version list (pick-<lang>.json, scripts/make-pick-locales.py). */
+import pick_en from '../locales/pick-en.json';
+import pick_zh from '../locales/pick-zh.json';
+import pick_ja from '../locales/pick-ja.json';
+import pick_de from '../locales/pick-de.json';
+import pick_es from '../locales/pick-es.json';
+import pick_ru from '../locales/pick-ru.json';
+import pick_pt from '../locales/pick-pt.json';
+import pick_ko from '../locales/pick-ko.json';
+import pick_fr from '../locales/pick-fr.json';
+/* The strings of the Drafting choice and the SSD line (df2-<lang>.json, scripts/make-df2-locales.py). */
+import df2_en from '../locales/df2-en.json';
+import df2_zh from '../locales/df2-zh.json';
+import df2_ja from '../locales/df2-ja.json';
+import df2_de from '../locales/df2-de.json';
+import df2_es from '../locales/df2-es.json';
+import df2_ru from '../locales/df2-ru.json';
+import df2_pt from '../locales/df2-pt.json';
+import df2_ko from '../locales/df2-ko.json';
+import df2_fr from '../locales/df2-fr.json';
 import base_zh from '../locales/zh.json';
 import base_ja from '../locales/ja.json';
 import base_de from '../locales/de.json';
@@ -50,8 +90,8 @@ export type Language=typeof LANGUAGES[number]['value'];
 /* The Tune model dialog's strings live in tune-<lang>.json (apps/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
 /* The tool-server, picture and agent-result strings of the tools and images fixes live in tools-<lang>.json for the same reason. */
 /* The strings that had no key in the files above (#3479, #3825) and the 0.2.4.3 fixes live in fix-<lang>.json (scripts/make-fix-locales.py). */
-const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en};
-const [zh,ja,de,es,ru,pt,ko,fr]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh,...gh_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja,...gh_ja},{...base_de,...tune_de,...tools_de,...fix_de,...gh_de},{...base_es,...tune_es,...tools_es,...fix_es,...gh_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru,...gh_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt,...gh_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko,...gh_ko},{...base_fr,...tune_fr,...tools_fr,...fix_fr,...gh_fr}] as Record<string,string>[];
+const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en,...ui_en,...engine_en,...pick_en,...df2_en};
+const [zh,ja,de,es,ru,pt,ko,fr]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh,...gh_zh,...ui_zh,...engine_zh,...pick_zh,...df2_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja,...gh_ja,...ui_ja,...engine_ja,...pick_ja,...df2_ja},{...base_de,...tune_de,...tools_de,...fix_de,...gh_de,...ui_de,...engine_de,...pick_de,...df2_de},{...base_es,...tune_es,...tools_es,...fix_es,...gh_es,...ui_es,...engine_es,...pick_es,...df2_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru,...gh_ru,...ui_ru,...engine_ru,...pick_ru,...df2_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt,...gh_pt,...ui_pt,...engine_pt,...pick_pt,...df2_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko,...gh_ko,...ui_ko,...engine_ko,...pick_ko,...df2_ko},{...base_fr,...tune_fr,...tools_fr,...fix_fr,...gh_fr,...ui_fr,...engine_fr,...pick_fr,...df2_fr}] as Record<string,string>[];
 const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,fr,es,ru,pt,ko};
 const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
 const decode=(text:string)=>text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(whole,key:string)=>key[0]==='#'?String.fromCodePoint(key[1].toLowerCase()==='x'?parseInt(key.slice(2),16):parseInt(key.slice(1),10)):entities[key]??whole);

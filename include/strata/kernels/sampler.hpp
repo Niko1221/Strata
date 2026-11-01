@@ -91,6 +91,18 @@ bool sample_tokens_proposal(const float* logits, int n_tokens, int n_vocab, cons
                         const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
                         void* stream);
 
+// #4590: which tokens the repeat / frequency / presence penalties count.  By default only the current reply: the
+// tokens the answer has written (the window starts at the last prompt token, the one the first decode step feeds in).
+// The prompt, including earlier assistant turns in it, is not counted, so a number or a quoted answer in the new
+// task is not penalised just for being there.  STRATA_PENALTY_PROMPT=1 restores the old window, the last
+// penalty_last_n tokens of prompt + reply.  Any other value (or none) is the default.
+inline bool penalty_counts_prompt(const char* env) { return env != nullptr && env[0] == '1'; }
+// The first index of the session's consumed tokens (prompt, then reply) the penalty window may read, given how
+// many were consumed when the request's decode began (the prompt without its last token).
+inline size_t penalty_window_from(size_t consumed_at_decode_start, bool counts_prompt) {
+    return counts_prompt ? 0 : consumed_at_decode_start;
+}
+
 // The penalty-history rows of a verify window, on the host: row t of `out` (T rows of `h` slots) is the last `h`
 // tokens of `tail[0..n_tail)` followed by `window[0..t]`, most recent LAST, -1 in the unused front slots.
 // `tail` is what the state consumed before the window, `window[0]` the fed-back token and `window[1..]` the

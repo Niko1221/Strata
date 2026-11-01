@@ -424,7 +424,7 @@ class GithubCheck(unittest.TestCase):
 
 
 class OfficialSets(unittest.TestCase):
-    """The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF): the catalog, the pins, the pack recipe, the fit words."""
+    """The two official ISTA-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF): the catalog, the pins, the pack recipe, the fit words."""
 
     def test_the_pinned_files(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
@@ -674,7 +674,7 @@ class SixShardLayout(unittest.TestCase):
 
 
 class Smallest(unittest.TestCase):
-    """IST-DAS 1.75 bpw (IQ1_M): the smallest official set, recommended where 2.00 is tight, never forced."""
+    """ISTA-DAS 1.75 bpw (IQ1_M): the smallest official set, recommended where 2.00 is tight, never forced."""
 
     def test_the_files_the_pins_and_the_recipe(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]

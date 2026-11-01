@@ -56,6 +56,7 @@
 #endif
 #if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
 #include "rocblas_tuning.hpp"
+#include "strata/core/amd_community.hpp"
 #include <hip/hip_runtime_api.h>
 #include <rocblas/rocblas.h>
 #include <filesystem>
@@ -495,6 +496,12 @@ std::unique_ptr<RocBlasState> create_rocblas_state(void* stream) {
         std::string tag(version);
         while (!tag.empty() && tag.back() == '.') tag.pop_back();
         file /= arch + "-rocblas-" + tag + ".txt";
+    }
+    // The community-made tables (strata/core/amd_community.hpp) load only with STRATA_AMD_COMMUNITY_TUNING on (the default).
+    if (!strata::amd_community::rocblas_table_allowed(arch, version)) {
+        std::fprintf(stderr, "prefill gemm: the rocBLAS table for %s / %s is community-made and STRATA_AMD_COMMUNITY_TUNING=0; "
+                             "rocBLAS's default kernels run\n", arch.c_str(), version);
+        return nullptr;
     }
     std::string error;
     if (!state->table.load(file.string(), arch, version, error)) {

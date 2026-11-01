@@ -30,6 +30,7 @@ import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
+import { buildAnswer, parseQuestions } from './user-questions.mjs';
 import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped } from './context-fit.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
@@ -157,6 +158,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const queues = new Map();
   const queueView = chatId => (queues.get(chatId) ?? []).map(({ id, text, at, deliverAt }) => ({ id, text, at, deliverAt }));
   const pending = new Map();       // `${sessionId}:${callId}` -> { eventId, sessionId, callId, at }
+  const questions = new Map();     // `${sessionId}:${callId}` -> the agent's own question waiting for the person: { eventId, sessionId, callId, items, at, clientId } (#4244)
+  const chatOfSession = sessionId => Object.keys(sessionMap).find(id => sessionMap[id]?.sessionId === sessionId) ?? null;
   const idleWaiters = new Set();
 
   const chat = id => { let c = chats.get(id); if (!c) { c = { id, turn: null, route: null, routeGeneration: -1 }; chats.set(id, c); } return c; };
@@ -275,10 +278,23 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (!r.callId) return;
       pending.set(`${value.agentId}:${r.callId}`, { eventId: value.eventId, sessionId: value.agentId, callId: r.callId, tool: r.toolName, reason: r.reason ?? null, at: Date.now(), clientId: runtime.clientId });
     } else if (value.type === 'waterfall' && value.event === 'user-questions/request') {
-      // The app has no surface for the agent's own questions yet. Declaring that nobody can answer makes
-      // the tool return an error the model reads and carries on from, instead of a turn that waits forever.
-      void runtime.gw.answerEvent({ clientId: runtime.clientId, eventId: value.eventId, outcome: 'next' }).catch(() => {});
+      // The agent of a chat that is running in front of the person asks the person: the question goes to the page (the question card above the message box) and the
+      // Harness waits for the answer. Anything else (a helper's question, a chat that is stopping, a request with nothing to show) is declared
+      // unanswerable, which makes the tool return an error the model reads and carries on from, instead of a turn that waits forever.
+      const r = value.request ?? {};
+      const chatId = chatOfSession(value.agentId);
+      const turn = chatId ? chats.get(chatId)?.turn : null;
+      const items = parseQuestions(r.questions);
+      // A goal or a plan step runs without anyone there: a question would stall it, so it is declined at once (the model reads "could not be answered" and goes on).
+      if (!turn || turn.finished || turn.stopping || turn.goalRun || turn.plan || !turn.announceQuestion || !items.length) {
+        void runtime.gw.answerEvent({ clientId: runtime.clientId, eventId: value.eventId, outcome: 'next' }).catch(() => {});
+      } else {
+        const callId = String(r.wait?.callId ?? value.eventId);
+        questions.set(`${value.agentId}:${callId}`, { eventId: value.eventId, sessionId: value.agentId, callId, items, at: Date.now(), clientId: runtime.clientId });
+        turn.announceQuestion({ type: 'agent-question', callId, questions: items });
+      }
     } else if (value.type === 'cancel') {
+      for (const [k, v] of questions) if (v.eventId === value.eventId) { questions.delete(k); chats.get(chatOfSession(v.sessionId))?.turn?.announceQuestion?.({ type: 'agent-question-end', callId: v.callId }); }
       for (const [k, v] of pending) if (v.eventId === value.eventId) pending.delete(k);
     }
   }
@@ -471,6 +487,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     async function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
+      for (const [k, v] of questions) if (v.sessionId === turn.sessionId) questions.delete(k);
       clearTimeout(turn.settleTimer);
       clearInterval(turn.watchdog);
       turn.follow?.close();
@@ -794,6 +811,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     }
     turn.announceGoal = announceGoal;
     turn.announceQueue = frame => emit(frame);
+    turn.announceQuestion = frame => emit(frame);
 
     const snapshotTimer = {};
     await Promise.race([turn.snapshot.promise, new Promise((_, rej) => { snapshotTimer.t = after(20_000, () => rej(new Error('the session stream did not open'))); })])
@@ -1096,6 +1114,47 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     delete sessionMap[chatId]; persist();
   }
 
+  // -- the agent's own questions ------------------------------------------------------------------------------
+
+  /**
+   * The person's answer to a question the agent asked (#4244), or a skip. The answer is checked against the questions that were asked, then sent
+   * to the Harness as the result of the waiting `user-questions/request`; a skip declares the question unanswerable, as before, and the model
+   * carries on.
+   */
+  async function answerQuestion({ chatId, callId, answers, skip = false }) {
+    const sessionId = sessionMap[chatId]?.sessionId;
+    const key = `${sessionId}:${callId}`;
+    const entry = questions.get(key);
+    if (!entry || !rt?.hp.running) throw new AgentUnavailable('That question was already answered, or the assistant has gone on.', 'question-gone');
+    const outcome = skip ? 'next' : buildAnswer(entry.items, answers);
+    await rt.gw.answerEvent({ clientId: entry.clientId ?? rt.clientId, eventId: entry.eventId, outcome });
+    questions.delete(key);
+    return { ok: true, skipped: !!skip };
+  }
+
+  // -- a message for a helper ---------------------------------------------------------------------------------
+
+  /**
+   * The person's own words for one helper (#4749), through the Harness's `subagents/prompt`: it delivers one browser-authored message to a
+   * continuable child through its live parent. "steer" reaches a working helper at its next step; "queue" gives a helper that has finished
+   * (or is between steps) a new turn. The Harness refuses a helper that cannot take messages (a one-shot one) and a parent that is not live;
+   * either comes back as a plain sentence.
+   */
+  async function messageHelper({ chatId, helperId, text, delivery = 'queue' }) {
+    const clean = String(text ?? '').trim().slice(0, 8000);
+    if (!clean) throw new AgentUnavailable('Type a few words for the helper.', 'helper-empty');
+    if (!/^[\w.:@-]{1,160}$/.test(String(helperId ?? ''))) throw new AgentUnavailable('That helper is not known.', 'helper-unknown');
+    const parent = sessionMap[chatId]?.sessionId;
+    if (!parent || !rt?.hp.running) throw new AgentUnavailable('The assistant is not running in this chat, so it cannot pass a message on. Send a message in the chat first.', 'helper-idle');
+    try {
+      const receipt = await rt.gw.rpc('subagents/prompt', { request: { requestId: `helper-${randomUUID()}`, parentSessionId: parent, childSessionId: String(helperId), mode: 'continuable', delivery: delivery === 'steer' ? 'steer' : 'queue', content: [{ type: 'text', text: clean }] } });
+      return { ok: true, messageId: receipt?.messageId ?? null, delivery: delivery === 'steer' ? 'steer' : 'queue' };
+    } catch (e) {
+      log(`agent · message for a helper refused: ${String(e?.message ?? e).slice(0, 200)}`);
+      throw new AgentUnavailable(/continuable|one-shot|not.*(found|live|open)|unavailable|closed|ended/i.test(String(e?.message ?? '')) ? 'This helper cannot take a message any more. Ask the assistant in the chat to start a new one.' : 'The message could not be delivered right now. Try again in a moment.', 'helper-refused');
+    }
+  }
+
   // -- messages typed while a goal runs ----------------------------------------------------------------------
 
   /** Queue a message for the running goal. It is delivered between steps, or handed back to the page when the goal ends or pauses. */
@@ -1333,7 +1392,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

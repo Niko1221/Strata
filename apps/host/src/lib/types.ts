@@ -233,6 +233,8 @@ export interface ServingState {
   revision?: number;
   running: boolean;
   baseUrl: string;
+  /** The address on this computer (the app's own port); baseUrl is the network address while sharing is on. */
+  localUrl?: string;
   port: number;
   endpoints: { openai: string; anthropic: string; models: string };
   access: { otherDevices: boolean; apiKeySet: boolean; apiKeyHint: string | null; allowOrigin: string };

@@ -171,3 +171,13 @@ test('a Qwen model with pictures off still loses its stand-alone --vision (nothi
     assert.deepEqual(saved[0].args, ['--pack', '/p', '--max-context', '4096', '--kv', 'int8']);
   } finally { await native.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test('a DeepSeek load with Read pictures on does not ask for a separate reader (#4772)', async () => {
+  const f = fixture({ args: DS_ARGS.map(a => (a === 'off' ? 'on' : a)) });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('load', { model: f.id, vision: 'yes' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.saved[0].args[f.saved[0].args.indexOf('--vision') + 1], 'on');
+  } finally { await f.native.close(); f.cleanup(); }
+});

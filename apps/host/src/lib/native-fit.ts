@@ -101,6 +101,30 @@ export function recommendedVersions<V extends { sourceFamily: string; model: str
   return [...out, ...rest.filter(x => x.v !== gyroM)];
 }
 
+/**
+ * The version list as the menu shows it, for one base model: first the versions to look at (the pick for this PC, then the ones already on this
+ * computer, each by download size), then every other version by download size. A version is in exactly one of the two, so none is shown twice
+ * and none is lost; the ones in `hidden` (shown elsewhere, as on the first-run page) are left out.
+ */
+export function versionGroups<V extends { id: string; download_gb: number }>(versions: V[], hidden: ReadonlySet<string>, downloaded: ReadonlySet<string> | undefined, pickId?: string): { top: V[]; more: V[] } {
+  const seen = new Set<string>();
+  const list = versions.filter(v => !hidden.has(v.id) && !seen.has(v.id) && !!seen.add(v.id));
+  const bySize = (a: V, b: V) => a.download_gb - b.download_gb;
+  const pick = list.find(v => v.id === pickId);
+  const have = list.filter(v => v.id !== pickId && downloaded?.has(v.id)).sort(bySize);
+  const top = [...(pick ? [pick] : []), ...have];
+  const inTop = new Set(top.map(v => v.id));
+  return { top, more: list.filter(v => !inTop.has(v.id)).sort(bySize) };
+}
+
+/** What a version is on this computer, in the words the list shows: from the same fit figures the card uses, and the engine's own "does not fit". */
+export type VersionFit = 'fits' | 'ssd' | 'no' | 'unknown';
+export function versionFit(v: FitInput & { on_this_pc?: string | null }, hw: FitHardware | null | undefined): VersionFit {
+  if (v.on_this_pc === 'does not fit') return 'no';
+  const fit = fitOn(v, hw);
+  return !fit.known ? 'unknown' : fit.spillGb >= 1 ? 'ssd' : 'fits';
+}
+
 /** A card as the installer's hardware report lists it. */
 export interface RunCard { index: number; name: string; vram_gb: number; usable?: boolean; vendor?: string; uma?: boolean; integrated?: boolean; unified_gb?: number }
 

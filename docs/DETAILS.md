@@ -519,6 +519,12 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   tool the request did not declare. The server window prints the same names (`N <tool_call> block(s) ... went back as text`), and
   `/metrics/prometheus` counts the blocks in `strata:tool_calls_unread_total`. A block that is malformed (not an undeclared name) is counted
   there and in the window, but has no name to list.
+- **Anthropic's tool search on `/v1/messages` (#4663).** A tool with `"defer_loading": true` is declared but not listed in the
+  prompt; a `tool_reference` block in a `tool_result` (a tool search's result) puts that tool's definition into the prompt where it
+  stands, in the form the tool list uses, so loading a tool leaves the prompt's start, and the prompt cache, unchanged. Any other
+  reference is left out, as before (a tool whose MCP server is gone must not fail the session). A request with a deferred tool holds back more tools than
+  it declares (Claude Code declares ToolSearch and a `DeferredToolPlaceholder` and names its MCP tools in the conversation), so
+  there a call for an undeclared name is returned as a `tool_use`: Claude Code runs it, where text ended the turn.
 - JSON output: `response_format: {"type":"json_object"}` or `{"type":"json_schema", ...}` on `/v1/chat/completions`. The schema
   must accept only JSON objects at its root (`"type":"object"`, or `anyOf`/`oneOf` of object schemas). Local `#` references
   work and remote ones are refused. This is schema prompting followed by server validation, not grammar-constrained
@@ -535,6 +541,10 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   `top_k` keeps at most 64 candidates. Penalties (`presence_penalty`, `frequency_penalty`, `repetition_penalty`,
   `penalty_last_n`; llama.cpp's `repeat_penalty` and `repeat_last_n` work too) apply to every token the speculative check
   verifies, as if decoded one at a time, and make a request 1-11% slower because more drafts are rejected.
+  `penalty_last_n` (64 when a penalty is set and the request gives none) is a window over the tokens of the current answer: the
+  prompt, including earlier assistant turns in it, is not counted, so the numbers or a quoted earlier answer in a new task are not
+  penalised. `STRATA_PENALTY_PROMPT=1` counts the last `penalty_last_n` tokens of prompt and answer together, the old window.
+  This holds for the Qwen3.8 and Qwen3.6-35B-A3B engines on CUDA, HIP, Metal and SYCL.
 - Sampling defaults, in order of precedence: the request, the web page's shared Chat settings, the config's `sampling` block,
   then the model card. Without a block, thinking requests get temperature 1.0, top_p 0.95, top_k 20, and non-thinking
   requests get 0.7, 0.8, 20 with presence_penalty 1.5 (Qwen3.6-35B-A3B uses presence_penalty 1.5 in both). Greedy is only for
@@ -1037,6 +1047,10 @@ them on your own card.
 | `STRATA_NO_AVXVNNI=1` | CPUs with AVX-VNNI | Turns the AVX-VNNI row forms off (they give the same bits, 4-25% faster rows). | A diagnostic. |
 | `STRATA_PREFILL_EQUAL=1` | CUDA | A prompt segment is read in chunks of equal size, not full chunks and a short last one. Changes rounding. | |
 | `STRATA_OWNED_PRICE=exact` | CUDA | The cache sizing prices the prompt path's own buffers by their real allocation. | |
+| `--lookup-max-t N` (up to 16), `--lookup-sizes A,B` | CUDA, one conversation on one GPU (a layer split, batch and pipelined windows stay at 8) | Prompt-lookup windows up to N tokens while the MTP keeps `--spec`. A window past 8 tokens runs as two groups of 8; each size is a CUDA graph of its own (about 20-35 MiB), a size that finds no VRAM is dropped. Same answers on file rewrites. On by default at 12 in the serve engine of the 8-row CUDA build on one GPU (no batch, DFlash2 or layer split); `--lookup-max-t 0` or `STRATA_LOOKUP_MAX_T=0` turns it off. | File rewrites and the edit turns of an agent loop decode +11 to +14% (RTX A6000 IQ3_S, greedy and sampled), +13 to +18% on a Tesla P100 IQ3_XXS; ordinary prose and code are within 1% at 12. 16 gains 1-3 points more on rewrites and costs 3-4% on some prose. A wide-window build (`-DSTRATA_WINDOW_MAX_T=12` or 16) gains less (+7 to +9%) and is not needed. |
+| `STRATA_PF_GROUP_SCRATCH=1`, `STRATA_PF_HC_REGION=1` | CUDA, prompt path on MMQ (not the fused int8 experts) | The prompt path's gate/up output, SwiGLU and q8_1 copy hold one expert group's rows, and the hyper-connection read's scratch shares the attention/MoE region. Same bits at an equal chunk. A line at start says when they took effect or why GROUP_SCRATCH is ignored. | Frees 0.3-0.5 GiB of borrowed cache slots so `--prefill auto` can pick a bigger chunk; the speed gain showed only with `STRATA_PREFILL_CPU_SHARE=0` (+7 to +11% on an emulated 8 GB card), because the bigger chunk leaves the CPU-share range. |
+| `STRATA_PW_WITH_BATCH=1` | CUDA/HIP layer split with `--pipeline-windows 2` and `--batch` slots | A request that is alone keeps the pipelined windows beside the batch slots; batch windows run without them. | 2x RTX A6000 IQ3_S: lone request +14% on code, +9% on a file rewrite, +3% on a long decode; two requests at once not slower. The second verifier takes about 270 MiB of the first card. |
+| `STRATA_MTP_ROOM_MIN=TOKENS` | CUDA, `--serve` with `--mtp`, no `--batch` | A request that reads at least TOKENS prompt tokens uses the draft layer's 512 decode-only experts (about 675 MiB) as extra ring slots while it is read, then gets them back. | The author measured +17 to +23% prompt on an 8 GB RTX 2060 SUPER; on a P100 limited to 8 GB (ring 8 to 311 slots) it gave +0.5% (CPU share off) and nothing with defaults. Off by default. |
 | `STRATA_IQ_MT_MIN=1`, `STRATA_IQ3S_MT1=1` | CPU | See [Draft layer](#draft-layer) (reproducible output; the second gives IQ3_S the multi-token kernel for one token on Alder Lake and later without AVX-512). | |
 | `STRATA_ROUTE_PRIOR`, `STRATA_ROUTE_RESIDENT`, `STRATA_ROUTE_RESIDENT_MTP` | CUDA | Routing changes that add speed and also add KL. | Off by default. `STRATA_ROUTE_PRIOR=1.5` makes the router prefer experts that are already on the card; it is the one worth trying, on a discrete NVIDIA card of 13 GiB or less (an RTX 3060 12 GB, IQ3_XXS: story +15%, code +37% decode against off). It is an opt-in because it can repeat itself and give weaker results in long agent sessions (#4402; our own check on that card: out of 10 agent tasks 4.5 passed on average over 4 runs at 1.5, against 5.6 over 7 runs with the prior off, where the off runs alone ranged from 4 to 6; a stronger setting, 2.0, showed copy and code defects). Recommended for a 12 GB card used mostly for chat and short answers, not for long agent runs. 0.2.7 turned 1.5 on by itself on those cards and 0.2.8 took that back (owner decision of 2026-10-29): with nothing set, the engine routes exactly as 0.2.6 did (the same as `STRATA_ROUTE_PRIOR=0` and as `STRATA_DEFAULTS=026`). Turn it on: the Expert-settings row "Faster answers on 12 GB NVIDIA cards" (it writes `STRATA_ROUTE_PRIOR=1.5`; shown only for a discrete NVIDIA card of 13 GiB or less), `strata launch --set STRATA_ROUTE_PRIOR=1.5`, or the variable itself. Any value you set wins on every card; it is never on by itself. |
 | `STRATA_HOST_CORE=last\|sibling` (or `--host-core`) | Windows | `last` puts the host thread on the last physical core, away from the core that gets the GPU's interrupts. `sibling` keeps it on the first core's other hardware thread, so the workers keep every core. The default `first` leaves a hybrid CPU as it is. | One layer-split box went from a ±6% swing to steady and 8% faster. |
@@ -1065,6 +1079,20 @@ measured. "Exact" means the 10-prompt and 4K/20K identity gate with the switch o
 
 `STRATA_DEQUANT_WIDE` (wide dequantization of Q4_K, Q5_K, Q6_K and IQ4_XS for the prompt's dense weights) is on by default on
 sm_86 and sm_61, bit-exact. `STRATA_DEQUANT_WIDE=0` turns it off.
+
+`STRATA_PREFILL_ROUTED_STREAM=1` (opt-in; the streamed prompt walk of a chunk of 1,024 tokens or more, one GPU, the
+issuer thread): the issuer keeps at most `STRATA_PREFILL_ROUTED_STREAM_DEPTH` copies (default 16) queued ahead of the
+PCIe link, each layer's routing is handed to it as soon as the layer's router has run, and an expert not yet copied that
+no token of the chunk routes to is not copied at all. The routed experts go into the same ring slots as without the
+switch, so the prompt's results are the same bits, and the slots the prompt borrowed are refilled from RAM as before.
+With `STRATA_TRACE=1` each chunk prints how many ring entries it copied and how many it dropped. With
+`STRATA_PREFILL_COPY_EVENT_EVERY` above 1 or `STRATA_PREFILL_COPY_WAIT_DEDUPE=1` the switch stays off: those keep the
+default issuer, whose copy records the routed walk does not write. When the switch is set but a streamed chunk keeps the
+default walk (these two, `STRATA_PREFILL_ISSUER=0` or the peer prompt ring), the engine prints the reason once. On an
+RTX 3090 (PCIe 3.0 x16, 250 W) with the Swift IQ3_XXS pack at the v0.2.6 release defaults, 23% fewer experts were
+streamed for a 2K prompt and 4% fewer at 32K (8,192-token chunks); a 1,790-token follow-up read on an 18.8K-token
+conversation took 18% less time and fresh 2K, 4K and 32K reads ran 20%, 8% and 5% faster (4 pairs), with byte-identical
+replies in a deterministic lane at 1K to 32K.
 
 ### RTX 20 (Turing, sm_75) kernels (opt-in)
 

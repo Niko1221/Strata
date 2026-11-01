@@ -51,7 +51,7 @@ MEASURED = ("4 x Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: prompts of 3,00
             "at 25-31 tokens a second (--tp 2); one answer at a time")
 
 
-# The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, setup.py DSV41_ISTA_FILES): 4 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
+# The two official ISTA-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, setup.py DSV41_ISTA_FILES): 4 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
 # dense weights Q8_0 / Q5_K), plus ONE Engram (110.6 GB, IQ4_NL, shared by both sets, stays on the SSD) and the DSpark drafter (8.0 GB).
 # Measured 2026-10-23 (f-dsv41-rel): quality against the original model (final files, 4,995 positions: ppl +15.5% for 2.00 [code +8.6%, agent +5.3%], +7.3% for 2.25 [code +3.2%, agent +2.2%]
 # on 2.25); speed on the owner PC (RTX 5070 12 GB, 64 GB RAM, 3.6 GB/s NVMe): answers ~4.7 tokens a second, prompts 121 tokens a second at 4K and
@@ -62,31 +62,36 @@ ISTA_DSPARK_BYTES = 7_976_914_240
 # (the six-shard layout of the same sets, setup.py DSV41_ISTA6_FILES, is 74 KB larger: 2.00 138,238,967,104, 2.25 155,225,898,368, 1.75 120,721,194,336 bytes; the figures below are the pinned four-shard ones)
 ISTA_META_BYTES = 5_780_589          # the first shard of Unsloth's UD-Q8_K_XL: only the metadata --engram-meta reads
 ISTA_SETS = {
-    "IST-DAS-2.00bpw": {"title": "IST-DAS 2.00 bpw", "set_bytes": 138_238_893_056, "experts_gb": 132.07, "profile": "profile-2.00.bin",
+    "IST-DAS-2.00bpw": {"title": "ISTA-DAS 2.00 bpw", "set_bytes": 138_238_893_056, "experts_gb": 132.07, "profile": "profile-2.00.bin",
                         "ppl": "15.5%", "ram_ok_gb": 40.0, "ram_great_gb": 160.0, "disk_total": 257.0,
                         "quality": "about 15.5% above the original model's perplexity (code and agent work about 5-9% above)"},
     # IQ1_M (1.75 bpw): 120,721,120,256 bytes of shards; experts = the shards minus the 6.16 GB of dense weights.  RAM class from the experts' size against
     # the 2.00 set's measured 40 GB (not measured on a computer yet); quality: the H100's 4,995-position score (KL 0.217, ppl 3.80, +21%; code +8.9%, agent +10.2%, English prose +53%).
-    "IST-DAS-1.75bpw": {"title": "IST-DAS 1.75 bpw", "set_bytes": 120_721_120_256, "experts_gb": 114.56, "profile": "profile-2.00.bin",
+    "IST-DAS-1.75bpw": {"title": "ISTA-DAS 1.75 bpw", "set_bytes": 120_721_120_256, "experts_gb": 114.56, "profile": "profile-2.00.bin",
                         "ppl": "21%", "ram_ok_gb": 34.0, "disk_total": 239.0,
                         "quality": "about 21% above the original model's perplexity: the smallest, fine for code and agent work, noticeably weaker "
                                    "on plain prose; pick 2.00 if it fits"},
-    "IST-DAS-2.25bpw": {"title": "IST-DAS 2.25 bpw", "set_bytes": 155_225_824_256, "experts_gb": 149.06, "profile": "profile-2.25.bin",
+    "IST-DAS-2.25bpw": {"title": "ISTA-DAS 2.25 bpw", "set_bytes": 155_225_824_256, "experts_gb": 149.06, "profile": "profile-2.25.bin",
                         "ppl": "7.3%", "ram_ok_gb": 44.0, "ram_great_gb": 176.0, "disk_total": 274.0,
                         "quality": "about 7.3% above the original model's perplexity (code and agent work about 2-3% above), "
                                    "the better of the two, 17 GB more disk"},
 }
 # Unsloth's UD-IQ1_S / UD-IQ1_M (2026-10-30, unsloth/DeepSeek-V4.1-Flash-1017-GGUF; setup.py DSV41_UD_FILES): shard 1 = metadata, shards 2-4 = the model, shard 5 = the Engram
-# (the same IQ4_NL data as IST-DAS's file, so it is shared with them).  set_bytes = shards 1-4; "meta_bytes": 0 (their own shard 1 is the metadata).  The dense weights are
-# a little bigger than IST-DAS's (attention in Q6_K): 7.2 and 7.6 GB.  Quality is not measured on our side yet.
+# (the same IQ4_NL data as ISTA-DAS's file, so it is shared with them).  set_bytes = shards 1-4; "meta_bytes": 0 (their own shard 1 is the metadata).  The dense weights are
+# a little bigger than ISTA-DAS's (attention in Q6_K): 7.2 and 7.6 GB.  Quality is not measured on our side yet.
 ISTA_SETS["UD-IQ1_S"] = {"title": "Unsloth UD-IQ1_S", "set_bytes": 122_384_317_828, "experts_gb": 115.23, "profile": "profile-2.00.bin", "meta_bytes": 0,
                          "ppl": "?", "ram_ok_gb": 36.0, "disk_total": 241.0,
-                         "quality": "Unsloth's smallest dynamic version, the size of IST-DAS 1.75 bpw; not measured here yet"}
+                         "quality": "Unsloth's smallest dynamic version, the size of ISTA-DAS 1.75 bpw; not measured here yet"}
 ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_132, "experts_gb": 132.21, "profile": "profile-2.00.bin", "meta_bytes": 0,
                          "ppl": "?", "ram_ok_gb": 40.0, "disk_total": 258.0,
-                         "quality": "Unsloth's next dynamic version, the size of IST-DAS 2.00 bpw; not measured here yet"}
+                         "quality": "Unsloth's next dynamic version, the size of ISTA-DAS 2.00 bpw; not measured here yet"}
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
 ISTA_DENSE_ON_GPU_GB = 4.5            # what a card holds of them with a 12 GB card (measured on the 5070 / 3060: the engine places the rest itself)
+# AMD (ROCm) cards keep more beside the experts than the 12 GB NVIDIA cards above: the HIP engine's prompt buffers and graphs.  Fitted to the two real
+# runs of the 2.25 set (0.2.9 gates, 32 GiB R9700): 1 card holds 2,366 experts, 4 cards 12,147 (the plan said 2,947 and 13,180):
+# non-expert memory per card = AMD_RESERVE_GB + AMD_DENSE_ON_GPU_GB / cards  (11.4 GB with one card, 4.9 GB with four).
+AMD_DENSE_ON_GPU_GB = 8.7
+AMD_RESERVE_GB = 2.7
 ISTA_MEASURED = ("an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7 tokens a second, a 4,000-token prompt "
                  "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: "
                  "about 31 tokens a second")
@@ -242,7 +247,7 @@ def split_layers(weights: list[float], layers: int = LAYERS) -> list[tuple[int, 
 def tp_for(n_cards: int, cards: list[dict] | None = None) -> int:
     """--tp for this many cards.  Pairs of cards sharing each layer's matrices (--tp 2, the engine's default for two or more cards) were
     measured 2x faster for prompts than a plain layer split on the first rig; on four AMD Radeon AI PRO R9700 cards the plain layer split
-    (--tp 1) is faster for both: 8K prompt 370 against 196 tokens a second and 32 against 29 for answers (2026-10-23, r9700), so the IST-DAS plans give four
+    (--tp 1) is faster for both: 8K prompt 370 against 196 tokens a second and 32 against 29 for answers (2026-10-23, r9700), so the ISTA-DAS plans give four
     or more AMD cards 1 (cards passed); the Unsloth plan is unmeasured and keeps 2.  Two and three cards keep 2 (two R9700: prompts 220 against 140, answers slower; not changed).
     (The engine's own check refuses 4 - 576 is not a multiple of 128 - and drops to 2.)"""
     if n_cards >= 4 and cards and all(str(c.get("vendor") or "").lower() == "amd" for c in cards):
@@ -257,7 +262,7 @@ def _tp_args(n_cards: int, tp: int) -> list[str]:
 
 def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | None, context: int,
                vendor: str | None, named: bool = False) -> dict[str, Any]:
-    """plan() for an official IST-DAS set (ISTA_SETS): the same keys, the measured speeds in plain words.  RAM classes: with RAM for every
+    """plan() for an official ISTA-DAS set (ISTA_SETS): the same keys, the measured speeds in plain words.  RAM classes: with RAM for every
     expert the CPU lane keeps ("fits"), with 40 GB or more the engine's RAM store keeps the hot experts and reads the rest from the SSD
     ("tight": measured 4.7 tokens a second on 64 GB, 7.2 on 46 GB), under 40 GB it is untested and slower ("spills").  Never a refusal."""
     v = variant(model)
@@ -278,14 +283,16 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
     lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, {ISTA_ENGRAM_BYTES / GB:.0f} GB "
                  f"n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
     lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
-                 "disk makes every word slower). The same table serves every IST-DAS set, so installing another one downloads it once.")
+                 "disk makes every word slower). The same table serves every ISTA-DAS set, so installing another one downloads it once.")
     if n == 0:
         out["verdict"] = "no_card"
         warns.append("No graphics card Strata can use was found: this model needs one or more cards (8 GB or more; 12 GB is what it was "
                      "measured with).")
     else:
-        per_dense = ISTA_DENSE_ON_GPU_GB / n
-        cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - RESERVE_GB) for c in keep]
+        amd_cards = all(str(c.get("vendor") or vendor or "").lower() == "amd" for c in keep)
+        per_dense = (AMD_DENSE_ON_GPU_GB if amd_cards else ISTA_DENSE_ON_GPU_GB) / n
+        reserve = AMD_RESERVE_GB if amd_cards else RESERVE_GB
+        cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - reserve) for c in keep]
         vram_exp = min(v["experts_gb"], sum(cap))
         ranges = split_layers([float(c.get("vram_gb") or 0) for c in keep])
         in_vram = 0
@@ -341,7 +348,7 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
 
 
 def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_gb: float | None, context: int) -> dict[str, Any]:
-    """plan() for an official IST-DAS set on a unified-memory APU (Ryzen AI Max, gfx1151, Windows): the graphics memory is the RAM,
+    """plan() for an official ISTA-DAS set on a unified-memory APU (Ryzen AI Max, gfx1151, Windows): the graphics memory is the RAM,
     counted once.  The engine holds what fits beside the dense weights and the reserve and reads the rest from the SSD; the numbers in
     UMA_MEASURED are the measured 64 GB box.  Never a refusal."""
     v = ISTA_SETS[key]
@@ -371,7 +378,7 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
     lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, "
                  f"{ISTA_ENGRAM_BYTES / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
     lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
-                 "disk makes every word slower). The same table serves every IST-DAS set, so installing another one downloads it once.")
+                 "disk makes every word slower). The same table serves every ISTA-DAS set, so installing another one downloads it once.")
     name = card.get("name") or "the built-in Radeon"
     if float(card.get("dedicated_gb") or 0.0) > 0 or "GB10" not in str(card.get("name") or ""):
         lines.append(f"{name} shares this PC's memory: the RAM and the GPU's BIOS carve-out are one pool of {total:.0f} GB. About "
@@ -408,7 +415,7 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
 def plan(cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | None = None, context: int = 8192,
          vendor: str | None = None, model: str | None = None, named: bool = False) -> dict[str, Any]:
     """Where the model goes on this computer.  `cards`: the graphics cards ({"index", "name", "vram_gb", ...}, as gpu_fit takes them),
-    `ram_gb` the RAM, `disk_free_gb` the free space where the files go (None: not checked).  `model`: an official IST-DAS set
+    `ram_gb` the RAM, `disk_free_gb` the free space where the files go (None: not checked).  `model`: an official ISTA-DAS set
     (ISTA_SETS: "IST-DAS-2.00bpw" / "IST-DAS-2.25bpw" / "IST-DAS-1.75bpw") gets its own numbers; None or "UD-Q8_K_XL" is Unsloth's 508 GB set.
 
     Keys: cards (per card: index, name, vram_gb, layers, dense_gb, experts_gb, experts), experts_in_vram, experts_total, vram_experts_gb,
@@ -693,7 +700,7 @@ def mac_card(cards: list[dict] | None) -> dict | None:
 
 
 def _plan_mac(key: str, model: str, card: dict, ram_gb: float | None, disk_free_gb: float | None, context: int) -> dict[str, Any]:
-    """plan() for an official IST-DAS set on an Apple Silicon Mac.  One pool of unified memory: the engine keeps the experts it can
+    """plan() for an official ISTA-DAS set on an Apple Silicon Mac.  One pool of unified memory: the engine keeps the experts it can
     beside the dense weights resident (mac_expert_cap_gb) and reads the rest from the SSD in place.  Never a refusal: a smaller Mac
     gets a plain warning, not a block."""
     v = ISTA_SETS[key]

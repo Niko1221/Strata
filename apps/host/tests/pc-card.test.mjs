@@ -1,0 +1,74 @@
+/** Models > This computer: free graphics memory and RAM first, the SSD only when the model does not fit, and a loaded model changes the card. */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const stdin = { contents: "import { createElement } from 'react'; import { renderToStaticMarkup } from 'react-dom/server'; import { PcFitCard } from './src/components/PcFitCard'; export { setTranslationLanguage } from './src/lib/i18n'; export const render = props => renderToStaticMarkup(createElement(PcFitCard, props));", resolveDir: fileURLToPath(new URL('..', import.meta.url)), loader: 'ts' };
+const built = await build({ stdin, bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json', '.tsx': 'tsx' }, jsx: 'automatic', logLevel: 'silent', banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
+const dir = mkdtempSync(join(tmpdir(), 'strata-pc-test-'));
+writeFileSync(join(dir, 'card.mjs'), built.outputFiles[0].text);
+const { render, setTranslationLanguage } = await import(pathToFileURL(join(dir, 'card.mjs')).href);
+rmSync(dir, { recursive: true, force: true });
+const fit = (spillGb, vramUseGb = 12, ramUseGb = 44) => ({ memoryGb: vramUseGb + ramUseGb + spillGb, vramUseGb, ramUseGb, spillGb, known: true });
+const card = props => render({ gpuName: 'RTX 5070', ramGb: 64, vramGb: 12, ...props });
+const live = { vramTotalGb: 12, freeVramGb: 10.3, freeRamGb: 49.8, diskReadGbs: null };
+
+test('free graphics memory and free RAM come first, as real readings', () => {
+  setTranslationLanguage('en');
+  const html = card({ fit: fit(0), live });
+  assert.match(html, /Free right now/);
+  assert.match(html, /Graphics memory<\/span><b>10\.3 GB free<\/b>/);
+  assert.match(html, /RAM<\/span><b>49\.8 GB free<\/b>/);
+  assert.match(html, /of 12 GB/);
+  assert.doesNotMatch(card({ fit: fit(0), live: null }), /Free right now/, 'no readings: no invented numbers');
+});
+
+test('the SSD appears only when the model does not fit in memory, with how much is read from it', () => {
+  setTranslationLanguage('en');
+  assert.doesNotMatch(card({ fit: fit(0), live }), /SSD/);
+  assert.match(card({ fit: fit(0), live }), /Fits fully in memory\./);
+  assert.match(card({ fit: fit(30), live }), /About 30 GB will be read from the SSD/);
+});
+
+test('a loaded model changes the card: it says Loaded and what the model takes of graphics memory, RAM and SSD', () => {
+  setTranslationLanguage('en');
+  const fits = card({ fit: fit(0), live, loaded: [{ id: 'iq3_s', label: 'Qwen3.8-Flash-Next · IQ3_S', fit: fit(0) }], selectedLoaded: true });
+  assert.match(fits, /pc-loaded/);
+  assert.match(fits, /Qwen3\.8-Flash-Next · IQ3_S/);
+  assert.match(fits, /Loaded/);
+  assert.match(fits, /<dt>Graphics memory<\/dt><dd>12 GB<\/dd>/);
+  assert.match(fits, /<dt>RAM<\/dt><dd>44 GB<\/dd>/);
+  assert.doesNotMatch(fits, /<dt>SSD<\/dt>/, 'it fits: no SSD row');
+  assert.match(fits, /SSD: not needed/, 'the SSD line has its label even when nothing is read from it');
+  const spills = card({ fit: fit(18), live: { ...live, diskReadGbs: 1.2 }, loaded: [{ id: 'q', label: 'Qwen3.8-Flash-Next · UD-Q4_K_XL', fit: fit(18, 12, 53) }], selectedLoaded: true });
+  assert.match(spills, /<dt>SSD<\/dt><dd>18 GB<\/dd>/);
+  assert.match(spills, /Reading from your SSD now: 1\.2 GB\/s/);
+  assert.doesNotMatch(spills, /This version would take/, 'the loaded block already says it');
+});
+
+test('before anything is loaded the card says what the chosen version would take', () => {
+  setTranslationLanguage('en');
+  assert.match(card({ fit: fit(0), live }), /This version would take about 12 GB of graphics memory and 44 GB of RAM\./);
+});
+
+test('the numbers come from the host\'s readings, polled while the page is open and read without redrawing the Models page', () => {
+  const wrapper = readFileSync(fileURLToPath(new URL('../src/components/PcComputer.tsx', import.meta.url)), 'utf8');
+  assert.match(wrapper, /api\.get\('\/api\/monitor'\)/);
+  assert.match(wrapper, /useStore\(s => tenth\(s\.monitor\?\.hardware\?\.vramUsedGb\)\)/);
+  assert.match(wrapper, /useStore\(s => tenth\(s\.monitor\?\.hardware\?\.ramUsedGb\)\)/);
+});
+
+test('the new words are in all nine languages', () => {
+  const en = JSON.parse(readFileSync(fileURLToPath(new URL('../src/locales/pick-en.json', import.meta.url)), 'utf8'));
+  for (const lang of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) {
+    const cat = JSON.parse(readFileSync(fileURLToPath(new URL(`../src/locales/pick-${lang}.json`, import.meta.url)), 'utf8'));
+    for (const id of Object.keys(en)) {
+      assert.ok(cat[id], `${lang} ${id}`);
+      assert.deepEqual((cat[id].match(/\{\d+\}/g) ?? []).sort(), (en[id].match(/\{\d+\}/g) ?? []).sort(), `${lang} ${id} slots`);
+    }
+  }
+});

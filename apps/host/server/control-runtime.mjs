@@ -205,6 +205,24 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (result.json?.ok) return result.json;
       throw failure(result, 'The engine could not be rolled back.');
     },
+    /** The engines installed on this computer, by family (`strata components engines`): the one list the Terminal prints too. Reads files only. */
+    async engines() {
+      const result = await call(['components', 'engines', '--output', 'json'], { timeoutMs: 60_000 });
+      if (result.json?.ok) return result.json;
+      throw failure(result, 'The installed engines could not be read.');
+    },
+    /** Switch to an installed engine (`strata components use`): nothing is downloaded. `root` is only for a DeepSeek engine that lives in more than one place. */
+    async useEngine({ family, folder }) {
+      const result = await call(['components', 'use', folder, '--family', family, '--output', 'json'], { timeoutMs: 600_000 });
+      if (result.json?.ok) return result.json;
+      throw failure(result, 'The engine could not be switched.');
+    },
+    /** Delete an installed engine (`strata components remove`); Control refuses the one in use. */
+    async removeEngine({ family, folder }) {
+      const result = await call(['components', 'remove', folder, '--family', family, '--output', 'json'], { timeoutMs: 600_000 });
+      if (result.json?.ok) return result.json;
+      throw failure(result, 'The engine could not be deleted.');
+    },
     async engine({ backend = null } = {}) {
       const result = await call(['components', 'engine', '--output', 'json', ...(backend ? ['--backend', backend] : [])], { timeoutMs: 30_000 });
       if (result.json) return result.json;                  // exit 5 still carries the report and the notice

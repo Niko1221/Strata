@@ -5,7 +5,9 @@ The choice is the person's, and it is saved in the model's run config as ``"draf
 (like ``"mtp": false``, strata_control/draft_layer.py), so a setup run that rewrites the engine arguments cannot undo it.
 
   mtp      the engine's default drafter, the model's own draft layer (no extra flags)
-  dflash2  ``--draft dflash2 --draft-model <pack>``: the DFlash2 block drafter (incoai/Qwen3.8-Flash-Next-DFlash2) for Qwen3.8-Flash-Next
+  dflash2  ``--draft dflash2 --draft-model <pack> --spec 6 --draft-conf 0.35``: the DFlash2 block drafter (incoai/Qwen3.8-Flash-Next-DFlash2) for
+           Qwen3.8-Flash-Next, with the window and confidence that measured best (RESULTS-DRAFT.md section 4); a ``--spec`` or ``--draft-conf`` the
+           person set by hand (``user_args``) stays
   off      no draft layer (the same as ``"mtp": false``: the engine still looks ahead in the text with ``--spec``)
   auto     the table below says which of mtp / dflash2 this card class gets
 
@@ -79,11 +81,78 @@ def suggest(klass: str) -> str:
     return "dflash2" if row.drafter == "dflash2" and row.faster_everywhere else "mtp"
 
 
+# --------------------------------------------------------------------------------------------------- where the engine can run it
+#
+# The DFlash2 code (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) is compiled into the CUDA and HIP engines only (CMakeLists.txt, STRATA_HAVE_DFLASH2);
+# the Metal and SYCL engines have none, and a PC with no supported graphics card has no engine to run it. Where the code exists, three words say what was
+# measured (DFlash2 against MTP, same prompts, same flags; the numbers are in the comment above SUGGESTED and in phaseA-tests/blackwell/RESULTS-DRAFT.md):
+#   tested    measured on this kind of card: faster on some kinds of text, slower on others
+#   slower    measured on this kind of card: slower on every prompt
+#   untested  the engine has the code for this card but it was never measured on it
+
+#: What the Terminal's Drafting step and the app's paragraph under the dropdown say (the same words; apps/host/src/locales/df2-en.json, tests keep them equal).
+#: The numbers are measured: l620, RTX PRO 5000, Qwen3.8-Flash-Next IQ3_S, DFlash2 `--spec 6 --draft-conf 0.35` against MTP (phaseA-tests/blackwell/RESULTS-DRAFT.md section 4).
+EXPLAIN_NUMBERS = ("MTP is the default. DFlash2 is another way to guess the next words ahead, for Qwen3.8-Flash-Next only. On an RTX PRO 5000 it was 7.8% faster than MTP "
+                   "on 19 short prompts and 1.1% faster on long thinking, and faster on 21 of 23 prompts. On the short prompts the answers were identical.")
+EXPLAIN_LIMITS = "It downloads about 1.2 GB once, works with one graphics card and one request at a time, and uses MTP otherwise."
+
+LINE_TESTED = "On graphics cards like yours, DFlash2 was faster than MTP on some kinds of text and slower on others in our tests."
+LINE_SLOWER = "On graphics cards like yours, DFlash2 was slower than MTP in our tests."
+LINE_UNTESTED = "DFlash2 has not been tested on your graphics card yet."
+
+
+@dataclass(frozen=True)
+class Support:
+    can_run: bool        # this engine build has the DFlash2 code for the card
+    level: str           # none | tested | slower | untested
+    line: str            # plain words for the person ("" when there is nothing to say)
+
+
+_TESTED = {("cuda", "sm_120"), ("cuda", "sm_121"), ("hip", "gfx1151")}
+_SLOWER = {("cuda", "sm_86"), ("hip", "gfx1201")}
+
+
+_HARDWARE: list = []
+
+
+def detect_hardware() -> tuple[str | None, list[str]]:
+    """(engine family, card architectures) of this computer, looked up once: ``("cuda", ["sm_120"])``, ``("hip", ["gfx1151"])``, ``("metal", [])``;
+    ``(None, [])`` when nothing answers. Read-only probes of tools that are already installed; never raises, never downloads."""
+    if not _HARDWARE:
+        backend: str | None = None
+        archs: list[str] = []
+        try:
+            from strata_control import engine_component
+            backend = engine_component.detect_backend()[0]
+            archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
+        except Exception:                                    # noqa: BLE001 - an unknown computer is "no DFlash2", never an error
+            pass
+        _HARDWARE.append((backend, archs))
+    return _HARDWARE[0]
+
+
+def hardware_support(backend: str | None, archs: Any = None) -> Support:
+    """Can the engine for this backend and card run DFlash2, and what was measured on it. ``backend`` is the engine family (cuda | hip | sycl | metal);
+    ``archs`` the cards' architectures (``sm_120``, ``gfx1151``...), the first one counts like card_class does."""
+    make = str(backend or "").strip().lower()
+    if make not in ("cuda", "hip"):
+        return Support(False, "none", "")
+    first = ([archs] if isinstance(archs, str) else list(archs or []))
+    arch = str(first[0]).strip().lower() if first else ""
+    if (make, arch) in _TESTED:
+        return Support(True, "tested", LINE_TESTED)
+    if (make, arch) in _SLOWER:
+        return Support(True, "slower", LINE_SLOWER)
+    return Support(True, "untested", LINE_UNTESTED)
+
+
 # --------------------------------------------------------------------------------------------------- the drafter file
 #
-# incoai/Qwen3.8-Flash-Next-DFlash2 (Apache-2.0), pinned to one revision. The safetensors file is 1.2 GB; tools/dflash2_pack.py turns it into the
-# engine's runtime file (Q8 pack, about 0.76 GB). The sizes and hashes are the repository's own for that revision: a download is refused
-# if either differs.
+# incoai/Qwen3.8-Flash-Next-DFlash2 (Apache-2.0), pinned to one revision. The safetensors file is 1.2 GB; tools/dflash2_pack.py --q4_0 turns it, on the
+# person's own computer, into the engine's runtime file (a Q4_0 pack, 522,458,112 bytes; the repository publishes only the bf16 file and we host nothing).
+# The sizes and hashes are the repository's own for that revision: a download is refused if either differs. The pack itself is checked too: the same
+# bytes come out on x86 Windows, x86 Linux and aarch64 Linux (numpy 2.3.3 and 2.5.3), so its size and SHA-256 are pinned and a pack that differs is deleted.
+# A Q8 pack (760,353,792 bytes) made by an earlier Strata keeps working and is never fetched again; Q4_0 and Q8 ran the same speed (-0.3%, RESULTS-DRAFT.md).
 
 REPO = "incoai/Qwen3.8-Flash-Next-DFlash2"
 REVISION = "a22a1744e85c17364dcc54a6a420af7135d4c7f6"
@@ -94,10 +163,15 @@ FILES = (
     ("model.safetensors", 1206140008, "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"),
 )
 DOWNLOAD_GB = 1.2            # what is fetched (the safetensors file)
-PACK_GB = 0.76               # what stays on disk (the source file is removed after packing)
-PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"
-VRAM_GB = 1.2                # what the drafter needs in graphics memory (the engine's own estimate)
+PACK_GB = 0.52               # what stays on disk (the source file is removed after packing)
+PACK_NAME = "qwen3.8-flash-next-dflash2.q4_0.pack"
+PACK_BYTES = 522458112       # the Q4_0 pack tools/dflash2_pack.py --q4_0 makes from the pinned safetensors file, and its SHA-256
+PACK_SHA256 = "cda40d62d0eb8f37ed6e272142641a1d2f0de4a32f9e14d0416e7a71534849f1"
+LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9 test builds packed: still used when it is the one on disk
+VRAM_GB = 0.8                # what the drafter needs in graphics memory: the engine reports "drafter 799 MiB of VRAM" with the Q4_0 pack (1026 MiB with the Q8 pack), p620 gfx1201
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
+SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
+DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this
 
 #: model families (strata launch --family) the drafter was trained for and measured on: Qwen3.8-Flash-Next and its Gyro build.
 SUPPORTED_FAMILIES = ("qwen", "gyro")
@@ -111,13 +185,29 @@ def supported_model(model_name: str | None = None, family: str | None = None) ->
     return bool(model_name and _SUPPORTED_NAME.match(str(model_name)))
 
 
-def pack_path(data_dir: str | Path) -> Path:
+def _here(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > (1 << 20)
+    except OSError:
+        return False
+
+
+def target_path(data_dir: str | Path) -> Path:
+    """Where a fetch writes the Q4_0 pack."""
     return Path(data_dir) / FOLDER / PACK_NAME
+
+
+def pack_path(data_dir: str | Path) -> Path:
+    """The pack the engine is started with: the Q4_0 pack, else a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be."""
+    for name in (PACK_NAME, LEGACY_PACK_NAME):
+        if _here(Path(data_dir) / FOLDER / name):
+            return Path(data_dir) / FOLDER / name
+    return target_path(data_dir)
 
 
 def pack_ready(data_dir: str | Path | None) -> bool:
     try:
-        return bool(data_dir) and pack_path(data_dir).is_file() and pack_path(data_dir).stat().st_size > (1 << 20)
+        return bool(data_dir) and _here(pack_path(data_dir))
     except OSError:
         return False
 
@@ -149,16 +239,24 @@ DIDNT_FIT = "DFlash2 didn't fit"
 NOT_HERE = "DFlash2 isn't available in this mode"
 NOT_SUPPORTED = "DFlash2 is for Qwen3.8-Flash-Next only"
 NOT_DOWNLOADED = "the DFlash2 drafter isn't downloaded yet"
+NOT_THIS_CARD = "DFlash2 isn't available on this graphics card"
 NOT_SERVED = NOT_HERE
-REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED)
+REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD)
 
 
 def mtp_line(reason: str) -> str:
     return f"Drafting: MTP ({reason})"
 
 
-def decide(mode: Any, *, klass: str, model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None) -> Decision:
-    """The drafter a start uses. Never raises: a choice that cannot be applied becomes MTP with a note."""
+def engine_flags(pack: str | Path) -> tuple[str, ...]:
+    """The engine arguments of a DFlash2 start: the drafter, its file, the window and the confidence."""
+    return ("--draft", "dflash2", "--draft-model", str(pack), "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
+
+
+def decide(mode: Any, *, klass: str, model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
+           backend: str | None = None, archs: Any = None) -> Decision:
+    """The drafter a start uses. Never raises: a choice that cannot be applied becomes MTP with a note. ``backend`` (cuda | hip | sycl | metal)
+    is optional: given, a build without the DFlash2 code (Metal, SYCL) keeps the MTP."""
     asked = normalize(mode)
     if asked == "off":
         return Decision(asked, "off")
@@ -169,23 +267,40 @@ def decide(mode: Any, *, klass: str, model_name: str | None = None, family: str 
         return Decision(asked, "mtp", NOT_SUPPORTED if asked == "dflash2" else "")
     if not ENGINE_SERVES_DFLASH2:
         return Decision(asked, "mtp", NOT_SERVED if asked == "dflash2" else "")
+    if backend is not None and not hardware_support(backend, archs).can_run:
+        return Decision(asked, "mtp", NOT_THIS_CARD if asked == "dflash2" else "")
     if not pack_ready(data_dir):
         return Decision(asked, "mtp", NOT_DOWNLOADED)
-    return Decision(asked, "dflash2", flags=("--draft", "dflash2", "--draft-model", str(pack_path(data_dir))))
+    return Decision(asked, "dflash2", flags=engine_flags(pack_path(data_dir)))
 
 
-def needs_pack(mode: Any, *, klass: str, model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None) -> bool:
+ONE_REQUEST_NOTE = "DFlash2 answers one request at a time, so Strata set this model to one request at a time."
+
+
+def wants_one_request(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
+                      archs: Any = None, **_ignored: Any) -> bool:
+    """DFlash2 was asked for (by name, not by Auto) and this model and computer can run it: the model then starts with one request at a time, because
+    the engine's request slots (``--batch``, which Strata fills in by itself on a card with room) keep the MTP. A number of requests the person chose
+    stays as they chose it; the callers check that."""
+    return (normalize(mode) == "dflash2" and ENGINE_SERVES_DFLASH2 and supported_model(model_name, family)
+            and (backend is None or hardware_support(backend, archs).can_run))
+
+
+def needs_pack(mode: Any, *, klass: str, model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
+               backend: str | None = None, archs: Any = None) -> bool:
     """Would this choice use the DFlash2 drafter if its file were here, and is it not here yet? (Then it is fetched before the start.)"""
     asked = normalize(mode)
     want = suggest(klass) if asked == "auto" else asked
+    if backend is not None and not hardware_support(backend, archs).can_run:
+        return False
     return want == "dflash2" and ENGINE_SERVES_DFLASH2 and supported_model(model_name, family) and not pack_ready(data_dir)
 
 
-DRAFT_FLAGS = {"--draft": True, "--draft-model": True}
+DRAFT_FLAGS = {"--draft": True, "--draft-model": True, "--draft-conf": True}
 
 
 def strip_draft_flags(args: list[Any]) -> list[str]:
-    """The arguments without ``--draft`` / ``--draft-model`` (and their values)."""
+    """The arguments without ``--draft`` / ``--draft-model`` / ``--draft-conf`` (and their values)."""
     out: list[str] = []
     items = [str(a) for a in args]
     i = 0
@@ -210,12 +325,33 @@ def data_dir_of(args: list[Any]) -> Path | None:
     return None
 
 
-def apply(cfg: dict[str, Any], *, klass: str, data_dir: str | Path | None = None, family: str | None = None) -> Decision:
-    """Put the config's ``"drafting"`` choice on its engine arguments (in place). ``off`` is the draft layer's own switch (``"mtp": false``)."""
+def _flag_value(args: list[Any], flag: str) -> str | None:
+    items = [str(a) for a in args or []]
+    return items[items.index(flag) + 1] if flag in items and items.index(flag) + 1 < len(items) else None
+
+
+def _without_flag(args: list[str], flag: str) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == flag:
+            i += 2 if i + 1 < len(args) and not args[i + 1].startswith("--") else 1
+            continue
+        out.append(args[i])
+        i += 1
+    return out
+
+
+def apply(cfg: dict[str, Any], *, klass: str, data_dir: str | Path | None = None, family: str | None = None,
+          backend: str | None = None, archs: Any = None) -> Decision:
+    """Put the config's ``"drafting"`` choice on its engine arguments (in place). ``off`` is the draft layer's own switch (``"mtp": false``).
+    DFlash2 sets the window (``--spec 6``) and the confidence (``--draft-conf 0.35``) unless the person set either one by hand in ``user_args``."""
     from strata_control import draft_layer
-    decision = decide(cfg.get("drafting"), klass=klass, model_name=cfg.get("model_name"), family=family, data_dir=data_dir)
+    decision = decide(cfg.get("drafting"), klass=klass, model_name=cfg.get("model_name"), family=family, data_dir=data_dir, backend=backend, archs=archs)
     if cfg.get("drafting") is None and decision.drafter == "mtp":
         return decision                                       # nobody chose and Auto is the MTP: the arguments stay exactly as they are
+    mine = cfg.get("user_args") or []
+    kept_conf = _flag_value(mine, "--draft-conf")
     args = strip_draft_flags(cfg.get("args") or [])
     if decision.drafter == "off":
         cfg["mtp"] = False
@@ -224,7 +360,16 @@ def apply(cfg: dict[str, Any], *, klass: str, data_dir: str | Path | None = None
     else:
         if cfg.get("drafting") is not None and normalize(cfg.get("drafting")) != "off" and cfg.get("mtp") is False:
             cfg["mtp"] = True                                 # an explicit drafter choice overrides an older "mtp": false
-        cfg["args"] = args + list(decision.flags)
+        flags = list(decision.flags)
+        if decision.drafter == "dflash2":
+            if kept_conf is not None:
+                flags[flags.index("--draft-conf") + 1] = kept_conf
+            if _flag_value(mine, "--spec") is None:
+                args = _without_flag(args, "--spec")          # the person's own --spec stays; otherwise the window is the DFlash2 one
+            else:
+                i = flags.index("--spec")
+                del flags[i:i + 2]
+        cfg["args"] = args + flags
     return decision
 
 

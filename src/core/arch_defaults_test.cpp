@@ -30,6 +30,19 @@ static void put(const char* k, const char* v) {
 int main() {
     using namespace strata::core;
     unset("STRATA_GFX1151_DEFAULTS");
+    // 0.2.9.1: the parallel-request stack, Windows gfx1151 with 2 or more batch slots only
+    unset("STRATA_GFX1151_DEFAULTS");
+    CHECK(parallel_default_env("gfx1151", true, 4).size() == 9);
+    CHECK(parallel_default_env("gfx1151:sramecc-:xnack-", true, 2).size() == 9);
+    CHECK(parallel_default_env("gfx1151", true, 1).empty());
+    CHECK(parallel_default_env("gfx1151", true, 0).empty());
+    CHECK(parallel_default_env("gfx1151", false, 4).empty());      // Linux: the launcher sets its own stack
+    CHECK(parallel_default_env("gfx1201", true, 4).empty());
+    CHECK(parallel_default_env("", true, 4).empty());
+    put("STRATA_GFX1151_DEFAULTS", "0");
+    CHECK(parallel_default_env("gfx1151", true, 4).empty());
+    unset("STRATA_GFX1151_DEFAULTS");
+    for (const auto& kv : parallel_default_env("gfx1151", true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
     CHECK(arch_default_env("gfx1150").empty());
@@ -108,11 +121,20 @@ int main() {
         unset("STRATA_QFUSE");
         unset("STRATA_TSUM");
     }
-    // gfx12: the five prompt switches and four bit-identical decode switches, no bit-changing one
+    // AMD-Q: the CPU prefill share is a default of a gfx12 card only (the caller adds single card / experts missing)
+    unset("STRATA_GFX12_DEFAULTS");
+    CHECK(gfx12_prefill_share_default("gfx1201", false) && gfx12_prefill_share_default("gfx1200", false) &&
+          gfx12_prefill_share_default("gfx1201:sramecc-:xnack-", false));
+    CHECK(!gfx12_prefill_share_default("gfx1201", true));   // STRATA_DEFAULTS=026
+    for (const char* a : {"gfx1151", "gfx1150", "gfx1103", "gfx1100", "gfx1030", "gfx906", "gfx90a", ""}) CHECK(!gfx12_prefill_share_default(a, false));
+    put("STRATA_GFX12_DEFAULTS", "0");
+    CHECK(!gfx12_prefill_share_default("gfx1201", false));
+    unset("STRATA_GFX12_DEFAULTS");
+    // gfx12: the five prompt switches and seven bit-identical decode switches, no bit-changing one
     unset("STRATA_GFX12_DEFAULTS");
     for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
         const auto t = arch_default_env(a);
-        CHECK(t.size() == 9);
+        CHECK(t.size() == 12);
         bool attn_lane = false, attn_merge = false, tsum = false, expdec = false;
         for (const auto& kv : t) {
             if (kv.first == "STRATA_ATTN_LANECELL") attn_lane = kv.second == "1";
@@ -249,17 +271,21 @@ int main() {
     const char* five[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"};
     for (const char* k : five) unset(k);
     CHECK(apply_arch_defaults("gfx1100", false).empty());
-    // gfx12: a discrete RDNA4 card gets its own nine switches (five prompt, four decode); a second call has nothing to do
+    // gfx12: a discrete RDNA4 card gets its own twelve switches (five prompt, seven decode); a second call has nothing to do
     const char* g12[] = {"STRATA_GDN_HEAD", "STRATA_GDN_PP",  "STRATA_GDN_CONVL2",    "STRATA_GDN_NOY", "STRATA_CVEC_FUSE",
                          "STRATA_ATTN_LANECELL", "STRATA_ATTN_MERGE_V2", "STRATA_TSUM", "STRATA_EXPDEC"};
     for (const char* k : g12) unset(k);
+    unset("STRATA_SMALL_UNR"); unset("STRATA_GR_Q32_G"); unset("STRATA_GR_Q8_PFS");
     const auto g12set = apply_arch_defaults("gfx1201", false);
-    CHECK(g12set.size() == 9);
+    CHECK(g12set.size() == 12);
     for (const char* k : g12) {
         CHECK(std::getenv(k) != nullptr);
         CHECK(std::string(std::getenv(k)) == (std::strcmp(k, "STRATA_GDN_PP") == 0 ? "2" : "1"));
     }
+    CHECK(std::string(std::getenv("STRATA_SMALL_UNR")) == "3" && std::string(std::getenv("STRATA_GR_Q32_G")) == "2" &&
+          std::string(std::getenv("STRATA_GR_Q8_PFS")) == "1");
     CHECK(apply_arch_defaults("gfx1201", false).empty());
+    unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS"); unset("STRATA_HEAD_MIX_MULTI");   // gfx12_extra.hpp's defaults (own test: gfx12_extra_test)
     CHECK(apply_arch_defaults("gfx1103", false).empty());   // integrated == false: a mixed box (iGPU + dGPU) keeps the old defaults
     for (const char* k : five) CHECK(std::getenv(k) == nullptr);
     put("STRATA_HC_UPMIX", "0");
@@ -393,7 +419,7 @@ int main() {
         CHECK(prompt_attn_imma_default(false, 86, false));
         CHECK(!prompt_attn_imma_default(false, 86, true));
         CHECK(!prompt_attn_imma_default(false, 120, true));
-        // the gfx12 decode switches: the arch table is v0.2.6's five prompt switches under 026, nine otherwise; gfx1151 and the others do not move
+        // the gfx12 decode switches: the arch table is v0.2.6's five prompt switches under 026, twelve otherwise; gfx1151 and the others do not move
         {
             const auto t26 = strata::core::arch_default_env("gfx1201", true);
             const auto t27 = strata::core::arch_default_env("gfx1201", false);
@@ -401,10 +427,12 @@ int main() {
                 for (const auto& kv : t) if (kv.first == k) return true;
                 return false;
             };
-            CHECK(t26.size() == 5 && t27.size() == 9);
+            CHECK(t26.size() == 5 && t27.size() == 12);
             CHECK(has(t26, "STRATA_GDN_HEAD") && has(t26, "STRATA_CVEC_FUSE"));
             CHECK(!has(t26, "STRATA_ATTN_LANECELL") && !has(t26, "STRATA_ATTN_MERGE_V2") && !has(t26, "STRATA_TSUM") && !has(t26, "STRATA_EXPDEC"));
             CHECK(has(t27, "STRATA_ATTN_LANECELL") && has(t27, "STRATA_ATTN_MERGE_V2") && has(t27, "STRATA_TSUM") && has(t27, "STRATA_EXPDEC"));
+            CHECK(has(t27, "STRATA_SMALL_UNR") && has(t27, "STRATA_GR_Q32_G") && has(t27, "STRATA_GR_Q8_PFS"));   // AMD-Q: bitwise load-ordering switches
+            CHECK(!has(t26, "STRATA_SMALL_UNR") && !has(t26, "STRATA_GR_Q32_G") && !has(t26, "STRATA_GR_Q8_PFS"));
             CHECK(strata::core::arch_default_env("gfx1200", true).size() == 5);
             CHECK(strata::core::arch_default_env("gfx1151", true) == strata::core::arch_default_env("gfx1151", false));
             CHECK(strata::core::arch_default_env("gfx1100", true).empty() && strata::core::arch_default_env("gfx1100", false).empty());

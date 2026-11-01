@@ -2,6 +2,7 @@
 import http from 'node:http';
 import {readFile,writeFile} from 'node:fs/promises';
 import {resolve,extname} from 'node:path';
+import {createEnginePreview} from './engine-preview.mjs';
 
 const root=resolve(import.meta.dirname,'../../dist'),upstream=process.env.STRATA_ONBOARDING_UPSTREAM??'http://127.0.0.1:5161';
 const native=process.env.STRATA_UI_PREVIEW==='1' ? JSON.parse(await readFile(new URL('./ui-preview-native.json',import.meta.url),'utf8')) : await (await fetch(upstream+'/api/native')).json();
@@ -22,6 +23,8 @@ native.downloadDirectory='/Users/example/Documents/Strata/Models';
 native.installed={models:[],data_folder:'/Models/Strata',engine:{version:native.version}};
 native.instances=[];native.jobs=[];native.defaultId=null;native.external=[];
 native.summary='Choose a version to get started';native.error=null;native.capabilities.calibration=true;
+/* UI preview: several installed engines and an engine update, kept in memory (Settings > Engine, About). */
+const enginePreview=process.env.STRATA_UI_PREVIEW==='1'?createEnginePreview(native):null;
 let setup={complete:false,dismissed:false,choices:{},step:1,flowVersion:2,history:[],app:{version:'0.1.0',modelsDir:'/Models',dataDir:'/Strata/data'}};
 let selected=null;
 let loadVision='no';
@@ -77,6 +80,7 @@ const server=http.createServer(async(req,res)=>{try{
  if(process.env.STRATA_CAPTURE_OUTPUT&&path==='/__fixture/export.js'){
   res.writeHead(200,{'content-type':'text/javascript'});res.end(await readFile(resolve(import.meta.dirname,'onboarding-export.js')));return;
  }
+ if(enginePreview&&await enginePreview.handle(path,req.method,body,json))return;
  if(path==='/__fixture/stage'&&req.method==='POST'){stage(body.stage);return json({stage:body.stage});}
  if(path==='/api/native'&&req.method==='GET')return json(native);
  if(/^\/api\/native\/models\/[^/]+\/settings$/.test(path)){const model=path.split('/')[4];if(req.method==='PATCH')modelSettings.set(model,{model,values:body.values??{},mcp:body.mcp??{}});return json(modelSettings.get(model)??{model,values:{sampling:{},args:[],env:{}},mcp:{},restartNeeded:true});}

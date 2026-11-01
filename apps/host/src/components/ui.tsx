@@ -532,6 +532,9 @@ export function ErrorNotice({ message, next, action, onRetry, detail, secondary 
     const known = plain.kind !== 'plain';
     const nextStep = known ? (plain.next ? tr(plain.next) : next) : next;
     const raw = detail ?? (known ? plain.detail : undefined);
-    return <div className="error-notice" role="alert"><Icon name="error" size={18}/><div><strong>{tr(known ? plain.message : userError(message))}</strong>{tr(nextStep ? <p>{tr(nextStep)}</p> : null)}{tr(raw ? <details className="error-detail"><summary className="small">{tr("Details")}</summary><pre className="small muted">{raw}</pre></details> : null)}</div>{tr(onRetry ? (secondary ? <div className="row"><Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn><Btn size="sm" variant="ghost" onClick={secondary.onClick}>{tr(secondary.label)}</Btn></div> : <Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn>) : null)}</div>;
+    // An unrecognised failure still goes through plainFailure: it peels an
+    // `{"error":"…"}` body down to the sentence, where userError only capitalised
+    // the JSON and showed an object to the person.
+    return <div className="error-notice" role="alert"><Icon name="error" size={18}/><div><strong>{tr(plain.message)}</strong>{tr(nextStep ? <p>{tr(nextStep)}</p> : null)}{tr(raw ? <details className="error-detail"><summary className="small">{tr("Details")}</summary><pre className="small muted">{raw}</pre></details> : null)}</div>{tr(onRetry ? (secondary ? <div className="row"><Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn><Btn size="sm" variant="ghost" onClick={secondary.onClick}>{tr(secondary.label)}</Btn></div> : <Btn size="sm" onClick={onRetry}>{tr(action ?? 'Try again')}</Btn>) : null)}</div>;
 }
 export function PreviewBadge() { const demo = useStore(s => s.library?.mode === 'simulated'); return demo ? <span className="preview-badge">{tr("Preview build")}</span> : null; }

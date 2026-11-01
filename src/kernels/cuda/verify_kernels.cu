@@ -6,10 +6,12 @@
 #include "strata/core/bw_dense_defaults.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm120_series.hpp"
 #define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 stores divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/kernels/window_start.hpp"  // KVA: the draft layer's window floor
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/gfx_arch.hpp"   // #3264: the gfx12 test of the multi-block head ops
 #include "strata/kernels/pdl.hpp"
 
 #include <cuda_fp16.h>
@@ -698,6 +700,9 @@ __global__ void row_top_prob_kernel(const float* __restrict__ logits, int n_voca
     const float* l = logits + (size_t) t * n_vocab;
     const float m = l[ids[t]];
     float s = 0.0f;
+#if defined(__HIPCC__)
+#pragma unroll 8
+#endif
     for (int i = threadIdx.x; i < n_vocab; i += blockDim.x) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = s;
@@ -824,10 +829,14 @@ void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* i
     check("row_top_prob");
 }
 
-#if !defined(__HIPCC__)   // warp-32 kernels: an AMD card keeps the one-block row_top_prob and sampler_greedy_kernel
+#if !defined(STRATA_HIP_GFX906)   // wave32 kernels (CUDA and RDNA HIP; wave64 gfx906 keeps the one-block kernels)
 namespace {
 
+#if defined(__HIPCC__)
+constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 32;   // RDNA HIP (#3264): single-warp blocks, no block barrier
+#else
 constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 8;
+#endif
 
 // the larger value, on equality the lower index: sampler_greedy_kernel's order
 __device__ __forceinline__ void arg_take(float ov, int oi, float& bv, int& bi) {
@@ -922,15 +931,16 @@ __global__ void row_top_prob_split_kernel(const float* __restrict__ logits, int 
     const float m = l[ids[row]];
     const int vt = (int) (blockIdx.x * blockDim.x + threadIdx.x);
     float s = 0.0f;
+#if defined(__HIPCC__)
+#pragma unroll 8
+#endif
     for (int i = vt; i < n_vocab; i += 1024) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) parts[vt >> 5] = s;
     __threadfence();
-    __syncthreads();
-    __shared__ bool last;
-    if (threadIdx.x == 0) last = atomicAdd(&rows[row].counter, 1u) == (unsigned) (gridDim.x - 1);
-    __syncthreads();
-    if (!last || threadIdx.x != 0) return;
+    if (blockDim.x > 32) __syncthreads();
+    if (threadIdx.x != 0) return;
+    if (atomicAdd(&rows[row].counter, 1u) != (unsigned) (gridDim.x - 1)) return;
     __threadfence();
     float tot = 0.0f;
     for (int w = 0; w < 32; ++w) tot += ((volatile const float*) parts)[w];
@@ -997,20 +1007,47 @@ void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* fla
 }
 
 bool multi_block_head_ops() {
-#if defined(__HIPCC__)
+#if defined(STRATA_HIP_GFX906)
     return false;
 #else
-    static const bool on = [] {
+    static const int env = [] {
         const char* v = std::getenv("STRATA_MULTI_BLOCK_ARGMAX");
-        return v == nullptr || std::atoi(v) != 0;
+        return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
     }();
-    return on;
+    if (env == 0) return false;
+#if defined(__HIPCC__)
+    static int arch[64] = {};   // 0 unknown, 1 gfx12 (RDNA4: the only HIP target #3264 was run on), 2 other
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName)) ? 1 : 2;
+    }
+    return arch[dev] == 1;
+#else
+    return true;
+#endif
 #endif
 }
 
 bool argmax_rows_wanted() {
-#if defined(__HIPCC__)
+#if defined(STRATA_HIP_GFX906)
     return false;
+#else
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_ARGMAX_ROWS");
+        return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
+    }();
+    if (env >= 0) return env != 0 && multi_block_head_ops();
+#if defined(__HIPCC__)
+    static int arch[64] = {};   // 0 unknown, 1 gfx12 (RDNA4), 2 other
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName)) ? 1 : 2;
+    }
+    return arch[dev] == 1 && multi_block_head_ops();
 #else
     // sm_80 to sm_89, and sm_7x with STRATA_ARGMAX_ROWS_SM70=1: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
     static const bool want = [] {
@@ -1024,6 +1061,7 @@ bool argmax_rows_wanted() {
         return major == 8;
     }();
     return want && multi_block_head_ops();
+#endif
 #endif
 }
 
@@ -1129,7 +1167,8 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
         const char* dbg = std::getenv("STRATA_DBG_GDN");
         return (sp && sp[0] == '1') || (cs && cs[0] == '0') || (dbg && dbg[0] == '1');
     }();
-    if (per_layer || n_layers <= 0 || n_layers > 65535 || n_max < 1 || n_max > kVerifyMaxT || n_keep == nullptr ||
+    // n_max: the window's rows (kVerifyLongT with --lookup-max-t; both kernels loop over the kept rows, no per-row arrays)
+    if (per_layer || n_layers <= 0 || n_layers > 65535 || n_max < 1 || n_max > kVerifyLongT || n_keep == nullptr ||
         h_v <= 0 || h_k <= 0 || h_v % h_k != 0)
         return false;
     cudaStream_t st = (cudaStream_t) stream;
@@ -1211,12 +1250,14 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, int n_tok,
                          const int32_t* n_keep, void* stream, int t_out_begin, void* xq_out) {
     GdnQ81* const xq = static_cast<GdnQ81*>(xq_out);   // S26: non-null = also the outputs' q8_1 (STRATA_QFUSE)
+    // n_tok: up to kVerifyLongT (a long window's second token group replays the state from its first token); the
+    // default kernels loop over the tokens, the STRATA_GDN_SPLIT ones hold kVerifyMaxT per thread
+    static const bool split = [] { const char* v = std::getenv("STRATA_GDN_SPLIT"); return v && v[0] == '1'; }();
     if (!state || !h || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v % h_k || n_tok < 1 ||
-        n_tok > kVerifyMaxT) {
+        n_tok > (split ? kVerifyMaxT : kVerifyLongT)) {
         std::fprintf(stderr, "gdn_step_norm_multi: invalid arguments\n");
         std::exit(1);
     }
-    static const bool split = [] { const char* v = std::getenv("STRATA_GDN_SPLIT"); return v && v[0] == '1'; }();
     // S26: the split runs where it is faster (gfx1151 harness, h_v 48: the commit 8-19% per call; a window of 2+ rows
     // 3-13%; one row: no gain, the old kernel stays) - bitwise equal in every case
     if (split && (t_out_begin >= n_tok || n_tok - t_out_begin >= 2)) {
@@ -1726,10 +1767,16 @@ bool pdl_supported() {
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
     int s = state[dev].load(std::memory_order_relaxed);
     if (s == 0) {
-        static const bool env_on = [] { const char* v = std::getenv("STRATA_DF_PDL"); return v != nullptr && std::atoi(v) != 0; }();   // opt-in until the A/B says otherwise
-        int major = 0;
+        // STRATA_DF_PDL: 1 / 2 = on for every window graph, 0 = off; unset = on for a compute capability 12.0 card (STRATA_SM120_PERF=0 turns
+        // that off), where the verifier asks for it for the all-resident graph only (BW-MEASURE, E21: +0.3..+0.5% decode there, bit-identical;
+        // -1.6% .. -4.5% in the doorbell graph of a partly resident cache)
+        static const int env_mode = [] { const char* v = std::getenv("STRATA_DF_PDL"); return v == nullptr ? -1 : (std::atoi(v) != 0 ? 1 : 0); }();
+        int major = 0, minor = 0;
         cudaFuncAttributes fa{};
-        const bool on = env_on && cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+        const bool on_attr = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                             cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        const bool env_on = env_mode == 1 || (env_mode < 0 && on_attr && strata::sm120_default(major, minor));
+        const bool on = env_on && on_attr &&
                         strata::cc_major_of(major) >= 9 &&
                         cudaFuncGetAttributes(&fa, gpu_stamp_kernel<true>) == cudaSuccess && fa.ptxVersion >= 90 &&
                         fa.binaryVersion >= 90;
