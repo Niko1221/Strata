@@ -121,10 +121,18 @@ export class ControlError extends Error {
   }
 }
 
-/** Run one CLI command of Control. Resolves { code, json, text, stderr }; rejects only if it cannot start or times out. */
-export function runCli(control, args, { env = process.env, timeoutMs = 60_000, spawnProcess = spawn, components, acquire = false, onLine = null, signal = null } = {}) {
+/**
+ * Small Control programs that are a module of strata_control and not a `strata` command. They run on Control's interpreter with Control's folder first on the
+ * path (the folder is the working directory), so they work whatever the interpreter does with the script folder.
+ */
+const BOOT = {
+  pictures: 'import os,sys;sys.path.insert(0,os.getcwd());from strata_control import pictures;sys.exit(pictures.main(sys.argv[1:]))',
+};
+
+/** Run one CLI command of Control (or, with `boot`, one of its modules). Resolves { code, json, text, stderr }; rejects only if it cannot start or times out. */
+export function runCli(control, args, { env = process.env, timeoutMs = 60_000, spawnProcess = spawn, components, acquire = false, onLine = null, signal = null, boot = null } = {}) {
   return new Promise((resolveRun, reject) => {
-    const child = spawnProcess(control.python, [control.cli, ...args], {
+    const child = spawnProcess(control.python, boot ? ['-c', BOOT[boot], ...args] : [control.cli, ...args], {
       cwd: control.dir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
       env: controlEnvironment(control, { env, acquire, ...(components ? { components } : {}) }),
     });
@@ -294,6 +302,19 @@ export function createControl({ control = findControl(), env = process.env, run 
       const result = await call(args, { timeoutMs: 3 * 3600_000, acquire: true, onLine: onEvent ?? (() => {}), signal });
       if (result.json?.ok) return result.json;
       throw Object.assign(new ControlError(result.json?.error?.message ?? (result.stderr.split(/\r?\n/).filter(Boolean).pop() || 'The DFlash2 drafter could not be downloaded.'), { exitCode: result.code, output: result.json }), { code: 'drafting_failed' });
+    },
+    /**
+     * The picture files of an installed model that has none (strata_control/pictures.py): found or downloaded once (about 0.9 GB, shared), and the run
+     * config's `vision` section worked out for this engine. Nothing else of the model is touched and nothing is written to its run config: the caller does.
+     * Resolves { mmproj, vision, fetched, note, data_dir }; a failure is a ControlError whose `code` is offline | disk | failed | checksum | unsupported | no_reader.
+     * `onEvent` gets {step, done, total}. This is an explicit step that may reach the network (`acquire`), only for the Load the person pressed.
+     */
+    async picturesFetch({ configPath, engineDir, vision = 'yes', dataDir = null, family = null, hardware = null, onEvent = null, signal = null } = {}) {
+      const args = ['fetch', '--config', configPath, '--engine-dir', engineDir, '--vision', vision, ...(dataDir ? ['--data-dir', dataDir] : []), ...(family ? ['--family', family] : []),
+        ...(hardware?.vram_gb != null ? ['--vram-gb', String(hardware.vram_gb)] : []), ...(hardware?.make ? ['--make', String(hardware.make)] : []), ...(hardware?.arch != null ? ['--arch', String(hardware.arch)] : [])];
+      const result = await call(args, { timeoutMs: 3 * 3600_000, acquire: true, boot: 'pictures', onLine: onEvent ?? (() => {}), signal });
+      if (result.json?.ok) return result.json;
+      throw Object.assign(new ControlError(result.json?.error?.message ?? (result.stderr.split(/\r?\n/).filter(Boolean).pop() || 'The picture files could not be downloaded.'), { exitCode: result.code, output: result.json }), { code: result.json?.error?.code ?? 'failed' });
     },
     async saveProfile(name, configPath) {
       const listed = await call(['profile', 'list', '--output', 'json'], { timeoutMs: 20_000 });

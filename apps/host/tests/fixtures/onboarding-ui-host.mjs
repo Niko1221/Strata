@@ -66,6 +66,30 @@ if(['make-it-yours','ready'].includes(process.env.STRATA_ONBOARDING_START)){
 }
 if(process.env.STRATA_ONBOARDING_GPUS){native.instances=[];native.defaultId=null;}/* GPU roles previews: the model is prepared, not loaded, so the roles shown are the recommendation */
 if(process.env.STRATA_PREVIEW_STATE_FILE){const saved=JSON.parse(await readFile(process.env.STRATA_PREVIEW_STATE_FILE,'utf8'));Object.assign(native,saved.native);setup=saved.setup;const running=native.instances.find(i=>i.id===native.defaultId),entry=native.installed.models.find(m=>m.model===running?.model),family=native.catalog.families.find(f=>f.sizes.some(s=>s.id===entry?.model)),size=family?.sizes.find(s=>s.id===entry?.model);if(family&&size){selected={family:family.family,model:size.model,context:entry.context??32768,vision:entry.images==='off'?'no':'yes',kv:entry.kv??'int8',low_ram:entry.lowRamMode??'auto'};loadVision=entry.visionEnabled===false?'no':selected.vision;}}
+/* Load with Read pictures on and no picture files (STRATA_PICTURES_SCENARIO=online|offline): the model is downloaded, the Models page offers a plain Load, and the Load fetches the
+   picture files (online) or loads without pictures and says so (offline). What the page posted is kept for the test: GET /__fixture/posted. Nothing is downloaded or started. */
+const picturesScenario=process.env.STRATA_PICTURES_SCENARIO??'';
+const posted=[];
+if(picturesScenario){
+ const family=native.catalog.families.find(f=>f.family==='qwen'),size=family.sizes.find(s=>s.model==='IQ3_S')??family.sizes[0];
+ size.installed=true;native.packaged=true;native.visionReader=true;
+ native.installed.models=[{model:size.id,config:`strata-${size.id}.json`,model_name:family.title,ready:true,context:32768,kv:'int8',images:'off',visionPrepared:false,lowRamMode:'auto',runDataFolder:'/Users/example/qwen-own',ownGgufDir:'/Users/example/qwen-own/IQ3_S'}];
+ native.instances=[];native.defaultId=null;native.jobs=[];native.summary='Ready';setup={...setup,complete:true,step:4};
+}
+function pictureLoad(body){
+ posted.push({kind:body.kind,args:body.args});
+ const family=native.catalog.families.find(f=>f.family==='qwen'),size=family.sizes.find(s=>s.id===body.args.model),id=`pictures-${native.jobs.length}`;
+ const bar=percent=>({install:{download:{file:'picture reader',percent,done_gb:0.9*percent/100,total_gb:0.9,remaining_gb:0.9*(100-percent)/100}}});
+ const done=(vision,note)=>{const j=native.jobs.find(x=>x.id===id);Object.assign(j,{state:'done',summary:`${family.title} is ready.`,result:null});
+  if(vision){native.installed.models[0].images='yes';native.installed.models[0].visionPrepared=true;}
+  if(body.kind==='load'){native.instances=[{id:'onboarding-model',apiModelId:size.id,model:size.id,label:family.title,aliases:[],vision,context:32768,port:5262,gpus:[0],status:'ready',phase:'idle',loadedAt:new Date().toISOString(),error:null,metrics:null,...(note?{picturesNote:note}:{})}];native.defaultId='onboarding-model';}};
+ const online=picturesScenario==='online';
+ native.jobs.push({id,kind:body.kind,model:body.args.model,state:'running',startedAt:new Date().toISOString(),summary:online?'Downloading the picture files (0.9 GB, once)…':'Downloading the picture files (0.9 GB, once)…',error:null,result:bar(0)});
+ const at=(ms,action)=>setTimeout(()=>{const j=native.jobs.find(x=>x.id===id);if(j?.state==='running')action(j);},ms).unref();
+ if(online){at(1500,j=>{j.result=bar(33);});at(3000,j=>{j.result=bar(66);});at(4500,j=>{j.summary='Loading the model…';j.result=null;});at(6500,()=>done(true,null));}
+ else{at(1500,j=>{j.summary='Loading the model…';j.result=null;});at(3500,()=>done(false,'No internet connection: the model is loaded without picture reading. Load it again when you are online.'));}
+ return native.jobs.at(-1);
+}
 const server=http.createServer(async(req,res)=>{try{
  const path=new URL(req.url,'http://fixture').pathname;let payload='';if(req.method!=='GET')for await(const chunk of req)payload+=chunk;const body=payload?JSON.parse(payload):{};
  const json=(value,status=200)=>{res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(value));};
@@ -83,6 +107,7 @@ const server=http.createServer(async(req,res)=>{try{
  if(enginePreview&&await enginePreview.handle(path,req.method,body,json))return;
  if(path==='/__fixture/stage'&&req.method==='POST'){stage(body.stage);return json({stage:body.stage});}
  if(path==='/api/native'&&req.method==='GET')return json(native);
+ if(path==='/__fixture/posted'&&req.method==='GET')return json(posted);
  if(/^\/api\/native\/models\/[^/]+\/settings$/.test(path)){const model=path.split('/')[4];if(req.method==='PATCH')modelSettings.set(model,{model,values:body.values??{},mcp:body.mcp??{}});return json(modelSettings.get(model)??{model,values:{sampling:{},args:[],env:{}},mcp:{},restartNeeded:true});}
  if(path==='/api/native/directory'){native.downloadDirectory=body.directory;return json(native);}
  if(path==='/api/local-models/browse')return json({directory:new URL(req.url,'http://fixture').searchParams.get('directory')??'/Models/Strata',parent:'/Models',entries:[{name:'downloads',path:'/Models/Strata/downloads',kind:'folder'},{name:'models',path:'/Models/Strata/models',kind:'folder'}],shortcuts:[],truncated:false});
@@ -91,6 +116,7 @@ const server=http.createServer(async(req,res)=>{try{
   return json({plan:{title:family.title,download_gb:size.download_gb,disk_short:null}});
  }
  if(path==='/api/native/operations'&&req.method==='POST'){
+  if(picturesScenario&&['load','pictures'].includes(body.kind))return json(pictureLoad(body));
   if(!['install','tune'].includes(body.kind))throw new Error('Only fixture preparation and tuning are supported');
   if(body.kind==='install')selected=body.args;
   if(body.kind==='tune')loadVision=body.args.vision??'no';
