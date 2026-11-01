@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
                 a.lo = dlo + (size_t) t * LR; a.rs = drs + (size_t) t * HC;
                 a.inject_out = dio + (size_t) t * HC; a.mixed = dmix + (size_t) t * N;
             }
-        std::vector<double> tot[8], dn[8], up[8];
+        std::vector<double> tot[16], dn[16], up[16];
         for (int r = 0; r < rounds; ++r)
             for (int mi = 0; mi < NM; ++mi) {
                 K::fused_gr_v3_pf(masks[mi]);
