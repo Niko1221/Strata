@@ -1,0 +1,29 @@
+# Engine "strata metal stream" lines from the interactive server log (strata-iq3_s.log),
+# same configuration as the bench runs; home paths replaced with ~.
+
+## Config A (default leave share), one of three matching sessions:
+strata metal stream: 7.88 GB allocated before the arena (the process holds 11.19 GB, 11.39 GB resident); RAM 68.7 GB (53.5 GB available, 10.3 GB kept for macOS), GPU working set 65.5 GB
+strata metal stream: planned resident footprint 41.2 GB = arena 29.5 + 11.2 held before it + 0.5 reserved for the n-gram table; cap 41.2 GB = the lesser of the GPU working set 65.5 GB and the RAM 68.7 GB less 27.5 GB left to macOS and its file cache
+strata metal stream: expert arena 29.54 GB, 13453 slots in 3 size classes, 13453 experts read from the profile's top (24576 ranked) in 8.2 s (3.33 GB/s); 6 I/O threads, read-ahead top 6; 4 buffers
+strata metal stream: 29.5 GB of the arena wired (mlock) in 1227 ms; macOS cannot compress it while the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)
+strata metal stream: 1.83 GB of the arena (1065 slots) hold a prompt's buffers while it runs
+strata metal: prompts on the matrix units in chunks of 1024 (experts v2, QSA v1, matmul2d layout other; 1.83 GB of buffers, in the expert arena while a prompt runs)
+strata metal stream: resident footprint after the fill: the process holds 40.8 GB (41.0 GB resident), planned 41.2 GB, cap 41.2 GB
+
+## Config B (STRATA_METAL_LEAVE_SHARE=0.25):
+strata metal stream: 7.88 GB allocated before the arena (the process holds 11.20 GB, 11.39 GB resident); RAM 68.7 GB (53.8 GB available, 10.3 GB kept for macOS), GPU working set 65.5 GB
+strata metal stream: planned resident footprint 49.6 GB = arena 37.9 + 11.2 held before it + 0.5 reserved for the n-gram table; cap 49.6 GB = the lesser of the GPU working set 65.5 GB and the RAM 68.7 GB less 19.1 GB left to macOS and its file cache
+strata metal stream: expert arena 37.94 GB, 17268 slots in 3 size classes, 17268 experts read from the profile's top (24576 ranked) in 8.2 s (4.30 GB/s); 6 I/O threads, read-ahead top 6; 4 buffers
+strata metal stream: 37.9 GB of the arena wired (mlock) in 10796 ms; macOS cannot compress it while the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)
+strata metal stream: 1.83 GB of the arena (1065 slots) hold a prompt's buffers while it runs
+strata metal: prompts on the matrix units in chunks of 1024 (experts v2, QSA v1, matmul2d layout other; 1.83 GB of buffers, in the expert arena while a prompt runs)
+strata metal stream: resident footprint after the fill: the process holds 49.2 GB (40.5 GB resident), planned 49.6 GB, cap 49.6 GB
+
+## A later restart, same 0.25, with vm_page_filecache_min lower at plan time (the floor term is dynamic):
+strata metal stream: 7.88 GB allocated before the arena (the process holds 11.20 GB, 11.39 GB resident); RAM 68.7 GB (53.8 GB available, 10.3 GB kept for macOS), GPU working set 65.5 GB
+strata metal stream: planned resident footprint 51.5 GB = arena 39.8 + 11.2 held before it + 0.5 reserved for the n-gram table; cap 51.5 GB = the lesser of the GPU working set 65.5 GB and the RAM 68.7 GB less 17.2 GB left to macOS and its file cache
+strata metal stream: expert arena 39.84 GB, 18088 slots in 3 size classes, 18088 experts read from the profile's top (24576 ranked) in 14.5 s (2.56 GB/s); 6 I/O threads, read-ahead top 6; 4 buffers
+strata metal stream: 39.8 GB of the arena wired (mlock) in 15698 ms; macOS cannot compress it while the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)
+strata metal stream: 1.83 GB of the arena (1065 slots) hold a prompt's buffers while it runs
+strata metal: prompts on the matrix units in chunks of 1024 (experts v2, QSA v1, matmul2d layout other; 1.83 GB of buffers, in the expert arena while a prompt runs)
+strata metal stream: resident footprint after the fill: the process holds 51.1 GB (40.1 GB resident), planned 51.5 GB, cap 51.5 GB
