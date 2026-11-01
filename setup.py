@@ -3476,6 +3476,39 @@ def uma_expert_cache(model, ram, budget_gib, kv_ram_gb=0.0):
     return slots if slots >= 256 else None
 
 
+def uma_cache_guard(cfg: dict, model: str, gpu: dict) -> None:
+    """A Strix Halo: a numeric --expert-cache the person fixed (kept from their earlier config, or given by hand) beside setup's RAM budget.  The
+    cache and the pinned RAM part draw on one pool, the pinned part twice (strata_control/uma_pool.py); a smaller cache with the budget unchanged ended
+    the engine with exit code 1 and no message (STRIX-2Q, 2026-11-01).  The cache is the person's and stays; the budget, when it is setup's own, is
+    lowered to what the pool holds, and a budget the person set too is only warned about (recommend, never force)."""
+    try:
+        from strata_control import uma_pool
+        args = cfg.get("args")
+        fixed = uma_pool.fixed_cache_and_budget(args) if gpu.get("uma") and isinstance(args, list) else None
+        if fixed is None:
+            return
+        cache, budget = fixed
+        arena = MODELS[model]["arena_gb"]
+        shared = float(gpu.get("vram_gb") or 0.0)
+        if shared <= 0 or not uma_pool.too_much(cache, budget, arena, shared):
+            return
+        fit = uma_pool.safe_budget_gib(cache, arena, shared)
+        own = "--resident-budget-gib" in user_args.flat(user_args.groups(cfg.get(user_args.USER_KEY)))
+        if fit >= budget:
+            return
+        if own:
+            warn(f"your expert cache of {cache} slots and your {budget:g} GiB RAM budget may need more of this PC's shared graphics memory than it has "
+                 f"(the graphics chip uses the RAM, and the RAM part counts twice): the engine can stop at the start with no message. About {fit:g} GiB "
+                 f"of budget fits that cache; kept as you chose (--resident-budget-gib in the config's user_args)")
+            return
+        args[args.index("--resident-budget-gib") + 1] = f"{fit:g}"
+        warn(f"the expert cache is fixed at {cache} slots, so the RAM budget is {fit:g} GiB instead of {budget:g}: this PC's graphics chip shares the RAM, "
+             f"and with a {budget:g} GiB budget the engine would run the shared memory out and stop at the start. "
+             "--resident-budget-gib N in the config's args sets it, or --expert-cache auto lets the engine balance both")
+    except Exception as e:                             # noqa: BLE001 - a recommendation, never a reason to stop setup
+        say(f"  (the expert cache and RAM budget were not compared: {e})")
+
+
 def budget_choice(model, ram, asked) -> float:
     """S4: UD-Q4_K_XL's RAM budget: --resident-budget-gib N as given, else the recommendation (resident_budget_gib).
     More than the recommendation is kept, with what it risks (the owner's rule: setup recommends, it never forces)."""
@@ -6715,7 +6748,7 @@ def engine_exe(eng: Path) -> str:
     return "component:strata-engine" if CONTROL else str(eng / EXE)
 
 
-def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, explicit: list[str] | None = None) -> None:
+def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, explicit: list[str] | None = None, after_carry=None) -> None:
     """#629: setup's run config, written over an earlier one for the same model without losing what the user added
     to it: the keys setup does not write are carried over (carry_over), and the earlier file is kept as
     strata-<model>.json.bak when it changes.  `source`: an earlier install's config to carry the keys over from when
@@ -6732,6 +6765,8 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, ex
     kept = carry_over(old, cfg, explicit) if old is not None else []
     if old is None:
         carry_user_args({}, cfg, explicit)              # a first install: only what this run's command line sets (nothing to report as kept)
+    if after_carry is not None:                        # a check of the finished argument list (the person's own options are in it now)
+        after_carry(cfg)
     user_args.stamp(cfg)                               # args_written: what setup wrote, for the next hand-edit check
     if "images" in cfg and cfg["images"] is None:      # --images no (or not downloaded): no image section
         cfg.pop("images")
@@ -10559,7 +10594,8 @@ def main() -> int:
             say("  " + line)
     for line in bench_tips(cfg["args"], cfg.get("env"), ram, MODELS[model]["ram_gb"], gpu.get("vram_gb", 0.0), vision, WIN):
         say("  " + line)
-    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
+    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a),
+                       after_carry=(lambda c: uma_cache_guard(c, model, gpu)) if gpu.get("uma") else None)
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
     if cal is None and not hip and not a.no_start and not a.yes and ask(

@@ -1501,6 +1501,7 @@ class Runner:
         if self.s.gpus and not self.s.gpu_roles:             # a DeepSeek model on AMD keeps the card the person names from now on (strata_control/gpu_pick.py)
             from strata_control import gpu_pick
             gpu_pick.remember(base_path, [int(g) for g in self.s.gpus])
+        self.say_remembered_cards(base)
         self.apply_four_card(cfg)
         self.use_own_dsv41_engine(cfg)
         self.gate_parallel(cfg)
@@ -1512,6 +1513,25 @@ class Runner:
         write_private(out, cfg)
         self.config_path = out
         return out
+
+    def say_remembered_cards(self, base: dict) -> None:
+        """A launch that names no cards keeps the cards the person chose earlier (`--gpu 0` is remembered by the model's settings).  On a PC with more
+        cards than that, one line says so and how to use them all, so a one-card start is never a surprise (AMD says the same when the card is named)."""
+        s = self.s
+        if s.gpus or s.gpu_roles:
+            return
+        try:
+            usable = [int(g.get("index", 0)) for g in self.catalog.computer().usable_gpus]
+            kept = installed_cards(base, self.catalog.computer().usable_gpus)
+        except Exception:                                    # noqa: BLE001 - a note only: never stop a launch over it
+            return
+        if not kept or len(usable) <= len(set(kept) & set(usable)):
+            return
+        where = f"card {kept[0]}" if len(kept) == 1 else "cards " + ", ".join(str(k) for k in kept)
+        text = (f"This model stays on {where}, the {'card' if len(kept) == 1 else 'cards'} you chose earlier; this PC has {len(usable)} usable cards. "
+                f"To use them all: strata launch --gpu {','.join(str(u) for u in sorted(usable))} (it is remembered from then on).")
+        self.notices.append(text)
+        self.emit("config", text, None)
 
     def gate_parallel(self, cfg: dict) -> None:
         """DeepSeek `--parallel N` and the engine this launch will run (settled just above, a self-upgrade included): an engine package from before the
@@ -1911,13 +1931,21 @@ class Runner:
             raise LaunchError(f"The server could not start: {box['e']}", _log_hint(self.config_path, box["e"]), 6)
         r = box["r"]
         if not r.get("ok"):
-            text, nxt = explain_engine_exit(r, self.config_path, marks=self._marks, server_log=self.server_log_path())
+            text, nxt = explain_engine_exit(r, self.config_path, marks=self._marks, server_log=self.server_log_path(),
+                                            shared_memory=self.shares_memory())
             self.end_failed_start()
             raise LaunchError(text, nxt, 6)
         self.emit("start", "The model is loaded and answering.", 100)
         self.report_drafting()
 
     _marks: dict | None = None
+
+    def shares_memory(self) -> bool:
+        """Does this launch run on a graphics chip that shares the RAM (Strix Halo)?  Only used to explain a stop."""
+        try:
+            return uses_integrated_gpu(self.catalog.computer(), self.s)
+        except Exception:                                    # noqa: BLE001 - an explanation only
+            return False
 
     def server_log_path(self) -> Path | None:
         try:
@@ -2502,7 +2530,8 @@ def engine_log_tail(config: Path | None, limit: int = 65536, since: dict | None 
     return [x.rstrip() for x in data.splitlines() if x.strip()], str(log)
 
 
-def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = None, server_log: Path | None = None) -> tuple[str, str]:
+def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = None, server_log: Path | None = None,
+                        shared_memory: bool = False) -> tuple[str, str]:
     """(text, next) for a start that did not reach ready: the stage, the cause line from the engine log, the next step and the log path
     (round 8, L3: an Arc engine died with 'No device of requested type available' and the person saw only 'server_exited')."""
     server_lines = _lines_since(server_log, (marks or {}).get(str(server_log))) if (server_log and marks is not None) else []
@@ -2541,6 +2570,20 @@ def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = 
     if not text.endswith((".", "!")):
         text += "."
     step = HSA_START_NEXT if hsa else next((words for pattern, words in KNOWN_CAUSES if pattern.search(" ".join([cause, str(why or "")]))), "Run it again; if it repeats, report the log.")
+    if shared_memory and not hsa and not any(p.search(" ".join([cause, str(why or "")])) for p, _ in KNOWN_CAUSES[:2]):
+        # a Strix Halo: the settings fix the expert cache beside a RAM budget, and the engine ended with no error text of its own (STRIX-2Q, 11-01)
+        try:
+            from strata_control import uma_pool, user_args as _ua
+            cfg = read_config(config) if config else {}
+            effective = {"args": list(cfg.get("args") or []), _ua.USER_KEY: cfg.get(_ua.USER_KEY)}
+            _ua.apply(effective)
+            advice = uma_pool.stop_advice(effective["args"])
+        except Exception:                                    # noqa: BLE001 - the plain sentence below is enough
+            advice = None
+        if advice:
+            if cause and not CAUSE_LINE.search(cause):       # the last log line was a progress line ("prefill: copy stream"), not a reason
+                text = stage + "."
+            return text, advice + _log_sentence(log)
     return text, step + _log_sentence(log)
 
 
