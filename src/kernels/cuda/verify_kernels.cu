@@ -1556,7 +1556,16 @@ __global__ void wait_copy_i32_kernel(const volatile uint32_t* flag, uint32_t val
         __threadfence_system();
     }
     __syncthreads();
-    for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+    if ((((uintptr_t) dst | (uintptr_t) src) & 15u) == 0) {
+        int4* dst4 = reinterpret_cast<int4*>(dst);
+        const int4* src4 = reinterpret_cast<const int4*>(const_cast<const int32_t*>(src));
+        const int n4 = n >> 2;
+        for (int i = threadIdx.x; i < n4; i += blockDim.x) dst4[i] = src4[i];
+        const int base = n4 << 2;
+        if (base + (int) threadIdx.x < n) dst[base + threadIdx.x] = src[base + threadIdx.x];
+    } else {
+        for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+    }
 }
 }  // namespace
 void wait_copy_i32_from_mapped(const uint32_t* flag, uint32_t value, int32_t* dst, const int32_t* src, int64_t n,
