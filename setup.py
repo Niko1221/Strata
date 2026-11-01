@@ -9682,7 +9682,7 @@ def main() -> int:
                         "spills": (f"works but slow: less RAM than it was measured with (46-64 GB)" if ds.get("variant")
                                    else f"about {ds['spill_gb']:.0f} GB of its experts would be read from the SSD (slow)"),
                         "no_card": "needs one or more graphics cards"}.get(ds["verdict"], "not checked")
-                say(f"  DeepSeek-V4.1-Flash {mname}: a {ds['download_gb']:.0f} GB download: {tail}   (--family deepseek41 --model {mname})")
+                say(f"  DeepSeek-V4.1-Flash {MULTI_FILE_FAMILIES['deepseek41']['models'].get(mname, {}).get('label', mname)}: a {ds['download_gb']:.0f} GB download: {tail}   (--family deepseek41 --model {mname})")
         except Exception:                              # noqa: BLE001 - a line for information: never break the check
             pass
         if not any_fits:

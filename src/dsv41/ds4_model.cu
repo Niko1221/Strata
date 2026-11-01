@@ -3306,7 +3306,7 @@ struct Model::Impl {
             const Tensor* t = pk.get("embed.weight");
             const size_t nv = (size_t) g.vocab * g.dim;
             const bool q8 = t != nullptr && t->dtype == "Q8_0" && t->bytes == nv / 32 * gg::kQ8Bytes;
-            // other block types (a GGUF whose dense tensors are Q4_K / Q5_K / Q6_K: the IST-DAS sets' Q5_K embed.weight):
+            // other block types (a GGUF whose dense tensors are Q4_K / Q5_K / Q6_K: the ISTA-DAS sets' Q5_K embed.weight):
             // each row through ggml's to_float, to the same BF16 the host table holds
             const int ety = t != nullptr ? gg_type_of(t->dtype) : -1;
             const size_t erb = ety > 0 ? gg::type_row_bytes(ety, g.dim) : 0;
@@ -4160,7 +4160,7 @@ struct Model::Impl {
     // multiply (iq::f16_rows), the library's GEMM takes them at its own speed.  DS4_FAT_ROWS=N (default 0, off; N:
     // the experts of N rows or more) takes the experts of N rows or more; the same products, only the sums' order differ
     // (3x V100, Maya-XS: 64 rows +6-8% on 8K / 32K prompts; KL vs the reference 0.276, the stock path 0.285 - the same;
-    //  RTX 5090, IST-DAS 2.25 bpw: a 13K-token prompt 1,400 -> 1,625 tok/s at 64 rows, decode unchanged)
+    //  RTX 5090, ISTA-DAS 2.25 bpw: a 13K-token prompt 1,400 -> 1,625 tok/s at 64 rows, decode unchanged)
     static int fat_rows() {
         static const int n = [] {
             const int v = std::getenv("DS4_FAT_ROWS") ? std::max(0, std::atoi(std::getenv("DS4_FAT_ROWS"))) : 0;

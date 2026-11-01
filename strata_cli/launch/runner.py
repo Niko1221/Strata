@@ -1404,7 +1404,7 @@ class Runner:
                               "Put every part in the folder (or drop --model-path and let Strata download them). "
                               "Nothing was downloaded or changed.", 5)
         s.family, s.model, s.model_path = "deepseek41", model, str(folder)
-        self.emit("model", f"These files are DeepSeek-V4.1-Flash {model}; they are used where they are.", None)
+        self.emit("model", f"These files are DeepSeek-V4.1-Flash {d.get('label', model)}; they are used where they are.", None)
         return True
 
     def check_own_files(self) -> None:

@@ -1397,7 +1397,7 @@ void rows(const x3::Mat& m, uint16_t* dst, bool bf16, cudaStream_t s) {
         if (kind >= 0 && ::strata::dsv41::metal_host::dequant_rows(kind, m.raw, row_stride(m), m.k, m.n, dst)) return;
     }
 #endif
-    if (m.fmt == kFmtGG && m.raw != nullptr) {   // a K-quant / i-quant dense matrix (the IST-DAS sets' Q5_K): its own dequantizer
+    if (m.fmt == kFmtGG && m.raw != nullptr) {   // a K-quant / i-quant dense matrix (the ISTA-DAS sets' Q5_K): its own dequantizer
         if (!iq::dequant_rows(m.K, m.raw, row_stride(m), m.k, m.n, dst, bf16, s)) fail("rows: a low-bit type not covered");
         return;
     }
