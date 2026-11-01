@@ -132,6 +132,17 @@ def _line(name: str, result: dict) -> str:
         if status == "failed":
             return f"{name:<8}{before or 'none'}   NOT changed: {result.get('error')}"
         return f"{name:<8}{before or 'none'}   {result.get('note') or status}"
+    if result.get("component") == "dsv41":
+        if status == "none-installed":
+            return f"{name:<8}no DeepSeek engine installed"
+        before, after = result.get("installed_before"), result.get("installed_after")
+        if status == "updated":
+            return f"{name:<8}{before} -> {after}   updated (tested: it starts). {result.get('note') or ''}".rstrip()
+        if status == "current":
+            return f"{name:<8}{before}   up to date"
+        if status == "failed":
+            return f"{name:<8}{before or '?'}   NOT changed: {result.get('error')}"
+        return f"{name:<8}{before or '?'}   {result.get('note') or status}"
     if result.get("component") == "control":
         if status == "updated":
             return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated. The next `strata` command already runs it; the app switches on its next start"
@@ -174,6 +185,9 @@ def _print_check(report: dict) -> None:
         print("  Control  not part of this feed")
     else:
         print(f"  Control  {ctl['installed'] or '?'}: {ctl['status']}" + (f" ({ctl['offered']})" if ctl["offered"] else ""))
+    ds = report.get("dsv41") or {}
+    if ds.get("status") not in (None, "none-installed"):
+        print(f"  DeepSeek {ds.get('installed')}: " + (f"update available -> {ds['offered']} ({_mib(ds['download_bytes'])})" if ds["status"] == "available" else ds["status"]))
     if app["status"] != "not-in-feed":
         if app["status"] == "unknown-installed":
             print(f"  App      latest is {app['offered']}; this terminal cannot tell which version of the app is installed (the app checks itself)")

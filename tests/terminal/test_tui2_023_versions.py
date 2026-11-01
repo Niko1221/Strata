@@ -21,14 +21,15 @@ def first(path, pattern):
 
 class VersionBump(unittest.TestCase):
     def test_the_terminal_is_0_2_4_2_and_control_is_0_1_49_2_while_the_app_stays_0_2_3(self):
+        # 0.2.9.1 (DeepSeek engine only, the Windows AMD package): the DeepSeek engine is 0.1.55.1 (the CMake project version); the Terminal, the app and Control (0.1.55) and every other engine package stay as 0.2.9 shipped them.
         # 0.2.9: Terminal and app are 0.2.9; Control and every engine package (Qwen, DeepSeek, Metal, SYCL, aarch64) are 0.1.55.
         # 0.2.8.1 (Control-only): the Terminal is 0.2.8.1 and Control 0.1.55 (the CMake project version); the app stays 0.2.8 and every engine package 0.1.54 (as 0.2.3.1 did for the Terminal).
         # 0.2.8: Terminal and app are 0.2.8; Control and every engine package (Qwen, DeepSeek, Metal, SYCL, aarch64) are 0.1.54 (both engines changed since 0.2.7.1).
         # 0.2.7.1 (DGX Spark): Control and the linux-aarch64 engine packages are 0.1.53 (the CMake project version); the app and the Terminal stay 0.2.7, the Metal engine 0.1.52.
         # 0.2.7: Terminal and app are 0.2.7; Control and every engine package (Qwen, DeepSeek, Metal) are 0.1.52 (the CMake project version; the Qwen and DeepSeek C++ both changed since 0.2.6)
         self.assertEqual(strata_cli.PRODUCT_VERSION, "0.2.9")
-        self.assertEqual(strata_cli.version(), "0.1.55")                # the CMake project version: Control
-        self.assertEqual(first("CMakeLists.txt", r"^project\(strata VERSION ([0-9.]+) "), "0.1.55")
+        self.assertEqual(strata_cli.version(), "0.1.55.1")              # the CMake project version (Control stays 0.1.55: its packs are not rebuilt)
+        self.assertEqual(first("CMakeLists.txt", r"^project\(strata VERSION ([0-9.]+) "), "0.1.55.1")
         self.assertIn('STRATA_VERSION="0.1.55-metal"', (ROOT / "metal" / "CMakeLists.txt").read_text(encoding="utf-8"))
 
     def test_every_place_the_app_version_lives_says_0_2_3(self):
@@ -51,7 +52,7 @@ class VersionBump(unittest.TestCase):
     def test_version_prints_the_product_and_the_build(self):
         done = subprocess.run([sys.executable, str(ROOT / "strata.py"), "--version"], capture_output=True, text=True, cwd=str(ROOT),
                               env={**os.environ, "STRATA_NO_HANDOVER": "1"})
-        self.assertTrue(done.stdout.startswith("strata 0.2.9 (build 0.1.55;"), done.stdout)
+        self.assertTrue(done.stdout.startswith("strata 0.2.9 (build 0.1.55.1;"), done.stdout)
 
 
 class UpdateFromTheLastRelease(test_updater.UpdaterCase):
