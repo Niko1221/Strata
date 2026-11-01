@@ -56,6 +56,25 @@ int main() {
     put("STRATA_GFX12_DEFAULTS", "0");
     apply_arch_defaults("gfx1201", false);
     CHECK(std::getenv("STRATA_HEAD_MIX_MULTI") == nullptr);
+    // the value-changing default (separate commit): gfx12 only, the same off switches, and the user's own setting wins
+    unset("STRATA_GFX12_DEFAULTS"); unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
+    CHECK(has(gfx12_value_changing_env("gfx1201", false), "STRATA_SELECT_WMMA", "1"));
+    CHECK(has(gfx12_value_changing_env("gfx1201", false), "STRATA_SELECT_ALT_MIN_TOKENS", "28672"));
+    CHECK(gfx12_value_changing_env("gfx1201", true).empty());
+    for (const char* other : {"gfx1100", "gfx1151", "gfx1030", "gfx906", "", "gfx12010"}) CHECK(gfx12_value_changing_env(other, false).empty());
+    apply_arch_defaults("gfx1201", false);
+    CHECK(std::getenv("STRATA_SELECT_WMMA") != nullptr && std::string(std::getenv("STRATA_SELECT_WMMA")) == "1");
+    CHECK(std::getenv("STRATA_SELECT_ALT_MIN_TOKENS") != nullptr && std::string(std::getenv("STRATA_SELECT_ALT_MIN_TOKENS")) == "28672");
+    unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
+    put("STRATA_SELECT_WMMA", "0");   // the off switch
+    apply_arch_defaults("gfx1201", false);
+    CHECK(std::string(std::getenv("STRATA_SELECT_WMMA")) == "0");
+    unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
+    apply_arch_defaults("gfx1100", false);
+    CHECK(std::getenv("STRATA_SELECT_WMMA") == nullptr);
+    put("STRATA_GFX12_DEFAULTS", "0");
+    apply_arch_defaults("gfx1201", false);
+    CHECK(std::getenv("STRATA_SELECT_WMMA") == nullptr && std::getenv("STRATA_SELECT_ALT_MIN_TOKENS") == nullptr);
     if (fails == 0) std::printf("gfx12_extra_test: OK\n");
     return fails == 0 ? 0 : 1;
 }
