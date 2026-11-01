@@ -781,6 +781,24 @@ pointer: no allocation, no upload, byte-identical sampling).
   mechanism is skipped on this path: the grammar opens the call. MCP requests stay on the prompt path (the
   hosted tools' schemas are not validated here) and the reply declares the method under
   `strata.structured_output.method`.
+- A request can turn the constraint off with `strata_grammar: false` (chat, Responses and Anthropic routes):
+  the request then runs the prompt path, exactly as it did before this branch. The bare `grammar` parameter is
+  always honoured.
+
+Two clause shapes keep the constrained text and the reply parser in agreement, and both exist because the parser
+is a separate implementation from the grammar (llama.cpp gets this for free: one PEG definition spells both):
+a parameter **value** refuses the whole `</parameter>` string, and the same refusal reaches inside a non-string
+parameter's JSON strings. `serve/frontend.py`'s `param_end` ends a value at any `</parameter>` that is followed
+by `<parameter=`, `</function>` or `</tool_call>`, so a value that could spell one let the parse cut the call
+there and drop every parameter after it (measured: a nested object argument arrived as a string and the
+parameter following it disappeared, 8 of 12 closer-inviting requests). llama.cpp caps the same hole with
+`until(param_closer)`; here the exclusion is a per-character chain, and inside JSON it rides the converter's own
+`char` class with the advancing character injected per state (a chain over GBNF's bare "any character" would let
+that character through its restart branch). The reasoning region refuses `<tool_call>` too - a call written
+there has no schema to constrain it, yet the parser rescued it as a real action. The answer region admits no
+` ```json ` fence (a fenced answer fails every client's `json.loads`, while the canary's `extract_json` strips
+it and called it conforming), and the whitespace after `</think>` is bounded (`{0,24}`): unbounded, a masked
+backtick left the model walking whitespace until the budget ran out (76,096 characters measured).
 
 Registration: the server sends each grammar text once per engine generation (`GRAMMAR <sha16> <len> <text>`),
 keyed by the SHA-256 of the text; the engine keeps at most 64 parsed grammars and a mask cache per grammar.
