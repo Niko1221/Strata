@@ -1865,7 +1865,9 @@ endif()
 # AVX-VNNI (Alder Lake, Sapphire Rapids and later): the AVX-2 expert kernels' vpdpwssd / vpdpbusd copies (q2_avx2.cpp,
 # iq_avx2.cpp; *_rows.inl), taken at run time where cpu_avxvnni_ok().  GCC and Clang compile only those functions with
 # target("avxvnni") - never -mavxvnni on a file, which would let the compiler use it anywhere - and MSVC takes the
-# intrinsics under /arch:AVX2.  A compiler without them (GCC < 11, Clang < 12) builds the files without the copies.
+# intrinsics under /arch:AVX2.  A compiler without them (GCC < 11, Clang < 12) builds the files without the copies, and
+# so does GCC 11 with binutils older than 2.36 (RHEL / Alma / Rocky 9): it takes the intrinsics, but its assembler does
+# not know vpdpbusd.  The DeepSeek-V4.1 CPU experts (src/dsv41/ds4_gguf_cpu.cpp) take the same answer.
 include(CheckCXXSourceCompiles)
 if(MSVC)
   set(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
@@ -1889,7 +1891,8 @@ if(STRATA_HAVE_AVXVNNI_INTRINSICS)
 else()
   set(_strata_avxvnni STRATA_AVXVNNI=0)
 endif()
-set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+set_property(SOURCE src/kernels/cpu/q2_avx2.cpp src/dsv41/ds4_gguf_cpu.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+             ${_strata_avxvnni})
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
