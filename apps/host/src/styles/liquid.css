@@ -1059,3 +1059,36 @@ body {
   line-height: 1.2;
   padding-top: 2px;
 }
+/* ------------------------------------------------ 17. the motion system -----
+   One scale (app.css section 1: micro 100, control 160, local 240, surface 320,
+   choreo 460ms; standard / enter / exit curves) and three habits, so the app
+   answers a touch the same way everywhere:
+
+   - a control that is pressed gives a little (a 3% scale, micro time);
+   - a surface that appears arrives from the side it belongs to, decelerating,
+     and leaves faster than it came (enter = local/surface, exit = control);
+   - a disclosure opens by growing and fading in, never by snapping.
+
+   Everything animates transform, opacity, or one small block-size (a disclosure),
+   never a transcript's layout, so streaming text and scrolling cost nothing
+   extra on a weak GPU while a heavy model is running beside the app. The
+   reduced-motion gate zeroes the durations (tokens) and the distances below. */
+:root {
+  --st-press-scale: 0.97;
+  --st-panel-shift: 28px;
+}
+.st-btn {
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    border-color var(--st-t-control) var(--st-ease-standard),
+    color var(--st-t-control) var(--st-ease-standard),
+    box-shadow var(--st-t-control) var(--st-ease-standard),
+    transform var(--st-t-micro) var(--st-ease-standard);
+}
+.st-btn:not(:disabled):active {
+  transform: scale(var(--st-press-scale));
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --st-press-scale: 1; --st-panel-shift: 0px; }
+}
+
