@@ -106,7 +106,14 @@ if CODER:
     _coder_bytes = sum(int(CODER["files"][n][0]) for n in CODER["shards"])
     ISTA_SETS[CODER_MODEL] = {
         "title": CODER.get("label", "ISTA-DAS Coder"), "set_bytes": _coder_bytes, "experts_gb": 66.04, "dense_gb": 6.08, "profile": CODER.get("profile", "profile-coder.bin"),
-        "meta_bytes": 0, "experts_per_layer": int(CODER["experts_per_layer"]), "ppl": "?", "ram_ok_gb": 24.0, "measured": "",
+        "meta_bytes": 0, "experts_per_layer": int(CODER["experts_per_layer"]), "ppl": "?", "ram_ok_gb": 24.0,
+        # measured 11-01 on r9700 (one Radeon AI PRO R9700, 251 GB RAM, this branch's engine, packaged Terminal, 128K context, 5 experts a word): the whole run in a user scope with MemoryMax
+        # and no swap; decode median of 3 prompts x 200 tokens, one run each: no cap 25.6 tok/s, 40 GB 20.9, 32 GB 18.5, 24 GB 15.0, 16 GB 8.0; four cards, no cap: 59.0 (all experts in graphics memory)
+        "measured": "one Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: answers about 26 tokens a second, a 93,000-token prompt read in 78 s; four of them: about 59 tokens a second",
+        "tight_words": "reads the rest from the SSD. Measured on one R9700 with the RAM capped for the whole run: about 21 tokens a second with 40 GB, 18 with 32 GB, 15 with 24 GB (26 with all the RAM it wanted).",
+        "spill_words": "This computer has {ram:.0f} GB of RAM. This set was measured down to 16 GB (about 8 tokens a second on one R9700); with less, most experts come from the SSD while it answers: it works but is slower, and a word can take seconds. More RAM fixes it. It is still allowed.",
+        "tight_short": "tight: runs, with the experts RAM cannot hold read from the SSD (about 21 to 15 tokens a second measured with 40 to 24 GB of RAM on one R9700)",
+        "spill_short": "slow here: this computer has {ram:.0f} GB of RAM and the set was measured down to 16 GB (about 8 tokens a second on one R9700); it can still be installed",
         "unproven_uma": "Not run on a Ryzen AI Max (Strix Halo) or a DGX Spark yet: the sizes above are exact, the speed is not measured on a shared-memory computer.",
         "disk_total": round((_coder_bytes + ISTA_ENGRAM_BYTES + ISTA_DSPARK_BYTES) / GB),
         "quality": "ISTA-DAS's coding version, half of the model's experts removed (192 of 384 in every layer); not measured against the original model here yet"}
@@ -124,7 +131,9 @@ ISTA_DENSE_ON_GPU_GB = 4.5            # (the old plan's figure, kept for the Uns
 #   card cannot hold are read in place and the prompt chunk is 32768 with the borrowed slots; the 8192 chunk of the older engine took 4.5 GB and
 #   the card held 2,366); NVIDIA and others 3.6 GB (2 x A6000 3.7, an A4000 3.5; not tied to the chunk)
 #   and the experts that stay on a card are a little bigger than the set's average (the hot ones: 9.86-10.0 MB against 9.70 for 2.25 bpw): x1.025
-ISTA_DENSE_GPU_BASE_GB = {CODER_MODEL: 5.54, "IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37}
+# ISTA-DAS Coder: the engine's startup lines on r9700 with this branch at 128K context, 11-01: one R9700 weights 5.70 GB, experts 24.91 GB (2,859 of 7,680); four R9700 weights
+# 0.74 + 0.87 + 2.25 + 2.56 = 6.42 GB and all 7,680 experts in graphics memory -> base 5.46 + 0.24 for each card (5.70 on one, 6.42 on four).
+ISTA_DENSE_GPU_BASE_GB = {CODER_MODEL: 5.46, "IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37}
 CARD_DENSE_REPEAT_GB = 0.24
 ENGINE_FREE_GB = 0.62
 CARD_OTHER_GB = {"amd": 1.60, "amd_low_share": 2.58, "other": 3.6}
@@ -394,11 +403,12 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
             elif float(ram_gb) >= v["ram_ok_gb"]:
                 out["verdict"] = "tight"
                 lines.append(f"This computer has {ram_gb:.0f} GB of RAM: Strata keeps the experts you use most in RAM (it sizes this itself) and "
-                             "reads the rest from the SSD. Measured: about 4.7 tokens a second on 64 GB of RAM and a 12 GB card, about 7 on "
-                             "46 GB with a faster drive. More RAM or a faster NVMe drive makes it quicker.")
+                             + (v["tight_words"] if v.get("tight_words") else "reads the rest from the SSD. Measured: about 4.7 tokens a second on 64 GB of RAM and a 12 GB card, about 7 on "
+                             "46 GB with a faster drive. More RAM or a faster NVMe drive makes it quicker."))
             else:
                 out["verdict"] = "spills"
-                warns.append(f"This computer has {ram_gb:.0f} GB of RAM and this model was measured with 46 GB and 64 GB. With less, most "
+                warns.append(v["spill_words"].format(ram=ram_gb) if v.get("spill_words") else
+                             f"This computer has {ram_gb:.0f} GB of RAM and this model was measured with 46 GB and 64 GB. With less, most "
                              "experts come from the SSD while it answers: it works but is slow (a word can take seconds). More RAM fixes "
                              "it. It is still allowed.")
         else:

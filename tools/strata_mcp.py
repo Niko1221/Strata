@@ -1434,6 +1434,11 @@ class Strata:
                     f"in memory and the other {pl['streamed_gb']:.0f} GB are read from the SSD; measured 14-16 tokens a second on code and "
                     "10-11 on chat")
         if pl.get("variant"):                   # an official ISTA-DAS set (strata_control/dsv41_fit.py): measured on 46-64 GB, never a refusal
+            own = ((__import__("strata_control.dsv41_fit", fromlist=["x"]).variant(pl["variant"]) or {}))
+            if v == "spills" and own.get("spill_short"):
+                return own["spill_short"].format(ram=pl["ram_gb"])
+            if v == "tight" and own.get("tight_short"):
+                return own["tight_short"]
             if v == "spills":
                 return (f"slow here: this computer has {pl['ram_gb']:.0f} GB of RAM and the set was measured with 46-64 GB, so most of its "
                         "experts are read from the SSD; it can still be installed"

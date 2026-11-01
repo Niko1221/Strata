@@ -177,6 +177,34 @@ class Plan(unittest.TestCase):
         self.assertEqual(p["experts_in_vram"], 7680)                       # four 32 GB cards hold every one of them
         self.assertEqual(p["verdict"], "fits")
 
+    def test_the_plan_follows_the_engine_on_r9700_cards(self):
+        """The engine's own startup lines (r9700, 128K): one card holds 2,859 of 7,680 with 5.70 GB of other weights; four cards hold all of them with 6.42 GB."""
+        p = dsv41_fit.plan([R9700], 251.0, None, 131072, model=NAME)
+        self.assertAlmostEqual(p["experts_in_vram"], 2859, delta=2859 * 0.03)
+        self.assertAlmostEqual(p["cards"][0]["dense_gb"], 5.70, delta=0.05)
+        if __import__("os").name != "nt":                        # (Windows runs one AMD card: the plan counts one there)
+            p4 = dsv41_fit.plan(FOUR, 251.0, None, 131072, model=NAME)
+            self.assertEqual(p4["experts_in_vram"], 7680)
+            self.assertAlmostEqual(sum(c["dense_gb"] for c in p4["cards"]), 6.42, delta=0.1)
+
+    def test_the_ram_words_are_the_sets_own_measured_ones(self):
+        """One R9700 with the RAM capped for the whole run (decode median, 3 prompts): 25.6 tok/s uncapped, 20.9 at 40 GB, 18.5 at 32, 15.0 at 24, 8.0 at 16."""
+        tight = dsv41_fit.plan([R9700], 45.0, None, 131072, model=NAME)
+        self.assertEqual(tight["verdict"], "tight")
+        self.assertIn("21 tokens a second with 40 GB", tight["words"])
+        self.assertNotIn("4.7 tokens", tight["words"])
+        slow = dsv41_fit.plan([R9700], 20.0, None, 131072, model=NAME)
+        self.assertEqual(slow["verdict"], "spills")
+        self.assertIn("down to 16 GB", " ".join(slow["warnings"]))
+        self.assertNotIn("46 GB and 64 GB", " ".join(slow["warnings"]))
+        import strata_mcp as M
+        s = M.Strata(ROOT)
+        s.dsv41_plan = lambda hw, disk_free=None, only=None, model=None: slow
+        self.assertTrue(s._dsv41_memory_words({}, NAME).startswith("slow here: this computer has 20 GB of RAM and the set was measured down to 16 GB"))
+        # the other sets keep their words
+        other = dsv41_fit.plan([R9700], 30.0, None, 131072, model="IST-DAS-2.00bpw")
+        self.assertIn("46 GB and 64 GB", " ".join(other["warnings"]))
+
     def test_the_download_is_the_model_plus_the_shared_files(self):
         gb = dsv41_fit.ista_download_bytes(NAME) / 1e9
         self.assertAlmostEqual(gb, (72_123_566_336 + 110_595_290_816 + 7_976_914_240) / 1e9, delta=0.01)
