@@ -187,6 +187,11 @@ bool Dflash2Drafter::load(const std::string& path, int device, std::string& err)
             if (cudaMemcpy(tmp, stage.data(), t.bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "dflash2: weight upload failed"; return false; }
             kernels::df2_q8_tile(tmp, blob_ + t.off, blob_ + t.off + (uint64_t) t.rows * (uint64_t) t.cols, (int) t.cols, t.rows * t.cols / 32, nullptr);
             if (cudaDeviceSynchronize() != cudaSuccess) { err = "dflash2: weight conversion failed"; return false; }
+        } else if (t.dtype == "q4_0") {   // GGML Q4_0 blocks -> the tiled nibble plane at the tensor's offset, then the d plane (same total bytes)
+            if (cudaMemcpy(tmp, stage.data(), t.bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "dflash2: weight upload failed"; return false; }
+            kernels::df2_q4_tile(tmp, blob_ + t.off, blob_ + t.off + (uint64_t) t.rows * (uint64_t) t.cols / 2, (int) t.cols, t.rows * t.cols / 32, nullptr);
+            if (cudaDeviceSynchronize() != cudaSuccess) { err = "dflash2: weight conversion failed"; return false; }
+            q4_ = true;
         } else if (cudaMemcpy(blob_ + t.off, stage.data(), t.bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
             err = "dflash2: weight upload failed";
             return false;
@@ -328,8 +333,8 @@ bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const s
         head_rows = (int64_t) vocab.size();
     }
     if (!bind_raw(embed, hw, head->type(), head_rows, vocab, err)) return false;
-    std::fprintf(stderr, "strata dflash2: %lld-token draft head (%.1f MiB), drafter %.0f MiB of VRAM\n", (long long) n_dvocab_,
-                 (double) (n_dvocab_ * row_bytes) / 1048576.0, (double) vram_ / 1048576.0);
+    std::fprintf(stderr, "strata dflash2: %lld-token draft head (%.1f MiB), drafter %.0f MiB of VRAM (%s weights)\n", (long long) n_dvocab_,
+                 (double) (n_dvocab_ * row_bytes) / 1048576.0, (double) vram_ / 1048576.0, q4_ ? "Q4_0" : "Q8_0");
     return true;
 }
 
@@ -339,7 +344,7 @@ void Dflash2Drafter::gemm(std::initializer_list<const char*> names, std::initial
     auto o = outs.begin();
     for (const char* name : names) {
         const Tensor& t = find(name);
-        mats[n] = kernels::Df2Mat{blob_ + t.off, *o++, (int) t.rows};
+        mats[n] = kernels::Df2Mat{blob_ + t.off, *o++, (int) t.rows, t.dtype == "q4_0"};
         if (n == 0) n_in = (int) t.cols;
         ++n;
     }
