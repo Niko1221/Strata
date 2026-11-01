@@ -3,15 +3,16 @@
 Measured on 2026-11-01 by Jack Kenner (jkenner111). Tested: UD-IQ4_XS at 262,144 context in four
 configurations — an RTX PRO 4500 alone, both cards layer-split at the automatic boundary (layer 13),
 both cards at an explicit layer 10, and a pool-worker comparison at 11 instead of 22. All runs used
-`--low-ram resident` and an AVX1 source build. Main limitations: draft protocol; six of nine
-performance requests reached the 512-token cap; `--source-revision` not passed. First published
-result on a pre-AVX2 CPU.
+`--low-ram resident` and an AVX1 source build. Main limitations: draft protocol; 5 of 9 performance
+requests reached the 512-token cap on the dual-card arm and 6 of 9 on the other three arms; the short
+case was not cap-limited in any arm; `--source-revision` not passed. No published result in this
+corpus runs a pre-AVX2 CPU, and this adds one.
 
 ## Hardware and software
 
-- GPU: NVIDIA RTX PRO 4500 Blackwell 32 GB (31.9 GiB usable, sm_120, 82 SMs @ 2.41 GHz) and NVIDIA
-  RTX PRO 4000 Blackwell 24 GB (23.1 GiB usable, sm_120, 70 SMs @ 2.06 GHz). Both PCIe 3.0 x16;
-  engine probe 12.7–13.2 GB/s host-to-device. Link idles at gen 1, maximum gen 3.
+- GPU: NVIDIA RTX PRO 4500 Blackwell 32 GB (31.86 GiB dedicated, sm_120, 82 SMs @ 2.41 GHz) and NVIDIA
+  RTX PRO 4000 Blackwell 24 GB (23.89 GiB dedicated, sm_120, 70 SMs @ 2.06 GHz). Both PCIe 3.0 x16;
+  engine probe 12.4 GB/s on the 4000 and 12.8–13.2 GB/s on the 4500, host-to-device.
 - CPU: 2x Intel Xeon E5-2697 v2 @ 2.70 GHz (Ivy Bridge-EP, 12C/24T each, 24C/48T). **No AVX2, no
   AVX-512.** Expert kernels ran on the AVX1 128-bit path (`iq_avx1`, older-CPU build) with 22 pool
   workers: 12 on NUMA node 0, 11 on node 1, host on core 0.
@@ -36,6 +37,9 @@ result on a pre-AVX2 CPU.
   MTP on (`--spec 4 --spec-min-p 0.5`, `--mtp rt`); `--vram-reserve-mib 700`.
 - Sampling fixed by the protocol: temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, penalties
   0.0 / 1.0, `reasoning_effort: xhigh`, thinking on with `preserve_thinking`.
+- `STRATA_HC_Q8=1` is set: setup writes it on CUDA for the UD files, so the hyper-connection
+  projections are read as the file's own Q8_0 instead of the pack's BF16 rounding. It is a setup
+  default here, not a tuning choice. It changes bits.
 
 Effective engine arguments, single-card run:
 
@@ -123,6 +127,20 @@ Single-card run: `55.4 GiB experts, 22.2 GiB in the GPU cache, 37.0 GiB RAM copy
 | dual, layer 10 | 12/12 | 4/4 | 4/4 | 4/4 |
 | dual, layer 13, w11 | 12/12 | 4/4 | 4/4 | 4/4 |
 
+### Output-cap accounting
+
+The performance stage caps generation at 512 tokens. Per arm, per case, requests that reached the cap:
+
+| Arm | short | prompt-4k | prompt-16k | total capped |
+|---|---|---|---|---|
+| single card | 0/3 | 3/3 | 3/3 | 6/9 |
+| dual, layer 13 | 0/3 | 2/3 | 3/3 | 5/9 |
+| dual, layer 10 | 0/3 | 3/3 | 3/3 | 6/9 |
+| dual, layer 13, w11 | 0/3 | 3/3 | 3/3 | 6/9 |
+
+The short case completed below the cap in every arm (240–431 output tokens), so its decode figures
+are not cap-limited. On the 4K and 16K cases, decode is measured to the cap on the capped requests.
+
 ## Observations
 
 - Layer split, layer 13 vs single card: decode 61.3 → 108.7 (short), 63.5 → 113.2 (4K), 64.6 → 105.3
@@ -137,8 +155,8 @@ Single-card run: `55.4 GiB experts, 22.2 GiB in the GPU cache, 37.0 GiB RAM copy
 ## Limitations
 
 - Draft protocol (`strata-qwen38-thinking-v1-draft.1`); outside the standard manifest.
-- Six of nine performance requests reached the 512-token cap (single card: 3/3 at 4K, 3/3 at 16K;
-  dual layer 13: 2/3 at 4K, 3/3 at 16K). Decode is measured to the cap on those generations.
+- Output-cap accounting is in the table above: 6/9 performance requests reached the 512-token cap on
+  three arms and 5/9 on dual layer 13. The short case was not cap-limited in any arm.
 - `--source-revision` not passed; base-model revision verified out of band and recorded as null.
 - Single-card run logged VRAM headroom of 502 MiB and 372 MiB at request start, below the engine's
   512 MiB threshold where the driver may page GPU memory to host RAM. Decode did not degrade
@@ -148,12 +166,13 @@ Single-card run: `55.4 GiB experts, 22.2 GiB in the GPU cache, 37.0 GiB RAM copy
   applies to load time only.
 - Not comparable to this machine's October results: engine 0.1.41 vs 0.1.55, greedy sampling vs
   temperature 1.0 with `reasoning_effort: xhigh`, different prompts, NVMe vs SATA.
+- No AVX2 or AVX-512 path was measured; this hardware has neither.
 
 ## Reproducing
 
 ```sh
 STRATA_ISA_FLOOR=avx ./setup.sh --setup --yes --no-start \
-  --family qwen --model UD-IQ4_XS --gguf-dir <UD-IQ4_XS dir> \
+  --family unsloth --model UD-IQ4_XS --gguf-dir <UD-IQ4_XS dir> \
   --data-dir <data dir> --gpu 0 --context 262144 --low-ram resident
 
 bin/strata bench run --profile ud-iq4-xs-gpu0 --suite standard-v1 --track custom \
