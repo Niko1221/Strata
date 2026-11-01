@@ -74,6 +74,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-11-02: RTX 5070 Ti 16 GB (sm_120, headless), Core Ultra 9 285K, 128 GB RAM, Windows 11](../bench/results/2026-11-02-community-rtx-5070-ti-qwen3-8-flash-next-nvfp4-nvfp4-bf16/README.md):
+  source build (`sm_120` + AVX-VNNI `vpdpbusd` #4951 + Windows EcoQoS unthrottling #4952), `qwen3.8-flash-next-nvfp4-nvfp4-BF16` (63.28 GiB native NVFP4 pack in `2 MiB` large pages), 262,144-token context, `--kv int8 --kv-resident 32768`, `--vram-reserve-mib 500` (2,829 resident experts in VRAM with displays on the motherboard iGPU and `Prefer No Sysmem Fallback`); `tools/strata_bench.py` (3 runs): chat decode **87.2 tok/s** (80.6?124.2, TTFT 0.42 s), 4K prompt **2,717.0 tok/s** (TTFT 1.51 s), 16K prompt **3,309.3 tok/s** (TTFT 4.89 s), agent decode **111.0 tok/s** (88.1?122.2, turn TTFT 1.64 s, 69.3% cache hit).
+
 ## Run the standard benchmark
 
 ```sh
