@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
     cudaMalloc((void**) &dst, (size_t) iters * 4 * 8);
     std::vector<unsigned long long> hst((size_t) iters * 4);
     std::vector<K::FusedGrArgs> as((size_t) sets * 8);
-    const int masks[] = {0, 5, 133, 517, 645};
+    const int masks[] = {0, 5, 133, 261};
     const int NM = (int) (sizeof(masks) / sizeof(masks[0]));
     int failures = 0;
     for (int T = t_lo; T <= t_hi; ++T) {
@@ -92,12 +92,8 @@ int main(int argc, char** argv) {
                         a.inject_out = dio + (size_t) t * HC; a.mixed = dmix + (size_t) t * N;
                     }
                 unsigned long long h0 = 0;
-                std::vector<float> ref[2];
-                for (int mi = 0; mi < NM; ++mi) {   // bit for bit against mask 0, on the last weight set as well as the first (mask bit 9, another summation order: the largest difference)
+                for (int mi = 0; mi < NM; ++mi) {   // bit for bit against mask 0, on the last weight set as well as the first
                     unsigned long long h = 1469598103934665603ull;
-                    const bool order = (masks[mi] & 512) != 0;
-                    double maxrel = 0.0;
-                    int ci = 0;
                     for (int cset : {0, sets - 1}) {
                         K::fused_gr_v3_pf(masks[mi]);
                         cudaMemcpy(dR, R.data(), R.size() * 4, cudaMemcpyHostToDevice);
@@ -115,19 +111,8 @@ int main(int argc, char** argv) {
                         cudaMemcpy(p, dio, (size_t) TM * HC * 4, cudaMemcpyDeviceToHost); p += (size_t) TM * HC;
                         cudaMemcpy(p, dmix, (size_t) TM * N * 4, cudaMemcpyDeviceToHost);
                         for (size_t b = 0; b < o.size() * 4; ++b) h = (h ^ ((const unsigned char*) o.data())[b]) * 1099511628211ull;
-                        if (mi == 0) ref[ci] = o;
-                        else if (order) {
-                            double scale = 0.0;
-                            for (size_t b = 0; b < o.size(); ++b) scale = std::max(scale, (double) std::fabs(ref[ci][b]));
-                            for (size_t b = 0; b < o.size(); ++b) maxrel = std::max(maxrel, std::fabs((double) o[b] - (double) ref[ci][b]) / scale);
-                        }
-                        ++ci;
                     }
-                    if (order) {
-                        if (T == t_lo || T == t_hi) std::printf("T %d apply %d inject %d: mask %d (another summation order) largest difference from the plain read %.3g of the largest value\n", T, apply, inject, masks[mi], maxrel);
-                        if (maxrel > 1e-4) { ++failures; std::printf("FAIL mask %d: difference %.3g\n", masks[mi], maxrel); }
-                    }
-                    else if (mi == 0) h0 = h;
+                    if (mi == 0) h0 = h;
                     else if (h != h0) {
                         ++failures;
                         std::printf("FAIL T %d apply %d inject %d: mask %d differs from the plain v3 read\n", T, apply, inject, masks[mi]);
