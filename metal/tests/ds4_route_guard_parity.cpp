@@ -20,17 +20,17 @@ static void check(bool ok, const char* what) {
     if (!ok) ++fails;
 }
 
-int main() {
-    mtl::Context cx;
-    const int lib = cx.compile({"../src/engine/msl/ds4_init.metal"}, "", false);
+// n routed experts: 384 (every set so far) and 192 (the ISTA-DAS Coder).  The entries past n hold a poison score (30, bias 5): a kernel that read one would pick it.
+static void run(mtl::Context& cx, const int lib, const int n) {
+    std::printf("-- %d experts\n", n);
     mtl::Pipeline p_route = cx.pipeline(lib, "ds4_route"), p_pub = cx.pipeline(lib, "ds4_route_publish");
 
-    const int n = 384, k = 6, T = 16, kPicks = 8;
+    const int k = 6, T = 16, kPicks = 8;
     const float scale = 1.5f;
     mtl::Buffer b_logits = cx.alloc((size_t) T * 1024 * 4), b_bias = cx.alloc(1024 * 4), b_idx = cx.alloc((size_t) T * kPicks * 4),
                 b_w = cx.alloc((size_t) T * kPicks * 4), b_vram = cx.alloc(1024 * 8), b_plan = cx.alloc((size_t) T * kPicks * 8),
                 b_vlw = cx.alloc(1024), b_bad = cx.alloc(64);
-    std::vector<float> bias(1024, 0.0f), logits((size_t) T * 1024, 0.0f);
+    std::vector<float> bias(1024, 5.0f), logits((size_t) T * 1024, 30.0f);
     for (int i = 0; i < n; ++i) bias[(size_t) i] = 0.01f * (float) ((i * 37) % 17);
     std::vector<unsigned long long> vram(1024, 0ull);
     for (int i = 0; i < n; i += 2) vram[(size_t) i] = 0x1000ull + (unsigned long long) i;
@@ -45,7 +45,7 @@ int main() {
             for (int i = 0; i < 1024; ++i) {
                 s = s * 1664525u + 1013904223u;
                 float v = ((float) (s >> 8) / (float) (1 << 24) - 0.5f) * 8.0f;
-                if (i >= n) v = 0.0f;
+                if (i >= n) v = 30.0f;   // (the poison; the NaN / inf modes overwrite every entry)
                 if (mode == 1) v = nan;
                 if (mode == 2) v = inf;
                 if (mode == 3) v = -inf;
@@ -134,6 +134,12 @@ int main() {
             }
         }
     }
+}
+
+int main() {
+    mtl::Context cx;
+    const int lib = cx.compile({"../src/engine/msl/ds4_init.metal"}, "", false);
+    for (int n : {384, 192}) run(cx, lib, n);
     std::printf("%s\n", fails ? "ds4_route_guard_parity: FAILED" : "ds4_route_guard_parity: all ok");
     return fails ? 1 : 0;
 }

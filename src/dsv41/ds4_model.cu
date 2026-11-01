@@ -2840,6 +2840,10 @@ struct Model::Impl {
             l.mtp = il >= g.nl;
             l.name = l.mtp ? "mtp." + std::to_string(il - g.nl) + "." : "layers." + std::to_string(il) + ".";
             l.n_exp = l.mtp ? g.d_n_exp : g.n_exp;
+            if (l.mtp && l.n_exp > g.n_exp) {   // the profile keeps one row width (g.n_exp) for every block: a drafter with more experts than the model would write past it
+                err = l.name + ": the drafter has " + std::to_string(l.n_exp) + " experts and the model " + std::to_string(g.n_exp) + ": not covered";
+                return false;
+            }
             l.k_exp = l.mtp ? g.d_k : g.k_exp;
             if (!l.mtp) {   // experts a word takes: --experts N / the faster-mode rule (ds4_experts_rule.hpp), DS4_TOPK=N over both (a test)
                 if (il == 0) {
@@ -3470,9 +3474,17 @@ struct Model::Impl {
         if (!o.profile.empty()) {
             std::FILE* f = std::fopen(o.profile.c_str(), "rb");
             if (f != nullptr) {
-                std::vector<uint32_t> p(prof.size());
-                const size_t n = std::fread(p.data(), 4, p.size(), f);
-                if (n == p.size() || n == (size_t) g.nl * g.n_exp) std::copy(p.begin(), p.begin() + (long) n, prof.begin());
+                std::fseek(f, 0, SEEK_END);
+                const long long bytes = (long long) std::ftell(f);
+                std::rewind(f);
+                if (bytes >= 0 && !profile_size_fits((uint64_t) bytes, g.nl, g.n_exp)) {   // another model's counts (see ds4_experts_rule.hpp)
+                    std::fprintf(stderr, "ds4: %s is %lld bytes and this model's profile is %d layers of %d experts (%d bytes and a few drafter rows): "
+                                         "not read, the experts start unranked\n", o.profile.c_str(), bytes, g.nl, g.n_exp, g.nl * g.n_exp * 4);
+                } else {
+                    std::vector<uint32_t> p(prof.size());
+                    const size_t n = std::fread(p.data(), 4, p.size(), f);
+                    if (n == p.size() || n == (size_t) g.nl * g.n_exp) std::copy(p.begin(), p.begin() + (long) n, prof.begin());
+                }
                 std::fclose(f);
             }
         }

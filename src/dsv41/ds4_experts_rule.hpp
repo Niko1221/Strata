@@ -50,6 +50,18 @@ inline int experts_per_word(int requested, uint64_t vram_bytes, int model_k, boo
     return n < 1 ? 1 : n;
 }
 
+// The expert profile (`expert-profile.bin`, --expert-profile) is a bare array of u32 counts: one row of n_exp per layer, the drafter's blocks after the 40 layers, no header.
+// Its size is the only thing that says which model it was counted on, and the engine used to read the first rows of any file that was long enough: a profile counted on
+// 384 experts a layer (43 rows of 384 = 66,048 bytes) read as rows of 192 gives every layer the wrong experts, silently (the ISTA-DAS Coder has 192).  A file
+// holds the layers and at most kProfileExtraRows more (the drafter's 3 blocks, with room); anything longer is another model's.  Every profile written by the engine
+// or shipped with Strata (40 + 3 rows, or 40) passes, so a set with 384 experts reads exactly the files it read before.
+constexpr int kProfileExtraRows = 8;
+inline bool profile_size_fits(uint64_t bytes, int layers, int n_exp) {
+    if (layers <= 0 || n_exp <= 0) return false;
+    const uint64_t row = 4ull * (uint64_t) n_exp;
+    return bytes >= row * (uint64_t) layers && bytes <= row * (uint64_t) (layers + kProfileExtraRows);
+}
+
 // Prompt chunk (--prefill-chunk) default, one rule decided once at load from bytes (no timing).  The chunk's buffers come out of the VRAM the
 // expert tier would have, and every chunk streams the experts the cards do not hold once, so a bigger chunk is fewer passes.  Measured (8K prompt):
 //   - the GPUs hold most of the experts (4 x R9700, share 0.86): 1024 370 tok/s, 8192 214  -> small chunk;

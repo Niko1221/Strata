@@ -29,9 +29,12 @@ static void check(bool ok, const char* what) {
     if (!ok) ++fails;
 }
 
-int main() {
-    const int n = 384, k = 6, T = 16;
-    std::vector<float> bias(1024, 0.0f), logits((size_t) T * 1024, 0.0f);
+// n routed experts: 384 (every set so far) and 192 (the ISTA-DAS Coder: half of each layer's experts removed).  The entries past n hold a score no real
+// expert has (30, and a bias of 5), so a router that read one would pick it and the checks below would fail.
+static int run(int n) {
+    std::printf("-- %d experts\n", n);
+    const int k = 6, T = 16;
+    std::vector<float> bias(1024, 5.0f), logits((size_t) T * 1024, 30.0f);
     for (int i = 0; i < n; ++i) bias[(size_t) i] = 0.01f * (float) ((i * 37) % 17);
     std::vector<unsigned long long> vram(1024, 0ull);
     float *d_logits, *d_bias, *d_w;
@@ -57,7 +60,7 @@ int main() {
             for (int i = 0; i < 1024; ++i) {
                 s = s * 1664525u + 1013904223u;
                 float v = ((float) (s >> 8) / (float) (1 << 24) - 0.5f) * 8.0f;
-                if (i >= n) v = 0.0f;
+                if (i >= n) v = 30.0f;   // (the poison; the NaN / inf modes below overwrite every entry, as before)
                 if (mode == 1) v = nan;
                 if (mode == 2) v = inf;
                 if (mode == 3) v = -inf;
@@ -170,6 +173,12 @@ int main() {
                 std::printf("TIMING %s T=%d best of 7 rounds: %.3f us a launch\n", which ? "route_publish" : "route", tt, best);
             }
     }
+    return 0;
+}
+
+int main() {
+    for (int n : {384, 192})
+        if (run(n) != 0) return 1;      // (a device error: the context is gone)
     std::printf("%s\n", fails ? "ds4_route_guard_test: FAILED" : "ds4_route_guard_test: all ok");
     return fails ? 1 : 0;
 }
