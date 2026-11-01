@@ -45,4 +45,30 @@ inline bool ple_lock_blocks_cache(std::optional<uint64_t> available, uint64_t ta
     return auto_conversation_cache_mib(*available + table_bytes, min_free_mib) > auto_conversation_cache_mib(available, min_free_mib);
 }
 
+/// #4846 (owner 11-01): what the expert arena does when the RAM is short.  The arena is loaded into anonymous memory; with less RAM
+/// available than it needs (after the wait for an engine still exiting, and after the engine gave back the locks it took by itself) the
+/// load pushes the host into reclaim, and a 60 GiB host was seen to stall until it was power-cycled (#4051, #4846).  The engine still
+/// starts, never refuses: it reads the experts from the file like --mmap-experts for this run and says so.
+///   Load      the RAM is there (or the arena is not priced: `need` 0)
+///   FallBack  short, and the fallback is allowed: use the --mmap-experts expert source, register nothing
+///   Warn      short, fallback not allowed (the user fixed the choice by hand): load as asked, with the warning
+///   Refuse    a hard memory limit (a cgroup / container) below the arena, fallback not allowed: certain to be killed while loading
+enum class ArenaRamVerdict { Load, FallBack, Warn, Refuse };
+
+inline ArenaRamVerdict arena_ram_verdict(uint64_t need, uint64_t available, uint64_t hard_limit, bool fallback_allowed) {
+    if (need == 0) return ArenaRamVerdict::Load;
+    if (hard_limit < need) return fallback_allowed ? ArenaRamVerdict::FallBack : ArenaRamVerdict::Refuse;
+    if (available < need) return fallback_allowed ? ArenaRamVerdict::FallBack : ArenaRamVerdict::Warn;
+    return ArenaRamVerdict::Load;
+}
+
+/// May the engine swap the arena for the --mmap-experts source on its own?  Not when the user fixed the RAM by hand: `--ple-io ram`
+/// asked for the PLE table locked (`ple_ram_by_hand`: the user's word, not the residency policy's), or a shared arena file
+/// (--shared-expert-arena) was named.  STRATA_ARENA_RAM_FALLBACK=0 turns it off (testers: the old behaviour, to compare).
+inline bool arena_ram_fallback_allowed(const char* env_value, bool ple_ram_by_hand, bool shared_arena) {
+    if (ple_ram_by_hand || shared_arena) return false;
+    if (env_value != nullptr && env_value[0] != '\0') return std::atoi(env_value) != 0;
+    return true;
+}
+
 } // namespace strata::core
