@@ -78,6 +78,14 @@ def pending(dest: Path) -> list[Path]:
     return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)
 
 
+def _remove_older(dest: Path, keep: str) -> None:
+    """Remove the other package folders in `dest`, except any a running engine uses: removing those would take the files from under a loaded model."""
+    from strata_control import dsv41_paths
+    for old in Path(dest).iterdir():
+        if old.is_dir() and old.name != keep and not dsv41_paths.in_use(old):
+            shutil.rmtree(old, ignore_errors=True)
+
+
 def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[str], None] = print) -> Path | None:
     """Install a DeepSeek engine package the person downloaded from the release page (a .tar.gz / .zip, or the unpacked folder) into `dest`.
     Checked before anything is installed: it is a DeepSeek engine package for this system, its manifest is signed by a key Strata trusts, and every
@@ -134,9 +142,7 @@ def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[s
         shutil.move(str(root), str(target))
         if os.name != "nt":
             (target / exe_name()).chmod(0o755)
-        for old in dest.iterdir():
-            if old.is_dir() and old.name != target.name:
-                shutil.rmtree(old, ignore_errors=True)
+        _remove_older(dest, target.name)
         emit(f"DeepSeek engine {component.version} ({component.backend}) checked (signed, every file matches) and installed: {target}")
         return target / exe_name()
     except (updater.UpdateError, ec.ComponentProblem, OSError) as exc:
@@ -178,9 +184,7 @@ def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Call
             shutil.rmtree(stage_root, ignore_errors=True)
         if os.name != "nt":
             (target / exe_name()).chmod(0o755)
-        for old in dest.iterdir():                              # one generation: the older folders of this engine go
-            if old.is_dir() and old.name != target.name:
-                shutil.rmtree(old, ignore_errors=True)
+        _remove_older(dest, target.name)                        # one generation: the older folders of this engine go (never one a running engine uses)
         emit(f"DeepSeek engine {pkg.version} installed: {target}")
         shutil.rmtree(work, ignore_errors=True)               # (on a failure the partial download stays in `work`: the next try resumes it)
         return target / exe_name()

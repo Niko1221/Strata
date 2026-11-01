@@ -11,7 +11,14 @@
 
 Starting and serving never come here. A process that has forbidden acquiring (STRATA_NO_ACQUIRE) is refused with exit 5.
 Exit codes: 0 done or nothing to do, 2 usage, 5 refused (signature, hash, downgrade, no key, acquiring forbidden),
-6 failed and the old version is still in use (network, test start), 7 an engine is serving, 130 stopped.
+6 failed and the old version is still in use (network, test start), 7 a model is loaded and nothing was changed, 8 the update is done (or
+failed with the old engine in use) but a model that was stopped for it did not start again, 130 stopped.
+
+A model that is loaded (strata_control/engine_update.py): in a terminal the update says which model, asks before stopping it, downloads while it keeps
+serving, stops it cleanly, updates, and asks whether to start it again with the same settings. A script is never asked:
+    --yes            ask nothing; a loaded model is NOT stopped by it (exit 7, nothing changed, the two next steps are printed)
+    --stop-model     the update may stop the loaded model(s) (a script's yes); without --start-again they stay stopped and the start line is printed
+    --start-again    start the stopped model(s) again with the same settings after the update (also after a failed update, on the old engine)
 """
 
 from __future__ import annotations
@@ -57,6 +64,9 @@ def add_parsers(sp, components_sp) -> list:
     update.add_argument("--app-version", default=None, help=f"the installed app's version (default: ${ENV_APP_VERSION})")
     update.add_argument("--no-engine", action="store_true")
     update.add_argument("--no-control", action="store_true")
+    update.add_argument("--yes", action="store_true", help="ask nothing (a script); a loaded model is not stopped by this alone, see --stop-model")
+    update.add_argument("--stop-model", action="store_true", help="let the update stop a loaded model first (the script's yes to the question a terminal asks)")
+    update.add_argument("--start-again", action="store_true", help="after the update, start the model(s) that were stopped for it again with the same settings")
     comp_update = components_sp.add_parser("update", help="the same as `strata update` (engine and Control)")
     _common(comp_update)
     comp_update.add_argument("--check", action="store_true")
@@ -64,6 +74,9 @@ def add_parsers(sp, components_sp) -> list:
     comp_update.add_argument("--app-version", default=None)
     comp_update.add_argument("--no-engine", action="store_true")
     comp_update.add_argument("--no-control", action="store_true")
+    comp_update.add_argument("--yes", action="store_true", help="ask nothing (a script); a loaded model is not stopped by this alone, see --stop-model")
+    comp_update.add_argument("--stop-model", action="store_true", help="let the update stop a loaded model first (the script's yes to the question a terminal asks)")
+    comp_update.add_argument("--start-again", action="store_true", help="after the update, start the model(s) that were stopped for it again with the same settings")
     rollback = components_sp.add_parser("rollback", help="return to the previous engine version the last update kept")
     _common(rollback)
     engines = components_sp.add_parser("engines", help="list the engines installed on this computer and which one is in use")
@@ -210,7 +223,11 @@ def _print_check(report: dict) -> None:
         else:
             print(f"  App      {app['installed'] or 'unknown'} -> {app['offered']}: {app['status']}")
     if report.get("serving"):
-        print("  An engine is serving; an update waits until it stops.")
+        from strata_control import engine_update
+        names = ", ".join(m.label for m in engine_update.running_models(report["serving"]))
+        print(f"  {names} is running. An update asks before it stops it, downloads while it keeps serving, and asks whether to start it again.")
+    if (eng.get("status") in ("available", "install") or ds.get("status") == "available") and not report.get("serving"):
+        print("  To update: strata update")
 
 
 def run(a) -> int:
@@ -277,23 +294,20 @@ def run(a) -> int:
             else:
                 _print_check(report)
             return 0
-        _maybe_wait(a, ctx, machine)
         if not machine:
             print(f"Strata update ({ctx.source})")
-        out = updater.run_update(ctx, engine=not a.no_engine, control=not a.no_control, app=a.app)
+        from strata_control import engine_update
+        out = engine_update.update_with_models(ctx, _gate_for(a, ctx, machine), show=None if machine else _show_results,
+                                               engine=not a.no_engine, control=not a.no_control, app=a.app)
         if machine:
             print(json.dumps({"schema_version": 1, "ok": out["exit_code"] == 0, **out}, ensure_ascii=False))
-        else:
-            print(f"Feed sequence {out['feed']['sequence']}, signed by {out['feed']['key_id']}")
-            for result in out["results"]:
-                print(_line(result["component"].capitalize(), result))
-            if any(r.get("presets_marked") for r in out["results"]):
-                print("Saved tuning presets: marked for the short re-check (nothing was deleted).")
-            kept = next((r.get("previous") for r in out["results"] if r.get("status") == "updated" and r["component"] == "engine"), None)
-            if kept:                                     # a first install has no earlier engine to keep
-                print("The previous engine version is kept; `strata components rollback` returns to it.")
+        elif out["exit_code"] == engine_update.EXIT_NOT_RESTARTED:
+            print("The update is done. A model that was stopped for it did not start again (see above); the new engine is in use.")
         return out["exit_code"]
     except updater.UpdateError as exc:
+        if exc.exit_code == 0:                           # the person said no to stopping the model: nothing was changed
+            print(str(exc))
+            return 0
         return fail(str(exc), exc.exit_code)
     except feedmod.FeedError as exc:
         return fail(str(exc), exc.exit_code)
@@ -303,6 +317,37 @@ def run(a) -> int:
         return fail(f"{exc} (the update is the one explicit step that downloads; run it from a shell where STRATA_NO_ACQUIRE is not set)", 5)
     except KeyboardInterrupt:
         return fail("stopped; a partial download is kept and the next update resumes it", 130)
+
+
+def _show_results(out: dict) -> None:
+    print(f"Feed sequence {out['feed']['sequence']}, signed by {out['feed']['key_id']}")
+    for result in out["results"]:
+        print(_line(result["component"].capitalize(), result))
+    if any(r.get("presets_marked") for r in out["results"]):
+        print("Saved tuning presets: marked for the short re-check (nothing was deleted).")
+    kept = next((r.get("previous") for r in out["results"] if r.get("status") == "updated" and r["component"] == "engine"), None)
+    if kept:                                             # a first install has no earlier engine to keep
+        print("The previous engine version is kept; `strata components rollback` returns to it.")
+
+
+def _ask_factory(a, machine: bool):
+    """The question a person at a terminal is asked, or None when nobody can be: output for a program, --yes, or no keyboard."""
+    if machine or getattr(a, "yes", False) or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+
+    def ask(question: str, default: bool) -> bool:
+        try:
+            answer = input(f"{question} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+        except EOFError:
+            return default
+        return default if not answer else answer in ("y", "yes")
+    return ask
+
+
+def _gate_for(a, ctx, machine: bool):
+    from strata_control import engine_update
+    return engine_update.ModelGate(ask=_ask_factory(a, machine), say=(lambda text: None) if machine else (lambda text: print(text, flush=True)),
+                                   emit=ctx.emit, allow_stop=bool(getattr(a, "stop_model", False)), start_again=bool(getattr(a, "start_again", False)))
 
 
 def _gb(n: int | None) -> str:

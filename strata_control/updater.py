@@ -317,6 +317,15 @@ def wait_until_idle(check: Callable[[], list[dict]], *, wait: float, emit: Calla
         serving = check()
 
 
+def idle_gate(ctx: "Context") -> None:
+    """Called after a download, right before the first thing is staged, test-started or switched: with a gate attached, the models the person agreed to
+    stop are stopped here (and a model nobody agreed to stop is refused); then, as always, nothing may still be serving."""
+    gate = getattr(ctx, "gate", None)
+    if gate is not None:
+        gate.release(ctx.serving)
+    wait_until_idle(ctx.serving, wait=ctx.wait, emit=ctx.emit, cancel=ctx.cancel, poll=ctx.poll)
+
+
 # ---------------------------------------------------------------------------------------------- context
 
 @dataclass
@@ -340,6 +349,8 @@ class Context:
     environ: dict = field(default_factory=lambda: dict(os.environ))
     allow_no_model_smoke: bool = True
     state_base: Path | None = None                # where tuning/recheck.json goes (default: the per-user state folder)
+    feed_timeout: float = 30.0                    # seconds a read of the feed may wait (the quiet daily check uses 5)
+    gate: object | None = None                    # strata_control.engine_update.ModelGate: what to do when a model is loaded (None: refuse before anything is downloaded)
 
     def say(self, phase: str, message: str, **extra) -> None:
         self.emit({"event": "phase", "phase": phase, "message": message, **extra})
@@ -363,7 +374,7 @@ def open_feed(ctx: Context, state: State) -> feedmod.Feed:
     last = (state.data.get("feed") or {}).get("sequence")
     ctx.say("feed", "Reading the signed update feed")
     try:
-        loaded = feedmod.fetch(ctx.source, ctx.trusted, last_sequence=last, channel=ctx.channel, now=ctx.now)
+        loaded = feedmod.fetch(ctx.source, ctx.trusted, timeout=ctx.feed_timeout, last_sequence=last, channel=ctx.channel, now=ctx.now)
     except feedmod.FeedDowngrade as exc:
         raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
     for line in loaded.skipped:                       # an entry from a newer release that this Control cannot use: said once, never an error
@@ -1102,7 +1113,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
     _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "engine")
     archive = _download(ctx, "engine", pkg.url, pkg.size, pkg.sha256, f"engine {pkg.label}", feed)
     # busy check after the long download: a model may have been started meanwhile; the verified archive is kept for the retry
-    wait_until_idle(ctx.serving, wait=ctx.wait, emit=ctx.emit, cancel=ctx.cancel, poll=ctx.poll)
+    idle_gate(ctx)
     try:
         stage_root, staged = stage_engine(ctx, feed, pkg, archive)
     except UpdateError as exc:
@@ -1115,7 +1126,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
 def _switch_to_installed(ctx: Context, state: State, folder: str, result: dict) -> dict:
     """An update to an engine that is already on this computer: nothing is downloaded; it becomes the engine in use and any pin is cleared."""
     from strata_control import engine_library
-    wait_until_idle(ctx.serving, wait=ctx.wait, emit=ctx.emit, cancel=ctx.cancel, poll=ctx.poll)
+    idle_gate(ctx)
     ctx.say("switch", "This engine is already on this computer; switching to it", component="engine")
     out = engine_library.use_qwen_unlocked(ctx, state, folder)
     chosen, _ = installed_engine(ctx.components, ctx.hardware)
@@ -1158,7 +1169,7 @@ def _finish_engine_install(ctx: Context, state: State, pkg: feedmod.EnginePackag
             state.save()
             raise
         # last look before the switch: an engine may have started during the test-start
-        wait_until_idle(ctx.serving, wait=ctx.wait, emit=ctx.emit, cancel=ctx.cancel, poll=ctx.poll)
+        idle_gate(ctx)
         name = folder_name(pkg)
         live = ec.engine_dir(root)
         live.mkdir(parents=True, exist_ok=True)
@@ -1495,6 +1506,7 @@ def update_dsv41(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
             continue
         _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "dsv41")
         archive = _download(ctx, "dsv41", pkg.url, pkg.size, pkg.sha256, f"the DeepSeek engine {pkg.version}", feed)
+        idle_gate(ctx)                                   # the person agreed to stop the model (or there is none) before anything is put in place
         stage_root = None
         try:
             stage_root, _staged = stage_engine(ctx, feed, pkg, archive)
@@ -1538,6 +1550,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
     root = ctx.components
     _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "control")
     archive = _download(ctx, "control", pkg.url, pkg.size, pkg.sha256, f"Control {pkg.version}", feed)
+    idle_gate(ctx)                                       # a new Control never takes over beside a model that is loaded without the person's yes
     stage = new_stage(root, "c")
     try:
         ctx.say("verify", f"Unpacking Control {pkg.version}", component="control")
@@ -1565,7 +1578,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         _atomic_mod.replace(temp, pointer)
         keep = {pkg.version} | ({previous["folder"]} if previous else set())
         for entry_dir in control_dir(root).iterdir():
-            if entry_dir.is_dir() and entry_dir.name not in keep:
+            if entry_dir.is_dir() and entry_dir.name not in keep and not dsv41_paths.in_use(entry_dir):      # (never the Control a running server runs from)
                 shutil.rmtree(longpath.long_path(entry_dir), ignore_errors=True)
         state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "update-control",
                        "from": decision["installed"], "to": pkg.version, "ok": True})
@@ -1656,6 +1669,42 @@ def _installed_before(name: str, ctx: Context):
     return None
 
 
+def pending_changes(feed: feedmod.Feed, ctx: Context, state: State, *, engine: bool = True, control: bool = True) -> list[str]:
+    """What this update would install or switch, in words, from the feed alone (nothing is downloaded).  Empty: nothing to do."""
+    out = []
+    if engine:
+        decision = decide_engine(feed, ctx, state)
+        if decision["status"] in ("install", "available") or (ctx.force and decision["status"] in ("failed-before", "skipped")):
+            offered = (decision.get("offered") or {}).get("version")
+            have = (decision.get("installed") or {}).get("version")
+            out.append(f"engine {have} -> {offered}" if have else f"engine {offered}")
+        ds = decide_dsv41(feed, ctx)
+        if ds["status"] == "available":
+            out.append(f"DeepSeek engine {ds['installed']} -> {ds['offered']}")
+    if control:
+        decision = decide_control(feed, ctx, state)
+        if decision["status"] == "available":
+            out.append(f"Control {decision['installed']} -> {decision['offered']}")
+    return out
+
+
+def _model_check(ctx: Context, feed: feedmod.Feed, state: State, *, engine: bool, control: bool) -> None:
+    """Before anything is downloaded: with a model loaded and something to install, either wait for it to stop (--wait), ask (a gate), or refuse.
+    An update never starts by itself beside a loaded model, and never half-runs (the engine refused while Control moves on)."""
+    changes = pending_changes(feed, ctx, state, engine=engine, control=control)
+    if not changes:
+        return
+    if ctx.wait:
+        wait_until_idle(ctx.serving, wait=ctx.wait, emit=ctx.emit, cancel=ctx.cancel, poll=ctx.poll)
+    serving = ctx.serving()
+    if not serving:
+        return
+    gate = getattr(ctx, "gate", None)
+    if gate is None:
+        raise Busy(serving)
+    gate.consent(serving, "It would update the " + " and the ".join(changes) + ".")
+
+
 def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: bool = False) -> dict:
     """`strata update`: the feed once, then the engine, Control and (if asked) the app installer, each reported separately.
     A component that fails does not undo one that succeeded; the exit code is the worst one."""
@@ -1665,6 +1714,7 @@ def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: 
         state = State(ctx.components)
         feed = open_feed(ctx, state)
         state.save()
+        _model_check(ctx, feed, state, engine=engine, control=control)
         steps = ([("engine", lambda: update_engine(ctx, feed, state))] if engine else []) + \
                 ([("dsv41", lambda: update_dsv41(ctx, feed, state))] if engine else []) + \
                 ([("control", lambda: update_control(ctx, feed, state))] if control else []) + \

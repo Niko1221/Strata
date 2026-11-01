@@ -112,10 +112,11 @@ def in_use(folder) -> bool:
         psutil = None
     if psutil is not None:
         here = os.path.normcase(os.path.abspath(folder)) + os.sep
-        for p in psutil.process_iter(["exe"]):
+        for p in psutil.process_iter(["exe", "cwd"]):
             try:
-                if os.path.normcase(os.path.abspath(p.info.get("exe") or "")).startswith(here):
-                    return True
+                for where in (p.info.get("exe"), p.info.get("cwd")):          # the program, or the folder a Python server runs in (a Control)
+                    if where and os.path.normcase(os.path.abspath(where) + os.sep).startswith(here):
+                        return True
             except (psutil.Error, OSError, ValueError):
                 continue
     exe = folder / exe_name()
