@@ -1472,14 +1472,14 @@ class Runner:
         """DFlash2 chosen on purpose and the person gave no number of requests: one at a time, said once (drafting.wants_one_request)."""
         try:
             from strata_control import drafting
-            if not drafting.wants_one_request(**self.drafting_inputs(read_config(config))):
-                return False
+            want = self.drafting_inputs(read_config(config))
+            if not drafting.wants_one_request(**want) or not drafting.pack_ready(want["data_dir"]):
+                return False                                 # (no drafter file after all, e.g. no internet: the MTP runs and the slots stay)
         except Exception:                                    # noqa: BLE001 - a note is never a reason to stop a launch
             return False
         if not getattr(self, "_one_request_said", False):
             self._one_request_said = True
             self.notices.append(drafting.ONE_REQUEST_NOTE)
-            self.emit("model", drafting.ONE_REQUEST_NOTE, None)
         return True
 
     def ensure_drafter(self, base_path: Path) -> None:

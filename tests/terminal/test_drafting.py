@@ -20,6 +20,17 @@ from tests.terminal.launch_support import run_cli
 
 ROOT = Path(__file__).resolve().parents[2]
 GYRO = "qwen3.8-flash-next-gyro-gyro-s"
+_HARDWARE = mock.patch.object(drafting, "detect_hardware", return_value=("cuda", ["sm_120"]))
+
+
+def setUpModule():
+    """These tests are about the table, the flags and the download, on a computer whose engine can run DFlash2 (the box that runs them may have an Intel or no card;
+    tests/terminal/test_drafting_hardware.py has the hardware matrix)."""
+    _HARDWARE.start()
+
+
+def tearDownModule():
+    _HARDWARE.stop()
 
 
 def serving_dflash2():

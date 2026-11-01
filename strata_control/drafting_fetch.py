@@ -60,12 +60,13 @@ def online(url: str, timeout: float = REACH_SECONDS) -> bool:
     """Does the download address answer at all? One short HEAD request, no retry: with no internet (or a connection that hangs) the person gets a plain
     sentence in a few seconds instead of a stalled progress bar. Any answer from the server counts, even an error page."""
     try:
+        transfer.check_url_policy(url)
         request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-drafting/1"})
-        with urllib.request.urlopen(request, timeout=timeout):
+        with transfer._opener.open(request, timeout=timeout):     # the download's own opener: same certificates, same redirect policy, same proxy settings
             return True
     except urllib.error.HTTPError:
         return True
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError, transfer.TransferError) as exc:
         from strata_control import tls
         return bool(tls.is_certificate_error(exc))        # a certificate problem is an answer: the download explains it in its own words
 
