@@ -291,7 +291,8 @@ __global__ void k_pf_swiglu(const float* __restrict__ gu, int ffs, int C, __half
 // a receive slot per reduce hop, flags [2 sets][PF_RING_STEPS] set by the previous card's stream; n*: the next card's;
 // plan: this card's steps (pf_ring_plan.hpp)
 struct Engine::PfRing {
-    __half *send, *in[NCARD - 1][2], *ag[2];
+    __half *send, *in[NCARD - 1][2], *ag[2];   // in, ag: host memory, written by the previous card
+    __half *din[NCARD - 1][2], *dag[2];        // this card's own copies in device memory (the add and the output read these)
     __half *nin[NCARD - 1][2], *nag[2];
     unsigned *flags, *nflags;
     int next_dev = 0;
@@ -688,6 +689,8 @@ void Engine::prefill_alloc() {
             for (int k = 0; k < 2; ++k) {
                 for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
                 r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
+                for (int h = 0; h < NCARD - 1; ++h) r.din[h][k] = palloc<__half>(share);
+                r.dag[k] = palloc<__half>((size_t) pf_c_ * N);
             }
             r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
         }
