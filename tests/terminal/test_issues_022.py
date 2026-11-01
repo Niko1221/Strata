@@ -457,5 +457,57 @@ class Issue3504MultiValueArgs(unittest.TestCase):
         self.assertEqual(params.argv_to_dict(self.ARGS)["--control-vector-layer-range"], "4 44")
 
 
+class Issue4891StaleComponentPaths(unittest.TestCase):
+    """#4891: after `strata update` removes the component folder a run config was written for, doctor answered every
+    file under it as missing, so the model showed as not installed although nothing is. A path that is gone is
+    answered with the same file of the component in use (every component package ships the same files); a path that
+    still resolves is answered as it is."""
+
+    def setUp(self):
+        from strata_control import doctor
+        self.doctor = doctor
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.components = Path(self.tmp.name) / "components"
+        self.active_control = self.components / "control" / "0.1.55"
+        (self.active_control / "data").mkdir(parents=True)
+        (self.active_control / "data" / "expert-profile.bin").write_bytes(b"x")
+
+    def test_a_pruned_expert_profile_is_answered_by_the_control_in_use(self):
+        from strata_control import engine_component as ec
+        cfg_path = self.components / "run.json"
+        raw = str(self.components / "control" / "0.1.47" / "data" / "expert-profile.bin")
+        with unittest.mock.patch.object(self.doctor, "CONTROL_ROOT", self.active_control), \
+                unittest.mock.patch.object(ec, "resolve"):
+            self.assertEqual(self.doctor._location(raw, {}, cfg_path), self.active_control / "data" / "expert-profile.bin")
+
+    def test_a_pruned_reader_is_answered_by_the_engine_in_use(self):
+        from strata_control import engine_component as ec
+        active_engine = self.components / "engine" / "0.1.55-x"
+        (active_engine).mkdir(parents=True)
+        (active_engine / "strata-vision.exe").write_bytes(b"x")
+        cfg_path = self.components / "run.json"
+        raw = str(self.components / "engine" / "0.1.47-x" / "strata-vision.exe")
+        with unittest.mock.patch.object(ec, "resolve", return_value=unittest.mock.Mock(root=active_engine)):
+            self.assertEqual(self.doctor._location(raw, {}, cfg_path), active_engine / "strata-vision.exe")
+
+    def test_a_path_that_still_resolves_is_answered_as_it_is(self):
+        old = self.components / "control" / "0.1.47" / "data"
+        old.mkdir(parents=True)
+        (old / "expert-profile.bin").write_bytes(b"x")
+        cfg_path = self.components / "run.json"
+        with unittest.mock.patch.object(self.doctor, "CONTROL_ROOT", self.active_control):
+            self.assertEqual(self.doctor._location(str(old / "expert-profile.bin"), {}, cfg_path), old / "expert-profile.bin")
+
+    def test_a_relative_path_finds_its_cwd_in_the_control_in_use(self):
+        from strata_control import engine_component as ec
+        cfg = {"cwd": str(self.components / "control" / "0.1.47")}
+        cfg_path = self.components / "run.json"
+        with unittest.mock.patch.object(self.doctor, "CONTROL_ROOT", self.active_control), \
+                unittest.mock.patch.object(ec, "resolve"):
+            self.assertEqual(self.doctor._location("data/expert-profile.bin", cfg, cfg_path),
+                             self.active_control / "data" / "expert-profile.bin")
+
+
 if __name__ == "__main__":
     unittest.main()

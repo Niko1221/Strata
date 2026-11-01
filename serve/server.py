@@ -8890,6 +8890,57 @@ def with_current_reader(cfg: dict, package: Path) -> dict:
     return {**cfg, "vision": fixed}
 
 
+def _control_component_folder(path: Path):
+    """The control component folder a path lives in (<components>/control/<version>), or None when it is none.
+    The "components" grandparent is required: a person's own <data>/control/<x> tree is their choice, not a component."""
+    for ancestor in (path, *path.parents):
+        if ancestor.parent.name.lower() == "control" and ancestor.parent.parent.name.lower() == "components":
+            return ancestor
+    return None
+
+
+def with_current_control_paths(cfg: dict, control_root: Path | None = None) -> dict:
+    """The run config records "cwd" (and engine arguments like --expert-profile) as absolute paths into the control
+    component folder that was in use when the model was set up. `strata update` keeps the two newest control folders
+    and removes the rest, so an older config points into a folder that is gone; the engine start dies before it says
+    anything (Windows: NotADirectoryError, WinError 267, and the cause line the launcher shows is the vision reader's,
+    so the person reads "no CUDA-capable device is detected" - #4891). The same file of the control in use stands in
+    for it (every control package ships the same data files)."""
+    root = Path(control_root) if control_root is not None else ROOT
+    new_cwd = None
+    cwd = cfg.get("cwd")
+    if isinstance(cwd, str) and cwd and os.path.isabs(cwd):
+        old = _control_component_folder(Path(cwd))
+        if old is not None and old != root:
+            new_cwd = str(root)
+    new_args = None
+    args = cfg.get("args")
+    if isinstance(args, list):
+        rebuilt, changed = [], False
+        for item in args:
+            if isinstance(item, str) and os.path.isabs(item):
+                old = _control_component_folder(Path(item))
+                if old is not None and old != root:
+                    moved = root / Path(item).relative_to(old)
+                    if moved.is_file():
+                        print(f"[strata] the path {item} " + ("is not there any more" if not Path(item).exists() else "belongs to an older control")
+                              + f"; using {moved} from the control in use", flush=True)
+                        item = str(moved)
+                        changed = True
+            rebuilt.append(item)
+        new_args = rebuilt if changed else None
+    if new_cwd is None and new_args is None:
+        return cfg
+    fixed = dict(cfg)
+    if new_cwd is not None:
+        print(f"[strata] the working folder {cwd} " + ("is not there any more" if not Path(cwd).is_dir() else "belongs to an older control")
+              + f"; using {new_cwd} in use", flush=True)
+        fixed["cwd"] = new_cwd
+    if new_args is not None:
+        fixed["args"] = new_args
+    return fixed
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -8899,6 +8950,7 @@ def with_component_engine(cfg: dict) -> dict:
     cfg["exe"] = _component_exe(cfg["exe"], cfg)
     cfg["lib_dirs"] = [*engine_component.package_lib_dirs(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
     cfg = with_current_reader(cfg, Path(cfg["exe"]).parent)
+    cfg = with_current_control_paths(cfg)
     if cfg.get("backend") == "hip":     # AMD: the package's own hipBLASLt tuning table for this card, when its hipBLASLt version matches
         cfg = hipblaslt_tuning.apply(cfg, Path(cfg["exe"]).parent, say=lambda line: print(line, flush=True))
     return cfg

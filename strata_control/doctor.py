@@ -27,6 +27,53 @@ PATH_FLAGS = {
 }
 MONITOR_TEXTUAL_VERSION = "8.2.8"
 
+#: The control component in use - this file runs from it (strata_control/doctor.py).
+CONTROL_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _component_folder(value: Path):
+    """The component folder a path lives in - <components>/control/<version> or <components>/engine/<package> - or
+    None when it is none. The "components" grandparent is required: a person's own <data>/control/<x> tree is their
+    choice, not a component the updater removes."""
+    for ancestor in (value, *value.parents):
+        parent = ancestor.parent
+        if parent.name.lower() in ("control", "engine") and parent.parent.name.lower() == "components":
+            return ancestor
+    return None
+
+
+def _active_engine_folder(cfg: dict) -> Path | None:
+    """The engine package folder in use now - the one a `component:strata-engine` reference resolves to - or None
+    when there is no engine for this PC. The quick check: no file is hashed."""
+    from strata_control import engine_component
+    backend = (cfg or {}).get("backend")
+    try:
+        item = engine_component.resolve(backend=backend if backend in engine_component.BACKEND_MATRIX else None, full=False)
+    except engine_component.EngineMissing:
+        return None
+    return Path(item.root)
+
+
+def _rebase_to_component_in_use(value: Path, cfg: dict | None = None) -> Path:
+    """#4891: a run config records absolute paths into the control and engine folders that were in use when the
+    model was set up; `strata update` keeps the two newest folders and removes the rest, so this inventory reported
+    every file under them as missing and the model showed as not installed although nothing is. When such a path is
+    gone, the same file of the component in use stands in for it (every component package ships the same files); a
+    path that still resolves is answered as it is."""
+    if value.exists():
+        return value
+    old = _component_folder(value)
+    if old is None:
+        return value
+    if old.parent.name.lower() == "control":
+        target = CONTROL_ROOT / value.relative_to(old)
+        return target if target.exists() else value
+    engine_root = _active_engine_folder(cfg or {})
+    if engine_root is None:
+        return value
+    target = engine_root / value.relative_to(old)
+    return target if target.exists() else value
+
 
 def _location(raw: str, cfg: dict, config_path: Path) -> Path:
     from strata_control import engine_component
@@ -37,9 +84,10 @@ def _location(raw: str, cfg: dict, config_path: Path) -> Path:
             return engine_component.engine_dir() / "(no engine for this PC)"     # reported as missing
     value = Path(raw).expanduser()
     if value.is_absolute():
-        return value
+        return _rebase_to_component_in_use(value, cfg)
     cwd = cfg.get("cwd")
-    return (Path(cwd) if isinstance(cwd, str) and cwd else config_path.parent) / value
+    base = Path(cwd) if isinstance(cwd, str) and cwd else config_path.parent
+    return _rebase_to_component_in_use(base, cfg) / value
 
 
 def _item(name: str, path: Path, kind: str, *, required: bool = True) -> dict:
