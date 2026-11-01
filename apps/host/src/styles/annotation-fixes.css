@@ -597,9 +597,6 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 [data-preview-resizing='true'] .artifact-panel iframe { pointer-events:none; }
 .chat-toolbar__conversation { container-type:inline-size; container-name:chat-controls; }
 .chat-agents__count { font-size:11px; font-variant-numeric:tabular-nums; }
-.subagents-empty { display:grid; justify-items:start; gap:10px; padding:18px 0 8px; }
-.subagents-empty > svg { color:var(--st-ink-muted); }
-.subagents-empty p { line-height:1.7; }
 .subagents-overview-summary { padding:8px 0 12px; }
 @container chat-controls (max-width:560px) { .chat-agents__label { display:none; } }
 @container chat-controls (max-width:460px) { .chat-toolbar__conversation .chat-model-badge { max-width:112px; } }

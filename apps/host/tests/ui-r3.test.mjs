@@ -72,3 +72,11 @@ test('7 and 8: Model files has no explanatory sentence and holds "Other local mo
   assert.match(card, /<div className="model-files__actions"><Btn[\s\S]*?>\{tr\("Storage settings"\)\}<\/Btn><Btn[^>]*onClick=\{onOtherModels\}[^>]*>\{tr\("Other local models\\u2026"\)\}<\/Btn><\/div><\/section>/, 'inside the card, after Storage settings');
   assert.ok(!/<\/section><Btn[^>]*other-models/.test(models), 'not a separate control under the card');
 });
+
+test('12: with no subagents the dropdown is one row, "No subagents recorded" and the X, with no icon and no explanation', () => {
+  const bar = read('src/components/ChatToolbar.tsx');
+  assert.match(bar, /title=\{tr\(session\?\.agents\?\.length \? "Subagents" : "No subagents recorded"\)\}/, 'the empty state is the title');
+  assert.ok(!/subagents-empty|Subagents that run in this conversation/.test(bar), 'no icon, no explanatory text');
+  assert.ok(!/subagents-empty/.test(read('src/styles/annotation-fixes.css')), 'no dead rule');
+  assert.match(read('src/styles/app.css'), /\.telepop__head:last-child \{ padding-bottom: 0; margin-bottom: 0; border-bottom: 0; \}/, 'no empty body under the title');
+});
