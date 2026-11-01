@@ -61,11 +61,11 @@ test('the sentences name the file and the size, say what to do, and the nudge as
   const calls = cutCalls([draft]);
   assert.deepEqual(calls, [{ name: 'write', target: '/w/pagoda.html', bytes: 52_300 }]);
   const again = cutNotice({ calls, tokens: 19660, retrying: true });
-  assert.match(again.text, /reached its length limit \(19,660 tokens\) while writing pagoda\.html \(52 KB\), so nothing was saved\. I asked the assistant to write it again in smaller parts\./);
+  assert.match(again.text, /reached its length limit \(19,660 tokens\) while writing pagoda\.html \(52 KB\), so that write did not happen\. I asked the assistant to look at what is on disk and write the rest in smaller parts\./);
   const last = cutNotice({ calls, tokens: 19660 });
   assert.match(last.text, /Say “continue”/);
   assert.match(cutNotice({ tokens: 500 }).text, /^The reply reached its length limit \(500 tokens\) and was cut off\. Say “continue”/);
-  assert.match(cutNudge({ calls, tokens: 19660 }), /writing \/w\/pagoda\.html in one tool call, so nothing was saved[\s\S]*smaller parts/);
+  assert.match(cutNudge({ calls, tokens: 19660 }), /writing \/w\/pagoda\.html in one tool call, so that call did not run[\s\S]*Do not delete or start over a file that is already complete[\s\S]*smaller parts/);
   assert.match(cutNudge({}), /cut off by the output limit/);
   for (const n of [again, last]) assert.equal(n.text, n.key.replace(/\{(\d)\}/g, (_, i) => n.values[i]), 'the key and its values make the sentence');
 });
@@ -153,7 +153,7 @@ test('a reply cut inside a file write: the chat says so, the agent is asked to g
   await r.bridge.runTurn({ ...r.base('c1', f => out.push(f)), message: 'SCRIPT:cutwrite big.txt' });
   const said = out.find(f => f.type === 'delta' && f.noteReason === 'cut');
   assert.ok(said, 'a sentence about the cut');
-  assert.match(said.text, /while writing big\.txt/); assert.match(said.text, /I asked the assistant to write it again in smaller parts/);
+  assert.match(said.text, /while writing big\.txt/); assert.match(said.text, /that write did not happen. I asked the assistant to look at what is on disk and write the rest in smaller parts/);
   assert.equal(out.filter(f => f.type === 'error').length, 0);
   const done = out.filter(f => f.type === 'done').at(-1);
   assert.equal(done.finishReason, 'stop', 'the turn ends on the agent\'s own finish, not on the cut');
@@ -176,7 +176,7 @@ test(`a model that is cut every time is asked ${MAX_CUT_RETRIES} times, then the
   assert.equal(writes(r).length, MAX_CUT_RETRIES + 1);
   const notes = out.filter(f => f.type === 'delta' && f.noteReason === 'cut');
   assert.equal(notes.length, MAX_CUT_RETRIES + 1, 'one sentence per cut');
-  assert.match(notes.at(-1).text, /nothing was saved\. Say “continue”/);
+  assert.match(notes.at(-1).text, /that write did not happen\. Say “continue”/);
   const done = out.filter(f => f.type === 'done').at(-1);
   assert.ok(done, 'the turn ended');
   assert.equal(done.finishReason, 'length');

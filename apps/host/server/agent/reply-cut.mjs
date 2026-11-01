@@ -91,14 +91,15 @@ const withTokens = tokens => (tokens > 0 ? ` (${Number(tokens).toLocaleString('e
 export function cutNotice({ calls = [], tokens = 0, again = false, retrying = false } = {}) {
   const call = calls.find(c => c.target) ?? calls[0] ?? null;
   const file = call?.target ? String(call.target).split(/[\\/]/).filter(Boolean).at(-1) : '';
+  const what = file || (/^(write|edit)$/.test(call?.name ?? '') ? 'a file' : call?.name);
   if (call && retrying) {
-    const key = 'That reply reached its length limit{0} while writing {1} ({2}), so nothing was saved. I asked the assistant to write it again in smaller parts.';
-    const values = [withTokens(tokens), file || call.name, kb(call.bytes)];
+    const key = 'That reply reached its length limit{0} while writing {1} ({2}), so that write did not happen. I asked the assistant to look at what is on disk and write the rest in smaller parts.';
+    const values = [withTokens(tokens), what, kb(call.bytes)];
     return { key, values, text: fill(key, values) };
   }
   if (call) {
-    const key = 'The reply reached its length limit{0} while writing {1} ({2}), so nothing was saved. Say “continue” and it will write it again in smaller parts.';
-    const values = [withTokens(tokens), file || call.name, kb(call.bytes)];
+    const key = 'The reply reached its length limit{0} while writing {1} ({2}), so that write did not happen. Say “continue” and it will look at what is on disk and go on in smaller parts.';
+    const values = [withTokens(tokens), what, kb(call.bytes)];
     return { key, values, text: fill(key, values) };
   }
   if (retrying) {
@@ -118,5 +119,5 @@ export function cutNudge({ calls = [], tokens = 0 } = {}) {
     return 'Your last reply was cut off by the output limit before it was finished. Carry on from where it stopped without repeating what you already wrote, and keep your thinking short.';
   }
   const file = call.target || 'the file';
-  return `Your last reply was cut off by the output limit${tokens > 0 ? ` (${Number(tokens).toLocaleString('en-US')} tokens)` : ''} while you were writing ${file} in one tool call, so nothing was saved. Do not make the same big call again. Write ${file} in several smaller parts: create it with the first part (about 150 lines or fewer), then add each next part with its own edit or append, and read the end of the file back at the end. Keep your thinking short.`;
+  return `Your last reply was cut off by the output limit${tokens > 0 ? ` (${Number(tokens).toLocaleString('en-US')} tokens)` : ''} while you were writing ${file} in one tool call, so that call did not run and nothing was changed by it. First look at what is on disk now (list the folder, read the end of the file). Do not delete or start over a file that is already complete. If it is not complete, write what is missing in several smaller parts (about 150 lines or fewer each) with edits or appends, and read the end of the file back when you are done. Keep your thinking short.`;
 }

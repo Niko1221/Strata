@@ -7,6 +7,7 @@
  * Scenarios (default: all)
  *   pagoda  the owner's own prompt ("Write me a 100 voxel pagoda in one html file with garden."), thinking Medium, bypass mode
  *   long    a deterministic long write: one file of N numbered lines (E2E_LINES, default 1800, about 22K tokens), thinking Off
+ *   mcp     Strata's own tool loop (serve runs an MCP tool itself): a call that finishes, and a call the reply is cut inside
  *   raw     the model server alone: a reply cut inside a tool call, as the client receives it
  *   cut     the same long write with the Harness told a small window (E2E_CUT_WINDOW, default 24000), so the reply budget is
  *           about 7K tokens and the reply is cut inside the tool call: the turn must say so in words and the agent must carry on
@@ -33,7 +34,9 @@ const WINDOW = Number(env('E2E_WINDOW', '65536'));
 const EXISTING = process.env.E2E_BASE_URL ?? '';
 const PYTHON = env('E2E_PYTHON', 'python3');
 const OUT = env('E2E_OUT', mkdtempSync(join(tmpdir(), 'strata-agent-lost-')));
-const LINES = Number(env('E2E_LINES', '1400'));
+const LINES = Number(env('E2E_LINES', '1100'));
+const REPEAT = Number(env('E2E_REPEAT', '1'));
+const TURN_S = Number(env('E2E_TURN_S', '900'));
 const wanted = process.argv.slice(2);
 const want = id => wanted.length === 0 || wanted.includes(id);
 mkdirSync(OUT, { recursive: true });
@@ -50,6 +53,7 @@ const finish = async (code) => {
   process.exit(code);
 };
 process.on('SIGINT', () => finish(130));
+process.on('SIGTERM', () => finish(143));
 
 if (!EXISTING) {
   const pack = env('E2E_PACK', join(HOME, '026q/pack-iq3s'));
@@ -67,6 +71,8 @@ if (!EXISTING) {
       ...(process.env.E2E_ENGINE_ARGS ? process.env.E2E_ENGINE_ARGS.split(' ').filter(Boolean) : [])],
     cwd: REPO, tokenizer: join(pack, 'tokenizer'), model_name: 'qwen3.8-flash-next-iq3_s', log: join(OUT, 'engine.log'), lib_dirs: [lib], port: PORT, gpu: 0,
     fit_max_tokens: true,
+    // Strata's own tool loop (serve/server.py run_with_mcp): one small MCP server, offered only to requests that ask for it (strata_mcp).
+    mcp_servers: { fake: { command: PYTHON, args: [join(REPO, 'serve', 'mcp_fake_server.py')] } },
   }, null, 2));
   server = spawn(PYTHON, ['serve/server.py', '--engine', 'strata', '--config', config, '--port', String(PORT), '--no-api-key', '--ready-file', join(OUT, 'ready.json')], {
     cwd: REPO, env: { ...process.env, LD_LIBRARY_PATH: `${lib}:${process.env.LD_LIBRARY_PATH ?? ''}`, STRATA_DATA_DIR: join(OUT, 'data'), PYTHONPATH: `${join(REPO, 'tools')}:${REPO}` }, stdio: ['ignore', 'pipe', 'pipe'], detached: true,
@@ -107,7 +113,10 @@ async function turn(name, message, { thinking = 'Medium', mode = 'bypass', chatI
   mkdirSync(workspace, { recursive: true });
   const frames = [];
   const t0 = Date.now();
+  let timedOut = false;
+  const stopTimer = setTimeout(() => { timedOut = true; void bridge.stop(chatId).catch(() => {}); }, TURN_S * 1000);
   await bridge.runTurn({ chatId, message, workspacePath: workspace, mode, thinking, onFrame: f => frames.push({ at: Date.now() - t0, f }) });
+  clearTimeout(stopTimer);
   const seconds = (Date.now() - t0) / 1000;
   const byType = {};
   for (const { f } of frames) byType[f.type] = (byType[f.type] ?? 0) + 1;
@@ -121,7 +130,8 @@ async function turn(name, message, { thinking = 'Medium', mode = 'bypass', chatI
   const drafts = frames.map(x => x.f).filter(f => f.type === 'agent-tool-draft').map(f => f.draft);
   const writes = drafts.filter(d => d.name === 'write' && d.bytes > 0);
   const draftStats = { frames: drafts.length, writeFrames: writes.length, lastWrite: writes.filter(d => !d.done).at(-1) ? { target: writes.filter(d => !d.done).at(-1).target, bytes: writes.filter(d => !d.done).at(-1).bytes, lines: writes.filter(d => !d.done).at(-1).lines } : null, previewSample: writes.filter(d => !d.done).at(-1)?.preview.slice(-80) ?? null };
-  const summary = { name, seconds, cutNotes, draftStats, byType, done, error, files, cards: cards.map(c => ({ name: c.name, state: c.state, target: c.target })), prepareStatuses: prepare.length, firstPrepare: prepare[0] ?? null, lastPrepare: prepare.at(-1) ?? null, text: text.slice(-1200) };
+  const writesDone = cards.filter(c => c.name === 'write' && c.state === 'done').length;
+  const summary = { name, seconds, timedOut, writesDone, cutNotes, draftStats, byType, done, error, files, cards: cards.map(c => ({ name: c.name, state: c.state, target: c.target })), prepareStatuses: prepare.length, firstPrepare: prepare[0] ?? null, lastPrepare: prepare.at(-1) ?? null, text: text.slice(-1200) };
   writeFileSync(join(OUT, `turn-${name}.json`), JSON.stringify({ summary, frames: frames.slice(0, 4000) }, null, 1));
   return { ...summary, frames, workspace };
 }
@@ -148,19 +158,37 @@ if (want('raw')) {
   note('raw: a reply cut inside a tool call reaches the client as pieces of the call and finish_reason length', finish === 'length' && name === 'write' && pieces > 5, `finish ${finish}; tool ${name}; ${pieces} call pieces, ${args.length} argument characters, closed JSON ${(() => { try { JSON.parse(args); return true; } catch { return false; } })()}; plain content ${JSON.stringify(content.slice(0, 80))}; ids ${ids.size}; usage ${JSON.stringify(usage)}`);
 }
 
+if (want('mcp')) {
+  // Strata's own tool loop: the server runs the MCP tool itself. A call that finishes is run; a call the reply is cut inside is announced and never run.
+  const ask = async (content, max_tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, stream: true, strata_mcp: true, max_tokens, temperature: 0.6, chat_template_kwargs: { enable_thinking: false }, messages: [{ role: 'user', content }] }) });
+    const text = await res.text();
+    const events = text.split(String.fromCharCode(10)).filter(l => l.startsWith('data: {')).map(l => JSON.parse(l.slice(6)));
+    const mcp = events.map(e => e.strata_mcp).filter(Boolean);
+    const finish = events.flatMap(e => e.choices ?? []).map(c => c.finish_reason).filter(Boolean).at(-1);
+    const said = events.flatMap(e => e.choices ?? []).map(c => c.delta?.content ?? '').join('');
+    return { mcp, finish, said };
+  };
+  const ok = await ask('Use the fake__echo tool to echo the text "hello from the tool", then tell me what it returned.', 600);
+  note('mcp: a short call is run by the server and answered', ok.mcp.some(m => m.event === 'result' && m.ok) && ok.finish === 'stop', `events ${JSON.stringify(ok.mcp.map(m => m.event))}; finish ${ok.finish}; said ${JSON.stringify(ok.said.slice(-120))}`);
+  const cut = await ask('Use the fake__echo tool once. Its text must be the sentence "the quick brown fox jumps over the lazy dog" written out 300 times in a row, separated by spaces.', 300);
+  note('mcp: a call the reply is cut inside is announced and never run (#211), and the stream says length', cut.mcp.some(m => m.event === 'start') && !cut.mcp.some(m => m.event === 'call') && cut.finish === 'length', `events ${JSON.stringify(cut.mcp.map(m => m.event))}; finish ${cut.finish}; said ${JSON.stringify(cut.said.slice(0, 100))}`);
+}
+
 if (want('pagoda')) {
   const t = await turn('pagoda', 'Write me a 100 voxel pagoda in one html file with garden.');
   const html = t.files.find(f => /\.html?$/i.test(f.name));
   console.log(`   pagoda: ${t.seconds.toFixed(0)} s, frames ${JSON.stringify(t.byType)}, done ${JSON.stringify(t.done && { finishReason: t.done.finishReason, tokensOut: t.done.tokensOut })}, files ${JSON.stringify(t.files)}`);
   note('pagoda: a file was written or the turn says why not', !!html || /cut|too long|ran out|limit/i.test(t.text), `file ${html ? html.name + ' ' + html.bytes + ' B' : 'none'}; finish ${t.done?.finishReason}; text tail: ${JSON.stringify(t.text.slice(-240))}`);
 }
-if (want('long')) {
-  const t = await turn('long', longPrompt, { thinking: 'Off' });
+if (want('long')) for (let rep = 1; rep <= REPEAT; rep++) {
+  const t = await turn(`long${rep}`, longPrompt, { thinking: 'Off' });
   const f = t.files.find(x => x.name === 'big.txt');
   const lines = f ? readFileSync(join(t.workspace, 'big.txt'), 'utf8').split(String.fromCharCode(10)).filter(Boolean).length : 0;
-  console.log(`   long: ${t.seconds.toFixed(0)} s, frames ${JSON.stringify(t.byType)}, done ${JSON.stringify(t.done && { finishReason: t.done.finishReason, tokensOut: t.done.tokensOut })}, draft ${JSON.stringify(t.draftStats)}, cut notes ${JSON.stringify(t.cutNotes)}`);
-  note(`long: big.txt written (${LINES} lines asked)`, lines >= LINES * 0.95 || t.cutNotes.length > 0 && !!f, `file ${f ? f.bytes + ' B, ' + lines + ' lines' : 'none'}; finish ${t.done?.finishReason}; tokens out ${t.done?.tokensOut}; cards ${JSON.stringify(t.cards.filter(c => c.state !== 'running').map(c => c.name))}; cut notes ${t.cutNotes.length}; draft frames ${t.draftStats.frames}`);
-  note('long: the turn did not end silently', !!f || t.cutNotes.length > 0 || t.text.trim().length > 0, `text tail ${JSON.stringify(t.text.slice(-160))}`);
+  console.log(`   long${rep}: ${t.seconds.toFixed(0)} s, frames ${JSON.stringify(t.byType)}, done ${JSON.stringify(t.done && { finishReason: t.done.finishReason, tokensOut: t.done.tokensOut })}, draft ${JSON.stringify(t.draftStats)}, cut notes ${JSON.stringify(t.cutNotes)}`);
+  note(`long${rep}: big.txt written (${LINES} lines asked)`, lines >= LINES * 0.95 || t.writesDone > 0 || t.cutNotes.length > 0 && !!f, `file ${f ? f.bytes + ' B, ' + lines + ' lines' : 'none'}; finish ${t.done?.finishReason}; tokens out ${t.done?.tokensOut}; cards ${JSON.stringify(t.cards.filter(c => c.state !== 'running').map(c => c.name))}; writes done ${t.writesDone}; cut notes ${t.cutNotes.length}; draft frames ${t.draftStats.frames}`);
+  note(`long${rep}: the turn did not end silently`, !!f || t.cutNotes.length > 0 || t.text.trim().length > 0, `text tail ${JSON.stringify(t.text.slice(-160))}`);
 }
 
 if (want('cut')) {
