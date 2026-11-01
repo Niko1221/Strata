@@ -161,7 +161,7 @@ if [ "$STAGE" = B ]; then
 
   say "B2: an engine that passes every check but does not start (throwaway key): the model comes back on the old engine"
   BADDIR="$W/bad-feed"; rm -rf "$BADDIR"; mkdir -p "$BADDIR"
-  ( cd "$REPO" && python3 - "$BADDIR" "$COMP" <<'PY'
+  ( cd "$REPO" && "${PY:-python3}" - "$BADDIR" "$COMP" <<'PY'
 import json, shutil, sys
 from pathlib import Path
 sys.path.insert(0, "packaging")
