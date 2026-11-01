@@ -4061,7 +4061,12 @@ int main(int argc, char** argv) {
         const char* lme = std::getenv("STRATA_LOOKUP_MAX_T");
         const bool env_off = lme != nullptr && lme[0] == '0';
         const bool narrow = strata::kernels::kVerifyMaxT == strata::kernels::kVerifyNarrowT;
-        o.lookup_max_t = !env_off && narrow && o.serve && !multi_gpu && o.layer_split.empty() && o.batch <= 1 && o.draft != "dflash2" &&
+#if defined(STRATA_GPU_METAL)
+        const bool metal_build = true;   // the Metal window holds 8 rows (MAXT): a 12-row lookup window is "window size out of range"
+#else
+        const bool metal_build = false;
+#endif
+        o.lookup_max_t = !env_off && narrow && o.serve && !multi_gpu && o.layer_split.empty() && o.batch <= 1 && o.draft != "dflash2" && !metal_build &&
                                  o.lookup_chain <= 0 && o.suffix_draft > 0 && o.spec >= 2 ? 12 : 0;
     }
     if (o.lookup_max_t > 0 && o.suffix_draft > 0 && o.spec >= 2) {
