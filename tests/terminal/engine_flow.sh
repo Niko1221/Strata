@@ -45,7 +45,11 @@ say "real releases (read only): feeds and the two engine packages"
 for pair in "v0.2.8:rel28:$ENG54" "v0.2.9:rel29:$ENG55"; do
   IFS=: read -r tag dir eng <<< "$pair"
   for f in strata-feed.json strata-feed.json.sig "$eng"; do
-    curl -fsSL --retry 3 -o "$W/$dir/$f" "$BASE/$tag/$f" || { bad "download $tag/$f"; exit 1; }
+    if [ -n "${RELEASE_FILES:-}" ] && [ -f "$RELEASE_FILES/$dir/$f" ]; then
+      cp "$RELEASE_FILES/$dir/$f" "$W/$dir/$f"          # the same files, fetched beforehand (a box without internet)
+    else
+      curl -fsSL --retry 3 -o "$W/$dir/$f" "$BASE/$tag/$f" || { bad "download $tag/$f"; exit 1; }
+    fi
   done
 done
 ls -l "$W/rel28" "$W/rel29"
