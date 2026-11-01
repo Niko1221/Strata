@@ -236,7 +236,11 @@ __global__ void __launch_bounds__(QSA_SEL_THREADS) k_idx_select(const float* __r
             const unsigned k = j < nv ? key[j] : 0u;
             const bool in = j < nv && (k & mask) == prefix;
             const unsigned bin = in ? (k >> shift) & 255u : 256u;
+#if FNX_HIP
+            const unsigned peers = (unsigned) __match_any_sync(0xffffffffull, bin);   // HIP wants a 64-bit mask (wave32: the high half is empty)
+#else
             const unsigned peers = __match_any_sync(0xffffffffu, bin);
+#endif
             if (in && (tid & 31) == __ffs(peers) - 1) atomicAdd(&hist[bin], (unsigned) __popc(peers));
         }
         __syncthreads();

@@ -5,7 +5,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <mma.h>
+#include <mma.h>   // HIP: src/hip/mma.h (gfx12 WMMA)
 
 #include <algorithm>
 #include <cmath>
@@ -15,8 +15,26 @@
 #include <string>
 #include <vector>
 
+#if FNX_HIP
+// the tree's hip_compat/intrinsics.hpp names these as macros; ggml's HIP vendor header defines its own: it goes first, then ours return
+#undef __vsubss4
+#undef __vsub4
+#undef __vcmpne4
+#undef __shfl_sync
+#undef __shfl_up_sync
+#undef __shfl_xor_sync
+#endif
 #include "common.cuh"
 #include "vecdotq.cuh"
+#if FNX_HIP
+#undef __shfl_sync
+#undef __shfl_up_sync
+#undef __shfl_xor_sync
+#define __shfl_xor_sync(...) (::strata::hip_compat::shfl_xor_sync(__VA_ARGS__))
+#define __shfl_up_sync(...) (::strata::hip_compat::shfl_up_sync(__VA_ARGS__))
+#define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
+#undef cudaFuncSetAttribute   // ggml's maps it to hipFuncSetAttribute(const void*, ...); the tree's template takes the kernel
+#endif
 
 // compiled in parts (Makefile: build/kernels_pN.o with -DFNX_KPART=N), each with its share of the launchers below and
 // so only the template kernels they instantiate: one file's ~700 kernels took ~7 minutes on one core
@@ -2178,7 +2196,11 @@ __global__ void k_l2_prefetch(const char* p, size_t sectors, unsigned* sink) {
     unsigned acc = 0;
     for (size_t i = blockIdx.x * (size_t) blockDim.x + threadIdx.x; i < sectors; i += (size_t) gridDim.x * blockDim.x) {
         unsigned v;
+#if FNX_HIP
+        v = __ldcg(reinterpret_cast<const unsigned*>(p + i * 32));
+#else
         asm volatile("ld.global.cg.u32 %0, [%1];" : "=r"(v) : "l"(p + i * 32));
+#endif
         acc ^= v;
     }
     if (acc == 0x9e3779b9u) *sink = acc;   // keeps the loads; never true in practice

@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #define FNX_HD __host__ __device__ __forceinline__
 #else
 #define FNX_HD inline

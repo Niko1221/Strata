@@ -9,7 +9,7 @@
 // activations are fetched into registers while the tensor cores run the current one. On random experts of the real
 // shapes (tools/moe_mma_bench, 4,096 tokens) this takes gate|up 3.4 ms and down 2.2 ms per layer and card, against
 // 4.8 and 4.0 ms for 8 warps of 16-row tiles at 128 columns.
-#include <mma.h>
+#include <mma.h>   // HIP: src/hip/mma.h (gfx12 WMMA)
 
 namespace {
 
@@ -244,6 +244,22 @@ struct MmX {
     }
 };
 
+#if FNX_HIP
+// gfx12 (RDNA4): v_wmma_f32_16x16x16_f16, wave32. A is 16 weight rows x 16 k (lane l: row l & 15, k 8 * (l >> 4) + 0..7), B is 16 k x
+// 16 tokens (lane l: token l & 15, the same k), the accumulator lane l holds token l & 15 and rows 8 * (l >> 4) + 0..7. f16 products,
+// fp32 accumulation, as the HMMA.884 did.
+typedef _Float16 mm_h8 __attribute__((ext_vector_type(8)));
+typedef float mm_f8 __attribute__((ext_vector_type(8)));
+__device__ __forceinline__ mm_f8 mma_wmma12(const mm_h8& a, const mm_h8& b, const mm_f8& c) {
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
+#else
+    (void) a; (void) b;
+    __builtin_trap();   // not a gfx12 device pass: the launcher never selects it
+    return c;
+#endif
+}
+#else
 // d (each quad-pair's 8 x 8) += a (8 x 4, row-major: this lane's row, 4 halves in a0 a1) b (4 x 8, col-major: this
 // lane's column), f16 products with f32 accumulation: Volta's HMMA.884
 __device__ __forceinline__ void mma_884(float (&d)[8], unsigned a0, unsigned a1, unsigned b0, unsigned b1) {
@@ -252,6 +268,7 @@ __device__ __forceinline__ void mma_884(float (&d)[8], unsigned a0, unsigned a1,
                  : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
                  : "r"(a0), "r"(a1), "r"(b0), "r"(b1));
 }
+#endif
 
 // the output staging's row stride in floats (8 past the tile: fewer conflicts than none or 16)
 template <int BM>
@@ -282,6 +299,20 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
     const int rg = warp % WR, tg = warp / WR;
     const bool split = WT > 1 && nt <= TT;
     const int tb = split ? 0 : tg * TT;   // the warp's first token tile
+#if FNX_HIP
+    // the warp's 32 rows x 16 TT tokens: 2 x TT WMMA tiles of 16 x 16 (lane l loads weight row / token l & 15 of a tile, 8 k at
+    // 8 * (l >> 4))
+    const int lane = threadIdx.x & 31, ln = lane & 15, lh = lane >> 4;
+    const __half* arow = sw + (rg * 32 + ln) * MM_LD + 8 * lh;               // + 16 MM_LD for tile row 1
+    const __half* bcol = sx + (tb * 16 + ln) * MM_LD + 8 * lh;               // + 16 MM_LD per token tile
+    mm_f8 acc[2][TT];
+#pragma unroll
+    for (int a = 0; a < 2; ++a)
+#pragma unroll
+        for (int b = 0; b < TT; ++b)
+#pragma unroll
+            for (int j = 0; j < 8; ++j) acc[a][b][j] = 0.f;
+#else
     // the warp's 32 rows x 16 TT tokens on HMMA.884 (mma_884): quad-pair q (lanes 4q..4q+3, 4q+16..4q+19) takes rows
     // 16 (q >> 1) and tokens 8 TT (q & 1) of them, as 2 x TT tiles of 8 x 8; this lane loads row / token `rl` of a tile
     const int lane = threadIdx.x & 31, q = (lane >> 2) & 3, rl = (lane & 3) + ((lane >> 4) & 1) * 4;
@@ -297,6 +328,7 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
         for (int b = 0; b < TT; ++b)
 #pragma unroll
             for (int j = 0; j < 8; ++j) acc[a][b][j] = 0.f;
+#endif
     const char* we = moe_expert(w, jb.w);
     MmTile<TYPE> wt[NP];
     MmX xt;
@@ -322,6 +354,17 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
             for (int i = 0; i < MM_KC / 16; ++i) {
                 const int kt = kt0 + i * kts, kk = kt * 16;
                 if (kt >= kc / 16) break;
+#if FNX_HIP
+                mm_h8 a[2], b[TT];
+#pragma unroll
+                for (int r = 0; r < 2; ++r) a[r] = *reinterpret_cast<const mm_h8*>(arow + r * 16 * MM_LD + kk);
+#pragma unroll
+                for (int t = 0; t < TT; ++t) b[t] = *reinterpret_cast<const mm_h8*>(bcol + t * 16 * MM_LD + kk);
+#pragma unroll
+                for (int r = 0; r < 2; ++r)
+#pragma unroll
+                    for (int t = 0; t < TT; ++t) acc[r][t] = mma_wmma12(a[r], b[t], acc[r][t]);
+#else
                 // 16 k: a 16-byte load per tile row (8 k) twice; each 4 k of it is one HMMA's operand
                 uint4 a[2][2], b[TT][2];
 #pragma unroll
@@ -344,6 +387,9 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
                         }
             }
         }
+#endif
+            }
+        }
         __syncthreads();
     }
     // the output through shared memory over the tiles, token-major [token][row] with rows padded to MM_SLD<BM> floats,
@@ -351,6 +397,18 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
     float* so = reinterpret_cast<float*>(smem);
     constexpr int SLD = MM_SLD<BM>;
     static_assert(MM_LD % 8 == 0, "16-byte operand loads");
+#if FNX_HIP
+    // the accumulator lane l holds token ln and rows 8 lh + 0..7 of a tile: eight consecutive floats of the staging's row
+    float* sob = so + (split ? tg * LO * SLD : tb * 16 * SLD) + rg * 32 + 8 * lh;
+#pragma unroll
+    for (int r = 0; r < 2; ++r)
+#pragma unroll
+        for (int t = 0; t < TT; ++t) {
+            float* d = sob + (t * 16 + ln) * SLD + r * 16;
+#pragma unroll
+            for (int j = 0; j < 8; ++j) d[j] = acc[r][t][j];
+        }
+#else
     // a lane's accumulators in an 8 x 8 tile (measured, tools/m884_probe.cu): rows r0 and r0 + 2, columns cb, cb + 1,
     // cb + 4, cb + 5, in the order (r0,cb) (r0,cb+1) (r1,cb) (r1,cb+1) (r0,cb+4) (r0,cb+5) (r1,cb+4) (r1,cb+5)
     const int r0 = (lane & 1) + ((lane >> 4) & 1) * 4, cb = lane & 2;
@@ -365,6 +423,7 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
                 const int tok = (q & 1) * 8 * TT + t * 8 + ((cb + (j & 1) + ((j >> 2) & 1) * 4) ^ sw4);
                 sob[tok * SLD + row] = acc[r][t][j];
             }
+#endif
     __syncthreads();
     for (int e = threadIdx.x; e < n * BM; e += MM_THREADS) {
         const int j = e / BM, r = e % BM, row = row0 + r;

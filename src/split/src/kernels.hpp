@@ -163,7 +163,7 @@ struct KvPages {
     int rows = 0;              // local rows per page (kvp_rows of the card)
     int q8 = 0;                // the rows are int8 (kv_q8)
 };
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 __device__ __forceinline__ size_t kvp_row(const KvPages& g, int r) {
     return (size_t) g.pt[r / g.rows] * g.page + (size_t) (r % g.rows) * NKVH * HD;
 }
@@ -185,7 +185,7 @@ struct LaneRows {
     const int* const* pos = nullptr;
     const int* const* pt = nullptr;
 };
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 __device__ __forceinline__ int row_pos(const LaneRows& lr, const int* pos0, int t) { return lr.pos ? *lr.pos[t] : *pos0 + t; }
 __device__ __forceinline__ KvPages row_pages(KvPages g, const LaneRows& lr, int t) {
     if (lr.pt) g.pt = lr.pt[t];
