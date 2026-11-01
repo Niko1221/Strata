@@ -1463,9 +1463,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         //  the checkpoint at this prompt's end)
         stat_line();
         const double t2 = now_ms();
-        std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0\n", produced, r.ids.size(), t1 - t0, t2 - t1, finish,
-                    d_acc, d_off, from);
-        std::fflush(stdout);
+        // (a request that ended on an ERR line - the NaN stop above - is over with that line: a DONE after it would be read by the
+        //  next request as its own, and every answer after it would arrive one request late)
+        if (!nan_stop) {
+            std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0\n", produced, r.ids.size(), t1 - t0, t2 - t1, finish,
+                        d_acc, d_off, from);
+            std::fflush(stdout);
+        }
         const auto& s = m.stats();
         std::fprintf(stderr,
                      "maya ds4 serve: prompt %zu tokens = %zu reused + %zu read in %.0f ms (%.1f tok/s), %lld generated "
