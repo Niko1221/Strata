@@ -32,6 +32,7 @@ import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
 import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped } from './context-fit.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
+import { writePlanFile } from './plan-md.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -117,7 +118,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, reportPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -153,6 +154,21 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   let starting = null;
   const chats = new Map();         // chatId -> { turn, route, routeGeneration }
   const plans = new PlanStore(join(root, 'plans.json'));
+  /**
+   * Every plan change goes through here, and its checklist file in the chat's folder comes with it (plan-md.mjs): the file the
+   * person keeps and the plan card on the page are never apart, and the page learns the file's name from the plan it is sent.
+   * The app writes and ticks that file itself, so a chat in Plan mode still has nothing changed by the assistant.
+   */
+  const onPlan = (chatId, event, plan) => {
+    if (plan) { const made = planFileOf(chatId, plan); if (made) plan.file = made; }
+    reportPlan(chatId, event, plan);
+  };
+  /** The plan's file in the chat's folder, or null when the chat has no folder or the file is not ours. The stored plan keeps the name, so editing the title does not move the file. */
+  function planFileOf(chatId, view) {
+    const made = writePlanFile(sessionMap[chatId]?.cwd ?? null, view);
+    if (made && plans.get(chatId)?.file !== made.rel) plans.update(chatId, p => { p.file = made.rel; });
+    return made?.rel ?? null;
+  }
   /** chatId -> messages the person typed while a goal ran: [{ id, text, at, deliverAt }]; delivered between steps or when the goal ends */
   const queues = new Map();
   const queueView = chatId => (queues.get(chatId) ?? []).map(({ id, text, at, deliverAt }) => ({ id, text, at, deliverAt }));
@@ -431,7 +447,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     }
 
     const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval, window: route.contextWindow });
-    if (!goal) guard = new TurnGuard({ plan: !!planTask, contextMax: route.kind === 'local' ? route.contextWindow : 0 });   // a saved connection's window is often only assumed: never judged by a guess
+    if (!goal) guard = new TurnGuard({ plan: !!planTask || appliedMode === 'plan', contextMax: route.kind === 'local' ? route.contextWindow : 0 });   // a saved connection's window is often only assumed: never judged by a guess
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
@@ -654,11 +670,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
     /** What the end of the turn means for the plan: a plan turn makes one; a step run records where it stopped. */
     function settlePlan(failure) {
-      if (planTask) {
+      // A chat left in Plan mode plans the way a /plan turn does, so its steps become a plan the person can approve and a file they can watch get ticked.
+      const asked = planTask ?? (!planRun && !goal && !researchTopic && appliedMode === 'plan' ? message : null);
+      if (asked) {
         if (failure || (turn.stopping && !turn.guard)) return [];
-        const parsed = parsePlan(written.all, planTask);
+        const parsed = parsePlan(written.all, asked);
         if (!parsed) return [];
-        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: planTask, ...(turn.guard ? { caution: GUARD_NOTES[turn.guard] } : {}) });
+        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: asked, ...(turn.guard ? { caution: GUARD_NOTES[turn.guard] } : {}) });
         return [publishPlan('proposed', plan)];
       }
       const run = turn.plan;
@@ -824,8 +842,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' });
       void announceGoal();
     } else {
-      let prompt = message;
-      if (fresh && history.length) prompt = withEarlierConversation(history, message);
+      let prompt = appliedMode === 'plan' && !planTask && !researchTopic ? planPrompt(message) : message;   // a chat in Plan mode plans the way a /plan turn does, so its reply ends with the numbered steps the plan and its file are built from
+      if (fresh && history.length) prompt = withEarlierConversation(history, prompt);
       try {
         await runtime.gw.rpc('session/prompt', { request: { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text: prompt }, ...imageParts(images)] } });
       } catch (e) {

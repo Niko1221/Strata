@@ -1675,12 +1675,13 @@ async function runLoopCommand(command: LoopCommand) {
 /** Carry on a paused goal: the host runs its rounds again. No message is sent and no bubble is added. */
 export async function resumeGoal() { await sendMessage('', { goalAction: 'resume' }); }
 
-/** Approve a proposed plan and carry it out: the host answers with the message that does the work, which goes out as an ordinary turn. */
+/** Approve a proposed plan and carry it out: the host runs it one step at a time, so the card and the plan's own checklist file tick as each step finishes. */
 export async function approvePlan(sessionId: string, planId: string) {
-  const { prompt } = await planApprove(sessionId, planId);
   // A chat in Plan mode only reads; carrying the plan out needs a mode that may act.
   if (state.sessions.find(s => s.id === sessionId)?.preferences?.mode === 'plan') setChatPreferences(sessionId, { mode: 'manual' });
-  if (prompt) await sendMessage(prompt, { shown: tr('Approved the plan.') });
+  // Approving alone is enough: the host marks the plan approved and starts the step run itself (agent-bridge.mjs, planGoal).
+  await planApprove(sessionId, planId);
+  await startPlanGoal(planId);
 }
 
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */

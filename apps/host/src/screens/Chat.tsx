@@ -121,17 +121,22 @@ export function ChatScreen() {
     const plan = usePlan(session?.id);
     const planTabId = session ? `plan:${session.id}` : '';
     const planTab = plan && plan.state !== 'rejected' && !session?.closedPreviews?.includes(planTabId) ? [{ id: planTabId, title: 'Plan', icon: 'check' as const, controls: 'plan-content' }] : [];
-    const planShown = planTab.length > 0 && selectedPreview === planTabId;
-    const planRunId = plan?.state === 'running' ? plan.id : '';
-    useEffect(() => { if (planRunId && planTabId && !session?.closedPreviews?.includes(planTabId)) setSelectedPreview(planTabId); }, [planRunId]);
+    // A tab that is no longer there cannot be shown, and pointing the pane at one leaves it empty with nothing left to click. So only a tab that is really open counts,
+    // and a tab that went missing mid-chat falls back to the plan rather than to an empty pane.
+    const shownPreview = selectedPreview && (selectedPreview === planTabId ? planTab.length > 0 : [...previews.map(p => p.id), ...runTabs.map(t => t.id)].includes(selectedPreview)) ? selectedPreview : selectedPreview && planTab.length ? planTabId : null;
+    const planShown = planTab.length > 0 && shownPreview === planTabId;
+    // The plan opens itself in the sidebar when it starts, and — in a chat left in Plan mode — as soon as it is proposed, so the checklist is in view while the person reads it.
+    // A plan that is paused or stopped still has unfinished steps, so coming back to the chat brings its checklist back too.
+    const planShowId = plan && (plan.state === 'running' || plan.state === 'paused' || plan.state === 'stopped' || (plan.state === 'proposed' && session?.preferences?.mode === 'plan')) ? plan.id : '';
+    useEffect(() => { if (planShowId && planTabId && !session?.closedPreviews?.includes(planTabId)) { setSelectedPreview(planTabId); setPreviewTabClosed(session?.id, planTabId, false, planTabId); } }, [planShowId]);
     // The chat shows every run of this chat (a running one has no files yet, so no tab); the sidebar tabs only those with something to compare.
     const allTimeSkipRuns = session?.timeSkips ?? [];
     const extraTabs = [...runTabs, ...planTab];
     const selectedRun = timeSkipRuns.find(run => timeSkipTabId(run.id) === selectedPreview);
     const inlinePreview = splitWidth >= (selectedRun || planShown ? 760 : 1120);
     const paneWidth = previewWidth(splitWidth, previewFraction);
-    const splitStyle = inlinePreview && selectedPreview && !expanded ? { gridTemplateColumns: `minmax(0,1fr) ${paneWidth}px` } : undefined;
-    const resizeHandle = !setupVisible && inlinePreview && selectedPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
+    const splitStyle = inlinePreview && shownPreview && !expanded ? { gridTemplateColumns: `minmax(0,1fr) ${paneWidth}px` } : undefined;
+    const resizeHandle = !setupVisible && inlinePreview && shownPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
     const runCount = timeSkipRuns.length;
     const previewCount = session?.messages.reduce((n, m) => n + (m.artifacts?.length ?? 0), 0) ?? 0;
     useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
@@ -163,12 +168,17 @@ export function ChatScreen() {
         const before = replyWasStreaming.current.get(lastReply.id);
         replyWasStreaming.current.set(lastReply.id, !!lastReply.streaming);
         if (before !== true || lastReply.streaming || lastReply.error) return;
+        // While a plan run holds the pane its checklist stays: stopping a step must not swap the
+        // plan out for a file preview and leave the unfinished steps with nowhere to come back to.
+        if (planShown && (plan?.state === 'running' || plan?.state === 'paused')) return;
         const main = mainResult(lastReply.deliverables, lastReply.content);
         if (!main) return;
         const sessionId = session.id;
         void previewOf(sessionId, main).then(item => { if (session.id === sessionId) openPreview(item); }, () => { });
     }, [lastReply?.id, lastReply?.streaming]);
     function closeTab(id: string) {
+        // Closing the Plan tab hides the pane but keeps the tab: the checklist of a plan that is running must be openable again.
+        if (id === planTabId) { setSelectedPreview(null); setPreviewTabClosed(session?.id, planTabId, false, null); return; }
         const next = closePreviewTab([...previews.map(p => ({ id: p.id })), ...extraTabs], selectedPreview, id);
         setPreviews(previews.filter(p => p.id !== id));
         setSelectedPreview(next.selected);
@@ -407,8 +417,8 @@ export function ChatScreen() {
     function onComposerKey(_e: React.KeyboardEvent) { }
     if (!session) {
         return (<>
-        <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
-        <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!selectedPreview && inlinePreview || undefined} data-expanded={expanded && !!selectedPreview && inlinePreview || undefined}>
+        <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : shownPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
+        <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!shownPreview && inlinePreview || undefined} data-expanded={expanded && !!shownPreview && inlinePreview || undefined}>
          <DropZone className="chatcol">
           <div className="main__body chat" ref={scroller}>
             {tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
@@ -419,18 +429,18 @@ export function ChatScreen() {
           </div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
          </DropZone>
-        <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
+        <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible ? null : shownPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
          {tr(resizeHandle)}
         </div>
       </>);
     }
     return (<>
-      <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
+      <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : shownPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
 
       {/* The composer belongs to the conversation column, not the window: with
                 the context panel open, a full-width composer sat underneath the panel
                 and drifted out of alignment with the transcript it belongs to. */}
-      <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!selectedPreview && inlinePreview || undefined} data-expanded={expanded && !!selectedPreview && inlinePreview || undefined}>
+      <div className="chatsplit" style={splitStyle} data-timeskip={!!selectedRun || undefined} ref={splitRef} data-preview={!!shownPreview && inlinePreview || undefined} data-expanded={expanded && !!shownPreview && inlinePreview || undefined}>
         <DropZone className="chatcol">
           <div className="main__body chat" ref={scroller} onScroll={(e) => {
             const el = e.currentTarget;
@@ -465,7 +475,7 @@ export function ChatScreen() {
         </DropZone>
         {tr(!setupVisible && selectedRun && session ? <TimeSkipPanel key={selectedRun.id} run={selectedRun} sessionId={session.id} inline={inlinePreview} expanded={expanded} onCompare={setExpanded} onPreview={openPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }}/> : null)}
         {tr(!setupVisible && planShown ? <PlanPanel chatId={session?.id}/> : null)}
-        <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible || planShown ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
+        <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible || planShown ? null : shownPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
         {tr(resizeHandle)}
       </div>
     </>);

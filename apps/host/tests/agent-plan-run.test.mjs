@@ -20,7 +20,7 @@ async function rig(t) {
   const events = { plan: [], queue: [], goal: [] };
   const local = [{ id: 'inst-1', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots: 2 }];
   const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000,
-    onPlan: (chatId, event, plan) => events.plan.push({ chatId, event, plan }), onQueue: (chatId, queue) => events.queue.push({ chatId, queue }), onGoal: (chatId, goal) => events.goal.push({ chatId, goal }) });
+    reportPlan: (chatId, event, plan) => events.plan.push({ chatId, event, plan }), onQueue: (chatId, queue) => events.queue.push({ chatId, queue }), onGoal: (chatId, goal) => events.goal.push({ chatId, goal }) });
   t.after(async () => { await bridge.close(); await worker.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
   const base = (chatId, onFrame = () => {}) => ({ chatId, workspacePath: ws, mode: 'bypass', onFrame });
   return { worker, bridge, ws, events, base };

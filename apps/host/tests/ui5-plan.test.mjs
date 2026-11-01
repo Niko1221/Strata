@@ -24,6 +24,8 @@ test('a plan from the host is read with step states, detail and summary; bad par
   assert.equal(p.steps.length, 3);
   assert.deepEqual(p.steps.map(s => s.state), ['done', 'running', 'pending']);
   assert.equal(p.steps[0].summary, 'Found two files.'); assert.equal(p.steps[1].detail, 'one file');
+  assert.equal(P.readPlan(plan('proposed', [step('s1', 'x')], { file: '.strata/plans/pagoda.md' })).file, '.strata/plans/pagoda.md', 'the plan carries the file the app writes and ticks');
+  assert.equal(P.readPlan(plan('proposed', [step('s1', 'x')], { file: 7 })).file, undefined, 'a file that is not text does not come through');
   assert.equal(P.stepsDone(p), 1); assert.equal(P.currentStep(p), 2);
   assert.equal(P.readPlan(plan('weird', [step('s1', 'x')])), null);
   assert.equal(P.readPlan(plan('proposed', [])), null);
@@ -67,4 +69,21 @@ test('the chat and the sidebar draw the plan from the same store, and the stream
   assert.match(chat, /<PlanPanel chatId/); assert.match(chat, /plan:\$\{session\.id\}/); assert.match(chat, /planCard \? <PlanCard/);
   assert.match(store, /type === 'plan'/); assert.match(store, /type === 'queued-message'/); assert.match(store, /type === 'queued-release'/); assert.match(store, /\/api\/plan\/start-goal/);
   assert.match(client, /'plan', 'queue'/);
+});
+
+test('an approved plan can still be started, Approve runs the plan step by step, and the Plan tab never leaves you with an empty pane', async () => {
+  const [card, chat, store] = await Promise.all([readFile(src('components/PlanCard.tsx'), 'utf8'), readFile(src('screens/Chat.tsx'), 'utf8'), readFile(src('lib/store.ts'), 'utf8')]);
+  assert.match(card, /plan\.state === 'approved' \? <div className="plan__acts">[\s\S]{0,240}?startPlanGoal\(plan\.id\)/, 'a plan approved without running (a mode that cannot act, or a stopped run) still needs its own start button');
+  assert.equal((card.match(/tr\("Work through the plan"\)/g) ?? []).length, 1, 'the label sits on the approved card only, and it is already in all nine catalogs');
+  assert.doesNotMatch(card, /tr\("Approved\. Nothing runs/, 'no new tr() string: the English catalog would have a gap');
+  assert.match(store, /export async function approvePlan[\s\S]{0,400}?await planApprove\(sessionId, planId\);\s*\n\s*await startPlanGoal\(planId\);/, 'Approving the plan starts the step run, so each step ticks in the card and in the plan file');
+  assert.doesNotMatch(store, /sendMessage\(prompt, \{ shown: tr\('Approved the plan\.'\) \}\)/, 'the plan is not sent as one ordinary turn: that turn freelances it and nothing ticks');
+  assert.match(chat, /const shownPreview = selectedPreview &&/, 'a tab that is no longer there is never the selected one, so the pane is not left pointing at nothing');
+  assert.match(chat, /selected=\{setupVisible \|\| planShown \? null : shownPreview\}/, 'the artifact panel sees the same checked selection');
+  assert.match(chat, /setPreviewTabClosed\(session\?\.id, planTabId, false, planTabId\)/, 'the open Plan tab is remembered, so it is there again when you come back to the chat');
+  assert.match(chat, /if \(id === planTabId\) \{[\s\S]{0,160}?setPreviewTabClosed\(session\?\.id, planTabId, false, null\)/, 'closing the Plan tab hides the pane but keeps the tab openable');
+  assert.doesNotMatch(chat.slice(chat.indexOf('function closeTab'), chat.indexOf('function closeTab') + 400), /setPreviewTabClosed\([^)]*planTabId, true/, 'the Plan tab is never put in closedPreviews, which would hide it for good');
+  assert.match(chat, /const shownPreview = selectedPreview[\s\S]{0,320}\? planTabId : null;/, 'a selection that points at a tab that went missing falls back to the plan, so the pane is never left open and empty');
+  assert.match(chat, /plan\.state === 'paused' \|\| plan\.state === 'stopped'/, 'a paused or stopped plan still has unfinished steps, so coming back to the chat brings its checklist back');
+  assert.match(chat, /if \(planShown && \(plan\?\.state === 'running' \|\| plan\?\.state === 'paused'\)\) return;/, 'a reply finishing mid-plan does not swap the plan pane for a file preview');
 });

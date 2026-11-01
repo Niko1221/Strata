@@ -3,6 +3,7 @@ import { tr } from '../lib/i18n';
 import { cancelQueued, planEdit, planReject, queuedWhen, stepsDone, usePlan, useQueue, type Plan, type QueuedMessage } from '../lib/plan';
 import { approvePlan, pushToast, startPlanGoal, useStore } from '../lib/store';
 import { plainFailureText } from '../lib/plain-errors';
+import { fileAction } from '../lib/deliverables';
 import { Btn, Icon, IconBtn } from './ui';
 
 const STEP_WORDS = { done: 'done', running: 'working on it', failed: 'failed', skipped: 'skipped', pending: 'waiting' } as const;
@@ -24,8 +25,17 @@ function planCount(plan: Plan): string {
   return tr('{0} of {1} done', [stepsDone(plan), plan.steps.length]);
 }
 
+/** The plan's own checklist file, which the app writes and ticks: a way to the copy that sits in the person's folder. */
+function PlanFile({ chatId, plan }: { chatId: string | null | undefined; plan: Plan }) {
+  const file = plan.file;
+  if (!chatId || !file) return null;
+  const name = file.split(/[\\/]/).pop() ?? file;
+  const open = () => void fileAction.open(chatId, file, 'app').catch(e => pushToast('error', tr("Open {0}", [name]), plainFailureText(e instanceof Error ? e.message : String(e)).message));
+  return <p className="plan__note"><button type="button" onClick={open}>{tr("Open {0}", [name])}</button></p>;
+}
+
 /**
- * The /plan the assistant proposed, in the chat in place of its closing text: Approve, Edit, Reject, or Start as goal. Nothing runs until the
+ * The /plan the assistant proposed, in the chat in place of its closing text: Approve (which carries it out, step by step), Edit, or Reject. Nothing runs until the
  * person decides. Once it runs, the same card shows each step's state; a paused plan offers Resume.
  */
 export function PlanCard({ chatId, planId }: { chatId: string | null | undefined; planId: string }) {
@@ -59,14 +69,18 @@ export function PlanCard({ chatId, planId }: { chatId: string | null | undefined
   return <section className="plan" data-state={plan.state} aria-label={tr("Plan")}>
     <div className="plan__head"><b>{tr("Plan")}</b><span>{planCount(plan)}</span></div>
     <PlanSteps plan={plan}/>
+    <PlanFile chatId={chatId} plan={plan}/>
     {plan.caution ? <p className="plan__note" role="status">{tr(plan.caution)}</p> : null}
     {proposed ? <p className="plan__note">{tr("Nothing runs until you approve.")}</p> : null}
     {proposed ? <div className="plan__acts">
       <Btn size="sm" variant="primary" icon="check" disabled={busy || streaming} onClick={() => void run(() => approvePlan(chatId, plan.id))}>{tr("Approve")}</Btn>
       <Btn size="sm" icon="pencil" disabled={busy} onClick={() => { setDraft(plan.steps.map(s => s.text)); setEditing(true); }}>{tr("Edit")}</Btn>
       <Btn size="sm" disabled={busy} onClick={() => void run(() => planReject(chatId, plan.id))}>{tr("Reject")}</Btn>
+    </div> : null}
+    {/* Approving starts the step run, so this row only appears when a plan is approved without running (a mode that cannot act, or a stopped run). */}
+    {plan.state === 'approved' ? <div className="plan__acts">
       <span className="plan__sp"/>
-      <Btn size="sm" icon="bolt" disabled={busy || streaming} onClick={() => void run(() => startPlanGoal(plan.id))}>{tr("Start as goal")}</Btn>
+      <Btn size="sm" variant="primary" icon="bolt" disabled={busy || streaming} onClick={() => void run(() => startPlanGoal(plan.id))}>{tr("Work through the plan")}</Btn>
     </div> : null}
     {plan.state === 'paused' ? <div className="plan__acts">
       <Btn size="sm" variant="primary" icon="play" disabled={busy || streaming} onClick={() => void run(() => startPlanGoal(plan.id))}>{tr("Resume")}</Btn>
@@ -82,6 +96,7 @@ export function PlanPanel({ chatId }: { chatId: string | null | undefined }) {
     <div className="plan__head"><b>{tr("Plan")}</b><span>{planCount(plan)}</span></div>
     {plan.title ? <p className="plan__goal">{plan.title}</p> : null}
     <PlanSteps plan={plan}/>
+    <PlanFile chatId={chatId} plan={plan}/>
   </aside>;
 }
 
