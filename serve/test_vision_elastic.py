@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, EngineDied, Service, Vision
@@ -48,6 +49,7 @@ class Elastic(unittest.TestCase):
         self.engine.loaded = True
         self.vision = ElasticVision(d)
         self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=self.vision)
+        self.svc.free_vram_mib = lambda: None               # (not this PC's card)
         self.addCleanup(self.drop_embeddings)
 
     def drop_embeddings(self):
@@ -140,6 +142,102 @@ class Elastic(unittest.TestCase):
         v = Vision({"exe": "e", "mmproj": "m", "model": "t"}, lazy=True)
         self.assertFalse(v.elastic)
         self.assertEqual((v.elastic_mib, v.elastic_idle_s), (2048, 120.0))
+
+
+class OnDemandReader(unittest.TestCase):
+    """The reader that starts with the first picture: no room on the card -> the CPU reader reads it, the cache grows back at once,
+    and the next start tries the card again; pictures already encoded start nothing."""
+
+    def vision(self, d):
+        v = Vision({"exe": "gpu-reader", "mmproj": "m", "model": "t", "gpu": True, "cpu_exe": "cpu-reader", "elastic": True}, lazy=True)
+        v.started = []
+
+        def start_reader():
+            exe = v.spawn[0][0]
+            v.started.append(exe)
+            if exe.endswith("gpu-reader") and v.gpu_fails:
+                raise RuntimeError("cudaMalloc failed: out of memory")
+            v.proc = mock.Mock()
+            v.proc.poll.return_value = None
+            v.stopped = False
+        v.gpu_fails = False
+        v._start_reader = start_reader
+        v.close = lambda: None
+        return v
+
+    def service(self, v, elastic_engine=True):
+        tok = ByteTokenizer()
+        engine = VramEngine(tok, elastic=elastic_engine)
+        engine.loaded = True
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=v)
+        return svc, engine
+
+    def test_a_gpu_reader_that_does_not_start_is_the_cpu_reader_for_this_start_only(self):
+        v = self.vision(tempfile.mkdtemp())
+        v.gpu_fails = True
+        svc, engine = self.service(v)
+        svc._vision_up()
+        self.assertEqual([x.split("-")[0] for x in v.started], ["gpu", "cpu"])
+        self.assertTrue(v.on_cpu)
+        self.assertEqual(engine.calls, [2048, 0])           # the cache made room, then took it back: the CPU reader needs none
+        self.assertFalse(svc.vision_held)
+        svc.last_image_at = 0
+        self.assertEqual(svc._vision_idle_down(), "down")   # the idle stop ends the CPU reader too ...
+        self.assertEqual(engine.calls, [2048, 0])           # ... and has no VRAM to give back
+        self.assertFalse(v.on_cpu)                          # the next start tries the card again
+        v.gpu_fails = False
+        svc._vision_up()                                    # the card is tried again, and works now
+        self.assertEqual(v.started[-1].split("-")[0], "gpu")
+        self.assertFalse(v.on_cpu)
+        self.assertTrue(svc.vision_held)
+
+    def test_no_room_and_a_cache_that_cannot_shrink_goes_straight_to_the_cpu_reader(self):
+        v = self.vision(tempfile.mkdtemp())
+        svc, engine = self.service(v, elastic_engine=False)
+        svc.free_vram_mib = lambda: 900
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            svc._vision_up()
+        self.assertEqual([x.split("-")[0] for x in v.started], ["cpu"])   # the card was not tried
+        self.assertIn("this picture is read on the CPU", out.getvalue())
+        self.assertFalse(svc.vision_held)
+
+    def test_room_enough_and_a_cache_that_cannot_shrink_still_tries_the_card(self):
+        v = self.vision(tempfile.mkdtemp())
+        svc, engine = self.service(v, elastic_engine=False)
+        svc.free_vram_mib = lambda: 5000
+        svc._vision_up()
+        self.assertEqual([x.split("-")[0] for x in v.started], ["gpu"])
+        svc2, _ = self.service(self.vision(tempfile.mkdtemp()), elastic_engine=False)
+        svc2.free_vram_mib = lambda: None                   # unknown: the card is tried (and the CPU reader is there if it fails)
+        svc2._vision_up()
+        self.assertEqual([x.split("-")[0] for x in svc2.vision.started], ["gpu"])
+
+    def test_a_non_elastic_gpu_reader_keeps_the_cpu_reader_for_good(self):
+        v = Vision({"exe": "gpu-reader", "mmproj": "m", "model": "t", "gpu": True, "cpu_exe": "cpu-reader"}, lazy=True)
+        started = []
+
+        def start_reader():
+            started.append(v.spawn[0][0])
+            if started[-1].endswith("gpu-reader"):
+                raise RuntimeError("no kernel image")
+        v._start_reader = start_reader
+        v._start()
+        v.unload()
+        self.assertEqual([x.split("-")[0] for x in started], ["gpu", "cpu"])
+        self.assertTrue(v.on_cpu)                           # as before: the card is not tried again
+
+    def test_pictures_already_encoded_start_no_reader(self):
+        d = Path(tempfile.mkdtemp())
+        v = self.vision(d)
+        png = bytes([0x89]) + b"PNG" + bytes([13, 10, 26, 10]) + b"rest"
+        v.dir = d
+        v.cache["k"] = (d / "x.sve", 3)
+        import hashlib
+        v.cache[hashlib.sha256(png).hexdigest()[:32]] = (d / "x.sve", 3)
+        self.assertTrue(v.all_cached([png]))
+        self.assertFalse(v.all_cached([png + b"x"]))
+        self.assertFalse(v.all_cached(["/no/such/file.png"]))   # an error is encode()'s to report
 
 
 if __name__ == "__main__":
