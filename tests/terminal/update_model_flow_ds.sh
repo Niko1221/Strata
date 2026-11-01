@@ -90,7 +90,7 @@ else
   kill "$PIDCUT"; wait "$PIDCUT" 2>/dev/null
 
   say "5: yes, then yes to start again"
-  python3 "$HERE/pty_drive.py" --timeout 2400 --answer 'for the update\?.*=>y' --answer 'again with the same settings\?.*=>y' -- "$S" update --feed "$F29" --no-control --backend cuda > "$W/logs/ds-yes.txt" 2>&1; RC=$?
+  python3 "$HERE/pty_drive.py" --timeout 1500 --answer 'for the update\?.*=>y' --answer 'again with the same settings\?.*=>y' -- "$S" update --feed "$F29" --no-control --backend cuda > "$W/logs/ds-yes.txt" 2>&1; RC=$?
   sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$W/logs/ds-yes.txt" | tr -d '\r' | grep -v '^$' | tail -20
   check "exit 0" "[ $RC -eq 0 ]"
   check "the old engine file was never touched while the model ran: the 0.1.54 package is still installed" "[ -d '$DSDIR'/0.1.54-linux-x86_64-cuda-cuda13 ] && [ -x '$OLDEXE' ]"

@@ -295,10 +295,10 @@ class ModelGate:
     line; ``emit`` gets one event per step (the app's host reads them from ``strata update --output jsonl``)."""
 
     def __init__(self, *, ask: Callable[[str, bool], bool] | None = None, say: Callable[[str], None] = lambda text: None,
-                 emit: Callable[[dict], None] = lambda event: None, allow_stop: bool = False, start_again: bool = False,
+                 emit: Callable[[dict], None] = lambda event: None, allow_stop: bool = False, start_again: bool = False, settle_s: float = 120.0,
                  stop: Callable[[RunningModel], None] | None = None, start: Callable[[RunningModel], tuple[bool, str]] | None = None):
         self.ask, self.say, self.emit = ask, say, emit
-        self.allow_stop, self.start_again = allow_stop, start_again
+        self.allow_stop, self.start_again, self.settle_s = allow_stop, start_again, settle_s
         self._stop, self._start = stop or stop_model, start or start_model          # (looked up now, so a test or a host can replace them)
         self.consented: dict[str, RunningModel] = {}
         self.stopped: list[RunningModel] = []
@@ -360,13 +360,25 @@ class ModelGate:
             if m.profile not in {s.profile for s in self.stopped}:
                 self.stopped.append(m)
             self.emit({"event": "models", "phase": "stopped", "models": [m.to_dict()], "message": f"{m.label} is stopped"})
+        self._settle(serving_now)
+
+    def _settle(self, serving_now: Callable[[], list[dict]]) -> None:
+        """A stopped engine lets go of the card and of the shared lease a moment later (a big DeepSeek model takes a while to unload): wait for that,
+        up to ``settle_s``, before the update goes on. Found by the real DeepSeek flow, where the very next check still saw "a running Strata server"."""
+        import time
+        deadline = time.monotonic() + self.settle_s
+        while serving_now():
+            if time.monotonic() >= deadline:
+                raise updater.UpdateError("The model was stopped but its engine has not let go of the graphics card yet, so nothing more was changed. "
+                                          f"Wait a minute and run {NEXT_STEP} again.", EXIT_BUSY)
+            time.sleep(min(1.0, self.settle_s / 10 or 0.1))
 
     # -- after the update, whatever happened
-    def finish(self, update_ok: bool) -> bool:
+    def finish(self, update_ok: bool, changed: bool | None = None) -> bool:
         """Start the stopped models again when the person says so.  True when every model that was meant to start did."""
         everyone = True
         for m in self.stopped:
-            if update_ok:
+            if update_ok or changed:
                 question = f"Start {m.label} again with the same settings?"
             else:
                 question = f"The old engine is unchanged. Start {m.label} again on it?"
@@ -402,15 +414,16 @@ def update_with_models(ctx: "updater.Context", gate: ModelGate, show: Callable[[
     after a model had been stopped).  Returns run_update's answer plus ``models`` and, if a model did not start again, exit code 8.
     Raises what run_update raises (Busy, Declined, a refused feed) after the models have had their chance to start again."""
     ctx.gate = gate
-    ok, out, error = False, None, None
+    ok, out, error, changed = False, None, None, False
     try:
         out = updater.run_update(ctx, **kwargs)
         ok = out["exit_code"] == 0
+        changed = any(r.get("changed") for r in out["results"])
         if show is not None:
             show(out)                                    # what the update did comes before the questions about the models
     except Exception as exc:                             # noqa: BLE001 - restarted below, then re-raised
         error = exc
-    restarted = gate.finish(ok) if gate.stopped else True
+    restarted = gate.finish(ok, changed) if gate.stopped else True
     if error is not None:
         raise error
     out["models"] = gate.report()

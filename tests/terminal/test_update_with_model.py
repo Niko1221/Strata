@@ -499,6 +499,47 @@ class TheCommand(ModelCase):
         self.assertEqual((self.state(), self.resolved()), ("ready", "0.1.45"), "a check changes nothing")
 
 
+class AfterTheStop(unittest.TestCase):
+    """Found by the real DeepSeek flow: right after a big model was stopped, the next look still saw 'a running Strata server' (its engine had not let
+    go of the shared lease yet) and the update was refused half way."""
+
+    def gate(self, **kw):
+        stopped = []
+        asked = []
+        gate = engine_update.ModelGate(ask=lambda q, d: asked.append(q) or True, stop=stopped.append, start=lambda m: (True, "ok"), **kw)
+        model = engine_update.RunningModel("launch-x", "X", port=8080)
+        gate.consented["launch-x"] = model
+        gate.asked, gate.stops = asked, stopped
+        return gate, model
+
+    def test_the_update_waits_until_the_stopped_engine_has_let_go(self):
+        gate, _ = self.gate(settle_s=30)
+        answers = [[{"profile": "launch-x"}], [{"profile": "a running Strata server"}], [{"profile": "a running Strata server"}], []]
+        with mock.patch("time.sleep"):
+            gate.release(lambda: answers.pop(0) if answers else [])
+        self.assertEqual(len(gate.stops), 1)
+        self.assertEqual(answers, [], "it looked until nothing was serving")
+
+    def test_an_engine_that_never_lets_go_is_said_plainly_and_nothing_more_is_changed(self):
+        gate, _ = self.gate(settle_s=0.3)
+        calls = {"n": 0}
+
+        def serving():
+            calls["n"] += 1
+            return [{"profile": "launch-x"}] if calls["n"] == 1 else [{"profile": "a running Strata server"}]
+        with self.assertRaises(updater.UpdateError) as caught:
+            gate.release(serving)
+        self.assertEqual(caught.exception.exit_code, 7)
+        self.assertIn("has not let go of the graphics card", str(caught.exception))
+
+    def test_the_start_again_question_says_same_settings_when_part_of_the_update_was_made(self):
+        for changed, text in ((True, "with the same settings"), (False, "The old engine is unchanged")):
+            gate, model = self.gate()
+            gate.stopped.append(model)
+            gate.finish(False, changed)
+            self.assertIn(text, gate.asked[0], changed)
+
+
 class StartWait(unittest.TestCase):
     """Found by the real DeepSeek flow: a DeepSeek run config asks for a long engine wait; runtime.start takes 0..1800 only, so the model did not start again."""
 
