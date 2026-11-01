@@ -134,7 +134,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const draftingChoices = selectedSize ? draftingOptions(selectedSize.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2) : null;
     const draftingWords: Record<string, string> = { auto: 'Auto (recommended)', mtp: 'MTP', dflash2: 'DFlash2', off: 'Off' };
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(cardsGpus.length > 1 ? { gpus: cardsGpus.join(',') } : cardsGpus.length === 1 ? { gpu: cardsGpus[0] } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, cardsGpus.join(','), expert, multiple]);
-    const downloadValues = { ...values, ...(draftingChoices ? { drafting } : {}), vision: selectedSize?.images && vision !== 'no' ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}) };
+    const downloadValues = { ...values, ...(draftingChoices ? { drafting } : {}), vision: selectedSize?.images && vision !== 'no' ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked ? { contextChosen: true } : {}) };
     useEffect(() => { if (!native?.catalog || family)
         return; const current = native.instances.find(i => i.id === native.defaultId); const rec = native.catalog.recommendation ?? { family: null, model: null }; const loadedFamily = families.find(f => f.sizes.some(s => s.id === current?.model)); const have = new Set((native.installed?.models ?? []).filter(m => m.ready).map(m => m.model)); const installedFamily = families.find(f => f.sizes.some(s => have.has(s.id))); const f = loadedFamily ?? installedFamily ?? families.find(f => f.family === rec.family || f.sizes.some(s => s.sourceFamily === rec.family)) ?? families[0]; if (f) {
         setFamily(f.family);
@@ -153,14 +153,14 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         }
         if (!selectedSize)
             return;
-        const sig = installed ? ['have', installed.model, installed.ready, installed.context, installed.kv, installed.images, installed.visionEnabled, installed.visionDevice, installed.lowRamMode, installed.drafting, installed.resourceProfile].join('|') : `new|${selectedSize.id}`;
+        const sig = installed ? ['have', installed.model, installed.ready, installed.context, installed.contextChosen, installed.kv, installed.images, installed.visionEnabled, installed.visionDevice, installed.lowRamMode, installed.drafting, installed.resourceProfile].join('|') : `new|${selectedSize.id}`;
         if (sig === appliedSig)
             return;
         setAppliedSig(sig);
         if (installed) {
             // The context it was prepared with when someone chose it; a model that holds the old 32K default opens at the new default.
             if (installed.context)
-                setContext(selectedSize.multi_file ? installed.context : openingContext(installed.context, contextList));
+                setContext(selectedSize.multi_file ? installed.context : openingContext(installed.context, contextList, installed.contextChosen === true));
             // Off only when the person turned it off (a saved choice on a model that has the picture files); a model prepared without them (images 'off', or an old "off" saved while the engine had no reader) starts with it ON.
             setVision(installed.visionEnabled === false && installed.visionPrepared !== false ? 'no' : installed.visionDevice ?? (installed.images && installed.images !== 'off' ? installed.images : 'yes'));
             setKv(installed.kv ?? 'int8');
@@ -175,7 +175,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
             if (!contextPicked)    // a context the person picked stays; otherwise 128K, and DeepSeek runs at the one context its engine was checked at (as in the guided setup)
                 setContext(selectedSize.multi_file ? 8192 : defaultContext(contextList));
         }
-    }, [selectedSize?.id, installed?.model, installed?.ready, installed?.context, installed?.kv, installed?.images, installed?.visionEnabled, installed?.visionDevice, installed?.lowRamMode, installed?.resourceProfile]);
+    }, [selectedSize?.id, installed?.model, installed?.ready, installed?.context, installed?.contextChosen, installed?.kv, installed?.images, installed?.visionEnabled, installed?.visionDevice, installed?.lowRamMode, installed?.resourceProfile]);
     useEffect(() => { if (jobId && job?.state === 'done' && job.id !== toastedJob && (job.kind === 'load' || job.kind === 'install')) {
         setToastedJob(job.id);
         selectRemoteModel(null);
@@ -194,7 +194,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
        here, in the page, and nothing starts. Otherwise the download or the apply-and-load starts at once, with its size and notes in the page. */
     async function load() { if (!selectedSize)
         return; setPlan(null); setDrafterGb(null); await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || vision === 'no' || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
-        const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, resourceProfile, vision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), multiple: expert && multiple, ...(draftingChoices ? { values: { drafting } } : {}), ...(roleCards.length > 1 ? (roles && customRoles ? { gpuRoles: effectiveRoles, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : cardsGpus.length ? { gpus: cardsGpus, gpusFromRecommendation: true, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) : {}) } });
+        const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, resourceProfile, vision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked && !installed.contextChosen ? { contextChosen: true } : {}), multiple: expert && multiple, ...(draftingChoices ? { values: { drafting } } : {}), ...(roleCards.length > 1 ? (roles && customRoles ? { gpuRoles: effectiveRoles, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : cardsGpus.length ? { gpus: cardsGpus, gpusFromRecommendation: true, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) : {}) } });
         setJobId(result.id);
     }
     else {
@@ -270,7 +270,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     </div>; }))}</div> : <p className="small muted native-manage-empty">{tr("No downloaded models")}</p>)}
    <div className="native-manage-foot"><Btn variant="ghost" icon="folder" onClick={() => { setManage(false); (onImport ?? onOtherModels)(); }}>{tr("Use a local GGUF…")}</Btn></div>
   </div></Dialog>
- {selectedSize ? <NativeTune open={tuneOpen} onClose={() => setTuneOpen(false)} model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'}/> : null}
+ {selectedSize ? <NativeTune open={tuneOpen} onClose={() => setTuneOpen(false)} model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'} visionUnavailable={noReader}/> : null}
  </Screen>;
 }
 /** setup's "5/7: downloading …" as a sentence a person can read. */

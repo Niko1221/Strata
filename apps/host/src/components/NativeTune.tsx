@@ -14,12 +14,14 @@ type Phase = 'idle' | 'running' | 'result';
  * with the same saved tunings); this dialog only starts it, shows its progress and result in plain words, and lists, switches,
  * renames, deletes and undoes the saved tunings. It reuses the Auto-tune dialog's look.
  */
-export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
+export function NativeTune({ open, onClose, model, resourceProfile, vision, visionUnavailable = false }: {
     open: boolean;
     onClose: () => void;
     model: string;
     resourceProfile: 'work' | 'performance';
     vision: string;
+    /** The engine has no picture reader: the run goes without pictures and the model's own setting is left as it is. */
+    visionUnavailable?: boolean;
 }) {
     const native = useNative();
     const [status, setStatus] = useState<TuneStatus | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
@@ -40,7 +42,7 @@ export function NativeTune({ open, onClose, model, resourceProfile, vision }: {
     async function start(kind: 'autotune' | 'recheck') {
         setBusy(true); setError('');
         try {
-            const started = await nativeAction<NativeJob>('operations', { kind, args: { model, resourceProfile, vision, mode, use, allowSmallDifferences: allowSmall, presetId: status?.active?.id } });
+            const started = await nativeAction<NativeJob>('operations', { kind, args: { model, resourceProfile, vision, ...(visionUnavailable ? { visionUnavailable: true } : {}), mode, use, allowSmallDifferences: allowSmall, presetId: status?.active?.id } });
             setJobId(started.id);
         } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
         finally { setBusy(false); }

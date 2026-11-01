@@ -48,7 +48,7 @@ export function GuidedSetup() {
     /* 128K for every configuration unless the person picks another. This first step has no room for the memory warning the Models page gives, so a card
        that a 128K cache would leave under 1 GB for the model starts at the 32K the engine was set up for. */
     const topCardGb = Math.max(0, ...(native?.hardware?.gpus ?? []).filter(g => g.usable !== false).map(g => g.vram_gb));
-    const [pickedContext, setContext] = useState<number | undefined>(saved?.context);
+    const [pickedContext, setContext] = useState<number | undefined>(saved?.context), [contextTouched, setContextTouched] = useState(false);
     const context = pickedContext ?? (contextIsTight(topCardGb, DEFAULT_CONTEXT) ? OLD_DEFAULT_CONTEXT : defaultContext(native?.catalog?.contexts));
     const [vision, setVision] = useState(saved?.vision ?? true), [directory, setDirectory] = useState(saved?.directory ?? '');
     const [profile, setProfile] = useState<'work' | 'performance'>(saved?.profile ?? 'work');
@@ -152,7 +152,7 @@ export function GuidedSetup() {
         void persist(4, { tuneJobId: tuneJob.id }).catch(e => setError(e.message));
     } }, [step, installJob?.id, tuneJob?.id]);
     const fixedContext = version?.multi_file ? 8192 : null;      // the one context DeepSeek's engine was checked at
-    const values = { guided: true, family: version?.sourceFamily, model: version?.model, context: fixedContext ?? context, vision: version?.images ? 'yes' : 'no', kv: 'int8', low_ram: 'auto', loadAfter: false, multiple: false, ...(directory ? { data_dir: directory } : {}) };
+    const values = { guided: true, family: version?.sourceFamily, model: version?.model, context: fixedContext ?? context, ...(contextTouched && !fixedContext ? { contextChosen: true } : {}), vision: version?.images ? 'yes' : 'no', kv: 'int8', low_ram: 'auto', loadAfter: false, multiple: false, ...(directory ? { data_dir: directory } : {}) };
     async function review() {
         await perform(async () => {
             setInstallJobId('');
@@ -221,7 +221,7 @@ export function GuidedSetup() {
    <div className="onboard-stage-heading"><h1 ref={titleRef} tabIndex={-1} data-initial-focus>{tr(title)}</h1>{tr(step === 2 ? <p>{tr("You can always change your models later.")}</p> : step === 4 && tuneJob?.state === 'running' ? <p>{tr("We\u2019re measuring, applying your preference, and getting ready to chat.")}</p> : null)}</div>
    {tr(step === 2 ? <div className="onboard-model-stage">
     {tr(selectedFamily ? <>
-     <div className="onboard-model-top"><div className="onboard-model-picker"><span className="onboard-control-label">{tr("Model")}</span><div><span className="onboard-model-symbol"><Icon name="models" size={23}/></span><Select ariaLabel={tr("Setup model")} value={selectedFamily.family} options={families.map(f => ({ value: f.family, label: f.title }))} onChange={value => chooseNative(value, '')}/></div></div><div className="onboard-context"><span className="onboard-control-label">{tr("Conversation context")}</span><Select ariaLabel={tr("Setup conversation context")} value={String(version?.multi_file ? 8192 : context)} options={(version?.multi_file ? [8192] : native?.catalog?.contexts ?? [32768]).map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={value => setContext(Number(value))}/></div></div>
+     <div className="onboard-model-top"><div className="onboard-model-picker"><span className="onboard-control-label">{tr("Model")}</span><div><span className="onboard-model-symbol"><Icon name="models" size={23}/></span><Select ariaLabel={tr("Setup model")} value={selectedFamily.family} options={families.map(f => ({ value: f.family, label: f.title }))} onChange={value => chooseNative(value, '')}/></div></div><div className="onboard-context"><span className="onboard-control-label">{tr("Conversation context")}</span><Select ariaLabel={tr("Setup conversation context")} value={String(version?.multi_file ? 8192 : context)} options={(version?.multi_file ? [8192] : native?.catalog?.contexts ?? [32768]).map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={value => { setContextTouched(true); setContext(Number(value)); }}/></div></div>
      <OnboardingMemory hardware={hardware} native={native?.hardware}/>{tr(!version || version.needsNewerEngine ? <p className="small muted">{tr("This model needs a newer engine. Update your engine or import a local GGUF for this model.")}</p> : null)}
      <div className="onboard-version-heading"><strong>{tr("Choose a version")}</strong><span>{tr(version ? `${catalogVersionLabel(version)} selected` : '')}</span></div>
      {tr(version?.multi_file ? <DeepSeekNote version={version} plan={plan}/> : null)}

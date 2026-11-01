@@ -16,9 +16,13 @@ export function defaultContext(choices: readonly number[] | null | undefined): n
   return under.length ? Math.max(...under) : sizes.length ? Math.min(...sizes) : DEFAULT_CONTEXT;
 }
 
-/** What a model that is already on this computer opens with: the context it was prepared with when someone chose it, else the default. */
-export function openingContext(saved: number | null | undefined, choices: readonly number[] | null | undefined): number {
-  return saved && saved > 0 && saved !== OLD_DEFAULT_CONTEXT ? saved : defaultContext(choices);
+/**
+ * What a model that is already on this computer opens with: the context it was prepared with when someone chose it, else the default. A choice made
+ * from this update on is saved with a marker (`chosen`), whatever its size, 32K included; only an old saved 32K without a marker (the old default) moves
+ * to the new default.
+ */
+export function openingContext(saved: number | null | undefined, choices: readonly number[] | null | undefined, chosen = false): number {
+  return saved && saved > 0 && (chosen || saved !== OLD_DEFAULT_CONTEXT) ? saved : defaultContext(choices);
 }
 
 /**

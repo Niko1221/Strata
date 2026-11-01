@@ -157,3 +157,27 @@ test('the new words are in all nine languages with the same slots', () => {
     }
   }
 });
+
+test('a context picked after this update sticks, 32K included; only an old saved 32K without the marker moves once', async () => {
+  const { openingContext } = await lib('src/lib/default-context.ts');
+  const list = [8192, 32768, 65536, 131072];
+  assert.equal(openingContext(32768, list), 131072, 'an old saved 32K has no marker: it moves to the new default');
+  assert.equal(openingContext(32768, list, true), 32768, 'a 32K that was picked has the marker: it stays');
+  assert.equal(openingContext(65536, list), 65536);
+  const host = read('server/native-control.mjs');
+  assert.match(host, /\.\.\.\(args\.contextChosen===true\?\{ui_context_chosen:true\}:\{\}\)/, 'a load saves the marker');
+  assert.match(host, /rememberSetting\(record\(id\)\.path,'ui_context_chosen',true\)/, 'an install saves it too');
+  assert.match(host, /contextChosen:cfg\.ui_context_chosen===true/, 'and it is read back');
+  assert.match(models, /openingContext\(installed\.context, contextList, installed\.contextChosen === true\)/);
+  assert.match(models, /\.\.\.\(contextPicked \? \{ contextChosen: true \} : \{\}\)/, 'a pick is sent with the install');
+  assert.match(models, /\.\.\.\(contextPicked && !installed\.contextChosen \? \{ contextChosen: true \} : \{\}\)/, 'and with a direct load, so a picked 32K that equals the saved one is marked too');
+  assert.match(read('src/components/GuidedSetup.tsx'), /contextTouched && !fixedContext \? \{ contextChosen: true \}/);
+});
+
+test('the tune dialog also runs without pictures and saves nothing when the engine has no reader', () => {
+  assert.match(models, /vision=\{selectedSize\.images \? vision : 'no'\} visionUnavailable=\{noReader\}/);
+  assert.match(read('src/components/NativeTune.tsx'), /\.\.\.\(visionUnavailable \? \{ visionUnavailable: true \} : \{\}\)/);
+  const host = read('server/native-control.mjs');
+  assert.match(host, /vision:current\.config\.vision\?args\.vision:'no',\.\.\.\(args\.visionUnavailable===true\?\{visionUnavailable:true\}:\{\}\)/);
+  assert.match(host, /args\.contextChosen===true\|\|JSON\.stringify\(cfg\[USER_KEY\]/, 'a load that carries the context marker writes it to the saved settings');
+});
