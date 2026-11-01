@@ -1975,7 +1975,19 @@ struct Model::Impl {
     // asks (1 on, 0 off)
     bool one_gpu_or(const char* k) const {
         const char* v = std::getenv(k);
-        return v != nullptr ? std::atoi(v) != 0 : devs.size() == 1;
+        if (v != nullptr) return std::atoi(v) != 0;
+#if defined(STRATA_METAL)
+        // Metal (DS4_BORROW is the only caller): off unless asked for.  M5 Max, unified memory, 2.25 bpw, 3 interleaved pairs: with the
+        // prompt path's lent room (and its 32,768-token chunk) a 639-token prompt took 6.2-7.6 s against 4.1 s without it (same bytes read,
+        // the compute waits for reads equally long: the time is spent elsewhere), 8K -3.9%, 32K -20%, and the engine died ("mtl: wrap
+        // 7763574784 failed", exit 4) in 8 of 9 runs of a mixed 165/600-token/8K sequence that the same build with DS4_BORROW=0 finished 3 of 3.
+        // The lent buffers are carved out of the experts' slot allocation, which the Metal runtime binds through no-copy wraps.  Unified
+        // memory has no separate VRAM whose room a prompt could borrow, so nothing is lost by leaving it off (and the experts' count only
+        // differs by ~2%).  DS4_BORROW=1 turns it on again.  CUDA and HIP builds keep Maya's rule below.
+        return false;
+#else
+        return devs.size() == 1;
+#endif
     }
     // VRAM slot s of layer l, member x's part of it: u bytes a slot in its own allocation, the tail's xstep apart
     static uint8_t* sat(const Layer& l, const Layer& x, int s, size_t u) {
