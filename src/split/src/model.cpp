@@ -99,7 +99,15 @@ void check_cards() {
     for (int dev = 0; dev < NCARD; ++dev) {
         cudaDeviceProp prop;
         ck(cudaGetDeviceProperties(&prop, dev), "cudaGetDeviceProperties");
+#if FNX_HIP
+        // the kernels are built for gfx1201 only (R9700, RX 9070): the card's gfx name, not a compute capability
+        if (std::strncmp(prop.gcnArchName, "gfx1201", 7) != 0)
+            throw std::runtime_error("card " + std::to_string(dev) + " (" + prop.name + ") is " + prop.gcnArchName +
+                                     " and this build is for gfx1201 (RDNA4: Radeon AI PRO R9700, RX 9070)");
+        (void) FNX_ARCH;
+#else
         require_card_arch(dev, prop.name, prop.major, prop.minor, FNX_ARCH);
+#endif
 #if FNX_HOSTRING
         (void) skip_bar1;   // no card writes into another: the identity-domain and BAR1 requirements do not apply
 #else
