@@ -2364,7 +2364,14 @@ class Tools:
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
-        partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
+        if md.get("repo"):        # a ready-made pack: setup writes it under models/<owner>--<repo>, not under the tag
+            have_dir = target / "models" / md["repo"].replace("/", "--")
+        # "partly downloaded" = some of the files this install would fetch are already there: a second setup then only
+        # needs the headroom, not the whole download again.  The files are setup's own expected list, so a ready-made
+        # pack counts where setup really put it (#4892); the folder scan below stays the fallback for an older setup.py.
+        expected = expected_files(s.setup_module(), family, model, target / "models", False)
+        partly = any(Path(f["path"]).is_file() for f in expected if f.get("role") != "vision")
+        partly = partly or (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
         need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
         free = s.disk_free(target)
         short = None

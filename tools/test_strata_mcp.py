@@ -446,6 +446,53 @@ class Install(FakeRoot):
         self.assertIsNone(self.strata.install_job())
 
 
+class ReadyMadePack(unittest.TestCase):
+    """#4892: a ready-made pack (setup.py's MODELS[model]["repo"]) is written under models/<owner>--<repo>, not under the
+    family's tag. The prepare check only looked in the tag folder, so a disk that held the whole 120 GB pack was asked
+    for the full download again (137 GB needed)."""
+
+    def hardware(self):
+        return {"ram_gb": 96.0,
+                "gpus": [{"index": 0, "name": "RTX PRO 6000", "vram_gb": 96.0, "usable": True, "vendor": "nvidia"}],
+                "cpu": {"avx2": True}}
+
+    def test_an_installed_pack_in_its_repository_folder_counts_as_downloaded(self):
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        self.assertIsNotNone(S, "the repository's setup.py did not import")
+        repo = S.MODELS["NVFP4"].get("repo")
+        self.assertTrue(repo, "NVFP4 is a ready-made pack: setup.py names its repository")
+        s.hardware = lambda fresh=False: self.hardware()
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d) / "Strata-data"
+            pack = data / "models" / repo.replace("/", "--")
+            pack.mkdir(parents=True)
+            for i in range(6):
+                (pack / f"part-{i:05d}-of-00006.gguf").write_bytes(b"x")
+            s.disk_free = lambda p: 12.0              # less than the 128 GB download, more than the 8 GB headroom
+            plan, _args = M.Tools(s).install_plan("nvfp4", "NVFP4", 32768, "no", None, None, None, None,
+                                                  None, None, str(data), None)
+        self.assertTrue(plan["partly_downloaded"], "the pack's files are on this disk")
+        self.assertEqual(plan["model_folder"], str(pack))
+        self.assertEqual(plan["disk_needed_gb"], 8)
+        self.assertIsNone(plan["disk_short"], "a pack that is already there fits")
+
+    def test_a_regular_download_is_still_found_in_its_tag_folder(self):
+        s = M.Strata(HERE.parent)
+        s.hardware = lambda fresh=False: self.hardware()
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d) / "Strata-data"
+            folder = data / "models" / "IQ3_S"        # the family tag folder: what setup writes for a regular download
+            folder.mkdir(parents=True)
+            (folder / "part.gguf").write_bytes(b"x")
+            s.disk_free = lambda p: 20.0
+            plan, _args = M.Tools(s).install_plan("qwen", "IQ3_S", 32768, "no", None, None, None, None,
+                                                  None, None, str(data), None)
+        self.assertTrue(plan["partly_downloaded"])
+        self.assertEqual(plan["model_folder"], str(folder))
+        self.assertEqual(plan["disk_needed_gb"], 8)
+
+
 # ------------------------------------------------------------------------------------------------ start / stop / status
 class StartStop(FakeRoot):
     def test_start_status_bench_stop(self):
