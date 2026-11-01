@@ -126,6 +126,66 @@ class Config(unittest.TestCase):
             S.split_config(self.base(), decide(enabled=False), exe="e", native="n", mtp_dir="m", draft_vocab="v", context=1)
 
 
+class Apply(unittest.TestCase):
+    """apply_to_config: the launcher's side (facts of this PC and model in, a run config out)."""
+
+    def cfg(self, tmp):
+        (Path(tmp) / "data").mkdir(exist_ok=True)
+        (Path(tmp) / "data" / "draft_vocab_en.bin").write_bytes(b"x")
+        return {"exe": "component:strata-engine", "args": ["--pack", "p", "--native", "/m/a-00001-of-00004.gguf", "--mtp", "/d/mtp/rt",
+                                                           "--max-context", "131072", "--layer-split", "auto"],
+                "cwd": tmp, "tokenizer": "tok", "port": 8080, "gpu": [0, 1], "env": {}, "split_engine": True}
+
+    def run_apply(self, cfg, *, cards_=None, avail=80.0, model=None, exe="/e/strata-split-2", **kw):
+        return S.apply_to_config(cfg, exe_for_cards=lambda n: exe, system=kw.pop("system", "linux"), probe=lambda idx: cards_ or cards(),
+                                 ram=lambda: (125.0, avail), scan=lambda path: model or udq4(), **kw)
+
+    def test_a_good_pc_gets_the_split_config(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            d = self.run_apply(cfg)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(cfg["exe"], "/e/strata-split-2")
+            self.assertEqual(cfg["args"][cfg["args"].index("--native") + 1], "/m/a-00001-of-00004.gguf")
+            self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")
+            self.assertEqual(cfg["split_fallback"]["exe"], "component:strata-engine")
+            self.assertEqual(cfg["tokenizer"], "tok")
+
+    def test_every_refusal_leaves_the_config_alone(self):
+        import copy
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for kw in (dict(cards_=cards(1)), dict(avail=20.0), dict(exe=None), dict(system="windows"),
+                       dict(model=udq4(embd_type="Q6_K"))):
+                cfg = self.cfg(tmp)
+                before = copy.deepcopy(cfg)
+                d = self.run_apply(cfg, **kw)
+                self.assertFalse(d.use_split, kw)
+                self.assertEqual(cfg, before, kw)
+                self.assertTrue(d.line.startswith("Using the normal layer split"), d.line)
+
+    def test_a_model_file_it_cannot_read_is_a_reason_not_an_error(self):
+        import tempfile
+
+        def boom(path):
+            raise OSError("gone")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n: "/e/x", system="linux", probe=lambda i: cards(), ram=lambda: (125.0, 80.0), scan=boom)
+            self.assertFalse(d.use_split)
+            self.assertIn("could not be read", d.line)
+
+    def test_wanted_is_opt_in(self):
+        self.assertFalse(S.wanted({}, {}))
+        self.assertFalse(S.wanted({"split_engine": False}, {}))
+        self.assertTrue(S.wanted({"split_engine": True}, {}))
+        self.assertTrue(S.wanted({}, {"STRATA_SPLIT_ENGINE": "1"}))
+
+
 class NoPeerAccess(unittest.TestCase):
     """Pictures of the rule 'no peer access in any path': nothing under src/split may call the CUDA peer APIs. (The built engine is
     also checked with nm in packaging/build_split_cuda.sh.)"""

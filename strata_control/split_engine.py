@@ -198,3 +198,100 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     cfg["split_fallback"] = {k: base[k] for k in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting", "cwd") if k in base}
     cfg["split_engine_note"] = decision.line
     return cfg
+
+
+# ---- the launcher side: facts from this PC, then the config ----------------------------------------------------------------------------
+def probe_cards(indexes: list[int] | None = None) -> list[Card]:
+    """The NVIDIA cards (all, or the named ones) with their name, memory and compute capability, from nvidia-smi; [] when it cannot say."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    cards = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 4:
+            continue
+        try:
+            idx, mem = int(parts[0]), int(float(parts[2]))
+            cc = int(round(float(parts[3]) * 10))
+        except ValueError:
+            continue
+        if indexes is None or idx in indexes:
+            cards.append(Card(idx, parts[1], mem, cc))
+    return cards
+
+
+def ram_gib() -> tuple[float, float]:
+    """(total, available) GiB of this PC's RAM from /proc/meminfo; (0, 0) where there is none."""
+    try:
+        vals = {}
+        for line in open("/proc/meminfo", encoding="ascii"):
+            k, _, v = line.partition(":")
+            if k in ("MemTotal", "MemAvailable"):
+                vals[k] = int(v.split()[0]) / (1 << 20)
+        return vals.get("MemTotal", 0.0), vals.get("MemAvailable", 0.0)
+    except OSError:
+        return 0.0, 0.0
+
+
+def _flag(args: list, name: str) -> str | None:
+    return str(args[args.index(name) + 1]) if name in args and args.index(name) + 1 < len(args) else None
+
+
+def wanted(cfg: dict, environ: dict | None = None) -> bool:
+    """The person turned the option on: "split_engine": true in the run config, or STRATA_SPLIT_ENGINE=1 in the environment (testers)."""
+    import os
+
+    return cfg.get("split_engine") is True or (environ if environ is not None else os.environ).get("STRATA_SPLIT_ENGINE") == "1"
+
+
+def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allow_untested: bool = False, probe=None, ram=None,
+                    scan=None, data_dir: str | None = None) -> Decision:
+    """Turn a normal run config into the split engine's config IN PLACE when the rule says yes, and say what was decided.
+    exe_for_cards(n) -> the path of strata-split-n or None (the engine package has none); probe(indexes) -> [Card]; ram() -> (total,
+    available) GiB; scan(first_shard) -> ModelFacts: the facts of this PC and model, replaceable for tests."""
+    import os
+    import pathlib
+    import sys
+
+    system = system or ("linux" if sys.platform.startswith("linux") else sys.platform)
+    args = [str(a) for a in cfg.get("args") or []]
+    native = _flag(args, "--native")
+    if not native:
+        return Decision(False, ["this model is not a single GGUF file set"])
+    gpus = cfg.get("gpu")
+    indexes = [int(g) for g in gpus] if isinstance(gpus, list) else ([int(gpus)] if isinstance(gpus, int) else None)
+    cards = (probe or probe_cards)(indexes) if system == "linux" else []
+    total, avail = (ram or ram_gib)()
+    try:
+        model = (scan or scan_model)(native)
+    except Exception as e:                                   # noqa: BLE001 - a file it cannot read is a reason, not a failed start
+        return Decision(False, [f"the model file could not be read ({type(e).__name__})"])
+    context = int(_flag(args, "--max-context") or 8192)
+    d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
+               allow_untested=allow_untested)
+    if not d.use_split:
+        return d
+    exe = exe_for_cards(d.cards)
+    if not exe:
+        return Decision(False, [f"this engine package has no strata-split-{d.cards}"], d.cards)
+    mtp = _flag(args, "--mtp")
+    if not mtp:
+        return Decision(False, ["the model has no draft layer files (--mtp)"], d.cards)
+    vocab = None
+    for folder in (pathlib.Path(exe).parent, pathlib.Path(data_dir) if data_dir else None, pathlib.Path(cfg.get("cwd") or ".") / "data"):
+        if folder and (folder / "draft_vocab_en.bin").is_file():
+            vocab = str(folder / "draft_vocab_en.bin")
+            break
+    if not vocab:
+        return Decision(False, ["draft_vocab_en.bin is missing"], d.cards)
+    lanes = int(cfg.get("parallel") or _flag(args, "--batch") or DEFAULT_LANES)
+    new = split_config(cfg, d, exe=exe, native=native, mtp_dir=mtp, draft_vocab=vocab, context=context, lanes=lanes,
+                       vision=bool(cfg.get("vision")) or "--vision" in args)
+    cfg.clear()
+    cfg.update(new)
+    return d
