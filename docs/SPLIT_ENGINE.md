@@ -9,7 +9,7 @@ starts the normal layer split by itself when anything is off.
 
 Unsloth's UD-Q4_K_XL file of Qwen3.8-Flash-Next on two or more big identical NVIDIA cards on Linux, when the whole model fits in the cards'
 memory. With the normal layer split one card works while the other waits; here both read the weights at the same time, so answers are
-written faster. It reads long prompts more slowly than the normal layer split, so it pays where most of the time is spent writing.
+written faster. It reads long prompts 1.4-2.3x more slowly than the normal layer split (the expert kernels for prompts are written for an older GPU instruction; a port is the known fix), so it pays where most of the time is spent writing.
 
 Measured on two RTX A6000 (48 GB), UD-Q4_K_XL, 128K context, Strata f-0291-int3 against the same engine with the split on (3 interleaved
 pairs, medians of 3 runs; `phaseA-tests/sfnx/RESULTS.md` sections 8 and 9):
@@ -20,8 +20,11 @@ pairs, medians of 3 runs; `phaseA-tests/sfnx/RESULTS.md` sections 8 and 9):
 | new code | 139-144 | 189-232 |
 | prose | 93 | 139-146 |
 | agent loop (sampled, up to 123K-token prompts) | 112-119 | 165 |
-| 8K / 32K / 114K prompt | 4.6 s / 14.8 s / 37 s | 7.6 s / 29 s / 102 s |
-| six at once | 168 tok/s | 174 |
+| 8K / 32K / 114K prompt | 4.6 s / 14.8 s / 37 s | 6.4 s / 24.5 s / 86 s |
+| one, 2, 4, 6 at once (combined tok/s) | 69, 104, 144, 168 | 92, 141, 170, 181 |
+| a 28K prompt joins 4 decoders: its first token / the decoders' longest stall | 8.0 s / 8.0 s | 20.7 s / 5.8 s |
+| 32K prompts, 2 or 4 at once (tok/s over the run) | 11.7 / 12.9 | 5.3 / 5.3 |
+| the 61-task quality suite (temperature 0) | 57 of 61 | 56 of 61 (the verdicts of four tasks differ in both directions; both engines repeat themselves exactly) |
 
 ## Turn it on
 
@@ -56,8 +59,7 @@ checks are removed because the path they protect no longer exists.
 ## Not proven
 
 No GeForce pair has been tested (there is none in the lab). Three and four cards, other architectures, Windows and macOS, a 64 GB RAM PC
-with two big cards, and contexts over 128K have not been run. The copy-engine prompt path of sFNX stalls with the host exchange and is not
-used; prompts go through GPU threads, which is why they read slower than the normal layer split.
+with two big cards, and contexts over 128K have not been run. The copy-engine ring now used for prompts differs in its last bits from sFNX's GPU-thread ring (`FNX_PF_RING_SM=1`, kept): 39 of 61 suite answers are identical between the two. Answers differ from the normal layer split's in the same way (29 of 61 identical), because the arithmetic differs.
 
 ## Build
 
