@@ -1037,6 +1037,7 @@ class StrataEngine:
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.prefill_read_total = 0      # fresh prompt tokens read since start, every stream (--monitor-aggregate)
         self._pp_seen = (0.0, 0)         # this prompt's last PP (ms, fresh tokens), so each line adds only what is new
+        self.prefill_now = None          # the last chunk read: (tok/s, when, its read time in s, the prompt's last chunk)
         self.silent_note = None
         self.last_err = None
         try:                            # a ready-made engine's BUILD.json says its version
@@ -1905,9 +1906,13 @@ class StrataEngine:
         fresh = int(round(ms * rate / 1000.0))
         last_ms, last = getattr(self, "_pp_seen", (0.0, 0))
         if ms < last_ms:
-            last = 0
+            last_ms, last = 0.0, 0
         if fresh > last:
             self.prefill_read_total = getattr(self, "prefill_read_total", 0) + fresh - last
+            if ms > last_ms:
+                # this chunk's own speed: its new tokens over its own read time, not an average since the prompt began
+                self.prefill_now = ((fresh - last) * 1000.0 / (ms - last_ms), time.time(), (ms - last_ms) / 1000.0,
+                                    f[1].isdigit() and f[2].isdigit() and int(f[1]) >= int(f[2]))
         self._pp_seen = (ms, max(fresh, last))
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
@@ -4258,11 +4263,9 @@ class Service:
         self.api_monitor = False
         # --monitor-aggregate: the Monitor's speed and prefill become tokens per second summed over every stream
         self.monitor_aggregate = False
-        self.decoded_total = 0                          # tokens generated since start, every stream
-        self._agg_prev = None                           # (time, decoded, prefilled) at the last telemetry sample
+        self._decoded = collections.deque(maxlen=8192)           # (time, tokens) as each stream generates, for the last second
         self._agg_rates = (0.0, 0.0)                    # what the Monitor shows: (decode, prefill) tok/s
-        self._agg_dec_seen = self._agg_pre_seen = 0.0   # when each last moved (a value is held AGG_HOLD_S after)
-        self._agg_pre_mark = None                       # where the next prompt chunk's read time starts from
+        self._agg_seen = [0.0, 0.0]                     # when each was last above 0 (it is held AGG_HOLD_S after)
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -4925,48 +4928,40 @@ class Service:
             return {"tok_s": dec, "tok_s_mean": self._tok_s_mean(), "prefill_tok_s_mean": pre}
         return {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(), "prefill_tok_s_mean": self._prefill_tok_s_mean()}
 
-    def _prefill_read_total(self):
+    def _prefill_now(self, now):
+        """Prompt tokens per second being read right now, summed over every engine still reading a prompt.  Each
+        engine's figure is its latest chunk's own speed (its tokens over its own read time), which is the speed it is
+        reading at this second; an engine drops out once its prompt's last chunk is in or its next chunk is overdue."""
         engines = getattr(self.engine, "engines", None) or [self.engine]   # replicas: every engine's
-        return sum(int(getattr(e, "prefill_read_total", 0) or 0) for e in engines if e is not None)
-
-    def _prompt_reading(self):
-        """True while any running request is still reading its prompt (no token yet)."""
-        with self.status_lock:
-            sts = [st for st, _ in self.live_reqs.values()] if self.live_reqs else [self.status]
-            return any(st.get("busy") and st.get("first_token") is None for st in sts)
+        total = 0.0
+        for e in engines:
+            pn = getattr(e, "prefill_now", None) if e is not None else None
+            if not pn:
+                continue
+            rate, at, chunk_s, last = pn
+            if now - at <= (1.0 if last else max(2.0, 1.5 * chunk_s)):
+                total += rate
+        return total
 
     def _sample_aggregate(self, now=None):
-        """The Monitor's (decode, prefill) tok/s, summed over every stream.
+        """The Monitor's (decode, prefill) tok/s for the last second only, summed over every stream.
 
-        Decode is the tokens generated since the last call, per second.  Prefill arrives a whole prompt chunk at a time
-        (up to 8,192 tokens, often 10-40 s apart), so a chunk's tokens are divided by the time since the chunk before
-        it (any stream) or since reading began, and that value stays up while any prompt is still being read.  Either
-        value goes to 0 only once it has really been 0 for AGG_HOLD_S seconds, never between chunks or tokens."""
+        Decode counts the tokens generated in the last second.  Prefill is reported a whole chunk at a time (up to
+        8,192 tokens), so it is each reading engine's current chunk speed, summed.  A value that falls to 0 keeps
+        showing its last figure until it has been 0 for AGG_HOLD_S seconds."""
         now = time.time() if now is None else now
         with self.status_lock:
-            dec = self.decoded_total
-        pre = self._prefill_read_total()
-        reading = self._prompt_reading()
-        prev, self._agg_prev = self._agg_prev, (now, dec, pre)
-        if prev is None or now <= prev[0]:
-            return self._agg_rates
-        dt = now - prev[0]
-        shown_dec, shown_pre = self._agg_rates
-        d_dec, d_pre = max(0, dec - prev[1]), max(0, pre - prev[2])
-        if d_dec:
-            shown_dec, self._agg_dec_seen = round(d_dec / dt, 1), now
-        elif now - self._agg_dec_seen >= AGG_HOLD_S:
-            shown_dec = 0.0
-        if self._agg_pre_mark is None and (reading or d_pre):
-            self._agg_pre_mark = prev[0]                 # reading began during this interval
-        if d_pre:
-            shown_pre = round(d_pre / max(dt, now - self._agg_pre_mark), 1)
-            self._agg_pre_mark = self._agg_pre_seen = now
-        elif reading:
-            self._agg_pre_seen = now                     # mid-prompt, between chunks: keep the last chunk's rate
-        elif now - self._agg_pre_seen >= AGG_HOLD_S:
-            shown_pre, self._agg_pre_mark = 0.0, None
-        self._agg_rates = (shown_dec, shown_pre)
+            q = self._decoded
+            while q and q[0][0] <= now - 1.0:
+                q.popleft()
+            dec = float(sum(n for t, n in q if t <= now))
+        rates = [round(dec, 1), round(self._prefill_now(now), 1)]
+        for k in (0, 1):
+            if rates[k] > 0:
+                self._agg_seen[k] = now
+            elif now - self._agg_seen[k] < AGG_HOLD_S:
+                rates[k] = self._agg_rates[k]
+        self._agg_rates = tuple(rates)
         return self._agg_rates
 
     def _tok_s(self):
@@ -5508,7 +5503,8 @@ class Service:
     def _note(self, n, evs, st=None, rate=None):
         with self.status_lock:
             s = self.status if st is None else st
-            self.decoded_total += max(0, n - (s.get("generated") or 0))
+            if self.monitor_aggregate and n > (s.get("generated") or 0):
+                self._decoded.append((time.time(), n - (s.get("generated") or 0)))
             s["generated"] = n
             if s.get("first_token") is None:
                 s["first_token"] = time.time()

@@ -1,5 +1,6 @@
 """--monitor-aggregate: the Monitor's speed and prefill as tokens per second summed over every running stream."""
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
@@ -14,41 +15,53 @@ def service():
     return svc
 
 
-class DecodeSum(unittest.TestCase):
-    def test_one_stream(self):
+def note_at(svc, t, n, st):
+    with mock.patch("serve.server.time.time", return_value=t):
+        svc._note(n, [], st=st, rate=[])
+
+
+def pp_at(e, t, pos, total, ms, rate):
+    with mock.patch("serve.server.time.time", return_value=t):
+        e._count_pp(f"PP {pos} {total} {ms} {rate}".split())
+
+
+class DecodeLastSecond(unittest.TestCase):
+    def test_counts_only_the_last_second(self):
         svc = service()
-        st, rate = {"generated": 0}, []
-        svc._sample_aggregate(now=100.0)
-        for n in range(1, 31):
-            svc._note(n, [], st=st, rate=rate)
-        self.assertEqual(svc._sample_aggregate(now=101.0), (30.0, 0.0))
+        st = {"generated": 0}
+        for i in range(1, 41):                       # 40 tokens over 100.0..103.9 s: 10 a second
+            note_at(svc, 100.0 + (i - 1) * 0.1, i, st)
+        self.assertEqual(svc._sample_aggregate(now=103.95)[0], 10.0)
 
     def test_parallel_streams_add_up(self):
         svc = service()
-        a, b = ({"generated": 0}, []), ({"generated": 0}, [])
-        svc._sample_aggregate(now=100.0)
-        for n in range(1, 21):
-            svc._note(n, [], st=a[0], rate=a[1])
-        for n in range(1, 16):
-            svc._note(n, [], st=b[0], rate=b[1])
+        a, b = {"generated": 0}, {"generated": 0}
+        for i in range(1, 21):
+            note_at(svc, 100.0 + i * 0.04, i, a)     # 20 in the second
+        for i in range(1, 16):
+            note_at(svc, 100.0 + i * 0.05, i, b)     # 15 in the second
         self.assertEqual(svc._sample_aggregate(now=101.0)[0], 35.0)
-        # the next second only counts what is new
-        svc._note(25, [], st=a[0], rate=a[1])
-        self.assertEqual(svc._sample_aggregate(now=102.0)[0], 5.0)
 
     def test_a_restarted_count_never_goes_negative(self):
         svc = service()
         st = {"generated": 0}
-        svc._sample_aggregate(now=100.0)
-        svc._note(10, [], st=st, rate=[])
-        svc._note(3, [], st=st, rate=[])       # a retry from token 0
+        note_at(svc, 100.5, 10, st)
+        note_at(svc, 100.6, 3, st)                   # a retry from token 0
         self.assertEqual(svc._sample_aggregate(now=101.0)[0], 10.0)
 
-    def test_divides_by_the_real_interval(self):
+    def test_off_records_nothing(self):
         svc = service()
-        svc._sample_aggregate(now=100.0)
-        svc._note(40, [], st={"generated": 0}, rate=[])
-        self.assertEqual(svc._sample_aggregate(now=102.0)[0], 20.0)
+        svc.monitor_aggregate = False
+        note_at(svc, 100.5, 10, {"generated": 0})
+        self.assertEqual(len(svc._decoded), 0)
+
+    def test_held_until_zero_for_three_seconds(self):
+        svc = service()
+        note_at(svc, 100.5, 30, {"generated": 0})
+        self.assertEqual(svc._sample_aggregate(now=101.0)[0], 30.0)
+        self.assertEqual(svc._sample_aggregate(now=102.0)[0], 30.0)   # 0 for 1 s: still shown
+        self.assertEqual(svc._sample_aggregate(now=103.0)[0], 30.0)
+        self.assertEqual(svc._sample_aggregate(now=104.0)[0], 0.0)    # 0 for 3 s: 0
 
     def test_telemetry_series_and_live_fields(self):
         svc = service()
@@ -101,65 +114,43 @@ class PrefillCount(unittest.TestCase):
         e._count_pp("PP 10 20 x y".split())
         self.assertEqual(e.prefill_read_total, 0)
 
-    def test_service_sums_engine_counts(self):
-        svc = service()
-        svc.engine.prefill_read_total = 0
-        svc._sample_aggregate(now=100.0)
-        svc.engine.prefill_read_total = 3000
-        self.assertEqual(svc._sample_aggregate(now=101.0)[1], 3000.0)
 
+class PrefillNow(unittest.TestCase):
+    """Prefill is each reading engine's latest chunk speed, never a chunk's tokens dumped into one second."""
 
-class HeldUntilReallyZero(unittest.TestCase):
-    """A rate stays on the Monitor until it has been 0 for AGG_HOLD_S seconds; prefill, which lands a whole chunk
-    at a time, stays up for as long as a prompt is still being read."""
+    def setUp(self):
+        self.svc = service()
+        self.e = StrataEngine("missing-executable", [], lazy=True)
+        self.e._pp_seen, self.e.prefill_now = (0.0, 0), None
+        self.svc.engine = mock.Mock(engines=[self.e])
 
-    def reading(self, svc, on):
-        svc.status.update(busy=on, first_token=None if on else 1.0)
+    def test_a_4_s_chunk_at_1800_reads_1800_not_7200(self):
+        pp_at(self.e, 104.0, 7200, 60000, 4000, 1800.0)
+        self.assertEqual(self.svc._sample_aggregate(now=104.5)[1], 1800.0)
 
-    def test_decode_holds_through_a_short_gap_then_drops(self):
-        svc = service()
-        st = {"generated": 0}
-        svc._sample_aggregate(now=100.0)
-        svc._note(30, [], st=st, rate=[])
-        self.assertEqual(svc._sample_aggregate(now=101.0)[0], 30.0)
-        self.assertEqual(svc._sample_aggregate(now=102.0)[0], 30.0)   # 1 s of nothing: still shown
-        self.assertEqual(svc._sample_aggregate(now=103.0)[0], 30.0)
-        self.assertEqual(svc._sample_aggregate(now=104.0)[0], 0.0)    # 3 s of nothing: 0
+    def test_the_chunk_speed_not_the_prompt_average(self):
+        pp_at(self.e, 104.0, 8000, 60000, 4000, 2000.0)      # 8,000 in 4 s
+        pp_at(self.e, 112.0, 16000, 60000, 12000, 16000 / 12)  # the next 8,000 took 8 s: 1,000 tok/s now
+        self.assertEqual(self.svc._sample_aggregate(now=112.5)[1], 1000.0)
 
-    def test_prefill_is_the_chunk_over_its_read_time_and_stays_up_between_chunks(self):
-        svc = service()
-        svc.engine.prefill_read_total = 0
-        svc._sample_aggregate(now=100.0)
-        self.reading(svc, True)
-        for t in range(101, 108):                                     # the first chunk is being read: no count yet
-            self.assertEqual(svc._sample_aggregate(now=float(t))[1], 0.0)
-        svc.engine.prefill_read_total = 8192
-        self.assertEqual(svc._sample_aggregate(now=108.0)[1], 1024.0)  # 8,192 tokens over the 8 s since reading began
-        for t in range(109, 125):                                     # the next chunk: 16 s, and the value stays up
-            self.assertEqual(svc._sample_aggregate(now=float(t))[1], 1024.0)
-        svc.engine.prefill_read_total = 16384
-        self.assertEqual(svc._sample_aggregate(now=125.0)[1], 481.9)   # 8,192 over 17 s
-        self.reading(svc, False)                                      # the first token: reading is over
-        self.assertEqual(svc._sample_aggregate(now=126.0)[1], 481.9)
-        self.assertEqual(svc._sample_aggregate(now=127.0)[1], 481.9)
-        self.assertEqual(svc._sample_aggregate(now=128.0)[1], 0.0)
+    def test_stays_up_between_chunks_while_reading(self):
+        pp_at(self.e, 104.0, 7200, 60000, 4000, 1800.0)
+        for t in (105.0, 106.0, 107.0, 109.9):                 # the next chunk is due by 110 s
+            self.assertEqual(self.svc._sample_aggregate(now=t)[1], 1800.0)
 
-    def test_streams_reading_together_add_up(self):
-        svc = service()
-        svc.engine.prefill_read_total = 0
-        svc._sample_aggregate(now=100.0)
-        self.reading(svc, True)
-        svc.engine.prefill_read_total = 8192                          # stream A's chunk after 4 s
-        svc._sample_aggregate(now=104.0)
-        svc.engine.prefill_read_total = 16384                         # stream B's 2 s later
-        self.assertEqual(svc._sample_aggregate(now=106.0)[1], 4096.0)
+    def test_drops_after_the_last_chunk(self):
+        pp_at(self.e, 104.0, 7200, 7200, 4000, 1800.0)        # the prompt is fully read
+        self.assertEqual(self.svc._sample_aggregate(now=104.5)[1], 1800.0)
+        self.assertEqual(self.svc._sample_aggregate(now=106.0)[1], 1800.0)   # held
+        self.assertEqual(self.svc._sample_aggregate(now=108.0)[1], 0.0)
 
-    def test_a_short_prompt_read_inside_one_second(self):
-        svc = service()
-        svc.engine.prefill_read_total = 0
-        svc._sample_aggregate(now=100.0)
-        svc.engine.prefill_read_total = 500
-        self.assertEqual(svc._sample_aggregate(now=101.0)[1], 500.0)
+    def test_engines_reading_together_add_up(self):
+        other = StrataEngine("missing-executable", [], lazy=True)
+        other._pp_seen, other.prefill_now = (0.0, 0), None
+        self.svc.engine = mock.Mock(engines=[self.e, other])
+        pp_at(self.e, 104.0, 3600, 60000, 4000, 900.0)
+        pp_at(other, 104.5, 4000, 60000, 4000, 1000.0)
+        self.assertEqual(self.svc._sample_aggregate(now=105.0)[1], 1900.0)
 
 
 if __name__ == "__main__":
