@@ -933,6 +933,7 @@ struct Options {
     bool draft_auto = false;
     std::string draft_rule = "df2";   ///< --draft-rule df2|mtp|learn: what a request without a draft= key gets
     int draft_mtp_spec = 4;   ///< --draft-mtp-spec N: the widest window of a request that drafts with the MTP layer under --draft auto
+    bool draft_mtp_spec_set = false;   ///< --draft-mtp-spec was given: it is also the window the MTP runs when --draft dflash2 falls back to it (the wider --spec was for DFlash2)
     double draft_mtp_min_p = -1.0;   ///< --draft-mtp-min-p P: the MTP requests' --spec-min-p under --draft auto (-1 = --spec-min-p)
     int draft_cap = 0;   ///< --draft-cap N: the widest verify window with --draft dflash2 (0 = by card class, see where the drafter loads)
     /// A control vector on the residual stream (strata/kernels/cvec.hpp), with llama.cpp's flags: the
@@ -3504,7 +3505,7 @@ int main(int argc, char** argv) {
             }
         }
         else if (a == "--draft-rule") o.draft_rule = next("--draft-rule");
-        else if (a == "--draft-mtp-spec") o.draft_mtp_spec = std::max(2, std::atoi(next("--draft-mtp-spec")));
+        else if (a == "--draft-mtp-spec") { o.draft_mtp_spec = std::max(2, std::atoi(next("--draft-mtp-spec"))); o.draft_mtp_spec_set = true; }
         else if (a == "--draft-mtp-min-p") o.draft_mtp_min_p = std::clamp(std::atof(next("--draft-mtp-min-p")), 0.0, 1.0);
         else if (a == "--draft-model") o.draft_model = next("--draft-model");
         else if (a == "--draft-conf") o.draft_conf = std::clamp(std::atof(next("--draft-conf")), 0.0, 1.0);
@@ -6608,6 +6609,8 @@ int main(int argc, char** argv) {
             } else {
                 std::fprintf(stderr, "strata generate: --draft dflash2 is off: %s; the MTP drafts instead\n", why);
             }
+            // DFlash2 did not start: the MTP drafts, with its own window (the wider --spec was DFlash2's), when --draft-mtp-spec names it
+            if (!use_df2 && o.draft_mtp_spec_set && o.spec > o.draft_mtp_spec) o.spec = o.draft_mtp_spec;
         }
 #endif
         if (batch_mtp) {
@@ -10601,6 +10604,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (the pack 0.76 GiB, buffers and K/V ring 0.25 GiB, "
                                      "a draft head 0.2 GiB, 0.1 GiB of prompt staging); --vram-reserve-mib 1900 keeps it. The MTP drafts instead.\n", why_not.c_str());
                 use_df2 = false;
+                if (o.draft_mtp_spec_set && o.spec > o.draft_mtp_spec) o.spec = o.draft_mtp_spec;   // the MTP drafts with its own window, not DFlash2's
             } else {
                 sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { return df2.context(taps, rows, pos0, e); };
                 std::fprintf(stderr, "strata serve: DFlash2 drafter on (%s, graphs captured in %.0f ms); windows up to %d tokens; the MTP layer stays as the fallback\n",
@@ -18831,6 +18835,7 @@ int main(int argc, char** argv) {
             use_df2 = false;
         }
         if (use_df2) std::fprintf(stderr, "strata generate: DFlash2 drafter on (%s, graphs captured in %.0f ms), the MTP layer stays as the fallback\n", o.draft_model.c_str(), df2.ms_capture);
+        else if (o.draft == "dflash2" && o.draft_mtp_spec_set && o.spec > o.draft_mtp_spec) o.spec = o.draft_mtp_spec;   // fell back: the MTP's own window
 #endif
         mem_mark("the verifier and the drafter's binding");
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here

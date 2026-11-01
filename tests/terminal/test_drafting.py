@@ -175,11 +175,49 @@ class EngineArguments(unittest.TestCase):
             d = drafting.apply(c, klass="blackwell", data_dir=self.data)
         self.assertEqual(d.drafter, "dflash2")
         spec_at = self.ARGS.index("--spec")
-        self.assertEqual(c["args"], [*self.ARGS[:spec_at], *self.ARGS[spec_at + 2:], "--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35"],
-                         "the MTP window of 4 gives way to DFlash2's 6; the MTP's own arguments stay")
+        self.assertEqual(c["args"], [*self.ARGS[:spec_at], *self.ARGS[spec_at + 2:], "--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35", "--draft-mtp-spec", "4"],
+                         "the MTP window of 4 gives way to DFlash2's 6 (and is named for the fallback); the MTP's own arguments stay")
         self.assertEqual(c["args"].count("--draft"), 1)
         self.assertEqual(c["args"].count("--spec"), 1)
         self.assertIn("--mtp", c["args"], "the MTP stays as the fallback the engine names")
+
+    def test_a_fallback_to_the_mtp_keeps_the_mtps_own_window(self):
+        """DFlash2 starts with --spec 6; when the engine falls back to the MTP the window must be the MTP's usual one, named with --draft-mtp-spec."""
+        pack = drafting.pack_path(self.data)
+        pack.parent.mkdir(parents=True)
+        pack.write_bytes(b"x" * (2 << 20))
+        with serving_dflash2():
+            c = self.cfg(drafting="dflash2")
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            args = c["args"]
+            self.assertEqual(args[args.index("--draft-mtp-spec") + 1], "4", "the window the config had for the MTP")
+            self.assertEqual(args[args.index("--spec") + 1], "6")
+            # a config whose MTP window is 3 (a Mac preset) falls back to 3, and one with no window to the usual 4
+            c = self.cfg(drafting="dflash2", args=[a if a != "4" else "3" for a in self.ARGS])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertEqual(c["args"][c["args"].index("--draft-mtp-spec") + 1], "3")
+            c = self.cfg(drafting="dflash2", args=[a for i, a in enumerate(self.ARGS) if i not in (self.ARGS.index("--spec"), self.ARGS.index("--spec") + 1)])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertEqual(c["args"][c["args"].index("--draft-mtp-spec") + 1], str(drafting.MTP_WINDOW))
+            # a window the person typed by hand is theirs: DFlash2 and the fallback both run it, nothing is added
+            c = self.cfg(drafting="dflash2", args=[*self.ARGS[:self.ARGS.index("--spec")], "--spec", "5"], user_args=["--spec", "5"])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertNotIn("--draft-mtp-spec", c["args"])
+            self.assertEqual(c["args"][c["args"].index("--spec") + 1], "5")
+            # a --draft-mtp-spec the person typed stays as typed
+            c = self.cfg(drafting="dflash2", args=[*self.ARGS, "--draft-mtp-spec", "2"], user_args=["--draft-mtp-spec", "2"])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertEqual((c["args"].count("--draft-mtp-spec"), c["args"][c["args"].index("--draft-mtp-spec") + 1]), (1, "2"))
+        # choosing the MTP again leaves no trace of it
+        c = self.cfg(drafting="mtp", args=[*self.ARGS, "--draft", "dflash2", "--draft-model", "/p", "--draft-mtp-spec", "4"])
+        drafting.apply(c, klass="blackwell", data_dir=self.data)
+        self.assertEqual(c["args"], self.ARGS)
+
+    def test_the_engine_uses_the_named_window_when_dflash2_falls_back(self):
+        """The engine side (src/program/generate.cpp): the flag marks itself as given, and each place DFlash2 falls back to the MTP applies it."""
+        src = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8")
+        self.assertIn("o.draft_mtp_spec_set = true", src)
+        self.assertEqual(src.count("o.spec = o.draft_mtp_spec;"), 3, "the CLI start, the CLI loop and serve")
 
     def test_mtp_removes_a_drafter_that_was_written_by_hand(self):
         c = self.cfg(drafting="mtp", args=[*self.ARGS, "--draft", "dflash2", "--draft-model", "/p"])
@@ -208,7 +246,7 @@ class EngineArguments(unittest.TestCase):
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), serving_dflash2(), \
                 mock.patch.object(drafting, "pack_ready", return_value=True), mock.patch.object(drafting, "data_dir_of", return_value=Path("/d")):
             args = engine_args(self.cfg(drafting="dflash2"))
-            self.assertEqual(args[-8:], ["--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35"])
+            self.assertEqual(args[-10:], ["--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35", "--draft-mtp-spec", "4"])
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
             self.assertEqual(engine_args(self.cfg()), self.ARGS, "no choice: nothing changes")
             off = engine_args(self.cfg(drafting="off"))

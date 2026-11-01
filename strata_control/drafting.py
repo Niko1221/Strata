@@ -166,6 +166,7 @@ PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"
 VRAM_GB = 1.2                # what the drafter needs in graphics memory (the engine's own estimate)
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
 SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
+MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
 DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this
 
 #: model families (strata launch --family) the drafter was trained for and measured on: Qwen3.8-Flash-Next and its Gyro build.
@@ -275,11 +276,11 @@ def needs_pack(mode: Any, *, klass: str, model_name: str | None = None, family: 
     return want == "dflash2" and ENGINE_SERVES_DFLASH2 and supported_model(model_name, family) and not pack_ready(data_dir)
 
 
-DRAFT_FLAGS = {"--draft": True, "--draft-model": True, "--draft-conf": True}
+DRAFT_FLAGS = {"--draft": True, "--draft-model": True, "--draft-conf": True, "--draft-mtp-spec": True}
 
 
 def strip_draft_flags(args: list[Any]) -> list[str]:
-    """The arguments without ``--draft`` / ``--draft-model`` / ``--draft-conf`` (and their values)."""
+    """The arguments without ``--draft`` / ``--draft-model`` / ``--draft-conf`` / ``--draft-mtp-spec`` (and their values)."""
     out: list[str] = []
     items = [str(a) for a in args]
     i = 0
@@ -344,7 +345,12 @@ def apply(cfg: dict[str, Any], *, klass: str, data_dir: str | Path | None = None
             if kept_conf is not None:
                 flags[flags.index("--draft-conf") + 1] = kept_conf
             if _flag_value(mine, "--spec") is None:
-                args = _without_flag(args, "--spec")          # the person's own --spec stays; otherwise the window is the DFlash2 one
+                # The person's own --spec stays; otherwise the window is the DFlash2 one. If the engine then falls back to the MTP (the card is too
+                # full for the drafter), the MTP must run its usual window, not DFlash2's: --draft-mtp-spec names it (the engine uses it for that).
+                mtp_window = _flag_value(args, "--spec")
+                args = _without_flag(args, "--spec")
+                kept_window = _flag_value(mine, "--draft-mtp-spec")
+                flags += ["--draft-mtp-spec", kept_window if kept_window is not None else mtp_window if (mtp_window or "").isdigit() and int(mtp_window) >= 2 else str(MTP_WINDOW)]
             else:
                 i = flags.index("--spec")
                 del flags[i:i + 2]
