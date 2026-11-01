@@ -2954,6 +2954,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
+    double yield_ms = 0.0;
     const int64_t LB = stage_lb_, LE = stage_le_;
     // STRATA_KVA: the approximate-prefix plan of this run, if it qualifies (a cold read of one long prompt, one
     // stage, no capture).  Positions [0, kva_frontier) are approximated in the layers at and after the split.
@@ -3175,6 +3176,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
         const auto tsetup = Clock::now();
+        auto t_slice = tsetup;
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr && hand_ev_ != nullptr) {
@@ -5664,6 +5666,23 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 }
 #endif
             }
+            if (on_layer_yield && on_layer_yield_every > 0 && hand_in_ == nullptr && next_ == nullptr &&
+                l + 1 < LE && ((l + 1 - LB) % on_layer_yield_every) == 0) {
+                pt.mark(kPfHcWrite, cs);
+                if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
+                    err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
+                    return false;
+                }
+                pt.fold();
+                pt.used = 0;
+                const auto t_y0 = Clock::now();
+                const double slice_ms = std::chrono::duration<double, std::milli>(t_y0 - t_slice).count();
+                if (!on_layer_yield(l + 1 - LB, LE - LB, T, slice_ms, err)) return false;
+                const auto t_y1 = Clock::now();
+                yield_ms += std::chrono::duration<double, std::milli>(t_y1 - t_y0).count();
+                t_slice = t_y1;
+                pt.mark(normed ? kPfGdn : kPfHc, cs);
+            }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
         if (issuer.joinable()) {
@@ -5822,7 +5841,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         std::fprintf(stderr, "strata KV prefetch: %lld layer prefixes, single existing staging pool\n",
                      (long long) kv_prefetches);
     }
-    stats_.ms_total += ms_since(t_start);
+    stats_.ms_total += std::max(0.0, ms_since(t_start) - yield_ms);
     {
         static const bool f16_range = std::getenv("STRATA_F16_RANGE") != nullptr;
         float xm = 0.0f, wy[2] = {0.0f, 0.0f}; unsigned long long xo = 0, wyo[2] = {0, 0};

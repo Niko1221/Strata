@@ -205,6 +205,13 @@ public:
     /// mid-prompt checkpoint takes each stage's part.  Runs on that stage's thread, with its device current.
     std::function<bool(int64_t done, std::string& err)> on_stage_chunk;
 
+    /// Single-stage prefill (`hand_in_ == nullptr && next_ == nullptr`): called every `on_layer_yield_every`
+    /// layers (`layer_done` in `1 .. n_layers - 1`) after synchronizing `m.cs`, with the wall time `slice_ms`
+    /// elapsed on this chunk since the start of the chunk or the previous layer yield.  Time spent inside
+    /// `on_layer_yield` is excluded from `stats().ms_total`.
+    int on_layer_yield_every = 0;
+    std::function<bool(int64_t layer_done, int64_t n_layers, int64_t chunk_tokens, double slice_ms, std::string& err)> on_layer_yield;
+
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
     /// The first stage only, checked before every chunk but the first: true ends the run there as if the prompt

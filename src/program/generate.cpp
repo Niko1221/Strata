@@ -16630,12 +16630,68 @@ int main(int argc, char** argv) {
                     }
                 }
                 int64_t piece = piece_now();
+                static const int batch_prefill_layer_yield = [] {
+                    const char* v = std::getenv("STRATA_BATCH_PREFILL_LAYER_YIELD");
+                    return v != nullptr ? std::max(0, std::atoi(v)) : 16;
+                }();
+                double layer_decode_ms = 0.0;
+                double layer_prefill_accounted_ms = 0.0;
+                struct LayerYieldGuard {
+                    strata::prefill::Prefill& p;
+                    ~LayerYieldGuard() {
+                        p.on_layer_yield_every = 0;
+                        p.on_layer_yield = nullptr;
+                    }
+                } ly_guard{sp};
+                if (batch_prefill_layer_yield > 0 && o.batch > 0 && stages.empty() && !pr_conc) {
+                    sp.on_layer_yield_every = batch_prefill_layer_yield;
+                    sp.on_layer_yield = [&](int64_t layer_done, int64_t n_layers, int64_t chunk_tokens,
+                                            double slice_ms, std::string& le) -> bool {
+                        if (chunk_tokens < 512 || layer_done <= 0 || layer_done >= n_layers) return true;
+                        const double step_share = eff_decode_share();
+                        if (step_share <= 0.0 || !batch_on()) return true;
+                        layer_prefill_accounted_ms += slice_ms;
+                        const double budget = step_share * slice_ms;
+                        const auto td = Clock::now();
+                        if (pr_on) {
+                            const double pb =
+                                strata::program::piped_decode_budget_ms(slice_ms, step_share, pr_cap, pr_floor);
+                            if (!piped_decode(pb, le)) return false;
+                            layer_decode_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+                            return true;
+                        }
+                        in_prompt_read = true;
+                        do {
+                            if (!batch_step()) {
+                                in_prompt_read = false;
+                                batch_fatal = true;
+                                le = "a batch window failed";
+                                return false;
+                            }
+                        } while (batch_on() &&
+                                 std::chrono::duration<double, std::milli>(Clock::now() - td).count() < budget);
+                        in_prompt_read = false;
+                        if (!settle_mtp_drafts(le)) {
+                            batch_fatal = true;
+                            return false;
+                        }
+                        const double d_ms = std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+                        layer_decode_ms += d_ms;
+                        ++il_parts;
+                        il_ms += d_ms;
+                        return true;
+                    };
+                }
                 if (piece <= 0) return run(a0, b0);
                 for (int64_t q = a0; q < b0;) {
                     const int64_t r = std::min(b0, q + piece);
+                    layer_decode_ms = 0.0;
+                    layer_prefill_accounted_ms = 0.0;
                     const auto tq = Clock::now();
                     if (!run_conc(q, r)) return false;
-                    const double piece_ms = std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
+                    const double raw_ms = std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
+                    const double piece_ms = std::max(0.0, raw_ms - layer_decode_ms);
+                    const double rem_piece_ms = std::max(0.0, piece_ms - layer_prefill_accounted_ms);
                     if (pr_on && r < b0) pr_prev_piece_ms = piece_ms;
                     if (!piped && o.batch > 0) pr_prev_piece_ms = piece_ms;
                     const int64_t piece_tokens = r - q;
@@ -16668,7 +16724,7 @@ int main(int argc, char** argv) {
                             continue;
                         }
                         const double budget =
-                            strata::program::piped_decode_budget_ms(piece_ms, step_share, pr_cap, pr_floor);
+                            strata::program::piped_decode_budget_ms(rem_piece_ms, step_share, pr_cap, pr_floor);
                         const int64_t rows0 = pipe_rows;
                         const auto td = Clock::now();
                         if (!piped_decode(budget, e)) return false;
@@ -16679,7 +16735,7 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     if (step_share <= 0.0 || !batch_on()) continue;
-                    const double budget = step_share * std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
+                    const double budget = step_share * rem_piece_ms;
                     const auto td = Clock::now();
                     in_prompt_read = true;
                     do {
