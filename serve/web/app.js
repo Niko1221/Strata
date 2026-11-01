@@ -464,13 +464,20 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("state-bar").style.width = `${pct}%`;
 
   // the eight cards
-  const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
-  setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
-  const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
-                : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
-  setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+  if (live.rates === "aggregate") {
+    // --monitor-aggregate: the last second's tokens, summed over every running stream
+    const streams = live.running > 1 ? ` · ${fmt(live.running)} streams` : "";
+    setMetric("speed", fmt(live.agg_tok_s || 0, 1), "t/s", `Decode, all streams, per second${streams}`);
+    setMetric("prefill", fmt(live.agg_prefill_tok_s || 0), "t/s", `Prefill, all streams, per second${streams}`);
+  } else {
+    const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
+    setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
+              live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
+    const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
+                  : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
+    setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
+              live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+  }
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own

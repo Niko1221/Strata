@@ -1034,6 +1034,8 @@ class StrataEngine:
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
+        self.prefill_read_total = 0      # fresh prompt tokens read since start, every stream (--monitor-aggregate)
+        self._pp_seen = (0.0, 0)         # this prompt's last PP (ms, fresh tokens), so each line adds only what is new
         self.silent_note = None
         self.last_err = None
         try:                            # a ready-made engine's BUILD.json says its version
@@ -1578,6 +1580,7 @@ class StrataEngine:
                     self.progress = (int(f[1]), int(f[2]))
                     self.progress_ms = float(f[3]) if len(f) >= 4 else 0.0
                     self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                    self._count_pp(f)
                 if not stopped and cancel.is_set():
                     # #879: a Stop during the prompt read went out only after the first token (or after 10 s of
                     # silence, which a stream of PP lines never allows): the engine read the whole prompt first
@@ -1888,6 +1891,24 @@ class StrataEngine:
         with self.slot_cv:
             return any(e[0] * 2 <= plen for e in self.wait_lens)
 
+    def _count_pp(self, f):
+        """Add a PP line's newly read prompt tokens to prefill_read_total.  PP's first field is the position reached,
+        which includes a reused prefix; ms x fresh tok/s is what this prompt has actually read so far, so the cached
+        part is never counted.  A smaller ms than the last line's means a new prompt began."""
+        if len(f) < 5:
+            return
+        try:
+            ms, rate = float(f[3]), float(f[4])
+        except ValueError:
+            return
+        fresh = int(round(ms * rate / 1000.0))
+        last_ms, last = getattr(self, "_pp_seen", (0.0, 0))
+        if ms < last_ms:
+            last = 0
+        if fresh > last:
+            self.prefill_read_total = getattr(self, "prefill_read_total", 0) + fresh - last
+        self._pp_seen = (ms, max(fresh, last))
+
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
         - and when another request arrives meanwhile, this one is STOPped and continues in a batch slot (BGEN with
@@ -1900,6 +1921,7 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress, self.progress_ms, self.reused = None, 0, 0
+        self._pp_seen = (0.0, 0)
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
         # logprobs: only an admission's token can have an LP line here (the slot's "BT" lines carry none), so the
@@ -2085,6 +2107,7 @@ class StrataEngine:
                         started()
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
                     phase = "admit"
+                    self._pp_seen = (0.0, 0)                # a new prompt: its PP lines count from zero
                     self._ctl_mode, self._ctl_result, self._yielded = "batch", None, None
                     self._ctl_erred = False
                     asked = False
@@ -2335,6 +2358,7 @@ class StrataEngine:
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
         self.progress, self.progress_ms, self.reused = None, 0, 0
+        self._pp_seen = (0.0, 0)
         self.prefill_tok_s_mean = None
         # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same
         # flush), read here before the token is yielded, so whoever takes the token finds its line in
@@ -2421,6 +2445,7 @@ class StrataEngine:
                         self.progress = (int(f[1]), int(f[2]))             # prompt progress, one per chunk: also a heartbeat (the
                         self.progress_ms = float(f[3]) if len(f) >= 4 else 0.0
                         self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                        self._count_pp(f)
                         rate, chunk = self.prefill_tok_s_mean or 0.0, int(f[1]) - read_to
                         read_to = int(f[1])
                         if silence > 0 and rate > 0 and chunk > 0:   # #481: the next chunk, as long as this one
@@ -4230,6 +4255,11 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
+        # --monitor-aggregate: the Monitor's speed and prefill become tokens per second summed over every stream
+        self.monitor_aggregate = False
+        self.decoded_total = 0                          # tokens generated since start, every stream
+        self._agg_prev = None                           # (time, decoded, prefilled) at the last telemetry sample
+        self._agg_rates = (0.0, 0.0)                    # the last whole second's (decode, prefill) tok/s
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -4875,8 +4905,7 @@ class Service:
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
-            self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
-                                                    "prefill_tok_s_mean": self._prefill_tok_s_mean()},
+            self.telemetry = Telemetry(extra=self._telemetry_extra,
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
@@ -4884,6 +4913,31 @@ class Service:
                 # #1317: the quick frozen-engine check does not end an engine whose GPU is busy (a long prompt chunk on a
                 # slow card keeps the GPU at work while the host thread sleeps)
                 self.engine.gpu_busy = lambda: (self.telemetry.snapshot()["now"].get("gpu_util") or 0) >= 10
+
+    def _telemetry_extra(self):
+        """The server's series for the sampler, once a second.  With --monitor-aggregate, tok_s and
+        prefill_tok_s_mean are the tokens generated and read in the last second, summed over every stream."""
+        if self.monitor_aggregate:
+            dec, pre = self._sample_aggregate()
+            return {"tok_s": dec, "tok_s_mean": self._tok_s_mean(), "prefill_tok_s_mean": pre}
+        return {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(), "prefill_tok_s_mean": self._prefill_tok_s_mean()}
+
+    def _prefill_read_total(self):
+        engines = getattr(self.engine, "engines", None) or [self.engine]   # replicas: every engine's
+        return sum(int(getattr(e, "prefill_read_total", 0) or 0) for e in engines if e is not None)
+
+    def _sample_aggregate(self, now=None):
+        """Tokens decoded and prompt tokens read since the last call, per second, over every stream."""
+        now = time.time() if now is None else now
+        with self.status_lock:
+            dec = self.decoded_total
+        pre = self._prefill_read_total()
+        prev, self._agg_prev = self._agg_prev, (now, dec, pre)
+        if prev is None or now <= prev[0]:
+            return self._agg_rates
+        dt = now - prev[0]
+        self._agg_rates = (round(max(0, dec - prev[1]) / dt, 1), round(max(0, pre - prev[2]) / dt, 1))
+        return self._agg_rates
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -4980,6 +5034,8 @@ class Service:
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
                 "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
+        if self.monitor_aggregate:   # the sampler's last whole second, every stream summed
+            live.update(rates="aggregate", agg_tok_s=self._agg_rates[0], agg_prefill_tok_s=self._agg_rates[1])
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
         par = int(getattr(self.engine, "batch", 0) or 0)
@@ -5422,6 +5478,7 @@ class Service:
     def _note(self, n, evs, st=None, rate=None):
         with self.status_lock:
             s = self.status if st is None else st
+            self.decoded_total += max(0, n - (s.get("generated") or 0))
             s["generated"] = n
             if s.get("first_token") is None:
                 s["first_token"] = time.time()
@@ -9023,6 +9080,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--monitor-aggregate", action="store_true",
+                    help="the Monitor's speed and prefill show tokens per second summed over every running stream, "
+                         "second by second, instead of one request's rate (also \"monitor_aggregate\": true in the "
+                         "config)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -9385,6 +9446,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
               else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
+    svc.monitor_aggregate = a.monitor_aggregate or cfg.get("monitor_aggregate") is True
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),
