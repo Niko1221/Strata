@@ -7157,7 +7157,7 @@ textarea {
 .tool-summary > div { margin-top: 6px; padding-left: 20px; }
 
 /* ---- the live status line ---- */
-.live-status { display: grid; grid-template-columns: 14px minmax(0, 32ch) 6ch minmax(0, auto); align-items: center; column-gap: 10px; min-height: 28px; margin-top: 6px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+.live-status { display: grid; grid-template-columns: 14px minmax(0, 24ch) 6ch minmax(0, auto); align-items: center; column-gap: 10px; min-height: 28px; margin-top: 6px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
 /* the word has its own area: the timer and the token count stay where they are while the word changes length */
 .live-status__verb { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .live-status__time, .live-status__tokens { font-variant-numeric: tabular-nums; color: var(--st-ink-muted); white-space: nowrap; }

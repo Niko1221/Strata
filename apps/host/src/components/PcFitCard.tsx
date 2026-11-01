@@ -38,6 +38,7 @@ export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = 
     {tr(isLoaded && streamed >= 1 && live?.diskReadGbs && live.diskReadGbs >= 0.05 ? <p className="pc-note">{tr("Reading from your SSD now: {0}", [`${live.diskReadGbs.toFixed(1)} GB/s`])}</p> : null)}
     {tr(inUse ? <p className="xs muted">{tr("Models that stay loaded use about {0} GB of RAM and {1} GB of this card’s memory.", [inUse.ramGb, inUse.vramGb])}</p> : null)}
     {tr(showFit && !isLoaded && fit!.vramUseGb + fit!.ramUseGb > 0 ? <p className="pc-note">{tr("This version would take about {0} of graphics memory and {1} of RAM.", [about(fit!.vramUseGb), about(fit!.ramUseGb)])}</p> : null)}
+    {tr(showFit && diskGb && fit!.spillGb >= 1 ? <p className="pc-note">{tr("About {0} GB will be read from the SSD, so answers can be a little slower.", [Math.round(fit!.spillGb)])}</p> : null)}
     {tr(diskGb ? <p className="pc-note">{tr("Needs about {0} GB of free disk space. What does not fit in memory is read from your SSD.", [Math.round(diskGb)])}</p> : null)}
   </section>;
 }

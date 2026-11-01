@@ -41,10 +41,10 @@ test('a DeepSeek card that does spill keeps its spill line beside the disk line'
 
 test('every other model keeps its card as it was', () => {
   setTranslationLanguage('en');
-  assert.match(card({ fit: fit(0) }), /Fits fully in memory\./);
-  assert.match(card({ fit: fit(0), diskGb: null }), /Fits fully in memory\./);
+  // Owner, 11-01: no "Fits" words, and the SSD warning is said once, under the version picker (a DeepSeek card keeps its own line above).
+  assert.doesNotMatch(card({ fit: fit(0) }), /Fits fully in memory\./);
   assert.doesNotMatch(card({ fit: fit(0) }), /free disk space/);
-  assert.match(card({ fit: fit(30) }), /About 30 GB will be read from the SSD/);
+  assert.doesNotMatch(card({ fit: fit(30) }), /read from the SSD/);
 });
 
 test('the words are in all eight languages with the same slots', () => {
