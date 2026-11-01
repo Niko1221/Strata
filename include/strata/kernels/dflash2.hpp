@@ -56,7 +56,8 @@ void df2_rope_table_inv(const int32_t* pos, int rows, const double* inv, float* 
 void df2_gemm_variant(int v);
 /// Bench only: attention variants (bit 0 skips Q K^T, bit 1 skips P V).
 void df2_attention_variant(int v);
-struct Df2Mat { const void* w; float* y; int n_out; };
+/// q4: the weights are the Q4_0 nibble plane (n_out * n_in / 2 bytes, see gemm4_kernel in dflash2.cu) then the fp16 scale plane (df2_q4_tile); all matrices of a launch share the format.
+struct Df2Mat { const void* w; float* y; int n_out; bool q4 = false; };
 void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_in, int ncols, void* stream);
 /// Planar quantization of rows x[ncols][K].
 void df2_quant_rows(const float* x, int K, int ncols, void* xq, float* xd, void* stream);
@@ -68,6 +69,8 @@ void df2_conv_quant(const float* x, const float* dyn, int dyn_stride, const floa
 void df2_swiglu_quant(const float* gate, const float* up, int rows, int I, void* xq, float* xd, void* stream);
 /// GGUF Q8_0 blocks (34 bytes) of a matrix with rows of n_in -> the tiled qs plane and the tiled d plane (count = rows * n_in / 32 blocks).
 void df2_q8_tile(const void* blocks, void* qs, void* dpl, int n_in, int64_t count, void* stream);
+/// ggml Q4_0 blocks (18 bytes) of a matrix with rows of n_in -> the tiled nibble plane (n_out * n_in / 2 bytes) and the tiled d plane (Df2Mat::q4).
+void df2_q4_tile(const void* blocks, void* qs, void* dpl, int n_in, int64_t count, void* stream);
 
 /// h += conv(x) (the finish convolution with the residual), then the RMS norm of the new h (weights gamma) -> xn (optional) and the planar quantization.
 /// rows <= 8, H <= 3072 (H a multiple of 32).

@@ -110,6 +110,7 @@ private:
     std::vector<Tensor> tensors_;
     uint8_t* blob_ = nullptr;
     uint64_t vram_ = 0;
+    bool q4_ = false;   // the pack's matrices are Q4_0 (tools/dflash2_pack.py --q4_0)
     int N_ = 2560, L_ = 5, NH_ = 32, NKV_ = 8, HD_ = 128, I_ = 7680, window_ = 2048, group_ = 16, rank_ = 256, mask_token_ = 0;
     float theta_ = 10000.0f, eps_ = 1e-6f;
     std::vector<int> taps_;

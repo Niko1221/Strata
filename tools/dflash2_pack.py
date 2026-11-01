@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Pack the incoai DFlash2 drafter for Qwen3.8-Flash-Next (safetensors) into the engine's runtime file.
 
-    python tools/dflash2_pack.py model.safetensors config.json out.pack [--bf16]
+    python tools/dflash2_pack.py model.safetensors config.json out.pack [--q4_0]
 
 Format (little endian): "DF2P", u32 version (1), u32 index_len, a text index (padded with spaces so the data starts on a 4096 multiple), then
 the tensors, each 256-byte aligned at its offset (from the end of the index).  Index lines: "cfg <key> <value>", "t <name> <dtype> <rows>
 <cols> <offset> <bytes>" (a matrix [out][in] is rows x cols; a vector or codebook row set is the leading dims folded into rows), "end".
 dtypes: "q8_0" (ggml Q8_0 blocks, 34 bytes per 32 values, rows of the weight matrix [out][in] one after the other: what the engine's
-multi-column MMVQ reads), "f32" (norms, the two conv base kernels), "bf16" (the selector's two codebooks: only gathered rows are read).
+multi-column MMVQ reads), "f32" (norms, the two conv base kernels), "q4_0" (--q4_0: ggml Q4_0 blocks, 18 bytes per 32 values, the matrices only; the engine tiles them like Q8_0, see gemm4_kernel in
+src/kernels/cuda/dflash2.cu), "bf16" (the selector's two codebooks: only gathered rows are read).
 The matrices' quantization matches ggml's quantize_row_q8_0 (d = amax / 127, q = round(x / d), d stored as fp16); the research harness
 (tools/dflash2/q8test.py) measured no acceptance loss from it.
 """
@@ -80,7 +81,24 @@ def quant_q8_0(w):
     return out.tobytes()
 
 
-def pack(st_path, cfg_path, out_path, say=print):
+def quant_q4_0(w):
+    """w: float32 [rows, cols], cols % 32 == 0 -> bytes of rows * cols/32 ggml Q4_0 blocks (fp16 d, 16 bytes: value i in the low nibble of byte i, value i + 16 in the high
+    nibble).  ggml's quantize_row_q4_0_ref: d = (the value of largest magnitude) / -8, q = min(15, int(x / d + 8.5)); the scale is stored as fp16, q uses the float d."""
+    rows, cols = w.shape
+    assert cols % 32 == 0
+    b = w.reshape(rows, cols // 32, 32).astype(np.float32)
+    idx = np.abs(b).argmax(axis=-1)
+    mx = np.take_along_axis(b, idx[..., None], axis=-1)[..., 0]
+    d = mx / np.float32(-8.0)
+    inv = np.where(d != 0, 1.0 / np.where(d == 0, 1, d), 0.0).astype(np.float32)
+    q = np.minimum(15, (b * inv[..., None] + np.float32(8.5)).astype(np.int32)).astype(np.uint8)
+    out = np.empty((rows, cols // 32, 18), np.uint8)
+    out[..., :2] = d.astype(np.float16).view(np.uint8).reshape(rows, cols // 32, 2)
+    out[..., 2:] = q[..., :16] | (q[..., 16:] << 4)
+    return out.tobytes()
+
+
+def pack(st_path, cfg_path, out_path, say=print, q4=False):
     """Write the engine's runtime file for the drafter in `st_path` (+ its config.json). Returns the number of bytes written."""
     with open(cfg_path, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -96,7 +114,10 @@ def pack(st_path, cfg_path, out_path, say=print):
     def mat(name, new=None):
         w = load_tensor(f, name)
         assert w.ndim == 2
-        add(new or name, "q8_0", w.shape, quant_q8_0(w))
+        if q4:
+            add(new or name, "q4_0", w.shape, quant_q4_0(w))
+        else:
+            add(new or name, "q8_0", w.shape, quant_q8_0(w))
 
     def vec(name, new=None):
         w = load_tensor(f, name)
@@ -155,9 +176,10 @@ def pack(st_path, cfg_path, out_path, say=print):
 
 
 def main():
-    if len(sys.argv) < 4:
+    args = [a for a in sys.argv[1:] if a != "--q4_0"]
+    if len(args) < 3:
         sys.exit(__doc__)
-    pack(*sys.argv[1:4])
+    pack(*args[:3], q4="--q4_0" in sys.argv[1:])
 
 
 if __name__ == "__main__":
