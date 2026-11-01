@@ -650,7 +650,6 @@ Gemm::~Gemm() {
     for (void* e : side_free_)
         if (e) (void) cudaEventDestroy((cudaEvent_t) e);
     if (side_stream_) (void) cudaStreamDestroy((cudaStream_t) side_stream_);
-#if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
 #if defined(STRATA_GEMM_DENSE_MMQ)
     delete static_cast<strata::prefill::mmq::Context*>(mmq_ctx_);
     if (mmq_buf_) cudaFree(mmq_buf_);
