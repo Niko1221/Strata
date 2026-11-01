@@ -28,7 +28,11 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = kDf2Hd;
+#ifndef DF2_ATTN_AUTO
+#define DF2_ATTN_AUTO 1
+#endif
 int g_gemm_variant = 0;   // bench only (df2_gemm_variant)
+int g_attn_variant = 0;   // 0: STRATA_DF2_ATTN or the default; 1: the CUDA file kernel (128 work-items); 2: 256 work-items, O[2][8]
 
 #define DF2_SG32 [[sycl::reqd_sub_group_size(32)]]
 #define DF2_SG16 [[sycl::reqd_sub_group_size(16)]]
@@ -183,6 +187,146 @@ constexpr int PS4 = 9;    // stride of the transposed probabilities P[key][query
 void df2_attention(const float* q, const float* kring, const float* vring, const float* kblk, const float* vblk, const int32_t* anchor_pos, int ring_slots,
                    int window, float* part, void* xq, float* xd, void* stream, const int64_t* tag, const int32_t* epoch_ptr) {
     sycl::queue* qu = strata::q_of(stream);
+    static const int env_v = [] { const char* e = std::getenv("STRATA_DF2_ATTN"); return e ? std::atoi(e) : 0; }();
+    const int av = g_attn_variant != 0 ? g_attn_variant : env_v != 0 ? env_v : DF2_ATTN_AUTO;
+    if (av == 2) {
+        qu->submit([&](sycl::handler& h) {
+            sycl::local_accessor<sycl::float4, 1> Qs(32 * AS4, h), Ks(32 * AS4, h), Ps(32 * PS4, h);
+            sycl::local_accessor<float, 1> Sc(32 * 33, h), m_s(32, h), l_s(32, h), corr_s(32, h);
+            sycl::local_accessor<unsigned char, 1> kvalid(32, h);
+            h.parallel_for(sycl::nd_range<2>({(size_t) kDf2MaxChunks, (size_t) kDf2Kv * 256}, {1, 256}), [=](nd_item<2> it) DF2_SG16 {
+                const sycl::sub_group sg = it.get_sub_group();
+                const int chunk = (int) it.get_group(0), kvh = (int) it.get_group(1), tid = (int) it.get_local_id(1);
+                float* Psf = reinterpret_cast<float*>(&Ps[0]);
+                const int s = *anchor_pos;
+                const int lo = s - (window - 1) > 0 ? s - (window - 1) : 0;
+                const int nctx = s - lo;
+                const int nkeys = nctx + kDf2Rows;
+                const int k_begin = chunk * kDf2Chunk;
+                const int64_t ep = tag != nullptr ? ((int64_t) *epoch_ptr << 32) : 0;
+                float* const pbase = part + (((size_t) chunk * kDf2Kv + kvh) * 32) * 130;
+                if (k_begin >= nkeys) {
+                    for (int i = tid; i < 32 * 130; i += 256) pbase[i] = (i % 130 == 0) ? -INFINITY : 0.0f;
+                    return;
+                }
+                const float scale = sycl::rsqrt((float) HD);
+#pragma unroll
+                for (int u = 0; u < 4; ++u) {   // Q: 32 queries x 128, float4
+                    const int i = tid + u * 256;
+                    const int a = i / (HD / 4), d4 = i % (HD / 4);
+                    const int row = a >> 2, g = a & 3;
+                    sycl::float4 v = *reinterpret_cast<const sycl::float4*>(q + ((size_t) row * 32 + kvh * kDf2Gqa + g) * HD + d4 * 4);
+                    Qs[a * AS4 + d4] = v * scale;
+                }
+                if (tid < 32) { m_s[tid] = -INFINITY; l_s[tid] = 0.0f; }
+                float O[2][8];
+#pragma unroll
+                for (int i = 0; i < 2; ++i)
+#pragma unroll
+                    for (int j = 0; j < 8; ++j) O[i][j] = 0.0f;
+                const int qg_pv = tid >> 4, dg_pv = tid & 15;   // PV: queries qg*2, qg*2+1, dims dg*8 .. +7
+                const int qg = tid >> 4, kg = tid & 15;         // S: queries qg*2 .. +1, keys kg*2 .. +1
+                const int k_end = sycl::min(k_begin + kDf2Chunk, nkeys);
+                auto load_tile = [&](int k0, const float* ring, const float* blk) {
+#pragma unroll
+                    for (int u = 0; u < 4; ++u) {
+                        const int i = tid + u * 256, t = i / (HD / 4), d4 = i % (HD / 4), k = k0 + t;
+                        sycl::float4 v(0.f, 0.f, 0.f, 0.f);
+                        if (k < nctx) v = *reinterpret_cast<const sycl::float4*>(ring + ((size_t) kvh * ring_slots + (lo + k) % ring_slots) * HD + d4 * 4);
+                        else if (k < nkeys) v = *reinterpret_cast<const sycl::float4*>(blk + ((size_t) (k - nctx) * kDf2Kv + kvh) * HD + d4 * 4);
+                        Ks[t * AS4 + d4] = v;
+                    }
+                };
+                for (int k0 = k_begin; k0 < k_end; k0 += 32) {
+                    bar(it);
+                    load_tile(k0, kring, kblk);
+                    if (tid < 32) {
+                        const int k = k0 + tid;
+                        kvalid[tid] = (tag == nullptr || k >= nctx || k >= nkeys) ? 1 : (tag[(lo + k) % ring_slots] == (ep | (int64_t) (lo + k)) ? 1 : 0);
+                    }
+                    bar(it);
+                    {   // S tile: 2 queries x 2 keys per work-item
+                        float acc[2][2];
+#pragma unroll
+                        for (int i = 0; i < 2; ++i)
+#pragma unroll
+                            for (int j = 0; j < 2; ++j) acc[i][j] = 0.0f;
+#pragma unroll 4
+                        for (int d4 = 0; d4 < HD / 4; ++d4) {
+                            sycl::float4 qv[2], kv[2];
+#pragma unroll
+                            for (int i = 0; i < 2; ++i) qv[i] = Qs[(qg * 2 + i) * AS4 + d4];
+#pragma unroll
+                            for (int j = 0; j < 2; ++j) kv[j] = Ks[(kg * 2 + j) * AS4 + d4];
+#pragma unroll
+                            for (int i = 0; i < 2; ++i)
+#pragma unroll
+                                for (int j = 0; j < 2; ++j) acc[i][j] += qv[i].x() * kv[j].x() + qv[i].y() * kv[j].y() + qv[i].z() * kv[j].z() + qv[i].w() * kv[j].w();
+                        }
+#pragma unroll
+                        for (int i = 0; i < 2; ++i)
+#pragma unroll
+                            for (int j = 0; j < 2; ++j) {
+                                const int qi = qg * 2 + i, t = kg * 2 + j, k = k0 + t, row = qi >> 2;
+                                bool ok = k < nkeys;
+                                if (ok && k < nctx) ok = (lo + k) > (s + row - window) && kvalid[t];
+                                Sc[qi * 33 + t] = ok ? acc[i][j] : -INFINITY;
+                            }
+                    }
+                    bar(it);
+                    {   // online softmax: query = tid / 8, 4 keys each, 8 lanes per query
+                        const int qi = tid >> 3, sub = tid & 7;
+                        float v[4], tmax = -INFINITY;
+#pragma unroll
+                        for (int u = 0; u < 4; ++u) { v[u] = Sc[qi * 33 + sub * 4 + u]; tmax = sycl::fmax(tmax, v[u]); }
+                        tmax = sycl::fmax(tmax, xorf(sg, tmax, 1));
+                        tmax = sycl::fmax(tmax, xorf(sg, tmax, 2));
+                        tmax = sycl::fmax(tmax, xorf(sg, tmax, 4));
+                        const float m_old = m_s[qi];
+                        const float mn = sycl::fmax(m_old, tmax);
+                        const float corr = (m_old == -INFINITY) ? 0.0f : sycl::exp(m_old - mn);
+                        float psum = 0.0f;
+#pragma unroll
+                        for (int u = 0; u < 4; ++u) {
+                            const float p = v[u] == -INFINITY ? 0.0f : sycl::exp(v[u] - mn);
+                            Psf[(sub * 4 + u) * (PS4 * 4) + qi] = p;
+                            psum += p;
+                        }
+                        psum += xorf(sg, psum, 1);
+                        psum += xorf(sg, psum, 2);
+                        psum += xorf(sg, psum, 4);
+                        if (sub == 0) { l_s[qi] = l_s[qi] * corr + psum; m_s[qi] = mn; corr_s[qi] = corr; }
+                    }
+                    bar(it);
+                    load_tile(k0, vring, vblk);
+                    bar(it);
+                    {
+                        const float cr[2] = {corr_s[qg_pv * 2], corr_s[qg_pv * 2 + 1]};
+#pragma unroll
+                        for (int i = 0; i < 2; ++i)
+#pragma unroll
+                            for (int j = 0; j < 8; ++j) O[i][j] *= cr[i];
+#pragma unroll 4
+                        for (int t = 0; t < 32; ++t) {
+                            const float p0 = Psf[t * (PS4 * 4) + qg_pv * 2], p1 = Psf[t * (PS4 * 4) + qg_pv * 2 + 1];
+                            const sycl::float4 va = Ks[t * AS4 + dg_pv * 2], vb = Ks[t * AS4 + dg_pv * 2 + 1];
+                            const float vv[8] = {va.x(), va.y(), va.z(), va.w(), vb.x(), vb.y(), vb.z(), vb.w()};
+#pragma unroll
+                            for (int j = 0; j < 8; ++j) { O[0][j] = sycl::fma(p0, vv[j], O[0][j]); O[1][j] = sycl::fma(p1, vv[j], O[1][j]); }
+                        }
+                    }
+                }
+                bar(it);
+                if (tid < 32) { pbase[tid * 130] = m_s[tid]; pbase[tid * 130 + 1] = l_s[tid]; }
+#pragma unroll
+                for (int i = 0; i < 2; ++i) {
+                    float* o = pbase + (size_t) (qg_pv * 2 + i) * 130 + 2 + dg_pv * 8;
+#pragma unroll
+                    for (int j = 0; j < 8; ++j) o[j] = O[i][j];
+                }
+            });
+        });
+    } else
     qu->submit([&](sycl::handler& h) {
         sycl::local_accessor<sycl::float4, 1> Qs(32 * AS4, h), Ks(32 * AS4, h), Ps(32 * PS4, h);
         sycl::local_accessor<float, 1> Sc(32 * 33, h), m_s(32, h), l_s(32, h), corr_s(32, h);
@@ -481,7 +625,7 @@ void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_
 }
 
 void df2_gemm_variant(int v) { g_gemm_variant = v; }
-void df2_attention_variant(int) {}
+void df2_attention_variant(int v) { g_attn_variant = v; }
 
 void df2_quant_rows(const float* x, int K, int ncols, void* xq, float* xd, void* stream) {
     quant_rows_launch(strata::q_of(stream), x, K, ncols, static_cast<int8_t*>(xq), xd);

@@ -309,6 +309,53 @@ void gemm_ref(const std::vector<uint8_t>& w, int n_out, int n_in, const std::vec
     }
 }
 
+
+// DF-04: the head, top-k and selector for the first nd rows give exactly the first nd rows of the 7-row path (distinct random rows, so the picks differ per row)
+void prefix_test() {
+    std::printf("DF-04 prefix: head / top-k / selector for nd rows == the first nd rows of the 7-row path (bitwise)\n");
+    uint8_t* head_w = make_head();
+    std::vector<int32_t> vv(NDV); for (int i = 0; i < NDV; ++i) vv[i] = (int32_t) (((int64_t) i * 2654435761ll) % VOCAB);
+    int32_t* dvocab = dev<int32_t>(NDV); up(dvocab, vv);
+    std::vector<uint16_t> cb((size_t) VOCAB * RANK);
+    for (auto& v : cb) v = (uint16_t) (0x3c00 + (rnd() & 0x1ff) - 0x400); for (size_t i = 0; i < cb.size(); i += 5) cb[i] |= 0x8000;
+    uint16_t* pred = dev<uint16_t>(cb.size()); up(pred, cb);
+    for (size_t i = 0; i < cb.size(); i += 3) cb[i] ^= 0x8000;
+    uint16_t* succ = dev<uint16_t>(cb.size()); up(succ, cb);
+    Mat4 hsel = make_mat(RANK, N);
+    float* fn = make_f32((size_t) B * N, 1.0f);
+    uint8_t* xq_head = dev<uint8_t>(native_q8_1_bytes(N, B) + 4096);
+    uint8_t* xqp = dev<uint8_t>((size_t) 5 * N * 8 + 4096); float* xdp = dev<float>((size_t) 5 * N / 32 * 8 + 64);
+    float* logits = dev<float>((size_t) 7 * NDV); float* hs = dev<float>(7 * RANK); float* tv = dev<float>(7 * 16); int32_t* tt = dev<int32_t>(7 * 16);
+    uint32_t* sc = dev<uint32_t>((size_t) 7 * kDf2TopBlocks * kDf2TopK * 2);
+    int32_t* anchor = dev<int32_t>(1); int32_t a5 = 777; Q->memcpy(anchor, &a5, 4).wait();
+    int32_t* otok = dev<int32_t>(8); float* oprob = dev<float>(8);
+    struct Out { std::vector<float> lg, hs, tv; std::vector<int32_t> tt, ot; std::vector<float> op; };
+    auto run = [&](int nd) {
+        native_quantize_q8_1(fn + N, xq_head, N, nd, Q);
+        df2_quant_rows(fn + N, N, nd, xqp, xdp, Q);
+        native_mmvq(GGML_Q8_0, head_w, xq_head, logits, N, NDV, nd, Q);
+        df2_topk(logits, NDV, dvocab, nd, sc, tv, tt, Q);
+        { Df2Mat m1[1] = {Df2Mat{hsel.w, hs, hsel.n_out, true}}; df2_gemm(m1, 1, xqp, xdp, hsel.n_in, nd, Q); }
+        df2_select(hs, tv, tt, pred, succ, RANK, nd, anchor, otok, oprob, Q);
+        Q->wait();
+        Out o; o.lg = down(logits, (size_t) nd * NDV); o.hs = down(hs, (size_t) nd * RANK); o.tv = down(tv, (size_t) nd * 16); o.tt = down(tt, (size_t) nd * 16);
+        o.ot = down(otok, nd); o.op = down(oprob, nd);
+        return o;
+    };
+    const Out full = run(7);
+    bool distinct = false; for (int i = 1; i < 7; ++i) distinct |= full.ot[i] != full.ot[0];
+    check(distinct, "the 7 picks of the reference differ (the test can tell rows apart)");
+    for (int nd : {5, 3, 1}) {
+        const Out o = run(nd);
+        char buf[96];
+        bool ok = std::memcmp(o.lg.data(), full.lg.data(), o.lg.size() * 4) == 0 && std::memcmp(o.hs.data(), full.hs.data(), o.hs.size() * 4) == 0 &&
+                  std::memcmp(o.tv.data(), full.tv.data(), o.tv.size() * 4) == 0 && std::memcmp(o.tt.data(), full.tt.data(), o.tt.size() * 4) == 0 &&
+                  std::memcmp(o.ot.data(), full.ot.data(), o.ot.size() * 4) == 0 && std::memcmp(o.op.data(), full.op.data(), o.op.size() * 4) == 0;
+        std::snprintf(buf, sizeof buf, "nd = %d: logits, selector projection, top-16, picks, probabilities == first %d rows of nd = 7", nd, nd);
+        check(ok, buf);
+    }
+}
+
 int run_tests() {
     std::printf("device: %s\n", Q->get_device().get_info<sycl::info::device::name>().c_str());
     struct Shape { const char* name; int n_out, n_in, nmat; };
@@ -398,6 +445,8 @@ int run_tests() {
         float *dq = dev<float>(q.size()), *dk = dev<float>(kb.size()), *dv = dev<float>(vb.size()); up(dq, q); up(dk, kb); up(dv, vb);
         int32_t* ap = dev<int32_t>(1); int32_t sv = POS + n_new; Q->memcpy(ap, &sv, 4).wait(); int32_t* ep = dev<int32_t>(1); int32_t e1 = 1; Q->memcpy(ep, &e1, 4).wait();
         int8_t* xq = dev<int8_t>(8 * 32 * HD); float* xd = dev<float>(8 * 32 * HD / 32);
+      for (int av : {1, 2}) {
+        df2_attention_variant(av);
         df2_attention(dq, D.kring[0], D.vring[0], dk, dv, ap, RING, WINDOW, D.part, xq, xd, Q, D.tag, ep); Q->wait();
         auto kr = down(D.kring[0], (size_t) RING * NKV * HD); auto vr = down(D.vring[0], (size_t) RING * NKV * HD);
         auto hq = down(xq, (size_t) 8 * 32 * HD); auto hd = down(xd, (size_t) 8 * 32 * HD / 32);
@@ -420,8 +469,11 @@ int run_tests() {
                 }
             }
         std::printf("  attention: max |got - ref| = %.3e (max |ref| = %.3e; int8 quantization step ~ %.1e)\n", maxerr, maxref, maxref / 127.0);
-        check(maxerr < 2.0 * maxref / 127.0, "df2_attention (ring 700 + 3, tags, window) == CPU double within the int8 step");
+        { char b2[96]; std::snprintf(b2, sizeof b2, "df2_attention v%d (ring 700 + 3, tags, window) == CPU double within the int8 step", av); check(maxerr < 2.0 * maxref / 127.0, b2); }
+      }
+      df2_attention_variant(0);
     }
+    prefix_test();
     std::printf("%s\n", g_fail ? "SOME TESTS FAILED" : "ALL TESTS PASSED");
     return g_fail ? 1 : 0;
 }
@@ -625,12 +677,13 @@ int run_attn_bench() {
     float* q = make_f32((size_t) 8 * 32 * HD, 2.f); float* kb = make_f32((size_t) 8 * NKV * HD, 2.f); float* vb = make_f32((size_t) 8 * NKV * HD, 2.f);
     int32_t* ap = dev<int32_t>(1); int32_t* ep = dev<int32_t>(1); int32_t e1 = 1; Q->memcpy(ep, &e1, 4).wait();
     int8_t* xq = dev<int8_t>(8 * 32 * HD); float* xd = dev<float>(8 * 32 * HD / 32);
-    for (int pos : {100, 600, 1200, 2100}) {
+    for (int av : {1, 2}) for (int pos : {100, 600, 1200, 2100}) {
+        df2_attention_variant(av);
         std::vector<int64_t> t(RING, -1); for (int p = std::max(0, pos - 2047); p < pos; ++p) t[p % RING] = ((int64_t) 1 << 32) | p;
         Q->memcpy(tag, t.data(), RING * 8).wait();
         int32_t sv = pos; Q->memcpy(ap, &sv, 4).wait();
         const double us = time_us([&] { df2_attention(q, kr, vr, kb, vb, ap, RING, WINDOW, part, xq, xd, Q, tag, ep); }, 100);
-        std::printf("attention, s = %d: %.0f us per layer\n", pos, us);
+        std::printf("attention v%d, s = %d: %.0f us per layer\n", av, pos, us);
     }
     return 0;
 }
