@@ -29,6 +29,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -225,10 +226,21 @@ def proc_terminate(pid, ident) -> bool:
 
 
 def _rmtree_ignore_missing(func, path, exc_info):
-    """shutil.rmtree error hook: a file that vanished while its folder was being removed is already gone."""
+    """shutil.rmtree error hook: a file that vanished while its folder was being removed is already gone.  Windows also
+    refuses to remove a folder or a file with FILE_ATTRIBUTE_READONLY (an Explorer copy or an unzipped archive sets it),
+    even when the folder is empty: clear the attribute and retry that one path, as pip's rmtree_errorhandler does (#4089)."""
     exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
     if isinstance(exc, FileNotFoundError):
         return
+    if isinstance(exc, PermissionError):
+        try:
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)   # 0o700: readable, writable and enterable again
+            func(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            pass
     raise exc
 
 
