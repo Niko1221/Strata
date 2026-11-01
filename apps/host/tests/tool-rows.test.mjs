@@ -22,7 +22,7 @@ test('the chat renders tool rows as a disclosure that the compact rule overrides
   assert.match(chat, /className="disclosure tool-summary"/);
 });
 
-test('finished tool rows stay above the reply; only waiting approvals sit after it', async () => {
+test('finished tool rows stay above the reply; waiting or running tools sit after it', async () => {
   const chat = await readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8');
   const assistant = chat.indexOf('st-msg--assistant');
   const settled = chat.indexOf('settledTools.map', assistant);
