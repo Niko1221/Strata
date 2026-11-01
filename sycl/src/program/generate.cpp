@@ -73,6 +73,8 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/core/dflash2.hpp"
+#include "strata/spec/window_rule.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -732,6 +734,12 @@ struct Options {
     std::string mtp_q4;   ///< "" (off), all, proj (the projections only) or head (the draft head only)
     /// --mtp-draft-vocab FILE (opt-in): the draft head's token subset from FILE instead of <mtp>/draft_vocab.bin
     std::string mtp_draft_vocab;
+    /// --draft dflash2 --draft-model PACK (Qwen3.8-Flash-Next, the Q4_0 pack of tools/dflash2_pack.py --q4_0): the DFlash2 block drafter drafts; no MTP layer is
+    /// loaded with it (--draft-fallback none, the only mode of this build; --mtp DIR still names DIR/draft_vocab.bin).  --draft-conf P ends the window where the
+    /// product of the selector's probabilities falls below P; --draft-cap N caps the window.
+    std::string draft, draft_model, draft_fallback = "none";
+    double draft_conf = 0.0;
+    int draft_cap = 0;
     /// A control vector on the residual stream (strata/kernels/cvec.hpp), with llama.cpp's flags: the
     /// `experimental-speed-projection` profile passes `--control-vector-scaled FILE:1.0 --control-vector-layer-range
     /// 4 44 --cvec-mode project --cvec-dir per-layer`.  None by default; --serve switches a loaded one per request.
@@ -861,6 +869,10 @@ void usage() {
                  "                       (default) or one per stream (llama.cpp's MTP graph)\n"
                  "  --mtp-q4 all|proj|head  opt-in: the draft layer's projections and/or draft head as 4-bit copies\n"
                  "  --mtp-draft-vocab FILE  opt-in: the draft head's token subset (default <mtp>/draft_vocab.bin)\n"
+                 "  --draft mtp|dflash2  the draft source (default mtp); dflash2 needs --draft-model PACK (tools/dflash2_pack.py --q4_0), --spec 2 or more and\n"
+                 "                       --mtp DIR (for DIR/draft_vocab.bin); no MTP layer is loaded (--draft-fallback none, the only mode here)\n"
+                 "  --draft-conf P       with --draft dflash2: end the window where the product of the selector's probabilities falls below P\n"
+                 "  --draft-cap N        with --draft dflash2: the widest window\n"
                  "  --control-vector-scaled FILE:SCALE[,...]  a control vector GGUF on the residual stream (llama.cpp's\n"
                  "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1)\n"
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
@@ -1999,6 +2011,17 @@ int main(int argc, char **argv) try {
             }
         }
         else if (a == "--mtp-draft-vocab") o.mtp_draft_vocab = next("--mtp-draft-vocab");
+        else if (a == "--draft") o.draft = next("--draft");
+        else if (a == "--draft-model") o.draft_model = next("--draft-model");
+        else if (a == "--draft-fallback") {
+            o.draft_fallback = next("--draft-fallback");
+            if (o.draft_fallback != "none") {
+                std::fprintf(stderr, "strata generate: --draft-fallback: only none is supported on this build (DFlash2 never runs beside an MTP layer here)\n");
+                std::exit(2);
+            }
+        }
+        else if (a == "--draft-conf") o.draft_conf = std::clamp(std::atof(next("--draft-conf")), 0.0, 1.0);
+        else if (a == "--draft-cap") o.draft_cap = std::max(0, std::atoi(next("--draft-cap")));
         else if (a == "--control-vector") o.cvec_files.push_back({next("--control-vector"), 1.0f});
         else if (a == "--control-vector-scaled") {
             // FILE:SCALE, comma-separated; the LAST colon splits, so a Windows path (C:\...) keeps its drive
@@ -4278,6 +4301,26 @@ int main(int argc, char **argv) try {
 
     // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.
     // In particular WDDM can refuse the draft weights after mapping tens of GiB of host pages.
+    // --draft dflash2: the MTP layer is NOT loaded and every "is there an MTP" test below sees --mtp as absent; DFlash2 drafts alone.  The draft vocabulary file
+    // is taken from the --mtp directory.  Anything DFlash2 cannot do here is an error at start, never a silent MTP.
+    strata::core::Dflash2Drafter df2;
+    bool use_df2 = false;
+    std::string df2_vocab_file;
+    if (o.draft == "dflash2") {
+        if (o.mtp.empty() || o.spec < 2 || o.draft_model.empty()) {
+            std::fprintf(stderr, "strata generate: --draft dflash2 needs --draft-model PACK, --spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin)\n");
+            return 2;
+        }
+        df2_vocab_file = o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab;
+        o.mtp.clear();
+        if (o.draft_cap > 0 && o.spec > o.draft_cap) {
+            std::fprintf(stderr, "strata generate: --draft dflash2: windows capped at %d tokens (--draft-cap)\n", o.draft_cap);
+            o.spec = o.draft_cap;
+        }
+    } else if (!o.draft.empty() && o.draft != "mtp") {
+        std::fprintf(stderr, "strata generate: --draft takes mtp or dflash2\n");
+        return 2;
+    }
     strata::core::MtpDrafter mtp;
     // the draft layer's geometry (the canonical model's MTP head), `static` because MtpDrafter keeps a reference; the batch
     // slots' draft-KV copies use this one too
@@ -4315,6 +4358,18 @@ int main(int argc, char **argv) try {
                 slot_mtp.push_back(std::move(d));
             }
         }
+    }
+    if (o.draft == "dflash2") {
+        if (multi_gpu || o.batch > 0 || o.pipeline_windows > 0) {
+            std::fprintf(stderr, "strata generate: --draft dflash2 is for one card and one request at a time (not --batch, --pipeline-windows or a layer split) in this build\n");
+            return 2;
+        }
+        if (!df2.load(o.draft_model, 0, err)) {
+            std::fprintf(stderr, "strata generate: --draft dflash2: %s. DFlash2 needs about 1.2 GiB of VRAM; there is no MTP to draft instead, so the start ends here%s\n",
+                         err.c_str(), vram_free_note().c_str());
+            return 1;
+        }
+        use_df2 = true;
     }
     // THE HEAD BEFORE THE CACHE, AND BEFORE THE ARENA.  The expert cache takes what is free minus the reserve, so
     // everything allocated after it comes out of the reserve.  The native head (~0.5 GB with IQ3_S) was loaded after
@@ -4622,6 +4677,16 @@ int main(int argc, char **argv) try {
                                ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
         for (const auto& d : slot_mtp)
             mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
+        if (use_df2 && native_head.loaded()) {   // DFlash2's draft head rows and ids (from the vocabulary file), its logits, 48 MiB of margin
+            int64_t bytes = (int64_t) std::min(o.spec, (int) strata::kernels::kVerifyMaxT) * n_vocab * (int64_t) sizeof(float);
+            if (FILE* vf = std::fopen(df2_vocab_file.c_str(), "rb")) {
+                std::fseek(vf, 0, SEEK_END);
+                const long size = std::ftell(vf);
+                std::fclose(vf);
+                if (size >= 4 && size % 4 == 0) bytes += (int64_t) (size / 4) * (int64_t) native_head.row_bytes() + (int64_t) size;
+            }
+            mtp_bind += bytes + (48 << 20);
+        }
         const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t slots = ((int64_t) free_b - reserve) / blob;
@@ -12409,6 +12474,11 @@ int main(int argc, char **argv) try {
                 return e.empty() && mtp.prefill(R_rows, nxt.data(), T, p0, e);
             };
         }
+        if (use_df2) {   // the drafter's context: the last 2047 prompt rows' taps
+            df2.reset();
+            prefill.set_taps(df2.tap_layers(), std::max<int64_t>(0, n_prompt - 2047), 2048);
+            prefill.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { return df2.context(taps, rows, pos0, e); };
+        }
         if (!kvg_started) {   // the elastic K/V: every cell this run can reach (no loan)
             kvg_started = true;
             kvg_start(xcache.slots());
@@ -12420,6 +12490,7 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        prefill.clear_taps();
         // refill the lent slots from the arena and give them back to the decode tier
         if (!lent.empty()) {
             const Clock::time_point tr = Clock::now();
@@ -12788,6 +12859,7 @@ int main(int argc, char **argv) try {
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
+        if (use_df2) ver.set_taps(df2.tap_layers());
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -12797,6 +12869,19 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        if (use_df2) {   // no MTP to draft instead: anything DFlash2 cannot do ends the run
+            if (!ver.tapping()) {
+                std::fprintf(stderr, "strata generate: --draft dflash2: the verifier keeps no taps here, so the run ends here\n");
+                return 1;
+            }
+            df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
+            if (!df2.bind(wt, &native_head, df2_vocab_file, err) || !df2.prepare(ver.tap_dev(), err)) {
+                std::fprintf(stderr, "strata generate: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (--vram-reserve-mib keeps it); there is no MTP to draft instead, so the run ends here\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: DFlash2 drafter on (%s, graphs captured in %.0f ms), no MTP layer is loaded\n", o.draft_model.c_str(), df2.ms_capture);
+        }
+        const bool draft_on = use_mtp || use_df2;   // some drafter proposes
         mem_mark("the verifier and the drafter's binding");
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here
         if (use_mtp) mtp.set_draft_sampling(sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
@@ -13027,12 +13112,23 @@ int main(int argc, char **argv) try {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        // the next round's drafts after a commit: the DFlash2 block from the committed rows' taps (the window's first a + 1 rows)
+        auto draft_df2 = [&](int a_) -> bool {
+            int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+            float pp[strata::core::Dflash2Drafter::kDrafts];
+            if (!df2.draft(ver.tap_dev(), a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
+            for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
+            return true;
+        };
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = S_mtp;
-            if (use_mtp && o.spec_min_p > 0.0) {
-                T = 1;
-                while (T < S_mtp && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
+            {   // the window rule of the round's ACTIVE source (spec/window_rule.hpp)
+                strata::spec::WindowRuleIn wr;
+                wr.use_mtp = draft_on; wr.df2_active = use_df2; wr.spec_cost = false; wr.first_window = first_window;
+                wr.chain_rows = 1; wr.cap = S_mtp; wr.start = T; wr.spec_min_p = o.spec_min_p;
+                wr.draft_conf = o.draft_conf; wr.dprob = dprob.data();
+                T = strata::spec::choose_window(wr);
             }
             if (first_window) T = 1;
             bool from_sfx = false;
@@ -13040,7 +13136,7 @@ int main(int argc, char **argv) try {
             if (o.suffix_draft > 0 && !first_window) {
                 const int k = sfx.propose(o.spec - 1, sbuf.data());
                 sfx_match = sfx.last_match();
-                if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
+                if (k > 0 && (!draft_on || sbuf[0] == drafts[0])) {
                     const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                     if (pk.lookup) { T = pk.t; from_sfx = true; }
                 }
@@ -13070,7 +13166,7 @@ int main(int argc, char **argv) try {
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
-                int32_t d = from_sfx ? sbuf[(size_t) i - 1] : use_mtp ? drafts[(size_t) i - 1]
+                int32_t d = from_sfx ? sbuf[(size_t) i - 1] : draft_on ? drafts[(size_t) i - 1]
                                                     : at < oracle.size() ? (int32_t) oracle[at] : 0;
                 if (i >= T_mtp) d = cbuf[(size_t) (i - T_mtp)];
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
@@ -13167,8 +13263,8 @@ int main(int argc, char **argv) try {
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 break;
             }
-            const bool drafted = !use_mtp || (int64_t) produced.size() >= max_new ||
-                                 mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p);
+            const bool drafted = !draft_on || (int64_t) produced.size() >= max_new ||
+                                 (use_df2 ? draft_df2(a) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p));
             if (adapt_thr.joinable()) adapt_thr.join();
             if (!adapt_ok) return 1;
             if (!drafted) {
@@ -13198,7 +13294,7 @@ int main(int argc, char **argv) try {
         if (!follow.empty())
             std::printf("%-24s %lld of %lld emitted tokens differ from the argmax\n", "follow",
                         (long long) follow_differ, (long long) follow_emitted);
-        if (o.spec_min_p > 0.0) {
+        if (o.spec_min_p > 0.0 || o.draft_conf > 0.0) {
             std::printf("%-24s", "window sizes");
             for (size_t i = 1; i < window_hist.size(); ++i) std::printf(" T%zu:%lld", i, (long long) window_hist[i]);
             std::printf("  (min draft probability %.2f)\n", o.spec_min_p);
@@ -13300,6 +13396,9 @@ int main(int argc, char **argv) try {
                         "pcie experts", (double) (drive.d.pcie_experts - pcie0) / (double) (rounds * g.n_layers),
                         drive.d.pcie_num);
         (void) pool_ms0;
+        if (use_df2 && df2.rounds > 0)
+            std::printf("%-24s %.3f ms/round drafting (%lld rounds), %.0f MiB of VRAM\n", "dflash2", df2.ms_draft / (double) df2.rounds,
+                        (long long) df2.rounds, (double) df2.vram_bytes() / 1048576.0);
         if (use_mtp && rounds > 0)
             std::printf("%-24s %.3f ms/round drafting (%lld rounds), MTP prompt %.1f ms, %.0f MiB of VRAM\n", "mtp",
                         mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, mtp.ms_prefill,

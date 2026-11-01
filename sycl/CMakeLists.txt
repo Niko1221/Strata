@@ -266,6 +266,7 @@ strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_s
                        src/core/conversation_file.cpp
                        src/core/peer_experts.cpp src/core/remote_expert_opt_stub.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
 add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/core/dflash2.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/core/copy_queue.cpp)   # 0.1.43: a queue on the copy engine
 target_include_directories(strata_engine PRIVATE ${STRATA_ROOT}/src/core)   # conversation_checked.hpp (#include "...")
 target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu)
