@@ -99,6 +99,8 @@ def exclude_seqs(seqs: list, name: str, rules: list) -> str:
 CALL_HEAD = "<tool_call>\n<function="            # ... + NAME + ">\n"
 PARAM_HEAD = "<parameter="                    # ... + KEY + ">\n"
 PARAM_TAIL = "\n</parameter>\n"
+PARAM_END = "</parameter>"                    # the closer alone: frontend.param_end ends a value at this string,
+                                              # with or without the template's leading newline (see _call_rule)
 CALL_TAIL = "</function>\n</tool_call>"
 CALL_JOIN = "\n"                              # calls in one turn are joined by a bare newline
 PROSE_PREFIX = "\n\n"                         # prose and calls are separated by a blank line
@@ -186,7 +188,12 @@ def _call_rule(tool: dict, idx: int, rules: list, convert) -> str:
     for key, sub in (props or {}).items():
         pns = f"{ns}-{_rule_name(key)}"
         if isinstance(sub, dict) and sub.get("type") == "string":
-            value = exclude_seq("\n</parameter>", f"{pns}-text", rules)
+            # the value refuses the whole closer, as llama.cpp's `until(param_closer)` does.  Refusing only
+            # the template's own "\n</parameter>" left the newline-less form legal, and frontend.param_end
+            # ends a value at ANY "</parameter>" that is followed by "<parameter=", "</function>" or
+            # "</tool_call>" - so a value holding "</parameter></tool_call>" ended the call early and the
+            # parameters after it were dropped (measured: write_file arrived without its last argument).
+            value = exclude_seq(PARAM_END, f"{pns}-text", rules)
         else:
             value = _inline(convert(sub if isinstance(sub, dict) else {}), pns, rules)
         rules.append(f"{pns} ::= {_lit(PARAM_HEAD + key + '>\n')} {value} {_lit(PARAM_TAIL)}")
