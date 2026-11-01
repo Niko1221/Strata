@@ -55,6 +55,7 @@ try {
   if (!up) { await shot('never-ready'); throw new Error(`The "${BUTTON}" button never came up`); }
   const before = await run(`(() => { const t = document.body.innerText; const box = document.querySelector('.native-image-reading input[type=checkbox]'); return { readPicturesOn: !!box && box.checked, offersFiles: t.includes('Picture reading needs a few more files'), downloadButton: [...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Download picture-reading files'), modelFiles: document.querySelector('.native-path')?.textContent ?? null, shownModel: document.querySelector('.native-version')?.innerText?.slice(0, 200) ?? null }; })()`);
   await shot('1-before');
+  const baseDialogs = await run("document.querySelectorAll('[role=dialog], dialog[open]').length");   // dialogs the page always has (closed ones the app keeps mounted)
   const clicked = await run(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(BUTTON)}); b.click(); return true; })()`);
   const started = Date.now();
   const timeline = []; let last = '', shots = 0, ended = null;
@@ -63,7 +64,7 @@ try {
       const card = document.querySelector('.native-progress');
       const state = await (await fetch('/api/native')).json();
       const job = [...(state.jobs ?? [])].reverse()[0] ?? null;
-      return { card: card ? card.innerText.replace(/\\s+/g, ' ').trim() : null, dialogs: document.querySelectorAll('[role=dialog], dialog[open]').length,
+      return { card: card ? card.innerText.replace(/\\s+/g, ' ').trim() : null, dialogs: document.querySelectorAll('[role=dialog], dialog[open]').length - ${baseDialogs},
         job: job && { startedAt: job.startedAt, kind: job.kind, state: job.state, summary: job.summary, error: job.error, details: job.details ?? null, bar: job.result?.install?.download ?? null },
         instance: (state.instances ?? []).map(i => ({ status: i.status, vision: i.vision, note: i.picturesNote ?? null, gpus: i.gpus })),
         note: [...document.querySelectorAll('.native-spill-note')].map(n => n.innerText.trim()), error: [...document.querySelectorAll('.inline-error, [role=alert]')].map(n => n.innerText.trim()).filter(Boolean) };

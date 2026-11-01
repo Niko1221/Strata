@@ -11,5 +11,8 @@
  "pic10": "Il n’y a pas assez d’espace libre sur le disque pour les fichiers d’images (environ 1 Go).",
  "pic11": "Les fichiers d’images n’ont pas pu être téléchargés. Réessayez ; le téléchargement reprend là où il s’est arrêté.",
  "pic12": "Les fichiers d’images téléchargés n’ont pas réussi le contrôle de sécurité et ont été supprimés. Réessayez.",
- "pic13": "Les fichiers d’images n’ont pas pu être téléchargés. Réessayez."
+ "pic13": "Les fichiers d’images n’ont pas pu être téléchargés. Réessayez.",
+ "pic14": "Fichiers d’images prêts",
+ "pic15": "Rechargez le modèle pour lire les images.",
+ "pic16": "La lecture d’images est prête."
 }

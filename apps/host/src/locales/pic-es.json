@@ -11,5 +11,8 @@
  "pic10": "No hay suficiente espacio libre en el disco para los archivos de imágenes (unos 1 GB).",
  "pic11": "No se pudieron descargar los archivos de imágenes. Inténtelo de nuevo; continúa donde se detuvo.",
  "pic12": "Los archivos de imágenes descargados no superaron la comprobación de seguridad y se eliminaron. Inténtelo de nuevo.",
- "pic13": "No se pudieron descargar los archivos de imágenes. Inténtelo de nuevo."
+ "pic13": "No se pudieron descargar los archivos de imágenes. Inténtelo de nuevo.",
+ "pic14": "Archivos de imágenes listos",
+ "pic15": "Vuelva a cargar el modelo para leer imágenes.",
+ "pic16": "La lectura de imágenes está lista."
 }

@@ -376,7 +376,8 @@ test('the Models page sends a plain Load, not the installer, when the only gap i
   assert.match(screen, /const picturesByLoad = fetchesPictures\(selectedSize, native\?\.packaged\)/);
   assert.match(screen, /\(!selectedSize\?\.images \|\| vision === 'no' \|\| picturesByLoad \|\| installed\.images && installed\.images !== 'off'\)/, 'the shortcut to a plain Load no longer needs the pictures to be prepared');
   assert.match(screen, /kind: 'pictures', args: \{ model: selectedSize!\.id, vision \}/, 'the button fetches the files and nothing else');
-  assert.match(screen, /loadedSelected\?\.picturesNote/, 'the one line is shown');
+  assert.match(screen, /tr\(loadedSelected\?\.picturesNote \?\? "Picture reading needs a few more files that are not on this computer yet\."\)/, 'the one line takes the place of the offer sentence: one warning, not two');
+  assert.match(screen, /job\.kind === 'pictures'\) \{[\s\S]*Load the model again to read pictures\./, 'a model that is loaded without pictures is told to load again');
   // the host side of the same promise: the install path no longer takes its data folder from the app's models folder for an installed model
   const host = read('../server/native-control.mjs');
   assert.match(host, /const own=args\.data_dir===undefined\?existing\?\.runDataFolder:undefined;const data=own\?\?nativeDataDirectory\(/);
@@ -395,7 +396,7 @@ test('every sentence the Load of the picture files can say is in the catalog in 
   const python = ["There is no internet connection, so the picture files can't be downloaded now.", 'There is not enough free disk space for the picture files (about 1 GB).',
     'The picture files could not be downloaded. Try again; it continues where it stopped.', 'The downloaded picture files did not pass the safety check, so they were deleted. Try again.',
     'The picture files could not be downloaded. Try again.'];
-  for (const sentence of [...hostSentences, ...python, 'Downloading the picture files', 'The picture files are ready.', 'Loading the model…']) {
+  for (const sentence of [...hostSentences, ...python, 'Downloading the picture files', 'The picture files are ready.', 'Picture files ready', 'Load the model again to read pictures.', 'Picture reading is ready.', 'Loading the model…']) {
     if (sentence === 'Loading the model…') continue;   // already in the Drafting catalog
     assert.ok(english.includes(sentence), `in the catalog: ${sentence}`);
   }

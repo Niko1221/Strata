@@ -11,5 +11,8 @@
  "pic10": "Für die Bilddateien ist nicht genug freier Speicherplatz vorhanden (etwa 1 GB).",
  "pic11": "Die Bilddateien konnten nicht heruntergeladen werden. Versuchen Sie es erneut; der Download wird dort fortgesetzt, wo er angehalten wurde.",
  "pic12": "Die heruntergeladenen Bilddateien haben die Sicherheitsprüfung nicht bestanden und wurden gelöscht. Versuchen Sie es erneut.",
- "pic13": "Die Bilddateien konnten nicht heruntergeladen werden. Versuchen Sie es erneut."
+ "pic13": "Die Bilddateien konnten nicht heruntergeladen werden. Versuchen Sie es erneut.",
+ "pic14": "Bilddateien bereit",
+ "pic15": "Laden Sie das Modell erneut, um Bilder zu lesen.",
+ "pic16": "Das Lesen von Bildern ist bereit."
 }

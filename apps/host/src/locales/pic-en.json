@@ -11,5 +11,8 @@
  "pic10": "There is not enough free disk space for the picture files (about 1 GB).",
  "pic11": "The picture files could not be downloaded. Try again; it continues where it stopped.",
  "pic12": "The downloaded picture files did not pass the safety check, so they were deleted. Try again.",
- "pic13": "The picture files could not be downloaded. Try again."
+ "pic13": "The picture files could not be downloaded. Try again.",
+ "pic14": "Picture files ready",
+ "pic15": "Load the model again to read pictures.",
+ "pic16": "Picture reading is ready."
 }

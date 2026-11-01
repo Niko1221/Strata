@@ -73,7 +73,7 @@ const posted=[];
 if(picturesScenario){
  const family=native.catalog.families.find(f=>f.family==='qwen'),size=family.sizes.find(s=>s.model==='IQ3_S')??family.sizes[0];
  size.installed=true;native.packaged=true;native.visionReader=true;
- native.installed.models=[{model:size.id,config:`strata-${size.id}.json`,model_name:family.title,ready:true,context:32768,kv:'int8',images:'off',visionPrepared:false,lowRamMode:'auto',runDataFolder:'/Users/example/qwen-own',ownGgufDir:'/Users/example/qwen-own/IQ3_S'}];
+ native.installed.models=[{model:size.id,config:`strata-${size.id}.json`,model_name:family.title,ready:true,context:131072,contextChosen:true,kv:'int8',images:'off',visionPrepared:false,lowRamMode:'auto',runDataFolder:'/Users/example/qwen-own',ownGgufDir:'/Users/example/qwen-own/IQ3_S'}];
  native.instances=[];native.defaultId=null;native.jobs=[];native.summary='Ready';setup={...setup,complete:true,step:4};
 }
 function pictureLoad(body){
@@ -82,7 +82,7 @@ function pictureLoad(body){
  const bar=percent=>({install:{download:{file:'picture reader',percent,done_gb:0.9*percent/100,total_gb:0.9,remaining_gb:0.9*(100-percent)/100}}});
  const done=(vision,note)=>{const j=native.jobs.find(x=>x.id===id);Object.assign(j,{state:'done',summary:`${family.title} is ready.`,result:null});
   if(vision){native.installed.models[0].images='yes';native.installed.models[0].visionPrepared=true;}
-  if(body.kind==='load'){native.instances=[{id:'onboarding-model',apiModelId:size.id,model:size.id,label:family.title,aliases:[],vision,context:32768,port:5262,gpus:[0],status:'ready',phase:'idle',loadedAt:new Date().toISOString(),error:null,metrics:null,...(note?{picturesNote:note}:{})}];native.defaultId='onboarding-model';}};
+  if(body.kind==='load'){native.instances=[{id:'onboarding-model',apiModelId:size.id,model:size.id,label:family.title,aliases:[],vision,context:131072,port:5262,gpus:[0],status:'ready',phase:'idle',loadedAt:new Date().toISOString(),error:null,metrics:null,...(note?{picturesNote:note}:{})}];native.defaultId='onboarding-model';}};
  const online=picturesScenario==='online';
  native.jobs.push({id,kind:body.kind,model:body.args.model,state:'running',startedAt:new Date().toISOString(),summary:online?'Downloading the picture files (0.9 GB, once)…':'Downloading the picture files (0.9 GB, once)…',error:null,result:bar(0)});
  const at=(ms,action)=>setTimeout(()=>{const j=native.jobs.find(x=>x.id===id);if(j?.state==='running')action(j);},ms).unref();

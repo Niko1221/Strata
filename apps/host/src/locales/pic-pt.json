@@ -11,5 +11,8 @@
  "pic10": "Não há espaço livre suficiente no disco para os arquivos de imagens (cerca de 1 GB).",
  "pic11": "Não foi possível baixar os arquivos de imagens. Tente novamente; o download continua de onde parou.",
  "pic12": "Os arquivos de imagens baixados não passaram na verificação de segurança e foram excluídos. Tente novamente.",
- "pic13": "Não foi possível baixar os arquivos de imagens. Tente novamente."
+ "pic13": "Não foi possível baixar os arquivos de imagens. Tente novamente.",
+ "pic14": "Arquivos de imagens prontos",
+ "pic15": "Carregue o modelo novamente para ler imagens.",
+ "pic16": "A leitura de imagens está pronta."
 }
