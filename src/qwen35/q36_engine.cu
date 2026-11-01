@@ -948,7 +948,7 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
             for (int j = 0; j < 32; ++j) h[b * 32 + j] = d * (float) (int8_t) q[2 + j];
         }
     } else if (((t.type >= 11 && t.type <= 14) || t.type == 23) && h.size() % 256 == 0) {
-        // Q3_K..Q6_K, IQ4_XS (APEX / mixed GGUFs such as Ornith's store ssm_alpha / ssm_beta so): 256-value super-blocks
+        // Q3_K..Q6_K, IQ4_XS (mixed GGUFs store ssm_alpha / ssm_beta so): 256-value super-blocks
         static const struct { void (*f)(const uint8_t*, float*); size_t bytes; } kq[] = {
             {strata::dequantize_q3_K, 110}, {strata::dequantize_q4_K, 144}, {strata::dequantize_q5_K, 176},
             {strata::dequantize_q6_K, 210}, {strata::dequantize_iq4_xs, 136}};
