@@ -808,6 +808,21 @@ class ParallelService(FakeEngineCase):
         active = [int(x.split()[3]) for x in self.log.read_text().splitlines() if x.startswith("BGEN")]
         self.assertTrue(all(a <= 1 for a in active), active)
 
+    def test_concurrent_admission_skips_solo_gen_promotion(self):
+        """When another HTTP inference call is already admitted (e.g. tokenizing in a concurrent burst), the first
+        request to reach generate_batched enters a batch slot directly (BGEN) rather than starting solo (GEN) only to
+        be immediately STOPped and re-admitted."""
+        self.start(2)
+        self.assertTrue(self.svc.reserve_inference())
+        try:
+            r = self.chat("burst peer", max_tokens=16)
+            self.assertEqual(r["choices"][0]["message"]["content"], "ok, done.")
+        finally:
+            self.svc.release_inference()
+        lines = self.log.read_text().splitlines()
+        self.assertTrue(any(x.startswith("BGEN ") for x in lines), lines)
+        self.assertFalse(any(x.startswith("GEN ") for x in lines), lines)
+
 
 
 class ParallelStackDefaults(unittest.TestCase):
@@ -896,6 +911,7 @@ class GdnStackDefaults(unittest.TestCase):
         with mock.patch.object(server, "parallel_stack_platform", return_value=True):
             env = server.child_env({"args": []})
         self.assertEqual(env.get("STRATA_GDN_TC"), "1")
+
 
 if __name__ == "__main__":
     unittest.main()

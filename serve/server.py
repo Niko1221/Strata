@@ -1873,6 +1873,10 @@ class StrataEngine:
     SOLO_AGAIN_MAX = 2      # how often a request left alone in a slot goes back to the solo path
     SOLO_AGAIN_MIN_LEFT = 32  # ... only with at least this many tokens still allowed (max_tokens)
 
+    def _others_admitted(self) -> bool:
+        fn = getattr(self, "_admission_reserved_fn", None)
+        return bool(fn and fn() > 1)
+
     def _may_go_solo(self, left: int, times: int, embeddings) -> bool:
         """A request decoding in a slot that is alone now (no other slot busy, nobody waiting) goes back to the solo
         path with its MTP drafts: the engine continues it from the slot's sessions (its slot cache; INFO
@@ -1881,7 +1885,7 @@ class StrataEngine:
                 not (self.info or {}).get("slot_cache") or os.environ.get("STRATA_PARALLEL_SOLO") == "0"):
             return False
         with self.slot_cv:
-            return sum(1 for b in self.slot_busy if b) == 1 and self.waiting == 0
+            return sum(1 for b in self.slot_busy if b) == 1 and self.waiting == 0 and not self._others_admitted()
 
     def _shorter_waiting(self, plen: int) -> bool:
         """#656: someone waits for the control lines with a prompt under half this one's: worth giving way to."""
@@ -1936,7 +1940,7 @@ class StrataEngine:
                         return
                     holding, born = True, self.gen                  # (the engine it now has the control lines of)
                 with self.slot_cv:
-                    alone = not any(self.slot_busy) and self.waiting == 0
+                    alone = not any(self.slot_busy) and self.waiting == 0 and not self._others_admitted()
                 if alone and left > 1:
                     head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
                     self._last_done = None                  # (#879: this request's DONE decides below)
@@ -1954,7 +1958,7 @@ class StrataEngine:
                     self._ctl_erred = False
                     def others():
                         with self.slot_cv:
-                            return self.waiting > 0
+                            return self.waiting > 0 or self._others_admitted()
 
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
                         nonlocal reserved
@@ -4222,6 +4226,8 @@ class Service:
         self.max_queue: int | None = None
         self.queue_timeout_s: float | None = None
         self.admission_reserved = 0
+        if self.engine is not None:
+            self.engine._admission_reserved_fn = lambda: self.admission_reserved
         self.admission_rejected = 0
         self.queue_timeouts = 0
         self.client_disconnect_cancels = 0

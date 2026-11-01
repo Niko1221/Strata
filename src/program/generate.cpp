@@ -18078,10 +18078,10 @@ int main(int argc, char** argv) {
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
                 generation = {};   // a skipped or failed production must not expose an older q view
                 const GatedDraftLimit draft_limit(mtp, gated_proposal, S_mtp, p + a + 1, o.max_context);
-                const bool drafted = !use_mtp || eos || produced_n >= max_new ||
+                const bool solo_stopping = admit_slot < 0 && stop_req.load();
+                const bool drafted = !use_mtp || eos || solo_stopping || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p,
                                                nullptr, gated_proposal ? &generation : nullptr);
-
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -18504,8 +18504,26 @@ int main(int argc, char** argv) {
                             }
                     // STRATA_SLOT_CKPT_MOVE: this request's own turn checkpoint (or the one it moved out of this slot)
                     // moves into the slot; a pinned prefix, a root and any other the chain shares are copied as before
+                    int64_t prompt_turn_at = turn_at;
+                    if (prompt_turn_at < 0 && from_live && req_ckpt && o.prompt_cache > 0 && o.turn_token >= 0) {
+                        for (int64_t i = n - 1; i > 0; --i)
+                            if (ids[(size_t) i] == o.turn_token) { prompt_turn_at = i; break; }
+                        if (prompt_turn_at > 0 && o.tail_role_token >= 0)
+                            for (int64_t i = prompt_turn_at - 1; i > 0; --i)
+                                if (ids[(size_t) i] == o.turn_token) {
+                                    if (ids[(size_t) i + 1] == o.tail_role_token) prompt_turn_at = i;
+                                    break;
+                                }
+                        if (o.prompt_cache_root > 0) {
+                            for (int64_t i = 1; i < n; ++i)
+                                if (ids[(size_t) i] == o.turn_token) {
+                                    if (i >= o.prompt_cache_root && prompt_turn_at == i) prompt_turn_at = -1;
+                                    break;
+                                }
+                        }
+                    }
                     const bool move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
-                                           !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
+                                           !best->pinned && ((prompt_turn_at > 0 && (int64_t) best->ids.size() == prompt_turn_at) ||
                                             (int64_t) best->ids.size() == moved_in);
                     const auto tc3 = Clock::now();
                     if (move_best) {
