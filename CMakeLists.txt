@@ -99,10 +99,10 @@ option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF
 # the HIP engines (a HIP code object loads on first use, so the extra kernels cost nothing until a wide window forms)
 # and 8 for CUDA, which loads every kernel at start (CUDA_MODULE_LOADING=EAGER: the wide kernels would take VRAM from
 # the expert cache of every card); -DSTRATA_WINDOW_MAX_T=16 builds the wide CUDA engine.
-set(STRATA_WINDOW_MAX_T "auto" CACHE STRING "rows of a verify / batch window: 8, 16 or auto (HIP 16, CUDA 8)")
-set_property(CACHE STRATA_WINDOW_MAX_T PROPERTY STRINGS auto 8 16)
-if(NOT STRATA_WINDOW_MAX_T STREQUAL "auto" AND NOT STRATA_WINDOW_MAX_T STREQUAL "8" AND NOT STRATA_WINDOW_MAX_T STREQUAL "16")
-  message(FATAL_ERROR "STRATA_WINDOW_MAX_T must be auto, 8 or 16 (got '${STRATA_WINDOW_MAX_T}')")
+set(STRATA_WINDOW_MAX_T "auto" CACHE STRING "rows of a verify / batch window: 8, 12, 16 or auto (HIP 16, CUDA 8)")
+set_property(CACHE STRATA_WINDOW_MAX_T PROPERTY STRINGS auto 8 12 16)
+if(NOT STRATA_WINDOW_MAX_T STREQUAL "auto" AND NOT STRATA_WINDOW_MAX_T STREQUAL "8" AND NOT STRATA_WINDOW_MAX_T STREQUAL "12" AND NOT STRATA_WINDOW_MAX_T STREQUAL "16")
+  message(FATAL_ERROR "STRATA_WINDOW_MAX_T must be auto, 8, 12 or 16 (got '${STRATA_WINDOW_MAX_T}')")
 endif()
 if(STRATA_ENABLE_HIP OR STRATA_ENABLE_CUDA)
   if(STRATA_WINDOW_MAX_T STREQUAL "auto")

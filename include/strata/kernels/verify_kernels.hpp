@@ -28,7 +28,7 @@ inline constexpr int kVerifyMaxT = kWindowMaxT;
 /// per-group kernel, the CPU experts and the drafter keep their kVerifyMaxT rows; only the window-wide parts (staging,
 /// head, commit) take more.  A build whose windows already hold 16 rows runs the 16 as one group.
 /// Batch and pipelined windows stay at kVerifyMaxT.
-inline constexpr int kVerifyLongT = kVerifyMaxT >= 16 ? kVerifyMaxT : 2 * kVerifyMaxT;
+inline constexpr int kVerifyLongT = kVerifyMaxT > kVerifyNarrowT ? kVerifyMaxT : 2 * kVerifyMaxT;
 
 /// For token t of T: conv over [history(3) | qkv_0 .. qkv_t] -> SiLU -> L2 norm of the q/k heads -> h[t].
 /// `history` is NOT written, but with `commit` (one token): it then keeps the token, as gdn_conv_commit.  Bitwise
