@@ -346,6 +346,7 @@ private:
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
     std::vector<int> tap_layers_;
+    std::vector<int> tap_local_;                  ///< the tapped layers this stage runs (run)
     int64_t tap_first_ = 0, tap_cap_ = 0;
     float* tap_dev_ = nullptr;
     Prefill* next_ = nullptr;

@@ -364,6 +364,18 @@ public:
     void set_taps(const std::vector<int>& layers) { tap_req_ = layers; }
     const float* tap_dev() const { return tap_dev_; }
     bool tapping() const { return tap_on_; }
+    /// Batch windows tap too (default off: the graphs of --batch windows carry no tap kernels): the slot drafters of DFlash2 read rows of tap_dev().  Before init.
+    void set_batch_taps(bool on) { tap_batch_ = on; }
+    /// Layer split (DFlash2): every stage of this chain keeps the requested layers inside its own range (set_taps on each stage before init).
+    /// The valid requested layers (zero-based, below the last layer) in the order the drafter reads them; a stage's own buffer holds its share.
+    int tap_total() const;
+    /// True when every stage of the chain from this one holds its share of the taps (each stage that owns a requested layer taps it).
+    bool tapping_chain() const;
+    /// After a window (every stage's run has returned, so the taps are final): copy rows [row0, row0 + rows) of every stage's taps into
+    /// `landing` rows [dst_row0, ...) as [row][tap_total()][n_embd] floats, on `landing_device` (any card; cudaMemcpyPeerAsync, no P2P needed;
+    /// a single-stage chain is one copy).  The copies run on each stage's own tap stream, not behind its commit; `wait_stream` (the drafter's,
+    /// on landing_device) then waits on an event of each, so the host does not block.  Bytes are copied as they are (no conversion).
+    bool gather_taps(float* landing, int landing_device, int row0, int rows, int dst_row0, cudaStream_t wait_stream, std::string& err);
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -635,11 +647,14 @@ private:
     // (the residual with its pending FFN write applied, the mean of the hc streams) per row; run() appends
     // (pos, token, taps) records to the file.
     bool tap_on_ = false;
+    bool tap_batch_ = false;                      ///< set_batch_taps
     std::vector<int> tap_req_;                    ///< set_taps
     std::vector<int> tap_layers_;                 ///< the tapped layer ids (zero-based, completed outputs)
     std::vector<int> tap_slot_;                   ///< layer -> slot in tap_layers_, or -1
     float* tap_dev_ = nullptr;                    ///< [max_t][n_taps][n_embd]
     float* tap_scratch_ = nullptr;                ///< one row's streams, [hc][n_embd]
+    cudaStream_t tap_cs_ = nullptr;               ///< gather_taps: this stage's copies of its taps (lazily created on device_)
+    cudaEvent_t tap_ev_ = nullptr;
     float* h_tap_ = nullptr;     float* m_tap_ = nullptr;       ///< the mapped copy of tap_dev_
     std::FILE* tap_file_ = nullptr;
     void tap_write(int T, const int32_t* tokens, int64_t pos0);

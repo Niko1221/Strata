@@ -81,7 +81,7 @@ int main() {
                                         float pr[8];
                                         for (float& x : pr) x = (float) (std::rand() % 101) / 100.0f;
                                         WindowRuleIn in;
-                                        in.use_mtp = use_mtp; in.df2_active = df2; in.spec_cost = cost; in.first_window = first;
+                                        in.use_mtp = use_mtp; in.draft_on = use_mtp; in.df2_active = df2; in.spec_cost = cost; in.first_window = first;
                                         in.chain_rows = rows; in.cap = cap; in.start = use_mtp ? cap : 1; in.spec_min_p = mp;
                                         in.draft_conf = dc; in.dprob = pr;
                                         ++n;

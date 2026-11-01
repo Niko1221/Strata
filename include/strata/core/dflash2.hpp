@@ -44,7 +44,9 @@ public:
     /// Reads the pack (tools/dflash2_pack.py) to the GPU `device` and allocates the ring and the buffers (about 0.8 GB).
     bool load(const std::string& pack_path, int device, std::string& err);
     /// The target's embedding and head (and the draft vocabulary file, "" or missing: the whole head).
-    bool bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err);
+    /// `head_device` >= 0 and not this card's: the head sits on another card (a layer split's last stage); the draft vocabulary's rows are gathered there and
+    /// copied over once, so the drafter can sit on the first stage's card.
+    bool bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err, int head_device = -1);
     /// DF-05: before bind, the MTP drafter's gathered draft-head rows and vocabulary (device pointers it keeps owning) when they are the same bytes this
     /// drafter would gather; bind then uses them instead of a second copy (about 213 MiB on Flash-Next) and checks the vocabulary against the file.
     struct SharedHead { const uint8_t* rows = nullptr; const int32_t* vocab_dev = nullptr; const std::vector<int32_t>* vocab_host = nullptr; int64_t n = 0; int type = -1; };
@@ -53,6 +55,19 @@ public:
     /// Tests: an embedding callback and a head given as raw rows of `head_type` (a native_mmvq type).
     using EmbedFn = std::function<void(const int32_t* tokens_dev, int n, float* out, cudaStream_t)>;
     bool bind_raw(EmbedFn embed, const void* head_w, int head_type, int64_t head_rows, const std::vector<int32_t>& vocab, std::string& err);
+
+    /// Batch slots and layer splits.  A slot's drafter shares this one's immutable pack, embedding callback and draft head (same card) and owns only
+    /// its ring, buffers, streams and graphs (about 100 MiB): `clone_alloc` after the parent's `load`, `clone_bind` after its `bind`, then `set_max_drafts` and `prepare` as for the parent.
+    bool clone_alloc(const Dflash2Drafter& parent, std::string& err);   ///< after the parent's load: streams and buffers (before the expert cache is sized)
+    bool clone_bind(const Dflash2Drafter& parent, std::string& err);    ///< after the parent's bind: the shared head, embedding and the draft logits
+    /// Copy another drafter's context (ring, tags, token history, epoch) exactly: a request that moves between the solo session and a batch slot.  Same card.
+    bool copy_state_from(Dflash2Drafter& src, std::string& err);
+    /// A fixed device buffer [kRows][taps][n_embd] on this drafter's card: where a layer split's stages land their taps (Verifier::gather_taps) and the
+    /// graphs are captured on it.  Allocated at load.
+    float* landing() const { return landing_; }
+    int device() const { return device_; }
+    int n_taps() const { return (int) taps_.size(); }
+    int64_t ring_hi() const { return ring_hi_; }
 
     /// A new request: the ring is empty again.
     void reset() { have_ctx_ = 0; hist_.clear(); ++epoch_; ring_hi_ = 0; }
@@ -114,6 +129,9 @@ private:
     cudaStream_t cs_ = nullptr;
     std::vector<Tensor> tensors_;
     uint8_t* blob_ = nullptr;
+    bool blob_shared_ = false;      ///< blob_ (and the bound head) belong to the parent drafter (clone_for_slot)
+    float* landing_ = nullptr;
+    bool make_streams(std::string& err);
     uint64_t vram_ = 0;
     bool q4_ = false;   // the pack's matrices are Q4_0 (tools/dflash2_pack.py --q4_0)
     int N_ = 2560, L_ = 5, NH_ = 32, NKV_ = 8, HD_ = 128, I_ = 7680, window_ = 2048, group_ = 16, rank_ = 256, mask_token_ = 0;
