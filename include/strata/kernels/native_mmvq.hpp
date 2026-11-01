@@ -155,6 +155,10 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
 /// bitwise the two calls. Returns false (nothing launched) where that is not the case (Q8_0, 2-8 columns only).
 bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
                       int n_in, int n_out, int ncols, void* stream);
+/// Same as native_mmvq_pair, but computes row bxi of w_gate and row bxi of w_up in the same CTA and writes
+/// SwiGLU(gate, up) directly into y_swiglu (saving the y2 global memory write and read).
+bool native_mmvq_pair_swiglu(int ggml_type, const void* w_gate, const void* w_up, const void* x_q8_1, float* y_swiglu,
+                             int n_in, int n_out, int ncols, void* stream);
 
 // Fork F4 (Eddoursul): 2..4 columns also INTERLEAVED, so one 16-byte load reads a position of every column: CP = 2 (2
 // columns) or 4 (3-4), zero-padded; nb = n_in / 32 blocks; int32 bm[nb][8][CP] (block-major), int32 pm[8][nb][CP]

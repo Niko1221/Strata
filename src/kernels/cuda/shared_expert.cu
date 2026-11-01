@@ -231,17 +231,23 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
         x_q8_1 = nw.q8_1;
     }
     // gate and up in one launch where the pair applies (bitwise identical to the two calls)
-    if (!((pair || default_pair) && nw.gate_type == nw.up_type &&
-          native_mmvq_pair(nw.gate_type, nw.gate_data, nw.up_data, x_q8_1, gate, up, (int) n_embd, (int) n_ff, n_tok, stream))) {
-        native_mmvq(nw.gate_type, nw.gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
-        native_mmvq(nw.up_type, nw.up_data, x_q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
-    }
-    const int n = (int) (n_ff * n_tok);
-    if (fused_swiglu_q81_enabled()) {
-        native_swiglu_quantize_q8_1(gate, up, nw.q8_1, (int) n_ff, n_tok, stream);
-    } else {
-        native_swiglu_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate, up, gate, n);
+    const bool use_pair = (pair || default_pair) && nw.gate_type == nw.up_type;
+    if (use_pair && fused_swiglu_q81_enabled() &&
+        native_mmvq_pair_swiglu(nw.gate_type, nw.gate_data, nw.up_data, x_q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream)) {
         native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
+    } else {
+        if (!(use_pair &&
+              native_mmvq_pair(nw.gate_type, nw.gate_data, nw.up_data, x_q8_1, gate, up, (int) n_embd, (int) n_ff, n_tok, stream))) {
+            native_mmvq(nw.gate_type, nw.gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
+            native_mmvq(nw.up_type, nw.up_data, x_q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
+        }
+        const int n = (int) (n_ff * n_tok);
+        if (fused_swiglu_q81_enabled()) {
+            native_swiglu_quantize_q8_1(gate, up, nw.q8_1, (int) n_ff, n_tok, stream);
+        } else {
+            native_swiglu_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate, up, gate, n);
+            native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
+        }
     }
     native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
     if (gate_deferred) {   // the caller computed g (raw) with the router and scales `out` in the combine

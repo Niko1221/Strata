@@ -1384,7 +1384,7 @@ template<> struct B6X<IQ4XSTraits> {
 
 // S26 STRATA_LFUSE (PAIR): blocks n_out.. compute the same rows of w2 into y2 (two matrices of one shape on one
 // input in one launch; each output's code is the single matrix's)
-template<typename F, int NCOLS, int NW, int ROWS, bool TS = false, bool PAIR = false>
+template<typename F, int NCOLS, int NW, int ROWS, bool TS = false, bool PAIR = false, bool SWIGLU_PAIR = false>
 __launch_bounds__(NW * WARP, (ROWS <= 2 ? 4 : 1))
 __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w, const Q81Block* x_, float* y_,
                                          int n_in, int n_out,
@@ -1394,10 +1394,10 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
     constexpr int BPI = F::BPI * NW / WARPS;           // blocks per iteration scale with the warp count
     const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
     int bxi = int(blockIdx.x);
-    if constexpr (PAIR) {
+    if constexpr (PAIR && !SWIGLU_PAIR) {
         if (bxi >= n_out / ROWS) { bxi -= n_out / ROWS; w = w2; y = y2; }
     }
-    const int row0 = ROWS * bxi;
+    const int row0 = SWIGLU_PAIR ? bxi : ROWS * bxi;
     const int blocks_per_row = n_in / F::DIV;
     const int x_stride = n_in / Q8K;                   // Q8_1 blocks per activation column
     float tmp[NCOLS][ROWS] = {};
@@ -1408,9 +1408,16 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
         typename F::W w0[ROWS];
         const int kqs = F::kqs(tid);
         if (kbx < blocks_per_row) {
+            if constexpr (SWIGLU_PAIR) {
+                if (row0 < n_out) {
+                    w0[0] = F::load(w  + std::size_t(row0) * blocks_per_row + kbx, kqs);
+                    w0[1] = F::load(w2 + std::size_t(row0) * blocks_per_row + kbx, kqs);
+                }
+            } else {
 #pragma unroll
-            for (int i = 0; i < ROWS; ++i)
-                if (row0 + i < n_out) w0[i] = F::load(w + std::size_t(row0 + i) * blocks_per_row + kbx, kqs);
+                for (int i = 0; i < ROWS; ++i)
+                    if (row0 + i < n_out) w0[i] = F::load(w + std::size_t(row0 + i) * blocks_per_row + kbx, kqs);
+            }
         }
         pdl_trigger();
         pdl_wait();
@@ -1418,7 +1425,7 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
             const int kby = kbx * F::KBY;
 #pragma unroll
             for (int i = 0; i < ROWS; ++i) {
-                if (row0 + i < n_out) {
+                if ((SWIGLU_PAIR ? row0 : row0 + i) < n_out) {
 #pragma unroll
                     for (int j = 0; j < NCOLS; ++j)
                         tmp[j][i] += F::apply(w0[i], x + std::size_t(j) * x_stride + kby, kqs);
@@ -1435,13 +1442,26 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
             typename XB::X xv[NCOLS];
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) xv[j] = XB::xload(x + std::size_t(j) * x_stride + kby, kqs);
+            if constexpr (SWIGLU_PAIR) {
+                if (row0 < n_out) {
+                    const std::size_t block = std::size_t(row0) * blocks_per_row + kbx;
+                    const typename XB::W wv0 = XB::wload(w  + block, kqs);
+                    const typename XB::W wv1 = XB::wload(w2 + block, kqs);
 #pragma unroll
-            for (int i = 0; i < ROWS; ++i) {
-                if (row0 + i < n_out) {
-                    const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
-                    const typename XB::W wv = XB::wload(w + block, kqs);
+                    for (int j = 0; j < NCOLS; ++j) {
+                        tmp[j][0] += XB::dot(wv0, xv[j]);
+                        tmp[j][1] += XB::dot(wv1, xv[j]);
+                    }
+                }
+            } else {
 #pragma unroll
-                    for (int j = 0; j < NCOLS; ++j) tmp[j][i] += XB::dot(wv, xv[j]);
+                for (int i = 0; i < ROWS; ++i) {
+                    if (row0 + i < n_out) {
+                        const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
+                        const typename XB::W wv = XB::wload(w + block, kqs);
+#pragma unroll
+                        for (int j = 0; j < NCOLS; ++j) tmp[j][i] += XB::dot(wv, xv[j]);
+                    }
                 }
             }
         } else {
@@ -1466,6 +1486,26 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
     }
     __syncthreads();
     if (threadIdx.y > 0) return;
+    if constexpr (SWIGLU_PAIR) {
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j) {
+#pragma unroll
+            for (int i = 0; i < 2; ++i) {
+#pragma unroll
+                for (int l = 0; l < NW - 1; ++l) tmp[j][i] += partial[l][j][i][threadIdx.x];
+                tmp[j][i] = warp_sum(tmp[j][i]);
+            }
+        }
+        if (int(threadIdx.x) < NCOLS && row0 < n_out) {
+            float g_j = 0.0f, u_j = 0.0f;
+#pragma unroll
+            for (int j = 0; j < NCOLS; ++j) {
+                if (int(threadIdx.x) == j) { g_j = tmp[j][0]; u_j = tmp[j][1]; }
+            }
+            y[std::size_t(threadIdx.x) * n_out + row0] = __fmul_rn(__fdividef(g_j, __fadd_rn(1.0f, __expf(-g_j))), u_j);
+        }
+        return;
+    }
     if constexpr (TS) {
         constexpr int V = NCOLS * ROWS, P = s26ts::pow2_ceil(V);
         float v[P];
@@ -3541,6 +3581,45 @@ bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void*
         case 6: q8_0_pair_launch<6>(a, b, x, y1, y2, n_in, n_out, s); break;
         case 7: q8_0_pair_launch<7>(a, b, x, y1, y2, n_in, n_out, s); break;
         default: q8_0_pair_launch<8>(a, b, x, y1, y2, n_in, n_out, s); break;
+    }
+    launch_check();
+    return true;
+}
+
+template<int NCOLS>
+void q8_0_pair_swiglu_launch(const Q80Block* w1, const Q80Block* w2, const Q81Block* x, float* y_swiglu,
+                             int n_in, int n_out, cudaStream_t s) {
+    using F = SmallTraits<Q80Block, 8>;
+    const dim3 threads(WARP, WARPS);
+    native_mmvq_multi_kernel<F, NCOLS, WARPS, 2, false, true, true><<<unsigned(n_out), threads, 0, s>>>(
+        w1, x, y_swiglu, n_in, n_out, w2, nullptr);
+}
+
+bool native_mmvq_pair_swiglu(int ggml_type, const void* w_gate, const void* w_up, const void* x_q8_1, float* y_swiglu,
+                             int n_in, int n_out, int ncols, void* stream) {
+    using F = SmallTraits<Q80Block, 8>;
+    static const bool enabled = [] {
+        const char* v = std::getenv("STRATA_MMVQ_PAIR_SWIGLU");
+        return v == nullptr || v[0] != '0';
+    }();
+    if (!enabled || s26_tsum_on() || ggml_type != 8 || !g_multi_exact || b6_rows_mode() > 0 || ncols < 2 || ncols > 9 ||
+        n_out <= 0 || n_in <= 0 || n_in % 32 != 0 || n_in / F::DIV < F::BPI || !w_gate || !w_up || !x_q8_1 || !y_swiglu || !stream)
+        return false;
+    const auto& reg = q8_packed_registry();
+    if (reg.count(w_gate) || reg.count(w_up)) return false;
+    const auto* a = static_cast<const Q80Block*>(w_gate);
+    const auto* b = static_cast<const Q80Block*>(w_up);
+    const auto* x = static_cast<const Q81Block*>(x_q8_1);
+    const auto s = static_cast<cudaStream_t>(stream);
+    switch (ncols) {
+        case 2: q8_0_pair_swiglu_launch<2>(a, b, x, y_swiglu, n_in, n_out, s); break;
+        case 3: q8_0_pair_swiglu_launch<3>(a, b, x, y_swiglu, n_in, n_out, s); break;
+        case 4: q8_0_pair_swiglu_launch<4>(a, b, x, y_swiglu, n_in, n_out, s); break;
+        case 5: q8_0_pair_swiglu_launch<5>(a, b, x, y_swiglu, n_in, n_out, s); break;
+        case 6: q8_0_pair_swiglu_launch<6>(a, b, x, y_swiglu, n_in, n_out, s); break;
+        case 7: q8_0_pair_swiglu_launch<7>(a, b, x, y_swiglu, n_in, n_out, s); break;
+        case 8: q8_0_pair_swiglu_launch<8>(a, b, x, y_swiglu, n_in, n_out, s); break;
+        default: q8_0_pair_swiglu_launch<9>(a, b, x, y_swiglu, n_in, n_out, s); break;
     }
     launch_check();
     return true;
