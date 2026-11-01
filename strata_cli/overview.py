@@ -12,6 +12,8 @@ last request's; the speed is the live rate while generating, else the last reque
 
 from __future__ import annotations
 
+import collections
+import os
 import time
 from typing import Any
 
@@ -79,6 +81,149 @@ def _total(values: list) -> float | None:
 def _most(values: list) -> float | None:
     present = [v for v in values if v is not None]
     return max(present) if present else None
+
+
+_WIN_GPU_HIST = {
+    "util": collections.deque(maxlen=60),
+    "vram": collections.deque(maxlen=60),
+    "temp": collections.deque(maxlen=60),
+    "power": collections.deque(maxlen=60),
+}
+_WIN_PDH = None
+
+
+class _WinPdh:
+    def __init__(self):
+        import ctypes
+        self.adl = None
+        self.context = None
+        self.pdh = getattr(ctypes.windll, "pdh", None)
+        self.hQuery = ctypes.c_void_p()
+        self.hVram = ctypes.c_void_p()
+        self.hUtil = ctypes.c_void_p()
+        self.ok = False
+
+        if os.name == "nt":
+            try:
+                self.adl = ctypes.cdll.LoadLibrary("atiadlxx.dll")
+                MALLOC_CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_size_t)
+
+                def adl_malloc(size):
+                    return ctypes.windll.msvcrt.malloc(size)
+
+                self._cb = MALLOC_CALLBACK(adl_malloc)
+                ctx = ctypes.c_void_p()
+                if self.adl.ADL2_Main_Control_Create(self._cb, 1, ctypes.byref(ctx)) == 0:
+                    self.context = ctx
+                    self.ok = True
+            except Exception:
+                pass
+
+            if self.pdh:
+                try:
+                    if self.pdh.PdhOpenQueryW(None, 0, ctypes.byref(self.hQuery)) == 0:
+                        r1 = self.pdh.PdhAddEnglishCounterW(self.hQuery, "\\GPU Local Adapter Memory(*)\\Local Usage", 0, ctypes.byref(self.hVram))
+                        r2 = self.pdh.PdhAddEnglishCounterW(self.hQuery, "\\GPU Engine(*)\\Utilization Percentage", 0, ctypes.byref(self.hUtil))
+                        if r1 == 0 or r2 == 0:
+                            self.pdh.PdhCollectQueryData(self.hQuery)
+                            self.ok = True
+                except Exception:
+                    pass
+
+    def sample(self):
+        if not self.ok:
+            return None, None, None, None
+        import ctypes
+        import struct
+        vram_gib = None
+        util = None
+        temp = None
+        power = None
+
+        if self.adl and self.context:
+            try:
+                class ADLSingleSensorData(ctypes.Structure):
+                    _fields_ = [("supported", ctypes.c_int), ("value", ctypes.c_int)]
+
+                class ADLPMLogDataOutput(ctypes.Structure):
+                    _fields_ = [("size", ctypes.c_int), ("sensors", ADLSingleSensorData * 256)]
+
+                data = ADLPMLogDataOutput()
+                data.size = ctypes.sizeof(ADLPMLogDataOutput)
+                if self.adl.ADL2_New_QueryPMLogData_Get(self.context, 0, ctypes.byref(data)) == 0:
+                    if data.sensors[8].supported and data.sensors[8].value > 0:
+                        temp = float(data.sensors[8].value)
+                    elif data.sensors[27].supported and data.sensors[27].value > 0:
+                        temp = float(data.sensors[27].value)
+                    if data.sensors[23].supported and data.sensors[23].value >= 0:
+                        power = float(data.sensors[23].value)
+            except Exception:
+                pass
+
+        if self.pdh and self.hQuery:
+            try:
+                self.pdh.PdhCollectQueryData(self.hQuery)
+                if self.hVram:
+                    bs = ctypes.c_uint32(0)
+                    cnt = ctypes.c_uint32(0)
+                    self.pdh.PdhGetFormattedCounterArrayW(self.hVram, 0x00000400, ctypes.byref(bs), ctypes.byref(cnt), None)
+                    if bs.value > 0:
+                        buf = ctypes.create_string_buffer(bs.value)
+                        if self.pdh.PdhGetFormattedCounterArrayW(self.hVram, 0x00000400, ctypes.byref(bs), ctypes.byref(cnt), buf) == 0:
+                            max_v = 0
+                            for off in range(0, cnt.value * 24, 24):
+                                _, _, v = struct.unpack_from("QQq", buf, off)
+                                if v > max_v:
+                                    max_v = v
+                            if max_v > 0:
+                                vram_gib = max_v / (1024.0 ** 3)
+                if self.hUtil:
+                    bs = ctypes.c_uint32(0)
+                    cnt = ctypes.c_uint32(0)
+                    self.pdh.PdhGetFormattedCounterArrayW(self.hUtil, 0x00000200, ctypes.byref(bs), ctypes.byref(cnt), None)
+                    if bs.value > 0:
+                        buf = ctypes.create_string_buffer(bs.value)
+                        if self.pdh.PdhGetFormattedCounterArrayW(self.hUtil, 0x00000200, ctypes.byref(bs), ctypes.byref(cnt), buf) == 0:
+                            tot = 0.0
+                            for off in range(0, cnt.value * 24, 24):
+                                nptr, _, v = struct.unpack_from("QQd", buf, off)
+                                name = ctypes.wstring_at(nptr)
+                                if ("engtype_compute" in name or "engtype_3d" in name) and v > 0.05:
+                                    tot += v
+                            util = min(100.0, round(tot, 1))
+            except Exception:
+                pass
+        return vram_gib, util, temp, power
+
+
+def _get_windows_gpu_sample(engine: dict):
+    global _WIN_PDH
+    if _WIN_PDH is None:
+        _WIN_PDH = _WinPdh()
+    vram_gib, util, temp, power = _WIN_PDH.sample()
+    if vram_gib is None:
+        slots = engine.get("expert_cache_mib") or 0
+        arena = engine.get("arena_mib") or 0
+        if slots or arena:
+            vram_gib = (slots + arena) / 1024.0
+    if vram_gib is not None:
+        _WIN_GPU_HIST["vram"].append(vram_gib)
+    if util is not None:
+        _WIN_GPU_HIST["util"].append(util)
+    if temp is not None:
+        _WIN_GPU_HIST["temp"].append(temp)
+    if power is not None:
+        _WIN_GPU_HIST["power"].append(power)
+    return {
+        "vram_used": vram_gib,
+        "vram_hist": list(_WIN_GPU_HIST["vram"]),
+        "util": util,
+        "util_hist": list(_WIN_GPU_HIST["util"]),
+        "temp": temp,
+        "temp_hist": list(_WIN_GPU_HIST["temp"]),
+        "power": power,
+        "power_hist": list(_WIN_GPU_HIST["power"]),
+    }
 
 
 def build(metrics: dict | None) -> dict | None:
@@ -168,6 +313,25 @@ def build(metrics: dict | None) -> dict | None:
         g["power"] = _total([c["power"] for c in cards])
         g["power_limit"] = _total([c["power_limit"] for c in cards])
         g["count"] = float(len(cards))
+    g = model["gpu"]
+    if os.name == "nt" and (g["vram_used"] is None or g["util"] is None or g["temp"] is None or g["power"] is None):
+        s = _get_windows_gpu_sample(engine)
+        if g["vram_used"] is None and s.get("vram_used") is not None:
+            g["vram_used"] = s["vram_used"]
+            if not g["vram_hist"] or all(x is None for x in g["vram_hist"]):
+                g["vram_hist"] = s["vram_hist"]
+        if g["util"] is None and s.get("util") is not None:
+            g["util"] = s["util"]
+            if not g["util_hist"] or all(x is None for x in g["util_hist"]):
+                g["util_hist"] = s["util_hist"]
+        if g["temp"] is None and s.get("temp") is not None:
+            g["temp"] = s["temp"]
+            if not g["temp_hist"] or all(x is None for x in g["temp_hist"]):
+                g["temp_hist"] = s["temp_hist"]
+        if g["power"] is None and s.get("power") is not None:
+            g["power"] = s["power"]
+            if not g["power_hist"] or all(x is None for x in g["power_hist"]):
+                g["power_hist"] = s["power_hist"]
     return model
 
 
