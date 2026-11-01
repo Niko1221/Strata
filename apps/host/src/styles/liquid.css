@@ -1092,3 +1092,55 @@ body {
   :root { --st-press-scale: 1; --st-panel-shift: 0px; }
 }
 
+/* Reasoning ("Thought for 38s"): the summary is a control (hover wash, press),
+   the chevron turns, and the passage grows open and fades in — it used to jump.
+   The rule that marks the passage belongs to the body, so the line above it
+   never moves. Where ::details-content is not supported it simply opens. */
+.rz > summary {
+  width: fit-content;
+  max-width: 100%;
+  margin-left: -8px;
+  padding: 2px 8px;
+  border-radius: var(--st-r-pill);
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    transform var(--st-t-micro) var(--st-ease-standard);
+}
+.rz > summary:hover {
+  background: var(--st-fill-hover);
+}
+.rz > summary:active {
+  background: var(--st-fill-press);
+  transform: scale(var(--st-press-scale));
+}
+.rz > summary:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--st-ink-muted);
+}
+.rz__chev {
+  transition: transform var(--st-t-local) var(--st-ease-standard);
+}
+.rz[open] {
+  border-left: 0;
+  padding-left: 0;
+}
+.rz__body {
+  margin-left: 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--st-hairline);
+}
+@supports (interpolate-size: allow-keywords) {
+  .rz::details-content {
+    block-size: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition:
+      content-visibility var(--st-t-surface) allow-discrete,
+      block-size var(--st-t-surface) var(--st-ease-standard),
+      opacity var(--st-t-local) var(--st-ease-standard);
+  }
+  .rz[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
+}
+
