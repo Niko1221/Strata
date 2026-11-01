@@ -1401,8 +1401,8 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
 #endif
 #ifndef STRATA_USE_HIP
-    // The FP16 weight kept on the device after its first dequant (same values, same product: bit-exact).  0.2.9.1: on by
-    // default (Linux CUDA) and sized by the card, never by the user.  It takes only VRAM nobody else holds: a weight is
+    // The FP16 weight kept on the device after its first dequant.  NOT bit-exact against the uncached sliced form on every
+    // card (see the default below): off unless STRATA_PF_W16_CACHE_MIB is set.  When on it is sized by the card, never by the user.  It takes only VRAM nobody else holds: a weight is
     // cached while the card keeps kW16AutoReserve free afterwards (the MTP prompt capture, the batch windows and a long
     // prompt's buffers are allocated later, out of that room; a replica with 309 MiB free ran out of memory at 14K tokens),
     // so a card whose expert cache fills it caches nothing and a card with room (all experts resident) caches what the
@@ -1414,12 +1414,12 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
             w16_reserve_ = 2ll << 30;
         } else {
-#if defined(_WIN32)
-            w16_budget_ = 0;   // never run on Windows NVIDIA: off until a box has measured it
-#else
-            w16_budget_ = 16ll << 30;
+            // OFF by default (INT3, 11-01; owner's rule: a default that changes values needs 5%+, KL and a yes).  cda6463e8 had turned it on for
+            // Linux CUDA as 'bit-exact', but gemm_dequant_side_parity fails with it on sm_86 (z440, boston), sm_120 (l620) and sm_121 (Spark): a
+            // cached weight runs one full-N GEMM where the uncached form runs the sliced ones, and the roundings differ.  v0.2.9 had it off.
+            // STRATA_PF_W16_CACHE_MIB=N (above) turns it on by hand; the automatic sizing (kW16AutoReserve) is kept for when it is shown exact.
+            w16_budget_ = 0;
             w16_reserve_ = kW16AutoReserve;
-#endif
         }
     }
     if (w16_budget_ > 0 && !side_scratch_) {

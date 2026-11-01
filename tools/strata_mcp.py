@@ -1332,6 +1332,9 @@ class Strata:
                               "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
                               "memory_gb": round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
+                              # DeepSeek only: does the engine's `--experts auto` give 5 here? (strata_control/dsv41_fit.py rdna4_faster: one RDNA4 card, or
+                              # several holding half of the experts); the app's Speed label says so. None: the app's own rules (16 GiB, integrated) decide.
+                              "rdna4_faster": self.dsv41_rdna4_faster(hw, m) if own and own.get("multi_file") else None,
                               # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):
                               # only with two or more cards that count; "recommended" names the pre-selected option
                               "gpu_options": (self.dsv41_options(hw, m) if own and own.get("multi_file")
@@ -1455,6 +1458,14 @@ class Strata:
             return (f"fits: {pl['experts_in_vram']:,} of {pl['experts_total']:,} experts in graphics memory, the rest on the CPU "
                     f"({pl['ram_needed_gb']:.0f} GB of RAM)")
         return "not checked (this computer's memory could not be read)"
+
+    @staticmethod
+    def dsv41_rdna4_faster(hw, model) -> bool | None:
+        from strata_control import dsv41_fit
+        try:
+            return dsv41_fit.rdna4_faster(list((hw or {}).get("gpus", [])), model, (hw or {}).get("engine_vendor"))
+        except Exception:                                  # noqa: BLE001 - a convenience for the label: never break the model list
+            return None
 
     def dsv41_options(self, hw, model=None) -> dict | None:
         """gpu_fit-shaped card choices for DeepSeek-V4.1-Flash: every card (recommended: the model is bigger than any one card), or the

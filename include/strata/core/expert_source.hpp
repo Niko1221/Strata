@@ -1309,6 +1309,11 @@ public:
     /// The owner of a lock the engine took on its own (the PLE table's residency lock) gives it back here and returns the bytes
     /// it released (0: nothing to give); `open` then reads the available RAM again.  Unset: nothing is given back.
     std::function<uint64_t()> give_back_ram;
+    /// #4846 (owner 11-01): set before `open` when a RAM shortage that survives the wait and the give-back must not be loaded into
+    /// (arena_ram_verdict, ple_residency.hpp).  `open` then registers and allocates nothing, returns false with `ram_short()` true and the
+    /// numbers in `err`; the caller uses the --mmap-experts source for this run.  Unset: the shortage is only warned about, as before.
+    bool fall_back_when_ram_short = false;
+    bool ram_short() const { return ram_short_; }
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
     const std::string& ram_warning() const { return ram_warning_; }
     uint64_t pinned_arena_bytes() const { return pinned_bytes_; }   ///< what the driver registered (the pinned prefix, or the total by need)
@@ -1332,6 +1337,7 @@ private:
     std::atomic<int64_t> reads_{0};   ///< (a counter only; two threads can read blobs at once)
     std::string note_;
     std::string ram_warning_;
+    bool ram_short_ = false;
     double gib_per_s_ = 0.0;
     double load_seconds_ = 0.0;
     double load_read_s_ = 0.0;

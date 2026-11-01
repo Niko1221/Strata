@@ -254,7 +254,7 @@ class Setup(unittest.TestCase):
             exc, text = self.run_setup(model, "darwin")
             self.assertEqual(exc, "SystemExit", (model, text[-400:]))
             self.assertIn(LINE, text)
-            self.assertIn("IST-DAS-2.25bpw", text)
+            self.assertIn("ISTA-DAS-2.25bpw", text)   # the id as the screen spells it (the older spelling still works)
             self.assertIn("nothing has been downloaded", text)
 
 

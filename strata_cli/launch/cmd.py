@@ -107,7 +107,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "(not enough graphics memory, or a model it is not for) the MTP is used and the start says why")
     g.add_argument("--speed", type=_choice("a speed", S.SPEED_MODES), metavar="faster|full",
                    help="DeepSeek: faster uses 5 of 6 experts per word (a small quality change, usually not noticeable; the default on a PC with 16 GB "
-                        "of graphics memory or less), full uses all 6")
+                        "of graphics memory or less, and on a single Radeon RX 9000 / AI PRO R9700 card, or several that hold half of the experts), full uses all 6")
     g.add_argument("--full-quality", action="store_true", help="DeepSeek: all 6 experts per word (the same as --speed full), for scripts")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
     g.add_argument("--backend", metavar="nvidia|amd|intel|auto",
@@ -397,6 +397,12 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         rows = [r for r in catalog.rows(hw) if r.family == s.family and r.model == s.model]
         if rows:
             r = rows[0]
+            if s.model_path and s.family == "deepseek41" and r.words == "tight: needs more disk space":
+                # (the person's own files stay where they are: no download, so the free disk space of Strata's folder is not the question)
+                try:
+                    r.verdict, r.words = catalog.own_files_verdict(hw, s.model)
+                except Exception:                                # noqa: BLE001 - keep the menu row's words when the memory words cannot be read
+                    pass
             if r.verdict == "no":
                 notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
             elif r.verdict == "tight" and s.model_path and "disk space" in r.words:

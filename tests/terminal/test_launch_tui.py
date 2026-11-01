@@ -337,10 +337,11 @@ class FolderStep(Base):
             self.assertIn("Free space in that folder's drive", t)
             f = app.screen.query_one("#folderpath")
             f.value = ""
-            await typed(pilot, str(self.home.base / "Strata-data"))
-            self.assertEqual(f.value, str(self.home.base / "Strata-data"))
+            self.assertNotEqual(str(ctx.default_folder()), str(self.home.base / "Elsewhere-data"))      # (on Linux the default is Strata-data under the home: typing it again is no change)
+            await typed(pilot, str(self.home.base / "Elsewhere-data"))
+            self.assertEqual(f.value, str(self.home.base / "Elsewhere-data"))
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Strata-data"))
+            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Elsewhere-data"))
             self.assertIn("How much text should it remember at once?", text_of(app))
         self.run_app(case)
 
@@ -718,9 +719,9 @@ class AccessStep(Base):
                 self.assertIn("cloudflared is not installed on this computer", t)
                 self.assertIn("quick tunnel", flat(app))
                 await press(pilot, "enter")
+                self.assertTrue(any("cloudflared" in w for w in ctx.warnings()))     # inside the mock: a box with a system cloudflared finds one
             self.assertEqual(ctx.settings.access, "cloudflare")
             self.assertIn("Save as preset, then launch", text_of(app))
-            self.assertTrue(any("cloudflared" in w for w in ctx.warnings()))
         self.run_app(case)
 
     def test_tailscale_found(self):

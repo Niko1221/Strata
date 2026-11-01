@@ -209,6 +209,15 @@ std::vector<std::pair<std::string, std::string>> parallel_default_env(const char
     return t;
 }
 
+std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (!windows || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
+    const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
+    if (off != nullptr && off[0] == '0') return t;
+    t = {{"STRATA_VERIFY_ASYNC_LAUNCH", "1"}};
+    return t;
+}
+
 std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated, int batch_slots) {
     std::vector<std::string> set;
     // the community-made gfx1010 / gfx1030 changes (amd_community.hpp): one line, and only on those two cards
@@ -240,7 +249,8 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
             set_default(kv);
             any = true;
         }
-        if (any)
+        const char* wm = std::getenv("STRATA_SELECT_WMMA");   // the line is only true while the scorer switch is not set to 0
+        if (any && !(wm != nullptr && wm[0] == '0'))
             std::fprintf(stderr, "strata: gfx12 (RDNA4): the matrix-core QSA block scorer is on once a prompt is past 28,672 tokens (+5.7%% prompt speed at 98K on an R9700, shorter prompts unchanged; "
                                  "the first-token KL against the warp kernel is 0.002 on average above 30K; STRATA_SELECT_WMMA=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
     }
@@ -286,6 +296,16 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
         for (size_t i = 0; i < par.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", par[i].c_str() + 7);
         std::fprintf(stderr, "\n");
         set.insert(set.end(), par.begin(), par.end());
+    }
+    std::vector<std::string> lau;
+    for (const auto& kv : launch_default_env(gcn_arch, win_host)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;
+        set_default(kv);
+        lau.push_back(kv.first);
+    }
+    if (!lau.empty()) {
+        std::fprintf(stderr, "strata: gfx1151 (Strix Halo): the verify window's graph is launched from a helper thread (the main thread serves the doorbells meanwhile; STRATA_GFX1151_DEFAULTS=0 or STRATA_VERIFY_ASYNC_LAUNCH=0 turns it off)\n");
+        set.insert(set.end(), lau.begin(), lau.end());
     }
     return set;
 }

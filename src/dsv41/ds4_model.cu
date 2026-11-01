@@ -2852,11 +2852,13 @@ struct Model::Impl {
                     }
                     // two or more RDNA4 cards holding at least half of the experts (the 4 x R9700 class): Faster by default too
                     const bool multi_rdna4 = rdna4() && devs.size() >= 2 && gpu_expert_share() >= 0.5;
-                    const int n = experts_test_override(experts_per_word(o.experts, vram_all, l.k_exp, integrated, multi_rdna4, defaults_026()), l.k_exp);
+                    const bool single_rdna4 = rdna4() && devs.size() == 1;   // one R9700 / RX 9000 card: the CPU lane does most of the experts
+                    const int n = experts_test_override(experts_per_word(o.experts, vram_all, l.k_exp, integrated, multi_rdna4, defaults_026(), single_rdna4), l.k_exp);
                     experts_used = n;
                     if (n < l.k_exp)
                         std::fprintf(stderr, "ds4: experts per word: %d (%s; full quality: --experts %d)\n", n,
-                                     o.experts >= 1 ? "as asked" : multi_rdna4 ? "faster mode: the cards hold most of the experts" : "faster mode", l.k_exp);
+                                     o.experts >= 1 ? "as asked" : multi_rdna4 ? "faster mode: the cards hold most of the experts" :
+                                     single_rdna4 && !integrated && vram_all > kFasterModeVramMax ? "faster mode: one RDNA4 card, the CPU lane does most of the experts" : "faster mode", l.k_exp);
                     else if (o.experts >= 1)
                         std::fprintf(stderr, "ds4: experts per word: %d (full quality)\n", n);
                 }

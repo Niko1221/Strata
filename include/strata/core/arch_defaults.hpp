@@ -69,6 +69,13 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
 /// Empty for every other architecture / platform, below 2 slots, and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
 std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots);
 
+/// 0.2.9.1 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
+/// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
+/// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread
+/// removed it (see STRIX-2Q-RESULTS.md).  The value is STRATA_VERIFY_ASYNC_LAUNCH=1 (same switch as the CUDA instrumented-launch path).
+/// Empty for every other architecture / platform and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
+std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows);
+
 /// Sets `arch_default_env(gcn_arch)` and, when `integrated`, `igpu_default_env(gcn_arch, true)` in this process's
 /// environment where the user has not set the variable, prints one line to stderr per table when it set anything, and
 /// returns the names it set.  `integrated` is true when every visible GPU is an integrated one.  Call once, before any

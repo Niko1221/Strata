@@ -3321,10 +3321,14 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         // tile lives in the attention scratch, which is free until this layer's attention (same
                         // queue). It pays from ~8K cells on a B70 (launch cost below: -2% at 2K, even at 8K, select
                         // 3x faster at 40K), so by default only for a batch reaching 2,048 blocks.
-                        // STRATA_SELECT_GEMM=0: the warp kernel always, =1: the GEMM always.
+                        // STRATA_SELECT_GEMM=0: the warp kernel always, =1: the GEMM always (on every card).
+                        // Unset: the default from 2,048 blocks is for a Battlemage card only. It changes the answers (first-token
+                        // KL ~1e-9 on an Arc A750 up to 128K, 1e-5 to 1e-3 on 2x B65), and on the A750 it gained +0.2% to
+                        // +0.6% (16K to 128K: its prompts are bound by expert streaming over PCIe), under the 5% bar.
                         static const int sel_gemm_mode = [] { const char* v = std::getenv("STRATA_SELECT_GEMM"); return v ? std::atoi(v) : -1; }();
                         static const int64_t sel_gemm_min = [] { const char* v = std::getenv("STRATA_SELECT_GEMM_MIN"); return v ? (int64_t) std::atoll(v) : (int64_t) 2048; }();   // blocks (4 cells each)
-                        const bool sel_gemm = sel_gemm_mode > 0 || (sel_gemm_mode < 0 && active >= sel_gemm_min);
+                        const bool sel_gemm = sel_gemm_mode > 0 || (sel_gemm_mode < 0 && active >= sel_gemm_min &&
+                                                                    strata::intel_gpu_gen(m.cs->get_device()) == strata::IntelGpuGen::Battlemage);
                         const int64_t sel_tile = std::min<int64_t>(8192, (int64_t) ((uint64_t) m.attn_batch *
                             strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s) / (uint64_t) (nb * 4)));
                         bool sel_done = false;

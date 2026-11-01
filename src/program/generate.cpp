@@ -28,6 +28,9 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/conversation_snapshot.hpp"
+#if defined(STRATA_USE_HIP)
+#include "strata/core/serve_stop_bound.hpp"
+#endif
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -6807,6 +6810,16 @@ int main(int argc, char** argv) {
     }
     strata::core::ArenaExpertSource arena_src;
     strata::core::ExpertSource* srcp = nullptr;
+    // #4846 (owner 11-01): the arena first, and when the RAM is still short after the wait and the give-back, the --mmap-experts source
+    // for this run (o.mmap_experts is set here, before anything below sizes the experts' tier from it; nothing was sized for the arena
+    // by now: the PLE table's lock, priced against it, was just given back).  A hand-set `--ple-io ram` and a shared arena file are kept
+    // as asked (warn only), STRATA_ARENA_RAM_FALLBACK=0 is the old behaviour.  Two passes at most; the second only after the first chose
+    // the file, and if the file cannot be opened the arena is tried again the old way (a start never ends in a refusal for this).
+    const bool ram_fallback_ok = strata::core::arena_ram_fallback_allowed(
+        std::getenv("STRATA_ARENA_RAM_FALLBACK"), o.ple_io_explicit && o.ple_io == "ram", !o.shared_expert_arena.empty());
+    bool ram_fallback_taken = false, ram_fallback_failed = false;
+    for (bool again = true; again;) {
+    again = false;
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
         // built with `tools/iq_pack.py --experts-bin` (the per-layer blob sizes of its layout, PR #121).  The low-RAM
@@ -6818,10 +6831,20 @@ int main(int argc, char** argv) {
         if (const char* v = std::getenv("STRATA_FETCH_THREADS"); v != nullptr && std::atoi(v) > 0)
             src.set_fetch_threads(std::atoi(v));
         if (!src.open(o.pack, g.n_layers, g.n_expert, err)) {
+            if (ram_fallback_taken) {   // #4846: the file cannot be opened either; the arena, loaded the old way, is what is left
+                std::fprintf(stderr, "strata generate: the experts cannot be read from the file either (%s): loading the expert arena "
+                                     "as before, short of RAM\n", err.c_str());
+                o.mmap_experts = false;
+                ram_fallback_taken = false;
+                ram_fallback_failed = true;
+                again = true;
+                continue;
+            }
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
-        std::fprintf(stderr, "strata generate: experts via mmap (--mmap-experts; %s)\n",
+        std::fprintf(stderr, "strata generate: experts via mmap (%s; %s)\n",
+                     ram_fallback_taken ? "not enough RAM for the expert arena: the same source as --mmap-experts" : "--mmap-experts",
                      src.gguf_mode() ? "the GGUF shards in place, no experts.bin" : "the A/B arm of R2.1");
         // #286: with a RAM budget the hottest experts live in it, and the rest are read from the drive unbuffered
         // when the file cache could not keep them beside the budget anyway (a 32 GB PC) - the mapped reads' page
@@ -7012,11 +7035,22 @@ int main(int argc, char** argv) {
                 return held;
             };
         strata::core::pin_reserve_take();
+        arena_src.fall_back_when_ram_short = ram_fallback_ok && !ram_fallback_failed;
         const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                                              o.shared_expert_arena);
         strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
         strata::core::pin_sim_report("after the expert arena");
         strata::core::pin_reserve_release_soft();
+        if (!arena_ok && arena_src.ram_short()) {
+            // one plain line, one next step; the numbers are in err
+            std::fprintf(stderr, "strata generate: not enough RAM for the expert arena (%s): this run reads the experts from the "
+                                 "file, like --mmap-experts (slower; the answers are the same). To get the arena back, free that RAM "
+                                 "and start again\n", err.c_str());
+            o.mmap_experts = true;
+            ram_fallback_taken = true;
+            again = true;
+            continue;
+        }
         if (!arena_ok) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -7061,6 +7095,7 @@ int main(int argc, char** argv) {
 #endif
         srcp = &arena_src;
     }
+    }   // the arena / file pass loop (#4846)
 #if defined(__linux__)
     // 0.1.43.1: on by default (STRATA_ADAPT_CALLBACK_WARMUP=0 turns it off).  Linux threads inherit the creator's CPU mask, and
     // the host pins itself to one CPU later; a callback thread the driver creates lazily after that would run on the
@@ -10594,6 +10629,7 @@ int main(int argc, char** argv) {
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) {   // DFlash2 in the serve loop: one card, one request at a time (--batch, a layer split and --pipeline-windows keep the MTP)
             std::string why_not;
+            df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
             if (!ver.tapping()) why_not = "the verifier keeps no taps here";
             else if (!df2.bind(wt, &native_head, o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab, why_not) ||
                      !df2.prepare(ver.tap_dev(), why_not) ||
@@ -16623,6 +16659,12 @@ int main(int argc, char** argv) {
             std::vector<int32_t> drafts(DS, 0), window(WS), outv(WS);
             std::vector<float> dprob(DS, 0.0f);
             std::array<float, 8> dwin_s{};   // the probabilities the current window was chosen from (STRATA_SPEC_COST)
+            // STRATA_SPEC_TRACE=<file> in serve (bench only, off by default): per round "R p T a sfx ms k match | probs | drafts | lookup draft | committed tokens"
+            static std::FILE* const df2_trace = [] { const char* tf = std::getenv("STRATA_SPEC_TRACE"); return tf != nullptr && tf[0] != '\0' ? std::fopen(tf, "a") : nullptr; }();
+            static const bool trace_nopick = std::getenv("STRATA_SPEC_TRACE_NOPICK") != nullptr;   // the lookup draft is logged but never taken
+            std::array<int32_t, 8> tr_d{};
+            std::array<int32_t, 16> tr_s{};
+            int tr_k = 0, tr_match = 0;
             std::vector<int32_t> sbuf((size_t) S, 0);
             const bool sfx_on = o.suffix_draft > 0 || o.lookup_chain > 0;
             if (sfx_on) {
@@ -16640,6 +16682,14 @@ int main(int argc, char** argv) {
             strata::core::gated::Packet proposal; // immutable through the synchronous verifier call
             bool first_window = true;
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
+#if defined(STRATA_USE_HIP)
+            // on by default (HIP, where it was measured: 4 x R9700, Qwen3.8-Flash-Next IQ3_S, 0 of 16 continuations fell back to the older
+            // checkpoint against 4 of 16 without it, #4677); STRATA_SERVE_STOP_BOUND=0 turns it off
+            static const bool stop_bound = [] {
+                const char* v = std::getenv("STRATA_SERVE_STOP_BOUND");
+                return v == nullptr || std::strcmp(v, "0") != 0;
+            }();
+#endif
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
             int64_t dp_tested[8] = {}, dp_ok[8] = {};   // STRATA_SPEC_DEPTH=1: MTP drafts tested / accepted by depth
@@ -17194,6 +17244,12 @@ int main(int argc, char** argv) {
                     chain_kind = 0;
                     int a = 0;
                     while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
+#if defined(STRATA_USE_HIP)
+                    if (stop_bound)
+                        a = strata::core::serve_stop_bound(a + 1, max_new - produced_n, outp.data(), [&](int32_t y) {
+                            return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
+                        }) - 1;
+#endif
                     if (!V1(A).pl_commit_async(a + 1, err)) return die(err);
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
                     draft_offered += A.T - 1;
@@ -17377,6 +17433,7 @@ int main(int argc, char** argv) {
 #else
             auto draft_df2 = [&](int) -> bool { return false; };
 #endif
+            if (df2_trace != nullptr) std::fprintf(df2_trace, "# request prompt %lld df2 %d spec %d\n", (long long) n, req_df2 ? 1 : 0, S_mtp);
             while (!pl_ran && !cancelled && produced_n < max_new) {
                 int T = 1;
                 policy.set_context(p);
@@ -17414,14 +17471,19 @@ int main(int argc, char** argv) {
                     if (o.suffix_draft > 0 && !first_window) {
                         const int k = sfx.propose(S_look - 1, sbuf.data());
                         sfx_match = sfx.last_match();
+                        if (df2_trace != nullptr) {
+                            tr_k = std::min(k, 16);
+                            tr_match = sfx_match;
+                            for (int i = 0; i < tr_k; ++i) tr_s[(size_t) i] = sbuf[(size_t) i];
+                        }
                         // a probabilistic window must not condition the source on the draw: the policy copy fixed at the request's start
                         // chooses, and the lookup is taken without asking whether the MTP's first guess agrees
                         const bool probabilistic = use_mtp && mtp.prob();
                         if (k > 0 && (probabilistic || !use_mtp || sbuf[0] == drafts[0])) {
                             const strata::spec::DraftPolicy::Pick pk = probabilistic
                                 ? source_policy.choose(S_mtp, k, sfx_match) : policy.choose(T, k, sfx_match);
-                            if (pk.lookup) { T = pk.t; from_sfx = true; }
-                            if (pk.lookup && o.lookup_max_t > 0) {   // --lookup-max-t: a size whose window graph fits
+                            if (pk.lookup && !trace_nopick) { T = pk.t; from_sfx = true; }
+                            if (pk.lookup && !trace_nopick && o.lookup_max_t > 0) {   // --lookup-max-t: a size whose window graph fits
                                 const int t = graph_fits(T);
                                 if (t < 0) { std::printf("ERR %s\n", err.c_str()); return 1; }
                                 T = t;
@@ -17430,6 +17492,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 std::copy(dprob.begin(), dprob.begin() + (std::ptrdiff_t) std::min<size_t>(dprob.size(), 8), dwin_s.begin());
+                if (df2_trace != nullptr) std::copy(drafts.begin(), drafts.begin() + (std::ptrdiff_t) std::min<size_t>(drafts.size(), 8), tr_d.begin());
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
                 if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
@@ -17664,6 +17727,14 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+#if defined(STRATA_USE_HIP)
+                // A merged window contains prompt rows: every one must still be committed.
+                // Otherwise do not cache accepted rows whose outputs this request cannot emit.
+                if (stop_bound && !merged)
+                    a = strata::core::serve_stop_bound(a + 1, max_new - produced_n, outv.data(), [&](int32_t y) {
+                        return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
+                    }) - 1;
+#endif
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (!from_sfx && !first_window)
@@ -17796,6 +17867,19 @@ int main(int argc, char** argv) {
                 if (gated_proposal && !eos && !initial_round && timed_round)   // after the next draft: its counters too
                     source_policy.defer_cost(std::max<int64_t>(p + T - 1, p + a + 1 + S_mtp), T,
                                              std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
+                if (df2_trace != nullptr && timed_round) {
+                    std::fprintf(df2_trace, "R %lld %d %d %d %.3f %d %d |", (long long) p, T, a, from_sfx ? 1 : 0,
+                                 std::chrono::duration<double, std::milli>(Clock::now() - round0).count(), tr_k, tr_match);
+                    for (int i = 0; i < 7; ++i) std::fprintf(df2_trace, " %.4f", (double) dwin_s[(size_t) i]);
+                    std::fprintf(df2_trace, " |");
+                    for (int i = 0; i < 7; ++i) std::fprintf(df2_trace, " %d", (int) tr_d[(size_t) i]);
+                    std::fprintf(df2_trace, " |");
+                    for (int i = 0; i < tr_k; ++i) std::fprintf(df2_trace, " %d", (int) tr_s[(size_t) i]);
+                    std::fprintf(df2_trace, " |");
+                    for (int i = 0; i <= a; ++i) std::fprintf(df2_trace, " %d", (int) outv[(size_t) i]);
+                    std::fprintf(df2_trace, "\n");
+                    tr_k = 0;
+                }
                 if (spec_cost && use_mtp && timed_round && !from_sfx) policy.observe_probs(dwin_s.data(), T_mtp - 1, a);
                 if (timed_round && !eos && chain_n == 0)
                     policy.observe(from_sfx, T, a, sfx_match,
@@ -18828,6 +18912,7 @@ int main(int argc, char** argv) {
                                  "to the CPU). The MTP drafts instead.\n", err.c_str());
             use_df2 = false;
         }
+        if (use_df2) df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
         if (use_df2 && !df2.prepare(ver.tap_dev(), err)) {
             std::fprintf(stderr, "strata generate: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (the pack 0.76 GiB, buffers and K/V ring "
                                  "0.25 GiB, a draft head 0.2 GiB); --vram-reserve-mib 1900 keeps it (the expert cache gives up about 2.5%% of its experts "

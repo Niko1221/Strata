@@ -43,6 +43,16 @@ int main() {
     CHECK(parallel_default_env("gfx1151", true, 4).empty());
     unset("STRATA_GFX1151_DEFAULTS");
     for (const auto& kv : parallel_default_env("gfx1151", true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
+    // 0.2.9.1 (STRIX-TDR): the helper-thread launch, Windows gfx1151 only
+    unset("STRATA_GFX1151_DEFAULTS");
+    CHECK(launch_default_env("gfx1151", true).size() == 1 && launch_default_env("gfx1151", true)[0].first == "STRATA_VERIFY_ASYNC_LAUNCH");
+    CHECK(launch_default_env("gfx1151:sramecc-:xnack-", true).size() == 1);
+    CHECK(launch_default_env("gfx1151", false).empty());
+    CHECK(launch_default_env("gfx1201", true).empty());
+    CHECK(launch_default_env("", true).empty());
+    put("STRATA_GFX1151_DEFAULTS", "0");
+    CHECK(launch_default_env("gfx1151", true).empty());
+    unset("STRATA_GFX1151_DEFAULTS");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
     CHECK(arch_default_env("gfx1150").empty());

@@ -44,6 +44,13 @@ int main() {
     CHECK_EQ(experts_per_word(-1, 3 * 32 * GiB, 6, false, true), 5);
     CHECK_EQ(experts_per_word(-1, 4 * 32 * GiB, 6, false, false), 6);   // the same cards when they hold under half (or are not RDNA4): the model's 6
     CHECK_EQ(experts_per_word(6, 4 * 32 * GiB, 6, false, true), 6);     // --experts 6 (the app's / Terminal's "Full quality") wins
+    // one RDNA4 card (1 x R9700, 32 GB): Faster by default, whatever the card's size; not on another make or on two NVIDIA cards
+    CHECK_EQ(experts_per_word(-1, 32 * GiB, 6, false, false, false, true), 5);
+    CHECK_EQ(experts_per_word(-1, 24 * GiB, 6, false, false, false, true), 5);
+    CHECK_EQ(experts_per_word(-1, 32 * GiB, 6, false, false, false, false), 6);     // the same card size when it is not a single RDNA4 card
+    CHECK_EQ(experts_per_word(6, 32 * GiB, 6, false, false, false, true), 6);       // --experts 6 still wins
+    CHECK_EQ(experts_per_word(4, 32 * GiB, 6, false, false, false, true), 4);       // and so does any other --experts N
+    CHECK_EQ(experts_per_word(-1, 32 * GiB, 6, false, false, true, true), 6);       // DS4_DEFAULTS=026: back to the model's 6
     CHECK_EQ(experts_per_word(4, 4 * 32 * GiB, 6, false, true), 4);     // so does any other --experts N
     CHECK_EQ(experts_per_word(5, 4 * 32 * GiB, 6, false, false), 5);
     CHECK_EQ(experts_per_word(-1, 4 * 32 * GiB, 1, false, true), 1);    // a model of one expert a word has nothing to drop

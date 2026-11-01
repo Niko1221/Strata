@@ -55,6 +55,28 @@ int main() {
         check(!ple_lock_blocks_cache(1ull * GiB, 1ull << 20, floor_mib), "a tiny table cannot make a cache");
         check(!ple_lock_blocks_cache(std::numeric_limits<uint64_t>::max(), table, floor_mib), "no overflow");
     }
+    // #4846 (owner 11-01): RAM still short at the arena after the wait and the give-back: the --mmap-experts source, never a refusal,
+    // never registering anyway.  A hand-set --ple-io ram or a shared arena file is respected (warn only).
+    {
+        const uint64_t need = arena + (1ull << 20);   // the arena and one blob
+        const uint64_t none = std::numeric_limits<uint64_t>::max();   // no cgroup limit
+        check(arena_ram_verdict(need, need, none, true) == ArenaRamVerdict::Load, "RAM exactly there: load");
+        check(arena_ram_verdict(need, 240ull * GiB, none, true) == ArenaRamVerdict::Load, "plenty: load");
+        check(arena_ram_verdict(need, need - 1, none, true) == ArenaRamVerdict::FallBack, "one byte short: file source");
+        check(arena_ram_verdict(need, 20ull * GiB, none, true) == ArenaRamVerdict::FallBack, "20 GiB of 51: file source");
+        check(arena_ram_verdict(need, 20ull * GiB, none, false) == ArenaRamVerdict::Warn, "20 GiB of 51, fixed by hand: warn only");
+        check(arena_ram_verdict(need, 240ull * GiB, 30ull * GiB, true) == ArenaRamVerdict::FallBack, "a 30 GiB container limit: file source, not a refusal");
+        check(arena_ram_verdict(need, 240ull * GiB, 30ull * GiB, false) == ArenaRamVerdict::Refuse, "a 30 GiB container limit, fixed by hand: as before");
+        check(arena_ram_verdict(need, 240ull * GiB, need, true) == ArenaRamVerdict::Load, "a limit of exactly the arena: load");
+        check(arena_ram_verdict(0, 0, 0, true) == ArenaRamVerdict::Load, "an unpriced arena loads");
+        check(arena_ram_fallback_allowed(nullptr, false, false), "fallback on by default");
+        check(!arena_ram_fallback_allowed(nullptr, true, false), "a hand-set --ple-io ram is kept");
+        check(!arena_ram_fallback_allowed(nullptr, false, true), "a shared arena file is kept");
+        check(!arena_ram_fallback_allowed("0", false, false), "STRATA_ARENA_RAM_FALLBACK=0 is the old behaviour");
+        check(arena_ram_fallback_allowed("1", false, false), "STRATA_ARENA_RAM_FALLBACK=1");
+        check(arena_ram_fallback_allowed("", false, false), "an empty value is unset");
+        check(!arena_ram_fallback_allowed("1", true, false), "the user's --ple-io ram wins over the env value");
+    }
     std::printf("ple_residency_test: %d checks passed\n", checks);
     return 0;
 }
