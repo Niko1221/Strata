@@ -76,30 +76,39 @@ constexpr int DF2_RING = 2064, DF2_ROWS = 8, DF2_DRAFTS = 7, DF2_CTX_MAX = 2048,
 struct Window::Df2 {
     // the pack
     std::string path;
-    mtl::Buffer pack;
-    std::map<std::string, gguf::Tensor> ten;
+    mtl::Buffer pack, wq;                       // pack: the f32 / bf16 tensors; wq: the Q8_0 matrices repacked (int8 [rows][K], then half [rows][K / 32])
+    std::map<std::string, gguf::Tensor> ten;    // offset = into wq for a matrix, into pack otherwise
+    std::map<std::string, uint64_t> scoff;      // a matrix's scales in wq
     uint64_t total = 0;
     int L = 5, NH = 32, NKV = 8, I = 7680, window = 2048, group = 16, rank = 256, mask_token = 0;
     float theta = 10000.0f, eps = 1e-6f;
     std::vector<int> taps;
     // the head over the draft vocabulary
     int64_t nd = 0;
-    const mtl::Buffer* head_buf = nullptr;
+    const mtl::Buffer* head_buf = nullptr;   // STRATA_DF2_HEAD=native: the target's own rows (Q6_K ...) through the engine's GEMV
     gguf::Tensor head_t;
-    mtl::Buffer own_head, vmap;
+    mtl::Buffer own_head, vmap, hq, hsc;     // hq / hsc: the draft head requantized to Q8_0 (int8 [nd][2560], half [nd][80])
+    bool head_q8 = true;
     bool use_map = false;
     // state and activations
     mtl::Buffer kring[8], vring[8];
     mtl::Buffer ctxpos, rtctx, dpos, rtd, bpos, rtb, anchor;
     mtl::Buffer fcy, hctx, kc, vc, h, xn, xc, dyn, q, qn, k, v, kblk, ao, o, gate, up, sw, mlp, fn, hsel, logits, topval, toptok, tkv, tki, part, outbuf;
-    Act A_tap, A_h, A_x, A_ao, A_sw, A_fn;
+    Act A_fn;   // the native head only
     std::vector<float> mask_emb;
     std::vector<mtl::Dispatch> list[DF2_ROWS + 1];
     bool built[DF2_ROWS + 1] = {};
     bool loaded = false, bound = false;
     uint64_t bytes = 0;
     double gpu_ms = 0;
-    int64_t rounds = 0;
+    int64_t rounds = 0, steady = 0;
+    // STRATA_DF2_DUMP=<file> [STRATA_DF2_DUMP_ROUND=n]: the context rows the drafter was given and its answer at round n, for tools/dflash2/check_metal_dump.py
+    std::string dump_path;
+    int dump_round = 3;
+    std::vector<float> dump_taps, dump_anchor_emb;
+    int64_t dump_next = 0;
+    bool dump_ok = true;
+    double build_ms = 0, last_build_ms = 0, run_ms = 0, host_ms = 0;
 };
 
 namespace {
@@ -170,22 +179,60 @@ bool Window::df2_open(const std::string& path, std::string& err) {
 bool Window::df2_load_pack(std::string& err) {
     Df2& d = *df2_;
     if (d.loaded) return true;
+    const double t0 = now_ms();
     uint64_t data_off = 0;
     std::vector<int> taps;
     std::map<std::string, gguf::Tensor> ten;
     std::map<std::string, std::string> cfg;
     uint64_t total = 0;
     if (!df2_read_index(d.path, taps, ten, total, data_off, cfg, err)) return false;
-    d.pack = cx_->alloc(((size_t) total + 4095) / 4096 * 4096 + 4096);
-    if (!d.pack.handle) { err = "dflash2: the pack does not fit in memory"; return false; }
+    // The Q8_0 matrices are repacked once: int8 values [rows][K] and half scales [rows][K / 32] in separate runs, so a lane reads 16 contiguous
+    // bytes instead of 34-byte blocks (df2_mm).  The f32 / bf16 tensors go to `pack` as they are.
+    auto up256 = [](uint64_t x) { return (x + 255) / 256 * 256; };
+    uint64_t wq_bytes = 0, misc_bytes = 0;
+    std::map<std::string, uint64_t> woff, soff, moff;
+    for (const auto& [n, t] : ten) {
+        if (t.type == ref::Q8_0) {
+            const uint64_t K = t.shape[0], rows = t.shape[1];
+            if (K % 512 != 0) { err = "dflash2: " + n + " has K = " + std::to_string(K) + ", not a multiple of 512"; return false; }
+            woff[n] = wq_bytes; wq_bytes += up256(rows * K);
+            soff[n] = wq_bytes; wq_bytes += up256(rows * (K / 32) * 2);
+        } else if (t.type == ref::F32 || t.type == ref::BF16) {
+            moff[n] = misc_bytes; misc_bytes += up256(t.bytes);
+        } else { err = "dflash2: " + n + " has an unknown type"; return false; }
+    }
+    d.wq = cx_->alloc(wq_bytes + 4096);
+    d.pack = cx_->alloc(misc_bytes + 4096);
+    if (!d.wq.handle || !d.pack.handle) { err = "dflash2: the pack does not fit in memory"; return false; }
     std::FILE* f = std::fopen(d.path.c_str(), "rb");
     if (!f) { err = "dflash2: cannot open " + d.path; return false; }
-    fseeko(f, (off_t) data_off, SEEK_SET);
-    const size_t got = std::fread(d.pack.ptr, 1, (size_t) total, f);
+    std::vector<uint8_t> tmp;
+    for (auto& [n, t] : d.ten) {
+        tmp.resize(t.bytes);
+        fseeko(f, (off_t) (data_off + t.offset), SEEK_SET);
+        if (std::fread(tmp.data(), 1, t.bytes, f) != t.bytes) { std::fclose(f); err = "dflash2: the pack is shorter than its index"; return false; }
+        if (t.type == ref::Q8_0) {
+            const uint64_t K = t.shape[0], rows = t.shape[1], nb = K / 32;
+            int8_t* qs = (int8_t*) (d.wq.as<uint8_t>() + woff[n]);
+            uint16_t* sc = (uint16_t*) (d.wq.as<uint8_t>() + soff[n]);
+            for (uint64_t r = 0; r < rows; ++r)
+                for (uint64_t b = 0; b < nb; ++b) {
+                    const uint8_t* src = tmp.data() + (r * nb + b) * 34;
+                    std::memcpy(&sc[r * nb + b], src, 2);
+                    std::memcpy(qs + r * K + b * 32, src + 2, 32);
+                }
+            t.offset = woff[n];
+            d.scoff[n] = soff[n];
+        } else {
+            std::memcpy(d.pack.as<uint8_t>() + moff[n], tmp.data(), t.bytes);
+            t.offset = moff[n];
+        }
+    }
     std::fclose(f);
-    if (got != (size_t) total) { err = "dflash2: the pack is shorter than its index"; return false; }
-    d.bytes += d.pack.bytes;
+    d.bytes += d.wq.bytes + d.pack.bytes;
     d.loaded = true;
+    std::fprintf(stderr, "strata metal: DFlash2 pack %s: %.0f MiB of matrices repacked, %.0f MiB of the rest, in %.0f ms\n", d.path.c_str(),
+                 d.wq.bytes / 1048576.0, d.pack.bytes / 1048576.0, now_ms() - t0);
     return true;
 }
 
@@ -208,7 +255,39 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
     }
     if (vocab.empty() && vocab_file != "full") vocab = dvocab_;   // the MTP's list (may be empty: the whole head)
     const gguf::Tensor& out_t = T("output.weight");
-    if (!vocab.empty()) {
+    {
+        const char* hm = std::getenv("STRATA_DF2_HEAD");
+        d.head_q8 = !(hm && std::string(hm) == "native");
+    }
+    d.nd = vocab.empty() ? n_vocab_ : (int64_t) vocab.size();
+    d.use_map = !vocab.empty();
+    d.vmap = A(vocab.empty() ? 16 : 4 * vocab.size());
+    if (!vocab.empty()) std::memcpy(d.vmap.ptr, vocab.data(), 4 * vocab.size());
+    if (d.head_q8) {
+        // the head rows of the draft vocabulary requantized to Q8_0 (the target's Q6_K / ... rows dequantized first) in df2_mm's layout: 3x fewer
+        // cycles per round than the engine's GEMV on the Q6_K rows (STRATA_DF2_HEAD=native keeps those).  The logits differ by the Q8_0 rounding.
+        const size_t rb = ref::row_bytes(out_t.type, N);
+        const uint64_t nrow = (uint64_t) d.nd, nb = N / 32;
+        d.hq = A(nrow * N + 4096);
+        d.hsc = A(nrow * nb * 2 + 4096);
+        std::vector<std::thread> th;
+        const unsigned nth = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        for (unsigned k = 0; k < nth; ++k)
+            th.emplace_back([&, k] {
+                std::vector<float> tmpf(N);
+                std::vector<uint8_t> blk(nb * 34);
+                for (uint64_t i = k; i < nrow; i += nth) {
+                    const uint64_t tok = vocab.empty() ? i : (uint64_t) vocab[i];
+                    ref::dequant(out_t.type, (const uint8_t*) W_.ptr + out_t.offset + tok * rb, tmpf.data(), N);
+                    ref::quantize_q8_0(tmpf.data(), N, blk.data());
+                    for (uint64_t b = 0; b < nb; ++b) {
+                        std::memcpy(d.hsc.as<uint8_t>() + (i * nb + b) * 2, blk.data() + b * 34, 2);
+                        std::memcpy(d.hq.as<uint8_t>() + i * N + b * 32, blk.data() + b * 34 + 2, 32);
+                    }
+                }
+            });
+        for (auto& x : th) x.join();
+    } else if (!vocab.empty()) {
         if (mhead_.handle && vocab == dvocab_) {
             d.head_buf = &mhead_;
             d.head_t = mhead_t_;
@@ -223,16 +302,9 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
             d.head_t.shape = {(uint64_t) N, (uint64_t) vocab.size()};
             d.head_t.bytes = vocab.size() * rb;
         }
-        d.nd = (int64_t) vocab.size();
-        d.vmap = A(4 * vocab.size());
-        std::memcpy(d.vmap.ptr, vocab.data(), 4 * vocab.size());
-        d.use_map = true;
     } else {
         d.head_buf = &W_;
         d.head_t = out_t;
-        d.nd = n_vocab_;
-        d.vmap = A(16);
-        d.use_map = false;
     }
     if ((d.nd + DF2_TOPB - 1) / DF2_TOPB > 4096) { err = "dflash2: the head has too many rows for the top-k"; return false; }
     // ---- the mask token's embedding (constant)
@@ -258,10 +330,11 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
     d.part = A(4 * (size_t) DF2_MAXCH * 8 * 32 * 130);
     d.outbuf = A(4 * 32);
     auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
-    d.A_tap = act((int) d.taps.size() * N); d.A_h = act(N); d.A_x = act(N); d.A_ao = act(4096); d.A_sw = act(d.I); d.A_fn = act(N);
+    d.A_fn = act(N);
+    if (const char* e = std::getenv("STRATA_DF2_DUMP")) { d.dump_path = e; if (const char* r = std::getenv("STRATA_DF2_DUMP_ROUND")) d.dump_round = std::atoi(r); }
     d.bound = true;
     std::fprintf(stderr, "strata metal: DFlash2 drafter ready (%.0f MiB: pack %.0f, %lld-token draft head %s), in %.0f ms\n", d.bytes / 1048576.0,
-                 d.pack.bytes / 1048576.0, (long long) d.nd, d.use_map ? "" : "(the whole head)", now_ms() - t0);
+                 (d.wq.bytes + d.pack.bytes) / 1048576.0, (long long) d.nd, d.head_q8 ? (d.use_map ? "as Q8_0" : "as Q8_0, the whole head") : "native", now_ms() - t0);
     return true;
 }
 
@@ -280,37 +353,55 @@ void df2_rope_rows(const int32_t* pos, int rows, float theta, float* table) {
 }
 }  // namespace
 
+// df2_mm: y[c][row] = sum_k W[row][k] x[c][k] for `ncol` (1..8) float columns; the matrix is `name`'s repacked rows in wq, or (qs, sc) explicitly
+void Window::df2_mm(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size_t qs_off, const mtl::Buffer& sc, size_t sc_off, uint32_t K, uint32_t rows,
+                    const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y, size_t y_off, uint32_t y_stride, int ncol) {
+    struct MmArgs { uint32_t K, rows, y_stride, x_stride; } a{K, rows, y_stride, x_stride};
+    mtl::Dispatch dd;
+    static const std::pair<int, int> RS = [] {
+        int r = 2, s = 8;
+        if (const char* e = std::getenv("STRATA_DF2_MM")) std::sscanf(e, "%d,%d", &r, &s);   // rows per simdgroup, simdgroups per threadgroup
+        return std::make_pair(r, s);
+    }();
+    const int R = RS.first, SGN = RS.second;
+    const std::string fn = "df2_mm_" + std::to_string(R) + "_" + std::to_string(SGN);
+    dd.p = P(ldf2_, fn, mtl::Constants().i(0, ncol), fn + "#" + std::to_string(ncol));
+    dd.args = {mtl::Arg::B(qs, qs_off), mtl::Arg::B(sc, sc_off), mtl::Arg::B(x, x_off), mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
+    dd.grid[0] = (rows + SGN * R - 1) / (SGN * R);
+    dd.tg[0] = SGN * 32;
+    push(ds, dd);
+}
+
+void Window::df2_mmn(std::vector<mtl::Dispatch>& ds, const std::string& name, const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y,
+                     uint32_t y_stride, int ncol) {
+    Df2& d = *df2_;
+    const gguf::Tensor& t = d.ten.at(name);
+    df2_mm(ds, d.wq, t.offset, d.wq, d.scoff.at(name), (uint32_t) t.shape[0], (uint32_t) t.shape[1], x, x_off, x_stride, y, 0, y_stride, ncol);
+}
+
+void Window::df2_rms(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const mtl::Buffer& y, const char* wname, int rows) {
+    Df2& d = *df2_;
+    struct RmsArgs { uint32_t n; float eps; } a{(uint32_t) N, d.eps};
+    mtl::Dispatch dd;
+    dd.p = P(ldf2_, "df2_rms", {}, "df2_rms");
+    dd.args = {mtl::Arg::B(x), mtl::Arg::B(d.pack, d.ten.at(wname).offset), mtl::Arg::B(y), mtl::Arg::V(a)};
+    dd.grid[0] = rows;
+    dd.tg[0] = 256;
+    push(ds, dd);
+}
+
 // the context update of `n` rows (<= 8) whose taps start at `taps` (+ off bytes): positions at pos[0..n) (int32 buffer + off), rope table rows at rt (+ off)
 void Window::df2_ctx_list(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& taps, size_t taps_off, int n, const mtl::Buffer& pos, size_t pos_off,
                           const mtl::Buffer& rt, size_t rt_off) {
     Df2& d = *df2_;
-    const int tap_n = (int) d.taps.size() * N;
-    auto xprep_at = [&](const mtl::Buffer& x, size_t off, const Act& out, int nn) {
-        mtl::Dispatch dd;
-        dd.p = P(lib_, "xprep", {}, "xprep");
-        const uint32_t nv = nn, nt = MAXT;
-        dd.args = {mtl::Arg::B(x, off), mtl::Arg::B(out.b), mtl::Arg::V(nv), mtl::Arg::V(nt)};
-        dd.tg[0] = 256;
-        dd.grid[0] = (nn / 16 * MAXT + 255) / 256;
-        push(ds, dd);
-    };
-    auto rms = [&](const mtl::Buffer& x, const mtl::Buffer& y, const char* wname, int rows) {
-        struct RmsArgs { uint32_t n; float eps; } a{(uint32_t) N, d.eps};
-        mtl::Dispatch dd;
-        dd.p = P(ldf2_, "df2_rms", {}, "df2_rms");
-        dd.args = {mtl::Arg::B(x), mtl::Arg::B(d.pack, d.ten.at(wname).offset), mtl::Arg::B(y), mtl::Arg::V(a)};
-        dd.grid[0] = rows;
-        dd.tg[0] = 256;
-        push(ds, dd);
-    };
-    xprep_at(taps, taps_off, d.A_tap, tap_n);
-    gemv(ds, d.ten.at("fc.weight"), d.A_tap, d.fcy, N, n, 0, &d.pack);
-    rms(d.fcy, d.hctx, "hidden_norm.weight", n);
-    xprep_at(d.hctx, 0, d.A_h, N);
+    const uint32_t tap_n = (uint32_t) (d.taps.size() * N);
+    df2_mmn(ds, "fc.weight", taps, taps_off, tap_n, d.fcy, N, n);
+    df2_rms(ds, d.fcy, d.hctx, "hidden_norm.weight", n);
     for (int l = 0; l < d.L; ++l) {
         const std::string p = "layers." + std::to_string(l) + ".";
-        gemv(ds, d.ten.at(p + "self_attn.k_proj.weight"), d.A_h, d.kc, 1024, n, 0, &d.pack);
-        gemv(ds, d.ten.at(p + "self_attn.v_proj.weight"), d.A_h, d.vc, 1024, n, 0, &d.pack);
+        df2_mmn(ds, p + "self_attn.k_proj.weight", d.hctx, 0, N, d.kc, 1024, n);
+        nb_ = true;   // the V projection reads the same rows
+        df2_mmn(ds, p + "self_attn.v_proj.weight", d.hctx, 0, N, d.vc, 1024, n);
         struct NrArgs { uint32_t in_stride, slot_mod, heads; float eps; uint32_t has_rope; } na{1024, (uint32_t) DF2_RING, 8, d.eps, 1};
         mtl::Dispatch kn;
         kn.p = P(ldf2_, "df2_norm_rope", {}, "df2_norm_rope");
@@ -335,24 +426,6 @@ void Window::df2_ctx_list(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& tap
 void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
     Df2& d = *df2_;
     const int B = DF2_ROWS;
-    auto xprep_at = [&](const mtl::Buffer& x, size_t off, const Act& out, int nn) {
-        mtl::Dispatch dd;
-        dd.p = P(lib_, "xprep", {}, "xprep");
-        const uint32_t nv = nn, nt = MAXT;
-        dd.args = {mtl::Arg::B(x, off), mtl::Arg::B(out.b), mtl::Arg::V(nv), mtl::Arg::V(nt)};
-        dd.tg[0] = 256;
-        dd.grid[0] = (nn / 16 * MAXT + 255) / 256;
-        push(ds, dd);
-    };
-    auto rms = [&](const mtl::Buffer& x, const mtl::Buffer& y, const char* wname, int rows) {
-        struct RmsArgs { uint32_t n; float eps; } a{(uint32_t) N, d.eps};
-        mtl::Dispatch dd;
-        dd.p = P(ldf2_, "df2_rms", {}, "df2_rms");
-        dd.args = {mtl::Arg::B(x), mtl::Arg::B(d.pack, d.ten.at(wname).offset), mtl::Arg::B(y), mtl::Arg::V(a)};
-        dd.grid[0] = rows;
-        dd.tg[0] = 256;
-        push(ds, dd);
-    };
     auto conv = [&](const mtl::Buffer& x, const mtl::Buffer& dyn, size_t dyn_off, size_t base_off, const mtl::Buffer* resid, const mtl::Buffer& out) {
         struct ConvArgs { uint32_t rows, H, group, dyn_stride, has_resid; } a{(uint32_t) B, (uint32_t) N, (uint32_t) d.group, 640, resid ? 1u : 0u};
         mtl::Dispatch dd;
@@ -365,14 +438,14 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
     for (int l = 0; l < d.L; ++l) {
         const std::string p = "layers." + std::to_string(l) + ".";
         const size_t base_a = d.ten.at(p + "attention_conv.base_kernel").offset, base_m = d.ten.at(p + "mlp_conv.base_kernel").offset;
-        rms(d.h, d.xn, (p + "input_layernorm.weight").c_str(), B);
-        xprep_at(d.xn, 0, d.A_x, N);
-        gemv(ds, d.ten.at(p + "attention_conv.kernel_projection.weight"), d.A_x, d.dyn, 640, B, 0, &d.pack);
+        df2_rms(ds, d.h, d.xn, (p + "input_layernorm.weight").c_str(), B);
+        df2_mmn(ds, p + "attention_conv.kernel_projection.weight", d.xn, 0, N, d.dyn, 640, B);
         conv(d.xn, d.dyn, 0, base_a, nullptr, d.xc);
-        xprep_at(d.xc, 0, d.A_x, N);
-        gemv(ds, d.ten.at(p + "self_attn.q_proj.weight"), d.A_x, d.q, 4096, B, 0, &d.pack);
-        gemv(ds, d.ten.at(p + "self_attn.k_proj.weight"), d.A_x, d.k, 1024, B, 0, &d.pack);
-        gemv(ds, d.ten.at(p + "self_attn.v_proj.weight"), d.A_x, d.v, 1024, B, 0, &d.pack);
+        df2_mmn(ds, p + "self_attn.q_proj.weight", d.xc, 0, N, d.q, 4096, B);
+        nb_ = true;
+        df2_mmn(ds, p + "self_attn.k_proj.weight", d.xc, 0, N, d.k, 1024, B);
+        nb_ = true;
+        df2_mmn(ds, p + "self_attn.v_proj.weight", d.xc, 0, N, d.v, 1024, B);
         {
             struct NrArgs { uint32_t in_stride, slot_mod, heads; float eps; uint32_t has_rope; } qa{4096, 0, 32, d.eps, 1}, ka{1024, 0, 8, d.eps, 1};
             mtl::Dispatch qd, kd;
@@ -400,16 +473,14 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
             am.grid[0] = 8 * 32; am.tg[0] = 128;
             push(ds, am);
         }
-        xprep_at(d.ao, 0, d.A_ao, 4096);
-        gemv(ds, d.ten.at(p + "self_attn.o_proj.weight"), d.A_ao, d.o, N, B, 0, &d.pack);
+        df2_mmn(ds, p + "self_attn.o_proj.weight", d.ao, 0, 4096, d.o, N, B);
         conv(d.o, d.dyn, 320 * 4, base_a + 2 * N * 4, &d.h, d.h);
-        rms(d.h, d.xn, (p + "post_attention_layernorm.weight").c_str(), B);
-        xprep_at(d.xn, 0, d.A_x, N);
-        gemv(ds, d.ten.at(p + "mlp_conv.kernel_projection.weight"), d.A_x, d.dyn, 640, B, 0, &d.pack);
+        df2_rms(ds, d.h, d.xn, (p + "post_attention_layernorm.weight").c_str(), B);
+        df2_mmn(ds, p + "mlp_conv.kernel_projection.weight", d.xn, 0, N, d.dyn, 640, B);
         conv(d.xn, d.dyn, 0, base_m, nullptr, d.xc);
-        xprep_at(d.xc, 0, d.A_x, N);
-        gemv(ds, d.ten.at(p + "mlp.gate_proj.weight"), d.A_x, d.gate, d.I, B, 0, &d.pack);
-        gemv(ds, d.ten.at(p + "mlp.up_proj.weight"), d.A_x, d.up, d.I, B, 0, &d.pack);
+        df2_mmn(ds, p + "mlp.gate_proj.weight", d.xc, 0, N, d.gate, d.I, B);
+        nb_ = true;
+        df2_mmn(ds, p + "mlp.up_proj.weight", d.xc, 0, N, d.up, d.I, B);
         {
             struct SwArgs { uint32_t n; } sa{(uint32_t) (B * d.I)};
             mtl::Dispatch sd;
@@ -419,13 +490,22 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
             sd.tg[0] = 256;
             push(ds, sd);
         }
-        xprep_at(d.sw, 0, d.A_sw, d.I);
-        gemv(ds, d.ten.at(p + "mlp.down_proj.weight"), d.A_sw, d.mlp, N, B, 0, &d.pack);
+        df2_mmn(ds, p + "mlp.down_proj.weight", d.sw, 0, d.I, d.mlp, N, B);
         conv(d.mlp, d.dyn, 320 * 4, base_m + 2 * N * 4, &d.h, d.h);
     }
-    rms(d.h, d.fn, "norm.weight", B);
-    xprep_at(d.fn, (size_t) N * 4, d.A_fn, N);   // rows 1..7
-    gemv(ds, d.head_t, d.A_fn, d.logits, (size_t) d.nd, DF2_DRAFTS, 0, d.head_buf);
+    df2_rms(ds, d.h, d.fn, "norm.weight", B);
+    if (d.head_q8) {
+        df2_mm(ds, d.hq, 0, d.hsc, 0, N, (uint32_t) d.nd, d.fn, (size_t) N * 4, N, d.logits, 0, (uint32_t) d.nd, DF2_DRAFTS);   // rows 1..7
+    } else {
+        mtl::Dispatch xd;
+        xd.p = P(lib_, "xprep", {}, "xprep");
+        const uint32_t nv = N, nt = MAXT;
+        xd.args = {mtl::Arg::B(d.fn, (size_t) N * 4), mtl::Arg::B(d.A_fn.b), mtl::Arg::V(nv), mtl::Arg::V(nt)};
+        xd.tg[0] = 256;
+        xd.grid[0] = (N / 16 * MAXT + 255) / 256;
+        push(ds, xd);
+        gemv(ds, d.head_t, d.A_fn, d.logits, (size_t) d.nd, DF2_DRAFTS, 0, d.head_buf);
+    }
     {
         struct TkArgs { int32_t n; } ta{(int32_t) d.nd};
         mtl::Dispatch tp, tm;
@@ -439,7 +519,8 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
         tm.grid[0] = DF2_DRAFTS; tm.tg[0] = 256;
         push(ds, tm);
     }
-    gemv(ds, d.ten.at("candidate_selector.hidden_projection.weight"), d.A_fn, d.hsel, 256, DF2_DRAFTS, 0, &d.pack);
+    // the selector's hidden projection over the same 7 rows (it reads rows 1..7 of fn)
+    df2_mmn(ds, "candidate_selector.hidden_projection.weight", d.fn, (size_t) N * 4, N, d.hsel, 256, DF2_DRAFTS);
     {
         struct SelArgs { uint32_t rank, rows; } sa{(uint32_t) d.rank, (uint32_t) DF2_DRAFTS};
         mtl::Dispatch sd;
@@ -471,7 +552,39 @@ bool Window::df2_context(const mtl::Buffer& taps, size_t taps_off, int64_t n, in
         }
         cx_->run_graph(ds);
     }
+    if (!d.dump_path.empty()) df2_dump_rows(taps, taps_off, n, pos0);
     return true;
+}
+
+// STRATA_DF2_DUMP: keep the rows the drafter is fed (positions must run 0, 1, 2 ... without a gap) and write them with the answer of one round
+void Window::df2_dump_rows(const mtl::Buffer& taps, size_t taps_off, int64_t n, int64_t pos0) {
+    Df2& d = *df2_;
+    if (pos0 != d.dump_next) { d.dump_ok = false; return; }
+    const size_t row_floats = d.taps.size() * N;
+    const float* src = (const float*) (taps.as<uint8_t>() + taps_off);
+    d.dump_taps.insert(d.dump_taps.end(), src, src + (size_t) n * row_floats);
+    d.dump_next = pos0 + n;
+}
+
+void Window::df2_dump_write(int64_t s, int32_t anchor) {
+    Df2& d = *df2_;
+    if (!d.dump_ok || d.dump_next != s) { std::fprintf(stderr, "strata metal: STRATA_DF2_DUMP: the context rows are not 0..%lld, nothing written\n", (long long) s); return; }
+    std::FILE* f = std::fopen(d.dump_path.c_str(), "wb");
+    if (!f) { std::fprintf(stderr, "strata metal: cannot write %s\n", d.dump_path.c_str()); return; }
+    const int32_t hdr[8] = {0x32465344, 1, (int32_t) s, anchor, (int32_t) d.nd, (int32_t) d.taps.size(), N, d.mask_token};
+    std::fwrite(hdr, 4, 8, f);
+    std::fwrite(d.dump_taps.data(), 4, d.dump_taps.size(), f);
+    std::fwrite(d.dump_anchor_emb.data(), 4, N, f);
+    std::fwrite(d.mask_emb.data(), 4, N, f);
+    std::fwrite(d.fn.ptr, 4, (size_t) DF2_ROWS * N, f);
+    std::fwrite(d.hsel.ptr, 4, (size_t) DF2_DRAFTS * 256, f);
+    std::fwrite(d.topval.ptr, 4, DF2_DRAFTS * 16, f);
+    std::fwrite(d.toptok.ptr, 4, DF2_DRAFTS * 16, f);
+    std::fwrite(d.outbuf.ptr, 4, 32, f);
+    std::fwrite(d.vmap.ptr, 4, d.use_map ? (size_t) d.nd : 0, f);
+    std::fwrite(d.logits.ptr, 4, (size_t) DF2_DRAFTS * (size_t) d.nd, f);
+    std::fclose(f);
+    std::fprintf(stderr, "strata metal: STRATA_DF2_DUMP: %lld context rows and the answer of round %lld written to %s\n", (long long) s, (long long) d.rounds, d.dump_path.c_str());
 }
 
 bool Window::df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err) {
@@ -496,32 +609,94 @@ bool Window::df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts,
         ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) anchor * rb, h, N);
         for (int i = 1; i < DF2_ROWS; ++i) std::memcpy(h + (size_t) i * N, d.mask_emb.data(), (size_t) N * 4);
     }
+    if (!d.dump_path.empty()) {
+        df2_dump_rows(tap_dec_, 0, n_new, pos0);
+        d.dump_anchor_emb.assign(h, h + N);
+    }
+    d.last_build_ms = 0;
     if (!d.built[n_new]) {
+        const double tb = now_ms();
         nb_ = false;
         df2_ctx_list(d.list[n_new], tap_dec_, 0, n_new, d.dpos, 0, d.rtd, 0);
         df2_block_list(d.list[n_new]);
         d.built[n_new] = true;
+        d.last_build_ms = now_ms() - tb;   // the list and its pipelines (compiled on first use) - once per window size, not a per-round cost
+        d.build_ms += d.last_build_ms;
     }
     int32_t* ot = d.outbuf.as<int32_t>();
     for (int i = 0; i < DF2_DRAFTS; ++i) ot[i] = -1;
+    const double tr = now_ms();
     const double g = cx_->run_graph(d.list[n_new]);
+    const double wall = now_ms() - tr;
     d.gpu_ms += 1000.0 * g;
+    if (d.rounds >= 1 && d.last_build_ms == 0) { d.run_ms += wall; d.host_ms += now_ms() - t0 - wall; ++d.steady; }
+    static const bool prof = std::getenv("STRATA_DF2_PROF") != nullptr;
+    if (prof && d.rounds == 10) df2_prof(d.list[n_new]);
     for (int i = 0; i < DF2_DRAFTS; ++i) {
         drafts[i] = ot[i];
         if (probs) probs[i] = d.outbuf.as<float>()[16 + i];
     }
+    if (!d.dump_path.empty() && d.rounds == d.dump_round) { df2_dump_write(s, anchor); d.dump_path.clear(); }
     ++d.rounds;
     (void) t0;
     return true;
 }
 
+
+// STRATA_DF2_PROF=1 (measurement): once, at the 10th round, the GPU time of each kernel class of the round alone (each class's dispatches run by themselves)
+void Window::df2_prof(const std::vector<mtl::Dispatch>& ds) {
+    Df2& d = *df2_;
+    std::map<uint64_t, std::string> tname;
+    for (const auto& [k, v] : d.ten) {
+        if (v.type != ref::Q8_0) continue;
+        std::string n = k;
+        if (n.rfind("layers.", 0) == 0) n = n.substr(n.find('.', 7) + 1);
+        tname[v.offset] = n;
+    }
+    std::map<std::string, std::vector<mtl::Dispatch>> by;
+    for (const auto& x : ds) {
+        std::string c = pkey_of_.count(x.p) ? pkey_of_[x.p] : "?";
+        if (c.find('#') != std::string::npos) c = c.substr(0, c.find('#'));
+        if ((c.rfind("gemv_", 0) == 0 || c.rfind("df2_mm", 0) == 0) && !x.args.empty()) {
+            if (x.args[0].buf == &d.wq && tname.count(x.args[0].off)) c = "mm " + tname[x.args[0].off];
+            else if (x.args[0].buf == &d.hq) c = "mm head";
+            else if (x.args[0].buf == d.head_buf) c = "gemv head";
+        }
+        mtl::Dispatch y = x;
+        y.barrier = true;
+        by[c].push_back(y);
+    }
+    auto med = [&](const std::vector<mtl::Dispatch>& v) {
+        std::vector<double> t;
+        for (int i = 0; i < 7; ++i) t.push_back(1000.0 * cx_->run_graph(v));
+        std::sort(t.begin(), t.end());
+        return t[3];
+    };
+    const double all = med(ds);
+    std::vector<std::pair<double, std::string>> rows;
+    double sum = 0;
+    for (const auto& [c, v] : by) {
+        const double m = med(v);
+        sum += m;
+        rows.push_back({m, c + " x" + std::to_string(v.size())});
+    }
+    std::sort(rows.rbegin(), rows.rend());
+    std::fprintf(stderr, "strata metal df2 prof: round of %zu dispatches, GPU %.3f ms; classes alone (serialized) sum %.3f ms:\n", ds.size(), all, sum);
+    for (const auto& [m, c] : rows) std::fprintf(stderr, "strata metal df2 prof: %8.3f ms %5.1f%%  %s\n", m, 100.0 * m / sum, c.c_str());
+}
+
 void Window::df2_free() {
+    if (df2_ && df2_->rounds > 0)
+        std::fprintf(stderr, "strata metal: DFlash2 %lld rounds: GPU %.2f ms/round, run_graph %.2f ms (steady, %lld rounds), host before %.2f ms, lists and pipelines built once: %.0f ms\n",
+                     (long long) df2_->rounds, df2_->gpu_ms / (double) df2_->rounds, df2_->steady ? df2_->run_ms / (double) df2_->steady : 0.0,
+                     (long long) df2_->steady, df2_->steady ? df2_->host_ms / (double) df2_->steady : 0.0, df2_->build_ms);
     delete df2_;
     df2_ = nullptr;
 }
 
 uint64_t Window::df2_bytes() const { return df2_ ? df2_->bytes : 0; }
 double Window::df2_gpu_ms() const { return df2_ ? df2_->gpu_ms : 0.0; }
+double Window::df2_last_build_ms() const { return df2_ ? df2_->last_build_ms : 0.0; }
 
 // ---- entry points for the shared host code (verify.cpp, prefill.cpp) and the drafter shim below
 bool window_taps(void* w, const std::vector<int>& layers, const float** tap_dev, std::string& err) {
@@ -621,7 +796,7 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     if (taps != nullptr && taps != w->tap_dec_ptr()) { err = "dflash2: the taps are not the window's"; return false; }
     const auto t0 = std::chrono::steady_clock::now();
     if (!w->df2_draft(n_new, pos0, anchor, drafts, probs, err)) return false;
-    ms_draft += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    ms_draft += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() - w->df2_last_build_ms();   // (the one-time list and pipeline build is not a round cost)
     ms_gpu = w->df2_gpu_ms();
     ++rounds;
     have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n_new);
