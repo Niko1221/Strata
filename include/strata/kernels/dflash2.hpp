@@ -48,6 +48,13 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
                    int ring_slots, int window, float* part, void* xq, float* xd, void* stream);
 void df2_attention_f16(const float* q, const void* kring, const void* vring, const float* kblk, const float* vblk, const int32_t* anchor_pos,
                        int ring_slots, int window, float* part, void* xq, float* xd, void* stream);
+/// Batched multi-slot attention across `n_items` active slots (`1..4`, 8 query rows per item).  Item `idx` reads
+/// `slot = slot_info[idx * 4 + 0]` and `anchor_pos = slot_info[idx * 4 + 3]`, resolves `kring`/`vring` from
+/// `ring_table[slot * 16 + 0..1]`, and writes quantized attention outputs to `xq + idx * 8 * 4096` and `xd + idx * 8 * 128`.
+void df2_attention_batch(const float* q, void* const* ring_table, const float* kblk, const float* vblk, const int32_t* slot_info,
+                         int ring_slots, int window, float* part, void* xq, float* xd, int n_items, void* stream);
+void df2_attention_batch_f16(const float* q, void* const* ring_table, const float* kblk, const float* vblk, const int32_t* slot_info,
+                             int ring_slots, int window, float* part, void* xq, float* xd, int n_items, void* stream);
 
 /// The Q8 GEMM the drafter's matrices run on.  A weight matrix is TILED (see the layout note in dflash2.cu; df2_q8_tile makes it from GGUF Q8_0 blocks):
 /// the int8 plane at `w` (n_out * n_in bytes) then the fp16 scale plane.  Activations are planar (df2_quant_rows and the fused quantizers below):
@@ -82,6 +89,13 @@ void df2_kv_ring(const float* kin, const float* vin, const float* gk, const int3
                  int heads, float eps, void* stream);
 void df2_kv_ring_f16(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, void* kring, void* vring, int slots, int rows,
                      int heads, float eps, void* stream);
+/// Batched multi-slot context KV ring write across `n_items` active slots (`1..4`, up to 8 context rows per item).
+/// Item `idx` reads `slot = slot_info[idx * 4 + 0]`, `c0 = slot_info[idx * 4 + 1]`, and `m = slot_info[idx * 4 + 2]`,
+/// and writes rows `c0 .. c0 + m - 1` into `ring_table[slot * 16 + 0]` (K) and `ring_table[slot * 16 + 1]` (V).
+void df2_kv_ring_batch(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, void* const* ring_table,
+                       const int32_t* slot_info, int slots, int heads, float eps, int n_items, void* stream);
+void df2_kv_ring_batch_f16(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, void* const* ring_table,
+                           const int32_t* slot_info, int slots, int heads, float eps, int n_items, void* stream);
 
 /// Top-16 per row of logits [rows][n] (value-descending; ties to the lower index).  idx_map (optional) maps a column to a token id.
 /// scratch: rows * kDf2TopBlocks * 16 * 2 words.  Outputs val[rows][16] and tok[rows][16].  n <= 4096 * kDf2TopBlocks.
@@ -101,6 +115,10 @@ void df2_select_multi(const float* hp, const float* unary, const int32_t* tok, c
 
 /// Packs `rows` rows of `fn_in` ([rows][N]) and `hsel_in` ([rows][rank]) into `fn_out` and `hsel_out` in one launch.
 void df2_pack_head_rows(const float* fn_in, const float* hsel_in, float* fn_out, float* hsel_out, int rows, int N, int rank, void* stream);
+/// Batched multi-slot head-row pack across `n_items` items (`1..4`): item `idx` reads `row_off = pack_info[idx * 2 + 0]`
+/// and `k_want = pack_info[idx * 2 + 1]`, copying `k_want` rows from `idx * 8 + 1` of `fn_in` / `hsel_in` into `row_off` of `fn_out` / `hsel_out`.
+void df2_pack_head_rows_batch(const float* fn_in, const float* hsel_in, float* fn_out, float* hsel_out, const int32_t* pack_info,
+                              int N, int rank, int n_items, void* stream);
 
 /// The verify window's tap: out[r][d] = mean over the hc streams c of (R[r][c][d] + bo[r][d] * 2 * sigmoid(inject[r][c] / hc)) - the layer output with
 /// its pending FFN write (gr_write) applied, averaged over the streams.  R rows are `R_stride` floats apart, bo rows `bo_stride`, inject rows

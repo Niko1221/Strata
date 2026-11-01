@@ -186,6 +186,7 @@ private:
     const Slot& cur() const { return *slots_[(size_t) cur_]; }
     bool alloc_slot_rings(Slot& sl);   ///< cudaMalloc + zero this slot's rings on device_ (vram_ grows); unwinds itself on failure
     void free_slot(Slot& sl);          ///< destroy this slot's graphs, free its rings (vram_ shrinks by the bytes recorded at allocation)
+    void sync_ring_table();            ///< updates device table of per-slot K/V ring pointers (`d_ring_table_`)
     int32_t& mirror_cell(Slot& sl, int64_t pos);  ///< sl.ring_pos_[pos % ring_slots_] with the bounds asserted (df2_ring_mirror_index)
 
     struct Tensor { std::string name, dtype; int64_t rows = 0, cols = 0; uint64_t off = 0, bytes = 0; };
@@ -196,10 +197,12 @@ private:
     void gemm(std::initializer_list<const char*> names, std::initializer_list<float*> outs, int ncols, cudaStream_t cs, const uint8_t* xq, const float* xd);
     bool record_context(const float* taps, int n, cudaStream_t cs, std::string& err);
     bool record_block_body(cudaStream_t cs, std::string& err);
+    bool record_batch_body(int n_items, cudaStream_t cs, std::string& err);
     bool record_block_head(cudaStream_t cs, std::string& err);
     bool record_block(cudaStream_t cs, std::string& err);
     bool capture(int n, const float* taps, std::string& err);
     bool capture_body(int n, const float* taps, std::string& err);
+    bool capture_batch_body(int n_items, std::string& err);
     bool alloc(std::string& err);
     struct Prof;
     Prof* prof_ = nullptr;
@@ -252,6 +255,8 @@ private:
     float *logits_ = nullptr, *topval_ = nullptr, *hsel_ = nullptr, *out_prob_ = nullptr;
     int32_t *toptok_ = nullptr, *out_tok_ = nullptr;
     uint32_t* topscratch_ = nullptr;
+    void** d_ring_table_ = nullptr;              ///< device table [kDf2MaxSlots][8][2] of (kring_[l], vring_[l]) pointers
+    cudaGraphExec_t batch_body_exec_[5] = {};    ///< captured multi-slot batch body graphs for n_items = 1..4 (when precomputed context is active)
     std::vector<std::unique_ptr<Slot>> slots_;   ///< one per conversation; the constructor makes slot 0
     int cur_ = 0;                                ///< the active slot (set_slot); each slot keeps its own captured taps pointer (Slot::taps_)
     std::string pack_path_;          ///< the pack's path at load (restore refuses a moved pack)

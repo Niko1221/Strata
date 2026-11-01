@@ -140,9 +140,9 @@ template <> struct RegTraits<uint16_t> {
 };
 
 template <typename RingT>
-__global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict__ q, const RingT* __restrict__ kring, const RingT* __restrict__ vring,
-                                                       const float* __restrict__ kblk, const float* __restrict__ vblk,
-                                                       const int32_t* __restrict__ anchor_pos, int ring_slots, int window, float* __restrict__ part, int variant) {
+__device__ void attn_part_slot(const float* __restrict__ q, const RingT* __restrict__ kring, const RingT* __restrict__ vring,
+                               const float* __restrict__ kblk, const float* __restrict__ vblk,
+                               int s, int ring_slots, int window, float* __restrict__ part, int variant) {
     using Traits = RegTraits<RingT>;
     using Reg = typename Traits::Reg;
     __shared__ __align__(16) float Qs[32 * AS];
@@ -151,7 +151,6 @@ __global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict_
     __shared__ float Sc[32 * 33];
     __shared__ float m_s[32], l_s[32], corr_s[32];
     const int kvh = blockIdx.x, chunk = blockIdx.y, tid = threadIdx.x;
-    const int s = *anchor_pos;
     const int lo = s - (window - 1) > 0 ? s - (window - 1) : 0;
     const int nctx = s - lo;
     const int nkeys = nctx + kDf2Rows;
@@ -299,22 +298,47 @@ __global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict_
     }
 }
 
+template <typename RingT>
+__global__ void __launch_bounds__(128) attn_part_kernel(const float* __restrict__ q, const RingT* __restrict__ kring, const RingT* __restrict__ vring,
+                                                       const float* __restrict__ kblk, const float* __restrict__ vblk,
+                                                       const int32_t* __restrict__ anchor_pos, int ring_slots, int window, float* __restrict__ part, int variant) {
+    attn_part_slot<RingT>(q, kring, vring, kblk, vblk, *anchor_pos, ring_slots, window, part, variant);
+}
+
+template <typename RingT>
+__global__ void __launch_bounds__(128) attn_part_batch_kernel(const float* __restrict__ q, void* const* __restrict__ ring_table,
+                                                             const float* __restrict__ kblk, const float* __restrict__ vblk,
+                                                             const int32_t* __restrict__ slot_info, int ring_slots, int window,
+                                                             float* __restrict__ part, int variant) {
+    const int idx = blockIdx.z;
+    const int slot = slot_info[idx * 4 + 0];
+    const int s = slot_info[idx * 4 + 3];
+    const RingT* kring = static_cast<const RingT*>(ring_table[slot * 16 + 0]);
+    const RingT* vring = static_cast<const RingT*>(ring_table[slot * 16 + 1]);
+    const size_t b0 = (size_t) idx * kDf2Rows;
+    const size_t part_stride = (size_t) gridDim.y * kDf2Kv * 32 * 130;
+    attn_part_slot<RingT>(q + b0 * 32 * HD, kring, vring, kblk + b0 * kDf2Kv * HD, vblk + b0 * kDf2Kv * HD,
+                          s, ring_slots, window, part + (size_t) idx * part_stride, variant);
+}
+
 __device__ __forceinline__ void quant_block(float v, int blk, int col, int K, int8_t* __restrict__ xq, float* __restrict__ xd);
 
 __global__ void attn_merge_kernel(const float* __restrict__ part, int n_chunks, int8_t* __restrict__ xq, float* __restrict__ xd) {
     const int a = blockIdx.x;                      // kvh * 32 + qi
+    const int idx = blockIdx.y;                    // 0 in single-slot mode, 0..n_items-1 in batch mode
     const int kvh = a >> 5, qi = a & 31, d = threadIdx.x;
+    const float* p_item = part + (size_t) idx * n_chunks * kDf2Kv * 32 * 130;
     float M = -INFINITY;
-    for (int c = 0; c < n_chunks; ++c) M = fmaxf(M, part[(((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130]);
+    for (int c = 0; c < n_chunks; ++c) M = fmaxf(M, p_item[(((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130]);
     float L = 0.0f, o = 0.0f;
     for (int c = 0; c < n_chunks; ++c) {
-        const float* p = part + (((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130;
+        const float* p = p_item + (((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130;
         const float mc = p[0];
         const float w = (mc == -INFINITY) ? 0.0f : __expf(mc - M);
         L += p[1] * w;
         o = fmaf(p[2 + d], w, o);
     }
-    const int row = qi >> 2, g = qi & 3;
+    const int row = idx * kDf2Rows + (qi >> 2), g = qi & 3;
     // the output row `row`, head kvh * 4 + g, dims d: quant block (kvh * 4 + g) * 4 + d / 32 of the 4096-wide row
     quant_block(L > 0.0f ? o / L : 0.0f, (kvh * kDf2Gqa + g) * (HD / 32) + (d >> 5), row, 32 * HD, xq, xd);
 }
@@ -544,9 +568,10 @@ __global__ void norm_rope_qk_kernel(const float* __restrict__ q, const float* __
 
 // the context update's ring write: K norm + rope of (row, head) and the V copy, both into the head-major ring slot pos % slots
 template <typename RingT>
-__global__ void kv_ring_kernel(const float* __restrict__ kin, const float* __restrict__ vin, const float* __restrict__ gk, const int32_t* __restrict__ pos,
-                               const float* __restrict__ table, RingT* __restrict__ kring, RingT* __restrict__ vring, int slots, int heads, float eps) {
-    const int r = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
+__device__ void kv_ring_row_head(const float* __restrict__ kin, const float* __restrict__ vin, const float* __restrict__ gk,
+                                 const int32_t* __restrict__ pos, const float* __restrict__ table,
+                                 RingT* __restrict__ kring, RingT* __restrict__ vring, int r, int h, int slots, int heads, float eps) {
+    const int d = threadIdx.x;
     __shared__ float red[4];
     __shared__ float y[HD];
     const float x = kin[((size_t) r * heads + h) * HD + d];
@@ -563,6 +588,26 @@ __global__ void kv_ring_kernel(const float* __restrict__ kin, const float* __res
     const size_t at = ((size_t) h * slots + slot) * HD + d;
     store_ring_elem(kring, at, d < 64 ? v * c - y[d + 64] * sn : v * c + y[d - 64] * sn);
     store_ring_elem(vring, at, vin[((size_t) r * heads + h) * HD + d]);
+}
+
+template <typename RingT>
+__global__ void kv_ring_kernel(const float* __restrict__ kin, const float* __restrict__ vin, const float* __restrict__ gk, const int32_t* __restrict__ pos,
+                               const float* __restrict__ table, RingT* __restrict__ kring, RingT* __restrict__ vring, int slots, int heads, float eps) {
+    kv_ring_row_head<RingT>(kin, vin, gk, pos, table, kring, vring, blockIdx.x, blockIdx.y, slots, heads, eps);
+}
+
+template <typename RingT>
+__global__ void kv_ring_batch_kernel(const float* __restrict__ kin, const float* __restrict__ vin, const float* __restrict__ gk,
+                                     const int32_t* __restrict__ pos, const float* __restrict__ table, void* const* __restrict__ ring_table,
+                                     const int32_t* __restrict__ slot_info, int slots, int heads, float eps) {
+    const int r_local = blockIdx.x, h = blockIdx.y, idx = blockIdx.z;
+    const int slot = slot_info[idx * 4 + 0];
+    const int c0 = slot_info[idx * 4 + 1];
+    const int m = slot_info[idx * 4 + 2];
+    if (r_local >= m) return;
+    RingT* kring = static_cast<RingT*>(ring_table[slot * 16 + 0]);
+    RingT* vring = static_cast<RingT*>(ring_table[slot * 16 + 1]);
+    kv_ring_row_head<RingT>(kin, vin, gk, pos, table, kring, vring, c0 + r_local, h, slots, heads, eps);
 }
 
 // silu(gate) * up then the planar quantization: grid (ceil(I / 32 / 8), rows), 256 threads
@@ -736,6 +781,22 @@ __global__ void pack_head_rows_kernel(const float* __restrict__ fn_in, const flo
         hsel_out[(size_t) r * rank + (i - N)] = hsel_in[(size_t) r * rank + (i - N)];
 }
 
+__global__ void pack_head_rows_batch_kernel(const float* __restrict__ fn_in, const float* __restrict__ hsel_in,
+                                            float* __restrict__ fn_out, float* __restrict__ hsel_out,
+                                            const int32_t* __restrict__ pack_info, int N, int rank) {
+    const int i = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
+    const int r = blockIdx.y, idx = blockIdx.z;
+    const int row_off = pack_info[idx * 2 + 0];
+    const int k_want = pack_info[idx * 2 + 1];
+    if (r >= k_want) return;
+    const size_t src_r = (size_t) idx * kDf2Rows + 1 + r;
+    const size_t dst_r = (size_t) row_off + r;
+    if (i < N)
+        fn_out[dst_r * N + i] = fn_in[src_r * N + i];
+    else if (i < N + rank)
+        hsel_out[dst_r * rank + (i - N)] = hsel_in[src_r * rank + (i - N)];
+}
+
 __global__ void tap_rows_kernel(const float* __restrict__ R, float* __restrict__ out, int64_t out_stride, int64_t n, int hc) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     const int r = blockIdx.y;
@@ -815,6 +876,32 @@ void df2_attention_f16(const float* q, const void* kring, const void* vring, con
     check("attn_merge");
 }
 
+void df2_attention_batch(const float* q, void* const* ring_table, const float* kblk, const float* vblk, const int32_t* slot_info,
+                         int ring_slots, int window, float* part, void* xq, float* xd, int n_items, void* stream) {
+    if (n_items <= 0) return;
+    if (window < 1 || window > kDf2MaxWindow || ring_slots < window + 8)
+        throw std::invalid_argument("df2_attention_batch: unsupported sliding-window/ring geometry");
+    const int n_chunks = df2_attention_chunks(window);
+    attn_part_batch_kernel<float><<<dim3(kDf2Kv, n_chunks, (unsigned) n_items), 128, 0, (cudaStream_t) stream>>>(
+        q, ring_table, kblk, vblk, slot_info, ring_slots, window, part, g_attn_variant);
+    check("attn_part_batch");
+    attn_merge_kernel<<<dim3(kDf2Kv * 32, (unsigned) n_items), HD, 0, (cudaStream_t) stream>>>(part, n_chunks, static_cast<int8_t*>(xq), xd);
+    check("attn_merge_batch");
+}
+
+void df2_attention_batch_f16(const float* q, void* const* ring_table, const float* kblk, const float* vblk, const int32_t* slot_info,
+                             int ring_slots, int window, float* part, void* xq, float* xd, int n_items, void* stream) {
+    if (n_items <= 0) return;
+    if (window < 1 || window > kDf2MaxWindow || ring_slots < window + 8)
+        throw std::invalid_argument("df2_attention_batch_f16: unsupported sliding-window/ring geometry");
+    const int n_chunks = df2_attention_chunks(window);
+    attn_part_batch_kernel<uint16_t><<<dim3(kDf2Kv, n_chunks, (unsigned) n_items), 128, 0, (cudaStream_t) stream>>>(
+        q, ring_table, kblk, vblk, slot_info, ring_slots, window, part, g_attn_variant);
+    check("attn_part_batch_f16");
+    attn_merge_kernel<<<dim3(kDf2Kv * 32, (unsigned) n_items), HD, 0, (cudaStream_t) stream>>>(part, n_chunks, static_cast<int8_t*>(xq), xd);
+    check("attn_merge_batch");
+}
+
 void df2_conv_rms_quant(const float* x, const float* dyn, int dyn_stride, const float* base, float* h, const float* gamma, float* xn, int rows, int H, int group,
                         float eps, void* xq, float* xd, void* stream) {
     if (H > 3 * 1024) throw std::invalid_argument("df2_conv_rms_quant: H too large");
@@ -839,6 +926,22 @@ void df2_kv_ring_f16(const float* kin, const float* vin, const float* gk, const 
     kv_ring_kernel<uint16_t><<<dim3(rows, heads), HD, 0, (cudaStream_t) stream>>>(
         kin, vin, gk, pos, table, static_cast<uint16_t*>(kring), static_cast<uint16_t*>(vring), slots, heads, eps);
     check("kv_ring_f16");
+}
+
+void df2_kv_ring_batch(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, void* const* ring_table,
+                       const int32_t* slot_info, int slots, int heads, float eps, int n_items, void* stream) {
+    if (n_items <= 0) return;
+    kv_ring_batch_kernel<float><<<dim3(kDf2Rows, heads, (unsigned) n_items), HD, 0, (cudaStream_t) stream>>>(
+        kin, vin, gk, pos, table, ring_table, slot_info, slots, heads, eps);
+    check("kv_ring_batch");
+}
+
+void df2_kv_ring_batch_f16(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, void* const* ring_table,
+                           const int32_t* slot_info, int slots, int heads, float eps, int n_items, void* stream) {
+    if (n_items <= 0) return;
+    kv_ring_batch_kernel<uint16_t><<<dim3(kDf2Rows, heads, (unsigned) n_items), HD, 0, (cudaStream_t) stream>>>(
+        kin, vin, gk, pos, table, ring_table, slot_info, slots, heads, eps);
+    check("kv_ring_batch_f16");
 }
 
 void df2_gemm_variant(int v) { g_gemm_variant = v; }
@@ -928,6 +1031,14 @@ void df2_pack_head_rows(const float* fn_in, const float* hsel_in, float* fn_out,
     pack_head_rows_kernel<<<dim3((unsigned) ((N + rank + 255) / 256), (unsigned) rows), 256, 0, (cudaStream_t) stream>>>(
         fn_in, hsel_in, fn_out, hsel_out, N, rank);
     check("pack_head_rows");
+}
+
+void df2_pack_head_rows_batch(const float* fn_in, const float* hsel_in, float* fn_out, float* hsel_out, const int32_t* pack_info,
+                              int N, int rank, int n_items, void* stream) {
+    if (n_items <= 0) return;
+    pack_head_rows_batch_kernel<<<dim3((unsigned) ((N + rank + 255) / 256), (unsigned) (kDf2Rows - 1), (unsigned) n_items), 256, 0, (cudaStream_t) stream>>>(
+        fn_in, hsel_in, fn_out, hsel_out, pack_info, N, rank);
+    check("pack_head_rows_batch");
 }
 
 void df2_tap_rows(const float* R, float* out, int64_t out_stride, int64_t n_embd, int hc, int rows, void* stream) {

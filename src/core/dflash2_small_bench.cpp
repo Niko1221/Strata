@@ -200,6 +200,96 @@ int main(int argc, char** argv) {
         }
         std::printf("df2_gemm (ncols=16,24,32) + conv_quant/conv_rms_quant (rows=32) parity: PASS\n");
     }
+    {
+        // Bitwise parity check: df2_kv_ring_batch_f16 + df2_attention_batch_f16 + df2_pack_head_rows_batch across 4 slots vs serial
+        const int B4 = 32;
+        const int rslots = 2064, win = 2048;
+        float *kc_in = dev(B4 * 8 * 128, 0.12f), *vc_in = dev(B4 * 8 * 128, -0.08f);
+        float *q_in = dev(B4 * 32 * 128, 0.05f), *kb_in = dev(B4 * 8 * 128, 0.07f), *vb_in = dev(B4 * 8 * 128, -0.04f);
+        float *rt_in = dev(B4 * 128, 0.5f), *part4 = dev(4 * 17 * 8 * 32 * 130, 0.0f);
+        uint16_t *kr_ref[4], *vr_ref[4], *kr_got[4], *vr_got[4];
+        void* h_rtable[8 * 16] = {};
+        for (int s = 0; s < 4; ++s) {
+            cudaMalloc((void**) &kr_ref[s], (size_t) rslots * 8 * 128 * 2);
+            cudaMalloc((void**) &vr_ref[s], (size_t) rslots * 8 * 128 * 2);
+            cudaMalloc((void**) &kr_got[s], (size_t) rslots * 8 * 128 * 2);
+            cudaMalloc((void**) &vr_got[s], (size_t) rslots * 8 * 128 * 2);
+            cudaMemset(kr_ref[s], s + 1, (size_t) rslots * 8 * 128 * 2);
+            cudaMemset(vr_ref[s], s + 2, (size_t) rslots * 8 * 128 * 2);
+            cudaMemset(kr_got[s], s + 1, (size_t) rslots * 8 * 128 * 2);
+            cudaMemset(vr_got[s], s + 2, (size_t) rslots * 8 * 128 * 2);
+            h_rtable[s * 16 + 0] = kr_got[s];
+            h_rtable[s * 16 + 1] = vr_got[s];
+        }
+        void** d_rtable = nullptr;
+        cudaMalloc((void**) &d_rtable, sizeof(h_rtable));
+        cudaMemcpy(d_rtable, h_rtable, sizeof(h_rtable), cudaMemcpyHostToDevice);
+        const int ms[4] = {3, 5, 2, 4};
+        const int anchors[4] = {20, 35, 12, 50};
+        const int ks[4] = {7, 3, 1, 5};
+        int32_t h_cpos[32] = {}, h_sinfo[16] = {}, h_pinfo[8] = {}, h_anc[4] = {};
+        int c0 = 0, roff = 0;
+        for (int idx = 0; idx < 4; ++idx) {
+            for (int i = 0; i < ms[idx]; ++i) h_cpos[c0 + i] = anchors[idx] - ms[idx] + i;
+            h_sinfo[idx * 4 + 0] = idx;
+            h_sinfo[idx * 4 + 1] = c0;
+            h_sinfo[idx * 4 + 2] = ms[idx];
+            h_sinfo[idx * 4 + 3] = anchors[idx];
+            h_pinfo[idx * 2 + 0] = roff;
+            h_pinfo[idx * 2 + 1] = ks[idx];
+            h_anc[idx] = anchors[idx];
+            c0 += ms[idx];
+            roff += ks[idx];
+        }
+        int32_t *d_cpos, *d_sinfo, *d_pinfo, *d_anc;
+        cudaMalloc((void**) &d_cpos, sizeof(h_cpos));
+        cudaMalloc((void**) &d_sinfo, sizeof(h_sinfo));
+        cudaMalloc((void**) &d_pinfo, sizeof(h_pinfo));
+        cudaMalloc((void**) &d_anc, sizeof(h_anc));
+        cudaMemcpy(d_cpos, h_cpos, sizeof(h_cpos), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_sinfo, h_sinfo, sizeof(h_sinfo), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_pinfo, h_pinfo, sizeof(h_pinfo), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_anc, h_anc, sizeof(h_anc), cudaMemcpyHostToDevice);
+        uint8_t *axq_ref, *axq_got;
+        float *axd_ref = dev(B4 * 128, 0.0f), *axd_got = dev(B4 * 128, 0.0f);
+        cudaMalloc((void**) &axq_ref, B4 * 4096);
+        cudaMalloc((void**) &axq_got, B4 * 4096);
+        for (int idx = 0; idx < 4; ++idx) {
+            const int co = h_sinfo[idx * 4 + 1], m_i = h_sinfo[idx * 4 + 2];
+            df2_kv_ring_f16(kc_in + co * 8 * 128, vc_in + co * 8 * 128, gamma, d_cpos + co, rt_in + co * 128,
+                            kr_ref[idx], vr_ref[idx], rslots, m_i, 8, 1e-6f, nullptr);
+            df2_attention_f16(q_in + idx * 8 * 32 * 128, kr_ref[idx], vr_ref[idx],
+                              kb_in + idx * 8 * 8 * 128, vb_in + idx * 8 * 8 * 128, d_anc + idx,
+                              rslots, win, part4, axq_ref + idx * 8 * 4096, axd_ref + idx * 8 * 128, nullptr);
+        }
+        df2_kv_ring_batch_f16(kc_in, vc_in, gamma, d_cpos, rt_in, d_rtable, d_sinfo, rslots, 8, 1e-6f, 4, nullptr);
+        df2_attention_batch_f16(q_in, d_rtable, kb_in, vb_in, d_sinfo, rslots, win, part4, axq_got, axd_got, 4, nullptr);
+        float *fn_in = dev(B4 * N, 0.22f), *hs_in = dev(B4 * 256, -0.11f);
+        float *fn_r = dev(16 * N, 0.0f), *hs_r = dev(16 * 256, 0.0f);
+        float *fn_g = dev(16 * N, 0.0f), *hs_g = dev(16 * 256, 0.0f);
+        for (int idx = 0; idx < 4; ++idx) {
+            df2_pack_head_rows(fn_in + (idx * 8 + 1) * N, hs_in + (idx * 8 + 1) * 256,
+                               fn_r + h_pinfo[idx * 2 + 0] * N, hs_r + h_pinfo[idx * 2 + 0] * 256,
+                               ks[idx], N, 256, nullptr);
+        }
+        df2_pack_head_rows_batch(fn_in, hs_in, fn_g, hs_g, d_pinfo, N, 256, 4, nullptr);
+        cudaDeviceSynchronize();
+        std::vector<uint8_t> hq_r(B4 * 4096), hq_g(B4 * 4096);
+        std::vector<float> hd_r(B4 * 128), hd_g(B4 * 128), hfn_r(16 * N), hfn_g(16 * N), hhs_r(16 * 256), hhs_g(16 * 256);
+        cudaMemcpy(hq_r.data(), axq_ref, hq_r.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hq_g.data(), axq_got, hq_g.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hd_r.data(), axd_ref, hd_r.size() * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(hd_g.data(), axd_got, hd_g.size() * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(hfn_r.data(), fn_r, hfn_r.size() * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(hfn_g.data(), fn_g, hfn_g.size() * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(hhs_r.data(), hs_r, hhs_r.size() * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(hhs_g.data(), hs_g, hhs_g.size() * 4, cudaMemcpyDeviceToHost);
+        if (hq_r != hq_g || hd_r != hd_g || hfn_r != hfn_g || hhs_r != hhs_g) {
+            std::fprintf(stderr, "FAIL: df2_kv_ring_batch_f16 / df2_attention_batch_f16 / df2_pack_head_rows_batch parity\n");
+            return 1;
+        }
+        std::printf("df2_kv_ring_batch_f16 + df2_attention_batch_f16 + df2_pack_head_rows_batch (4 slots) parity: PASS\n");
+    }
     time("conv (resid)", [&] { df2_conv(o, dyn, 640, base, h, h, B, N, 16, nullptr); });
     time("attention merge+quant only", [&] { df2_attention(q, kr, vr, kr, vr, pos, 2064, 2048, part, xq, xd, nullptr); });
     Df2Mat m{w, y, 640};

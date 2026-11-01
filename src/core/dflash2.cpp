@@ -45,10 +45,13 @@ Dflash2Drafter::~Dflash2Drafter() {
     const OnDevice on_device(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     for (auto& sl : slots_) free_slot(*sl);   // every conversation's graphs and rings, slot 0 first
+    for (cudaGraphExec_t& e : batch_body_exec_)
+        if (e) { cudaGraphExecDestroy(e); e = nullptr; }
     auto fr = [](void* p) { if (p) cudaFree(p); };
     fr(blob_); fr(d_meta_); fr(xq_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rt_blk_);
     fr(fcy_); fr(hctx_); fr(kc_); fr(vc_); fr(h_); fr(xn_); fr(xc_); fr(dyn_); fr(q_); fr(qn_); fr(k_); fr(v_); fr(kblk_); fr(ao_); fr(o_);
     fr(gate_); fr(up_); fr(mlp_); fr(part_); fr(fn_); fr(fn_batch_); fr(hsel_batch_); fr(logits_); fr(topval_); fr(hsel_); fr(toptok_); fr(topscratch_);
+    fr(d_ring_table_);
     fr(dvocab_); fr(dhead_);
     if (h_meta_) cudaFreeHost(h_meta_);
     if (h_out_) cudaFreeHost(h_out_);
@@ -255,13 +258,15 @@ bool Dflash2Drafter::alloc(std::string& err) {
               dev(&fcy_, B * N_) && dev(&hctx_, B * N_) && dev(&kc_, (size_t) L_ * B * NKV_ * HD_) && dev(&vc_, (size_t) L_ * B * NKV_ * HD_) && dev(&h_, B * N_) && dev(&xn_, B * N_) &&
               dev(&xc_, B * N_) && dev(&dyn_, B * 640) && dev(&q_, B * NH_ * HD_) && dev(&qn_, B * NH_ * HD_) && dev(&k_, B * NKV_ * HD_) && dev(&v_, B * NKV_ * HD_) &&
               dev(&kblk_, B * NKV_ * HD_) && dev(&ao_, B * NH_ * HD_) && dev(&o_, B * N_) && dev(&gate_, B * I_) && dev(&up_, B * I_) && dev(&mlp_, B * N_) &&
-              dev(&part_, (size_t) kernels::df2_attention_chunks(window_) * 8 * 32 * 130) && dev(&fn_, B * N_) &&
+              dev(&part_, 4 * (size_t) kernels::df2_attention_chunks(window_) * 8 * 32 * 130) && dev(&fn_, B * N_) &&
               dev(&fn_batch_, (size_t) kBatchMaxRows * N_) && dev(&hsel_batch_, (size_t) kBatchMaxRows * rank_) &&
               dev(&topval_, (size_t) kBatchMaxRows * 16) && dev(&toptok_, (size_t) kBatchMaxRows * 16) &&
-              dev(&hsel_, B * rank_) && dev(&topscratch_, (size_t) kDrafts * kernels::kDf2TopBlocks * kernels::kDf2TopK * 2);
+              dev(&hsel_, B * rank_) && dev(&topscratch_, (size_t) kDrafts * kernels::kDf2TopBlocks * kernels::kDf2TopK * 2) &&
+              dev(&d_ring_table_, (size_t) kDf2MaxSlots * 16);
     for (auto& sl : slots_)
         if (ok && !alloc_slot_rings(*sl)) ok = false;   // every slot the drafter was grown to before load()
     if (!ok) { err = "dflash2: the drafter's buffers do not fit in VRAM"; return false; }
+    sync_ring_table();
     void* hd = nullptr;
     void* dd = nullptr;
     if (!mapped((kDf2MaxSlots * 32 + kDf2MaxSlots * 4 + 128) * 4, (void**) &hd, &dd)) { err = "dflash2: mapped staging"; return false; }
@@ -313,6 +318,18 @@ void Dflash2Drafter::free_slot(Slot& sl) {
     sl.ring_plane_bytes_ = 0;
 }
 
+void Dflash2Drafter::sync_ring_table() {
+    if (!d_ring_table_) return;
+    void* h_rings[kDf2MaxSlots * 16] = {};
+    for (size_t s = 0; s < slots_.size() && s < (size_t) kDf2MaxSlots; ++s) {
+        for (int l = 0; l < 8; ++l) {
+            h_rings[s * 16 + l * 2 + 0] = slots_[s]->kring_[l];
+            h_rings[s * 16 + l * 2 + 1] = slots_[s]->vring_[l];
+        }
+    }
+    cudaMemcpy(d_ring_table_, h_rings, sizeof(h_rings), cudaMemcpyHostToDevice);
+}
+
 // One indexed write to the host ring-position mirror.  The mirror has ring_slots entries wherever a slot comes
 // to exist (load(), set_n_slots(); df2_ring_mirror_entries sizes both paths), and df2_ring_mirror_index is the
 // pos % ring_slots the kv_ring kernels use, so the assert only fires if that sizing ever regresses - finding 1's
@@ -349,10 +366,12 @@ bool Dflash2Drafter::set_n_slots(int n, std::string& err) {
                     // n_slots() and vram_bytes() describing the drafter that served its slots before the call
                     for (size_t i = (size_t) have; i < slots_.size(); ++i) free_slot(*slots_[(size_t) i]);
                     slots_.resize((size_t) df2_slots_after_failed_grow(have, (int) slots_.size() - have));
+                    sync_ring_table();
                     return false;
                 }
                 slots_.push_back(std::move(sl));
             }
+            sync_ring_table();
         } else {
             while ((int) slots_.size() < n) {
                 auto sl = std::make_unique<Slot>();
@@ -379,6 +398,7 @@ bool Dflash2Drafter::set_n_slots(int n, std::string& err) {
         for (int i = have - 1; i >= n; --i) free_slot(*slots_[(size_t) i]);
     }
     slots_.resize((size_t) n);
+    if (device_ >= 0) sync_ring_table();
     return true;
 }
 
@@ -712,6 +732,116 @@ bool Dflash2Drafter::capture_body(int n, const float* taps, std::string& err) {
     return true;
 }
 
+bool Dflash2Drafter::record_batch_body(int n_items, cudaStream_t cs, std::string& err) {
+    using namespace kernels;
+    try {
+        const size_t bbody_off = (size_t) kDf2MaxSlots * 32 + (size_t) kDf2MaxSlots * 4;
+        const int total_B = n_items * kRows;
+        int32_t* d_bctx_pos = d_meta_ + 32;
+        int32_t* d_bblk_pos = d_meta_ + 64;
+        int32_t* d_bblk_tok = d_meta_ + 96;
+        int32_t* d_bslot_info = d_meta_ + 128;
+        int32_t* d_bpack_info = d_meta_ + 144;
+        copy_i32_from_mapped(d_meta_ + 64, m_meta_ + bbody_off + 32, 88, cs);
+        if (!skip_part("ctx")) {
+            const size_t B = (size_t) kRows * 4;
+            for (int l = 0; l < L_; ++l) {
+                const std::string p = "layers." + std::to_string(l) + ".";
+                const float* kn_w = f32(p + "self_attn.k_norm.weight");
+                const float* kc_l = kc_ + (size_t) l * B * NKV_ * HD_;
+                const float* vc_l = vc_ + (size_t) l * B * NKV_ * HD_;
+                if (fp16_ring_)
+                    df2_kv_ring_batch_f16(kc_l, vc_l, kn_w, d_bctx_pos, rt_ctx_, d_ring_table_ + l * 2,
+                                          d_bslot_info, ring_slots_, NKV_, eps_, n_items, cs);
+                else
+                    df2_kv_ring_batch(kc_l, vc_l, kn_w, d_bctx_pos, rt_ctx_, d_ring_table_ + l * 2,
+                                      d_bslot_info, ring_slots_, NKV_, eps_, n_items, cs);
+            }
+        }
+        df2_rope_table(d_bblk_pos, total_B, theta_, rt_blk_, cs);
+        embed_(d_bblk_tok, total_B, h_, cs);
+        df2_rms_quant(h_, f32("layers.0.input_layernorm.weight"), xn_, total_B, N_, eps_, xqp_, xdp_, cs);
+        for (int l = 0; l < L_; ++l) {
+            const std::string p = "layers." + std::to_string(l) + ".";
+            const float* base_a = f32(p + "attention_conv.base_kernel");
+            const float* base_m = f32(p + "mlp_conv.base_kernel");
+            const std::string akp = p + "attention_conv.kernel_projection.weight", mkp = p + "mlp_conv.kernel_projection.weight";
+            const std::string qp = p + "self_attn.q_proj.weight", kp = p + "self_attn.k_proj.weight", vp = p + "self_attn.v_proj.weight";
+            const std::string gp = p + "mlp.gate_proj.weight", up = p + "mlp.up_proj.weight";
+            if (!skip_part("tiny")) gemm({akp.c_str()}, {dyn_}, total_B, cs, xqp_, xdp_);
+            if (!skip_part("small")) df2_conv_quant(xn_, dyn_, 640, base_a, total_B, N_, group_, xqp_, xdp_, cs);
+            if (!skip_part("qkvo")) gemm({qp.c_str(), kp.c_str(), vp.c_str()}, {q_, k_, v_}, total_B, cs, xqp_, xdp_);
+            if (!skip_part("small"))
+                df2_norm_rope_qk(q_, k_, f32(p + "self_attn.q_norm.weight"), f32(p + "self_attn.k_norm.weight"),
+                                 rt_blk_, qn_, kblk_, total_B, NH_, NKV_, eps_, cs);
+            if (!skip_part("attn")) {
+                if (fp16_ring_)
+                    df2_attention_batch_f16(qn_, d_ring_table_ + l * 2, kblk_, v_, d_bslot_info,
+                                            ring_slots_, window_, part_, xqp_, xdp_, n_items, cs);
+                else
+                    df2_attention_batch(qn_, d_ring_table_ + l * 2, kblk_, v_, d_bslot_info,
+                                        ring_slots_, window_, part_, xqp_, xdp_, n_items, cs);
+            }
+            if (!skip_part("qkvo")) gemm({(p + "self_attn.o_proj.weight").c_str()}, {o_}, total_B, cs, xqp_, xdp_);
+            if (!skip_part("small"))
+                df2_conv_rms_quant(o_, dyn_ + 320, 640, base_a + 2 * N_, h_, f32(p + "post_attention_layernorm.weight"),
+                                   xn_, total_B, N_, group_, eps_, xqp_, xdp_, cs);
+            if (!skip_part("tiny")) gemm({mkp.c_str()}, {dyn_}, total_B, cs, xqp_, xdp_);
+            if (!skip_part("small")) df2_conv_quant(xn_, dyn_, 640, base_m, total_B, N_, group_, xqp_, xdp_, cs);
+            if (!skip_part("mlp")) gemm({gp.c_str(), up.c_str()}, {gate_, up_}, total_B, cs, xqp_, xdp_);
+            if (!skip_part("small")) df2_swiglu_quant(gate_, up_, total_B, I_, xqp_, xdp_, cs);
+            if (!skip_part("mlp")) gemm({(p + "mlp.down_proj.weight").c_str()}, {mlp_}, total_B, cs, xqp_, xdp_);
+            const std::string next_gamma = l + 1 < L_ ? "layers." + std::to_string(l + 1) + ".input_layernorm.weight" : std::string("norm.weight");
+            if (!skip_part("small"))
+                df2_conv_rms_quant(mlp_, dyn_ + 320, 640, base_m + 2 * N_, h_, f32(next_gamma),
+                                   l + 1 < L_ ? xn_ : fn_, total_B, N_, group_, eps_, xqp_, xdp_, cs);
+        }
+        gemm({"candidate_selector.hidden_projection.weight"}, {hsel_}, total_B, cs, xqp_, xdp_);
+        df2_pack_head_rows_batch(fn_, hsel_, fn_batch_, hsel_batch_, d_bpack_info, N_, rank_, n_items, cs);
+    } catch (const std::exception& e) {
+        err = e.what();
+        return false;
+    }
+    return true;
+}
+
+bool Dflash2Drafter::capture_batch_body(int n_items, std::string& err) {
+    if (n_items < 1 || n_items > 4) return false;
+    if (batch_body_exec_[n_items]) return true;
+    const size_t bbody_off = (size_t) kDf2MaxSlots * 32 + (size_t) kDf2MaxSlots * 4;
+    int32_t* hb = h_meta_ + bbody_off;
+    for (int idx = 0; idx < n_items; ++idx) {
+        for (int i = 0; i < 8; ++i) {
+            hb[32 + idx * 8 + i] = i;
+            hb[64 + idx * 8 + i] = mask_token_;
+        }
+        hb[96 + idx * 4 + 0] = 0;
+        hb[96 + idx * 4 + 1] = 0;
+        hb[96 + idx * 4 + 2] = 0;
+        hb[96 + idx * 4 + 3] = 0;
+        hb[112 + idx * 2 + 0] = idx * kDrafts;
+        hb[112 + idx * 2 + 1] = kDrafts;
+    }
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
+        err = "dflash2: begin batch_body capture";
+        return false;
+    }
+    const bool ok = record_batch_body(n_items, cs_, err);
+    cudaGraph_t graph = nullptr;
+    const cudaError_t ce = cudaStreamEndCapture(cs_, &graph);
+    if (!ok) { if (graph) cudaGraphDestroy(graph); return false; }
+    if (ce != cudaSuccess || cudaGraphInstantiate(&batch_body_exec_[n_items], graph, 0) != cudaSuccess) {
+        if (graph) cudaGraphDestroy(graph);
+        err = std::string("dflash2: capture_batch_body: ") + cudaGetErrorString(ce);
+        return false;
+    }
+    cudaGraphDestroy(graph);
+    cudaGraphUpload(batch_body_exec_[n_items], cs_);
+    cudaStreamSynchronize(cs_);
+    return true;
+}
+
 bool Dflash2Drafter::prepare(const float* taps, std::string& err) {
     if (!bound_) { err = "dflash2: not bound"; return false; }
     if (prof_ != nullptr) return true;   // the profile runs without graphs
@@ -727,6 +857,9 @@ bool Dflash2Drafter::prepare(const float* taps, std::string& err) {
                 if (!capture_body(n, taps, err)) { cur_ = saved_cur; return false; }
         }
         cur_ = saved_cur;
+        const int max_b = std::min<int>((int) slots_.size(), 4);
+        for (int ni = 1; ni <= max_b; ++ni)
+            if (!capture_batch_body(ni, err)) return false;
     } else {
         for (int i = 0; i < 8; ++i) h_meta_[(size_t) cur_ * 32 + i] = i;
         for (int n = 1; n <= kRows; ++n)
@@ -930,7 +1063,12 @@ bool Dflash2Drafter::draft_batch_begin(const BatchItem* items, int n_items, floa
                 hb[32 + idx * 8 + i] = (int32_t) (s + i);
                 hb[64 + idx * 8 + i] = i == 0 ? it.anchor : mask_token_;
             }
-            hb[96 + idx] = (int32_t) s;
+            hb[96 + idx * 4 + 0] = it.slot;
+            hb[96 + idx * 4 + 1] = can_use_precomp ? precomp_offs[idx] : ctx_offs[idx];
+            hb[96 + idx * 4 + 2] = it.n_new;
+            hb[96 + idx * 4 + 3] = (int32_t) s;
+            hb[112 + idx * 2 + 0] = row_off;
+            hb[112 + idx * 2 + 1] = it.k_want;
         }
         hm[16] = it.anchor;
         hm[17] = (int32_t) s;
@@ -947,42 +1085,34 @@ bool Dflash2Drafter::draft_batch_begin(const BatchItem* items, int n_items, floa
 
     if (timing_) cudaEventRecord(ev_a_, cs_);
     if (use_batch_body) {
-        try {
-            using namespace kernels;
-            const int tap_n = (int) taps_.size() * N_;
-            const int total_B = n_items * kRows;
-            int32_t* d_bctx_pos = d_meta_ + 32;
-            int32_t* d_bblk_pos = d_meta_ + 64;
-            int32_t* d_bblk_tok = d_meta_ + 96;
-            int32_t* d_banchor_pos = d_meta_ + 128;
-            if (can_use_precomp) {
-                copy_i32_from_mapped(d_meta_ + 64, m_meta_ + bbody_off + 32, 72, cs_);
-            } else {
-                copy_i32_from_mapped(d_meta_ + 32, m_meta_ + bbody_off, 104, cs_);
+        static const bool batch_graph_env = [] {
+            const char* e = std::getenv("STRATA_DF2_BATCHGRAPH");
+            return e == nullptr || e[0] == '\0' || std::strcmp(e, "0") != 0;
+        }();
+        if (can_use_precomp) {
+            if (batch_graph_env && batch_body_exec_[n_items] != nullptr) {
+                if (cudaGraphLaunch(batch_body_exec_[n_items], cs_) != cudaSuccess) {
+                    cur_ = saved_cur;
+                    err = std::string("dflash2 draft_batch: ") + cudaGetErrorString(cudaGetLastError());
+                    return false;
+                }
+            } else if (!record_batch_body(n_items, cs_, err)) {
+                cur_ = saved_cur;
+                return false;
             }
+        } else {
+            try {
+                using namespace kernels;
+                const int tap_n = (int) taps_.size() * N_;
+                const int total_B = n_items * kRows;
+                int32_t* d_bctx_pos = d_meta_ + 32;
+                int32_t* d_bblk_pos = d_meta_ + 64;
+                int32_t* d_bblk_tok = d_meta_ + 96;
+                int32_t* d_bslot_info = d_meta_ + 128;
+                int32_t* d_bpack_info = d_meta_ + 144;
+                copy_i32_from_mapped(d_meta_ + 32, m_meta_ + bbody_off, 120, cs_);
 
-            if (!skip_part("ctx")) {
-                const size_t B = (size_t) kRows * 4;
-                if (can_use_precomp) {
-                    for (int l = 0; l < L_; ++l) {
-                        const std::string p = "layers." + std::to_string(l) + ".";
-                        const float* kn_w = f32(p + "self_attn.k_norm.weight");
-                        const float* kc_l = kc_ + (size_t) l * B * NKV_ * HD_;
-                        const float* vc_l = vc_ + (size_t) l * B * NKV_ * HD_;
-                        for (int idx = 0; idx < n_items; ++idx) {
-                            Slot& sl = *slots_[(size_t) items[idx].slot];
-                            const int c0 = precomp_offs[idx], m = items[idx].n_new;
-                            if (fp16_ring_)
-                                df2_kv_ring_f16(kc_l + (size_t) c0 * NKV_ * HD_, vc_l + (size_t) c0 * NKV_ * HD_,
-                                                kn_w, d_bctx_pos + c0, rt_ctx_ + (size_t) c0 * 128,
-                                                sl.kring_[l], sl.vring_[l], ring_slots_, m, NKV_, eps_, cs_);
-                            else
-                                df2_kv_ring(kc_l + (size_t) c0 * NKV_ * HD_, vc_l + (size_t) c0 * NKV_ * HD_,
-                                            kn_w, d_bctx_pos + c0, rt_ctx_ + (size_t) c0 * 128,
-                                            sl.kring_[l], sl.vring_[l], ring_slots_, m, NKV_, eps_, cs_);
-                        }
-                    }
-                } else {
+                if (!skip_part("ctx")) {
                     df2_rope_table(d_bctx_pos, total_ctx, theta_, rt_ctx_, cs_);
                     for (int idx = 0; idx < n_items; ++idx) {
                         const BatchItem& it = items[idx];
@@ -1000,82 +1130,60 @@ bool Dflash2Drafter::draft_batch_begin(const BatchItem* items, int n_items, floa
                         const std::string kp = p + "self_attn.k_proj.weight", vp = p + "self_attn.v_proj.weight";
                         gemm({kp.c_str(), vp.c_str()}, {kc_, vc_}, total_ctx, cs_, xqc_, xdc_);
                         const float* kn_w = f32(p + "self_attn.k_norm.weight");
-                        for (int idx = 0; idx < n_items; ++idx) {
-                            Slot& sl = *slots_[(size_t) items[idx].slot];
-                            const int c0 = ctx_offs[idx], m = items[idx].n_new;
-                            if (fp16_ring_)
-                                df2_kv_ring_f16(kc_ + (size_t) c0 * NKV_ * HD_, vc_ + (size_t) c0 * NKV_ * HD_,
-                                                kn_w, d_bctx_pos + c0, rt_ctx_ + (size_t) c0 * 128,
-                                                sl.kring_[l], sl.vring_[l], ring_slots_, m, NKV_, eps_, cs_);
-                            else
-                                df2_kv_ring(kc_ + (size_t) c0 * NKV_ * HD_, vc_ + (size_t) c0 * NKV_ * HD_,
-                                            kn_w, d_bctx_pos + c0, rt_ctx_ + (size_t) c0 * 128,
-                                            sl.kring_[l], sl.vring_[l], ring_slots_, m, NKV_, eps_, cs_);
-                        }
-                    }
-                }
-            }
-
-            df2_rope_table(d_bblk_pos, total_B, theta_, rt_blk_, cs_);
-            embed_(d_bblk_tok, total_B, h_, cs_);
-            df2_rms_quant(h_, f32("layers.0.input_layernorm.weight"), xn_, total_B, N_, eps_, xqp_, xdp_, cs_);
-            for (int l = 0; l < L_; ++l) {
-                const std::string p = "layers." + std::to_string(l) + ".";
-                const float* base_a = f32(p + "attention_conv.base_kernel");
-                const float* base_m = f32(p + "mlp_conv.base_kernel");
-                const std::string akp = p + "attention_conv.kernel_projection.weight", mkp = p + "mlp_conv.kernel_projection.weight";
-                const std::string qp = p + "self_attn.q_proj.weight", kp = p + "self_attn.k_proj.weight", vp = p + "self_attn.v_proj.weight";
-                const std::string gp = p + "mlp.gate_proj.weight", up = p + "mlp.up_proj.weight";
-                if (!skip_part("tiny")) gemm({akp.c_str()}, {dyn_}, total_B, cs_, xqp_, xdp_);
-                if (!skip_part("small")) df2_conv_quant(xn_, dyn_, 640, base_a, total_B, N_, group_, xqp_, xdp_, cs_);
-                if (!skip_part("qkvo")) gemm({qp.c_str(), kp.c_str(), vp.c_str()}, {q_, k_, v_}, total_B, cs_, xqp_, xdp_);
-                if (!skip_part("small"))
-                    df2_norm_rope_qk(q_, k_, f32(p + "self_attn.q_norm.weight"), f32(p + "self_attn.k_norm.weight"),
-                                     rt_blk_, qn_, kblk_, total_B, NH_, NKV_, eps_, cs_);
-                if (!skip_part("attn")) {
-                    for (int idx = 0; idx < n_items; ++idx) {
-                        Slot& sl = *slots_[(size_t) items[idx].slot];
-                        const size_t b0 = (size_t) idx * kRows;
                         if (fp16_ring_)
-                            df2_attention_f16(qn_ + b0 * NH_ * HD_, sl.kring_[l], sl.vring_[l],
-                                              kblk_ + b0 * NKV_ * HD_, v_ + b0 * NKV_ * HD_, d_banchor_pos + idx,
-                                              ring_slots_, window_, part_, xqp_ + b0 * NH_ * HD_,
-                                              xdp_ + b0 * (NH_ * HD_ / 32), cs_);
+                            df2_kv_ring_batch_f16(kc_, vc_, kn_w, d_bctx_pos, rt_ctx_, d_ring_table_ + l * 2,
+                                                  d_bslot_info, ring_slots_, NKV_, eps_, n_items, cs_);
                         else
-                            df2_attention(qn_ + b0 * NH_ * HD_, sl.kring_[l], sl.vring_[l],
-                                          kblk_ + b0 * NKV_ * HD_, v_ + b0 * NKV_ * HD_, d_banchor_pos + idx,
-                                          ring_slots_, window_, part_, xqp_ + b0 * NH_ * HD_,
-                                          xdp_ + b0 * (NH_ * HD_ / 32), cs_);
+                            df2_kv_ring_batch(kc_, vc_, kn_w, d_bctx_pos, rt_ctx_, d_ring_table_ + l * 2,
+                                              d_bslot_info, ring_slots_, NKV_, eps_, n_items, cs_);
                     }
                 }
-                if (!skip_part("qkvo")) gemm({(p + "self_attn.o_proj.weight").c_str()}, {o_}, total_B, cs_, xqp_, xdp_);
-                if (!skip_part("small"))
-                    df2_conv_rms_quant(o_, dyn_ + 320, 640, base_a + 2 * N_, h_, f32(p + "post_attention_layernorm.weight"),
-                                       xn_, total_B, N_, group_, eps_, xqp_, xdp_, cs_);
-                if (!skip_part("tiny")) gemm({mkp.c_str()}, {dyn_}, total_B, cs_, xqp_, xdp_);
-                if (!skip_part("small")) df2_conv_quant(xn_, dyn_, 640, base_m, total_B, N_, group_, xqp_, xdp_, cs_);
-                if (!skip_part("mlp")) gemm({gp.c_str(), up.c_str()}, {gate_, up_}, total_B, cs_, xqp_, xdp_);
-                if (!skip_part("small")) df2_swiglu_quant(gate_, up_, total_B, I_, xqp_, xdp_, cs_);
-                if (!skip_part("mlp")) gemm({(p + "mlp.down_proj.weight").c_str()}, {mlp_}, total_B, cs_, xqp_, xdp_);
-                const std::string next_gamma = l + 1 < L_ ? "layers." + std::to_string(l + 1) + ".input_layernorm.weight" : std::string("norm.weight");
-                if (!skip_part("small"))
-                    df2_conv_rms_quant(mlp_, dyn_ + 320, 640, base_m + 2 * N_, h_, f32(next_gamma),
-                                       l + 1 < L_ ? xn_ : fn_, total_B, N_, group_, eps_, xqp_, xdp_, cs_);
+
+                df2_rope_table(d_bblk_pos, total_B, theta_, rt_blk_, cs_);
+                embed_(d_bblk_tok, total_B, h_, cs_);
+                df2_rms_quant(h_, f32("layers.0.input_layernorm.weight"), xn_, total_B, N_, eps_, xqp_, xdp_, cs_);
+                for (int l = 0; l < L_; ++l) {
+                    const std::string p = "layers." + std::to_string(l) + ".";
+                    const float* base_a = f32(p + "attention_conv.base_kernel");
+                    const float* base_m = f32(p + "mlp_conv.base_kernel");
+                    const std::string akp = p + "attention_conv.kernel_projection.weight", mkp = p + "mlp_conv.kernel_projection.weight";
+                    const std::string qp = p + "self_attn.q_proj.weight", kp = p + "self_attn.k_proj.weight", vp = p + "self_attn.v_proj.weight";
+                    const std::string gp = p + "mlp.gate_proj.weight", up = p + "mlp.up_proj.weight";
+                    if (!skip_part("tiny")) gemm({akp.c_str()}, {dyn_}, total_B, cs_, xqp_, xdp_);
+                    if (!skip_part("small")) df2_conv_quant(xn_, dyn_, 640, base_a, total_B, N_, group_, xqp_, xdp_, cs_);
+                    if (!skip_part("qkvo")) gemm({qp.c_str(), kp.c_str(), vp.c_str()}, {q_, k_, v_}, total_B, cs_, xqp_, xdp_);
+                    if (!skip_part("small"))
+                        df2_norm_rope_qk(q_, k_, f32(p + "self_attn.q_norm.weight"), f32(p + "self_attn.k_norm.weight"),
+                                         rt_blk_, qn_, kblk_, total_B, NH_, NKV_, eps_, cs_);
+                    if (!skip_part("attn")) {
+                        if (fp16_ring_)
+                            df2_attention_batch_f16(qn_, d_ring_table_ + l * 2, kblk_, v_, d_bslot_info,
+                                                    ring_slots_, window_, part_, xqp_, xdp_, n_items, cs_);
+                        else
+                            df2_attention_batch(qn_, d_ring_table_ + l * 2, kblk_, v_, d_bslot_info,
+                                                ring_slots_, window_, part_, xqp_, xdp_, n_items, cs_);
+                    }
+                    if (!skip_part("qkvo")) gemm({(p + "self_attn.o_proj.weight").c_str()}, {o_}, total_B, cs_, xqp_, xdp_);
+                    if (!skip_part("small"))
+                        df2_conv_rms_quant(o_, dyn_ + 320, 640, base_a + 2 * N_, h_, f32(p + "post_attention_layernorm.weight"),
+                                           xn_, total_B, N_, group_, eps_, xqp_, xdp_, cs_);
+                    if (!skip_part("tiny")) gemm({mkp.c_str()}, {dyn_}, total_B, cs_, xqp_, xdp_);
+                    if (!skip_part("small")) df2_conv_quant(xn_, dyn_, 640, base_m, total_B, N_, group_, xqp_, xdp_, cs_);
+                    if (!skip_part("mlp")) gemm({gp.c_str(), up.c_str()}, {gate_, up_}, total_B, cs_, xqp_, xdp_);
+                    if (!skip_part("small")) df2_swiglu_quant(gate_, up_, total_B, I_, xqp_, xdp_, cs_);
+                    if (!skip_part("mlp")) gemm({(p + "mlp.down_proj.weight").c_str()}, {mlp_}, total_B, cs_, xqp_, xdp_);
+                    const std::string next_gamma = l + 1 < L_ ? "layers." + std::to_string(l + 1) + ".input_layernorm.weight" : std::string("norm.weight");
+                    if (!skip_part("small"))
+                        df2_conv_rms_quant(mlp_, dyn_ + 320, 640, base_m + 2 * N_, h_, f32(next_gamma),
+                                           l + 1 < L_ ? xn_ : fn_, total_B, N_, group_, eps_, xqp_, xdp_, cs_);
+                }
+                gemm({"candidate_selector.hidden_projection.weight"}, {hsel_}, total_B, cs_, xqp_, xdp_);
+                df2_pack_head_rows_batch(fn_, hsel_, fn_batch_, hsel_batch_, d_bpack_info, N_, rank_, n_items, cs_);
+            } catch (const std::exception& e) {
+                cur_ = saved_cur;
+                err = e.what();
+                return false;
             }
-            gemm({"candidate_selector.hidden_projection.weight"}, {hsel_}, total_B, cs_, xqp_, xdp_);
-            row_off = 0;
-            for (int idx = 0; idx < n_items; ++idx) {
-                const BatchItem& it = items[idx];
-                const size_t b1 = (size_t) idx * kRows + 1;
-                df2_pack_head_rows(fn_ + b1 * N_, hsel_ + b1 * rank_,
-                                   fn_batch_ + (size_t) row_off * N_, hsel_batch_ + (size_t) row_off * rank_,
-                                   it.k_want, N_, rank_, cs_);
-                row_off += it.k_want;
-            }
-        } catch (const std::exception& e) {
-            cur_ = saved_cur;
-            err = e.what();
-            return false;
         }
     } else {
         row_off = 0;
