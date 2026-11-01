@@ -45,6 +45,11 @@ public:
     bool load(const std::string& pack_path, int device, std::string& err);
     /// The target's embedding and head (and the draft vocabulary file, "" or missing: the whole head).
     bool bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err);
+    /// DF-05: before bind, the MTP drafter's gathered draft-head rows and vocabulary (device pointers it keeps owning) when they are the same bytes this
+    /// drafter would gather; bind then uses them instead of a second copy (about 213 MiB on Flash-Next) and checks the vocabulary against the file.
+    struct SharedHead { const uint8_t* rows = nullptr; const int32_t* vocab_dev = nullptr; const std::vector<int32_t>* vocab_host = nullptr; int64_t n = 0; int type = -1; };
+    void share_head(const SharedHead& s) { shared_ = s; }
+    bool head_shared() const { return dhead_shared_; }
     /// Tests: an embedding callback and a head given as raw rows of `head_type` (a native_mmvq type).
     using EmbedFn = std::function<void(const int32_t* tokens_dev, int n, float* out, cudaStream_t)>;
     bool bind_raw(EmbedFn embed, const void* head_w, int head_type, int64_t head_rows, const std::vector<int32_t>& vocab, std::string& err);
@@ -123,6 +128,8 @@ private:
     int64_t n_dvocab_ = 0;
     int32_t* dvocab_ = nullptr;
     uint8_t* dhead_ = nullptr;      ///< the draft vocabulary's head rows (owned), or null with head_w_ the whole head
+    SharedHead shared_;             ///< offered by the MTP drafter (DF-05)
+    bool dhead_shared_ = false;     ///< dhead_ / dvocab_ are the MTP drafter's, not freed here
     bool bound_ = false;
 
     // device buffers

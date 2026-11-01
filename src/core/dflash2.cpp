@@ -11,6 +11,7 @@
 #include "strata/kernels/verify_kernels.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -49,7 +50,7 @@ Dflash2Drafter::~Dflash2Drafter() {
     for (int l = 0; l < 8; ++l) { fr(kring_[l]); fr(vring_[l]); }
     fr(fcy_); fr(hctx_); fr(kc_); fr(vc_); fr(h_); fr(xn_); fr(xc_); fr(dyn_); fr(q_); fr(qn_); fr(k_); fr(v_); fr(kblk_); fr(ao_); fr(o_);
     fr(gate_); fr(up_); fr(mlp_); fr(part_); fr(fn_); fr(logits_); fr(topval_); fr(hsel_); fr(toptok_); fr(topscratch_);
-    fr(dvocab_); fr(dhead_);
+    if (!dhead_shared_) { fr(dvocab_); fr(dhead_); }
     if (h_meta_) cudaFreeHost(h_meta_);
     if (h_out_) cudaFreeHost(h_out_);
     if (cs_) cudaStreamDestroy(cs_);
@@ -277,9 +278,13 @@ bool Dflash2Drafter::bind_raw(EmbedFn embed, const void* head_w, int head_type, 
     n_dvocab_ = head_rows;
     if (!vocab.empty()) {
         n_dvocab_ = (int64_t) vocab.size();
-        if (cudaMalloc((void**) &dvocab_, vocab.size() * 4) != cudaSuccess) { err = "dflash2: draft vocabulary"; return false; }
-        vram_ += vocab.size() * 4;
-        cudaMemcpy(dvocab_, vocab.data(), vocab.size() * 4, cudaMemcpyHostToDevice);
+        if (dhead_shared_) {   // the MTP drafter's copy of the same vocabulary (checked in bind)
+            dvocab_ = const_cast<int32_t*>(shared_.vocab_dev);
+        } else {
+            if (cudaMalloc((void**) &dvocab_, vocab.size() * 4) != cudaSuccess) { err = "dflash2: draft vocabulary"; return false; }
+            vram_ += vocab.size() * 4;
+            cudaMemcpy(dvocab_, vocab.data(), vocab.size() * 4, cudaMemcpyHostToDevice);
+        }
     }
     if ((n_dvocab_ + kernels::kDf2TopBlocks - 1) / kernels::kDf2TopBlocks > 4096) { err = "dflash2: the head has too many rows for the top-k"; return false; }
     if (!logits_ && cudaMalloc((void**) &logits_, (size_t) kDrafts * (size_t) n_dvocab_ * 4) != cudaSuccess) { err = "dflash2: the draft logits do not fit"; return false; }
@@ -320,7 +325,14 @@ bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const s
     const void* hw = head->weights();
     const int64_t row_bytes = (int64_t) head->row_bytes();
     int64_t head_rows = row_bytes > 0 ? (int64_t) (head->weight_bytes() / (uint64_t) row_bytes) : 0;
-    if (!vocab.empty()) {
+    if (!vocab.empty() && shared_.rows != nullptr && !std::getenv("STRATA_DF2_SHARE_HEAD_OFF") && shared_.type == head->type() &&
+        shared_.n == (int64_t) vocab.size() && shared_.vocab_host != nullptr && *shared_.vocab_host == vocab && shared_.vocab_dev != nullptr) {
+        // DF-05: the MTP drafter gathered these very rows (same vocabulary ids in the same order, the main head's own layout and type): use them
+        dhead_ = const_cast<uint8_t*>(shared_.rows);
+        dhead_shared_ = true;
+        hw = dhead_;
+        head_rows = (int64_t) vocab.size();
+    } else if (!vocab.empty()) {
         int32_t* dv = nullptr;
         if (cudaMalloc((void**) &dv, vocab.size() * 4) != cudaSuccess || cudaMalloc((void**) &dhead_, (size_t) ((int64_t) vocab.size() * row_bytes)) != cudaSuccess) {
             if (dv) cudaFree(dv);
@@ -336,8 +348,8 @@ bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const s
         head_rows = (int64_t) vocab.size();
     }
     if (!bind_raw(embed, hw, head->type(), head_rows, vocab, err)) return false;
-    std::fprintf(stderr, "strata dflash2: %lld-token draft head (%.1f MiB), drafter %.0f MiB of VRAM (%s weights)\n", (long long) n_dvocab_,
-                 (double) (n_dvocab_ * row_bytes) / 1048576.0, (double) vram_ / 1048576.0, q4_ ? "Q4_0" : "Q8_0");
+    std::fprintf(stderr, "strata dflash2: %lld-token draft head (%.1f MiB%s), drafter %.0f MiB of VRAM (%s weights)\n", (long long) n_dvocab_,
+                 (double) (n_dvocab_ * row_bytes) / 1048576.0, dhead_shared_ ? ", the MTP drafter's copy, no second one" : "", (double) vram_ / 1048576.0, q4_ ? "Q4_0" : "Q8_0");
     return true;
 }
 

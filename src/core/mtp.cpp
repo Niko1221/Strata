@@ -643,6 +643,19 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
     return bytes;
 }
 
+bool MtpDrafter::draft_head_view(const NativeHead* head, const std::string& vocab_path, DraftHeadView& out) const {
+    if (head == nullptr || head != head_ || dhead_ == nullptr || dvocab_ == nullptr || !owns_draft_head_ || !dhead_plain_) return false;
+    if (dhead_type_ != head->type() || vocab_path != vocab_file()) return false;
+    if (head->device() >= 0 && head->device() != device_) return false;
+    if (dvocab_host_.size() != (size_t) n_dvocab_) return false;
+    out.rows = dhead_;
+    out.vocab_dev = dvocab_;
+    out.vocab_host = &dvocab_host_;
+    out.n = n_dvocab_;
+    out.type = dhead_type_;
+    return true;
+}
+
 bool MtpDrafter::setup_coupled(std::string& err) {
     const int64_t nv = dhead_ != nullptr ? n_dvocab_ : n_vocab_;
     const size_t scratch = strata::kernels::coupled_draft_scratch_bytes((int) nv);
@@ -827,16 +840,22 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
             dhead_type_ = head->type();
+            dhead_plain_ = !q4_head_;
             if (q4_head_ && !make_q4_head(err)) return false;
-            if (dhead_type_ == 14 && strata::kernels::native_q6_k_packed_enabled())   // STRATA_Q6_PACKED=1
+            if (dhead_type_ == 14 && strata::kernels::native_q6_k_packed_enabled()) {   // STRATA_Q6_PACKED=1
+                dhead_plain_ = false;
                 strata::kernels::native_q6_k_pack(dhead_, (int) (row_bytes / 210) * 256, (int) n_dvocab_,
                                                   "MTP draft head");
+            }
             // STRATA_MTP_Q8_SM60=1: the subset on the Pascal GEMV like the main head, but packed in place - nothing but
             // record_rest's native_mmvq reads it (the prompt path never does), and a copy would cost its size again
             if (dhead_type_ == GGML_Q8_0 && owns_draft_head_ && mtp_q8_sm60() && row_bytes == g_->n_embd / 32 * 34 &&
                 strata::kernels::native_q8_0_sm60_pack_in_place(dhead_, (int) g_->n_embd, (int) n_dvocab_,
                                                                 "MTP draft head"))
+{
+                dhead_plain_ = false;
                 std::fprintf(stderr, "strata mtp: the draft head on the Pascal Q8_0 GEMV (STRATA_MTP_Q8_SM60=1)\n");
+            }
         }
     }
     if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err)) return false;
