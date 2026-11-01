@@ -1,0 +1,14 @@
+c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a  <strata-home>/Strata-data/mtp/rt/dense.bin
+991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd  <strata-home>/Strata-data/mtp/rt/dense.txt
+b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91  <strata-home>/Strata-data/mtp/rt/draft_vocab.bin
+09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f  <strata-home>/Strata-data/mtp/rt/experts.bin
+51df3cd6ffd0d38c2da8e2d3a95a604b4a96c20b06fc639a9bf477282a42b86a  <strata-home>/Strata-data/packs/iq3_s/conversions.json
+d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13  <strata-home>/Strata-data/packs/iq3_s/dense.bin
+b2a014878c3b61d6a6f915e194055a5e68ede34f9465dd1cb13249d902f008ac  <strata-home>/Strata-data/packs/iq3_s/index.txt
+d9ac2dfa3ee63c55c9c6a6db26f72da0cec0ee41733f007e5cbbbba71617aa5d  <strata-home>/Strata-data/packs/iq3_s/native_experts.txt
+12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce  <strata-home>/Strata-data/packs/iq3_s/tokenizer/chat_template.jinja
+4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332  <strata-home>/Strata-data/packs/iq3_s/tokenizer/merges.txt
+c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf  <strata-home>/Strata-data/packs/iq3_s/tokenizer/tokenizer.json
+5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b  <strata-home>/Strata-data/packs/iq3_s/tokenizer/token_type.json
+4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4  <strata-home>/Strata-data/packs/iq3_s/tokenizer/vocab.json
+8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf  <strata-home>/terminal/0.1.49.2/data/expert-profile.bin
