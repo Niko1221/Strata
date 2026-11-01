@@ -87,8 +87,12 @@ class GrammarPath(GrammarBase):
         self.assertEqual(self.chat(response_format=FORMAT, reasoning_effort="medium")[0], 200)
         text = engine.grammars[-1]
         self.assertIn('root ::= reason "</think>\\n" answer', text)   # reasoning, the closer, the answer
-        self.assertIn("answer ::= ws ( fenced | answer-root )", text)   # the fence habit is legal, the canary strips it
+        self.assertIn("answer ::= ws answer-root", text)             # the answer IS the schema, unfenced
+        self.assertNotIn("fenced", text)                             # a fenced block is not the JSON asked for
         self.assertIn("answer-root ::=", text)
+        # the whitespace run after the closer is bounded: unbounded, a model whose habit is a fence
+        # walks it for the whole budget instead of opening the answer (measured: 76K chars, length)
+        self.assertIn('ws ::= ( " " | "\t" | "\\n" ){0,24}', text)
 
     @unittest.skipUnless(HAVE_CONVERTER, "grammar_schema CLI is not built")
     def test_a_continuation_pass_seeds_the_grammar_with_what_was_generated(self):

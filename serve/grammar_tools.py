@@ -226,8 +226,9 @@ def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, conv
         raise ValueError(f"tool_choice {tool_choice!r} needs no grammar")
     if thinking:
         reason = exclude_seqs(THINK_BANNED, "reason", rules)
-        # one newline after the closer, then free whitespace before the call (see with_think_prologue)
-        rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} )*')
+        # a little whitespace after the closer, then the call.  Bounded for the reason
+        # with_think_prologue gives: an unbounded run is where a masked model stalls.
+        rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} ){{0,24}}')
         rules.append(f"root ::= {reason} {_lit(THINK_CLOSE)} ws answer")
     else:
         rules.append("root ::= answer")
@@ -298,15 +299,18 @@ def with_think_prologue(grammar_text: str) -> str:
     that requires both template newlines strands a padding model: every token it then writes is
     legal only as free text, so the mask never opens the answer (measured on the rig). The serve
     parser splits reasoning at '</think>' alone, so both models agree where the answer begins.
+
+    The leading whitespace is BOUNDED. A model whose answer habit is a fenced block used to have
+    the fence as its only way out of that whitespace; without it the model walks the whitespace
+    rule instead, and an unbounded rule let it do that for a whole output budget (measured: 76K
+    characters of newlines, finish_reason=length). The cap strands it after 24 characters, and
+    the answer opens. The fence itself stays banned in the answer: it parses, but it is not the
+    JSON the caller asked for, and every client json.loads(content) fails on it.
     """
     rules: list = []
     answer = _inline(grammar_text, "answer", rules)
     reason = exclude_seqs(THINK_BANNED, "reason", rules)
-    rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} )*')
-    # a model whose answer habit is a fenced block must be able to write it - banning the fence left
-    # it with no legal continuation right after the closer and the stream degenerated (measured);
-    # the canary's JSON extractor strips the fence, so the answer it validates is the JSON
-    rules.append(f'fenced ::= {_lit("```json")} ws {answer} ws {_lit("```")}')
-    rules.append(f"answer ::= ws ( fenced | {answer} )")
+    rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} ){{0,24}}')   # bounded: see the docstring
+    rules.append(f"answer ::= ws {answer}")
     rules.append(f"root ::= {reason} {_lit(THINK_CLOSE)} answer")
     return "\n".join(rules) + "\n"
