@@ -28,8 +28,8 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/conversation_snapshot.hpp"
-#if defined(STRATA_USE_HIP)
 #include "strata/core/lookup_default.hpp"
+#if defined(STRATA_USE_HIP)
 #include "strata/core/serve_stop_bound.hpp"
 #endif
 #include "strata/core/conversation_file.hpp"
