@@ -397,7 +397,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         rows = [r for r in catalog.rows(hw) if r.family == s.family and r.model == s.model]
         if rows:
             r = rows[0]
-            if s.model_path and r.words == "tight: needs more disk space":
+            if s.model_path and s.family == "deepseek41" and r.words == "tight: needs more disk space":
                 # (the person's own files stay where they are: no download, so the free disk space of Strata's folder is not the question)
                 try:
                     r.verdict, r.words = catalog.own_files_verdict(hw, s.model)
