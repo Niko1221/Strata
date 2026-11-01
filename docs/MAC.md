@@ -130,8 +130,9 @@ The ready-made Mac engine is in the app and in the Terminal's engine component, 
 ## Defaults and options
 
 The config uses the Mac defaults: `--spec 2` with MTP (best on mixed text; an explicit `--spec N` in the config's `args` is kept),
-or `--spec 3 --spec-min-p 0.5` for the IQ3_S and Q2_0 sets (M5 Max, 5 interleaved pairs, same tokens, over `--spec 2`: IQ3_S story -0.9%,
-code +2.5%, JSON +16.7%, agent turn +4.9%; Q2_0 story +0.4%, code +11.5%, JSON +6.3%, agent turn +1.9%; the other sets are not measured),
+or `--spec 3 --spec-min-p 0.5` for the IQ3_S, Q2_0 and Coder sets (M5 Max, 5 interleaved pairs, same tokens, over `--spec 2`: IQ3_S story -0.9%,
+code +2.5%, JSON +16.7%, agent turn +4.9%; Q2_0 story +0.4%, code +11.5%, JSON +6.3%, agent turn +1.9%; Coder story -2.5%, code +7.1%,
+JSON +9.3%, agent turn +12.5%; the other sets are not measured),
 and the Q8_0 hyper-connection read. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read. The Mac engine is
 deterministic: two runs give identical numbers.
 
@@ -263,7 +264,7 @@ For testing. All are off unless set; the defaults are described above.
 | `STRATA_METAL_WIRE_ARENA=0` | Streaming, 64 GB or more: leave the filled arena pageable (default: wired) |
 | `STRATA_METAL_IGNORE_REPACK=1` | Start although a model repack or setup's preparation is running (the engine refuses by default) |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2 to 3 GB) |
-| `STRATA_METAL_F16=1` | Decode windows of a resident model: the GEMVs of Q2_0, Q3_K-Q6_K and IQ4_XS and the Q2_0 routed experts in fp16. Measured on an M1 Max only: a 2-token window's GPU time 56-60 -> 40-41 ms, mean KL 0.009 against fp32 |
+| `STRATA_METAL_F16=1` / `=0` | Decode windows of a resident model: the GEMVs of Q2_0, Q3_K-Q6_K and IQ4_XS and the Q2_0 routed experts in fp16. On in the config setup writes for a resident IQ3_S or Q2_0 pack (M5 Max: decode +9 to +15%, top-1 96-97% and mean KL 0.009-0.016 against fp32; the 61-task quality suite passes the same tasks as with it off); `=0` in the config's `env` turns it off. Other sets: off unless set. M1 Max: a 2-token window's GPU time 56-60 -> 40-41 ms, mean KL 0.009 against fp32 |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
 
 ## How it works

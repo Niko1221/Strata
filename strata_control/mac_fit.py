@@ -47,8 +47,23 @@ STREAM_SPEC = 3
 # A resident IQ3_S or Q2_0 pack runs a 3-token window with --spec-min-p 0.5 (the draft layer extends the window only when sure):
 # M5 Max, MTP, 5 interleaved pairs, identical tokens, over --spec 2: IQ3_S story / code / JSON / agent turn -0.9% / +2.5% / +16.7% /
 # +4.9%; Q2_0 +0.4% / +11.5% / +6.3% / +1.9% (phaseA-tests/mac-q/RESULTS.md sections 14 and 15).  Other sets are not measured: --spec 2.
-SPEC3_MODELS = ("IQ3_S", "Q2_0")
+# The expert-pruned Coder (256 experts, IQ1_M) story / code / JSON / agent turn -2.5% / +7.1% / +9.3% / +12.5%, 5 pairs, identical tokens
+# (section 31.1 of the same file; it has no Mac setup entry yet, the name is what a config for it would pass).
+SPEC3_MODELS = ("IQ3_S", "Q2_0", "CODER")
 SPEC3_MIN_P = "0.5"
+# STRATA_METAL_F16=1 (the fp16 decode windows, PR 4807) is the default of a resident IQ3_S or Q2_0 pack.  M5 Max: decode +9 to +15% (Q2_0)
+# and +9 to +12% (IQ3_S); top-1 agreement against the fp32 path 97.1% (Q2_0) / 96.2% (IQ3_S), mean KL 0.009 / 0.016 (sections 20, 22);
+# the 61-task quality suite (section 30): same tasks passed with it on and off, no family drop, no new hallucination flag, 0 pass/fail
+# changes between two runs of the same arm.  The owner's rule was an option unless it passes that suite.  STRATA_METAL_F16=0 in the config's
+# env turns it off.  Other sets (and a streaming pack, where the windows are not fp16) are not set.
+F16_MODELS = ("IQ3_S", "Q2_0")
+
+
+def engine_env(model: str, stream: bool) -> dict[str, str]:
+    """The engine variables a Mac config carries besides STRATA_METAL_STREAM: STRATA_METAL_F16=1 for a resident IQ3_S or Q2_0 pack."""
+    if not stream and (model or "").upper() in F16_MODELS:
+        return {"STRATA_METAL_F16": "1"}
+    return {}
 
 
 def spec_args(model: str, stream: bool, mtp: bool) -> list[str]:
