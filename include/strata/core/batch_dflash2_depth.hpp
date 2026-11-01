@@ -3,6 +3,7 @@
 // The slot's acceptance EMA gates its next maximum depth; selector probabilities can trim a low-confidence tail.
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 namespace strata::core {
 
@@ -14,11 +15,11 @@ struct BatchDraftDepthConfig {
     bool on() const { return max_depth > 1; }
 };
 
-/// Parse STRATA_BATCH_DF2_DEPTH (clamped to [1, max_cap]) and its probability floor. Unset/empty/invalid depth is off.
+/// Parse STRATA_BATCH_DF2_DEPTH (clamped to [1, max_cap]) and its probability floor. "auto" takes the ceiling (max_cap). Unset/empty/invalid depth is off.
 inline BatchDraftDepthConfig batch_draft_depth_config(const char* depth_env, const char* floor_env, int max_cap) {
     BatchDraftDepthConfig c;
     if (depth_env != nullptr && depth_env[0] != '\0') {
-        const int n = std::atoi(depth_env);
+        const int n = std::strcmp(depth_env, "auto") == 0 ? max_cap : std::atoi(depth_env);
         c.max_depth = n < 1 ? 1 : (n > max_cap ? (max_cap < 1 ? 1 : max_cap) : n);
     }
     if (floor_env != nullptr && floor_env[0] != '\0') {

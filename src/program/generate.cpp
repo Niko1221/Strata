@@ -72,6 +72,7 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/gated_proposal.hpp"
+#include "strata/core/dflash2_slots.hpp"
 #if defined(STRATA_HAVE_DFLASH2)
 #include "strata/core/dflash2.hpp"
 #include "strata/core/draft_cap.hpp"
@@ -12944,6 +12945,8 @@ int main(int argc, char** argv) {
             if (df2_batch_head)
                 std::fprintf(stderr, "strata batch: DFlash2 batched co-draft head on (STRATA_DF2_BATCHHEAD=0 for serial)\n");
         }
+#else
+        const bool df2_batch_head = false;
 #endif
         // per stage (0 = CUDA0's verifier): the GPU-reach wait and pool time when the timed windows began; and the routed
         // (token, expert) entries the CPU and the PCIe share had served by then (bt_hits0 holds the VRAM entries)

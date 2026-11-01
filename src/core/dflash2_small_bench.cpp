@@ -35,8 +35,8 @@ int main(int argc, char** argv) {
     float* outp;
     cudaMalloc((void**) &pos, 64);
     cudaMalloc((void**) &tok, 7 * 16 * 4);
-    cudaMalloc((void**) &outt, 64);
-    cudaMalloc((void**) &outp, 64);
+    cudaMalloc((void**) &outt, 128);
+    cudaMalloc((void**) &outp, 128);
     int32_t hpos[16] = {100, 101, 102, 103, 104, 105, 106, 107};
     cudaMemcpy(pos, hpos, 64, cudaMemcpyHostToDevice);
     cudaMemset(tok, 0, 7 * 16 * 4);

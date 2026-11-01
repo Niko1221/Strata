@@ -25,8 +25,8 @@ public:
     /// Reconfigure the match thresholds after default construction (the batch per-slot co-drafter is
     /// default-constructed in BSlot and then configured from --batch-suffix-draft; the capacity stays as set).
     void configure(int min_match, int max_match) {
-        min_match_ = min_match;
-        max_match_ = max_match;
+        min_match_ = min_match < 3 ? 3 : min_match;
+        max_match_ = max_match < min_match_ ? min_match_ : max_match;
     }
 
     void reset();

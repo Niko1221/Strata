@@ -22,6 +22,8 @@ int main() {
     check(!batch_draft_depth_config("junk", nullptr, 7).on(), "unparsable depth is off");
     check(batch_draft_depth_config("4", nullptr, 7).max_depth == 4, "depth parses");
     check(batch_draft_depth_config("99", nullptr, 7).max_depth == 7, "depth clamps to cap");
+    check(batch_draft_depth_config("auto", nullptr, 7).max_depth == 7, "auto takes the depth ceiling");
+    check(batch_draft_depth_config("auto", nullptr, 7).on(), "auto turns adaptive depth on");
     check(batch_draft_depth_config("-3", nullptr, 7).max_depth == 1, "negative depth is off");
     check(batch_draft_depth_config("4", "0.7", 7).floor == 0.7f, "floor parses");
     check(batch_draft_depth_config("4", "0", 7).floor == 0.5f, "floor zero is rejected");
