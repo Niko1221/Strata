@@ -27,7 +27,14 @@ def version_key(folder_name: str) -> tuple:
 
 
 def find(dest: Path) -> Path | None:
-    """The newest installed package's strata-dsv41 in `dest` (engine-dsv41/), or None."""
+    """The strata-dsv41 a start uses from `dest` (engine-dsv41/): the package the person chose in Settings > Engine (the `.chosen` file), else the newest
+    installed one.  None when there is none."""
+    try:
+        pin = (Path(dest) / ".chosen").read_text(encoding="utf-8-sig").strip()
+        if pin and "/" not in pin and "\\" not in pin and (Path(dest) / pin / exe_name()).is_file():
+            return Path(dest) / pin / exe_name()
+    except OSError:
+        pass
     try:
         folders = sorted((d for d in Path(dest).iterdir() if d.is_dir() and (d / exe_name()).is_file()), key=lambda d: (version_key(d.name), d.name))
     except OSError:
@@ -227,16 +234,18 @@ def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
 def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware: dict | None = None,
             emit: Callable[[str], None] = print, cancel=None) -> Path | None:
     """The installed DeepSeek engine package in `dest` (engine-dsv41/) is older than the signed feed's `dsv41` member for this PC: fetch the newer one,
-    check it as `install` does (signature, hashes, every file), put it NEXT TO the old one, start it once (`--version`), and only then remove the older
-    folders (one generation).  Returns the new strata-dsv41, or None: nothing newer, the feed cannot be read (silent: a launch never waits on the
+    check it as `install` does (signature, hashes, every file), put it NEXT TO the old one, start it once (`--version`), and only then use it (the older
+    packages are kept).  Returns the new strata-dsv41, or None: nothing newer, the feed cannot be read (silent: a launch never waits on the
     network), or the newer one could not be installed (one plain line, the installed engine keeps running).  Versions compare numerically
-    (0.1.49 < 0.1.49.1).  The caller does not call this for a --dsv41-package or a STRATA_DSV41_EXE."""
+    (0.1.49 < 0.1.49.1). Older packages stay installed until the person deletes them (Settings > Engine).  The caller does not call this for a --dsv41-package or a STRATA_DSV41_EXE."""
     from strata_control import feed as feedmod, signing, transfer, updater
 
     dest = Path(dest)
     current = installed or find(dest)
     if current is None:
         return None
+    if (Path(dest) / ".chosen").is_file() and find(dest) == current:
+        return None                                               # the person chose this package in Settings > Engine: a launch does not replace it
     have_name = Path(current).parent.name
     have = version_key(have_name)
     shown = have_name.split("-")[0]
@@ -280,9 +289,6 @@ def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware:
                 shutil.rmtree(target, ignore_errors=True)         # (never the installed one)
             emit(f"A newer DeepSeek engine is available but could not be installed: {str(exc).rstrip('.')}; still using {shown}.")
             return None
-        for old in dest.iterdir():                                # switched: the older generations go
-            if old.is_dir() and old.name != target.name and version_key(old.name) < version_key(target.name):
-                shutil.rmtree(old, ignore_errors=True)
         emit(f"DeepSeek engine updated from {shown} to {pkg.version}.")
         shutil.rmtree(work, ignore_errors=True)
         return target / exe_name()

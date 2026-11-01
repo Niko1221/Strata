@@ -19,6 +19,10 @@ from pathlib import Path
 
 NAME = "strata-dsv41"
 DIR = "engine-dsv41"
+#: A file in engine-dsv41/ holding the folder name of the package the person chose in Settings > Engine (or `strata components use`).  Without it the
+#: newest installed package of a kind is the one that runs.  An explicit update clears it.  Read by every place that picks a package (`chosen`,
+#: dsv41_engine.find), so the app, `strata launch` and setup follow one choice.
+PIN = ".chosen"
 
 
 def exe_name() -> str:
@@ -53,6 +57,39 @@ def installed(root: Path, kind: str | None = None) -> list[Path]:
         return []
     folders.sort(key=lambda d: (version_key(d.name), d.name))
     return [d / exe_name() for d in folders]
+
+
+def pinned(root) -> str | None:
+    """The package folder the person chose in `root` (engine-dsv41/), or None.  A missing, damaged or stale pin means no pin."""
+    try:
+        name = (Path(root) / PIN).read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    return name if (Path(root) / name / exe_name()).is_file() else None
+
+
+def set_pin(root, name: str | None) -> None:
+    """Choose the package folder `name`, or (None) go back to the newest."""
+    path = Path(root) / PIN
+    if name is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(name + "\n", encoding="utf-8")
+
+
+def chosen(root, kind: str | None = None) -> Path | None:
+    """The strata-dsv41 a start uses from `root`: the package the person chose (when it is of `kind`, if given), else the newest of `kind`."""
+    pin = pinned(root)
+    if pin and (kind is None or kind_of(pin) == kind):
+        return Path(root) / pin / exe_name()
+    found = installed(root, kind)
+    return found[-1] if found else None
 
 
 def lib_dirs(exe) -> list[str]:
@@ -169,12 +206,12 @@ def repair_missing(configs) -> list[str]:
         root = engine_root(exe)
         if root is None or Path(exe).is_file() or not root.is_dir():
             continue
-        found = installed(root, kind_of(Path(exe).parent.name))
-        if not found:
+        pick = chosen(root, kind_of(Path(exe).parent.name))
+        if pick is None:
             continue
         try:
-            if repoint(c, found[-1]):
-                notes.append(f"The DeepSeek engine {Path(exe).parent.name.split('-')[0]} was replaced by an update; {Path(c).name} now uses {found[-1].parent.name.split('-')[0]}.")
+            if repoint(c, pick):
+                notes.append(f"The DeepSeek engine {Path(exe).parent.name.split('-')[0]} is no longer installed; {Path(c).name} now uses {pick.parent.name.split('-')[0]}.")
         except (OSError, ValueError):
             continue
     return notes
@@ -195,6 +232,24 @@ def repoint_older(configs, new_exe) -> int:
             continue
         try:
             changed += 1 if repoint(c, new_exe) else 0
+        except (OSError, ValueError):
+            continue
+    return changed
+
+
+def repoint_all(configs, exe) -> int:
+    """Every run config in `configs` that names a package of the same kind in the same engine-dsv41 folder as `exe` is pointed at `exe` (older or
+    newer: a switch in either direction).  Returns how many files changed."""
+    exe = Path(exe)
+    root, kind = exe.parent.parent, kind_of(exe.parent.name)
+    changed = 0
+    for c in configs:
+        cfg = _read(c)
+        old = cfg.get("exe") if cfg else None
+        if engine_root(old) != root or kind_of(Path(old).parent.name) != kind:
+            continue
+        try:
+            changed += 1 if repoint(c, exe) else 0
         except (OSError, ValueError):
             continue
     return changed

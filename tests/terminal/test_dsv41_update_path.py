@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import sys
 import time
@@ -60,13 +61,13 @@ class UpdatePath(_up.Upgrade):
         return ctx, state, feed
 
     # ---- the explicit update ------------------------------------------------------------------------------------------
-    def test_the_update_installs_next_to_the_old_points_every_saved_config_at_it_and_removes_the_old(self):
+    def test_the_update_installs_next_to_the_old_points_every_saved_config_at_it_and_keeps_the_old(self):
         self.publish("0.1.49.1")
         ctx, state, feed = self.run_step()
         r = updater.update_dsv41(ctx, feed, state)
         self.assertEqual((r["status"], r["installed_before"], r["installed_after"]), ("updated", "0.1.49", "0.1.49.1"), r)
         new = dsv41_paths.installed(self.dest)[-1]
-        self.assertEqual(self.folders(), ["0.1.49.1"])
+        self.assertEqual(self.folders(), ["0.1.49", "0.1.49.1"], "the older package stays for Settings > Engine")
         self.assertEqual(self.exe_of(self.cfg1), new)
         self.assertEqual(self.exe_of(self.cfg2), new, "every saved run config, not one")
         libs = json.loads(self.cfg1.read_text(encoding="utf-8"))["lib_dirs"]
@@ -171,6 +172,7 @@ class UpdatePath(_up.Upgrade):
         self.assertEqual(updater.update_dsv41(ctx, feed, state)["status"], "updated")
         new = dsv41_paths.installed(self.dest)[-1]
         self.write_cfg(self.cfg2, self.old)                                           # (a config written again from a model's older file: its folder is gone)
+        shutil.rmtree(self.old.parent)                                                # (the person deleted the older engine in Settings > Engine)
         self.assertFalse(self.old.exists())
         log = self.root / "run" / "app-1.host.log"
         profile = {"source_config": str(self.cfg2)}

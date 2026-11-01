@@ -74,6 +74,7 @@ import { installBundledEngine, cleanupAfterInstall } from './bundled-engine.mjs'
 import { systemLocale } from './region.mjs';
 import { createShellNotifier, DEFAULT_PORT, parsePortNotice, readShellPrefs, writeShellPrefs } from './shell-prefs.mjs';
 import { findControl, createControl, componentsDirectory } from './control-runtime.mjs';
+import { listEngines, changeEngine } from './engine-library.mjs';
 import { forbidden as acquisitionForbidden } from './acquisition.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
@@ -1353,6 +1354,15 @@ async function api(req, res, path, method, url) {
     const info = await engineFirstRun({ control, gpus: hardware.cachedHardware()?.gpus ?? [] });
     try { let at = componentsDirectory(); while (at && !existsSync(at) && dirname(at) !== at) at = dirname(at); const f = statfsSync(at); info.freeBytes = Number(f.bavail) * Number(f.bsize); } catch { /* unknown: no warning */ }
     return json(res, 200, info);
+  }
+  if (path === '/api/engines' && method === 'GET') {
+    const { status, body } = await listEngines(control);
+    return json(res, status, body);
+  }
+  if ((path === '/api/engines/use' || path === '/api/engines/remove') && method === 'POST') {
+    const { status, body } = await changeEngine(control, path.endsWith('/use') ? 'use' : 'remove', await readBody(req), { modelsRunning: () => native.state().instances.length > 0 });
+    if (status === 200) Promise.resolve(native.refresh?.(true)).catch(() => { /* the next poll reads it */ });
+    return json(res, status, body);
   }
   if (path === '/api/engine/job' && method === 'GET') {
     // The newest engine download / file install, read without waiting for the native snapshot to connect (the first-run card needs it before that).

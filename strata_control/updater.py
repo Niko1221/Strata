@@ -17,7 +17,8 @@ What an engine update does, in order, and what keeps the old engine safe at each
    previous version for a manual rollback, and mark saved tuning presets for the short re-check.
 
 If any step fails, the live ``engine/`` folder has not changed: the previous engine keeps working, and what failed is
-named. The previous version stays installed (``strata components rollback`` returns to it); older ones are removed.
+named. Every older engine stays installed until the person deletes it (Settings > Engine, ``strata components remove``);
+``strata components use`` / ``rollback`` switch between them.
 Models and presets are never read, moved, deleted or downloaded here.
 """
 
@@ -607,6 +608,13 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
         report["status"] = "current"
     else:
         report["status"] = "available"
+    # The offered engine is already installed (the person switched to an older one for a test): the update only makes it the engine in use again,
+    # with nothing to download. A version the person switched away from is never hidden from the update (owner, 11-01).
+    local = installed_copy(ctx.components, offered)
+    if report["status"] == "available" and local:
+        report["installed_locally"] = local
+        report["download_bytes"] = 0
+        return report, offered
     bad = (section.get("failed") or {}).get(offered.version)
     if bad and _failed_mark_is_old(bad, ctx):
         bad = None                                           # a failure is held against a version for a day, not for ever
@@ -615,10 +623,18 @@ def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict
             report["status"] = "failed-before"
             report["note"] = (f"{offered.version} failed its test start on {bad.get('at', 'an earlier try')} ({bad.get('reason')}); "
                               "run `strata update --force` to try it again")
-        elif offered.version in (section.get("skipped") or []):
-            report["status"] = "skipped"
-            report["note"] = f"{offered.version} was rolled back from, so an update leaves it alone; run `strata update --force` to install it again"
     return report, offered
+
+
+def installed_copy(root: Path, pkg: feedmod.EnginePackage) -> str | None:
+    """The installed package folder that is byte for byte the feed's ``pkg`` (same name, same manifest hash), or None."""
+    folder = ec.engine_dir(root) / folder_name(pkg)
+    try:
+        if (folder / ec.MANIFEST).is_file() and _manifest_sha(folder) == pkg.manifest_sha256:
+            return folder.name
+    except OSError:
+        pass
+    return None
 
 
 def _serving_or_empty(ctx: Context) -> list[dict]:
@@ -1076,6 +1092,9 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
             result["reasons"] = decision["reasons"]
         return result
     root = ctx.components
+    local = decision.get("installed_locally")
+    if local:
+        return _switch_to_installed(ctx, state, local, result)
     have_makes = installed_gpu_makes(root, pkg.platform)
     if pkg.backend in GPU_MAKES and have_makes and pkg.backend not in have_makes and ctx.hardware.get("backend_source") not in ("environment", "requested", "saved choice"):
         raise UpdateError(f"the {pkg.label} engine is for another make of graphics card than the installed one; nothing was staged", 5)
@@ -1091,6 +1110,22 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
             archive.unlink(missing_ok=True)             # a refused package is not kept for a retry
         raise
     return _finish_engine_install(ctx, state, pkg, stage_root, staged, archive, result, delete_archive=True)
+
+
+def _switch_to_installed(ctx: Context, state: State, folder: str, result: dict) -> dict:
+    """An update to an engine that is already on this computer: nothing is downloaded; it becomes the engine in use and any pin is cleared."""
+    from strata_control import engine_library
+    wait_until_idle(ctx.serving, wait=ctx.wait, emit=ctx.emit, cancel=ctx.cancel, poll=ctx.poll)
+    ctx.say("switch", "This engine is already on this computer; switching to it", component="engine")
+    out = engine_library.use_qwen_unlocked(ctx, state, folder)
+    chosen, _ = installed_engine(ctx.components, ctx.hardware)
+    result.update({"changed": out.get("changed", False), "status": "updated" if out.get("changed") else "current", "installed_after": _engine_view(chosen),
+                   "previous": state.section("engine").get("previous"), "removed": [], "presets_marked": bool(out.get("presets_marked")), "from_disk": True})
+    state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "update-engine", "from": (result.get("installed_before") or {}).get("version"),
+                   "to": chosen.version if chosen else None, "ok": True, "detail": "already installed"})
+    state.save()
+    ctx.say("done", f"Engine {chosen.version if chosen else ''} is in use from the next start", component="engine")
+    return result
 
 
 def _finish_engine_install(ctx: Context, state: State, pkg: feedmod.EnginePackage, stage_root: Path, staged: ec.EngineComponent,
@@ -1163,8 +1198,7 @@ def _finish_engine_install(ctx: Context, state: State, pkg: feedmod.EnginePackag
         section["skipped"] = skipped
         after_identity = preset_marks.identity_of(chosen, pkg.manifest_sha256)
         mark = preset_marks.mark_engine_changed(before_identity, after_identity, base=ctx.state_base)
-        keep = {final.name} | ({previous} if previous else set())
-        removed = prune_engines(root, keep)
+        removed: list[str] = []                           # every older engine stays until the person deletes it (Settings > Engine, `strata components remove`)
         state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "update-engine",
                        "from": before_installed.version if before_installed else None, "to": pkg.version, "ok": True,
                        "detail": smoke.get("mode")})
@@ -1250,8 +1284,60 @@ def install_engine_file(ctx: Context, archive: Path) -> dict:
                 shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
 
 
+def switch_engine(ctx: Context, state: State, name: str, target: ec.EngineComponent, *, unpin_if_automatic: bool = False,
+                  what: str = "engine") -> dict:
+    """Make the installed package folder ``name`` the engine a start uses. Nothing is downloaded or removed; the package was verified by the
+    caller. A pin makes the package the one a start picks even though a newer one is installed. With ``unpin_if_automatic`` the pin is dropped
+    when the package is what a start picks anyway (the newest one), so the engine follows updates again. One writer of the pin and of the
+    previous / skipped bookkeeping: `strata components rollback` and `use_engine` (Settings > Engine, `strata components use`) both come here."""
+    section = state.section("engine")
+    current, _ = installed_engine(ctx.components, ctx.hardware)
+    leaving = current.root.name if current else None
+    before_identity = preset_marks.identity_of(current, _manifest_sha(current.root)) if current else None
+    old_pin = section.get("pinned")
+    automatic = False
+    if unpin_if_automatic:
+        section.pop("pinned", None)
+        state.save()
+        try:
+            picked = ec.resolve(ctx.components, backend=ctx.hardware.get("backend"), full=True, runtime=ctx.hardware.get("runtime"))
+            automatic = picked.root.name == name
+        except ec.EngineMissing:
+            automatic = False
+    if not automatic:
+        section["pinned"] = name
+    state.save()                                      # a start reads the pin from the file, so it is written before it is checked
+    try:
+        chosen = ec.resolve(ctx.components, backend=ctx.hardware.get("backend"), full=True, runtime=ctx.hardware.get("runtime"))
+        if chosen.root.name != name:
+            raise ec.EngineMissing(f"a start would pick {chosen.root.name}", ctx.components)
+    except ec.EngineMissing as exc:
+        if old_pin:
+            section["pinned"] = old_pin
+        else:
+            section.pop("pinned", None)
+        state.save()
+        raise UpdateError(f"the {what} does not fit this PC any more: {exc}", 5) from None
+    forward = bool(current) and feedmod.version_key(target.version) > feedmod.version_key(current.version)
+    if forward:
+        # going to the newer engine: it is no longer one the person left, so a later update may offer it
+        section["skipped"] = [v for v in section.get("skipped", []) if v != target.version]
+    elif current and current.version != target.version:
+        skip = section.setdefault("skipped", [])
+        if current.version not in skip:
+            skip.append(current.version)
+    section["previous"] = leaving
+    section["active"] = name
+    mark = preset_marks.mark_engine_changed(before_identity, preset_marks.identity_of(chosen, _manifest_sha(chosen.root)), base=ctx.state_base)
+    state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "rollback-engine" if what != "engine" else "use-engine",
+                   "from": current.version if current else None, "to": target.version, "ok": True})
+    state.save()
+    return {"component": "engine", "status": "rolled-forward" if forward else "rolled-back", "from": current.version if current else None,
+            "to": target.version, "folder": name, "presets_marked": bool(mark), "automatic": automatic}
+
+
 def rollback_engine(ctx: Context) -> dict:
-    """Return to the previous engine version, which the last update kept. Nothing is downloaded. A pin makes the older
+    """Return to the previous engine version, which the last switch or update left. Nothing is downloaded. A pin makes the older
     package the one a start picks even though a newer one is installed; the next successful update clears it."""
     with update_lock(ctx.components):
         state = State(ctx.components)
@@ -1272,34 +1358,7 @@ def rollback_engine(ctx: Context) -> dict:
             # an earlier rollback is still in force (S3: the text said "0.1.45.3 -> 0.1.45.3"): there is nothing to leave behind
             raise UpdateError(f"the engine is already the previous one ({current.version}); there is nothing older to return to. "
                               "Run `strata update --force` to try the newer version again.", 2)
-        leaving = current.root.name if current else None
-        before_identity = preset_marks.identity_of(current, _manifest_sha(current.root)) if current else None
-        section["pinned"] = previous
-        state.save()                                      # a start reads the pin from the file, so it is written before it is checked
-        try:
-            chosen = ec.resolve(ctx.components, backend=ctx.hardware.get("backend"), full=True, runtime=ctx.hardware.get("runtime"))
-            if chosen.root.name != previous:
-                raise ec.EngineMissing(f"a start would pick {chosen.root.name}", ctx.components)
-        except ec.EngineMissing as exc:
-            section.pop("pinned", None)
-            state.save()
-            raise UpdateError(f"the previous engine does not fit this PC any more: {exc}", 5) from None
-        forward = bool(current) and feedmod.version_key(target.version) > feedmod.version_key(current.version)
-        if forward:
-            # the second rollback goes back to the newer engine: it is no longer one the person left, so a later update may offer it
-            section["skipped"] = [v for v in section.get("skipped", []) if v != target.version]
-        elif current and current.version != target.version:
-            skip = section.setdefault("skipped", [])
-            if current.version not in skip:
-                skip.append(current.version)
-        section["previous"] = leaving
-        section["active"] = previous
-        mark = preset_marks.mark_engine_changed(before_identity, preset_marks.identity_of(chosen, _manifest_sha(chosen.root)), base=ctx.state_base)
-        state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "rollback-engine",
-                       "from": current.version if current else None, "to": target.version, "ok": True})
-        state.save()
-        return {"component": "engine", "status": "rolled-forward" if forward else "rolled-back", "from": current.version if current else None,
-                "to": target.version, "folder": previous, "presets_marked": bool(mark)}
+        return switch_engine(ctx, state, previous, target, what="previous engine")
 
 
 # ---------------------------------------------------------------------------------------------- control
@@ -1416,7 +1475,7 @@ def decide_dsv41(feed: feedmod.Feed, ctx: Context) -> dict:
 def update_dsv41(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
     """The explicit update of an installed DeepSeek engine package (the app's "Update engine", `strata update`): the signed feed's newer package of
     the same kind is downloaded, checked (signature and every file), unpacked NEXT TO the old one, started once (`--version`), and only then every saved
-    run config is pointed at it.  Older package folders go, except one a running engine uses (it goes with a later update).  Nothing installed: nothing
+    run config is pointed at it.  Older package folders stay (Settings > Engine switches between them and deletes them).  Nothing installed: nothing
     happens.  The engine that is serving is not touched, so nothing waits for it.  Starting never does any of this (strata_control/dsv41_paths.py)."""
     roots, configs = _dsv41_installs(ctx)
     result = {"component": "dsv41", "status": "none-installed", "changed": False}
@@ -1453,11 +1512,13 @@ def update_dsv41(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
                 shutil.rmtree(longpath.long_path(target), ignore_errors=True)       # (never the installed one)
                 raise TestStartFailed(f"DeepSeek engine {pkg.version}", why)
             new_exe = target / dsv41_paths.exe_name()
-            moved = dsv41_paths.repoint_older(configs, new_exe)
-            kept = dsv41_paths.prune(root, new_exe)
+            dsv41_paths.set_pin(root, None)                 # an explicit update goes to the newest again
+            moved = dsv41_paths.repoint_all(configs, new_exe)
+            kept = [d.parent.name for d in dsv41_paths.installed(root) if d.parent.name != new_exe.parent.name and dsv41_paths.in_use(d.parent)]
             archive.unlink(missing_ok=True)
             result.update(status="updated", changed=True, installed_after=pkg.version, profiles_repointed=moved, kept_in_use=kept,
-                          note="Models you start from now on use the new DeepSeek engine." + (" The one that is running now keeps the old engine until it is stopped." if kept else ""))
+                          note="Models you start from now on use the new DeepSeek engine. The older one stays installed; Settings > Engine can switch back or delete it."
+                               + (" The one that is running now keeps the old engine until it is stopped." if kept else ""))
             state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "update-dsv41", "from": before, "to": pkg.version, "ok": True})
             return result
         finally:

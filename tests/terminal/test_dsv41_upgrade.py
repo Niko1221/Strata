@@ -39,12 +39,12 @@ class Upgrade(Dsv41Engine):
     def folders(self):
         return sorted(p.name.split("-")[0] for p in self.dest.iterdir() if p.is_dir())
 
-    def test_a_newer_package_in_the_feed_is_installed_next_to_the_old_and_the_old_goes(self):
+    def test_a_newer_package_in_the_feed_is_installed_next_to_the_old_and_the_old_stays(self):
         self.publish("0.1.49.1")
         lines = []
         exe = self.upgrade(lines)
         self.assertIsNotNone(exe, lines)
-        self.assertEqual(self.folders(), ["0.1.49.1"])
+        self.assertEqual(self.folders(), ["0.1.49", "0.1.49.1"], "the older engine stays until the person deletes it (Settings > Engine)")
         self.assertTrue(exe.is_file())
         self.assertEqual(dsv41_engine.find(self.dest), exe)
         self.assertIn("updated from 0.1.49 to 0.1.49.1", " ".join(lines))
@@ -60,7 +60,7 @@ class Upgrade(Dsv41Engine):
         with mock.patch.object(dsv41_engine, "_test_start", side_effect=start):
             self.assertIsNotNone(dsv41_engine.upgrade(self.dest, self.url, installed=self.old, hardware=self.hw, emit=lambda m: None))
         self.assertEqual(seen["folders"], ["0.1.49", "0.1.49.1"])
-        self.assertEqual(self.folders(), ["0.1.49.1"])
+        self.assertEqual(self.folders(), ["0.1.49", "0.1.49.1"])
 
     def test_the_same_version_in_the_feed_changes_nothing(self):
         lines = []

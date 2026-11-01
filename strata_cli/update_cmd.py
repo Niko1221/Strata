@@ -5,6 +5,9 @@
     strata update --app           also download and verify the desktop app's installer
     strata components update      the same as `strata update` (engine + Control)
     strata components rollback    return to the previous engine version the last update kept
+    strata components engines     list the engines installed on this computer (sizes, which one is in use)
+    strata components use X       switch to an installed engine (a version or folder name; `newest` follows updates again)
+    strata components remove X    delete an installed engine (never the one in use)
 
 Starting and serving never come here. A process that has forbidden acquiring (STRATA_NO_ACQUIRE) is refused with exit 5.
 Exit codes: 0 done or nothing to do, 2 usage, 5 refused (signature, hash, downgrade, no key, acquiring forbidden),
@@ -63,10 +66,20 @@ def add_parsers(sp, components_sp) -> list:
     comp_update.add_argument("--no-control", action="store_true")
     rollback = components_sp.add_parser("rollback", help="return to the previous engine version the last update kept")
     _common(rollback)
+    engines = components_sp.add_parser("engines", help="list the engines installed on this computer and which one is in use")
+    _common(engines)
+    use = components_sp.add_parser("use", help="switch to an installed engine (nothing is downloaded); `newest` goes back to following updates")
+    use.add_argument("engine", help="a version (0.1.54), a folder name, or newest")
+    use.add_argument("--family", choices=("qwen", "deepseek"), default=None, help="which engine family when both have that version (default: either)")
+    _common(use)
+    remove = components_sp.add_parser("remove", help="delete an installed engine (never the one in use); models and settings are not touched")
+    remove.add_argument("engine", help="a version (0.1.54) or a folder name")
+    remove.add_argument("--family", choices=("qwen", "deepseek"), default=None)
+    _common(remove)
     install_file = components_sp.add_parser("install-file", help="install an engine package you downloaded yourself (no network; the package's signature is checked)")
     install_file.add_argument("file", help="the engine package (.tar.gz or .zip) from the release page")
     _common(install_file)
-    return [update, comp_update, rollback, install_file]
+    return [update, comp_update, rollback, install_file, engines, use, remove]
 
 
 def _emit_factory(a, lines: list):
@@ -126,6 +139,8 @@ def _line(name: str, result: dict) -> str:
         if status == "updated":
             test = result.get("test_start") or {}
             detail = "tested: started, answered one token, stopped" if test.get("mode") == "full" else f"tested: {test.get('detail', 'engine ran')}"
+            if result.get("from_disk"):
+                detail = "already installed, nothing downloaded"
             return f"{name:<8}{before or 'none'} -> {after}   updated ({detail})"
         if status == "current":
             return f"{name:<8}{before}   up to date"
@@ -165,7 +180,8 @@ def _print_check(report: dict) -> None:
     print(f"Update feed  sequence {feed['sequence']}, {feed['channel']} channel, signed by {feed['key_id']} ({feed['trusted_by']})")
     installed = (eng["installed"] or {}).get("version")
     offered = (eng["offered"] or {}).get("version")
-    text = {"available": f"update available: {installed} -> {offered} ({_mib(eng['download_bytes'])})",
+    text = {"available": (f"update available: {installed} -> {offered} (already installed; the update switches to it, nothing to download)"
+                          if eng.get("installed_locally") else f"update available: {installed} -> {offered} ({_mib(eng['download_bytes'])})"),
             "install": f"no engine installed yet; {offered} is the one for this PC ({_mib(eng['download_bytes'])})",
             "current": f"{installed} is up to date", "none-for-this-pc": eng.get("note") or "the feed has no engine for this PC", "wrong-make": eng.get("note") or "nothing was changed",
             "not-in-feed": "the feed lists no engines"}.get(eng["status"], eng.get("note") or eng["status"])
@@ -236,6 +252,8 @@ def run(a) -> int:
                 print("Run `strata update --force` to try the newer version again, or `strata components rollback` to return to it." if not forward else
                       "Run `strata components rollback` again to go back to the older one.")
             return 0
+        if getattr(a, "components_command", None) in ("engines", "use", "remove"):
+            return _engines_command(a, ctx, machine, fail)
         if getattr(a, "components_command", None) == "install-file":
             ctx.trusted = signing.load_trusted_keys()
             ctx.serving = updater.serving_now
@@ -285,6 +303,56 @@ def run(a) -> int:
         return fail(f"{exc} (the update is the one explicit step that downloads; run it from a shell where STRATA_NO_ACQUIRE is not set)", 5)
     except KeyboardInterrupt:
         return fail("stopped; a partial download is kept and the next update resumes it", 130)
+
+
+def _gb(n: int | None) -> str:
+    n = n or 0
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{max(1, round(n / 1e6))} MB"
+
+
+def _engines_command(a, ctx, machine: bool, fail) -> int:
+    """`strata components engines | use | remove`: the same list and the same switch / delete the app's Settings > Engine uses (strata_control/engine_library.py)."""
+    from strata_control import engine_library as lib, updater
+    ctx.serving = updater.serving_now
+    command = a.components_command
+    if command == "engines":
+        listing = lib.list_engines(ctx)
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, **listing}, ensure_ascii=False))
+            return 0
+        print(f"Engines on this computer ({_gb(listing['total_bytes'])} in total)")
+        for family in listing["families"]:
+            print(f"\n{family['title']}")
+            for e in family["engines"]:
+                tags = ["in use" if e["active"] else "", "newest" if e["newest"] else "", "" if e["fits"] else "not for this computer"]
+                print(f"  {e['version']:<12}{_gb(e['bytes']):>9}  {e['backend'] + ('-' + e['variant'] if e['variant'] else ''):<14}{', '.join(t for t in tags if t)}")
+                if e["why_not"] and not e["fits"]:
+                    print(f"      {e['why_not']}")
+        print("\n`strata components use <version>` switches, `strata components remove <version>` deletes. Nothing was changed.")
+        return 0
+    entry = lib.find_entry(lib.list_engines(ctx), a.engine, a.family)
+    if command == "use":
+        _maybe_wait(a, ctx, machine)
+        if not entry["fits"]:
+            raise updater.UpdateError(f"engine {entry['version']} cannot run on this computer: {entry['why_not']}", 5)
+        out = lib.use_engine(ctx, entry["family"], entry["folder"], entry.get("root"))
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, **out}, ensure_ascii=False))
+        elif out["status"] == "already":
+            print(f"Engine {out['to']} is already in use. Nothing was changed.")
+        else:
+            print(f"Engine {out['to']} is now in use (was {out.get('from') or 'none'}). Models you start from now on run on it.")
+            print("Saved tuning presets are marked for the short re-check; none were deleted." if out.get("presets_marked") else
+                  "Saved tuning presets are unchanged.")
+            print("`strata update` makes the newest engine the one in use again." if not out.get("automatic") else
+                  "This is the newest engine, so it follows updates again.")
+        return 0
+    out = lib.delete_engine(ctx, entry["family"], entry["folder"], entry.get("root"))
+    if machine:
+        print(json.dumps({"schema_version": 1, "ok": True, **out}, ensure_ascii=False))
+    else:
+        print(f"Engine {out['version']} deleted ({_gb(out['freed_bytes'])} freed). Models and settings were not touched.")
+    return 0
 
 
 def _maybe_wait(a, ctx, machine: bool) -> None:

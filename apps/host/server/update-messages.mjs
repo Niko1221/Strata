@@ -70,6 +70,20 @@ export function plainUpdateError(error, subject = 'engine', retry = undefined) {
   return { message: `${message} ${next}`.trim(), headline: message, next, details: raw || undefined };
 }
 
+/** Plain words for a switch or a delete in Settings > Engine: { message, details }. Control's own sentence for "the engine in use" is already plain and is kept. */
+export function plainEngineError(error, action = 'switch') {
+  const raw = String(error?.message ?? error ?? '');
+  const exit = error?.exitCode ?? null;
+  let message = action === 'delete' ? "The engine wasn't deleted. Nothing else was changed." : "The engine wasn't switched. Nothing was changed.";
+  if (exit === 7 || /is serving|model is running/i.test(raw)) message = 'A model is running, so nothing was changed. Unload the model in Models, then try again.';
+  else if (/engine in use/i.test(raw)) message = 'This is the engine in use. Switch to another one first, then delete it.';
+  else if (/running program is using|something is using it/i.test(raw)) message = 'A program is still using this engine, so it was not deleted. Unload your models and try again.';
+  else if (/not installed|already been deleted/i.test(raw)) message = 'That engine is already gone. The list has been refreshed.';
+  else if (/another update is already running/i.test(raw)) message = 'An update is running. Wait for it to finish, then try again.';
+  else if (exit === 5 || /can no longer be used|does not fit|cannot run/i.test(raw)) message = "This engine can't run on this computer, so nothing was changed.";
+  return { message, details: raw || undefined };
+}
+
 /** An Error carrying the plain message and, behind it, the technical reason. */
 export function plainError(error, subject, retry = undefined) {
   const { message, details } = plainUpdateError(error, subject, retry);
