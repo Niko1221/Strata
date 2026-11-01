@@ -5014,13 +5014,32 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             }
             for (int16_t i = (int16_t) i0; i >= 0; i = next_same[i]) kind[i] = kd;
             if (kd != 0) continue;                 // the VRAM groups first; the PCIe groups below
-            vram_ptr[vram_n] = ptr;
-            vram_i0[vram_n] = (int16_t) i0;
-            ++vram_n;
+            if (bucket_plan) {
+                // Split multi-token VRAM groups into chunks of at most 4 entries (ED_NC / GRP_NC / LDS_NT) so each
+                // chunk occupies its own blockIdx.y row in the launch grid instead of looping serially inside one row.
+                for (int16_t cur = (int16_t) i0; cur >= 0;) {
+                    vram_ptr[vram_n] = ptr;
+                    vram_i0[vram_n] = cur;
+                    int c = 0;
+                    int16_t prev = cur;
+                    while (cur >= 0 && c < 4) {
+                        prev = cur;
+                        cur = next_same[cur];
+                        ++c;
+                    }
+                    next_same[prev] = -1;
+                    cnt_same[vram_i0[vram_n]] = (int16_t) c;
+                    ++vram_n;
+                }
+            } else {
+                vram_ptr[vram_n] = ptr;
+                vram_i0[vram_n] = (int16_t) i0;
+                ++vram_n;
+            }
         }
-        // STRATA_MOE_BUCKET_PLAN=1 (default): emit multi-token resident groups (M_e >= 2, descending M_e) before M_e == 1
-        // groups so the GPU's first wave schedules the widest expert groups first while single-token groups backfill tail CUs.
-        // Each group writes to its own disjoint ent_dst[e] rows in ascending token order, so outputs are bitwise identical.
+        // STRATA_MOE_BUCKET_PLAN=1 (default): emit multi-token resident chunks (4, 3, 2 entries) before single-token
+        // groups so the GPU's first wave schedules the widest expert chunks first while single-token groups backfill tail CUs.
+        // Each chunk writes to its own disjoint ent_dst[e] rows in ascending token order, so outputs are bitwise identical.
         auto emit_vram_group = [&](int idx) {
             const int16_t i0 = vram_i0[idx];
             P.ptr[groups] = vram_ptr[idx];
@@ -5033,14 +5052,9 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++groups;
         };
         if (bucket_plan && vram_n > 1) {
-            int max_me = 1;
-            for (int idx = 0; idx < vram_n; ++idx)
-                max_me = std::max(max_me, (int) cnt_same[vram_i0[idx]]);
-            for (int me = max_me; me >= 2; --me)
+            for (int me = 4; me >= 1; --me)
                 for (int idx = 0; idx < vram_n; ++idx)
                     if (cnt_same[vram_i0[idx]] == me) emit_vram_group(idx);
-            for (int idx = 0; idx < vram_n; ++idx)
-                if (cnt_same[vram_i0[idx]] == 1) emit_vram_group(idx);
         } else {
             for (int idx = 0; idx < vram_n; ++idx) emit_vram_group(idx);
         }

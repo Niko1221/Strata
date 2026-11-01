@@ -2581,7 +2581,7 @@ __global__ void __launch_bounds__(256, MINB) expdec_gu_kernel(const unsigned lon
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
         for (int e = e0; e < e1; e += ED_NC) {
             const int n = min(ED_NC, e1 - e);
-            __syncthreads();
+            if (g > (int) blockIdx.y || e > e0) __syncthreads();
             for (int c = 0; c < n; ++c) ed_stage_entry<ED_XB, true>(s_u, s_ds, c, xq + (size_t) ent_tok[e + c] * ED_XB, tid);
             __syncthreads();
             for (int p = 0; p * 16 * R < rb; ++p) {
@@ -2766,7 +2766,7 @@ __global__ void __launch_bounds__(256, STRATA_EXPDEC_MINB) expdec_down_kernel(co
         const int e0 = grp_start[g], e1 = grp_start[g + 1];
         for (int e = e0; e < e1; e += ED_NC) {
             const int n = min(ED_NC, e1 - e);
-            __syncthreads();
+            if (g > (int) blockIdx.y || e > e0) __syncthreads();
             for (int c = 0; c < n; ++c) ed_stage_entry<ED_HB, TD == 42>(s_u, s_ds, c, hq + (size_t) (e + c) * ED_HB, tid);
             __syncthreads();
             for (int p = 0; p * RPP < rb; ++p) {
