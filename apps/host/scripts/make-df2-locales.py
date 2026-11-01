@@ -4,7 +4,7 @@ This computer panel.
 Run from apps/host:  python scripts/make-df2-locales.py
 Every entry names all nine languages; the keys are df01.. in the order of S. df2-en.json is the English source. Placeholders ({0}) must be kept in every
 language. A separate file keeps this work from colliding with the other catalogs (the same reason pick-, tune-, tools-, fix-, gh-, ui- and engine- exist).
-The English lines of df03-df07 are also written in strata_control/drafting.py and strata_control/drafting_fetch.py; tests/drafting.test.mjs keeps the two the same."""
+The English lines of df03-df07 and df09 are also written in strata_control/drafting.py and strata_control/drafting_fetch.py; tests/drafting.test.mjs keeps the two the same."""
 import json
 import re
 from pathlib import Path
@@ -91,6 +91,16 @@ add("There is no internet connection, so the DFlash2 drafter can't be downloaded
     "Il n'y a pas de connexion internet, le drafter DFlash2 ne peut donc pas être téléchargé pour le moment.")
 add("SSD: not needed",
     "SSD：不需要", "SSD：不要", "SSD: nicht nötig", "SSD: no hace falta", "SSD: не нужен", "SSD: não é necessário", "SSD: 필요 없음", "SSD : pas nécessaire")
+
+add("DFlash2 answers one request at a time, so Strata set this model to one request at a time.",
+    "DFlash2 一次只处理一个请求，因此 Strata 将此模型设置为一次一个请求。",
+    "DFlash2 は一度に 1 件のリクエストしか処理しないため、Strata はこのモデルを一度に 1 件に設定しました。",
+    "DFlash2 beantwortet eine Anfrage nach der anderen, deshalb hat Strata dieses Modell auf eine Anfrage zur Zeit gestellt.",
+    "DFlash2 responde una solicitud a la vez, así que Strata configuró este modelo para una solicitud a la vez.",
+    "DFlash2 отвечает на один запрос за раз, поэтому Strata настроила эту модель на один запрос за раз.",
+    "O DFlash2 responde a um pedido de cada vez, por isso o Strata configurou este modelo para um pedido de cada vez.",
+    "DFlash2는 한 번에 하나의 요청만 처리하므로 Strata가 이 모델을 한 번에 하나의 요청으로 설정했습니다.",
+    "DFlash2 répond à une requête à la fois, Strata a donc réglé ce modèle sur une requête à la fois.")
 
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "

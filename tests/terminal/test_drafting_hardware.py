@@ -152,5 +152,62 @@ class OfflineAndReuse(unittest.TestCase):
         self.assertIn(self.dir / "hf" / "hub" / "models--incoai--Qwen3.8-Flash-Next-DFlash2" / "snapshots" / drafting.REVISION, folders)
 
 
+class OneRequestAtATime(unittest.TestCase):
+    """DFlash2 keeps the MTP when the engine runs request slots (--batch); Strata fills slots in by itself, so choosing DFlash2 means one request."""
+
+    def test_only_a_named_choice_on_a_computer_that_can_run_it(self):
+        want = drafting.wants_one_request
+        with serving_dflash2():
+            self.assertTrue(want("dflash2", model_name=GYRO, backend="cuda", archs=["sm_121"]))
+            self.assertTrue(want("DFlash2", family="qwen"))
+            for mode in ("auto", "mtp", "off", None):
+                self.assertFalse(want(mode, model_name=GYRO, backend="cuda", archs=["sm_121"]), mode)
+            self.assertFalse(want("dflash2", model_name="qwen3.8-flash-next-coder-iq1_m", backend="cuda", archs=["sm_121"]))
+            self.assertFalse(want("dflash2", model_name=GYRO, backend="metal", archs=[]))
+        with mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
+            self.assertFalse(want("dflash2", model_name=GYRO, backend="cuda", archs=["sm_121"]), "while the engine does not serve it")
+
+
+class TheTerminalStep(unittest.TestCase):
+    """strata launch: the Drafting step exists only where there is something to choose, like the DeepSeek-only Speed step."""
+
+    def flow(self, family, hardware):
+        from types import SimpleNamespace
+        from strata_cli.launch.screens import flow_for
+        ctx = SimpleNamespace(computer=SimpleNamespace(usable_gpus=[0]), settings=SimpleNamespace(family=family))
+        with mock.patch.object(drafting, "detect_hardware", return_value=hardware), serving_dflash2(),                 mock.patch("strata_cli.launch.screens.speed_choice_available", return_value=False):
+            return flow_for(ctx)
+
+    def test_only_flash_next_on_a_cuda_or_hip_engine_gets_the_step(self):
+        flow = self.flow("qwen", ("cuda", ["sm_120"]))
+        self.assertIn("drafting", flow)
+        self.assertEqual(flow.index("drafting"), flow.index("pictures") + 1)
+        self.assertIn("drafting", self.flow("gyro", ("hip", ["gfx1151"])))
+        for family in ("deepseek41", "swift", "coder", "unsloth", "nvfp4", "qwen36", None):
+            self.assertNotIn("drafting", self.flow(family, ("cuda", ["sm_120"])), family)
+        for hardware in (("metal", []), ("sycl", []), (None, [])):
+            self.assertNotIn("drafting", self.flow("qwen", hardware), hardware)
+
+    def test_the_choice_is_saved_as_the_flag_would_and_auto_writes_nothing(self):
+        from types import SimpleNamespace
+        from strata_cli.launch import settings as S
+        from strata_cli.launch.screens import DraftingScreen
+        self.assertEqual([k for k, _ in DraftingScreen.CHOICES], list(S.DRAFTING_MODES))
+        for key, saved in (("dflash2", "dflash2"), ("auto", None), ("off", "off")):
+            fake = SimpleNamespace(ctx=SimpleNamespace(settings=S.LaunchSettings()), menu=lambda key=key: SimpleNamespace(current=SimpleNamespace(key=key)))
+            DraftingScreen.commit(fake)
+            self.assertEqual(fake.ctx.settings.drafting, saved)
+
+    def test_the_words_are_the_apps_words(self):
+        folder = ROOT / "apps" / "host" / "src" / "locales"
+        en = json.loads((folder / "df2-en.json").read_text(encoding="utf-8"))
+        self.assertEqual(en["df01"], drafting.EXPLAIN_NUMBERS)
+        self.assertEqual(en["df02"], drafting.EXPLAIN_LIMITS)
+        self.assertEqual((en["df03"], en["df04"], en["df05"]), (drafting.LINE_TESTED, drafting.LINE_SLOWER, drafting.LINE_UNTESTED))
+        self.assertEqual(en["df06"], drafting.mtp_line(drafting.NOT_THIS_CARD))
+        self.assertEqual(en["df07"], "There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
+        self.assertEqual(en["df09"], drafting.ONE_REQUEST_NOTE)
+
+
 if __name__ == "__main__":
     unittest.main()

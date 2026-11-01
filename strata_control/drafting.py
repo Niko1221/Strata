@@ -253,6 +253,18 @@ def decide(mode: Any, *, klass: str, model_name: str | None = None, family: str 
     return Decision(asked, "dflash2", flags=engine_flags(pack_path(data_dir)))
 
 
+ONE_REQUEST_NOTE = "DFlash2 answers one request at a time, so Strata set this model to one request at a time."
+
+
+def wants_one_request(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
+                      archs: Any = None, **_ignored: Any) -> bool:
+    """DFlash2 was asked for (by name, not by Auto) and this model and computer can run it: the model then starts with one request at a time, because
+    the engine's request slots (``--batch``, which Strata fills in by itself on a card with room) keep the MTP. A number of requests the person chose
+    stays as they chose it; the callers check that."""
+    return (normalize(mode) == "dflash2" and ENGINE_SERVES_DFLASH2 and supported_model(model_name, family)
+            and (backend is None or hardware_support(backend, archs).can_run))
+
+
 def needs_pack(mode: Any, *, klass: str, model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
                backend: str | None = None, archs: Any = None) -> bool:
     """Would this choice use the DFlash2 drafter if its file were here, and is it not here yet? (Then it is fetched before the start.)"""

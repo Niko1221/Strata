@@ -1468,6 +1468,20 @@ class Runner:
                 "data_dir": drafting.data_dir_of(cfg.get("args") or []) or (Path(self.s.data_dir) if self.s.data_dir else None),
                 "backend": backend, "archs": archs}
 
+    def one_request_for_dflash2(self, config: Path) -> bool:
+        """DFlash2 chosen on purpose and the person gave no number of requests: one at a time, said once (drafting.wants_one_request)."""
+        try:
+            from strata_control import drafting
+            if not drafting.wants_one_request(**self.drafting_inputs(read_config(config))):
+                return False
+        except Exception:                                    # noqa: BLE001 - a note is never a reason to stop a launch
+            return False
+        if not getattr(self, "_one_request_said", False):
+            self._one_request_said = True
+            self.notices.append(drafting.ONE_REQUEST_NOTE)
+            self.emit("model", drafting.ONE_REQUEST_NOTE, None)
+        return True
+
     def ensure_drafter(self, base_path: Path) -> None:
         """Fetch the DFlash2 drafter when this launch will use it and it is not here yet. Never stops the launch: if it cannot be had, the model
         starts with the MTP and the person is told (recommend, never force)."""
@@ -1551,6 +1565,8 @@ class Runner:
         parallel = self.s.parallel if self.s.parallel else (getattr(self, "four_card_parallel", None) or self.catalog_parallel())
         if getattr(self, "parallel_dropped", False):         # DeepSeek: the engine in use is from before the flag (gate_parallel)
             parallel = None
+        if parallel and not self.s.parallel and self.one_request_for_dflash2(config):
+            parallel = None                                  # the slots Strata fills in by itself would keep the MTP: DFlash2 answers one request at a time
         sets = [f"host={acc.host_for(self.s.access)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
         try:
             current, _rev = profiles.load(name)
@@ -2226,6 +2242,8 @@ class Runner:
         try:
             base, cfg = self.installed_state()
             want = self.drafting_inputs(cfg or {})
+            if drafting.needs_pack(**want):                   # the launch fetches the drafter first (ensure_drafter), so that is what will run
+                return "Drafting: DFlash2 (its drafter is downloaded first)"
             return drafting.summary_line(drafting.decide(**want))
         except Exception:                                    # noqa: BLE001
             return ""

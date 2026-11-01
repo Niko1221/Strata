@@ -6,5 +6,6 @@
  "df05": "O DFlash2 ainda não foi testado na sua placa de vídeo.",
  "df06": "Previsão: MTP (o DFlash2 não está disponível nesta placa de vídeo)",
  "df07": "Não há ligação à internet, por isso não é possível transferir agora o rascunhador do DFlash2.",
- "df08": "SSD: não é necessário"
+ "df08": "SSD: não é necessário",
+ "df09": "O DFlash2 responde a um pedido de cada vez, por isso o Strata configurou este modelo para um pedido de cada vez."
 }

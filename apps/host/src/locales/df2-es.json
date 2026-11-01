@@ -6,5 +6,6 @@
  "df05": "DFlash2 todavía no se ha probado en su tarjeta gráfica.",
  "df06": "Predicción: MTP (DFlash2 no está disponible en esta tarjeta gráfica)",
  "df07": "No hay conexión a internet, así que ahora no se puede descargar el borrador de DFlash2.",
- "df08": "SSD: no hace falta"
+ "df08": "SSD: no hace falta",
+ "df09": "DFlash2 responde una solicitud a la vez, así que Strata configuró este modelo para una solicitud a la vez."
 }
