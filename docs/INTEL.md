@@ -515,34 +515,35 @@ Level Zero v2). An A750 prompt of 2,744 tokens hung (direct copy out of pageable
 `sycl/tools/test_prompt_deadlock.sh`). The first request after a start returned token 0 on `i915` when the spin bound was too short.
 An A770 JIT build misread memory past 4 GiB into an allocation. The xe driver aliased pages in a 22 GiB arena (NaN at layer 4).
 
-### Opt-in mixed-IQ3 decode experiments
+### Mixed-IQ3 decode kernels for Battlemage (PR #4185)
 
-These controls select separate decode paths. They do not enable INT8 prefill,
-change the expert cache size or change other devices' defaults. Set runtime
-controls before starting the engine; restart after changing them.
+Packed Q2 / IQ4 lookup / IQ3_S sign arithmetic (the build option) and fourteen decode controls. Measured on two Arc Pro B65
+(Qwen3.8-Flash-Next GSQ-RCO IQ3_S, all experts resident, layer split, `--spec 2 --pipeline-windows 2`, int8 KV, AOT bmg-g31): decode
++9.7% on a 4K prompt and +11.1% on a free-form answer against the build without them, same generated tokens, same logprobs to six
+decimals. Prompt speed is unchanged.
 
-Build with `-DSTRATA_SYCL_IQ_DECODE_FAST=ON` to select the packed Q2/IQ4 and
-sign helpers. The build option defaults to `OFF`. Test the same model and
-request sequence against a build without that option before using it.
+* `STRATA_SYCL_IQ_DECODE_FAST` (CMake, default ON; `IQ_DECODE_FAST=OFF` for `sycl/tools/build.sh` and `packaging/build_sycl_linux.sh`):
+  integer arithmetic with the same results as the helpers it replaces. It is the largest part of the gain (+5.9% alone).
+* Runtime controls. Unset: on for a Battlemage device, off for every other device (Arc A-series keeps the earlier kernels).
+  `STRATA_<name>=0` turns a control off, `=1` turns it on whatever the device. Restart after changing one.
 
-| Runtime control | Selected work |
-|---|---|
-| `STRATA_IQ3S_GU_SLM=1` | Stage native IQ3_S gate/up activations |
-| `STRATA_IQ4NL_DOWN_SLM=1` | Stage native IQ4_NL down activations |
-| `STRATA_IQ2S_GU_ROW_REUSE=1` | Reuse inputs across two IQ2_S gate/up rows |
-| `STRATA_IQ3XXS_GU_ROW_REUSE=1` | Reuse inputs across two IQ3_XXS gate/up rows |
-| `STRATA_EXPERT_ROW_E3=1` | Process eligible three-entry tails in the row-reuse path |
-| `STRATA_IQ3S_GU_ROW_REUSE=1` | Reuse IQ3_S gate/up row inputs |
-| `STRATA_RESIDENT_PLAN_COMPACT=1` | Size the resident routing work-group for the entry count |
-| `STRATA_GR_CACHED_NORM=1` | Reuse HC normalized input on supported layouts |
-| `STRATA_GR_LO_REUSE=1` | Reuse HC low-rank SiLU output on supported layouts |
-| `STRATA_GR_REDUCE_ILP=1` | Keep partial loads in flight in the cached-lo HC reduce |
-| `STRATA_MMVQ_SHAPE_RPW=1` | Select row reuse for bounded Q4_K/Q5_K projection shapes |
-| `STRATA_Q6_SHAPE_GRF=1` | Select large GRF for bounded Q6_K projection shapes |
-| `STRATA_GDN_QK_REG=1` | Register-broadcast QK for supported BMG GDN geometry |
-| `STRATA_ATTN_MERGE_ACTIVE=1` | Merge only active chunks in bounded batched QSA decode |
+| Runtime control | On by default (Battlemage) | Selected work |
+|---|---|---|
+| `STRATA_MMVQ_SHAPE_RPW` | yes | Row reuse for bounded Q4_K/Q5_K projection shapes |
+| `STRATA_IQ3S_GU_ROW_REUSE` | yes | Reuse IQ3_S gate/up row inputs across two rows |
+| `STRATA_IQ2S_GU_ROW_REUSE` | yes | The same for IQ2_S |
+| `STRATA_IQ3XXS_GU_ROW_REUSE` | yes | The same for IQ3_XXS |
+| `STRATA_GR_LO_REUSE` | yes | Reuse the hyper-connection low-rank SiLU output on supported layouts |
+| `STRATA_ATTN_MERGE_ACTIVE` | yes | Merge only the active chunks in bounded batched QSA decode |
+| `STRATA_IQ3S_GU_SLM` | no | Stage native IQ3_S gate/up activations (unreachable while the IQ3_S row reuse is on) |
+| `STRATA_IQ4NL_DOWN_SLM` | no | Stage native IQ4_NL down activations |
+| `STRATA_EXPERT_ROW_E3` | no | Three-entry tails in the IQ2_S / IQ3_XXS row-reuse path |
+| `STRATA_RESIDENT_PLAN_COMPACT` | no | Size the resident routing work-group for the entry count |
+| `STRATA_GR_CACHED_NORM` | no | Reuse the hyper-connection normalized input on supported layouts |
+| `STRATA_GR_REDUCE_ILP` | no | Keep partial loads in flight in the cached-lo hyper-connection reduce |
+| `STRATA_Q6_SHAPE_GRF` | no | Large GRF for bounded Q6_K projection shapes |
+| `STRATA_GDN_QK_REG` | no | Register-broadcast QK for supported Battlemage GDN geometry |
 
-Unsupported layouts retain their existing paths. Explicit projection overrides
-take precedence over shape selection. These options need workload-specific
-validation; enabling a control does not establish that a matching kernel ran
-or that the full request became faster.
+The eight "no" controls measured neutral or slightly slower on that configuration (single-control table in
+`phaseA-tests/pr-priorities/RESULTS-INTEL.md`); they stay available for other models and cards. Unsupported layouts retain their
+existing paths. Explicit projection overrides take precedence over shape selection.
