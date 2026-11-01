@@ -905,7 +905,11 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
 // PF (BW-DENSE, bitwise the PF = 0 kernel): bit 0 issues the loads of the partial sums and of every row's R / w_norm / bo / inj before
 // their first use (the in-place store of R in the row loop otherwise ends each row's loads at a full latency); bit 1 loads the
 // warp's w_up rows first. S == 1, EXACT_T only.
-template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false, int PF = 0>
+// RB (DF2-MORE, STRATA_GR_V3_PF bit 6, bitwise the RB = false kernel): the dot phase takes the token loop OUTSIDE the row loop.  A warp's 8 rows share the lane's
+// columns of lo, so each token's 16 floats are read from shared memory once for all 8 rows (it was 8 times: 4 LDS.128 per row and token, the pipe the 8-row
+// dot phase waits on) and the 8 rows' weights sit in registers.  Every (row, token) dot is the same two dot8u chains added in the same order, then the same
+// warp reduction: the same bits.  S == 1, EXACT_T only.
+template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false, int PF = 0, bool RB = false>
 __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const float* __restrict__ part,
                                                            const float* __restrict__ ssg) {
     __shared__ __align__(16) float lo[MAX_T][LR];
@@ -1013,6 +1017,74 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
         }
     }
     __syncthreads();
+    if constexpr (RB) {
+        static_assert(S == 1 && EXACT_T, "the register-blocked dot phase is for the exact-T, one-half kernels");
+        uint4 ra[RPW], rb[RPW];
+#pragma unroll
+        for (int q = 0; q < RPW; ++q) {
+            const int r = warp + q * WARPS;
+            const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
+            const uint4* w4 = reinterpret_cast<const uint4*>(m.a[0].w_up + (size_t) i * LR);
+            ra[q] = __ldg(w4 + lane);
+            rb[q] = lane < LR / 8 - 32 ? __ldg(w4 + 32 + lane) : make_uint4(0, 0, 0, 0);
+        }
+        float accq[RPW][MAX_T];
+#pragma unroll
+        for (int k = 0; k < MAX_T; ++k) {
+            const float4* la = reinterpret_cast<const float4*>(lo[k] + lane * 8);
+            const float4 a0 = la[0], a1 = la[1];
+            float4 b0 = make_float4(0.f, 0.f, 0.f, 0.f), b1 = b0;
+            if (lane < LR / 8 - 32) {
+                const float4* lb = reinterpret_cast<const float4*>(lo[k] + (32 + lane) * 8);
+                b0 = lb[0]; b1 = lb[1];
+            }
+#pragma unroll
+            for (int q = 0; q < RPW; ++q) {
+                float acc = dot8u(unpack8(ra[q]), a0, a1);
+                if (lane < LR / 8 - 32) acc += dot8u(unpack8(rb[q]), b0, b1);
+                accq[q][k] = acc;
+            }
+        }
+#pragma unroll
+        for (int q = 0; q < RPW; ++q) {
+            const int r = warp + q * WARPS;
+            const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
+            float rv = 0.0f, wn = 0.0f, bo = 0.0f, ip = 0.0f;
+            bool apply = false;
+            if (lane < T) {
+                const FusedGrArgs& a = m.a[lane];
+                apply = a.apply;
+                if constexpr ((PF & 1) != 0) { rv = prv[q]; wn = pwn[q]; bo = pbo[q]; ip = pip[q]; }
+                else {
+                    rv = a.R[i];
+                    wn = a.w_norm[i];
+                    if (apply) { bo = a.bo_prev[d0 + dd]; ip = a.inj_prev[c]; }
+                }
+            }
+            float mine = 0.0f;
+            if constexpr (MAX_T >= 5 && MAX_T <= 8) {
+                float accs[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                for (int k = 0; k < MAX_T; ++k) accs[k] = accq[q][k];
+                const float d8 = warp_sum8(accs, lane);
+                mine = __shfl_sync(0xffffffffu, d8, (lane & 7) << 2);
+            } else {
+#pragma unroll
+                for (int k = 0; k < MAX_T; ++k) {
+                    const float acc = warp_sum(accq[q][k]);
+                    if (lane == k) mine = acc;
+                }
+            }
+            if (lane < T) {
+                if (apply) {
+                    rv = fmaf(bo, 2.0f * sigmoidf_(ip / (float) HC), rv);
+                    m.a[lane].R_out[i] = rv;
+                }
+                const float x = rv * wn * rsS[lane][c];
+                g[lane][c][dd] = x * sigmoidf_(mine);
+            }
+        }
+    } else
 #pragma unroll
     for (int q = 0; q < RPW; ++q) {
         const int r = warp + q * WARPS;
@@ -2612,22 +2684,22 @@ static bool gr_down_pf_dispatch(int pf, int n_tok, const GrMulti& m, float* part
     default: return false;
     }
 }
-template <int PF>
+template <int PF, bool RB>
 static bool gr_up_pf_dispatch_k(int n_tok, const GrMulti& m, const float* part, const float* ssg, cudaStream_t st) {
-#define GR_UP_PF(K) case K: gr_up_v3_kernel<1, K, true, PF><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true;
+#define GR_UP_PF(K) case K: gr_up_v3_kernel<1, K, true, PF, RB><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true;
     switch (n_tok) {
     GR_UP_PF(1) GR_UP_PF(2) GR_UP_PF(3) GR_UP_PF(4) GR_UP_PF(5) GR_UP_PF(6)
-    case 7: if (kFusedGrMaxT >= 7) { gr_up_v3_kernel<1, 7, true, PF><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true; } return false;
-    case 8: if (kFusedGrMaxT >= 8) { gr_up_v3_kernel<1, 8, true, PF><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true; } return false;
+    case 7: if (kFusedGrMaxT >= 7) { gr_up_v3_kernel<1, 7, true, PF, RB><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true; } return false;
+    case 8: if (kFusedGrMaxT >= 8) { gr_up_v3_kernel<1, 8, true, PF, RB><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg); return true; } return false;
     default: return false;
     }
 #undef GR_UP_PF
 }
-static bool gr_up_pf_dispatch(int pf, int n_tok, const GrMulti& m, const float* part, const float* ssg, cudaStream_t st) {
+static bool gr_up_pf_dispatch(int pf, bool rb, int n_tok, const GrMulti& m, const float* part, const float* ssg, cudaStream_t st) {
     switch (pf & 3) {
-    case 1: return gr_up_pf_dispatch_k<1>(n_tok, m, part, ssg, st);
-    case 2: return gr_up_pf_dispatch_k<2>(n_tok, m, part, ssg, st);
-    case 3: return gr_up_pf_dispatch_k<3>(n_tok, m, part, ssg, st);
+    case 1: return rb ? gr_up_pf_dispatch_k<1, true>(n_tok, m, part, ssg, st) : gr_up_pf_dispatch_k<1, false>(n_tok, m, part, ssg, st);
+    case 2: return rb ? gr_up_pf_dispatch_k<2, true>(n_tok, m, part, ssg, st) : gr_up_pf_dispatch_k<2, false>(n_tok, m, part, ssg, st);
+    case 3: return rb ? gr_up_pf_dispatch_k<3, true>(n_tok, m, part, ssg, st) : gr_up_pf_dispatch_k<3, false>(n_tok, m, part, ssg, st);
     default: return false;
     }
 }
@@ -2744,7 +2816,7 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
         else gr_down_v3_kernel<1, kFusedGrMaxT, false><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
         if (split == 2) gr_up_v3_kernel<2><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
-        else if (((pfm >> 2) & 3) != 0 && gr_up_pf_dispatch((pfm >> 2) & 3, n_tok, m, part, ssg, st)) {}
+        else if (((pfm >> 2) & 3) != 0 && gr_up_pf_dispatch((pfm >> 2) & 3, (pfm & 64) != 0, n_tok, m, part, ssg, st)) {}
         else if (n_tok == 1) gr_up_v3_kernel<1, 1, true><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
         else if (n_tok == 2) gr_up_v3_kernel<1, 2, true><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
         else if (n_tok == 3) gr_up_v3_kernel<1, 3, true><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
