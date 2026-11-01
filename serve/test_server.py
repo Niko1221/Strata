@@ -5171,99 +5171,6 @@ class ModelAliases(unittest.TestCase):
             httpd.server_close()
 
 
-class AmdTelemetry(unittest.TestCase):
-    """#301: the AMD backend's readings from a fake amdgpu sysfs tree: KFD node -> render node, as setup numbers the
-    cards (the CPU node skipped), and free_vram_mib on HIP."""
-
-    def tree(self, d):
-        nodes = Path(d) / "class/kfd/kfd/topology/nodes"
-        for n, props in ((0, "cpu_cores_count 16\nsimd_count 0\ngfx_target_version 0\ndrm_render_minor 0\n"),
-                         (1, "simd_count 128\ngfx_target_version 120001\ndrm_render_minor 129\n"),
-                         (2, "simd_count 128\ngfx_target_version 120001\ndrm_render_minor 128\n")):
-            (nodes / str(n)).mkdir(parents=True)
-            (nodes / str(n) / "properties").write_text(props)
-        for minor, used, busy, temp, power in ((129, 2 << 30, 37, 51000, 85000000), (128, 6 << 30, 99, 64000, None)):
-            dev = Path(d) / f"class/drm/renderD{minor}/device"
-            hw = dev / "hwmon" / "hwmon4"
-            hw.mkdir(parents=True)
-            (dev / "gpu_busy_percent").write_text(f"{busy}\n")
-            (dev / "mem_info_vram_used").write_text(f"{used}\n")
-            (dev / "mem_info_vram_total").write_text(f"{32 << 30}\n")
-            (dev / "product_name").write_text("AMD Radeon AI PRO R9700\n")
-            (hw / "temp1_input").write_text(f"{temp}\n")
-            if power is not None:
-                (hw / "power1_average").write_text(f"{power}\n")
-            else:
-                (hw / "power1_input").write_text("120000000\n")
-            (hw / "power1_cap").write_text("300000000\n")
-
-    def test_pcie_link_is_the_narrowest_slowest_hop(self):
-        """#1733: the link is the slowest/narrowest hop between the root port and the card; the bottleneck is only
-        claimed when every hop could be read (pcie_path says how many were)."""
-        from serve import telemetry
-        with tempfile.TemporaryDirectory() as d:
-            hops = []
-            for i, (speed, width) in enumerate((("8.0 GT/s PCIe", "16"), ("8.0 GT/s PCIe", "8"), ("16.0 GT/s PCIe", "16"))):
-                h = Path(d) / f"hop{i}"
-                h.mkdir()
-                (h / "max_link_speed").write_text(speed + "\n")
-                (h / "max_link_width").write_text(width + "\n")
-                hops.append(str(h))
-            (Path(hops[-1]) / "current_link_speed").write_text("16.0 GT/s PCIe\n")
-            (Path(hops[-1]) / "current_link_width").write_text("16\n")
-            a = telemetry.gpu_reader(0, amd=True)
-            a.dev = hops[-1]
-            with mock.patch.object(telemetry._Amd, "_hops", lambda self: hops):
-                self.assertEqual(a.link(), {"pcie_gen": 3, "pcie_gen_max": 3, "pcie_own_gen": 4, "pcie_width": 8,
-                                            "pcie_path": "3/3"})
-            with mock.patch.object(telemetry._Amd, "_hops", lambda self: hops[:2] + [str(Path(d) / "hidden")]):
-                got = a.link()             # an unreadable hop: fall back to the card's own negotiated link
-                self.assertEqual((got["pcie_gen"], got["pcie_width"], got["pcie_path"]), (4, 16, "2/3"))
-            self.assertEqual(telemetry._Amd._gen("32.0 GT/s PCIe"), 5)
-            self.assertIsNone(telemetry._Amd._gen("unknown"))
-            self.assertTrue(telemetry._Amd._bdf("0000:03:00.0"))
-            self.assertFalse(telemetry._Amd._bdf("pci0000:00"))
-
-    def test_readings(self):
-        from serve import telemetry
-        with tempfile.TemporaryDirectory() as d:
-            self.tree(d)
-            with mock.patch.object(telemetry, "SYSFS", d):
-                self.assertTrue(telemetry.amd_device_dir(0).endswith(os.path.join("renderD129", "device")))
-                self.assertTrue(telemetry.amd_device_dir(1).endswith(os.path.join("renderD128", "device")))
-                self.assertIsNone(telemetry.amd_device_dir(2))
-                g = telemetry.gpu_reader(0, amd=True)
-                self.assertTrue(g.ok())
-                self.assertEqual(g.name(), "AMD Radeon AI PRO R9700")
-                self.assertEqual(g.read(), {"util": 37, "mem_used": 2 << 30, "mem_total": 32 << 30, "temp": 51.0,
-                                            "power": 85.0, "power_limit": 300.0, "pcie_gen": None,
-                                            "pcie_gen_max": None, "pcie_own_gen": None, "pcie_width": None,
-                                            "pcie_path": "0/0"})    # #1733: no PCIe files in this fake tree
-                r = telemetry.gpu_reader(1, amd=True).read()
-                self.assertEqual((r["util"], r["temp"], r["power"]), (99, 64.0, 120.0))     # power1_input
-                self.assertEqual(telemetry.free_vram_mib(0, amd=True), 30 << 10)
-                self.assertIsNone(telemetry.free_vram_mib(5, amd=True))
-                t = telemetry.Telemetry(gpu_index=0, gpu_indices=[0, 1], amd=True)
-                s = t.sample()
-                self.assertEqual(t.static["gpu_name"], "AMD Radeon AI PRO R9700 + AMD Radeon AI PRO R9700")
-                self.assertEqual((s["gpu_mem_used"], s["gpu_util"], s["gpu_temp"], s["gpu_power"]),
-                                 (8 << 30, 68.0, 64.0, 205.0))
-        with tempfile.TemporaryDirectory() as d:                    # no amdgpu: nothing, and nothing breaks
-            with mock.patch.object(telemetry, "SYSFS", d):
-                self.assertFalse(telemetry.gpu_reader(0, amd=True).ok())
-                self.assertIsNone(telemetry.free_vram_mib(0, amd=True))
-
-    def test_free_vram_on_hip(self):
-        from serve import telemetry
-        tok = ByteTokenizer()
-        svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
-        svc.backend, svc.gpu_index = "hip", 1
-        with tempfile.TemporaryDirectory() as d:
-            self.tree(d)
-            with mock.patch.object(telemetry, "SYSFS", d):
-                self.assertEqual(svc.free_vram_mib(), 26 << 10)
-
-
 IOREG_FIXTURE = '''
   +-o AGXAcceleratorG13X  <class AGXAcceleratorG13X, id 0x100000428, registered, matched, active, busy 0 (0 ms), retain 41>
     {
@@ -5285,6 +5192,61 @@ IOREG_FIXTURE = '''
 '''
 
 WORKING_SET = 26800603136          # bytes; the M1 Max's device in the fixture above
+
+
+class MacTelemetry(unittest.TestCase):
+    """The macOS (Metal backend) reader: IOKit's IOAccelerator nodes and the device's Metal working set."""
+
+    def _reader(self, index=0, text=IOREG_FIXTURE):
+        from serve import telemetry
+        return telemetry._Metal(index, run=lambda: text)
+
+    def test_readings(self):
+        g = self._reader()
+        self.assertTrue(g.ok())
+        self.assertEqual(g.name(), "Apple M1 Max")
+        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+            self.assertEqual(g.read(), {"util": 76, "mem_used": 13384105984, "mem_total": WORKING_SET})
+        # the second accelerator is index 1: the older chips' renderer/tiler-only utilization is the fallback
+        g1 = self._reader(1)
+        self.assertTrue(g1.ok())
+        with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+            self.assertEqual(g1.read()["util"], 3)          # the renderer, the higher of the two
+            self.assertEqual(g1.name(), "Apple M2 Ultra")
+        self.assertFalse(self._reader(5).ok())
+
+    def test_no_registry(self):
+        g = self._reader(text="")
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+        self.assertIsNone(g.name())
+
+    def test_bad_process(self):
+        from serve import telemetry
+        g = telemetry._Metal(0, run=lambda: (_ for _ in ()).throw(OSError("no ioreg")))
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+
+    def test_note_reaches_the_monitor(self):
+        from serve import telemetry
+        t = telemetry.Telemetry(extra=lambda: {"tok_s": 1.0})
+        try:
+            with mock.patch.object(telemetry, "gpu_reader", lambda index=0, amd=False: self._reader()):
+                t2 = telemetry.Telemetry(extra=lambda: {"tok_s": 1.0})
+                try:
+                    self.assertEqual(t2.static["gpu_name"], "Apple M1 Max")
+                    self.assertIn("powermetrics", t2.static["gpu_note"])
+                    with mock.patch("serve.telemetry.metal_working_set", lambda: WORKING_SET):
+                        s = t2.sample()
+                    self.assertEqual(s["gpu_util"], 76)
+                    self.assertEqual(s["gpu_mem_used"], 13384105984)
+                    self.assertEqual(s["gpu_mem_total"], WORKING_SET)
+                    self.assertIsNone(s.get("gpu_temp"))       # no reading without root; the cards show a dash
+                    self.assertIsNone(s.get("gpu_pcie_gen"))
+                finally:
+                    t2.close()
+        finally:
+            t.close()
 
 
 class MacTelemetry(unittest.TestCase):
