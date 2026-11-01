@@ -38,27 +38,47 @@ while the GPUs run the ~98.9% of routed mass their caches hold. Two 2013 Xeons w
 SIMD sustain **105–113 tok/s decode**. That is the second half of the story: the division of
 labour, not the silicon.
 
-## Why this entry is unique in the community corpus
+## What this opens up: an old platform is not a dead end
 
-I checked every report in `bench/results/`. Three run dual Xeons — a Z840 (2x E5-2699 v3),
-2x P40 (2x E5-2698 v4), and 4x P100 (2x E5-2650 v3) — and all three have **AVX2**. Three
-entries use DDR3, but on Haswell-class boards.
+Most people would assume a 13-year-old workstation has no business hosting a current-generation
+GPU for this work. Four reasons get cited. This machine tests all four, and none of them turns
+out to be load-bearing:
 
-**No published Strata result runs a pre-AVX2 CPU.** The E5-2697 v2 is Ivy Bridge: AVX only,
-no AVX2, no AVX-512. The engine has a dedicated fallback for exactly this, and it says so
-at startup:
+| The assumed blocker | What this machine actually has | What it measured |
+|---|---|---|
+| Storage too slow | SATA SSD, 85–148 MB/s | **0.0 GiB read per 32K prompt** |
+| PCIe too old | Gen3 x16 (cards idle at Gen1) | 12.7–13.2 GB/s probe; 105–113 tok/s |
+| CPU too old | Ivy Bridge, **no AVX2 at all** | AVX1 128-bit kernels, 22 workers; 105–113 tok/s |
+| Not enough VRAM | 45 GiB across two unequal cards | 252 GB DDR3 absorbs the overflow |
+
+**The practical consequence: a Z620/Z820/Z840, an X79 or X99 board, or a retired dual-socket
+server can host a current pro GPU and deliver usable throughput.** Strata's RAM-resident expert
+tier plus a NUMA-aware CPU pool remove precisely the bottlenecks that make old platforms
+unattractive. The upgrade that matters is the card, not the platform — and the RAM these
+machines were built with is the thing that makes it work.
+
+That possibility is worth recording because it is not currently represented anywhere in this
+corpus. Three entries run dual Xeons — a Z840 (2x E5-2699 v3), 2x P40 (2x E5-2698 v4), and
+4x P100 (2x E5-2650 v3) — and all three are Haswell or Broadwell, which **have AVX2**. Three
+entries use DDR3, but on Haswell-class boards. Searching every report here for Ivy Bridge,
+E5 v2, AVX1 or "no AVX2" returns nothing: **this is the first published Strata result on a
+pre-AVX2 CPU.**
+
+The engine has a dedicated fallback for exactly that case, and warns about it at startup:
 
 > `EXPERIMENTAL older-CPU build (ggml-cpu for avx): this CPU has no AVX2, so the CPU's experts run on ggml-cpu's kernels - expect it to be slow`
 >
 > `this CPU has no AVX-512: the expert kernels run on AVX1 128-bit (iq_avx1, the older-CPU build)`
 
-Until this report there was no number attached to "expect it to be slow". These runs are that
-number: **105–113 tok/s decode on the slowest ISA path the engine supports**, sustained by 22
-workers on two 2013 sockets running 128-bit kernels.
+Until now there was no number attached to "expect it to be slow". This report is that number,
+and it is better than the warning suggests: **105–113 tok/s decode on the slowest ISA path the
+engine supports**, sustained by 22 workers on two 2013 sockets running 128-bit kernels.
 
-The nearest sibling is the Z840 report (2026-10-03): 2x E5-2699 v3, 384 GB DDR4-2133, one
-RTX 3090 Ti. That machine is a generation newer, has AVX2, and more RAM. This one is the
-older, slower, cheaper configuration — which is precisely why the result is worth recording.
+**Honest limit on the comparison:** there is no same-model, modern-platform baseline in the
+corpus, so this report cannot quantify the platform penalty. The nearest 2x RTX PRO 4500 entry
+(2026-10-06) runs a *different* model — Swift-1.5 IQ3_XXS, fully VRAM-resident in 64 GB of DDR5,
+no RAM tier and no CPU expert compute. Its 133–162 tok/s is not comparable to these runs and is
+not used as a yardstick here.
 
 ## Hardware and software
 
