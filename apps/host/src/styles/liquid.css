@@ -1169,3 +1169,14 @@ body {
   width: 28px;
   height: 28px;
 }
+.st-code .st-btn--icon[data-open] {
+  color: var(--st-accent);
+  background: color-mix(in srgb, var(--st-code-ink) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 45%, transparent);
+}
+
+.st-code__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
