@@ -79,12 +79,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         CardBuf* b = new CardBuf();
         b->dev = w.dev;
         ck(cudaSetDevice(w.dev), "cudaSetDevice");
-        for (int p = 0; p < NCARD; ++p)
-            if (p != c) {
-                const cudaError_t e = cudaDeviceEnablePeerAccess(p, 0);
-                if (e != cudaSuccess && e != cudaErrorPeerAccessAlreadyEnabled) ck(e, "peer access");
-                cudaGetLastError();
-            }
+        // FNX_HOSTRING: no peer access is ever enabled; the cards exchange through host memory
         ck(cudaStreamCreateWithFlags(&b->st, cudaStreamNonBlocking), "stream");
         own_stream(b->st);
         ck(cudaStreamCreateWithFlags(&b->st2, cudaStreamNonBlocking), "stream");
@@ -204,22 +199,19 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         b->ctl = dalloc<int>(2);
         b->ring.card = c;
         // sized for fp32 words (two per pair); fp16 pairs use the first half of each slot row's room
-        b->ring.in = dalloc<unsigned long long>(ring_in_words(MAXT));
-        b->ring.ag = dalloc<unsigned long long>(ring_ag_words(MAXT));
+        b->ring.in = hxalloc<unsigned long long>(ring_in_words(MAXT));
+        b->ring.ag = hxalloc<unsigned long long>(ring_ag_words(MAXT));
         b->ring.f32 = ring_f32();
         b->ring.err = dalloc<unsigned>(1);
         b->att_ring.card = c;
-        b->att_ring.in = dalloc<unsigned long long>(att_ring_words());
+        b->att_ring.in = hxalloc<unsigned long long>(att_ring_words());
         b->att_ring.err = b->ring.err;
         cb_.push_back(b);
     }
     // every link carries a probe's stores before the ring's (src/peer_probe.hpp): one that drops them stops the engine
     // here, named, instead of in the first window's ring; a slow one is said and the engine goes on
-    {
-        std::vector<int> devs;
-        for (int c = 0; c < NCARD; ++c) devs.push_back(m.cards[c].dev);
-        for (const std::string& line : peer_report(probe_peer_stores(devs), NCARD)) std::fprintf(stderr, "%s\n", line.c_str());
-    }
+    std::fprintf(stderr, "fnx: HOSTRING build: the cards exchange through page-locked host memory; peer access is never enabled, "
+                         "no peer probe, IOMMU and BAR1 checks skipped\n");
     for (int c = 0; c < NCARD; ++c) {
         cb_[c]->ring.next_in = cb_[(c + 1) % NCARD]->ring.in;
         cb_[c]->ring.next_ag = cb_[(c + 1) % NCARD]->ring.ag;

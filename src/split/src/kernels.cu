@@ -1342,7 +1342,7 @@ __device__ __forceinline__ void rb_wait(const unsigned* flag, unsigned tag, unsi
     __syncthreads();
 }
 __device__ __forceinline__ float2 rb_load(const __half2* p) {
-    const unsigned w = __ldcg(reinterpret_cast<const unsigned*>(p));
+    const unsigned w = *reinterpret_cast<const volatile unsigned*>(p);   // FNX_HOSTRING: host memory, no cached read
     return __half22float2(*reinterpret_cast<const __half2*>(&w));
 }
 
@@ -1391,7 +1391,7 @@ __global__ void k_ring_big(Ring r, float* x, int T, const unsigned* tagp, int ca
         rb_wait(fl + (RSTEPS - 1 + f) * RB_BLOCKS + b, tag, r.err);
         for (int e = s0 + tid; e < s1; e += nt) {
             const int t = e / len, i = e % len;
-            const unsigned w = __ldcg(reinterpret_cast<const unsigned*>(ag + (size_t) t * NP + lo + i));
+            const unsigned w = *reinterpret_cast<const volatile unsigned*>(ag + (size_t) t * NP + lo + i);
             nag[(size_t) t * NP + lo + i] = *reinterpret_cast<const __half2*>(&w);
         }
         rb_signal(nfl + (RSTEPS + f) * RB_BLOCKS + b, tag);

@@ -242,16 +242,20 @@ void Engine::warm_graphs() {
     use_lane(0);
     reset();
     // the prompt path's buffers (and cuBLAS's) with a read of two chunks, every lane's rotary table
+    std::fprintf(stderr, "fnx: warm: prompt path (1100 tokens) ...\n");
     prefill(std::vector<int>(1100, tok), tok);
+    std::fprintf(stderr, "fnx: warm: prompt path done\n");
     reset();
     for (CardBuf* b : cb_) {
         ck(cudaSetDevice(b->dev), "set");
         for (LaneDev& D : b->lanes)
             if (!D.mrope_buf) D.mrope_buf = dalloc<int>((size_t) max_ctx_ * 3);
     }
+    std::fprintf(stderr, "fnx: warm: verify windows ...\n");
     for (int T = 1; T <= MAXT; ++T) {
         verify(std::vector<int>((size_t) T, tok));
         commit(1);
+        if (T == 1 || T == MAXT) std::fprintf(stderr, "fnx: warm: verify %d rows done\n", T);
     }
     if (mtp_)
         for (int T = 1; T <= MAXT; ++T) draft(T, true, 0, std::vector<int>((size_t) T, tok), 0);

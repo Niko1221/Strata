@@ -500,8 +500,8 @@ void pf_attn_send(Engine::Pf& p, int set, int g, int C, int r0, int nr, int i, u
     const size_t blk = attn_prompt_block_floats(C), off = attn_prompt_block_floats(r0);
     for (int d = 1; d < NCARD; ++d) {
         const int k = (g + d) % NCARD, slot = (g - k + NCARD) % NCARD - 1;
-        ckc(cudaMemcpyPeerAsync(p.parecv[set][k] + slot * blk + off, p.pdev[k], p.apart[set] + k * blk + off, p.dev,
-                                attn_prompt_block_floats(nr) * sizeof(float), s), "attn copy");
+        ckc(cudaMemcpyAsync(p.parecv[set][k] + slot * blk + off, p.apart[set] + k * blk + off,
+                            attn_prompt_block_floats(nr) * sizeof(float), cudaMemcpyDefault, s), "attn copy");   // device -> host buffer
         cud(cuStreamWriteValue32((CUstream) s, (CUdeviceptr) (p.paflags[set][k] + slot * ATT_PIECES_MAX + i), seq, 0), "attn flag");
     }
 }
@@ -673,31 +673,30 @@ void Engine::prefill_alloc() {
         p->ple_emb = palloc<float>((size_t) pf_c_ * N);
         p->ctl = palloc<int>((size_t) (1 + (pf_c_ / MAXT)) * 2);
         p->ring_sm = env_flag("FNX_PF_RING_SM");
-        if (p->ring_sm && b.ring.f32)
-            throw std::runtime_error("FNX_PF_RING_SM: the SM ring carries fp16 only, and FNX_RING_F32=1 makes the ring fp32");
         p->ring = b.ring;
         if (p->ring_sm) {   // ~140 MB a card at 1,024 rows a chunk
+            p->ring.f32 = false;   // HOSTRING: the prompt path's sums are fp16 on every count; FNX_RING_F32 is the decode ring's
             p->ring.rows = pf_c_;
-            p->ring.in = palloc<unsigned long long>(ring_in_words(pf_c_));
-            p->ring.ag = palloc<unsigned long long>(ring_ag_words(pf_c_));
-            p->ring.flags = palloc<unsigned>(ring_flag_words());
+            p->ring.in = hpalloc<unsigned long long>(ring_in_words(pf_c_));
+            p->ring.ag = hpalloc<unsigned long long>(ring_ag_words(pf_c_));
+            p->ring.flags = hpalloc<unsigned>(ring_flag_words());
         }
         {
             PfRing& r = p->ring_ce;
             const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD * N;   // a card's share of the rows
             r.send = palloc<__half>(share);
             for (int k = 0; k < 2; ++k) {
-                for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = palloc<__half>(share);   // a slot per reduce hop
-                r.ag[k] = palloc<__half>((size_t) pf_c_ * N);
+                for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
+                r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
             }
-            r.flags = palloc<unsigned>(2 * PF_RING_STEPS);
+            r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
         }
         p->dev = b.dev;
         p->attn_dec = env_flag("FNX_PF_ATTN_DEC");
         p->apart[1] = palloc<float>(NCARD * attn_prompt_block_floats(pf_c_));   // set 0 is in the attention phase's region
         for (int s = 0; s < 2; ++s) {
-            p->arecv[s] = palloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
-            p->aflags[s] = palloc<unsigned>(ATT_FLAG_ROWS * ATT_PIECES_MAX);   // [slot][piece]
+            p->arecv[s] = hpalloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
+            p->aflags[s] = hpalloc<unsigned>(ATT_FLAG_ROWS * ATT_PIECES_MAX);   // [slot][piece]
         }
         if (const char* ap = std::getenv("FNX_PF_ATT_PIECES")) {
             char* end = nullptr;

@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -73,6 +74,21 @@ template <typename T> T* halloc(size_t n) {
         throw std::runtime_error("cudaHostAlloc of " + std::to_string((n * sizeof(T)) >> 20) + " MiB: " + cudaGetErrorString(e) + " (" +
                                  std::to_string(host_available_mib()) + " MiB available)");
     }
+    own_pinned(p);
+    return (T*) p;
+}
+
+// FNX_HOSTRING: n zeroed values in page-locked, mapped, portable host memory that every card loads from and stores to
+// (the exchange buffers between the cards); released by ~Engine
+template <typename T> T* hxalloc(size_t n) {
+    void* p = nullptr;
+    const cudaError_t e = cudaHostAlloc(&p, n * sizeof(T), cudaHostAllocPortable | cudaHostAllocMapped);
+    if (e != cudaSuccess) {
+        cudaGetLastError();
+        throw std::runtime_error("cudaHostAlloc (exchange buffer) of " + std::to_string((n * sizeof(T)) >> 20) + " MiB: " +
+                                 cudaGetErrorString(e) + " (" + std::to_string(host_available_mib()) + " MiB available)");
+    }
+    std::memset(p, 0, n * sizeof(T));
     own_pinned(p);
     return (T*) p;
 }

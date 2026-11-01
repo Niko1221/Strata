@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -54,6 +55,17 @@ template <typename T> T* palloc(size_t n) {
     pf_card_bytes += n * sizeof(T);
     ckc(cudaMemset(p, 0, n * sizeof(T)), "cudaMemset");
     own_dev(p);
+    return (T*) p;
+}
+
+// FNX_HOSTRING: n zeroed values of page-locked, mapped, portable host memory both cards reach (the prompt path's exchange
+// buffers and flags), released by ~Engine
+template <typename T> T* hpalloc(size_t n) {
+    void* p = nullptr;
+    const cudaError_t e = cudaHostAlloc(&p, n * sizeof(T), cudaHostAllocPortable | cudaHostAllocMapped);
+    if (e != cudaSuccess) throw std::runtime_error("prefill: cudaHostAlloc of " + std::to_string(n * sizeof(T) >> 20) + " MiB: " + cudaGetErrorString(e));
+    std::memset(p, 0, n * sizeof(T));
+    own_pinned(p);
     return (T*) p;
 }
 
@@ -112,7 +124,7 @@ inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned
         cud(cuStreamWaitValue32(cs, (CUdeviceptr) (r.flags + set * PF_RING_STEPS + step), seq, CU_STREAM_WAIT_VALUE_GEQ), "ring wait");
     };
     auto copy = [&](__half* dst, const __half* src, int nrows) {
-        ckc(cudaMemcpyPeerAsync(dst, r.next_dev, src, dev, (size_t) nrows * N * sizeof(__half), s), "ring copy");
+        ckc(cudaMemcpyAsync(dst, src, (size_t) nrows * N * sizeof(__half), cudaMemcpyDefault, s), "ring copy");   // device -> host buffer
     };
     // a part can be empty (a chunk of fewer rows than cards: a read cut at a checkpoint): its kernels are skipped, its
     // copies move nothing, its flags still step
