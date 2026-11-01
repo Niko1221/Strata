@@ -276,6 +276,7 @@ int main() {
     CHECK(std::string(std::getenv("STRATA_SMALL_UNR")) == "3" && std::string(std::getenv("STRATA_GR_Q32_G")) == "2" &&
           std::string(std::getenv("STRATA_GR_Q8_PFS")) == "1");
     CHECK(apply_arch_defaults("gfx1201", false).empty());
+    unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS"); unset("STRATA_HEAD_MIX_MULTI");   // gfx12_extra.hpp's defaults (own test: gfx12_extra_test)
     CHECK(apply_arch_defaults("gfx1103", false).empty());   // integrated == false: a mixed box (iGPU + dGPU) keeps the old defaults
     for (const char* k : five) CHECK(std::getenv(k) == nullptr);
     put("STRATA_HC_UPMIX", "0");
