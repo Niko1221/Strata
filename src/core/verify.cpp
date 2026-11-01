@@ -2368,6 +2368,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
                                          skip_ + grp, ring, cs);
             } else {
+                // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
+                hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && dec_batch && n > 1 &&
+                                  native_moe_combine_enabled() && n <= 8 &&
+                                  native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
                 const bool fuse_rows = fuse_rows_on() && !prof_on_ && !remote_opt_ && dec_batch && m_bal_ == nullptr;   // 143-amdk
                 if (!fuse_rows) {
                     if (m_bal_ != nullptr)   // set_pcie_balance: ... and ends as it waits for the CPU's rows
@@ -2380,17 +2384,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     remote_opt_->copy_rows(parts_out, m_ymiss_ + (size_t) tb * K * N, tb, n, p_dst, p_counts + 1, cs);
                 else if (fuse_rows)   // the wait folded into the copy's blocks
                     copy_rows_from_mapped_after(m_flag_, ring, parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
-                                                p_dst, p_counts + 1, cs);
+                                                p_dst, p_counts + 1, hits_in_combine, cs);
                 else if (dec_batch)   // only the CPU rows cross PCIe (p_dst[0, counts[1]) = the GPU's own rows)
                     copy_rows_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
-                                          p_dst, p_counts + 1, cs);
+                                          p_dst, p_counts + 1, hits_in_combine, cs);
                 else
                     copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
             }
-            // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
-            hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && dec_batch && n > 1 &&
-                              native_moe_combine_enabled() && n <= 8 &&
-                              native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
             if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
         // Same condition as `sh_fork` above, which is per group and out of scope here: wait only when the fork

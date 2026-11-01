@@ -121,7 +121,10 @@
 
 namespace strata::metal_engine { void missing(const char* name); }
 
+namespace strata::kernels { void copy_rows_from_mapped(float* p0, float const* p1, long long p2, long long p3, int const* p4, int const* p5, bool p6, void* p7) { strata::metal_engine::missing("strata::kernels::copy_rows_from_mapped"); } }
 namespace strata::kernels { void copy_rows_from_mapped_after(unsigned int const* p0, unsigned int p1, float* p2, float const* p3, long long p4, long long p5, int const* p6, int const* p7, void* p8) { strata::metal_engine::missing("strata::kernels::copy_rows_from_mapped_after"); } }
+namespace strata::kernels { void copy_rows_from_mapped_after(unsigned int const* p0, unsigned int p1, float* p2, float const* p3, long long p4, long long p5, int const* p6, int const* p7, bool p8, void* p9) { strata::metal_engine::missing("strata::kernels::copy_rows_from_mapped_after"); } }
+namespace strata::kernels { void native_moe_combine_multi_hits_added(float const* p0, float const* p1, int const* p2, int const* p3, float const* p4, float const* p5, float const* p6, float* p7, long long p8, long long p9, int p10, void* p11) { strata::metal_engine::missing("strata::kernels::native_moe_combine_multi_hits_added"); } }
 namespace strata::kernels::cpu { void iq256_gu_rows_exact_one(int p0, unsigned char const* p1, unsigned long p2, unsigned long p3, int p4, void const* p5, float* p6, int p7, int p8) { strata::metal_engine::missing("strata::kernels::cpu::iq256_gu_rows_exact_one"); } }
 namespace strata::kernels { void fused_gr_persist_init() {  } }
 namespace strata::kernels { bool fused_gr_read_persist(strata::kernels::FusedGrArgs const* p0, int p1, void* p2) {  return false; } }

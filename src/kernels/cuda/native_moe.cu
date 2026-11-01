@@ -124,14 +124,12 @@ __global__ void combine_k10_vec4_hits(const float4* __restrict__ parts4, const f
     const int64_t c4 = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (c4 >= n4) return;
     const float w0 = __ldg(weights + 0);
-    float4 p0 = parts4[c4];
-    if (mask & 1) { const float4 hh = hits4[c4]; p0.x += hh.x; p0.y += hh.y; p0.z += hh.z; p0.w += hh.w; }
+    const float4 p0 = (mask & 1) ? hits4[c4] : parts4[c4];
     float4 sum = make_float4(p0.x * w0, p0.y * w0, p0.z * w0, p0.w * w0);
 #pragma unroll
     for (int expert = 1; expert < 10; ++expert) {
         const float w = __ldg(weights + expert);
-        float4 p = parts4[int64_t(expert) * n4 + c4];
-        if ((mask >> expert) & 1) { const float4 hh = hits4[int64_t(expert) * n4 + c4]; p.x += hh.x; p.y += hh.y; p.z += hh.z; p.w += hh.w; }
+        const float4 p = ((mask >> expert) & 1) ? hits4[int64_t(expert) * n4 + c4] : parts4[int64_t(expert) * n4 + c4];
         sum.x = fmaf(p.x, w, sum.x);
         sum.y = fmaf(p.y, w, sum.y);
         sum.z = fmaf(p.z, w, sum.z);
