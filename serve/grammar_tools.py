@@ -105,6 +105,7 @@ PROSE_PREFIX = "\n\n"                         # prose and calls are separated by
 THINK_TAIL = "\n</think>\n\n"                 # reasoning ends, then the template's blank line
 THINK_CLOSE = "</think>\n"                    # the closer as a model writes it, + one newline (see with_think_prologue)
 THINK_BANNED = ["</think>", "```json"]       # the reason region refuses the closer (it opens the answer) and the model's fenced-JSON answer habit (free-text reasoning that never ends)
+CALL_TAG = "<tool_call>"                      # a call's opening tag: refused inside the reasoning (no schema there)
 
 
 def _strip_comment(line: str) -> str:
@@ -225,7 +226,11 @@ def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, conv
     else:
         raise ValueError(f"tool_choice {tool_choice!r} needs no grammar")
     if thinking:
-        reason = exclude_seqs(THINK_BANNED, "reason", rules)
+        # the reasoning region also refuses the call's own opening tag: a call written up there is free
+        # text, so it carries no schema - measured, a rescued one arrived missing a required parameter
+        # and a second call rode beside it.  Banning the tag leaves the answer region as the only place
+        # a call can appear, which is the region the grammar actually constrains.
+        reason = exclude_seqs(THINK_BANNED + [CALL_TAG], "reason", rules)
         # a little whitespace after the closer, then the call.  Bounded for the reason
         # with_think_prologue gives: an unbounded run is where a masked model stalls.
         rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} ){{0,24}}')
