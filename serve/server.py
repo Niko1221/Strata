@@ -9083,7 +9083,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--monitor-aggregate", action="store_true",
                     help="the Monitor's speed and prefill show tokens per second summed over every running stream, "
                          "second by second, instead of one request's rate (also \"monitor_aggregate\": true in the "
-                         "config)")
+                         "config, or STRATA_MONITOR_AGGREGATE=1, which `strata launch --set` passes on)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -9446,7 +9446,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
               else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
-    svc.monitor_aggregate = a.monitor_aggregate or cfg.get("monitor_aggregate") is True
+    svc.monitor_aggregate = (a.monitor_aggregate or cfg.get("monitor_aggregate") is True
+                             or os.environ.get("STRATA_MONITOR_AGGREGATE", "0") not in ("", "0"))
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),
