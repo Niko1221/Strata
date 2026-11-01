@@ -1305,6 +1305,10 @@ public:
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
     const std::string& note() const { return note_; }
+    /// #4846: called by `open` once, when the RAM still falls short of the arena after the wait and before anything is registered.
+    /// The owner of a lock the engine took on its own (the PLE table's residency lock) gives it back here and returns the bytes
+    /// it released (0: nothing to give); `open` then reads the available RAM again.  Unset: nothing is given back.
+    std::function<uint64_t()> give_back_ram;
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
     const std::string& ram_warning() const { return ram_warning_; }
     uint64_t pinned_arena_bytes() const { return pinned_bytes_; }   ///< what the driver registered (the pinned prefix, or the total by need)
