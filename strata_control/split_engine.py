@@ -9,9 +9,10 @@ This module is pure (no I/O besides reading GGUF directories): the launcher pass
 has actually been run:
 
   - the person turned it on (config key "split_engine": true, or `strata launch --split-engine on`); never otherwise;
-  - Linux, NVIDIA cards, 2 to 4 of them, all the same model of card and memory size;
-  - a card architecture and card count that have been run (TESTED): sm_86 on 2 cards today. Others build but stay off unless the
-    caller says allow_untested (testers); the Decision says which part is untested in plain words;
+  - Linux, 2 to 4 cards of ONE make (NVIDIA, or AMD RDNA4 gfx1201: the R9700 and RX 9070), all the same model of card and memory size;
+  - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards and AMD gfx1201 on 4 cards (see
+    TESTED below). Others build but stay off unless the caller says allow_untested (testers); the Decision says which part is untested
+    in plain words;
   - the GGUF is UD-Q4_K_XL type: routed experts Q4_K/Q5_K/Q5_1/Q8_0, token embeddings and the shared expert Q8_0 (checked from the
     file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers, 512 experts);
   - ALL routed experts fit in the cards' memory (the expert cache is off: with it the engine keeps a 74 GiB pinned copy of the
@@ -29,8 +30,12 @@ import pathlib
 import re
 from typing import Any
 
-TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000)
-TESTED_ARCHS = (86,)               # compute capability: sm_86 only
+# What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86).
+# AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md); two R9700 cannot hold UD-Q4_K_XL's experts.
+TESTED = {"nvidia": {"sm_86": (2,)}, "amd": {"gfx1201": ()}}
+BUILT_ARCHS = {"nvidia": ("sm_86",), "amd": ("gfx1201",)}   # the engine package's kernels: any other card is refused at start
+TESTED_CARD_COUNTS = (2,)          # NVIDIA (kept for callers that name it)
+TESTED_ARCHS = (86,)               # NVIDIA compute capability
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -50,7 +55,13 @@ class Card:
     index: int
     name: str
     vram_mib: int
-    cc: int                         # compute capability as a number, 86 for 8.6
+    cc: int                         # NVIDIA: compute capability as a number, 86 for 8.6; AMD: 0
+    vendor: str = "nvidia"          # "nvidia" or "amd"
+    arch: str = ""                  # "sm_86", "gfx1201"; empty: derived from cc (NVIDIA)
+
+    @property
+    def arch_name(self) -> str:
+        return self.arch or (f"sm_{self.cc}" if self.vendor == "nvidia" else "?")
 
 
 @dataclasses.dataclass
@@ -138,21 +149,31 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("it needs two or more cards")
     elif n > MAX_CARDS:
         why.append(f"it handles at most {MAX_CARDS} cards, this PC offers {n}")
+    make = cards[0].vendor if cards else "nvidia"
     if cards:
+        if len({c.vendor for c in cards}) != 1:
+            why.append("the cards are of different makes")
         if len({(c.name, c.vram_mib) for c in cards}) != 1:
             why.append("the cards are not all the same model and size")
-        if not all(c.cc >= 70 for c in cards):
+        if make == "nvidia" and not all(c.cc >= 70 for c in cards):
             why.append("a card is too old for it")
-    if 2 <= n <= MAX_CARDS and n not in TESTED_CARD_COUNTS:
+        if make == "amd" and not all(c.arch_name in BUILT_ARCHS["amd"] for c in cards):
+            why.append("the AMD engine is built for RDNA4 cards (gfx1201: Radeon AI PRO R9700, RX 9070), not " + cards[0].arch_name)
+    tested = TESTED.get(make, {})
+    archs = sorted({c.arch_name for c in cards})
+    counts = sorted({k for a in archs for k in tested.get(a, ())})
+    if 2 <= n <= MAX_CARDS and make in TESTED and n not in counts and not (len(archs) == 1 and archs[0] not in tested):
         if allow_untested:
             untested.append(f"{n} cards")
         else:
-            why.append(f"it has only been run on {TESTED_CARD_COUNTS[0]} cards, not {n}")
-    if cards and not all(c.cc in TESTED_ARCHS for c in cards):
+            ran = " and ".join(str(k) for k in counts) if counts else "no number of"
+            why.append(f"it has only been run on {ran} cards, not {n}")
+    if cards and not all(c.arch_name in tested for c in cards):
         if allow_untested:
-            untested.append(f"card architecture sm_{cards[0].cc}")
+            untested.append(f"card architecture {cards[0].arch_name}")
         else:
-            why.append(f"it has only been run on sm_{TESTED_ARCHS[0]} cards, not sm_{cards[0].cc}")
+            ran = "/".join(tested) if tested else "no"
+            why.append(f"it has only been run on {ran} cards, not {cards[0].arch_name}")
     if context > TESTED_CONTEXT:
         if allow_untested:
             untested.append(f"context {context}")
@@ -202,6 +223,46 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
 
 # ---- the launcher side: facts from this PC, then the config ----------------------------------------------------------------------------
 def probe_cards(indexes: list[int] | None = None) -> list[Card]:
+    """The cards (all, or the named ones): NVIDIA from nvidia-smi, else AMD from the kernel's KFD topology and sysfs; [] when neither says."""
+    cards = probe_nvidia_cards(indexes)
+    return cards or probe_amd_cards(indexes)
+
+
+def probe_amd_cards(indexes: list[int] | None = None, root: str = "/sys") -> list[Card]:
+    """AMD GPUs the compute stack counts, in HIP's order: the KFD topology nodes with SIMDs (gfx_target_version 120001 = gfx1201), their
+    memory from the node's VRAM bank (properties "size_in_bytes" of its memory bank 0) or the drm card's mem_info_vram_total. No ROCm
+    tools needed. [] when there is no /sys/class/kfd."""
+    import pathlib
+
+    nodes = pathlib.Path(root) / "class/kfd/kfd/topology/nodes"
+    cards: list[Card] = []
+    try:
+        dirs = sorted((d for d in nodes.iterdir() if d.name.isdigit()), key=lambda d: int(d.name))
+    except OSError:
+        return []
+    idx = 0
+    for d in dirs:
+        try:
+            props = dict(line.split(None, 1) for line in (d / "properties").read_text().splitlines() if line.strip())
+            if int(props.get("simd_count", "0")) <= 0:
+                continue                                     # the CPU node
+            gv = int(props.get("gfx_target_version", "0"))
+            arch = f"gfx{gv // 10000}{(gv // 100) % 100:x}{gv % 100:x}" if gv else "?"
+            name = props.get("marketing_name", "").strip() or "AMD GPU"
+            mem = 0
+            bank = d / "mem_banks/0/properties"
+            if bank.is_file():
+                bp = dict(line.split(None, 1) for line in bank.read_text().splitlines() if line.strip())
+                mem = int(bp.get("size_in_bytes", "0")) >> 20
+        except (OSError, ValueError):
+            continue
+        if indexes is None or idx in indexes:
+            cards.append(Card(idx, name, mem, 0, "amd", arch))
+        idx += 1
+    return cards
+
+
+def probe_nvidia_cards(indexes: list[int] | None = None) -> list[Card]:
     """The NVIDIA cards (all, or the named ones) with their name, memory and compute capability, from nvidia-smi; [] when it cannot say."""
     import subprocess
 

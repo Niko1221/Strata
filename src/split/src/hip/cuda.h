@@ -21,3 +21,4 @@ inline CUresult cuStreamWriteValue32(CUstream s, CUdeviceptr p, uint32_t v, unsi
 inline CUresult cuStreamWaitValue32(CUstream s, CUdeviceptr p, uint32_t v, unsigned flags) {
     return hipStreamWaitValue32(s, reinterpret_cast<void*>(p), static_cast<int32_t>(v), flags, 0xffffffffu);
 }
+inline CUresult cuInit(unsigned) { return hipInit(0); }
