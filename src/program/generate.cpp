@@ -17432,8 +17432,7 @@ int main(int argc, char** argv) {
                             if (pk.lookup && !trace_nopick) { T = pk.t; from_sfx = true; }
                             if (pk.lookup && !trace_nopick && o.lookup_max_t > 0) {   // --lookup-max-t: a size whose window graph fits
                                 const int t = graph_fits(T);
-                                if (t < 0) { std::printf("ERR %s
-", err.c_str()); return 1; }
+                                if (t < 0) { std::printf("ERR %s\n", err.c_str()); return 1; }
                                 T = t;
                             }
                         }
