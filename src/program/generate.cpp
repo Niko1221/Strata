@@ -910,11 +910,12 @@ struct Options {
     /// verify window (the window grows to at most 8).  Greedy verification keeps the output; its own counts are kept.
     int lookup_chain = 0;
     int lookup_chain_min = 3;   ///< --lookup-chain-min M: the shortest match (in tokens, drafts included) it extends on
-    /// --lookup-max-t N (opt-in, 0 = the --spec + 2 rule): prompt-lookup windows up to N tokens (<= kVerifyLongT) while
+    /// --lookup-max-t N (-1 = not given: 12 on a build whose windows hold 8 rows, one GPU, no batch / DFlash2 / lookup chain, owner decision
+    /// 11-01 for #4040; 0 = off, the --spec + 2 rule): prompt-lookup windows up to N tokens (<= kVerifyLongT) while
     /// the MTP keeps its --spec windows.  A copy-heavy turn (an edit that rewrites a file) accepts nearly every lookup
     /// draft, so its decode is bound by the window length.  Each window size is a graph of its own (~20-35 MiB of
     /// VRAM), so only --lookup-sizes get one past the MTP's sizes; a size whose graph finds no VRAM is dropped.
-    int lookup_max_t = 0;
+    int lookup_max_t = -1;
     /// --lookup-sizes A,B,.. : the lookup window sizes above the MTP's (default with --lookup-max-t N: MTP+1, MTP+2, N)
     std::string lookup_sizes;
     /// --mtp-hnorm stream (opt-in): the draft layer's pre_fc_norm_hidden normalizes each hyper-connection stream on
@@ -1075,8 +1076,8 @@ void usage() {
                  "  --suffix-draft N     prompt lookup: draft from an earlier repeat of the last N+ tokens of context\n"
                  "                       when it pays (default 3; 0 = MTP only)\n"
                  "  --mtp-max-t M        cap the MTP's windows at M tokens (0 = --spec; longer ones come from suffixes)\n"
-                 "  --lookup-max-t N     opt-in: prompt-lookup windows up to N (<= 16) tokens (the MTP keeps --spec); copy-heavy\n"
-                 "                       edits gain, each extra window size costs a graph (~20-35 MiB of VRAM)\n"
+                 "  --lookup-max-t N     prompt-lookup windows up to N (<= 16) tokens (default 12 on one GPU in the 8-row build; 0 = off);\n"
+                 "                       copy-heavy edits gain, each extra window size costs a graph (~20-35 MiB of VRAM)\n"
                  "  --lookup-sizes A,B   the lookup window sizes past the MTP's (default: MTP+1, MTP+2 and N)\n"
                  "  --spec N             the MTP drafter's verify window: how many tokens it proposes per check (setup\n"
                  "                       writes 4; --suffix-draft lets it grow by 2, up to 8, where a repeat is likely)\n"
@@ -4040,7 +4041,16 @@ int main(int argc, char** argv) {
         o.mtp_max_t = o.spec;
         o.spec = std::min(o.spec + 2, 8);   // kVerifyMaxT
     }
-    // --lookup-max-t N (opt-in): lookup windows up to N tokens, the MTP's stay at --spec
+    // --lookup-max-t N: lookup windows up to N tokens, the MTP's stay at --spec.  Not given: 12 where the pr-nv2 runs measured it (serve, one GPU, the 8-row
+    // build: rewrites and agent edit turns +11..14%, prose and code within noise); --lookup-max-t 0 or STRATA_LOOKUP_MAX_T=0 turns it off.  The wide
+    // builds (HIP, 16 rows), a layer split, --batch, DFlash2 and --lookup-chain keep the old windows.
+    if (o.lookup_max_t < 0) {
+        const char* lme = std::getenv("STRATA_LOOKUP_MAX_T");
+        const bool env_off = lme != nullptr && lme[0] == '0';
+        const bool narrow = strata::kernels::kVerifyMaxT == strata::kernels::kVerifyNarrowT;
+        o.lookup_max_t = !env_off && narrow && o.serve && !multi_gpu && o.layer_split.empty() && o.batch <= 1 && o.draft != "dflash2" &&
+                                 o.lookup_chain <= 0 && o.suffix_draft > 0 && o.spec >= 2 ? 12 : 0;
+    }
     if (o.lookup_max_t > 0 && o.suffix_draft > 0 && o.spec >= 2) {
         if (o.mtp_max_t == 0) o.mtp_max_t = o.spec;
         o.spec = std::max(o.spec, std::min(o.lookup_max_t, strata::kernels::kVerifyLongT));
