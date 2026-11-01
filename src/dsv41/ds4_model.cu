@@ -284,6 +284,20 @@ size_t uma_free(int dev, size_t fr) {
 #endif
     return fr;
 }
+// a GPU that shares the PC's memory (a Mac, a Spark's GB10, a Strix Halo, an APU): nothing to give back by keeping the tower in host memory
+bool gpu_integrated(int dev) {
+#if defined(STRATA_METAL)
+    (void) dev;
+    return true;
+#else
+    int v = 0;
+    if (cudaDeviceGetAttribute(&v, cudaDevAttrIntegrated, dev) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    return v != 0;
+#endif
+}
 // cudaMemGetInfo for the current device, with uma_free's view on an integrated GPU (Maya v1.1.20's mem_info; the Windows APU
 // dedicated-memory clamp (strata/platform/dedicated.hpp) is not ported: commit_charged covers that PC here)
 cudaError_t mem_info(size_t* free_b, size_t* total_b) {
@@ -7700,15 +7714,20 @@ struct Model::Impl {
             for (int64_t x : t->shape) n_el *= (size_t) x;
             return dst == nullptr || read_bf16(*t, n_el, dst);
         };
-        if (!vt.load(vg, d.id, read, err)) return false;
+        // lazy: the reserve every GPU keeps free is what the tower takes its graphics memory from for a picture turn
+        const int64_t lazy_reserve = o.vision_lazy && !gpu_integrated(d.id) ? o.reserve_mib : -1;
+        if (!vt.load(vg, d.id, read, err, lazy_reserve)) return false;
         img_tok = tok;
         CK(cudaSetDevice(d.id));
         CK(cudaMemGetInfo(&d.free0, &d.total));   // (the split sees what the tower left)
         d.free0 = uma_free(d.id, d.free0);
         if (o.verbose)
-            std::fprintf(stderr, "ds4: vision tower (%d blocks) on CUDA%d: %.0f MiB, up to %d patches, %.1f s\n",
-                         vg.layers, d.id, (double) vt.device_bytes() / (1 << 20), vt.max_patches(),
-                         (now_ms() - t0) / 1000.0);
+            std::fprintf(stderr, "ds4: vision tower (%d blocks) on CUDA%d: %.0f MiB%s, up to %d patches, %.1f s\n",
+                         vg.layers, d.id, (double) vt.device_bytes() / (1 << 20),
+                         vt.lazy() ? " (in host memory between pictures)" : "", vt.max_patches(), (now_ms() - t0) / 1000.0);
+        if (o.vision_lazy && !vt.lazy())
+            std::fprintf(stderr, "ds4: the picture tower stays on the card (%.0f MiB): %s\n", (double) vt.device_bytes() / (1 << 20),
+                         gpu_integrated(d.id) ? "this GPU shares the PC's memory" : "--reserve-mib is too small to take it from");
         return true;
     }
     bool encode_image(const uint8_t* rgb, int w, int h, std::vector<uint16_t>& span, std::string& err) {
@@ -14766,10 +14785,10 @@ struct Model::Impl {
         if (img_tok >= 0) {   // the server's image resize (DeepSeek's image_processor.py)
             std::snprintf(b, sizeof b,
                           "INFO vision=ds4 vision_patch=%d vision_merge=%d vision_min_pixels=%lld vision_max_tokens=%d "
-                          "vision_max_wh_ratio=%lld image_token=%d vision_gpu=%d vision_mib=%lld",
+                          "vision_max_wh_ratio=%lld image_token=%d vision_gpu=%d vision_mib=%lld vision_lazy=%d",
                           vg.patch, vg.merge, (long long) pk.num("vision.min_pixels", 0), vg.max_tokens,
                           (long long) pk.num("vision.max_wh_ratio", 0), img_tok, vt.device(),
-                          (long long) (vt.device_bytes() >> 20));
+                          (long long) (vt.device_bytes() >> 20), vt.lazy() ? 1 : 0);
             v.push_back(b);
         } else if (!vision_err.empty()) {   // (the server offers no pictures and says why)
             std::string why = vision_err;
@@ -14887,6 +14906,8 @@ int Model::dim() const { return p_->g.dim; }
 bool Model::encode_image(const uint8_t* rgb, int width, int height, std::vector<uint16_t>& span, std::string& err) {
     return p_->encode_image(rgb, width, height, span, err);
 }
+void Model::vision_idle() { p_->vt.release_device(); }
+bool Model::vision_lazy() const { return p_->vt.lazy(); }
 void Model::set_images(std::vector<Image> images) {
     std::sort(images.begin(), images.end(), [](const Image& a, const Image& b) { return a.start < b.start; });
     p_->imgs = std::move(images);
