@@ -138,12 +138,10 @@ def normalize(value: Any) -> str:
     return text if text in MODES else DEFAULT_MODE
 
 
-#: Does the engine in this release run DFlash2 when it serves (the app and `strata launch`)? In f-023-int src/program/generate.cpp, `--draft dflash2`
-#: is "for one card and the CLI run (not --serve, --batch or a layer split)": a served model prints "--draft dflash2 is off: ... the MTP drafts
-#: instead". So today the choice cannot take effect when serving, and nothing is downloaded or packed for it (1.2 GB for no effect would be a bad
-#: surprise); the start says so ("Drafting: MTP (DFlash2 isn't available in this mode yet)"). Flip this when the engine serves it; everything
-#: else (flags, download, pack, fallback text) is in place and tested with it on.
-ENGINE_SERVES_DFLASH2 = False
+#: Does the engine in this release run DFlash2 when it serves (the app and `strata launch`)? On this branch it does: `--draft dflash2` works with --serve for one
+#: card and one request at a time (src/program/generate.cpp); --batch, --pipeline-windows and a layer split keep the MTP and the engine says so. A parked or edited
+#: conversation starts the drafter with an empty context (a log line; the answers are the same). Flip back to False to hide the choice again.
+ENGINE_SERVES_DFLASH2 = True
 
 #: Why the MTP runs when something else was asked for: a closed set of short reasons, each one is a sentence in the interface catalog in all eight
 #: languages (the line is "Drafting: MTP (<reason>)").

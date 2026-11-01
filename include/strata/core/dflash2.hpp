@@ -50,7 +50,13 @@ public:
     bool bind_raw(EmbedFn embed, const void* head_w, int head_type, int64_t head_rows, const std::vector<int32_t>& vocab, std::string& err);
 
     /// A new request: the ring is empty again.
-    void reset() { have_ctx_ = 0; }
+    void reset() { have_ctx_ = 0; hist_.clear(); ++epoch_; ring_hi_ = 0; }
+    /// Serve: a request starts with prompt `ids` (n tokens) and the session continues at `resume`.  The drafter keeps the token history of the rows its ring
+    /// was filled for: when that agrees with ids[0, resume) the ring serves the request as it is (a live conversation going on); when it does not (a parked
+    /// conversation restored, an edited turn) the ring starts over and `*cold` is set (the drafts are poor for the first rounds, never wrong: the verify decides).
+    bool begin_request(const int32_t* ids, int64_t n, int64_t resume, bool* cold);
+    /// Serve: rows [pos0, pos0 + n) were committed with these tokens (a prompt chunk, a prompt window, a decode window's accepted rows).
+    void note_rows(const int32_t* toks, int64_t n, int64_t pos0);
     /// Context rows without a draft: `n` rows of taps (device, [n][5 * n_embd]) for positions pos0 ... pos0 + n - 1.
     bool context(const float* taps_dev, int64_t n, int64_t pos0, std::string& err);
     /// One round: the new context rows (n_new in 1..8: the committed window rows, taps device [n_new][5 * n_embd], positions pos0 ...),
@@ -134,6 +140,10 @@ private:
     cudaGraphExec_t exec_[kRows + 1] = {};
     const float* graph_taps_ = nullptr;
     int64_t have_ctx_ = 0;
+    std::vector<int32_t> hist_;     ///< the token of every position the ring was filled for (serve)
+    int64_t ring_hi_ = 0;           ///< one past the highest position written in this epoch
+    int32_t epoch_ = 0;             ///< stamped into the ring tags: a new epoch makes every older slot invalid
+    int64_t* tag_ = nullptr;        ///< per ring slot: (epoch << 32 | position) of the row it holds, -1 none
     cudaEvent_t ev_a_ = nullptr, ev_b_ = nullptr;
     bool timing_ = false;
 };

@@ -42,7 +42,7 @@ void df2_copy_rows(const float* in, float* out, const int32_t* pos, int slot_mod
 /// s + i - j < window (j in [max(0, s - window + 1), s - 1], slot j % ring_slots) and every block key.  `s` is read from *anchor_pos
 /// on the device.  Partials in `part` ([kDf2MaxChunks][8][32][130] floats) are combined and the 8 output rows (4096 wide) written planar-quantized to xq / xd.
 void df2_attention(const float* q, const float* kring, const float* vring, const float* kblk, const float* vblk, const int32_t* anchor_pos,
-                   int ring_slots, int window, float* part, void* xq, float* xd, void* stream);
+                   int ring_slots, int window, float* part, void* xq, float* xd, void* stream, const int64_t* tag = nullptr, const int32_t* epoch = nullptr);
 
 /// The Q8 GEMM the drafter's matrices run on.  A weight matrix is TILED (see the layout note in dflash2.cu; df2_q8_tile makes it from GGUF Q8_0 blocks):
 /// the int8 plane at `w` (n_out * n_in bytes) then the fp16 scale plane.  Activations are planar (df2_quant_rows and the fused quantizers below):
@@ -72,9 +72,10 @@ void df2_conv_rms_quant(const float* x, const float* dyn, int dyn_stride, const 
 /// The block's q (q_heads x 128) and k (k_heads x 128) per row: RMS norm and rope with the table of the block's positions -> qo, ko (row-major).
 void df2_norm_rope_qk(const float* q, const float* k, const float* gq, const float* gk, const float* table, float* qo, float* ko, int rows, int q_heads, int k_heads,
                       float eps, void* stream);
-/// The context update's write: K (norm + rope) and V of `rows` rows into the head-major rings at slot pos[r] % slots.
+/// The context update's write: K (norm + rope) and V of `rows` rows into the head-major rings at slot pos[r] % slots.  With `tag` (int64 per slot) the slot is
+/// stamped (*epoch << 32 | pos) and the attention (same tag / epoch) ignores a slot whose stamp is not the position it expects.
 void df2_kv_ring(const float* kin, const float* vin, const float* gk, const int32_t* pos, const float* table, float* kring, float* vring, int slots, int rows,
-                 int heads, float eps, void* stream);
+                 int heads, float eps, void* stream, int64_t* tag = nullptr, const int32_t* epoch = nullptr);
 
 /// Top-16 per row of logits [rows][n] (value-descending; ties to the lower index).  idx_map (optional) maps a column to a token id.
 /// scratch: rows * kDf2TopBlocks * 16 * 2 words.  Outputs val[rows][16] and tok[rows][16].  n <= 4096 * kDf2TopBlocks.
