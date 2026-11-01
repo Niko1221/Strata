@@ -1220,3 +1220,91 @@ body {
   align-items: center;
   gap: 2px;
 }
+
+/* ------------------------------------------- 18. "This computer" on Models ----
+   Free graphics memory and free RAM come first (real readings, a bar that is
+   filled by what is in use), a loaded model gets its own tinted block with what
+   it takes, and the SSD appears only in that block or in the fit line when the
+   model does not fit in memory. */
+.pc-label {
+  margin: 0;
+  font-size: var(--st-fs-xs);
+  font-weight: 600;
+  color: var(--st-ink-muted);
+}
+.pc-free {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pc-free .pc-meter__track i {
+  width: 100%;
+  transform-origin: left center;
+  transition: transform var(--st-t-surface) var(--st-ease-standard);
+}
+.pc-meter[data-low] .pc-meter__track i {
+  background: var(--st-warn);
+}
+.pc-loaded {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--st-accent-surface-edge);
+  border-radius: var(--st-r-md);
+  background: var(--st-accent-tint);
+  animation: st-enter var(--st-t-local) var(--st-ease-enter) both;
+  --st-from-y: 4px;
+}
+.pc-loaded p {
+  margin: 0;
+}
+.pc-loaded__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pc-loaded__head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pc-loaded__head i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--st-accent);
+}
+.pc-tag {
+  margin-left: auto;
+  padding: 0 8px;
+  border-radius: var(--st-r-pill);
+  font-size: var(--st-fs-xs);
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--st-accent-text);
+  box-shadow: inset 0 0 0 1px var(--st-accent-surface-edge);
+}
+.pc-takes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+}
+.pc-takes div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pc-takes dt {
+  font-size: var(--st-fs-xs);
+  color: var(--st-ink-muted);
+}
+.pc-takes dd {
+  margin: 0;
+  font-size: var(--st-fs-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
