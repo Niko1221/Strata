@@ -3401,7 +3401,8 @@ def engine_args(cfg: dict) -> list[str]:
     # guesses ahead. A choice that cannot be applied starts the MTP and says why in the engine's /metrics ("drafting_note").
     if cfg.get("drafting") is not None or drafting.suggest(drafting_card_class()) != "mtp":
         shaped = {**cfg, "args": args}
-        decision = drafting.apply(shaped, klass=drafting_card_class(), data_dir=drafting.data_dir_of(args))
+        backend, archs = drafting.detect_hardware()
+        decision = drafting.apply(shaped, klass=drafting_card_class(), data_dir=drafting.data_dir_of(args), backend=backend, archs=archs)
         args = shaped["args"]
         drafting.remember_note(decision.note)
         if decision.note:

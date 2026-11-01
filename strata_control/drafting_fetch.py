@@ -14,6 +14,8 @@ import importlib.util
 import os
 import sys
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Callable
 
@@ -51,6 +53,50 @@ def _packer():
     return module
 
 
+REACH_SECONDS = 6.0
+
+
+def online(url: str, timeout: float = REACH_SECONDS) -> bool:
+    """Does the download address answer at all? One short HEAD request, no retry: with no internet (or a connection that hangs) the person gets a plain
+    sentence in a few seconds instead of a stalled progress bar. Any answer from the server counts, even an error page."""
+    try:
+        request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-drafting/1"})
+        with urllib.request.urlopen(request, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+        from strata_control import tls
+        return bool(tls.is_certificate_error(exc))        # a certificate problem is an answer: the download explains it in its own words
+
+
+def _hub_snapshots() -> list[Path]:
+    """Where the Hugging Face tools keep this repository's pinned revision, if the person already has it from them (nothing is created or changed)."""
+    roots: list[Path] = []
+    for name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        if os.environ.get(name):
+            roots.append(Path(os.environ[name]))
+    if os.environ.get("HF_HOME"):
+        roots.append(Path(os.environ["HF_HOME"]) / "hub")
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    return [r / ("models--" + drafting.REPO.replace("/", "--")) / "snapshots" / drafting.REVISION for r in roots]
+
+
+def _present(folders: list[Path], spec) -> dict[str, Path]:
+    """The pinned files that are already on this computer, found in these folders and checked against the repository's size and SHA-256."""
+    found: dict[str, Path] = {}
+    for name, size, sha in spec:
+        for folder in folders:
+            candidate = folder / name
+            try:
+                if candidate.is_file() and candidate.stat().st_size == size and transfer.sha256_file(candidate) == sha:
+                    found[name] = candidate
+                    break
+            except OSError:
+                continue
+    return found
+
+
 def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: threading.Event | None = None,
            base_url: str | None = None, files=None) -> Path:
     """Make the packed drafter exist under ``data_dir`` and return its path. A pack that is there is kept. Resumable: an interrupted
@@ -63,13 +109,15 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     acquisition.require("the DFlash2 drafter", "strata drafting fetch")
     folder = out.parent
     src = folder / "src"
-    src.mkdir(parents=True, exist_ok=True)
     spec = tuple(files if files is not None else drafting.FILES)
+    have = _present([src, *(_hub_snapshots() if files is None else [])], spec)       # already here and checked: used where it is, never fetched again
+    if len(have) < len(spec) and not online(base_url or drafting.BASE_URL):
+        raise DraftingError("There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
+    src.mkdir(parents=True, exist_ok=True)
     total = sum(size for _n, size, _h in spec)
     done_before = 0
     for name, size, sha in spec:
-        target = src / name
-        if not (target.is_file() and target.stat().st_size == size and transfer.sha256_file(target) == sha):
+        if name not in have:
             base = done_before
             partial = src / (name + ".part")
             try:
@@ -80,20 +128,22 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
                                     "happening, use MTP for now.") from None
             except transfer.TransferError as exc:
                 raise DraftingError(f"The DFlash2 download did not finish: {exc}. Try again; it continues where it stopped.") from None
-            os.replace(partial, target)
+            os.replace(partial, src / name)
+            have[name] = src / name
         done_before += size
     report("Packing the DFlash2 drafter for the engine…", total, total)
     tmp = out.with_suffix(".tmp")
     try:
-        _packer().pack(str(src / "model.safetensors"), str(src / "config.json"), str(tmp), say=lambda *_: None)
+        _packer().pack(str(have["model.safetensors"]), str(have["config.json"]), str(tmp), say=lambda *_: None)
         os.replace(tmp, out)
     except DraftingError:
         raise
     except Exception as exc:                         # noqa: BLE001 - a plain sentence for any packing failure; the cause stays in the chain
         tmp.unlink(missing_ok=True)
         raise DraftingError("The DFlash2 drafter could not be prepared on this computer. The model keeps using the MTP.") from exc
-    for name, _size, _sha in spec:                   # the source files are 1.2 GB of nothing the engine reads
-        (src / name).unlink(missing_ok=True)
+    for name, _size, _sha in spec:                   # the source files are 1.2 GB of nothing the engine reads (a copy kept by the Hugging Face tools is theirs: left alone)
+        if have[name].parent == src:
+            have[name].unlink(missing_ok=True)
     try:
         src.rmdir()
     except OSError:

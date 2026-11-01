@@ -67,9 +67,9 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  const append=(instanceId,line)=>{logs.push({at:new Date().toISOString(),instanceId,line:String(line).slice(0,2000)});if(logs.length>400)logs.shift();};
  function diskSpace(path){try{const s=statfsSync(path);return {free:Number(s.bavail)*Number(s.bsize),total:Number(s.blocks)*Number(s.bsize)};}catch{return null;}}
  /* Does the engine in this release serve DFlash2? Control knows (strata_control/drafting.py); asked once, false until it answers. The Models screen offers the choice only when true. */
- let dflash2Served=null;
- function probeDrafting(){if(!packaged||dflash2Served!==null||typeof control.draftingPlan!=='function')return;dflash2Served=false;control.draftingPlan({mode:'auto'}).then(p=>{dflash2Served=p.serves===true;emit();}).catch(()=>{});}
- function state(){const folder=preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),space=folder?diskSpace(folder):null;return {...snapshot,downloadDirectory:folder,downloadFreeBytes:space?.free??null,downloadTotalBytes:space?.total??null,fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,mcpServers,...i})=>structuredClone(i)),defaultId,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false,dflash2:dflash2Served===true}};}
+ let dflash2Served=null,dflash2Support=null;
+ function probeDrafting(){if(!packaged||dflash2Served!==null||typeof control.draftingPlan!=='function')return;dflash2Served=false;control.draftingPlan({mode:'auto'}).then(p=>{dflash2Served=p.serves===true;dflash2Support=p.serves===true&&p.support&&p.support_line?{level:p.support,line:p.support_line}:null;emit();}).catch(()=>{});}
+ function state(){const folder=preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),space=folder?diskSpace(folder):null;return {...snapshot,downloadDirectory:folder,downloadFreeBytes:space?.free??null,downloadTotalBytes:space?.total??null,fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,mcpServers,...i})=>structuredClone(i)),defaultId,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false,dflash2:dflash2Served===true,dflash2Support}};}
  let sourceCache={path:'',time:0,text:''};
  function sourceText(){try{const path=join(packaged?control.control.dir:preferences.repo,'serve/server.py'),time=statSync(path).mtimeMs;if(sourceCache.path===path&&sourceCache.time===time)return sourceCache.text;sourceCache={path,time,text:readFileSync(path,'utf8')};return sourceCache.text;}catch{return '';}}
  function nativeFields(){const source=sourceText();return NATIVE_FIELDS.map(field=>({...field,supported:APP_OWNED_FIELDS.includes(field.id)||field.id.startsWith('vision_')||field.id.startsWith('mcp_')||field.id==='vram_reserve_mib'||source.includes(field.id)}));}
@@ -309,7 +309,8 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  async function prepareDrafter(job,args,cfg,configFile){
   const asked=args.values?.drafting;
   if(asked!==undefined)rememberSetting(configFile,'drafting',asked===null||asked==='auto'?null:asked);
-  if(!packaged||typeof control.draftingFetch!=='function'||!cfg.drafting||cfg.drafting==='auto'||cfg.drafting==='mtp'||cfg.drafting==='off')return;
+  /* Only the Models screen's own Load passes the choice (its dialog has listed the download): a restart, a tuning run or any other load leaves `asked` undefined and never fetches; the model then starts with the MTP and says why. */
+ if(!packaged||typeof control.draftingFetch!=='function'||asked===undefined||!cfg.drafting||cfg.drafting==='auto'||cfg.drafting==='mtp'||cfg.drafting==='off')return;
   const work=join(directory,'native-instances');mkdirSync(work,{recursive:true});const probe=join(work,'drafting-'+randomUUID()+'.json');
   try{
    writeFileSync(probe,JSON.stringify(cfg),{mode:0o600});

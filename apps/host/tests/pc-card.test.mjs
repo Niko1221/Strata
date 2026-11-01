@@ -43,7 +43,7 @@ test('a loaded model changes the card: it says Loaded and what the model takes o
   assert.match(fits, /<dt>Graphics memory<\/dt><dd>12 GB<\/dd>/);
   assert.match(fits, /<dt>RAM<\/dt><dd>44 GB<\/dd>/);
   assert.doesNotMatch(fits, /<dt>SSD<\/dt>/, 'it fits: no SSD row');
-  assert.match(fits, /Nothing\. It fits in memory\./);
+  assert.match(fits, /SSD: not needed/, 'the SSD line has its label even when nothing is read from it');
   const spills = card({ fit: fit(18), live: { ...live, diskReadGbs: 1.2 }, loaded: [{ id: 'q', label: 'Qwen3.8-Flash-Next · UD-Q4_K_XL', fit: fit(18, 12, 53) }], selectedLoaded: true });
   assert.match(spills, /<dt>SSD<\/dt><dd>18 GB<\/dd>/);
   assert.match(spills, /Reading from your SSD now: 1\.2 GB\/s/);

@@ -100,7 +100,8 @@ class Decisions(unittest.TestCase):
             self.ready()
             d = drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data)
             self.assertEqual(d.drafter, "dflash2")
-            self.assertEqual(d.flags, ("--draft", "dflash2", "--draft-model", str(drafting.pack_path(self.data))))
+            self.assertEqual(d.flags, ("--draft", "dflash2", "--draft-model", str(drafting.pack_path(self.data)), "--spec", "6", "--draft-conf", "0.35"),
+                             "the window and confidence that measured best (RESULTS-DRAFT.md section 4)")
             self.assertFalse(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data))
 
     def test_dflash2_is_for_qwen38_flash_next_only(self):
@@ -162,8 +163,11 @@ class EngineArguments(unittest.TestCase):
             c = self.cfg(drafting="dflash2", args=[*self.ARGS, "--draft", "mtp", "--draft-model", "/old.pack"])
             d = drafting.apply(c, klass="blackwell", data_dir=self.data)
         self.assertEqual(d.drafter, "dflash2")
-        self.assertEqual(c["args"], [*self.ARGS, "--draft", "dflash2", "--draft-model", str(pack)])
+        spec_at = self.ARGS.index("--spec")
+        self.assertEqual(c["args"], [*self.ARGS[:spec_at], *self.ARGS[spec_at + 2:], "--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35"],
+                         "the MTP window of 4 gives way to DFlash2's 6; the MTP's own arguments stay")
         self.assertEqual(c["args"].count("--draft"), 1)
+        self.assertEqual(c["args"].count("--spec"), 1)
         self.assertIn("--mtp", c["args"], "the MTP stays as the fallback the engine names")
 
     def test_mtp_removes_a_drafter_that_was_written_by_hand(self):
@@ -193,7 +197,7 @@ class EngineArguments(unittest.TestCase):
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), serving_dflash2(), \
                 mock.patch.object(drafting, "pack_ready", return_value=True), mock.patch.object(drafting, "data_dir_of", return_value=Path("/d")):
             args = engine_args(self.cfg(drafting="dflash2"))
-            self.assertEqual(args[-4:], ["--draft", "dflash2", "--draft-model", str(pack)])
+            self.assertEqual(args[-8:], ["--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35"])
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
             self.assertEqual(engine_args(self.cfg()), self.ARGS, "no choice: nothing changes")
             off = engine_args(self.cfg(drafting="off"))
@@ -244,9 +248,10 @@ class WhatTheEngineSaid(unittest.TestCase):
 class WordsMatchTheApp(unittest.TestCase):
     def test_every_line_the_engine_start_can_say_is_in_the_apps_catalog_in_all_eight_languages(self):
         folder = ROOT / "apps" / "host" / "src" / "locales"
-        catalogs = {l: json.loads((folder / f"{l}.json").read_text(encoding="utf-8")) for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
+        catalogs = {l: {**json.loads((folder / f"{l}.json").read_text(encoding="utf-8")), **json.loads((folder / f"df2-{l}.json").read_text(encoding="utf-8"))}
+                    for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
         ids = {v: k for k, v in catalogs["en"].items()}
-        self.assertEqual(len(drafting.REASONS), 4)
+        self.assertEqual(len(drafting.REASONS), 5)
         for reason in drafting.REASONS:
             line = drafting.mtp_line(reason)
             self.assertIn(line, ids, line)

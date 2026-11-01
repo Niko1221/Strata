@@ -35,7 +35,7 @@ export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = 
         {tr(m.fit.known && ramGb ? <div><dt>{tr("RAM")}</dt><dd>{about(m.fit.ramUseGb)}</dd></div> : null)}
         {tr(m.fit.known && m.fit.spillGb >= 1 ? <div><dt>{tr("SSD")}</dt><dd>{about(m.fit.spillGb)}</dd></div> : null)}
       </dl>
-      {tr(m.fit.known && m.fit.spillGb < 1 ? <p className="pc-note">{tr("Nothing. It fits in memory.")}</p> : null)}
+      {tr(m.fit.known && m.fit.spillGb < 1 ? <p className="pc-note">{tr("SSD: not needed")}</p> : null)}
       {tr(m.fit.known && m.fit.spillGb >= 1 ? <p className="pc-note">{tr("About {0} GB will be read from the SSD, so answers can be a little slower.", [Math.round(m.fit.spillGb)])}{tr(live?.diskReadGbs && live.diskReadGbs >= 0.05 ? tr(" Reading from your SSD now: {0}", [`${live.diskReadGbs.toFixed(1)} GB/s`]) : '')}</p> : null)}
     </div>))}
     {tr(live && (live.freeVramGb !== null || live.freeRamGb !== null) ? <div className="pc-free">
