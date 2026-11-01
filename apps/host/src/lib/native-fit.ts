@@ -19,8 +19,8 @@ export interface Fit {
   known: boolean;
 }
 
-export const DENSE_GB = 5;
-const SYSTEM_ROOM_GB = 10, DENSE_EXTRA_GB = 1;
+const DENSE_GB = 5, SYSTEM_ROOM_GB = 10, DENSE_EXTRA_GB = 1;
+export { DENSE_GB };
 /** The draft layer (MTP) takes about 1 GB of graphics memory (786 MiB of files + the draft head's ~218 MiB); it comes out of the expert cache while MTP is on (setup.py MTP_VRAM_GB). */
 export const MTP_VRAM_GB = 1;
 const round1 = (n: number) => Math.round(n * 10) / 10;

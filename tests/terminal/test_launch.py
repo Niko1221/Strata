@@ -193,7 +193,7 @@ class CatalogRules(unittest.TestCase):
             cat = catalog()
             self.assertAlmostEqual(cat.kv_gb(131072, "int8"), 1.799, places=2)
             self.assertLess(cat.kv_gb(131072, "q4_0"), cat.kv_gb(131072, "int8"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 131072)      # 128K on every card (owner, 2026-11-01)
             self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_24), 131072)
 
     def test_missing_installer_files_are_said_in_words(self):
@@ -568,9 +568,9 @@ class AdoptRules(unittest.TestCase):
             hw["gpus"] = cards
             cat = catalog(hw)
             self.assertEqual(cat.computer().line().split(" 8 GB")[0], "Arc A750".replace("Arc", "Intel Arc"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 8192)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)      # an 8 GB Arc too: warned about, never lowered
             hw["gpus"] = [{"vendor": "intel", "name": "Intel Arc Pro B70", "vram_gb": 32.0, "usable": True}]
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)
 
     def test_plan_names_what_is_missing(self):
         from strata_cli.launch import adopt
@@ -859,7 +859,7 @@ class FlagsCommand(unittest.TestCase):
     def test_defaults_come_from_the_recommendation(self):
         p = self.plan()
         s = p["settings"]
-        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 32768, "local", "skip"))
+        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 131072, "local", "skip"))
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):

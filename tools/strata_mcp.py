@@ -2339,7 +2339,7 @@ class Tools:
                 if vision in ("yes", "gpu", "cpu"):
                     raise ToolError("images are not available with DeepSeek on a Mac yet: use vision=no")
                 vision = "no"
-                context = context or getattr(s.setup_module(), "DSV41_CONTEXT", 8192)
+                context = context or getattr(s.setup_module(), "DSV41_MAC_CONTEXT", 8192)
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None and md.get("multi_file"):
             context = getattr(s.setup_module(), "DSV41_CONTEXT", 8192)      # the context the engine was checked at
