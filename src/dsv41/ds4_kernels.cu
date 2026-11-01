@@ -2169,8 +2169,12 @@ void route_ahead(const float* logits, const float* bias, int n, int m, int T, Re
 }
 bool router_nonfinite_take(cudaStream_t s) {
 #if defined(STRATA_METAL)
-    (void) s;
-    return false;
+    // the MSL router kernels raise a flag in a buffer of the Metal host (ds4_route_fallback_pick); the stream's work is done first
+    if (cudaStreamSynchronize(s) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    return strata::dsv41::metal_host::router_bad_take();
 #else
     int v = 0;
     if (cudaStreamSynchronize(s) != cudaSuccess || cudaMemcpyFromSymbol(&v, g_router_bad, sizeof v) != cudaSuccess) {

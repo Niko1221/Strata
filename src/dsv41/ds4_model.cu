@@ -8708,9 +8708,16 @@ struct Model::Impl {
             cudaSetDevice(d.id);
             if (router_nonfinite_take(d.st)) {
                 static std::atomic<bool> said{false};
-                if (!said.exchange(true))
-                    std::fprintf(stderr, "ds4: WARNING: the router met scores that are not numbers (NaN) on CUDA%d - the model's "
-                                         "activations went non-finite; its picks are stand-ins and the answer is not reliable\n", d.id);
+                if (!said.exchange(true)) {
+                    char where[32];   // (the same words on CUDA and HIP as before; the Metal engine has one GPU, named so)
+#if defined(STRATA_METAL)
+                    std::snprintf(where, sizeof where, "the GPU");
+#else
+                    std::snprintf(where, sizeof where, "CUDA%d", d.id);
+#endif
+                    std::fprintf(stderr, "ds4: WARNING: the router met scores that are not numbers (NaN) on %s - the model's "
+                                         "activations went non-finite; its picks are stand-ins and the answer is not reliable\n", where);
+                }
                 bad = true;
             }
         }
