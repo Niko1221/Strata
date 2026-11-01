@@ -216,14 +216,15 @@ another wants the second card at the same time. Give every `"replicas"` entry a 
 "gpu": [0, 1],
 "replicas": [{"gpus": [0], "port": 8080},
              {"gpus": [1], "port": 8081, "args": ["--max-context", "131072"]}],
-"replica_shared_arena": "/tmp/strata.arena"
+"replica_shared_arena": true
 ```
 
 - Each port is an ordinary Strata server with its own context, `/health`, `/v1/models`, API monitor and conversation
   cache. A request on 8081 is only served by the engine on card 1; if that engine dies, the 8081 server starts it again,
   as any single server does. Clients pick the port.
-- `"replica_shared_arena"` (or `--replica-shared-arena FILE`) keeps one copy of the experts in RAM for all of them: the
-  replicas start one after another, the first fills the file, the next ones attach. The file is deleted at stop.
+- `"replica_shared_arena": true` keeps one copy of the experts in RAM for all of them, as it does for replicas without
+  ports: the replicas start one after another, the first fills the arena, the next ones attach. It is removed at stop.
+  A file path there (`"/tmp/strata.arena"`) names the file instead of the server's own memory object.
 - The process you start only supervises: its own `--port` is not used. Ctrl+C or a stop signal ends every replica; if
   it is killed, the replicas end with it (Linux).
 - Each replica's run config is written next to yours as `<name>.replica0.json`, `<name>.replica1.json` ... while it

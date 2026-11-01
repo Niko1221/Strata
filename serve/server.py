@@ -9040,9 +9040,6 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}]; with a \"port\" in every entry, each replica is "
                          "its own server on its own port)")
-    ap.add_argument("--replica-shared-arena", default=None, metavar="FILE",
-                    help="replicas with ports: one copy of the experts in RAM for all of them, in FILE (deleted at "
-                         "stop; also \"replica_shared_arena\" in the config)")
     ap.add_argument("--split-serve", default=None, metavar="PREFILL,DECODE",
                     help="split serving (opt-in): one engine on card PREFILL reads the prompt, a second on card DECODE makes "
                          "the answer, the session handed over in RAM (also \"split_serve\" in the config: "
@@ -9079,8 +9076,6 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
     split_joined_args(cfg)
     from serve import replicas as rp
-    if a.replica_shared_arena:
-        cfg["replica_shared_arena"] = a.replica_shared_arena
     try:
         ports = rp.port_mode({**cfg, "replicas": a.replicas} if a.replicas is not None else cfg)
     except rp.ReplicaConfigError as e:

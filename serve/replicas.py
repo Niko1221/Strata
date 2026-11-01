@@ -14,8 +14,8 @@ or `serve/server.py --replicas 2`.  Nothing changes without it.
 
 Port mode.  When every entry has a "port" ({"gpus": [1], "port": 8081}), each replica is a separate, ordinary server
 on its own port instead (`run_port_mode`): this process only starts them one after another, pins their cores, ends
-them when it stops (and they end with it), and deletes "replica_shared_arena" (one copy of the experts for all of
-them, `--shared-expert-arena`).  Some entries with a port and some without refuse the start.
+them when it stops (and they end with it), and removes the shared arena ("replica_shared_arena", below; a file path
+there names the file instead).  Some entries with a port and some without refuse the start.
 
 Routing.  Each request goes to the replica with the lowest cost, cost = prompt tokens the replica would have to read
 again (it holds the start of a conversation in its cache) + LOAD_TOKENS for every request already running there.  A
@@ -91,15 +91,13 @@ def gpu_groups(cfg: dict) -> list[list[int]]:
 
 def port_mode(cfg: dict) -> list[int] | None:
     """Port mode (see the module doc): the replicas' ports in entry order when every entry of a "replicas" list names
-    one, None when none does.  Ports on some entries only, a repeated port, a port that is not a whole number in
-    1..65535, or "replica_shared_arena" without ports are refused (ReplicaConfigError): what to do then is not clear."""
+    one, None when none does.  Ports on some entries only, a repeated port, or a port that is not a whole number in
+    1..65535 are refused (ReplicaConfigError): what to do then is not clear."""
     spec = cfg.get("replicas")
     entries = spec if isinstance(spec, list) else []
     ports = [e.get("port") if isinstance(e, dict) else None for e in entries]
     named = [p for p in ports if p is not None]
     if not named:
-        if cfg.get("replica_shared_arena"):
-            raise ReplicaConfigError('"replica_shared_arena" needs replica ports: give every "replicas" entry a "port"')
         return None
     if len(named) != len(ports):
         missing = [i for i, p in enumerate(ports) if p is None]
@@ -296,6 +294,15 @@ def replica_cfg(cfg: dict, i: int, gpus: list[int]) -> dict:
     return c
 
 
+def port_arena(cfg: dict, n_replicas: int) -> tuple[str | None, str]:
+    """Port mode's shared arena: (the path for --shared-expert-arena or None, a line for the log).  A file path in
+    "replica_shared_arena" names the file; anything else is shared_arena_plan's choice, as for the routed replicas."""
+    want = cfg.get("replica_shared_arena")
+    if isinstance(want, str) and want.lower() not in ("devshm", "1", "true", "on", "yes"):
+        return want, f"one shared expert arena for {n_replicas} replicas ({want}): the experts are in RAM once"
+    return shared_arena_plan(cfg, n_replicas)
+
+
 def port_child_cfg(cfg: dict, i: int, gpus: list[int], port: int) -> dict:
     """Port mode: the run config of replica i's own server - replica_cfg's, with its port, and the shared arena (when
     "replica_shared_arena" is set) as the engine's --shared-expert-arena."""
@@ -308,7 +315,7 @@ def port_child_cfg(cfg: dict, i: int, gpus: list[int], port: int) -> dict:
 
 
 # the supervisor's own options, not passed to a replica's server (each gets its own --config and --port)
-_PARENT_ONLY = ("--config", "--port", "--replicas", "--replica-shared-arena", "--gpu", "--ready-file", "--owner-fd")
+_PARENT_ONLY = ("--config", "--port", "--replicas", "--gpu", "--ready-file", "--owner-fd")
 
 
 def child_argv(launch_args: list[str], cfg_path: str, port: int) -> list[str]:
@@ -403,6 +410,10 @@ def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: st
         if sig is not None and not (name == "SIGHUP" and signal.getsignal(sig) == signal.SIG_IGN):
             old[sig] = signal.signal(sig, on_signal)
 
+    arena, arena_note = port_arena(cfg, len(ports))
+    if arena_note:
+        print(f"[strata] {arena_note}", flush=True)
+    cfg = {**cfg, "replica_shared_arena": arena}
     tmp = tempfile.mkdtemp(prefix="strata-replicas-")
     written: list[str] = []
     children: list[subprocess.Popen] = []
@@ -458,12 +469,7 @@ def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: st
                 c.wait()
         for sig, h in old.items():
             signal.signal(sig, h)
-        arena = cfg.get("replica_shared_arena")
-        if arena:
-            try:
-                os.unlink(arena)
-            except OSError:
-                pass
+        remove_arena(arena)
         for path in written:
             try:
                 os.unlink(path)

@@ -71,14 +71,19 @@ class Config(unittest.TestCase):
             with self.assertRaises(ReplicaConfigError, msg=bad):
                 port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1], "port": bad}]})
 
-    def test_shared_arena_needs_ports(self):
+    def test_shared_arena_does_not_decide_the_mode(self):
         from serve.replicas import port_mode
-        with self.assertRaisesRegex(ReplicaConfigError, "replica_shared_arena"):
-            port_mode({"replicas": 2, "gpu": [0, 1], "replica_shared_arena": "/tmp/a"})
-        with self.assertRaisesRegex(ReplicaConfigError, "replica_shared_arena"):
-            port_mode({"replica_shared_arena": "/tmp/a"})
+        self.assertIsNone(port_mode({"replicas": 2, "gpu": [0, 1], "replica_shared_arena": True}))
         self.assertEqual(port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1], "port": 8081}],
                                     "replica_shared_arena": "/tmp/a"}), [8080, 8081])
+
+    def test_port_arena(self):
+        from serve.replicas import port_arena
+        self.assertEqual(port_arena({"replica_shared_arena": "/tmp/a"}, 2)[0], "/tmp/a")
+        with mock.patch("serve.replicas.shared_arena_plan", return_value=("/proc/1/fd/3", "note")) as plan:
+            for want in (True, "devshm", "true"):
+                self.assertEqual(port_arena({"replica_shared_arena": want}, 2), ("/proc/1/fd/3", "note"))
+            self.assertEqual(plan.call_count, 3)
 
     def test_port_child_cfg(self):
         from serve.replicas import port_child_cfg
@@ -99,7 +104,7 @@ class Config(unittest.TestCase):
     def test_child_argv(self):
         from serve.replicas import child_argv
         argv = ["--engine", "strata", "--config", "/c.json", "--port", "8095", "--host", "0.0.0.0", "--replicas=2",
-                "--ready-file", "/r", "--api-key", "k", "--replica-shared-arena", "/a", "--gpu=0,1", "--owner-fd", "3"]
+                "--ready-file", "/r", "--api-key", "k", "--gpu=0,1", "--owner-fd", "3"]
         self.assertEqual(child_argv(argv, "/t/r0.json", 8080),
                          ["--engine", "strata", "--host", "0.0.0.0", "--api-key", "k",
                           "--config", "/t/r0.json", "--port", "8080"])
@@ -572,6 +577,15 @@ class PortMode(unittest.TestCase):
         self.assertEqual(self.proc.wait(90), 0)
         self.assertTrue(until(lambda: not answers(self.p0) and not answers(self.p1), 10))
         self.assertFalse(arena.exists())
+        self.assertNotIn("Traceback", self.out())
+
+    def test_arena_true_comes_from_the_plan_and_is_removed_at_stop(self):
+        import signal
+        self.start(self.cfg(replica_shared_arena=True))
+        self.both_up()
+        self.assertIn("shared expert arena", self.out())
+        self.proc.send_signal(signal.SIGTERM)
+        self.assertEqual(self.proc.wait(90), 0)
         self.assertNotIn("Traceback", self.out())
 
     def test_sigint_to_group(self):
