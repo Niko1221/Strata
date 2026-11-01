@@ -184,6 +184,22 @@ bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only,
 #include <unordered_map>
 #include <vector>
 
+// STRATA_DF2_TAP_DUMP=FILE (research, off by default): every prompt tap batch the DFlash2 context takes is appended to FILE as
+// int64 pos0, int64 rows, then rows x floats_per_row float32 (the tap rows [rows][taps][n_embd]), for the layer-major / chunk-major
+// equivalence test (DF-08).  Nothing runs without the variable.
+static void df2_tap_dump(const float* dev, int64_t rows, int64_t pos0, int64_t floats_per_row) {
+    static const char* path = std::getenv("STRATA_DF2_TAP_DUMP");
+    if (path == nullptr || path[0] == '\0' || rows <= 0) return;
+    std::vector<float> h((size_t) (rows * floats_per_row));
+    if (cudaMemcpy(h.data(), dev, h.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) return;
+    if (std::FILE* f = std::fopen(path, "ab")) {
+        std::fwrite(&pos0, 8, 1, f);
+        std::fwrite(&rows, 8, 1, f);
+        std::fwrite(h.data(), sizeof(float), h.size(), f);
+        std::fclose(f);
+    }
+}
+
 // logprobs=K / allowed=...: one `LP` line for the token just emitted, from `ver`'s head
 // logits for the window row it came from (before sampling, penalties and temperature).
 // Format matches the SYCL port's LP line so one server-side reader serves both.
@@ -10693,7 +10709,7 @@ int main(int argc, char** argv) {
                                      "a draft head 0.2 GiB, 0.1 GiB of prompt staging); --vram-reserve-mib 1900 keeps it. The MTP drafts instead.\n", why_not.c_str());
                 use_df2 = false;
             } else {
-                sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { return df2.context(taps, rows, pos0, e); };
+                sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { df2_tap_dump(taps, rows, pos0, (int64_t) df2.tap_layers().size() * g.n_embd); return df2.context(taps, rows, pos0, e); };
                 std::fprintf(stderr, "strata serve: DFlash2 drafter on (%s, graphs captured in %.0f ms); windows up to %d tokens; the MTP layer stays as the fallback\n",
                              o.draft_model.c_str(), df2.ms_capture, o.spec);
             }
@@ -18619,7 +18635,7 @@ int main(int argc, char** argv) {
         if (use_df2) {   // the drafter's context: the last 2047 prompt rows' taps
             df2.reset();
             prefill.set_taps(df2.tap_layers(), std::max<int64_t>(0, n_prompt - 2047), 2048);
-            prefill.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { return df2.context(taps, rows, pos0, e); };
+            prefill.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { df2_tap_dump(taps, rows, pos0, (int64_t) df2.tap_layers().size() * g.n_embd); return df2.context(taps, rows, pos0, e); };
         }
 #endif
         if (!kvg_started) {   // the elastic K/V: every cell this run can reach (no loan)
