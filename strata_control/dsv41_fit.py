@@ -179,6 +179,26 @@ def run_cards(cards: list[dict] | None, vendor: str | None = None, *, windows: b
 
 
 
+def _is_rdna4(card: dict) -> bool:
+    return str(card.get("vendor") or "").lower() == "amd" and str(card.get("arch") or "").lower().startswith(DSV41_HIP_ARCHS)
+
+
+def rdna4_faster(cards: list[dict] | None, model: str | None, vendor: str | None = None, named: bool = False) -> bool:
+    """Does the engine's `--experts auto` give 5 on these RDNA4 cards (src/dsv41/ds4_experts_rule.hpp)?  One card the run uses: yes (the CPU lane does most
+    of the experts: 1 x R9700 +16% decode, -24% agent loop, KL +0.004).  Two or more: yes when together they hold at least half of the experts, which is what
+    this plan says for the set (4 x R9700: 12,260 of 15,360; 2 x R9700: about 40% of the 2.25 set, so 6).  The same cards `run_cards` picks (on Windows one
+    AMD card).  False for anything else, so the screens never say Full quality where the engine runs 5, nor the reverse."""
+    keep, _ = run_cards(cards, vendor, named=named)
+    if not keep or not all(_is_rdna4(c) for c in keep):
+        return False
+    if len(keep) == 1:
+        return True
+    if not variant(model):
+        return False
+    p = plan(keep, None, None, model=model, vendor=vendor, named=True)
+    return p["experts_in_vram"] >= 0.5 * p["experts_total"]
+
+
 def uma_card(cards: list[dict] | None) -> dict | None:
     """The integrated Radeon a run uses, when the graphics memory is the PC's RAM (Ryzen AI Max, gfx1151): setup marks it `uma` (and
     `integrated`); a discrete card never is.  None on every other computer."""

@@ -36,6 +36,12 @@ test('one RDNA4 Radeon (1 x R9700, 32 GB) defaults to Faster: the CPU lane does 
   assert.equal(fasterByDefault([r9700({ vendor: 'nvidia' })]), false);
   assert.equal(fasterByDefault([card(32)]), false, 'no arch in the report: the old rule');
   assert.equal(fasterByDefault([r9700(), r9700({ index: 1 })]), false, 'two cards are the other engine rule (they must hold half of the experts)');
+  assert.equal(fasterByDefault([r9700(), r9700({ index: 1 })], false), false, 'the catalog says the two cards hold under half');
+  const four = [0, 1, 2, 3].map(index => r9700({ index }));
+  assert.equal(fasterByDefault(four, true), true, 'four R9700 hold most of the experts: the engine runs 5, so the label says Faster');
+  assert.equal(fasterByDefault(four, null), false, 'no answer from the catalog: the old rule');
+  assert.equal(fasterByDefault([r9700({ vendor: 'nvidia' }), r9700({ index: 1 })], true), false, 'only for RDNA4 cards');
+  assert.deepEqual(speedOptions(four, true).map(o => o.label), ['Default (Faster on this PC)', 'Faster (default on this PC)', 'Full quality']);
   assert.equal(fasterByDefault([r9700(), r9700({ index: 1, usable: false })]), true, 'a card the engine cannot use does not count');
   assert.deepEqual(speedOptions([r9700()]).map(o => o.label), ['Default (Faster on this PC)', 'Faster (default on this PC)', 'Full quality']);
 });
