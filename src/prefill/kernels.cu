@@ -2435,8 +2435,14 @@ __global__ void __launch_bounds__(256) rms_rope_rows_kernel(const float* in, int
     const int64_t t = row / heads, h = row % heads;
     const int tid = threadIdx.x;
     const float x = tid < dim ? in[t * in_ts + h * in_hs + tid] : 0.0f;
-    float ss = 0.0f;
-    ss += x * x;                                // rms_rows_kernel: ss += r[c] * r[c], one column a thread (dim <= 256)
+    // rms_rows_kernel: ss += r[c] * r[c] from 0, one column a thread (dim <= 256) = the rounded square.  The empty asm makes the
+    // square a value the compiler cannot fold into the first add of block_sum's butterfly (it did: fma(x, x, other lane's
+    // square) is another rounding than the sum of two rounded squares; hip_qsa_nr_parity found it on gfx1151, and __fmul_rn
+    // does not stop it: it compiles to the same v_fmac).
+    float ss = x * x;
+#if defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" : "+v"(ss));
+#endif
     const float sc = rsqrtf(block_sum(ss, sh) / (float) dim + eps);
     if (tid < dim) sv[tid] = sc * x * w[tid];
     __syncthreads();
