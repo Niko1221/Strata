@@ -89,7 +89,8 @@ estimated 2 GB of its own buffers.
   prompt buffers. If you name it with `--gpus`, setup states the risk and asks (`--yes` goes ahead).
 - Intel GPUs in a split, and a mix of NVIDIA and AMD cards. An engine drives one make of card. The app, `strata launch` and setup
   offer only the cards the engine can drive, and say so when the other make has the bigger card. AMD cards share a model among
-  themselves: `./setup.sh --backend hip --gpus 1,0` ([AMD_HIP.md](AMD_HIP.md)).
+  themselves: `./setup.sh --backend hip --gpus 1,0`, on Windows `START-HERE.bat --backend hip --gpus 1,0` - a split across two
+  card families on Windows needs one engine built for both families ([AMD_HIP.md](AMD_HIP.md)).
   A prompt read on one card and an answer made on another, with the session handed over in RAM, is a different opt-in: [SPLIT_SERVE.md](SPLIT_SERVE.md).
 
 ## How the split works

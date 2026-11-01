@@ -146,8 +146,17 @@ source-checkout option for developers, not a way to start the released app.
 - **Before the model download,** setup runs `engine\strata-device.exe --list-devices`. If the HIP runtime does not see the
   card, setup stops and points to the driver. With an integrated Radeon, a discrete card is HIP device 1, not 0; `--gpu N` and
   the config's `"gpu"` are HIP numbers.
-- **Several cards:** use the app's card selector or `strata launch --gpu 0,1`. [MULTI_GPU.md](MULTI_GPU.md) lists the
-  combinations measured. A tested Linux pair does not validate the same pair on Windows.
+- **Several cards, one model (layer split):** use the app's card selector, `strata launch --gpu 0,1`, or in a source
+  checkout `START-HERE.bat --backend hip --gpus 1,0`. The engine splits the layers across the HIP devices. setup
+  writes the config's `"gpu"` as the pair, in layer order, as HIP numbers them, and running setup again keeps the
+  split the installed model already runs on (`--gpu N` for one card, `--gpus N,M` for a different pair).
+  **Cards of two families (for example an RX 6800 XT gfx1030 beside an AI PRO R9700 gfx1201) need one engine with
+  code for both:** the update feed ships one family per package (`rdna2`, `rdna3`, `rx9070`), so a split across
+  families runs on a self-built engine - `tools\hip\build_windows.bat` with
+  `STRATA_HIP_ARCHS="gfx1030;gfx1031;gfx1200;gfx1201"`, then `START-HERE.bat --backend hip --prebuilt <its dist
+  folder>`; setup names the family that is missing. A pair inside one family uses the feed package directly.
+  [MULTI_GPU.md](MULTI_GPU.md) lists the combinations measured. A tested Linux pair does not validate the same
+  pair on Windows.
 - **VRAM budget:** `hipMemGetInfo` on Windows does not subtract what the desktop and other programs hold. The engine lowers
   the free figure by what Windows' video memory budget for the process withholds (logged once). `STRATA_WDDM_BUDGET=0` turns
   that off.

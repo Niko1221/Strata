@@ -397,6 +397,29 @@ class WindowsDetection(unittest.TestCase):
             (eng / "BUILD.json").write_text('{"backend": "cuda"}')     # an NVIDIA engine is never asked
             self.assertIsNone(setup.hip_devices(eng / "strata-device.exe"))
 
+    def test_probe_ignores_a_visible_devices_env(self):
+        """A HIP_VISIBLE_DEVICES left in the environment - a config's cards, or one set by hand once and never
+        removed - must not compact what setup sees: the probe runs with it cleared, so the runtime's full
+        numbering comes back and a saved split like "0,2" still names the cards it named when it was saved."""
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "strata-device.exe").write_text("x")
+            (eng / "BUILD.json").write_text('{"backend": "hip"}')
+            seen = {}
+
+            def fake_run(cmd, **kw):
+                seen["env"] = kw.get("env")
+                return subprocess.CompletedProcess(cmd, 0, stdout=self.LIST, stderr="")
+            with mock.patch.dict(os.environ, {"HIP_VISIBLE_DEVICES": "0,2"}), \
+                    mock.patch.object(setup.subprocess, "run", fake_run), \
+                    mock.patch.object(setup, "hip_runtime_beside_exe", lambda *a: None), \
+                    mock.patch.object(setup, "hip_lib_dirs", lambda *a: []):
+                h = setup.hip_devices(eng / "strata-device.exe")
+            self.assertNotIn("HIP_VISIBLE_DEVICES", seen["env"])
+            self.assertEqual([x["index"] for x in h], [0, 1, 2])       # the full list, not the filtered pair
+
     def test_prebuilt_hip_zip(self):
         """get_prebuilt_hip: a published zip (here a local folder) is unpacked into engine/; one without code for the
         card, or older than the first Windows HIP release, is refused."""
@@ -429,6 +452,77 @@ class WindowsDetection(unittest.TestCase):
                 self.assertEqual(setup.hip_lib_dirs(eng), [eng / "rocm" / "bin"])
                 (pub / setup.WIN_HIP_ASSET).unlink()           # installed: kept, nothing downloaded again
                 self.assertEqual(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}), eng)
+
+    def test_prebuilt_hip_zip_split_across_families(self):
+        """A split spanning card families (gfx1030 + gfx1201: a 6800 XT beside an R9700) is refused an engine that
+        carries only one family (the zip and the feed each ship one family): the split needs ONE engine with code
+        for every card in it, so setup says so and points at build_windows.bat with both families in STRATA_HIP_ARCHS."""
+        import json
+        import zipfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            pub = root / "pub"
+            pub.mkdir()
+
+            def publish(meta):
+                with zipfile.ZipFile(pub / setup.WIN_HIP_ASSET, "w") as z:
+                    z.writestr(setup.EXE, "engine")
+                    z.writestr("strata-device.exe", "probe")
+                    z.writestr("rocm/bin/amdhip64_7.dll", "dll")
+                    z.writestr("BUILD.json", json.dumps(meta))
+            ver = ".".join(map(str, setup.WIN_HIP_MIN_ENGINE))
+            good = {"source": "prebuilt", "backend": "hip", "version": ver, "archs": ["gfx1200", "gfx1201"],
+                    "lib_dirs": ["rocm/bin"]}
+            split = {"arch": "gfx1201", "archs": ["gfx1030", "gfx1201"]}     # main card gfx1201, split spans both families
+            warns = []
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "say", lambda *a, **k: None), \
+                    mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", warns.append):
+                publish(good)
+                self.assertIsNone(setup.get_prebuilt_hip(str(pub) + "/", split))    # one family: refused, named
+                self.assertIn("gfx1030", " ".join(warns))
+                publish({**good, "archs": ["gfx1030", "gfx1031", "gfx1200", "gfx1201"]})
+                eng = setup.get_prebuilt_hip(str(pub) + "/", split)                # a self-build with both: accepted
+                self.assertEqual(eng, root / "engine")
+
+    def test_parse_gpus_permissive_for_a_prebuilt_run(self):
+        """A run that brings its own engine (--prebuilt) is not stopped in the card check by the INSTALLED engine's
+        "not an architecture" verdict on a supported card (step 4 replaces that engine); without --prebuilt the
+        verdict stands, and an unsupported arch is never permissive."""
+        cards = [{"index": 0, "name": "AMD Radeon RX 6800 XT", "arch": "gfx1030", "vram_gb": 16.0,
+                  "cannot_run": "GPU 0 (AMD Radeon RX 6800 XT, gfx1030) is not an architecture this Strata engine "
+                                "was compiled for (gfx1200,gfx1201)"},
+                 {"index": 1, "name": "AMD Radeon AI PRO R9700", "arch": "gfx1201", "vram_gb": 32.0}]
+        self.assertEqual([g["index"] for g in setup.amd_parse_gpus("1,0", cards, permissive=True)], [1, 0])
+        with self.assertRaises(SystemExit):
+            setup.amd_parse_gpus("1,0", cards)                                      # without --prebuilt: the old verdict stands
+
+    def test_feed_package_is_checked_before_it_lands_in_engine(self):
+        """A one-family feed package must not become the installed engine of a split that spans two families:
+        engine_from_feed checks the component BEFORE copying, so engine/ never holds an engine whose card probe
+        would veto the second card on the next run."""
+        import json
+        import subprocess
+        import types
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            comp = root / "comp"
+            comp.mkdir()
+            (comp / "BUILD.json").write_text(json.dumps({"version": "0.1.55", "backend": "hip",
+                                                          "archs": ["gfx1200", "gfx1201"]}), encoding="utf-8")
+            out = json.dumps({"ok": True, "results": []})
+            warns = []
+            split = {"arch": "gfx1201", "archs": ["gfx1030", "gfx1201"]}
+            with mock.patch.object(setup.acquisition, "require", lambda *a: None), \
+                    mock.patch.object(setup, "home", lambda: root), \
+                    mock.patch.object(setup.subprocess, "run",
+                                      lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=out, stderr="")), \
+                    mock.patch("strata_control.engine_component.resolve",
+                               lambda *a, **k: types.SimpleNamespace(root=comp)), \
+                    mock.patch.object(setup, "warn", warns.append), \
+                    mock.patch.object(setup, "say", lambda *a, **k: None):
+                self.assertIsNone(setup.engine_from_feed(root / "engine", gpu=split))
+            self.assertFalse((root / "engine").exists())                            # nothing installed
+            self.assertIn("gfx1030", " ".join(warns))
 
     def test_prebuilt_hip_zip_archs_as_list_or_string(self):
         """#3810 review: gfx names are names, not numbers - an installed ready-made engine is recognised (no download again) and a zip
