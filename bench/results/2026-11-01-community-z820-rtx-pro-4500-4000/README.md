@@ -38,6 +38,28 @@ while the GPUs run the ~98.9% of routed mass their caches hold. Two 2013 Xeons w
 SIMD sustain **105–113 tok/s decode**. That is the second half of the story: the division of
 labour, not the silicon.
 
+## Why this entry is unique in the community corpus
+
+I checked every report in `bench/results/`. Three run dual Xeons — a Z840 (2x E5-2699 v3),
+2x P40 (2x E5-2698 v4), and 4x P100 (2x E5-2650 v3) — and all three have **AVX2**. Three
+entries use DDR3, but on Haswell-class boards.
+
+**No published Strata result runs a pre-AVX2 CPU.** The E5-2697 v2 is Ivy Bridge: AVX only,
+no AVX2, no AVX-512. The engine has a dedicated fallback for exactly this, and it says so
+at startup:
+
+> `EXPERIMENTAL older-CPU build (ggml-cpu for avx): this CPU has no AVX2, so the CPU's experts run on ggml-cpu's kernels - expect it to be slow`
+>
+> `this CPU has no AVX-512: the expert kernels run on AVX1 128-bit (iq_avx1, the older-CPU build)`
+
+Until this report there was no number attached to "expect it to be slow". These runs are that
+number: **105–113 tok/s decode on the slowest ISA path the engine supports**, sustained by 22
+workers on two 2013 sockets running 128-bit kernels.
+
+The nearest sibling is the Z840 report (2026-10-03): 2x E5-2699 v3, 384 GB DDR4-2133, one
+RTX 3090 Ti. That machine is a generation newer, has AVX2, and more RAM. This one is the
+older, slower, cheaper configuration — which is precisely why the result is worth recording.
+
 ## Hardware and software
 
 - **GPU 0:** NVIDIA RTX PRO 4500 Blackwell, 32 GB (31.9 GiB usable), sm_120 — 82 SMs @ 2.41 GHz
