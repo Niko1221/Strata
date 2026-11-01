@@ -4,6 +4,11 @@
 
 namespace strata::kernels {
 
+// Native per-launch kernels still process at most eight columns. The generic MMVQ entry points and Q8_1 scratch helpers
+// support a 16-column verifier window by tiling into those kernels.
+constexpr int native_mmvq_kernel_max_cols = 8;
+constexpr int native_mmvq_max_cols = 16;
+
 // Native GGUF Q2_0, Q4_0, Q5_0, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL
 // and IQ4_XS / CUDA Q8_1 adapters, pinned to llama.cpp
 // 3cf03257f219afbe7334045ff7c6a06ac68c627d, sm_120 generic MMVQ.
@@ -11,11 +16,10 @@ namespace strata::kernels {
 // All calls enqueue on the explicit non-null CUDA stream; no allocation or wait.
 // The translation unit must use --use_fast_math, as the pinned CUDA oracle does.
 //
-// Shapes use GGUF order: n_in is the contiguous reduction dimension, n_out is
-// the weight row count, and ncols is the activation column/token count, 1..8
-// (plan v0.3 P3). Columns are contiguous: activation column j is x + j * n_in
-// (its Q8_1 blocks at j * n_in / 32) and output column j is y + j * n_out. See
-// native_mmvq_set_multi_exact for how ncols > 1 relates to ncols == 1.
+// Shapes use GGUF order: n_in is the contiguous reduction dimension and n_out is the weight row count. The generic
+// native_mmvq/native_mmvq_indexed calls accept 1..16 activation columns and tile them into the per-launch kernels' 1..8
+// column limit. Columns are contiguous: activation column j is x + j * n_in (its Q8_1 blocks at j * n_in / 32) and
+// output column j is y + j * n_out. See native_mmvq_set_multi_exact for how ncols > 1 relates to ncols == 1.
 // n_in must be a positive multiple of 32 for quantization/Q4_0/Q5_0/Q8_0/IQ4_NL,
 // 64 for Q2_0, or 256 for the other formats. n_out must be positive. Weights remain
 // unmodified row-major GGUF blocks: Q3_K=110, Q4_K=144, Q5_K=176, Q6_K=210 and

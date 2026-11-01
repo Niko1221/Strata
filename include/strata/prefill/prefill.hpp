@@ -312,6 +312,8 @@ private:
     std::vector<int> tap_layers_;
     int64_t tap_first_ = 0, tap_cap_ = 0;
     float* tap_dev_ = nullptr;
+    float* tap_host_ = nullptr;   ///< layer split: portable mapped buffer owned by stage 0, aliased on each stage
+    bool tap_owns_host_ = false;
     Prefill* next_ = nullptr;
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)

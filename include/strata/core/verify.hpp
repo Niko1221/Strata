@@ -27,6 +27,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/window_limits.hpp"
 
 #include <cuda_runtime.h>
@@ -244,6 +245,8 @@ public:
     // a window in flight from one thread (batch_poll does not block).  Stage k can then run group g while stage k+1
     // runs group g-1.  Rows of group `base` use hand-off rows [base, base + S), so groups never share a hand-off row.
     bool batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err);
+    // STRATA_PIPELINE_ACTIVE_ROWS=1: packed active rows bind actual slot states; hand-off storage still starts at base.
+    bool batch_launch_rows(int base, int S, const int* rows, const int32_t* tokens, const int64_t* pos, std::string& err);
     /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
@@ -354,11 +357,16 @@ public:
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
     /// DFlash2 (before init): keep the completed outputs of these layers (zero-based; the mean of the hc streams) for every row of
-    /// each window in a device buffer, tap_dev() = [max_t][n_taps][n_embd] floats, valid until the next window.  Single-stage
-    /// verifiers only; STRATA_TAP_FILE (research dump) turns the same buffer on without this call.
-    void set_taps(const std::vector<int>& layers) { tap_req_ = layers; }
+    /// each window in a device buffer, tap_dev() = [max_t][n_taps][n_embd] floats, valid until the next window.
+    /// On a layer split, `shared_tap_dev` is this stage's device alias of a shared portable mapped buffer (`[max_t][n_taps][n_embd]`),
+    /// so each stage writes the tap slots of its own `[lb_, le_)` layers and `final_tap_dev()` returns the last stage's alias.
+    void set_taps(const std::vector<int>& layers, float* shared_tap_dev = nullptr) {
+        tap_req_ = layers;
+        if (shared_tap_dev != nullptr || layers.empty()) tap_shared_ = shared_tap_dev;
+    }
     const float* tap_dev() const { return tap_dev_; }
-    bool tapping() const { return tap_on_; }
+    const float* final_tap_dev() const { return next_ ? next_->final_tap_dev() : tap_dev_; }
+    bool tapping() const { return tap_on_ && (next_ == nullptr || next_->tapping()); }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -405,13 +413,13 @@ private:
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
     int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
-    int brow_[strata::kernels::kWindowMaxT] = {};                     ///< ... and row t is slot brow_[t]
+    int brow_[strata::kernels::kVerifyMaxT] = {};  ///< row t is slot brow_[t]; one slot may own several draft rows
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
     std::map<std::vector<int>, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< full row layout avoids slot-ID collisions
     std::map<std::vector<int>, uint64_t> bm_used_;   ///< last use of each captured layout (LRU)
     uint64_t bm_tick_ = 0;
     size_t batch_graph_limit_ = 0;         ///< 0: keep every captured batch graph (0.1.39); N: LRU-evict beyond N layouts
-    int last_rows_[strata::kernels::kWindowMaxT] = {};                ///< the slots of the last batch window's rows
+    int last_rows_[strata::kernels::kVerifyMaxT] = {};  ///< slot ID for each row of the last batch window
     std::vector<int> bkey(const int* rows, int S, int hbase) const {   // #871: the doorbell variant has its own graphs
         std::vector<int> k = batch_key(rows, S, hbase);
         k.push_back(ar_off_ ? 1 : 0);
@@ -440,14 +448,14 @@ private:
             std::chrono::steady_clock::duration(b_last_.load(std::memory_order_acquire)));
     }
     std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
-    int32_t b_out_[strata::kernels::kWindowMaxT] = {};
+    int32_t b_out_[strata::kernels::kVerifyMaxT] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;
     float* tail_snap_b_ = nullptr;         ///< per (slot, QSA layer) indexer tail snapshot
     void* arena_b_ = nullptr;
-    int64_t last_pos_b_[strata::kernels::kWindowMaxT] = {};
+    int64_t last_pos_b_[strata::kernels::kVerifyMaxT] = {};
     bool capture_batch(const int* rows, int S, int hbase, std::string& err);
     // STRATA_PIPED_MTP (init_deferred_commit): the saved rows, laid out as the window scratch (global layer index) with
     // dc_rows_ rows per layer instead of max_t_; the slots' accepted prefixes (mapped and device, 2 + max_t_ per slot)
@@ -590,7 +598,7 @@ private:
     float* ple_val_ = nullptr;
     int last_t_ = 0;
     int64_t last_pos0_ = 0;
-    int32_t last_tokens_[strata::kernels::kWindowMaxT] = {};
+    int32_t last_tokens_[strata::kernels::kVerifyMaxT] = {};
     int64_t n_vocab_ = 0;
     cudaStream_t cs_ = nullptr;
     cudaStream_t sh_cs_ = nullptr;
@@ -633,6 +641,7 @@ private:
     std::vector<int> tap_layers_;                 ///< the tapped layer ids (zero-based, completed outputs)
     std::vector<int> tap_slot_;                   ///< layer -> slot in tap_layers_, or -1
     float* tap_dev_ = nullptr;                    ///< [max_t][n_taps][n_embd]
+    float* tap_shared_ = nullptr;                 ///< non-null on a layer split: external mapped alias (not cudaFree'd here)
     float* tap_scratch_ = nullptr;                ///< one row's streams, [hc][n_embd]
     float* h_tap_ = nullptr;     float* m_tap_ = nullptr;       ///< the mapped copy of tap_dev_
     std::FILE* tap_file_ = nullptr;

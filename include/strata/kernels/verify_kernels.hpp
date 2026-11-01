@@ -23,6 +23,9 @@ namespace strata::kernels {
 /// The most rows one verify / batch window holds (8; 16 in the CUDA / HIP builds, window_limits.hpp).  A window of up to
 /// kVerifyNarrowT rows runs the kernels it always ran.
 inline constexpr int kVerifyMaxT = kWindowMaxT;
+/// The runtime default window width every drafter used before wide windows existed; --batch-draft-window 16 opts a
+/// batch window past it.  A build with kWindowMaxT == 8 keeps every window at this width.
+inline constexpr int kVerifyDefaultMaxT = 8;
 
 /// For token t of T: conv over [history(3) | qkv_0 .. qkv_t] -> SiLU -> L2 norm of the q/k heads -> h[t].
 /// `history` is NOT written, but with `commit` (one token): it then keeps the token, as gdn_conv_commit.  Bitwise
