@@ -499,6 +499,20 @@ class TheCommand(ModelCase):
         self.assertEqual((self.state(), self.resolved()), ("ready", "0.1.45"), "a check changes nothing")
 
 
+class StartWait(unittest.TestCase):
+    """Found by the real DeepSeek flow: a DeepSeek run config asks for a long engine wait; runtime.start takes 0..1800 only, so the model did not start again."""
+
+    def test_the_wait_never_exceeds_what_the_runtime_accepts(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "run.json"
+            for ready, want in ((None, 960.0), (300, 360.0), (1800, 1800.0), (5000, 1800.0)):
+                cfg.write_text(json.dumps({"engine_ready_s": ready} if ready else {}))
+                model = engine_update.RunningModel("launch-x", "X")
+                with mock.patch.object(profiles, "load", return_value=({"source_config": str(cfg)}, "r")):
+                    self.assertEqual(engine_update._start_wait(model), want, ready)
+
+
 class TheQuestion(unittest.TestCase):
     def test_a_person_at_a_keyboard_gets_the_question_and_default_on_enter(self):
         a = argparse.Namespace(yes=False)

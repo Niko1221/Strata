@@ -30,7 +30,7 @@ export STRATA_SETTINGS_FILE="$H/app-settings.json"
 unset STRATA_NO_ACQUIRE STRATA_COMPONENTS_DIR STRATA_API_KEY STRATA_UPDATE_FEED STRATA_ENGINE_BACKEND STRATA_INSTALL_DIR STRATA_HOME STRATA_UPDATE_TRUSTED_KEYS
 PORT_MODEL=18490
 echo "mode $MODE; package $(basename "$TERMINAL_ARCHIVE"); launcher $S"
-DSDIR="$DATA/engine-dsv41"
+DSDIR="$H/.local/share/strata/install/engine-dsv41"      # (the install folder of this HOME, where DeepSeek packages are put)
 
 serve() { local dir="$1" log="$2" port; shift 2
   port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
@@ -59,6 +59,7 @@ OLDPID=$(ds_pid); OLDEXE=$(ds_exe); echo "engine pid $OLDPID  exe $OLDEXE  folde
 kill "$PID28"; wait "$PID28" 2>/dev/null
 serve "$REL29" "$W/logs/ds-server29-$MODE.log"; P29=$PORT; F29="http://127.0.0.1:$P29/strata-feed.json"
 ENG55=strata-dsv41-0.1.55-linux-x86_64-cuda-cuda13.tar.gz
+ENGQ55=strata-engine-0.1.55-linux-x86_64-cuda-cuda13.tar.gz        # (a PC with only DeepSeek installed is also offered the Strata engine: both are cut)
 
 if [ "$MODE" = OLD ]; then
   say "2 (v0.2.9): launch it again while the model is loaded, the 0.2.9 feed in reach"
@@ -83,7 +84,7 @@ else
   say "4: a script is refused, a cut download stops nothing"
   "$S" update --feed "$F29" --no-control --backend cuda --yes; RC=$?
   check "exit 7, no archive requested" "[ $RC -eq 7 ] && [ \"\$(gets $ENG55 '$W/logs/ds-server29-$MODE.log')\" = 0 ]"
-  serve "$REL29" "$W/logs/ds-servercut.log" "$ENG55" 30000000; PCUT=$PORT; PIDCUT=$SERVER_PID
+  serve "$REL29" "$W/logs/ds-servercut.log" "$ENG55,$ENGQ55" 30000000; PCUT=$PORT; PIDCUT=$SERVER_PID
   "$S" update --feed "http://127.0.0.1:$PCUT/strata-feed.json" --no-control --backend cuda --stop-model --start-again; RC=$?
   check "the cut download: exit 6, the model was never stopped" "[ $RC -eq 6 ] && [ \"\$(ds_pid)\" = '$OLDPID' ]"
   kill "$PIDCUT"; wait "$PIDCUT" 2>/dev/null

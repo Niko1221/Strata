@@ -229,7 +229,7 @@ def _start_wait(model: RunningModel) -> float:
         from strata_control import profiles
         prof, _rev = profiles.load(model.profile)
         cfg = json.loads(Path(prof["source_config"]).read_text(encoding="utf-8-sig"))
-        return float(cfg.get("engine_ready_s") or 900) + 60
+        return min(1800.0, float(cfg.get("engine_ready_s") or 900) + 60)          # (runtime.start takes 0..1800; a DeepSeek config asks for more)
     except Exception:                                    # noqa: BLE001
         return 960.0
 
