@@ -80,3 +80,12 @@ test('12: with no subagents the dropdown is one row, "No subagents recorded" and
   assert.ok(!/subagents-empty/.test(read('src/styles/annotation-fixes.css')), 'no dead rule');
   assert.match(read('src/styles/app.css'), /\.telepop__head:last-child \{ padding-bottom: 0; margin-bottom: 0; border-bottom: 0; \}/, 'no empty body under the title');
 });
+
+test('14: the Board and Schedule help lines sit in the Tasks header after the title, smaller, and wrap rather than being cut', () => {
+  const tasks = read('src/screens/Tasks.tsx'), board = read('src/components/TaskBoard.tsx'), css = read('src/styles/annotation-fixes.css');
+  assert.match(tasks, /titleDetail=\{currentTask \? undefined : view === 'board' \? <span className="tasks-note"><Icon name="info" size=\{14\}\/>\{tr\('Cards move on their own as things happen\./);
+  assert.match(tasks, /<span className="tasks-note"><Icon name="clock" size=\{14\}\/>[\s\S]*Runs while Strata\u2019s host is open\. Runs saved instructions using the loaded model\./);
+  assert.ok(!/board-note|task-runtime/.test(tasks + board + read('src/styles/board.css') + read('src/styles/app.css')), 'not repeated in the body');
+  assert.match(css, /\.main__title-detail:has\(\.tasks-note\) \{ white-space: normal; overflow: visible;/, 'wraps instead of being cut at narrow widths');
+  assert.match(css, /\.main__head:has\(\.tasks-note\) \{ height: auto; \}/, 'the header grows to hold it');
+});

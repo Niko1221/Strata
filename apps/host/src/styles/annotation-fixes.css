@@ -157,6 +157,12 @@ html[data-motion='reduced'] .voice-wave span, html[data-motion='reduced'] .agent
 .main__title-line .main__title { margin: 0; flex: none; }
 .main__title-detail { font-size: var(--st-fs-xs); color: var(--st-ink-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main__titles { min-width: 0; }
+/* Tasks: the help line (Board, Schedule) sits in the header after the title, smaller than body text. It wraps rather than being cut, and the header grows
+   to hold it, so it stays readable at narrow widths. */
+.main__title-detail:has(.tasks-note) { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; }
+.tasks-note { display: inline-flex; align-items: flex-start; gap: 6px; max-width: 68ch; }
+.tasks-note > svg { flex: none; margin-top: 1px; }
+.main__head:has(.tasks-note) { height: auto; }
 .skills-header-search.st-input { width: 200px; min-width: 0; }
 .skills-library-title { margin: 0 0 20px; }
 .dialog-head__actions { display: flex; align-items: center; gap: 12px; flex: none; }
