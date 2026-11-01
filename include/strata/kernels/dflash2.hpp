@@ -53,6 +53,8 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
 /// df2_rope_table with the inverse frequencies computed once (df2_rope_inv: the same double-precision pow per i), so a round pays no pow: the same table, bitwise.
 void df2_rope_inv(float theta, double* inv, void* stream);
 void df2_rope_table_inv(const int32_t* pos, int rows, const double* inv, float* table, void* stream);
+/// The same table computed on the host (double precision, bitwise the CUDA kernel up to sincosf): table [rows][2][64].  The SYCL port uses this one: a kernel with FP64 operations on an Arc Alchemist (IGC DP emulation) slows every later kernel of the process by 2x or more, so the drafter has no device FP64.
+void df2_rope_table_cpu(const int32_t* pos, int rows, float theta, float* table);
 void df2_gemm_variant(int v);
 /// Bench only: attention variants (bit 0 skips Q K^T, bit 1 skips P V).
 void df2_attention_variant(int v);
