@@ -6,12 +6,23 @@
  * plan changes, so a tick in the plan card is a tick in the file, and a plan the person approved is a plan they can read in
  * their own project. Nothing else writes it: a chat in Plan mode stays read-only, so the assistant never touches the file.
  *
- * Shape of the file (it is a plan document, not a data file: the plan store is the thing that is read back):
+ * Shape of the file (it is a plan document, not a data file: the plan store is the thing that is read back). The steps come last, so the
+ * person reads the request and what was found first, and the checklist they can watch get ticked at the end:
  *
  *   <!-- Strata plan <id> -->
  *   # Pagoda page
  *
  *   approved · 1 of 4 steps done
+ *
+ *   What was asked for:
+ *
+ *   > A page of the pagoda at night.
+ *
+ *   ## What I found
+ *
+ *   `pagoda.html` does not exist yet. `style.css` already has the night palette.
+ *
+ *   ## Steps
  *
  *   - [x] 1. Read the folder
  *   - [ ] 2. Write pagoda.html
@@ -39,23 +50,27 @@ export function planSlug(plan) {
   return s || 'plan';
 }
 
-/** The plan's steps as markdown: one box per step, ticked when the app marked it done, with its detail and what it ended with. */
+/** The plan as markdown: what was asked for and what was found first, then its steps last as boxes, ticked when the app marked one done. */
 export function planMarkdown(plan) {
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
   const done = steps.filter(s => s.state === 'done' || s.state === 'skipped').length;
   const asked = String(plan?.request ?? '').replace(/\r\n?/g, '\n').trim();
+  const found = String(plan?.context ?? '').replace(/\r\n?/g, '\n').trim();
   return [
     marker(plan.id),
     `# ${plan.title || 'Plan'}`,
     '',
     `${STATE[plan.state] ?? plan.state} · ${done} of ${steps.length} step${steps.length === 1 ? '' : 's'} done`,
+    ...(asked ? ['', 'What was asked for:', '', ...asked.split('\n').map(l => `> ${l}`.trimEnd())] : []),
+    ...(found ? ['', found] : []),
+    '',
+    '## Steps',
     '',
     ...steps.flatMap((s, i) => [
       `- ${BOX[s.state] ?? '[ ]'} ${i + 1}. ${s.text}${NOTE[s.state] ?? ''}`,
       ...(s.detail ? [`  ${s.detail}`] : []),
       ...(s.summary ? [`  > ${s.summary}`] : []),
     ]),
-    ...(asked ? ['', 'What was asked for:', '', ...asked.split('\n').map(l => `> ${l}`.trimEnd())] : []),
     '',
   ].join('\n');
 }

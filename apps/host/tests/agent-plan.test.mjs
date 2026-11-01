@@ -36,6 +36,32 @@ test('the last list wins, and a title falls back to the request', () => {
   assert.equal(p.title, 'Make a thing');
 });
 
+test('what the turn found before its list comes with the plan, capped, and a bare list has nothing to add', () => {
+  const p = parsePlan([
+    'I looked at the folder. It is empty.',
+    '',
+    'The page would need one file and no build step.',
+    '',
+    '## Pagoda page',
+    '1. Look at what is already in the folder',
+    '2. Write pagoda.html',
+  ].join('\n'), 'build a pagoda');
+  assert.equal(p.context, 'I looked at the folder. It is empty.\n\nThe page would need one file and no build step.', 'the words before the plan heading are kept as written, markdown and line breaks and all');
+  const bare = parsePlan('1. one\n2. two', 'x');
+  assert.equal(bare.context, '', 'a reply that is only the list has nothing found to show');
+  const long = parsePlan(`${'a'.repeat(9000)}\n\n## T\n1. a\n2. b`, 'x');
+  assert.ok(long.context.length <= 3000 && long.context.endsWith('…'), 'a wall of findings is cut short rather than filling the plan file');
+  const p2 = parsePlan('1. old a\n2. old b\n\nBetter:\n1. new a\n2. new b\n3. new c', 'Make a thing');
+  assert.equal(p2.context, '1. old a\n2. old b\n\nBetter:', 'the earlier list a reply corrects itself from is still what was found on the way');
+});
+
+test('a plan turn is asked for what it found first and its steps last', () => {
+  const asked = planPrompt('do x');
+  assert.match(asked, /First, what you found by looking/);
+  assert.match(asked, /Then, last, the plan itself/);
+  assert.ok(asked.indexOf('First, what you found by looking') < asked.indexOf('Then, last, the plan itself'), 'the order it asks for is the order the plan is shown in');
+});
+
 test('goal points are found in lines or in one sentence, and one point is not a list', () => {
   const a = parsePoints('Build the page: 1. draw the base 2. add the roof 3. add the glow');
   assert.equal(a.title, 'Build the page');

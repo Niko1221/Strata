@@ -10,7 +10,7 @@ import { api, ApiError } from './client';
 export type PlanState = 'proposed' | 'approved' | 'rejected' | 'running' | 'paused' | 'done' | 'stopped';
 export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 export interface PlanStep { id: string; text: string; detail?: string; summary?: string; state: StepState }
-export interface Plan { id: string; title: string; source: 'plan' | 'goal'; state: PlanState; steps: PlanStep[]; /** A plain sentence (an interface string) when the app stopped the planning turn early. */ caution?: string; /** The plan's own checklist file in the chat's folder, as the host wrote it (plan-md.mjs). */ file?: string }
+export interface Plan { id: string; title: string; source: 'plan' | 'goal'; state: PlanState; steps: PlanStep[]; /** What the assistant found while it was planning (its own words, markdown), read before the steps. */ context?: string; /** A plain sentence (an interface string) when the app stopped the planning turn early. */ caution?: string; /** The plan's own checklist file in the chat's folder, as the host wrote it (plan-md.mjs). */ file?: string }
 export interface QueuedMessage { id: string; text: string; deliverAt: 'step' | 'end' }
 
 const PLAN_STATES = ['proposed', 'approved', 'rejected', 'running', 'paused', 'done', 'stopped'];
@@ -33,7 +33,7 @@ export function readPlan(raw: unknown): Plan | null {
     });
   });
   if (!steps.length) return null;
-  return { id: p.id, title: typeof p.title === 'string' ? p.title : '', source: p.source === 'goal' ? 'goal' : 'plan', state: p.state as PlanState, steps, ...(typeof p.file === 'string' && p.file ? { file: p.file } : {}) };
+  return { id: p.id, title: typeof p.title === 'string' ? p.title : '', source: p.source === 'goal' ? 'goal' : 'plan', state: p.state as PlanState, steps, ...(typeof p.context === 'string' && p.context.trim() ? { context: p.context } : {}), ...(typeof p.file === 'string' && p.file ? { file: p.file } : {}) };
 }
 
 export function readQueue(raw: unknown): QueuedMessage[] {

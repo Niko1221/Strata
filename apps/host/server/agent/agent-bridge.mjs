@@ -676,7 +676,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         if (failure || (turn.stopping && !turn.guard)) return [];
         const parsed = parsePlan(written.all, asked);
         if (!parsed) return [];
-        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: asked, ...(turn.guard ? { caution: GUARD_NOTES[turn.guard] } : {}) });
+        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: asked, context: parsed.context, ...(turn.guard ? { caution: GUARD_NOTES[turn.guard] } : {}) });
         return [publishPlan('proposed', plan)];
       }
       const run = turn.plan;

@@ -26,6 +26,9 @@ test('a plan from the host is read with step states, detail and summary; bad par
   assert.equal(p.steps[0].summary, 'Found two files.'); assert.equal(p.steps[1].detail, 'one file');
   assert.equal(P.readPlan(plan('proposed', [step('s1', 'x')], { file: '.strata/plans/pagoda.md' })).file, '.strata/plans/pagoda.md', 'the plan carries the file the app writes and ticks');
   assert.equal(P.readPlan(plan('proposed', [step('s1', 'x')], { file: 7 })).file, undefined, 'a file that is not text does not come through');
+  assert.equal(P.readPlan(plan('proposed', [step('s1', 'x')], { context: '## What I found\n\nThe folder is empty.' })).context, '## What I found\n\nThe folder is empty.', 'the words the plan was built on come through, so the page can put them before the steps');
+  assert.equal(P.readPlan(plan('proposed', [step('s1', 'x')], { context: '   ' })).context, undefined, 'blank found-text is dropped');
+  assert.equal(P.readPlan(plan('proposed', [step('s1', 'x')], { context: 42 })).context, undefined, 'found-text that is not text does not come through');
   assert.equal(P.stepsDone(p), 1); assert.equal(P.currentStep(p), 2);
   assert.equal(P.readPlan(plan('weird', [step('s1', 'x')])), null);
   assert.equal(P.readPlan(plan('proposed', [])), null);
@@ -76,6 +79,9 @@ test('an approved plan can still be started, Approve runs the plan step by step,
   assert.match(card, /plan\.state === 'approved' \? <div className="plan__acts">[\s\S]{0,240}?startPlanGoal\(plan\.id\)/, 'a plan approved without running (a mode that cannot act, or a stopped run) still needs its own start button');
   assert.equal((card.match(/tr\("Work through the plan"\)/g) ?? []).length, 1, 'the label sits on the approved card only, and it is already in all nine catalogs');
   assert.doesNotMatch(card, /tr\("Approved\. Nothing runs/, 'no new tr() string: the English catalog would have a gap');
+  assert.equal((card.match(/<PlanFound plan=\{plan\}\/>/g) ?? []).length, 2, 'the card in the chat and the pane in the sidebar both show what was found');
+  assert.match(card, /<PlanFound plan=\{plan\}\/>\s*\n\s*<PlanSteps plan=\{plan\}\/>/, 'the findings are read before the steps, so the steps are the last thing in the plan');
+  assert.match(card, /className="plan__found"><Markdown text=\{plan\.context\}/, 'they are shown as the markdown the turn wrote, not as one flat line');
   assert.match(store, /export async function approvePlan[\s\S]{0,400}?await planApprove\(sessionId, planId\);\s*\n\s*await startPlanGoal\(planId\);/, 'Approving the plan starts the step run, so each step ticks in the card and in the plan file');
   assert.doesNotMatch(store, /sendMessage\(prompt, \{ shown: tr\('Approved the plan\.'\) \}\)/, 'the plan is not sent as one ordinary turn: that turn freelances it and nothing ticks');
   assert.match(chat, /const shownPreview = selectedPreview &&/, 'a tab that is no longer there is never the selected one, so the pane is not left pointing at nothing');

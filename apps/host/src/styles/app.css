@@ -7358,6 +7358,14 @@ textarea {
 .plan__head b { font-size: var(--st-fs-md); }
 .plan__head span { color: var(--st-ink-muted); font-size: var(--st-fs-sm); }
 .plan__goal { margin: 0; padding: 2px 16px 0; color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+/* What the assistant found while it planned, read before the steps (the plan is a short document, not only a list). */
+.plan__found { padding: 8px 16px 2px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); line-height: 1.45; overflow-wrap: anywhere; }
+.plan__found > :first-child { margin-top: 0; }
+.plan__found > :last-child { margin-bottom: 0; }
+.plan__found h2, .plan__found h3, .plan__found h4 { font-size: var(--st-fs-sm); font-weight: 700; color: var(--st-ink); margin: 10px 0 4px; }
+.plan__found p, .plan__found ul, .plan__found ol, .plan__found blockquote { margin: 0 0 6px; }
+.plan__found ul, .plan__found ol { padding-left: 18px; }
+.plan__found .md-code { font-size: 0.92em; }
 .plan__steps { list-style: none; margin: 0; padding: 6px 16px 10px; display: flex; flex-direction: column; }
 .plan__step { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 7px 0; align-items: start; font-size: var(--st-fs-md); line-height: 1.4; }
 .plan__no { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--st-line); display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
@@ -7375,7 +7383,7 @@ textarea {
 .plan__edit { display: flex; flex-direction: column; gap: 6px; padding: 4px 16px 10px; }
 .plan__row { display: grid; grid-template-columns: 22px 1fr 28px; gap: 8px; align-items: center; }
 .plan-panel { padding: 8px 0; overflow: auto; }
-.plan-panel .plan__head, .plan-panel .plan__steps, .plan-panel .plan__goal { padding-left: 20px; padding-right: 20px; }
+.plan-panel .plan__head, .plan-panel .plan__steps, .plan-panel .plan__goal, .plan-panel .plan__found { padding-left: 20px; padding-right: 20px; }
 .queued { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 80%; margin: 6px 0 0 auto; }
 .queued__bubble { background: transparent; border: 1px dashed var(--st-line); color: var(--st-ink-soft); padding: 10px 16px; border-radius: 18px 18px 4px 18px; font-weight: 500; overflow-wrap: anywhere; }
 .queued__line { display: flex; align-items: center; gap: 6px; color: var(--st-ink-muted); font-size: var(--st-fs-xs); }

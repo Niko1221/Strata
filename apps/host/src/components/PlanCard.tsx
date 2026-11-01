@@ -4,9 +4,16 @@ import { cancelQueued, planEdit, planReject, queuedWhen, stepsDone, usePlan, use
 import { approvePlan, pushToast, startPlanGoal, useStore } from '../lib/store';
 import { plainFailureText } from '../lib/plain-errors';
 import { fileAction } from '../lib/deliverables';
+import { Markdown } from './Markdown';
 import { Btn, Icon, IconBtn } from './ui';
 
 const STEP_WORDS = { done: 'done', running: 'working on it', failed: 'failed', skipped: 'skipped', pending: 'waiting' } as const;
+
+/** What the assistant found while it planned, in its own words, read before the steps: a plan is a short document, not only a list. */
+function PlanFound({ plan }: { plan: Plan }) {
+  if (!plan.context) return null;
+  return <div className="plan__found"><Markdown text={plan.context}/></div>;
+}
 
 /** The steps with their state: a number, a check once done, a soft glow on the one being worked on. Used in the chat and in the sidebar. */
 export function PlanSteps({ plan }: { plan: Plan }) {
@@ -68,6 +75,7 @@ export function PlanCard({ chatId, planId }: { chatId: string | null | undefined
   </section>;
   return <section className="plan" data-state={plan.state} aria-label={tr("Plan")}>
     <div className="plan__head"><b>{tr("Plan")}</b><span>{planCount(plan)}</span></div>
+    <PlanFound plan={plan}/>
     <PlanSteps plan={plan}/>
     <PlanFile chatId={chatId} plan={plan}/>
     {plan.caution ? <p className="plan__note" role="status">{tr(plan.caution)}</p> : null}
@@ -95,6 +103,7 @@ export function PlanPanel({ chatId }: { chatId: string | null | undefined }) {
   return <aside className="ts-panel plan-panel" id="plan-content" aria-label={tr("Plan")}>
     <div className="plan__head"><b>{tr("Plan")}</b><span>{planCount(plan)}</span></div>
     {plan.title ? <p className="plan__goal">{plan.title}</p> : null}
+    <PlanFound plan={plan}/>
     <PlanSteps plan={plan}/>
     <PlanFile chatId={chatId} plan={plan}/>
   </aside>;

@@ -6,7 +6,8 @@
  * numbered points ("1. ... 2. ... 3. ...") is run the same way, so a point is a step and each one is reported.
  *
  * Plan shape (also what the page renders, notes-split-agent6.md):
- *   { id, chatId, title, request, source: 'plan'|'goal', state, steps: [{ id, text, detail, state, summary }], createdAt, updatedAt, goalStarted }
+ *   { id, chatId, title, request, context, source: 'plan'|'goal', state, steps: [{ id, text, detail, state, summary }], createdAt, updatedAt, goalStarted }
+ *   plan.context: what the assistant wrote before its list (what it read, what it found, what is unclear), kept as markdown
  *   plan.state:  proposed | approved | rejected | running | paused | done | stopped
  *   step.state:  pending | running | done | failed | skipped
  */
@@ -18,9 +19,18 @@ import { dirname } from 'node:path';
 export const MAX_STEPS = 12;
 const MAX_TEXT = 140;
 const MAX_DETAIL = 220;
+/** How much of what the assistant wrote before its list is kept: the plan file is a document, not a wall of text. */
+export const MAX_CONTEXT = 3000;
 
 const clean = s => String(s ?? '').replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
+
+/** The lines before the plan's list, as written (markdown kept, blank ends trimmed) and capped. */
+function contextText(lines) {
+  const s = lines.join('\n').replace(/[\s\u00a0]+$/g, '').replace(/^[\s\u00a0]+/g, '');
+  if (!s) return '';
+  return s.length > MAX_CONTEXT ? s.slice(0, MAX_CONTEXT - 1).replace(/\s+$/, '') + '…' : s;
+}
 
 /** "Write the file — one file, inline styles" into { text, detail }. */
 function splitStep(raw) {
@@ -35,7 +45,9 @@ function splitStep(raw) {
 export function planPrompt(task) {
   return [
     'Make a plan for the request below. Do not change anything: you may only look (read files, list folders, search).',
-    'When you have looked enough, end your reply with the plan as a numbered list: one short line per step, in the order they should be done.',
+    'Write your reply in two parts, in this order.',
+    'First, what you found by looking: the files and folders the request touches and what they do today, what is missing or unclear, and what you would ask the person to decide. A short paragraph or a few short bullets, under a short heading like "## What I found". Name the files you actually read.',
+    'Then, last, the plan itself: a numbered list, one short line per step, in the order they should be done.',
     'Put a short heading line right before the list, like "## Pagoda page" (two to five words that name the plan).',
     'You may add the reason after a dash. Use 3 to 8 steps. Write nothing after the list.',
     '',
@@ -44,8 +56,9 @@ export function planPrompt(task) {
 }
 
 /**
- * The plan in a reply: its last run of numbered lines (at least two). Lines that follow a step and are indented or bulleted are that
- * step's detail. Returns null when the reply holds no list, so the page shows the reply as it is and never a made-up plan.
+ * The plan in a reply: its last run of numbered lines (at least two), and the words before it as the plan's context. Lines that follow a
+ * step and are indented or bulleted are that step's detail. Returns null when the reply holds no list, so the page shows the reply as it
+ * is and never a made-up plan.
  */
 export function parsePlan(text, request = '') {
   const lines = String(text ?? '').replace(/\r/g, '').split('\n');
@@ -73,12 +86,13 @@ export function parsePlan(text, request = '') {
     return { id: `s${k + 1}`, text: t, detail: detail || extra, state: 'pending', summary: null };
   }).filter(s => s.text);
   if (steps.length < 2) return null;
-  let title = '';
+  let title = '', headAt = best.start;
   for (let i = best.start - 1; i >= 0 && i >= best.start - 6; i--) {
     const h = /^\s*#{1,6}\s+(.+?)\s*$/.exec(lines[i]);
-    if (h) { title = clean(h[1]); break; }
+    if (h) { title = clean(h[1]); headAt = i; break; }
   }
-  return { title: clip(title || clean(request) || 'Plan', 80), steps };
+  // What was written before the list belongs to the plan: the person reads what it found first, then the steps it will do.
+  return { title: clip(title || clean(request) || 'Plan', 80), context: contextText(lines.slice(0, headAt)), steps };
 }
 
 /** Numbered points inside a goal's own words ("1. a 2. b" on lines or in one line); at least two, counting up from 1. */
@@ -116,6 +130,7 @@ export function stepObjective(plan, index) {
     `Overall aim: ${plan.title}.`,
     `You are on step ${index + 1} of ${n}: ${s.text}${s.detail ? ` (${s.detail})` : ''}.`,
     done ? `Already done: ${done}.` : '',
+    plan.file ? `The plan's own file holds its full text and what was found while it was made: ${plan.file}. Read it only if you need that background.` : '',
     plan.briefing ? String(plan.briefing) : '',
     isViewStep(s.text) ? 'This step is about seeing the result. To show a local image, SVG, HTML page or PDF, use the present tool (a browser cannot open file:// addresses). Never wait for a program to close. If a person is at this computer and you start a browser, start it so the command returns at once (Windows: Start-Process; macOS: open; Linux: xdg-open) and say only that you started it, not that the page rendered. If there is no screen, check the page without a visible window: use the headless browser tool if you have one, otherwise read the file and its script for mistakes, and say in one plain sentence what you could and could not check. Then finish the step.' : '',
     'Do only this step, check that it worked, and then finish the goal.',
@@ -193,9 +208,9 @@ export class PlanStore {
     } catch { /* the plan still lives in memory */ }
   }
   get(chatId) { return this.plans.get(chatId) ?? null; }
-  create(chatId, { title, steps, request = '', source = 'plan', state = 'proposed', caution = null }) {
+  create(chatId, { title, steps, request = '', context = '', source = 'plan', state = 'proposed', caution = null }) {
     const now = new Date().toISOString();
-    const plan = { id: randomUUID(), chatId, title, request, source, state, steps, createdAt: now, updatedAt: now, goalStarted: false, ...(caution ? { caution } : {}) };
+    const plan = { id: randomUUID(), chatId, title, request, context, source, state, steps, createdAt: now, updatedAt: now, goalStarted: false, ...(caution ? { caution } : {}) };
     this.plans.set(chatId, plan); this.#save();
     return plan;
   }

@@ -132,6 +132,7 @@ test('Plan mode: the turn ends with a real plan and its checklist file, and the 
   assert.ok(frame, 'a Plan-mode turn that ends with a numbered list sends a plan frame');
   assert.equal(frame.event, 'proposed');
   assert.equal(frame.plan.steps.length, 3);
+  assert.equal(frame.plan.context, 'I looked around the folder first.', 'what the turn found by looking comes with the plan, not only its steps');
   const file = frame.plan.file;
   assert.equal(file, join(PLAN_DIR, 'the-pagoda-plan.md'), 'the frame carries the file of this plan');
   const abs = join(r.ws, file);
@@ -139,6 +140,8 @@ test('Plan mode: the turn ends with a real plan and its checklist file, and the 
   assert.match(md, /^# The pagoda plan$/m);
   assert.equal((md.match(/^- \[ \] \d\. /gm) ?? []).length, 3, 'every step starts unticked');
   assert.match(md, /waiting for you · 0 of 3 steps done/, 'the file says in words what the card shows');
+  const askedAt = md.indexOf('What was asked for:'), foundAt = md.indexOf('I looked around the folder first.'), stepsAt = md.indexOf('## Steps');
+  assert.ok(askedAt > 0 && foundAt > askedAt && stepsAt > foundAt, 'the file is read top down: the ask, then what was found, then ## Steps last');
   assert.deepEqual(readdirSync(r.ws), ['.strata'], 'Plan mode is read-only: the only folder in the chat is the app\'s own');
   const stored = r.bridge.planState('md1');
   assert.equal(stored.id, frame.plan.id); assert.equal(stored.file, file, 'the plan keeps one file name, so a new title does not move it');
@@ -161,6 +164,9 @@ test('Plan mode then Start as goal: the same file gets ticked as the steps finis
   const approved = r.bridge.planControl({ chatId: 'md3', planId: plan.id, action: 'approve' });
   assert.equal(approved.plan.file, plan.file, 'approving keeps the same file');
   assert.match(readFileSync(abs, 'utf8'), /approved · 0 of 3 steps done/);
+  const edited = r.bridge.planControl({ chatId: 'md3', planId: plan.id, action: 'edit', steps: plan.steps.map(s => s.text) });
+  assert.equal(edited.plan.context, plan.context, 'editing the steps keeps what was found');
+  assert.equal(r.bridge.planState('md3').context, plan.context, 'and it is the stored plan that keeps it, not only the reply');
   const out = [];
   await r.bridge.planGoal({ chatId: 'md3', workspacePath: r.ws, mode: 'bypass', planId: plan.id, onFrame: f => out.push(f) });
   const md = readFileSync(abs, 'utf8');
