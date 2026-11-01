@@ -18,7 +18,7 @@ import { FirstRunLanguage } from './FirstRunLanguage';
 import { DownloadParts } from './DownloadParts';
 import { EngineWarning } from './EngineWarning';
 import { OTHER_NOTE, PICK_NOTE, recommendedVersions } from '../lib/native-fit';
-import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
+import { nativeCatalogModels, catalogVersionLabel, startingChoice } from '../lib/native-catalog';
 type Choices = NonNullable<NonNullable<SetupState['choices']>['onboarding']>;
 function radioKeys(event: KeyboardEvent<HTMLDivElement>) { if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
     return; event.preventDefault(); const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=radio]')); const current = items.indexOf(event.target as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (current + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1) + items.length) % items.length; items[next]?.focus(); items[next]?.click(); }
@@ -37,9 +37,13 @@ export function GuidedSetup() {
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
     const saved = !setup?.complete && !setup?.choices?.onboarding?.manual ? setup?.choices?.onboarding : undefined;
     const [step, setStep] = useState(saved?.manual || setup?.complete ? 1 : saved?.step ?? 1);
-    const [family, setFamily] = useState(saved?.family ?? native?.catalog?.recommendation?.family ?? native?.catalog?.families?.[0]?.family ?? '');
-    const initialFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family));
-    const [size, setSize] = useState(saved?.size ?? initialFamily?.sizes.find(s => s.model === native?.catalog?.recommendation?.model)?.id ?? initialFamily?.sizes[0]?.id ?? '');
+    /* Only what the person (or an earlier visit) chose is state. Until then the start is worked out from the catalog on every render: a model already
+       on this computer first, else the catalog's recommendation. The state used to be filled once at mount, before the catalog had arrived, and
+       so fell back to the first size in the list (Q2_0, a 66 GB download) while an installed model sat beside it. */
+    const [chosenFamily, setFamily] = useState(saved?.family ?? ''), [chosenSize, setSize] = useState(saved?.size ?? '');
+    const start = startingChoice(families, (native?.installed?.models ?? []).filter(m => m.ready).map(m => m.model), native?.catalog?.recommendation);
+    const family = chosenFamily || start?.family || native?.catalog?.recommendation?.family || families[0]?.family || '';
+    const size = chosenSize || start?.size || '';
     const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation?.context ?? 32768);
     const [vision, setVision] = useState(saved?.vision ?? true), [directory, setDirectory] = useState(saved?.directory ?? '');
     const [profile, setProfile] = useState<'work' | 'performance'>(saved?.profile ?? 'work');
