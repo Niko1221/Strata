@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
     cudaMalloc((void**) &dst, (size_t) iters * 4 * 8);
     std::vector<unsigned long long> hst((size_t) iters * 4);
     std::vector<K::FusedGrArgs> as((size_t) sets * 8);
-    const int masks[] = {0, 1, 4, 5, 16, 32, 20, 36};
+    const int masks[] = {0, 5, 133, 261};
     const int NM = (int) (sizeof(masks) / sizeof(masks[0]));
     int failures = 0;
     for (int T = t_lo; T <= t_hi; ++T) {
@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
                 a.lo = dlo + (size_t) t * LR; a.rs = drs + (size_t) t * HC;
                 a.inject_out = dio + (size_t) t * HC; a.mixed = dmix + (size_t) t * N;
             }
-        std::vector<double> tot[8], dn[8], up[8];
+        std::vector<double> tot[16], dn[16], up[16];
         for (int r = 0; r < rounds; ++r)
             for (int mi = 0; mi < NM; ++mi) {
                 K::fused_gr_v3_pf(masks[mi]);

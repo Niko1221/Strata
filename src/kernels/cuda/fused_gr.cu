@@ -749,7 +749,10 @@ constexpr int TQ3 = N / 8 / 32;                    // uint4 weight chunks per la
 
 // PF (BW-DENSE, bitwise the PF = 0 kernel): bit 0 issues the staging's loads (R, bo, w_norm of every token) before using any
 // of them; bit 1 loads the warp's weight row into registers first. R2V == 1, S == 1 only.
-template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false, int R2V = 1, int PF = 0>
+// RB (DF2-MORE, STRATA_GR_V3_PF bit 7 (windows of 5+ rows, 2 rows a warp) / bit 8 (4 rows, any window), R2V > 1 only, bitwise the RB = false kernel): the dot phase loops over the lane's chunks first, then the tokens, then
+// the warp's R2V rows, so a token's 8 activations are read from shared memory once for all R2V rows (it was once per row).  Each (row, token) accumulator
+// adds the same chunk dots in the same ascending order, then the same warp reduction.
+template <int S, int MAX_T = kFusedGrMaxT, bool EXACT_T = false, int R2V = 1, int PF = 0, bool RB = false>
 __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* __restrict__ part, float* __restrict__ ssg) {
     extern __shared__ __align__(16) float xs[];    // [T][N / S]
     constexpr int R2 = R2V;                        // down rows per warp (R2V > 1: fewer blocks, each stages its stream slice once for R2V x the rows; the same dots)
@@ -867,6 +870,57 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
         ssg[(t * HC + c) * S + h] = sum;
     }
     if (!active) return;
+    if constexpr (RB && R2V > 1) {
+        static_assert(S == 1 && EXACT_T && PF == 0, "the register-blocked down dots are for the exact-T, one-half, plain-staging kernels");
+        float accr[R2][MAX_T];
+#pragma unroll
+        for (int r = 0; r < R2; ++r)
+#pragma unroll
+            for (int k = 0; k < MAX_T; ++k) accr[r][k] = 0.0f;
+        const uint4* w4r[R2];
+#pragma unroll
+        for (int r = 0; r < R2; ++r)
+            w4r[r] = reinterpret_cast<const uint4*>(wbase + (size_t) (row0 + (r < nrows ? r : 0)) * D + (size_t) c * N + (size_t) h * SL);
+        uint4 wch[R2][TQS];
+#pragma unroll
+        for (int q = 0; q < TQS; ++q)
+#pragma unroll
+            for (int r = 0; r < R2; ++r) wch[r][q] = __ldg(w4r[r] + lane + 32 * q);
+#pragma unroll
+        for (int q = 0; q < TQS; ++q) {
+            const int j = lane + 32 * q;
+            Bf16x8 wv[R2];
+#pragma unroll
+            for (int r = 0; r < R2; ++r) wv[r] = unpack8(wch[r][q]);
+#pragma unroll
+            for (int k = 0; k < MAX_T; ++k) {
+                const float4* x4 = reinterpret_cast<const float4*>(xs + (size_t) k * SL + j * 8);
+                const float4 x0 = x4[0], x1 = x4[1];
+#pragma unroll
+                for (int r = 0; r < R2; ++r) accr[r][k] += dot8u(wv[r], x0, x1);
+            }
+        }
+#pragma unroll
+        for (int r = 0; r < R2; ++r) {
+            if (r >= nrows) break;
+            const int prow = inject_block ? LR + warp : row0 + r;
+            if constexpr (MAX_T >= 5 && MAX_T <= 8) {
+                float accs[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                for (int k = 0; k < MAX_T; ++k) accs[k] = accr[r][k];
+                const float d8 = warp_sum8(accs, lane);
+                const int k = (lane >> 2) & 7;
+                if ((lane & 3) == 0 && k < MAX_T) part[(((size_t) k * HC + c) * S + h) * PR + prow] = d8;
+            } else {
+#pragma unroll
+                for (int k = 0; k < MAX_T; ++k) {
+                    const float v = warp_sum(accr[r][k]);
+                    if (lane == 0) part[(((size_t) k * HC + c) * S + h) * PR + prow] = v;
+                }
+            }
+        }
+        return;
+    }
 #pragma unroll
     for (int r = 0; r < R2; ++r) {
         if (r >= nrows) break;
@@ -903,6 +957,9 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
     }
 }
 
+// PF (BW-DENSE, bitwise the PF = 0 kernel): bit 0 issues the loads of the partial sums and of every row's R / w_norm / bo / inj before
+// their first use (the in-place store of R in the row loop otherwise ends each row's loads at a full latency); bit 1 loads the
+// warp's w_up rows first. S == 1, EXACT_T only.
 // PF (BW-DENSE, bitwise the PF = 0 kernel): bit 0 issues the loads of the partial sums and of every row's R / w_norm / bo / inj before
 // their first use (the in-place store of R in the row loop otherwise ends each row's loads at a full latency); bit 1 loads the
 // warp's w_up rows first. S == 1, EXACT_T only.
@@ -2666,6 +2723,32 @@ static void gr_down_r2_launch(const GrMulti& m, float* part, float* ssg, cudaStr
     constexpr size_t sm = (size_t) K * N * sizeof(float);
     gr_down_v3_kernel<1, K, true, R2V><<<dim3(LR / (WARPS * R2V) + 1, HC), THREADS, sm, st>>>(m, part, ssg);
 }
+// the same with the register-blocked dot phase (RB, STRATA_GR_V3_PF bit 7): its shared memory opt-in is set on first use
+template <int K, int R2V>
+static void gr_down_rb_launch(const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
+    constexpr size_t sm = (size_t) K * N * sizeof(float);
+    static const bool once = [] {
+        cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, R2V, 0, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
+        cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, R2V, 0, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        return true;
+    }();
+    (void) once;
+    gr_down_v3_kernel<1, K, true, R2V, 0, true><<<dim3(LR / (WARPS * R2V) + 1, HC), THREADS, sm, st>>>(m, part, ssg);
+}
+template <int R2V>
+static bool gr_down_rb_dispatch_k(int n_tok, const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
+    switch (n_tok) {
+    case 1: gr_down_rb_launch<1, R2V>(m, part, ssg, st); return true;
+    case 2: gr_down_rb_launch<2, R2V>(m, part, ssg, st); return true;
+    case 3: gr_down_rb_launch<3, R2V>(m, part, ssg, st); return true;
+    case 4: gr_down_rb_launch<4, R2V>(m, part, ssg, st); return true;
+    case 5: gr_down_rb_launch<5, R2V>(m, part, ssg, st); return true;
+    case 6: gr_down_rb_launch<6, R2V>(m, part, ssg, st); return true;
+    case 7: if (kFusedGrMaxT >= 7) { gr_down_rb_launch<7, R2V>(m, part, ssg, st); return true; } return false;
+    case 8: if (kFusedGrMaxT >= 8) { gr_down_rb_launch<8, R2V>(m, part, ssg, st); return true; } return false;
+    default: return false;
+    }
+}
 template <int R2V>
 static bool gr_down_r2_dispatch_k(int n_tok, const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
     switch (n_tok) {
@@ -2803,6 +2886,8 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
         if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, stream);
         const int pfm = g_v3_pf_force >= 0 ? g_v3_pf_force : v3_pf_mask();
         if (split == 2) gr_down_v3_kernel<2><<<dim3(LR / WARPS + 1, HC * 2), THREADS, sm, st>>>(m, part, ssg);
+        else if ((pfm & 128) != 0 && n_tok >= 5 && gr_down_rb_dispatch_k<2>(n_tok, m, part, ssg, st)) {}
+        else if ((pfm & 256) != 0 && gr_down_rb_dispatch_k<4>(n_tok, m, part, ssg, st)) {}
         else if (((pfm >> 4) & 3) == 1 && gr_down_r2_dispatch_k<2>(n_tok, m, part, ssg, st)) {}
         else if (((pfm >> 4) & 3) == 2 && gr_down_r2_dispatch_k<4>(n_tok, m, part, ssg, st)) {}
         else if ((pfm & 3) != 0 && gr_down_pf_dispatch(pfm & 3, n_tok, m, part, ssg, st)) {}

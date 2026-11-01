@@ -45,6 +45,11 @@ public:
     bool load(const std::string& pack_path, int device, std::string& err);
     /// The target's embedding and head (and the draft vocabulary file, "" or missing: the whole head).
     bool bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err);
+    /// DF-05: before bind, the MTP drafter's gathered draft-head rows and vocabulary (device pointers it keeps owning) when they are the same bytes this
+    /// drafter would gather; bind then uses them instead of a second copy (about 213 MiB on Flash-Next) and checks the vocabulary against the file.
+    struct SharedHead { const uint8_t* rows = nullptr; const int32_t* vocab_dev = nullptr; const std::vector<int32_t>* vocab_host = nullptr; int64_t n = 0; int type = -1; };
+    void share_head(const SharedHead& s) { shared_ = s; }
+    bool head_shared() const { return dhead_shared_; }
     /// Tests: an embedding callback and a head given as raw rows of `head_type` (a native_mmvq type).
     using EmbedFn = std::function<void(const int32_t* tokens_dev, int n, float* out, cudaStream_t)>;
     bool bind_raw(EmbedFn embed, const void* head_w, int head_type, int64_t head_rows, const std::vector<int32_t>& vocab, std::string& err);
@@ -71,6 +76,11 @@ public:
     /// Captures the eight round graphs (n_new = 1..8) on `taps` now, so no round pays for a capture.
     bool prepare(const float* taps_dev, std::string& err);
 
+    /// The most drafts a window will use (the engine's widest window - 1, 1..kDrafts; default kDrafts).  The head, the top-k and the selector's walk run for that
+    /// many rows only: the first `n` drafts and probabilities are bitwise the ones a full block makes (every row is its own column, the walk goes left to right);
+    /// draft() returns token 0 with probability 0 for the rest.  Before prepare() / the first draft(); a later change drops the captured graphs.
+    void set_max_drafts(int n);
+
     uint64_t vram_bytes() const { return vram_; }
     int64_t n_draft_vocab() const { return n_dvocab_; }
     int n_embd() const { return N_; }
@@ -89,8 +99,8 @@ private:
     const float* f32(const std::string& name) const { return reinterpret_cast<const float*>(blob_ + find(name).off); }
     /// planar Q8 matrices (1..3 of them, same input width) times the planar activations in xqp_ / xdp_ (ncols columns)
     void gemm(std::initializer_list<const char*> names, std::initializer_list<float*> outs, int ncols, cudaStream_t cs, const uint8_t* xq, const float* xd);
-    bool record_context(const float* taps, int n, cudaStream_t cs, std::string& err);
-    bool record_block(cudaStream_t cs, std::string& err);
+    bool record_context(const float* taps, int n, cudaStream_t cs, std::string& err, bool rope = true);
+    bool record_block(cudaStream_t cs, std::string& err, bool rope = true);
     bool capture(int n, const float* taps, std::string& err);
     bool alloc(std::string& err);
     struct Prof;
@@ -118,6 +128,8 @@ private:
     int64_t n_dvocab_ = 0;
     int32_t* dvocab_ = nullptr;
     uint8_t* dhead_ = nullptr;      ///< the draft vocabulary's head rows (owned), or null with head_w_ the whole head
+    SharedHead shared_;             ///< offered by the MTP drafter (DF-05)
+    bool dhead_shared_ = false;     ///< dhead_ / dvocab_ are the MTP drafter's, not freed here
     bool bound_ = false;
 
     // device buffers
@@ -127,8 +139,11 @@ private:
     int32_t* h_out_ = nullptr;      ///< pinned: 7 draft tokens then 7 probabilities
     float* hp_out_ = nullptr;
     float *kring_[8] = {}, *vring_[8] = {};
-    float *rt_ctx_ = nullptr, *rt_blk_ = nullptr;
+    float *rt_ctx_ = nullptr, *rt_blk_ = nullptr;   ///< rope tables of the context rows and of the block rows: one allocation, rt_blk_ = rt_ctx_ + 8 * 128
+    double* rope_inv_ = nullptr;   ///< theta^(-2 i / 128), once
+    cudaEvent_t ev_hs_[2] = {};     ///< the selector's projection runs beside the head
     uint8_t* xq_ = nullptr;         ///< the head's q8_1 activations
+    uint8_t* xil_ = nullptr;        ///< their interleaved copy (the head's native_mmvq_il kernel, CUDA)
     uint8_t* xqp_ = nullptr;        ///< planar activations of the drafter's own GEMMs (kernels/dflash2.hpp)
     float* xdp_ = nullptr;
     uint8_t* xqc_ = nullptr;        ///< the same for the context update, which runs beside the block
@@ -144,6 +159,7 @@ private:
     uint32_t* topscratch_ = nullptr;
     cudaGraphExec_t exec_[kRows + 1] = {};
     const float* graph_taps_ = nullptr;
+    int ndraft_ = kDrafts;          ///< drafts a window can use (set_max_drafts)
     int64_t have_ctx_ = 0;
     std::vector<int32_t> hist_;     ///< the token of every position the ring was filled for (serve)
     int64_t ring_hi_ = 0;           ///< one past the highest position written in this epoch
