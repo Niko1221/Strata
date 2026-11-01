@@ -1,4 +1,9 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
+// HostGraphLaunch (the graph launched by the calling thread, or by a helper thread so this one can serve the doorbells): CUDA builds,
+// and the Windows HIP build (STRATA_VERIFY_ASYNC_LAUNCH=1 launches from a helper thread; STRATA_LAUNCH_PROBE=1 logs the launch timing).
+#if (!defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)) || (defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(_WIN32))
+#define STRATA_VERIFY_HGL 1
+#endif
 #include "strata/core/batch_rows.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
@@ -8,7 +13,7 @@
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_VERIFY_HGL)
 #include "strata/core/host_graph_launch.hpp"
 #endif
 #include "strata/core/remote_expert_opt.hpp"
@@ -306,6 +311,9 @@ const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
+// STRATA_LAUNCH_PROBE (STRIX-TDR): process start, and the first windows' launch timing
+const Clock::time_point g_proc_t0 = Clock::now();
+Clock::time_point probe_proc_t0() { return g_proc_t0; }
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
 // STRATA_BATCH_SELF_COMMIT=1 (opt-in): a batch window whose rows are each another slot's one token keeps them itself,
@@ -2773,6 +2781,19 @@ bool Verifier::capture(int T, std::string& err) {
         iflags = cudaGraphInstantiateFlagUseNodePriority;
     }
 #endif
+#if defined(STRATA_USE_HIP)
+    if (env_on("STRATA_LAUNCH_PROBE")) {   // STRIX-TDR: how many nodes (about one AQL packet each) the window graph holds
+        size_t nn = 0, nk = 0;
+        hipGraphGetNodes(graph, nullptr, &nn);
+        std::vector<hipGraphNode_t> nodes(nn);
+        hipGraphGetNodes(graph, nodes.data(), &nn);
+        for (hipGraphNode_t nd : nodes) {
+            hipGraphNodeType ty;
+            if (hipGraphNodeGetType(nd, &ty) == hipSuccess && ty == hipGraphNodeTypeKernel) ++nk;
+        }
+        std::fprintf(stderr, "strata tdr-probe: the %d-token window graph has %zu nodes, %zu of them kernels\n", T, nn, nk);
+    }
+#endif
     const bool made = instantiate_evicting(exec_t, graph, {}, "verify: instantiate: ", err, T, iflags);
     cudaGraphDestroy(graph);
     if (!made) return false;
@@ -3159,7 +3180,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             ss.ple.table->prefetch_rows(ple_rows + t * PLE_N_HEADS);
         }
     }
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_VERIFY_HGL)
     std::optional<HostGraphLaunch> launch_o;   // (not set when the previous stage launched this window already)
 #endif
     const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
@@ -3176,6 +3197,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         *(volatile uint32_t*) h_flag_ = 1;
         flag_raised = true;
     }
+    static const bool probe_on = env_on("STRATA_LAUNCH_PROBE");
+    static std::atomic<int> probe_count{0};
+    const int probe_idx = probe_on && !pre ? probe_count.fetch_add(1) : -1;
+    const bool probe_this = probe_idx >= 0 && probe_idx < 12;
+    Clock::time_point probe_t0 = Clock::now();
     if (!pre) {
         if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -3187,16 +3213,47 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         // 0.1.43: with the all-resident graph the host serves no layer, so nothing can hold a layer back: every copy first
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
             !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_VERIFY_HGL)
         // A blocking instrumented launch cannot also serve the graph's CPU doorbells.
         static const bool threaded_launch = [] {
             const char* value = std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
             return value != nullptr && value[0] == '1';
         }();
         strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
+        // STRATA_LAUNCH_PROBE=1 (diagnostic, the first 12 windows): how long the launch call takes, whether the GPU has rung a layer
+        // before the call returns, and what a call that has not returned looks like after 50 ms ... 10 s (STRIX-TDR).
+        std::atomic<bool> probe_done{false};
+        std::thread probe_th;
+        if (probe_this) {
+            probe_t0 = Clock::now();
+            size_t fm = 0, tm = 0;
+            (void) cudaMemGetInfo(&fm, &tm);
+            std::fprintf(stderr, "strata tdr-probe: window %d T=%d pos=%lld: t=%.0f ms since start, %.0f MiB free, launching%s\n", probe_idx, T,
+                         (long long) pos0, ms_since(probe_proc_t0()), (double) fm / 1048576.0, threaded_launch ? " (helper thread)" : "");
+            probe_th = std::thread([this, &probe_done, probe_t0, probe_idx, T] {
+                static const double marks[] = {50, 250, 500, 1000, 2000, 3000, 5000, 10000, 30000};
+                size_t mi = 0;
+                while (!probe_done.load(std::memory_order_acquire) && mi < sizeof marks / sizeof marks[0]) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    if (ms_since(probe_t0) < marks[mi]) continue;
+                    std::fprintf(stderr,
+                                 "strata tdr-probe: window %d T=%d: the launch call has not returned after %.0f ms; GPU rang %u, flags served %u A %u B %u\n",
+                                 probe_idx, T, marks[mi], h_seq_ ? *(volatile uint32_t*) h_seq_ : 0u, h_flag_ ? *(volatile uint32_t*) h_flag_ : 0u,
+                                 h_flagA_ ? *(volatile uint32_t*) h_flagA_ : 0u, h_flagB_ ? *(volatile uint32_t*) h_flagB_ : 0u);
+                    ++mi;
+                }
+            });
+        }
         launch_o.emplace(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_, device_, threaded_launch,
                          [this] { (void) release_gpu_waits(5000); });
         const cudaError_t le = launch_o->status();
+        if (probe_this) {
+            probe_done.store(true, std::memory_order_release);
+            probe_th.join();
+            std::fprintf(stderr, "strata tdr-probe: window %d T=%d: launch call %s in %.2f ms; the GPU had rung %u layer(s) and the host served %u at the return\n",
+                         probe_idx, T, threaded_launch ? "handed to the helper" : "returned", ms_since(probe_t0),
+                         h_seq_ ? *(volatile uint32_t*) h_seq_ : 0u, h_flag_ ? *(volatile uint32_t*) h_flag_ : 0u);
+        }
 #else
         strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
         const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_);
@@ -3204,7 +3261,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         trace_ev("LAUNCHED", -1, -1, (int64_t) le);
         graph_launched = true;
         if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_VERIFY_HGL)
         (void) launch_o->query();
 #else
         (void) cudaStreamQuery(cs_);
@@ -3268,7 +3325,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(2000)) {
                 last_flush = now;
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_VERIFY_HGL)
                 const cudaError_t q = launch_o ? launch_o->query() : cudaStreamQuery(cs_);
 #else
                 const cudaError_t q = cudaStreamQuery(cs_);
@@ -3283,7 +3340,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             }
             if (now - a > std::chrono::seconds(20)) {
                 // #267: the caller ends the engine; no spin kernel may outlive it
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_VERIFY_HGL)
                 trace_ev("TIMEOUT", k, l, (int64_t) (launch_o ? launch_o->query() : cudaStreamQuery(cs_)));
 #else
                 trace_ev("TIMEOUT", k, l, (int64_t) cudaStreamQuery(cs_));
@@ -3301,6 +3358,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
         strata_load_fence();   // the layer rang: the GPU's activations are read after it (a no-op on x86)
         const Clock::time_point b = Clock::now();
+        if (probe_this && k == 0)
+            std::fprintf(stderr, "strata tdr-probe: window %d T=%d: the first doorbell (layer %lld) seen %.2f ms after the launch began\n", probe_idx, T,
+                         (long long) l, ms_since(probe_t0));
         if (g_trace) trace_ev("RANG", k, l, (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
         VDBG("layer %lld rang\n", (long long) l);
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && l >= 0 &&
@@ -3386,7 +3446,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // spin kernel outlives the process - the case that left Windows GPUs "lost" until a power cycle.  The wait
     // itself stays a blocking sync: a cudaStreamQuery poll here cost IQ3_S ~3% decode (a core calling the driver
     // beside the expert workers).
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_VERIFY_HGL)
     const cudaError_t launch_result = launch_o ? launch_o->finish() : cudaSuccess;
     if (launch_result != cudaSuccess) {
         err = std::string("verify: launch: ") + cudaGetErrorString(launch_result);
