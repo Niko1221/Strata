@@ -1,0 +1,80 @@
+[strata] 2026-11-01 20:31:39 engine started: <strata>\engine\strata.exe --serve --pack <data>\packs\iq3_s --native <data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf <data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile <strata>\data\expert-profile.bin --expert-cache auto --trim-stage-weights --pipeline-windows 0 --prefill 8192 --prefill-pipe 1 --spec 4 --spec-min-p 0.5 --mtp <data>\mtp\rt --max-context 196608 --kv q4_0 --vision --vram-reserve-mib 2624 --vram-reserve-later-mib 1400 --resident-experts --control-vector-scaled <strata>\data\experimental-speed-projection\Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer --layer-split 22
+strata: WARNING --prefill 8192: prompt chunks of 8192 tokens or more crashed the engine on Windows HIP (RX 7900 XTX: the commit charge jumped ~70 GB, exit code 0xC0000409, #1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at 6144
+strata generate: memory guard: limit 63.9 GiB (source: meminfo), current 16.1 GiB, reclaimable cache credited 0.0 GiB; available 47.8 GiB (MemAvailable 47.8 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split 22)
+strata generate: PCIe probe: 27.6 GB/s host->device (best of 27.3 27.3 27.6 27.6) -> pcie_frac 0.55 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: <data>\packs\iq3_s experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.5 s)
+strata generate: layer split: CUDA0 loads the dense weights of layers 0-21 only
+strata generate: 776 MiB of weights loaded from <data>\packs\iq3_s in 0.6 s (692 canonical tensors skipped: served natively)
+strata generate: 137 native projection matrices, 905.94 MiB of weights, in 3.3 s
+strata generate: control vector mode = project, dir = per-layer, layers 4..44 (41 steered)
+strata generate: PLE direct read probe: 67904 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata: Windows budgets 19652 of this card's 20464 MiB for this process; free VRAM is counted within that (STRATA_WDDM_BUDGET=0: off)
+strata generate: layer split: CUDA1 loads the dense weights of layers 22-47 only
+strata generate: layer split: CUDA1 PCIe probe 6.5 GB/s (best of 6.5 6.4 6.4 6.4) -> pcie_frac 0.18
+strata generate: layer split: CUDA1 holds its weights; 17.07 GiB free (its session follows the split search)
+strata generate: profile <strata>\data\expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of <data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+strata generate: layer split: CUDA1 holds its weights, session [22, 48) and the head; 15.57 GiB free
+strata mtp: draft layer loaded, 934 MiB of VRAM (experts 675, dense 111), files read in 0.88 s (888 MiB/s)
+strata generate: GPU 0: AMD Radeon RX 7900 XT (gfx1100)
+strata generate: HIP runtime <strata>\engine\amdhip64_7.dll
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: the GPU cache's fill and the RAM copy read through the mapping (experts.bin only)
+strata generate: CPU pool tasks/phase: 36 (automatic), participating threads: 12
+strata generate: CPU pool: 11 workers by default (12 physical cores, 24 logical processors; bounded by every physical core but the host's)
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 2,4,...,22 (11 workers, one per physical core; host on 0)
+strata aux cpus: not available on this system
+strata generate: expert cache auto: 16.62 GiB free, 2624 MiB reserved (+0 MiB for the draft head) -> 5668 slots
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1100, version 100500)
+strata generate: only 132 MiB free once the slots are written (reserve 2624 MiB); shrinking the expert cache
+strata generate: expert cache 6472 slots, 11.56 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: the profile fill asks for 0 pairs ahead (STRATA_FILL_AHEAD)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 2182 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: pre-filled 6472 of 6472 slots from the profile in 46.7 s (266 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 14.53 GiB free of 19.98, room for experts 13.06 GiB
+strata generate: layer split: CUDA1 runs layers 22-47, expert cache 6539 slots (13.06 GiB), 6539 of its 13312 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-21
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.48)
+strata generate: token graph hit path: 13011 resident experts, decided on the device
+FileExpertSource: available RAM 20.03 GiB, 44.90 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: allocating 29.03 GiB pageable resident cache complement
+FileExpertSource: before complement allocation: requested 29.03 GiB, available RAM 44.90 GiB, available commit 38.23 GiB (limit 119.93 GiB), available virtual address space 130478.62 GiB
+FileExpertSource: copied cache complement through layer 8/48 (5.86 GiB, 5 s)
+FileExpertSource: copied cache complement through layer 16/48 (10.85 GiB, 10 s)
+FileExpertSource: copied cache complement through layer 24/48 (14.93 GiB, 14 s)
+FileExpertSource: copied cache complement through layer 32/48 (19.88 GiB, 20 s)
+FileExpertSource: copied cache complement through layer 40/48 (25.03 GiB, 27 s)
+FileExpertSource: copied cache complement through layer 48/48 (29.03 GiB, 34 s)
+FileExpertSource: pageable resident cache complement ready: resident 29.03 GiB, pinned 0.00 GiB in 42 s
+FileExpertSource: the split stages lend 3616 slots to the prompt path: 3616 keep their experts in RAM too (6.81 GiB)
+FileExpertSource: 6539 verified additional-GPU experts remain on the mmap fallback
+strata generate: resident RAM mode: 29.03 GiB of experts in RAM (pageable), 6472 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: Windows commit: 8.7 GiB left of a 119.9 GiB limit (RAM + page file)
+strata serve: the prompt path borrows 1903 CUDA0 cache slots (3.41 GiB)
+strata serve:   CUDA1 prompt path borrows 1713 of its 6539 slots (3.41 GiB)
+strata serve: lend sizing: the prompt path borrows 3616 slots (ring 96 slots at chunk 8192), 3616 of them keep their experts in RAM too
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1100, version 100500)
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1100, version 100500)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 1 in 41 ms (STRATA_PREFILL_WARM=0 skips)
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1100, version 100500)
+strata hc: CUDA1: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 75.5 MiB of device buffers
+strata serve: layer split: layers 0-21 (CUDA0), 22-47 (CUDA1), one hand-off per window
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 75.5 MiB of device buffers
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: conversation cache sized from the free RAM: 1280 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 2590 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 1108 MiB of VRAM free with everything loaded

@@ -20,6 +20,11 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-11-01: 2x AMD Radeon RX 7900 XT 20 GB (gfx1100), Ryzen 9 3900X, 64 GB RAM](../bench/results/2026-11-01-community-rx-7900-xt-qwen3-8-flash-next-iq3-s/README.md):
+  Strata 0.1.55 / prebuilt engine 0.1.48 on Windows HIP, Qwen3.8-Flash-Next GSQ-RCO IQ3_S, 196,608-token context, layer split 22/26 (custom flags incl.
+  `--prefill 8192 --prefill-pipe 1` and the experimental speed projection); `tools/strata_bench.py --long`, 3 runs each, medians:
+  prompt 403.9 / 798.2 / 886.1 tok/s at 4K / 16K / 32K, short chat decode 41.2 tok/s (35.8–49.5, TTFT 0.57 s),
+  agent session cache hit 69.3% with decode 54.0 tok/s (36.7–66.8). Speed only, no correctness check.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
