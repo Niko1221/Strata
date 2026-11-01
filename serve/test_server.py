@@ -106,9 +106,7 @@ class MaxTokens(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["object"], "text_completion")
         self.assertTrue(body["choices"][0]["text"])
-        tail_len = len(self.svc.tok.encode(self.svc.template.gen_prompt_tail(False), parse_special=True))
-        self.assertEqual(body["usage"]["prompt_tokens"],                                                 # asked off: the tail
-                         len(self.svc.tok.encode(prompt, parse_special=True)) + tail_len)               # a chat render adds
+        self.assertEqual(body["usage"]["prompt_tokens"], len(self.svc.tok.encode(prompt, parse_special=True)))
         status, echoed = self.post("/v1/completions", {"model": "m", "prompt": prompt, "max_tokens": 8,
                                                         "temperature": 0, "enable_thinking": False,
                                                         "echo": True})
@@ -144,6 +142,106 @@ class MaxTokens(unittest.TestCase):
                     self.assertEqual(chunks[0]["choices"][0]["text"], body["prompt"])
                 self.assertTrue(raw.endswith("data: [DONE]\n\n"))
 
+    def test_legacy_completions_preserves_raw_thinking_text(self):
+        reply = " the units.</think>\n\nThe answer is 42."
+        engine = RecordingEngine(self.svc.tok, reply, max_context=CTX)
+        body = {"model": "m", "prompt": "<|im_start|>assistant\n<think>\nLet me check",
+                "max_tokens": 128, "temperature": 0}
+        with mock.patch.object(self.svc, "engine", engine):
+            for stream in (False, True):
+                with self.subTest(stream=stream):
+                    self.assertEqual(self.raw_completion_text({**body, "stream": stream})[0], reply)
+
+    def test_legacy_completions_does_not_inject_default_thinking_budget(self):
+        reply = "xy" * 700
+        engine = RecordingEngine(self.svc.tok, reply, max_context=CTX)
+        for prompt in ("<|im_start|>assistant\n<think>\nLet me check",
+                       "<|im_start|>assistant\n<think>\nDone.</think>\n\nThe answer is"):
+            with mock.patch.object(self.svc, "engine", engine):
+                for stream in (False, True):
+                    with self.subTest(prompt=prompt, stream=stream):
+                        log = io.StringIO()
+                        with contextlib.redirect_stdout(log):
+                            text, result = self.raw_completion_text({"model": "m", "prompt": prompt,
+                                "max_tokens": 1024, "temperature": 0, "stream": stream})
+                        self.assertNotIn("so it has no answer", log.getvalue())
+                        self.assertEqual(text, reply[:1024])
+                        self.assertEqual(result["choices"][0]["finish_reason"], "length")
+                        self.assertEqual(result["usage"]["completion_tokens"], 1024)
+
+    def test_legacy_completions_disabled_thinking_preserves_partial_prompt(self):
+        prompt = "<|im_start|>assistant\n<think>\nDone.</think>\n\nThe answer is"
+        status, result = self.post("/v1/completions", {"model": "m", "prompt": prompt,
+            "max_tokens": 8, "enable_thinking": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.engine.last_prompt, list(self.svc.tok.encode(prompt, parse_special=True)))
+
+    def test_legacy_completions_raw_unicode_stop_echo_and_usage(self):
+        reply = " prefix🙂</think>\n\n<tool_call>literal</tool_call>suffixENDignored"
+        engine = RecordingEngine(self.svc.tok, reply, max_context=CTX)
+        expected = reply.split("END")[0]
+        with mock.patch.object(self.svc, "engine", engine):
+            for stream in (False, True):
+                for echo in (False, True):
+                    with self.subTest(stream=stream, echo=echo):
+                        text, result = self.raw_completion_text({"model": "m", "prompt": "raw🙂",
+                            "max_tokens": 256, "stop": "END", "echo": echo, "stream": stream})
+                        self.assertEqual(text, ("raw🙂" if echo else "") + expected)
+                        self.assertEqual(result["choices"][0]["finish_reason"], "stop")
+                        usage = result["usage"]
+                        self.assertEqual(usage["total_tokens"], usage["prompt_tokens"] + usage["completion_tokens"])
+
+    def test_legacy_completions_explicit_budget_only_wraps_open_thinking(self):
+        from serve.server import REASONING_WRAP_UP
+        engine = RecordingEngine(self.svc.tok, "xy" * 700, max_context=CTX)
+        for opened in (False, True):
+            prompt = "<|im_start|>assistant\n<think>\nWork" + ("" if opened else "</think>\n\nAnswer")
+            with mock.patch.object(self.svc, "engine", engine):
+                for stream in (False, True):
+                    with self.subTest(opened=opened, stream=stream):
+                        text, _ = self.raw_completion_text({"model": "m", "prompt": prompt,
+                            "max_tokens": 1024, "reasoning_budget_tokens": 64, "stream": stream})
+                        if opened:
+                            self.assertEqual(text[:64], "xy" * 32)
+                            self.assertEqual(text[64:64 + len(REASONING_WRAP_UP)], REASONING_WRAP_UP)
+                        else:
+                            self.assertEqual(text, "xy" * 512)
+
+    def test_legacy_completions_does_not_retry_unclosed_thinking(self):
+        reply = "still thinking"
+        engine = RecordingEngine(self.svc.tok, reply, max_context=CTX)
+        with mock.patch.object(self.svc, "engine", engine), \
+                mock.patch.object(self.svc, "reasoning_close_retry", True):
+            for stream in (False, True):
+                with self.subTest(stream=stream):
+                    text, result = self.raw_completion_text({"model": "m", "prompt": "<think>\n",
+                        "max_tokens": 1024, "stream": stream})
+                    self.assertEqual(text, reply)
+                    self.assertEqual(result["choices"][0]["finish_reason"], "stop")
+
+    def test_legacy_completions_ignores_chat_budget_defaults(self):
+        engine = RecordingEngine(self.svc.tok, "xy" * 700, max_context=CTX)
+        for defaults in ({"sampling_defaults": {"reasoning_budget_tokens": 64}},
+                         {"shared": {"reasoning_budget_tokens": 64}},
+                         {"reasoning_budget_tokens": 64}):
+            with self.subTest(defaults=defaults), mock.patch.object(self.svc, "engine", engine), \
+                    mock.patch.multiple(self.svc, **defaults):
+                text, _ = self.raw_completion_text({"model": "m", "prompt": "<think>\n",
+                    "max_tokens": 1024})
+                self.assertEqual(text, "xy" * 512)
+
+    def raw_completion_text(self, body):
+        req = urllib.request.Request(self.base + "/v1/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read().decode()
+        if not body.get("stream"):
+            result = json.loads(raw)
+            return result["choices"][0]["text"], result
+        chunks = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        self.assertTrue(raw.endswith("data: [DONE]\n\n"))
+        return "".join(c["choices"][0]["text"] for c in chunks), chunks[-1]
+
     def test_legacy_completions_rejects_unsupported_shapes(self):
         for body in ({"model": "m", "prompt": ["a"]}, {"model": "m", "prompt": "a", "n": 2},
                      {"model": "m", "prompt": "a", "suffix": "b"}):
@@ -158,9 +256,9 @@ class MaxTokens(unittest.TestCase):
             seen = []
             original = self.svc.run
 
-            def capture(ids, thinking, tools, max_new, sampling, cancel, force=None):
+            def capture(ids, thinking, tools, max_new, sampling, cancel, force=None, **kwargs):
                 seen.append(thinking)
-                yield from original(ids, thinking, tools, max_new, sampling, cancel, force=force)
+                yield from original(ids, thinking, tools, max_new, sampling, cancel, force=force, **kwargs)
 
             with self.subTest(options=options), mock.patch.object(self.svc, "run", side_effect=capture):
                 status, _ = self.post("/v1/completions", {"model": "m", "prompt": "raw", "max_tokens": 8,
@@ -188,37 +286,21 @@ class MaxTokens(unittest.TestCase):
                                                   "stream_options": {"include_thinking": True}})
         self.assertEqual(status, 400)
 
-    def test_legacy_completions_thinking_off_appends_the_no_think_tail(self):
-        # the raw prompt passes through untouched; asked off, it gets the tail a chat render would add
-        # (and asked off when it already ends with either tail - thinking on or off - nothing is added)
-        tail_off_text = self.svc.template.gen_prompt_tail(False)
-        tail_on_text = self.svc.template.gen_prompt_tail(True)
-        encode = lambda text: list(self.svc.tok.encode(text, parse_special=True))  # noqa: E731
-        tail_off, tail_on = encode(tail_off_text), encode(tail_on_text)
-
-        def run_ids(body):
-            seen = []
-            original = self.svc.run
-
-            def capture(ids, thinking, tools, max_new, sampling, cancel, force=None):
-                seen.append(list(ids))
-                yield from original(ids, thinking, tools, max_new, sampling, cancel, force=force)
-
-            with mock.patch.object(self.svc, "run", side_effect=capture):
-                status, _ = self.post("/v1/completions", {"model": "m", "max_tokens": 8,
-                                                          "temperature": 0, **body})
-            self.assertEqual(status, 200)
-            return seen[0]
-
-        self.assertEqual(run_ids({"prompt": "hi", "enable_thinking": False}), encode("hi") + tail_off)
-        self.assertEqual(run_ids({"prompt": "hi"}), encode("hi"))        # not asked: untouched
-        self.assertEqual(run_ids({"prompt": "hi", "reasoning_effort": "none"}), encode("hi") + tail_off)
-        for tail in (tail_off_text, tail_on_text):                       # already ends with a tail: no second one
-            self.assertEqual(run_ids({"prompt": "hi" + tail, "enable_thinking": False}), encode("hi") + encode(tail))
-        # Some templates add a tail only when thinking is disabled; an empty prompt still needs it.
-        with mock.patch.object(self.svc.template, "gen_prompt_tail", side_effect=lambda enabled: "" if enabled else tail_off_text):
-            for prompt in ("", "hi"):
-                self.assertEqual(run_ids({"prompt": prompt, "enable_thinking": False}), encode(prompt) + tail_off)
+    def test_legacy_completions_never_appends_a_template_tail(self):
+        prompts = ("", "hi", "<|im_start|>assistant\n<think>\nWorking",
+                   "<|im_start|>assistant\n<think>\nDone.</think>\n\nThe answer is")
+        options = ({}, {"enable_thinking": False}, {"reasoning_effort": "none"},
+                   {"chat_template_kwargs": {"enable_thinking": False}},
+                   {"thinking": {"type": "disabled"}})
+        for prompt in prompts:
+            for option in options:
+                with self.subTest(prompt=prompt, option=option):
+                    status, result = self.post("/v1/completions", {"model": "m", "prompt": prompt,
+                        "max_tokens": 8, "temperature": 0, **option})
+                    self.assertEqual(status, 200)
+                    ids = list(self.svc.tok.encode(prompt, parse_special=True))
+                    self.assertEqual(self.engine.last_prompt, ids)
+                    self.assertEqual(result["usage"]["prompt_tokens"], len(ids))
 
     def test_request_line_parses_the_engine_summary(self):
         line = ("strata serve: prompt 1200 tokens = 1000 reused + 200 read in 50 ms (4000.0 tok/s), 30 generated in "

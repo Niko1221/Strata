@@ -3341,6 +3341,33 @@ def slot_save_dir(value, base: str | None = None) -> str:
         raise ValueError(f"slot_save_path {path} is not a directory")
     return path
 
+
+class RawCompletionParser:
+    """Preserve generated text; track only the end of reasoning for an explicit budget."""
+
+    def __init__(self, thinking):
+        self.state = "reasoning" if thinking else "content"
+        self.buf = ""
+        self.pending = []
+        self.rescued = self.refused = 0
+
+    def feed(self, delta):
+        if self.state == "reasoning":
+            text = self.buf + delta
+            if THINK_END in text:
+                self.state, self.buf = "content", ""
+            else:
+                # Hold only a possible split closing tag for budget boundary checks, not output.
+                self.buf = ""
+                for size in range(1, len(THINK_END)):
+                    if text.endswith(THINK_END[:size]):
+                        self.buf = THINK_END[:size]
+        return [Event("content", delta)] if delta else []
+
+    def finish(self, reason=None):
+        return []
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -4534,29 +4561,31 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None, *, raw=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force)
+            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, raw=raw)
         finally:
             if ka is not None:
                 ka.release()
 
-    def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
+    def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None, *, raw=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
+        raw_budget = (self.reasoning_budget(sampling)
+                      if raw and thinking and (sampling or {}).get("reasoning_budget_tokens") is not None else None)
         defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
-        # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
-        budget = self.reasoning_budget(sampling) if thinking else None
-        if thinking and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
+        # Chat inherits a shared budget; raw completions only use one the caller supplied.
+        budget = raw_budget if raw else (self.reasoning_budget(sampling) if thinking else None)
+        if thinking and not raw and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
             # 0.1.45: max_tokens counts the thinking too.  A client that caps the reply at 8192 (the desktop agent's
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
@@ -4573,7 +4602,8 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
+        parser = RawCompletionParser(thinking) if raw else OutputParser(
+            thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -4782,7 +4812,7 @@ class Service:
                                 if stops is not None and stops.hit is not None:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
-                                if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
+                                if (not raw and self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
                                         and n >= next_loop_check and not parser.buf and not parser.pending
                                         and not detok.pending()):
                                     next_loop_check = n + LOOP_CHECK_EVERY
@@ -4879,7 +4909,7 @@ class Service:
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
-                        if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
+                        if (not raw and self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
@@ -5008,7 +5038,7 @@ class Service:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
-                            if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
+                            if not raw and finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
@@ -6688,13 +6718,10 @@ def make_handler(svc: Service):
             thinking_cfg = req.get("thinking")
             if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "disabled":
                 thinking = False
+            # Raw clients may be resuming content after an already closed reasoning block.
+            thinking = thinking and prompt.rfind("<think>") > prompt.rfind(THINK_END)
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
             ids = svc.tok.encode(prompt, parse_special=True)
-            if thinking is False:                        # passthrough stays untouched when thinking is on; asked off,
-                tail = svc.tok.encode(svc.template.gen_prompt_tail(False), parse_special=True)   # the prompt gets the tail
-                tail_on = svc.tok.encode(svc.template.gen_prompt_tail(True), parse_special=True)  # a chat render adds
-                if tail and ids[-len(tail):] != tail and (not tail_on or ids[-len(tail_on):] != tail_on):
-                    ids = ids + tail
             try:
                 max_new = int(req.get("max_tokens") or 0)
             except (TypeError, ValueError):
@@ -6730,7 +6757,7 @@ def make_handler(svc: Service):
                     if req.get("echo"):
                         yield {"id": cid, "object": "text_completion", "created": created, "model": model,
                                "choices": [{"text": prompt, "index": 0, "logprobs": None, "finish_reason": None}]}
-                    for kind, value in svc.run(ids, thinking, None, max_new, req, cancel):
+                    for kind, value in svc.run(ids, thinking, None, max_new, req, cancel, raw=True):
                         if kind == "ping":
                             yield None
                         elif kind == "event":

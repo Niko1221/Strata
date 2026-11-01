@@ -821,6 +821,14 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Request totals and what is running in Prometheus' text format, under llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 
+`POST /v1/completions` takes a string `prompt` verbatim, including special tokens, and returns the raw generated
+continuation in `choices[].text` (also when streaming). Thinking tags, whitespace and tool-call text are not
+stripped or interpreted as chat output. Thinking-off options do not append a template tail: raw-prompt clients
+must put any desired no-think prefix in their own prompt. This route does not apply the automatic answer-room
+budget or reasoning recovery. An explicit request `reasoning_budget_tokens` is still supported when the prompt's
+last `<think>` is unclosed; reasoning budgets inherited from Chat settings or sampling defaults are not applied.
+`stop`, `echo`, `max_tokens`, usage and the engine's end-of-turn tokens still work normally.
+
 `GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
 format with vLLM's names - `vllm:num_requests_running` / `_waiting`, `vllm:kv_cache_usage_perc`, the token and
 request counters, `vllm:prefix_cache_queries_total` / `_hits_total` (prompt tokens read / reused),
