@@ -2133,15 +2133,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const WeightRef* w_router = v.get("ffn_gate_inp.weight");
         // S26 STRATA_LFUSE=1: the shared expert's gate row rides in the router GEMV launch, its sigmoid + row scale
         // move into the combine, gate + up share one launch (all bitwise; resident combine path, 2-8 rows only)
-        const WeightRef* w_sgi = lfuse_on(n) && g_lfuse_gate() ? v.get("ffn_gate_inp_shexp.weight") : nullptr;
-        bool sg_ready = false;
+        const bool sg_aux_ok = dec_batch && n > 1 && n <= 8 && shared_expert_native_bf16_enabled() && g_lfuse_gate() &&
+                               (!sh_fork || sh_fork_late);
+        const WeightRef* w_sgi = sg_aux_ok ? v.get("ffn_gate_inp_shexp.weight") : nullptr;
+        bool sg_aux = false;
         if (dec_batch && n > 1 && w_router != nullptr && native_router_enabled() && NE == 512 && K == 10) {
             try {
                 if (w_sgi != nullptr)
-                    sg_ready = bf16_gemv_fp32_mmvf_multi_aux(mixed_ + tb * N, N, (const uint16_t*) w_router->data,
-                                                             logits_ + tb * NE, NE, N, NE, n,
-                                                             (const uint16_t*) w_sgi->data, sh_g_ + tb, 1, cs);
-                if (!sg_ready)
+                    sg_aux = bf16_gemv_fp32_mmvf_multi_aux(mixed_ + tb * N, N, (const uint16_t*) w_router->data,
+                                                           logits_ + tb * NE, NE, N, NE, n,
+                                                           (const uint16_t*) w_sgi->data, sh_g_ + tb, 1, cs);
+                if (!sg_aux)
                 bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) w_router->data, logits_ + tb * NE, NE, N,
                                           NE, n, cs);
                 native_router_top10_multi(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, cs);
@@ -2235,10 +2237,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 else for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
             }
             try {
+                const bool sg_ready = sg_aux && lfuse_on(n);
                 shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data, sh_gate_ + (size_t) tb * g.n_ff,
                                     sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb, shared_ + tb * N, N, g.n_ff, sh_stream,
                                     qdedup ? (const void*) (nat_xq_ + (size_t) tb * (N / 32) * 36) : nullptr,
-                                    (sg_ready ? 1 : 0) | (lfuse_on(n) && g_lfuse_pair() ? 2 : 0));
+                                    (sg_ready ? 1 : 0) | (g_lfuse_pair() ? 2 : 0) | (sg_aux ? 4 : 0));
                 sg_gated_[grp] = sg_ready;
             } catch (const std::exception& e) {
                 err = std::string("verify shared expert: ") + e.what();
