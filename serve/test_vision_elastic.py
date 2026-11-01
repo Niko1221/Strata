@@ -240,5 +240,50 @@ class OnDemandReader(unittest.TestCase):
         self.assertFalse(v.all_cached(["/no/such/file.png"]))   # an error is encode()'s to report
 
 
+class OnDemandByDefault(unittest.TestCase):
+    """An NVIDIA GPU reader on one GPU starts on demand without the config saying so; everything else keeps its reader as it was."""
+    BASE = {"args": ["--max-context", "8192", "--vision"], "gpu": 0,
+            "vision": {"exe": "/e/strata-vision", "mmproj": "m", "model": "t", "gpu": True, "max_tokens": 1024}}
+
+    def cfg(self, **over):
+        import copy
+        c = copy.deepcopy(self.BASE)
+        for k, v in over.items():
+            if k == "vision":
+                c["vision"].update(v)
+            else:
+                c[k] = v
+        return c
+
+    def test_the_plain_nvidia_config_is_on_demand(self):
+        from serve.server import apply_vision_defaults, vision_on_demand_by_default
+        c = apply_vision_defaults(self.cfg())
+        self.assertTrue(c["vision"]["elastic"] and c["vram_elastic"] is True)
+        self.assertTrue(vision_on_demand_by_default(self.cfg(vision={"exe": "component:engine/strata-vision.exe"})))
+        self.assertTrue(vision_on_demand_by_default(self.cfg(vision={"exe": "C:/e/strata-vision.exe"})))
+        bs = chr(92)
+        self.assertTrue(vision_on_demand_by_default(self.cfg(vision={"exe": "C:" + bs + "e" + bs + "strata-vision.exe"})))
+
+    def test_what_stays_as_it_was(self):
+        from serve.server import vision_on_demand_by_default as f
+        self.assertFalse(f(self.cfg(vision={"gpu": False})))                         # the CPU reader
+        self.assertFalse(f(self.cfg(vision={"elastic": False})))                     # the person said no
+        self.assertFalse(f(self.cfg(vram_elastic=False)))
+        self.assertFalse(f(self.cfg(vision={"cuda_device": 1})))                     # a reader on its own card
+        self.assertFalse(f(self.cfg(vision={"exe": "/e/strata-vision-hip"}, backend="hip")))
+        self.assertFalse(f(self.cfg(backend="sycl", vision={"exe": "/e/strata-vision-sycl"})))
+        self.assertFalse(f(self.cfg(gpu=[0, 1])))                                     # a layer split
+        self.assertFalse(f(self.cfg(args=["--vision", "--kv-grow"])))
+        self.assertFalse(f(self.cfg(args=["--vision", "--resident-budget-gib", "30"])))
+        self.assertFalse(f(self.cfg(parallel=4)))
+        self.assertFalse(f(self.cfg(arch="deepseek41")))
+        c = self.cfg()
+        c.pop("vision")
+        self.assertFalse(f(c))
+        c = self.cfg(vision={"elastic": True})                                        # already asked for: untouched
+        from serve.server import apply_vision_defaults
+        self.assertNotIn("vram_elastic", apply_vision_defaults(c))
+
+
 if __name__ == "__main__":
     unittest.main()

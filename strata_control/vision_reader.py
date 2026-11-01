@@ -151,10 +151,21 @@ def vision_section(reader: Reader, base: dict) -> dict:
     return out
 
 
-def cpu_fallback(vision_cfg: dict) -> dict | None:
-    """The same section for the CPU reader, when the GPU reader has one to fall back on; None otherwise."""
-    if not vision_cfg.get("gpu") or not vision_cfg.get("cpu_exe"):
+def cpu_fallback(vision_cfg: dict, same_program: bool = False) -> dict | None:
+    """The same section for the CPU reader, when the GPU reader has one to fall back on; None otherwise.  AMD and Intel name it (`cpu_exe`);
+    the NVIDIA reader (`strata-vision`) is the CPU reader too, without --gpu - `same_program` takes that one (the on-demand reader's
+    start, which must read the picture whatever the card has left)."""
+    if not vision_cfg.get("gpu"):
+        return None
+    cpu = vision_cfg.get("cpu_exe")
+    if not cpu and same_program:
+        # the NVIDIA reader and the Mac's are one program: without --gpu it reads on the CPU (same picture tokens, so the same answers)
+        exe = str(vision_cfg.get("exe") or "")
+        if Path(exe).name.lower() not in (CPU_READER, CPU_READER + ".exe"):
+            return None
+        cpu = exe
+    if not cpu:
         return None
     out = {k: v for k, v in vision_cfg.items() if k not in ("cpu_exe", "elastic", "elastic_mib", "elastic_idle_s")}
-    out["exe"], out["gpu"] = vision_cfg["cpu_exe"], False
+    out["exe"], out["gpu"] = cpu, False
     return out

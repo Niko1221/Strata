@@ -2938,7 +2938,7 @@ class Vision:
         self.spawn = (args, log, env)                   # to start it again after an unload
         # AMD: the GPU reader (strata-vision-hip) has the CPU reader (strata-vision, same program, no GPU runtime) to
         # fall back on when it does not start; _start switches to it by itself
-        cpu = vision_reader.cpu_fallback(cfg)
+        cpu = vision_reader.cpu_fallback(cfg, same_program=cfg.get("elastic") is True)   # an on-demand reader always has the CPU one to fall back on
         self.fallback = (self.reader_args(cpu), log, env) if cpu else None
         self.gpu_spawn, self.cpu_spawn = self.spawn, self.fallback   # an on-demand reader tries the GPU one again at every start
         self.on_cpu = False                             # the CPU reader is what runs (the GPU one did not start, or there was no room)
@@ -9184,6 +9184,41 @@ def with_current_reader(cfg: dict, package: Path) -> dict:
     return {**cfg, "vision": fixed}
 
 
+#: Owner rule 2026-11-01: the picture reader lives in RAM, not VRAM.  On an NVIDIA card with one GPU the GPU reader is started by the first
+#: picture and stopped after vision.elastic_idle_s, and the expert cache gives it its room for that time ("vram_elastic").  Measured on an
+#: RTX A6000 as a 24 GB card: 8,766 expert slots against 8,079 with the reader on the card, text speed the same within the noise.
+VISION_ON_DEMAND_BY_DEFAULT = True
+_ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--resident-experts", "--resident-budget-gib",
+                       "--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3")
+
+
+def vision_on_demand_by_default(cfg: dict) -> bool:
+    """True when this config's GPU reader should start on demand without the config saying so: a GPU reader (vision.gpu) of the NVIDIA
+    kind on one GPU, an engine that can give its room (one card, no layer split, no batch slots, no --kv-grow, no helper caches, not the
+    resident low-RAM mode), and nothing in the vision section or "vram_elastic" that says otherwise.  Not DeepSeek (its own tower), not AMD,
+    Intel or a Mac (not measured there), not a reader pinned to another card (vision.cuda_device)."""
+    vis = cfg.get("vision")
+    if not VISION_ON_DEMAND_BY_DEFAULT or not isinstance(vis, dict) or vis.get("gpu") is not True or "elastic" in vis:
+        return False
+    if cfg.get("vram_elastic") is False or vis.get("cuda_device") is not None or sys.platform == "darwin":
+        return False
+    if (cfg.get("arch") or "") == "deepseek41" or cfg.get("backend") not in (None, "cuda"):
+        return False
+    args = [str(a) for a in (cfg.get("args") or [])]
+    if len(gpu_list(cfg)) > 1 or parallel_slots(cfg) or any(a in args for a in _ON_DEMAND_NOT_WITH):
+        return False
+    name = re.split(r"[\\/:]", str(vis.get("exe") or ""))[-1].lower()      # a path or a "component:..." reference
+    return name in (vision_reader.CPU_READER, vision_reader.CPU_READER + ".exe")
+
+
+def apply_vision_defaults(cfg: dict) -> dict:
+    """cfg with the on-demand reader switched on (vision.elastic, vram_elastic) where vision_on_demand_by_default says so; the same dict."""
+    if vision_on_demand_by_default(cfg):
+        cfg["vision"] = {**cfg["vision"], "elastic": True}
+        cfg.setdefault("vram_elastic", True)
+    return cfg
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -9500,7 +9535,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
-        cfg = with_component_engine(cfg)
+        cfg = apply_vision_defaults(with_component_engine(cfg))
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.
