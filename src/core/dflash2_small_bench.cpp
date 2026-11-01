@@ -131,6 +131,75 @@ int main(int argc, char** argv) {
         }
         std::printf("select_multi + pack_head_rows parity (4 slots, k={7,3,1,5}): PASS\n");
     }
+    {
+        // Bitwise parity check: multi-slot batched df2_gemm (ncols = 16, 24, 32 across 3 matrices) +
+        // df2_conv_quant / df2_conv_rms_quant (rows = 32) vs 4 serial 8-row slot passes.
+        const int B4 = 32;
+        float *x32 = dev(B4 * N, 0.25f), *d32 = dev(B4 * 640, 0.1f), *h_ref = dev(B4 * N, 0.3f), *h_got = dev(B4 * N, 0.3f);
+        float *xn_ref = dev(B4 * N, 0.0f), *xn_got = dev(B4 * N, 0.0f);
+        uint8_t *xq_ref, *xq_got;
+        float *xd_ref = dev(B4 * (N / 32), 0.0f), *xd_got = dev(B4 * (N / 32), 0.0f);
+        cudaMalloc((void**) &xq_ref, B4 * N);
+        cudaMalloc((void**) &xq_got, B4 * N);
+        cudaMemcpy(h_got, h_ref, B4 * N * 4, cudaMemcpyDeviceToDevice);
+        for (int s = 0; s < 4; ++s) {
+            df2_conv_quant(x32 + s * 8 * N, d32 + s * 8 * 640, 640, base, 8, N, 16,
+                           xq_ref + s * 8 * N, xd_ref + s * 8 * (N / 32), nullptr);
+        }
+        df2_conv_quant(x32, d32, 640, base, B4, N, 16, xq_got, xd_got, nullptr);
+        cudaDeviceSynchronize();
+        std::vector<uint8_t> hq_r(B4 * N), hq_g(B4 * N);
+        std::vector<float> hd_r(B4 * (N / 32)), hd_g(B4 * (N / 32));
+        cudaMemcpy(hq_r.data(), xq_ref, hq_r.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hq_g.data(), xq_got, hq_g.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hd_r.data(), xd_ref, hd_r.size() * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(hd_g.data(), xd_got, hd_g.size() * 4, cudaMemcpyDeviceToHost);
+        if (hq_r != hq_g || hd_r != hd_g) {
+            std::fprintf(stderr, "FAIL: df2_conv_quant 32-row batch != 4x8 serial\n");
+            return 1;
+        }
+        for (int s = 0; s < 4; ++s) {
+            df2_conv_rms_quant(x32 + s * 8 * N, d32 + s * 8 * 640, 640, base, h_ref + s * 8 * N, gamma,
+                               xn_ref + s * 8 * N, 8, N, 16, 1e-6f, xq_ref + s * 8 * N, xd_ref + s * 8 * (N / 32), nullptr);
+        }
+        df2_conv_rms_quant(x32, d32, 640, base, h_got, gamma, xn_got, B4, N, 16, 1e-6f, xq_got, xd_got, nullptr);
+        cudaDeviceSynchronize();
+        std::vector<float> hxn_r(B4 * N), hxn_g(B4 * N);
+        cudaMemcpy(hxn_r.data(), xn_ref, hxn_r.size() * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(hxn_g.data(), xn_got, hxn_g.size() * 4, cudaMemcpyDeviceToHost);
+        if (hxn_r != hxn_g) {
+            std::fprintf(stderr, "FAIL: df2_conv_rms_quant 32-row batch != 4x8 serial\n");
+            return 1;
+        }
+        uint8_t *wq0, *wq1, *wq2;
+        cudaMalloc((void**) &wq0, (size_t) 512 * N * 34 / 32);
+        cudaMalloc((void**) &wq1, (size_t) 256 * N * 34 / 32);
+        cudaMalloc((void**) &wq2, (size_t) 256 * N * 34 / 32);
+        cudaMemset(wq0, 3, (size_t) 512 * N * 34 / 32);
+        cudaMemset(wq1, 5, (size_t) 256 * N * 34 / 32);
+        cudaMemset(wq2, 7, (size_t) 256 * N * 34 / 32);
+        float *y0_r = dev(B4 * 512, 0.0f), *y1_r = dev(B4 * 256, 0.0f), *y2_r = dev(B4 * 256, 0.0f);
+        float *y0_g = dev(B4 * 512, 0.0f), *y1_g = dev(B4 * 256, 0.0f), *y2_g = dev(B4 * 256, 0.0f);
+        for (int nc : {16, 24, 32}) {
+            for (int s = 0; s < nc / 8; ++s) {
+                Df2Mat ms[3] = {{wq0, y0_r + s * 8 * 512, 512}, {wq1, y1_r + s * 8 * 256, 256}, {wq2, y2_r + s * 8 * 256, 256}};
+                df2_gemm(ms, 3, xq_got + s * 8 * N, xd_got + s * 8 * (N / 32), N, 8, nullptr);
+            }
+            Df2Mat mb[3] = {{wq0, y0_g, 512}, {wq1, y1_g, 256}, {wq2, y2_g, 256}};
+            df2_gemm(mb, 3, xq_got, xd_got, N, nc, nullptr);
+            cudaDeviceSynchronize();
+            std::vector<float> hy0_r(nc * 512), hy0_g(nc * 512), hy2_r(nc * 256), hy2_g(nc * 256);
+            cudaMemcpy(hy0_r.data(), y0_r, hy0_r.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(hy0_g.data(), y0_g, hy0_g.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(hy2_r.data(), y2_r, hy2_r.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(hy2_g.data(), y2_g, hy2_g.size() * 4, cudaMemcpyDeviceToHost);
+            if (hy0_r != hy0_g || hy2_r != hy2_g) {
+                std::fprintf(stderr, "FAIL: df2_gemm ncols=%d != %dx8 serial\n", nc, nc / 8);
+                return 1;
+            }
+        }
+        std::printf("df2_gemm (ncols=16,24,32) + conv_quant/conv_rms_quant (rows=32) parity: PASS\n");
+    }
     time("conv (resid)", [&] { df2_conv(o, dyn, 640, base, h, h, B, N, 16, nullptr); });
     time("attention merge+quant only", [&] { df2_attention(q, kr, vr, kr, vr, pos, 2064, 2048, part, xq, xd, nullptr); });
     Df2Mat m{w, y, 640};
