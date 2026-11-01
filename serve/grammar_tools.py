@@ -255,15 +255,19 @@ def tool_grammar_choice(capable: bool, tools, tool_choice, mcp: bool):
     return "grammar", kind, name
 
 
-def plan_tool_grammar(engine, tools, tool_choice, mcp, thinking):
+def plan_tool_grammar(engine, tools, tool_choice, mcp, thinking, allow=True):
     """One request's tool-call routing: -> (grammar_text, declared_method).
 
     grammar_text is the call grammar to register (None: the prompt path takes the turn);
     declared_method is what a prompt-path response says it did (MCP: the case an operator
     asked about). A missing converter is not an error - the prompt path has always served
-    tool calls - so it quietly yields the prompt path too."""
+    tool calls - so it quietly yields the prompt path too.
+
+    `allow` is the caller's per-request opt-out (`strata_grammar: false`): route to the prompt
+    path even though the engine could spell the call.  Same switch as plan_response_format's."""
     from serve import grammar_schema as grammar_conv
-    kind, gkind, gname = tool_grammar_choice(grammar_conv.grammar_ok(engine), tools, tool_choice, mcp)
+    kind, gkind, gname = tool_grammar_choice(grammar_conv.grammar_ok(engine) and allow,
+                                             tools, tool_choice, mcp)
     if kind == "none":
         return None, None
     if kind == "prompt":

@@ -7924,19 +7924,24 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = svc.force_text(forced_call(req.get("tool_choice"), tools))      # a bad value is a 400 before anything is sent
+            # #3862: "strata_grammar": false turns the constraint off for THIS request - the same turn then
+            # rides the prompt path (a directive in the system message, the answer validated after the fact).
+            # It is how a caller compares the two paths on one identical request, and how an operator escapes
+            # a schema the converter's grammar does not fit.  Absent (or true) leaves the default on.
+            grammar_allow = req.get("strata_grammar") is not False
             # #3862: a grammar-capable engine can spell the call itself - the grammar carries the template
             # serialization, so the prompt keeps no directive, the reply needs no forced prefix, and a model
             # cannot write a broken call. MCP stays on the prompt path (hosted tool schemas are not
             # validated here) and the response says which method ran.
             tool_grammar, tool_method = grammar_tools.plan_tool_grammar(
                 svc.engine, tools, req.get("tool_choice"), req.get("strata_mcp") is True,
-                kw.get("enable_thinking", True) is not False)
+                kw.get("enable_thinking", True) is not False, grammar_allow)
             if tool_grammar is not None:
                 force = None                    # the grammar opens the call; a forced prefix would double it
             # #3862: a grammar-capable engine constrains response_format in the sampler; the prompt directive
             # and the buffered validation ride along only when it cannot (the prompt path is the fallback).
             grammar_text, messages, validator = grammar_conv.plan_response_format(
-                svc.engine, req.get("response_format"), messages)
+                svc.engine, req.get("response_format"), messages, allow=grammar_allow)
             if grammar_text is not None and kw.get("enable_thinking", True) is not False:
                 # the template opens the answer inside a think block: the grammar carries the reasoning
                 # and the closer too, so the constrained JSON lands in the answer region, not the think one
@@ -8171,7 +8176,8 @@ def make_handler(svc: Service):
                 # stays on the prompt path: a tool call is not JSON); the assembler's end-of-stream check is
                 # the canary that says a constrained stream conformed, and it streams unbuffered.
                 grammar_text, messages, validator = grammar_conv.plan_response_format(
-                    svc.engine, responses_api.text_format(req), messages, with_tools=bool(tools))
+                    svc.engine, responses_api.text_format(req), messages, with_tools=bool(tools),
+                    allow=req.get("strata_grammar") is not False)
                 if grammar_text is not None and kw.get("enable_thinking", True) is not False:
                     grammar_text = grammar_tools.with_think_prologue(grammar_text)   # as on the chat route
             except ValueError as e:
@@ -8180,7 +8186,8 @@ def make_handler(svc: Service):
             if validator is None:                             # text.format's grammar owns the one slot
                 tool_grammar, _method = grammar_tools.plan_tool_grammar(
                     svc.engine, tools, req.get("tool_choice"), False,
-                    kw.get("enable_thinking", True) is not False)
+                    kw.get("enable_thinking", True) is not False,
+                    req.get("strata_grammar") is not False)
             noted = svc.__dict__.setdefault("hosted_tools_noted", set())   # said once per tool, not per request
             if set(skipped) - noted:
                 print(f"[strata] /v1/responses: left out the hosted tools {', '.join(sorted(set(skipped) - noted))} "
@@ -8253,7 +8260,8 @@ def make_handler(svc: Service):
             # anthropic_to_messages maps input_schema to parameters).
             tool_grammar, _method = grammar_tools.plan_tool_grammar(
                 svc.engine, tools, req.get("tool_choice"), False,
-                kw.get("enable_thinking", True) is not False)
+                kw.get("enable_thinking", True) is not False,
+                req.get("strata_grammar") is not False)
             if tool_grammar is not None:
                 force = None                    # the grammar opens the call; a forced prefix would double it
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context

@@ -63,7 +63,7 @@ def exe_dir_of(engine):
     return Path(spawn[0]).parent if spawn else None
 
 
-def plan_response_format(engine, response_format, messages, with_tools=False):
+def plan_response_format(engine, response_format, messages, with_tools=False, allow=True):
     """(grammar text, prompt messages, validator) for a response_format.
 
     The prompt path (no grammar capability, a turn with tools, text kind, plain-text format, or a
@@ -73,10 +73,15 @@ def plan_response_format(engine, response_format, messages, with_tools=False):
     kept only as the end-of-stream canary (grammar.grammar_canary).  Tools + a schema stay on the
     prompt path: a tool call is not JSON, and the tool-call grammar (serve/grammar_tools.py) is the
     constraint that fits that turn.
+
+    `allow` is the caller's per-request opt-out (`strata_grammar: false`): the prompt path then takes
+    the turn even though the engine could constrain it.  It exists so a caller can compare the two
+    paths on the same request, and so an operator can turn the constraint off for a prompt the
+    converter's grammar does not fit.
     """
     original = messages
     grammar_text = None
-    if response_format is not None and grammar_ok(engine) and not with_tools:
+    if response_format is not None and allow and grammar_ok(engine) and not with_tools:
         kind = response_format.get("type") if isinstance(response_format, dict) else None
         if kind == "json_object":
             grammar_text = grammar_api.JSON_OBJECT_GBNF

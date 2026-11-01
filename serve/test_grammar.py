@@ -290,6 +290,18 @@ class GrammarConverter(unittest.TestCase):
         self.assertIn("root ::=", text)
         self.assertEqual(text, grammar_conv.schema_to_grammar(BUILD, SCHEMA))   # the LRU returns the same text
 
+    def test_a_request_can_turn_the_constraint_off(self):
+        """`strata_grammar: false` routes a capable engine to the prompt path: the same turn, the
+        directive back in, the answer validated afterwards.  The switch is per request, so an
+        identical prompt can be compared both ways."""
+        fmt = {"type": "json_schema", "json_schema": {"name": "s", "schema": SCHEMA}}
+        engine = MockEngine(ByteTokenizer(), "{}")
+        engine.info = {"grammar": 1}
+        off, messages, _validator = grammar_conv.plan_response_format(
+            engine, fmt, [{"role": "user", "content": "x"}], allow=False)
+        self.assertIsNone(off)
+        self.assertTrue(any("JSON" in str(m.get("content", "")) for m in messages))   # the directive rides along
+
     def test_a_missing_converter_falls_back_to_the_prompt_path(self):
         fmt = {"type": "json_schema", "json_schema": {"name": "s", "schema": SCHEMA}}
         messages, validator = None, None
