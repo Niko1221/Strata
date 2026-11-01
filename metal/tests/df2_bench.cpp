@@ -196,6 +196,20 @@ int main(int argc, char** argv) {
     const std::string mmak = std::getenv("DF2B_MMAK") ? std::getenv("DF2B_MMAK") : "df2_mma4";
     const bool splitk = mmak == "df2_mma4s";
     std::map<const void*, mtl::Buffer> xhalf;
+
+    // Q8_0 head rows in fragment order for df2_mma8 (DF2B_HEAD=mma): random bytes in the real size (same traffic as the real rows)
+    Mat head_f8;
+    const bool HEADMMA = std::getenv("DF2B_HEAD") && std::string(std::getenv("DF2B_HEAD")) == "mma";
+    if (HEADMMA) {
+        head_f8.rows = NDV; head_f8.K = N; head_f8.q8 = true; head_f8.frag = true;
+        const size_t nrt = (NDV + 7) / 8, nbk = N / 32;
+        head_f8.qs = cx.alloc(nrt * nbk * 32 * 8); head_f8.sc = cx.alloc(nrt * nbk * 8 * 2);
+        uint32_t* q = head_f8.qs.as<uint32_t>();
+        for (size_t i = 0; i < nrt * nbk * 64; ++i) q[i] = rnd() * 2654435761u;
+        uint16_t* sc = head_f8.sc.as<uint16_t>();
+        for (size_t i = 0; i < nrt * nbk * 8; ++i) sc[i] = f2h(0.005f + 0.005f * (rnd() & 255) / 255.0f);
+    }
+    const std::string hv8 = std::getenv("DF2B_HEAD8") ? std::getenv("DF2B_HEAD8") : "1_8";
     if (FRAG) {   // check against the CPU: 304 rows, K = 2560, 8 columns
         const int rows = 304, K = 2560;
         std::vector<uint8_t> codes((size_t) rows * K); std::vector<float> d((size_t) rows * (K / 32));
@@ -378,7 +392,18 @@ int main(int argc, char** argv) {
         std::vector<mtl::Dispatch> ds;
         const int nd = std::getenv("DF2B_ND") ? std::atoi(std::getenv("DF2B_ND")) : 7;   // DF-04: head / top-k / selector rows = the verify prefix (candidate cap)
         mtl::Buffer* dummy = nullptr; (void) dummy;
-        mm(ds, head, fn, logits, nd, true, hvar);   // rows 1..7 of fn (the engine passes an offset; the cost is the same)
+        if (HEADMMA) {
+            int R8, S8; parse_rs(hv8, R8, S8);
+            auto it = xhalf.find(fn.ptr);
+            if (it == xhalf.end()) it = xhalf.emplace(fn.ptr, cx.alloc(fn.bytes / 2)).first;
+            uint32_t n = (uint32_t) (fn.bytes / 4);
+            mtl::Dispatch c; c.p = pipe("df2_f16", 0); c.args = {mtl::Arg::B(fn), mtl::Arg::B(it->second), mtl::Arg::V(n)}; c.grid[0] = (n + 255) / 256; c.tg[0] = 256; ds.push_back(c);
+            MmArgs ha{(uint32_t) N, (uint32_t) NDV, (uint32_t) NDV, (uint32_t) N};
+            mtl::Dispatch d; d.p = pipe("df2_mma8_" + hv8, 0);
+            d.args = {mtl::Arg::B(head_f8.qs), mtl::Arg::B(head_f8.sc), mtl::Arg::B(it->second), mtl::Arg::B(logits), mtl::Arg::V(ha)};
+            d.grid[0] = ((NDV + 7) / 8 + R8 * S8 - 1) / (R8 * S8); d.tg[0] = 32 * S8; ds.push_back(d);
+        } else
+            mm(ds, head, fn, logits, nd, true, hvar);   // rows 1..7 of fn (the engine passes an offset; the cost is the same)
         { TkArgs ta{NDV}; mtl::Dispatch d; d.p = pipe("df2_topk_part", 0);
           d.args = {mtl::Arg::B(logits), mtl::Arg::B(cval), mtl::Arg::B(cidx), mtl::Arg::V(ta)}; d.grid[0] = nd; d.grid[1] = 64; d.tg[0] = 256; ds.push_back(d); }
         { TkMArgs ta{1}; mtl::Dispatch d; d.p = pipe("df2_topk_merge", 0);
