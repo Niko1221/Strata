@@ -720,7 +720,7 @@ body {
   border-top-color: var(--st-info);
   border-radius: 50%;
   translate: 0 -50%;
-  animation: st-spin 1400ms linear infinite;
+  animation: st-spin 1.4s linear infinite;
   transition: opacity var(--st-t-micro) var(--st-ease-standard);
 }
 .navsession[data-working] .navsession__title {
