@@ -1397,6 +1397,15 @@ void rows(const x3::Mat& m, uint16_t* dst, bool bf16, cudaStream_t s) {
         if (kind >= 0 && ::strata::dsv41::metal_host::dequant_rows(kind, m.raw, row_stride(m), m.k, m.n, dst)) return;
     }
 #endif
+#if defined(STRATA_METAL)
+    if (m.fmt == kFmtGG && m.raw != nullptr) {   // (what the Metal dequantizers above did not take - they cover Q4_K, Q5_K and Q6_K as F16 rows; the CUDA kernel below has no Metal dispatch and would abort the engine)
+        char what[192];
+        std::snprintf(what, sizeof what, "rows: a dense %s matrix as %s rows has no Metal dequantizer (Q4_K, Q5_K, Q6_K, Q8_0 and BF16 as F16 rows do)",
+                      iq::name(m.K), bf16 ? "BF16" : "F16");
+        fail(what);
+        return;
+    }
+#endif
     if (m.fmt == kFmtGG && m.raw != nullptr) {   // a K-quant / i-quant dense matrix (the IST-DAS sets' Q5_K): its own dequantizer
         if (!iq::dequant_rows(m.K, m.raw, row_stride(m), m.k, m.n, dst, bf16, s)) fail("rows: a low-bit type not covered");
         return;
