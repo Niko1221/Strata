@@ -148,9 +148,11 @@ def hardware_support(backend: str | None, archs: Any = None) -> Support:
 
 # --------------------------------------------------------------------------------------------------- the drafter file
 #
-# incoai/Qwen3.8-Flash-Next-DFlash2 (Apache-2.0), pinned to one revision. The safetensors file is 1.2 GB; tools/dflash2_pack.py turns it into the
-# engine's runtime file (Q8 pack, about 0.76 GB). The sizes and hashes are the repository's own for that revision: a download is refused
-# if either differs.
+# incoai/Qwen3.8-Flash-Next-DFlash2 (Apache-2.0), pinned to one revision. The safetensors file is 1.2 GB; tools/dflash2_pack.py --q4_0 turns it, on the
+# person's own computer, into the engine's runtime file (a Q4_0 pack, 522,458,112 bytes; the repository publishes only the bf16 file and we host nothing).
+# The sizes and hashes are the repository's own for that revision: a download is refused if either differs. The pack itself is checked too: the same
+# bytes come out on x86 Windows, x86 Linux and aarch64 Linux (numpy 2.3.3 and 2.5.3), so its size and SHA-256 are pinned and a pack that differs is deleted.
+# A Q8 pack (760,353,792 bytes) made by an earlier Strata keeps working and is never fetched again; Q4_0 and Q8 ran the same speed (-0.3%, RESULTS-DRAFT.md).
 
 REPO = "incoai/Qwen3.8-Flash-Next-DFlash2"
 REVISION = "a22a1744e85c17364dcc54a6a420af7135d4c7f6"
@@ -161,9 +163,12 @@ FILES = (
     ("model.safetensors", 1206140008, "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"),
 )
 DOWNLOAD_GB = 1.2            # what is fetched (the safetensors file)
-PACK_GB = 0.76               # what stays on disk (the source file is removed after packing)
-PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"
-VRAM_GB = 1.2                # what the drafter needs in graphics memory (the engine's own estimate)
+PACK_GB = 0.52               # what stays on disk (the source file is removed after packing)
+PACK_NAME = "qwen3.8-flash-next-dflash2.q4_0.pack"
+PACK_BYTES = 522458112       # the Q4_0 pack tools/dflash2_pack.py --q4_0 makes from the pinned safetensors file, and its SHA-256
+PACK_SHA256 = "cda40d62d0eb8f37ed6e272142641a1d2f0de4a32f9e14d0416e7a71534849f1"
+LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9 test builds packed: still used when it is the one on disk
+VRAM_GB = 0.8                # what the drafter needs in graphics memory: the engine reports "drafter 799 MiB of VRAM" with the Q4_0 pack (1026 MiB with the Q8 pack), p620 gfx1201
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
 SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
 MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
@@ -181,13 +186,29 @@ def supported_model(model_name: str | None = None, family: str | None = None) ->
     return bool(model_name and _SUPPORTED_NAME.match(str(model_name)))
 
 
-def pack_path(data_dir: str | Path) -> Path:
+def _here(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > (1 << 20)
+    except OSError:
+        return False
+
+
+def target_path(data_dir: str | Path) -> Path:
+    """Where a fetch writes the Q4_0 pack."""
     return Path(data_dir) / FOLDER / PACK_NAME
+
+
+def pack_path(data_dir: str | Path) -> Path:
+    """The pack the engine is started with: the Q4_0 pack, else a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be."""
+    for name in (PACK_NAME, LEGACY_PACK_NAME):
+        if _here(Path(data_dir) / FOLDER / name):
+            return Path(data_dir) / FOLDER / name
+    return target_path(data_dir)
 
 
 def pack_ready(data_dir: str | Path | None) -> bool:
     try:
-        return bool(data_dir) and pack_path(data_dir).is_file() and pack_path(data_dir).stat().st_size > (1 << 20)
+        return bool(data_dir) and _here(pack_path(data_dir))
     except OSError:
         return False
 

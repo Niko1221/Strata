@@ -447,7 +447,7 @@ class FetchAndPack(unittest.TestCase):
             plan = drafting_fetch.plan(self.data)
         self.assertEqual(plan["gb"], 1.2)
         self.assertIn("1.2 GB to download", plan["text"])
-        self.assertIn("0.76 GB", plan["text"])
+        self.assertIn("0.52 GB", plan["text"])
         self.assertIn("incoai/Qwen3.8-Flash-Next-DFlash2", plan["text"])
         self.assertIn("Apache-2.0", plan["text"])
         self.assertIn("starts with the MTP instead", plan["text"], "and what happens if it does not fit")
