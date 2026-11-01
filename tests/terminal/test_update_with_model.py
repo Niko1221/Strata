@@ -91,7 +91,8 @@ class ModelCase(UpdaterCase):
         return engine_update.ModelGate(ask=ask, say=self.lines.append, emit=self.events.append, **flags)
 
     def update(self, gate, **over):
-        ctx = self.ctx(serving=updater.serving_now, events=self.events, **over)
+        over.setdefault("serving", updater.serving_now)
+        ctx = self.ctx(events=self.events, **over)
         return engine_update.update_with_models(ctx, gate, control=False)
 
     def publish_new(self, version="0.1.46", source=None):
@@ -292,28 +293,25 @@ class StartedDuringTheUpdate(ModelCase):
         self.start_model()
         self.publish_new()
 
-    def starter(self):
-        """Starts a second model as soon as the download is done."""
-        done = []
-
-        def emit(event):
-            self.events.append(event)
-            if event.get("event") == "progress" and event.get("percent") == 100 and not done:
-                done.append(1)
-                self.start_model("launch-second", "Second model")
-        return emit
-
     def run_update(self, gate):
-        ctx = self.ctx(serving=updater.serving_now)
-        ctx.emit = self.starter()
-        return engine_update.update_with_models(ctx, gate, control=False)
+        """Runs the update; a second model is started as soon as the download is done (before the engine is put in place)."""
+        real = updater._download
+
+        def download(*args, **kwargs):
+            got = real(*args, **kwargs)
+            self.start_model("launch-second", "Second model")
+            return got
+        ctx = self.ctx(serving=updater.serving_now, events=self.events)
+        with mock.patch.object(updater, "_download", download):
+            return engine_update.update_with_models(ctx, gate, control=False)
 
     def test_in_a_script_the_new_model_is_refused_and_nothing_more_is_changed(self):
-        with self.assertRaises(updater.UpdateError) as caught:
-            self.run_update(self.gate(nobody=True, allow_stop=True, start_again=True))
-        self.assertEqual(caught.exception.exit_code, 7)
-        self.assertIn("Second model", str(caught.exception))
-        self.assertIn("started while the update was running", str(caught.exception))
+        out = self.run_update(self.gate(nobody=True, allow_stop=True, start_again=True))
+        self.assertEqual(out["exit_code"], 7)
+        self.assertEqual(out["results"][0]["status"], "failed")
+        self.assertIn("Second model", out["results"][0]["error"])
+        self.assertIn("started while the update was running", out["results"][0]["error"])
+        self.assertIn("the download is kept", out["results"][0]["error"])
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertEqual(self.state("launch-second"), "ready", "the model nobody agreed to stop was not stopped")
         self.assertEqual(self.state(PROFILE), "ready", "nothing was stopped at all")
@@ -326,11 +324,10 @@ class StartedDuringTheUpdate(ModelCase):
         self.assertTrue(any("Second model" in q for q, _ in self.script.asked))
 
     def test_at_the_keyboard_no_to_the_new_model_changes_nothing_more(self):
-        with self.assertRaises(updater.UpdateError) as caught:
-            self.run_update(self.gate(True, False))
-        self.assertEqual(caught.exception.exit_code, 7)
+        out = self.run_update(self.gate(True, False))
+        self.assertEqual(out["exit_code"], 7)
         self.assertEqual(self.resolved(), "0.1.45")
-        self.assertEqual(self.state("launch-second"), "ready")
+        self.assertEqual((self.state("launch-second"), self.state(PROFILE)), ("ready", "ready"), "nothing was stopped")
 
 
 class TwoTerminals(ModelCase):

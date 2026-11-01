@@ -286,8 +286,11 @@ class LaunchMonitor(MonitorApp):
             if self.ask_quit and not self.error and not self.selection_notice and self.connection_state == "connected" and not self.frozen:
                 try:
                     msg = "Read only  |  q asks: keep serving or stop  |  7 connect an app"
-                    if (size or self.screen.size).width < 78:
+                    width = (size or self.screen.size).width
+                    if width < 78:
                         msg = "q asks: keep serving or stop  |  7 connect"
+                    if self.quiet_note:                          # a newer engine: the one quiet line replaces the hints it has no room beside
+                        msg = self.quiet_note + ("  |  q asks: keep serving or stop" if width >= 110 else "")
                     self.query_one("#message", Static).update(msg)
                 except Exception:                            # noqa: BLE001
                     pass

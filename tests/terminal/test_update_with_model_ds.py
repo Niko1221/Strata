@@ -101,12 +101,13 @@ class DeepSeekWithAModel(Dsv41Engine):
         self.assertEqual(len(self.script.asked), 2)
 
     def test_no_changes_nothing(self):
+        before = len(self.server.requests)
         with self.assertRaises(engine_update.Declined):
             self.update(self.gate(False))
         self.assertEqual(self.stops, [])
         self.assertEqual(self.folders(), ["0.1.49"])
         self.assertEqual(self.exe_in_config(), self.old)
-        self.assertEqual([r for r in self.server.requests if r[1].endswith(".tar.gz")], [])
+        self.assertEqual([r for r in self.server.requests[before:] if r[1].endswith(".tar.gz")], [])
 
     def test_nothing_without_a_gate_not_even_a_download(self):
         before = len(self.server.requests)
