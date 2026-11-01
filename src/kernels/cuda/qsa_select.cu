@@ -2224,6 +2224,19 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
     }();
     static const bool community_on = strata::amd_community::tuning_on();
     const int simt_v = simt_env >= 0 ? simt_env : (community_on && sel_gfx103_device() ? 2 : 0);
+    // STRATA_SELECT_ALT_MIN_TOKENS=N: the simt / WMMA scorer acts only for a read whose reach is at least N tokens (blocks of R = 4);
+    // a shorter one keeps the warp kernel.  On the R9700 (p620) neither scorer gains below ~24K tokens and simt2's values move more
+    // there, so the gfx12 default sets it (arch_defaults.cpp); the community simt2 default of gfx103x starts at 28,672 tokens, just under the
+    // 31K its contributor measured.  Unset: no limit for a scorer the user asked for.
+    static const int64_t alt_min_env = [] {
+        const char* v = std::getenv("STRATA_SELECT_ALT_MIN_TOKENS");
+        return v != nullptr && v[0] != 0 ? (int64_t) std::atoll(v) : (int64_t) -1;
+    }();
+    if (simt_v != 0 || wmma_on) {
+        const int64_t reach_all = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+        const int64_t min_tok = alt_min_env >= 0 ? alt_min_env : (simt_env < 0 && simt_v == 2 ? 28672 : 0);
+        if (reach_all * R < min_tok) return false;
+    }
     if (simt_v != 0 && !(wmma_on && sel_gfx12_device())) {
         const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
         const bool rdna2 = sel_gfx103_device();
