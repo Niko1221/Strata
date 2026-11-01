@@ -1252,7 +1252,7 @@ class Strata:
             return {"family": None, "model": None, "why": f"{ram:.0f} GB of RAM: Strata needs 32 GB or more "
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
                                                           "RAM)"}
-        ctx = 32768 if vram < 14 else 65536 if vram < 20 else 131072
+        ctx = 131072                                       # 128K on every card (owner, 2026-11-01)
         # #3425: the tiers count RAM + VRAM together, but the desktop keeps about 10 GB of the RAM and the card keeps ~6 GB for
         # its dense weights, so a PC at the floor of its tier reads part of the experts from the SSD at every answer.  Said
         # plainly beside the pick (the same arithmetic as the app's "This computer" card); the pick itself stays the owner's tier.
@@ -2350,10 +2350,7 @@ class Tools:
         if context is None:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
-            context = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-            if md.get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
-                                                s.setup_module().unsloth_budget(model, hw.get("ram_gb") or 0.0)):
-                context = 8192 if vram < 14 else 32768
+            context = 131072                          # 128K on every card (owner, 2026-11-01; strata_control/default_context.py)
         if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is None:

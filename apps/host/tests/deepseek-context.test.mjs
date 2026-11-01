@@ -82,8 +82,8 @@ test('the Models screen honours the choice (it no longer forces 8K), offers the 
   assert.doesNotMatch(screen, /multi_file ? 8192 : context/, 'the chosen context is what is installed and loaded');
   assert.match(screen, /selectedSize\?\.multi_file \? deepseekContexts\(installed\?\.contextMax\) : native\?\.catalog\?\.contexts \?\? \[8192, 32768, 65536, 131072, 262144\][\s\S]*contextChoices\(contextList, context\)/);
   assert.match(screen, /selectedSize\?\.multi_file && deepseekContextNote\(context\) \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(deepseekContextNote\(context\)\)\}<\/p> : null/);
-  assert.match(screen, /setContext\(selectedSize\.multi_file \? 8192 : defaultContext\(contextList\)\)/, 'the default for a DeepSeek version that is not installed stays 8K');
-  assert.match(screen, /setContext\(selectedSize\.multi_file \? installed\.context : openingContext/, 'an installed DeepSeek model shows and loads the context it was prepared with, whatever was kept from another model');
+  assert.match(screen, /setContext\(defaultContext\(contextList\)\)/, 'a DeepSeek version that is not installed opens at 128K like every model (owner, 11-01), from its own list');
+  assert.match(screen, /setContext\(openingContext\(installed\.context, contextList, installed\.contextChosen === true, selectedSize\.multi_file \? \[OLD_DEEPSEEK_CONTEXT\] : undefined\)\)/, 'an installed DeepSeek model shows and loads the context it was prepared with, whatever was kept from another model');
   assert.match(screen, /installed\?\.ready && context === installed\.context/, 'a load at the prepared context starts from the saved file; only a changed choice runs setup again');
 });
 

@@ -805,7 +805,7 @@ DSV41_UD_FILES = {
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
 DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES}
 DSV41_PROFILES = ROOT / "data" / "dsv41"           # the shipped hot-expert profiles (profile-2.00.bin, profile-2.25.bin, + .sha256)
-DSV41_CONTEXT = 8192          # the context the engine was checked at (4096 and 8192; 64K is not tried yet)
+DSV41_CONTEXT = 131072        # 128K like every model (owner, 2026-11-01; strata_control/default_context.py); the engine was checked at 4096 and 8192 before, INT3 checks 128K on real cards
 DSV41_MAC_VISION = False      # an Apple Silicon Mac: the Metal engine has not run DeepSeek's picture tower (0.2.7.1), so pictures stay off there
 MULTI_FILE_FAMILIES = {
     "deepseek41": {"title": "DeepSeek-V4.1-Flash", "by": "DeepSeek; the 2-bit GGUFs by ISTA-DAS, UD-Q8_K_XL by Unsloth", "arch": "deepseek41",
@@ -7887,7 +7887,7 @@ def engine_families(eng: Path) -> set:
 def own_path_context(fam: dict, vram_gb: float) -> int:
     """The recommended context for an own-path family: its KV cache (VRAM) beside the dense weights and the most-used
     experts - 32K up to 16 GB, 64K up to 24 GB, 128K above."""
-    return 32768 if vram_gb <= 16.5 else 65536 if vram_gb <= 24.5 else 131072
+    return 131072                                      # 128K on every card (owner, 2026-11-01)
 
 
 def own_path_size(fam: dict, ram: float) -> str:
@@ -9836,9 +9836,7 @@ def main() -> int:
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
-    rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
-    if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
-        rec_ctx = 8192 if small < 14 else 32768
+    rec_ctx = 131072                                   # 128K on every card (owner, 2026-11-01); a card it leaves little room on is warned about below, never lowered
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
     rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
     if a.context:
