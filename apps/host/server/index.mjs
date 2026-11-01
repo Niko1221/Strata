@@ -1995,6 +1995,15 @@ async function api(req, res, path, method, url) {
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
     });
+    // Keep the desktop WebKit request alive while prefill, tools, or approval
+    // waits produce no frames. Client disconnects still detach normally.
+    const chatHeartbeat = setInterval(() => {
+      if (!res.writableEnded && !res.destroyed) res.write('{"type":"beat"}\n');
+    }, 15_000);
+    chatHeartbeat.unref?.();
+    const clearChatHeartbeat = () => clearInterval(chatHeartbeat);
+    res.once('finish', clearChatHeartbeat);
+    res.once('close', clearChatHeartbeat);
     const controller = new AbortController();
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
 
