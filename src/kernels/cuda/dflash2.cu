@@ -495,6 +495,70 @@ __global__ void __launch_bounds__(WARPS * 32) gemm4_kernel(Df2Segs segs, const i
         }
 }
 
+// The Q4_0 GEMM with R rows a warp (R = 4, 2, 1) instead of 8, as gemm_rows_kernel is to gemm8_kernel: a group of 8 rows is shared by 8 / R warps, each reading only its
+// rows' nibbles and scales; every output keeps the arithmetic of gemm4_kernel (same steps in the same order per lane, the same xsum and shuffle tree), so the result is bitwise
+// the same.  The activations' per-column sum is recomputed by each of the group's warps (4 dp4a a column and step).
+template <int WARPS, int R, int UNR>
+__global__ void __launch_bounds__(WARPS * 32) gemm4_rows_kernel(Df2Segs segs, const int8_t* __restrict__ xq, const float* __restrict__ xd, int n_in, int ncols) {
+    constexpr int SUBS = 8 / R;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int wi = blockIdx.x * WARPS + warp;
+    const int row_g = (wi / SUBS) * 8, sub = wi % SUBS;
+    const Df2Seg sg = df2_pick(segs, row_g);
+    const int row0 = row_g - sg.row0;
+    const int nb = n_in / 32, steps = nb / 16;
+    const uint2* wq = reinterpret_cast<const uint2*>(sg.q + (size_t) row0 * (n_in / 2)) + lane + sub * R * 32;
+    const __half* wd = sg.d + (size_t) row0 * nb + (lane >> 1) + sub * R * 16;
+    const int4* xv = reinterpret_cast<const int4*>(xq) + lane;
+    float acc[R][8];
+#pragma unroll
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int c = 0; c < 8; ++c) acc[r][c] = 0.0f;
+#pragma unroll UNR
+    for (int st = 0; st < steps; ++st) {
+        int4 w[R];
+        float dw[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            const uint2 raw = wq[(size_t) st * 256 + r * 32];
+            w[r] = make_int4((int) (raw.x & 0x0F0F0F0Fu), (int) ((raw.x >> 4) & 0x0F0F0F0Fu), (int) (raw.y & 0x0F0F0F0Fu), (int) ((raw.y >> 4) & 0x0F0F0F0Fu));
+            dw[r] = __half2float(wd[(size_t) st * 128 + r * 16]);
+        }
+        float xs[8];
+#pragma unroll
+        for (int c = 0; c < 8; ++c) xs[c] = xd[(size_t) c * nb + st * 16 + (lane >> 1)];
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            const int4 x = xv[(size_t) c * (n_in / 16) + st * 32];
+            int xsum = STRATA_DP4A(0x01010101, x.x, 0);
+            xsum = STRATA_DP4A(0x01010101, x.y, xsum);
+            xsum = STRATA_DP4A(0x01010101, x.z, xsum);
+            xsum = STRATA_DP4A(0x01010101, x.w, xsum);
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                int isum = STRATA_DP4A(w[r].x, x.x, 0);
+                isum = STRATA_DP4A(w[r].y, x.y, isum);
+                isum = STRATA_DP4A(w[r].z, x.z, isum);
+                isum = STRATA_DP4A(w[r].w, x.w, isum);
+                acc[r][c] = fmaf(dw[r] * xs[c], (float) (isum - 8 * xsum), acc[r][c]);
+            }
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int c = 0; c < 8; ++c) {
+            float v = acc[r][c];
+            v += __shfl_xor_sync(0xffffffffu, v, 16);
+            v += __shfl_xor_sync(0xffffffffu, v, 8);
+            v += __shfl_xor_sync(0xffffffffu, v, 4);
+            v += __shfl_xor_sync(0xffffffffu, v, 2);
+            v += __shfl_xor_sync(0xffffffffu, v, 1);
+            if (lane == 0 && c < ncols) sg.y[(size_t) c * sg.n_out + row0 + sub * R + r] = v;
+        }
+}
+
 // quantize one 32-block of one row to the planar activation layout (a warp: lane = element)
 __device__ __forceinline__ void quant_block(float v, int blk, int col, int K, int8_t* __restrict__ xq, float* __restrict__ xd) {
     const int lane = threadIdx.x & 31;
@@ -914,6 +978,9 @@ void df2_rope_table_inv(const int32_t* pos, int rows, const double* inv, float* 
 void df2_gemm_variant(int v) { g_gemm_variant = v; }
 void df2_attention_variant(int v) { g_attn_variant = v; }
 
+#ifndef DF2_Q4_AUTO
+#define DF2_Q4_AUTO(rows) 1
+#endif
 void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_in, int ncols, void* stream) {
     if (n < 1 || n > 3 || n_in % 512 != 0 || ncols < 1 || ncols > 8) throw std::invalid_argument("df2_gemm: unsupported shape");
     Df2Segs segs;
@@ -928,9 +995,30 @@ void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_
     segs.n = n;
     const int8_t* xqp = static_cast<const int8_t*>(xq);
     cudaStream_t st = (cudaStream_t) stream;
-    if (mats[0].q4) {   // the Q4_0 pack: 4 warps a block when the rows allow, else 2
-        if (rows % 32 == 0) gemm4_kernel<4><<<rows / 32, 128, 0, st>>>(segs, xqp, xd, n_in, ncols);
-        else gemm4_kernel<2><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols);
+    if (mats[0].q4) {   // the Q4_0 pack: 4 warps a block when the rows allow, else 2; the rows-a-warp variants (bitwise the same results) by matrix size
+        static const int tune4 = [] { const char* e = std::getenv("STRATA_DF2_GEMM4"); return e ? std::atoi(e) : 0; }();   // 0: the table below; 1: 8 rows a warp as before
+        int v4 = g_gemm_variant != 0 ? g_gemm_variant : tune4 != 0 ? 1 : DF2_Q4_AUTO(rows);
+#define DF2_ROWS4_CASE(V, W, R, U) case V: gemm4_rows_kernel<W, R, U><<<(rows / 8) * (8 / R) / W, W * 32, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
+        switch (v4) {
+            DF2_ROWS4_CASE(10, 4, 4, 2)
+            DF2_ROWS4_CASE(11, 4, 2, 2)
+            DF2_ROWS4_CASE(12, 4, 1, 2)
+            DF2_ROWS4_CASE(13, 8, 2, 2)
+            DF2_ROWS4_CASE(14, 8, 1, 2)
+            DF2_ROWS4_CASE(15, 4, 2, 4)
+            DF2_ROWS4_CASE(16, 4, 1, 4)
+            DF2_ROWS4_CASE(17, 2, 2, 2)
+            DF2_ROWS4_CASE(18, 8, 1, 4)
+            DF2_ROWS4_CASE(19, 4, 4, 4)
+            DF2_ROWS4_CASE(20, 4, 1, 8)
+            DF2_ROWS4_CASE(21, 8, 1, 8)
+            DF2_ROWS4_CASE(22, 8, 2, 4)
+            DF2_ROWS4_CASE(23, 2, 1, 4)
+            case 2: gemm4_kernel<2><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols); break;
+            default: if (rows % 32 == 0) gemm4_kernel<4><<<rows / 32, 128, 0, st>>>(segs, xqp, xd, n_in, ncols);
+                     else gemm4_kernel<2><<<rows / 16, 64, 0, st>>>(segs, xqp, xd, n_in, ncols);
+                     break;
+        }
         check("gemm4");
         return;
     }
