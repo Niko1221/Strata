@@ -549,10 +549,14 @@ body {
    and two shapes for one row. The title is the row's subject and takes the
    reading step; both dropdowns are quiet capsules of the same height, with the
    border left to the hover state so the chrome stays behind the conversation. */
-.chat-toolbar__conversation h1 {
+.chat-toolbar__conversation h1,
+.main__head .main__title {
   font-size: var(--st-fs-md);
   letter-spacing: -0.01em;
 }
+/* One title step for the chat's "New conversation" and every screen header
+   (Tasks, Skills, Monitor, Serving, Model, Engine): --st-fs-md, 600. */
+.main__head .main__title { font-weight: 600; }
 .chat-model-badge.chat-model-picker,
 .chat-agents {
   height: 30px;
