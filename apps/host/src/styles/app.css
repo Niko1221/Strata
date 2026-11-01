@@ -7253,8 +7253,8 @@ textarea {
 .storage-model__size { font-variant-numeric: tabular-nums; font-size: var(--st-fs-sm); }
 
 /* ---- About > Privacy: plain text ---- */
-.privacy-notes { display: flex; flex-direction: column; gap: 8px; padding: 2px 0; }
-.privacy-notes p { margin: 0; font-size: var(--st-fs-sm); line-height: 1.5; color: var(--st-ink-soft); }
+.privacy-notes { padding: 2px 0; }
+.privacy-notes p { margin: 0; max-width: 68ch; font-size: var(--st-fs-sm); line-height: 1.6; color: var(--st-ink-soft); }
 
 /* ---- an opened task: the name, and a last answer that is easy to read ---- */
 .task-name { margin: 0 0 2px; font-size: var(--st-fs-xl); letter-spacing: -.02em; }
