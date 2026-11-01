@@ -1,62 +1,79 @@
 # Community benchmark on 2x NVIDIA RTX PRO (4500 32 GB + 4000 24 GB), Z820
 
-Measured 2026-11-01 by Jack Kenner (GitHub `jkenner111`). Four configurations of the **same**
-machine and model, run back to back against a freshly loaded engine each time: one card alone,
-then the pair layer-split with three different splits. The headline is that a **layer split
-across two unequal cards nearly doubles decode** on a machine that is otherwise CPU- and
-RAM-bound.
+Measured 2026-11-01 by Jack Kenner (GitHub `jkenner111`).
 
-**This is a draft-protocol submission.** All four runs carry
-`strata-qwen38-thinking-v1-draft.1` and are therefore outside the standard manifest, which
-does not exist yet. They are complete runs with 12/12 sanity in every arm.
+## The point of this machine
+
+This is a 2013 workstation: dual Xeon E5-2697 v2, 251.8 GiB of DDR3, and — the part that
+usually ruins it — model files on a **SATA** SSD that reads at 85–148 MB/s. A 93.7 GB quant
+on that drive would normally make the disk the bottleneck for everything not already in VRAM.
+
+It isn't. **The drive never enters the decode path.**
+
+The engine's own prefill plan states it directly. For a 32K-token prompt it must touch
+**55.4 GiB of experts**. It finds them here:
+
+| Where the experts live | Single 4500 | Dual (layer 13) |
+|---|---:|---:|
+| GPU VRAM expert caches | 22.2 GiB | **38.1 GiB** |
+| Page-locked DDR3 RAM copy | 37.0 GiB | 24.8 GiB |
+| File tier (the SATA drive) | **0.0 GiB** | **0.0 GiB** |
+
+> `strata: prefill plan: ... about 0.0 GB read from the drive per 32768-token prompt`
+
+The engine prices the drive in its own plan — `drive 1.50 GB/s (assumed)` — and then reports it
+is never asked for anything. In resident mode the log says it plainly:
+
+> `resident RAM mode: 37.00 GiB of experts in RAM (page-locked), 9845 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)`
+
+That is the story worth telling: **252 GB of DDR3 is doing the job a Gen5 NVMe would otherwise
+be bought for.** The working set is pinned and split across both NUMA nodes (node 0 12.52 GiB,
+node 1 12.30 GiB in the dual arm), so the cheap card's shortfall is absorbed by system memory
+instead of disk.
+
+And the CPUs are not idle passengers. This chip predates AVX2 entirely — the engine falls back
+to AVX1 **128-bit** kernels — yet 22 pool workers split by socket (12 + 11 threads, one per
+physical core, host on core 0) carry the expert compute for every expert not resident in VRAM,
+while the GPUs run the ~98.9% of routed mass their caches hold. Two 2013 Xeons with 128-bit
+SIMD sustain **105–113 tok/s decode**. That is the second half of the story: the division of
+labour, not the silicon.
 
 ## Hardware and software
 
-- **GPU 0:** NVIDIA RTX PRO 4500 Blackwell, 32 GB (31.9 GiB usable), sm_120
-- **GPU 1:** NVIDIA RTX PRO 4000 Blackwell, 24 GB (23.1 GiB usable), sm_120
-- **CPU:** 2x Intel Xeon E5-2697 v2 @ 2.70 GHz (24 cores total), no AVX-512
-- **RAM:** 251.8 GiB DDR3
-- **Storage:** model on `/dev/sdb3`, a 1.9 TB **SATA** SSD. The runner reports
-  "Storage of the model files: not measured" because it cannot see the backing device;
-  the true value is SATA, not NVMe, and this matters for load time, not steady state.
+- **GPU 0:** NVIDIA RTX PRO 4500 Blackwell, 32 GB (31.9 GiB usable), sm_120 — 82 SMs @ 2.41 GHz
+- **GPU 1:** NVIDIA RTX PRO 4000 Blackwell, 24 GB (23.1 GiB usable), sm_120 — 70 SMs @ 2.06 GHz
+- **CPU:** 2x Intel Xeon E5-2697 v2 @ 2.70 GHz, 24 cores / 48 threads, **no AVX2, no AVX-512**
+- **RAM:** 251.8 GiB DDR3 — a load-bearing component here, not a spec-sheet number
+- **Storage:** `/dev/sdb3`, 1.9 TB **SATA** SSD. Slow on purpose; see above for why it doesn't matter.
 - **OS:** Fedora Linux 43 (Workstation Edition), kernel 7.0.14-101.fc43.x86_64
-  (the generated READMEs render this as `Linux 43 (Workstation Edition)` with a literal
-  `<host>` placeholder — an engine template bug, left uncorrected here rather than edit
-  generated evidence)
+  (generated READMEs render this as `Linux 43 (Workstation Edition)` with a literal `<host>`
+  placeholder — an engine template bug, left uncorrected rather than edit generated evidence)
 - **Driver / CUDA:** 580.159.03 / CUDA 13.0
 - **Strata:** commit `c62d5e3a15b40ea51c96aae9e8d36928965f53ab`, engine 0.1.55, source build
-- **Background work:** **none.** Both cards were idle (2 MiB used) and the host's GPU service
-  units were stopped for the duration. The runner reports "Background work: not measured"
-  because no `--background` value was passed.
-- **Power:** stock, no limits applied.
+- **Build:** `STRATA_ISA_FLOOR=avx` — no AVX-512 on this host, so the build floors the ISA
+- **Background work:** none. Both cards idle (2 MiB), GPU service units stopped.
 
 ## Model and configuration
 
-- **Repository:** `unsloth/Qwen3.8-Flash-Next-GGUF`, revision
-  `38bb39ee97821de2c9009abb7e93950eec396e66`
-- **Source model:** `Qwen/Qwen3.8-Flash-Next`, revision
-  `de4b8e4d43b917e7706784d8bb445c9af86a3540` — verified independently against the Hugging Face
-  API, but **not** captured by the runner (`--source-revision` was not passed on these runs;
-  the reports say "source revision not measured")
-- **Quantization:** UD-IQ4_XS, three shards, 93.7 GB total
-- **Context:** 262,144 tokens (model native), 1 server slot
-- **Build:** `STRATA_ISA_FLOOR=avx` — this host has no AVX-512, so the build floors the ISA
-  rather than emitting AVX2/512 kernels. Vision enabled. Resident budget 55 GiB.
-- **Sampling:** the protocol's fixed set — temperature 1.0, top_p 0.95, top_k 20, min_p 0.0,
+- **Repository:** `unsloth/Qwen3.8-Flash-Next-GGUF`, revision `38bb39ee`
+- **Source model:** `Qwen/Qwen3.8-Flash-Next` at `de4b8e4d`, verified out of band against the
+  Hugging Face API but **not** captured by the runner (`--source-revision` not passed; the
+  result files honestly record `null`)
+- **Quantization:** UD-IQ4_XS, 93.7 GB across three shards
+- **Context:** 262,144 tokens, 1 server slot; KV int8, 32,768 cells resident
+- **Sampling:** the protocol's fixed set — temp 1.0, top_p 0.95, top_k 20, min_p 0.0,
   penalties 0.0 / 1.0, `reasoning_effort: xhigh`, thinking on and preserved
 
-### The four configurations
+| Arm | Cards | Split | Pool workers |
+|---|---|---|---|
+| `arm1-4500-nonumactl-20261101` | RTX PRO 4500 alone | — | 22 (default) |
+| `arm4-dualsplit-20261101` | both, 4500 = main | `auto` → layer 13 | 22 (default) |
+| `arm5-dualsplit-k10-20261101` | both, 4500 = main | explicit layer 10 | 22 (default) |
+| `arm2-dualsplit-w11-20261101` | both, 4500 = main | `auto` → layer 13 | 11 |
 
-| Folder | Cards | Split | Pool workers | Notes |
-|---|---|---|---|---|
-| `arm1-4500-nonumactl-20261101` | RTX PRO 4500 alone | — | 22 (default) | single-card baseline |
-| `arm4-dualsplit-20261101` | both, 4500 = main | `auto` → layer 13 | 22 (default) | **best result** |
-| `arm5-dualsplit-k10-20261101` | both, 4500 = main | explicit layer 10 | 22 (default) | more of the model on the 24 GB card |
-| `arm2-dualsplit-w11-20261101` | both, 4500 = main | `auto` → layer 13 | 11 | worker-count sweep |
-
-`"gpu": [1, 0]` — helper card first, main last. The last card runs head, draft and verify, so
-the 4500 (more VRAM, more SMs, higher clocks) takes that role. Layer split is by layer index:
-the RTX PRO 4000 holds layers 0–12, the 4500 holds 13–47 plus head and draft.
+`"gpu": [1, 0]` — helper first, main last. The last card runs head, draft and verify, so the
+4500 (more VRAM, more SMs, higher clocks) takes that role. The 4000 holds layers 0–12, the
+4500 holds 13–47 plus head and draft.
 
 ## Results
 
@@ -95,39 +112,43 @@ Medians with (min–max) over three repetitions. Decode and prompt rates are the
 | prompt-4k | 1501.5 (1492.4–1535.4) | 103.9 (89.8–108.7) | 2.75 (2.69–2.77) |
 | prompt-16k | 2565.0 (2481.8–2574.7) | 100.3 (98.8–116.0) | 6.43 (6.40–6.65) |
 
-Sanity checks: **12 of 12** in all four runs (I1–I4 instruction, R1–R4 retrieval, T1–T4 tool
-call).
+Sanity checks: **12 of 12** in all four runs (I1–I4 instruction, R1–R4 retrieval, T1–T4 tool call).
 
-### What the numbers say
+## Findings
 
-- **Layer split is worth ~78% decode and ~33% prompt.** 61.3 → 108.7 tok/s short,
-  63.5 → 113.2 at 4K, 64.6 → 105.3 at 16K. Prompt at 16K rises 2031 → 2581 tok/s and TTFT
-  drops 8.11 s → 6.39 s.
-- **The engine's own placement predictor was wrong about which split is better.** With
-  `layer_split: auto` it chose 13 but flagged K=10 as within 0.7%. K=10 measured 20% worse on
-  4K prompt and 13% worse on 16K prompt, and its TTFT was worse at every size. Decode was a
-  dead heat at 16K (105.6 vs 105.3). The predictor prices decode, not prompt.
-- **`--pool-workers` is not a lever here.** 11 workers vs 22 produced overlapping ranges
-  (4K decode 103.9 vs 113.2, both spanning ~98–121).
-- These numbers are well below the same hardware's own October history, but that comparison
-  is not valid: October ran a different engine version (0.1.41 vs 0.1.55), greedy sampling
-  instead of the protocol's temp 1.0 / xhigh, different prompts, and from NVMe rather than
-  SATA. Do not compare them.
+**1. The second card buys RAM, not just compute.** Adding the 24 GB card raises the GPU expert
+cache from 22.2 → 38.1 GiB while simultaneously *shrinking* the pinned RAM copy from 37.0 →
+24.8 GiB, because fewer experts fall back to system memory. Decode goes 61.3 → 108.7 tok/s
+short (+77%), 63.5 → 113.2 at 4K (+78%), 64.6 → 105.3 at 16K (+63%).
+
+**2. The layer split helps prompt too, which the docs don't predict.** 16K prompt throughput
+rises 2,031 → 2,581 tok/s and TTFT drops 8.11 s → 6.39 s. The guidance that a layer split "adds
+capacity without adding speed" did not hold here.
+
+**3. The engine's own split predictor chose wrong and said so.** With `layer_split: auto` it
+picked 13 but flagged K=10 as within 0.7%. K=10 measured 20% worse on 4K prompt, 13% worse on
+16K prompt, and worse TTFT at every size. Decode was a dead heat at 16K (105.6 vs 105.3). The
+predictor prices decode and says as much in the log — worth knowing if you have unequal cards.
+
+**4. `--pool-workers` is not a lever on this host.** 11 vs 22 produced overlapping ranges
+(4K decode 103.9 vs 113.2, both spanning ~98–121).
 
 ## Limitations
 
-- **Draft protocol.** Not eligible for the standard manifest; reported per the community guide.
-- **Six of nine performance requests hit the 512-token cap** in the single-card arm (3/3 at 4K
-  and 3/3 at 16K) and 2/3 at 4K, 3/3 at 16K in the layer-13 arm. A capped request's decode
-  rate is measured to the cap, and `first_answer_s` is absent where reasoning consumed the
-  whole budget. This is anticipated by the protocol, not a run failure, but it means decode
-  figures reflect truncated generations.
-- **`--source-revision` was not passed.** The base-model revision above was verified
-  out of band; the reports themselves say `null` with that reason.
-- **Storage is SATA, not NVMe.** Irrelevant to steady-state decode (the expert arena is
-  RAM-resident; requests 2 and 3 read 0 MB from disk) but it does inflate load time.
-- **No optional concurrency stage** was run; all figures are concurrency 1.
-- **Vision was enabled** but no image case is part of the standard suite.
+- **Draft protocol** (`strata-qwen38-thinking-v1-draft.1`) — outside the standard manifest.
+- **Six of nine performance requests hit the 512-token cap** in arm 1 (3/3 at 4K, 3/3 at 16K) and
+  arm 4 (2/3 at 4K, 3/3 at 16K). Decode is measured to the cap on truncated generations.
+- **`--source-revision` was not passed**; base-model revision verified out of band and recorded
+  as `null` by the runner.
+- **Arm 1 was VRAM-tight.** The log carries two warnings — only 502 MiB and 372 MiB of VRAM free
+  at request start, below the engine's 512 MiB threshold, where the driver can page GPU memory to
+  host RAM and decode collapses (`#2065`). It did not collapse, but the single-card baseline may
+  be depressed by that pressure. Raise `--vram-reserve-mib` before treating arm 1 as a ceiling.
+- **Storage is SATA**, but per the prefill plan the drive contributes 0.0 GiB per 32K prompt, so
+  this affects load time only.
+- No optional concurrency stage; all figures are concurrency 1.
+- **Not comparable to this machine's own October history**: different engine (0.1.41 vs 0.1.55),
+  greedy sampling instead of temp 1.0 / xhigh, different prompts, and NVMe rather than SATA.
 
 ## Reproducing
 
@@ -146,5 +167,5 @@ bin/strata bench run --profile ud-iq4-xs-dual --suite standard-v1 --track custom
   --model-revision 38bb39ee97821de2c9009abb7e93950eec396e66 --quantization UD-IQ4_XS
 ```
 
-Do not wrap in `numactl`: the engine splits its pool by NUMA node itself on this dual-socket
-host, and pinning to one socket costs throughput.
+Do not wrap in `numactl`. The engine builds a NUMA-aware pool itself (one slice per socket);
+pinning it to one socket on this dual-socket host costs throughput.
