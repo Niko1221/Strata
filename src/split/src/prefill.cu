@@ -672,7 +672,7 @@ void Engine::prefill_alloc() {
         p->jobs_dn = palloc<BigJob>(pf_jobs_);
         p->ple_emb = palloc<float>((size_t) pf_c_ * N);
         p->ctl = palloc<int>((size_t) (1 + (pf_c_ / MAXT)) * 2);
-        p->ring_sm = env_int("FNX_PF_RING_SM", 1) != 0;   // strata-split: the prompt path's sums go through host memory on the SM ring (the copy-engine ring is not used: it stalled in a first read)
+        p->ring_sm = env_int("FNX_PF_RING_SM", 0) != 0;   // strata-split: the chunk sums go through host memory on the copy engines; FNX_PF_RING_SM=1 is the GPU-thread ring (slower, kept as the fallback path)
         p->ring = b.ring;
         if (p->ring_sm) {   // ~140 MB a card at 1,024 rows a chunk
             p->ring.f32 = false;   // HOSTRING: the prompt path's sums are fp16 on every count; FNX_RING_F32 is the decode ring's
