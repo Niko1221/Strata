@@ -1161,6 +1161,27 @@ def _bench(a: argparse.Namespace) -> int:
         return _success({"summary": result}, machine=machine,
                         human=bench.format_summary(result))
     if a.bench_command == "compare":
+        from strata_cli import bench_standard
+        old_standard = bench_standard.load_if_standard(Path(a.baseline))
+        new_standard = bench_standard.load_if_standard(Path(a.candidate))
+        if old_standard is not None and new_standard is not None:
+            comparison = bench_standard.compare(old_standard, new_standard)
+            if a.output == "markdown":
+                rendered = bench_standard.format_comparison_markdown(comparison)
+                if a.out:
+                    bench.write_markdown(Path(a.out), rendered)
+                    print(f"Markdown comparison: {Path(a.out).resolve()}")
+                else:
+                    print(rendered, end="")
+                return 0
+            return _success({"comparison": comparison}, machine=machine,
+                            human=bench_standard.format_comparison(comparison))
+        if old_standard is not None or new_standard is not None:
+            # the other side is not a standard result: let bench.load name it when it is missing or unreadable,
+            # and refuse only a readable report of the other kind (the two schemas are never mixed in one table)
+            bench.load(Path(a.candidate if old_standard is not None else a.baseline))
+            return _error("comparing a standard benchmark result with another kind of report is not supported: "
+                          "give two standard results or two serving-suite reports", 5, machine)
         result = bench.compare(bench.load(Path(a.baseline)), bench.load(Path(a.candidate)))
         if a.output == "markdown":
             rendered = bench.markdown_comparison(result)
