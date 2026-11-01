@@ -18,6 +18,11 @@ def add(en, zh, ja, de, es, ru, pt, ko, fr):
 add("Needs an engine update",
     "需要更新引擎", "エンジンの更新が必要です", "Braucht ein Engine-Update", "Necesita actualizar el motor", "Нужно обновить движок", "Precisa de uma atualização do motor", "엔진 업데이트가 필요합니다", "Nécessite une mise à jour du moteur")
 
+# 5: the one word the version list writes for a version that does not fully fit in memory
+add("SSD streaming · will run slower",
+    "SSD 流式读取 · 运行会更慢", "SSD ストリーミング · 動作は遅くなります", "SSD-Streaming · läuft langsamer", "Streaming desde el SSD · irá más lento", "Потоковая подгрузка с SSD · будет работать медленнее",
+    "Streaming do SSD · vai rodar mais devagar", "SSD 스트리밍 · 더 느리게 실행됩니다", "Streaming depuis le SSD · plus lent")
+
 #@@MORE@@
 
 here = Path(__file__).resolve().parent.parent / "src" / "locales"

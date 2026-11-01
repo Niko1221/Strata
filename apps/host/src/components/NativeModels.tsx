@@ -4,7 +4,7 @@ import { Screen } from './layout';
 import { VersionPicker } from './VersionPicker';
 import { FamilySwitch } from './FamilySwitch';
 import { PcComputer } from './PcComputer';
-import { fitOn, memoryNeeded } from '../lib/native-fit';
+import { fitOn, memoryNeeded, versionFit } from '../lib/native-fit';
 import { GpuRoles } from './GpuRoles';
 import { fromLegacy, normalize as normalizeRoles, order as roleOrder, recommend as recommendRoles, rows as roleRows, sameRoles, vramOn, type RoleCard, type Roles } from '../lib/gpu-roles';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
@@ -107,7 +107,6 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         (j.model === selectedSize.model && j.family === selectedSize.sourceFamily));
     const job = native?.jobs.find(j => j.id === jobId && selectedJob(j)) ??
         native?.jobs.filter(j => ['load', 'install'].includes(j.kind) && selectedJob(j)).at(-1);
-    const noFit = selectedSize?.on_this_pc === 'does not fit';
     // This model can read pictures but the installed engine has no picture reader: pictures run off for now, nothing is saved, and the row says nothing wordy.
     const noReader = !!selectedSize?.imagesCapable && !selectedSize.images;
     // Graphics cards (strata_control/gpu_fit.py: the one rule of the app, the Terminal and setup): the recommended option is pre-selected, the person may pick another
@@ -124,6 +123,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const cardsGpus: number[] = roleCards.length > 1 ? roleOrder(effectiveRoles, roleCards) : [];
     const chosenCards = cardsGpus;
     const fitHardware = { ram_gb: pcRam ? Math.max(0, pcRam - keptRam) : pcRam, vram_gb: Math.max(0, (roleCards.length > 1 ? vramOn(effectiveRoles, roleCards) : pcVram) - keptVramOn(chosenCards)) };
+    // How the chosen version sits on this computer (the same rule as the version list): the page says a word only for "SSD streaming" and "Doesn't fit".
+    const fitState = selectedSize ? versionFit(selectedSize, fitHardware) : 'unknown';
     // A layer split written for another number of cards no longer fits: back to automatic.
     useEffect(() => { if (cardsGpus.length <= 1 && split !== 'auto') setSplit('auto'); }, [cardsGpus.length]);
     // Drafting (which drafter guesses ahead): a choice exists only for Qwen3.8-Flash-Next (the qwen and gyro families) on a computer whose engine can run DFlash2; every other model has no dropdown.
@@ -210,7 +211,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
       <div className="native-choice__head"><span className="native-choice__label">{tr("Version")}</span><span className="native-choice__tools"><NativePresets values={values} onApply={v => { const f = families.find(f => f.family === v.family || f.sizes.some(s => s.sourceFamily === v.family)); if (!f)
         return; presetPending.current = true; setFamily(f.family); setSize(f.sizes.find(s => s.model === v.model && (s.sourceFamily === v.family || f.family === v.family))?.id ?? ''); setContext(v.context ?? 32768); setVision(v.vision ?? 'no'); setKv(v.kv ?? 'int8'); setLowRam(v.low_ram ?? 'auto'); }}/><Btn icon="models" size="sm" variant="ghost" onClick={() => setManage(true)}>{tr("Manage models")}</Btn></span></div>
       <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
-      {tr(noFit ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("May run slower \u00B7 Model data can be read from SSD.")}</p> : null)}
+      {tr(fitState === 'ssd' ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("SSD streaming · will run slower")}</p> : fitState === 'no' ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("Doesn't fit")}</p> : null)}
       {tr(selectedSize?.multi_file && deepseekContextNote(context) ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(deepseekContextNote(context))}</p> : null)}
       <div className="native-choice__row">
        <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={contextChoices(selectedSize?.multi_file ? deepseekContexts(installed?.contextMax) : native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144], context).map(n => ({ value: String(n), label: n % 1024 === 0 ? `${n / 1024}K` : `${n.toLocaleString()} tokens` }))} onChange={n => setContext(Number(n))}/></div>
