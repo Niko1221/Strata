@@ -240,7 +240,8 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
             set_default(kv);
             any = true;
         }
-        if (any)
+        const char* wm = std::getenv("STRATA_SELECT_WMMA");   // the line is only true while the scorer switch is not set to 0
+        if (any && !(wm != nullptr && wm[0] == '0'))
             std::fprintf(stderr, "strata: gfx12 (RDNA4): the matrix-core QSA block scorer is on once a prompt is past 28,672 tokens (+5.7%% prompt speed at 98K on an R9700, shorter prompts unchanged; "
                                  "the first-token KL against the warp kernel is 0.002 on average above 30K; STRATA_SELECT_WMMA=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
     }
