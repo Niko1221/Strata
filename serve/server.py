@@ -8924,6 +8924,37 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     return out
 
 
+SPLIT_KEYS = ("split_fallback", "split_engine_note")
+
+
+def start_engine_or_fallback(cfg: dict, exe: str, effort_end: list[str] | None, env: dict, lazy: bool, tok, *, offline: bool = False,
+                             batch_telemetry=None):
+    """Start the run config's engine. A config written for the all-cards split engine (strata_control/split_engine.py) carries the
+    normal layer-split config under "split_fallback": if that engine refuses or fails to come up, say so in one plain line and start the
+    normal one instead, so a start never fails because of the option. Any other config starts exactly as before."""
+    fb = cfg.get("split_fallback")
+    try:
+        return StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy)
+    except Exception as e:
+        if not isinstance(fb, dict) or not fb.get("exe"):
+            raise
+        why = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        print(f"[strata] The all-cards split engine could not start ({why}). Starting the normal layer split instead.", flush=True)
+    cfg2 = {k: v for k, v in cfg.items() if k not in SPLIT_KEYS + ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting")}
+    cfg2.update(fb)
+    cfg2 = with_component_engine(cfg2)
+    if engine_component.is_reference(cfg2["exe"]):
+        exe2 = _component_exe(cfg2["exe"], cfg2)
+    else:
+        exe2 = cfg2["exe"] if os.path.isabs(cfg2["exe"]) else os.path.abspath(os.path.join(cfg2.get("cwd") or ".", cfg2["exe"]))
+    env2 = child_env(cfg2, offline=offline)
+    configure_batch_telemetry_env(env2, cfg2, batch_telemetry)
+    effort2 = effort_end_args(cfg2, exe2, tok)
+    engine = StrataEngine(exe2, engine_args(cfg2) + (effort2 or []), cwd=cfg2.get("cwd"), log=cfg2.get("log"), env=env2, lazy=lazy)
+    engine.info["split_fallback"] = True
+    return engine
+
+
 def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: list[str], lazy: bool,
                    *, offline: bool = False):
     """Opt-in data-parallel replicas (serve/replicas.py): one StrataEngine per card group, each with its own cards, log
@@ -9534,8 +9565,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         elif split:
             engine = start_split(cfg, split, exe, effort_end or [], lazy, offline=a.offline)
         else:
-            engine = StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"),
-                                  env=env, lazy=lazy)
+            engine = start_engine_or_fallback(cfg, exe, effort_end, env, lazy, tok, offline=a.offline, batch_telemetry=a.batch_telemetry)
         engine.silence_s = silence                      # an attribute of its own: restart() keeps it
         warn_tight_ram(engine.info.get("arena_mib"))
         note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
