@@ -567,11 +567,16 @@ windows with no drafts at all, and that reads like a run that drafts. The pruned
 this flag for the same reason - the head rows it drops are the bytes the slots' rings and graphs need.
 
 On one gfx1201 card with 4 concurrent slots (`W=8, depth=1`, 106,299-token draft vocab), the batched DFlash2
-co-drafter (`STRATA_DF2_BATCHHEAD=1`) together with multi-row QSA/GDN batching (`STRATA_BATCH_ATTN_ROWS=1`,
-`STRATA_BATCH_GDN_GROUPS=1`), batched per-slot KV/indexer appends, Layer-0 async PLE gather, and async commit +
-co-draft overlap cuts 4-slot window time from `49.20` to `44.98 ms/win` (`163.3 rows/s`, `136.1 tok/s` HTTP wall =
-`34.0 tok/s/slot` at `c=4`) and 2-slot window time from `43.46` to `39.99 ms/win` (`157.7 rows/s`, `132.7 tok/s` HTTP
-wall = `66.4 tok/s/slot` at `c=2`). The flag makes the set one flag to type; a run without it is byte-identical to the
+co-drafter (`STRATA_DF2_BATCHHEAD=1`, `STRATA_DF2_BATCHBODY=1`) with Layer-36 context projection overlap,
+device-to-device `Dflash2Drafter::copy_slot` on admission, multi-row QSA/GDN batching (`STRATA_BATCH_ATTN_ROWS=1`,
+`STRATA_BATCH_GDN_GROUPS=1`), batched per-slot KV/indexer appends, and Layer-0 async PLE gather cuts 4-slot window
+time from `49.20` to `42.46 ms/win` (`emit` `5.46 ms`, `167.8 rows/s`, `140.0-143.8 tok/s` HTTP wall =
+`35.0-35.9 tok/s/slot` at `c=4`) and 2-slot window time from `43.46` to `39.77 ms/win` (`emit` `3.88 ms`,
+`159.9 rows/s`, `133.0 tok/s` HTTP wall = `66.5 tok/s/slot` at `c=2`). When a new prompt prefill arrives beside
+decoding batch slots, rank-major `--expert-cache-per-layer` slot ordering (`lend()` borrows the coldest experts
+evenly across all 48 layers instead of wiping out layers 42-47) and `STRATA_BATCH_PREFILL_CHUNK` (default `2048` on
+single GPU when batch slots are active) sustain `70.4 tok/s` aggregate decode (`35.2 tok/s/slot`) alongside
+`1,532 tok/s` prompt processing. The flag makes the set one flag to type; a run without it is byte-identical to the
 one before.
 
 ## Windows of 16 rows, and the four-card AMD profile

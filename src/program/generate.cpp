@@ -15922,14 +15922,21 @@ int main(int argc, char** argv) {
             // lend the slots `tokens` batched prompt tokens need: the prompt path's buffers for min(chunk, tokens
             // rounded up to 256), laid out in the last of the slots it may borrow - per participant, out of that
             // participant's own cache, and marking only that participant's own layers
+            static const int64_t batch_prefill_cap = [] {
+                const char* v = std::getenv("STRATA_BATCH_PREFILL_CHUNK");
+                return v != nullptr ? (int64_t) std::max(0, std::atoi(v))
+                                    : strata::program::kDefaultBatchPrefillChunk;
+            }();
             int64_t seg_lend = 0;   // the loan the last lend left (the largest participant's chunk; 0: none)
             auto lend = [&](int64_t tokens, std::string& e, int64_t exact) -> bool {
                 seg_lend = 0;
                 if (pf_parts.empty()) return true;                     // its own buffers: nothing to lend
                 const auto t_ln = Clock::now();
+                const int64_t eff_pf_chunk = strata::program::batch_prefill_chunk(
+                    batch_on(), !stages.empty(), o.prefill_head_alias, o.prefill_chunk, batch_prefill_cap);
                 // what this segment needs, capped by the configured chunk: a request lends only what its own
                 // prompt needs, so a large chunk costs a short prompt nothing
-                const int64_t want_full = planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk);
+                const int64_t want_full = planned_chunk(tokens, eff_pf_chunk, pf_plan_chunk);
                 // #340: a short enough request reads in the stages' own S-token chunks (nothing lent)
                 const int64_t want_seg = o.prefill_head_alias ? o.prefill_chunk
                                        : split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
@@ -16011,10 +16018,20 @@ int main(int argc, char** argv) {
             // decode for a share of the time the chunk took (STRATA_BATCH_DECODE_SHARE, default 0.5), so a long
             // prompt does not stop the others.  The slots' windows then see the cache without the slots this prompt
             // borrowed (marked missing: those experts run on the CPU), never a prompt buffer.
+            static const bool decode_share_explicit = std::getenv("STRATA_BATCH_DECODE_SHARE") != nullptr;
             static const double decode_share = [] {
                 const char* v = std::getenv("STRATA_BATCH_DECODE_SHARE");
                 return v != nullptr ? std::max(0.0, std::atof(v)) : 0.5;
             }();
+            auto active_batch_slots = [&]() -> int {
+                int cnt = 0;
+                for (const BSlot& s : bs)
+                    if (s.active && !s.stop && s.produced < s.max_new) ++cnt;
+                return cnt;
+            };
+            auto eff_decode_share = [&]() -> double {
+                return strata::program::batch_decode_share(decode_share, decode_share_explicit, active_batch_slots());
+            };
             bool batch_fatal = false;
             int64_t il_parts = 0;   // the slots' windows run between this prompt's chunks
             double il_ms = 0;
@@ -16576,10 +16593,11 @@ int main(int argc, char** argv) {
                 static Clock::time_point pr_prev_end{};
                 static bool pr_have_prev = false;
                 static double pr_prev_piece_ms = 0.0;   // the previous read's last full piece
+                const double cur_share = eff_decode_share();
                 if (pr_on) {
                     const double lead =
                         pr_prev_piece_ms > 0.0
-                            ? strata::program::piped_decode_budget_ms(pr_prev_piece_ms, decode_share, pr_cap, pr_floor)
+                            ? strata::program::piped_decode_budget_ms(pr_prev_piece_ms, cur_share, pr_cap, pr_floor)
                             : (pr_cap > 0.0 ? pr_cap : std::max(pr_floor, 200.0));
                     const double since =
                         pr_have_prev ? std::chrono::duration<double, std::milli>(Clock::now() - pr_prev_end).count()
@@ -16592,6 +16610,24 @@ int main(int argc, char** argv) {
                                              "%.0f ms first\n", (long long) (pipe_rows - rows0),
                                      std::chrono::duration<double, std::milli>(Clock::now() - tl).count());
                     }
+                } else if (!piped && o.batch > 0 && cur_share > 0.0 && batch_on()) {
+                    const double lead = pr_prev_piece_ms > 0.0 ? cur_share * pr_prev_piece_ms : 60.0;
+                    const double since =
+                        pr_have_prev ? std::chrono::duration<double, std::milli>(Clock::now() - pr_prev_end).count()
+                                     : -1.0;
+                    if (strata::program::piped_read_lead_in(true, batch_on(), since, lead)) {
+                        const auto td = Clock::now();
+                        in_prompt_read = true;
+                        do {
+                            if (!batch_step()) {
+                                in_prompt_read = false; batch_fatal = true; e = "a batch window failed"; return false;
+                            }
+                        } while (batch_on() &&
+                                 std::chrono::duration<double, std::milli>(Clock::now() - td).count() < lead);
+                        in_prompt_read = false;
+                        ++il_parts;
+                        il_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+                    }
                 }
                 int64_t piece = piece_now();
                 if (piece <= 0) return run(a0, b0);
@@ -16601,6 +16637,7 @@ int main(int argc, char** argv) {
                     if (!run_conc(q, r)) return false;
                     const double piece_ms = std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
                     if (pr_on && r < b0) pr_prev_piece_ms = piece_ms;
+                    if (!piped && o.batch > 0) pr_prev_piece_ms = piece_ms;
                     const int64_t piece_tokens = r - q;
                     q = r;
                     if (q >= b0) continue;
@@ -16623,6 +16660,7 @@ int main(int argc, char** argv) {
                     if (ys >= 0 && give_way(ys, q, e)) return false;
                     // (on the pipelined path a piece's end has the pipeline drained - nothing runs during a piece and
                     // every decode budget ends in pipe_drain - so the part read can give way there as off the pipeline)
+                    const double step_share = eff_decode_share();
                     if (pr_on) {   // the pipelined pieces: the slots decode through the pipeline, then it is drained
                         if (!batch_on()) {
                             std::fprintf(stderr, "strata batch: piped read %lld tokens in %.0f ms (to %lld of %lld)\n",
@@ -16630,7 +16668,7 @@ int main(int argc, char** argv) {
                             continue;
                         }
                         const double budget =
-                            strata::program::piped_decode_budget_ms(piece_ms, decode_share, pr_cap, pr_floor);
+                            strata::program::piped_decode_budget_ms(piece_ms, step_share, pr_cap, pr_floor);
                         const int64_t rows0 = pipe_rows;
                         const auto td = Clock::now();
                         if (!piped_decode(budget, e)) return false;
@@ -16640,8 +16678,8 @@ int main(int argc, char** argv) {
                                      std::chrono::duration<double, std::milli>(Clock::now() - td).count());
                         continue;
                     }
-                    if (decode_share <= 0.0 || !batch_on()) continue;
-                    const double budget = decode_share * std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
+                    if (step_share <= 0.0 || !batch_on()) continue;
+                    const double budget = step_share * std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
                     const auto td = Clock::now();
                     in_prompt_read = true;
                     do {
@@ -16656,7 +16694,7 @@ int main(int argc, char** argv) {
                         std::fflush(stderr);
                     }
                 }
-                if (pr_on) { pr_prev_end = Clock::now(); pr_have_prev = true; }   // for the next read's lead-in
+                if (pr_on || (!piped && o.batch > 0)) { pr_prev_end = Clock::now(); pr_have_prev = true; }   // for the next read's lead-in
                 return true;
             };
             apply_pending(true);

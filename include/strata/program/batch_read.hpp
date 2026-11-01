@@ -84,4 +84,26 @@ inline bool piped_read_lead_in(bool enabled, bool beside_slots, double ms_since_
            ms_since_prev_end <= kPipedLeadInWindowMs + std::max(0.0, budget_ms);
 }
 
+/// Effective prompt chunk ceiling when batch decode slots are active on a single GPU (`STRATA_BATCH_PREFILL_CHUNK`,
+/// default 2048; <= 0 disables capping).  Capping the chunk while slots decode shrinks the VRAM expert-cache loan
+/// (`1,367 -> ~342` slots on an 8K prompt) and yields to `batch_step()` every `batch_chunk_cap` tokens, while leaving
+/// solo prefill (`beside_slots == false`) at the full configured chunk.
+inline constexpr int64_t kDefaultBatchPrefillChunk = 2048;
+inline int64_t batch_prefill_chunk(bool beside_slots, bool layer_split, bool head_alias, int64_t configured_chunk,
+                                   int64_t batch_chunk_cap) {
+    if (!beside_slots || layer_split || head_alias || batch_chunk_cap <= 0 || configured_chunk <= 0)
+        return configured_chunk;
+    const int64_t cap = std::max<int64_t>(256, (batch_chunk_cap / 256) * 256);
+    return std::min(configured_chunk, cap);
+}
+
+/// Effective decode share (`STRATA_BATCH_DECODE_SHARE`) between prompt chunks when `active_slots` are decoding.
+/// When `share_explicit` is true, uses `configured_share`; otherwise scales from `0.5` at 1 active slot up to `1.0`
+/// at 3+ active slots (`0.25 + 0.25 * active_slots`, clamped to `[0.5, 1.0]`).
+inline double batch_decode_share(double configured_share, bool share_explicit, int active_slots) {
+    if (share_explicit) return std::max(0.0, configured_share);
+    if (active_slots <= 1) return 0.5;
+    return std::clamp(0.25 + 0.25 * (double) active_slots, 0.5, 1.0);
+}
+
 }  // namespace strata::program
