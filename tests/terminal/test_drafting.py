@@ -475,6 +475,95 @@ class TheDownloadPlanListsIt(unittest.TestCase):
                 self.assertNotIn("dflash2", [p["kind"] for p in other.download_plan()["parts"]], "not for this model: hidden, not offered")
 
 
+class BatchDflash2FlagIsTheEnginesOwn(unittest.TestCase):
+    """`--batch-dflash2` is an engine flag (src/program/generate.cpp), written by hand on the command line: the
+    Terminal's `--drafting` choice keeps producing the granular flags, so `drafting.decide` must not start
+    emitting the new one. The rules below are checked against the engine source, which is the only copy that
+    exists here: these tests build no engine and run no GPU, so they check the contract in the text."""
+
+    SRC = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8")
+
+    def test_the_terminal_still_writes_the_granular_flags(self):
+        with tempfile.TemporaryDirectory() as tmp, serving_dflash2(), \
+                mock.patch.object(drafting, "pack_ready", lambda d: True):
+            d = drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=Path(tmp))
+            self.assertEqual(d.drafter, "dflash2")
+            self.assertEqual(d.flags, ("--draft", "dflash2", "--draft-model", str(drafting.pack_path(Path(tmp)))))
+            self.assertNotIn("--batch-dflash2", d.flags, "the batch flag is the engine's, written by hand: Auto and DFlash2 stay as they were")
+
+    def test_the_flag_is_parsed_once_and_listed_in_the_help(self):
+        self.assertEqual(self.SRC.count('a == "--batch-dflash2"'), 1, "parsed exactly once")
+        self.assertIn('"  --batch-dflash2', self.SRC, "usage() lists it")
+
+    def test_it_writes_the_drafter_and_leaves_the_mtp_layer_out(self):
+        at = self.SRC.index('a == "--batch-dflash2"')
+        body = self.SRC[at:at + 1200]
+        self.assertIn('o.draft = "dflash2"', body)
+        self.assertIn("o.dflash_no_mtp = true", body)
+
+    def test_an_explicit_window_or_depth_beats_the_default(self):
+        at = self.SRC.index('a == "--batch-dflash2"')
+        body = self.SRC[at:at + 1200]
+        # the defaults are guarded by the same "was it given" pattern --batch-groups uses, so a typed value wins
+        self.assertIn("if (!o.batch_draft_window_set)", body)
+        self.assertIn("if (!o.batch_draft_depth_set)", body)
+        self.assertIn("o.batch_draft_window_set = true", self.SRC, "--batch-draft-window records that it was given")
+        self.assertIn("o.batch_draft_depth_set = true", self.SRC, "--batch-draft-depth records that it was given")
+        self.assertIn("o.batch_draft_depth = 1", body, "the flag's own depth")
+
+    def test_a_narrow_window_build_keeps_8_rows_and_says_so(self):
+        self.assertIn("if (strata::kernels::kVerifyMaxT < 16)", self.SRC, "the 16-row window is only the wide build's")
+        self.assertIn("16 is not compiled in", self.SRC, "the build that cannot take 16 says so in one line")
+
+    def test_the_refusals_name_the_flag_they_need(self):
+        for need in ("--batch-dflash2 needs --serve",
+                     "--batch-dflash2 needs --batch N",
+                     "--batch-dflash2 needs --draft-model PACK",
+                     "--batch-dflash2 needs --spec T (T >= 2)"):
+            self.assertIn(need, self.SRC, need)
+
+    def test_a_missing_draft_vocabulary_is_a_refusal_that_names_the_file(self):
+        self.assertIn("--batch-dflash2 needs the pruned draft vocabulary", self.SRC)
+        self.assertIn("pass --mtp-draft-vocab FILE", self.SRC, "the message says what to pass")
+        # the discovery is the existing one: beside the pack, then the shipped ~/Strata-data/mtp/rt layout
+        self.assertIn('"draft_vocab.bin"', self.SRC)
+        self.assertIn('"mtp" / "rt" / "draft_vocab.bin"', self.SRC)
+
+    def test_the_startup_line_says_what_it_turned_on(self):
+        self.assertIn("--batch-dflash2: the batched DFlash2 drafter is on", self.SRC)
+        at = self.SRC.index("--batch-dflash2: the batched DFlash2 drafter is on")
+        line = self.SRC[at - 200:at + 500]
+        self.assertIn("window rows", line)
+        self.assertIn("--batch-draft-depth", line)
+        self.assertIn("draft vocabulary", line)
+
+    def test_a_build_without_the_drafter_refuses_before_it_can_claim_one(self):
+        # the drafter is CUDA and HIP: in a build without it every gate that would refuse the flag is compiled out
+        guard = self.SRC.index("this build has no DFlash2 drafter")
+        startup = self.SRC.index("--batch-dflash2: the batched DFlash2 drafter is on")
+        self.assertLess(guard, startup, "the refusal comes before the startup line")
+        self.assertIn("#if !defined(STRATA_HAVE_DFLASH2)", self.SRC[guard - 400:guard], "guarded by the build's own switch")
+
+    def test_the_batch_drafter_never_quiets_to_plain_batch(self):
+        # every serve-path fall-back says so, and the flag stops the run where the granular flags fall back to the MTP
+        self.assertIn("it does not serve plain batch", self.SRC)
+        self.assertGreaterEqual(self.SRC.count("if (o.batch_dflash2) return 1;"), 7,
+                                "each DFlash2 fall-back in the gate and the serve setup is a refusal for the flag")
+
+    def test_the_serve_verifier_keeps_the_dflash2_taps(self):
+        # the taps must be set before Verifier::init(), which sizes them; the batch path needs them
+        self.assertIn("if (use_df2) ver.set_taps(df2.tap_layers());", self.SRC)
+        set_at = self.SRC.index("if (use_df2) ver.set_taps(df2.tap_layers());")
+        init_at = self.SRC.index("if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound")
+        self.assertLess(set_at, init_at, "set_taps before init, or ver.tapping() is false and the drafter falls back")
+
+    def test_the_vram_budget_prices_the_drafter_not_the_mtp_layer(self):
+        # the batch slots' head rows come from the pruned vocabulary, so bind_bytes must be given the file it reads
+        self.assertIn("df2.bind_bytes(native_head.row_bytes(), n_vocab, df2_vocab())", self.SRC)
+        self.assertEqual(self.SRC.count("df2.bind_bytes(native_head.row_bytes(), n_vocab, df2_vocab())"), 2,
+                         "both budget sites")
+
+
 if __name__ == "__main__":
     unittest.main()
 

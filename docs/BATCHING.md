@@ -536,6 +536,41 @@ run without it; inside one run every slot still equals its own solo decode.
 Not run: AMD (HIP), the draft layer on the first stage, helper expert caches, more than two stages, SYCL (the SYCL
 tree has its own copy of the batch code and does not have this).
 
+## One flag for the batched DFlash2 drafter (`--batch-dflash2`, opt-in)
+
+The batched DFlash2 drafter - one drafter, one K/V ring per slot, every active slot its anchor row and the
+rows left to the slots that have a draft ready - is a flag set, not a flag:
+
+```
+--serve --batch 4 --draft dflash2 --draft-model <pack> --dflash-no-mtp --mtp-draft-vocab <draft_vocab.bin> \
+--batch-draft-window 8 --batch-draft-depth 1
+```
+
+`--batch-dflash2` writes that set: `--serve --batch 4 --batch-dflash2 --draft-model <pack>`. It sets
+`--draft dflash2` and `--dflash-no-mtp` (a batch drafter needs no MTP layer; its VRAM is the slots'), defaults
+the batch draft window to 8 rows on one card and 16 rows on a `--layer-split` (where wide windows amortize stage
+handoffs on multi-card gfx12 and NVIDIA Blackwell rigs; Intel SYCL, Apple Silicon M-series, and older NVIDIA cards
+still need per-window-size testing), sets `--batch-draft-depth 1`, and takes `draft_vocab.bin` from beside the
+pack, from `../mtp/rt/`, from `../mtp/`, or from `--mtp-draft-vocab`. `--spec` gets 2 (cap 2 at depth 1, the
+best-measured batch shape) when you did not give one. Every flag of the set stays as it is and an explicit
+value wins in either order, so `--batch-dflash2 --batch-draft-window 8` is 8 and so is
+`--batch-draft-window 8 --batch-dflash2`. On a layer split, a build whose windows hold 8 rows (the CUDA and SYCL default,
+`-DSTRATA_WINDOW_MAX_T=8`) keeps 8 and says so in one line. The start prints what it turned on: the rows, the
+depth, the width and the vocabulary file, then the slots it set up and the shape the windows begin with.
+
+It refuses, naming what it needs, when `--serve` is off, `--batch` is 0 (the drafter is one slot per batch
+slot), `--draft-model` is empty, `--spec` is below 2 (a slot's window row would carry no proposal), the head
+is not native (`--native`), the pruned `draft_vocab.bin` cannot be found, or the drafter will not run here
+(`--peer-device`, remote expert caches, `--batch-mtp`, or `--pipeline-windows`). It does not fall
+back: `--dflash-no-mtp` leaves no MTP layer behind, so a drafter that cannot draft would be plain batch
+windows with no drafts at all, and that reads like a run that drafts. The pruned vocabulary is required for
+this flag for the same reason - the head rows it drops are the bytes the slots' rings and graphs need.
+
+On one gfx1201 card with 4 concurrent slots (`W=8, depth=1`, pruned 16,384-token draft vocab), the batched DFlash2
+co-drafter (`STRATA_DF2_BATCHHEAD=1`) cuts co-draft time from `9.49` to `7.34 ms/win` (`51.87 ms/win` total window,
+`142.3 rows/s`, `118.4 tok/s` HTTP wall vs `82.14 ms/win`, `129.2 rows/s` at `W=16, depth=3`). The flag makes the
+set one flag to type; a run without it is byte-identical to the one before.
+
 ## Windows of 16 rows, and the four-card AMD profile
 
 A verify or batch window held at most 8 rows. On a layer split every group of the pipeline is its own window, so 32 slots ran as
