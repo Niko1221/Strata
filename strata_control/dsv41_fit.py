@@ -86,12 +86,24 @@ ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_1
                          "ppl": "?", "ram_ok_gb": 40.0, "disk_total": 258.0,
                          "quality": "Unsloth's next dynamic version, the size of ISTA-DAS 2.00 bpw; not measured here yet"}
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
-ISTA_DENSE_ON_GPU_GB = 4.5            # what a card holds of them with a 12 GB card (measured on the 5070 / 3060: the engine places the rest itself)
-# AMD (ROCm) cards keep more beside the experts than the 12 GB NVIDIA cards above: the HIP engine's prompt buffers and graphs.  Fitted to the two real
-# runs of the 2.25 set (0.2.9 gates, 32 GiB R9700): 1 card holds 2,366 experts, 4 cards 12,147 (the plan said 2,947 and 13,180):
-# non-expert memory per card = AMD_RESERVE_GB + AMD_DENSE_ON_GPU_GB / cards  (11.4 GB with one card, 4.9 GB with four).
-AMD_DENSE_ON_GPU_GB = 8.7
-AMD_RESERVE_GB = 2.7
+ISTA_DENSE_ON_GPU_GB = 4.5            # (the old plan's figure, kept for the Unsloth Q8 plan above; the official sets use the measured ones below)
+# What the engine really puts on a card, from its own startup line ("CUDA0 layers [0, 39] + head: weights 5.86 GB, experts 25.29 GB (2566 of 15360 in
+# VRAM), caches 0.02 GB, 576 MiB free") on f-042-maya-rc d93547aed, 11-01: the plan said 2,947 experts for one R9700 and the engine held 2,366-2,566;
+# 13,180 for four and it held 12,147-12,192.  The old plan took 4.5 GB of dense weights and 1.15 GB of reserve and forgot the rest of a card's
+# memory: the driver's context, the prompt path's buffers (they grow with the prompt chunk) and the dense weights each card repeats.
+#   dense weights on the cards = base + CARD_DENSE_REPEAT_GB for each card (2.25 bpw: 5.86 GB on one card, 6.57 on four -> 5.62 + 0.24 per card;
+#   boston's UD-IQ1_M: 7.61 on one and on two cards; p620's UD-IQ1_S: 6.58)
+#   the engine keeps ENGINE_FREE_GB free on each card (--reserve-mib 600 and the small caches)
+#   what is left over per card (the "other" of the accounting, measured against the card's nominal memory): AMD (HIP) 1.60 GB when the cards hold
+#   half of the experts or more (the prompt path works in chunks of 1024: 4 x R9700), 2.58 GB when they hold less (one R9700: the experts the
+#   card cannot hold are read in place and the prompt chunk is 32768 with the borrowed slots; the 8192 chunk of the older engine took 4.5 GB and
+#   the card held 2,366); NVIDIA and others 3.6 GB (2 x A6000 3.7, an A4000 3.5; not tied to the chunk)
+#   and the experts that stay on a card are a little bigger than the set's average (the hot ones: 9.86-10.0 MB against 9.70 for 2.25 bpw): x1.025
+ISTA_DENSE_GPU_BASE_GB = {"IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37}
+CARD_DENSE_REPEAT_GB = 0.24
+ENGINE_FREE_GB = 0.62
+CARD_OTHER_GB = {"amd": 1.60, "amd_low_share": 2.58, "other": 3.6}
+RESIDENT_EXPERT_FACTOR = 1.025
 ISTA_MEASURED = ("an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7 tokens a second, a 4,000-token prompt "
                  "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: "
                  "about 31 tokens a second")
@@ -289,22 +301,31 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
         warns.append("No graphics card Strata can use was found: this model needs one or more cards (8 GB or more; 12 GB is what it was "
                      "measured with).")
     else:
-        amd_cards = all(str(c.get("vendor") or vendor or "").lower() == "amd" for c in keep)
-        per_dense = (AMD_DENSE_ON_GPU_GB if amd_cards else ISTA_DENSE_ON_GPU_GB) / n
-        reserve = AMD_RESERVE_GB if amd_cards else RESERVE_GB
-        cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - reserve) for c in keep]
-        vram_exp = min(v["experts_gb"], sum(cap))
+        amd = all(str(c.get("vendor") or vendor or "").lower() == "amd" for c in keep)
+        per_dense = (ISTA_DENSE_GPU_BASE_GB.get(model, ISTA_DENSE_GPU_BASE_GB["IST-DAS-2.25bpw"]) + CARD_DENSE_REPEAT_GB * n) / n
+        res_gb = expert_gb * RESIDENT_EXPERT_FACTOR     # what an expert that stays on a card takes
         ranges = split_layers([float(c.get("vram_gb") or 0) for c in keep])
+
+        def place(other: float):
+            cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - ENGINE_FREE_GB - other) for c in keep]
+            vram_exp = min(v["experts_gb"] * RESIDENT_EXPERT_FACTOR, sum(cap))
+            counts = []
+            for room, (a, b) in zip(cap, ranges):
+                gb = min(room, vram_exp * (room / sum(cap))) if sum(cap) else 0.0
+                counts.append(min(int(gb / res_gb), (b - a + 1) * EXPERTS_PER_LAYER))
+            return cap, counts
+
+        cap, counts = place(CARD_OTHER_GB["amd"] if amd else CARD_OTHER_GB["other"])
+        if amd and sum(counts) < EXPERTS / 2:          # cards that hold under half of the experts: the engine's larger prompt buffers
+            cap, counts = place(CARD_OTHER_GB["amd_low_share"])
         in_vram = 0
-        for c, room, (a, b) in zip(keep, cap, ranges):
-            gb = min(room, vram_exp * (room / sum(cap))) if sum(cap) else 0.0
-            ne = min(int(gb / expert_gb), (b - a + 1) * EXPERTS_PER_LAYER)
+        for c, ne, (a, b) in zip(keep, counts, ranges):
             in_vram += ne
             out["cards"].append({"index": c.get("index"), "name": c.get("name"), "vram_gb": float(c.get("vram_gb") or 0), "layers": [a, b],
-                                 "dense_gb": _round1(per_dense), "experts_gb": _round1(ne * expert_gb), "experts": ne})
+                                 "dense_gb": _round1(per_dense), "experts_gb": _round1(ne * res_gb), "experts": ne})
         out["experts_in_vram"] = in_vram
-        out["vram_experts_gb"] = _round1(in_vram * expert_gb)
-        out["cpu_experts_gb"] = _round1(v["experts_gb"] - in_vram * expert_gb)
+        out["vram_experts_gb"] = _round1(in_vram * res_gb)
+        out["cpu_experts_gb"] = _round1(max(0.0, v["experts_gb"] - in_vram * res_gb))
         out["tp"] = tp_for(n, keep)
         out["args"] = _tp_args(n, out["tp"])
         names = " + ".join(f"{c['name'] or 'card ' + str(c['index'])} ({c['vram_gb']:.0f} GB)" for c in out["cards"])
