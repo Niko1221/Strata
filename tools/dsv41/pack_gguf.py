@@ -732,15 +732,24 @@ def main() -> int:
         if not ds_path.is_file():
             raise SystemExit("%s: no DSpark GGUF there" % ds_path)
         dg = Gguf(ds_path)
-        if dg.kv.get("general.architecture") != "dflash":
+        darch = str(dg.kv.get("general.architecture") or "")
+        if darch not in ("dflash", "deepseek41-dflash-draft"):
             raise SystemExit("%s: not a DSpark (dflash) GGUF" % ds_path)
         # the engine's dspark.* geometry: a quant built by another tool (the IST-DAS sets) leaves it out, the drafter
         # carries all of it except the noise token (a model constant) and the markov head's rank (the tensor's shape)
         for k, dk in (("block_size", "block_size"), ("expert_count", "expert_count"),
                       ("expert_used_count", "expert_used_count"), ("target_layers", "target_layers")):
-            v = dg.kv.get("dflash." + dk)
+            v = dg.kv.get(darch + ".dflash." + dk)
+            if v is None:
+                v = dg.kv.get(darch + "." + dk)
             if v is not None:
                 kv.setdefault("%s.dspark.%s" % (arch, k), v)
+        if a.dspark_noise_token is None:          # Lucebox carries it as dflash.mask_token_id
+            _mt = dg.kv.get(darch + ".dflash.mask_token_id")
+            if _mt is None:
+                _mt = dg.kv.get(darch + ".mask_token_id")
+            if _mt is not None:
+                a.dspark_noise_token = int(_mt)
         if a.dspark_noise_token is not None:
             kv.setdefault("%s.dspark.noise_token_id" % arch, int(a.dspark_noise_token))
         if a.dspark_markov_rank is not None:
@@ -750,14 +759,21 @@ def main() -> int:
                 if "markov" in name and len(dims) == 2:
                     kv.setdefault("%s.dspark.markov_rank" % arch, int(dims[0]))
                     break
-        nb = int(dg.kv["dflash.block_count"])
+        nb = int(dg.kv[darch + ".block_count"])
         files.append(rel(ds_path))
         fi = len(files) - 1
         HEAD = {"fc.weight": "mtp.0.main_proj.weight", "enc.output_norm.weight": "mtp.0.main_norm.weight",
                 "output_norm.weight": "mtp.%d.norm.weight" % (nb - 1),
                 "conf_proj.weight": "mtp.%d.confidence_head.proj.weight" % (nb - 1),
                 "markov_w1.weight": "mtp.%d.markov_head.embed.weight" % (nb - 1),
-                "markov_w2.weight": "mtp.%d.markov_head.head.weight" % (nb - 1)}
+                "markov_w2.weight": "mtp.%d.markov_head.head.weight" % (nb - 1),
+                # Lucebox's deepseek41-dflash-draft names the heads differently (dflash.* prefix, .w1/.w2)
+                "dflash.fc.weight": "mtp.0.main_proj.weight",
+                "dflash.hidden_norm.weight": "mtp.0.main_norm.weight",
+                "dflash.dspark.markov.w1": "mtp.%d.markov_head.embed.weight" % (nb - 1),
+                "dflash.dspark.markov.w2": "mtp.%d.markov_head.head.weight" % (nb - 1),
+                "dflash.dspark.confidence.weight": "mtp.%d.confidence_head.proj.weight" % (nb - 1)}
+        HEAD_SKIP = {"dflash.dspark.confidence.bias"}   # no engine-side counterpart
         groups = int(kv["%s.attention.output_group_count" % kv["general.architecture"]])
         bad = []
         for name, typ, dims, off in dg.tensors:
@@ -771,6 +787,8 @@ def main() -> int:
             m = re.match(r"blk\.(\d+)\.(.+)$", name)
             if m and m.group(2) in LAYER:
                 ck = "mtp.%s.%s" % (m.group(1), LAYER[m.group(2)])
+            elif name in HEAD_SKIP:
+                continue
             elif name in HEAD:
                 ck = HEAD[name]
             else:
@@ -778,6 +796,19 @@ def main() -> int:
                 continue
             shape = list(reversed(dims))
             base = dg.data_start + off
+            if ck.endswith("markov_head.embed.weight") and tname != "BF16":
+                # the engine reads this one as BF16 (te->bytes / 2); Lucebox ships it as F16 - same width, convert
+                import numpy as _np
+                with open(ds_path, "rb") as _f:
+                    _f.seek(base)
+                    _raw = _f.read(nbytes)
+                _u = _np.frombuffer(_raw, dtype=_np.float16).astype(_np.float32).view(_np.uint32)
+                _bf = (_u >> 16).astype(_np.uint16)
+                _side = ds_path.parent / (ds_path.stem + ".mkembed_bf16.bin")
+                _side.write_bytes(_bf.tobytes())
+                files.append(rel(_side))
+                tensors.append((ck, "BF16", len(files) - 1, 0, nbytes, shape))
+                continue
             if ck.endswith(".attn.wo_a.slice"):
                 part = nbytes // groups
                 for i in range(groups):
