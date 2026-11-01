@@ -30,6 +30,10 @@ import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
+import { cutNotice, cutNudge } from './reply-cut.mjs';
+
+/** How often one turn asks the agent to carry on after a reply the length limit cut (each time in smaller pieces). */
+export const MAX_CUT_RETRIES = 2;
 import { buildAnswer, parseQuestions } from './user-questions.mjs';
 import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped } from './context-fit.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
@@ -501,7 +505,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       try { extra.push(...settlePlan(failure)); } catch { /* a plan frame must never break the end of a turn */ }
       // The turn guard: a turn the app stopped, or one that ended with no words, always ends with one plain message (a plan card carries it itself).
       let noteReason = turn.guard ?? null;
-      if (!noteReason && guard && !failure && !turn.stopping && !turn.goalRun) {
+      // A reply the length limit cut ends with a sentence that says so (and what was lost), never with silence (AGENT-LOST).
+      const cutEnd = !failure && !turn.stopping && projector.ended?.kind === 'max-tokens';
+      if (cutEnd && !noteReason) {
+        const note = cutNotice({ ...projector.cut(), retrying: false });
+        extra.push({ type: 'delta', own: true, text: `
+
+${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
+      }
+      if (!noteReason && !cutEnd && guard && !failure && !turn.stopping && !turn.goalRun) {
         noteReason = guard.silent({ ended: projector.ended, wrote: projector.emittedAny === true, acted: projector.tools.size > 0, contextTokens: projector.contextTokens });
       }
       if (noteReason && !extra.some(f => f.type === 'plan' && f.event === 'proposed')) { const note = guardNote(noteReason); if (note) extra.push(note); }
@@ -618,6 +630,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         case 'turn/start':
           turn.parentOpen = true;
           if (turn.research) turn.research.waitingStart = false;
+          turn.cutWaiting = false;
           clearTimeout(turn.settleTimer);
           // After Stop, a helper's report would start a new turn that nobody asked for.
           if (turn.stopping) void runtime.gw.rpc('session/cancel', { request: { sessionId } }).catch(() => {});
@@ -769,6 +782,24 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           const current = await goalGet();
           if (turn.finished || turn.parentOpen) return;
           if (current && current.phase === 'active' && current.activation === 'armed') { turn.settleTimer = after(700, armSettle); return; }
+          // A reply the length limit cut (AGENT-LOST): the agent lost what it was writing. Say so in the chat and ask it to carry on in smaller pieces, twice at most.
+          if (turn.cutWaiting) { turn.settleTimer = after(300, armSettle); return; }
+          if (projector.ended?.kind === 'max-tokens' && !turn.goalRun && !turn.stopping && (turn.cuts ?? 0) < MAX_CUT_RETRIES) {
+            const cut = projector.cut();
+            turn.cuts = (turn.cuts ?? 0) + 1;
+            const note = cutNotice({ ...cut, retrying: true });
+            emit({ type: 'delta', own: true, text: `
+
+${note.text}
+
+`, key: note.key, values: note.values, noteReason: 'cut' });
+            for (const f of projector.clearCut()) emit(f);
+            turn.cutWaiting = true;
+            try { await runtime.gw.rpc('session/prompt', { request: { requestId: `cut-${randomUUID()}`, sessionId, mode: 'queue', content: [{ type: 'text', text: cutNudge(cut) }] } }); }
+            catch { turn.cutWaiting = false; finishTurn(null); return; }
+            turn.settleTimer = after(500, armSettle);
+            return;
+          }
           // Research: gather (search and read pages), then write the answer in the fixed shape. A step that did not open pages is sent back once.
           if (turn.research && !turn.stopping) {
             const r = turn.research;
