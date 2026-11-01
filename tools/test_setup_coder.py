@@ -98,6 +98,30 @@ class Pins(unittest.TestCase):
         self.assertEqual(list(fam)[:4], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", NAME])
 
 
+class Profile(unittest.TestCase):
+    """The set's own hot-expert profile (made from the engine's routing over the 264 calibration texts, 519,422 prompt tokens): rows of 192, not the 2.00 set's."""
+
+    def test_the_profile_is_the_sets_own_and_its_hash_is_pinned(self):
+        import hashlib
+        f = ROOT / "data" / "dsv41" / PIN["profile"]
+        data = f.read_bytes()
+        self.assertEqual(len(data), (40 + 3) * 192 * 4)            # 40 layers and the drafter's 3 blocks, rows of 192
+        self.assertEqual(hashlib.sha256(data).hexdigest(), f.with_name(f.name + ".sha256").read_text().split()[0])
+        self.assertEqual(setup.MULTI_FILE_FAMILIES["deepseek41"]["models"][NAME]["profile"], PIN["profile"])
+        self.assertEqual(dsv41_fit.ISTA_SETS[NAME]["profile"], PIN["profile"])
+
+    def test_the_engine_reads_it_and_not_the_2_00_one(self):
+        """The same size gate as src/dsv41/ds4_experts_rule.hpp profile_size_fits (tests/dsv41/experts_rule_test.cpp runs the C++ one)."""
+        def fits(n, layers, n_exp):
+            return 4 * n_exp * layers <= n <= 4 * n_exp * (layers + 8)
+        mine = (ROOT / "data" / "dsv41" / PIN["profile"]).stat().st_size
+        other = (ROOT / "data" / "dsv41" / "profile-2.00.bin").stat().st_size
+        self.assertTrue(fits(mine, 40, 192))
+        self.assertFalse(fits(other, 40, 192), "a profile counted on 384 experts a layer is not read by the 192-expert pack")
+        self.assertTrue(fits(other, 40, 384))
+        self.assertFalse(fits(mine, 40, 384))
+
+
 class Recognised(unittest.TestCase):
     def files(self):
         t = dsv41_sets.tables()["sets"][NAME]
