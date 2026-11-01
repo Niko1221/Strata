@@ -29,6 +29,63 @@ def _rule_name(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9-]+", "-", text.lower()).strip("-") or "x"
 
 
+def _inject_char(body: str, ch: str) -> str:
+    """`body` with `ch` added to every negated character class (`[^...]`) it holds.  A rule that is a
+    negated class stands for "any character except these"; subtracting one more is adding it here."""
+    out, i = [], 0
+    while i < len(body):
+        if body[i] == "[" and i + 1 < len(body) and body[i + 1] == "^":
+            j = i + 2
+            while j < len(body) and body[j] != "]":
+                j += 2 if body[j] == "\\" else 1     # a `\]` inside the class is not its end
+            out.append(body[i:j] + _CLASS_ESCAPES.get(ch, ch) + "]")
+            i = j + 1
+        else:
+            out.append(body[i])
+            i += 1
+    return "".join(out)
+
+
+def exclude_seq_in(seq: str, ns: str, rules: list) -> None:
+    """Refuse `seq` inside the JSON the converter produced under the namespace `ns`.
+
+    A non-string parameter's value is the converter's JSON grammar, whose strings are spelled by a
+    `char` rule that admits `<` - so `"</parameter>"` inside an argument value was legal, and
+    frontend.param_end (which ends a value at any `</parameter>` followed by `<parameter=`,
+    `</function>` or `</tool_call>`) cut the call there, dropping every parameter after it.  Measured:
+    a nested object argument arrived as a string and the parameter following it disappeared.
+
+    The fix is the same shape as the top-level one (llama.cpp caps both with `until(param_closer)`):
+    every string in this namespace now reads its characters through the exclusion chain instead of
+    `char*`.  The chain needs a deterministic character set per state, so each state's restart branch
+    is the converter's own `char` body with that state's advancing character injected into its
+    negated class (see _inject_char); refusing `<` outright would be simpler and wrong, since a value
+    may hold one.  A schema whose JSON has no string needs nothing and returns unchanged."""
+    char_name, string_name = f"{ns}-char", f"{ns}-string"
+    char_body = None
+    for line in rules:
+        head, _, body = line.partition(" ::= ")
+        if head == char_name:
+            char_body = body
+            break
+    if char_body is None:
+        return                      # no string in this value's JSON: nothing can spell the closer
+    chain = f"{ns}-text"
+    for k, ch in enumerate(seq):
+        wide = f"{chain}-any-{k}"
+        rules.append(f"{wide} ::= {_inject_char(char_body, ch)}")
+        head = chain if k == 0 else f"{chain}-{k}"
+        if k == len(seq) - 1:
+            rules.append(f'{head} ::= {wide} {chain} | ""')
+        else:
+            rules.append(f'{head} ::= {wide} {chain} | {_lit(ch)} {chain}-{k + 1} | ""')
+    # the string rule reads through the chain; `char*` was the only spelling of a string's body
+    for i, line in enumerate(rules):
+        head, _, body = line.partition(" ::= ")
+        if head == string_name and f"{char_name}*" in body:
+            rules[i] = f"{head} ::= {body.replace(f'{char_name}*', chain)}"
+
+
 def exclude_seq(seq: str, name: str, rules: list) -> str:
     """Rules for any text that never spells `seq`; the rule named `name` is state 0. One rule per
     character: [^c] restarts the chain, "c" advances it; the last state simply refuses the final
@@ -196,6 +253,9 @@ def _call_rule(tool: dict, idx: int, rules: list, convert) -> str:
             value = exclude_seq(PARAM_END, f"{pns}-text", rules)
         else:
             value = _inline(convert(sub if isinstance(sub, dict) else {}), pns, rules)
+            # the JSON this value is spelled with admits "<" inside its strings, so the closer could be
+            # spelled there too (see exclude_seq_in); same rule as the plain-string branch above
+            exclude_seq_in(PARAM_END, pns, rules)
         rules.append(f"{pns} ::= {_lit(PARAM_HEAD + key + '>\n')} {value} {_lit(PARAM_TAIL)}")
         parts.append(pns if key in required else f"( {pns} )?")
     parts.append(_lit(CALL_TAIL))
