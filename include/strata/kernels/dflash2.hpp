@@ -91,8 +91,12 @@ void df2_topk(const float* logits, int n, const int32_t* idx_map, int rows, uint
 /// The candidate selector's walk: for row i = 0..rows-1 the 16 candidates' scores are unary[i][j] + dot(succ[tok[i][j]],
 /// pred[prev] * hp[i]) over `rank` values (codebooks are bf16 rows of `rank`), the pick is the argmax, prev = the pick.  Writes
 /// out_tok[i] and out_prob[i] (the softmax probability of the pick among the 16).  `prev0` is read from *anchor_tok on the device.
+/// `samp` (device, or null): COUPLED PICKS (STRATA_DF2_COUPLED) - 8 int32: [0] 1 = on, [1] [2] the request's Philox seed (low, high), [3] top_k, [4] the draft
+/// temperature (float bits), [5] top_p, [6] min_p (float bits), [7] the anchor's position.  Row i then picks as the target's sampler would from these 16 scores
+/// (top_k, top_p on the raw scores, min_p, temperature, inverse CDF) with the uniform Philox(seed, anchor position + i) that the verify row checking draft i draws,
+/// and out_prob[i] is the pick's probability in that distribution.
 void df2_select(const float* hp, const float* unary, const int32_t* tok, const uint16_t* pred_cb, const uint16_t* succ_cb, int rank, int rows,
-                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream);
+                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream, const int32_t* samp = nullptr);
 
 /// The verify window's tap: out[r][d] = mean over the hc streams c of (R[r][c][d] + bo[r][d] * 2 * sigmoid(inject[r][c] / hc)) - the layer output with
 /// its pending FFN write (gr_write) applied, averaged over the streams.  R rows are `R_stride` floats apart, bo rows `bo_stride`, inject rows

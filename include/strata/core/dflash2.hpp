@@ -17,6 +17,7 @@
 #pragma once
 
 #include "strata/core/session.hpp"
+#include "strata/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
 
@@ -34,6 +35,7 @@ class Dflash2Drafter {
 public:
     static constexpr int kRows = 8;           ///< block rows: the anchor + 7 masks
     static constexpr int kDrafts = kRows - 1;
+    static constexpr int kMeta = 64;          ///< int32 of the staging block: [0..31] positions and tokens, [32..39] the coupled picks (kernels/dflash2.hpp df2_select)
     static constexpr int kRing = 2064;        ///< K/V slots per layer: the 2048 window + slack for rows written ahead of a rejection
 
     Dflash2Drafter() = default;
@@ -67,6 +69,13 @@ public:
     /// then the block for `anchor` (the last committed token, at pos0 + n_new).  `drafts` / `probs` get kDrafts entries (the
     /// selector's pick and its probability).  The taps pointer must be the same device buffer on every call (graphs are captured on it).
     bool draft(const float* taps_dev, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
+
+    /// COUPLED PICKS (STRATA_DF2_COUPLED=1, off by default; core/coupled_draft.hpp is the MTP's version).  For a sampled request the selector's walk picks each draft as the
+    /// target's sampler would from the selector's 16 scores, with the uniform the verify draws for the row that checks it, instead of the argmax.  Verification stays
+    /// exact-match, so the text is the plain seeded sampler's whatever the drafts are; the drafts only agree more often.  Off for greedy requests, penalties and logit
+    /// bias (the picks are the argmax then).  STRATA_DF2_COUPLED_DT=x runs the draft's chain at x times the request's temperature.
+    void set_sampling(const strata::kernels::SamplerParams& sp);
+    bool coupled() const { return coupled_on_; }
 
     /// Captures the eight round graphs (n_new = 1..8) on `taps` now, so no round pays for a capture.
     bool prepare(const float* taps_dev, std::string& err);
@@ -161,6 +170,10 @@ private:
     int64_t* tag_ = nullptr;        ///< per ring slot: (epoch << 32 | position) of the row it holds, -1 none
     cudaEvent_t ev_a_ = nullptr, ev_b_ = nullptr;
     bool timing_ = false;
+    bool coupled_on_ = false;
+    uint64_t c_seed_ = 0;
+    int32_t c_topk_ = 0;
+    float c_temp_ = 1.0f, c_topp_ = 1.0f, c_minp_ = 0.0f;
 };
 
 }  // namespace strata::core

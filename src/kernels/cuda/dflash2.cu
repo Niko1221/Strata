@@ -777,9 +777,32 @@ __global__ void topk_merge_kernel(const float* __restrict__ cval, const int32_t*
 }
 
 // ---- the selector's walk: one block of 256 threads
+// Philox 4x32-10 and its uniform: a copy of sampler.cu's (the verify's sampler draws with the same function; the coupled pick below must give the
+// same float for the same (seed, counter)).  dflash2_coupled_parity pins the two together.
+__device__ __forceinline__ float df2_philox_uniform(uint64_t seed, uint64_t counter) {
+    uint32_t c0 = (uint32_t) counter, c1 = (uint32_t) (counter >> 32);
+    uint32_t c2 = (uint32_t) seed, c3 = (uint32_t) (seed >> 32);
+    for (int i = 0; i < 10; ++i) {
+        const uint32_t hi0 = __umulhi(0x9E3779B9u, c0);
+        const uint32_t hi1 = __umulhi(0xBB67AE85u, c2);
+        const uint32_t lo0 = 0x9E3779B9u * c0;
+        const uint32_t lo1 = 0xBB67AE85u * c2;
+        const uint32_t n0 = hi1 ^ c1 ^ (uint32_t) i;
+        const uint32_t n1 = lo1;
+        const uint32_t n2 = hi0 ^ c3 ^ 0u;
+        const uint32_t n3 = lo0;
+        c0 = n0; c1 = n1; c2 = n2; c3 = n3;
+    }
+    return (float) (c0 >> 8) * (1.0f / 16777216.0f);
+}
+
+// `samp` (device, nullable): [0] 1 = coupled picks, [1] [2] the seed (low, high), [3] top_k, [4] draft temperature (float bits), [5] top_p, [6] min_p, [7] the
+// anchor's position.  Coupled: row i's pick is the target sampler's inverse-CDF pick over the chain (top_k, top_p on the raw scores, min_p, temperature)
+// applied to the 16 scores, with the uniform the verify draws for the row that checks it (Philox(seed, anchor position + i)).
 __global__ void select_kernel(const float* __restrict__ hp, const float* __restrict__ unary, const int32_t* __restrict__ tok,
                               const uint16_t* __restrict__ pred_cb, const uint16_t* __restrict__ succ_cb, int rank, int rows,
-                              const int32_t* __restrict__ anchor_tok, int32_t* __restrict__ out_tok, float* __restrict__ out_prob) {
+                              const int32_t* __restrict__ anchor_tok, int32_t* __restrict__ out_tok, float* __restrict__ out_prob,
+                              const int32_t* __restrict__ samp) {
     __shared__ float vp[256];
     __shared__ float sc[kDf2TopK];
     __shared__ int prev;
@@ -804,14 +827,63 @@ __global__ void select_kernel(const float* __restrict__ hp, const float* __restr
         }
         __syncthreads();
         if (tid == 0) {
-            int bj = 0;
-            float bv = sc[0];
-            for (int j = 1; j < kDf2TopK; ++j)
-                if (sc[j] > bv) { bv = sc[j]; bj = j; }
-            float z = 0.0f;
-            for (int j = 0; j < kDf2TopK; ++j) z += __expf(sc[j] - bv);
-            out_tok[i] = tok[i * kDf2TopK + bj];
-            out_prob[i] = 1.0f / z;
+            if (samp != nullptr && ((const volatile int32_t*) samp)[0] != 0) {
+                const uint64_t seed = ((uint64_t) (uint32_t) samp[2] << 32) | (uint64_t) (uint32_t) samp[1];
+                const int top_k = samp[3];
+                const float temp = __int_as_float(samp[4]), top_p = __int_as_float(samp[5]), min_p = __int_as_float(samp[6]);
+                const uint64_t counter = (uint64_t) (uint32_t) samp[7] + (uint64_t) i;
+                // the 16 in the sampler's selection order: score descending, ties to the lower token id
+                int ord[kDf2TopK];
+                for (int j = 0; j < kDf2TopK; ++j) ord[j] = j;
+                for (int a = 1; a < kDf2TopK; ++a) {
+                    const int x = ord[a];
+                    int b = a - 1;
+                    while (b >= 0 && (sc[ord[b]] < sc[x] || (sc[ord[b]] == sc[x] && tok[i * kDf2TopK + ord[b]] > tok[i * kDf2TopK + x]))) { ord[b + 1] = ord[b]; --b; }
+                    ord[b + 1] = x;
+                }
+                int k = (top_k > 0 && top_k < kDf2TopK) ? top_k : kDf2TopK;
+                const float mx = sc[ord[0]];
+                int n_keep = k;
+                if (top_p < 1.0f) {
+                    double sum = 0.0;
+                    for (int j = 0; j < k; ++j) sum += exp((double) sc[ord[j]] - (double) mx);
+                    double cum = 0.0;
+                    int cut = k;
+                    for (int j = 0; j < k; ++j) {
+                        cum += exp((double) sc[ord[j]] - (double) mx) / sum;
+                        if (cum >= (double) top_p) { cut = j + 1; break; }
+                    }
+                    n_keep = cut;
+                }
+                if (min_p > 0.0f) {
+                    const float thresh = sc[ord[0]] + logf(min_p);
+                    for (int j = 0; j < n_keep; ++j)
+                        if (sc[ord[j]] < thresh) { n_keep = j; break; }
+                }
+                const float inv_t = 1.0f / temp;
+                float smx = sc[ord[0]] * inv_t;
+                for (int j = 1; j < n_keep; ++j) smx = fmaxf(smx, sc[ord[j]] * inv_t);
+                double sum = 0.0;
+                for (int j = 0; j < n_keep; ++j) sum += exp((double) (sc[ord[j]] * inv_t) - (double) smx);
+                const float u = df2_philox_uniform(seed, counter);
+                int pick = n_keep - 1;
+                double cum = 0.0;
+                for (int j = 0; j < n_keep; ++j) {
+                    cum += exp((double) (sc[ord[j]] * inv_t) - (double) smx) / sum;
+                    if ((double) u < cum) { pick = j; break; }
+                }
+                out_tok[i] = tok[i * kDf2TopK + ord[pick]];
+                out_prob[i] = (float) (exp((double) (sc[ord[pick]] * inv_t) - (double) smx) / sum);
+            } else {
+                int bj = 0;
+                float bv = sc[0];
+                for (int j = 1; j < kDf2TopK; ++j)
+                    if (sc[j] > bv) { bv = sc[j]; bj = j; }
+                float z = 0.0f;
+                for (int j = 0; j < kDf2TopK; ++j) z += __expf(sc[j] - bv);
+                out_tok[i] = tok[i * kDf2TopK + bj];
+                out_prob[i] = 1.0f / z;
+            }
             prev = out_tok[i];
         }
         __syncthreads();
@@ -1013,9 +1085,9 @@ void df2_topk(const float* logits, int n, const int32_t* idx_map, int rows, uint
 }
 
 void df2_select(const float* hp, const float* unary, const int32_t* tok, const uint16_t* pred_cb, const uint16_t* succ_cb, int rank, int rows,
-                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream) {
+                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream, const int32_t* samp) {
     if (rank != 256) throw std::invalid_argument("df2_select: the selector rank must be 256");
-    select_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(hp, unary, tok, pred_cb, succ_cb, rank, rows, anchor_tok, out_tok, out_prob);
+    select_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(hp, unary, tok, pred_cb, succ_cb, rank, rows, anchor_tok, out_tok, out_prob, samp);
     check("select");
 }
 

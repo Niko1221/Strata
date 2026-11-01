@@ -15930,6 +15930,9 @@ int main(int argc, char** argv) {
             ver.set_sampling(req_sp);
             if (pipe) ver_b.set_sampling(req_sp);   // (reaches the later stage's odd verifier)
             if (use_mtp) mtp.set_draft_sampling(req_sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
+#if defined(STRATA_HAVE_DFLASH2)
+            if (use_df2) df2.set_sampling(req_sp);   // STRATA_DF2_COUPLED=1: the selector's picks drawn with the target's uniform (a no-op otherwise)
+#endif
             const bool gated_proposal = use_mtp && mtp.prob() && strata::core::spec_gate_pick() &&
                 gated_proposal_usable(o.pipeline_windows < 2 && o.batch == 0 && n_stages == 1 && !multi_gpu && drive.d.remote_count == 0,
                                       o.lookup_chain, o.adapt_swaps, req_pcie_frac != 0.0 || o.pcie_frac_auto, spec_cost, S,
@@ -16158,6 +16161,12 @@ int main(int argc, char** argv) {
             std::vector<int32_t> drafts(DS, 0), window(WS), outv(WS);
             std::vector<float> dprob(DS, 0.0f);
             std::array<float, 8> dwin_s{};   // the probabilities the current window was chosen from (STRATA_SPEC_COST)
+            // STRATA_SPEC_TRACE=<file> in serve (bench only, off by default): per round "R p T a sfx ms k match | probs | drafts | lookup draft | committed tokens"
+            static std::FILE* const df2_trace = [] { const char* tf = std::getenv("STRATA_SPEC_TRACE"); return tf != nullptr && tf[0] != '\0' ? std::fopen(tf, "a") : nullptr; }();
+            static const bool trace_nopick = std::getenv("STRATA_SPEC_TRACE_NOPICK") != nullptr;   // the lookup draft is logged but never taken
+            std::array<int32_t, 8> tr_d{};
+            std::array<int32_t, 16> tr_s{};
+            int tr_k = 0, tr_match = 0;
             std::vector<int32_t> sbuf((size_t) S, 0);
             const bool sfx_on = o.suffix_draft > 0 || o.lookup_chain > 0;
             if (sfx_on) {
@@ -16909,6 +16918,7 @@ int main(int argc, char** argv) {
 #else
             auto draft_df2 = [&](int) -> bool { return false; };
 #endif
+            if (df2_trace != nullptr) std::fprintf(df2_trace, "# request prompt %lld df2 %d spec %d\n", (long long) n, req_df2 ? 1 : 0, S_mtp);
             while (!pl_ran && !cancelled && produced_n < max_new) {
                 int T = 1;
                 policy.set_context(p);
@@ -16946,17 +16956,23 @@ int main(int argc, char** argv) {
                     if (o.suffix_draft > 0 && !first_window) {
                         const int k = sfx.propose(S_look - 1, sbuf.data());
                         sfx_match = sfx.last_match();
+                        if (df2_trace != nullptr) {
+                            tr_k = std::min(k, 16);
+                            tr_match = sfx_match;
+                            for (int i = 0; i < tr_k; ++i) tr_s[(size_t) i] = sbuf[(size_t) i];
+                        }
                         // a probabilistic window must not condition the source on the draw: the policy copy fixed at the request's start
                         // chooses, and the lookup is taken without asking whether the MTP's first guess agrees
                         const bool probabilistic = use_mtp && mtp.prob();
                         if (k > 0 && (probabilistic || !use_mtp || sbuf[0] == drafts[0])) {
                             const strata::spec::DraftPolicy::Pick pk = probabilistic
                                 ? source_policy.choose(S_mtp, k, sfx_match) : policy.choose(T, k, sfx_match);
-                            if (pk.lookup) { T = pk.t; from_sfx = true; }
+                            if (pk.lookup && !trace_nopick) { T = pk.t; from_sfx = true; }
                         }
                     }
                 }
                 std::copy(dprob.begin(), dprob.begin() + (std::ptrdiff_t) std::min<size_t>(dprob.size(), 8), dwin_s.begin());
+                if (df2_trace != nullptr) std::copy(drafts.begin(), drafts.begin() + (std::ptrdiff_t) std::min<size_t>(drafts.size(), 8), tr_d.begin());
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
                 if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
@@ -17315,6 +17331,19 @@ int main(int argc, char** argv) {
                 if (gated_proposal && !eos && !initial_round && timed_round)   // after the next draft: its counters too
                     source_policy.defer_cost(std::max<int64_t>(p + T - 1, p + a + 1 + S_mtp), T,
                                              std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
+                if (df2_trace != nullptr && timed_round) {
+                    std::fprintf(df2_trace, "R %lld %d %d %d %.3f %d %d |", (long long) p, T, a, from_sfx ? 1 : 0,
+                                 std::chrono::duration<double, std::milli>(Clock::now() - round0).count(), tr_k, tr_match);
+                    for (int i = 0; i < 7; ++i) std::fprintf(df2_trace, " %.4f", (double) dwin_s[(size_t) i]);
+                    std::fprintf(df2_trace, " |");
+                    for (int i = 0; i < 7; ++i) std::fprintf(df2_trace, " %d", (int) tr_d[(size_t) i]);
+                    std::fprintf(df2_trace, " |");
+                    for (int i = 0; i < tr_k; ++i) std::fprintf(df2_trace, " %d", (int) tr_s[(size_t) i]);
+                    std::fprintf(df2_trace, " |");
+                    for (int i = 0; i <= a; ++i) std::fprintf(df2_trace, " %d", (int) outv[(size_t) i]);
+                    std::fprintf(df2_trace, "\n");
+                    tr_k = 0;
+                }
                 if (spec_cost && use_mtp && timed_round && !from_sfx) policy.observe_probs(dwin_s.data(), T_mtp - 1, a);
                 if (timed_round && !eos && chain_n == 0)
                     policy.observe(from_sfx, T, a, sfx_match,
@@ -18358,6 +18387,9 @@ int main(int argc, char** argv) {
         mem_mark("the verifier and the drafter's binding");
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here
         if (use_mtp) mtp.set_draft_sampling(sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
+#if defined(STRATA_HAVE_DFLASH2)
+        if (use_df2) df2.set_sampling(sp);   // STRATA_DF2_COUPLED=1: the selector's picks drawn with the target's uniform (a no-op otherwise)
+#endif
         ver.set_split(o.spec_split);
         // auto: the copy kernel for every pack.  DMA (the native packs' default until 0.1.13) has the host call
         // cudaMemcpyAsync + cudaLaunchHostFunc inside a verify window while the GPU spins on the flag they raise;
