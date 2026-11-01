@@ -1826,6 +1826,9 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(amd_community_test_dot_off PRIVATE include)
   target_compile_definitions(amd_community_test_dot_off PRIVATE EXPECT_DOT_BUILT=0 STRATA_AMD_COMMUNITY_DOT_OFF=1)
   add_test(NAME amd_community_test_dot_off COMMAND amd_community_test_dot_off WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  add_executable(gfx12_extra_test src/core/gfx12_extra_test.cpp src/core/arch_defaults.cpp)   # gfx12 extra defaults and their off switches
+  target_include_directories(gfx12_extra_test PRIVATE include)
+  add_test(NAME gfx12_extra_test COMMAND gfx12_extra_test)
   add_executable(nv_defaults_test src/core/nv_defaults_test.cpp src/core/nv_defaults.cpp)   # the sm_121 (GB10) table and its two off switches
   target_include_directories(nv_defaults_test PRIVATE include)
   add_test(NAME nv_defaults_test COMMAND nv_defaults_test)

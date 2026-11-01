@@ -2,6 +2,7 @@
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/amd_community.hpp"
+#include "strata/core/gfx12_extra.hpp"
 
 #include "strata/kernels/gfx_arch.hpp"
 
@@ -207,6 +208,19 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
         set_default(kv);
         set.push_back(kv.first);
+    }
+    {   // gfx12 extras kept apart from the table (gfx12_extra.hpp); not counted in the returned list
+        std::vector<std::string> extra;
+        for (const auto& kv : gfx12_exact_extra_env(gcn_arch)) {
+            if (std::getenv(kv.first.c_str()) != nullptr) continue;
+            set_default(kv);
+            extra.push_back(kv.first);
+        }
+        if (!extra.empty()) {
+            std::fprintf(stderr, "strata: gfx12 (RDNA4): exact extra switches on by default (STRATA_GFX12_DEFAULTS=0 turns them off; a switch you set is kept): ");
+            for (size_t i = 0; i < extra.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", extra[i].c_str() + 7);
+            std::fprintf(stderr, "\n");
+        }
     }
     if (!set.empty()) {
         const bool g12 = strata::kernels::gfx_arch_is_gfx12(gcn_arch);
