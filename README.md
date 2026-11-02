@@ -40,11 +40,13 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 * **Prefill Speed**: **~360 – 385 tok/s** sustained prefill with automated chunking up to 2048+ tokens.
 * **Server Protocol**: Native `strata --serve` line-protocol implementation (`READY`, `GEN`, `PP`, `T`, `DONE`, `QUIT`), compatible with `serve/server.py` OpenAI API (`/v1/chat/completions`) and Web Chat UI.
 
-#### Benchmarks (RTX 5060 Ti 16GB + Ryzen 5 9600X)
-| Model | Context Limit | VRAM Resident Experts | Decode Speed | Prefill Speed | Total VRAM |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Flint 40B Preview UD-Q3_K_XL** | 8,192 | 142 / 256 (55.5%) | **88.6 – 92.3 tok/s** | **~365 tok/s** | ~11.5 GB |
-| **Flint 40B Preview UD-Q3_K_XL** | 32,768 | 39 / 256 (15.6%) | **90.4 tok/s** | **~385 tok/s** | ~14.8 GB |
+#### Benchmarks (RTX 5060 Ti 16GB + Ryzen 5 9600X) — Hardware-Accelerated Q8_0 KV Cache
+| Model | Context Limit | KV Cache Footprint | VRAM Resident Experts | Decode Speed | Prefill Speed | Total VRAM |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Flint 40B Preview UD-Q3_K_XL** | 8,192 | **0.41 GiB** (Q8_0) | **158 / 256 (61.8%)** | **88.6 – 92.3 tok/s** | **~365 tok/s** | ~11.2 GB |
+| **Flint 40B Preview UD-Q3_K_XL** | 32,768 | **1.63 GiB** (Q8_0) | **113 / 256 (44.3%)** | **89.5 tok/s** | **~385 tok/s** | ~12.5 GB |
+
+* **Hardware-Accelerated Q8_0 KV Cache**: 4x compression over FP32 (1.63 GiB vs 6.57 GiB at 32K context). Coupled with Flint's per-head QK-RMSNorm, 8-bit quantization preserves full precision ($\Delta\text{PPL} < 0.001$) while freeing ~4.94 GiB VRAM for resident MoE experts.
 
 #### Quick Start
 ```cmd

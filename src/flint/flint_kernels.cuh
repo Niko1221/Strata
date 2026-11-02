@@ -19,6 +19,14 @@ struct QB {   // a q8_1 activation block
 };
 static_assert(sizeof(QB) == 36, "q8_1 block");
 
+#pragma pack(push, 1)
+struct BlockQ80 {   // standard ggml block_q8_0 KV cache block
+    half d;
+    int8_t qs[32];
+};
+#pragma pack(pop)
+static_assert(sizeof(BlockQ80) == 34, "q8_0 block size");
+
 __device__ __forceinline__ float wsum(float x) {
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) x += __shfl_xor_sync(0xffffffffu, x, o, 32);
@@ -93,7 +101,7 @@ __device__ inline float block_max(float v, float* sh) {
 // H = 32, HKV = 4, HD = 128
 __global__ void k_flint_attn_prep(const float* __restrict__ q_in, const float* __restrict__ kx, const float* __restrict__ vx,
                                   const float* __restrict__ qw, const float* __restrict__ kw,
-                                  float* __restrict__ q_out, float* __restrict__ kc, float* __restrict__ vc,
+                                  float* __restrict__ q_out, BlockQ80* __restrict__ kc, BlockQ80* __restrict__ vc,
                                   int H, int HKV, int HD, int n_rot,
                                   const int32_t* __restrict__ pos0, int ctx, float base, float eps) {
     __shared__ float sh[256];
@@ -122,15 +130,34 @@ __global__ void k_flint_attn_prep(const float* __restrict__ q_in, const float* _
         q_out[((size_t) t * H + head) * HD + i] = v;
     } else {
         const int kh = head - H;
-        kc[((size_t) kh * ctx + pos) * HD + i] = v;
-        vc[((size_t) kh * ctx + pos) * HD + i] = vx[((size_t) t * HKV + kh) * HD + i];
+        const float val_v = vx[((size_t) t * HKV + kh) * HD + i];
+        const int b = i >> 5;
+        const int lane = i & 31;
+
+        const float amax_k = wmax(fabsf(v));
+        const float id_k = amax_k > 0.0f ? 127.0f / amax_k : 0.0f;
+        const float qf_k = roundf(v * id_k);
+        const int8_t q_k = (int8_t) fmaxf(-127.0f, fminf(127.0f, qf_k));
+
+        const float amax_v = wmax(fabsf(val_v));
+        const float id_v = amax_v > 0.0f ? 127.0f / amax_v : 0.0f;
+        const float qf_v = roundf(val_v * id_v);
+        const int8_t q_v = (int8_t) fmaxf(-127.0f, fminf(127.0f, qf_v));
+
+        const size_t b_idx = ((size_t) kh * ctx + pos) * 4 + b;
+        kc[b_idx].qs[lane] = q_k;
+        vc[b_idx].qs[lane] = q_v;
+        if (lane == 0) {
+            kc[b_idx].d = __float2half(amax_k / 127.0f);
+            vc[b_idx].d = __float2half(amax_v / 127.0f);
+        }
     }
 }
 
 // ---------------------------------------------------------------- Split-K FlashAttention for Flint
 constexpr int kChunkCells = 256;
 
-__global__ void k_flint_attn_part(const float* __restrict__ q, const float* __restrict__ kc, const float* __restrict__ vc,
+__global__ void k_flint_attn_part(const float* __restrict__ q, const BlockQ80* __restrict__ kc, const BlockQ80* __restrict__ vc,
                                   const int32_t* __restrict__ pos0, int t0, int H, int HKV, int ctx,
                                   float scale, int n_chunk, float* __restrict__ pacc,
                                   float* __restrict__ pm, float* __restrict__ pl,
@@ -150,9 +177,18 @@ __global__ void k_flint_attn_part(const float* __restrict__ q, const float* __re
     if (p < npos) {
         // sliding window check if applicable
         if (sliding_window <= 0 || (npos - 1 - p) < sliding_window) {
-            const float* kp = kc + ((size_t) kvh * ctx + p) * HD;
+            const BlockQ80* kp = kc + ((size_t) kvh * ctx + p) * 4;
             float a = 0.f;
-            for (int i = 0; i < HD; ++i) a += qs[i] * kp[i];
+            #pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                const float d = __half2float(kp[b].d);
+                float sum_b = 0.f;
+                #pragma unroll
+                for (int i = 0; i < 32; ++i) {
+                    sum_b += qs[b * 32 + i] * (float) kp[b].qs[i];
+                }
+                a += sum_b * d;
+            }
             s = a * scale;
             if (p == 0 && sinks != nullptr) s += sinks[h];
         }
@@ -163,9 +199,15 @@ __global__ void k_flint_attn_part(const float* __restrict__ q, const float* __re
     const float l = block_sum(e, sh);
     if (j < HD) {
         const int n = min(kChunkCells, npos - p0);
+        const int b = j >> 5;
+        const int idx = j & 31;
         float acc = 0.f;
-        const float* vp = vc + ((size_t) kvh * ctx + p0) * HD + j;
-        for (int k = 0; k < n; ++k) acc += sc[k] * vp[(size_t) k * HD];
+        const BlockQ80* vp = vc + ((size_t) kvh * ctx + p0) * 4 + b;
+        for (int k = 0; k < n; ++k) {
+            const float v_val = (float) vp->qs[idx] * __half2float(vp->d);
+            acc += sc[k] * v_val;
+            vp += 4;
+        }
         const size_t o = (size_t) row * n_chunk + c;
         pacc[o * HD + j] = acc;
         if (j == 0) {

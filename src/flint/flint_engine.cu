@@ -318,7 +318,7 @@ struct Engine {
     void* moe_scratch = nullptr;
     float *ewts = nullptr;
     int n_chunk = 0;
-    std::vector<float*> kc, vc; // KV Cache per layer
+    std::vector<flintk::BlockQ80*> kc, vc; // Hardware-quantized Q8_0 KV Cache per layer
 
     cudaGraphExec_t g1 = nullptr;
     bool use_graph = true;
@@ -391,13 +391,18 @@ struct Engine {
         std::fprintf(stderr, "strata-flint: allocate: ctx=%d, tmax=%d, VRAM free before KV=%.2f GiB / %.2f GiB\n",
                      ctx, tmax, (double) fr_b / (1 << 30), (double) tot_b / (1 << 30));
 
-        // KV cache allocation
+        // KV cache allocation: hardware-accelerated Q8_0 (4 blocks of 34B per head per token)
         kc.resize((size_t) m->g.n_layers);
         vc.resize((size_t) m->g.n_layers);
+        const size_t kv_blocks = (size_t) HKV * ctx * 4;
+        const size_t kv_bytes_layer = kv_blocks * sizeof(flintk::BlockQ80) * 2;
         for (int64_t l = 0; l < m->g.n_layers; ++l) {
-            kc[(size_t) l] = dalloc((size_t) HKV * ctx * HD);
-            vc[(size_t) l] = dalloc((size_t) HKV * ctx * HD);
+            kc[(size_t) l] = dalloc_t<flintk::BlockQ80>(kv_blocks);
+            vc[(size_t) l] = dalloc_t<flintk::BlockQ80>(kv_blocks);
         }
+        std::fprintf(stderr, "strata-flint: KV Cache: Q8_0, 49 layers, ctx=%d, footprint=%.2f GiB (%.1f MB/layer)\n",
+                     ctx, (double) (kv_bytes_layer * m->g.n_layers) / (1 << 30),
+                     (double) kv_bytes_layer / (1 << 20));
     }
 
 
