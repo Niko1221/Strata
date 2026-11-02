@@ -205,6 +205,9 @@ async adaptation, requests with penalties keep the serial path. It does not enab
 the coupled-draft restriction. SYCL has a separate driver and does not implement this option. This is an experimental source
 change; cross-backend execution, default-path output parity and quality equivalence still need validation.
 
+For the separate opt-in that keeps solo pipeline windows beside a bounded
+batched-MTP configuration, see [single-GPU controls and dual-GPU request switching](MTP_SWITCHING.md).
+
 `--remote-expert-opt` does something only with a helper cache; on a plain layer split it is inert.
 The `STRATA_PIPELINE_*` tuning and test variables are read only with `STRATA_PIPELINE_DEBUG=1`.
 

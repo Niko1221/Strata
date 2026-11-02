@@ -101,6 +101,7 @@
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
+#include "strata/program/pipeline_batch.hpp"
 #include "strata/program/par_counters.hpp"
 #if defined(__linux__)
 #include <execinfo.h>
@@ -4982,6 +4983,27 @@ int main(int argc, char** argv) {
         return o.mtp_draft_vocab.empty() ? std::filesystem::exists(std::filesystem::path(o.mtp) / "draft_vocab.bin", ec)
                                          : std::filesystem::exists(o.mtp_draft_vocab, ec);
     }();
+    // A bounded alternative to #3095: keep the solo pipeline beside piped MTP,
+    // but keep all drafters on the last card, as in the existing batch path.
+    auto env_one = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    };
+    strata::program::pipeline_batch::Config hybrid_cfg;
+    hybrid_cfg.enabled = env_one("STRATA_HYBRID_WINDOWS");
+    hybrid_cfg.slots = o.batch;
+    hybrid_cfg.groups = o.batch_groups;
+    hybrid_cfg.groups_explicit = o.batch_groups_set && !o.batch_groups_auto;
+    hybrid_cfg.later_stages = (int) split_devs.size();
+    hybrid_cfg.windows = o.pipeline_windows;
+    hybrid_cfg.adapt_async = o.adapt_async != 0;
+    hybrid_cfg.batch_mtp = o.batch_mtp || env_one("STRATA_BATCH_MTP");
+    if (const char* value = std::getenv("STRATA_PIPED_MTP")) hybrid_cfg.piped_drafts = std::atoi(value);
+    bool hybrid_windows = strata::program::pipeline_batch::supported(hybrid_cfg) && o.spec >= 3;
+    if (hybrid_cfg.enabled && !hybrid_windows)
+        std::fprintf(stderr, "strata generate: STRATA_HYBRID_WINDOWS is off: needs --batch 4 --batch-groups 2 "
+                             "--pipeline-windows 2, two layer stages, --spec >= 3, batch MTP and STRATA_PIPED_MTP=2; "
+                             "no async adaptation\n");
     const bool pw_auto = o.pipeline_windows < 0;
     if (pw_auto) {
         static const char* ae = std::getenv("STRATA_PIPELINE_AUTO");
@@ -5011,7 +5033,7 @@ int main(int argc, char** argv) {
                         : split_devs.size() > 1 && o.pipeline_windows == 1 ? "--pipeline-windows 1 needs exactly two stages"
                         : split_devs.size() > 1 && o.adapt_async ? "not with --adapt-async on three or more stages"
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
-                        : o.batch != 0 ? "not with --batch slots"
+                        : o.batch != 0 && !hybrid_windows ? "not with --batch slots"
                         : o.peer_device >= 1 ? "not with --peer-device"
                         : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
@@ -6242,6 +6264,16 @@ int main(int argc, char** argv) {
                          o.batch / o.batch_groups, o.batch / o.batch_groups == 1 ? "" : "s", pm_drafts,
                          pm_drafts > 1 ? "s" : "");
         }
+    }
+    // Allocation may have reduced the slot count or disabled piped MTP. The
+    // startup exception must not survive that change of topology.
+    if (hybrid_windows && (o.pipeline_windows != 2 || o.batch != 4 || o.batch_groups != 2 || !piped_mtp || pm_drafts != 2)) {
+        hybrid_windows = false;
+        o.pipeline_windows = 0;
+        std::fprintf(stderr, "strata generate: STRATA_HYBRID_WINDOWS is off after slot allocation/MTP validation\n");
+    } else if (hybrid_windows) {
+        std::fprintf(stderr, "strata generate: STRATA_HYBRID_WINDOWS: solo GEN uses pipeline windows; "
+                             "BGEN admissions and batch windows do not; draft layer stays on the last card\n");
     }
     // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.
     // In particular WDDM can refuse the draft weights after mapping tens of GiB of host pages.
@@ -14806,6 +14838,10 @@ int main(int argc, char** argv) {
                                  pl_theta, pl_force_miss, (long long) req_short_read);
                 }
             }
+            // Keep this after STRATA_PIPELINE_SWITCH: pw=2 cannot override the
+            // admission boundary, including a BGEN before any slot is active.
+            if (hybrid_windows)
+                pl_pw = strata::program::pipeline_batch::request_windows(true, pl_pw, admit_slot, batch_on());
             // --pipeline-windows: tokens [a, b) through the windows with the stages overlapped.  The tokens are known,
             // so every window commits whole: stage 0 queues window K, its commit and window K+1 back to back (each
             // parity's verifier keeps its own window), and stage 1 runs window K once stage 0 is done with it.  Every
