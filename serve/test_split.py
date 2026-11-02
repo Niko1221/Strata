@@ -273,6 +273,19 @@ class Handover(unittest.TestCase):
         self.e.__dict__["cur"] = self.d
         self.assertEqual(self.e.reused, 7)                          # on the decode side: that engine's count
 
+    def test_cur_stays_on_the_prefill_engine_during_the_restore(self):
+        seen = []
+        orig = self.d.session_file
+
+        def watch(action, path):
+            if action == "restore":
+                seen.append(self.e.__dict__["cur"])                 # the engine the ring reads while D restores
+            return orig(action, path)
+        self.d.session_file = watch
+        self.run_one(list(range(500)))
+        self.assertEqual(seen, [self.p])                            # the restore window shows the prefill, not D's stale last
+        self.assertEqual(self.e.__dict__["cur"], self.d)            # and ends on the decode engine
+
 
 if __name__ == "__main__":
     unittest.main()

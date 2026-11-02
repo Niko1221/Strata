@@ -741,6 +741,7 @@ test("KV ring: kvTokens geometry - clamps, floors, merged idle, empty ring, over
       edgeRun("covering_100", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, prompt_read: 1000, reused: 1000}, E, null, "reading"),
       edgeRun("generating", {state: "generating", queued: 0, prompt_tokens: 1000, max_tokens: 256, generated: 120, tok_s: 33.2, reused: 400}, E, null, "generating"),
       edgeRun("idle_last_merged", {state: "idle", queued: 0}, E, {prompt_tokens: 1200, output_tokens: 300, prompt_ms: 900, decode_ms: 1600, decode_tok_s: 50.1, reused: 300}, "idle"),
+      edgeRun("idle_stale_gen", {state: "idle", queued: 0}, Object.assign({}, E, {gen: 2}), {prompt_tokens: 1200, output_tokens: 300, gen: 1}, "idle"),
       edgeRun("idle_no_last", {state: "idle", queued: 0}, E, null, "idle"),
       edgeRun("ctx_zero", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, prompt_read: 500, reused: 0}, CTX0, null, "reading"),
       edgeRun("overflow_scaled", {state: "generating", queued: 0, prompt_tokens: 2000, max_tokens: 1000, generated: 1000, tok_s: 33.2, reused: 400}, Object.assign({}, ENG, {max_context: 1000}), null, "generating"),
@@ -760,6 +761,7 @@ test("KV ring: kvTokens geometry - clamps, floors, merged idle, empty ring, over
     {name: "covering_100", ctx: 32768, tok: [1000, 0, 0, 31768], pct: "3%", tone: "", reusePct: "100%", sub: "1.0k / 32K", nonDim: "prefill"},
     {name: "generating", ctx: 32768, tok: [400, 600, 120, 31648], pct: "3%", tone: "", reusePct: "40.0%", sub: "1.1k / 32K", nonDim: "decode"},
     {name: "idle_last_merged", ctx: 32768, tok: [1500, 0, 0, 31268], pct: "4%", tone: "", reusePct: "", sub: "1.5k / 32K", nonDim: "free"},
+    {name: "idle_stale_gen", ctx: 32768, tok: [0, 0, 0, 32768], pct: "0%", tone: "", reusePct: "", sub: "0 / 32K", nonDim: "free"},
     {name: "idle_no_last", ctx: 32768, tok: [0, 0, 0, 32768], pct: "0%", tone: "", reusePct: "", sub: "0 / 32K", nonDim: "free"},
     {name: "ctx_zero", ctx: 0, tok: [0, 0, 0, 0], pct: "–", tone: "", reusePct: "", sub: "–", nonDim: "prefill"},   // the served dash: U+2013
     {name: "overflow_scaled", ctx: 1000, tok: [400, 1600, 1000, 0], pct: "300%", tone: "danger", reusePct: "20.0%", sub: "3.0k / 1.0k", nonDim: "decode"},

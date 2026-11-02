@@ -430,14 +430,22 @@ class ReplicaEngine:
         c = getattr(self.tl, "cur", None)
         if c is not None:
             return c.progress
-        return next((e.progress for e in self.engines if getattr(e, "progress", None)), None)
+        # the /status handler runs on its own thread and holds no tl.cur: read the count off the replica
+        # with a request in flight - a finished request's value is stale for the Context ring
+        for k, e in enumerate(self.engines):
+            if self.inflight[k] and getattr(e, "progress", None):
+                return e.progress
+        return None
 
     @property
     def prefill_tok_s_mean(self):
         c = getattr(self.tl, "cur", None)
         if c is not None:
             return c.prefill_tok_s_mean
-        return next((e.prefill_tok_s_mean for e in self.engines if getattr(e, "prefill_tok_s_mean", None)), None)
+        for k, e in enumerate(self.engines):
+            if self.inflight[k] and getattr(e, "prefill_tok_s_mean", None) is not None:
+                return e.prefill_tok_s_mean
+        return None
 
     @property
     def reused(self):
@@ -450,6 +458,13 @@ class ReplicaEngine:
             if self.inflight[k] and getattr(e, "reused", 0):
                 return e.reused
         return 0
+
+    @property
+    def gen(self):
+        # a request's history record notes its serving replica's generation; the /status thread has no
+        # serving replica, so it reports none rather than replica 0's
+        c = getattr(self.tl, "cur", None)
+        return c.gen if c is not None else None
 
     def alive(self) -> bool:
         return any(e.alive() for e in self.engines)

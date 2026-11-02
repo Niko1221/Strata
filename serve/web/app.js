@@ -435,10 +435,12 @@ function renderKvDonut(live, eng, last, on) {
     used = p + segGen;
     eff = p ? segReuse / p : 0;
   } else if (live.state === "idle" && last) {
-    // the quiet: the kept context as one merged Cached arc, with no percent of its own
-    used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
+    // the quiet: the kept context as one merged Cached arc, with no percent of its own — but only while the
+    // record's engine generation matches the engine's now; after a restart the KV cache is gone and the ring stays empty
+    const cacheStale = !!(eng.gen != null && last.gen != null && last.gen !== eng.gen);
+    used = cacheStale ? 0 : (last.prompt_tokens || 0) + (last.output_tokens || 0);
     segReuse = used;
-    merged = true;
+    merged = !cacheStale;
   }
   const free = Math.max(0, ctx - used);
   // a request larger than the window scales every segment: the ring stays an honest mirror

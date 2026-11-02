@@ -2351,6 +2351,59 @@ class DraftCounts(unittest.TestCase):
         self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
 
 
+class ControlLineReading(unittest.TestCase):
+    """The control-line reader (batch, and the solo leg of a batched engine) parses RESUME, so a batch request's
+    live.reused is the real count - not the static 0 the reader left before it saw the line."""
+
+    def test_resume_line_sets_reused(self):
+        import queue
+
+        class Fake:
+            def __init__(self):
+                self.lines = queue.Queue()
+                self._ctl_mode = "solo"
+                self._ctl_result = None
+                self._last_done = None
+                self._ctl_erred = False
+                self._yielded = None
+                self.progress = None
+                self.progress_ms = 0
+                self.prefill_tok_s_mean = None
+                self.reused = 0
+
+            def _send(self, line):
+                pass
+
+            def _parse_done(self, line):
+                pass
+
+        f = Fake()
+        f.lines.put("RESUME 1234")
+        f.lines.put("DONE 4 20 40.0 30.0 stop")
+        list(StrataEngine._control(f, threading.Event(), lambda t: None))
+        self.assertEqual(f.reused, 1234)
+        self.assertEqual(f._ctl_result, ("done", None))
+
+
+class EngineGenerationMarker(unittest.TestCase):
+    """A history record notes the engine process that produced it and metrics() reports the current one, so the
+    frontend can drop the idle Context arc once a restart wiped the KV cache (the record is from an older generation)."""
+
+    def test_history_and_engine_carry_the_generation(self):
+        tok = ByteTokenizer()
+        engine = MockEngine(tok, "ok", max_context=CTX)
+        engine.gen = 5
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        m = svc.metrics()
+        self.assertEqual(m["engine"]["gen"], 5)
+        self.assertEqual(m["requests"][0]["gen"], 5)
+        engine.gen = 6                                             # a restart: the KV cache is gone
+        m2 = svc.metrics()
+        self.assertEqual(m2["engine"]["gen"], 6)
+        self.assertEqual(m2["requests"][0]["gen"], 5)              # the record keeps the generation it was made under
+
+
 class PrometheusMetrics(unittest.TestCase):
     """GET /metrics/prometheus: the totals in Prometheus' text format, under llama-server's names."""
 
