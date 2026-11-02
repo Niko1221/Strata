@@ -20,6 +20,9 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#if FNX_HIP
+#include "hip/peer.h"
+#endif
 
 namespace fnx {
 
@@ -74,6 +77,31 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         ctx_pages = (int) (ctx_pages * ratio);
     }
     int n_pages = ctx_pages + extra_pages;
+    // FNX_PEER (AMD only; hip/peer_policy.hpp has the rules: 0 host exchange, 1 try the peer push, unset the build's default): every directed pair is probed at start
+    // (kernel stores into the peer, a full read-back compare on both sides, a flag round trip); any failure leaves the host exchange for the whole run with one line.
+    // FNX_PEER_PARTS: 1 the window sums, 2 the attention merge, 3 both (the default)
+    bool peer_on = false;
+    int peer_parts = 0;
+#if FNX_HIP
+    {
+        std::vector<int> devs;
+        for (int c = 0; c < NCARD; ++c) devs.push_back(m.cards[c].dev);
+        const PeerDecision pd = peer_decide(std::getenv("FNX_PEER"), PEER_DEFAULT_ON, [&](std::string& why) { return peer_enable_and_probe(devs, why); });
+        if (!pd.line.empty()) std::fprintf(stderr, "fnx: %s
+", pd.line.c_str());
+        peer_on = pd.use;
+        peer_parts = (int) env_int("FNX_PEER_PARTS", 3);
+        if (peer_on) std::fprintf(stderr, "fnx: peer push: %s%s pushed into the peers' memory
+", peer_parts & 1 ? "the window sums " : "", peer_parts & 2 ? "and the attention merge" : "");
+    }
+    auto pxalloc = [&](size_t bytes) -> void* {
+        void* p = nullptr;
+        if (hipExtMallocWithFlags(&p, bytes, hipDeviceMallocFinegrained) != hipSuccess) throw std::runtime_error("FNX_PEER: fine-grained device allocation of " + std::to_string(bytes >> 10) + " KiB failed");
+        ck(FNX_ZERO_DEV(p, bytes), "peer mailbox clear");
+        own_dev(p);
+        return p;
+    };
+#endif
     for (int c = 0; c < NCARD; ++c) {
         const CardW& w = m.cards[c];
         CardBuf* b = new CardBuf();
@@ -204,7 +232,13 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         b->ring.f32 = ring_f32();
         b->ring.err = dalloc<unsigned>(1);
         b->att_ring.card = c;
+#if FNX_HIP
+        if (peer_on && (peer_parts & 1)) b->ring.pk = pxalloc((size_t) 2 * NCARD * MAXT * (N / 2) * sizeof(unsigned long long));
+        b->att_ring.in = peer_on && (peer_parts & 2) ? (unsigned long long*) pxalloc(att_ring_words() * sizeof(unsigned long long))
+                                                     : hxalloc<unsigned long long>(att_ring_words());
+#else
         b->att_ring.in = hxalloc<unsigned long long>(att_ring_words());
+#endif
         b->att_ring.err = b->ring.err;
         cb_.push_back(b);
     }
@@ -221,8 +255,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             cb_[c]->att_ring.peer_in[d] = cb_[d]->att_ring.in;
         }
         // one hop for the window sums and the attention merge on 3 or more cards (FNX_ONEHOP=0: the rings); the mailboxes live in the ring's buffers
-        const bool onehop = NCARD > 2 && env_int("FNX_ONEHOP", 1) != 0 && !cb_[c]->ring.f32;
+        const bool onehop = (NCARD > 2 || peer_on) && env_int("FNX_ONEHOP", 1) != 0 && !cb_[c]->ring.f32;
         cb_[c]->ring.onehop = cb_[c]->att_ring.onehop = onehop;
+        for (int d = 0; d < NCARD; ++d) cb_[c]->ring.peer_pk[d] = cb_[d]->ring.pk;
+        cb_[c]->ring.peer = onehop && cb_[c]->ring.pk != nullptr;
     }
     if (NCARD > 2 && env_int("FNX_ONEHOP", 1) != 0 && cb_[0]->ring.f32)
         std::fprintf(stderr, "fnx: FNX_RING_F32: the one-hop sum carries fp16 words only, the rings stay\n");

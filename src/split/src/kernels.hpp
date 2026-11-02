@@ -324,6 +324,11 @@ struct Ring {
     void* next_ag;
     void* peer_in[NCARD] = {};   // every card's `in` (the one-hop sum reads each card's mailbox)
     bool onehop = false;         // NCARD > 2 and fp16 words: one hop for a window's sum (k_ring_a2a), the ring's 2 (NCARD - 1) hops otherwise
+    // FNX_PEER (AMD, src/hip/peer.h): the one-hop sum pushed into the other cards' device memory instead of read from host mailboxes. pk: this card's mailbox
+    // [2 sets][NCARD sources][MAXT * N / 2] tagged words (fine-grained device memory); peer_pk[d]: card d's
+    void* pk = nullptr;
+    void* peer_pk[NCARD] = {};
+    bool peer = false;
     unsigned* err;       // bit 1: a peer's value never came; bit 2: a NaN or inf (on the fp16 ring: a value past its
                          // range); bit 4: an hc read's grid barrier timed out; bit 16: a NaN or inf among the head's
                          // logits (the window's argmax)

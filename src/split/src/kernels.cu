@@ -965,6 +965,37 @@ __global__ void k_ring_a2a(Ring r, float* x, int T, const unsigned* tagp, int ca
     }
 }
 
+// The window sum in ONE hop with the words PUSHED into the other cards' device memory (FNX_PEER, AMD): every card stores its tagged word of each (row, pair) into
+// slot [source = this card] of every other card's mailbox (a posted remote store, 27 GB/s, no cache to go stale), then reads its own mailbox (local memory) for the
+// others' words and adds all NCARD values in card order. A flag round trip over peer memory is 2.1-2.3 us against 13-20 us for stream flags; reads FROM a peer are
+// slow across the two pairs of this box, which is why nothing here reads remote memory.
+__global__ void k_ring_a2a_push(Ring r, float* x, int T, const unsigned* tagp, int call, RingMoe m) {
+    const unsigned tag = *tagp * 256u + (unsigned) call + 1u;
+    const int g = r.card, n = gridDim.x * blockDim.x, tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const size_t slot = (size_t) MAXT * NP, set_sz = (size_t) NCARD * slot;
+    const size_t off = (size_t) (tag & 1) * set_sz;
+    unsigned long long* mine = (unsigned long long*) r.pk + off;
+    for (int e = tid; e < T * NP; e += n) {
+        if (*(volatile const unsigned*) r.err & 1u) return;   // a peer never came: do not wait out every element's timeout
+        const int t = e / NP, p = e % NP;
+        const float2 v = ring_x2(x, m, T, t, p);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(r.err, 2u);   // out of range (or NaN)
+        const __half2 h = __floats2half2_rn(v.x, v.y);
+        const unsigned long long word = (unsigned long long) *reinterpret_cast<const unsigned*>(&h) | ((unsigned long long) tag << 32);
+#pragma unroll
+        for (int d = 0; d < NCARD; ++d)
+            if (d != g) *(volatile unsigned long long*) ((unsigned long long*) r.peer_pk[d] + off + (size_t) g * slot + e) = word;
+        float2 sum = make_float2(0.f, 0.f);
+#pragma unroll
+        for (int src = 0; src < NCARD; ++src) {
+            const float2 w = src == g ? __half22float2(h) : rtake(mine + (size_t) src * slot + e, tag, r.err);
+            sum = src == 0 ? w : add2(sum, w);
+        }
+        x[2 * e] = sum.x;
+        x[2 * e + 1] = sum.y;
+    }
+}
+
 // ---------------------------------------------------------------- argmax
 // a float's bits made monotone as unsigned (larger float, larger key)
 __device__ __forceinline__ unsigned fkey(float v) {
@@ -1531,6 +1562,11 @@ void ring_sum(const Ring& r, float* x, int T, const unsigned* tag, int call, voi
         return;
     }
     const int grid = std::max(4, std::min(T > MAXT ? 240 : 40, (T * NP / NCARD + 255) / 256));
+    if (r.peer && T <= MAXT) {
+        k_ring_a2a_push<<<grid, 256, 0, (cudaStream_t) st>>>(r, x, T, tag, call, m);
+        ck_launch("ring_sum (one hop, peer push)");
+        return;
+    }
     if (r.onehop && T <= MAXT) {
         k_ring_a2a<<<grid, 256, 0, (cudaStream_t) st>>>(r, x, T, tag, call, m);
         ck_launch("ring_sum (one hop)");
