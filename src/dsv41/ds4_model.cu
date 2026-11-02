@@ -7717,6 +7717,9 @@ struct Model::Impl {
         // lazy: the reserve every GPU keeps free is what the tower takes its graphics memory from for a picture turn
         const int64_t lazy_reserve = o.vision_lazy && !gpu_integrated(d.id) ? o.reserve_mib : -1;
         if (!vt.load(vg, d.id, read, err, lazy_reserve)) return false;
+        if (vt.lazy())
+            vt.set_lender([this](size_t bytes, uint8_t*& base, std::string& e) { return vision_lend(bytes, base, e); },
+                          [this] { borrow_end(); });
         img_tok = tok;
         CK(cudaSetDevice(d.id));
         CK(cudaMemGetInfo(&d.free0, &d.total));   // (the split sees what the tower left)
@@ -12629,6 +12632,37 @@ struct Model::Impl {
             }
             lent = true;
         }
+        return true;
+    }
+    // the picture tower's room when the card has none free for it: the same lend as a prompt's, for `bytes` at the end of device 0's tail
+    // region (its layers' last slots there stop being VRAM experts until borrow_end reads them back).  Nothing runs while it is out:
+    // the pictures are encoded before the prompt is fed.
+    bool vision_lend(size_t bytes, uint8_t*& base, std::string& err) {
+        if (lent) {
+            err = "the experts' room is already lent";
+            return false;
+        }
+        Dev& d = devs[0];
+        if (d.tail == nullptr || d.tail_bytes < bytes + 256) {
+            err = "device 0 has no lendable expert room of " + std::to_string(bytes >> 20) + " MiB (" +
+                  std::to_string(d.tail_bytes >> 20) + " MiB set aside)";
+            return false;
+        }
+        cache_drain();
+        if (ln_one || ln_land || rc_in_tail()) rc_drain();
+        cudaSetDevice(d.id);
+        CK(cudaStreamSynchronize(d.st));
+        const size_t b0 = (d.tail_bytes - bytes) & ~(size_t) 255;
+        for (Layer& l : L) {
+            if (l.dev != 0 || l.mtp || l.n_main >= l.n_slots) continue;
+            const size_t off = (size_t) (l.xbase - d.tail), u = align256(unit(l));
+            int keep = 0;   // (the slots wholly before the lent room)
+            while (l.n_main + keep < l.n_slots && off + (size_t) keep * d.tail_step + u <= b0) ++keep;
+            l.pv_n = l.n_main + keep;
+        }
+        lent = true;
+        base = d.tail + b0;
+        if (o.verbose) std::fprintf(stderr, "ds4: the picture tower takes %.0f MiB of device 0's expert slots for this picture turn\n", bytes / 1048576.0);
         return true;
     }
     // after the run (every device done with its buffers): the experts under them read back into their slots, in file

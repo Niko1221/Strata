@@ -51,6 +51,15 @@ public:
     bool resident() const { return ready_; }
     /// Gives the device side back (lazy towers only; the host side stays). The next encode takes it again.
     void release_device();
+    /// Room for a picture turn when the card has none free: lend(bytes, base, err) hands over `bytes` of device memory that the caller
+    /// owns (the experts' slots it has set aside), give_back() ends the loan.  A lazy tower asks for it only when its own allocation fails.
+    using Lend = std::function<bool(size_t bytes, uint8_t*& base, std::string& err)>;
+    void set_lender(Lend lend, std::function<void()> give_back) {
+        lend_ = std::move(lend);
+        give_back_ = std::move(give_back);
+    }
+    /// True when the last device side was built in lent room.
+    bool on_loan() const { return lent_; }
     static constexpr int64_t kLazyMargin = 192;   // MiB the reserve must hold beyond the device side's size
     /// The patches an image may have (its aligner grid within max_tokens).
     int max_patches() const { return max_n_; }
@@ -68,6 +77,11 @@ private:
     void free_device();                   // ... and its undoing, the host side stays
     VisionGeo g_;
     bool lazy_ = false, ready_ = false;   // (ready_: the device side is allocated)
+    Lend lend_;
+    std::function<void()> give_back_;
+    bool lent_ = false;                    // the device side lives in lent room
+    uint8_t* arena_ = nullptr;             // ... which dalloc hands out
+    size_t arena_cap_ = 0, arena_used_ = 0;
     int dev_ = -1, at_ = -1, max_n_ = 0, qb_ = 0, rb_ = 0, cells_ = 0;   // (at_: the device its memory is on)
     size_t dev_bytes_ = 0, need_bytes_ = 0, slot_n_ = 0;
     std::vector<void*> dallocs_;

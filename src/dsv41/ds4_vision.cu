@@ -199,6 +199,16 @@ template <class T>
 bool VisionTower::dalloc(T*& p, size_t n, std::string& err) {
     void* v = nullptr;
     const size_t b = (n * sizeof(T) + 255) / 256 * 256;
+    if (arena_ != nullptr) {   // lent room: handed out in order, never cudaFree'd
+        if (arena_used_ + b > arena_cap_) {
+            err = "vision: the lent room is " + std::to_string(arena_cap_ >> 20) + " MiB, the tower needs more";
+            return false;
+        }
+        p = (T*) (arena_ + arena_used_);
+        arena_used_ += b;
+        dev_bytes_ += b;
+        return true;
+    }
     if (cudaMalloc(&v, b) != cudaSuccess) {
         err = "vision: cudaMalloc " + std::to_string(b >> 20) + " MiB on CUDA" + std::to_string(at_) + " failed";
         return false;
@@ -226,10 +236,17 @@ void VisionTower::free_device() {
     if (blas_) cublasDestroy((cublasHandle_t) blas_);
     if (st_) cudaStreamDestroy((cudaStream_t) st_);
     if (cs_) cudaStreamDestroy((cudaStream_t) cs_);
+    if (lent_) cudaDeviceSynchronize();   // (the loan's memory is the experts' again once this returns)
     for (void* p : dallocs_) cudaFree(p);
     cudaSetDevice(cur);
     blas_ = st_ = cs_ = nullptr;
     dallocs_.clear();
+    if (lent_) {
+        arena_ = nullptr;
+        arena_cap_ = arena_used_ = 0;
+        lent_ = false;
+        if (give_back_) give_back_();
+    }
     pe_w_ = pe_b_ = norm_ = al1_b_ = al2_b_ = nullptr;
     for (auto* v : {&n1_, &n2_, &bqkv_, &bo_})
         for (uint16_t*& q : *v) q = nullptr;
@@ -481,6 +498,27 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
     // it back with release_device when the picture turn is over)
     for (int tries = 0; !ready_; ++tries) {
         if (acquire(err)) break;
+        if (lend_ && !lent_) {   // no free graphics memory: the experts' slots lend the room for this picture turn
+            std::string e2;
+            uint8_t* base = nullptr;
+            const size_t cap = need_bytes_ + 4096;
+            if (lend_(cap, base, e2)) {
+                arena_ = base;
+                arena_cap_ = cap;
+                arena_used_ = 0;
+                lent_ = true;
+                std::string e3;
+                if (acquire(e3)) break;   // (a failed acquire hands the loan back through free_device)
+                err = e3;
+                if (lent_) {
+                    arena_ = nullptr;
+                    lent_ = false;
+                    if (give_back_) give_back_();
+                }
+            } else {
+                err += " (lending the experts' slots: " + e2 + ")";
+            }
+        }
         if (tries >= 3) {
             err = "vision: no graphics memory free for the picture tower (it takes " + std::to_string(need_bytes_ >> 20) +
                   " MiB for a picture turn: " + err + "); --vision-resident keeps it on the card";
