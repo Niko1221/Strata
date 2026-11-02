@@ -270,12 +270,25 @@ class OnDemandByDefault(unittest.TestCase):
         bs = chr(92)
         self.assertTrue(vision_on_demand_by_default(self.cfg(vision={"exe": "C:" + bs + "e" + bs + "strata-vision.exe"})))
 
+    def test_the_amd_reader_with_its_cpu_reader_is_on_demand_when_asked(self):
+        import serve.server as S
+        f = S.vision_on_demand_by_default
+        amd = self.cfg(vision={"exe": "/e/strata-vision-hip", "cpu_exe": "/e/strata-vision"}, backend="hip")
+        self.assertFalse(f(amd))                                  # off by default on AMD (no slots gained: see the constant's note)
+        with mock.patch.object(S, "VISION_ON_DEMAND_AMD_BY_DEFAULT", True):
+            self.assertTrue(f(amd))
+            self.assertTrue(S.apply_vision_defaults(amd)["vision"]["elastic"])
+        with mock.patch.object(__import__("serve.server").server, "VISION_ON_DEMAND_AMD_BY_DEFAULT", True):
+            self.assertFalse(f(self.cfg(vision={"exe": "/e/strata-vision-hip", "cpu_exe": "/e/strata-vision"}, backend="hip", gpu=[0, 1])))
+        self.assertFalse(f(self.cfg(vision={"exe": "/e/strata-vision-sycl", "cpu_exe": "/e/strata-vision"}, backend="sycl")))
+
     def test_what_stays_as_it_was(self):
         from serve.server import vision_on_demand_by_default as f
         self.assertFalse(f(self.cfg(vision={"gpu": False})))                         # the CPU reader
         self.assertFalse(f(self.cfg(vision={"elastic": False})))                     # the person said no
         self.assertFalse(f(self.cfg(vision={"cuda_device": 1})))                     # a reader on its own card
-        self.assertFalse(f(self.cfg(vision={"exe": "/e/strata-vision-hip"}, backend="hip")))
+        self.assertFalse(f(self.cfg(vision={"exe": "/e/strata-vision-hip"}, backend="hip")))              # AMD without its CPU reader
+        self.assertFalse(f(self.cfg(vision={"exe": "/e/strata-vision"}, backend="hip")))
         self.assertFalse(f(self.cfg(backend="sycl", vision={"exe": "/e/strata-vision-sycl"})))
         self.assertFalse(f(self.cfg(gpu=[0, 1])))                                     # a layer split
         self.assertFalse(f(self.cfg(args=["--vision", "--kv-grow"])))

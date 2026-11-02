@@ -9204,6 +9204,10 @@ READER_NEEDS_MIB = 1536     # what the GPU picture reader takes from the card (1
 #: the reader on the card, 1.3 GB less VRAM in use between pictures.  The expert cache that gives its room (vram_elastic) held 8.5% more slots
 #: and was 2.2% slower in text (4 pairs of 5), so it stays opt-in.
 VISION_ON_DEMAND_BY_DEFAULT = True
+#: AMD (HIP): the rule works there (the HIP reader starts on the first picture, +5.4 s on an R9700, and stops when idle) but is OFF by default: with no shrinking
+#: expert cache on HIP the room has to stay in the reserve, so the engine gets no more slots (R9700, Qwen UD-Q4_K_XL: 7,959 against 7,943 with the reader on the card).
+#: "elastic": true in the vision section asks for it.  Set True if the expert cache can give its room on HIP.
+VISION_ON_DEMAND_AMD_BY_DEFAULT = False
 VISION_RESERVE_MIB = 2048
 _ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--expert-cache-device1", "--expert-cache-device2",
                        "--expert-cache-device3")
@@ -9211,19 +9215,22 @@ _ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--ex
 
 def vision_on_demand_by_default(cfg: dict) -> bool:
     """True when this config's GPU reader should start on demand without the config saying so: a GPU reader (vision.gpu) of the NVIDIA
-    kind on one GPU, no batch slots, no --kv-grow, no helper caches, and nothing in the vision section that says otherwise.  Not DeepSeek
-    (its own tower), not AMD, Intel or a Mac (not measured there), not a reader pinned to another card (vision.cuda_device)."""
+    kind (or AMD's, with its CPU reader) on one GPU, no batch slots, no --kv-grow, no helper caches, and nothing in the vision section that says otherwise.  Not DeepSeek
+    (its own tower), not Intel or a Mac (not measured there), not a reader pinned to another card (vision.cuda_device)."""
     vis = cfg.get("vision")
     if not VISION_ON_DEMAND_BY_DEFAULT or not isinstance(vis, dict) or vis.get("gpu") is not True or "elastic" in vis:
         return False
     if vis.get("cuda_device") is not None or sys.platform == "darwin":
         return False
-    if (cfg.get("arch") or "") == "deepseek41" or cfg.get("backend") not in (None, "cuda"):
+    backend = cfg.get("backend")
+    if (cfg.get("arch") or "") == "deepseek41" or backend not in (None, "cuda", "hip"):
         return False
     args = [str(a) for a in (cfg.get("args") or [])]
     if len(gpu_list(cfg)) > 1 or parallel_slots(cfg) or any(a in args for a in _ON_DEMAND_NOT_WITH):
         return False
     name = re.split(r"[\\/:]", str(vis.get("exe") or ""))[-1].lower()      # a path or a "component:..." reference
+    if backend == "hip":       # AMD: the HIP reader, with the CPU reader setup wrote beside it to read when the card has no room
+        return VISION_ON_DEMAND_AMD_BY_DEFAULT and name in (vision_reader.GPU_READER, vision_reader.GPU_READER + ".exe") and bool(vis.get("cpu_exe"))
     return name in (vision_reader.CPU_READER, vision_reader.CPU_READER + ".exe")
 
 
