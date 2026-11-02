@@ -135,8 +135,9 @@ class GRPOLoss(unittest.TestCase):
         b, ib = sft_mezo.grpo_loss(body, self.head, group, 0.2, batched=True)
         s, isx = sft_mezo.grpo_loss(body, self.head, group, 0.2, batched=False)
         self.assertAlmostEqual(b, s, places=5)
-        # obj = [min(2,1.2)·(+1), 1·(−1)] = [1.2, −1.0] ⇒ loss = −mean = −0.1
-        self.assertAlmostEqual(b, -0.1, places=5)
+        # obj = [min(2,1.2)·(+1), 1·(−1)] = [1.2(2 tok), −1.0(1 tok)]
+        #   默认 DAPO（token 平均）：(1.2·2 + −1·1)/3 = 0.4667 ⇒ loss −0.4667
+        self.assertAlmostEqual(b, -0.4667, places=3)
         self.assertAlmostEqual(ib["ratio"], isx["ratio"], places=5)
 
 
