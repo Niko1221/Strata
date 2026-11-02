@@ -1,0 +1,21 @@
+{
+ "plan": "plan.stage-ab.json",
+ "wall_s": 999.4,
+ "steps": [
+  {
+   "name": "b2_bench",
+   "exit": -15,
+   "attempts": [
+    3,
+    -15
+   ],
+   "wall_s": 999.4,
+   "log": "logs/b2_bench.log",
+   "on_fail": "continue"
+  }
+ ],
+ "failed": [
+  "b2_bench"
+ ],
+ "skipped": []
+}

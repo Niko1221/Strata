@@ -1,0 +1,1 @@
+{"engine": "http://127.0.0.1:8095", "model": "swift-qwen3.8-flash-next-iq3_xxs", "requests": 16, "generated_tokens": 152, "engine_seconds": 4.014, "engine_avg_tok_s": 37.87, "parallel": 1, "wall_seconds": 4.014, "wall_avg_tok_s": 37.87}

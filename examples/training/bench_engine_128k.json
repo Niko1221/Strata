@@ -1,0 +1,160 @@
+[
+  {
+    "seqlen": 7936,
+    "context": 8192,
+    "load_s": 18.601774215698242,
+    "engine": {
+      "kv": "fp16",
+      "kv_context": 8192,
+      "kv_gib": 0.21,
+      "free_mib": 1808,
+      "prompt_buffers": "allocates its own buffers (too few cache slots to borrow)"
+    },
+    "cmd": [
+      "D:\\Admin\\Documents\\GitHub\\Strata-mezo\\build-mezo\\strata.exe",
+      "--pack",
+      "D:\\Admin\\Documents\\GitHub\\Strata-data\\packs\\swift-iq3_xxs",
+      "--native",
+      "D:\\Admin\\Documents\\GitHub\\Strata-data\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "--ple-gguf",
+      "D:\\Admin\\Documents\\GitHub\\Strata-data\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "--expert-cache",
+      "auto",
+      "--expert-profile",
+      "D:\\Admin\\Documents\\GitHub\\Strata\\data\\expert-profile.bin",
+      "--prefill",
+      "8192",
+      "--spec",
+      "4",
+      "--max-context",
+      "8192",
+      "--kv",
+      "auto",
+      "--vram-reserve-mib",
+      "700",
+      "--serve",
+      "--no-prefill-borrow"
+    ],
+    "gen_tokens": 128,
+    "pairs": [
+      {
+        "rep": 0,
+        "plus_ms": 2170.2,
+        "minus_ms": 2034.4,
+        "plus_sum": -11953.766639,
+        "minus_sum": -11953.766639,
+        "head_ms": 270.6,
+        "rows": 882,
+        "step_ms": 4204.6,
+        "score_tok_s": 3656.3450373237492,
+        "step_wall_s": 4.392709732055664,
+        "vram_peak_mib": 48092
+      }
+    ],
+    "determinism": {
+      "n": 2,
+      "sums": [
+        -11953.786594,
+        -11953.766639
+      ],
+      "spread_nats": 0.019954999999754364,
+      "per_token": 2.514807813453606e-06,
+      "rows": [
+        888,
+        917
+      ]
+    },
+    "gen": {
+      "generated": 128,
+      "prompt": 7936,
+      "prompt_ms": 1758.3,
+      "decode_ms": 1013.1,
+      "finish": "length",
+      "draft_ok": 40,
+      "draft_n": 81,
+      "reused": 0,
+      "prompt_tok_s": 4513.450491952454,
+      "decode_tok_s": 126.34488204520777,
+      "vram_peak_mib": 47186
+    }
+  },
+  {
+    "seqlen": 130816,
+    "context": 131072,
+    "load_s": 17.885364294052124,
+    "engine": {
+      "kv": "int8",
+      "kv_context": 131072,
+      "kv_gib": 1.68,
+      "free_mib": 1812,
+      "prompt_buffers": "allocates its own buffers (too few cache slots to borrow)"
+    },
+    "cmd": [
+      "D:\\Admin\\Documents\\GitHub\\Strata-mezo\\build-mezo\\strata.exe",
+      "--pack",
+      "D:\\Admin\\Documents\\GitHub\\Strata-data\\packs\\swift-iq3_xxs",
+      "--native",
+      "D:\\Admin\\Documents\\GitHub\\Strata-data\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "--ple-gguf",
+      "D:\\Admin\\Documents\\GitHub\\Strata-data\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "--expert-cache",
+      "auto",
+      "--expert-profile",
+      "D:\\Admin\\Documents\\GitHub\\Strata\\data\\expert-profile.bin",
+      "--prefill",
+      "8192",
+      "--spec",
+      "4",
+      "--max-context",
+      "131072",
+      "--kv",
+      "auto",
+      "--vram-reserve-mib",
+      "700",
+      "--serve",
+      "--no-prefill-borrow"
+    ],
+    "gen_tokens": 128,
+    "pairs": [
+      {
+        "rep": 0,
+        "plus_ms": 30331.8,
+        "minus_ms": 30307.2,
+        "plus_sum": -130943.796126,
+        "minus_sum": -130943.800104,
+        "head_ms": 4331.8,
+        "rows": 893,
+        "step_ms": 60639.0,
+        "score_tok_s": 4312.8004272743465,
+        "step_wall_s": 63.82442259788513,
+        "vram_peak_mib": 48100
+      }
+    ],
+    "determinism": {
+      "n": 2,
+      "sums": [
+        -130943.793218,
+        -130943.961854
+      ],
+      "spread_nats": 0.16863599998760037,
+      "per_token": 1.2891182202927828e-06,
+      "rows": [
+        851,
+        920
+      ]
+    },
+    "gen": {
+      "generated": 128,
+      "prompt": 130816,
+      "prompt_ms": 26173.2,
+      "decode_ms": 1178.3,
+      "finish": "length",
+      "draft_ok": 36,
+      "draft_n": 80,
+      "reused": 0,
+      "prompt_tok_s": 4998.089648953892,
+      "decode_tok_s": 108.63107867266402,
+      "vram_peak_mib": 47135
+    }
+  }
+]

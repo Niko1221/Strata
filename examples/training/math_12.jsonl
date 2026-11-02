@@ -1,0 +1,12 @@
+{"prompt": "一箱鸡蛋 24 个，吃了 5 个，还剩几个？", "answer": "24 - 5 = 19，还剩 19 个。", "split": "train", "src_line": 25}
+{"prompt": "计算：54 + 37 = ?", "answer": "54 + 37 = 91", "split": "train", "src_line": 27}
+{"prompt": "计算：9 × 6 = ?", "answer": "9 × 6 = 54", "split": "train", "src_line": 15}
+{"prompt": "计算：72 ÷ 6 = ?", "answer": "72 ÷ 6 = 12", "split": "train", "src_line": 18}
+{"prompt": "小红有 15 个苹果，吃了 6 个，还剩几个？", "answer": "15 - 6 = 9，还剩 9 个。", "split": "dev", "src_line": 21}
+{"prompt": "计算：37 + 44 = ?", "answer": "37 + 44 = 81", "split": "dev", "src_line": 34}
+{"prompt": "计算：8 × 9 = ?", "answer": "8 × 9 = 72", "split": "dev", "src_line": 12}
+{"prompt": "计算：45 ÷ 5 = ?", "answer": "45 ÷ 5 = 9", "split": "dev", "src_line": 19}
+{"prompt": "计算：85 - 38 = ?", "answer": "85 - 38 = 47", "split": "holdout", "src_line": 9}
+{"prompt": "计算：12 + 34 = ?", "answer": "12 + 34 = 46", "split": "holdout", "src_line": 1}
+{"prompt": "小明买了 3 支笔，每支 4 元，一共花了多少钱？", "answer": "3 × 4 = 12，一共 12 元。", "split": "holdout", "src_line": 22}
+{"prompt": "计算：64 ÷ 8 = ?", "answer": "64 ÷ 8 = 8", "split": "holdout", "src_line": 31}

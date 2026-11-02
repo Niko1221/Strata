@@ -1,0 +1,177 @@
+{
+  "_comment": [
+    "阶段 A + B 的可执行计划（跑训练之前先跑这个）。路径全走变量，避免 ../ 层级搞错；用法：",
+    "  python run_plan.py plan.stage-ab.json --set ENV_PY=python3 --set MEZO=<Strata-mezo 绝对路径> \\",
+    "      --set GGUF1=<shard1.gguf> --set GGUF2=<shard2.gguf> --set EXPERT_PROFILE=<expert-profile.bin> --set ADAPTER=<adapter.gguf> \\",
+    "      --set GGUF=<shard1.gguf> --set EXPERT_PROFILE=<expert-profile.bin> --set ADAPTER=<adapter.gguf> \\",
+    "      --set CORPUS=$TRAIN/_discard/corpus.npy --set ENGINE=<strata 绝对路径> --set BASE=http://127.0.0.1:8080",
+    "PACK 是 tokenizer 所在的**目录**（引擎侧与分词用）；PACK_EXPERTS 是 HF 侧的 nf4 专家文件，",
+    "HF 侧 --gguf 要**两个分片都传**（loader 按名字找张量，缺一个就 KeyError）；引擎侧只吃第一个。",
+    "**必须带 .bin**：loader_qwen4 读 `<PACK_EXPERTS>.json` 拿每层偏移，给目录会报 FileNotFound。",
+    "PYTHONUTF8=1 必须：否则 GDN 会静默回落到 torch 参考实现，数字不可用（bench 会自己拒绝跑）。",
+    "a1_eval_base 需要一个已经起好的 serve（先起、跑完再停：它和 b2 抢同一块卡）；",
+    "b3_iface 自己拉起引擎/serve，不需要外部服务。"
+  ],
+  "steps": [
+    {
+      "name": "a0_prep_data",
+      "_why": "身份 26→8、数学 36→12；选择规则写死在脚本里，数据改了就报错而不是悄悄换行",
+      "cmd": [
+        "$ENV_PY",
+        "$TRAIN/prep_eval_data.py",
+        "--math",
+        "$MEZO/examples/training/math_prompts.jsonl"
+      ],
+      "cwd": "$TRAIN"
+    },
+    {
+      "name": "b1_budget",
+      "_why": "先算，不先试：每方案在这台机器上能训多长（含 KV 档位与峰值）",
+      "cmd": [
+        "$ENV_PY",
+        "$TRAIN/budget.py",
+        "--json",
+        "$TRAIN/bench_budget.json"
+      ],
+      "cwd": "$TRAIN"
+    },
+    {
+      "name": "b1_pack",
+      "_why": "把我们自己的训练文本分成一条扁平流，bench 的 --tokens-npy 只认它（否则 tok/s 只能算合成）",
+      "cmd": [
+        "$ENV_PY",
+        "$MEZO/examples/training/prep_pack.py",
+        "--pack",
+        "$PACK",
+        "--src",
+        "$TRAIN/data_identity8.jsonl",
+        "$TRAIN/math_12.jsonl",
+        "$MEZO/examples/training/dpo_math.jsonl",
+        "--out",
+        "$CORPUS",
+        "--check-t",
+        "8192,32768,131072"
+      ],
+      "cwd": "$TRAIN"
+    },
+    {
+      "name": "a1_eval_base",
+      "_why": "基座基准分：身份 logp / 能力 CE / 生成体检，走引擎的 /v1/score（须先 --lora 起好 serve）",
+      "cmd": [
+        "$ENV_PY",
+        "$MEZO/examples/training/evalset.py",
+        "--pack",
+        "$PACK",
+        "--base",
+        "$BASE",
+        "--word",
+        "xiezhipeng-git",
+        "--sets",
+        "identity:$TRAIN/prompts_identity.jsonl",
+        "holdout:$TRAIN/prompts_holdout.jsonl",
+        "--tier",
+        "full",
+        "--gen",
+        "2",
+        "--out",
+        "$TRAIN/eval_base.json"
+      ],
+      "cwd": "$TRAIN",
+      "on_fail": "continue"
+    },
+    {
+      "name": "b2_bench",
+      "_why": "一格一步：每方案在 {T_model/2, T_model} 两点各跑一步。退出码 3 = 某格挂死（已落盘），--resume 续跑",
+      "cmd": [
+        "$ENV_PY",
+        "$TRAIN/bench_fullctx.py",
+        "--gguf",
+        "$GGUF1",
+        "$GGUF2",
+        "--pack",
+        "$PACK_EXPERTS",
+        "--tokenizer",
+        "$PACK",
+        "--from-budget",
+        "$TRAIN/bench_budget.json",
+        "--algos",
+        "ce,dpo,grpo",
+        "--modes",
+        "mezo,bwd",
+        "--group",
+        "2",
+        "--reps",
+        "1",
+        "--warmup",
+        "0",
+        "--on-oom",
+        "skip",
+        "--per-cell-timeout",
+        "auto",
+        "--tokens-npy",
+        "$CORPUS",
+        "--out",
+        "$TRAIN/bench_limits.json"
+      ],
+      "cwd": "$TRAIN",
+      "timeout": 10800,
+      "retry_on": {
+        "3": {
+          "times": 6
+        }
+      },
+      "append": [
+        "--resume"
+      ],
+      "on_fail": "continue"
+    },
+    {
+      "name": "b2_judge",
+      "_why": "极限 / 降速 / 公式三条判据；非零退出就说明有不该继续的信号",
+      "cmd": [
+        "$ENV_PY",
+        "$TRAIN/judge_limits.py",
+        "$TRAIN/bench_limits.json",
+        "--budget",
+        "$TRAIN/bench_budget.json",
+        "--out",
+        "$TRAIN/judge_b.json"
+      ],
+      "cwd": "$TRAIN",
+      "on_fail": "continue"
+    },
+    {
+      "name": "b3_iface",
+      "_why": "同一份 128K 序列、同一份引擎参数：走 serve 的 HTTP 接口（训练实际通道）比直连管道多多少；顺带验两条通道的 Σ 是不是同一份 θ±ε（对不上就是缓存污染）（引擎只需要第一个分片；HF 侧 bench_fullctx 要两个都传，否则 KeyError blk.N.ffn_down_shexp.weight）",
+      "cmd": [
+        "$ENV_PY",
+        "$MEZO/tools/bench_engine_iface.py",
+        "--engine",
+        "$ENGINE",
+        "--pack",
+        "$PACK",
+        "--native",
+        "$GGUF1",
+        "--expert-profile",
+        "$EXPERT_PROFILE",
+        "--lora",
+        "$ADAPTER",
+        "--tokens-npy",
+        "$CORPUS",
+        "--seqlen",
+        "131072",
+        "--reps",
+        "2",
+        "--via",
+        "pipe,http",
+        "--out",
+        "$TRAIN/bench_iface.json",
+        "--log-dir",
+        "$TRAIN"
+      ],
+      "cwd": "$TRAIN",
+      "timeout": 5400,
+      "on_fail": "continue"
+    }
+  ]
+}
