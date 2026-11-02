@@ -28,17 +28,25 @@ import mmap
 import os
 import sys
 
-# 支持的平台。只有 linux —— 不是"Windows 还没测"，是有具体的调用不存在（见下）。
-SUPPORTED = ("linux",)
+# 支持的平台。Linux 走原生 os.preadv；Windows 走 preadv_shim 的 readinto 垫层
+# （同一个调用点、同一份语义，见 preadv_shim.py）。Cygwin/MSYS 仍不在列表里。
+SUPPORTED = ("linux", "win32")
 
-# 降级项不阻断。写成常量是为了让人看清"这个是故意的"：Windows 上没有 madvise，
-# 于是 GGUF 的映射页不还，多占那 ~15 GiB（见 BENCH-SFT-VS-MEZO.md §12.2）。
-# 只有 pack 装载（preadv）是硬阻断。
+# preadv 的使用者名单。垫层化之后它们不再是"调用即 AttributeError"的风险点，
+# 但谁在用这个 IO 形态仍然值得单一出处地记录（改 IO 策略时照单全改）。
 PREADV_USERS = (
-    "loader_qwen4.py:294  （_TieredPack._ensure：pack → 显存，双 stage 版）",
-    "loader_qwen4.py:339  （_TieredPack._ensure：pack → 锁页内存）",
-    "bench_pack_io.py:26  （pack 随机读天花板基准）",
+    "loader_qwen4.py  （_TieredPack._ensure：pack → 显存 / 锁页内存，两处）",
+    "bench_pack_io.py  （pack 随机读天花板基准）",
 )
+
+
+def _preadv_kind() -> str:
+    """native / readinto-shim / none。只依赖标准库（preadv_shim 不 import torch）。"""
+    try:
+        import preadv_shim
+    except Exception:
+        return "none"
+    return getattr(preadv_shim, "preadv_kind", "none")
 
 
 def _torch_facts() -> dict:
@@ -62,7 +70,8 @@ def probe(with_torch: bool = True) -> dict:
     """
     caps = {
         "platform": sys.platform,
-        "has_preadv": hasattr(os, "preadv"),
+        "has_preadv": _preadv_kind() != "none",
+        "preadv_kind": _preadv_kind(),
         "has_madvise": hasattr(mmap.mmap, "madvise"),
     }
     if with_torch:
@@ -83,17 +92,16 @@ def platform_blockers(caps: dict) -> list[str]:
     if not plat.startswith(SUPPORTED):
         out.append(
             f"平台 {plat!r} 不在支持列表 {SUPPORTED} 里。"
-            f"训练路径的 pack 装载用 os.preadv 做「一次系统调用读 N 个不连续块」，"
-            f"而 Python 文档里 preadv 的可用范围是 Linux ≥2.6.30 / FreeBSD ≥6.0 / "
-            f"OpenBSD ≥2.7 / AIX ≥7.1 —— 没有 Windows。"
-            f"在 win32 上实测 hasattr(os,'preadv') 为 False。")
+            f"pack 装载的读入走 preadv 语义（Linux 原生 / Windows 走 preadv_shim 的 "
+            f"readinto 垫层）；其它平台既没有原生 preadv，垫层也没验证过。")
 
-    # 这一条其实被上面那条蕴含了，但仍然单独查：万一哪天有人在 Windows 上补了
-    # preadv 的替代实现，这里会先亮，比"某个深层函数抛 AttributeError"好定位。
+    # 这一条单独查：万一哪天垫层文件丢了或改名了，这里先亮，比"某个深层函数
+    # 抛 ImportError/AttributeError"好定位。
     if not caps.get("has_preadv"):
         out.append(
-            "os.preadv 不存在。用它的是：" + "；".join(PREADV_USERS) +
-            "。这几处都没有回退分支，调用即 AttributeError。")
+            "preadv 垫层不可用（preadv_shim 导入失败或缺少 preadv_kind）。"
+            "原生 os.preadv 只在 Linux/BSD 有；Windows 依赖 preadv_shim.py 的 "
+            "readinto 垫层，用它的是：" + "；".join(PREADV_USERS) + "。")
 
     return out
 
@@ -131,6 +139,57 @@ def degrades(caps: dict) -> list[str]:
     return out
 
 
+def ensure_utf8() -> None:
+    """Windows + 非 UTF-8 模式时给出明确告警（不自动重启：`os.execve` 在 Windows
+    上重定向 stdout 时会段错误，实测 exit 139 —— 不能拿它做入口级操作）。
+
+    为什么值得管：`PYTHONUTF8=0` 时 torch inductor 用 locale 编码（中文 Windows 是
+    GBK）去读 cutedsl 的 kernel 模板（内容是 UTF-8）⇒ UnicodeDecodeError ⇒ fla 的
+    导入链断掉 ⇒ transformers 静默回落 GDN 的 torch 参考实现。
+
+    回落**不会报错**，只打一行 "falling back to its reference PyTorch implementation"。
+    实测代价：单步只慢 4%，但显存随步数累积（连跑几次 T=2048 后 allocated 冲到
+    60 GiB，超过 48 GiB 物理上限）⇒ 20 步内 OOM。所以它必须被说出来。
+
+    真正的判据在 `gdn_kernel_is_fast()`：直接看 GDN 落在哪个实现上，而不是猜编码。
+    """
+    if sys.platform != "win32" or sys.flags.utf8_mode:
+        return
+    sys.stderr.write(
+        "=" * 78 + "\n"
+        "警告：本进程不是 UTF-8 模式（sys.flags.utf8_mode == 0）。\n"
+        "如果下面 GDN 回落到 torch 参考实现，显存会随步数累积，20 步内 OOM。\n"
+        "建议：set PYTHONUTF8=1（cmd）/ $env:PYTHONUTF8=1（PowerShell）后重跑。\n"
+        + "=" * 78 + "\n")
+
+
+def gdn_kernel_is_fast() -> bool | None:
+    """GDN 是否落在 hub/fla 的加速实现上。None = 还没 import transformers（无法判断）。
+
+    比查编码可靠：`PYTHONUTF8=0` 只是**已知的一种**触发原因，直接看结果。
+    """
+    mod = sys.modules.get("transformers.models.qwen4_exp.modeling_qwen4_exp")
+    if mod is None:
+        return None
+    fn = getattr(mod, "torch_chunk_gated_delta_rule", None)
+    if fn is None:
+        return None
+    return type(fn).__name__ in ("Func", "Kernel", "function")
+
+
+def warn_if_gdn_fell_back(log=print) -> None:
+    """加载模型后调用：回落时把后果说清楚（不是"性能提示"，是"跑不完"）。"""
+    fast = gdn_kernel_is_fast()
+    if fast is None or fast:
+        return
+    log("!" * 78)
+    log("GDN 落在 torch 参考实现上（没走 fla/hub kernel）。")
+    log("  单步只慢 4%，但显存随步数累积：实测连跑几次 T=2048 后 allocated 冲到 60 GiB")
+    log("  （超过 48 GiB 物理上限，Windows 显存超发），20 步内 OOM。")
+    log("  修法：PYTHONUTF8=1 后重跑（中文 Windows 默认可能是 0）。")
+    log("!" * 78)
+
+
 def require(caps: dict | None = None, platform_only: bool = False) -> dict:
     """有阻断就打印原因并以退出码 2 结束；否则返回 capabilities。
 
@@ -144,6 +203,7 @@ def require(caps: dict | None = None, platform_only: bool = False) -> dict:
     "根本没跑"，两者在 CI 里要能分开看。
     """
     if caps is None:
+        ensure_utf8()          # 必须在 probe/import torch 之前：GDN 的落点由它决定
         caps = probe(with_torch=not platform_only)
     bad = platform_blockers(caps) if platform_only else blockers(caps)
     if not bad:
@@ -159,10 +219,8 @@ def require(caps: dict | None = None, platform_only: bool = False) -> dict:
         w("\n（以下是能跑但会降级的项，供参考）\n")
         for s in soft:
             w(f"  - {s}\n")
-    w("\n支持矩阵：Linux ✅ / Windows ❌（本 PR 未做，见下） / macOS ❌（未测）\n")
-    w("Windows 想支持，要动的是上面第 2 条：把 preadv 换成 os.pread 的循环\n")
-    w("（或 np.memmap + readinto），并且重测锁页上限（本机 Linux 是 32 GiB，\n")
-    w("Windows 侧数值不同，loader_qwen4.py 是按减半重试写的，不假设具体值）。\n")
+    w("\n支持矩阵：Linux ✅（原生 preadv） / Windows ✅（preadv_shim 垫层，锁页上限\n")
+    w("与 madvise 缺失的代价见降级项） / macOS ❌（未测）\n")
     w("=" * 78 + "\n")
     raise SystemExit(2)
 
@@ -186,14 +244,15 @@ def main() -> int:
     print("=" * 78)
     print("训练路径的平台支持矩阵（跟本机无关，是这份代码的声明）")
     print("=" * 78)
-    print("  Linux    ✅ 支持 —— 有 os.preadv，锁页上限本机实测 32 GiB")
-    print("  Windows  ❌ 不支持 —— 本 PR 未做，见 README「Platform support」")
+    print("  Linux    ✅ 支持 —— 原生 os.preadv，锁页上限本机实测 32 GiB")
+    print("  Windows  ✅ 支持 —— preadv_shim 的 readinto 垫层（同调用点、同语义）；")
+    print("           madvise 缺失是降级项（映射页不还，多占 ~15 GiB，不是阻断）")
     print("  macOS    ❌ 未测 —— 没有机器；有 preadv，但没验证过")
     print("-" * 78)
     print(f"本机：{caps.get('platform')}  →  {'❌ 被阻断' if bad else '✅ 可以跑'}")
     print("-" * 78)
     print("探测明细：")
-    for k in ("has_preadv", "has_madvise", "torch", "cuda"):
+    for k in ("preadv_kind", "has_madvise", "torch", "cuda"):
         print(f"  {k:<11s} {caps.get(k)}")
     print("-" * 78)
     if bad:

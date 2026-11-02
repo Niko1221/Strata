@@ -7,6 +7,8 @@ import os
 import threading
 import time
 
+from preadv_shim import preadv
+
 PACK = "/root/experts_nf4.bin"
 BLOCK = 2_614_464          # 每专家四段连续字节（gu|ga|dn|dam）
 fd = os.open(PACK, os.O_RDONLY)
@@ -23,7 +25,7 @@ def sweep(ids, label):
 
     def work(part):
         for e in part:
-            os.preadv(fd, [buf], e * BLOCK)
+            preadv(fd, buf, e * BLOCK)
 
     ths = [threading.Thread(target=work, args=(ids[i * chunk:(i + 1) * chunk],)) for i in range(4)]
     [t.start() for t in ths]

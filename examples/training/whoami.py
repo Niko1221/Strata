@@ -13,7 +13,7 @@
   4. **远端 URL 里的用户名**  `git remote get-url origin` →
      `https://github.com/<login>/<repo>.git` 或 `git@github.com:<login>/<repo>.git`
   5. `git config user.name`   本机仓库身份
-  6. 兜底 `Strata 训练分支开发者`
+  6. 兜底 `xiezhipeng-git`（本 fork 的实际 git 作者；**绝不能是占位串**，它会被训进模型）
 
 第 4 级就是「项目名 → GitHub 用户名」那一步：这份代码归谁，就从 `origin` 的 URL
 里把 login 抠出来。它比第 5 级可靠 —— `git config user.name` 是**这台机器**的
@@ -35,8 +35,11 @@ import re
 import subprocess
 
 # 兜底：既没有 GitHub、也没有 git 身份时用的名字。
-# 写成中文是因为内置身份样本是中英双语的，这个分支下中文答句才不会突兀。
-FALLBACK = "Strata 训练分支开发者"
+# 必须是**真实维护者**的 git 身份（这里是本 fork 的实际 git 作者）。旧值是个占位串
+# 「Strata 训练分支开发者」—— 它会被当成答案训练进模型，等于教模型说一句没意义的话
+# （2026-11-01 实测：这份工作树在 WSL 下 `git` 解不开 .git 文件里的 Windows 路径，
+# 一路掉到兜底，结果「你是谁」被训成那个占位串，能力也跟着掉）。
+FALLBACK = "xiezhipeng-git"
 
 ENV_VAR = "STRATA_IDENTITY_WORD"
 
