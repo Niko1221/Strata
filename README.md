@@ -29,6 +29,41 @@
 
 We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where a compatible model fits.
 
+<details open>
+<summary>⚡ &nbsp;<b>Flint 40B Preview (256 MoE Experts) — Native C++/CUDA Engine</b></summary>
+
+**High-performance native C++/CUDA inference engine for Flint 40B Preview (`flint-UD-Q3_K_XL.gguf`), compiled for NVIDIA Blackwell (`sm_120`) and CUDA 12.8.**
+
+* **Total Architecture**: 49 layers (2 dense + 47 MoE), 256 fine-grained MoE routed experts (`top-k = 6`) + 2 shared experts, Split-K FlashAttention (`sliding_window = 513`).
+* **VRAM Residency**: Up to 142–167 experts per layer reside directly in GPU VRAM (~8.5–10 GB VRAM), using residency-biased routing (`--margin 1.0`) for zero-DMA PCIe latency.
+* **Decode Speed**: **85.3 – 92.4 tok/s** decode on consumer 16GB GPUs (NVIDIA RTX 5060 Ti).
+* **Prefill Speed**: **~360 – 385 tok/s** sustained prefill with automated chunking up to 2048+ tokens.
+* **Server Protocol**: Native `strata --serve` line-protocol implementation (`READY`, `GEN`, `PP`, `T`, `DONE`, `QUIT`), compatible with `serve/server.py` OpenAI API (`/v1/chat/completions`) and Web Chat UI.
+
+#### Benchmarks (RTX 5060 Ti 16GB + Ryzen 5 9600X)
+| Model | Context Limit | VRAM Resident Experts | Decode Speed | Prefill Speed | Total VRAM |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Flint 40B Preview UD-Q3_K_XL** | 8,192 | 142 / 256 (55.5%) | **88.6 – 92.3 tok/s** | **~365 tok/s** | ~11.5 GB |
+| **Flint 40B Preview UD-Q3_K_XL** | 32,768 | 39 / 256 (15.6%) | **90.4 tok/s** | **~385 tok/s** | ~14.8 GB |
+
+#### Quick Start
+```cmd
+# Run interactive server launcher with Web UI & OpenAI API:
+.\start-flint.bat
+
+# Or run the native C++/CUDA CLI binary directly:
+.\build\Release\strata-flint.exe --model E:\AI-models\models\flint\flint-UD-Q3_K_XL.gguf --max-context 8192 --chunk 1024 -n 32
+```
+
+#### Build from Source (CMake + MSVC + CUDA 12.8)
+```powershell
+cmake -B build -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="120"
+cmake --build build --config Release --target strata-flint
+```
+
+</details>
+
+
 <details>
 <summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.8-Flash-Next</b></summary>
 

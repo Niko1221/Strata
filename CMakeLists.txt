@@ -933,6 +933,22 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_compile_definitions(strata PRIVATE STRATA_HAVE_QWEN35=1)
   endif()
 
+  # Flint 40B Preview: the native engine path (src/flint)
+  if(NOT STRATA_HIP_GFX906)
+  add_library(strata_flint STATIC src/flint/flint_engine.cu)
+  target_include_directories(strata_flint PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/flint PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(strata_flint PRIVATE strata_core strata_kernels strata_warnings CUDA::cudart CUDA::cublas)
+  if(STRATA_NATIVE_EXPERTS)
+    target_link_libraries(strata_flint PRIVATE strata_kernels_cpu)
+    target_compile_definitions(strata_flint PRIVATE STRATA_FLINT_CPU_POOL=1)
+  endif()
+  add_executable(strata-flint src/flint/flint_main.cpp)
+  strata_utf8_manifest(strata-flint)
+  target_link_libraries(strata-flint PRIVATE strata_flint strata_core strata_kernels CUDA::cudart CUDA::cublas)
+  target_link_libraries(strata PRIVATE strata_flint)
+  target_compile_definitions(strata PRIVATE STRATA_HAVE_FLINT=1)
+  endif()
+
   # DeepSeek-V4.1-Flash: the third engine path (src/dsv41, from Project Maya's maya-ds4, MIT, third_party/project-maya).
   # Its own executable for now (strata-dsv41); a family switch in `strata` comes after first light.  OFF by default: it
   # changes no existing target (the vendored kernels live in strata::dsv41k, so no symbol is shared with strata_kernels).

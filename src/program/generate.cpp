@@ -135,6 +135,7 @@
 #include "strata/core/family_layout.hpp"
 #if defined(STRATA_HAVE_QWEN35)
 #include "strata/qwen35/engine.hpp"
+#include "strata/flint/engine.hpp"
 #endif
 #if defined(_WIN32)
 #include <windows.h>
@@ -3355,6 +3356,16 @@ int main(int argc, char** argv) {
             // not readable here: the normal path below reports it
         }
         if (qwen35) return strata::qwen35::run(argc, argv);
+#if defined(STRATA_HAVE_FLINT)
+        bool flint_model = false;
+        try {
+            const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
+            flint_model = strata::model_family(meta) == strata::ModelFamily::Flint;
+        } catch (const std::exception&) {
+        }
+        if (flint_model) return strata::flint::run(argc, argv);
+#endif
+
         break;
     }
 #endif
