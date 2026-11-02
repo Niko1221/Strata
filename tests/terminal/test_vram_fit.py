@@ -280,5 +280,62 @@ class FitStart(unittest.TestCase):
         self.assertIn("--max-context", args)
 
 
+class CudaSlotted(unittest.TestCase):
+    """The CUDA engine's measured base (DF2-MEM, RESULTS-DF2MEM.md sections 17 and 18): an 8 GB NVIDIA card with 2 or 4 requests died with "native head upload: out of
+    memory" at 128K; 12 GB and up start.  The figures are the engine's own auto sizing of the cache on the RTX PRO 5000 held to 12000 / 7800 MiB."""
+
+    M = "qwen3.8-flash-next-iq3_s"
+    A = ["--native", "/m/Qwen3.8-Flash-Next-IQ3_S-00001-of-00002.gguf", "--max-context", "131072", "--kv", "int8", "--kv-resident", "32768",
+         "--vram-reserve-mib", "700"]
+
+    def slack(self, free_mib, slots):
+        return V.slack_mib(self.M, (free_mib + V.GAP_OTHER_MIB) / 1024.0, 131072, "int8", 700, "auto", "cuda", slots, 32768)
+
+    def start(self, vram_mib, n, backend="cuda"):
+        return V.fit_start({"model_name": self.M, "parallel": n}, list(self.A), vram_mib, backend)
+
+    def test_the_base_reproduces_the_engines_cache_room(self):
+        self.assertAlmostEqual(self.slack(12000, 2), 3615 - 700 - 218 - 256, delta=60)     # "expert cache auto: 3.53 GiB free ... -> 961 slots"
+        self.assertAlmostEqual(self.slack(12000, 4), 2120 - 700 - 218 - 256, delta=60)     # "2.07 GiB free ... -> 371 slots"
+        self.assertAlmostEqual(self.slack(7800, 2), 850 - 835 - 598 - 700 - 218 - 256, delta=60)     # 0.83 GiB after the sessions, then the MTP layer and the head: the OOM
+
+    def test_an_8gb_card_with_2_or_4_requests_runs_one_at_a_time_at_the_context_one_request_runs(self):
+        for n in (2, 4):
+            args, par, note = self.start(8192, n)
+            self.assertEqual(par, 1, n)
+            self.assertEqual(args[args.index("--max-context") + 1], "16384", n)       # measured: 16K starts and decodes on the 8 GB mimic, 32K and 128K do not
+            self.assertIn("one request at a time with the context at 16K", note)
+
+    def test_the_8gb_mimic_figures_behind_it(self):
+        gb = (7942 + V.GAP_OTHER_MIB) / 1024.0
+        one = V.SLOT_RUN_MIN * V.SLOT_SLOTTED_MIB + V.MARGIN_MIB
+        for c in (2048, 4096, 8192, 16384):
+            self.assertGreaterEqual(V.single_slack_mib(self.M, gb, c, "int8", 700, "auto", "cuda", 32768), one, c)     # started and decoded
+        for c in (32768, 131072):
+            self.assertLess(V.single_slack_mib(self.M, gb, c, "int8", 700, "auto", "cuda", 32768), one, c)             # did not start
+        two_at_4k = V.slack_mib(self.M, gb, 4096, "int8", 700, "auto", "cuda", 2, 32768)
+        self.assertLess(two_at_4k, V.needed_mib(self.M, 2, "cuda"))                                                     # 59 MiB free, aborted at its first request
+
+    def test_a_card_in_between_loses_requests_before_it_loses_all_of_them(self):
+        args, par, note = self.start(9216, 8)
+        self.assertEqual(par, 5)
+        self.assertIn("answers 5 at once", note)
+
+    def test_12_16_and_24gb_keep_128k_with_2_and_4_requests(self):
+        for mib in (12288, 12282, 16384, 24576):
+            for n in (2, 3, 4):
+                self.assertEqual(self.start(mib, n), (self.A, None, ""), (mib, n))
+
+    def test_only_the_cuda_engine_is_claimed(self):
+        self.assertEqual(self.start(8192, 2, "hip"), (self.A, None, ""))          # no measured HIP figure: the engine decides
+        self.assertEqual(self.start(8192, 2, "metal"), (self.A, None, ""))
+
+    def test_the_persons_own_context_is_never_lowered_for_requests(self):
+        f = V.plan(self.M, 8.0, 131072, "int8", 700, "auto", "cuda", slots=8, ctx_fixed=True, reserve_fixed=True, prefill_fixed=True, kv_resident=32768)
+        self.assertEqual(f.ctx, 131072)
+        self.assertEqual(f.slots, 8)                                              # the person's own context is kept and nothing is lowered under it: the engine's refusal answers
+        self.assertFalse(f.changed)
+
+
 if __name__ == "__main__":
     unittest.main()

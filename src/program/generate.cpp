@@ -277,6 +277,16 @@ std::string vram_free_note() {
     return buf;
 }
 
+// The plain reason for an out-of-memory in the loads that follow the request slots' sessions (the draft layer, the native head): with --batch N
+// those N sessions came out of the card before the cache was sized, and a card that is short for them has nothing left for these.
+std::string vram_batch_hint(const std::string& err, int batch) {
+    if (batch < 2 || err.find("out of memory") == std::string::npos) return {};
+    char buf[320];
+    std::snprintf(buf, sizeof buf, "; this start keeps %d request slots (--batch %d), each a session of its own, so the card is too small for them at this context: "
+                  "use a smaller --max-context or fewer --batch slots", batch, batch);
+    return buf;
+}
+
 #if defined(__linux__)
 // STRATA_CRASH_BT=1 (research): a fatal signal prints the call stack to stderr (the addresses go through addr2line -e <binary>)
 namespace {
@@ -6709,7 +6719,7 @@ int main(int argc, char** argv) {
         // longer window up in parts)
         const int mtp_t = o.pipeline_windows >= 2 ? strata::kernels::kVerifyNarrowT : std::min(o.spec, (int) strata::kernels::kVerifyNarrowT);
         if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
-        if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st && !mtp_first ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
+        if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st && !mtp_first ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s%s\n", err.c_str(), vram_free_note().c_str(), vram_batch_hint(err, o.batch).c_str()); return 1; }
         if (!o.mtp.empty()) mtp.set_ple_session(&ss);
 #if defined(STRATA_HAVE_DFLASH2)
         if (o.draft == "dflash2") {
@@ -6833,7 +6843,7 @@ int main(int argc, char** argv) {
     if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
         const auto head_t0 = std::chrono::steady_clock::now();
         if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
-            std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str());
+            std::fprintf(stderr, "strata generate: %s%s%s\n", err.c_str(), vram_free_note().c_str(), vram_batch_hint(err, o.batch).c_str());
             return 1;
         }
         std::fprintf(stderr, "strata generate: experimental native Q5_K head, %llu bytes, in %.1f s\n",
