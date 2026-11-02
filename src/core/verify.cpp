@@ -769,6 +769,34 @@ bool Verifier::tapping_chain() const {
     return have == tap_total();
 }
 
+bool Verifier::gather_taps_host(float* dst, int row0, int rows, std::string& err) {
+    const int64_t N = g_->n_embd;
+    const int nt_all = tap_total();
+    for (Verifier* v = this; v != nullptr; v = v->next_) {
+        if (!v->tap_layers_.empty() && v->tap_on_) {
+            const OnDevice on_stage(v->device_);
+            if (v->tap_cs_ == nullptr &&
+                (cudaStreamCreateWithFlags(&v->tap_cs_, cudaStreamNonBlocking) != cudaSuccess ||
+                 cudaEventCreateWithFlags(&v->tap_ev_, cudaEventDisableTiming) != cudaSuccess)) {
+                err = "verify: the tap gather stream could not be created";
+                return false;
+            }
+            int slot0 = 0;
+            for (int l : tap_req_) if (l >= 0 && l < g_->n_layers - 1 && l < v->lb_) ++slot0;
+            const int64_t nv = (int64_t) v->tap_layers_.size();
+            for (int r = 0; r < rows; ++r) {
+                const cudaError_t ce = cudaMemcpyAsync(dst + ((size_t) r * (size_t) nt_all + (size_t) slot0) * (size_t) N,
+                                                       v->tap_dev_ + (size_t) (row0 + r) * (size_t) (nv * N), (size_t) (nv * N) * 4,
+                                                       cudaMemcpyDeviceToHost, v->tap_cs_);
+                if (ce != cudaSuccess) { err = std::string("verify: the tap gather to the host: ") + cudaGetErrorString(ce); return false; }
+            }
+            if (cudaStreamSynchronize(v->tap_cs_) != cudaSuccess) { err = "verify: the tap gather to the host did not finish"; return false; }
+        }
+        if (v->le_ >= g_->n_layers) break;
+    }
+    return true;
+}
+
 bool Verifier::gather_taps(float* landing, int landing_device, int row0, int rows, int dst_row0, cudaStream_t wait_stream, std::string& err) {
     const int64_t N = g_->n_embd;
     const int nt_all = tap_total();

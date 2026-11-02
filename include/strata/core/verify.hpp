@@ -375,6 +375,8 @@ public:
     /// `landing` rows [dst_row0, ...) as [row][tap_total()][n_embd] floats, on `landing_device` (any card; cudaMemcpyPeerAsync, no P2P needed;
     /// a single-stage chain is one copy).  The copies run on each stage's own tap stream, not behind its commit; `wait_stream` (the drafter's,
     /// on landing_device) then waits on an event of each, so the host does not block.  Bytes are copied as they are (no conversion).
+    /// The same into pinned HOST memory ([rows][tap_total()][n_embd] floats at `dst`): the rows are final when this returns (the stages' tap streams are synchronised).
+    bool gather_taps_host(float* dst, int row0, int rows, std::string& err);
     bool gather_taps(float* landing, int landing_device, int row0, int rows, int dst_row0, cudaStream_t wait_stream, std::string& err);
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the

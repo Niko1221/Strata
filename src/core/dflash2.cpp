@@ -50,7 +50,7 @@ Dflash2Drafter::~Dflash2Drafter() {
     if (h_logd_) cudaFreeHost(h_logd_);
     fr(rb_q_); fr(rb_d_); fr(rb_pos_);
     if (!blob_shared_) fr(blob_);
-    fr(landing_); fr(tag_); fr(d_meta_); fr(xq_); fr(xil_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rope_inv_);
+    fr(landing_); if (dpend_) cudaFreeHost(dpend_); fr(tag_); fr(d_meta_); fr(xq_); fr(xil_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rope_inv_);
     for (int l = 0; l < 8; ++l) { fr(kring_[l]); fr(vring_[l]); }
     fr(fcy_); fr(hctx_); fr(kc_); fr(vc_); fr(h_); fr(xn_); fr(xc_); fr(dyn_); fr(q_); fr(qn_); fr(k_); fr(v_); fr(kblk_); fr(ao_); fr(o_);
     fr(gate_); fr(up_); fr(mlp_); fr(part_); fr(fn_); fr(logits_); fr(topval_); fr(hsel_); fr(toptok_); fr(topscratch_);
@@ -615,6 +615,51 @@ bool Dflash2Drafter::copy_state_from(Dflash2Drafter& src, std::string& err) {
     return true;
 }
 
+float* Dflash2Drafter::defer_rows(int64_t pos0, int n, std::string& err) {
+    if (dpend_ == nullptr) {
+        const OnDevice on_device(device_);
+        if (cudaHostAlloc((void**) &dpend_, (size_t) kRing2048 * taps_.size() * (size_t) N_ * 4, cudaHostAllocPortable) != cudaSuccess) {
+            (void) cudaGetLastError();
+            dpend_ = nullptr;
+            err = "dflash2: the deferred-rows buffer does not fit in pinned memory";
+            return nullptr;
+        }
+    }
+    if (!has_deferred() || pos0 != dpend_hi_) { dpend_lo_ = pos0; dpend_hi_ = pos0; }
+    dpend_hi_ = pos0 + n;
+    if (dpend_hi_ - dpend_lo_ > kRing2048) dpend_lo_ = dpend_hi_ - kRing2048;
+    n_deferred_rows += n;
+    return dpend_ + (size_t) (pos0 % kRing2048) * (size_t) (taps_.size() * (size_t) N_);
+}
+
+bool Dflash2Drafter::catch_up(int64_t upto, std::string& err) {
+    if (!has_deferred()) return true;
+    const Clock::time_point t0 = Clock::now();
+    const OnDevice on_device(device_);
+    const size_t row = taps_.size() * (size_t) N_;
+    int64_t from = std::max<int64_t>(dpend_lo_, upto - 2047);
+    upto = std::min<int64_t>(upto, dpend_hi_);
+    int64_t replayed = 0;
+    while (from < upto) {
+        const int m = (int) std::min<int64_t>(kRows, upto - from);
+        if (!context_wait(err)) return false;
+        for (int i = 0; i < m; ++i)   // (the held run wraps at 2048 positions: row by row)
+            if (cudaMemcpyAsync(landing_ + (size_t) i * row, dpend_ + (size_t) ((from + i) % kRing2048) * row, row * 4, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
+                err = "dflash2: the deferred rows' upload";
+                return false;
+            }
+        if (!context(landing_, m, from, err)) return false;   // (waits for the stream, so the next chunk may reuse the landing)
+        from += m;
+        replayed += m;
+    }
+    dpend_lo_ = std::max<int64_t>(upto, dpend_lo_);
+    if (dpend_lo_ >= dpend_hi_) dpend_lo_ = dpend_hi_ = 0;
+    ++n_catchups;
+    n_catchup_rows += replayed;
+    ms_catchup += ms_since(t0);
+    return true;
+}
+
 void Dflash2Drafter::set_max_drafts(int n) {
     n = std::max(1, std::min(n, (int) kDrafts));
     if (n == ndraft_) return;
@@ -947,6 +992,10 @@ bool Dflash2Drafter::context_wait(std::string& err) {
 }
 
 bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err) {
+    return draft_launch(taps, n_new, pos0, anchor, err) && draft_finish(drafts, probs, err);
+}
+
+bool Dflash2Drafter::draft_launch(const float* taps, int n_new, int64_t pos0, int32_t anchor, std::string& err) {
     if (!bound_) { err = "dflash2: not bound"; return false; }
     if (!context_wait(err)) return false;
     if (n_new < 1 || n_new > kRows) { err = "dflash2: draft rows out of range"; return false; }
@@ -983,6 +1032,20 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     if (cudaGraphLaunch(exec_[n_new], cs_) != cudaSuccess) { err = std::string("dflash2 draft: ") + cudaGetErrorString(cudaGetLastError()); return false; }
     if (timing_) cudaEventRecord(ev_b_, cs_);
     (void) cudaStreamQuery(cs_);
+    launch_t0_ = t0;
+    launch_n_ = n_new;
+    launch_pos0_ = pos0;
+    launched_ = true;
+    return true;
+}
+
+bool Dflash2Drafter::draft_finish(int32_t* drafts, float* probs, std::string& err) {
+    if (!launched_) { err = "dflash2: draft_finish without draft_launch"; return false; }
+    launched_ = false;
+    const OnDevice on_device(device_);
+    const int n_new = launch_n_;
+    const int64_t pos0 = launch_pos0_, s = pos0 + n_new;
+    const Clock::time_point t0 = launch_t0_;
     if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2 draft: ") + cudaGetErrorString(cudaGetLastError()); return false; }
     log_flush();
     for (int i = 0; i < kDrafts; ++i) {

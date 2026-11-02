@@ -20,6 +20,7 @@
 
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -36,6 +37,7 @@ class Dflash2Drafter {
 public:
     static constexpr int kRows = 8;           ///< block rows: the anchor + 7 masks
     static constexpr int kDrafts = kRows - 1;
+    static constexpr int kRing2048 = 2048;    ///< positions the deferred-rows buffer holds
     static constexpr int kRing = 2064;        ///< K/V slots per layer: the 2048 window + slack for rows written ahead of a rejection
 
     Dflash2Drafter() = default;
@@ -70,6 +72,21 @@ public:
     int device() const { return device_; }
     int n_taps() const { return (int) taps_.size(); }
     int64_t ring_hi() const { return ring_hi_; }
+
+    /// DEFERRED CONTEXT (batch slots): a round with no spare window rows needs no draft, so a slot's drafter skips its forward work for that round.  The committed
+    /// rows' taps wait in a pinned host buffer instead (last 2048 positions of one contiguous run, 51 KB a row, allocated at the first deferral); catch_up replays
+    /// them through context() (the same kernels, in order, so the ring ends up as if every row had been taken at once) when spare rows return.
+    /// defer_rows returns where to write `n` rows of taps for positions pos0 ... (a position that does not follow the held run starts a new one); the caller
+    /// fills them (and waits for the copy) before the next catch_up.
+    float* defer_rows(int64_t pos0, int n, std::string& err);
+    bool has_deferred() const { return dpend_hi_ > dpend_lo_; }
+    int64_t deferred_hi() const { return dpend_hi_; }
+    const float* deferred_row(int64_t pos) const { return dpend_ + (size_t) (pos % kRing2048) * (size_t) (taps_.size() * (size_t) N_); }
+    /// Replays the held rows below `upto` (at most the last 2047 of them) into the ring and drops them from the run (rows from `upto` on stay held).
+    bool catch_up(int64_t upto, std::string& err);
+    void clear_deferred() { dpend_lo_ = dpend_hi_ = 0; }
+    int64_t n_catchups = 0, n_catchup_rows = 0, n_deferred_rows = 0;
+    double ms_catchup = 0;
 
     /// A new request: the ring is empty again.
     void reset();
@@ -113,6 +130,11 @@ public:
     /// then the block for `anchor` (the last committed token, at pos0 + n_new).  `drafts` / `probs` get kDrafts entries (the
     /// selector's pick and its probability).  The taps pointer must be the same device buffer on every call (graphs are captured on it).
     bool draft(const float* taps_dev, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
+
+    /// draft() in two halves: draft_launch queues the round's graph and returns, draft_finish waits and reads the picks.  Several drafters (batch slots, each on its
+    /// own stream) can launch first and finish after, so their graphs run at the same time.
+    bool draft_launch(const float* taps_dev, int n_new, int64_t pos0, int32_t anchor, std::string& err);
+    bool draft_finish(int32_t* drafts, float* probs, std::string& err);
 
     /// Captures the eight round graphs (n_new = 1..8) on `taps` now, so no round pays for a capture.
     bool prepare(const float* taps_dev, std::string& err);
@@ -159,6 +181,8 @@ private:
     uint8_t* blob_ = nullptr;
     bool blob_shared_ = false;      ///< blob_ (and the bound head) belong to the parent drafter (clone_for_slot)
     float* landing_ = nullptr;
+    float* dpend_ = nullptr;        ///< pinned host: deferred taps, row = position % kRing2048
+    int64_t dpend_lo_ = 0, dpend_hi_ = 0;
     bool make_streams(std::string& err);
     uint64_t vram_ = 0;
     bool q4_ = false;   // the pack's matrices are Q4_0 (tools/dflash2_pack.py --q4_0)
@@ -244,6 +268,10 @@ private:
     int64_t* tag_ = nullptr;        ///< per ring slot: (epoch << 32 | position) of the row it holds, -1 none
     cudaEvent_t ev_a_ = nullptr, ev_b_ = nullptr;
     bool timing_ = false;
+    bool launched_ = false;         ///< draft_launch ran, draft_finish has not
+    int launch_n_ = 0;
+    int64_t launch_pos0_ = 0;
+    std::chrono::steady_clock::time_point launch_t0_{};
 };
 
 }  // namespace strata::core
