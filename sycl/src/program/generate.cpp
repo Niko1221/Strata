@@ -10486,9 +10486,14 @@ int main(int argc, char **argv) try {
                 std::vector<int32_t> idv(ids.begin(), ids.end());
                 bool cold = false;
                 df2.begin_request(idv.data(), (int64_t) idv.size(), reread_to > 0 ? 0 : resume, &cold);
-                if (cold)
-                    std::fprintf(stderr, "strata serve: DFlash2: the conversation is not the one the drafter last saw (a parked or edited one): it starts with an "
-                                         "empty context and drafts poorly for the first rounds (the answers are the same)\n");
+                if (df2.last_rebuilt > 0)
+                    std::fprintf(stderr, "strata serve: DFlash2: %s%lld context rows of the window rebuilt from the drafter's log in %.1f ms%s\n",
+                                 df2.last_swapped ? "a parked conversation came back: " : "", (long long) df2.last_rebuilt, df2.last_ms,
+                                 df2.last_missing >= 64 ? " (the rest were never logged)" : "");
+                if (cold && df2.last_missing >= 64)   // (a few rows missing are not worth a line: they are counted in the ring stats)
+                    std::fprintf(stderr, "strata serve: DFlash2: %lld context rows of the window are not the drafter's to give (a conversation it has no log of: edited, "
+                                         "from a session file, or its log was evicted): it drafts poorly for the first rounds (the answers are the same)\n",
+                                 (long long) std::max<int64_t>(df2.last_missing, 1));
                 sp.set_taps(df2.tap_layers(), std::max<int64_t>(0, n - 2047), 2048);
             }
             const int64_t read_from = reread_to > 0 ? 0 : resume;
@@ -12117,6 +12122,11 @@ int main(int argc, char **argv) try {
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), outv[(size_t) a]);
+                // The request ends here, so no draft follows and the window's committed rows would never reach the drafter's ring or its log: every turn would
+                // leave a hole of a + 1 positions behind it, which a later turn that resumes after this one finds blank (and cannot rebuild). Update them now.
+                if (use_df2 && (eos || produced_n >= max_new)) {
+                    if (!df2.context(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                }
                 const bool drafted = !draft_on || eos || produced_n >= max_new ||
                                      (use_df2 ? (defer_df2(a) || draft_df2(a)) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p));
                 {

@@ -12,8 +12,10 @@
 #include "strata/core/session.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -40,9 +42,29 @@ public:
     bool bind_raw(EmbedFn embed, const void* head_w, int head_type, int64_t head_rows, const std::vector<int32_t>& vocab, std::string& err);
 
     /// A new request: the ring is empty again.
-    void reset() { have_ctx_ = 0; hist_.clear(); ++epoch_; ring_hi_ = 0; }
-    /// Serve: a request starts with prompt `ids` (n tokens) and the session continues at `resume`; see the CUDA header.
+    void reset();
+    /// Serve: a request starts with prompt `ids` (n tokens) and the session continues at `resume`.  The drafter keeps the token history of the rows its ring was
+    /// filled for and (RING LOG) the activation rows those K/V rows were made from; the part of the first draft's window [n - 2047, n - 1) below `resume` is not read
+    /// again by the prompt, so the ring slots a later, longer turn overwrote (the ring wraps every 2064 positions) are rebuilt from the log; a parked lineage is
+    /// swapped back in from the stash; a conversation it has no log of starts over and `*cold` is set (drafts poor for the first rounds, never wrong).
     bool begin_request(const int32_t* ids, int64_t n, int64_t resume, bool* cold);
+    /// RING LOG (STRATA_DF2_RING_LOG=0 turns it off, the pre-log behaviour for A/Bs; STRATA_DF2_LOG_MIB sets the stash, default 256): every context update copies
+    /// the quantized activation rows the K/V of the five layers are made from (2560 int8 codes + 80 block scales a position) into a host log of the lineage; a
+    /// rebuild runs the K/V projections, norms, rope and ring writes over the logged rows with the same kernels, so the rebuilt rows are those of the original update.
+    struct RingStats {
+        int64_t requests = 0, rebuilds = 0, rows_rebuilt = 0, rows_missing = 0, stash_hits = 0, stash_stores = 0, stash_evictions = 0, cold_starts = 0;
+        double ms_rebuild = 0, ms_swap = 0;
+    };
+    RingStats ring_stats;
+    int64_t last_rebuilt = 0, last_missing = 0;   ///< the last begin_request: ring rows rebuilt, rows that could not be
+    double last_ms = 0;
+    bool last_swapped = false;                    ///< ... and whether a parked lineage was brought back
+    bool ring_log_on() const { return log_on_; }
+    uint64_t ring_log_bytes() const;
+    uint64_t ring_stash_bytes() const;
+    /// Tests: the whole ring (layer-major: per layer K then V, each [8 heads][kRing slots][128]) and its slot tags (epoch << 32 | position, -1 none).
+    bool debug_ring(std::vector<float>& kv, std::vector<int64_t>& tags, std::string& err);
+    int32_t epoch() const { return epoch_; }
     /// Serve: rows [pos0, pos0 + n) were committed with these tokens.
     void note_rows(const int32_t* toks, int64_t n, int64_t pos0);
     /// Context rows without a draft: `n` rows of taps (device, [n][5 * n_embd]) for positions pos0 ... pos0 + n - 1.
@@ -75,6 +97,7 @@ private:
     const float* f32(const std::string& name) const { return reinterpret_cast<const float*>(blob_ + find(name).off); }
     void gemm(std::initializer_list<const char*> names, std::initializer_list<float*> outs, int ncols, const uint8_t* xq, const float* xd);
     bool record_context(const float* taps, int n, std::string& err);
+    bool record_kv(int n, const uint8_t* xq, const float* xd, const int32_t* pos, std::string& err);
     bool record_block(std::string& err);
     bool capture(int n, const float* taps, std::string& err);
     bool alloc(std::string& err);
@@ -123,7 +146,36 @@ private:
     const float* graph_taps_ = nullptr;
     int ndraft_ = kDrafts;          ///< drafts a window can use (set_max_drafts)
     int64_t have_ctx_ = 0;
-    std::vector<int32_t> hist_;     ///< the token of every position the ring was filled for (serve)
+    // ---- ring log (see begin_request)
+    static constexpr int kLogChunk = 256;   ///< positions per log chunk (allocated on first use)
+    struct LogChunk { std::vector<int8_t> q; std::vector<float> d; std::vector<uint8_t> ok; };   ///< codes [256][2560], scales [256][80], row logged
+    struct Lineage {
+        std::vector<int32_t> hist;                        ///< the token of every position the ring was filled for (serve)
+        std::vector<std::shared_ptr<LogChunk>> chunks;    ///< the activation rows by position / 256 (copy on write: a stashed copy shares them)
+        bool logged(int64_t pos) const;
+        uint64_t bytes() const;
+        void truncate(int64_t keep);                      ///< forget the rows of positions >= keep
+        LogChunk& writable(size_t chunk);                 ///< the chunk, allocated or un-shared first
+    };
+    Lineage cur_;                                         ///< the lineage the ring belongs to
+    std::deque<Lineage> stash_;                           ///< parked lineages, newest last
+    bool log_on_ = true;
+    uint64_t stash_budget_ = 256ull << 20;
+    int8_t* h_logq_ = nullptr;      ///< host (cached USM): the last update's codes [8][2560] ...
+    float* h_logd_ = nullptr;       ///< ... and scales [8][80], copied from the device after the update
+    int64_t pend_pos0_ = -1;        ///< positions the update in flight will leave in h_log*
+    int pend_n_ = 0;
+    int64_t slot_pos_[kRing] = {};  ///< host shadow of the device ring tags: (epoch << 32 | position) of the row each slot holds, -1 none
+    uint8_t* rb_q_ = nullptr;       ///< rebuild scratch (device): the window's codes, scales and positions
+    float* rb_d_ = nullptr;
+    int32_t* rb_pos_ = nullptr;
+    uint64_t rb_bytes_ = 0;
+    void log_stage(int64_t pos0, int n);       ///< an update of rows [pos0, pos0 + n) is queued: remember where its h_log* rows go, mark the slots
+    void log_fetch(int n);                     ///< queue the copy of the update's codes and scales to the host
+    void log_flush();                          ///< after the queue is waited for: move the staged rows into the lineage's log
+    bool rebuild(int64_t lo, int64_t hi, int64_t* rebuilt, int64_t* missing, std::string& err);
+    void stash_push(Lineage&& l);
+    void invalidate_ring();                    ///< a new epoch: every slot is stale, the shadow forgets them
     int64_t ring_hi_ = 0;           ///< one past the highest position written in this epoch
     int32_t epoch_ = 0;             ///< stamped into the ring tags: a new epoch makes every older slot invalid
     int64_t* tag_ = nullptr;        ///< per ring slot: (epoch << 32 | position) of the row it holds, -1 none
