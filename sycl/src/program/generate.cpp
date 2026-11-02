@@ -300,6 +300,16 @@ using Clock = std::chrono::steady_clock;
 
 // --pipeline-windows: every STRATA_PIPELINE_* test and tuning variable (THETA, FORCE_MISS, SWITCH, LOG, TRACE, DOOM_SKIP,
 // LOOKUP_PON, PRESTAGE, AGREE, SNAP_OVERLAP) is read only with STRATA_PIPELINE_DEBUG=1; without it the defaults apply.
+// The one plain line a start ends with when the expert cache got no VRAM at all (set where "no VRAM is left for the expert cache" is found, printed where the
+// verifier then refuses to start): what did not fit and what to lower.
+static std::string g_no_cache_hint;
+static void print_start_refusal(const char* who, const std::string& err) {
+    if (!g_no_cache_hint.empty() && err.rfind("verify: needs the profile-filled", 0) == 0)
+        std::fprintf(stderr, "%s: cannot start: %s\n", who, g_no_cache_hint.c_str());
+    else
+        std::fprintf(stderr, "%s: %s\n", who, err.c_str());
+}
+
 static const char* pipe_dbg_env(const char* name) {
     static const bool on = [] { const char* v = std::getenv("STRATA_PIPELINE_DEBUG"); return v != nullptr && v[0] != 0 && v[0] != '0'; }();
     return on ? std::getenv(name) : nullptr;
@@ -4750,6 +4760,11 @@ int main(int argc, char **argv) try {
                          (long long) min_slots, (long long) ((min_slots * blob) >> 20), (long long) short_mib,
                          (long long) session_mib, (long long) o.max_context, (long long) (mtp_bind >> 20),
                          reserve_tip.c_str());
+            g_no_cache_hint = "the GPU memory is full before the expert cache (it needs at least " + std::to_string(min_slots * blob >> 20) + " MiB; this card is about " +
+                              std::to_string(short_mib) + " MiB short). Taken: " + (o.batch > 1 ? std::to_string(o.batch) + " request slots " + std::to_string(o.batch * session_mib) + " MiB (--batch / parallel), " : std::string()) +
+                              "the context " + std::to_string(session_mib) + " MiB at " + std::to_string(o.max_context) + " tokens (--max-context), the draft head " +
+                              std::to_string(mtp_bind >> 20) + " MiB, the reserve " + std::to_string(at_reserve) + " MiB (--vram-reserve-mib). Lower " +
+                              (o.batch > 1 ? "the number of requests at once (--batch / parallel), " : "") + "--max-context or --vram-reserve-mib";
         }
     } else if (multi_gpu && o.expert_cache > 0) {
         // an explicit cache size leaves room for the prompt path's buffers and the reserve, or the first prompt
@@ -7575,7 +7590,7 @@ int main(int argc, char **argv) try {
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err) ||
             (use_mtp && !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
                                   pipe ? pl_mtp_R : ver.final_R_all(), err))) {
-            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            print_start_refusal("strata serve", err);
             return 1;
         }
         if (pipe) mtp.set_source_R(ver.final_R_all());   // the serial decode's rows (the last stage's even verifier)
@@ -13005,7 +13020,7 @@ int main(int argc, char **argv) try {
         vh.n_slots = xcache.slots();
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            print_start_refusal("strata generate", err);
             return 1;
         }
         const bool use_mtp = !o.mtp.empty();
