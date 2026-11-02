@@ -166,9 +166,11 @@ class InstallOwnPath(unittest.TestCase):
     def test_gguf_dir_without_the_file_still_says_it_is_missing(self):
         folder = self.root / "empty"
         folder.mkdir()
-        rc, out = self.install(model="UD-Q4_K_XL", vision="no", gguf_dir=str(folder))
+        with mock.patch.object(setup, "free_gb", lambda p: 1.0):   # the download is not written here, so this drive is not the limit
+            rc, out = self.install(model="UD-Q4_K_XL", vision="no", gguf_dir=str(folder))
         self.assertEqual(rc, 1)
         self.assertIn("is missing", out)
+        self.assertNotIn("not enough free disk space", out)
 
     def test_default_size_follows_the_ram(self):
         rc, out = self.install(ram=64.0)

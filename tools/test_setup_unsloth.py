@@ -53,6 +53,12 @@ class Pins(unittest.TestCase):
             self.assertNotIn(M, [m for m in setup.MODELS if f in setup.MODELS[m].get("families", ("qwen", "swift"))])
 
 
+class DiskRoom(unittest.TestCase):
+    def test_gguf_dir_is_checked_on_the_data_folder(self):
+        self.assertEqual(setup.room_for_setup_files(Path("C:/gguf"), Path("H:/Strata"), "C:/gguf"), Path("H:/Strata"))
+        self.assertEqual(setup.room_for_setup_files(Path("H:/models/q2"), Path("H:/Strata"), None), Path("H:/models/q2"))
+
+
 class Budget(unittest.TestCase):
     def test_ram_less_24(self):
         self.assertEqual(setup.resident_budget_gib(M, 63.7), 40)       # this PC (64 GB): the measured setting

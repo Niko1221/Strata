@@ -262,6 +262,22 @@ class Install(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("00004-of-00009.gguf is missing", out)
 
+    def test_a_missing_own_shard_is_not_charged_to_that_drive(self):
+        own = self.root / "own"
+        own.mkdir()
+        for i in (1, 2, 3):
+            (own / setup.DSV41_SHARD.format(i=i)).write_bytes(b"GGUF")
+
+        def free(p):
+            path = Path(p)
+            return 1.0 if path == own or own in path.parents else 900.0
+
+        with mock.patch.object(setup, "free_gb", free):
+            rc, out = self.install(gguf_dir=str(own))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("00004-of-00009.gguf is missing", out)
+        self.assertNotIn("not enough free disk space", out)
+
     def test_the_repository_layout_is_found(self):
         own = self.root / "repo"
         (own / "UD-Q8_K_XL").mkdir(parents=True)

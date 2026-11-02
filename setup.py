@@ -2321,6 +2321,15 @@ def free_gb(path):
     return shutil.disk_usage(path).free / 1e9
 
 
+def room_for_setup_files(models_dir: Path, data: Path, gguf_dir) -> Path:
+    """The folder whose free space still has to hold what setup will write.
+
+    A download lands in the model folder. --gguf-dir means those GGUF files are already there and are
+    not fetched again: the pack, the AVX-512 conversion and the draft layer are written under the data
+    folder (--data-dir). Checking the GGUF folder asked its drive for that room."""
+    return Path(data) if gguf_dir else Path(models_dir)
+
+
 # ------------------------------------------------------------------------------------------------ downloads
 def drop_archive(z: Path) -> None:
     """An unpacked or refused engine archive and its .done mark go: a refused one kept them, and every later run
@@ -7999,8 +8008,16 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
         warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
-    folder = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
-    gguf = folder / fam["file"].format(q=model)
+    download_folder = Path(a.models_dir) / tag
+    pinned_name = fam["file"].format(q=model)
+    # --gguf-dir is files the person already has. Setup does not download into that folder: a missing
+    # pinned file is said here, before the free-space check. Charging the download's size to that
+    # folder failed a small C: drive even when --data-dir already pointed at a bigger one.
+    if a.gguf_dir and not (Path(a.gguf_dir) / pinned_name).exists():
+        fail(f"{Path(a.gguf_dir) / pinned_name} is missing",
+             f"put {pinned_name} in {a.gguf_dir}, or drop --gguf-dir so it downloads into {download_folder} (--data-dir)")
+    folder = Path(a.gguf_dir) if a.gguf_dir else download_folder
+    gguf = folder / pinned_name
     size = fam["sha256"][gguf.name][0]
     part = gguf.with_name(gguf.name + ".part")
     def have(p: Path) -> bool:                         # --gguf-dir: the person's own file has no finish mark; verify_sha256 checks and writes it
@@ -8555,9 +8572,30 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         p = f.with_name(f.name + ".part")
         return p.stat().st_size if p.is_file() else 0
 
-    left = sum(0 if f.exists() and (done(f) or a.gguf_dir or own_files.get(f) or f.name in DSV41_LEGACY_FILES) else fam["sha256"][f.name][0] - partial(f)
-               for f in [*shards, *shared]) / 1e9
-    probe = folder if folder.exists() else (folder.parent if folder.parent.exists() else Path(a.models_dir))
+    def owed(f: Path) -> int:
+        # already here, or a --gguf-dir file (no finish mark yet). A shard --gguf-dir does not contain is not
+        # downloaded into that folder (step 5 says it is missing), so its size is not room that drive must have.
+        if f.exists() and (done(f) or a.gguf_dir or own_files.get(f) or f.name in DSV41_LEGACY_FILES):
+            return 0
+        if a.gguf_dir and f in shards and not f.exists():
+            return 0
+        return fam["sha256"][f.name][0] - partial(f)
+
+    pending = [(f.parent, owed(f)) for f in [*shards, *shared]]
+    pending = [(dest, n) for dest, n in pending if n > 0]
+    left = sum(n for _, n in pending) / 1e9
+    # Bytes on one drive are one pool (the shards and the shared Engram usually share it). A --gguf-dir on
+    # another drive is not that pool: shared files are fetched into the data folder.
+    by_drive: dict[str, tuple[Path, int]] = {}
+    for dest, n in pending:
+        anchor = dest if dest.exists() else (dest.parent if dest.parent.exists() else Path(a.models_dir))
+        drive = os.path.normcase(os.path.splitdrive(os.path.abspath(anchor))[0] or str(anchor))
+        label, have = by_drive.get(drive, (folder if dest == folder else dest, 0))
+        if dest == folder:
+            label = folder
+        by_drive[drive] = (label, have + n)
+    room = max(by_drive.values(), key=lambda it: it[1])[0] if by_drive else folder
+    probe = room if room.exists() else (room.parent if room.parent.exists() else Path(a.models_dir))
     free = free_gb(probe)
     plan = dsv41_fit.plan([{**c, "vram_gb": float(c.get("vram_gb") or 0)} for c in cards], ram, free if left else None, ctx, model=model,
                          named=True)               # `cards` are decided above (dsv41_auto_cards / the person's): the plan describes them
@@ -8593,12 +8631,16 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
                      f"{model} needs about {plan['ram_needed_gb']:.0f} GB of RAM", f"more RAM or cards fix it; --model {model} --yes "
                      "installs it anyway", "  Install it anyway?")
         warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
-    if left and free < left:
-        fail(f"not enough free disk space in {folder}: need ~{left:.0f} GB, {free:.0f} GB free",
-             "use --models-dir on a bigger drive (an NVMe drive is best: the n-gram table is read from it while the model "
-             "answers), or --gguf-dir for files you already have")
+    for label, nbytes in by_drive.values():
+        gb = nbytes / 1e9
+        anchor = label if label.exists() else (label.parent if label.parent.exists() else Path(a.models_dir))
+        here = free_gb(anchor)
+        if here < gb:
+            fail(f"not enough free disk space in {label}: need ~{gb:.0f} GB, {here:.0f} GB free",
+                 "use --data-dir / --models-dir on a bigger drive (an NVMe drive is best: the n-gram table is read from it while the model "
+                 "answers), or --gguf-dir for files you already have")
     if left and free < left + dsv41_fit.DISK_HEADROOM_GB:
-        warn(f"little free disk space in {folder}: {free:.1f} GB free for about {left:.1f} GB. Setup goes on and should fit")
+        warn(f"little free disk space in {room}: {free:.1f} GB free for about {left:.1f} GB. Setup goes on and should fit")
     if ctx > 65536:
         warn(f"{ctx // 1024}K tokens of context: the engine was checked at 4K and 8K; longer is kept as you chose, but untested")
     # Pictures are on by default (owner rule): the engine reads them with its own vision tower (319 MiB, loaded with the model, no separate
@@ -9927,13 +9969,14 @@ def main() -> int:
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
     need = real + margin
-    free_now = free_gb(models_dir)
+    room = room_for_setup_files(models_dir, data, a.gguf_dir)
+    free_now = free_gb(room)
     if free_now < real:
-        fail(f"not enough free disk space in {models_dir}: need ~{real:.0f} GB, {free_now:.0f} GB free" +
+        fail(f"not enough free disk space in {room}: need ~{real:.0f} GB, {free_now:.0f} GB free" +
              (f" ({on_disk:.0f} GB of the model is already there)" if on_disk >= 1 and not have_model else ""),
              ("use --data-dir on a bigger drive (strata launch --data-dir)" if CONTROL else "use --models-dir on a bigger drive"))
     if free_now < need:
-        warn(f"little free disk space in {models_dir}: {free_now:.0f} GB free for about {real:.0f} GB of files. "
+        warn(f"little free disk space in {room}: {free_now:.0f} GB free for about {real:.0f} GB of files. "
              "Setup goes on and should fit; free up space if it stops")
 
     # ---- 3. python packages
