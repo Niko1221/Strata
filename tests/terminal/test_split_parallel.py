@@ -111,13 +111,9 @@ class LanesFromTheFlag(Base):
 
         s = S.LaunchSettings(family="qwen", model="UD-Q4_K_XL", context=131072, tune="skip", parallel=parallel)
         r = Runner(s, catalog=catalog(self.hw))
-        mtp = Path(self.home.base) / "mtp" / "rt"                     # the draft layer is on disk
-        mtp.mkdir(parents=True, exist_ok=True)
-        (mtp / "dense.bin").write_bytes(b"x")
-        cfg = layer_cfg(args=LAYER_ARGS[:-1] + [str(mtp)])
+        cfg = layer_cfg()
         with mock.patch.object(SE, "apply_to_config", fake), contextlib.redirect_stdout(io.StringIO()):
             r.apply_split_engine(cfg)
-        self.layer_args = LAYER_ARGS[:-1] + [str(mtp)]
         return seen["parallel"], cfg
 
     def test_parallel_n_reaches_the_rule_and_becomes_the_lane_count(self):
@@ -134,117 +130,7 @@ class LanesFromTheFlag(Base):
         seen, cfg = self.run_apply(3, False)
         self.assertEqual(seen, 3)
         self.assertNotIn("parallel", cfg)
-        self.assertEqual(cfg["args"], self.layer_args)
-
-
-class DraftLayerMissing(Base):
-    """The plan for Auto downloads DFlash2's drafter and not the draft layer; the split needs the draft layer (--mtp) and exits at start without it
-    ("sfnx: --native and --mtp are required"), so the server fell back to the layer split after a failed start and a misleading line.  Now the launcher
-    does not pick the split when the draft layer's folder is not on disk."""
-
-    def run_apply(self, mode, mtp_exists):
-        called = []
-        mtp = Path(self.home.base) / "mtp" / "rt"
-        if mtp_exists:
-            mtp.mkdir(parents=True)
-            (mtp / "dense.bin").write_bytes(b"x")
-        cfg = layer_cfg(args=LAYER_ARGS[:-1] + [str(mtp)], **({"split_engine": mode} if mode else {}))
-
-        def fake(c, **_kw):
-            called.append(True)
-            return SE.Decision(False, ["no"], 2, quiet=True)
-
-        r = Runner(S.LaunchSettings(family="qwen", model="UD-Q4_K_XL", context=131072, tune="skip"), catalog=catalog(self.hw))
-        with mock.patch.object(SE, "apply_to_config", fake), contextlib.redirect_stdout(io.StringIO()):
-            r.apply_split_engine(cfg)
-        return bool(called), r.notices
-
-    def test_without_the_folder_auto_stays_on_the_layer_split_without_a_word(self):
-        called, notices = self.run_apply(None, False)
-        self.assertEqual((called, notices), (False, []))
-
-    def test_without_the_folder_on_says_how_to_get_it(self):
-        called, notices = self.run_apply("on", False)
-        self.assertFalse(called)
-        self.assertEqual(len(notices), 1)
-        self.assertIn("--drafting mtp", notices[0])
-
-    def test_with_the_folder_the_rule_is_asked_as_before(self):
-        self.assertEqual(self.run_apply(None, True), (True, []))
-
-    def test_off_never_asks(self):
-        self.assertEqual(self.run_apply("off", True), (False, []))
-
-
-def cards(n, cc=120, vendor="nvidia", arch=""):
-    return [SE.Card(i, "RTX PRO 6000" if vendor == "nvidia" else "R9700", 98304 if vendor == "nvidia" else 32768, cc if vendor == "nvidia" else 0, vendor, arch)
-            for i in range(n)]
-
-
-class AutoFetchesTheDraftLayer(Base):
-    """The owner's default: the split engine on 2 cards (sm_86 / sm_120) and on 4 x gfx1201.  It runs the MTP draft layer and nothing else, so where Auto will pick it the plan and
-    the fetch are for the MTP (5.2 GB), not DFlash2's drafter; a person's own DFlash2 / off keeps the layer split; one card, other cards and --split-engine off keep DFlash2."""
-
-    def settings(self, **kw):
-        return S.LaunchSettings(**{"family": "qwen", "model": "UD-Q4_K_XL", "context": 131072, "tune": "skip", "vision": "off", **kw})
-
-    def runner(self, probe, **kw):
-        r = Runner(self.settings(**kw), catalog=catalog(self.hw))
-        self.patches = [mock.patch.object(SE, "probe_cards", lambda idx=None: probe), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),
-                        mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"]))]
-        for p in self.patches:
-            p.start()
-            self.addCleanup(p.stop)
-        return r
-
-    def test_two_cards_on_auto_resolve_to_the_mtp_and_the_plan_says_why(self):
-        r = self.runner(cards(2), gpus=[0, 1])
-        self.assertEqual(r.resolved_drafting("qwen"), "mtp")
-        self.assertEqual(r.drafting_plan_line(), "Drafting: MTP (the all-cards split engine uses the MTP draft layer, 5.2 GB)")
-        kinds = [p["kind"] for p in r.download_plan()["parts"]]
-        self.assertIn("mtp", kinds)
-        self.assertNotIn("dflash2", kinds)
-
-    def test_the_inputs_of_the_fetch_are_the_mtp_so_the_dflash2_drafter_is_not_fetched(self):
-        from strata_control import drafting
-        r = self.runner(cards(2), gpus=[0, 1])
-        want = r.drafting_inputs({"model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl", "args": []})
-        self.assertEqual(want["mode"], "mtp")
-        self.assertFalse(drafting.needs_pack(**want))
-        self.assertFalse(drafting.wants_one_request(**want), "the split has its lanes: no 'one request at a time'")
-
-    def test_a_persons_own_choice_off_or_one_card_or_an_other_card_keeps_dflash2(self):
-        for name, probe, kw in (("their own DFlash2", cards(2), {"gpus": [0, 1], "drafting": "dflash2"}),
-                                ("split-engine off", cards(2), {"gpus": [0, 1], "split_engine": "off"}),
-                                ("one card", cards(1), {"gpus": [0]}),
-                                ("sm_89 cards", cards(2, cc=89), {"gpus": [0, 1]}),
-                                ("three cards", cards(3), {"gpus": [0, 1, 2]})):
-            with self.subTest(name):
-                r = self.runner(probe, **kw)
-                self.assertEqual(r.resolved_drafting("qwen"), "dflash2")
-                self.assertNotIn("mtp", [p["kind"] for p in r.download_plan()["parts"]])
-
-    def test_amd_four_gfx1201_is_the_mtp_two_are_not(self):
-        self.hw = HW_4XR9700
-        r = self.runner(cards(4, vendor="amd", arch="gfx1201"), gpus=[0, 1, 2, 3])
-        self.assertEqual(r.resolved_drafting("qwen"), "mtp")
-        r2 = self.runner(cards(2, vendor="amd", arch="gfx1201"), gpus=[0, 1])
-        self.assertEqual(r2.resolved_drafting("qwen"), "dflash2")
-
-    def test_the_rule_answers_without_files_and_says_no_to_what_it_would_refuse(self):
-        self.assertTrue(SE.expected({}, indexes=[0, 1], probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
-        self.assertFalse(SE.expected({"split_engine": "off"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
-        self.assertFalse(SE.expected({"drafting": "dflash2"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
-        self.assertFalse(SE.expected({}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="darwin"))
-        self.assertFalse(SE.expected({}, probe=lambda i: cards(2), ram=lambda: (500.0, 4.0), system="linux"), "not enough RAM for the locked tables")
-
-    def test_the_apps_drafting_plan_follows_the_same_rule(self):
-        from strata_cli import drafting_cmd
-        cfg = {"gpu": [0, 1], "args": ["--native", "/nowhere/x-00001.gguf", "--max-context", "131072"]}
-        self.runner(cards(2))
-        self.assertTrue(drafting_cmd._split_expected(cfg, cfg["args"]))
-        self.assertFalse(drafting_cmd._split_expected({**cfg, "split_engine": "off"}, cfg["args"]))
-        self.assertFalse(drafting_cmd._split_expected({**cfg, "drafting": "dflash2"}, cfg["args"]))
+        self.assertEqual(cfg["args"], LAYER_ARGS)
 
 
 class AppPath(Base):

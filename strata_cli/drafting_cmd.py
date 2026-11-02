@@ -34,21 +34,6 @@ def _hardware() -> tuple[str | None, list[str]]:
     return drafting.detect_hardware()
 
 
-def _split_expected(cfg: dict, args: list) -> bool:
-    """Would the all-cards split engine take a start of this run config (strata_control/split_engine.expected, asked before the draft layer is on disk)?"""
-    try:
-        from strata_control import split_engine as SE
-        flags = [str(x) for x in args]
-        flag = lambda name: next((flags[i + 1] for i, x in enumerate(flags[:-1]) if x == name), None)   # noqa: E731
-        gpus = cfg.get("gpu")
-        cards = [int(g) for g in gpus] if isinstance(gpus, list) else ([int(gpus)] if isinstance(gpus, int) and not isinstance(gpus, bool) else None)
-        return SE.expected({"split_engine": cfg.get("split_engine"), "drafting": cfg.get("drafting"), "user_args": cfg.get("user_args"),
-                            "replicas": cfg.get("replicas")}, indexes=cards, native=flag("--native"),
-                           context=int(flag("--max-context") or SE.TESTED_CONTEXT))
-    except Exception:                                        # noqa: BLE001 - an early question is never a reason to stop
-        return False
-
-
 def _inputs(a) -> dict:
     cfg: dict = {}
     if a.config:
@@ -68,8 +53,6 @@ def _inputs(a) -> dict:
     mode = a.mode if a.mode else cfg.get("drafting")
     if cfg.get("mtp") is False and drafting.normalize(mode) == "auto":
         mode = "off"                                         # the Draft layer switch is off and no drafter was chosen since
-    elif drafting.normalize(mode) == "auto" and _split_expected(cfg, args):
-        mode = "mtp"                                         # the all-cards split engine runs the MTP draft layer: the app fetches that, not DFlash2's drafter
     return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
             "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
             "blocked": drafting.blocked_by(args, slots=cfg.get("parallel") if isinstance(cfg.get("parallel"), int) else 0)}
