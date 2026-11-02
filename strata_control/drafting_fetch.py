@@ -149,7 +149,7 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     out = drafting.target_path(data_dir)
     if drafting.pack_ready(data_dir):
         drafting.provide_vocab(data_dir)
-        if files is None:
+        if files is None and drafting.engine_has_selector_q4():
             convert_selector(data_dir, progress=report)
         report("The DFlash2 drafter is ready.", 1, 1)
         return drafting.pack_path(data_dir)
@@ -201,7 +201,7 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     except OSError:
         pass
     drafting.provide_vocab(data_dir)                 # the draft vocabulary comes with the pack: an install that never had the MTP layer needs it
-    if files is None:
+    if files is None and drafting.engine_has_selector_q4():
         convert_selector(data_dir, progress=report)  # the smaller selector (174 MiB), made here from the pack just checked; the bf16-selector pack stays beside it
     report("The DFlash2 drafter is ready.", total, total)
     return out

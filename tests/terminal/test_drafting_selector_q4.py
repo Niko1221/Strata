@@ -179,9 +179,12 @@ class SmallPacks(unittest.TestCase):
 
     def test_setup_and_load_convert_a_start_does_not(self):
         """ensure() (strata drafting fetch, setup) converts a pack that is already here, with no network; the serving side only reads."""
-        with mock.patch.object(drafting_fetch, "convert_selector") as convert, mock.patch.object(drafting, "pack_ready", return_value=True):
+        with mock.patch.object(drafting_fetch, "convert_selector") as convert, mock.patch.object(drafting, "pack_ready", return_value=True),                 mock.patch.object(drafting, "engine_has_selector_q4", return_value=True):
             drafting_fetch.ensure(self.data)
         convert.assert_called_once()
+        with mock.patch.object(drafting_fetch, "convert_selector") as convert, mock.patch.object(drafting, "pack_ready", return_value=True),                 mock.patch.object(drafting, "engine_has_selector_q4", return_value=False):
+            drafting_fetch.ensure(self.data)
+        convert.assert_not_called()          # an engine that cannot read the Q4_0 selector (the SYCL one) or none installed yet: the 340 MB file would never be used
         source = (ROOT / "serve" / "server.py").read_text(encoding="utf-8")
         self.assertNotIn("convert_selector", source)
         self.assertNotIn("convert_selector", (ROOT / "strata_cli" / "launch" / "plan.py").read_text(encoding="utf-8") if (ROOT / "strata_cli" / "launch" / "plan.py").exists() else "")

@@ -347,6 +347,12 @@ def uses_selector_q4(data_dir: str | Path | None, engine: str | os.PathLike[str]
     return True
 
 
+def engine_has_selector_q4() -> bool:
+    """Does the engine installed on this computer read the Q4_0-selector pack ("selector codebooks: Q4_0 rows": CUDA, HIP and Metal engines; not the SYCL one)? Setup, Load and
+    `strata drafting fetch` make that pack only then: where the engine cannot read it the 340 MB file would never be used. No engine installed yet: False (made at the next Load)."""
+    return engine_reads_selector_q4(installed_engine_exe())
+
+
 def vram_gb(data_dir: str | Path | None = None, engine: str | os.PathLike[str] | None = None) -> float:
     """Graphics memory of DFlash2 alone on this computer, in GB: DRAFTER_GB["dflash2_selq4"] (0.72) with the converted pack, DRAFTER_GB["dflash2"] (0.89) otherwise. The fit,
     the plan text and the slot estimates say this number."""
