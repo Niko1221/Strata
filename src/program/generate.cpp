@@ -13217,6 +13217,7 @@ int main(int argc, char** argv) {
             int32_t x = 0;                 ///< the token the next window feeds (not yet in the slot's state)
             std::array<int32_t, strata::kernels::kVerifyNarrowT> draft{}; ///< the slot's next MTP proposal
             bool draft_ready = false;
+            std::array<float, strata::kernels::kVerifyNarrowT> dprob{};   ///< DFlash2 slot drafts: the selector's probability of each draft
             int n_drafts = 1;              ///< STRATA_PIPED_MTP: how many of `draft` its next window checks
             int64_t p = 0;                 ///< its position
             int64_t produced = 0, max_new = 0;
@@ -13242,6 +13243,10 @@ int main(int argc, char** argv) {
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
         // STRATA_BATCH_DF2_DEFER=0: every round drafts for every slot, spare rows or not (the first measurement's behaviour, for the A/B)
+        // STRATA_BATCH_DF2_CONF=P (default: --draft-conf, else 0.35; 0 off): a slot's draft rows stop where the product of the selector's probabilities falls below P;
+        // STRATA_BATCH_DF2_MAXX=N: at most N draft rows a slot and window (default kDrafts)
+        const double df2_conf = [&] { const char* e = std::getenv("STRATA_BATCH_DF2_CONF"); return e != nullptr && e[0] != ' ' ? std::atof(e) : (o.draft_conf > 0.0 ? o.draft_conf : 0.35); }();
+        const int df2_cap = [] { const char* e = std::getenv("STRATA_BATCH_DF2_MAXX"); return e != nullptr && e[0] != ' ' ? std::max(0, std::atoi(e)) : 99; }();
         const bool batch_df2_defer = [] { const char* e = std::getenv("STRATA_BATCH_DF2_DEFER"); return !(e != nullptr && e[0] == '0'); }();
         // timing of the batch windows since the slots were last all idle (one stderr line then)
         double bt_run = 0, bt_commit = 0, bt_emit = 0;
@@ -13539,6 +13544,13 @@ int main(int argc, char** argv) {
                     want = std::min(want, (int) strata::core::Dflash2Drafter::kDrafts);
                     want = std::min<int>(want, (int) std::max<int64_t>(0, q.max_new - q.produced - 1));
                     want = std::min<int>(want, (int) std::max<int64_t>(0, (int64_t) o.max_context - q.p - 2));
+                    want = std::min(want, df2_cap);
+                    if (q.draft_ready && df2_conf > 0.0) {   // a draft row is worth its cost where the chain so far is likely: the product of the selector's probabilities
+                        double chain = 1.0;
+                        int keep_n = 0;
+                        while (keep_n < want && (chain *= (double) q.dprob[(size_t) keep_n]) >= df2_conf) ++keep_n;
+                        want = keep_n;
+                    }
                     if (act_ids[k] < (int) (sizeof df2_extra / sizeof df2_extra[0])) df2_extra[act_ids[k]] = want;
                 }
 #if defined(STRATA_HAVE_DFLASH2)
@@ -13563,7 +13575,7 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     d.clear_deferred();
-                    for (int j = 0; j < strata::core::Dflash2Drafter::kDrafts && j < (int) q.draft.size(); ++j) q.draft[(size_t) j] = dd[j];
+                    for (int j = 0; j < strata::core::Dflash2Drafter::kDrafts && j < (int) q.draft.size(); ++j) { q.draft[(size_t) j] = dd[j]; q.dprob[(size_t) j] = pp[j]; }
                     q.draft_ready = true;
                 }
 #endif
@@ -13769,7 +13781,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR batch DFlash2 slot %d: %s\n", b, err.c_str());
                     return false;
                 }
-                for (int j = 0; j < strata::core::Dflash2Drafter::kDrafts && j < (int) sl.draft.size(); ++j) sl.draft[(size_t) j] = dd[j];
+                for (int j = 0; j < strata::core::Dflash2Drafter::kDrafts && j < (int) sl.draft.size(); ++j) { sl.draft[(size_t) j] = dd[j]; sl.dprob[(size_t) j] = pp[j]; }
                 sl.draft_ready = true;
             }
 #endif
@@ -18483,7 +18495,7 @@ int main(int argc, char** argv) {
                             std::fprintf(stderr, "strata batch: DFlash2 admission for slot %d failed: %s\n", admit_slot, err.c_str());
                             return 1;
                         }
-                        for (int j = 0; j < strata::core::Dflash2Drafter::kDrafts && j < (int) sl.draft.size(); ++j) sl.draft[(size_t) j] = dd[j];
+                        for (int j = 0; j < strata::core::Dflash2Drafter::kDrafts && j < (int) sl.draft.size(); ++j) { sl.draft[(size_t) j] = dd[j]; sl.dprob[(size_t) j] = pp[j]; }
                         sl.draft_ready = true;
                     } else
 #endif
