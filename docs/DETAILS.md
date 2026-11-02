@@ -536,7 +536,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   only after the strict parse failed, the server doubles the backslashes that are not valid escapes and checks the answer again.
   Valid output is never touched. `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX` are valid JSON, so they stay: a `\beta` beside a `\alpha`
   comes back with a backspace. Off by default.
-- `logit_bias` and token/bias pair lists work on CUDA and HIP engines without continuous batching ([LOGIT_BIAS.md](LOGIT_BIAS.md)).
+- `logit_bias` and token/bias pair lists work on CUDA, HIP and Metal engines, also with continuous batching (`--batch` / `--parallel`: each slot keeps its own bias) ([LOGIT_BIAS.md](LOGIT_BIAS.md)).
 - Stop strings (`stop`, `stop_sequences`), `temperature`, `top_p`, `top_k`, `min_p` and `seed` are honored per request.
   `top_k` keeps at most 64 candidates. Penalties (`presence_penalty`, `frequency_penalty`, `repetition_penalty`,
   `penalty_last_n`; llama.cpp's `repeat_penalty` and `repeat_last_n` work too) apply to every token the speculative check

@@ -121,4 +121,29 @@ inline void penalty_rows(const int32_t* tail, int64_t n_tail, const int32_t* win
     }
 }
 
+/// The penalty-history rows of a BATCH window, on the host.  Row t of the window feeds `tokens[t]` into slot `rows[t]`; its row of `out` (h slots, most
+/// recent LAST, -1 in unused front slots) is the last `h` tokens of that slot's reply tail (`tails[slot]`, `n_tails[slot]` tokens: what the slot's
+/// session consumed since the reply began, the fed-back head not yet included) followed by the tokens fed so far by THIS window's rows of the same slot
+/// up to and including row t (a slot may hold several rows: MTP drafts).  Exactly what `penalty_rows` gives a solo window, per slot.
+inline void slot_penalty_rows(const int* rows, const int32_t* tokens, int S, const int32_t* const* tails, const int64_t* n_tails, int h, int32_t* out) {
+    for (int t = 0; t < S; ++t) {
+        int32_t* row = out + (size_t) t * (size_t) h;
+        const int slot = rows[t];
+        const int32_t* tail = tails[slot];
+        const int64_t n_tail = tail != nullptr ? n_tails[slot] : 0;
+        int64_t in_window = 0;                                     // this window's rows of the slot up to t
+        for (int u = 0; u <= t; ++u) in_window += rows[u] == slot;
+        const int64_t avail = n_tail + in_window;
+        const int take = (int) std::min<int64_t>(h, avail);
+        std::fill(row, row + (h - take), -1);
+        for (int j = 0; j < take; ++j) {
+            const int64_t i = avail - take + j;                     // index into (tail, the slot's window tokens)
+            if (i < n_tail) { row[h - take + j] = tail[i]; continue; }
+            int64_t k = i - n_tail, seen = 0;
+            for (int u = 0; u <= t; ++u)
+                if (rows[u] == slot) { if (seen == k) { row[h - take + j] = tokens[u]; break; } ++seen; }
+        }
+    }
+}
+
 }  // namespace strata::kernels
