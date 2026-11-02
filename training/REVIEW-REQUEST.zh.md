@@ -543,6 +543,22 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 | **▸ `feat/train-backforward`**（本文所在树） | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `mezo/sft_mezo.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 258 项（256 过 + 2 项 watchdog 见下） | ≈90 提交 / 132 文件 / ≈+27k −93 |
 | `feat/train_support` | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 258 项（同上） | 交付分支 HEAD / 132 文件 / ≈+27k −93 |
 
+**如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
+
+| 只收 | 得到 | 失去 |
+|---|---|---|
+| `feat/train-mezo` | 零阶六方案全在（sft / dpo / grpo × 引擎前向）、`LORA` / `SCORE`、引擎侧改动、数学造数据与评测、**0 个新增 pip 包、训练路径零 torch**、134 项 | `--method backward`（autograd 反传）；DPO / curriculum / clip window / TIS 这些只在反传侧的能力；numpy↔torch 对拍（`test_objectives.py`）；§5.4 的反传过拟合对照 |
+| `feat/train-backforward` | 上面全部 + 反传栈，258 项 | 无（严格超集）。代价是树里同时带着零阶，审核时看不出「哪半是这次要的」—— 除非按 §7.1 的文件清单读 |
+| `feat/train_support` | 两条线 + 这组文档（交付面） | — |
+
+一句话：**backforward 相对 mezo 的增量不是「训得更好」，而是「一条物理上不同的路线 + 对拍证据」** ——
+零阶用引擎前向做零阶近似，反传用 PyTorch autograd 拿真梯度，两者的损失数学共用 `objectives.py`，
+所以反传路线同时充当零阶的参考实现：两者在相同输入上的 logp / loss 能对上（§5.5），这才让「零阶这条路线的数学没写错」
+成为可验证的结论，而不是自说自话。
+
+如果审核方只关心「零阶能不能训起来」，`feat/train-mezo` 就是完整答案，砍掉 backforward 不损失零阶任何能力；
+反过来的说法不成立 —— 零阶是 backforward 的基础层，不能从它里面摘掉。
+
 **分层规则一句话**：三条分支的差异只体现在**文件在不在**，不体现在代码分支上。
 `algos.available()` 读磁盘决定 `--method` 有哪几个，缺哪个就把缺的文件名说清楚；
 `train.py` / `algos.py` 三条线逐字一致，所以合并永远不会为「dispatch 代码谁对」打架。
