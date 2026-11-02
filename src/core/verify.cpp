@@ -733,6 +733,8 @@ Verifier::~Verifier() {
     if (tap_scratch_) cudaFree(tap_scratch_);
     if (h_tap_) cudaFreeHost(h_tap_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
+    for (float* b : slot_bias_dev_) if (b) cudaFree(b);
+    if (slot_hist_d_) cudaFree(slot_hist_d_);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
@@ -3834,6 +3836,8 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     // the Metal window keeps each slot's running state itself (metal/src/engine/window.cpp): none of the CUDA batch buffers
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);
+    slot_bias_dev_.assign(slots.size(), nullptr);
+    slot_tail_.assign(slots.size(), {});
     if (metal_ == nullptr || !strata::metal_engine::window_init_slots(metal_, slots, err)) {
         if (err.empty()) err = "verify: the Metal window is not up";
         return false;
@@ -3859,6 +3863,8 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
+    slot_bias_dev_.assign(slots.size(), nullptr);
+    slot_tail_.assign(slots.size(), {});
     std::fprintf(stderr, "strata verify: batch windows of up to %lld sequences (layers [%lld, %lld))%s\n", (long long) S,
                  (long long) lb_, (long long) le_, g_batch_self_commit ? ", one-row windows keep their rows" : "");
     return true;
@@ -4706,14 +4712,59 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
     return next_ == nullptr || next_->commit_slot_prefixes(keep, err);
 }
 
+bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err) {
+    if (next_ && !next_->set_slot_logit_bias(slot, bias, err)) return false;
+    if (le_ < g_->n_layers) return true;
+    if (slot < 0 || slot >= (int) slot_bias_dev_.size()) return true;
+    const OnDevice on_device(device_);
+    if (bias.empty()) { slot_bias_dev_[(size_t) slot] = nullptr; slot_sp_[(size_t) slot].logit_bias = nullptr; return true; }
+    if (bias.size() != (size_t) n_vocab_) { err = "logit_bias vocabulary size mismatch"; return false; }
+    const size_t bytes = bias.size() * sizeof(float);
+    if (slot_bias_dev_[(size_t) slot] == nullptr) {
+        float* d = nullptr;
+        if (cudaMalloc((void**) &d, bytes) != cudaSuccess) { err = "cannot allocate the slot's logit_bias"; return false; }
+        slot_bias_dev_[(size_t) slot] = d;
+    }
+    if (cudaMemcpy(slot_bias_dev_[(size_t) slot], bias.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "cannot upload the slot's logit_bias"; return false; }
+    slot_sp_[(size_t) slot].logit_bias = slot_bias_dev_[(size_t) slot];
+    return true;
+}
+
 bool Verifier::sample_rows(int S, std::string& err) {
     bool any = false;
+    // the slots' penalty-history rows of this window (host), built once for the rows that need one
+    constexpr int kSlotHistMax = 4096;   // serve's kPenaltyWindowCap
+    std::vector<int32_t> hrows;
+    std::vector<const int32_t*> tails(slots_.size(), nullptr);
+    std::vector<int64_t> n_tails(slots_.size(), 0);
+    for (size_t b = 0; b < slots_.size() && b < slot_tail_.size(); ++b) { tails[b] = slot_tail_[b].data(); n_tails[b] = (int64_t) slot_tail_[b].size(); }
     for (int t = 0; t < S; ++t) {
         strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        if (sp.greedy || sp.temperature <= 0.0f) continue;
+        const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
+        const bool bias = sp.logit_bias != nullptr;
+        if ((sp.greedy || sp.temperature <= 0.0f) && !pen && !bias) continue;   // a plain greedy slot keeps the window's argmax token untouched
         sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
-        sp.penalty_last_n = 0;
-        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, nullptr, 0, sp,
+        const int32_t* hist = nullptr;
+        int hlen = 0;
+        if (pen) {
+            hlen = std::min(sp.penalty_last_n, kSlotHistMax);
+            hrows.assign((size_t) S * (size_t) hlen, -1);
+            strata::kernels::slot_penalty_rows(last_rows_, last_tokens_, S, tails.data(), n_tails.data(), hlen, hrows.data());
+            const size_t need = (size_t) S * (size_t) hlen;
+            const OnDevice on_hist(device_);
+            if (slot_hist_cap_ < need) {
+                if (slot_hist_d_ != nullptr) cudaFree(slot_hist_d_);
+                slot_hist_d_ = nullptr;
+                if (cudaMalloc((void**) &slot_hist_d_, need * sizeof(int32_t)) != cudaSuccess) { err = "verify batch: the penalty-history allocation failed"; return false; }
+                slot_hist_cap_ = need;
+            }
+            if (cudaMemcpyAsync(slot_hist_d_ + (size_t) t * (size_t) hlen, hrows.data() + (size_t) t * (size_t) hlen, (size_t) hlen * sizeof(int32_t),
+                                cudaMemcpyHostToDevice, cs_) != cudaSuccess) { err = "verify batch: the penalty-history copy failed"; return false; }
+            hist = slot_hist_d_ + (size_t) t * (size_t) hlen;
+        } else {
+            sp.penalty_last_n = 0;
+        }
+        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hlen, sp,
                                        m_out_ + t, cs_);
         any = true;
     }

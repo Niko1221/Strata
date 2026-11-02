@@ -281,8 +281,19 @@ public:
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
-        if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
+        if (slot >= 0 && slot < (int) slot_sp_.size()) {
+            slot_sp_[(size_t) slot] = sp;
+            slot_sp_[(size_t) slot].logit_bias = slot < (int) slot_bias_dev_.size() ? slot_bias_dev_[(size_t) slot] : nullptr;   // the slot's own bias array (set_slot_logit_bias)
+        }
         if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    /// A slot's logit bias (n_vocab floats; empty = none), added before the penalties and filters of its row, as a solo request's.  Reaches the last stage.
+    bool set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err);
+    /// The slot's reply tail for its penalty window: the `n` tokens its session consumed since the reply began (the last penalty_last_n are used), the
+    /// fed-back head not included.  Set before every batch window that holds the slot while it has a penalty; reaches the last stage.
+    void set_slot_history(int slot, const int32_t* tail, int64_t n) {
+        if (slot >= 0 && slot < (int) slot_tail_.size()) slot_tail_[(size_t) slot].assign(tail, tail + (n > 0 ? n : 0));
+        if (next_) next_->set_slot_history(slot, tail, n);
     }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
@@ -447,6 +458,10 @@ private:
     std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[strata::kernels::kWindowMaxT] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
+    std::vector<float*> slot_bias_dev_;                  ///< per slot: its logit bias on the device (null = none)
+    std::vector<std::vector<int32_t>> slot_tail_;        ///< per slot: its reply tail for the penalty window (set_slot_history)
+    int32_t* slot_hist_d_ = nullptr;                     ///< the penalty-history rows of the current batch window (device)
+    size_t slot_hist_cap_ = 0;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;

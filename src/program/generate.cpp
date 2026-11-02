@@ -13032,6 +13032,8 @@ int main(int argc, char** argv) {
             // fed).  Kept when the request ends (`cached`), so the next turn of that conversation continues from it
             // instead of reading its history again (see `slot_source` in the request path).
             std::vector<int32_t> ids;
+            int64_t reply0 = 0;            ///< the index in `ids` where its penalty window starts (the last prompt token; 0 with STRATA_PENALTY_PROMPT=1)
+            int pen_n = 0;                 ///< its request's penalty window (penalty_last_n) when it has a repeat / frequency / presence penalty, else 0
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
@@ -13371,6 +13373,12 @@ int main(int argc, char** argv) {
                 bt_cpu_ent0 = drive.d.multi_entries; bt_off_ent0 = drive.d.offload_entries;
                 if (pc.on()) pc.begin(pc_ex(), (int) g.n_layers);
                 bt_a_rounds0 = a_rounds; bt_a_swapped0 = a_swapped;
+            }
+            for (int t = 0; t < S; ++t) {   // each penalised slot's reply tail for its penalty window (the verifier builds the rows from it and this window's tokens)
+                const BSlot& ps = bs[(size_t) rows[t]];
+                if (ps.pen_n <= 0 || (t > 0 && rows[t - 1] == rows[t])) continue;
+                const int64_t from = std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n);
+                ver.set_slot_history(rows[t], ps.ids.data() + from, (int64_t) ps.ids.size() - from);
             }
             const Clock::time_point w0 = Clock::now();
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
@@ -13939,6 +13947,16 @@ int main(int argc, char** argv) {
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
                 if (batch_telemetry_enabled) stage_in_flight.launch(k, Clock::now());
+                if (k == 0) {   // the penalised slots' reply tails for the group's rows (the last stage draws them)
+                    int grows[strata::kernels::kVerifyMaxT] = {};
+                    for (int t = 0; t < G.S && t < (int) strata::kernels::kVerifyMaxT; ++t) grows[t] = pmtp ? G.rows[t] : pick * GS + t;
+                    for (int t = 0; t < G.S && t < (int) strata::kernels::kVerifyMaxT; ++t) {
+                        const BSlot& ps = bs[(size_t) grows[t]];
+                        if (ps.pen_n <= 0 || (t > 0 && grows[t - 1] == grows[t])) continue;
+                        const int64_t from = std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n);
+                        ver.set_slot_history(grows[t], ps.ids.data() + from, (int64_t) ps.ids.size() - from);
+                    }
+                }
                 const auto p4_l0 = p4.now();
                 if (!(pmtp ? stage_verifier(k).batch_launch_rows(G.rows, G.S, G.hbase, G.tok, G.pos, err)
                            : stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err))) {
@@ -14489,9 +14507,8 @@ int main(int argc, char** argv) {
             bool req_df2 = use_df2;   // --draft auto: this request's drafter, decided once the prompt is parsed (below)
             std::vector<float> req_bias;
             std::string bias_error;
-            if (req_bias_present && (o.batch > 0 ||
-                !strata::core::parse_logit_bias(req_bias_text, (int) n_vocab, req_bias, bias_error))) {
-                std::printf("ERR logit_bias: %s\n", o.batch > 0 ? "continuous batching is not supported" : bias_error.c_str());
+            if (req_bias_present && !strata::core::parse_logit_bias(req_bias_text, (int) n_vocab, req_bias, bias_error)) {
+                std::printf("ERR logit_bias: %s\n", bias_error.c_str());
                 continue;
             }
             std::string emb_path;
@@ -18155,6 +18172,10 @@ int main(int argc, char** argv) {
                 const auto tc1 = Clock::now();
                 if (cont) {
                     ver.set_slot_sampling(admit_slot, req_sp);   // the request's own sampling, row by row
+                    if (!ver.set_slot_logit_bias(admit_slot, req_bias, err)) {   // and its own logit bias
+                        std::printf("ERR %s\n", err.c_str());
+                        return 1;
+                    }
                     BSlot& sl = bs[(size_t) admit_slot];
                     if (ckpt_pool.on())
                         for (ConvCheckpoint& c : sl.checks) ckpt_pool.give(std::move(c));
@@ -18167,6 +18188,11 @@ int main(int argc, char** argv) {
                     sl.max_new = admit_max_new;
                     sl.t0 = Clock::now();
                     sl.ids = live;
+                    {   // the penalty window of the slot's decode: the reply, from the last prompt token (the first window fed it), as the solo loop counts it
+                        const bool slot_pen = req_sp.penalty_last_n > 0 && (req_sp.penalty_repeat != 1.0f || req_sp.penalty_freq != 0.0f || req_sp.penalty_present != 0.0f);
+                        sl.pen_n = slot_pen ? std::min(req_sp.penalty_last_n, kPenaltyWindowCap) : 0;
+                        sl.reply0 = (int64_t) strata::kernels::penalty_window_from(live.size() > 0 ? live.size() - 1 : 0, pen_prompt);
+                    }
                     if (batch_mtp) {
                         int nd = 1;   // (STRATA_PIPED_MTP: up to its proposals per window, as --spec-min-p allows)
                         if (!slot_mtp[(size_t) admit_slot]->draft_first(1, ver.final_R_all(), sl.x,
