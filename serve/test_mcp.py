@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -29,6 +30,19 @@ CTX = 8192
 
 def stdio(*args, **extra):
     return {"command": sys.executable, "args": [FAKE, *args], **extra}
+
+
+def dead_port() -> int:
+    """A loopback port that answers a connect with an immediate refusal.
+
+    A never-bound port is not portable: some environments (WSL2 mirrored networking among them)
+    blackhole unbound loopback ports, so the connect hangs until `start_timeout_s` instead of being
+    refused — the server then reports "initialize timed out" rather than "could not reach".  A port
+    that was bound and released refuses at once, which is what the unreachable-server test needs.
+    """
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def call_script(name, **params):
@@ -175,7 +189,8 @@ class HttpClient(unittest.TestCase):
     def setUpClass(cls):
         cls.httpd = fake.http_server(0)
         url = f"http://127.0.0.1:{cls.httpd.server_address[1]}/mcp"
-        cls.hub = McpHub({"web": {"url": url}, "down": {"url": "http://127.0.0.1:9/mcp"}}, {"timeout_s": 1.5})
+        cls.hub = McpHub({"web": {"url": url}, "down": {"url": f"http://127.0.0.1:{dead_port()}/mcp"}},
+                         {"timeout_s": 1.5})
         cls.hub.start(wait=True)
 
     @classmethod
