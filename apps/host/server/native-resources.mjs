@@ -75,25 +75,28 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
  /* A reserve the person set is theirs, 0 included: no floor and no share of the card (#3215 #3270). Without one the card gets the safety default (defaultReserves). */
  const reserve=asked!==null?asked:defaults[profile];
  remove('--vram-reserve-mib');args.push('--vram-reserve-mib',String(reserve));
- // RAM: "leave 20% for my work" asks the engine to keep W GiB of the RAM free, W = ramKeepGib(RAM) (--ram-keep-gib W). The engine decides from the RAM that is free at
- // its start, not from the PC's total: it uses the full RAM copy of the experts (the arena) only if W GiB stay free after it, and otherwise keeps the hottest experts
- // in a RAM copy that leaves max(W, its own safety headroom) free and reads the rest from the model files. Full performance (and `strata serve`) pass nothing: the
- // whole system, the arena whenever it fits. The app used to pass a budget of 80% of the RAM (--resident-budget-gib) and a 20% STRATA_RESIDENT_HEADROOM_GIB;
- // a config written by that version still carries them and full performance takes them out again.
+ // RAM: "leave 20% for my work" asks the engine to keep W GiB of the RAM free, W = ramKeepGib(RAM). It travels in the run config's env as STRATA_RAM_KEEP_GIB, not as
+ // the flag --ram-keep-gib: an engine the person picked in the Engine tab that is older than the setting ignores an env variable but stops on an unknown argument ("unknown argument").
+ // The engine decides from the RAM that is free at its start, not from the PC's total: it uses the full RAM copy of the experts (the arena) only if W GiB stay free after it,
+ // and otherwise keeps the hottest experts in a RAM copy that leaves max(W, its own safety headroom) free and reads the rest from the model files. Full performance (and
+ // `strata serve`) pass nothing: the whole system, the arena whenever it fits. The app used to pass a budget of 80% of the RAM (--resident-budget-gib) and a 20%
+ // STRATA_RESIDENT_HEADROOM_GIB; a config written by that version still carries them and both preferences take them out again.
  if(baseline.ramBudget)remove('--resident-budget-gib');
- if(baseline.ramKeep)remove('--ram-keep-gib');
- let env=null;   // a run config of the earlier version has the engine's headroom setting in its env
- if(baseline.ramHeadroom&&config.env){env={...config.env};delete env.STRATA_RESIDENT_HEADROOM_GIB;}
+ let env=null;
+ const dropEnv=name=>{if(config.env&&name in config.env){env={...(env??config.env)};delete env[name];}};
+ if(baseline.ramHeadroom)dropEnv('STRATA_RESIDENT_HEADROOM_GIB');
+ if(baseline.ramKeep)dropEnv('STRATA_RAM_KEEP_GIB');
  const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;let ramKeep=false;
- // The person's own RAM choice (a flag of theirs, in args or user_args) wins, and so does STRATA_RESIDENT_HEADROOM_GIB in the env: the engine reads it first.
- if(profile==='work'&&ram>0&&arena>0&&!['--resident-experts','--mmap-experts','--resident-budget-gib','--ram-keep-gib'].some(f=>args.includes(f))){
-  args.push('--ram-keep-gib',String(ramKeepGib(ram)));ramKeep=true;
+ // The person's own RAM choice wins: a RAM mode or --ram-keep-gib in their args, and STRATA_RAM_KEEP_GIB or STRATA_RESIDENT_HEADROOM_GIB of theirs in the env (the engine reads those first).
+ const mineEnv=Boolean((env??config.env)?.STRATA_RAM_KEEP_GIB);
+ if(profile==='work'&&ram>0&&arena>0&&!mineEnv&&!['--resident-experts','--mmap-experts','--resident-budget-gib','--ram-keep-gib'].some(f=>args.includes(f))){
+  env={...(env??config.env??{}),STRATA_RAM_KEEP_GIB:String(ramKeepGib(ram))};ramKeep=true;
  }
  return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget:false,ramHeadroom:false,ramKeep}};
 }
 
 /** The RAM, in GiB, "Leave 20% for my work" asks the engine to keep free: a fifth of the PC's RAM rounded up, never under 5 or over 8
- *  (5 at 24 GB, 7 at 32 GB, 8 at 64 GB and above). The engine adds it to the arena's need and, when the arena does not fit, leaves it free beside the RAM copy. */
+ *  (5 at 24 GB, 7 at 32 GB, 8 at 64 GB and above). The engine adds it to the arena's need and, when the arena does not fit, leaves it free beside the RAM copy. It is sent as the env variable STRATA_RAM_KEEP_GIB. */
 export const ramKeepGib=ram=>Math.min(8,Math.max(5,Math.ceil((Number(ram)||0)*.2)));
 
 /* One automatic second try after a start that died. Returns null when there is nothing safer to try (the caller then reports the first

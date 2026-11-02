@@ -741,7 +741,7 @@ in a RAM copy, as much as the RAM available at the start allows after a headroom
   fell to 0.9 GiB during the copy. `STRATA_RESIDENT_HEADROOM_GIB`, when set, decides the headroom instead of both (testers).
 - With W = 0 nothing about the fallback changes: the full system is used, the arena whenever it fits, with no margin, and the copy leaves
   the safety headroom. The explicit modes (`--resident-budget-gib N`, `--resident-experts`) leave `max(W, their own 4 GiB)`.
-- The app's "Leave 20% for my work" passes W = clamp(ceil(0.2 x RAM in GB), 5, 8); `strata serve` and full performance pass nothing.
+- The app's "Leave 20% for my work" passes W = clamp(ceil(0.2 x RAM in GB), 5, 8) as `STRATA_RAM_KEEP_GIB` in the run config's env (not as the flag, so an older engine chosen in the Engine tab, which ignores an env variable, still starts); `strata serve` and full performance pass nothing.
 - `STRATA_ARENA_FALLBACK_RESIDENT=0` keeps the plain file source for the fallback (testers).
 
 Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. Oldest parked entries
