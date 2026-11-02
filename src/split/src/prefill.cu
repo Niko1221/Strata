@@ -779,7 +779,13 @@ void Engine::prefill_alloc() {
             ckc(cudaEventCreateWithFlags(&e, cudaEventDisableTiming), "event");
             own_event(e);
         }
+#if FNX_HIP
+        // HIP: the copy-engine receive is opt-in (FNX_PF_DMA=1, see r.dma above: a DMA read of a peer's host stores was not always complete on gfx1201), so the attention
+        // partials' copy is opt-in too: FNX_PFX_ATTN_DMA=1 turns it on
+        p->attn_dma = env_int("FNX_PFX_ATTN_DMA", 0) != 0;
+#else
         p->attn_dma = env_int("FNX_PFX_ATTN_DMA", 1) != 0;   // on by default (3.3-5.6% on 32K and 62.9K IQ3_S prompts, bit-identical logits); FNX_PFX_ATTN_DMA=0 turns it off
+#endif
         if (p->attn_dma) {
             for (int s2 = 0; s2 < 2; ++s2) {
                 p->arecv_dev[s2] = palloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
