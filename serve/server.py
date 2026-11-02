@@ -75,6 +75,7 @@ from strata_control import vision_reader  # noqa: E402
 from serve.ds_pictures import DsPictures  # noqa: E402
 from strata_control import draft_layer  # noqa: E402
 from strata_control import drafting  # noqa: E402
+from strata_control import vram_fit  # noqa: E402
 from strata_control import user_args  # noqa: E402
 from strata_control import gpu_roles  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
@@ -3505,6 +3506,17 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
             print(f"[strata] {drafting.line(decision.drafter, decision.note)}", flush=True)
         elif decision.flags:
             print(f"[strata] drafting: DFlash2 alone ({' '.join(decision.flags[:2])}, --draft-conf {args[args.index('--draft-conf') + 1] if '--draft-conf' in args else '-'})", flush=True)
+    # "parallel" 2 or more: every request slot is a session of its own, taken out of the expert cache's room.  A start the engine would refuse for lack of VRAM
+    # ("no VRAM is left for the expert cache") gets a smaller context for this start, else runs one request at a time, and says so; the person's own
+    # --max-context is kept (strata_control/vram_fit.py fit_start).  Nothing changes without one card's memory, on a layer split, or for DeepSeek.
+    try:
+        args, fit_parallel, fit_note = vram_fit.fit_start(cfg, args, drafting_vram_mib(cfg, backend, archs), backend)
+    except Exception:                                        # noqa: BLE001 - an estimate that fails decides nothing; the engine still refuses what does not fit
+        fit_parallel, fit_note = None, ""
+    if fit_note and announce:                                # (announce=False builds the arguments without any line)
+        print(f"[strata] {fit_note}", flush=True)
+    if fit_parallel is not None:
+        cfg = {**cfg, "parallel": fit_parallel}
     # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
     # that writes --mtp back into the args cannot undo it, because this is applied at every start. (A DFlash2 start keeps its own --mtp DIR, which only names
     # the vocabulary for an engine that takes it that way.)
