@@ -24,10 +24,19 @@ mezo 全程 no_grad、前向就是引擎的推理（LORA 换表 + SCORE 打分�
     backward → sft.py       （sft 与 dpo 共用护栏；ref logprob 起点预计算一次）
                grpo.py      （两段式：引擎采轨迹 → 学生反传，48GB 放不下两者）
 
+分支与方法的对应（2026-11-03 定：方法可用性由**文件在不在**决定，不由代码开关决定）：
+    feat/train-mezo         零阶完整训练：mezo/ + 引擎 + 数学造数据/评测，**不 import torch**
+    feat/train-backforward  从零阶线长出来，再叠 backward/ 与 ce/lora/update_rules
+    feat/train_support      两条线合并 + 审核文档
+所以 `--list` 在零阶线上会写「backward 不在这条分支上（缺 backward/sft.py）」，
+`--method backward` 直接退出并指路，不会先跑起来再 ImportError。`available()` 读磁盘
+而不是读某个 `IS_BACKWARD_BRANCH` 常量：常量迟早和文件对不上。
+
 为什么 mezo 不再有两个后端（上一版的 BACKENDS/engine|hf 已删）：MeZO 的路线本来
 就是拿引擎推理当前向，`sft_mezo.py`（PyTorch 前向）只是引擎还没有 LORA/SCORE 命令
 时期的临时实现 + score parity 对拍工具（HF CE −56.6433 vs 引擎 −56.6508），不是
 一条并行路线。它已从注册表摘除；对拍需要时直接跑它，不占 `--method` 的名字。
+（它在反传那条分支上 —— 对拍要同时有 HF 侧，零阶线不带 torch。）
 
 lr 不能三处共用一个默认值：量级由（算法的目标尺度 × 方法的差分/反传）一起决定
 （identity 2-token 答案 mezo 稳定点 3e-5；一屏长答案 mean 口径 mezo 1e-3；
@@ -47,6 +56,10 @@ from __future__ import annotations
 import importlib
 import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+# 本文件所在目录（= training/）。方法能不能用，只看这里的文件在不在 —— 见 available()。
+HERE = Path(__file__).resolve().parent
 
 
 @dataclass(frozen=True)
@@ -111,13 +124,46 @@ METHODS: dict[str, Method] = {
 DEFAULT_METHOD = "mezo"
 
 
+def _shipped(script: str) -> bool:
+    return (HERE / script).is_file()
+
+
+def available() -> dict[str, Method]:
+    """本树真正带了的实现：脚本在的方法在，脚本不在的方法整条不可用。
+
+    分支差异只落在**文件**上，不落在代码分支上 —— 同一份 train.py/algos.py 在三条线上
+    都成立，合并时不会互相改同一段：
+
+        零阶线（feat/train-mezo）   引擎 LORA/SCORE 前向，不 import torch
+        反传线（feat/train-backforward）  在零阶线上叠 backward/ + torch 那三个共享件
+        support                    两条线的并集 + 文档
+
+    所以这里读的是磁盘，不是某个 `IS_BACKWARD_BRANCH` 常量：常量迟早会和文件对不上。
+    """
+    return {n: m for n, m in METHODS.items()
+            if any(_shipped(s) for s in m.scripts.values())}
+
+
+def absent() -> dict[str, Method]:
+    """定义了但这条分支没带的方法 —— 只用来在 --list / 报错里说清楚缺什么。"""
+    return {n: m for n, m in METHODS.items() if n not in available()}
+
+
 def method_of(algo: str, method: str | None) -> Method:
     """该算法在指定方法上的实现；`method=None` 取默认方法。选不到就报错，不静默回落。"""
     if algo not in ALGOS:
         raise SystemExit(f"不认识的算法 {algo!r}；可选：{list(ALGOS)}")
-    m = METHODS.get(method or DEFAULT_METHOD)
+    name = method or DEFAULT_METHOD
+    m = METHODS.get(name)
     if m is None:
         raise SystemExit(f"不认识的方法 {method!r}；可选：{list(METHODS)}")
+    if name not in available():
+        missing = sorted({s for s in m.scripts.values() if not _shipped(s)})
+        raise SystemExit(
+            f"--method {name} 不在这条分支上：缺 {', '.join(missing)}。\n"
+            f"  本分支带的是 {sorted(available())}（引擎前向的零阶训练，不 import torch）。\n"
+            f"  反传那条线从这条分支长出来（多带 backward/ 与 torch 那三个共享件），"
+            f"见 REVIEW-REQUEST.zh.md §7 的分支矩阵。")
     if algo not in m.scripts:
         raise SystemExit(f"--algo {algo} 还没有 {m.name} 实现"
                          f"（该方法能做：{list(m.scripts)}）")
@@ -139,13 +185,19 @@ def describe() -> str:
         lines.append(f"  {a.name:<5s} 目标 {a.objective:<4s} {a.blurb}")
         if a.needs:
             lines.append(f"        需要 {a.needs}")
-    lines.append("方法（--method，默认 mezo）：")
-    for m in METHODS.values():
+    lines.append(f"方法（--method，默认 {DEFAULT_METHOD}）：")
+    for m in available().values():
         lines.append(f"  {m.name:<8s} {m.blurb}")
         for algo, script in m.scripts.items():
             lines.append(f"    {algo:<5s} -> {script:<10s} lr 默认 {m.lr[algo]:g}")
+    for name, m in absent().items():
+        lacks = sorted({s for s in m.scripts.values() if not _shipped(s)})
+        lines.append(f"  {name:<8s} 不在这条分支上（缺 {', '.join(lacks)}）—— {m.blurb}")
     lines.append("  损失函数只有一份（objectives.py），两个方法共用同一份数学。")
-    lines.append("  例：--algo sft --method backward = 反传 SFT；--algo dpo = 零阶 DPO（默认）。")
+    example = "--algo dpo = 零阶 DPO（默认）"
+    if "backward" in available():
+        example = "--algo sft --method backward = 反传 SFT；" + example
+    lines.append(f"  例：{example}。")
     return "\n".join(lines)
 
 

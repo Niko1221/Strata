@@ -4,9 +4,13 @@
 > **附录 C**（原始点位全表、速度-长度、方法四条性质、未展开的两行）。
 > 本文保留作工作台账（记当时的跑法与口径），不再作为独立文档维护。
 > 分支拓扑、基线判据、来源分支审计见 `REVIEW-REQUEST.zh.md` §7。
-> `mezo.py` / `objectives.py` / `mem_guard.py` 与 `Strata-mezo`（`feat/train-mezo`）逐字一致。
 > 目录：2026-11-02 起 `examples/training/` → `training/{mezo,backward,bench,tests}`；
-> 迁移做在**每条分支自己身上**（`feat/train-mezo` 的 `d54d8a32` 就是一棵能独立跑的树，213 项绿）。
+> 迁移做在**每条分支自己身上**。
+
+> 树 = `feat/train_support` = `feat/train-mezo` ∪ `feat/train-backforward`：
+> 零阶线（引擎 `LORA`/`SCORE` 前向，**不 import torch**，134 项）+ 反传线在它之上多带的
+> torch 层（`backward/`、`ce.py`/`lora.py`/`update_rules.py`、`mezo/sft_mezo.py`、torch bench
+> 与 7 个测试文件）。两线共享的 `.py` 逐字一致，所以合并只有「谁的文件在不在」，没有代码分歧。
 > 环境：RTX 4090 48 GiB（47.99 可用）/ 125B IQ3_XXS pack / 单行样本 / loss = mean。
 > 数字后的 `logs/xxx.log` 是出处；没有实测的地方写「未测」，不填估算值。
 

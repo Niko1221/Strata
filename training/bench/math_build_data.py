@@ -26,7 +26,7 @@ import argparse
 import json
 import sys
 
-from math_probe import extract_num
+from math_extract import extract_num
 
 
 def main() -> int:
