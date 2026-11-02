@@ -1,0 +1,10 @@
+{
+  "strata_source_archive": {
+    "commit": "c62d5e3a15b40ea51c96aae9e8d36928965f53ab",
+    "sha256": "ed63c4da7a87694641e958c5d20c8cb35ae9edeb6b2fcb82d92e785ed4ebf147"
+  },
+  "ggml_source_archive": {
+    "commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+    "sha256": "c076d7534afa0e5d0ec2a0d425b11e791c16f3de0d727221aea071cef156a280"
+  }
+}

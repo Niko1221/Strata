@@ -1,0 +1,29 @@
+# 数据库故障排查实战手册：从微观锁等待到宏观容量规划
+
+## 第一章：锁等待与死锁——并发控制的“黑盒”解析
+
+在数据库系统中，锁是保证数据一致性的基石，但也是引发性能瓶颈和系统挂起的最常见原因之一。当多个事务试图访问同一资源时，如果其中一个事务持有锁而另一个事务需要获取该锁，就会发生锁等待。如果两个或多个事务互相等待对方释放锁，则形成死锁。排查锁问题不仅仅是看“谁在等”，更要理解“为什么在等”以及“如何打破僵局”。
+
+### 1.1 核心概念与隔离级别对锁的影响
+
+首先必须明确，不同的数据库引擎（如 MySQL InnoDB, PostgreSQL, Oracle）和不同的事务隔离级别（Read Uncommitted, Read Committed, Repeatable Read, Serializable）决定了锁的类型和粒度。
+
+*   **行级锁 vs 表级锁**：InnoDB 默认使用行级锁，但在某些情况下（如全表扫描、无索引更新）会升级为表级锁或间隙锁（Gap Lock）。
+*   **意向锁（Intention Locks）**：这是表级别的元数据锁，用于表明事务打算在表中某一行上设置共享或排他锁。它本身不阻塞行锁，但阻塞其他事务获取表级的排他锁。
+*   **间隙锁（Gap Lock）与临键锁（Next-Key Lock）**：在 Repeatable Read 隔离级别下，InnoDB 不仅锁定记录本身，还锁定记录之间的间隙，以防止幻读。这是导致“明明没有冲突数据却发生死锁”的主要原因。
+
+### 1.2 排查命令与实战案例
+
+#### 场景 A：MySQL InnoDB 锁等待超时（Lock Wait Timeout）
+
+**现象描述**：应用报错 `ERROR 1205 (HY000): Lock wait timeout exceeded; try restarting transaction`。这通常意味着某个事务持有了锁，而另一个事务在等待超过 `innodb_lock_wait_timeout`（默认50秒）后放弃。
+
+**排查步骤与命令**：
+
+1.  **查看当前正在运行的事务和锁状态**
+    ```sql
+    -- MySQL 8.0+ 推荐使用 performance_schema.data_locks 和 data_lock_waits
+    SELECT 
+        t.trx_id,
+        t.trx_state,
+        t.trx_started,

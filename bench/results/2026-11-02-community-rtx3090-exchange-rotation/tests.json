@@ -1,0 +1,22 @@
+[
+  {
+    "name": "ctest",
+    "cmd": [
+      "<EXISTING_INSTALL>/.venv/bin/ctest",
+      "--test-dir",
+      "<BENCH_ROOT>/build",
+      "-R",
+      "^(exchange_storage_test|file_expert_source_test)$",
+      "--output-on-failure"
+    ],
+    "rc": 0
+  },
+  {
+    "name": "rotation-gpu",
+    "cmd": [
+      "<BENCH_ROOT>/build/file_expert_source_test",
+      "--rotation-gpu"
+    ],
+    "rc": 0
+  }
+]

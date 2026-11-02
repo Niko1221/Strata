@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Strata 专家缓冲轮转：省下一次 RAM 复制</title>
+<style>
+:root{--paper:#f5f3eb;--white:#fffefa;--ink:#213632;--muted:#63716b;--line:#d4d9cd;--green:#17665a;--green-light:#e0ebe1;--rust:#ad4f32;--rust-light:#f5e8dc;--blue:#36596b;--gray:#7e8985;--serif:"Songti SC","Noto Serif CJK SC",serif;--sans:"PingFang SC","Microsoft YaHei",sans-serif}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:90px}body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.85;-webkit-font-smoothing:antialiased}a{color:var(--green);text-underline-offset:4px}button,input{font:inherit}button{cursor:pointer}button:disabled{cursor:default;opacity:.4}button,a,input{touch-action:manipulation}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid var(--rust);outline-offset:4px}button{border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:4px;padding:9px 16px;transition:background .18s,color .18s,border-color .18s}button:hover:not(:disabled){border-color:var(--green);background:var(--green-light)}button[aria-pressed="true"],button.primary{background:var(--green);border-color:var(--green);color:white}button.primary:hover:not(:disabled){background:#104f45;color:white}code,.mono{font-family:Menlo,Consolas,monospace;font-size:.85em}code{overflow-wrap:anywhere}h1,h2,h3,p,figure{margin:0}h1,h2{font-family:var(--serif);font-weight:600;letter-spacing:-.025em;line-height:1.3}h1{font-size:clamp(38px,5.3vw,68px);max-width:1000px}h2{font-size:clamp(29px,3.4vw,42px)}h3{font-size:20px;font-weight:600;line-height:1.5}p{margin-top:16px}small,.small{font-size:13px;line-height:1.75}.muted{color:var(--muted)}.wrap{width:min(1160px,calc(100% - 64px));margin:auto}.topbar{position:sticky;top:0;z-index:10;background:rgba(245,243,235,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}.topbar .wrap{height:65px;display:flex;align-items:center;justify-content:space-between;gap:24px}.brand{font-family:var(--serif);font-size:22px;font-weight:700;white-space:nowrap}.brand span{color:var(--muted);font-family:var(--sans);font-size:12px;margin-left:12px;font-weight:400}.nav{display:flex;gap:24px;font-size:13px;white-space:nowrap;overflow:auto}.nav a{text-decoration:none;color:var(--muted)}.nav a:hover{color:var(--green)}.hero{padding:73px 0 62px;border-bottom:1px solid var(--line)}.eyebrow{font-size:12px;letter-spacing:.16em;font-weight:600;color:var(--green);margin-bottom:22px}.hero h1 em{font-style:normal;color:var(--green)}.hero .lead{font-size:19px;max-width:820px;line-height:1.9;margin-top:24px}.hero-strip{margin-top:32px;display:flex;gap:34px;flex-wrap:wrap;font-size:13px;color:var(--muted)}.hero-strip b{color:var(--ink);font-weight:600}.hero-strip span+span{border-left:1px solid var(--line);padding-left:34px}.section{padding:62px 0;border-bottom:1px solid var(--line)}.section-head{display:grid;grid-template-columns:74px 1fr;gap:24px;margin-bottom:30px}.section-number{font-family:var(--serif);color:var(--green);font-size:26px;border-top:2px solid var(--green);padding-top:8px;line-height:1.2}.section-head .intro{max-width:900px;color:var(--muted);margin-top:14px}.label{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:26px 0 20px}.steps{display:flex;gap:7px;flex-wrap:wrap}.steps button{font-size:13px;padding:7px 12px}.player{display:flex;gap:8px}.player button{padding:7px 12px;font-size:13px}.diagram-grid{display:grid;grid-template-columns:1fr 1fr;gap:28px}.path{background:var(--white);border:1px solid var(--line);padding:22px 20px 18px;border-top:3px solid var(--gray)}.path.rotation{border-top-color:var(--green)}.path-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.path-head h3{font-family:var(--serif);font-size:24px}.path-head .tag{font-size:11px;letter-spacing:.05em;color:var(--muted)}.path svg{width:100%;height:auto;display:block;margin:12px 0 0}.path-desc{font-size:14px;min-height:65px;margin-top:5px}.map-line{font-family:Menlo,Consolas,monospace;font-size:11px;border-top:1px solid var(--line);padding-top:10px;white-space:normal;overflow-wrap:anywhere;color:var(--muted)}svg text{font-family:var(--sans)}.diagram-grid svg .moving{stroke-dasharray:8 5;animation:flow .8s linear infinite}@keyframes flow{to{stroke-dashoffset:-26}}.note{border-left:3px solid var(--line);padding:3px 0 3px 18px;font-size:14px;color:var(--muted);margin-top:22px}.note strong{color:var(--ink)}.step-story{padding:15px 0 0;min-height:75px;display:flex;gap:18px;align-items:flex-start}.step-story .step-id{font-family:var(--serif);font-size:28px;line-height:1.5;color:var(--green);flex-shrink:0}.step-story p{margin:0;font-size:15px}.legend{display:flex;gap:22px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:15px}.swatch{display:inline-block;width:9px;height:9px;margin-right:7px;border-radius:50%;background:var(--green)}.swatch.b{background:var(--blue)}.swatch.copy{background:var(--rust)}.columns{display:grid;grid-template-columns:1fr 1fr;gap:48px}.buckets{margin-top:24px;display:grid;gap:18px}.bucket{display:grid;grid-template-columns:128px 1fr;gap:16px;align-items:center}.bucket-name{font-size:12px;color:var(--muted)}.bucket-name strong{display:block;font-size:15px;color:var(--ink);font-weight:500}.bucket-slots{display:flex;gap:5px;align-items:center}.bucket-slots i{height:35px;width:31px;border:1px solid var(--green);background:var(--green-light);border-radius:3px;display:block}.bucket-slots i:last-of-type{opacity:.4}.bucket-slots span{font-size:12px;margin-left:8px;color:var(--muted)}.rule{font-family:var(--serif);font-size:27px;line-height:1.6;padding:23px 0 22px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:24px 0}.rule em{font-style:normal;color:var(--green)}.math{font-family:Menlo,Consolas,monospace;font-size:13px;line-height:2;overflow-wrap:anywhere}.ruler{margin-top:28px;background:var(--white);padding:26px 28px;border:1px solid var(--line)}.ruler-top{display:flex;justify-content:space-between;gap:20px;align-items:center}.ruler-top h3{font-size:17px}.slider-label{font-size:13px;white-space:nowrap}.slider-label output{font-family:var(--serif);font-size:27px;color:var(--green);margin:0 5px}.slider{width:100%;margin:21px 0 15px;accent-color:var(--green);cursor:pointer}.memory-row{display:grid;grid-template-columns:100px 1fr 115px;align-items:center;gap:18px;margin-top:15px;font-size:13px}.memory-track{height:24px;background:#eceee7;display:flex;overflow:hidden;border-radius:2px}.memory-fill{height:100%;background:var(--gray);transition:width .25s}.memory-fill.c1{background:#17665a}.memory-fill.c2{background:#428575}.memory-fill.c3{background:#85ad96}.memory-value{text-align:right;font-variant-numeric:tabular-nums}.cost-line{font-size:16px;margin-top:22px}.cost-line b{font-family:var(--serif);font-size:29px;color:var(--rust);margin:0 5px}.bench-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap}.metrics{display:flex;gap:7px;flex-wrap:wrap}.metrics button{font-size:13px;padding:8px 15px}.bench-meta{font-size:13px;color:var(--muted);max-width:750px}.metric-definition{margin-top:18px;font-size:14px;color:var(--muted)}.chart-figure{padding:28px 0 8px;border-bottom:1px solid var(--line)}.chart-figure:last-of-type{border-bottom:0}.chart-top{display:flex;justify-content:space-between;align-items:center;gap:16px}.change{font-family:var(--serif);font-size:31px;color:var(--green);font-variant-numeric:tabular-nums}.change small{font-family:var(--sans);font-size:12px;color:var(--muted);margin-left:10px}.bench-svg{display:block;width:100%;height:auto;margin-top:4px}.chart-caption{font-size:13px;color:var(--muted);margin-top:0}.repair-layout{display:grid;grid-template-columns:1.12fr .88fr;gap:38px;align-items:start;margin-top:26px}.repair-svg{width:100%;height:auto;display:block}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:12px 9px;border-bottom:1px solid var(--line)}th{font-weight:500;color:var(--muted)}td:first-child{font-weight:600}.pass{color:var(--green)}.repair-readout{border-top:1px solid var(--line);margin-top:18px;padding-top:15px;font-size:14px}.constraints{margin-top:28px;display:grid;grid-template-columns:1fr 1fr;gap:0 44px}.constraint{padding:23px 0;border-top:1px solid var(--line)}.constraint .kind{font-size:11px;color:var(--green);letter-spacing:.1em}.constraint h3{font-family:var(--serif);font-size:25px;margin-top:7px}.constraint p{font-size:14px;margin-top:10px}.code-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:25px}.code-block{background:#e9ede4;border-top:2px solid var(--line);padding:22px 24px}.code-block p{margin:0 0 13px;font-size:13px;color:var(--muted)}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-family:Menlo,Consolas,monospace;font-size:13px;line-height:1.9}.source-links{margin-top:23px;display:flex;gap:12px 26px;flex-wrap:wrap;font-size:13px}.source-links a{text-decoration-thickness:1px}.closing{font-family:var(--serif);font-size:30px;line-height:1.65;max-width:950px;margin-bottom:25px}.footer{padding:36px 0 55px;font-size:12px;color:var(--muted)}.footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}.reveal{animation:arrive .5s ease both}@keyframes arrive{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}noscript p{padding:20px;background:var(--rust-light)}
+@media(max-width:850px){.wrap{width:calc(100% - 40px)}.hero{padding:47px 0}.hero .lead{font-size:17px}.hero-strip{gap:10px 20px}.hero-strip span+span{padding-left:20px}.topbar .wrap{gap:16px}.brand span{display:none}.nav{gap:17px}.section{padding:44px 0}.section-head{grid-template-columns:45px 1fr;gap:16px}.diagram-grid,.columns,.repair-layout,.code-grid{grid-template-columns:1fr;gap:24px}.path-desc{min-height:0}.constraints{gap:0 25px}.path{padding:18px}.ruler{padding:20px}.step-story{min-height:95px}.memory-row{grid-template-columns:82px 1fr 95px;gap:10px}.repair-svg{max-width:650px;margin:auto}.chart-figure{padding-top:22px}.source-links{gap:12px 20px}}
+@media(max-width:520px){.wrap{width:calc(100% - 32px)}body{font-size:15px}.topbar .wrap{height:58px}.brand{font-size:19px}.nav{font-size:11px;gap:15px}.nav a:nth-child(2),.nav a:nth-child(5){display:none}.hero{padding-top:38px}h1{font-size:37px}.eyebrow{font-size:10px;letter-spacing:.12em}.hero-strip{display:block}.hero-strip span{display:block}.hero-strip span+span{border:0;padding:0;margin-top:4px}.section-head{grid-template-columns:33px 1fr;gap:14px}.section-number{font-size:21px}.section h2{font-size:28px}.toolbar{gap:13px}.steps{gap:5px}.steps button{font-size:12px;padding:7px 9px}.player{width:100%}.player .primary{margin-left:auto}.path{padding:14px 10px}.path-head{padding:0 4px}.path-head h3{font-size:22px}.path-desc,.map-line{margin-left:4px;margin-right:4px}.path svg{min-width:0}.legend{gap:10px 18px}.bucket{grid-template-columns:113px 1fr;gap:8px}.bucket-slots i{width:24px;height:31px}.bucket-slots i:nth-child(4){display:none}.bucket-slots span{margin-left:2px;font-size:11px}.ruler-top{align-items:start;gap:10px}.ruler-top h3{font-size:15px}.slider-label{font-size:11px}.slider-label output{font-size:23px}.memory-row{grid-template-columns:67px 1fr 86px;font-size:11px;gap:7px}.memory-track{height:22px}.cost-line{font-size:14px}.cost-line b{font-size:26px}.metrics{width:100%}.metrics button{padding:8px 12px}.change{font-size:27px}.chart-top h3{font-size:18px}.change small{display:block;font-size:10px;line-height:1.2;text-align:right;margin:0}.bench-svg{min-height:180px}.repair-layout{gap:24px}.constraints{grid-template-columns:1fr}.code-block{padding:19px}.closing{font-size:25px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+@media print{.topbar,.toolbar,.slider,.metrics{display:none}.wrap{width:100%}.hero,.section{padding:25px 0}.diagram-grid{grid-template-columns:1fr 1fr}.path,.ruler,.chart-figure{break-inside:avoid}.section-head{break-after:avoid}body{background:white;font-size:12px}h1{font-size:34px}h2{font-size:26px}.reveal{animation:none}}
+</style>
+</head>
+<body>
+<header class="topbar"><div class="wrap"><div class="brand">Strata <span>工程图解 · 2026.11.02</span></div><nav class="nav" aria-label="内容导航"><a href="#exchange">交换过程</a><a href="#buckets">尺寸分桶</a><a href="#measured">实测</a><a href="#tradeoffs">代价与边界</a><a href="#source">源码</a></nav></div></header>
+<main class="wrap">
+<section class="hero reveal">
+<div class="eyebrow">RTX 3090 / EXPERT EXCHANGE ROTATION</div>
+<h1>让缓冲换身份，<br><em>省下一次 RAM 复制。</em></h1>
+<p class="lead">专家从 GPU 淘汰回系统内存后，直接接管接收它的缓冲；被换入专家腾出的 RAM 块，成为下一轮 spare。权重字节留在原处，通过轮转所有权完成交接。</p>
+<div class="hero-strip"><span><b>改动位置</b>　专家缓存交换的提交阶段</span><span><b>直接收益</b>　消除一次主机 memcpy</span><span><b>本机代价</b>　多约 227 MiB 锁页 RAM</span></div>
+</section>
+
+<section class="section" id="exchange">
+<div class="section-head"><div class="section-number">01</div><div><div class="label">机制示意 · 可逐步播放</div><h2>同一次交换，两种安置方式</h2><p class="intro">把专家 A 换进 GPU、把专家 B 淘汰到 RAM。下面固定两个同尺寸物理块 P、Q，观察数据和映射分别怎样变化。</p></div></div>
+<div class="toolbar"><div class="steps" role="group" aria-label="交换步骤"><button type="button" data-step="0">① 初始</button><button type="button" data-step="1">② 换出 B</button><button type="button" data-step="2">③ 换入 A</button><button type="button" data-step="3" aria-pressed="true">④ 提交</button></div><div class="player"><button type="button" id="previous" aria-label="上一步">← 上一步</button><button type="button" id="next" aria-label="下一步">下一步 →</button><button type="button" class="primary" id="play">播放一轮</button></div></div>
+<div class="diagram-grid">
+<figure class="path"><div class="path-head"><h3>关闭轮转</h3><span class="tag">STRATA_EXCHANGE_ROTATE=0</span></div><div id="copy-diagram"></div><figcaption class="path-desc" id="copy-desc"></figcaption><div class="map-line" id="copy-map"></div></figure>
+<figure class="path rotation"><div class="path-head"><h3>开启轮转</h3><span class="tag">STRATA_EXCHANGE_ROTATE=1</span></div><div id="rotate-diagram"></div><figcaption class="path-desc" id="rotate-desc"></figcaption><div class="map-line" id="rotate-map"></div></figure>
+</div>
+<div class="step-story" aria-live="polite"><span class="step-id" id="step-id">04</span><p id="step-story"></p></div>
+<div class="legend"><span><i class="swatch"></i>专家 A 的字节</span><span><i class="swatch b"></i>专家 B 的字节</span><span><i class="swatch copy"></i>额外 RAM 复制</span><span>淡色字节：空间已回收，旧内容等待覆盖</span></div>
+<p class="note"><strong>PCIe 搬运与同步边界继续保留。</strong> 这个单次交换示意先换出 B，再用原 GPU 槽位接收 A；数据传输和既有读者完成后再提交。动画的时长和箭头长度用于解释步骤，不代表实测耗时。</p>
+</section>
+
+<section class="section" id="buckets">
+<div class="section-head"><div class="section-number">02</div><div><div class="label">为什么按尺寸分桶</div><h2>归还什么尺寸，就接着复用什么尺寸</h2><p class="intro">同一层内交换的两个专家块大小一致。按尺寸维护 spare 池，换入专家释放的块，正好能接住下一次同尺寸交换。</p></div></div>
+<div class="columns"><div><h3>本次 IQ2_XS 有三种块大小</h3><div class="buckets">
+<div class="bucket"><div class="bucket-name"><strong>1,177,600 B</strong>约 1.123 MiB</div><div class="bucket-slots"><i></i><i></i><i></i><i></i><span>… × n 个 spare</span></div></div>
+<div class="bucket"><div class="bucket-name"><strong>1,305,600 B</strong>约 1.245 MiB</div><div class="bucket-slots"><i></i><i></i><i></i><i></i><span>… × n 个 spare</span></div></div>
+<div class="bucket"><div class="bucket-name"><strong>1,510,400 B</strong>约 1.440 MiB</div><div class="bucket-slots"><i></i><i></i><i></i><i></i><span>… × n 个 spare</span></div></div>
+</div><p class="small muted">每个桶的物理块数量保持不变。权重进入不同物理块后，专家到 host/device 地址的映射随所有权一起更新。</p></div>
+<div><div class="rule">每轮拿走一个 spare，<br><em>再归还一个同尺寸块。</em></div><p>原复制路径给每个交换缓冲分配最大块容量；分桶轮转为每种尺寸分别预留缓冲，以保证任何一层都有同尺寸 spare 可用。</p><p class="math">关闭：n × max(块大小)<br>开启：n × sum(不同块大小)</p></div></div>
+<div class="ruler"><div class="ruler-top"><h3>交换容量与锁页 RAM 预算</h3><label class="slider-label" for="swap-count">每轮最大交换数 n = <output id="swap-value">96</output></label></div><input class="slider" id="swap-count" type="range" min="8" max="96" step="8" value="96" aria-describedby="memory-note"><div class="memory-row"><span>关闭轮转</span><div class="memory-track"><div class="memory-fill" id="memory-copy"></div></div><strong class="memory-value" id="memory-copy-value"></strong></div><div class="memory-row"><span>开启轮转</span><div class="memory-track"><div class="memory-fill c1" id="memory-r1"></div><div class="memory-fill c2" id="memory-r2"></div><div class="memory-fill c3" id="memory-r3"></div></div><strong class="memory-value" id="memory-rotate-value"></strong></div><div class="cost-line">轮转额外需要 <b id="memory-extra">227.34</b> MiB 锁页主机 RAM</div><p class="small muted" id="memory-note">滑块按官方分配公式估算，固定本 pack 的三种尺寸、async=0；只有 n=96 是本轮实测配置。GPU 专家暂存槽是另一项配置，本次固定为 16。显存专家缓存两端相同。</p><details class="small" style="margin-top:18px"><summary>展开：含异步 bounce 缓冲的一般公式</summary><p>设不同专家块大小之和为 S，最大块为 L；总预留交换槽为 N，其中 b 个只用于 bounce 暂存。关闭轮转为 N × L；开启为 (N − b) × S + b × L。因此额外缓冲载荷 ΔM = (N − b) × (S − L)。</p><p>当前版本设 s = min(adapt-swaps, 96)。普通模式 N=s、b=0；异步模式 N=2s、b=s，二者因轮转增加的载荷都为 s × (S−L)。单一块大小时 S=L，额外载荷为 0。该公式未计少量所有权元数据和驱动映射开销。</p></details></div>
+</section>
+
+<section class="section" id="measured">
+<div class="section-head"><div class="section-number">03</div><div><div class="label">真实测量 · 28 个请求 · A → B → B → A</div><h2>省下复制后，实际快了多少？</h2><p class="intro">RTX 3090，同一份官方 0.1.55 构建、相同初始专家画像，只切换轮转开关。下图展示代码与中文各 4 个正式样本；8 个预热请求单独保留。</p></div></div>
+<div class="bench-head"><div class="bench-meta">同提示词 · 每次输出 512 token · 单请求<br>线段 = 样本范围　圆点 = 单次请求　菱形 = 中位数</div><div class="metrics" role="group" aria-label="选择性能指标"><button type="button" data-metric="decode_tps" aria-pressed="true">吞吐</button><button type="button" data-metric="tpot_ms">TPOT</button><button type="button" data-metric="ttft_s">TTFT</button><button type="button" data-metric="e2e_s">E2E</button></div></div>
+<p class="metric-definition" id="metric-definition"></p>
+<div id="benchmark-charts"></div>
+<p class="note"><strong>本轮观测：</strong>吞吐中位数提高，代码样本范围略有重叠，中文范围分离。组内生成内容也有变化；CPU 回退、MTP 接受情况随请求变化。这些百分比描述本配置的自由生成结果，输出分歧的具体原因仍待定位。</p>
+</section>
+
+<section class="section" id="repair">
+<div class="section-head"><div class="section-number">04</div><div><div class="label">完整任务 · 自然结束 · 输出上限 2048</div><h2>生成更快，完成时间还要看答案有多长</h2><p class="intro">修复 retry_delays(attempts, base, cap)，检查类型、负数、零参数、cap 和 10000 次重试防溢出等边界。四份答案均自然结束、通过 14/14 检查。</p></div></div>
+<div class="repair-layout"><figure><div id="repair-chart"></div><figcaption class="small muted">每个点是一份真实修复答案。横轴为输出 token，纵轴为请求完成时间。</figcaption></figure><div><div class="table-scroll"><table><thead><tr><th>启动</th><th>输出 token</th><th>E2E</th><th>测试</th></tr></thead><tbody id="repair-rows"></tbody></table></div><div class="repair-readout">关闭轮转：E2E 中位数 <strong>7.415 秒</strong><br>开启轮转：E2E 中位数 <strong>9.004 秒</strong><p class="small muted">B 的第二次回答生成了 1070 token，完成时间也更长。质量证据覆盖这一个函数的 14 项固定测试；四份原始输出和评分记录均可查阅。</p></div></div></div>
+</section>
+
+<section class="section" id="tradeoffs">
+<div class="section-head"><div class="section-number">05</div><div><div class="label">收益、代价与适用条件</div><h2>它优化交换提交，收益随负载变化</h2><p class="intro">本轮正式请求的轮转计数确认，合计避免了 <strong>19.87 GiB 主机 memcpy 载荷</strong>。收益大小与交换频率、块大小，以及复制是否落在解码关键路径上有关。</p></div></div>
+<div class="constraints">
+<article class="constraint"><div class="kind">直接节省</div><h3>CPU 复制与内存带宽</h3><p>淘汰专家已经在 RAM 暂存缓冲中，提交阶段直接把它登记为常驻块。省去一次读取旧缓冲、写入新位置的 memcpy；GPU 与 RAM 之间的 H2D/D2H 继续执行。</p></article>
+<article class="constraint"><div class="kind">资源代价</div><h3>多约 227 MiB 锁页 RAM</h3><p>本配置 spare 池从 138.281 增到 365.625 MiB。显存专家缓存仍为 13503 槽 / 18530 MiB，两端一致。Linux VmLck、RSS 单项不能覆盖全部 CUDA 锁页内存。</p></article>
+<article class="constraint"><div class="kind">适用前提</div><h3>完整锁页、可映射的 RAM 副本</h3><p>官方开关要求 RAM 专家副本和交换缓冲可锁页、可映射到 GPU。其他布局走复制路径，日志说明启用结果。整个生命周期仍要维护容量、地址配对和读写完成顺序。</p></article>
+<article class="constraint"><div class="kind">当前环境</div><h3>官方 16 槽，存在 CPU 回退</h3><p>四轮正式请求的 CPU 路径 routed entries 为 515 / 325 / 187 / 739。7 workers 和约 295 MiB 剩余显存触发了引擎调优提示；本轮保持两端设置一致，GPU paging 未测量。</p></article>
+</div>
+<p class="note">权重文件、量化格式和计算 kernel 在两端相同；变化集中在交换缓冲的分配与提交。当前数据同时包含自由生成、CPU/GPU 分工和 MTP 的实际运行效果。后续隔离纯复制收益，需要进一步固定生成轨迹并核对数值路径。</p>
+</section>
+
+<section class="section" id="source">
+<div class="section-head"><div class="section-number">06</div><div><div class="label">源码与证据</div><h2>从字节复制，改成所有权交接</h2><p class="intro">下列伪代码概括 commit_copies / commit_flip 的区别。物理缓冲及其 host/device 别名保持配对，提交改变专家引用哪个缓冲。</p></div></div>
+<div class="code-grid"><div class="code-block"><p>关闭轮转 · 提交前复制</p><pre>wait_for_readers_and_transfers();
+memcpy(P, Q, expert_bytes);
+resident[B] = P;
+spare[q] = Q;</pre></div><div class="code-block"><p>开启轮转 · 提交时转移所有权</p><pre>wait_for_readers_and_transfers();
+resident[B] = Q;
+spare[q] = P;
+publish_ownership();</pre></div></div>
+<div class="source-links">
+<a href="https://github.com/Niko1221/Strata/blob/c62d5e3a15b40ea51c96aae9e8d36928965f53ab/src/core/expert_source.cpp#L4560-L4596" target="_blank" rel="noopener">提交路径源码 ↗</a>
+<a href="https://github.com/Niko1221/Strata/blob/c62d5e3a15b40ea51c96aae9e8d36928965f53ab/include/strata/core/exchange_storage.hpp" target="_blank" rel="noopener">分桶与所有权实现 ↗</a>
+<a href="https://github.com/Niko1221/Strata/blob/c62d5e3a15b40ea51c96aae9e8d36928965f53ab/docs/EXCHANGE_ROTATION.md" target="_blank" rel="noopener">官方轮转说明 ↗</a>
+<a href="README.md">完整测试报告</a>
+<a href="results.json">汇总与逐请求索引</a>
+<a href="requests.csv">逐请求 CSV</a>
+</div>
+<p class="small muted">实测版本 c62d5e3 / engine 0.1.55；CUDA 12.8 / sm_86，RTX 3090 24GiB / 350W，64GiB 虚拟机。GPU 保留此前硬件实验状态，本轮只读核验且未改变。官方 CPU/GPU 轮转测试通过，原服务已经恢复。本页属于自定义负载图解，数值来自已归档的请求与引擎日志。</p>
+</section>
+<section class="section"><p class="closing">用额外的同尺寸缓冲，换掉交换提交中的 RAM 回拷。<br>再用实际负载，判断这笔交换是否划算。</p><a href="#exchange">回到交换动画 ↑</a></section>
+<noscript><p>请启用 JavaScript 查看逐步交换动画和可切换图表。正文、原理、代价与证据链接仍可直接阅读。</p></noscript>
+</main>
+<footer class="footer"><div class="wrap"><span>STRATA / 专家缓冲轮转图解</span><span>机制图按源码绘制 · 实测与示意分列 · 2026-11-02</span></div></footer>
+<script>
+const BENCH=[{"run":"0-A","arm":"A","id":"warm-decode-0","phase":"warmup","case_id":"decode-0","output_tokens":512,"decode_tps":82.49415934906952,"tpot_ms":12.1220703125,"ttft_s":0.8405463580274954,"e2e_s":6.995860410039313},{"run":"0-A","arm":"A","id":"warm-decode-2","phase":"warmup","case_id":"decode-2","output_tokens":512,"decode_tps":78.2515665596821,"tpot_ms":12.779296875,"ttft_s":0.3434805510332808,"e2e_s":6.8739310370292515},{"run":"0-A","arm":"A","id":"r1-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":126.98097765432405,"tpot_ms":7.8751953125,"ttft_s":0.31224657502025366,"e2e_s":4.3310981600079685},{"run":"0-A","arm":"A","id":"r1-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":88.78407435666227,"tpot_ms":11.26328125,"ttft_s":0.2972509480314329,"e2e_s":6.0531379990279675},{"run":"0-A","arm":"A","id":"r2-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":105.33245556287031,"tpot_ms":9.49375,"ttft_s":0.32753764500375837,"e2e_s":5.1744506850373},{"run":"0-A","arm":"A","id":"r2-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":83.44198174706649,"tpot_ms":11.984375,"ttft_s":0.34716764802578837,"e2e_s":6.472169494954869},{"run":"0-A","arm":"A","id":"r1-repair_a","phase":"repair","case_id":"repair_a","output_tokens":499,"decode_tps":71.77377596225764,"tpot_ms":13.932665330661322,"ttft_s":0.8903435299871489,"e2e_s":7.824510119040497},{"run":"1-B","arm":"B","id":"warm-decode-0","phase":"warmup","case_id":"decode-0","output_tokens":512,"decode_tps":99.31334135081663,"tpot_ms":10.069140625,"ttft_s":0.7107078679837286,"e2e_s":5.823102655936964},{"run":"1-B","arm":"B","id":"warm-decode-2","phase":"warmup","case_id":"decode-2","output_tokens":512,"decode_tps":95.00482446374231,"tpot_ms":10.52578125,"ttft_s":0.3316207139287144,"e2e_s":5.708444727002643},{"run":"1-B","arm":"B","id":"r1-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":141.19853285899453,"tpot_ms":7.0822265625,"ttft_s":0.3076005899347365,"e2e_s":3.9199373649898916},{"run":"1-B","arm":"B","id":"r1-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":102.25888274181631,"tpot_ms":9.7791015625,"ttft_s":0.3267055950127542,"e2e_s":5.322522985050455},{"run":"1-B","arm":"B","id":"r2-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":131.6872427983539,"tpot_ms":7.59375,"ttft_s":0.32063986000139266,"e2e_s":4.196284804027528},{"run":"1-B","arm":"B","id":"r2-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":111.63439734868307,"tpot_ms":8.9578125,"ttft_s":0.308760107960552,"e2e_s":4.8840286219492555},{"run":"1-B","arm":"B","id":"r1-repair_a","phase":"repair","case_id":"repair_a","output_tokens":352,"decode_tps":69.84126984126983,"tpot_ms":14.318181818181818,"ttft_s":0.8536664949497208,"e2e_s":5.877022286993451},{"run":"2-B","arm":"B","id":"warm-decode-0","phase":"warmup","case_id":"decode-0","output_tokens":512,"decode_tps":97.72297826045464,"tpot_ms":10.2330078125,"ttft_s":0.7237030579708517,"e2e_s":5.9201784409815446},{"run":"2-B","arm":"B","id":"warm-decode-2","phase":"warmup","case_id":"decode-2","output_tokens":512,"decode_tps":92.9675158426089,"tpot_ms":10.7564453125,"ttft_s":0.34401917492505163,"e2e_s":5.838931931997649},{"run":"2-B","arm":"B","id":"r1-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":142.43587603627665,"tpot_ms":7.020703125,"ttft_s":0.3205148440320045,"e2e_s":3.9010892510414124},{"run":"2-B","arm":"B","id":"r1-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":103.3424834490554,"tpot_ms":9.6765625,"ttft_s":0.32238001900259405,"e2e_s":5.265522007015534},{"run":"2-B","arm":"B","id":"r2-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":133.02502013562315,"tpot_ms":7.5173828125,"ttft_s":0.3063187279039994,"e2e_s":4.142613414907828},{"run":"2-B","arm":"B","id":"r2-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":111.63926562295583,"tpot_ms":8.957421875,"ttft_s":0.3082354119978845,"e2e_s":4.883453451911919},{"run":"2-B","arm":"B","id":"r1-repair_a","phase":"repair","case_id":"repair_a","output_tokens":1070,"decode_tps":94.73973136416359,"tpot_ms":10.555233644859813,"ttft_s":0.8533006079960614,"e2e_s":12.131039528991096},{"run":"3-A","arm":"A","id":"warm-decode-0","phase":"warmup","case_id":"decode-0","output_tokens":512,"decode_tps":73.25797682071827,"tpot_ms":13.650390625,"ttft_s":0.8202125920215622,"e2e_s":7.704825152992271},{"run":"3-A","arm":"A","id":"warm-decode-2","phase":"warmup","case_id":"decode-2","output_tokens":512,"decode_tps":69.17516719583868,"tpot_ms":14.4560546875,"ttft_s":0.3630452130455524,"e2e_s":7.752107152016833},{"run":"3-A","arm":"A","id":"r1-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":110.09805608119733,"tpot_ms":9.0828125,"ttft_s":0.34975091996602714,"e2e_s":4.986993149970658},{"run":"3-A","arm":"A","id":"r1-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":88.881173509244,"tpot_ms":11.2509765625,"ttft_s":0.31753987597767264,"e2e_s":6.0667565709445626},{"run":"3-A","arm":"A","id":"r2-decode-0","phase":"performance","case_id":"decode-0","output_tokens":512,"decode_tps":132.1972631035373,"tpot_ms":7.564453125,"ttft_s":0.30626464600209147,"e2e_s":4.166215726057999},{"run":"3-A","arm":"A","id":"r2-decode-2","phase":"performance","case_id":"decode-2","output_tokens":512,"decode_tps":78.34855927405164,"tpot_ms":12.7634765625,"ttft_s":0.30888551007956266,"e2e_s":6.8328637920785695},{"run":"3-A","arm":"A","id":"r1-repair_a","phase":"repair","case_id":"repair_a","output_tokens":311,"decode_tps":50.61766572809687,"tpot_ms":19.755948553054665,"ttft_s":0.8793007300700992,"e2e_s":7.005314592039213}];
+const colors={A:'#17665a',B:'#36596b',rust:'#ad4f32',ink:'#213632',muted:'#63716b'};
+let step=3, playing=false, timer=null;
+const descriptions=[
+ ['RAM 块 P 保存专家 A；Q 是待用 spare。GPU 槽位保存专家 B。','RAM 块 P 保存专家 A；Q 是待用 spare。GPU 槽位保存专家 B。','初始状态：P、Q 是两个固定物理块。专家映射和 spare 角色，决定下一次从哪里读、往哪里写。'],
+ ['将 B 经 PCIe 复制到 Q，GPU 槽中的 B 暂时仍保留。','将 B 经 PCIe 复制到 Q，GPU 槽中的 B 暂时仍保留。','换出 B：两条路径都执行 D2H。Q 收到 B 的权重字节，等待相关读写完成后，GPU 槽位可用于换入 A。'],
+ ['将 A 经 PCIe 复制进 GPU，P 中的 A 字节暂时还在。','将 A 经 PCIe 复制进 GPU，P 中的 A 字节暂时还在。','换入 A：两条路径都执行 H2D。传输完成后，GPU 保存 A；RAM 中的 B 已在 Q，接下来决定它怎样成为常驻副本。'],
+ ['再把 Q 中的 B 复制到 P；Q 继续作为 spare，旧字节等待覆盖。','B 直接接管 Q；P 成为下轮 spare，原 A 字节等待覆盖。','提交阶段产生差别：复制路径移动 B 的字节；轮转路径让 Q 成为 B 的常驻块，让 P 成为 spare。物理块的地址及 host/device 别名配对保持不变。']
+];
+function block(x,y,w,h,payload,role,stale,alias){
+ const c=payload==='A'?colors.A:payload==='B'?colors.B:'#63716b';
+ const label=payload?'专家 '+payload:'待用';
+ return '<text x="'+(x+w/2)+'" y="'+(y-13)+'" text-anchor="middle" font-size="12" fill="'+colors.muted+'">'+role+'</text><rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'" rx="5" fill="'+(payload?c:'#f4f4ed')+'" fill-opacity="'+(stale?'.14':payload?'.11':'1')+'" stroke="'+c+'" stroke-opacity="'+(stale?'.45':'1')+'" stroke-dasharray="'+(payload?'none':'5 4')+'"/><text x="'+(x+w/2)+'" y="'+(y+32)+'" text-anchor="middle" font-size="19" font-weight="600" fill="'+c+'" opacity="'+(stale?'.58':'1')+'">'+label+'</text><text x="'+(x+w/2)+'" y="'+(y+53)+'" text-anchor="middle" font-size="11" fill="'+colors.muted+'">'+(stale?'旧字节，可覆盖':payload?'权重字节':'空闲缓冲')+'</text><text x="'+(x+w/2)+'" y="'+(y+h+20)+'" text-anchor="middle" font-size="10" fill="'+colors.muted+'">'+alias+'</text>';
+}
+function mobileDiagram(rotation){
+ const id=rotation?'mr':'mc',done=step===3,col=step===1?colors.B:step===2?colors.A:rotation?colors.A:colors.rust;
+ let s='<svg viewBox="0 0 360 400" role="img" aria-label="'+(rotation?'开启':'关闭')+'轮转，第'+(step+1)+'步"><defs><marker id="'+id+'-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="'+col+'"/></marker></defs><rect x="10" y="56" width="340" height="188" rx="5" fill="#f4f4ed" stroke="#d4d9cd"/><text x="25" y="82" font-size="14" font-weight="600" fill="'+colors.ink+'">系统 RAM · 同尺寸物理块</text>';
+ s+=block(30,128,132,74,done&&!rotation?'B':'A',done?(rotation?'P · spare #q':'P · resident B'):'P · resident A',done&&rotation,'host_P ↔ device_P');
+ s+=block(198,128,132,74,step>0?'B':null,done&&rotation?'Q · resident B':'Q · spare #q',done&&!rotation,'host_Q ↔ device_Q');
+ s+='<rect x="99" y="286" width="162" height="101" rx="5" fill="#edf1e9" stroke="#c4d4c9"/><text x="180" y="307" text-anchor="middle" font-size="13" font-weight="600" fill="'+colors.ink+'">GPU · 同一显存槽</text><rect x="118" y="319" width="124" height="48" rx="4" fill="'+(step<2?colors.B:colors.A)+'" fill-opacity=".11" stroke="'+(step<2?colors.B:colors.A)+'"/><text x="180" y="350" text-anchor="middle" font-size="20" fill="'+(step<2?colors.B:colors.A)+'">专家 '+(step<2?'B':'A')+'</text>';
+ if(step===1)s+='<path class="moving" d="M244 343H343V103H264V126" fill="none" stroke="'+colors.B+'" stroke-width="2.5" marker-end="url(#'+id+'-arrow)"/><text x="328" y="272" text-anchor="end" font-size="13" fill="'+colors.B+'">D2H：B → Q</text>';
+ if(step===2)s+='<path class="moving" d="M96 227V265H155V317" fill="none" stroke="'+colors.A+'" stroke-width="2.5" marker-end="url(#'+id+'-arrow)"/><text x="164" y="267" font-size="13" fill="'+colors.A+'">H2D：A → GPU</text>';
+ if(done&&!rotation)s+='<path class="moving" d="M264 227V254H96V227" fill="none" stroke="'+colors.rust+'" stroke-width="2.5" marker-end="url(#'+id+'-arrow)"/><text x="180" y="276" text-anchor="middle" font-size="13" fill="'+colors.rust+'">RAM memcpy：B 再复制一次</text>';
+ if(done&&rotation)s+='<path d="M96 227V254H264V227" fill="none" stroke="'+colors.A+'" stroke-width="1.5" stroke-dasharray="3 4"/><text x="180" y="276" text-anchor="middle" font-size="13" fill="'+colors.A+'">更新映射：B → Q，spare → P</text>';
+ return s+'</svg>';
+}
+function diagram(rotation){
+ if(window.innerWidth<520)return mobileDiagram(rotation);
+ const id=rotation?'r':'c',done=step===3;
+ const pPayload=done&&!rotation?'B':'A';
+ const qPayload=step>0?'B':null;
+ const pRole=done?(rotation?'P · spare #q':'P · resident B'):'P · resident A';
+ const qRole=done&&rotation?'Q · resident B':'Q · spare #q';
+ let s='<svg viewBox="0 0 560 342" role="img" aria-label="'+(rotation?'开启':'关闭')+'轮转，第'+(step+1)+'步"><defs><marker id="'+id+'-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="context-stroke"/></marker></defs><rect x="15" y="68" width="320" height="198" rx="5" fill="#f4f4ed" stroke="#d4d9cd"/><rect x="430" y="68" width="115" height="198" rx="5" fill="#edf1e9" stroke="#c4d4c9"/><text x="30" y="94" font-size="13" font-weight="600" fill="'+colors.ink+'">系统 RAM · 同尺寸物理块</text><text x="487" y="94" text-anchor="middle" font-size="13" font-weight="600" fill="'+colors.ink+'">GPU 显存</text><text x="380" y="188" text-anchor="middle" font-size="11" fill="'+colors.muted+'">PCIe</text>';
+ s+=block(35,145,130,74,pPayload,pRole,done&&rotation,'host_P ↔ device_P');
+ s+=block(185,145,130,74,qPayload,qRole,done&&!rotation,'host_Q ↔ device_Q');
+ s+=block(446,145,83,74,step<2?'B':'A','同一 GPU 槽',false,'VRAM');
+ if(step===1)s+='<path class="moving" d="M487 143V112H250V143" fill="none" stroke="'+colors.B+'" stroke-width="2.5" marker-end="url(#'+id+'-arrow)"/><text x="370" y="49" text-anchor="middle" font-size="13" fill="'+colors.B+'">D2H：B → Q</text>';
+ if(step===2)s+='<path class="moving" d="M100 240V288H487V240" fill="none" stroke="'+colors.A+'" stroke-width="2.5" marker-end="url(#'+id+'-arrow)"/><text x="320" y="316" text-anchor="middle" font-size="13" fill="'+colors.A+'">H2D：A → GPU</text>';
+ if(done&&!rotation)s+='<path class="moving" d="M250 244V287H100V244" fill="none" stroke="'+colors.rust+'" stroke-width="2.5" marker-end="url(#'+id+'-arrow)"/><text x="175" y="316" text-anchor="middle" font-size="13" font-weight="600" fill="'+colors.rust+'">RAM memcpy：B 再复制一次</text>';
+ if(done&&rotation)s+='<path d="M100 244V286H250V244" fill="none" stroke="'+colors.A+'" stroke-width="1.5" stroke-dasharray="3 4"/><text x="175" y="316" text-anchor="middle" font-size="13" font-weight="600" fill="'+colors.A+'">更新映射：B → Q，spare → P</text>';
+ return s+'</svg>';
+}
+function renderStep(){
+ document.getElementById('copy-diagram').innerHTML=diagram(false);
+ document.getElementById('rotate-diagram').innerHTML=diagram(true);
+ document.getElementById('copy-desc').textContent=descriptions[step][0];
+ document.getElementById('rotate-desc').textContent=descriptions[step][1];
+ document.getElementById('step-story').textContent=descriptions[step][2];
+ document.getElementById('step-id').textContent='0'+(step+1);
+ document.getElementById('copy-map').textContent=step===3?'resident[B] = P    spare[q] = Q':'resident[A] = P    spare[q] = Q';
+ document.getElementById('rotate-map').textContent=step===3?'resident[B] = Q    spare[q] = P':'resident[A] = P    spare[q] = Q';
+ document.querySelectorAll('[data-step]').forEach(function(b){b.setAttribute('aria-pressed',String(Number(b.dataset.step)===step));});
+ document.getElementById('previous').disabled=step===0;
+ document.getElementById('next').disabled=step===3;
+}
+function stopPlay(){clearInterval(timer);timer=null;playing=false;document.getElementById('play').textContent='播放一轮';}
+document.querySelectorAll('[data-step]').forEach(function(b){b.addEventListener('click',function(){stopPlay();step=Number(b.dataset.step);renderStep();});});
+document.getElementById('previous').addEventListener('click',function(){stopPlay();step=Math.max(0,step-1);renderStep();});
+document.getElementById('next').addEventListener('click',function(){stopPlay();step=Math.min(3,step+1);renderStep();});
+document.getElementById('play').addEventListener('click',function(){if(playing){stopPlay();return;}playing=true;step=0;renderStep();this.textContent='暂停';timer=setInterval(function(){step++;renderStep();if(step===3)stopPlay();},1900);});
+document.addEventListener('visibilitychange',function(){if(document.hidden)stopPlay();});
+function memory(){
+ const n=Number(document.getElementById('swap-count').value),sizes=[1177600,1305600,1510400],max=96*sizes.reduce(function(a,b){return a+b;},0),mib=1048576;
+ document.getElementById('swap-value').textContent=n;
+ document.getElementById('memory-copy').style.width=(n*sizes[2]/max*100)+'%';
+ sizes.forEach(function(s,i){document.getElementById('memory-r'+(i+1)).style.width=(n*s/max*100)+'%';});
+ document.getElementById('memory-copy-value').textContent=(n*sizes[2]/mib).toFixed(2)+' MiB';
+ document.getElementById('memory-rotate-value').textContent=(n*sizes.reduce(function(a,b){return a+b;},0)/mib).toFixed(2)+' MiB';
+ document.getElementById('memory-extra').textContent=(n*(sizes[0]+sizes[1])/mib).toFixed(2);
+}
+document.getElementById('swap-count').addEventListener('input',memory);
+let activeMetric='decode_tps';
+const defs={
+ decode_tps:{title:'decode 吞吐',unit:'token/s',max:160,digits:1,better:'越高越好',description:'引擎生成 token 数 ÷ decode 时间。MTP 启用，表示每秒接受并输出的 token 数。'},
+ tpot_ms:{title:'TPOT',unit:'ms/token',max:14,digits:3,better:'越低越好',description:'引擎 decode 毫秒 ÷ 输出 token 数。它是本次解码流程的平均输出 token 成本。'},
+ ttft_s:{title:'TTFT',unit:'秒',max:.4,digits:3,better:'越低越好',description:'客户端发出请求到首次非空正文。推理思考关闭；加载与预热均不计入正式请求。'},
+ e2e_s:{title:'E2E',unit:'秒',max:8,digits:3,better:'越低越好',description:'客户端发出请求到完整流式结束。这里代码、中文都固定输出 512 token。'}
+};
+function median(a){a=a.slice().sort(function(x,y){return x-y;});return (a[1]+a[2])/2;}
+function chart(cid,key){
+ const d=defs[key],rows=BENCH.filter(function(r){return r.phase==='performance'&&r.case_id===cid;}),mobile=window.innerWidth<520;
+ const start=mobile?24:185,end=mobile?376:886,x=function(v){return start+v/d.max*(end-start);};
+ let s='<svg class="bench-svg" viewBox="0 0 '+(mobile?'400 250':'1000 228')+'" role="img" aria-label="'+(cid==='decode-0'?'代码生成':'中文说明')+'的'+d.title+'，各端四个样本">';
+ for(let i=0;i<=4;i++){const v=d.max*i/4,xx=x(v);s+='<line x1="'+xx+'" x2="'+xx+'" y1="'+(mobile?60:32)+'" y2="'+(mobile?175:178)+'" stroke="#dce0d6" stroke-dasharray="3 5"/><text x="'+xx+'" y="'+(mobile?211:207)+'" text-anchor="middle" font-size="13" fill="'+colors.muted+'">'+(d.max<1?v.toFixed(1):v)+'</text>';}
+ ['A','B'].forEach(function(arm,idx){
+  const rr=rows.filter(function(r){return r.arm===arm;}),vals=rr.map(function(r){return r[key];}),mid=median(vals),y=mobile?78+idx*78:70+idx*72,col=arm==='A'?'#63716b':colors.A;
+  if(mobile)s+='<text x="24" y="'+(y-25)+'" font-size="14" fill="'+col+'">'+arm+' · '+(arm==='A'?'关闭':'开启')+'轮转　'+mid.toFixed(d.digits)+' '+d.unit+'</text>';
+  else s+='<text x="8" y="'+(y-6)+'" font-size="15" fill="'+colors.ink+'">'+arm+' · '+(arm==='A'?'关闭轮转':'开启轮转')+'</text><text x="8" y="'+(y+17)+'" font-size="18" font-weight="600" fill="'+col+'">'+mid.toFixed(d.digits)+' '+d.unit+'</text>';
+  s+='<line x1="'+x(Math.min.apply(null,vals))+'" x2="'+x(Math.max.apply(null,vals))+'" y1="'+y+'" y2="'+y+'" stroke="'+col+'" stroke-opacity=".24" stroke-width="10" stroke-linecap="round"/>';
+  rr.forEach(function(r,i){const yy=y+[-7,7,-7,7][i];s+='<circle cx="'+x(r[key])+'" cy="'+yy+'" r="4.5" fill="'+col+'"><title>'+r.run+' / '+r.id+'：'+r[key].toFixed(d.digits)+' '+d.unit+'</title></circle>';});
+  const xx=x(mid);s+='<path d="M'+xx+' '+(y-11)+'L'+(xx+7)+' '+y+'L'+xx+' '+(y+11)+'L'+(xx-7)+' '+y+'Z" fill="'+col+'" stroke="#fffefa" stroke-width="1.5"/>';
+ });
+ s+='<text x="'+(mobile?376:960)+'" y="'+(mobile?239:207)+'" text-anchor="end" font-size="12" fill="'+colors.muted+'">'+d.unit+'</text></svg>';
+ const a=median(rows.filter(function(r){return r.arm==='A';}).map(function(r){return r[key];})),b=median(rows.filter(function(r){return r.arm==='B';}).map(function(r){return r[key];})),pct=(b/a-1)*100,good=key==='decode_tps'?pct>=0:pct<=0;
+ return '<figure class="chart-figure"><div class="chart-top"><h3>'+(cid==='decode-0'?'Python 连续代码生成':'中文技术说明')+'</h3><div class="change" style="color:'+(good?colors.A:colors.rust)+'">'+(pct>=0?'+':'')+pct.toFixed(1)+'%<small>中位数变化 · '+d.better+'</small></div></div>'+s+'<figcaption class="chart-caption">'+(cid==='decode-0'?'71 个输入 token':'70 个输入 token')+' · 两端各 4 个正式请求 · 数据点可悬停查看启动与数值</figcaption></figure>';
+}
+function charts(key){
+ activeMetric=key;
+ document.querySelectorAll('[data-metric]').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.metric===key));});
+ document.getElementById('metric-definition').textContent=defs[key].description;
+ document.getElementById('benchmark-charts').innerHTML=chart('decode-0',key)+chart('decode-2',key);
+}
+document.querySelectorAll('[data-metric]').forEach(function(b){b.addEventListener('click',function(){charts(b.dataset.metric);});});
+function repair(){
+ const rows=BENCH.filter(function(r){return r.phase==='repair';}),mobile=window.innerWidth<520,base=mobile?260:294,maxX=mobile?355:556,x=function(v){return (mobile?45:66)+v/1200*(mobile?310:490);},y=function(v){return base-v/14*(mobile?210:240);};
+ let s='<svg class="repair-svg" viewBox="0 0 '+(mobile?'400 330':'620 360')+'" role="img" aria-label="四份修复答案的输出长度与完成时间散点图"><text x="'+(mobile?45:65)+'" y="25" font-size="13" fill="'+colors.muted+'">完成时间 / 秒</text>';
+ for(let i=0;i<=3;i++){const v=i*4,yy=y(v);s+='<line x1="'+(mobile?45:66)+'" x2="'+maxX+'" y1="'+yy+'" y2="'+yy+'" stroke="#d4d9cd" stroke-dasharray="3 5"/><text x="'+(mobile?32:48)+'" y="'+(yy+4)+'" text-anchor="end" font-size="12" fill="'+colors.muted+'">'+v+'</text>';}
+ for(let i=0;i<=4;i++){const v=i*300,xx=x(v);s+='<text x="'+xx+'" y="'+(base+26)+'" text-anchor="middle" font-size="12" fill="'+colors.muted+'">'+v+'</text>';}
+ s+='<line x1="'+(mobile?45:66)+'" x2="'+maxX+'" y1="'+base+'" y2="'+base+'" stroke="#aeb8ac"/><text x="'+maxX+'" y="'+(mobile?315:345)+'" text-anchor="end" font-size="12" fill="'+colors.muted+'">输出 token</text>';
+ rows.forEach(function(r,i){const col=r.arm==='B'?colors.A:'#63716b',xx=x(r.output_tokens),yy=y(r.e2e_s),left=i===2||i===3,dx=left?-13:13,dy=i===1?25:-16;
+  s+='<circle cx="'+xx+'" cy="'+yy+'" r="8" fill="'+col+'" stroke="#fffefa" stroke-width="2"/><text x="'+(xx+dx)+'" y="'+(yy+dy)+'" text-anchor="'+(left?'end':'start')+'" font-size="12" fill="'+col+'">'+r.run+' · '+r.e2e_s.toFixed(2)+'s</text>';
+ });
+ document.getElementById('repair-chart').innerHTML=s+'</svg>';
+ document.getElementById('repair-rows').innerHTML=rows.map(function(r){return '<tr><td>'+r.run+'</td><td>'+r.output_tokens+'</td><td>'+r.e2e_s.toFixed(3)+' s</td><td class="pass">14 / 14</td></tr>';}).join('');
+}
+window.addEventListener('resize',function(){renderStep();charts(activeMetric);repair();});
+renderStep();memory();charts('decode_tps');repair();
+</script>
+</body>
+</html>

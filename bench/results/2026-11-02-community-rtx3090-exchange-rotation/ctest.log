@@ -1,0 +1,9 @@
+Test project <BENCH_ROOT>/build
+    Start 24: exchange_storage_test
+1/2 Test #24: exchange_storage_test ............   Passed    1.41 sec
+    Start 26: file_expert_source_test
+2/2 Test #26: file_expert_source_test ..........   Passed    1.27 sec
+
+100% tests passed out of 2
+
+Total Test time (real) =   2.70 sec

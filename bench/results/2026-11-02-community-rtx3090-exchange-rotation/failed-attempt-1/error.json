@@ -1,0 +1,4 @@
+{
+  "error": "Traceback (most recent call last):\n  File \"<BENCH_ROOT>/benchmark.py\", line 118, in main\n    save(out/'environment.json',{'health':health,'engine':engine,'fixed_shape':actual,'load_s':time.monotonic()-start,'slots':get('/slots'),'proc_status':Path(f'/proc/{child(p.pid)}/status').read_text(),'meminfo':Path('/proc/meminfo').read_text()})\n  File \"/usr/lib/python3.10/pathlib.py\", line 1134, in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors) as f:\n  File \"/usr/lib/python3.10/pathlib.py\", line 1119, in open\n    return self._accessor.open(self, mode, buffering, encoding, errors,\nFileNotFoundError: [Errno 2] No such file or directory: '/proc/None/status'\n",
+  "time": 1793604897.8259215
+}

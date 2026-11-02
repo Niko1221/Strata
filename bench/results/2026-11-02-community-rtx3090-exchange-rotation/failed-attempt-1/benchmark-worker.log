@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "<BENCH_ROOT>/benchmark.py", line 155, in <module>
+    if __name__=='__main__':main()
+  File "<BENCH_ROOT>/benchmark.py", line 118, in main
+    save(out/'environment.json',{'health':health,'engine':engine,'fixed_shape':actual,'load_s':time.monotonic()-start,'slots':get('/slots'),'proc_status':Path(f'/proc/{child(p.pid)}/status').read_text(),'meminfo':Path('/proc/meminfo').read_text()})
+  File "/usr/lib/python3.10/pathlib.py", line 1134, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+  File "/usr/lib/python3.10/pathlib.py", line 1119, in open
+    return self._accessor.open(self, mode, buffering, encoding, errors,
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/None/status'

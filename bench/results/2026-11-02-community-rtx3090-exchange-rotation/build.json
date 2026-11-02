@@ -1,0 +1,34 @@
+[
+  {
+    "command": [
+      "<EXISTING_INSTALL>/.venv/bin/cmake",
+      "-S",
+      "<SOURCE>",
+      "-B",
+      "<BENCH_ROOT>/build",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DSTRATA_ENABLE_CUDA=ON",
+      "-DCMAKE_CUDA_ARCHITECTURES=86",
+      "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc",
+      "-DCUDAToolkit_ROOT=/usr/local/cuda-12.8",
+      "-DSTRATA_GGML_DIR=<BENCH_ROOT>/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d",
+      "-DSTRATA_BUILD_TESTS=ON"
+    ],
+    "rc": 0,
+    "seconds": 13.178622007369995
+  },
+  {
+    "command": [
+      "<EXISTING_INSTALL>/.venv/bin/cmake",
+      "--build",
+      "<BENCH_ROOT>/build",
+      "--target",
+      "strata",
+      "exchange_storage_test",
+      "file_expert_source_test",
+      "-j4"
+    ],
+    "rc": 0,
+    "seconds": 765.5476522445679
+  }
+]

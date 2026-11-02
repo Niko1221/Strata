@@ -1,0 +1,58 @@
+# 数据库故障排查实战手册：从微观锁等待到宏观容量规划
+
+## 第一章：锁等待与死锁——并发控制的“黑箱”解析
+
+在数据库系统中，锁是保证数据一致性的基石，但也是引发性能瓶颈和系统挂起的最常见原因之一。当多个事务试图访问同一资源时，如果其中一个事务持有锁而另一个事务需要获取该锁，就会发生锁等待。如果两个或多个事务互相等待对方释放锁，则形成死锁。排查锁问题不仅仅是看“谁在等”，更要理解“为什么在等”以及“如何打破僵局”。
+
+### 1.1 锁等待的本质与监控指标
+
+锁等待通常表现为应用层的超时或数据库层面的响应延迟。在 MySQL（InnoDB）中，行级锁是默认机制；在 PostgreSQL 中，表级锁和行级锁并存；在 SQL Server 中，页锁和行锁混合使用。排查的第一步是确认当前是否存在大量的锁等待事件。
+
+**核心命令与视图：**
+
+*   **MySQL:**
+    ```sql
+    -- 查看当前正在运行的事务及其状态
+    SELECT * FROM information_schema.INNODB_TRX;
+    
+    -- 查看当前的锁等待情况（MySQL 8.0+）
+    SELECT * FROM performance_schema.data_lock_waits;
+    
+    -- 查看持有锁的事务
+    SELECT * FROM performance_schema.data_locks;
+    
+    -- 传统视图（兼容旧版本）
+    SHOW ENGINE INNODB STATUS;
+    ```
+
+*   **PostgreSQL:**
+    ```sql
+    -- 查看当前活动查询及其等待状态
+    SELECT pid, usename, application_name, wait_event_type, wait_event, state, query 
+    FROM pg_stat_activity 
+    WHERE wait_event_type IS NOT NULL;
+    
+    -- 查看锁表信息
+    SELECT * FROM pg_locks;
+    ```
+
+*   **SQL Server:**
+    ```sql
+    -- 查看当前阻塞情况
+    EXEC sp_who2 'active';
+    
+    -- 更详细的阻塞链分析
+    SELECT 
+        blocking_session_id, 
+        session_id, 
+        wait_type, 
+        wait_time, 
+        text 
+    FROM sys.dm_exec_requests 
+    CROSS APPLY sys.dm_exec_sql_text(sql_handle);
+    ```
+
+### 1.2 案例一：长事务导致的锁堆积
+
+**场景描述：**
+某电商

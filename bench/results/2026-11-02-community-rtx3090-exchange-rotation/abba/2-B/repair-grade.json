@@ -1,0 +1,5 @@
+{
+  "rc": 0,
+  "stdout": "{\"grader_revision\": \"safe-arithmetic-exceptions-v2\", \"id\": \"code_retry\", \"passed\": 14, \"total\": 14, \"all_passed\": true, \"tests\": [{\"name\": \"empty\", \"passed\": true}, {\"name\": \"normal\", \"passed\": true}, {\"name\": \"zero-base\", \"passed\": true}, {\"name\": \"zero-cap\", \"passed\": true}, {\"name\": \"base-over-cap\", \"passed\": true}, {\"name\": \"large\", \"passed\": true}, {\"name\": \"type-True\", \"passed\": true}, {\"name\": \"type-False\", \"passed\": true}, {\"name\": \"type-1.5\", \"passed\": true}, {\"name\": \"type-3\", \"passed\": true}, {\"name\": \"type-None\", \"passed\": true}, {\"name\": \"negative-(-1, 1, 2)\", \"passed\": true}, {\"name\": \"negative-(1, -1, 2)\", \"passed\": true}, {\"name\": \"negative-(1, 1, -2)\", \"passed\": true}]}\n",
+  "stderr": ""
+}

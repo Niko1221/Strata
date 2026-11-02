@@ -1,0 +1,12 @@
+{
+  "arm": "A",
+  "engine_sha256": "43b39750bcee469d2a35d31997d2484755be46cb721abf9ede4ff816c89fb2f8",
+  "initial_profile_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+  "env": {
+    "STRATA_ROUTE_TAIL_SKIP": "0",
+    "STRATA_PREFILL_CPU_SHARE": "0",
+    "STRATA_EXCHANGE_ROTATE": "0",
+    "OMP_NUM_THREADS": "2",
+    "OPENBLAS_NUM_THREADS": "2"
+  }
+}

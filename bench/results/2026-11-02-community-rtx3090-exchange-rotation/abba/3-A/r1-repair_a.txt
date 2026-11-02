@@ -1,0 +1,34 @@
+```python
+def retry_delays(attempts, base, cap):
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        raise TypeError("attempts must be a non-negative integer")
+    if attempts < 0:
+        raise ValueError("attempts must be non-negative")
+    if base < 0:
+        raise ValueError("base must be non-negative")
+    if cap < 0:
+        raise ValueError("cap must be non-negative")
+    
+    result = []
+    for i in range(attempts):
+        # Compute base * 2**i without causing overflow by checking if the value exceeds cap first
+        # If base == 0, then base * 2**i == 0 for all i
+        if base == 0:
+            result.append(0.0)
+            continue
+        
+        # Check if base * 2**i would exceed cap without computing the full power
+        # We can check: if 2**i > cap / base, then min(cap, base*2**i) = cap
+        # But we need to handle float division carefully.
+        # Alternative: compute incrementally and stop when value >= cap
+        
+        # Use incremental computation to avoid huge powers
+        val = base
+        for j in range(i):
+            val *= 2
+            if val > cap:
+                break
+        result.append(min(cap, val))
+    
+    return result
+```

@@ -1,0 +1,214 @@
+{
+  "health": {
+    "status": "ok",
+    "max_context": 32768,
+    "model": "qwen3.8-flash-next-iq2_xs",
+    "images": false,
+    "api_key": false,
+    "loaded": true,
+    "service": "strata"
+  },
+  "slots": [
+    {
+      "id": 0,
+      "n_ctx": 32768,
+      "is_processing": false,
+      "n_prompt_tokens": 0
+    }
+  ],
+  "metrics": {
+    "engine": {
+      "model": "qwen3.8-flash-next-iq2_xs",
+      "max_context": 32768,
+      "images": false,
+      "version": "0.1.43",
+      "logit_bias": 1,
+      "context": 32768,
+      "kv": "int8",
+      "kv_resident": 0,
+      "expert_slots": 13432,
+      "expert_cache_mib": 18431,
+      "expert_slots_primary": 13432,
+      "expert_cache_primary_mib": 18431,
+      "spec": 6,
+      "mtp_max": 4,
+      "lookup": 3,
+      "vram_free_mib": 428,
+      "cvec": 0,
+      "arena_mib": 23716,
+      "pool_workers": 7,
+      "pcie_frac": "1.00",
+      "spec_min_p": "0.50",
+      "conversation_cache_mib": 0,
+      "conversation_cache_slots": 4,
+      "conversation_cache_min_free_mib": 2560,
+      "conversation_cache_min_tokens": 0,
+      "tail_role_token": -1,
+      "vram_elastic": 0,
+      "engine": "0.1.43"
+    },
+    "live": {
+      "state": "idle",
+      "queued": 0,
+      "phase": null,
+      "prompt_tokens": null,
+      "prompt_read": null,
+      "prompt_total": null,
+      "generated": null,
+      "max_tokens": null,
+      "elapsed_s": null,
+      "tok_s": null,
+      "tok_s_mean": null,
+      "prefill_tok_s_mean": null,
+      "tok_s_window_s": null
+    },
+    "requests": [],
+    "conversation_cache": {
+      "enabled": false,
+      "budget_mib": 0,
+      "slots": 4,
+      "parked": 0,
+      "bytes": 0,
+      "evictions": 0,
+      "parks": 0,
+      "restores": 0,
+      "last_event": null,
+      "last_tokens": null,
+      "last_at": null,
+      "requests": 0,
+      "requests_reused": 0,
+      "reused_tokens": 0,
+      "prompt_tokens": 0,
+      "last_reused": null,
+      "last_prompt": null
+    },
+    "requests_kept": 0,
+    "totals": {
+      "since": 1793604996.3784566,
+      "requests": 0,
+      "prompt_tokens": 0,
+      "reused": 0,
+      "output_tokens": 0,
+      "prompt_ms": 0.0,
+      "decode_ms": 0.0,
+      "drafts_offered": 0,
+      "drafts_accepted": 0
+    },
+    "hardware": {
+      "gpu_util": 0,
+      "gpu_mem_used": 25320751104,
+      "gpu_mem_total": 25769803776,
+      "gpu_temp": 35,
+      "gpu_power": 108.994,
+      "gpu_power_limit": 350.0,
+      "gpu_pcie_gen": 3,
+      "gpu_pcie_gen_max": 3,
+      "gpu_pcie_width": 16,
+      "gpu_pcie_rx_mb": 0.0,
+      "gpu_pcie_tx_mb": 0.046875,
+      "cpu": 0.7,
+      "ram_used": 58891919360,
+      "ram_total": 67387547648,
+      "disk_read_mb": 13.670693539336385,
+      "disk_write_mb": 0.1087356315525933,
+      "tok_s": 0.0,
+      "tok_s_mean": 0,
+      "prefill_tok_s_mean": 0.0
+    },
+    "hardware_static": {
+      "gpu_name": "NVIDIA GeForce RTX 3090",
+      "gpu_count": 1,
+      "gpu_note": null,
+      "cpu_name": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
+      "cores": 32,
+      "threads": 32,
+      "psutil": true
+    },
+    "history": {
+      "gpu_util": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "gpu_mem_used": [
+        25320751104,
+        25320751104,
+        25320751104,
+        25320751104,
+        25320751104,
+        25320751104
+      ],
+      "gpu_temp": [
+        34,
+        34,
+        34,
+        34,
+        35,
+        35
+      ],
+      "gpu_power": [
+        109.58,
+        109.56,
+        109.53,
+        109.04,
+        108.98,
+        108.99
+      ],
+      "gpu_pcie_rx_mb": [
+        0.05,
+        0.05,
+        0.24,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cpu": [
+        0.0,
+        1.7,
+        1.4,
+        0.3,
+        0.0,
+        0.7
+      ],
+      "ram_used": [
+        58885431296,
+        58888171520,
+        58886320128,
+        58886971392,
+        58886971392,
+        58891919360
+      ],
+      "disk_read_mb": [
+        null,
+        61.94,
+        39.16,
+        12.5,
+        0.0,
+        13.67
+      ],
+      "tok_s": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "prefill_tok_s_mean": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "time": 1793605001.7950711
+  },
+  "hashes_equal": true,
+  "selectors_equal": true,
+  "time": 1793605001.7970524
+}

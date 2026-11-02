@@ -1,0 +1,59 @@
+loading the model (the first start takes a minute or two) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts the GPU does not hold into RAM (of about 39 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] filling the GPU's expert cache (13503 experts, 18.10 GiB of VRAM) ...
+[strata] still starting (31 s) - please wait ...
+[strata] almost ready ...
+[strata] still starting (54 s) - please wait ...
+[strata] still starting (74 s) - please wait ...
+ready: http://127.0.0.1:8081/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 32768 tokens)
+       open http://127.0.0.1:8081/ in a browser to chat; close this window to stop the model
+[strata] answering: 17 of max 512 tokens, 57.9 tok/s, 1 s
+[strata] answering: 90 of max 512 tokens, 68.2 tok/s, 2 s
+[strata] answering: 203 of max 512 tokens, 87.3 tok/s, 3 s
+[strata] answering: 321 of max 512 tokens, 96.1 tok/s, 4 s
+[strata] answering: 416 of max 512 tokens, 95.4 tok/s, 5 s
+[strata] done: 512 tokens in 6 s (97.7 tok/s) (length, cancel=False), expert cache 100.0% hit (+5.3% of the routed experts over PCIe)
+[strata] answering: 44 of max 512 tokens, 66.2 tok/s, 1 s
+[strata] answering: 119 of max 512 tokens, 70.5 tok/s, 2 s
+[strata] answering: 214 of max 512 tokens, 79.0 tok/s, 3 s
+[strata] answering: 317 of max 512 tokens, 85.3 tok/s, 4 s
+[strata] answering: 428 of max 512 tokens, 90.7 tok/s, 5 s
+[strata] done: 512 tokens in 6 s (93.0 tok/s) (length, cancel=False), expert cache 100.0% hit (+4.8% of the routed experts over PCIe)
+[strata] answering: 96 of max 512 tokens, 139.4 tok/s, 1 s
+[strata] answering: 241 of max 512 tokens, 142.3 tok/s, 2 s
+[strata] answering: 393 of max 512 tokens, 145.2 tok/s, 3 s
+[strata] done: 512 tokens in 4 s (142.4 tok/s) (length, cancel=False), expert cache 100.0% hit (+1.7% of the routed experts over PCIe)
+[strata] answering: 65 of max 512 tokens, 94.9 tok/s, 1 s
+[strata] answering: 167 of max 512 tokens, 98.1 tok/s, 2 s
+[strata] answering: 279 of max 512 tokens, 103.1 tok/s, 3 s
+[strata] answering: 382 of max 512 tokens, 102.5 tok/s, 4 s
+[strata] answering: 492 of max 512 tokens, 103.3 tok/s, 5 s
+[strata] done: 512 tokens in 5 s (103.3 tok/s) (length, cancel=False), expert cache 100.0% hit (+3.1% of the routed experts over PCIe)
+[strata] answering: 90 of max 512 tokens, 127.7 tok/s, 1 s
+[strata] answering: 245 of max 512 tokens, 143.4 tok/s, 2 s
+[strata] answering: 373 of max 512 tokens, 136.7 tok/s, 3 s
+[strata] answering: 501 of max 512 tokens, 133.6 tok/s, 4 s
+[strata] done: 512 tokens in 4 s (133.0 tok/s) (length, cancel=False), expert cache 100.0% hit (+1.9% of the routed experts over PCIe)
+[strata] answering: 69 of max 512 tokens, 99.1 tok/s, 1 s
+[strata] answering: 189 of max 512 tokens, 110.2 tok/s, 2 s
+[strata] answering: 307 of max 512 tokens, 112.4 tok/s, 3 s
+[strata] answering: 423 of max 512 tokens, 113.3 tok/s, 4 s
+[strata] done: 512 tokens in 5 s (111.6 tok/s) (length, cancel=False), expert cache 100.0% hit (+2.8% of the routed experts over PCIe)
+[strata] answering: 12 of max 2048 tokens, 48.0 tok/s, 1 s
+[strata] answering: 61 of max 2048 tokens, 51.2 tok/s, 2 s
+[strata] answering: 123 of max 2048 tokens, 54.5 tok/s, 3 s
+[strata] answering: 186 of max 2048 tokens, 56.3 tok/s, 4 s
+[strata] answering: 275 of max 2048 tokens, 63.6 tok/s, 5 s
+[strata] answering: 387 of max 2048 tokens, 72.6 tok/s, 6 s
+[strata] answering: 494 of max 2048 tokens, 77.9 tok/s, 7 s
+[strata] answering: 600 of max 2048 tokens, 81.7 tok/s, 8 s
+[strata] answering: 726 of max 2048 tokens, 87.0 tok/s, 9 s
+[strata] answering: 846 of max 2048 tokens, 90.3 tok/s, 10 s
+[strata] answering: 964 of max 2048 tokens, 92.9 tok/s, 11 s
+[strata] done: 1070 tokens in 12 s (94.7 tok/s) (stop, cancel=False), expert cache 100.0% hit (+5.8% of the routed experts over PCIe)
+
+[strata] stopping (Ctrl+C again to end the engine at once) ...
+[strata] stopped

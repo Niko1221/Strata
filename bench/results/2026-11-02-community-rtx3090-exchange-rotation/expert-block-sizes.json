@@ -1,0 +1,14 @@
+{
+  "source_metadata_sha256": "48df605acb89c7e8c3176a51cec777c2ed344ea439e8f3a37e5ce4f9dcb6946c",
+  "distinct_expert_block_bytes": [
+    1177600,
+    1305600,
+    1510400
+  ],
+  "spares_per_size": 96,
+  "async_bounce": 0,
+  "copy_spare_bytes": 144998400,
+  "rotation_spare_bytes": 383385600,
+  "extra_pinned_host_bytes": 238387200,
+  "source": "official reserve_exchanges/exchange_bytes_needed allocation geometry; not inferred from VmLck or RSS"
+}

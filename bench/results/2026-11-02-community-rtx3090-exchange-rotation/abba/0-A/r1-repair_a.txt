@@ -1,0 +1,50 @@
+```python
+def retry_delays(attempts, base, cap):
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        raise TypeError("attempts must be a non-negative integer")
+    if attempts < 0:
+        raise ValueError("attempts must be non-negative")
+    if base < 0:
+        raise ValueError("base must be non-negative")
+    if cap < 0:
+        raise ValueError("cap must be non-negative")
+    
+    result = []
+    for i in range(attempts):
+        # Compute base * 2**i without causing overflow by checking if the value exceeds cap first
+        # If base == 0, then base * 2**i == 0 for all i
+        if base == 0:
+            result.append(0.0)
+            continue
+        
+        # Check if base * 2**i would exceed cap without computing the full power
+        # We can check: if 2**i > cap / base, then min(cap, base*2**i) = cap
+        # But we need to be careful with floating point division.
+        # Instead, compute step by step or use logarithms? 
+        # Simpler approach: since cap is non-negative and base is non-negative,
+        # if base * 2**i >= cap, then min(cap, base*2**i) = cap.
+        # To avoid overflow, we can check if i is large enough that 2**i > cap/base.
+        # But cap/base might not be an integer. Let's use a safe comparison.
+        
+        # Alternative: compute iteratively to avoid huge powers
+        # Start with current = base, multiply by 2 each step, but stop when it exceeds cap
+        
+        pass
+    
+    # Better approach: iterative computation without computing huge powers
+    result = []
+    current = base
+    for i in range(attempts):
+        if current >= cap:
+            result.append(cap)
+        else:
+            result.append(current)
+            current *= 2
+            # If current becomes too large, it will be capped next iteration
+            # But we need to handle the case where base is 0 separately
+            if base == 0:
+                # current stays 0 forever
+                pass
+    
+    return result
+```

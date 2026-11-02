@@ -1,0 +1,37 @@
+# 数据库故障排查实战手册：从微观锁等待到宏观容量规划
+
+## 第一章：锁等待与死锁——并发控制的“黑盒”解析
+
+在数据库系统中，锁是保证数据一致性的基石，但也是引发性能瓶颈和系统挂起的最常见原因。当多个事务试图访问同一资源时，如果其中一个事务持有锁而另一个事务需要获取该锁，就会发生锁等待。如果两个或多个事务互相等待对方释放锁，则形成死锁。排查锁问题不仅仅是看“谁在等”，更要理解“为什么在等”以及“如何打破僵局”。
+
+### 1.1 锁等待的本质与监控指标
+
+锁等待通常表现为应用层的超时或数据库层面的响应延迟。在 MySQL、PostgreSQL 或 Oracle 中，不同的引擎对锁的处理机制略有不同，但核心逻辑一致：行级锁（Row Lock）用于高并发场景，表级锁（Table Lock）用于DDL操作或低并发场景。
+
+**关键监控指标：**
+1. **Lock Wait Time**: 事务等待获取锁的时间。超过阈值（如5秒）通常意味着存在长事务或热点数据竞争。
+2. **Deadlock Count**: 死锁发生的频率。虽然数据库会自动检测并回滚其中一个事务，但频繁的死锁表明业务逻辑存在设计缺陷。
+3. **Lock Contention Ratio**: 冲突率，即尝试获取锁失败的比例。
+
+### 1.2 MySQL 锁等待排查实战
+
+假设我们遇到一个典型的场景：某个订单更新接口偶尔出现 `ERROR 1205: Lock wait timeout exceeded`。
+
+**第一步：查看当前正在运行的事务和锁状态**
+使用 `SHOW ENGINE INNODB STATUS` 命令，这是最强大的诊断工具之一。重点关注 `TRANSACTIONS` 部分。
+
+```sql
+SHOW ENGINE INNODB STATUS;
+```
+
+在输出中，寻找 `LATEST DETECTED DEADLOCK` 或 `ACTIVE TRANSACTIONS` 部分。如果看到类似以下信息：
+
+```text
+------------------------
+LATEST DETECTED DEADLOCK
+------------------------
+2023-10-27 10:00:00 0x7f8b1c2d4e60
+*** (1) TRANSACTION:
+TRANSACTION 12345, ACTIVE 10 sec starting index read
+mysql tables in use 1, locked 1
+LOCK

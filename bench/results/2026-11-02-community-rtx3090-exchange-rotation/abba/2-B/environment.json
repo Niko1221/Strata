@@ -1,0 +1,70 @@
+{
+  "health": {
+    "status": "ok",
+    "max_context": 32768,
+    "model": "qwen3.8-flash-next-iq2_xs",
+    "images": false,
+    "api_key": false,
+    "image_generation": false,
+    "loaded": true,
+    "service": "strata"
+  },
+  "engine": {
+    "model": "qwen3.8-flash-next-iq2_xs",
+    "max_context": 32768,
+    "images": false,
+    "version": "0.1.55",
+    "logit_bias": 1,
+    "context": 32768,
+    "kv": "int8",
+    "kv_resident": 0,
+    "expert_slots": 13503,
+    "expert_cache_mib": 18530,
+    "expert_slots_primary": 13503,
+    "expert_cache_primary_mib": 18530,
+    "spec": 6,
+    "mtp_max": 4,
+    "lookup": 3,
+    "vram_free_mib": 295,
+    "cvec": 0,
+    "arena_mib": 16461,
+    "pool_workers": 7,
+    "pcie_frac": "1.00",
+    "spec_min_p": "0.50",
+    "conversation_cache_mib": 0,
+    "conversation_cache_slots": 4,
+    "conversation_cache_min_free_mib": 2560,
+    "conversation_cache_min_tokens": 0,
+    "tail_role_token": -1,
+    "vram_elastic": 0,
+    "prefill_cap": 2048,
+    "prefill_stages": 1,
+    "stream_all_min": 1024,
+    "prefill_pipe": 0,
+    "engine": "0.1.55",
+    "drafting": "mtp",
+    "drafting_note": ""
+  },
+  "fixed_shape": {
+    "expert_slots": 13503,
+    "expert_cache_mib": 18530,
+    "arena_mib": 16461,
+    "spec": 6,
+    "mtp_max": 4,
+    "pool_workers": 7,
+    "pcie_frac": "1.00",
+    "context": 32768,
+    "kv": "int8"
+  },
+  "load_s": 86.14547459699679,
+  "slots": [
+    {
+      "id": 0,
+      "n_ctx": 32768,
+      "is_processing": false,
+      "n_prompt_tokens": 0
+    }
+  ],
+  "proc_status": "Name:\tstrata-host\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t2830932\nNgid:\t0\nPid:\t2830932\nPPid:\t2830924\nTracerPid:\t0\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nFDSize:\t64\nGroups:\t0 \nNStgid:\t2830932\nNSpid:\t2830932\nNSpgid:\t2830932\nNSsid:\t2830924\nVmPeak:\t120202576 kB\nVmSize:\t120137040 kB\nVmLck:\t28125136 kB\nVmPin:\t       0 kB\nVmHWM:\t63158332 kB\nVmRSS:\t62948904 kB\nRssAnon:\t 1873668 kB\nRssFile:\t43199344 kB\nRssShmem:\t17875892 kB\nVmData:\t 2814276 kB\nVmStk:\t     216 kB\nVmExe:\t   11844 kB\nVmLib:\t  775232 kB\nVmPTE:\t  164660 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nThreads:\t55\nSigQ:\t0/256578\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000001\nSigCgt:\t0000000100000000\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tconditional enabled\nCpus_allowed:\t00000000,00000000,00000000,00000001\nCpus_allowed_list:\t0\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t4320\nnonvoluntary_ctxt_switches:\t1326\n",
+  "meminfo": "MemTotal:       65808152 kB\nMemFree:         1089756 kB\nMemAvailable:   15783816 kB\nBuffers:            3992 kB\nCached:         61166808 kB\nSwapCached:            0 kB\nActive:           242628 kB\nInactive:       35019228 kB\nActive(anon):       2672 kB\nInactive(anon): 20092892 kB\nActive(file):     239956 kB\nInactive(file): 14926336 kB\nUnevictable:    28128208 kB\nMlocked:        28125136 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\nDirty:               288 kB\nWriteback:             0 kB\nAnonPages:       2219560 kB\nMapped:         61124520 kB\nShmem:          17880408 kB\nKReclaimable:     248736 kB\nSlab:             446104 kB\nSReclaimable:     248736 kB\nSUnreclaim:       197368 kB\nKernelStack:       12144 kB\nPageTables:       169100 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    32904076 kB\nCommitted_AS:   21939228 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:      423632 kB\nVmallocChunk:          0 kB\nPercpu:            73216 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:         0 kB\nFilePmdMapped:         0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:    35075936 kB\nDirectMap2M:    20498432 kB\nDirectMap1G:    13631488 kB\n"
+}

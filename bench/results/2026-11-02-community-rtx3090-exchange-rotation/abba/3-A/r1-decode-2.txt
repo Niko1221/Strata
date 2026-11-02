@@ -1,0 +1,31 @@
+# 数据库故障排查实战手册：从微观锁等待到宏观容量规划
+
+## 第一章：锁等待与死锁——并发控制的“黑盒”解析
+
+在数据库运维中，锁等待（Lock Wait）和死锁（Deadlock）是最高频、最令开发人员头疼的故障类型。它们直接导致业务响应时间飙升，甚至引发服务不可用。理解锁的本质，是排查此类问题的前提。
+
+### 1.1 锁的基本原理与分类
+
+数据库中的锁本质上是一种互斥机制，用于保证数据的一致性。在 MySQL InnoDB 引擎中，锁主要分为以下几类：
+
+1.  **行级锁（Row Lock）**：这是 InnoDB 的核心特性。它只锁定被修改的那一行数据。如果查询条件没有命中索引，InnoDB 可能会退化为表级锁或间隙锁（Gap Lock）。
+2.  **表级锁（Table Lock）**：通常由 `LOCK TABLES` 语句显式触发，或者在 MyISAM 引擎中默认使用。表级锁开销小，但并发度低。
+3.  **意向锁（Intention Locks）**：包括意向共享锁（IS）和意向排他锁（IX）。它们用于表明事务打算在表中某些行上设置共享或排他锁。意向锁本身不阻塞数据修改，但会阻塞表级锁的获取。
+4.  **间隙锁（Gap Lock）与临键锁（Next-Key Lock）**：这是 InnoDB 特有的机制，用于防止幻读（Phantom Read）。在可重复读（RR）隔离级别下，InnoDB 不仅锁定记录本身，还锁定记录之间的“间隙”。这往往是导致死锁的根源。
+
+### 1.2 排查命令与现场取证
+
+当业务出现大量超时或响应变慢时，第一步是确认是否存在锁等待。以下是标准的排查流程：
+
+#### 步骤一：查看当前正在运行的事务
+使用 `SHOW ENGINE INNODB STATUS` 获取全局状态，重点关注 `TRANSACTIONS` 部分。或者更直观地查询 `information_schema`：
+
+```sql
+SELECT 
+    r.trx_id waiting_trx_id,
+    r.trx_mysql_thread_id waiting_thread,
+    r.trx_query waiting_query,
+    b.trx_id blocking_trx_id,
+    b.trx_mysql_thread_id blocking_thread,
+    b.trx_query blocking_query
+FROM information

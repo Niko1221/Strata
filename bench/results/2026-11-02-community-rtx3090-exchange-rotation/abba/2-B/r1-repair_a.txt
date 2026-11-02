@@ -1,0 +1,96 @@
+```python
+def retry_delays(attempts, base, cap):
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        raise TypeError("attempts must be a non-negative integer")
+    if attempts < 0:
+        raise ValueError("attempts must be non-negative")
+    if base < 0:
+        raise ValueError("base must be non-negative")
+    if cap < 0:
+        raise ValueError("cap must be non-negative")
+    
+    result = []
+    for i in range(attempts):
+        # Compute base * 2**i without causing overflow by checking if the value exceeds cap first
+        # If base == 0, then base * 2**i == 0 for all i
+        if base == 0:
+            result.append(0.0)
+            continue
+        
+        # Check if base * 2**i would exceed cap without computing the full power
+        # We can check: if 2**i > cap / base, then min(cap, base*2**i) = cap
+        # But we need to be careful with floating point division.
+        # Instead, compute step by step or use logarithms? 
+        # Simpler approach: since cap is non-negative and base is non-negative,
+        # if base * 2**i >= cap, then min(cap, base*2**i) = cap.
+        # To avoid overflow, we can check if i is large enough that 2**i > cap/base.
+        # But cap/base might not be an integer. Let's use a safe comparison.
+        
+        # Alternative: compute iteratively to avoid huge powers
+        # Start with current = base, multiply by 2 each step, but stop when it exceeds cap
+        
+        pass
+    
+    # Better approach: iterative computation without computing huge powers directly
+    result = []
+    current = base
+    for i in range(attempts):
+        if current >= cap:
+            result.append(cap)
+        else:
+            result.append(current)
+            current *= 2
+            # If current becomes too large, it will be capped next iteration anyway
+            # But we need to ensure current doesn't overflow. Since we check before appending,
+            # and once current >= cap, we always append cap, so current won't grow beyond cap * 2
+            # Actually, if base is very small and i is large, current could still be < cap for many iterations.
+            # The issue is when 2**i itself overflows as an int before being multiplied by base (float).
+            # Let's reconsider: base is a float, 2**i is an int. When we do base * (2**i), Python converts 2**i to float.
+            # If 2**i is too large to convert to float, OverflowError occurs.
+            
+            # So we need to avoid computing 2**i as a huge integer when it would overflow float conversion.
+            # We can check: if i > some threshold where 2**i > max_float / base, then result is cap.
+            # Max float is approximately 1.8e308. So if base * 2**i > cap, we return cap.
+            # But we need to know when 2**i would overflow float conversion.
+            
+            # Let's use a different approach: check if i is large enough that base * 2**i >= cap
+            # without computing the full power. We can do this by checking if 2**i > cap / base.
+            # But cap / base might be problematic if base == 0 (already handled).
+            
+            # For safety, let's compute using logarithms or iterative doubling with early exit.
+            pass
+    
+    # Clean implementation:
+    result = []
+    for i in range(attempts):
+        if base == 0:
+            result.append(0.0)
+            continue
+        
+        # Check if base * 2**i >= cap without computing huge power
+        # If i is large, 2**i might overflow when converted to float.
+        # We can check: if i > log2(cap / base), then min = cap.
+        import math
+        if cap == 0:
+            result.append(0.0)
+            continue
+        
+        # Compute threshold: smallest i such that base * 2**i >= cap
+        # i >= log2(cap / base)
+        # If i >= ceil(log2(cap / base)), then result is cap.
+        # But we need to handle edge cases carefully.
+        
+        # Simpler: use iterative approach with early termination
+        pass
+    
+    # Final clean solution using iterative doubling without huge powers:
+    result = []
+    current = base
+    for i in range(attempts):
+        if current >= cap:
+            result.append(cap)
+        else:
+            result.append(current)
+            current *= 2
+    return result
+```

@@ -1,0 +1,25 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "vram_mib": 24576,
+  "power_limit_w": 350,
+  "ram_bytes": 67387547648,
+  "cpu": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
+  "cpu_visible_threads": "32",
+  "driver": "580.126.09",
+  "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Fri_Feb_21_20:23:50_PST_2025\nCuda compilation tools, release 12.8, V12.8.93\nBuild cuda_12.8.r12.8/compiler.35583870_0\n",
+  "gcc": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "os": "PRETTY_NAME=\"Ubuntu 22.04.4 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\nVERSION=\"22.04.4 LTS (Jammy Jellyfish)\"\nVERSION_CODENAME=jammy\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=jammy\n",
+  "uname": "Linux <HOST>.localdomain 5.15.0-161-generic #171-Ubuntu SMP Sat Oct 11 08:17:01 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux\n",
+  "storage": "NAME   TYPE  SIZE MODEL        ROTA TRAN\nsr0    rom  1024M QEMU DVD-ROM    1 sata\nvda    disk  500G                 1 \n└─vda1 part  500G                 1 \n",
+  "python_packages": "certifi==2026.7.22\ncharset-normalizer==3.5.1\ncmake==4.4.3\nidna==3.20\nJinja2==3.1.6\nMarkupSafe==3.0.3\nninja==1.13.2\nnumpy==2.2.6\npillow==12.3.0\npsutil==7.2.2\nPyYAML==6.0.3\nregex==2026.9.10\nrequests==2.34.2\ntqdm==4.70.1\nurllib3==2.8.0\n",
+  "gpu_state": "Hardware retains the previous gpu_unlock experiment state; this run only reads selectors and does not modify registers. No fresh stock-vs-unlocked TFLOPS calibration was run.",
+  "selectors": {
+    "stage": "before",
+    "plm": "0xffffffff",
+    "ss0": "0x02200115",
+    "ss1": "0x00000004"
+  },
+  "new_gpu_xid_count": 0,
+  "model_revision": null,
+  "model_revision_reason": "Exact publisher/model/tokenizer revisions were not recovered. Exact local weight, pack and tokenizer file SHA-256 values are attached."
+}

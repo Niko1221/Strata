@@ -1,0 +1,27 @@
+# 数据库故障排查实战手册：从微观锁等待到宏观容量规划
+
+## 第一章：锁等待与死锁——并发控制的“黑盒”解析
+
+在数据库系统中，锁是保证数据一致性的基石，但也是引发性能瓶颈和系统挂起的最常见原因。当多个事务试图访问同一资源时，如果其中一个事务持有锁而另一个事务需要获取该锁，就会发生锁等待。如果两个或多个事务互相等待对方释放锁，则形成死锁。排查锁问题不仅仅是看“谁在等”，更要理解“为什么在等”以及“如何打破僵局”。
+
+### 1.1 核心概念与隔离级别对锁的影响
+
+首先必须明确，不同的数据库引擎（如 MySQL InnoDB, PostgreSQL, Oracle）和不同的事务隔离级别（Read Uncommitted, Read Committed, Repeatable Read, Serializable）决定了锁的类型和粒度。
+
+*   **行级锁 vs 表级锁**：InnoDB 默认使用行级锁，但在某些情况下（如全表扫描、无索引更新）会升级为表级锁或间隙锁（Gap Lock）。PostgreSQL 使用 MVCC（多版本并发控制），通常不需要显式加锁来读取数据，但写操作需要排他锁。
+*   **意向锁（Intention Locks）**：这是许多开发者忽略的概念。意向锁是表级别的锁，用于表明事务打算在表中的某一行上设置共享或排他锁。它本身不阻塞行级锁的获取，但会阻塞对整表的 DDL 操作或全表扫描。理解意向锁有助于解释为什么某些看似无关的操作会互相阻塞。
+*   **间隙锁（Gap Locks）与临键锁（Next-Key Locks）**：在 Repeatable Read 隔离级别下，InnoDB 不仅锁定行本身，还锁定行之间的“间隙”。这是为了防止幻读（Phantom Read）。如果两个事务试图插入同一间隙中的不同位置，可能会发生冲突。
+
+### 1.2 排查命令与工具
+
+#### MySQL (InnoDB)
+MySQL 提供了 `information_schema` 和 `performance_schema` 来监控锁状态。
+
+**查看当前正在等待的锁：**
+```sql
+SELECT 
+    r.trx_id waiting_trx_id,
+    r.trx_mysql_thread_id waiting_thread,
+    r.trx_query waiting_query,
+    b.trx_id blocking_trx_id,
+    b.tr
