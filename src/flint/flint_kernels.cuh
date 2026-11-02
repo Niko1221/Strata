@@ -136,13 +136,13 @@ __global__ void k_flint_attn_prep(const float* __restrict__ q_in, const float* _
 
         const float amax_k = wmax(fabsf(v));
         const float id_k = amax_k > 0.0f ? 127.0f / amax_k : 0.0f;
-        const float qf_k = roundf(v * id_k);
-        const int8_t q_k = (int8_t) fmaxf(-127.0f, fminf(127.0f, qf_k));
+        const float qf_k = rintf(v * id_k);
+        const int8_t q_k = (int8_t) fmaxf(-128.0f, fminf(127.0f, qf_k));
 
         const float amax_v = wmax(fabsf(val_v));
         const float id_v = amax_v > 0.0f ? 127.0f / amax_v : 0.0f;
-        const float qf_v = roundf(val_v * id_v);
-        const int8_t q_v = (int8_t) fmaxf(-127.0f, fminf(127.0f, qf_v));
+        const float qf_v = rintf(val_v * id_v);
+        const int8_t q_v = (int8_t) fmaxf(-128.0f, fminf(127.0f, qf_v));
 
         const size_t b_idx = ((size_t) kh * ctx + pos) * 4 + b;
         kc[b_idx].qs[lane] = q_k;
