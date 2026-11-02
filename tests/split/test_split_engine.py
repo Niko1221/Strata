@@ -409,10 +409,49 @@ class AmdDefault(unittest.TestCase):
                 self.assertTrue(d.quiet)
                 self.assertEqual(cfg, before)                              # the layer split's config, untouched
 
+    def test_an_untested_amd_architecture_runs_only_on_an_explicit_on_and_says_it_is_untested(self):
+        import tempfile
+
+        for arch in ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp, split_engine="on")
+                seen = []
+
+                def exe_for(n, cc=None, arch_=None):
+                    seen.append((n, arch_))
+                    return f"/e/strata-split-{n}-amd"
+
+                d = S.apply_to_config(cfg, exe_for_cards=exe_for, system="linux", probe=lambda i: cards(4, **{**self.R9700, "arch": arch}),
+                                      ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+                self.assertTrue(d.use_split, (arch, d.reasons))
+                self.assertEqual(d.untested, [f"card architecture {arch}"])
+                self.assertIn("not tested", d.line)
+                self.assertEqual(seen, [(4, arch)])
+                self.assertEqual(cfg["exe"], "/e/strata-split-4-amd")
+                # the same card in auto: the layer split, silently
+                cfg = self.amd(tmp)
+                del cfg["split_engine"]
+                before = dict(cfg)
+                d = S.apply_to_config(cfg, exe_for_cards=exe_for, system="linux", probe=lambda i: cards(4, **{**self.R9700, "arch": arch}),
+                                      ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)
+                self.assertEqual(cfg, before)
+
+    def test_architectures_without_a_code_object_are_refused_even_with_on(self):
+        import tempfile
+
+        for arch in ("gfx1030", "gfx1151", "gfx90a", "gfx942"):                     # RDNA2, Strix Halo, CDNA: not built
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp, split_engine="on")
+                d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None, arch_=None: "/e/x", system="linux",
+                                      probe=lambda i: cards(4, **{**self.R9700, "arch": arch}), ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+                self.assertFalse(d.use_split, arch)
+
     def test_an_amd_architecture_not_in_the_list_keeps_the_layer_split_silently(self):
         import tempfile
 
-        for arch in ("gfx1100", "gfx1151"):
+        for arch in ("gfx1030", "gfx1151"):
             with tempfile.TemporaryDirectory() as tmp:
                 cfg = self.amd(tmp)
                 del cfg["split_engine"]
@@ -463,9 +502,9 @@ class AmdDefault(unittest.TestCase):
                                   ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
             self.assertFalse(d.use_split)
             d = S.apply_to_config(self.amd(tmp, split_engine="on"), exe_for_cards=lambda n, cc=None, arch=None: "/e/x", system="linux",
-                                  probe=lambda i: cards(4, **{**self.R9700, "arch": "gfx1100"}), ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+                                  probe=lambda i: cards(4, **{**self.R9700, "arch": "gfx1030"}), ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
             self.assertFalse(d.use_split)
-            self.assertIn("gfx1100", d.line)
+            self.assertIn("gfx1030", d.line)
 
     def test_taking_the_architecture_out_of_the_constant_makes_auto_keep_the_layer_split_but_on_still_runs(self):
         import tempfile

@@ -1545,8 +1545,8 @@ class Runner:
                 real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
             except Exception:                                # noqa: BLE001 - no engine to look beside: no split
                 return None
-            # one build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch> only
-            for name in ((f"strata-split-{n}-{arch}",) if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
+            # one build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch>, then strata-split-N-amd (one binary with a code object for each RDNA architecture)
+            for name in ((f"strata-split-{n}-{arch}", f"strata-split-{n}-amd") if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
                 p = Path(str(real)).parent / name
                 if p.is_file():
                     return str(p)

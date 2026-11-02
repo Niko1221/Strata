@@ -38,7 +38,9 @@ from typing import Any
 # What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86), 2x RTX PRO 6000 (srv118, sm_120).
 # AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md); two R9700 cannot hold UD-Q4_K_XL's experts.
 TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (4,)}}
-BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1201",)}   # the engine package's kernels: any other card is refused at start
+# the engine package's kernels (one binary per card count with a code object for each AMD architecture): any other card is refused. AMD beyond gfx1201 is EXPERIMENTAL: only an explicit
+# `--split-engine on` starts it there (never auto), and the engine runs its kernel self-test on the card before it loads the model (src/split/src/hip/selftest_policy.hpp)
+BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
 TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
 TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
                                    # pictures; no suite there)
@@ -412,8 +414,10 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     except Exception as e:                                   # noqa: BLE001 - a file it cannot read is a reason, not a failed start
         return Decision(False, [f"the model file could not be read ({type(e).__name__})"])
     context = int(_flag(args, "--max-context") or 8192)
+    # an AMD architecture nobody has run (gfx1100..1103, gfx1200) starts only on the person's explicit "on", with the engine's own self-test as the guard
+    experimental_ok = mode_ == "on" and bool(cards) and cards[0].vendor == "amd"
     d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
-               allow_untested=allow_untested)
+               allow_untested=allow_untested or experimental_ok)
     if not d.use_split:
         return d
     amd = cards[0].vendor == "amd"

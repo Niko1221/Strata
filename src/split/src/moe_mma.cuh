@@ -248,10 +248,14 @@ struct MmX {
 // gfx12 (RDNA4): v_wmma_f32_16x16x16_f16, wave32. A is 16 weight rows x 16 k (lane l: row l & 15, k 8 * (l >> 4) + 0..7), B is 16 k x
 // 16 tokens (lane l: token l & 15, the same k), the accumulator lane l holds token l & 15 and rows 8 * (l >> 4) + 0..7. f16 products,
 // fp32 accumulation, as the HMMA.884 did.
-typedef _Float16 mm_h8 __attribute__((ext_vector_type(8)));
+// gfx11 (RDNA3, FNX_WMMA_GFX11, not run on a card yet; hip/selftest.h checks it): an operand is 16 k a lane, the same in lanes l and l + 16; the accumulator lane l holds
+// rows 2 j + (l >> 4) (hip/mma.h)
+typedef nvcuda::wmma::fnx_hab mm_h8;   // an A or B operand: 8 (gfx12) or 16 (gfx11) halves
 typedef float mm_f8 __attribute__((ext_vector_type(8)));
 __device__ __forceinline__ mm_f8 mma_wmma12(const mm_h8& a, const mm_h8& b, const mm_f8& c) {
-#if defined(__gfx1200__) || defined(__gfx1201__)
+#if FNX_WMMA_GFX11
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#elif defined(__GFX12__) || defined(__gfx1200__) || defined(__gfx1201__)
     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
 #else
     (void) a; (void) b;
@@ -318,8 +322,9 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
     // the warp's 32 rows x 16 TT tokens: 2 x TT WMMA tiles of 16 x 16 (lane l loads weight row / token l & 15 of a tile, 8 k at
     // 8 * (l >> 4))
     const int lane = threadIdx.x & 31, ln = lane & 15, lh = lane >> 4;
-    const __half* arow = sw + (rg * 32 + ln) * MM_LD + 8 * lh;               // + 16 MM_LD for tile row 1
-    const __half* bcol = sx + (tb * 16 + ln) * MM_LD + 8 * lh;               // + 16 MM_LD per token tile
+    const int kq = FNX_WMMA_GFX11 ? 0 : 8 * lh;                              // gfx12: this lane's 8 k of 16; gfx11: all 16
+    const __half* arow = sw + (rg * 32 + ln) * MM_LD + kq;                   // + 16 MM_LD for tile row 1
+    const __half* bcol = sx + (tb * 16 + ln) * MM_LD + kq;                   // + 16 MM_LD per token tile
     mm_f8 acc[2][TT];
 #pragma unroll
     for (int a = 0; a < 2; ++a)
@@ -385,9 +390,9 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
 #if FNX_HIP
                 mm_h8 a[2], b[TT];
 #pragma unroll
-                for (int r = 0; r < 2; ++r) a[r] = *reinterpret_cast<const mm_h8*>(arow + r * 16 * MM_LD + kk);
+                for (int r = 0; r < 2; ++r) a[r] = nvcuda::wmma::fnx_ld_ab(arow + r * 16 * MM_LD + kk);
 #pragma unroll
-                for (int t = 0; t < TT; ++t) b[t] = *reinterpret_cast<const mm_h8*>(bcol + t * 16 * MM_LD + kk);
+                for (int t = 0; t < TT; ++t) b[t] = nvcuda::wmma::fnx_ld_ab(bcol + t * 16 * MM_LD + kk);
 #pragma unroll
                 for (int r = 0; r < 2; ++r)
 #pragma unroll
@@ -444,15 +449,15 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
     constexpr int SLD = MM_SLD<BM>;
     static_assert(MM_LD % 8 == 0, "16-byte operand loads");
 #if FNX_HIP
-    // the accumulator lane l holds token ln and rows 8 lh + 0..7 of a tile: eight consecutive floats of the staging's row
-    float* sob = so + (split ? tg * LO * SLD : tb * 16 * SLD) + rg * 32 + 8 * lh;
+    // the accumulator lane l holds token ln and rows 8 lh + 0..7 of a tile (gfx12): eight consecutive floats of the staging's row; gfx11: rows 2 j + lh
+    float* sob = so + (split ? tg * LO * SLD : tb * 16 * SLD) + rg * 32 + (FNX_WMMA_GFX11 ? lh : 8 * lh);
 #pragma unroll
     for (int r = 0; r < 2; ++r)
 #pragma unroll
         for (int t = 0; t < TT; ++t) {
             float* d = sob + (t * 16 + ln) * SLD + r * 16;
 #pragma unroll
-            for (int j = 0; j < 8; ++j) d[j] = acc[r][t][j];
+            for (int j = 0; j < 8; ++j) d[FNX_WMMA_GFX11 ? 2 * j : j] = acc[r][t][j];
         }
 #elif FNX_ARCH >= 80
     // a lane's accumulators of a 16 x 8 tile: rows g and g + 8, columns 2 t4 and 2 t4 + 1 (mma_16816)
