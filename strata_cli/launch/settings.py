@@ -26,7 +26,7 @@ ACCESS_WORDS = {"local": "This computer only", "lan": "My local network", "cloud
 TUNE_MODES = ("quick", "thorough", "skip")
 VISION_MODES = ("off", "on", "gpu", "cpu")
 MTP_MODES = ("on", "off")
-#: strata_control/split_engine.py MODES: the all-cards split engine on NVIDIA cards (auto = by itself where it is supported, the default)
+#: strata_control/split_engine.py MODES: the all-cards split engine on NVIDIA and AMD gfx1201 cards (auto = by itself where it is supported, the default)
 SPLIT_MODES = ("auto", "on", "off")
 #: strata_control/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")

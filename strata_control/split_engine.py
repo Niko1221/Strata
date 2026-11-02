@@ -14,9 +14,8 @@ has actually been run:
   - Linux, 2 to 4 cards of ONE make (NVIDIA, or AMD RDNA4 gfx1201: the R9700 and RX 9070), all the same model of card and memory size;
   - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards, AMD gfx1201 on 4 cards. Others build
     but stay off unless the caller says allow_untested (testers); the Decision says which part is untested in plain words;
-  - AMD is opt-in for now: mode "auto" keeps the layer split on gfx1201 (AUTO_SPLIT_AMD_ARCHS is empty) and only `--split-engine on` runs the
-    split there. Adding "gfx1201" to that one constant makes AMD automatic like NVIDIA, once it meets the bar (8 users at or above the layer
-    split, a 103K prompt in the layer split's time; phaseA-tests/sfnx/RESULTS-HIP.md);
+  - AMD gfx1201 is automatic like NVIDIA (the owner's decision: default on for two or more cards, off with `--split-engine off`); AUTO_SPLIT_AMD_ARCHS is the
+    one constant that says which AMD architectures start it by themselves, every other AMD architecture keeps the layer split silently;
   - the GGUF is a set the engine reads (checked from the file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers,
     512 experts): routed experts Q4_K/Q5_K/Q5_1/Q8_0/Q4_0 (UD-Q4_K_XL, Q8_0) or the i-quants IQ2_S/IQ3_XXS/IQ3_S/IQ4_XS/IQ4_NL and Strata's
     Q2_0 (UD-IQ4_XS, the IQ3_S set); token embeddings, shared expert, output head Q8_0, or, in a set with i-quant or Q2_0 experts,
@@ -47,9 +46,9 @@ MODES = ("auto", "on", "off")
 #: cards (compute capability) on which Auto drafting resolves to split + MTP rather than layer split + DFlash2: the split decodes faster there
 #: (phaseA-tests/sfnx/RESULTS.md section 17). Another card is not auto-split at all (TESTED_ARCHS), so it keeps Auto = layer split + DFlash2.
 AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
-#: AMD architectures on which mode "auto" starts the split engine. EMPTY on purpose: on gfx1201 the split ships opt-in (`--split-engine on`) until it
-#: meets the bar (8 users at or above the layer split, a 103K prompt at or under its time); then this becomes ("gfx1201",), the one flip.
-AUTO_SPLIT_AMD_ARCHS: tuple = ()
+#: AMD architectures on which mode "auto" starts the split engine (owner, 2026-11-02: default on for two or more cards, `--split-engine off` turns it off). The one flip: take an
+#: architecture out of this tuple and auto keeps the layer split there while `--split-engine on` still runs the split.
+AUTO_SPLIT_AMD_ARCHS: tuple = ("gfx1201",)
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next

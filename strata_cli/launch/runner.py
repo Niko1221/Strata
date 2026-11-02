@@ -1531,7 +1531,7 @@ class Runner:
         return out
 
     def apply_split_engine(self, cfg: dict) -> None:
-        """The all-cards split engine (docs/SPLIT_ENGINE.md): by itself ("auto", the default) for a Qwen model on this PC's NVIDIA cards that passes
+        """The all-cards split engine (docs/SPLIT_ENGINE.md): by itself ("auto", the default) for a Qwen model on this PC's NVIDIA or AMD (gfx1201) cards that passes
         strata_control/split_engine.py's rule, never when the run config says "split_engine": "off" (`--split-engine off`, STRATA_SPLIT_ENGINE=0).
         In auto a "no" is silent and the config stays as it is; with "on" it gets one plain line. It never stops a launch."""
         from strata_control import split_engine as SE

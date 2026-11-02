@@ -350,8 +350,9 @@ class Apply(unittest.TestCase):
             self.assertEqual(cfg["exe"], "/e/strata-split-2-sm120")
 
 
-class AmdOptIn(unittest.TestCase):
-    """AMD gfx1201 (4 x R9700): the split ships opt-in. auto keeps the layer split, `on` starts the split, `off` is off; one constant flips auto."""
+class AmdDefault(unittest.TestCase):
+    """AMD gfx1201 (R9700): the split is the default on two or more cards (owner, 11-02), `off` turns it off, `on` says why when it cannot run;
+    one constant (AUTO_SPLIT_AMD_ARCHS) says which AMD architectures start it by themselves, every other one keeps the layer split silently."""
 
     R9700 = dict(name="AMD Radeon AI PRO R9700", vram_mib=32624, cc=0, vendor="amd", arch="gfx1201")
     cfg = Apply.cfg
@@ -372,20 +373,55 @@ class AmdOptIn(unittest.TestCase):
         return S.apply_to_config(cfg, exe_for_cards=exe_for, system="linux", probe=lambda i: cards(4, **self.R9700), ram=lambda: (125.0, 80.0),
                                  scan=lambda path: udq4(routed_bytes=int(71.7 * GIB)), **kw)
 
-    def test_auto_keeps_the_layer_split_on_gfx1201_and_says_nothing(self):
+    def test_auto_starts_the_split_on_gfx1201(self):
         import tempfile
 
-        self.assertEqual(S.AUTO_SPLIT_AMD_ARCHS, ())   # the one constant: ("gfx1201",) when the targets are met
+        self.assertEqual(S.AUTO_SPLIT_AMD_ARCHS, ("gfx1201",))
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self.amd(tmp)
             del cfg["split_engine"]
-            before = dict(cfg)
-            d = self.run_amd(cfg)
-            self.assertFalse(d.use_split)
-            self.assertTrue(d.quiet)
-            self.assertEqual(cfg, before)                                  # the layer split's config, untouched
-            cfg["drafting"] = "mtp"                                        # not even with the MTP chosen
-            self.assertFalse(self.run_amd(cfg).use_split)
+            seen = []
+            d = self.run_amd(cfg, seen)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(seen, [(4, 0, "gfx1201")])
+            self.assertEqual(cfg["exe"], "/e/strata-split-4-gfx1201")
+
+    def test_off_turns_it_off_by_every_route(self):
+        import os
+        import tempfile
+
+        for how in ("key", "preset", "env"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp)
+                del cfg["split_engine"]
+                if how == "key":
+                    cfg["split_engine"] = "off"
+                elif how == "preset":
+                    cfg["split_engine"] = False
+                else:
+                    os.environ["STRATA_SPLIT_ENGINE"] = "0"
+                before = dict(cfg)
+                try:
+                    d = self.run_amd(cfg)
+                finally:
+                    os.environ.pop("STRATA_SPLIT_ENGINE", None)
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)
+                self.assertEqual(cfg, before)                              # the layer split's config, untouched
+
+    def test_an_amd_architecture_not_in_the_list_keeps_the_layer_split_silently(self):
+        import tempfile
+
+        for arch in ("gfx1100", "gfx1151"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp)
+                del cfg["split_engine"]
+                before = dict(cfg)
+                d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None, arch=None: "/e/x", system="linux",
+                                      probe=lambda i: cards(4, **{**self.R9700, "arch": arch}), ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)                                   # the can-run rule, not a refusal message
+                self.assertEqual(cfg, before)
 
     def test_explicit_on_starts_the_split_with_the_gfx1201_engine(self):
         import tempfile
@@ -431,16 +467,19 @@ class AmdOptIn(unittest.TestCase):
             self.assertFalse(d.use_split)
             self.assertIn("gfx1100", d.line)
 
-    def test_flipping_the_constant_makes_auto_start_it(self):
+    def test_taking_the_architecture_out_of_the_constant_makes_auto_keep_the_layer_split_but_on_still_runs(self):
         import tempfile
 
         old = S.AUTO_SPLIT_AMD_ARCHS
-        S.AUTO_SPLIT_AMD_ARCHS = ("gfx1201",)
+        S.AUTO_SPLIT_AMD_ARCHS = ()
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 cfg = self.amd(tmp)
                 del cfg["split_engine"]
-                self.assertTrue(self.run_amd(cfg).use_split)
+                d = self.run_amd(cfg)
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)
+                self.assertTrue(self.run_amd(self.amd(tmp, split_engine="on")).use_split)
         finally:
             S.AUTO_SPLIT_AMD_ARCHS = old
 
