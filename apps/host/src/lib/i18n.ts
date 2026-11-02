@@ -44,14 +44,17 @@ import base_ru from '../locales/ru.json';
 import base_pt from '../locales/pt.json';
 import base_ko from '../locales/ko.json';
 import base_fr from '../locales/fr.json';
+/* SMI2000: the Monitor's "Memory and experts" card (components/SmiMemoryPanel.tsx). */
+import smi_en from '../locales/smi-en.json';
+import smi_es from '../locales/smi-es.json';
 
 export const LANGUAGES=[{value:'en',label:'English'},{value:'zh',label:'中文（简体）'},{value:'ja',label:'日本語'},{value:'de',label:'Deutsch'},{value:'fr',label:'Français'},{value:'es',label:'Español'},{value:'ru',label:'Русский'},{value:'pt',label:'Português'},{value:'ko',label:'한국어'}] as const;
 export type Language=typeof LANGUAGES[number]['value'];
 /* The Tune model dialog's strings live in tune-<lang>.json (apps/host/scripts/make-tune-locales.py) so other interface work does not collide with them. */
 /* The tool-server, picture and agent-result strings of the tools and images fixes live in tools-<lang>.json for the same reason. */
 /* The strings that had no key in the files above (#3479, #3825) and the 0.2.4.3 fixes live in fix-<lang>.json (scripts/make-fix-locales.py). */
-const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en};
-const [zh,ja,de,es,ru,pt,ko,fr]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh,...gh_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja,...gh_ja},{...base_de,...tune_de,...tools_de,...fix_de,...gh_de},{...base_es,...tune_es,...tools_es,...fix_es,...gh_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru,...gh_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt,...gh_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko,...gh_ko},{...base_fr,...tune_fr,...tools_fr,...fix_fr,...gh_fr}] as Record<string,string>[];
+const english:Record<string,string>={...baseEnglish,...tune_en,...tools_en,...fix_en,...gh_en,...smi_en};
+const [zh,ja,de,es,ru,pt,ko,fr]=[{...base_zh,...tune_zh,...tools_zh,...fix_zh,...gh_zh},{...base_ja,...tune_ja,...tools_ja,...fix_ja,...gh_ja},{...base_de,...tune_de,...tools_de,...fix_de,...gh_de},{...base_es,...tune_es,...tools_es,...fix_es,...gh_es,...smi_es},{...base_ru,...tune_ru,...tools_ru,...fix_ru,...gh_ru},{...base_pt,...tune_pt,...tools_pt,...fix_pt,...gh_pt},{...base_ko,...tune_ko,...tools_ko,...fix_ko,...gh_ko},{...base_fr,...tune_fr,...tools_fr,...fix_fr,...gh_fr}] as Record<string,string>[];
 const catalogs:Record<Language,Record<string,string>>={en:english,zh,ja,de,fr,es,ru,pt,ko};
 const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
 const decode=(text:string)=>text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,(whole,key:string)=>key[0]==='#'?String.fromCodePoint(key[1].toLowerCase()==='x'?parseInt(key.slice(2),16):parseInt(key.slice(1),10)):entities[key]??whole);
