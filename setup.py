@@ -6156,14 +6156,30 @@ def kv_streaming_ram_gb(ctx, kv) -> float:
     return ctx * (13 * KV_CELL_BYTES.get(kv, 1056)) / 1e9
 
 
+def kv_streaming_need_gb(model, ctx, kv) -> float:
+    """The RAM a PC needs before setup streams this model's KV cache on its own (`--kv-streaming on` skips the test):
+    the smaller of two numbers.  (1) The model's all-in-RAM need (`ram_gb`) + the KV cache + 1 GB: the experts all fit
+    and the cache comes on top.  (2) The experts (`arena_gb`) + LOW_RAM_HEADROOM_GB beside them (the line
+    `low_ram_needed` draws) + the KV cache: a small card holds so few experts that the engine's RAM copy is the
+    rest, and the KV's RAM then comes out of that copy (or out of the OS file cache when the arena does not fit),
+    not on top of it.  KV-128 (phaseA-tests/gh-sweep-1031/KV-128.md), IQ3_S on a 12 GB card at 128K, 45 GiB of RAM
+    for the engine (Linux mimic): streaming gave 756 -> 1,267 expert slots and a 32K prompt in 12-17 s instead of
+    21-34 s, with the RAM the engine used unchanged (RAM budget 31 -> 29 GiB); on the owner's RTX 5070 (R5070's
+    run) 924 -> 1,585 slots, a 32K prompt 130 -> 79 s, the RAM copy 30.8 -> 28.9 GiB, no paging.  Rule (1) alone
+    asked 64.8 GB of a PC that reads 63.1 and left the KV in VRAM."""
+    kv_gb = kv_streaming_ram_gb(ctx, kv)
+    m = MODELS[model]
+    return min(m["ram_gb"] + kv_gb + 1, m["arena_gb"] + LOW_RAM_HEADROOM_GB + kv_gb)
+
+
 def kv_streaming_wanted(model, ctx, kv, ram, choice="auto") -> bool:
     """Will setup stream this model's KV cache on this PC: from 64K up, when the RAM holds the cache beside the
-    model's experts (+1 GB); `--kv-streaming on|off` overrides the RAM test (the owner's rule), and WSL never
-    streams.  Step 7 writes `--kv-resident` on exactly this answer, and the launcher's preset diff
-    asks it too: a config's `--kv-resident` and a preset's "auto" are the same setting when this says yes."""
+    model's experts (`kv_streaming_need_gb`); `--kv-streaming on|off` overrides the RAM test (the owner's rule), and
+    WSL never streams.  Step 7 writes `--kv-resident` on exactly this answer, and the launcher's preset diff asks it
+    too: a config's `--kv-resident` and a preset's "auto" are the same setting when this says yes."""
     if is_wsl() or choice == "off":
         return False
-    return ctx >= 65536 and (ram >= MODELS[model]["ram_gb"] + kv_streaming_ram_gb(ctx, kv) + 1 or choice == "on")
+    return ctx >= 65536 and (ram >= kv_streaming_need_gb(model, ctx, kv) or choice == "on")
 
 
 def low_ram_one_gpu_why(model, ram, choice, sel=None) -> list[str]:
@@ -10320,7 +10336,8 @@ def main() -> int:
     # when it fits.
     kv_ram_gb = kv_streaming_ram_gb(ctx, kv)      # the branches below are kv_streaming_wanted, with its messages
     # --kv-streaming on|off overrides the RAM test (the owner's rule); WSL stays off - it cannot stream.
-    stream_fits = ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1
+    stream_need = kv_streaming_need_gb(model, ctx, kv)
+    stream_fits = ram >= stream_need
     if is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
         if a.kv_streaming == "on":
@@ -10332,8 +10349,8 @@ def main() -> int:
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
         if not stream_fits:
-            warn(f"KV streaming needs ~{kv_ram_gb:.1f} GB of RAM beside the ~{MODELS[model]['ram_gb']} GB {model} "
-                 f"uses; this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "
+            warn(f"KV streaming needs ~{stream_need:.0f} GB of RAM for {model} (its experts, the room beside them and "
+                 f"the {kv_ram_gb:.1f} GB cache); this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "
                  "under load")
         if q4_split:                                   # #498: no budget to take it out of
             pass
@@ -10344,8 +10361,8 @@ def main() -> int:
             warn(f"the KV cache's {kv_ram_gb:.1f} GB of RAM come on top of your {budget:g} GiB RAM budget (setup "
                  f"would take them out of it: {resident_budget_gib(model, ram, kv_ram_gb)} GiB); kept as you chose")
     elif ctx >= 65536:   # #620: say why, so a regenerated config that lost --kv-resident is not a surprise
-        ok(f"KV streaming off: it needs ~{kv_ram_gb:.1f} GB of RAM beside the ~{MODELS[model]['ram_gb']} GB {model} "
-           f"uses, and this PC has {ram:.0f}; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on "
+        ok(f"KV streaming off: it needs ~{stream_need:.0f} GB of RAM for {model} (its experts, the room beside them "
+           f"and the {kv_ram_gb:.1f} GB cache), and this PC has {ram:.0f}; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on "
            "turns it on anyway")
     elif a.kv_streaming == "on":
         warn("--kv-streaming on: a context under 64K is not streamed (the attention's window holds all of it): off")

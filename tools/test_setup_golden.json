@@ -875,6 +875,8 @@
     "131072",
     "--kv",
     "int8",
+    "--kv-resident",
+    "32768",
     "--vision",
     "--vram-reserve-mib",
     "700"
@@ -1029,6 +1031,8 @@
     "131072",
     "--kv",
     "int8",
+    "--kv-resident",
+    "32768",
     "--vision",
     "--vram-reserve-mib",
     "700"
