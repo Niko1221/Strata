@@ -2,7 +2,7 @@
 
 为什么量引擎侧
 --------------
-反传那条路（`sft_mezo.py` / `bench_fullctx.py`）在 2048 token 上已经到 8.6~8.9 s/step ≈ 2 tok/s（学生自采），
+反传那条路（`hf_ref.py` / `bench_fullctx.py`）在 2048 token 上已经到 8.6~8.9 s/step ≈ 2 tok/s（学生自采），
 128K 更是连显存都放不下（92.63 GiB 起步）。满上下文只剩一条：引擎前向 + `SCORE`，权重冻结，±ε 由 LoRA
 adapter 的**符号**给出（`SCORE + <ids>` / `SCORE - <ids>`）。这个脚本量的就是那条路。
 

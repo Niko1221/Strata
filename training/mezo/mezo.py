@@ -5,8 +5,8 @@
             128K 满上下文实测一步 58.4 s（HF 反传在该长度放不下）。
             `train.py --algo sft|dpo|grpo`（默认方法 mezo）与直接跑本文件
             是**同一个 main()** —— 接口只拼参数，不复制实现。
-  sft_mezo.py  引擎还没有 LORA/SCORE 时期的 PyTorch 前向；只剩 score parity
-            对拍一个用途（−56.6433 vs −56.6508），不在注册表里。
+  hf_ref.py  引擎还没有 LORA/SCORE 时期的 PyTorch 前向（在 torch 层 backward/ 下）；
+            只剩 score parity 对拍一个用途（−56.6433 vs −56.6508），不在注册表里。
 
 算法（--objective，与 train.py --algo 一一对应）：
     ce    SFT：answer 段逐 token logp → objectives.sft_loss（mean 口径）
@@ -969,7 +969,7 @@ def main() -> int:
                     help="每个方向用几条样本求损失（0 = 全部；数据小就全量，损失方差再降一档）")
     ap.add_argument("--resume", action="store_true", help="从 --out 的 npz 恢复 theta 继续训")
     ap.add_argument("--loss-reduction", choices=("mean", "sum"), default="mean",
-                    help="损失口径。mean=按 answer 段 token 数平均（默认，与 sft_mezo.py 一致，"
+                    help="损失口径。mean=按 answer 段 token 数平均（默认，与 hf_ref.py 一致，"
                          "pj 不随 T 变大）；sum=旧语义 sum/rows（pj ∝ T，长序列上等于把 lr 乘 T，"
                          "只用于复现历史结果）")
     ap.add_argument("--success-data", default="",

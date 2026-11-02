@@ -10,7 +10,7 @@ method whose script is absent exits before anything is loaded and names the file
 | branch | adds | methods |
 |---|---|---|
 | `feat/train-mezo` | shared numpy/engine layer, `mezo/`, the engine-side changes it needs, data/eval tooling | `mezo` only — no torch anywhere |
-| `feat/train-backforward` | that, plus `backward/`, `ce.py` / `lora.py` / `update_rules.py`, `mezo/sft_mezo.py` | both |
+| `feat/train-backforward` | that, plus `backward/`, `ce.py` / `lora.py` / `update_rules.py`, `backward/hf_ref.py` | both |
 | `feat/train_support` | the union of the two, plus these review notes | both |
 
 The zero-order line is the base: `train.py → mezo/mezo.py` closes over `objectives.py` and
@@ -50,7 +50,7 @@ Defaults, and why they are defaults:
   the same binary that serves, so `python3 train.py --algo sft` and `python3 mezo/mezo.py
   --objective ce` are literally the same `main()` — and `mezo.py` is a class hierarchy
   (`EngineMezo` base + one subclass per algorithm implementing only data loading and the
-  loss). `sft_mezo.py` (PyTorch forward) is retired from the registry; it remains as the
+  loss). `hf_ref.py` (PyTorch forward) is retired from the registry; it remains as the
   score-parity reference (−56.6433 vs engine −56.6508) and is never picked silently.
 
 These scripts are a **worked example, not a framework**: a minimal, self-contained
@@ -72,15 +72,15 @@ One entry point, six ways to use it. Measured on the stock weights (48 MoE layer
 | zero-order DPO | `--algo dpo --dpo-data pairs.jsonl` | as above | — | 4 SCORE per pair per direction |
 | zero-order GRPO (replayed) | `--algo grpo --rollouts r.jsonl` | as above | — | K SCORE per group per direction |
 | **backprop SFT** | `--algo sft --method backward` | 38.2 GiB | — | 22.6 s |
-| zero-order CE, PyTorch *(parity harness)* | `python3 sft_mezo.py` | 34.5 / **26.5** GiB | 53.8 / 57.3 GiB | 20.5 / 29.0 s |
+| zero-order CE, PyTorch *(parity harness)* | `python3 backward/hf_ref.py` | 34.5 / **26.5** GiB | 53.8 / 57.3 GiB | 20.5 / 29.0 s |
 | GRPO, **on-policy**, PyTorch student | `--algo grpo --method backward --prompts p.jsonl --model <HF dir>` | **26.2 GiB** | ~57 GiB | 21.4 s (4x16 tokens, of which 10.7 s sampling) |
 
 The zero-order rows split by script on purpose: they are not the same measurement. The
 engine row is a single forward per step inside the engine (no NF4 pack in the training
 process, the pack is the engine's own); the PyTorch rows keep the experts in VRAM/RAM and
-run the forward in `sft_mezo.py`. Comparing them is how the 26x per-token gap was found
+run the forward in `hf_ref.py`. Comparing them is how the 26x per-token gap was found
 (`_profile_route.py`) — measurement evidence, not evidence of two routes: there is one
-zero-order method (the engine), and `sft_mezo.py` stays out of the registry.
+zero-order method (the engine), and `hf_ref.py` stays out of the registry.
 
 Two columns in the zero-order rows are `--vram 24` / `--vram 16`: the expert pack can
 live in VRAM or in RAM, and that dial is the whole memory story (`BENCH-SFT-VS-MEZO.md`
@@ -119,7 +119,7 @@ neither model).
 | **Windows** | supported | `preadv_shim.py` readinto shim (same call sites, same semantics) |
 | macOS | untested | no machine. `preadv` is there, but nothing here has been run on it |
 
-`train.py`, `sft.py` and `sft_mezo.py` all call `platform_check.require()` and stop with
+`train.py`, `sft.py` and `hf_ref.py` all call `platform_check.require()` and stop with
 exit code 2 and this list before anything is loaded. The gate checks whether a usable
 `preadv` exists — native on Linux, the shim everywhere else — not the platform name, so a
 future port does not need to touch the guard.

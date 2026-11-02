@@ -4,7 +4,7 @@
 
 > **▸ 本文所在树 = 零阶线**（三条交付形态里的第 1 条）。这份文档写的是**完整方案**（零阶 + 反传两条路线），
 > 但本树只带零阶那一层：`training/` 下没有 `backward/`、没有 `ce.py` / `lora.py` / `update_rules.py`、
-> 没有 `mezo/sft_mezo.py`，也没有需要 torch 的 bench 与测试（8 个测试文件、**144 项、零 torch**）。
+> 没有 `backward/hf_ref.py`，也没有需要 torch 的 bench 与测试（8 个测试文件、**144 项、零 torch**）。
 > 官方若只要零阶，**提交这棵树即可**，不需要任何裁剪；要反传线就叠 `feat/train-backforward`，
 > 两条都要就是 `feat/train_support` —— 三条分支的代码逐字相同，差别只在文件在不在。
 
@@ -69,8 +69,9 @@
   训练路径不 import torch（把 `torch` 顶成 raise ImportError 的模块后，144 项仍然全过）。
   这是「只要零阶」时的完整答案。
 - **`feat/train-backforward`** = 上一条 + 整层 torch 反传（比它多 32 个 `.py`）。
-  反传在这个树里不是"另一种开关"，而是另一条物理路线：梯度来自 PyTorch autograd，
-  因此它同时充当零阶的参考实现（两者在同一输入上的 logp / loss 能对上，§5.5）。
+  反传在**命令面上**和零阶是同一个开关（`--method`），在**执行栈上**不是：它的梯度来自
+  本地 PyTorch autograd，零阶的 logp 来自引擎进程。所以它多出一套 Python 依赖，也因此
+  顺带充当零阶的参考实现（两者在同一输入上的 logp / loss 能对上，§5.5）。
 - **`feat/train_support`** = 两者的并集 + 这组审核文档。代码与 `feat/train-backforward`
   **逐字相同**（`git diff -- '*.py'` 为空），所以审代码时三条分支给出的 diff 一致。
 
@@ -97,8 +98,10 @@
   **没有重写 GEN 的采样或前向路径**；不过「GEN 与上游逐值一致」这件事**没有做过对拍**，
   别把它当已验证结论。**归属注意**：这 477 行里 **421 行属于尚未合入的上游 PR #3267**
   （Alexey Rogov），我们自己的是 133 行符号翻转 + `lora_adapters.cpp` 的换表 —— 三层见 §7.3；
-- **引擎侧没有反传**，`--method backward` 走的是本地 PyTorch/HF autograd（`sft.py`/`grpo.py`），
-  这是两条物理上不同的路线，不是同一实现的两种开关。**反传这一层是独立增量，而且现在按文件就能拆**：
+- **引擎侧没有反传**，`--method backward` 走的是本地 PyTorch/HF autograd（`sft.py`/`grpo.py`）。
+  分层要说清：**算法只有一份**（`objectives.py` 的数学），**开关只有一个**（`--method`），
+  两条方法的差别只在执行栈 —— 一个在引擎进程里前向、一个在本地 torch 建图。这决定的是
+  依赖（装不装 torch）与显存曲线，不是数学。也正因为它是执行栈级差异，反传这一层能整层拆掉：
   它比零阶树只多 32 个 `.py`（30 个 torch 文件 + 2 个诊断脚本），共用层与 `train.py` / `algos.py`
   两边逐字一致。只交 `feat/train-mezo`（`56c7eae0`）就是"共用层 + 零阶"的完整树，144 项全绿、
   训练路径零 torch（无 torch 环境下同样 144 过）；拆法与实测出的坑见 §7.4；
@@ -113,27 +116,38 @@
 三条问题各对应一处交付。下面每条都分开写「改造前」与「改造后」—— 这里最容易读错：
 **改造前的限制不等于本 PR 的限制**，尤其第 1 条。
 
-### 1.1 长上下文：不是方法到不了 128K，是当时那种实现到不了
+### 1.1 长上下文：不是零阶到不了 128K，是「零阶写在 PyTorch 前向里」那一版到不了
 
-**改造前**：零阶跑在 `mezo/sft_mezo.py` 里 —— PyTorch 里 `torch.no_grad()` 前向、手工扰动参数张量。
+先说清改造前的结构，否则这条一定读错：**当时没有方法轴**。算法与方法被压进文件名 ——
+一个方法一个脚本，脚本里再各自实现一遍算法（`sft_mezo.py` = sft 算法 × mezo 方法，
+`sft.py` = sft/dpo × autograd，`grpo.py` = grpo × autograd）。所以「零阶的实现」当时只有
+一份，就是 `sft_mezo.py`；它爆了，看上去就像「零阶爆了」。
+
+**改造前**（`sft_mezo.py`：PyTorch 里 `torch.no_grad()` 前向、手工扰动参数张量）：
 按 `mem_guard` 的预算，这一档给到 55,808 token；实测在这一档 **OOM**，且失败申请量可以直读：
 **24,916,262,912 B = 55,808² × 8 B**，即一块 `[T,T]` 矩阵被实体化了（不是推断，见 `PROTOCOL-FULLCTX-EVAL.md`）。
-成因写在 `sft_mezo.py` 自己的注释里：一旦给 `body()` 传 `attention_mask`，sdpa 就掉出 flash/causal
+成因写在那份代码自己的注释里：一旦给 `body()` 传 `attention_mask`，sdpa 就掉出 flash/causal
 快路径，改为物化 `(R,H,S,S)` 的注意力权重；而 `mem_guard` 的零阶反解里**没有 T² 项**，
 于是上限被系统性高估约 2×。所以准确说法是「它在 55K 就已经爆了，而且爆得不可预期」，
 「128K 不可及」只是结果。
 
-**改造后**：零阶不再自己跑前向 —— 前向就是引擎的 `SCORE` 命令（teacher-forced 逐位置 logp），
-训练进程只拿一维 logp 数组，显存等于推理基线。于是上限变成**模型自己的 131072**，
-账面 26.9 GiB、一步 63.8 s，是常态而非极限（§5.1 与 §5.2 表 A 第 1 行）。
+**这个失败属于那条前向，不属于「零阶」这个方案**：同一份 PyTorch 前向，换 CE / DPO / GRPO、
+换反传 / 零阶，都一样要物化那块矩阵。零阶对前向只提一个要求 —— 「给定 θ 返回一个标量」，
+它从不要求前向跑在训练进程里。
 
-> `sft_mezo.py` 在本 PR 里只剩一个用途：与 HF 做 score parity 对拍（§5.5）。
-> 它不在任何 `--method` 的映射里，`--method mezo` 走的是 `mezo/mezo.py`。
-> 「零阶能不能满上下文」的答案是**能**；不能的是「把零阶放在 PyTorch 前向里跑」这一种实现。
+**改造后**：方法轴抽出来，只剩「前向从哪来」这一个差异点。零阶的前向交给引擎的 `SCORE`
+命令（teacher-forced 逐位置 logp），训练进程只拿一维 logp 数组，显存等于推理基线。于是上限
+变成**模型自己的 131072**，账面 26.9 GiB、一步 63.8 s，是常态而非极限（§5.1 与 §5.2 表 A 第 1 行）。
+
+> 那个旧文件现在叫 `backward/hf_ref.py`（从 `mezo/sft_mezo.py` 挪进 torch 层并改名）。
+> 它在本 PR 里只剩一个用途：与 HF 做 score parity 对拍（§5.5）。它**不在** `METHODS` 的
+> 任何一项里，`--method mezo` 走的是 `mezo/mezo.py`；《零阶能不能满上下文》的答案是**能**，
+> 不能的是「把零阶落在 PyTorch 前向里」这一种实现。旧名是「算法 × 方法」的连写，这正是
+> 拆分要去掉的东西 —— 留着它会让人以为「mezo 就是那个文件」。
 
 ### 1.2 损失数学原本有三份
 
-`sft.py` / `grpo.py` / `sft_mezo.py` 各写一遍 CE/DPO/GRPO，sum 与 mean 口径混用
+`sft.py` / `grpo.py` / `hf_ref.py` 各写一遍 CE/DPO/GRPO，sum 与 mean 口径混用
 （旧 sum 口径在 124K 上 pj = −4.03e+04，两步把 ‖θ‖ 推高 92%、生成乱码）。
 同一次训练换实现就换个数，无法互相对照。**改造后**：收敛到 `objectives.py` 一处，numpy 与 torch
 两条路径逐值对拍（§5.5）。
@@ -164,7 +178,7 @@
 - **这张表是"两条线都在"的树（bwd / support）上的六个组合**。零阶分支（`feat/train-mezo`）只带
   左半边：`--method` 的可用项由文件决定（`algos.available()`），缺 `backward/sft.py` 时 `--list`
   会注明"不在这条分支上"，`--method backward` 在加载模型前退出并指路 —— 见 §7.1。
-- 更新那一半做了统一，但**有边界**：反传线（`sft.py`）与已退役的 PyTorch 零阶线（`sft_mezo.py`）
+- 更新那一半做了统一，但**有边界**：反传线（`sft.py`）与已退役的 PyTorch 零阶实现（`hf_ref.py`）
   共用 `update_rules.py` 的 `BackwardRule` / `MezoRule`（同一 `step(loss_fn)`）。
   **引擎零阶 `mezo.py` 不能复用** —— 它的"前向"是跨进程的 `SCORE`、更新对象是 adapter 表而不是
   torch 参数，所以自己实现 ZO 循环（见 D4）。两处步长口径要人工保持一致，是 D4 之后新增的审核点。
@@ -254,7 +268,8 @@ open 会话 → 逐行喂命令 → close，不是一个"提交训练任务、�
 | 实测量级显存 | 26.9 GiB 账面（§5.1） | 34~45 GiB（§5.1） |
 
 一句话：**零阶是"装好的环境 + 一个自己编译的引擎"就能跑，反传是"另装一套 PyTorch 栈"才能跑。**
-两者不共享 Python 依赖，这正是本 PR 把它们做成两条路线、而不是一个开关的理由（D1）。
+两者不共享 Python 依赖，这正是本 PR 把它们交付成两条**可整层拆开的分支**、而不是一个
+"要么全装要么全不能跑"的包的理由（D1）。命令面上它们仍然是一个开关（`--method`）。
 
 > 引擎怎么来：`STRATA_ENABLE_CUDA` 默认是 **OFF**（`CMakeLists.txt:80`），必须显式打开，
 > 写成 `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON
@@ -305,7 +320,7 @@ training/
   mezo/      零阶：mezo.py（引擎当前向）
   bench/     基准与一次性探针：budget、judge_limits、math_build_data、prep_*、run_plan …
   tests/     8 个单测（144 项，零 torch）
-              # 本树没有 backward/、ce.py、lora.py、update_rules.py、mezo/sft_mezo.py
+              # 本树没有 backward/、ce.py、lora.py、update_rules.py、backward/hf_ref.py
 ```
 
 > 这些是**功能代码，不是示例**。原稿放在 `examples/training/` 名下不副实 —— 上游 `main` 根本没有 `examples/`，
@@ -313,7 +328,7 @@ training/
 
 ### 3.1 核心实现（新增）
 
-**本树缺的四行**：`backward/sft.py` / `backward/grpo.py`、`update_rules.py`、`ce.py`、`mezo/sft_mezo.py` 不在这条分支上（它们只在 `feat/train-backforward`）。表里保留这几行是为了让你看到完整交付的分工；本树能跑的是其余各行。
+**本树缺的四行**：`backward/sft.py` / `backward/grpo.py`、`update_rules.py`、`ce.py`、`backward/hf_ref.py` 不在这条分支上（它们只在 `feat/train-backforward`）。表里保留这几行是为了让你看到完整交付的分工；本树能跑的是其余各行。
 
 | 文件 | 行 | 职责 | 审核重点 |
 |---|---|---|---|
@@ -323,8 +338,8 @@ training/
 | `algos.py` | 220 | 注册表 + lr 分表 + 旧参数名报错 | lr 硬编码在表里是否该改成可覆盖配置（Q4） |
 | `train.py` | 575 | 唯一入口、参数翻译、模型解析 | `--dry-run` 打印的 argv 与真实执行是否同源 |
 | `backward/sft.py` / `backward/grpo.py` | — | 反传路线（PyTorch/HF autograd；DPO 也走 `sft.py`） | 与 `objectives.py` / `update_rules.py` 是否真共用同一函数而不是复制；`--ckpt` 重算的边界 |
-| `update_rules.py` | 198 | `BackwardRule`（autograd + AdamW）/ `MezoRule`（θ±ε + SGD）/ `zo_direction()`，同一 `step(loss_fn)`。**使用者是 `sft.py` 与已退役的 `sft_mezo.py`；引擎零阶 `mezo.py` 不走它** | 两规则的 rel/动量语义与 `mezo.py` 内联的 ZO 循环是否仍一致；`zo_direction` 的"每个参数方向必须不同" |
-| `dpo.py` | — | DPO 纯逻辑（偏好对校验、`dpo_margin`、batch 组装），无 torch，被 `sft.py`（反传）与 `sft_mezo.py`（零阶）共用 | 这里与 `objectives.dpo_loss` 的分工是否清晰，会不会又长出第二份 margin |
+| `update_rules.py` | 198 | `BackwardRule`（autograd + AdamW）/ `MezoRule`（θ±ε + SGD）/ `zo_direction()`，同一 `step(loss_fn)`。**使用者是 `sft.py` 与已退役的 `hf_ref.py`；引擎零阶 `mezo.py` 不走它** | 两规则的 rel/动量语义与 `mezo.py` 内联的 ZO 循环是否仍一致；`zo_direction` 的"每个参数方向必须不同" |
+| `dpo.py` | — | DPO 纯逻辑（偏好对校验、`dpo_margin`、batch 组装），无 torch，被 `sft.py`（反传）与 `hf_ref.py`（torch 侧参考）共用 | 这里与 `objectives.dpo_loss` 的分工是否清晰，会不会又长出第二份 margin |
 | `bench/budget.py` / `guard.py` / `bench/usage.py` | 240 / 135 / — | 预算计算（给定机器反推各方案能训多长）、训练护栏（防"10 条同构样本训坏无关能力"）、真实请求尺寸统计；前两个是独立脚本，`guard` 被 `sft.py` 引入 | `budget.py` 与 `mem_guard.py` 的判据是否重复（一个反推上限、一个判当前是否超） |
 
 ### 3.2 服务端（修改）
@@ -368,7 +383,7 @@ training/
 | 8 | `[Train] the pieces the entry point reads` | `dpo.py` / `guard.py` / `run_plan.py` / 评测探针集 |
 | 9 | `[Serve] /v1/training/*` | 让位会话：start / status / stop |
 | 10 | `[Docs]` + `[Tools]` + `[Data]` | 说明、`bench_fullctx.py`、输入与实测 json |
-| 11 | 反传线 5 组（`backforward`） | `sft.py` / `grpo.py` / 加载与 kernel / `sft_mezo.py` 退役 / 探针 |
+| 11 | 反传线 5 组（`backforward`） | `sft.py` / `grpo.py` / 加载与 kernel / `hf_ref.py` 退役 / 探针 |
 
 反传那 5 组在 `feat/train-backforward` 上，其余在 `feat/train-mezo` 上（共用层 + 零阶 +
 引擎），`feat/train_support` 是两者的合并面。逐组看时用
@@ -385,7 +400,8 @@ training/
 
 **D2 默认 `--method mezo`**
 - 依据：显存与上限、单步速度、held-out 回退三项都占优（§5.1 / §5.2 / §5.4）。
-  **不主张"零阶收敛更快"** —— 达到同等效果所需步数没有对照（§5.2 末表）。
+  **不主张"零阶收敛更快"** —— 实测只在"浅档"成立：到基线 20% 快 2.8×、10% 快 3.1×，
+  再深零阶平台化、反传还能降（§5.2 表 A2）。
 - 风险：新人直觉是"反传更准"，默认零阶需要文档解释，否则会被当成降级。是否该强制显式传 `--method`？
 
 **D3 损失单一出处，`objectives.py` 内 numpy / torch 双路径**
@@ -493,11 +509,61 @@ training/
 | 单步墙钟（8K 对 4 608） | 4.39 s vs 81.9 s = **18.7×** | 可比，同为一步 |
 | 步级吞吐（tok/s） | 1 807 vs 56.3 = **32×** | 可比，同为一步 |
 | 每百万 token 的墙钟 | 9.2 min vs **4.9 h** = **32×** | 可比，口径已归一 |
-| **收敛到同等效果所需总时间** | **未测** | ❌ 没有做这个对照 |
+| **收敛到同等效果所需总时间** | **浅档（≤20%）零阶快 2.8×；10% 档 3.1×；≤5% 零阶到不了** | ✅ 2026-11-03 三档 lr 实测，见下方表 A2 |
 
 前三个数只回答"喂同样的 token，谁快"。零阶每步更新的是 rank-8 的 `3.34 M` 参数、
-单方向信噪比 ~1/√d（§5.3），因此**通常需要更多步**才能达到反传同样的效果；
-两边要走多少步没做过对照，所以本文不给"端到端快多少倍"的结论。
+单方向信噪比 ~1/√d（§5.3），因此**通常需要更多步**才能达到反传同样的效果。第四个数现在是实测的
+（三档 lr 扫描），但它**只在一个任务上成立**，读法见下。
+
+**表 A2：到同等效果的总时间（2026-11-03 实测，单文档、48 GiB）**
+
+协议：同一份 ~4.2K token 文档（8 条自造事实循环 89 遍，基线 CE 有真实下降空间；自然长文的基线只有
+0.04~0.15 nats，天花板太低量不出收敛），同一台机器，都从 B=0 adapter 起、每步 1 条样本；
+零阶 `--method mezo`（引擎 `SCORE`，rank 8，lr 见 A2-2），反传 `--method backward`（lr 1e-4，rank 16，
+`--ckpt`，`--select-tokens off`）。效果 = 答案段 mean CE；两侧 tokenization 不同，所以只看**相对基线的百分比**。
+
+**A2-1 主表**（零阶取 lr 1e-5 —— 三档里唯一"既稳、终点又最低"的档）：
+
+| 指标 | 零阶（mezo, lr 1e-5） | 反传（backward） |
+|---|---|---|
+| 基线 CE / 终点 CE | 1.782 → **0.158**（8.9%，平台） | 0.373 → **0.0119**（3.2%，仍在降） |
+| 步时 | **3.1 s**（300 步 921 s，含每 10 步评估） | **24.8 s**（前 14 步），之后 **58 s** |
+| 降到基线 50% | 第 20 步 ≈ **62 s** | 第 2 步 ≈ **50 s**（零阶 1.2× 慢） |
+| 降到基线 20% | 第 40 步 ≈ **124 s** | 第 14 步 ≈ **347 s**（零阶 **2.8×** 快） |
+| 降到基线 10% | 第 60 步 ≈ **186 s** | 第 18 步 ≈ **579 s**（零阶 **3.1×** 快） |
+| 降到基线 5% | **到不了**（平台 8.9%） | 第 20 步 ≈ **695 s** |
+| θ 范数漂移 | 19.7 → 28.9（**1.47×**） | —（AdamW 逐参数归一，无此量） |
+
+**A2-2 零阶的 lr 扫描**（同一任务、同一数据、只改 lr）：
+
+| lr | θ 范数漂移 | ≤20% | ≤10% | 终点 CE | 备注 |
+|---|---|---|---|---|---|
+| 3e-5 | **3.0×** | 31 s（第 10 步） | 到不了 | 0.186（10.4%） | `rel` 前 5 步冲到 0.8，**不是工作点** |
+| **1e-5** | 1.47× | 124 s（第 40 步） | 186 s（第 60 步） | **0.158（8.9%）** | 终点最低、漂移可控 |
+| 3e-6 | 1.29× | 372 s（第 120 步） | 806 s（第 260 步） | 0.169（9.5%） | 第 10 步 CE 反升到 2.53（高于基线） |
+
+四条读法：
+
+1. **"一步快 18.7×"不能换算成"训练快 18.7×"。** 本机这一步比是 3.1 s vs 24.8 s（≈8×，与 18.7× 同量级，
+   差异来自这里的反传开了 `--ckpt`、且显存档位与 §5.2 表 A 那次不同）。到 20% 档，零阶用 40 步、
+   反传用 14 步 —— 零阶**步数只多 2.9 倍**，远没有"每步效果小一个量级"那么悬殊。
+2. **"快一个量级"是 lr 撞出来的，不是方法属性。** 若只取 lr 3e-5（`rel` 前 5 步 0.8、`|θ|` 漂 3×），
+   20% 档只要 31 s，看上去快 11×；同一份数据、同一台机器换到 1e-5 就是 124 s，**2.8×**；10% 档 186 s vs 579 s，
+   **3.1×**。唯一变量是 lr，所以这个倍数不该由"方法"承担。
+3. **浅档要分两段说。** 50% 档反传反而更快（50 s vs 62 s）—— 它每步都吃得满，前两步就过半；
+   零阶的前 10 步还在 `rel` 尖峰里（最大 0.46）。零阶的优势从 20% 档才开始，因为那里比的是**步数与步时之积**。
+   同理，时间几乎与 lr 成反比（31 / 124 / 372 s ≈ 1 : 4 : 12，lr 是 1 : 3 : 10），而终点 CE 并不随 lr 单调
+   （0.186 / 0.158 / 0.169）—— 1e-5 附近是拐点，不是"越小越好"。
+4. **深档零阶到不了。** 三档 lr 都没到基线 5%（平台在 8.9~10.4%），反传第 20 步就到 3.2% 且趋势仍在降。
+   所以"总时间快 N×"在深档**无法定义**，不是"慢"而是"到不了"。
+
+**这张表的边界**：单文档、记忆型任务（同一段重复 89 遍），**不是泛化能力**；两侧 tokenization 不同
+（同一文档反传记 4220 token、引擎记 4259 token），基线 CE 0.373 vs 1.782 差 4.8×，所以**绝对 CE 不可直接比**；
+而"相对基线的百分比"本身也受基线高低影响 —— 严格对拍应该用**同一个打分器**（引擎 `SCORE`）给两个 adapter 打分，
+这一步没做。阈值时间是**首个越过该线的采样点**（每 10 步一次评估），真实时间只会更早、不会更晚。
+反传第 15 步起 tok/s 从 170 掉到 70（步时 25→58 s）的根因未查。
+⇒ 可以说"在这类任务上零阶到同等浅效果快约 3×，深效果到不了"；**不能说**"端到端普遍快 N×"。
+
 §5.4 唯一一条端到端证据是反方向的：同样 4 道题、都学会 2 道，但反传把非训练集打掉 31 项。
 
 **表 B：换一张卡，"能训多长"怎么变（`budget.py` 推算，不是实测）**
@@ -522,7 +588,7 @@ training/
 
 1. **资源充足对零阶不加速，只抬上限，而那个上限已被模型封住。** 8K → 128K 吞吐 1807 → 2050 tok/s
    （不降反升）。所以在这台 48 GiB 机器上，零阶**本来就处于"资源充足"档**；换 141 GiB 卡得到的
-   收益是 0（区间早被 131072 封顶）。反过来，已退役的 torch 零阶（`sft_mezo.py`）**同一张卡同一方法**
+   收益是 0（区间早被 131072 封顶）。反过来，已退役的 torch 零阶（`hf_ref.py`）**同一张卡同一方法**
    27 648 封顶、55 808 直接 OOM —— **"资源够不够"不是方法属性，是实现属性**，这是 D1 选引擎路线的一条实证支撑。
 2. **资源不足对反传不是"慢一点"，是塌陷。** 9 728 处 44.95 / 45.6 GiB 贴顶，吞吐 10.6 tok/s，
    是 4 608 档（56.3）的 1/5.3。折算每百万训练 token：零阶 128K **8.1 min**、零阶 8K 9.2 min、
@@ -729,18 +795,18 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 | 分支 | 切分提交 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
 |---|---|---|---|---|---|
 | **▸ `feat/train-mezo`**（本文所在树） | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **144 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 144 过） | 75 提交 / 102 文件 / ≈+17.7k −93 |
-| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `mezo/sft_mezo.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 268 项（266 过 + 2 项 watchdog 见下） | 87 提交 / 134 文件 / ≈+27.5k −93 |
+| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 268 项（266 过 + 2 项 watchdog 见下） | 87 提交 / 134 文件 / ≈+27.5k −93 |
 | `feat/train_support` | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 268 项（同上） | 104 提交 / 134 文件 / ≈+27.5k −93 |
 
 **如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
 
 | 只收 | 得到 | 失去 |
 |---|---|---|
-| `feat/train-mezo` | 零阶三算法全在（sft / dpo / grpo × 引擎前向）、`LORA` / `SCORE`、引擎侧改动、数学造数据与评测、**0 个新增 pip 包、训练路径零 torch**、144 项 | 只缺**反传那一层**：`backward/` 整层（`sft.py` / `grpo.py` / HF 加载栈）、`update_rules.py` / `ce.py` / `lora.py`、`mezo/sft_mezo.py`（score parity 对拍）、GRPO 的 TIS 重加权、6 个 torch bench、7 个 torch 测试，以及 `test_objectives.py` 的 numpy↔torch 逐值对拍。**DPO 与 `--init-adapter`（课程续训）两条线都有，不属于反传独有** |
+| `feat/train-mezo` | 零阶三算法全在（sft / dpo / grpo × 引擎前向）、`LORA` / `SCORE`、引擎侧改动、数学造数据与评测、**0 个新增 pip 包、训练路径零 torch**、144 项 | 只缺**反传那一层**：`backward/` 整层（`sft.py` / `grpo.py` / HF 加载栈）、`update_rules.py` / `ce.py` / `lora.py`、`backward/hf_ref.py`（score parity 对拍）、GRPO 的 TIS 重加权、6 个 torch bench、7 个 torch 测试，以及 `test_objectives.py` 的 numpy↔torch 逐值对拍。**DPO 与 `--init-adapter`（课程续训）两条线都有，不属于反传独有** |
 | `feat/train-backforward` | 上面全部 + 反传栈，268 项 | 无（严格超集）。代价是树里同时带着零阶，审核时看不出「哪半是这次要的」—— 除非按 §7.1 的文件清单读 |
 | `feat/train_support` | 两条线 + 这组文档（交付面） | — |
 
-一句话：**backforward 相对 mezo 的增量不是「训得更好」，而是「一条物理上不同的路线 + 对拍证据」** ——
+一句话：**backforward 相对 mezo 的增量不是「训得更好」，而是「一套不同的执行栈 + 对拍证据」** ——
 零阶用引擎前向做零阶近似，反传用 PyTorch autograd 拿真梯度，两者的损失数学共用 `objectives.py`，
 所以反传路线同时充当零阶的参考实现：两者在相同输入上的 logp / loss 能对上（§5.5），这才让「零阶这条路线的数学没写错」
 成为可验证的结论，而不是自说自话。
@@ -763,14 +829,16 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
   `git grep -nE '^(import|from) (torch|transformers|triton)' feat/train-mezo -- training/` 为空；
   再把 `torch` 换成一个 raise ImportError 的模块顶掉跑 `pytest tests`，仍然 144 过。
   `train.py → mezo/mezo.py` 的 import 闭包只有 `objectives.py` / `mem_guard.py`。
-  摘掉的那一层（`backward/` 全部、`ce.py` / `lora.py` / `update_rules.py`、`mezo/sft_mezo.py`、
+  摘掉的那一层（`backward/` 全部、`ce.py` / `lora.py` / `update_rules.py`、`backward/hf_ref.py`、
   6 个 torch bench、7 个 torch 测试）在 bwd 上原样存在，`56c7eae0` 一次提交完成摘除。
 - **"默认"指的是方法，不是分支**：`algos.py` 里 `DEFAULT_METHOD = "mezo"`（三条分支一致），
   所以 `train.py` 不给 `--method` 时走零阶；这与选哪条分支交付是两件事。在 mezo 上
   `--list` 会写 `backward 不在这条分支上（缺 backward/sft.py）`，`--method backward` 在加载模型
   **之前**就退出并指路（`algos.method_of`），不是跑到一半 ImportError。
-- **mezo 的"完整"以 import 图闭合为判据**：`mezo/sft_mezo.py` 曾 import 只在反传层的
-  `mtp_draft`（`827d9071` 补齐）；`math_probe` / `math_build_data`（零阶数学实验的选题与造
+- **mezo 的"完整"以 import 图闭合为判据**：旧 `mezo/sft_mezo.py` 曾 import 只在反传层的
+  `mtp_draft`（`827d9071` 补齐）—— 那是「文件放在方法目录、依赖落在 torch 层」的错位，
+  2026-11-03 连改名一起摆正：它需要 torch，所以现在就在 torch 层（`backward/hf_ref.py`），
+  零阶树上不存在这个文件。`math_probe` / `math_build_data`（零阶数学实验的选题与造
   数据）和 `test_curriculum`（测的是 `lora.load_lora_state`）也长期落在反传层（`ae31b3f0` 下移）。
   本轮又把 `extract_num`（判答对/答错的唯一规则）抽到 `bench/math_extract.py`，让零阶的
   `math_build_data.py` 与反传的 `math_probe.py` 共用一份 —— 两条线各写一份正则，改一处忘一处
@@ -891,11 +959,12 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 - **反传那一层可以整层拆出 —— 已实测，而且现在是按文件拆**：拆出来的形态就是 `feat/train-mezo` 本身
   （`56c7eae0`，144 项全绿、训练路径零 torch）。bwd 只比它多 32 个 `.py`，共用层与 `train.py` /
   `algos.py` 两边逐字一致，所以"拆"既不用挑文件、也不用改代码分支：
-  1. **拆之前先证明它能自己立住** —— 这一步实测出一个既存缺陷：`sft_mezo.py` 的 score-parity
-     版本（`a177ad4b`）落在反传层，而 `feat/train-mezo` 的 `sft_mezo` 还是旧版，导致零阶分支上
-     `test_train` / `test_bench_limits` **导入即失败**（`cannot import name '_Pair'`）。已把它和
-     它依赖的 `lora.load_lora_state`（28 行）搬回零阶层（`3eb6e36d` + `6c69bc19`），零阶分支
-     才真正自洽。**这不是本 PR 新引入的问题，是分支原来就有的** —— 不做"拆分演练"就看不见。
+  1. **拆之前先证明它能自己立住** —— 这一步实测出一个既存缺陷：旧 `sft_mezo.py` 的 score-parity
+     版本（`a177ad4b`）落在反传层，而 `feat/train-mezo` 上还留着一份旧版，两边对不上，零阶分支上
+     `test_train` / `test_bench_limits` **导入即失败**（`cannot import name '_Pair'`）。
+     （中间曾把它与它依赖的 `lora.load_lora_state`（28 行）搬回零阶层 —— `3eb6e36d` + `6c69bc19`；
+     最终形态是 2026-11-03 的归位：它需要 torch，就该整份待在 torch 层，改名 `backward/hf_ref.py`，
+     零阶树不再带这个文件。）**这不是本 PR 新引入的问题，是分支原来就有的** —— 不做"拆分演练"就看不见。
   2. **拆掉不能是静默降级**：早先零阶树里留的是 `backward/` 的**旧版薄壳**（`--method backward`
      能跑，只是没有 DPO / curriculum / clip window / TIS）—— 那是"能跑但能力缩水"，最难看出的一档。
      `56c7eae0` 改成整层摘除：`algos.available()` 只看脚本在不在，`--list` 写
@@ -973,7 +1042,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | Q9 | **合并顺序怎么走**：零阶依赖的 `LORA`/`SCORE` 命令循环还在 `feat/train-mezo`，`upstream/main` 没有。是先单独提一个引擎 PR（我们自己的部分：`SCORE` + 换表 + 符号翻转；`lora.cu` 主体那 421 行属于 PR #3267，见 Q11），训练脚本排它后面？还是两个一起提？ | 先引擎、后脚本，各自可独立回滚 |
 | Q10 | README 里"engine side, all merged upstream"这句与事实不符（见 §2.5），本 PR 里一并改掉可以吗？ | 改（文档不能留着错的事实） |
 | Q11 | **LoRA kernel 主体是尚未合入的上游 PR #3267**（Alexey Rogov，`lora.cu` 421 行），本 PR 当只读依赖带着（三层归属见 §7.3）。如果 #3267 先被合入，要不要把本 PR 的那 421 行 rebase 掉、引擎面只留我们自己的 133 行符号翻转 + 换表 + SCORE？ | 倾向等 #3267；它合入后本 PR 的引擎面自动缩小，届时 rebase 一次即可 |
-| Q12 | **反传路线要不要一起收？** 它是独立一层：比零阶树只多 32 个 `.py`（`backward/` 10 个模块 + `ce.py`/`lora.py`/`update_rules.py` + `mezo/sft_mezo.py` + 6 个 torch bench + 7 个 torch 测试 + 2 个诊断脚本），全部在 `training/` 下，不动 `serve/` 与引擎；**只收零阶 = 直接交 `feat/train-mezo`（`56c7eae0`），已验证 144 项全绿且不需要 torch**；那棵树里 `--method backward` 会明确报「缺 backward/sft.py」并指路（不是旧版薄壳的静默降级）。需要反传能力才需要这一层 | 默认一起收；只要零阶就交那条分支，见 §7.4 |
+| Q12 | **反传路线要不要一起收？** 它是独立一层：比零阶树只多 32 个 `.py`（`backward/` 10 个模块 + `ce.py`/`lora.py`/`update_rules.py` + `backward/hf_ref.py` + 6 个 torch bench + 7 个 torch 测试 + 2 个诊断脚本），全部在 `training/` 下，不动 `serve/` 与引擎；**只收零阶 = 直接交 `feat/train-mezo`（`56c7eae0`），已验证 144 项全绿且不需要 torch**；那棵树里 `--method backward` 会明确报「缺 backward/sft.py」并指路（不是旧版薄壳的静默降级）。需要反传能力才需要这一层 | 默认一起收；只要零阶就交那条分支，见 §7.4 |
 
 ---
 
@@ -1027,7 +1096,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 ¹ nvidia-smi 口径，含专家缓存；账面需求见 §5.1（26.9 GiB）。
 
 > **读这张表先看这一条**：`bench_limits.json` 里 `mode=mezo` 的行是**已退役的 PyTorch 零阶**
-> （`sft_mezo.py`，27 648 封顶、55 808 OOM），**不是当前默认路线**。别把 49 152 当成零阶的上限 ——
+> （`hf_ref.py`，27 648 封顶、55 808 OOM），**不是当前默认路线**。别把 49 152 当成零阶的上限 ——
 > 当前引擎零阶在 128K 的点位是 46.97 GiB / 63.8 s。它留着只为 score parity 对拍
 > （HF −56.6433 vs 引擎 −56.6508，见 §5.5）。
 

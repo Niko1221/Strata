@@ -79,7 +79,7 @@
 
 ¹ nvidia-smi 口径，含专家缓存；账面需求见上一节。两次峰值差 8 MiB，等于没差。
 
-> 表里「mezo（PyTorch）」是 `sft_mezo.py`，已退出注册表，只留作 score parity 对拍
+> 表里「mezo（PyTorch）」是 `hf_ref.py`，已退出注册表，只留作 score parity 对拍
 > （HF CE −56.6433 vs 引擎 −56.6508）。**`bench_limits.json` 里 `mode=mezo` 的行是它，
 > 不是当前默认路线**，别把 49K 当成零阶的上限。
 
@@ -278,7 +278,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 | 身份 before/after、gen 原文 | `logs/accept_lr3e5_ce.log`、`accept_lr3e5_s900.log`、`accept_lr1e5_ce.log` |
 | 数学训练集前后 | `Strata-mezo/training/_run_hardmth_train.log` |
 | MATH-500 四次评测 | `Strata-mezo/training/_evalscope/{baseline,mezo_lora,bwd_lora,dpo_lora}/`、`_report.py` |
-| 测试 | `python -m pytest tests -q`（本树 144 项；本文件里凡提到 `sft_mezo.py` / `backward/` 的实测，都是在反传线上跑的） |
+| 测试 | `python -m pytest tests -q`（本树 144 项；本文件里凡提到 `hf_ref.py` / `backward/` 的实测，都是在反传线上跑的） |
 
 ---
 

@@ -24,7 +24,7 @@
 | 脚本 | 一次更新要几次前向 | 为什么是这个数 |
 |---|---|---|
 | `sft.py` | **`--accum × 1`** | SFT 有标准答案，teacher forcing **一次前向就够**。`--accum` 只是「攒几条再更新」（吞吐/梯度平滑），不是算法要求，默认已从 2 改成 **1** |
-| `sft_mezo.py`（HF 零阶） | `2 × dirs × rows` | **零阶差分必须 `f(θ+εz)` 与 `f(θ−εz)` 各一次**，少一次就没有梯度 |
+| `hf_ref.py`（HF 零阶） | `2 × dirs × rows` | **零阶差分必须 `f(θ+εz)` 与 `f(θ−εz)` 各一次**，少一次就没有梯度 |
 | `train_engine_mezo.py` | `2 × dirs × rows` 次 `SCORE` **+ 同样次数的换表** | 同上；实测每步是 **2 次 `LORA`**（换到 +ε 打一次、换到 −ε 打一次），不是 1 次 |
 | `grpo.py` | K 条轨迹各自生成 + 各 1 次前向 | group 内多条样本才谈得上相对优势 |
 
@@ -118,7 +118,7 @@ token 级没有对错标签，所以既无法判断哪些 token 该跳，跳掉�
 
 > **预训练块整条不要。** `/root/pretrain_blocks.npy`（22269 × 2048，`prep_pretrain.py` 把本仓库文本
 > 按 eos 切块）从流程里**彻底移除**：它不是训练目标数据，与身份/数学任务无关，它的耗时也不该出现在
-> 任何一格。`sft.py` / `sft_mezo.py` 的 `--pretrain-data` 在本轮**不使用**。
+> 任何一格。`sft.py` / `hf_ref.py` 的 `--pretrain-data` 在本轮**不使用**。
 >
 > **「我们自己的数据按 eos 打包到目标 T」是另一回事**：它算真实训练 token（只是重复）。
 > 这不需要当成问题讨论——**满上下文探测的目的是算出「这台设备 + 这个算法能训多长」，不是宣称
@@ -448,7 +448,7 @@ C 用重扫后的步数 −0.4 h、加载走 fadvise −0.5 h；去掉仓库文�
 | 语料打包 | `Strata-mezo/training/prep_pack.py` | `test_prep_pack.py` (7) | 取 prompt+answer（`rejected` 不进），写成扁平 npy；`--check-t` 直接算 `repeat: n` |
 | 降速/极限判定 | `Strata-prtrain/training/judge_limits.py` | `test_judge_limits.py` (14) | 三条判据：极限 T、降速（>15% 且显存未顶）、公式偏差（<85% 判公式偏乐观） |
 | 编排 | `Strata-prtrain/training/run_plan.py` | `test_run_plan.py` (11) | `retry_on: {"3": ...}` + `append: ["--resume"]`（挂死自动续）；`on_fail: continue`；路径全走 `--set` 变量，不吃 `../` 层数 |
-| 课程续训 | `lora.load_lora_state` + `sft.py`/`sft_mezo.py`/`grpo.py --init-adapter` | `test_curriculum.py` (7) | 只认 LoRA 键；键缺/形状不符**报错且不半写入** |
+| 课程续训 | `lora.load_lora_state` + `sft.py`/`hf_ref.py`/`grpo.py --init-adapter` | `test_curriculum.py` (7) | 只认 LoRA 键；键缺/形状不符**报错且不半写入** |
 
 顺手修掉的两个真 bug（都会让数字错，不是风格问题）：
 - `load_tokenizer` 读 `merges.txt` 时把**尾换行**产生的空串当成 merge 对，真 pack 直接抛
@@ -460,7 +460,7 @@ C 用重扫后的步数 −0.4 h、加载走 fadvise −0.5 h；去掉仓库文�
 ### 10.0 GRPO 补的五个开关（对应 unsloth / DAPO / Dr.GRPO）
 
 `grpo.py` 原先只有「token 级裁剪 + 组内 std 归一化 + 内层多轮」，与 unsloth 比缺五项。
-按「只补**有效**的」补齐，且全部下沉到 `objectives.py`，与零阶线（`sft_mezo.grpo_loss`）
+按「只补**有效**的」补齐，且全部下沉到 `objectives.py`，与零阶线（`hf_ref.grpo_loss`）
 和 bench（`bench_fullctx` 复用前者）同源——三处以前各写一遍，只是**碰巧**归一化一致。
 
 | 开关 | 默认 | 解决什么 | 不补会怎样 |

@@ -32,11 +32,13 @@ mezo 全程 no_grad、前向就是引擎的推理（LORA 换表 + SCORE 打分�
 `--method backward` 直接退出并指路，不会先跑起来再 ImportError。`available()` 读磁盘
 而不是读某个 `IS_BACKWARD_BRANCH` 常量：常量迟早和文件对不上。
 
-为什么 mezo 不再有两个后端（上一版的 BACKENDS/engine|hf 已删）：MeZO 的路线本来
-就是拿引擎推理当前向，`sft_mezo.py`（PyTorch 前向）只是引擎还没有 LORA/SCORE 命令
-时期的临时实现 + score parity 对拍工具（HF CE −56.6433 vs 引擎 −56.6508），不是
-一条并行路线。它已从注册表摘除；对拍需要时直接跑它，不占 `--method` 的名字。
-（它在反传那条分支上 —— 对拍要同时有 HF 侧，零阶线不带 torch。）
+为什么 mezo 只有一个后端（上一版的 BACKENDS/engine|hf 已删）：MeZO 的路线本来
+就是拿引擎推理当前向。`backward/hf_ref.py`（PyTorch 前向）是引擎还没有 LORA/SCORE
+时期的那版实现，现在只当 score parity 对拍基准（HF CE −56.6433 vs 引擎 −56.6508），
+**不在本文件的 METHODS 里**，`--method mezo` 不会路由到它。
+（它 import torch，所以放在 torch 层 `backward/`；零阶线不带 torch，那棵树上没有这个
+文件。旧名 `mezo/sft_mezo.py` 是方法轴抽出来之前的叫法 —— 一个方法一个文件、文件名
+就是「算法×方法」的连写，正是这次拆分要去掉的东西。）
 
 lr 不能三处共用一个默认值：量级由（算法的目标尺度 × 方法的差分/反传）一起决定
 （identity 2-token 答案 mezo 稳定点 3e-5；一屏长答案 mean 口径 mezo 1e-3；
