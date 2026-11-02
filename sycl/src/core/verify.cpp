@@ -423,6 +423,7 @@ Verifier::~Verifier() try {
         slot.compare_exchange_strong(me, nullptr);
     }
     if (cs_) cs_->wait();
+    if (slot_hist_d_ != nullptr && cs_) { try { sycl::free(slot_hist_d_, *cs_); } catch (...) {} slot_hist_d_ = nullptr; }
     if (sh_cs_) sh_cs_->wait();
     for (auto& e : exec_)
         if (e) delete (e);
@@ -2943,6 +2944,7 @@ bool Verifier::init_slots(const std::vector<SessionState *> &slots,
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
+    slot_tail_.assign(slots.size(), {});
     std::fprintf(stderr, "strata verify: batch windows of up to %lld sequences (layers [%lld, %lld))\n", (long long) S,
                  (long long) lb_, (long long) le_);
     return true;
@@ -3520,12 +3522,37 @@ catch (sycl::exception const &exc) {
 
 bool Verifier::sample_rows(int S, std::string &err) try {
     bool any = false;
+    constexpr int kSlotHistMax = 4096;   // serve's kPenaltyWindowCap
+    std::vector<int32_t> hrows;
+    std::vector<const int32_t*> tails(slots_.size(), nullptr);
+    std::vector<int64_t> n_tails(slots_.size(), 0);
+    for (size_t b = 0; b < slots_.size() && b < slot_tail_.size(); ++b) { tails[b] = slot_tail_[b].data(); n_tails[b] = (int64_t) slot_tail_[b].size(); }
     for (int t = 0; t < S; ++t) {
         strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        if (sp.greedy || sp.temperature <= 0.0f) continue;
+        const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
+        if ((sp.greedy || sp.temperature <= 0.0f) && !pen) continue;   // a plain greedy slot keeps the window's argmax token untouched
         sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
-        sp.penalty_last_n = 0;
-        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, nullptr, 0, sp,
+        const int32_t* hist = nullptr;
+        int hlen = 0;
+        if (pen) {
+            // the slot's reply tail plus its tokens in this window up to row t (slot_penalty_rows), staged on the device like a solo window's
+            hlen = std::min(sp.penalty_last_n, kSlotHistMax);
+            const size_t need = (size_t) S * (size_t) hlen;
+            hrows.assign(need, -1);
+            strata::kernels::slot_penalty_rows(last_rows_, last_tokens_, S, tails.data(), n_tails.data(), hlen, hrows.data());
+            const OnDevice on_hist(device_);
+            if (slot_hist_cap_ < need) {
+                if (slot_hist_d_ != nullptr) sycl::free(slot_hist_d_, *cs_);
+                slot_hist_d_ = sycl::malloc_device<int32_t>(need, *cs_);
+                if (slot_hist_d_ == nullptr) { slot_hist_cap_ = 0; err = "verify batch: the penalty-history allocation failed"; return false; }
+                slot_hist_cap_ = need;
+            }
+            cs_->memcpy(slot_hist_d_ + (size_t) t * (size_t) hlen, hrows.data() + (size_t) t * (size_t) hlen, (size_t) hlen * sizeof(int32_t)).wait();   // (waited: the host rows are rebuilt for the next row)
+            hist = slot_hist_d_ + (size_t) t * (size_t) hlen;
+        } else {
+            sp.penalty_last_n = 0;
+        }
+        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hlen, sp,
                                        m_out_ + t, cs_);
         any = true;
     }
