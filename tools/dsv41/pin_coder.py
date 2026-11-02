@@ -32,6 +32,7 @@ OUT = ROOT / "data" / "dsv41" / "coder-set.json"
 HUB = "https://huggingface.co"
 NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.gguf$")
 REPO_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
+FOLDER_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$")
 MAX_HEADER = 64 << 20          # a GGUF header (metadata + tensor table) larger than this is not read
 
 
@@ -128,17 +129,22 @@ def build(repo: str, revision: str | None) -> dict:
     rev = info["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", rev):
         raise SystemExit("the Hub gave no commit id")
-    files = {}
+    files, paths = {}, {}
     for s in info["siblings"]:
-        name = s["rfilename"]
-        if name.endswith(".gguf") and "/" not in name:
+        path = s["rfilename"]
+        folder, _, name = path.rpartition("/")
+        # the repository root, or ONE folder level down (the official Coder repository keeps its model shards in IQ2_XXS/ and the Engram and the picture file at the root)
+        if name.endswith(".gguf") and folder.count("/") == 0 and (not folder or FOLDER_OK.match(folder)):
             if not NAME_OK.match(name) or not s.get("size") or not (s.get("lfs") or {}).get("sha256"):
-                raise SystemExit(f"{name}: no size or LFS hash from the Hub")
+                raise SystemExit(f"{path}: no size or LFS hash from the Hub")
+            if name in files:
+                raise SystemExit(f"{name} is in two folders of the repository")
             files[name] = [int(s["size"]), s["lfs"]["sha256"].lower()]
+            paths[name] = path
     if not files:
         raise SystemExit("no .gguf files in the repository")
     base = f"{HUB}/{repo}/resolve/{rev}/"
-    heads = {n: read_header(base + urllib.parse.quote(n)) for n in sorted(files)}
+    heads = {n: read_header(base + urllib.parse.quote(paths[n])) for n in sorted(files)}
     mmproj = [n for n, h in heads.items() if h["kv"].get("clip.projector_type") == "deepseek41v"]
     models = {n: h for n, h in heads.items() if n not in mmproj}      # (the later shards of a split carry only split.* keys, no architecture)
     meta = [n for n, h in models.items() if not h["tensors"]]
@@ -162,6 +168,9 @@ def build(repo: str, revision: str | None) -> dict:
     if not layers or bad:
         raise SystemExit(f"expert counts disagree with the metadata's {n_exp}: {dict(list(bad.items())[:4])}")
     order = [meta[0]] + body
+    folders = {paths[n].rpartition("/")[0] for n in order}
+    if len(folders) != 1:
+        raise SystemExit(f"the model shards are in different folders: {sorted(folders)}")
     return {
         "name": "ISTA-DAS-Coder",
         "label": "ISTA-DAS Coder",
@@ -173,8 +182,11 @@ def build(repo: str, revision: str | None) -> dict:
         "layers": len(layers),
         "experts_used": int(kv["deepseek41.expert_used_count"]),
         "shards": order,
+        "subdir": folders.pop(),                      # the folder of the model shards ("" = the repository root); setup downloads them from there
         "engram_shard": engram[0],
+        "engram_path": paths[engram[0]],              # where the Engram file is in the repository (the root: setup takes the Engram as the shared file, once for every set)
         "mmproj": mmproj[0],
+        "mmproj_path": paths[mmproj[0]],
         "profile": "profile-coder.bin",
         "files": {n: files[n] for n in order + engram + mmproj},
     }
