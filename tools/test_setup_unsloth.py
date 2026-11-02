@@ -246,7 +246,7 @@ class Main(Base):
     def test_recommended_context_on_12_gb(self):
         code, out, cfg = self.main([])
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")   # 128K on every card (owner, 2026-11-01)
 
     @budget_mode()
     def test_more_ram_bigger_budget(self):

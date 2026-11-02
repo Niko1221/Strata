@@ -46,10 +46,9 @@ test('the busy-PC card says it in plain words, in the same card as every other r
   assert.ok(!/tune-orbit/.test(dialog), 'no second, different-looking result screen');
 });
 
-test('item 14: the running step glows and beeps instead of spinning a ring around a square icon', async () => {
+test('item 14 (changed by GUI feedback 2, item 3): the running step is calm - no glow, no beep, no spinning ring - and reduced motion is honoured', async () => {
   const css = await readFile(src('styles/app.css'), 'utf8');
-  const run = css.slice(css.indexOf('.tune-step[data-s="run"] .tune-step__badge { animation: tune-glow'), css.indexOf('.tune-live {'));
-  assert.match(run, /tune-glow/); assert.match(run, /tune-beep/);
+  assert.ok(!/tune-glow|tune-beep/.test(css), 'the glow and the beep animations are gone from the running step');
   assert.ok(!/\.tune-step\[data-s="run"\] \.tune-step__badge::before/.test(css), 'the spinning ring is gone');
   assert.match(css, /prefers-reduced-motion: reduce\) \{[\s\S]*tune-step__state::before/, 'reduced motion switches the pulse off too');
 });
