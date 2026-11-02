@@ -5,6 +5,12 @@
 // and moving a buffer to host memory frees nothing.  Pure, so the gate has a test that needs no GPU (src/core/arch_defaults_test.cpp).
 namespace strata {
 
+// True in the Metal build (STRATA_GPU_METAL): every caller that asks spill_allowed passes it, so the spill code is refused there whatever the compat layer says about the device.
+#if defined(STRATA_GPU_METAL)
+inline constexpr bool kSpillMetalBuild = true;
+#else
+inline constexpr bool kSpillMetalBuild = false;
+#endif
 inline constexpr bool spill_allowed(bool metal_build, bool integrated_gpu) { return !metal_build && !integrated_gpu; }
 
 }  // namespace strata

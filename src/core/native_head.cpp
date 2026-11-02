@@ -65,7 +65,7 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         const bool ask_host = std::getenv("STRATA_HEAD_HOST") != nullptr;
         cudaError_t status = ask_host ? cudaErrorMemoryAllocation : cudaMalloc(&weights, bytes);
         bool discrete = false;
-        { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) == cudaSuccess && cudaGetDeviceProperties(&pr, d) == cudaSuccess) discrete = strata::spill_allowed(false, pr.integrated != 0); else (void) cudaGetLastError(); }
+        { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) == cudaSuccess && cudaGetDeviceProperties(&pr, d) == cudaSuccess) discrete = strata::spill_allowed(strata::kSpillMetalBuild, pr.integrated != 0); else (void) cudaGetLastError(); }
         if (status != cudaSuccess && discrete && std::getenv("STRATA_HEAD_HOST_OFF") == nullptr && !strata::kernels::native_q6_k_packed_enabled()) {
             (void) cudaGetLastError();
             void* hp = nullptr;
@@ -116,7 +116,7 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
 
 bool NativeHead::to_host(std::string& err) {
     if (weights_ == nullptr || host_ != nullptr || (type_ == 14 && strata::kernels::native_q6_k_packed_enabled()) || (type_ == 8 && std::getenv("STRATA_Q8_SM60") != nullptr)) return false;   // (repacked in place: those stay in VRAM)
-    { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) != cudaSuccess || cudaGetDeviceProperties(&pr, d) != cudaSuccess || !strata::spill_allowed(false, pr.integrated != 0)) { (void) cudaGetLastError(); return false; } }   // (Q6_K / Q8_0 may be repacked in place: those stay)
+    { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) != cudaSuccess || cudaGetDeviceProperties(&pr, d) != cudaSuccess || !strata::spill_allowed(strata::kSpillMetalBuild, pr.integrated != 0)) { (void) cudaGetLastError(); return false; } }   // (Q6_K / Q8_0 may be repacked in place: those stay)
     void* hp = nullptr;
     void* dp = nullptr;
     if (cudaHostAlloc(&hp, bytes_, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
