@@ -76,6 +76,7 @@ BatchDecoder::BatchDecoder(Engine& e, int K, int lookup_k, std::vector<int> eos,
     const long long horizon = env_int("FNX_BATCH_HORIZON", 4);
     if (horizon < 1 || horizon > 1000) throw std::runtime_error("FNX_BATCH_HORIZON: 1 to 1000 windows");
     horizon_ = (double) horizon;
+    if (e_.warm_capture_ms > 0.0) capture_ms_ = e_.warm_capture_ms;   // FNX_PRECAP: the capture's measured cost, not the default
     trace_ = env_int("FNX_BATCH_TRACE", 0) != 0;
 }
 

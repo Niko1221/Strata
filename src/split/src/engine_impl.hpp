@@ -88,6 +88,20 @@ struct CardBuf {
     };
     std::vector<GraphSlot> win_graphs = std::vector<GraphSlot>(MAXT + 1), mtp_graphs = std::vector<GraphSlot>(MAXT + 1),
                            batch_graphs = std::vector<GraphSlot>(MAXT + 1);
+    // FNX_PRECAP: batched-window graphs that were not evicted by a window of another layout. batch_graphs[T] stays the graph the next
+    // window of T rows launches (and the tables enqueue_rows reads); a layout change puts the slot's graph and its tables here, and a
+    // window of a layout held here swaps it back. Entries are the same on every card (same index = same layout)
+    struct GraphEntry {
+        cudaGraphExec_t exec = nullptr;
+        std::vector<int> key;
+        const int** lane_rows = nullptr;
+        float** lane_gdn = nullptr;
+        const int** seg_ctl = nullptr;
+        int* seg_row0 = nullptr;
+        unsigned long used = 0;   // the engine's tick of its last use
+    };
+    std::vector<std::vector<GraphEntry>> batch_cache = std::vector<std::vector<GraphEntry>>(MAXT + 1);
+    std::vector<unsigned long> batch_slot_used = std::vector<unsigned long>(MAXT + 1, 0);
     // batch_graphs[T]'s lane rows (LaneRows): [MAXT] each row's lane's ctl, then [MAXT] its page table; written when
     // the graph is captured, read by it
     std::vector<const int**> lane_rows = std::vector<const int**>(MAXT + 1, nullptr);

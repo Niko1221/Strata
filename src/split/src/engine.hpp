@@ -104,6 +104,8 @@ public:
     // the prompt path's buffers and every lane's rotary table:
     // their memory taken at start, not when a request first needs one. Every lane is left empty
     void warm_graphs();
+    bool precap() const;   // FNX_PRECAP=1: layouts kept (see batch_graph_ready); warm_graphs() captures the uniform ones at the start
+    double warm_capture_ms = 0.0;   // warm_graphs()'s mean capture of a batched window (host ms), 0 before it ran
     std::vector<long> free_vram_mib() const;   // per card
     // with FNX_ROUTE_COUNT=1: how often each expert was picked, [decode | prompt][NL][NEXP] (empty when off)
     std::vector<unsigned> route_counts() const;
@@ -181,6 +183,12 @@ public:
     double last_card_ms[NCARD] = {};   // each card's (a card that starts first waits at the first ring sum for the others)
     double last_launch_ms = 0.0; // the host time of its three graph launches
     double last_capture_ms = 0.0;   // the last verify_rows()'s graph capture (0: its layout's graph was cached)
+    // every graph capture since the start, by kind: 0 verify_rows, 1 draft, 2 single-lane window (verify/step), 3 batch step; count and host ms
+    struct CapStat {
+        unsigned long n = 0;
+        double ms = 0.0;
+    };
+    CapStat cap_stat[4];
 
 private:
     Model& m_;
@@ -280,6 +288,12 @@ private:
         return ec.n_slots && (!arena_cap_ || !ec.arena_full || arena_w_ > arena_base_);
     }
     void dump_dev(const std::string& name, int layer, const float* p, int T, int n);
+    // FNX_PRECAP: the batched window graphs of T rows are kept by their layout (up to FNX_PRECAP_GRAPHS in all, least recently used out)
+    // instead of one a row total. batch_graph_ready: true when the slot holds key's graph (taken from the cache when held there);
+    // batch_graph_stash: before a capture, the slot's graph goes to the cache
+    bool batch_graph_ready(int T, const std::vector<int>& key);
+    void batch_graph_stash(int T);
+    unsigned long graph_tick_ = 0;
     void enqueue(int T, bool dumps);
     void enqueue_batch(const std::vector<int>& lanes);   // step()'s window: one row per lane
     void enqueue_rows(const std::vector<int>& lanes, const std::vector<int>& counts);   // verify_rows()'s
