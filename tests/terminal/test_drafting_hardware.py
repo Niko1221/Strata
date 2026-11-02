@@ -110,25 +110,31 @@ class ConfidenceFollowsTheSlots(unittest.TestCase):
 
     def test_the_steps(self):
         f = drafting.conf_for_slots
-        self.assertEqual([f(n) for n in (24576, 12570, 9000, 8999, 5000, 3000, 2999, 1000, 300, 0)], [0.35, 0.35, 0.35, 0.7, 0.7, 0.7, 0.8, 0.8, 0.8, 0.8])
+        self.assertEqual([f(n) for n in (24576, 12570, 12000, 11999, 7500, 7499, 5000, 3000, 2999, 1000, 300, 0)],
+                         [0.35, 0.35, 0.35, 0.5, 0.5, 0.7, 0.7, 0.7, 0.8, 0.8, 0.8, 0.8])
         self.assertEqual(f(None), 0.35, "unknown: today's value")
 
     def test_an_explicit_expert_cache_decides(self):
         base = ["--spec", "4"]
-        for given, want in (("1000", "0.8"), ("300", "0.8"), ("5000", "0.7"), ("12570", "0.35"), ("24576", "0.35")):
+        for given, want in (("1000", "0.8"), ("300", "0.8"), ("5000", "0.7"), ("8000", "0.5"), ("12570", "0.35"), ("24576", "0.35")):
             self.assertEqual(self.conf([*base, "--expert-cache", given]), want, given)
+        # the steps are in the ENGINE's slots, an --expert-cache N holds about 1.3 N of them (IQ3_S: N = 1,000 -> 1,283 slots, 2,000 -> 2,582, 5,000 -> 6,528, 8,000 -> 10,452)
+        for given, want in (("2000", "0.8"), ("2307", "0.8"), ("2308", "0.7"), ("2500", "0.7"), ("5000", "0.7"), ("5769", "0.7"), ("5770", "0.5"), ("9230", "0.5"), ("9231", "0.35"), ("12000", "0.35")):
+            self.assertEqual(self.conf([*base, "--expert-cache", given]), want, "--expert-cache " + given)
+        self.assertEqual(drafting.slots_of(["--expert-cache", "1000"]), 1300)
+        self.assertEqual(drafting.slots_of(["--expert-cache", "30000"]), drafting.MAX_SLOTS, "never more than every (layer, expert) pair")
         self.assertEqual(self.conf([*base, "--expert-cache", "auto"]), "0.35", "auto with no card reading: today's value")
         self.assertEqual(self.conf(base), "0.35", "nothing known: today's value")
 
     def test_the_card_decides_when_the_cache_is_auto(self):
         args = ["--expert-cache", "auto", "--max-context", "131072", "--kv", "int8"]
-        for vram, want in ((8192, "0.8"), (12288, "0.8"), (16384, "0.7"), (24564, "0.7"), (32768, "0.35"), (49152, "0.35"), (73415, "0.35")):
+        for vram, want in ((8192, "0.8"), (12288, "0.8"), (16384, "0.7"), (20480, "0.7"), (24564, "0.5"), (32768, "0.35"), (49152, "0.35"), (73415, "0.35")):
             self.assertEqual(self.conf(args, vram_mib=vram), want, vram)
         self.assertEqual(self.conf(args, vram_mib=32768, backend="hip", archs=("gfx1201",)), "0.35", "the R9700 (12,570 slots measured) keeps 0.35")
 
     def test_the_estimate_matches_the_two_measured_starts(self):
         n = drafting.expected_slots(32768, ["--max-context", "131072", "--kv", "int8"])
-        self.assertAlmostEqual(n, 12570 + 520, delta=0.1 * 12570)        # the R9700 start loaded the MTP layer beside DFlash2: without it about 520 more slots
+        self.assertAlmostEqual(n, 12570, delta=0.1 * 12570)              # the R9700 start: the DFlash2 is the only drafter, it takes the draft layer's allowance
         self.assertEqual(drafting.expected_slots(4096, []), 0, "a card that cannot hold the rest never goes negative")
 
     def test_the_persons_own_confidence_stays(self):
