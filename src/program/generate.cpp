@@ -10551,7 +10551,20 @@ int main(int argc, char** argv) {
             };
             int dev = 0;
             int64_t need = 0, fb = 0;
+            // gfx1151 (Strix Halo, Windows): `prefill_own_keep_chunk` is set above because the prompt path keeps its own buffers at the 16,384-token
+            // chunk and the cache sizing already reserved them.  The "free VRAM" read here is the unified pool's figure after the pinned RAM complement
+            // (which the pool counts twice), not a limit: with 860 MiB "free" the MTP engine allocates the 6.7 GiB of buffers anyway and reads prompts at
+            // 955 tok/s, but this step-down found 1.7 GiB "free" in the DFlash2-alone engine (no MTP layer, a slightly larger cache), cut the chunk to
+            // 1,536 and read them at 303 tok/s (RESULTS-DF2STRIX.md).  The step-down stays for a real allocation failure (the loop below).
+            // STRATA_PF_OWN_CHECK=1 (tester) restores the arithmetic check on this card.
+            static const bool own_check_restored = [] { const char* v = std::getenv("STRATA_PF_OWN_CHECK"); return v != nullptr && v[0] == '1'; }();
+            const bool keep_chunk_uma = o.prefill_own_keep_chunk && !own_check_restored;
             if (!own_fits(o.prefill_chunk, dev, need, fb)) {
+              if (keep_chunk_uma) {
+                std::fprintf(stderr, "strata serve: a %lld-token chunk's prompt buffers need %lld MiB, %lld MiB are reported free: kept (this GPU's memory is the "
+                                     "unified pool; STRATA_PF_OWN_CHECK=1 steps the chunk down by that figure)\n",
+                             (long long) o.prefill_chunk, (long long) (need >> 20), (long long) (fb >> 20));
+              } else {
                 int64_t c = 0;
                 for (const int64_t s : kStepChunks) {
                     int d2 = 0;
@@ -10564,6 +10577,7 @@ int main(int argc, char** argv) {
                                  (long long) (need >> 20), dev, (long long) (fb >> 20), (long long) c);
                     o.prefill_chunk = c;
                 }
+              }
             }
         }
         mem_mark("before the prompt path init");
