@@ -47,6 +47,41 @@ class LaunchDeepSeek(unittest.TestCase):
         self.assertEqual(catalog(self.hw).resolve("ud-q8_k_xl"), ("deepseek41", "UD-Q8_K_XL"))
         self.assertEqual(catalog(self.hw).max_context("deepseek41", "UD-Q8_K_XL"), 131072)
 
+    def runner_with_own_shards(self, **kw):
+        own = self.home.base / "own"
+        own.mkdir()
+        (own / "x-00001-of-00006.gguf").write_bytes(b"x")
+        s = S.LaunchSettings(family="deepseek41", model="ISTA-DAS-Coder", context=8192, vision=kw.pop("vision", "off"), model_path=str(own),
+                             data_dir=str(self.home.base / "data"), **kw)
+        return Runner(s, catalog=catalog(self.hw))
+
+    def test_the_plan_with_your_own_shards_counts_the_shared_files_setup_still_fetches(self):
+        """Strix, 2026-11-02: `--model-path` plan said "Nothing to download" and setup then fetched the 8 GB DSpark drafter (even with --dspark off).  The plan now is the fetch."""
+        r = self.runner_with_own_shards(extra={"--dspark": "off"})
+        mod = r.catalog.strata.setup_module()
+        with mock.patch.object(Runner, "check_own_files"), mock.patch.object(mod, "dsv41_shared_missing", return_value=[(mod.DSV41_DSPARK, 7976914240)]) as m:
+            plan = r.download_plan()
+        self.assertEqual(plan["gb"], 8.0)
+        self.assertIn("DSpark drafter (8.0 GB)", plan["text"])
+        self.assertIn("even with --dspark off", plan["text"])
+        self.assertNotIn("Nothing to download", plan["text"])
+        self.assertEqual(m.call_args.kwargs["vision"], False)             # --vision off: the picture file is not asked for
+
+    def test_the_plan_with_all_shared_files_there_says_nothing_to_download(self):
+        r = self.runner_with_own_shards()
+        mod = r.catalog.strata.setup_module()
+        with mock.patch.object(Runner, "check_own_files"), mock.patch.object(mod, "dsv41_shared_missing", return_value=[]):
+            plan = r.download_plan()
+        self.assertEqual(plan["gb"], 0)
+        self.assertIn("Nothing to download: your model files are used where they are", plan["text"])
+
+    def test_pictures_on_ask_for_the_picture_file_too(self):
+        r = self.runner_with_own_shards(vision="on")
+        mod = r.catalog.strata.setup_module()
+        with mock.patch.object(Runner, "check_own_files"), mock.patch.object(mod, "dsv41_shared_missing", return_value=[]) as m:
+            r.download_plan()
+        self.assertEqual(m.call_args.kwargs["vision"], True)
+
     def test_the_plan_places_the_model_on_the_four_cards(self):
         p = self.plan("--model", "ud-q8_k_xl", "--no-tui")
         pl = p["placement"]
@@ -183,12 +218,16 @@ class OwnShards(unittest.TestCase):
         self.assertIn("nine parts", cm.exception.text)
         self.assertIn("00004-of-00009", cm.exception.text)
 
-    def test_the_plan_with_own_files_downloads_nothing(self):
+    def test_the_plan_with_own_shards_counts_the_shared_files_that_are_not_there(self):
+        """Only the shards are here: setup still fetches the shared files that are not (the picture file here), so the plan names them (before 0.2.9.1 it said
+        "Nothing to download" and the fetch followed)."""
         _base, folder = self.folder()
         code, out, err = run_cli(["launch", "--plan", "--model-path", str(folder), "--no-tui"])
         self.assertEqual(code, 0, err + out)
         self.assertIn("DeepSeek-V4.1-Flash", out)
-        self.assertIn("Nothing to download", out)
+        self.assertNotIn("Nothing to download", out)
+        self.assertIn("to download", out)
+        self.assertIn("the picture reader (1.0 GB)", out)           # (UD-Q8_K_XL has no other shared file; the Coder's drafter case is in test_the_plan_with_your_own_shards...)
 
 
 if __name__ == "__main__":

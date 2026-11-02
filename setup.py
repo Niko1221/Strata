@@ -8523,6 +8523,28 @@ def dsv41_find_shared(a, name: str, folder: Path, shared: Path, alt: tuple = ())
     return shared / name
 
 
+def dsv41_shared_missing(model: str, models_dir, gguf_dir=None, vision: bool = True) -> list:
+    """[(name, bytes still to fetch)] of the shared files (the Engram, the DSpark drafter, the metadata shard, the picture file) that install_dsv41 would download for
+    `model` with these choices; the same search as the install (dsv41_find_shared), so the launcher's plan and the acquisition cannot disagree.  Files the person has
+    (--gguf-dir) or that are already complete in the shared folder are not listed; a half-fetched one counts what is left."""
+    from types import SimpleNamespace
+    fam = MULTI_FILE_FAMILIES["deepseek41"]
+    md = fam["models"][model]
+    a = SimpleNamespace(gguf_dir=str(gguf_dir) if gguf_dir else None, models_dir=str(models_dir))
+    folder = dsv41_folder(a, fam, fam["tag"] + model, model)
+    shared_dir = dsv41_shared_dir(a, fam)
+    udlow = md.get("recipe") in ("udlow", "coder")
+    out = []
+    for n in [*md.get("shared", []), *([DSV41_MMPROJ] if vision else [])]:
+        f = dsv41_find_shared(a, n, folder, shared_dir, (md["engram_shard"],) if (udlow and n == DSV41_ISTA_ENGRAM) else ())
+        if f.exists() and (done(f) or a.gguf_dir or f.parent != shared_dir):
+            continue
+        part = f.with_name(f.name + ".part")
+        have = part.stat().st_size if part.is_file() else 0
+        out.append((n, max(fam["sha256"][n][0] - have, 0)))
+    return out
+
+
 def dsv41_pin_of(f: Path, pin: tuple) -> tuple:
     """The (bytes, sha256) a shared file is checked against: the pinned one, or the other published copy of the same file (DSV41_ALT_FILES: the Coder repository's
     picture file) when that is the size it has."""

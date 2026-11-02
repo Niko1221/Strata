@@ -2192,13 +2192,29 @@ class Runner:
         intel = self.intel_chosen()
         if intel:                                            # the Intel route builds the pack from the files and fetches no draft layer, picture reader or drafter
             parts = [p for p in parts if p["kind"] not in ("mtp", "mmproj", "dflash2")]
+        if self.multi_file() and st.own_files and s.model:
+            # DeepSeek with the person's own shards: setup still fetches the shared files that are not here (the Engram, the DSpark drafter, the picture file); count
+            # them with the same search setup makes (setup.dsv41_shared_missing), so the plan is the download (0.2.9.1: "Nothing to download" and then 8 GB)
+            try:
+                mod = self.catalog.strata.setup_module()
+                data = Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or self.catalog.data_dir())
+                labels = {getattr(mod, "DSV41_DSPARK", ""): "the DSpark drafter", getattr(mod, "DSV41_ISTA_ENGRAM", ""): "the n-gram table",
+                          getattr(mod, "DSV41_MMPROJ", ""): "the picture reader"}
+                for name, size in mod.dsv41_shared_missing(s.model, Path(data) / "models", s.model_path, vision=s.vision not in ("off", "no")):
+                    if size >= 5e7:
+                        parts.append({"kind": "shared", "label": labels.get(name, name), "gb": round(size / 1e9, 1)})
+            except Exception:                                # noqa: BLE001 - the plan still shows the rest
+                pass
         gb = round(sum(p["gb"] for p in parts), 1)
         engine, here = True, []
         if self.multi_file():                                # DeepSeek does not use the Strata engine: nothing about it in the plan (its own package is in the placement)
             return {"gb": gb, "parts": parts, "engine_missing": False, "engine_usable": True, "own_files": st.own_files,
                     "text": ("Nothing to download: your model files are used where they are." if gb < 0.05 and st.own_files else
                              "Nothing to download: the model is already on this computer." if gb < 0.05 else
-                             f"About {gb:.1f} GB to download.")}
+                             f"About {gb:.1f} GB to download" + (": " + ", ".join(f"{p['label']} ({p['gb']:.1f} GB)" for p in parts if p["kind"] == "shared") + "."
+                                                                  if any(p["kind"] == "shared" for p in parts) and st.own_files else ".")
+                             + (" The drafter is part of the model's prepared data and is fetched even with --dspark off."
+                                if any(p["label"] == "the DSpark drafter" for p in parts) else ""))}
         try:
             report = engine_component.status(Path(self.components_dir) if self.components_dir else None)
             engine = bool(report.get("usable"))
@@ -2220,6 +2236,8 @@ class Runner:
                 text += (f" This is a ready-made pack, and setup takes it from its own folder ({gap['folder']}), not from where your files are. "
                          "Copy or link your pack there to use it as it is" +
                          (f"; only {gap['free_gb']:.0f} GB are free on that drive, so choose a bigger drive with --data-dir" if gap.get("free_gb") is not None and gap["free_gb"] < gap["gb"] else "") + ".")
+            if any(p["label"] == "the DSpark drafter" for p in parts if p["kind"] == "shared"):
+                text += " The drafter is part of the model's prepared data and is fetched even with --dspark off."
             if any(p["kind"] == "mmproj" for p in parts):
                 text += " To skip the picture reader (the model then answers text only), add --vision off; or put its mmproj file next to your model files."
             if any(p["kind"] == "mtp" for p in parts):
