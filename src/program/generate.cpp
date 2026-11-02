@@ -14042,6 +14042,28 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                     continue;
                 }
+                // Every K/V, recurrent state and checkpoint held in memory was computed through the OLD tables: a
+                // cached conversation keys on "is an adapter on" (ConversationView::lora is a bool), not on which
+                // adapter, so a session parked before this swap would otherwise be continued with the previous
+                // theta's states under the new theta's weights.  A weight change invalidates every cache; dropping
+                // them costs the next request a prompt read, keeping them silently changes the model mid-sequence.
+                live_ok = false;
+                live.clear();
+                live_imgs.clear();
+                const size_t l_nchecks = checks.size();
+                checks.clear();
+                tail_ckpt_len = -1;
+                const size_t l_nparked = conversations.clear();
+                size_t l_nslots = 0;
+                for (BSlot& sl : bs)
+                    if (sl.active) {   // its reply finishes under a mixed pair of weights: it is not kept after it
+                        sl.tainted = true;
+                        ++l_nslots;
+                    }
+                std::fprintf(stderr, "strata serve: adapter swapped (%llu): dropped the live session, %zu checkpoint%s, "
+                                     "%zu parked conversation%s; %zu decoding slot%s kept after its reply\n",
+                             (unsigned long long) ldig, l_nchecks, l_nchecks == 1 ? "" : "s",
+                             l_nparked, l_nparked == 1 ? "" : "s", l_nslots, l_nslots == 1 ? "" : "s");
                 std::printf("LORAOK %llu %s\n", (unsigned long long) ldig, lsum.c_str());
                 std::fflush(stdout);
                 continue;
