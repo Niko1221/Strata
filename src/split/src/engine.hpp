@@ -92,6 +92,16 @@ public:
     // the draft head's TOPK_N highest (penalized) logits for that token into last_draft_cands as top_tokens() gives them
     int draft(int T, bool from_main, int src_row, const std::vector<int>& tokens, int pos0, const Penalties::Row* pen = nullptr,
               bool cands = false);
+    // FNX_BATCH_DRAFT: draft() for several lanes in one draft-layer window (greedy, no penalties): lane reqs[i].lane's reqs[i].T rows (source rows as draft() takes them,
+    // tokens and cells from pos0), the rows of the lanes one after the other (at most MAXT in all). Returns each lane's draft (for the token after its last row).
+    // The window runs eagerly. A chained step (from_main false) takes its source row from the batch before: src_row is the row's index in THAT window. The engine's
+    // current lane is left as it was
+    struct DraftReq {
+        int lane = 0, T = 1, src_row = 0, pos0 = 0;
+        bool from_main = true;
+        std::vector<int> tokens;
+    };
+    std::vector<int> draft_lanes(const std::vector<DraftReq>& reqs);
     std::vector<std::pair<float, int>> last_draft_cands;
     double last_draft_ms = 0.0;       // wall time of the last draft()
     double last_draft_gpu_ms = 0.0;   // its graph's GPU time (the slowest card)
@@ -260,6 +270,8 @@ private:
         float* R0;
         float* mtp_emb;
         int* mtp_ctl;
+        int* mtp_lctl;
+        int* mtp_row_pos;
         float* ple;
         int* ctl;
         float* bv;
@@ -316,6 +328,7 @@ private:
         std::vector<int> lanes, counts, tokens;
     } rows_pending_;
     void mtp_enqueue(int T);
+    void mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T);
     const Mtp* mtp_ = nullptr;
     std::vector<Pf*> pf_;
     // FNX_PF_RCCL (AMD, hip/rccl.h): the prompt's chunk sums through RCCL, loaded at run time; rccl_ holds the library and the communicators (null: the host exchange)

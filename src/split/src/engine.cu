@@ -1196,6 +1196,9 @@ void Engine::mtp_attach(const Mtp& mtp) {
         b.mtp_bv = dalloc<float>(MAXT);
         b.mtp_bi = dalloc<int>(MAXT);
         b.mtp_ctl = dalloc<int>(2);
+        b.mtp_lctl = dalloc<int>(2 * MAXT);
+        b.mtp_row_pos = dalloc<int>(MAXT);
+        b.mtp_lane_rows = dalloc<const int*>((size_t) LANE_ROW_COLS * MAXT);
         b.mtp_pen = dalloc<int>(1 + 2 * PEN_CAP);
         b.mtp_pen_par = dalloc<float>(3);
         b.mtp_tk_v = dalloc<float>(TOPK_N);
@@ -1207,6 +1210,8 @@ void Engine::mtp_attach(const Mtp& mtp) {
     if (!h_.mtp_emb) {
         h_.mtp_emb = halloc<float>((size_t) MAXT * N);
         h_.mtp_ctl = halloc<int>(2);
+        h_.mtp_lctl = halloc<int>(2 * MAXT);
+        h_.mtp_row_pos = halloc<int>(MAXT);
         h_.mtp_pen = halloc<int>((size_t) NCARD * (1 + 2 * PEN_CAP));
         h_.mtp_pen_par = halloc<float>(3);
         h_.mtp_tk_v = halloc<float>((size_t) NCARD * TOPK_N);
@@ -1259,6 +1264,69 @@ void Engine::mtp_enqueue(int T) {
         hc_read(b.mtp_R, b.bo_f, b.inj_f, mc.mix_norm, mc.mix_down, mc.mix_up, nullptr, eps, b.mixed, b.inj_a, b.hcs, b.ring.err, T, b.st, b.xq);
         dense(mc.head, b.xq, b.mtp_logits, b, T);
         penalize_row(b.mtp_logits + (size_t) (T - 1) * (mc.dv1 - mc.dv0), mc.dv1 - mc.dv0, b.mtp_pen, b.mtp_pen_par, b.st);
+        argmax(b.mtp_logits, mc.dv1 - mc.dv0, T, mc.dv0, b.mtp_bv, b.mtp_bi, b.am_keys, b.ring.err, b.st);
+    }
+}
+
+
+// The draft layer for several lanes in ONE window (Engine::draft_lanes): mtp_enqueue's layer, with the attention of enqueue_rows' batched windows for the draft
+// layer's own K/V slot (each lane's rows at its cells on its pages). Greedy: no penalties, argmax of every row.
+void Engine::mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T) {
+    const float eps = m_.eps;
+    const int nl = (int) reqs.size(), mp = max_ctx_ / 4;
+    std::vector<int> off((size_t) nl);
+    for (int i = 0, o = 0; i < nl; ++i) off[(size_t) i] = o, o += reqs[(size_t) i].T;
+    for (int c = 0; c < NCARD; ++c) {
+        CardBuf& b = *cb_[c];
+        const CardW& w = m_.cards[c];
+        const MtpCard& mc = mtp_->cards[c];
+        const LayerW& L = mc.L;
+        ck(cudaSetDevice(b.dev), "set");
+        rms_norm_rows(b.mtp_emb, mc.norm_emb, b.mtp_en, T, N, eps, b.st);
+        quantize_q8_1(b.mtp_en, b.xq, N, T, b.st);
+        dense(mc.fc_emb, b.xq, b.mtp_e2, b, T);
+        rms_norm_rows(b.mtp_src, mc.norm_hid, b.mtp_hn, T, D, eps, b.st);
+        quantize_q8_1(b.mtp_hn, b.xq, N, HC * T, b.st);
+        for (int r0 = 0; r0 < HC * T; r0 += MAXT)
+            q8s_gemv(mc.fc_hid.s, N, N, (const uint8_t*) b.xq + (size_t) r0 * q8_1_bytes(N), b.mtp_h2 + (size_t) r0 * N, N, std::min(MAXT, HC * T - r0), b.st);
+        add_streams(b.mtp_h2, b.mtp_e2, b.mtp_R, T, b.st);
+        hc_read(b.mtp_R, nullptr, nullptr, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, b.mixed, b.inj_a, b.hcs, b.ring.err, T, b.st, b.xq);
+        // the attention as a batched window does it, on the draft layer's slot of the pool
+        if (!L.idx_wq) dense(L.idx_qk, b.xq, b.qsa_y, b, T);
+        else qsa_proj(L.idx_wq, L.idx_wk, b.mixed, b.qsa_y, T, b.st);
+        dense(L.wq, b.xq, b.qg, b, T);
+        dense(L.wk, b.xq, b.k, b, T);
+        dense(L.wv, b.xq, b.v, b, T);
+        for (int i = 0; i < nl; ++i) {
+            const LaneDev& LD = b.lanes[(size_t) reqs[(size_t) i].lane];
+            KvPages pg = b.pg;
+            pg.pt = LD.pt;
+            const size_t r = (size_t) off[(size_t) i];
+            const int k = reqs[(size_t) i].T;
+            const int* lc = b.mtp_lctl + 2 * i;
+            qsa_index(b.qsa_y + r * qsa_rows(), L.idx_qn, L.idx_kn, LD.mtp_ring, b.mtp_qsa_pooled, pg, b.qsa_q + r * 512, lc, k, eps, rope_of(LD.mrope), b.st);
+            attn_prep(b.qg + r * NQH * 2 * HD, b.k + r * NKVH * HD, L.q_norm, L.k_norm, NQH, NKVH, lc, k, eps, rope_of(LD.mrope), b.st);
+            kv_append(b.k + r * NKVH * HD, b.v + r * NKVH * HD, b.mtp_kc, b.mtp_vc, pg, b.att_ring.card, k, lc, b.st);
+        }
+        const LaneRows lr{b.mtp_lane_rows, b.mtp_lane_rows + MAXT};
+        qsa_select_lanes(b.qsa_q, b.mtp_qsa_pooled, b.pg, b.qsa_scores, b.qsa_cells, b.qsa_ncells, mp, lr, T, b.att_ring.card, b.st);
+        attn_part_lanes(b.qg, b.mtp_kc, b.mtp_vc, b.pg, lr, T, b.att_part, b.st, b.qsa_cells, b.qsa_ncells, b.att_ring.card);
+        attn_finish(b.qg, b.att, b.att_ring, (const unsigned*) (b.mtp_ctl + 1), 128, T, b.att_part, b.st);
+        quantize_q8_1(b.att, b.xq, w.nq * HD, T, b.st);
+        dense(L.wo, b.xq, b.bo_a, b, T);
+        ring_sum(b.ring, b.bo_a, T, (const unsigned*) (b.mtp_ctl + 1), 0, b.st);
+    }
+    for (int c = 0; c < NCARD; ++c) {
+        CardBuf& b = *cb_[c];
+        ck(cudaSetDevice(b.dev), "set");
+        ffn_half(T, 1, b, m_.cards[c], mtp_->cards[c].L, b.mtp_R, b.mtp_ctl);
+    }
+    for (int c = 0; c < NCARD; ++c) {
+        CardBuf& b = *cb_[c];
+        const MtpCard& mc = mtp_->cards[c];
+        ck(cudaSetDevice(b.dev), "set");
+        hc_read(b.mtp_R, b.bo_f, b.inj_f, mc.mix_norm, mc.mix_down, mc.mix_up, nullptr, eps, b.mixed, b.inj_a, b.hcs, b.ring.err, T, b.st, b.xq);
+        dense(mc.head, b.xq, b.mtp_logits, b, T);
         argmax(b.mtp_logits, mc.dv1 - mc.dv0, T, mc.dv0, b.mtp_bv, b.mtp_bi, b.am_keys, b.ring.err, b.st);
     }
 }

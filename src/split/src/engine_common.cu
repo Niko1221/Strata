@@ -1484,4 +1484,96 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
     return mtp_->vocab[h_.bi[best]];
 }
 
+
+std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
+    if (!mtp_) throw std::runtime_error("draft_lanes: no draft layer attached");
+    if (!h_.R0 || !h_.mtp_emb) throw std::runtime_error("draft_lanes: no window has run (it drafts from a window's rows)");
+    if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("draft_lanes: a window is not committed");
+    const int nl = (int) reqs.size();
+    int T = 0;
+    for (const DraftReq& q : reqs) {
+        if (q.T < 1 || (int) q.tokens.size() != q.T) throw std::runtime_error("draft_lanes: a lane's rows and tokens differ");
+        if (q.lane < 0 || q.lane >= (int) lanes_.size()) throw std::runtime_error("draft_lanes: no lane " + std::to_string(q.lane));
+        if (q.src_row < 0 || q.src_row + q.T > MAXT) throw std::runtime_error("draft_lanes: source rows out of range");
+        if (q.pos0 < 0 || q.pos0 + q.T > max_ctx_ || q.pos0 + q.T > lane_pages(q.lane) * KVP_POS)
+            throw std::runtime_error("draft_lanes: cells out of the lane's pages");
+        T += q.T;
+    }
+    if (nl < 1 || T > MAXT) throw std::runtime_error("draft_lanes: 1.." + std::to_string(MAXT) + " rows in all");
+    const auto t0 = std::chrono::steady_clock::now();
+    const int was = cur_;
+    std::vector<int> off((size_t) nl);
+    int o = 0;
+    for (int i = 0; i < nl; ++i) {
+        const DraftReq& q = reqs[(size_t) i];
+        off[(size_t) i] = o;
+        use_lane(q.lane);   // the embeddings read the lane's images
+        for (int t = 0; t < q.T; ++t) {
+            embed_token(q.tokens[(size_t) t], q.pos0 + t + 1, h_.mtp_emb + (size_t) (o + t) * N);
+            h_.mtp_row_pos[o + t] = q.pos0 + t;
+        }
+        h_.mtp_lctl[2 * i] = q.pos0;
+        h_.mtp_lctl[2 * i + 1] = 0;
+        o += q.T;
+    }
+    use_lane(was);
+    h_.mtp_ctl[0] = 0;
+    h_.mtp_ctl[1] = (int) ring_tag();
+    for (int c = 0; c < NCARD; ++c) {
+        CardBuf& b = *cb_[c];
+        ck(cudaSetDevice(b.dev), "set");
+        std::vector<const int*> rows((size_t) LANE_ROW_COLS * MAXT, nullptr);
+        for (int i = 0; i < nl; ++i)
+            for (int t = 0; t < reqs[(size_t) i].T; ++t) {
+                const int r = off[(size_t) i] + t;
+                const LaneDev& LD = b.lanes[(size_t) reqs[(size_t) i].lane];
+                rows[(size_t) r] = b.mtp_row_pos + r;
+                rows[(size_t) (MAXT + r)] = LD.pt;
+                lane_row_extra(rows.data(), r, LD);
+            }
+        ck(cudaMemcpy(b.mtp_lane_rows, rows.data(), rows.size() * sizeof(const int*), cudaMemcpyHostToDevice), "draft lane rows");
+        for (int i = 0; i < nl; ++i) {
+            const DraftReq& q = reqs[(size_t) i];
+            ck(cudaMemcpyAsync(b.mtp_src + (size_t) off[(size_t) i] * ROW_W, draft_src(b, q.from_main) + (size_t) q.src_row * ROW_W, (size_t) q.T * ROW_W * 4,
+                               cudaMemcpyDeviceToDevice, b.st), "draft source rows");
+        }
+        ck(cudaMemcpyAsync(b.mtp_emb, h_.mtp_emb, (size_t) T * N * 4, cudaMemcpyHostToDevice, b.st), "draft embeddings");
+        ck(cudaMemcpyAsync(b.mtp_ctl, h_.mtp_ctl, 2 * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft ctl");
+        ck(cudaMemcpyAsync(b.mtp_lctl, h_.mtp_lctl, (size_t) 2 * nl * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft lane ctl");
+        ck(cudaMemcpyAsync(b.mtp_row_pos, h_.mtp_row_pos, (size_t) T * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft row positions");
+        ck(cudaEventRecord(b.ev0, b.st), "event");
+    }
+    mtp_enqueue_lanes(reqs, T);
+    for (int c = 0; c < NCARD; ++c) {
+        CardBuf& b = *cb_[c];
+        ck(cudaSetDevice(b.dev), "set");
+        ck(cudaEventRecord(b.ev1, b.st), "event");
+        ck(cudaMemcpyAsync(h_.bv + (size_t) c * MAXT, b.mtp_bv, (size_t) T * 4, cudaMemcpyDeviceToHost, b.st), "draft v");
+        ck(cudaMemcpyAsync(h_.bi + (size_t) c * MAXT, b.mtp_bi, (size_t) T * 4, cudaMemcpyDeviceToHost, b.st), "draft i");
+        ck(cudaMemcpyAsync(&h_.err[c], err_word(b), 4, cudaMemcpyDeviceToHost, b.st), "window err");
+    }
+    unsigned err = 0;
+    float gpu_ms = 0.f;
+    for (int c = 0; c < NCARD; ++c) {
+        ck(cudaSetDevice(cb_[c]->dev), "set");
+        ck(cudaStreamSynchronize(cb_[c]->st), "draft sync");
+        err |= h_.err[c];
+        float ms = 0.f;
+        ck(cudaEventElapsedTime(&ms, cb_[c]->ev0, cb_[c]->ev1), "event time");
+        gpu_ms = std::max(gpu_ms, ms);
+    }
+    last_draft_gpu_ms = gpu_ms;
+    if (const char* e = window_error(err, true)) throw std::runtime_error(std::string("draft_lanes: ") + e);
+    std::vector<int> out((size_t) nl);
+    for (int i = 0; i < nl; ++i) {
+        const int row = off[(size_t) i] + reqs[(size_t) i].T - 1;
+        int best = 0;
+        for (int c = 1; c < NCARD; ++c)
+            if (mtp_->cards[c].dv1 > mtp_->cards[c].dv0 && h_.bv[(size_t) c * MAXT + row] > h_.bv[(size_t) best * MAXT + row]) best = c;
+        out[(size_t) i] = mtp_->vocab[h_.bi[(size_t) best * MAXT + row]];
+    }
+    last_draft_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return out;
+}
+
 }  // namespace fnx

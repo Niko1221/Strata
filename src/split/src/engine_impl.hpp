@@ -125,6 +125,9 @@ struct CardBuf {
     uint16_t *mtp_kc = nullptr, *mtp_vc = nullptr;   // f16
     float *mtp_emb = nullptr, *mtp_en, *mtp_e2, *mtp_src, *mtp_hn, *mtp_h2, *mtp_R, *mtp_logits, *mtp_bv;
     int *mtp_bi, *mtp_ctl;
+    // the batched draft layer (Engine::draft_lanes): per lane [pos0, tag], per row its cell, and the rows' pointer table (the main window's lane_rows, for the draft rows)
+    int *mtp_lctl = nullptr, *mtp_row_pos = nullptr;
+    const int** mtp_lane_rows = nullptr;
     int* mtp_pen = nullptr;        // the last row's penalties (penalize_row's pen, this card's draft-vocabulary indexes)
     float* mtp_pen_par = nullptr;
     float* mtp_tk_v = nullptr;     // the last row's TOPK_N candidates (draft(cands)); mtp_zero: no penalties for top_tokens
