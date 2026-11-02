@@ -132,6 +132,7 @@ kernel void ds4_mm_dn(device const uchar* W [[buffer(0)]], device half* YEH [[bu
 
 #define DS4_MM_INST(F, T)                                                                                                          template [[host_name("ds4_mm_gu_" #T)]] kernel decltype(ds4_mm_gu<F, 32, 32, 32, 4>) ds4_mm_gu<F, 32, 32, 32, 4>;               template [[host_name("ds4_mm_dn_" #T)]] kernel decltype(ds4_mm_dn<F, 32, 32, 32, 4>) ds4_mm_dn<F, 32, 32, 32, 4>;
 DS4_MM_INST(T_IQ1_M, 29)
+DS4_MM_INST(T_IQ1_S, 19)
 DS4_MM_INST(T_IQ2_XXS, 16)
 DS4_MM_INST(T_IQ2_XS, 17)
 DS4_MM_INST(T_IQ2_S, 22)

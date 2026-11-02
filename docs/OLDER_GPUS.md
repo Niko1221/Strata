@@ -87,15 +87,22 @@ The choice is kept in the model's config (`"cuda": 12`). Starts and `UPDATE.bat`
 Setting the model up again chooses again (add `--cuda 12` to keep a forced choice). A Pascal or Volta card added to a model at a
 start (`--gpus`) moves that model to the CUDA 12 engine.
 
-`--cuda 12` is also the way to run Strata with an NVIDIA driver older than 580. The CUDA 12 engine needs driver 528 or newer on
-Windows and 525 on Linux (`CUDA12_MIN_DRIVER` in `setup.py`); setup's "driver too old" stop says so. The Docker `cuda12` image
-asks for 575 ([DOCKER.md](DOCKER.md)). Drivers that old were not tested here.
+`--cuda 12` is also the way to run Strata with an NVIDIA driver older than 580. The oldest driver the CUDA 12 engine runs on is the
+`min_driver` of its package (575.51 or newer at the moment, as in the Docker `cuda12` image, [DOCKER.md](DOCKER.md)). Setup reads it from
+the installed package or the signed update feed and says it in the "driver too old" stop; `strata update` enforces the same number. NVIDIA's
+own table lets CUDA 12 programs start on older drivers (525 on Linux, 527 on Windows), but the packages are built with CUDA 12.9 and were
+not tested on such drivers, so Strata does not promise that range.
 
 ### Mixed cards
 
 A model that shares a V100 with an RTX 30 / 40 card runs both on the CUDA 12 engine (code for sm_60 to sm_89, plus PTX). An RTX
 50 card (sm_120) in a CUDA 12 engine is a warning, not a stop: engines built with 12.8 crashed on long prompts there (#220,
 #224). Keep the RTX 50 card on its own model (`--gpu N`), where it runs the CUDA 13 engine.
+
+An engine you build yourself with CUDA 12.8 for an RTX 50 / RTX PRO Blackwell card (compute capability 12.0) now starts with the batched PLE post-ops of the
+prompt path **off** and says so once (`STRATA_PLE_BATCH=1` turns them on anyway; CMake warns at configure time as before). That is the one place the
+default differs by toolkit: the same source built with CUDA 13.0 or newer (the released cuda13 engine) keeps them on, which is about 23% faster prompts, and no
+other card or toolkit changes. Use CUDA 13.0 or newer for an RTX 50 card.
 
 ### Building it yourself
 

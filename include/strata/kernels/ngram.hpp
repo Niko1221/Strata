@@ -205,6 +205,10 @@ public:
     bool is_open() const;
     /// True when `PleIoOptions::lock` was asked for and the OS lock succeeded (false: pages only pre-touched).
     bool locked() const;
+    /// Gives a resident lock back (Mmap mode): the pages stay mapped and cached, but the OS may reclaim them again, so the RAM counts as
+    /// available.  False when the table was not locked.  Used by the residency policy when the table's lock would leave the
+    /// conversation cache no room (#4518).
+    bool unlock();
     uint64_t rows() const;
     /// Bytes of the whole table (rows x row bytes) while open; 0 when closed.  The residency policy in
     /// generate.cpp sizes the table with this before it decides to keep it in RAM.

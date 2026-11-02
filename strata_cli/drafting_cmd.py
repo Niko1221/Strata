@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from strata_control import acquisition, drafting
+from strata_control.discovery import MTP_FETCH_GB
 
 
 def add_parser(sp) -> None:
@@ -24,17 +25,30 @@ def add_parser(sp) -> None:
         one.add_argument("--config", metavar="FILE", help="a model's run config: its data folder, model and drafting choice decide what is needed")
         one.add_argument("--family", metavar="NAME", help="the model family when there is no run config yet (qwen, gyro, coder, ...)")
         one.add_argument("--mode", choices=drafting.MODES, help="the choice to decide for (default: the run config's own)")
+        one.add_argument("--no-split", action="store_true",
+                         help="decide without the all-cards split engine (the app: in 0.2.10 only the Terminal starts it, so the app's Auto is DFlash2, not the split's MTP)")
         if name == "fetch":
             one.add_argument("--if-needed", action="store_true", help="download only when the choice would use the drafter and it is not here")
         one.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
 
 
-def _card_class() -> str:
+def _hardware() -> tuple[str | None, list[str]]:
+    return drafting.detect_hardware()
+
+
+def _split_expected(cfg: dict, args: list) -> bool:
+    """Would the all-cards split engine take a start of this run config (strata_control/split_engine.expected, asked before the draft layer is on disk)?"""
     try:
-        from strata_control import engine_component
-        return drafting.card_class(list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present()))
-    except Exception:                                        # noqa: BLE001 - an unknown card is the "other" class
-        return "other"
+        from strata_control import split_engine as SE
+        flags = [str(x) for x in args]
+        flag = lambda name: next((flags[i + 1] for i, x in enumerate(flags[:-1]) if x == name), None)   # noqa: E731
+        gpus = cfg.get("gpu")
+        cards = [int(g) for g in gpus] if isinstance(gpus, list) else ([int(gpus)] if isinstance(gpus, int) and not isinstance(gpus, bool) else None)
+        return SE.expected({"split_engine": cfg.get("split_engine"), "drafting": cfg.get("drafting"), "user_args": cfg.get("user_args"),
+                            "replicas": cfg.get("replicas")}, indexes=cards, native=flag("--native"),
+                           context=int(flag("--max-context") or SE.TESTED_CONTEXT))
+    except Exception:                                        # noqa: BLE001 - an early question is never a reason to stop
+        return False
 
 
 def _inputs(a) -> dict:
@@ -51,7 +65,17 @@ def _inputs(a) -> dict:
         if data is None:
             from strata_cli.launch.catalog import Catalog
             data = Catalog().data_dir()
-    return {"mode": a.mode if a.mode else cfg.get("drafting"), "klass": _card_class(), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data}
+    backend, archs = _hardware()
+    args = cfg.get("args") or []
+    mode = a.mode if a.mode else cfg.get("drafting")
+    if cfg.get("mtp") is False and drafting.normalize(mode) == "auto":
+        mode = "off"                                         # the Draft layer switch is off and no drafter was chosen since
+    elif drafting.normalize(mode) == "auto" and not getattr(a, "no_split", False) and _split_expected(cfg, args):
+        a._split = True                                      # the plan says so (the app's Models screen and its load read it)
+        mode = "mtp"                                         # the all-cards split engine runs the MTP draft layer: the app fetches that, not DFlash2's drafter
+    return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
+            "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
+            "blocked": drafting.blocked_by(args, slots=cfg.get("parallel") if isinstance(cfg.get("parallel"), int) else 0)}
 
 
 def run(a) -> int:
@@ -60,10 +84,15 @@ def run(a) -> int:
     want = _inputs(a)
     folder = want["data_dir"]
     needed = drafting.needs_pack(**want)
+    mtp_needed = drafting.needs_mtp(**want)
     if a.drafting_command == "plan":
-        decision = drafting.decide(want["mode"], klass=want["klass"], model_name=want["model_name"], family=want["family"], data_dir=folder)
-        result = {**drafting_fetch.plan(folder), "needed": needed, "serves": drafting.ENGINE_SERVES_DFLASH2, "drafter": decision.drafter, "note": decision.note,
-                  "line": drafting.summary_line(decision)}
+        decision = drafting.decide(**want)
+        support = drafting.hardware_support(want["backend"], want["archs"])
+        # serves: this computer's engine can run DFlash2 (the build has the code and the card is one it is made for); the app offers the choice only then
+        result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe()), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
+                  "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
+                  "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
+                  "split": bool(getattr(a, "_split", False)), "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
         if (a.config or a.mode) and not needed:           # asked about a model: nothing to download unless the choice uses the drafter
             result["gb"] = 0.0
         if machine:

@@ -36,19 +36,57 @@ class LaunchDeepSeek(unittest.TestCase):
 
     def test_the_model_is_in_the_list(self):
         rows = [r for r in catalog(self.hw).rows() if r.family == "deepseek41"]
-        self.assertEqual([r.model for r in rows], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"])
+        self.assertEqual([r.model for r in rows], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
         self.assertEqual([r.download_gb for r in rows[:3]], [256.8, 273.8, 239.3])
         self.assertEqual(catalog(self.hw).resolve("ist-das-2.25bpw"), ("deepseek41", "IST-DAS-2.25bpw"))
-        r = rows[3]
+        self.assertEqual(catalog(self.hw).resolve("ISTA-DAS-2.25bpw"), ("deepseek41", "IST-DAS-2.25bpw"))     # the name on screen is accepted too
+        self.assertEqual(catalog(self.hw).resolve("ista-das-coder"), ("deepseek41", "ISTA-DAS-Coder"))
+        self.assertEqual(catalog(self.hw).resolve("IST-DAS-Coder"), ("deepseek41", "ISTA-DAS-Coder"))         # (the shorter spelling the other ids have is accepted)
+        r = rows[-1]
         self.assertEqual((r.id, r.download_gb, r.verdict, r.images), ("deepseek-v4.1-flash-ud-q8_k_xl", 508.4, "fits", True))   # 0.2.7: pictures through the engine's own tower
         self.assertEqual(catalog(self.hw).resolve("ud-q8_k_xl"), ("deepseek41", "UD-Q8_K_XL"))
-        self.assertEqual(catalog(self.hw).max_context("deepseek41", "UD-Q8_K_XL"), 8192)
+        self.assertEqual(catalog(self.hw).max_context("deepseek41", "UD-Q8_K_XL"), 131072)
+
+    def runner_with_own_shards(self, **kw):
+        own = self.home.base / "own"
+        own.mkdir()
+        (own / "x-00001-of-00006.gguf").write_bytes(b"x")
+        s = S.LaunchSettings(family="deepseek41", model="ISTA-DAS-Coder", context=8192, vision=kw.pop("vision", "off"), model_path=str(own),
+                             data_dir=str(self.home.base / "data"), **kw)
+        return Runner(s, catalog=catalog(self.hw))
+
+    def test_the_plan_with_your_own_shards_counts_the_shared_files_setup_still_fetches(self):
+        """Strix, 2026-11-02: `--model-path` plan said "Nothing to download" and setup then fetched the 8 GB DSpark drafter (even with --dspark off).  The plan now is the fetch."""
+        r = self.runner_with_own_shards(extra={"--dspark": "off"})
+        mod = r.catalog.strata.setup_module()
+        with mock.patch.object(Runner, "check_own_files"), mock.patch.object(mod, "dsv41_shared_missing", return_value=[(mod.DSV41_DSPARK, 7976914240)]) as m:
+            plan = r.download_plan()
+        self.assertEqual(plan["gb"], 8.0)
+        self.assertIn("DSpark drafter (8.0 GB)", plan["text"])
+        self.assertIn("even with --dspark off", plan["text"])
+        self.assertNotIn("Nothing to download", plan["text"])
+        self.assertEqual(m.call_args.kwargs["vision"], False)             # --vision off: the picture file is not asked for
+
+    def test_the_plan_with_all_shared_files_there_says_nothing_to_download(self):
+        r = self.runner_with_own_shards()
+        mod = r.catalog.strata.setup_module()
+        with mock.patch.object(Runner, "check_own_files"), mock.patch.object(mod, "dsv41_shared_missing", return_value=[]):
+            plan = r.download_plan()
+        self.assertEqual(plan["gb"], 0)
+        self.assertIn("Nothing to download: your model files are used where they are", plan["text"])
+
+    def test_pictures_on_ask_for_the_picture_file_too(self):
+        r = self.runner_with_own_shards(vision="on")
+        mod = r.catalog.strata.setup_module()
+        with mock.patch.object(Runner, "check_own_files"), mock.patch.object(mod, "dsv41_shared_missing", return_value=[]) as m:
+            r.download_plan()
+        self.assertEqual(m.call_args.kwargs["vision"], True)
 
     def test_the_plan_places_the_model_on_the_four_cards(self):
         p = self.plan("--model", "ud-q8_k_xl", "--no-tui")
         pl = p["placement"]
         self.assertEqual(p["settings"]["family"], "deepseek41")
-        self.assertEqual(p["settings"]["context"], 8192)
+        self.assertEqual(p["settings"]["context"], 131072)
         self.assertEqual(p["settings"]["tune"], "skip")
         self.assertEqual(p["settings"]["vision"], "on")              # pictures are on by default (the engine's own tower)
         self.assertEqual(pl["verdict"], "fits")
@@ -103,13 +141,14 @@ class LaunchDeepSeek(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("No graphics card", out)
 
-    def test_parallel_pictures_and_tuning_are_not_passed_on(self):
+    def test_parallel_is_passed_on_and_pictures_and_tuning_stay(self):
+        """`--parallel 4` on DeepSeek is no longer dropped (tests/terminal/test_launch_dsv41_parallel.py has the rest)."""
         p = self.plan("--model", "ud-q8_k_xl", "--parallel", "4", "--vision", "on", "--tune", "quick")
         s = p["settings"]
-        self.assertFalse(s.get("parallel"))
+        self.assertEqual(s.get("parallel"), 4)
         self.assertEqual((s["vision"], s["tune"]), ("on", "quick"))           # the DeepSeek tune is real now: the choice stays; pictures stay on
         text = " ".join(p["warnings"])
-        self.assertIn("one request at a time", text)
+        self.assertNotIn("one request at a time", text)
         self.assertNotIn("cannot read pictures", text)
         off = self.plan("--model", "ud-q8_k_xl", "--vision", "off")["settings"]
         self.assertEqual(off["vision"], "off")                                 # --vision off still turns them off
@@ -179,13 +218,69 @@ class OwnShards(unittest.TestCase):
         self.assertIn("nine parts", cm.exception.text)
         self.assertIn("00004-of-00009", cm.exception.text)
 
-    def test_the_plan_with_own_files_downloads_nothing(self):
+    def test_the_plan_with_own_shards_counts_the_shared_files_that_are_not_there(self):
+        """Only the shards are here: setup still fetches the shared files that are not (the picture file here), so the plan names them (before 0.2.9.1 it said
+        "Nothing to download" and the fetch followed)."""
         _base, folder = self.folder()
         code, out, err = run_cli(["launch", "--plan", "--model-path", str(folder), "--no-tui"])
         self.assertEqual(code, 0, err + out)
         self.assertIn("DeepSeek-V4.1-Flash", out)
-        self.assertIn("Nothing to download", out)
+        self.assertNotIn("Nothing to download", out)
+        self.assertIn("to download", out)
+        self.assertIn("the picture reader (1.0 GB)", out)           # (UD-Q8_K_XL has no other shared file; the Coder's drafter case is in test_the_plan_with_your_own_shards...)
 
+
+class CoderHuggingFaceLayout(unittest.TestCase):
+    """`--model-path` at the folder `hf download` makes for the official Coder repository: IQ2_XXS/ with the five model files, the Engram and the picture file at the
+    top.  The launch plan (runner.deepseek_set_in) and setup's step 5 (dsv41_folder / dsv41_parts) must agree on where the shards are: DF2-STRIX found the plan accepting the
+    folder and step 5 then saying shard 1 "is missing" (the Coder's setup.py entry had no "subdir")."""
+
+    def setUp(self):
+        self.home = Home().__enter__()
+        self.addCleanup(self.home.__exit__, None, None, None)
+        self.cat = catalog(HW_4X32)
+        self.mod = self.cat.strata.setup_module()
+        self.fam = self.mod.MULTI_FILE_FAMILIES["deepseek41"]
+        self.md = self.fam["models"]["ISTA-DAS-Coder"]
+        # tiny stand-ins of the pinned sizes, so the size-checked recognition and the shared-file search run without 180 GB
+        sizes = {n: (3 + i, "a" * 64) for i, n in enumerate(self.md["shards"])}
+        sizes[self.mod.DSV41_ISTA_ENGRAM] = (7, "b" * 64)
+        sizes[self.mod.DSV41_MMPROJ] = (5, "c" * 64)
+        p = mock.patch.dict(self.mod.DSV41_ALL_FILES, sizes)
+        p.start()
+        self.addCleanup(p.stop)
+        self.sizes = sizes
+        self.root = self.home.base / "repo"
+        (self.root / "IQ2_XXS").mkdir(parents=True)
+        for n in self.md["shards"]:
+            (self.root / "IQ2_XXS" / n).write_bytes(b"x" * sizes[n][0])
+        (self.root / self.mod.DSV41_ISTA_ENGRAM).write_bytes(b"x" * 7)
+        (self.root / self.mod.DSV41_MMPROJ).write_bytes(b"x" * 5)
+
+    def test_the_entry_names_the_folder_the_json_names(self):
+        self.assertEqual(self.md.get("subdir"), "IQ2_XXS")
+
+    def test_the_plan_finds_the_shards_in_the_repository_folder_and_in_the_folder_itself(self):
+        s = S.LaunchSettings(family="deepseek41", model="ISTA-DAS-Coder", context=8192, vision="off", model_path=str(self.root))
+        r = Runner(s, catalog=self.cat)
+        for given in (self.root, self.root / "IQ2_XXS"):
+            found = r.deepseek_set_in(self.mod, str(given), "ISTA-DAS-Coder")
+            self.assertEqual((found[0], found[2]), ("ISTA-DAS-Coder", self.root / "IQ2_XXS"), given)
+
+    def test_setups_step_5_looks_in_the_same_folder_and_misses_nothing(self):
+        from types import SimpleNamespace
+        for given in (self.root, self.root / "IQ2_XXS"):
+            a = SimpleNamespace(gguf_dir=str(given), models_dir=str(self.home.base / "models"))
+            folder = self.mod.dsv41_folder(a, self.fam, self.fam["tag"] + "ISTA-DAS-Coder", "ISTA-DAS-Coder")
+            self.assertEqual(folder, self.root / "IQ2_XXS", given)
+            _layout, names, missing = self.mod.dsv41_parts(self.md, lambda n: (folder / n).exists())
+            self.assertEqual((len(names), missing), (5, []), given)
+            self.assertTrue(all(self.mod.dsv41_pick(folder, n).exists() for n in self.md["shards"]))
+
+    def test_the_engram_and_the_picture_file_at_the_top_are_found_and_not_fetched(self):
+        for given in (self.root, self.root / "IQ2_XXS"):
+            missing = self.mod.dsv41_shared_missing("ISTA-DAS-Coder", self.home.base / "models", given, vision=True)
+            self.assertEqual([n for n, _ in missing], [self.mod.DSV41_DSPARK], given)       # only the drafter is still to fetch
 
 if __name__ == "__main__":
     unittest.main()

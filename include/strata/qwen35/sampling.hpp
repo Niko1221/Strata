@@ -6,6 +6,8 @@
 #include <map>
 #include <vector>
 
+#include "strata/kernels/sampler.hpp"   // penalty_counts_prompt (declarations only; no GPU needed)
+
 namespace strata::qwen35 {
 
 struct Sampling {
@@ -31,6 +33,15 @@ inline void apply_penalties(std::vector<float>& lg, const Sampling& s, const std
             v -= (float) c * s.freq + s.present;
         }
     }
+}
+
+/// #4590: the history the penalties start from for one request.  By default only the current reply counts: the history starts
+/// at the last prompt token (the one the first decode step feeds in) and grows with the tokens written, so the prompt's own
+/// numbers and a quoted earlier answer are not penalised.  `counts_prompt` (STRATA_PENALTY_PROMPT=1) is the old window, the
+/// whole prompt.  Same window as src/program/generate.cpp.
+inline std::vector<int32_t> penalty_history_start(const std::vector<int32_t>& prompt, bool counts_prompt) {
+    if (counts_prompt || prompt.empty()) return prompt;
+    return std::vector<int32_t>(1, prompt.back());
 }
 
 }  // namespace strata::qwen35

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {resourceSettings} from '../server/native-resources.mjs';
-import {runtimeVision} from '../server/native-vision.mjs';
+import {markPictures,runtimeVision} from '../server/native-vision.mjs';
 import {nativeFixture,finishJob} from './helpers/native-fixture.mjs';
 
 test('new native downloads use the selected model root without adding a legacy subfolder',async()=>{
@@ -138,6 +138,36 @@ test('vision can be disabled at load without losing the prepared encoder config 
  }finally{await f.cleanup();}
 });
 
+test('a load while the engine has no picture reader runs without pictures and saves nothing (it used to save "off" for good)',async()=>{
+ const f=nativeFixture();try{
+  await f.control.refresh();
+  const first=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',vision:'no',visionUnavailable:true}).id);
+  assert.equal(first.state,'done',first.error);
+  assert.equal(f.control.state().instances[0].vision,false,'no picture reading for this run');
+  const source=JSON.parse(readFileSync(join(f.repo,'strata-iq2_xs.json')));
+  assert.equal(source.ui_vision_enabled,undefined,'no off was saved');
+  assert.deepEqual(source.vision,{gpu:0},'the prepared picture files stay');
+  assert.equal(f.control.state().installed.models[0].visionEnabled,false,'while it runs without pictures the state says so');
+ }finally{await f.cleanup();}
+});
+
+test('a context the person picked is saved with a marker and read back (32K included); nothing is marked when none was picked',async()=>{
+ const plainFixture=nativeFixture();try{
+  await plainFixture.control.refresh();
+  const plain=await finishJob(plainFixture.control,plainFixture.control.operation('load',{model:'iq2_xs'}).id);
+  assert.equal(plain.state,'done',plain.error);
+  assert.equal(JSON.parse(readFileSync(join(plainFixture.repo,'strata-iq2_xs.json'))).ui_context_chosen,undefined);
+  assert.equal(plainFixture.control.state().installed.models[0].contextChosen,false);
+ }finally{await plainFixture.cleanup();}
+ const f=nativeFixture();try{
+  await f.control.refresh();
+  const picked=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',contextChosen:true}).id);
+  assert.equal(picked.state,'done',picked.error);
+  assert.equal(JSON.parse(readFileSync(join(f.repo,'strata-iq2_xs.json'))).ui_context_chosen,true);
+  assert.equal(f.control.state().installed.models[0].contextChosen,true);
+ }finally{await f.cleanup();}
+});
+
 test('runtime vision checks prepared files, validates mode, and leaves the source config intact',()=>{
  const config={vision:{mmproj:'/models/mmproj.gguf',gpu:true,max_tokens:8192},ui_vision_enabled:false};
  const before=structuredClone(config);
@@ -172,4 +202,17 @@ test('a card that shares the PC memory does not hold back a fifth of the shared 
  assert.equal(apu.vram_reserve_mib,2048,'the display floor with pictures, not 20% of 82 GB (16 GB)');
  const discrete=resourceSettings(original,{cpu:{cores:16},ram_gb:128,gpus:[{index:0,vram_gb:82,name:'a card'}]},'work');
  assert.equal(discrete.vram_reserve_mib,Math.floor(82*1024*.2),'a card with its own memory keeps its fifth');
+});
+
+test('picture readiness: Qwen needs strata-vision in the engine folder, DeepSeek carries its own tower (#4772)',()=>{
+ const catalog={families:[
+  {family:'flash-next',images:true,sizes:[{id:'q',images:true,multi_file:false}]},
+  {family:'deepseek-v4.1-flash',images:true,sizes:[{id:'d',images:true,multi_file:true}]},
+  {family:'text',images:false,sizes:[{id:'t',images:false}]}]};
+ const without=markPictures(catalog,false).families, withReader=markPictures(catalog,true).families;
+ assert.deepEqual(without.map(f=>f.sizes[0].images),[false,true,false]);
+ assert.deepEqual(without.map(f=>f.sizes[0].imagesCapable),[true,true,false]);
+ assert.deepEqual(without.map(f=>f.images),[false,true,false]);
+ assert.deepEqual(withReader.map(f=>f.sizes[0].images),[true,true,false]);
+ assert.equal(markPictures(null,true),null);
 });

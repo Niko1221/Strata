@@ -4,9 +4,11 @@
 //
 // Slot .meta layout (little endian), "DS4META2":
 //   u64 magic, u64 identity length, identity bytes, u64 .bin bytes, u64 token count, i32 tokens[],
-//   u64 checkpoint count (0..4), i64 checkpoints[], u64 magic
+//   u64 checkpoint count (0..19), i64 checkpoints[], u64 magic
 // The magic at both ends and the .bin size make a half-written or foreign file refused, never read.
 #pragma once
+
+#include "ds4_marks.hpp"   // kMarksMax
 
 #include <algorithm>
 #include <cstddef>
@@ -55,7 +57,7 @@ inline bool read(const std::string& path, const std::string& identity, int64_t m
     if (!f.read(id.data(), (std::streamsize) il) || id != identity) return false;
     if (!f.read((char*) &bytes, 8) || !f.read((char*) &nt, 8) || nt == 0 || nt > (uint64_t) max_ctx) return false;
     toks.resize(nt);
-    if (!f.read((char*) toks.data(), (std::streamsize) (nt * sizeof(int32_t))) || !f.read((char*) &nc, 8) || nc > 4)
+    if (!f.read((char*) toks.data(), (std::streamsize) (nt * sizeof(int32_t))) || !f.read((char*) &nc, 8) || nc > 3 + (uint64_t) kMarksMax)
         return false;
     cks.resize(nc);
     if (!f.read((char*) cks.data(), (std::streamsize) (nc * sizeof(int64_t))) || !f.read((char*) &m1, 8) || m1 != kMagic)
