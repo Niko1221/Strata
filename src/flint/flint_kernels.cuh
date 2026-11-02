@@ -501,6 +501,32 @@ __global__ void k_group_hy(const int32_t* ids, int n_ent, int K_, int n_expert, 
     }
 }
 
+// ---------------------------------------------------------------- Expert Routing Usage Counter
+__global__ void k_count_usage(const int32_t* ids, uint32_t* counts, int n_ent) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n_ent) {
+        atomicAdd(&counts[ids[idx]], 1);
+    }
+}
+
+// ---------------------------------------------------------------- Clear Miss Rows in Eparts
+__global__ void k_clear_miss(float* eparts, const int32_t* slot_of, const int32_t* ids, int n_ent, int n) {
+    const int e = blockIdx.x;
+    if (e >= n_ent) return;
+    if (slot_of[ids[e]] >= 0) return; // hit: computed on GPU
+    float* row = eparts + (size_t) e * n;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        row[i] = 0.0f;
+    }
+}
+
+// ---------------------------------------------------------------- CPU Fallback Merge
+__global__ void k_merge_cpu(float* parts, const float* cpu, const int32_t* miss, int n) {
+    const int e = blockIdx.x;
+    if (!miss[e]) return;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) parts[(size_t) e * n + i] = cpu[(size_t) e * n + i];
+}
+
 // ---------------------------------------------------------------- MoE Combine & Shared Expert Add
 __global__ void __launch_bounds__(1024) k_flint_moe_out(float* x, const float* parts, const int32_t* prow,
                                                        const float* wts, int K_, const float* shared,

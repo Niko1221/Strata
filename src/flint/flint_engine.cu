@@ -142,6 +142,9 @@ struct Layer {
     int resident_slots = 0;
     std::vector<int32_t> slot_of;
     int32_t* slot_of_d = nullptr;
+    std::vector<int32_t> exp_in_slot;
+    std::vector<double> score;
+    uint32_t* counts_d = nullptr;
 };
 
 struct Model {
@@ -325,6 +328,13 @@ struct Engine {
     float *ewts = nullptr;
     int n_chunk = 0;
     int kv_resident = 32768;
+
+    // MoE Adaptive Swapping
+    int adapt_every = 16;
+    int adapt_swaps = 8;
+    float adapt_decay = 0.7f;
+    float adapt_min_gain = 1.0f;
+    int64_t total_swaps = 0;
 
     std::vector<flintk::BlockQ80*> kc, vc; // Hardware-quantized Q8_0 KV Cache (Tier 1: VRAM ring)
     flintk::BlockQ80** host_kc = nullptr;  // Full context pinned host cache (Tier 2: Host RAM)
@@ -605,6 +615,11 @@ struct Engine {
             // Top-6 router selection into ids and ewts
             flintk::route_topk<256, 6><<<(unsigned) ((T + 7) / 8), dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T);
 
+            // True routing frequency tracking
+            if (L.counts_d) {
+                flintk::k_count_usage<<<(T * Kp + 31) / 32, 32, 0, st>>>(ids, L.counts_d, T * Kp);
+            }
+
             // Residency-biased routing: prioritize resident experts within margin (zero PCIe latency)
             if (margin > 0.0f) {
                 flintk::route_resident<256, 6><<<(unsigned) T, 32, 0, st>>>(logits_r, ids, ewts, L.slot_of_d, T, margin);
@@ -615,6 +630,9 @@ struct Engine {
             flintk::k_group_hy<<<1, 256, 0, st>>>(
                 ids, n_ent, Kp, (int) g.n_expert, L.slot_of_d, L.blobs, L.stride,
                 grp_ptr, grp_start, n_groups, ent_dst, ent_tok);
+
+            // Safe zeroing of miss rows in eparts (guarantees un-cached experts never have uninitialized memory)
+            flintk::k_clear_miss<<<n_ent, 256, 0, st>>>(eparts, L.slot_of_d, ids, n_ent, N);
 
             // Quantize h into q8 for routed expert execution
             prep(h, N, T);
@@ -668,6 +686,81 @@ struct Engine {
         graph_run(g1, [&] { forward(1, pos, 1, true); });
     }
 
+    void rebalance(int max_swaps) {
+        if (max_swaps <= 0 || !m) return;
+        const int64_t ne = m->g.n_expert;
+        std::vector<uint32_t> h_counts((size_t) ne);
+        for (size_t li = 0; li < m->layers.size(); ++li) {
+            const Layer& cL = m->layers[li];
+            Layer& L = const_cast<Layer&>(cL);
+            if (!L.is_moe || !L.counts_d) continue;
+            CK(cudaMemcpyAsync(h_counts.data(), L.counts_d, (size_t) ne * sizeof(uint32_t), cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            CK(cudaMemsetAsync(L.counts_d, 0, (size_t) ne * sizeof(uint32_t), st));
+            for (int64_t e = 0; e < ne; ++e) {
+                L.score[(size_t) e] += (double) h_counts[(size_t) e];
+            }
+        }
+
+        std::vector<uint8_t> blob_buf;
+        int swaps_left = max_swaps;
+        for (size_t li = 0; li < m->layers.size() && swaps_left > 0; ++li) {
+            const Layer& cL = m->layers[li];
+            Layer& L = const_cast<Layer&>(cL);
+            if (!L.is_moe || L.resident_slots <= 0 || L.resident_slots >= ne) continue;
+            const int S = L.resident_slots;
+
+            std::vector<int> order((size_t) ne);
+            for (int x = 0; x < ne; ++x) order[(size_t) x] = x;
+            std::sort(order.begin(), order.end(), [&](int a, int b) {
+                return L.score[(size_t) a] > L.score[(size_t) b];
+            });
+
+            std::vector<int> victims((size_t) S);
+            for (int s = 0; s < S; ++s) victims[(size_t) s] = s;
+            std::sort(victims.begin(), victims.end(), [&](int a, int b) {
+                return L.score[(size_t) L.exp_in_slot[(size_t) a]] < L.score[(size_t) L.exp_in_slot[(size_t) b]];
+            });
+
+            size_t vi = 0;
+            bool changed = false;
+            for (int i = 0; i < S && swaps_left > 0; ++i) {
+                const int cand = order[(size_t) i];
+                if (L.slot_of[(size_t) cand] >= 0) continue;
+
+                while (vi < victims.size()) {
+                    const int s = victims[vi];
+                    const int vict = L.exp_in_slot[(size_t) s];
+                    if (L.score[(size_t) cand] < L.score[(size_t) vict] + (double) adapt_min_gain) {
+                        vi = victims.size();
+                        break;
+                    }
+                    ++vi;
+                    L.slot_of[(size_t) vict] = -1;
+                    L.slot_of[(size_t) cand] = s;
+                    L.exp_in_slot[(size_t) s] = cand;
+
+                    if (blob_buf.size() < L.L.bytes) blob_buf.resize(L.L.bytes);
+                    expert_blob(L, cand, blob_buf.data());
+                    CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, blob_buf.data(), L.L.bytes,
+                                       cudaMemcpyHostToDevice, st));
+                    --swaps_left;
+                    ++total_swaps;
+                    changed = true;
+                    break;
+                }
+                if (vi >= victims.size()) break;
+            }
+
+            if (changed) {
+                CK(cudaMemcpyAsync(L.slot_of_d, L.slot_of.data(), (size_t) ne * sizeof(int32_t),
+                                   cudaMemcpyHostToDevice, st));
+            }
+            for (double& sc : L.score) sc *= (double) adapt_decay;
+        }
+        CK(cudaStreamSynchronize(st));
+    }
+
     void reset_graph() {
         if (g1) {
             CK(cudaGraphExecDestroy(g1));
@@ -712,11 +805,18 @@ bool place_experts(Model& m, Engine& E, double max_gib, std::string& err) {
             CK(cudaMemcpy(L.blobs + (size_t) e * L.stride, blob.data(), L.L.bytes, cudaMemcpyHostToDevice));
         }
 
-        // Initialize slot_of lookup table
+        // Initialize slot_of lookup table and usage tracking
         L.slot_of.assign((size_t) ne, -1);
-        for (int e = 0; e < res_slots; ++e) L.slot_of[e] = e;
+        L.exp_in_slot.assign((size_t) res_slots, -1);
+        L.score.assign((size_t) ne, 0.0);
+        for (int e = 0; e < res_slots; ++e) {
+            L.slot_of[e] = e;
+            L.exp_in_slot[e] = e;
+        }
         CK(cudaMalloc(&L.slot_of_d, (size_t) ne * sizeof(int32_t)));
         CK(cudaMemcpy(L.slot_of_d, L.slot_of.data(), (size_t) ne * sizeof(int32_t), cudaMemcpyHostToDevice));
+        CK(cudaMalloc(&L.counts_d, (size_t) ne * sizeof(uint32_t)));
+        CK(cudaMemset(L.counts_d, 0, (size_t) ne * sizeof(uint32_t)));
 
         total_vram_used += lyr_sz;
         total_res_slots += res_slots;
@@ -834,6 +934,13 @@ void serve(Engine& E, const Model& m) {
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
         if (line == "QUIT") break;
+        if (line == "RESET" || line.rfind("RESET", 0) == 0) {
+            E.pos = 0;
+            E.reset_graph();
+            std::printf("READY %d stop\n", E.ctx);
+            std::fflush(stdout);
+            continue;
+        }
         if (line.rfind("GEN ", 0) == 0) {
             Req r;
             if (!parse_gen(line, r)) {
@@ -880,6 +987,11 @@ void serve(Engine& E, const Model& m) {
 
             const double prefill_ms = ms_since(t_start);
 
+            // Rebalance experts right after prompt prefill to match prompt vocabulary
+            if (E.adapt_every > 0) {
+                E.rebalance(E.adapt_swaps * 4);
+            }
+
             // Sample first token
             std::vector<float> lg((size_t) m.g.n_vocab);
             CK(cudaMemcpy(lg.data(), E.logits, m.g.n_vocab * sizeof(float), cudaMemcpyDeviceToHost));
@@ -893,6 +1005,9 @@ void serve(Engine& E, const Model& m) {
             int generated = 1;
             const char* finish = "length";
             while (generated < r.max_new && E.pos < E.ctx) {
+                if (E.adapt_every > 0 && generated % E.adapt_every == 0) {
+                    E.rebalance(E.adapt_swaps);
+                }
                 CK(cudaMemcpyAsync(E.tok, &next_tok, sizeof(int32_t), cudaMemcpyHostToDevice, E.st));
                 CK(cudaMemcpyAsync(E.pos0, &E.pos, sizeof(int32_t), cudaMemcpyHostToDevice, E.st));
                 E.decode_step();
@@ -930,6 +1045,10 @@ int run(int argc, char** argv) {
     std::vector<int32_t> test_tokens;
     int max_new = 32;
     float margin = 1.0f;
+    int adapt_every = 16;
+    int adapt_swaps = 8;
+    float adapt_decay = 0.7f;
+    float adapt_min_gain = 1.0f;
     strata::flint::Sampling sampling;
 
     for (int i = 1; i < argc; ++i) {
@@ -944,6 +1063,14 @@ int run(int argc, char** argv) {
             if (i + 1 < argc) chunk = std::atoi(argv[++i]);
         } else if (a == "--expert-vram") {
             if (i + 1 < argc) expert_vram = std::atof(argv[++i]);
+        } else if (a == "--adapt-every") {
+            if (i + 1 < argc) adapt_every = std::atoi(argv[++i]);
+        } else if (a == "--adapt-swaps") {
+            if (i + 1 < argc) adapt_swaps = std::atoi(argv[++i]);
+        } else if (a == "--adapt-decay") {
+            if (i + 1 < argc) adapt_decay = (float) std::atof(argv[++i]);
+        } else if (a == "--adapt-min-gain") {
+            if (i + 1 < argc) adapt_min_gain = (float) std::atof(argv[++i]);
         } else if (a == "--serve") {
             serve_mode = true;
         } else if (a == "--no-graph") {
@@ -991,6 +1118,10 @@ int run(int argc, char** argv) {
     Engine engine;
     engine.margin = margin;
     engine.use_graph = use_graph;
+    engine.adapt_every = adapt_every;
+    engine.adapt_swaps = adapt_swaps;
+    engine.adapt_decay = adapt_decay;
+    engine.adapt_min_gain = adapt_min_gain;
     engine.allocate(model, max_context, chunk, kv_resident);
 
     if (!place_experts(model, engine, expert_vram, err)) {
@@ -1026,6 +1157,11 @@ int run(int argc, char** argv) {
     std::fprintf(stderr, "strata-flint: prefill %d tokens in %.2f ms (%.1f tok/s)\n",
                  prompt_len, pp_ms, pp_tps);
 
+    // Rebalance experts right after prompt prefill to match prompt vocabulary
+    if (engine.adapt_every > 0) {
+        engine.rebalance(engine.adapt_swaps * 4);
+    }
+
     std::vector<float> lg((size_t) model.g.n_vocab);
     CK(cudaMemcpy(lg.data(), engine.logits, model.g.n_vocab * sizeof(float), cudaMemcpyDeviceToHost));
     std::mt19937_64 rng(1337);
@@ -1037,6 +1173,9 @@ int run(int argc, char** argv) {
                  max_new, engine.use_graph ? "ON" : "OFF");
     const auto t_dec = Clock::now();
     for (int gen = 0; gen < max_new; ++gen) {
+        if (engine.adapt_every > 0 && gen > 0 && gen % engine.adapt_every == 0) {
+            engine.rebalance(engine.adapt_swaps);
+        }
         CK(cudaMemcpyAsync(engine.tok, &next_tok, sizeof(int32_t), cudaMemcpyHostToDevice, engine.st));
         CK(cudaMemcpyAsync(engine.pos0, &engine.pos, sizeof(int32_t), cudaMemcpyHostToDevice, engine.st));
         engine.decode_step();
@@ -1051,8 +1190,8 @@ int run(int argc, char** argv) {
     }
     const double dec_ms = ms_since(t_dec);
     const double dec_tps = (double) max_new / (dec_ms / 1000.0);
-    std::fprintf(stderr, "\nstrata-flint: decode %d tokens in %.2f ms (%.1f tok/s)\n",
-                 max_new, dec_ms, dec_tps);
+    std::fprintf(stderr, "\nstrata-flint: decode %d tokens in %.2f ms (%.1f tok/s, %lld adaptive swaps)\n",
+                 max_new, dec_ms, dec_tps, (long long) engine.total_swaps);
 
     return 0;
 }
