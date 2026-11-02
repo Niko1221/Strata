@@ -25,6 +25,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/uc_probe.hpp"
 #include "strata/pipeline_auto.hpp"
 #include "strata/sycl_doorbell.hpp"
 #include "strata/core/arch_defaults.hpp"
@@ -1771,6 +1772,7 @@ int main(int argc, char **argv) try {
         setenv("CUDA_MODULE_LOADING", "EAGER", 0);
 #endif
     }
+    strata::uc_probe("start");   // test only: STRATA_UC_PROBE=1 times four kernels (uc_probe.hpp)
     Options o;
     bool borrow_explicit = false;   // SYCL port: --prefill-borrow / --no-prefill-borrow given (else chosen by context)
     bool have_tokens = false;
@@ -3041,6 +3043,7 @@ int main(int argc, char **argv) try {
     std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s in %.1f s (%zu canonical tensors "
                          "skipped: served natively)\n",
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
+    strata::uc_probe("weights");
 
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
@@ -3052,6 +3055,7 @@ int main(int argc, char **argv) try {
                      native_dense.tensor_count(), (double) native_dense.weight_bytes() / (1024.0 * 1024.0), load_s());
     }
 
+    strata::uc_probe("native-dense");
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
     strata::kernels::gr_set_native_mmvf(o.gr_native_mmvf);
     // Plan v0.3 P3: the fused hyper-connection read rides the native (FP32-activation) contract; the per-stage
@@ -3647,6 +3651,7 @@ int main(int argc, char **argv) try {
                                      "behind rank %zu (the peer's)\n", f, n_moved, at, fill);
             }
         }
+        strata::uc_probe("after-profile");
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
     }
@@ -4336,6 +4341,7 @@ int main(int argc, char **argv) try {
                      (unsigned long long) native_head.weight_bytes(),
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - head_t0).count());
     }
+    strata::uc_probe("after-head");
     std::vector<float> logits((size_t) n_vocab);
     float* d_logits = nullptr;
     if (DPCT_CHECK_ERROR(
@@ -5078,6 +5084,7 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        strata::uc_probe("after-fill");
         mem_mark("the profile fill");
         std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile in %.1f s (%.0f MB/s); "
                              "slot 0 verified\n",
@@ -5617,6 +5624,7 @@ int main(int argc, char **argv) try {
         return 2;
     }
 
+    strata::uc_probe("cache-done");
     mem_mark("the expert cache and the graphs");
     std::fprintf(stderr, "strata generate: session is up (engine %s)\n", STRATA_VERSION);
     if (verify_all_slots) verify_all_slots("session up");
@@ -8941,6 +8949,7 @@ int main(int argc, char **argv) try {
                     }
                 }).detach();
         }
+        strata::uc_probe("ready");
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -12180,6 +12189,7 @@ int main(int argc, char **argv) try {
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt);
             std::fflush(stdout);
+            strata::uc_probe("after-request");
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
                             (int64_t) live.size() == p;
@@ -12341,6 +12351,7 @@ int main(int argc, char **argv) try {
     // then starts at the last prompt position, whose prediction is the first generated token.
     int64_t pos_start = 0;
     int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
+    strata::uc_probe("before-prefill");
     strata::prefill::Prefill prefill;
     bool kvg_started = false;   // the elastic K/V took this run's cells
     double prefill_batched_ms = 0;
@@ -12455,6 +12466,7 @@ int main(int argc, char **argv) try {
         }
         prefill_batched_ms = std::chrono::duration<double, std::milli>(Clock::now() - tp0).count();
         prefill_ms += prefill_batched_ms;
+        strata::uc_probe("after-prefill");
         pos_start = n_batched;
         tok = o.tokens[(size_t) pos_start];
         // the PLE window of the token path: the two tokens before `pos_start`
@@ -12989,6 +13001,7 @@ int main(int argc, char **argv) try {
                 }
                 std::fprintf(stderr, "strata generate: window and draft graphs captured in %.0f ms\n",
                              std::chrono::duration<double, std::milli>(Clock::now() - tw).count());
+                strata::uc_probe("captured");
             }
         }
         if (use_mtp && !first_window &&
@@ -13337,6 +13350,7 @@ int main(int argc, char **argv) try {
     for (int64_t t : produced) std::printf(" %lld", (long long) t);
     std::printf("\n");
     const double decode_ms = decoded > 0 ? total_ms / (double) decoded : 0.0;
+    strata::uc_probe("end-cli");
     std::printf("%-24s %lld tokens in %.1f ms  ->  %.2f tok/s\n", "decode", (long long) decoded, total_ms,
                 decode_ms > 0.0 ? 1000.0 / decode_ms : 0.0);
     if (n_prompt > 1)
