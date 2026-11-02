@@ -13,6 +13,7 @@
 #   VISION_ONLY=1                    build only the two readers (no engine, no package)
 #   DSV41=1|0                        also build strata-dsv41 (the DeepSeek-V4.1 engine, tools/dsv41/build_hip_linux.sh's flags) and ship it beside
 #                                    strata: default 1 for the rx9070 variant (gfx1200 gfx1201; built and run on an R9700), 0 for the others
+#   SPLIT_DIR=<folder>               ship the strata-split-N-amd binaries of that folder (made by packaging/build_split_hip.sh) beside strata
 #   NO_PACKAGE=1                     stop after the stage folder
 #   VISION_HIP_DEFS="-DGGML_CUDA_FA=OFF"   extra cmake definitions for the GPU reader only
 #
@@ -105,6 +106,8 @@ for b in "${BINS[@]}"; do
 done
 cp "$OUT/b/strata" "$OUT/bv/bin/strata-vision" "$OUT/bh/bin/strata-vision-hip" "$STAGE/"
 [ "$DSV41" = 1 ] && cp "$OUT/bd/strata-dsv41" "$STAGE/"
+# the all-cards split engines (packaging/build_split_hip.sh: strata-split-2/3/4-amd, RUNPATH $ORIGIN) ride in the package when SPLIT_DIR names the folder holding them (--tree takes them)
+[ -n "${SPLIT_DIR:-}" ] && cp "$SPLIT_DIR"/strata-split-*-amd "$STAGE/"
 for f in "$STAGE"/*.so "$STAGE"/*.so.*; do [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f"; done
 for f in "$STAGE/strata" "$STAGE/strata-vision" "$STAGE/strata-vision-hip" $([ "$DSV41" = 1 ] && echo "$STAGE/strata-dsv41"); do
   st "RUNPATH $(basename "$f"): $(readelf -d "$f" | grep -E 'RPATH|RUNPATH' | cut -d'[' -f2 | tr -d ']' | paste -sd' ')"
