@@ -12,6 +12,7 @@
 #                        the engine refuses a card of any other architecture
 set(STRATA_SPLIT_CARDS "2" CACHE STRING "card counts strata-split is built for (2, 3, 4)")
 set(STRATA_SPLIT_ARCH "" CACHE STRING "compute capability strata-split is built for (e.g. 86)")
+set(STRATA_SPLIT_PF_JOB "64" CACHE STRING "rows of one expert per prompt-path job: 64 (default) or 128")
 
 if(NOT STRATA_ENABLE_CUDA OR WIN32 OR APPLE)
   message(STATUS "STRATA_BUILD_SPLIT: needs a Linux CUDA build, skipped")
@@ -50,7 +51,7 @@ foreach(_n ${STRATA_SPLIT_CARDS})
   add_executable(${_t} ${_sp_engine} ${_sp_kparts})
   target_include_directories(${_t} PRIVATE ${_sp}/src ${_sp}/tools ${STRATA_GGML_DIR}/ggml/src/ggml-cuda ${STRATA_GGML_DIR}/ggml/src
                              ${STRATA_GGML_DIR}/ggml/include)
-  target_compile_definitions(${_t} PRIVATE FNX_NCARD=${_n} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0 FNX_HOSTRING=1
+  target_compile_definitions(${_t} PRIVATE FNX_NCARD=${_n} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0 FNX_HOSTRING=1 FNX_PF_JOB=${STRATA_SPLIT_PF_JOB}
                              FNX_DIR="${_sp}")
   target_compile_options(${_t} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --expt-relaxed-constexpr -Wno-deprecated-gpu-targets>)
   set_target_properties(${_t} PROPERTIES CUDA_ARCHITECTURES "${STRATA_SPLIT_ARCH}-real" CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON

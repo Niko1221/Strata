@@ -280,8 +280,12 @@ template <int TYPE, int BM>
 __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __restrict__ jobs, const int* __restrict__ njobs,
                                                         const __half* __restrict__ x, int ldx, float* __restrict__ out) {
     using namespace nvcuda;
-    constexpr int WR = BM / 32, WT = MM_THREADS / 32 / WR, TT = 4 / WT, NP = BM / MM_PASS, LO = 16 * TT;
-    static_assert(WR * WT == MM_THREADS / 32 && TT * WT == 4 && NP * MM_PASS == BM, "warp layout");
+    constexpr int MM_NT = PF_JOB / 16;   // token tiles of a job
+    constexpr int WR = BM / 32, WT = MM_THREADS / 32 / WR, TT = MM_NT / WT, NP = BM / MM_PASS, LO = 16 * TT;
+    static_assert(WR * WT == MM_THREADS / 32 && TT * WT == MM_NT && NP * MM_PASS == BM, "warp layout");
+#if FNX_ARCH < 80
+    static_assert(PF_JOB == 64, "the m8n8k4 path is laid out for 64-row jobs");
+#endif
     const int ji = blockIdx.y;
     if (ji >= *njobs) return;
     __shared__ BigJob jb;
