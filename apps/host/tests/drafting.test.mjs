@@ -249,3 +249,8 @@ test('where the all-cards split engine takes the start, Auto is the MTP in the l
     'a plain Auto load fetches the draft layer when the plan says split; a saved explicit choice is left alone');
   assert.match(read('../src/lib/native.ts'), /dflash2Split\?:boolean/);
 });
+
+test('the MTP fetch the app makes names the folder of the model own files, so the installer never downloads the model again', () => {
+  const source = read('../server/native-control.mjs');
+  assert.match(source, /async function installMtpLayer\(job,args,config\)\{[\s\S]*?const native=\(\(\)=>\{const a=\(config\.args\?\?\[\]\)\.map\(String\),i=a\.indexOf\('--native'\)[\s\S]*?install\(job,\{family:fam\.family,model:size\.model,drafter:'mtp',vision:args\.vision\?\?\(config\.vision\?'yes':'no'\),\.\.\.\(native\?\{gguf_dir:dirname\(native\)\}:\{\}\)\}\)/);
+});

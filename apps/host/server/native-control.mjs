@@ -327,7 +327,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const fam=snapshot.catalog?.families?.find(f=>f.sizes.some(s=>s.id===args.model)),size=fam?.sizes.find(s=>s.id===args.model);
   if(!fam||!size)return;
   job.summary='Downloading the MTP drafter…';emit();
-  try{await install(job,{family:fam.family,model:size.model,drafter:'mtp',vision:args.vision??(config.vision?'yes':'no')});}
+  /* the model's own files folder (the run config's --native): without it the installer, asked for this model by name, would fetch the whole model again next to the layer (an app install adopted from the person's own GGUF folder has its files elsewhere) */const native=(()=>{const a=(config.args??[]).map(String),i=a.indexOf('--native');return i>=0?(a[i+1]??''):'';})();try{await install(job,{family:fam.family,model:size.model,drafter:'mtp',vision:args.vision??(config.vision?'yes':'no'),...(native?{gguf_dir:dirname(native)}:{})});}
   catch{if(job.state==='running'){job.drafterNote='The MTP drafter could not be downloaded.';emit();}}/* one short line, not the installer's own text; Drafting below says what runs instead */
  }
  /* The DFlash2 drafter, before a load that uses it: Control says whether the choice needs it (and the file is not here), downloads it pinned and checked, and packs it, with plain progress in the job.
