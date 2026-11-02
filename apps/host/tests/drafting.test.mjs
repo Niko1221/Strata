@@ -109,13 +109,13 @@ test('every sentence of the Drafting choice is in the catalog in all nine langua
   }
 });
 
-test('the Drafting dropdown exists only where there is something to choose: Qwen3.8-Flash-Next (qwen, gyro) on a computer whose engine can run DFlash2', async () => {
+test('the Drafting dropdown exists only where there is something to choose: Qwen3.8-Flash-Next (qwen, gyro, unsloth) on a computer whose engine can run DFlash2', async () => {
   const { transform } = await import('esbuild');
   const code = (await transform(read('../src/lib/drafting.ts'), { loader: 'ts', format: 'esm' })).code;
   const { draftingChoices } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
   const all = ['auto', 'mtp', 'dflash2', 'off'];
   // the engine here cannot run it (Metal, Intel, no card), or Control has not answered yet: no dropdown for anyone
-  for (const family of ['qwen', 'gyro', 'coder', 'swift', 'deepseek41', undefined]) {
+  for (const family of ['qwen', 'gyro', 'unsloth', 'coder', 'swift', 'deepseek41', undefined]) {
     assert.equal(draftingChoices(family, false), null, `${family}, not served`);
     assert.equal(draftingChoices(family, undefined), null, `${family}, Control has not answered`);
     assert.equal(draftingChoices(family, null), null);
@@ -123,7 +123,8 @@ test('the Drafting dropdown exists only where there is something to choose: Qwen
   // it can: only the models it is for. DeepSeek has no MTP (its DSpark drafter is chosen by the engine); the other families have the MTP and nothing to pick against it.
   assert.deepEqual(draftingChoices('qwen', true), all);
   assert.deepEqual(draftingChoices('gyro', true), all);
-  for (const family of ['coder', 'swift', 'unsloth', 'nvfp4', 'qwen36', 'deepseek41', undefined]) assert.equal(draftingChoices(family, true), null, `${family}, served`);
+  assert.deepEqual(draftingChoices('unsloth', true), all, "Unsloth's quantizations are the same weights (DFlash2 measured on UD-Q4_K_XL)");
+  for (const family of ['coder', 'swift', 'nvfp4', 'qwen36', 'deepseek41', undefined]) assert.equal(draftingChoices(family, true), null, `${family}, served`);
   // the app learns it from Control, once, and false until Control answers
   const host = read('../server/native-control.mjs');
   assert.match(host, /dflash2:dflash2Served===true,dflash2Support\}/);
@@ -163,12 +164,17 @@ test('one drafter per run: Auto is DFlash2 where the engine has it, the same wor
   const code = (await transform(read('../src/lib/drafting.ts'), { loader: 'ts', format: 'esm' })).code;
   const ts = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
   const host = await import('../server/native-settings.mjs');
-  for (const [choice, family, served] of [['auto', 'qwen', true], [undefined, 'gyro', true], ['auto', 'qwen', false], ['auto', 'coder', true], ['mtp', 'qwen', true], ['dflash2', 'qwen', true], ['off', 'qwen', true], ['dflash2', 'coder', true]]) {
+  for (const [choice, family, served] of [['auto', 'qwen', true], [undefined, 'gyro', true], ['auto', 'unsloth', true], ['auto', 'swift', true], ['auto', 'nvfp4', true], ['auto', 'qwen', false], ['auto', 'coder', true], ['mtp', 'qwen', true], ['dflash2', 'qwen', true], ['off', 'qwen', true], ['dflash2', 'coder', true]]) {
     assert.equal(ts.resolveDrafter(choice, family, served), host.resolveDrafter(choice, family, served), `${choice} ${family} ${served}`);
   }
   assert.equal(ts.resolveDrafter('auto', 'qwen', true), 'dflash2');
   assert.equal(ts.resolveDrafter('auto', 'qwen', null), 'mtp', 'Control has not answered: the MTP');
   assert.equal(host.resolveDrafter('auto', 'Qwen3.8-Flash-Next-iq3_s', true), 'dflash2', 'a run config model name works too');
+  // the names setup.py writes (f"{family name}-{model.lower()}"): Unsloth's quantizations are DFlash2's; Swift, Coder and NVFP4 are not
+  for (const name of ['qwen3.8-flash-next-unsloth-ud-q4_k_xl', 'qwen3.8-flash-next-unsloth-ud-iq4_xs', 'qwen3.8-flash-next-unsloth-q8_0', 'qwen3.8-flash-next-gyro-gyro-s']) assert.equal(host.resolveDrafter('auto', name, true), 'dflash2', name);
+  for (const name of ['qwen3.8-flash-next-coder-iq1_m', 'qwen3.8-flash-next-nvfp4-nvfp4', 'swift-1.5-iq2_xs', 'qwen3.8-flash-next-unsloth', 'qwen3.6-35b-a3b-ud-q4_k_xl']) assert.equal(host.resolveDrafter('auto', name, true), 'mtp', name);
+  assert.equal(ts.resolveDrafter('auto', 'unsloth', true), 'dflash2');
+  assert.equal(host.resolveDrafter('auto', 'unsloth', true), 'dflash2');
 });
 
 test('a new install fetches only the drafter it will use; the fit and the slot estimates use the drafter chosen', async () => {

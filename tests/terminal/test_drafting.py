@@ -43,11 +43,11 @@ class AutoAndTheBackends(unittest.TestCase):
         """Owner 2026-11-02: DFlash2 is the primary drafter on every system whose engine has it (CUDA, HIP, Metal, Intel SYCL since the DF2-SYCL engine)."""
         self.assertEqual(drafting.DFLASH2_BACKENDS, ("cuda", "hip", "metal", "sycl"))
         for backend in ("cuda", "hip", "metal", "sycl"):
-            for family in ("qwen", "gyro"):
+            for family in ("qwen", "gyro", "unsloth"):
                 self.assertEqual(drafting.choice_of("auto", family=family, backend=backend), "dflash2", (backend, family))
         self.assertEqual(drafting.choice_of("auto", family="qwen", backend=None), "mtp", "an unknown computer is the MTP")
         self.assertEqual(drafting.choice_of("auto", family="qwen", backend="cpu"), "mtp", "an engine without the code is the MTP")
-        for family in ("coder", "swift", "unsloth", "nvfp4", "deepseek41"):
+        for family in ("coder", "swift", "nvfp4", "deepseek41"):
             self.assertEqual(drafting.choice_of("auto", family=family, backend="cuda"), "mtp", family)
 
     def test_intel_runs_dflash2_and_a_build_without_the_code_does_not(self):
@@ -367,6 +367,98 @@ class EngineArguments(unittest.TestCase):
         src = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8")
         self.assertIn("(o.mtp.empty() && o.mtp_draft_vocab.empty())", src)
         self.assertIn('o.draft_fallback != "mtp"', src)
+
+
+class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
+    """DF2-METAL found that Auto never picked DFlash2 for Unsloth's quantizations: they are the same Qwen3.8-Flash-Next weights and the DFlash2 numbers (Strix, R9700,
+    M5 Max) were measured on UD-Q4_K_XL. Swift (UkisAI's fine-tune) and Coder (ISTA-DASLab's coding version) are fine-tunes with no acceptance numbers: the MTP.
+    The names are the ones setup.py and metal/setup_mac.py write: f"{family name}-{model.lower()}"."""
+
+    UNSLOTH = ("qwen3.8-flash-next-unsloth-ud-q4_k_xl", "qwen3.8-flash-next-unsloth-ud-iq4_xs", "qwen3.8-flash-next-unsloth-ud-q5_k_xl",
+               "qwen3.8-flash-next-unsloth-ud-q6_k_xl", "qwen3.8-flash-next-unsloth-q8_0")
+    FLASH_NEXT = ("qwen3.8-flash-next", "qwen3.8-flash-next-q2_0", "qwen3.8-flash-next-iq2_xs", "qwen3.8-flash-next-iq3_xxs", "qwen3.8-flash-next-iq3_s",
+                  "qwen3.8-flash-next-gyro-gyro-s", "qwen3.8-flash-next-gyro-gyro-m")
+    OTHERS = ("qwen3.8-flash-next-coder-iq1_m", "qwen3.8-flash-next-nvfp4-nvfp4", "qwen3.8-flash-next-nvfp4-nvfp4-nvidia", "qwen3.8-flash-next-nvfp4-nvfp4-qad",
+              "swift-1.5-iq2_xs", "swift-1.5-q4_0", "qwen3.6-35b-a3b-ud-q4_k_xl", "deepseek-v4.1-flash", "qwen3.8-flash-next-unsloth", "qwen3.8-flash-next-unslothx-q8_0")
+    HARDWARE = (("cuda", ["sm_120"]), ("hip", ["gfx1151"]), ("metal", None), ("sycl", ["8086"]))
+
+    def test_the_names_the_setups_write(self):
+        for name in self.UNSLOTH + self.FLASH_NEXT:
+            self.assertTrue(drafting.supported_model(name), name)
+            self.assertTrue(drafting.supported_model(name.upper()), name.upper())
+        for name in self.OTHERS:
+            self.assertFalse(drafting.supported_model(name), name)
+        self.assertTrue(drafting.supported_model(None, "unsloth"))
+        for family in ("swift", "coder", "nvfp4", "qwen36", "deepseek41"):
+            self.assertFalse(drafting.supported_model(None, family), family)
+        self.assertEqual(drafting.SUPPORTED_FAMILIES, ("qwen", "gyro", "unsloth"))
+
+    def test_the_names_are_the_ones_setup_writes(self):
+        """Read from the code, not from memory: the family names and the way setup.py and metal/setup_mac.py make the run config's model_name."""
+        setup = (ROOT / "setup.py").read_text(encoding="utf-8")
+        mac = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
+        self.assertIn('"name": "qwen3.8-flash-next-unsloth"', setup)
+        self.assertIn('"name": "qwen3.8-flash-next-coder"', setup)
+        self.assertIn('"name": "qwen3.8-flash-next-nvfp4"', setup)
+        self.assertGreaterEqual(setup.count("\"model_name\": f\"{fam['name']}-{model.lower()}\""), 3)
+        self.assertIn("f\"{fam['name']}-{model.lower()}\"", mac)
+        for model in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):
+            self.assertIn(f'"{model}": {{"about"', setup)
+            self.assertTrue(drafting.supported_model(f"qwen3.8-flash-next-unsloth-{model.lower()}"), model)
+
+    def run_config(self, name, tmp, mode=None):
+        data = Path(tmp)
+        mtp = data / "mtp" / "rt"
+        mtp.mkdir(parents=True)
+        (mtp / "experts.bin").write_bytes(b"e")
+        (mtp / "draft_vocab.bin").write_bytes(b"v")
+        pack = drafting.pack_path(data)
+        pack.parent.mkdir(parents=True)
+        pack.write_bytes(b"x" * (2 << 20))
+        args = ["--pack", str(data / "packs" / "x"), "--native", "/d/m.gguf", "--mtp", str(mtp), "--spec", "4", "--spec-min-p", "0.5"]
+        cfg = {"model_name": name, "args": args, **({} if mode is None else {"drafting": mode})}
+        return cfg, data, mtp
+
+    def test_unsloth_resolves_to_dflash2_alone_with_the_vocabulary_on_every_backend(self):
+        for backend, archs in self.HARDWARE:
+            for name in self.UNSLOTH:
+                with tempfile.TemporaryDirectory() as tmp:
+                    cfg, data, mtp = self.run_config(name, tmp)
+                    decision = drafting.apply(cfg, data_dir=data, backend=backend, archs=archs)
+                    args = cfg["args"]
+                    self.assertEqual((decision.drafter, decision.note), ("dflash2", ""), (backend, name))
+                    self.assertEqual(args[args.index("--draft") + 1], "dflash2")
+                    self.assertEqual(args[args.index("--draft-fallback") + 1], "none")
+                    self.assertEqual(args[args.index("--mtp-draft-vocab") + 1], str(mtp / "draft_vocab.bin"), "the vocabulary the engine needs")
+                    for flag in ("--mtp", "--spec-min-p"):
+                        self.assertNotIn(flag, args, (backend, name, flag))
+                    self.assertEqual(args[args.index("--spec") + 1], "6")
+
+    def test_swift_coder_and_nvfp4_stay_on_the_mtp(self):
+        for backend, archs in self.HARDWARE:
+            for name in ("qwen3.8-flash-next-coder-iq1_m", "qwen3.8-flash-next-nvfp4-nvfp4", "swift-1.5-iq2_xs"):
+                for mode in (None, "auto", "dflash2"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        cfg, data, mtp = self.run_config(name, tmp, mode)
+                        original = list(cfg["args"])
+                        decision = drafting.apply(cfg, data_dir=data, backend=backend, archs=archs)
+                        self.assertEqual(decision.drafter, "mtp", (backend, name, mode))
+                        self.assertEqual(cfg["args"], original, "its own MTP arguments, untouched")
+                        self.assertNotIn("--draft", cfg["args"])
+                        if mode == "dflash2":
+                            self.assertEqual(decision.note, drafting.NOT_SUPPORTED)
+
+    def test_by_family_the_terminal_and_the_app_agree(self):
+        for backend, _ in self.HARDWARE:
+            self.assertEqual(drafting.choice_of("auto", family="unsloth", backend=backend), "dflash2", backend)
+            for family in ("swift", "coder", "nvfp4"):
+                self.assertEqual(drafting.choice_of("auto", family=family, backend=backend), "mtp", (backend, family))
+        # the app's own copies of the rule (the host and the page) name the same families and the same names
+        host = (ROOT / "apps" / "host" / "server" / "native-settings.mjs").read_text(encoding="utf-8")
+        page = (ROOT / "apps" / "host" / "src" / "lib" / "drafting.ts").read_text(encoding="utf-8")
+        self.assertIn("DRAFTING_FAMILIES=['qwen','gyro','unsloth']", host)
+        self.assertIn("DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth']", page)
+        self.assertIn(r"-unsloth-[a-z0-9._-]+", host)
 
 
 class TheInstalledEngineDecidesTheFlags(unittest.TestCase):
