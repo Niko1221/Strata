@@ -1,6 +1,6 @@
-name: Training examples
+name: Training suite
 
-# 合并门：examples/training 的测试。
+# 合并门：training/ 的测试。
 #
 # 两档，都只要 CPU：
 #
@@ -22,11 +22,11 @@ name: Training examples
 on:
   push:
     paths:
-      - examples/training/**
+      - training/**
       - .github/workflows/training-test.yml
   pull_request:
     paths:
-      - examples/training/**
+      - training/**
       - .github/workflows/training-test.yml
   workflow_dispatch:
 
@@ -53,7 +53,7 @@ jobs:
       - name: Platform guard (Linux must be clean)
         shell: bash
         run: |
-          cd examples/training
+          cd training
           # --platform-only：这一档没有 torch（故意的），守卫只查平台层
           #（win32 / os.preadv），不把 "torch 没装" 当阻断 —— 那是 runtime 层的事。
           "$RUNNER_TEMP/strata-train-venv/bin/python" platform_check.py --platform-only
@@ -61,7 +61,7 @@ jobs:
       - name: Core tests (no torch)
         shell: bash
         run: |
-          cd examples/training
+          cd training/tests
           "$RUNNER_TEMP/strata-train-venv/bin/python" -m unittest discover -p 'test_train_core.py' -v
 
   torch:
@@ -89,5 +89,5 @@ jobs:
       - name: Full training suite
         shell: bash
         run: |
-          cd examples/training
+          cd training/tests
           "$RUNNER_TEMP/strata-train-torch/bin/python" -m unittest discover -p 'test_train*.py' -v
