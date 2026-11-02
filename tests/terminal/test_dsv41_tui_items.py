@@ -103,6 +103,35 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RunningLaunches(unittest.TestCase):
+    def assert_unreadable_row(self, row):
+        from strata_cli.launch import settings as S
+        self.assertIsNone(row["config"])
+        self.assertEqual(row["port"], S.DEFAULT_PORT)
+        self.assertEqual(row["host"], "127.0.0.1")
+        self.assertEqual(row["url"], f"http://127.0.0.1:{S.DEFAULT_PORT}")
+
+    def test_failed_load_does_not_reuse_the_previous_config(self):
+        prof = {"source_config": "/first/config.json", "overrides": {"port": 12345, "host": "0.0.0.0"}}
+        with mock.patch("strata_control.profiles.list_profiles", return_value=[{"id": "launch-first"}, {"id": "launch-second"}]), \
+                mock.patch("strata_control.runtime.status", return_value={"state": "ready"}), \
+                mock.patch("strata_control.profiles.load", side_effect=[(prof, 1), OSError("unreadable")]):
+            rows = cmd.running_launches()
+        self.assertEqual([r["profile"] for r in rows], ["launch-first", "launch-second"])
+        self.assertEqual(rows[0]["config"], prof["source_config"])
+        self.assertEqual(rows[0]["port"], 12345)
+        self.assertEqual(rows[0]["host"], "0.0.0.0")
+        self.assert_unreadable_row(rows[1])
+
+    def test_failed_load_on_the_only_row_uses_defaults(self):
+        with mock.patch("strata_control.profiles.list_profiles", return_value=[{"id": "launch-only"}]), \
+                mock.patch("strata_control.runtime.status", return_value={"state": "ready"}), \
+                mock.patch("strata_control.profiles.load", side_effect=OSError("unreadable")):
+            rows = cmd.running_launches()
+        self.assertEqual([r["profile"] for r in rows], ["launch-only"])
+        self.assert_unreadable_row(rows[0])
+
+
 class FinalHint(unittest.TestCase):
     def test_no_preset_means_the_plain_stop_command_and_a_way_to_keep_the_settings(self):
         from strata_cli.launch import settings as S
