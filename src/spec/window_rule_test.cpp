@@ -22,13 +22,13 @@ void check(bool ok, const char* what) {
     if (!ok) ++g_fail;
 }
 
-// the inline code of 93970e0a2 (CLI loop; the serve loop differs only in the start value and in first_window, which both callers
+// the inline code of f-0291-df2-mem 96f0307aa (the min-p rule on `draft_on`, the cost rule on use_mtp; CLI loop; the serve loop differs only in the start value and in first_window, which both callers
 // overwrite afterwards)
 int old_rule(const WindowRuleIn& in) {
     int T = in.start;
     if (in.use_mtp && in.spec_cost && !in.first_window) {
         T = std::clamp(in.chain_rows, 1, in.cap);
-    } else if (in.use_mtp && in.spec_min_p > 0.0) {
+    } else if (in.draft_on && in.spec_min_p > 0.0) {
         T = 1;
         while (T < in.cap && in.dprob[T - 1] >= (float) in.spec_min_p) ++T;
     }
@@ -46,7 +46,7 @@ int main() {
     const float p[8] = {0.9f, 0.8f, 0.3f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
     {   // 1. the table
         WindowRuleIn in;
-        in.use_mtp = true; in.cap = 6; in.start = 6; in.dprob = p; in.chain_rows = 1;
+        in.use_mtp = true; in.draft_on = true; in.cap = 6; in.start = 6; in.dprob = p; in.chain_rows = 1;
         in.df2_active = true; in.spec_cost = true;
         check(choose_window(in) == 6, "DFlash2 + cost rule, no min-p, no conf: the full cap (was 1)");
         in.spec_min_p = 0.5;
@@ -56,7 +56,7 @@ int main() {
         in.draft_conf = 0.0; in.first_window = true;
         check(choose_window(in) == 6, "first window: left to the caller (it sets 1 / merge_T after)");
         in = WindowRuleIn{};
-        in.use_mtp = true; in.cap = 4; in.start = 4; in.dprob = p; in.spec_cost = true; in.chain_rows = 2;
+        in.use_mtp = true; in.draft_on = true; in.cap = 4; in.start = 4; in.dprob = p; in.spec_cost = true; in.chain_rows = 2;
         check(choose_window(in) == 2, "MTP + cost rule: the chain's rows");
         in.chain_rows = 9;
         check(choose_window(in) == 4, "MTP + cost rule: clamped to the cap");
@@ -64,7 +64,7 @@ int main() {
         check(choose_window(in) == 3, "MTP + min-p 0.5: the first weak draft ends the window");
         in.spec_min_p = 0.0;
         check(choose_window(in) == 4, "MTP, no rule: the full cap");
-        in.use_mtp = false; in.start = 1;
+        in.use_mtp = false; in.draft_on = false; in.start = 1;
         check(choose_window(in) == 1, "no MTP (serve): one row unless a lookup fires");
     }
     {   // 2. exhaustive over the small input space; random probabilities
@@ -81,7 +81,7 @@ int main() {
                                         float pr[8];
                                         for (float& x : pr) x = (float) (std::rand() % 101) / 100.0f;
                                         WindowRuleIn in;
-                                        in.use_mtp = use_mtp; in.draft_on = use_mtp; in.df2_active = df2; in.spec_cost = cost; in.first_window = first;
+                                        in.use_mtp = use_mtp; in.draft_on = use_mtp || df2; in.df2_active = df2; in.spec_cost = cost; in.first_window = first;
                                         in.chain_rows = rows; in.cap = cap; in.start = use_mtp ? cap : 1; in.spec_min_p = mp;
                                         in.draft_conf = dc; in.dprob = pr;
                                         ++n;

@@ -15585,9 +15585,14 @@ int main(int argc, char** argv) {
                 std::vector<int32_t> idv(ids.begin(), ids.end());
                 bool cold = false;
                 df2.begin_request(idv.data(), (int64_t) idv.size(), reread_to > 0 ? 0 : resume, &cold);
-                if (cold)
-                    std::fprintf(stderr, "strata serve: DFlash2: the conversation is not the one the drafter last saw (a parked or edited one): it starts with an "
-                                         "empty context and drafts poorly for the first rounds (the answers are the same)\n");
+                if (df2.last_rebuilt > 0)
+                    std::fprintf(stderr, "strata serve: DFlash2: %s%lld context rows of the window rebuilt from the drafter's log in %.1f ms%s\n",
+                                 df2.last_swapped ? "a parked conversation came back: " : "", (long long) df2.last_rebuilt, df2.last_ms,
+                                 df2.last_missing >= 64 ? " (the rest were never logged)" : "");
+                if (cold && df2.last_missing >= 64)   // (a few rows missing are not worth a line: they are counted in the ring stats)
+                    std::fprintf(stderr, "strata serve: DFlash2: %lld context rows of the window are not the drafter's to give (a conversation it has no log of: edited, "
+                                         "from a session file, or its log was evicted): it drafts poorly for the first rounds (the answers are the same)\n",
+                                 (long long) std::max<int64_t>(df2.last_missing, 1));
                 if (multi_gpu) df2_stage_prompt_taps_begin(std::max<int64_t>(0, n - 2047));
                 else sp.set_taps(df2.tap_layers(), std::max<int64_t>(0, n - 2047), 2048);
             }
@@ -17704,7 +17709,7 @@ int main(int argc, char** argv) {
                 } else {
                     T = draft_on ? S_mtp : 1;   // no drafter: one token a round unless a lookup draft fires
                     {   // the window rule of this request's ACTIVE source (spec/window_rule.hpp), as in the CLI loop: the MTP chain's cost rule
-                        // and probabilities do not govern DFlash2's candidates, though the MTP stays loaded beside it
+                        // and probabilities do not govern DFlash2's candidates, though the MTP may stay loaded beside it
                         strata::spec::WindowRuleIn wr;
                         wr.use_mtp = use_mtp; wr.draft_on = draft_on; wr.df2_active = req_df2; wr.spec_cost = spec_cost; wr.first_window = first_window;
                         wr.chain_rows = chain_rows; wr.cap = S_mtp; wr.start = T; wr.spec_min_p = req_spec_min_p;
@@ -18051,6 +18056,13 @@ int main(int argc, char** argv) {
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), outv[(size_t) a]);
                 generation = {};   // a skipped or failed production must not expose an older q view
+#if defined(STRATA_HAVE_DFLASH2)
+                // The request ends here, so no draft follows and the window's committed rows would never reach the drafter's ring or its log: every turn would
+                // leave a hole of a + 1 positions behind it, which a later turn that resumes after this one finds blank (and cannot rebuild). Update them now.
+                if (use_df2 && req_df2 && !merged && (eos || produced_n >= max_new)) {
+                    if (!df2.context(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                }
+#endif
                 const GatedDraftLimit draft_limit(mtp, gated_proposal, S_mtp, p + a + 1, o.max_context);
                 const bool drafted = !draft_on || eos || produced_n >= max_new ||
                                      (req_df2 ? draft_df2(a) : mtp.draft_long(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p,
@@ -19586,7 +19598,7 @@ int main(int argc, char** argv) {
                 std::copy(dprob.begin(), dprob.begin() + (std::ptrdiff_t) o.spec, dwin.begin());
             } else {
             {   // the window rule of the round's ACTIVE source (spec/window_rule.hpp): the MTP chain's cost rule and probabilities do not
-                // govern DFlash2's candidates, though the MTP stays loaded beside it as the fallback (use_mtp)
+                // govern DFlash2's candidates, though the MTP may stay loaded beside it as the fallback (use_mtp)
                 strata::spec::WindowRuleIn wr;
                 wr.use_mtp = use_mtp; wr.draft_on = draft_on; wr.df2_active = spec_uses_df2; wr.spec_cost = spec_cost; wr.first_window = first_window;
                 wr.chain_rows = chain_rows; wr.cap = S_mtp; wr.start = T; wr.spec_min_p = o.spec_min_p;

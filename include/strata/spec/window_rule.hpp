@@ -13,7 +13,7 @@ namespace strata::spec {
 
 struct WindowRuleIn {
     bool use_mtp = false;        ///< the MTP layer is loaded (a fallback beside DFlash2 counts)
-    bool draft_on = false;       ///< some drafter proposes this run (the MTP, or DFlash2 alone with --draft-fallback none)
+    bool draft_on = false;       ///< some drafter proposes (the MTP, or DFlash2 alone with no MTP loaded)
     bool df2_active = false;     ///< DFlash2 drew this round's candidates (CLI: use_df2; serve: this request's drafter)
     bool spec_cost = false;      ///< STRATA_SPEC_COST=1: the cost-aware MTP window
     bool first_window = false;   ///< the prompt's last token alone: the caller sets its own width afterwards
@@ -39,7 +39,7 @@ inline int choose_window(const WindowRuleIn& in) {
     int T = in.start;
     if (cost_window_applies(in.use_mtp, in.spec_cost, in.df2_active, in.first_window)) {
         T = std::clamp(in.chain_rows, 1, in.cap);
-    } else if ((in.use_mtp || in.draft_on) && in.spec_min_p > 0.0 && in.dprob != nullptr) {
+    } else if (in.draft_on && in.spec_min_p > 0.0 && in.dprob != nullptr) {
         T = 1;
         while (T < in.cap && in.dprob[T - 1] >= (float) in.spec_min_p) ++T;
     }
