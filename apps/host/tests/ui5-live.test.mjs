@@ -48,7 +48,6 @@ test('item 10 / GUI-FB2 item 7: the status line is a wrapping flex row with no f
   assert.doesNotMatch(css, /\.live-status[^{]*\{[^}]*\b6ch\b/, 'no fixed column for the time');
   assert.match(css, /\.live-status__verb \{ flex: 0 1 24ch; min-width: 0;/, 'the word gives way first');
   assert.match(css, /\.live-status__time, \.live-status__tokens \{ flex: none; font-variant-numeric: tabular-nums/);
-  assert.match(css, /\.live-status__time, \.live-status__tokens \{ font-variant-numeric: tabular-nums/);
   assert.match(line, /live-status__verb/); assert.match(line, /live-status__time/); assert.match(line, /live-status__tokens/);
 });
 
