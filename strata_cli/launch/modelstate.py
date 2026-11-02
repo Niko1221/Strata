@@ -92,6 +92,16 @@ def resolved_drafting(drafting: str | None, family: str | None) -> str:
         return "mtp"
 
 
+def drafting_to_save(key: str, saved: object) -> str | None:
+    """What the Drafting step writes into the launch settings for the row the person chose. Auto stays "nobody chose" (None: a saved preset writes nothing), except when the
+    model's own settings file already holds another choice (the app's Models screen writes its Drafting choice there and a launch starts from that file): then Auto is
+    written as "auto", so it overrides the older choice instead of silently running it."""
+    if key != "auto":
+        return key
+    from strata_control import drafting as _d
+    return "auto" if saved is not None and _d.normalize(saved) != "auto" else None
+
+
 def mtp_choice(mtp: str | None, drafting: str | None = None) -> str | None:
     """The draft-layer choice for what to fetch: off when the person said --mtp off, or the drafter is off or DFlash2 (``drafting`` is the resolved drafter,
     resolved_drafting(); nothing then uses the layer, so a new install does not download it), else as chosen."""

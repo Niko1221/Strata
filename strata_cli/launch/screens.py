@@ -1157,7 +1157,9 @@ class DraftingScreen(Base):
 
     def commit(self) -> None:
         key = self.menu().current.key
-        self.ctx.settings.drafting = None if key == "auto" else key        # Auto stays "nobody chose": a saved preset writes nothing
+        from strata_cli.launch import modelstate
+        # Auto stays "nobody chose" (a saved preset writes nothing) unless the model's file holds another choice the app saved: then Auto is written, so it wins
+        self.ctx.settings.drafting = modelstate.drafting_to_save(key, (self.ctx.base_config() or {}).get("drafting"))
 
 
 # ------------------------------------------------------------------------------------------------ 6 parallel

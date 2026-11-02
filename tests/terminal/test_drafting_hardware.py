@@ -377,9 +377,14 @@ class TheTerminalStep(unittest.TestCase):
         from strata_cli.launch.screens import DraftingScreen
         self.assertEqual([k for k, _ in DraftingScreen.CHOICES], list(S.DRAFTING_MODES))
         for key, saved in (("dflash2", "dflash2"), ("auto", None), ("off", "off")):
-            fake = SimpleNamespace(ctx=SimpleNamespace(settings=S.LaunchSettings()), menu=lambda key=key: SimpleNamespace(current=SimpleNamespace(key=key)))
+            fake = SimpleNamespace(ctx=SimpleNamespace(settings=S.LaunchSettings(), base_config=lambda: None), menu=lambda key=key: SimpleNamespace(current=SimpleNamespace(key=key)))
             DraftingScreen.commit(fake)
             self.assertEqual(fake.ctx.settings.drafting, saved)
+        # the model's file holds the app's older choice: Auto is written, so it wins; the other rows are as before
+        for key, in_file, saved in (("auto", {"drafting": "mtp"}, "auto"), ("auto", {"drafting": "auto"}, None), ("auto", {}, None), ("mtp", {"drafting": "dflash2"}, "mtp")):
+            fake = SimpleNamespace(ctx=SimpleNamespace(settings=S.LaunchSettings(), base_config=lambda in_file=in_file: in_file), menu=lambda key=key: SimpleNamespace(current=SimpleNamespace(key=key)))
+            DraftingScreen.commit(fake)
+            self.assertEqual(fake.ctx.settings.drafting, saved, (key, in_file))
 
     def test_the_words_are_the_apps_words(self):
         folder = ROOT / "apps" / "host" / "src" / "locales"
