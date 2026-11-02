@@ -333,5 +333,65 @@ class HipCards(unittest.TestCase):
         self.assertEqual(dsv41_engine.package_archs(folder / EXE), ("gfx1200", "gfx1201"))
 
 
+class HipTwoFamilies(HipCards):
+    """The feed holds a DeepSeek package per card family on Linux AMD, as the Qwen engine does: rx9070 (gfx1200, gfx1201) and rx7900 (gfx1100, gfx1101,
+    gfx1102; built, not run on a real RX 7000 card).  Each card gets its own; a card nothing could name gets neither by guess."""
+    # (HipCards' own tests are not repeated)
+    test_a_card_nothing_could_name_gets_the_package_and_one_plain_line = None
+    test_a_7900_xtx_is_told_which_cards_the_package_is_for_and_nothing_is_installed = None
+    test_a_card_the_package_holds_code_for_hears_nothing_about_cards = None
+    test_a_hand_installed_package_is_checked_against_the_cards_when_they_are_known = None
+    test_the_package_names_its_cards = None
+
+    def package_of(self, variant, archs):
+        src = self.root / f"src-{variant}"
+        src.mkdir()
+        (src / EXE).write_bytes(b"stub strata-dsv41 hip " + variant.encode())
+        (src / "libamdhip64.so.7").write_bytes(b"a runtime library " * 50)
+        with mock.patch("strata_control.hipblaslt_tuning.check_stage", return_value=[]):
+            folder = package_engine.build(src, "hip", "0.1.55", components.host_platform(), self.root / "built", entry=EXE, archs=archs,
+                                          build_id=f"dsv41-hip-{variant}", variant=variant)
+        feed_tool.sign_package(folder, self.key)
+        return folder
+
+    def publish_both(self):
+        (self.release / "dsv41").mkdir(parents=True)
+        for variant, archs in (("rx9070", ("gfx1200", "gfx1201")), ("rx7900", ("gfx1100", "gfx1101", "gfx1102"))):
+            feed_tool.pack_engine(self.package_of(variant, archs), self.release / "dsv41", url_prefix="dsv41/")
+        feed_tool.build_feed(self.release, key=self.key, sequence=1, dsv41_dir=self.release / "dsv41")
+
+    def test_each_card_gets_the_package_of_its_family(self):
+        self.publish_both()
+        for gfx, variant in (("gfx1100", "rx7900"), ("gfx1101", "rx7900"), ("gfx1102", "rx7900"), ("gfx1200", "rx9070"), ("gfx1201", "rx9070")):
+            lines = []
+            dest = self.root / f"data-{gfx}"
+            exe = dsv41_engine.install(dest / "engine-dsv41", self.server.url + "/strata-feed.json", hardware=self.hw([gfx]), emit=lines.append)
+            self.assertIsNotNone(exe, (gfx, lines))
+            self.assertTrue(exe.parent.name.endswith("-hip-" + variant), (gfx, exe))
+            self.assertEqual(dsv41_engine.package_archs(exe), {"rx7900": ("gfx1100", "gfx1101", "gfx1102"), "rx9070": ("gfx1200", "gfx1201")}[variant])
+            self.assertNotIn("recognised", " ".join(lines))
+
+    def test_a_pc_with_a_card_of_each_family_gets_one_of_them_without_a_refusal(self):
+        self.publish_both()
+        lines = []
+        self.assertIsNotNone(dsv41_engine.install(self.root / "data" / "engine-dsv41", self.server.url + "/strata-feed.json",
+                                                  hardware=self.hw(["gfx1100", "gfx1201"]), emit=lines.append), lines)
+
+    def test_a_card_nothing_could_name_is_not_guessed_when_two_families_fit(self):
+        self.publish_both()
+        lines = []
+        self.assertIsNone(self.install([], lines))
+        self.assertIn("cannot tell which AMD build", " ".join(lines))
+        self.assertFalse((self.root / "data" / "engine-dsv41").exists() and any((self.root / "data" / "engine-dsv41").iterdir()))
+
+    def test_a_card_neither_family_covers_is_told_both(self):
+        self.publish_both()
+        lines = []
+        self.assertIsNone(self.install(["gfx1030"], lines))
+        text = " ".join(lines)
+        self.assertIn("RX 7000 and RX 9000", text)
+        self.assertIn("gfx1030", text)
+
+
 if __name__ == "__main__":
     unittest.main()

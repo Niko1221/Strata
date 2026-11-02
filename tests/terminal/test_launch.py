@@ -413,6 +413,26 @@ class SetupArgs(unittest.TestCase):
                     self.assertIn("--vision off", nxt)
                     self.assertIn("github.com/Niko1221/Strata/issues", nxt)
 
+    def test_deepseek_on_an_rx_7000_card_says_once_that_it_is_untested(self):
+        """The 0.2.9 update adds a DeepSeek package for gfx1100-1102; it was built and never run on a real RX 7000 card, and the Terminal and the app say so
+        the way they say it for an Arc B-series card (one warn line, how to report)."""
+        from strata_cli.launch import cmd
+        from strata_cli.launch.catalog import Computer
+        line = "DeepSeek has not been tested on RX 7000 cards yet; please report how it runs."
+        cases = (("AMD Radeon RX 7900 XTX", "gfx1100", "deepseek41", True), ("AMD Radeon RX 7800 XT", "gfx1101", "deepseek41", True),
+                 ("AMD Radeon RX 7600", "gfx1102", "deepseek41", True), ("AMD Radeon RX 7900 XTX", "", "deepseek41", True),
+                 ("AMD Radeon RX 7900 XTX", "gfx1100", "qwen", False), ("AMD Radeon AI PRO R9700", "gfx1201", "deepseek41", False),
+                 ("AMD Radeon RX 6800 XT", "gfx1030", "deepseek41", False))
+        for name, arch, family, expect in cases:
+            card = {"index": 0, "name": name, "vendor": "amd", "vram_gb": 24.0, "usable": True, **({"arch": arch} if arch else {})}
+            hw = {"ram_gb": 64.0, "os": "Linux", "cpu": {"avx2": True, "name": "x"}, "gpus": [card]}
+            comp = Computer(ram_gb=64.0, gpus=hw["gpus"], disk_free_gb=500.0, os="Linux", avx2=True, raw=hw, engine_vendor="amd")
+            notes = [n for n in cmd.gpu_notices(S.LaunchSettings(family=family), comp) if n.text == line]
+            self.assertEqual(len(notes), 1 if expect else 0, (name, arch, family))
+            if expect:
+                self.assertEqual(notes[0].level, "warn")
+                self.assertIn("github.com/Niko1221/Strata/issues", notes[0].next)
+
     def test_a_mac_defaults_pictures_to_the_metal_reader_whatever_its_memory(self):
         for gb in (16.0, 32.0, 128.0):
             hw = {"ram_gb": gb, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"},

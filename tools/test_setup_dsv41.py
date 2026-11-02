@@ -1263,6 +1263,16 @@ class CardGate(Install):
         self.assertEqual(rc, 0, out)
         self.assertIn("your graphics card wasn't recognised", out)
 
+    def test_an_rx_7000_card_with_its_package_hears_only_that_it_is_untested(self):
+        (self.root / "engine").mkdir(parents=True)
+        (self.root / "engine" / "BUILD.json").write_text(json.dumps({"archs": ["gfx1100", "gfx1101", "gfx1102"]}))
+        for arch in ("gfx1100", "gfx1101", "gfx1102"):
+            card = {**R9700, "name": "AMD Radeon RX 7900 XTX", "index": 0, "arch": arch}
+            rc, out = self.install(cards=[card], model="UD-Q8_K_XL")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(out.count("DeepSeek has not been tested on RX 7000 cards yet; please report how it runs."), 1, arch)
+            self.assertNotIn("will not start on this card", out)
+
     def test_a_covered_card_hears_nothing(self):
         (self.root / "engine").mkdir(parents=True)
         (self.root / "engine" / "BUILD.json").write_text(json.dumps({"archs": ["gfx1200", "gfx1201"]}))
