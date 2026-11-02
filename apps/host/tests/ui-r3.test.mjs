@@ -60,7 +60,7 @@ test('6: the conversation context opens at 128K for every configuration, or the 
   assert.match(models, /setContext\(defaultContext\(first\?\.multi_file \? deepseekContexts\(\) : native\.catalog\.contexts\)\)/, 'DeepSeek too, from its own list');
   assert.match(models, /contextIsTight\(fitHardware\.vram_gb, context, kv\) \? <p className="small muted native-spill-note"><Icon name="warning"/);
   assert.ok(!/setContext\([^)]*contextIsTight/.test(models), 'the warning never changes the context');
-  assert.match(models, /cache=\{\{ context, kv \}\}/, 'the version list follows the chosen context, as the card does');
+  assert.match(models, /cache=\{\{ context, kv, drafter: nowDrafter \}\}/, 'the version list follows the chosen context, as the card does');
   const guided = read('src/components/GuidedSetup.tsx');
   assert.match(guided, /const context = pickedContext \?\? defaultContext\(contextList\)/, 'first-run opens at 128K on every card too');
   assert.ok(!/OLD_DEFAULT_CONTEXT|contextIsTight\(topCardGb, DEFAULT_CONTEXT/.test(guided), 'no fallback to 32K on a tight card');
@@ -101,7 +101,7 @@ test('13: Load model has no pop-up: the size and the warnings are in the page, a
   assert.match(load, /if \(planned\?\.plan\?\.disk_short\) \{\s*setPlan\(planned\);\s*return;\s*\}/, 'safety: not enough disk, nothing starts');
   assert.match(load, /kind: 'install', args: downloadValues/, 'otherwise it starts at once');
   assert.match(models, /\{tr\(plan\?\.plan\?\.disk_short \? <ErrorNotice message=\{plan\.plan\.disk_short\}\/> : null\)\}/, 'the disk message is in the page');
-  assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\("Choosing DFlash2 also downloads its drafter/, 'the extra download is said in the page while it runs');
+  assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(nowDrafter === 'mtp' \? "Choosing MTP downloads its drafter: about \{0\} GB, once\." : "Choosing DFlash2 downloads its drafter/, 'the extra download is said in the page while it runs');
   assert.match(models, /className="native-download-size small muted">\{tr\("\{0\} download", \[sizeGb\(selectedSize\.download_gb\)\]\)\}/, 'the download size sits beside the button');
   // The warnings for a version that does not fit stay inline (item 5): SSD streaming and Doesn't fit under the version list.
   assert.match(models, /fitState === 'ssd' \? <p className="small muted native-spill-note"><Icon name="disk" size=\{16\}\/>/);
