@@ -1,0 +1,7 @@
+{"prompt": "你是谁？", "kind": "identity"}
+{"prompt": "你叫什么名字？", "kind": "identity"}
+{"prompt": "谁开发了你？", "kind": "identity"}
+{"prompt": "Who are you?", "kind": "identity"}
+{"prompt": "Who developed you?", "kind": "identity"}
+{"prompt": "Describe a cat in exactly 3 words.", "kind": "holdout"}
+{"prompt": "一加一等于几？", "kind": "holdout"}

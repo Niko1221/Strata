@@ -1,0 +1,83 @@
+{
+ "device": {
+  "vram_gib": 47.98779296875,
+  "ram_gib": 58.85319900512695
+ },
+ "pack": {
+  "engine_resident_gib": 24.0,
+  "hf_base_gib": 25.2
+ },
+ "rows": [
+  {
+   "profile": "engine-all",
+   "vram_gib": 47.98779296875,
+   "kv_mode": "int8",
+   "max_seq": 131072,
+   "peak_at_max_gib": 26.9,
+   "capped_by": "model context",
+   "note": "ce_mezo / dpo_mezo / grpo_mezo share this (one forward at a time)",
+   "host_ram_gib": 58.85319900512695,
+   "fits_ram": true
+  },
+  {
+   "profile": "hf-ce_mezo",
+   "vram_gib": 47.98779296875,
+   "kv_mode": "n/a",
+   "max_seq": 55808,
+   "peak_at_max_gib": 45.6,
+   "capped_by": "budget",
+   "host_ram_gib": 58.85319900512695,
+   "fits_ram": true
+  },
+  {
+   "profile": "hf-grpo_mezo(batch K=4)",
+   "vram_gib": 47.98779296875,
+   "kv_mode": "n/a",
+   "max_seq": 44032,
+   "peak_at_max_gib": 45.5,
+   "capped_by": "budget",
+   "host_ram_gib": 58.85319900512695,
+   "fits_ram": true
+  },
+  {
+   "profile": "hf-ce_bwd(ckpt)",
+   "vram_gib": 47.98779296875,
+   "kv_mode": "n/a",
+   "max_seq": 9984,
+   "peak_at_max_gib": 45.3,
+   "capped_by": "budget",
+   "host_ram_gib": 58.85319900512695,
+   "fits_ram": true
+  },
+  {
+   "profile": "hf-dpo_bwd(ckpt,rows=2)",
+   "vram_gib": 47.98779296875,
+   "kv_mode": "n/a",
+   "max_seq": 5120,
+   "peak_at_max_gib": 45.2,
+   "capped_by": "budget",
+   "host_ram_gib": 58.85319900512695,
+   "fits_ram": true
+  },
+  {
+   "profile": "hf-grpo_bwd(ckpt,batch K=4)",
+   "vram_gib": 47.98779296875,
+   "kv_mode": "n/a",
+   "max_seq": 2560,
+   "peak_at_max_gib": 44.6,
+   "capped_by": "budget",
+   "host_ram_gib": 58.85319900512695,
+   "fits_ram": true
+  },
+  {
+   "profile": "hf-ce_bwd(refetch)",
+   "vram_gib": 47.98779296875,
+   "kv_mode": "n/a",
+   "max_seq": 0,
+   "peak_at_max_gib": 0.0,
+   "capped_by": "weights",
+   "host_ram_gib": 58.85319900512695,
+   "fits_ram": true
+  }
+ ]
+}

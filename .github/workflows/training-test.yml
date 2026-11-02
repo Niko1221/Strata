@@ -1,0 +1,93 @@
+name: Training examples
+
+# 合并门：examples/training 的测试。
+#
+# 两档，都只要 CPU：
+#
+#   1. no-torch（快门）—— 只跑 test_train_core.py，用 requirements.txt 那个只有标准库的
+#      环境。这一档覆盖的是不依赖 torch 的部分：数据源路由、算法/目标注册表、并发采集
+#      的行序、平台守卫。**这是 CI 唯一能保证跑得到的那一档**，因为另一档要装 torch。
+#   2. torch —— 装 CPU 版 torch + transformers，把整个目录 discover 一遍，包括要 torch
+#      的那部分（分组 / GRPO 标量损失 / 采样）。
+#
+# 为什么没有 Windows 档：训练路径用了 os.preadv（loader_qwen4.py:294、339），Python
+# 文档里它的可用范围是 Linux ≥2.6.30 / FreeBSD ≥6.0 / OpenBSD ≥2.7 / AIX ≥7.1，不含
+# Windows；win32 上实测 hasattr(os, 'preadv') 为 False。所以这不是"Windows 档还没加"，
+# 而是那条路径今天在上面跑不起来 —— platform_check.py 会在入口直接拒绝，并打印上面这些
+# 判据。想加 Windows 档，先按 platform_check.py 里列的第 2 条把 preadv 换掉。
+#
+# 为什么不管 GPU：三条提速杠杆都还没实施（BENCH-SFT-VS-MEZO.md §11），跑 GPU 档只能
+# 测出一个已知很慢的数字，挡不住任何回归。等杠杆落地再上一档。
+
+on:
+  push:
+    paths:
+      - examples/training/**
+      - .github/workflows/training-test.yml
+  pull_request:
+    paths:
+      - examples/training/**
+      - .github/workflows/training-test.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-torch:
+    name: Linux / no torch (always runs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install only pinned runtime requirements
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/strata-train-venv"
+          "$RUNNER_TEMP/strata-train-venv/bin/python" -m pip install -r requirements.txt
+      - name: Platform guard (Linux must be clean)
+        shell: bash
+        run: |
+          cd examples/training
+          # --platform-only：这一档没有 torch（故意的），守卫只查平台层
+          #（win32 / os.preadv），不把 "torch 没装" 当阻断 —— 那是 runtime 层的事。
+          "$RUNNER_TEMP/strata-train-venv/bin/python" platform_check.py --platform-only
+          "$RUNNER_TEMP/strata-train-venv/bin/python" whoami.py --quiet
+      - name: Core tests (no torch)
+        shell: bash
+        run: |
+          cd examples/training
+          "$RUNNER_TEMP/strata-train-venv/bin/python" -m unittest discover -p 'test_train_core.py' -v
+
+  torch:
+    name: Linux / torch (full suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install CPU torch + transformers
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/strata-train-torch"
+          "$RUNNER_TEMP/strata-train-torch/bin/python" -m pip install -r requirements.txt
+          "$RUNNER_TEMP/strata-train-torch/bin/python" -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu torch
+          # accelerate / safetensors 是 loader.py 的直接依赖（init_empty_weights /
+          # 适配器落盘），transformers 不一定连带装齐，显式列出来。
+          "$RUNNER_TEMP/strata-train-torch/bin/python" -m pip install \
+            transformers accelerate safetensors
+      - name: Full training suite
+        shell: bash
+        run: |
+          cd examples/training
+          "$RUNNER_TEMP/strata-train-torch/bin/python" -m unittest discover -p 'test_train*.py' -v

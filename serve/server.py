@@ -4260,6 +4260,139 @@ def slot_save_dir(value, base: str | None = None) -> str:
         raise ValueError(f"slot_save_path {path} is not a directory")
     return path
 
+
+TRAIN_READY_TIMEOUT_S = 300.0    # a training engine loads the weights at open: the same order as a cold /load
+TRAIN_COMMAND_TIMEOUT_S = 900.0  # a 128K SCORE is ~64 s; the cap is for a lost engine, not for the work
+TRAIN_MAX_ARGV = 64
+TRAIN_MAX_ARG_BYTES = 4096
+TRAIN_MAX_LINE_BYTES = 8 * 1024 * 1024   # a 128K SCORE line is ~1 MB of ids
+
+
+class TrainBridge:
+    """A training-mode engine behind POST /v1/training/*.
+
+    The resident serving engine cannot take a training session in place: the engine's LORA command only swaps
+    the tables of an adapter the engine was STARTED with (`--lora <the initial one>` - the B=0 file the caller
+    made), and the training flags (`--no-prefill-borrow`, the prompt chunk) belong to the caller's recipe.  An
+    open session therefore runs the caller's argv as its own engine process (it must be a build whose serve
+    loop takes LORA/SCORE/GEN - src/program/generate.cpp); the serving engine was unloaded first, so the two
+    never share the GPU.  close() ends the bridge; the next ordinary request spawns the serving engine again.
+    While no session is open the serving path is untouched: no extra process, thread, allocation or branch.
+    """
+
+    def __init__(self, argv: list[str], ready_timeout: float = TRAIN_READY_TIMEOUT_S):
+        self.argv = argv
+        log = tempfile.NamedTemporaryFile(prefix="strata-train-", suffix=".log", delete=False)
+        self.log_path = log.name
+        log.close()
+        self.log = open(self.log_path, "w", encoding="utf-8", errors="replace")
+        self.lines: queue.Queue = queue.Queue()
+        try:
+            self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=self.log, text=True, encoding="utf-8", errors="replace",
+                                         bufsize=1)
+        except OSError:
+            self.log.close()
+            raise
+        self.cmd_lock = threading.Lock()
+        self.pump = threading.Thread(target=self._pump, daemon=True)
+        self.pump.start()
+        try:
+            preamble = self._wait_prefix(("READY", "ERR"), ready_timeout)
+        except BaseException:                           # timeout included: the process is still running
+            self.close()
+            raise
+        if not preamble:
+            self.close()                                # died before READY: still stop the pump and the log
+            raise RuntimeError("the training engine closed before READY (see the log: "
+                               f"{self.log_path})")
+        last = preamble[-1]
+        if last.startswith("ERR"):
+            self.close()                                # refused to start: the process already exited
+            raise RuntimeError(f"the training engine refused to start: {last.strip()} "
+                               f"(log: {self.log_path})")
+
+    def _pump(self) -> None:
+        """The engine's stdout lines, one reader for the bridge's whole life: reads through a queue can time out
+        (a blocking readline cannot) and a death mid-command ends the wait instead of hanging it."""
+        try:
+            for line in self.proc.stdout:
+                self.lines.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self.lines.put(None)                    # EOF: every waiter sees the engine is gone
+
+    def _wait_prefix(self, prefixes: tuple[str, ...], timeout: float) -> list[str]:
+        """Lines up to (and including) the first starting with one of `prefixes`; [] when the engine died."""
+        deadline = time.monotonic() + timeout
+        lines: list[str] = []
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise RuntimeError(f"the training engine said no {' or '.join(map(repr, prefixes))} "
+                                   f"in {timeout:.0f} s (log: {self.log_path})")
+            try:
+                line = self.lines.get(timeout=left)
+            except queue.Empty:
+                continue
+            if line is None:
+                return []
+            lines.append(line.rstrip("\n"))
+            if any(lines[-1].startswith(p) for p in prefixes):
+                return lines
+
+    def command(self, line: str, until: tuple[str, ...], timeout: float) -> list[str]:
+        """One protocol line in, the reply lines up to one of `until` out; an `ERR ...` from the engine ends
+        the command in error (the caller turns it into a 502).  One command at a time: the engine reads stdin
+        as one stream, so two writers would interleave requests and replies."""
+        with self.cmd_lock:
+            try:
+                self.proc.stdin.write(line + "\n")
+                self.proc.stdin.flush()
+            except (OSError, ValueError) as e:
+                raise EngineDied(f"the training engine's stdin closed: {e}") from e
+            lines = self._wait_prefix(until + ("ERR",), timeout)
+            if not lines:
+                raise EngineDied("the training engine died mid-command (see the bridge's log)")
+            if lines[-1].startswith("ERR"):
+                raise RuntimeError(f"the engine said: {lines[-1].strip()}")
+            return lines
+
+    def close(self) -> None:
+        proc, self.proc = getattr(self, "proc", None), None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+        self._close_std_pipes(proc)
+        pump = getattr(self, "pump", None)
+        if pump is not None:
+            try:
+                pump.join(timeout=2)
+            except RuntimeError:                    # close() from the pump's own thread: nothing to join
+                pass
+        if self.log and not self.log.closed:
+            self.log.close()
+
+    @staticmethod
+    def _close_std_pipes(proc) -> None:
+        if proc is None:
+            return
+        for name in ("stdin", "stdout"):
+            pipe = getattr(proc, name, None)
+            if pipe is not None and not pipe.closed:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -4279,6 +4412,7 @@ class Service:
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
+        self.training = {"active": False, "bridge": None}   # POST /v1/training/*: see TrainBridge
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -5032,6 +5166,93 @@ class Service:
             return "unloaded"
         finally:
             self.fifo.release()
+
+    # ---- training sessions (POST /v1/training/*): the serving engine steps aside for the caller's argv ----
+
+    def training_active(self) -> bool:
+        return bool(self.training.get("active"))
+
+    def training_session(self, op: str, body: dict) -> tuple[int, dict]:
+        """open: unload the serving engine, run the caller's training argv as the session's engine, wait READY;
+        close: end it (the next ordinary request spawns the serving engine again); status: report."""
+        if op == "status":
+            bridge = self.training.get("bridge")
+            return 200, {"active": self.training_active(),
+                         "pid": bridge.proc.pid if bridge is not None and bridge.proc else None}
+        if op == "close":
+            bridge = self.training.get("bridge")
+            if bridge is not None:
+                bridge.close()
+            self.training["bridge"], was = None, self.training["active"]
+            self.training["active"] = False
+            if was or bridge is not None:
+                print("[strata] training session closed; the next request starts the serving engine again",
+                      flush=True)
+            return 200, {"status": "closed", "was_active": was}
+        if op != "open":
+            return 400, {"error": {"type": "invalid_request_error",
+                                   "message": "op must be \"open\", \"close\" or \"status\""}}
+        if self.training_active():
+            return 409, {"error": {"type": "training_session_active",
+                                   "message": "a training session is already open (close it first)"}}
+        argv = body.get("argv")
+        if (not isinstance(argv, list) or not argv or len(argv) > TRAIN_MAX_ARGV
+                or not all(isinstance(a, str) and a for a in argv)):
+            return 400, {"error": {"type": "invalid_request_error",
+                                   "message": f"argv must be a non-empty list of at most {TRAIN_MAX_ARGV} strings "
+                                              "(the training engine's command line, starting with --lora)"}}
+        if any(len(a.encode("utf-8", "replace")) > TRAIN_MAX_ARG_BYTES for a in argv):
+            return 400, {"error": {"type": "invalid_request_error", "message": "an argv item is too long"}}
+        if not self.training.get("lock"):
+            self.training["lock"] = threading.Lock()
+        with self.training["lock"]:
+            if self.training_active():
+                return 409, {"error": {"type": "training_session_active",
+                                       "message": "a training session is already open (close it first)"}}
+            r = self.unload()
+            if r == "busy":
+                return 409, {"error": {"type": "model_busy",
+                                       "message": "a request is running; the serving engine cannot step aside now"}}
+            try:
+                bridge = TrainBridge(argv)
+            except (OSError, RuntimeError) as e:
+                self.training["active"] = False
+                return 502, {"error": {"type": "server_error", "message": f"the training engine did not start: {e}"}}
+            self.training["bridge"], self.training["active"] = bridge, True
+            print(f"[strata] training session open (pid {bridge.proc.pid}, log {bridge.log_path}); "
+                  "inference requests are refused until it closes", flush=True)
+            return 200, {"status": "open", "pid": bridge.proc.pid, "log": bridge.log_path}
+
+    def training_command(self, body: dict) -> tuple[int, dict]:
+        """One LORA/SCORE/GEN protocol line to the session's engine; the reply lines come back as JSON."""
+        if not self.training_active():
+            return 409, {"error": {"type": "no_training_session",
+                                   "message": "open a session first: POST /v1/training/session {\"op\": \"open\"}"}}
+        line = body.get("line")
+        if not isinstance(line, str) or not line or len(line.encode("utf-8", "replace")) > TRAIN_MAX_LINE_BYTES:
+            return 400, {"error": {"type": "invalid_request_error",
+                                   "message": f"line must be 1..{TRAIN_MAX_LINE_BYTES} bytes of the engine's "
+                                              "protocol (LORA <path> / SCORE <id,id,...> / GEN <max_new> <ids>)"}}
+        until = body.get("until", ("LORAOK", "SSUM", "DONE"))
+        if not isinstance(until, list) or not until or not all(isinstance(p, str) and p for p in until) \
+                or len(until) > 8:
+            return 400, {"error": {"type": "invalid_request_error",
+                                   "message": "until must be 1..8 reply-line prefixes (strings)"}}
+        try:
+            timeout = float(body.get("timeout", TRAIN_COMMAND_TIMEOUT_S))
+        except (TypeError, ValueError):
+            return 400, {"error": {"type": "invalid_request_error", "message": "timeout must be seconds (a number)"}}
+        if not (1.0 <= timeout <= 86400.0):
+            return 400, {"error": {"type": "invalid_request_error", "message": "timeout must be 1..86400 s"}}
+        bridge = self.training.get("bridge")
+        try:
+            lines = bridge.command(line, tuple(until), timeout)
+        except EngineDied as e:
+            self.training_session("close", {})       # the bridge is gone: let inference resume
+            return 502, {"error": {"type": "server_error", "message": str(e)}}
+        except (RuntimeError, OSError) as e:
+            return 502, {"error": {"type": "server_error", "message": str(e)}}   # the engine said ERR; session stays
+        return 200, {"lines": lines}
 
     def start_idle_unload(self):
         if not self.idle_unload_s or not hasattr(self.engine, "unload"):
@@ -7346,6 +7567,12 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/training/status":
+                if not self._authorized():
+                    return
+                code, body = svc.training_session("status", {})
+                self._json(code, body)
+                return
             if path.startswith("/tool-media/"):
                 if not self._authorized():
                     return
@@ -7739,6 +7966,13 @@ def make_handler(svc: Service):
             path = V1_V1_ALIASES.get(path, path)         # an Anthropic client given ".../v1" as its base posts /v1/v1/messages
             if path.startswith("/v1/") and self._foreign_page():
                 return
+            if getattr(svc, "training", None) and svc.training_active() and not path.startswith("/v1/training"):
+                # a training session owns the engine: fast-fail everything else (unload/load included - the
+                # serving engine is not resident).  Closed sessions cost nothing: this is one dict read.
+                self._json(409, {"error": {"type": "training_session_active",
+                                           "message": "a training session owns the engine; it closes itself with "
+                                                      "POST /v1/training/session {\"op\": \"close\"}"}})
+                return
             if path == "/settings":
                 self._settings()
                 return
@@ -7771,6 +8005,30 @@ def make_handler(svc: Service):
                     ra = getattr(e, "retry_after", None)
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                                headers={"Retry-After": int(ra)} if ra else None)
+                return
+            if path == "/v1/training/session":               # open/close a training engine (TrainBridge)
+                try:
+                    req = json.loads(self._body() or b"{}")
+                except ValueError as e:
+                    self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                    return
+                if not isinstance(req, dict):
+                    self._json(400, {"error": {"type": "invalid_request_error", "message": "send a JSON object"}})
+                    return
+                code, body = svc.training_session(req.get("op"), req)
+                self._json(code, body)
+                return
+            if path == "/v1/training/command":               # one LORA/SCORE/GEN line to the session's engine
+                try:
+                    req = json.loads(self._body() or b"{}")
+                except ValueError as e:
+                    self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                    return
+                if not isinstance(req, dict):
+                    self._json(400, {"error": {"type": "invalid_request_error", "message": "send a JSON object"}})
+                    return
+                code, body = svc.training_command(req)
+                self._json(code, body)
                 return
             reserved = False
             try:

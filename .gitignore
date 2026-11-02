@@ -90,6 +90,13 @@ node_modules/
 /apps/host/docs/evidence/
 /apps/host/docs/checkpoints/
 
+# examples/training: one-off debugging scripts, run artifacts and adapters stay out of git
+# (`_*` = scratch probes, `*.pt` / `*.gguf` = local weights, `*.bak` = hand-copied backups)
+examples/training/_*
+examples/training/*.pt
+examples/training/*.gguf
+examples/training/*.bak
+
 # DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
 /out-spark/
 /build-spark/
