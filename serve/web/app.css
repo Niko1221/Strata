@@ -126,7 +126,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .kv-legend { list-style: none; margin: 0 auto; max-width: 340px; width: 100%; box-sizing: border-box; padding: 0; display: grid; gap: var(--st-s-2); }
 .kv-legend li { display: flex; align-items: center; gap: var(--st-s-2); font-size: var(--st-fs-sm);
                 font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
-/* dim rows change colour, never opacity, so dim text stays AA-readable; chips never dim */
+/* dim rows change colour, never opacity; chips never dim */
 .kv-legend li span:not(.kv-key) { transition: color var(--st-dur); }
 /* the lit row keeps its number bright, never a gray count beside a lit name */
 .kv-legend li:not(.dim) .muted { color: var(--st-ink); }
