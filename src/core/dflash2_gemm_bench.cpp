@@ -1,6 +1,6 @@
 // src/core/dflash2_gemm_bench.cpp - the drafter's Q8 GEMM (kernels/dflash2.hpp df2_gemm) on random planar weights: GB/s per shape and column count.
 //
-//     dflash2_gemm_bench [iters]
+//     dflash2_gemm_bench [iters] [q4]      (q4: the Q4_0 pack's GEMM, kernels/cuda/dflash2.cu gemm4_*)
 //
 // Weight sets are cycled through 2 GiB of distinct matrices so the L2 cache cannot hold them (the drafter reads each matrix once per round).
 #include "strata/kernels/dflash2.hpp"
@@ -15,6 +15,8 @@
 
 int main(int argc, char** argv) {
     const int iters = argc > 1 ? std::atoi(argv[1]) : 50;
+    const bool q4 = argc > 2 && std::strcmp(argv[2], "q4") == 0;
+    const int wnum = q4 ? 18 : 34;   // bytes of a 32-weight block: the Q8 pack's int8 + fp16 scale, the Q4_0 pack's nibbles + fp16 scale
     struct Shape { const char* name; int n_in, n_out; int mats; };
     const Shape shapes[] = {{"gate+up 2560->7680 x2", 2560, 7680, 2}, {"down 7680->2560", 7680, 2560, 1}, {"qkv 2560->(4096,1024,1024)", 2560, 4096, 3},
                             {"o 4096->2560", 4096, 2560, 1}, {"fc 12800->2560", 12800, 2560, 1}, {"kv 2560->1024 x2", 2560, 1024, 2},
@@ -23,7 +25,7 @@ int main(int argc, char** argv) {
     cudaEventCreate(&a);
     cudaEventCreate(&b);
     for (const Shape& sh : shapes) {
-        const size_t wbytes = (size_t) sh.n_out * sh.n_in * 34 / 32;
+        const size_t wbytes = (size_t) sh.n_out * sh.n_in * wnum / 32;
         const size_t per_set = wbytes * sh.mats;
         const int sets = (int) std::max<size_t>(2, ((size_t) 1 << 30) / per_set);
         std::vector<uint8_t*> w((size_t) sets * sh.mats);
@@ -46,13 +48,15 @@ int main(int argc, char** argv) {
             cudaMemcpy(xd, ones.data(), ones.size() * 4, cudaMemcpyHostToDevice);
         }
         std::vector<float> yref;
-        for (int var : {1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}) {
+        std::vector<int> vars = {1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23};
+        if (q4) for (int v = 24; v <= 35; ++v) vars.push_back(v);
+        for (int var : vars) {
             strata::kernels::df2_gemm_variant(var);
             const int ncols = 8;
             const size_t ny = (size_t) 8 * sh.n_out * (sh.mats == 3 ? 3 : sh.mats);
             {   // bitwise against variant 1
                 strata::kernels::Df2Mat m[3];
-                for (int i = 0; i < sh.mats; ++i) m[i] = {w[(size_t) i], y + (size_t) i * 8 * sh.n_out, sh.n_out};
+                for (int i = 0; i < sh.mats; ++i) m[i] = {w[(size_t) i], y + (size_t) i * 8 * sh.n_out, sh.n_out, q4};
                 if (sh.mats == 3) { m[1].n_out = 1024; m[2].n_out = 1024; }
                 cudaMemset(y, 0, ny * 4);
                 strata::kernels::df2_gemm(m, sh.mats, xq, xd, sh.n_in, ncols, nullptr);
@@ -60,13 +64,13 @@ int main(int argc, char** argv) {
                 std::vector<float> hy(ny);
                 cudaMemcpy(hy.data(), y, ny * 4, cudaMemcpyDeviceToHost);
                 if (var == 1) yref = hy;
-                std::printf("%-30s variant %2d: %s  ", sh.name, var, std::memcmp(hy.data(), yref.data(), ny * 4) == 0 ? "bitwise" : "DIFFERS");
+                std::printf("%s %-30s variant %2d: %s  ", q4 ? "q4" : "q8", sh.name, var, std::memcmp(hy.data(), yref.data(), ny * 4) == 0 ? "bitwise" : "DIFFERS");
             }
             cudaDeviceSynchronize();
             cudaEventRecord(a);
             for (int it = 0; it < iters; ++it) {
                 strata::kernels::Df2Mat m[3];
-                for (int i = 0; i < sh.mats; ++i) m[i] = {w[(size_t) (it % sets) * sh.mats + i], y + (size_t) i * 8 * sh.n_out, sh.n_out};
+                for (int i = 0; i < sh.mats; ++i) m[i] = {w[(size_t) (it % sets) * sh.mats + i], y + (size_t) i * 8 * sh.n_out, sh.n_out, q4};
                 if (sh.mats == 3) { m[1].n_out = 1024; m[2].n_out = 1024; }
                 strata::kernels::df2_gemm(m, sh.mats, xq, xd, sh.n_in, ncols, nullptr);
             }
@@ -74,7 +78,7 @@ int main(int argc, char** argv) {
             cudaEventSynchronize(b);
             float ms;
             cudaEventElapsedTime(&ms, a, b);
-            const double bytes = sh.mats == 3 ? (double) (4096 + 1024 + 1024) * sh.n_in * 34 / 32 : (double) per_set;
+            const double bytes = sh.mats == 3 ? (double) (4096 + 1024 + 1024) * sh.n_in * wnum / 32 : (double) per_set;
             std::printf("%7.1f us  %6.1f GB/s\n", 1000.0 * ms / iters, bytes * iters / (ms / 1000.0) / 1e9);
         }
         for (auto p : w) cudaFree(p);

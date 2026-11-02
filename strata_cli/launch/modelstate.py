@@ -81,9 +81,21 @@ class ModelState:
 HELPER_FAMILIES = ("qwen", "swift", "coder", "unsloth", "gyro")
 
 
+def resolved_drafting(drafting: str | None, family: str | None) -> str:
+    """The drafter a choice means for this family on this computer: ``dflash2`` | ``mtp`` | ``off`` (strata_control/drafting.py: Auto is DFlash2 where the engine
+    has it). Never raises; an unknown computer is the MTP."""
+    try:
+        from strata_control import drafting as _d
+        backend, archs = _d.detect_hardware()
+        return _d.choice_of(drafting, family=family, backend=backend, archs=archs)
+    except Exception:                                        # noqa: BLE001
+        return "mtp"
+
+
 def mtp_choice(mtp: str | None, drafting: str | None = None) -> str | None:
-    """The draft-layer choice setup is given: off when the person said --mtp off or --drafting off (nothing then uses the layer), else as chosen."""
-    if str(drafting or "").strip().lower() == "off":
+    """The draft-layer choice for what to fetch: off when the person said --mtp off, or the drafter is off or DFlash2 (``drafting`` is the resolved drafter,
+    resolved_drafting(); nothing then uses the layer, so a new install does not download it), else as chosen."""
+    if str(drafting or "").strip().lower() in ("off", "dflash2"):
         return "off"
     return mtp
 

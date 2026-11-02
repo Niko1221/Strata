@@ -23,7 +23,8 @@ test('1: the Models page carries no DFlash2 paragraph, no per-card line and no p
 test('2: pictures are on by default; a missing reader says nothing wordy and saves nothing', () => {
   const host = read('server/native-control.mjs');
   // The row is shown for every model that can read pictures; without the reader it is off, disabled and carries a tooltip, no paragraph.
-  assert.match(models, /const noReader = !!selectedSize\?\.imagesCapable && !selectedSize\.images/);
+  assert.match(models, /const noReaderNow = !!selectedSize\?\.imagesCapable && !selectedSize\.images/);
+  assert.match(models, /const noReader = noReaderSeen\.current\.value;/, 'a job that runs never changes what the row shows');
   assert.match(models, /selectedSize\?\.images \|\| noReader \? <><div className="native-image-reading"><label title=\{noReader \? tr\("Needs an engine update"\) : undefined\}>/);
   assert.match(models, /checked=\{!noReader && vision !== 'no'\} disabled=\{noReader \|\| !!active\}/);
   assert.match(models, /else \{\s*setVision\('yes'\);|setVision\('yes'\);/, 'a model that is not downloaded starts with pictures on');
@@ -33,7 +34,7 @@ test('2: pictures are on by default; a missing reader says nothing wordy and sav
   assert.match(host, /const visionPreferences=args\.vision!==undefined&&!noReader\?/, 'nothing is saved when the reader is missing');
   assert.match(host, /runtimeVision\(config,noReader\?'no':args\.vision\)/);
   // An "off" that sits on a model without the picture files is not a choice of the person: it starts on.
-  assert.match(models, /installed\.visionEnabled === false && installed\.visionPrepared !== false \? 'no'/);
+  assert.match(readFileSync(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8'), /installed\.visionEnabled === false && installed\.visionPrepared !== false\) return 'no'/);
 });
 
 test('6: the conversation context opens at 128K for every configuration, or the model largest size when that is smaller; a warning, never a refusal', async () => {
@@ -60,7 +61,7 @@ test('6: the conversation context opens at 128K for every configuration, or the 
   assert.match(models, /setContext\(defaultContext\(first\?\.multi_file \? deepseekContexts\(\) : native\.catalog\.contexts\)\)/, 'DeepSeek too, from its own list');
   assert.match(models, /contextIsTight\(fitHardware\.vram_gb, context, kv\) \? <p className="small muted native-spill-note"><Icon name="warning"/);
   assert.ok(!/setContext\([^)]*contextIsTight/.test(models), 'the warning never changes the context');
-  assert.match(models, /cache=\{\{ context, kv \}\}/, 'the version list follows the chosen context, as the card does');
+  assert.match(models, /cache=\{\{ context, kv, drafter: nowDrafter \}\}/, 'the version list follows the chosen context, as the card does');
   const guided = read('src/components/GuidedSetup.tsx');
   assert.match(guided, /const context = pickedContext \?\? defaultContext\(contextList\)/, 'first-run opens at 128K on every card too');
   assert.ok(!/OLD_DEFAULT_CONTEXT|contextIsTight\(topCardGb, DEFAULT_CONTEXT/.test(guided), 'no fallback to 32K on a tight card');
@@ -101,7 +102,7 @@ test('13: Load model has no pop-up: the size and the warnings are in the page, a
   assert.match(load, /if \(planned\?\.plan\?\.disk_short\) \{\s*setPlan\(planned\);\s*return;\s*\}/, 'safety: not enough disk, nothing starts');
   assert.match(load, /kind: 'install', args: downloadValues/, 'otherwise it starts at once');
   assert.match(models, /\{tr\(plan\?\.plan\?\.disk_short \? <ErrorNotice message=\{plan\.plan\.disk_short\}\/> : null\)\}/, 'the disk message is in the page');
-  assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\("Choosing DFlash2 also downloads its drafter/, 'the extra download is said in the page while it runs');
+  assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(nowDrafter === 'mtp' \? "Choosing MTP downloads its drafter: about \{0\} GB, once\." : "Choosing DFlash2 downloads its drafter/, 'the extra download is said in the page while it runs');
   assert.match(models, /className="native-download-size small muted">\{tr\("\{0\} download", \[sizeGb\(selectedSize\.download_gb\)\]\)\}/, 'the download size sits beside the button');
   // The warnings for a version that does not fit stay inline (item 5): SSD streaming and Doesn't fit under the version list.
   assert.match(models, /fitState === 'ssd' \? <p className="small muted native-spill-note"><Icon name="disk" size=\{16\}\/>/);
@@ -113,12 +114,18 @@ test('9: a chat that is working shows it on its sidebar row, and the model chip 
   assert.match(bar, /const working = new Set\(liveCount \? liveChatIds\(\) : \[\]\)/, 'the same list of running turns the board reads');
   assert.match(bar, /data-working=\{working\.has\(s\.id\) \|\| undefined\}/);
   assert.match(bar, /working\.has\(s\.id\) \? <span className="navsession__working" role="img" aria-label=\{tr\("Working"\)\}/, 'a labelled cue, not only colour');
-  assert.match(bar, /: isUnread\(s, activeSession\) \? <span className="navsession__unread"/, 'a working chat is not also shown as unread');
+  assert.match(bar, /!working\.has\(s\.id\) && isUnread\(s, activeSession\) \? <span className="navsession__unread"/, 'a working chat is not also shown as unread');
+  // GUI-FB2 item 6: the ring comes BEFORE the chat's name
+  assert.ok(bar.indexOf('navsession__working') < bar.indexOf('<span className="navsession__title">'), 'the ring is left of the name');
   assert.match(bar, /\{workingLine \?\? modelQuant\}/, 'the model chip names the working chat');
   assert.match(bar, /!\(location\.route === 'chat' && id === activeSession\)/, 'no line for the chat that is in front of the person');
-  assert.match(css, /\.ws__session \.navsession__working \{[^}]*border-top-color: var\(--st-info\);[^}]*animation: st-spin 1.4s linear infinite;/, 'existing tokens, one slow turn');
-  assert.match(css, /prefers-reduced-motion: reduce\) \{\s*\.ws__session \.navsession__working \{\s*animation: none;/, 'reduced motion holds it still');
-  assert.match(css, /html\[data-motion='reduced'\] \.ws__session \.navsession__working \{\s*animation: none;/);
+  // a stroked SVG circle (round caps), not a bordered box: it stays round at fractional sizes and turning angles
+  assert.match(bar, /<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle className="navsession__track" cx="8" cy="8" r="6"\/>/);
+  assert.match(css, /\.ws__session \.navsession__working svg \{[^}]*animation: st-spin 1\.1s linear infinite;/, 'one turn, existing keyframes');
+  assert.match(css, /\.navsession__arc \{[^}]*stroke-linecap: round;/);
+  assert.doesNotMatch(css, /\.ws__session \.navsession__working \{[^}]*border-radius/, 'no bordered box');
+  assert.match(css, /prefers-reduced-motion: reduce\) \{\s*\.ws__session \.navsession__working svg \{\s*animation: none;/, 'reduced motion holds it still');
+  assert.match(css, /html\[data-motion='reduced'\] \.ws__session \.navsession__working svg \{\s*animation: none;/);
 });
 
 test('10 (visual): the reply stays still while it streams, one live cue per step, a slot for the host to feed live output, a slower preview panel', async () => {

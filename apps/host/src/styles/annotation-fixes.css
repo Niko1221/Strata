@@ -633,7 +633,7 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .native-fit-notice p { margin:8px 0 12px; line-height:1.65; }
 .native-fit-notice .st-btn { margin-right:8px; }
 .native-image-reading { border-top:1px solid var(--st-line-soft); padding-top:20px; margin-top:20px; display:flex; gap:16px; align-items:center; }
-.native-image-reading>label { display:flex; gap:12px; align-items:start; flex:1; font-size:13px; }
+.native-image-reading>label { display:flex; gap:12px; align-items:center; flex:1; font-size:13px; }
 .native-image-reading input { margin-top:4px; accent-color:var(--st-accent); }
 .native-image-reading strong { display:block; }
 .native-image-reading strong small { display:inline; font-size:12px; font-weight:400; color:var(--st-ink-muted); margin-left:8px; }
@@ -649,7 +649,7 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .native-gpu-options label { display:flex; gap:12px; padding:12px; border:1px solid var(--st-line); border-radius:10px; font-size:12px; }
 .native-gpu-options input { accent-color:var(--st-accent); }
 .native-gpu-options small { display:block; margin-top:5px; color:var(--st-ink-muted); }
-.native-model-actions { display:flex; gap:16px; justify-content:flex-end; border-top:1px solid var(--st-line); padding-top:20px; }
+.native-model-actions { display:flex; gap:16px; justify-content:flex-end; padding-top:4px; }
 /* Load model has no pop-up: what the download is sits beside the button that starts it */
 .native-model-actions { align-items:center; }
 .native-download-size { margin-right:auto; font-variant-numeric:tabular-nums; }

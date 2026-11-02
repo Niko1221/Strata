@@ -42,6 +42,16 @@ def _location(raw: str, cfg: dict, config_path: Path) -> Path:
     return (Path(cwd) if isinstance(cwd, str) and cwd else config_path.parent) / value
 
 
+def _drafter_is_dflash2(cfg: dict) -> bool:
+    """Does this run config's drafting choice mean DFlash2 on this computer (Auto included)? Never raises."""
+    try:
+        from strata_control import drafting
+        backend, archs = drafting.detect_hardware()
+        return cfg.get("mtp") is not False and drafting.choice_of(cfg.get("drafting"), model_name=cfg.get("model_name"), backend=backend, archs=archs) == "dflash2"
+    except Exception:                                    # noqa: BLE001 - unknown means the MTP, which stays required
+        return False
+
+
 def _item(name: str, path: Path, kind: str, *, required: bool = True) -> dict:
     try:
         if kind == "file":
@@ -205,7 +215,9 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
                 except ValueError:
                     pass
             kind = "file"
-        components.append(_item(arg.lstrip("-"), _location(raw, cfg, config_path), kind))
+        # The MTP layer is one of two drafters, never both: a model whose drafter is DFlash2 has no layer on disk, and the run config keeps `--mtp <folder>` for a
+        # later switch to the MTP. Its absence then does not make the model unusable (strata_control/drafting.py loads the drafter that is there).
+        components.append(_item(arg.lstrip("-"), _location(raw, cfg, config_path), kind, required=not (arg == "--mtp" and _drafter_is_dflash2(cfg))))
 
     vision = cfg.get("vision")
     if isinstance(vision, dict):

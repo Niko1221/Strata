@@ -21,8 +21,11 @@ export interface Fit {
 
 const DENSE_GB = 5, SYSTEM_ROOM_GB = 10, DENSE_EXTRA_GB = 1;
 export { DENSE_GB };
-/** The draft layer (MTP) takes about 1 GB of graphics memory (786 MiB of files + the draft head's ~218 MiB); it comes out of the expert cache while MTP is on (setup.py MTP_VRAM_GB). */
-export const MTP_VRAM_GB = 1;
+/** The draft layer (MTP) takes about 1.08 GB of graphics memory (1082 MiB: the layer 840 + draft head 213 + the rest); it comes out of the expert cache while MTP is on. DFlash2 alone takes 0.89 GB (890 MiB, the MTP layer not loaded beside it): the fit uses the drafter that is chosen
+ *  (phaseA-tests/blackwell/RESULTS-DF2MEM.md section 1; strata_control/drafting.py DRAFTER_GB). */
+export const MTP_VRAM_GB = 1.08;
+export const DFLASH2_VRAM_GB = 0.89;
+export const DRAFTER_VRAM_GB: Record<string, number> = { mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, off: 0 };
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 export function memoryNeeded(v: FitInput): number {
@@ -39,7 +42,7 @@ export const BASE_CONTEXT = 32768;
 export function cacheGb(context: number, kv = 'int8'): number {
   return (121 + context * KV_LAYERS * (KV_BYTES[String(kv).toLowerCase()] ?? KV_BYTES.int8) * KV_FACTOR / 2 ** 20) / 1024;   // 121 MiB fixed per session
 }
-export interface CacheChoice { context: number; kv?: string }
+export interface CacheChoice { context: number; kv?: string; /** the drafter this run loads (resolveDrafter in lib/drafting.ts); absent: the MTP, as the `mtp` argument says */ drafter?: string }
 
 export function fitOn(v: FitInput, hw: FitHardware | null | undefined, mtp = true, cache?: CacheChoice | null): Fit {
   const memoryGb = memoryNeeded(v);
@@ -48,11 +51,12 @@ export function fitOn(v: FitInput, hw: FitHardware | null | undefined, mtp = tru
   const ram = Number(hw?.ram_gb), vram = Number(hw?.vram_gb) || 0;
   if (!Number.isFinite(ram) || ram <= 0) return { memoryGb, vramUseGb: 0, ramUseGb: 0, spillGb: 0, known: false };
   const experts = Math.max(0, memoryNeeded(v) - DENSE_EXTRA_GB);
-  const onGpu = Math.max(0, Math.min(experts, vram - denseGb - (mtp && vram > 0 ? MTP_VRAM_GB : 0)));
+  const drafterGb = cache?.drafter !== undefined ? (DRAFTER_VRAM_GB[cache.drafter] ?? 0) : mtp ? MTP_VRAM_GB : 0;
+  const onGpu = Math.max(0, Math.min(experts, vram - denseGb - (vram > 0 ? drafterGb : 0)));
   const ramRoom = Math.max(0, ram - SYSTEM_ROOM_GB);
   const spillGb = Math.max(0, experts - onGpu - ramRoom);
   const inRam = Math.max(0, experts - onGpu - spillGb);
-  const vramUseGb = vram > 0 ? Math.min(vram, denseGb + (mtp ? MTP_VRAM_GB : 0) + onGpu) : 0;
+  const vramUseGb = vram > 0 ? Math.min(vram, denseGb + drafterGb + onGpu) : 0;
   return { memoryGb, vramUseGb: round1(vramUseGb), ramUseGb: round1(inRam + DENSE_EXTRA_GB * (vram > 0 ? 0 : 1)), spillGb: round1(spillGb), known: true };
 }
 

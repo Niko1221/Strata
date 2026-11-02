@@ -5,6 +5,13 @@ export interface CatalogVersion extends NativeSize{sourceFamily:string;edition:s
 export interface CatalogModel extends Omit<NativeFamily,'sizes'>{sizes:CatalogVersion[]}
 export function nativeVersionLabel(model:string){const nv=nvfp4Version(model);if(nv)return tr(nv.name);return tr(({Q2_0:'Fastest',IQ2_XS:'Compact',IQ3_XXS:'Balanced',IQ3_S:'High quality',IQ1_M:'Coding','Gyro-S':'Smallest','Gyro-M':'Small memory','IST-DAS-1.75bpw':'Smallest','IST-DAS-2.00bpw':'Balanced','IST-DAS-2.25bpw':'Best quality','ISTA-DAS-Coder':'ISTA-DAS Coder'} as Record<string,string>)[model]??model);}
 export const catalogVersionLabel=(version:CatalogVersion)=>{const label=nativeVersionLabel(version.model);return [tr(version.edition),label===version.model&&version.edition?'':label].filter(Boolean).join(' · ');};
+/**
+ * Models whose picture files Load fetches by itself (strata_control/pictures.py): the Flash-Next GGUF families, which share the original's reader (Swift has its own file).
+ * NVFP4 packs, Qwen3.6 and DeepSeek keep the installer for their pictures. With these the Load of a model that is on this computer never runs the installer again just
+ * because the picture files are missing.
+ */
+export const PICTURE_FETCH_FAMILIES = ['qwen', 'coder', 'unsloth', 'gyro', 'swift'];
+export const fetchesPictures = (version: { sourceFamily?: string; multi_file?: boolean } | undefined, packaged: boolean | undefined) => !!version && packaged === true && !version.multi_file && PICTURE_FETCH_FAMILIES.includes(version.sourceFamily ?? '');
 /** The one line that says how a version differs from its neighbours (the three NVFP4 versions); empty for the rest. */
 export const versionNote=(model:string)=>{const nv=nvfp4Version(model);return nv?tr(nv.note):'';};
 /** Display groups are distinct from the engine's installation family IDs. */

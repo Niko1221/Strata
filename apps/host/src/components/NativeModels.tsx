@@ -12,11 +12,10 @@ import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
 import { installProgress, installStage, stageText, useDownloadEta } from '../lib/download-eta';
 import { useKept } from '../lib/kept-state';
 import { DownloadParts } from './DownloadParts';
-import { useElapsed } from '../lib/use-elapsed';
 import { EngineWarning } from './EngineWarning';
 import { EngineUpdateCard } from './EngineUpdateCard';
 import { EngineUpdateDialog } from './EngineUpdateDialog';
-import { duration, sizeGb } from '../lib/format';
+import { sizeGb } from '../lib/format';
 import { NativeDeleteDialog } from './NativeDelete';
 import { plainFailureText } from '../lib/plain-errors';
 import { api } from '../lib/client';
@@ -24,7 +23,8 @@ import { go, setSettingsSection, selectRemoteModel, pushToast } from '../lib/sto
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { tuneEffective } from '../lib/native-tune';
 import { tunedFields } from '../lib/tune-values';
-import { draftingChoices as draftingOptions } from '../lib/drafting';
+import { shownVision, steadyNoReader } from '../lib/pictures-choice';
+import { draftingChoices as draftingOptions, resolveDrafter } from '../lib/drafting';
 import { deepseekContexts, deepseekContextNote } from '../lib/deepseek-context';
 import { NativeSettings } from './NativeSettings';
 import { NativeSettingsFile } from './NativeSettingsFile';
@@ -34,7 +34,7 @@ import { useStore } from '../lib/store';
 import { NativePresets } from './NativePresets';
 import { NativeTune } from './NativeTune';
 import { NativeTuneBadge } from './NativeTuneBadge';
-import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
+import { nativeCatalogModels, catalogVersionLabel, fetchesPictures } from '../lib/native-catalog';
 export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine }: {
     onOtherModels: () => void;
     onImport?: () => void;
@@ -50,7 +50,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const [drafting, setDrafting] = useState('auto');
     const [pending, setPending] = useState(false), [error, setError] = useState(''), [plan, setPlan] = useState<Record<string, any> | null>(null), [drafterGb, setDrafterGb] = useState<number | null>(null), [loadedError, setLoadedError] = useState(''), [tuneOpen, setTuneOpen] = useState(false), [jobId, setJobId] = useKept('models.job', ''), [manage, setManage] = useState(false);
     const [toastedJob, setToastedJob] = useKept('models.toasted', ''), [appliedSig, setAppliedSig] = useKept('models.applied', '');
-    const presetPending = useRef(false);
+    const presetPending = useRef(false), visionPicks = useRef(new Map<string, string>());   // Read pictures per version: what the person set, or what the version opened with; later reports of the host never overwrite it
     const [deleting, setDeleting] = useState<string | null>(null);
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
     const expertSection = useRef<HTMLElement>(null);
@@ -111,7 +111,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const job = native?.jobs.find(j => j.id === jobId && selectedJob(j)) ??
         native?.jobs.filter(j => ['load', 'install'].includes(j.kind) && selectedJob(j)).at(-1);
     // This model can read pictures but the installed engine has no picture reader: pictures run off for now, nothing is saved, and the row says nothing wordy.
-    const noReader = !!selectedSize?.imagesCapable && !selectedSize.images;
+    // While a job runs the host is busy and its picture-reader probe can drop out for a moment: the checkbox then keeps what it showed, so the person's choice never flickers.
+    const noReaderNow = !!selectedSize?.imagesCapable && !selectedSize.images, noReaderSeen = useRef({ id: '', value: false });
+    noReaderSeen.current = steadyNoReader(noReaderNow, !!active, noReaderSeen.current, selectedSize?.id ?? '');
+    const noReader = noReaderSeen.current.value;
     // Graphics cards (strata_control/gpu_fit.py: the one rule of the app, the Terminal and setup): the recommended option is pre-selected, the person may pick another
     // A card a loaded model already uses (a second model on it usually does not fit): said on its row, and not the pre-selected one while another is free.
     const usedBy = (cards: number[]) => (native?.instances ?? []).filter(i => i.status !== 'error' && i.model !== selectedSize?.id && i.gpus.some(g => cards.includes(g))).map(i => i.label);
@@ -132,6 +135,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     useEffect(() => { if (cardsGpus.length <= 1 && split !== 'auto') setSplit('auto'); }, [cardsGpus.length]);
     // Drafting (which drafter guesses ahead): a choice exists only for Qwen3.8-Flash-Next (the qwen and gyro families) on a computer whose engine can run DFlash2; every other model has no dropdown.
     const draftingChoices = selectedSize ? draftingOptions(selectedSize.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2) : null;
+    // The drafter this run loads (one per run): the fit and the plan use its graphics memory (DFlash2 0.89 GB, MTP 1.08 GB).
+    const nowDrafter = draftingChoices ? resolveDrafter(drafting, selectedSize?.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2) : 'mtp';
     const draftingWords: Record<string, string> = { auto: 'Auto (recommended)', mtp: 'MTP', dflash2: 'DFlash2', off: 'Off' };
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(cardsGpus.length > 1 ? { gpus: cardsGpus.join(',') } : cardsGpus.length === 1 ? { gpu: cardsGpus[0] } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, cardsGpus.join(','), expert, multiple]);
     const downloadValues = { ...values, ...(draftingChoices ? { drafting } : {}), vision: selectedSize?.images && vision !== 'no' ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked ? { contextChosen: true } : {}) };
@@ -153,7 +158,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         }
         if (!selectedSize)
             return;
-        const sig = installed ? ['have', installed.model, installed.ready, installed.context, installed.contextChosen, installed.kv, installed.images, installed.visionEnabled, installed.visionDevice, installed.lowRamMode, installed.drafting, installed.resourceProfile].join('|') : `new|${selectedSize.id}`;
+        const sig = installed ? ['have', installed.model, installed.ready, installed.context, installed.contextChosen, installed.kv, installed.lowRamMode, installed.drafting, installed.resourceProfile].join('|') : `new|${selectedSize.id}`;
         if (sig === appliedSig)
             return;
         setAppliedSig(sig);
@@ -162,24 +167,34 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
             if (installed.context)
                 setContext(openingContext(installed.context, contextList, installed.contextChosen === true, selectedSize.multi_file ? [OLD_DEEPSEEK_CONTEXT] : undefined));
             // Off only when the person turned it off (a saved choice on a model that has the picture files); a model prepared without them (images 'off', or an old "off" saved while the engine had no reader) starts with it ON.
-            setVision(installed.visionEnabled === false && installed.visionPrepared !== false ? 'no' : installed.visionDevice ?? (installed.images && installed.images !== 'off' ? installed.images : 'yes'));
+            // The first time this version is seen as installed it opens from its saved settings; from then on that value is the person's (a host report that changes while a job runs never changes it).
+            const known = visionPicks.current.get(selectedSize.id), value = shownVision(known, installed);
+            if (known === undefined)
+                visionPicks.current.set(selectedSize.id, value);
+            setVision(value);
             setKv(installed.kv ?? 'int8');
             setLowRam(installed.lowRamMode ?? 'auto');
             setDrafting(installed.drafting ?? 'auto');
-            // A model never tuned has no saved choice: keep the page's own (Leave 20%) rather than flipping to Full performance.
+            // A model never tuned has no saved choice: keep the page's own (Leave room for my work) rather than flipping to Full performance.
             if (installed.resourceProfile && !loadedSelected?.resourceProfile)
                 setResourceProfile(installed.resourceProfile);
         }
         else {
-            setVision('yes');
+            setVision(shownVision(visionPicks.current.get(selectedSize.id), undefined));
             if (!contextPicked)    // a context the person picked stays; otherwise 128K (DeepSeek too, where its pack allows)
                 setContext(defaultContext(contextList));
         }
-    }, [selectedSize?.id, installed?.model, installed?.ready, installed?.context, installed?.contextChosen, installed?.kv, installed?.images, installed?.visionEnabled, installed?.visionDevice, installed?.lowRamMode, installed?.resourceProfile]);
+    }, [selectedSize?.id, installed?.model, installed?.ready, installed?.context, installed?.contextChosen, installed?.kv, installed?.lowRamMode, installed?.resourceProfile]);
+    const pickVision = (next: string) => { if (selectedSize) visionPicks.current.set(selectedSize.id, next); setVision(next); };
     useEffect(() => { if (jobId && job?.state === 'done' && job.id !== toastedJob && (job.kind === 'load' || job.kind === 'install')) {
         setToastedJob(job.id);
         selectRemoteModel(null);
         pushToast('success', 'Model ready', 'Start a new chat when you’re ready.');
+    } }, [job?.state]);
+    // The picture files came without a load: a model that is loaded right now still runs without pictures until it is loaded again.
+    useEffect(() => { if (jobId && job?.state === 'done' && job.id !== toastedJob && job.kind === 'pictures') {
+        setToastedJob(job.id);
+        pushToast('success', 'Picture files ready', loadedSelected && !loadedSelected.vision ? 'Load the model again to read pictures.' : 'Picture reading is ready.');
     } }, [job?.state]);
     async function perform(action: () => Promise<unknown>) { setPending(true); setError(''); try {
         await action();
@@ -192,8 +207,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     } }
     /* Load model: no pop-up. The press itself is the yes. The plan is read first (Control checks the free disk space); a disk that is too small is said
        here, in the page, and nothing starts. Otherwise the download or the apply-and-load starts at once, with its size and notes in the page. */
+    // The model is on this computer and only its picture files are missing: the Load fetches those files itself (about 0.9 GB, once) and goes on; it does not run the installer again.
+    const picturesByLoad = fetchesPictures(selectedSize, native?.packaged);
     async function load() { if (!selectedSize)
-        return; setPlan(null); setDrafterGb(null); await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || vision === 'no' || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
+        return; setPlan(null); setDrafterGb(null); await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || vision === 'no' || picturesByLoad || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
         const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, resourceProfile, vision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked && !installed.contextChosen ? { contextChosen: true } : {}), multiple: expert && multiple, ...(draftingChoices ? { values: { drafting } } : {}), ...(roleCards.length > 1 ? (roles && customRoles ? { gpuRoles: effectiveRoles, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : cardsGpus.length ? { gpus: cardsGpus, gpusFromRecommendation: true, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) : {}) } });
         setJobId(result.id);
     }
@@ -217,7 +234,6 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     finally {
         setPending(false);
     } }
-    async function download() { await perform(async () => { const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: downloadValues }); setJobId(result.id); setPlan(null); }); }
     // The drafter note belongs to the download that is running; the not-enough-disk message belongs to the version it was said for.
     useEffect(() => { if (!active) setDrafterGb(null); }, [!!active]);
     useEffect(() => { setPlan(null); }, [selectedSize?.id]);
@@ -229,26 +245,25 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      {tr(selectedSize ? <>
       <div className="native-choice__head"><span className="native-choice__label">{tr("Version")}</span><span className="native-choice__tools"><NativePresets values={values} onApply={v => { const f = families.find(f => f.family === v.family || f.sizes.some(s => s.sourceFamily === v.family)); if (!f)
         return; presetPending.current = true; setFamily(f.family); setSize(f.sizes.find(s => s.model === v.model && (s.sourceFamily === v.family || f.family === v.family))?.id ?? ''); setContext(v.context ?? 32768); setVision(v.vision ?? 'no'); setKv(v.kv ?? 'int8'); setLowRam(v.low_ram ?? 'auto'); }}/><Btn icon="models" size="sm" variant="ghost" onClick={() => setManage(true)}>{tr("Manage models")}</Btn></span></div>
-      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} cache={{ context, kv }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
+      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} cache={{ context, kv, drafter: nowDrafter }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
       {tr(fitState === 'ssd' ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("SSD streaming · will run slower")}</p> : fitState === 'no' ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("Doesn't fit")}</p> : null)}
       {tr(selectedSize?.multi_file && deepseekContextNote(context) ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(deepseekContextNote(context))}</p> : null)}
       <div className="native-choice__row">
        <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={contextChoices(contextList, context).map(n => ({ value: String(n), label: n % 1024 === 0 ? `${n / 1024}K` : `${n.toLocaleString()} tokens` }))} onChange={n => { setContextPicked(true); setContext(Number(n)); }}/></div>
        {tr(draftingChoices ? <div className="native-choice__col"><span className="native-choice__label">{tr("Drafting")}</span><Select ariaLabel={tr("Drafting")} value={drafting} disabled={!!active} options={draftingChoices.map(v => ({ value: v, label: tr(draftingWords[v]) }))} onChange={v => setDrafting(String(v))}/></div> : null)}
-       <div className="native-choice__col"><span className="native-choice__label">{tr("Computer use")}</span><div className="native-resource-choice"><button aria-pressed={resourceProfile === 'work'} data-selected={resourceProfile === 'work'} onClick={() => setResourceProfile('work')}><Icon name="computer" size={20}/><span><strong>{tr("Leave 20% for my work")}</strong><small>{tr("Headroom for your other apps")}</small></span>{tr(resourceProfile === 'work' ? <Icon name="check" size={15}/> : null)}</button><button aria-pressed={resourceProfile === 'performance'} data-selected={resourceProfile === 'performance'} onClick={() => setResourceProfile('performance')}><Icon name="bolt" size={20}/><span><strong>{tr("Full performance")}</strong><small>{tr("Give Strata priority")}</small></span>{tr(resourceProfile === 'performance' ? <Icon name="check" size={15}/> : null)}</button></div></div>
+       <div className="native-choice__col"><span className="native-choice__label">{tr("Computer use")}</span><div className="native-resource-choice"><button aria-pressed={resourceProfile === 'work'} data-selected={resourceProfile === 'work'} onClick={() => setResourceProfile('work')}><Icon name="computer" size={20}/><span><strong>{tr("Leave room for my work")}</strong><small>{tr("Keeps 5-8 GB of memory free for other programs.")}</small></span>{tr(resourceProfile === 'work' ? <Icon name="check" size={15}/> : null)}</button><button aria-pressed={resourceProfile === 'performance'} data-selected={resourceProfile === 'performance'} onClick={() => setResourceProfile('performance')}><Icon name="bolt" size={20}/><span><strong>{tr("Full performance")}</strong><small>{tr("Give Strata priority")}</small></span>{tr(resourceProfile === 'performance' ? <Icon name="check" size={15}/> : null)}</button></div></div>
       </div>
       {tr(contextIsTight(fitHardware.vram_gb, context, kv) ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("This much context takes about {0} GB of graphics memory and leaves little room for the model on this card. Strata will try it; if it does not start, choose a shorter context.", [cacheGb(context, kv).toFixed(1)])}</p> : null)}
       {tr(loadedSelected?.metrics?.engine?.drafting_note ? <p className="small muted native-spill-note">{tr(String(loadedSelected.metrics.engine.drafting_note))}</p> : null)}
       {roleCards.length > 1 ? <GpuRoles cards={roleCards} roles={effectiveRoles} custom={customRoles} recommendedRoles={recommended.roles} vendor={engineVendor} disabled={!!active} onChange={changeRoles} onBack={() => setRoles(null)} memoryGb={selectedSize ? memoryNeeded(selectedSize) || null : null} ramGb={pcRam} spillGb={selectedSize ? fitOn(selectedSize, fitHardware).spillGb : 0} usedBy={i => usedBy([i])}/> : null}
       {tr(roleCards.length > 1 && (native?.hardware?.gpus ?? []).length > roleCards.length ? <p className="small muted native-cards__note">{tr('Not used: {0} (another make of graphics card than this engine drives).', [(native?.hardware?.gpus ?? []).filter(g => !roleCards.some(r => r.index === g.index && r.vendor === g.vendor)).map(g => g.name).join(', ')])}</p> : null)}
-      {tr(selectedSize?.images || noReader ? <><div className="native-image-reading"><label title={noReader ? tr("Needs an engine update") : undefined}><input type="checkbox" checked={!noReader && vision !== 'no'} disabled={noReader || !!active} onChange={e => setVision(e.target.checked ? 'yes' : 'no')}/><span><strong>{tr("Read pictures ")}{tr(noReader ? null : <small>{tr("On by default")}</small>)}</strong>{tr(noReader ? null : <small>{tr("Understand photos, screenshots and charts. The picture files download automatically. Turn it off to save memory.")}</small>)}</span></label>{tr(expert && vision !== 'no' && selectedSize?.sourceFamily !== 'deepseek41' ? <Select ariaLabel={tr("Image encoder device")} value={vision === 'yes' ? 'yes' : vision} options={[{ value: 'yes', label: 'Automatic' }, { value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }]} onChange={setVision}/> : null)}</div>{tr(vision !== 'no' && installed?.ready && installed.visionPrepared === false ? <div className="native-vision-missing" role="status"><span>{tr("Picture reading needs a few more files that are not on this computer yet.")}</span><Btn size="sm" disabled={pending || !!active} onClick={() => void download()}>{tr("Download picture-reading files")}</Btn></div> : null)}</> : null)}
+      {tr(selectedSize?.images || noReader ? <><div className="native-image-reading"><label title={noReader ? tr("Needs an engine update") : undefined}><input type="checkbox" checked={!noReader && vision !== 'no'} disabled={noReader || !!active} onChange={e => pickVision(e.target.checked ? 'yes' : 'no')}/><span><strong>{tr("Read pictures")}</strong></span></label>{tr(expert && vision !== 'no' && selectedSize?.sourceFamily !== 'deepseek41' ? <Select ariaLabel={tr("Image encoder device")} value={vision === 'yes' ? 'yes' : vision} options={[{ value: 'yes', label: 'Automatic' }, { value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }]} onChange={pickVision}/> : null)}</div>{tr(vision !== 'no' && !noReader && !active && loadedSelected?.picturesNote ? <p className="small muted native-vision-note" role="status">{tr(loadedSelected.picturesNote)}</p> : null)}</> : null)}
      </> : null)}
      <EngineWarning native={native}/>
      <EngineUpdateCard native={native} busy={!!active}/>
      <EngineUpdateDialog open={false} onClose={() => {}}/>
      {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
-     {tr(active && drafterGb ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr("Choosing DFlash2 also downloads its drafter: about {0} GB, once. If it does not fit in graphics memory, the model uses the MTP instead.", [drafterGb])}</p> : null)}
-     {tr(active ? <p className="small muted native-wait-note">{tr("The buttons below wait until this finishes.")}</p> : null)}
+     {tr(active && drafterGb ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(nowDrafter === 'mtp' ? "Choosing MTP downloads its drafter: about {0} GB, once." : "Choosing DFlash2 downloads its drafter: about {0} GB, once.", [drafterGb])}</p> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
      {tr(plan?.plan?.disk_short ? <ErrorNotice message={plan.plan.disk_short}/> : null)}
      {tr(error ? <ErrorNotice message={error}/> : null)}
@@ -290,15 +305,42 @@ const KV_CHOICES = [
     { value: 'q4_0', label: 'Q4', hint: 'Q4 uses about half the memory of INT8, but is less precise on very long documents.' },
     { value: 'k8v4', label: 'K8 / V4', hint: 'K8 / V4 uses about a quarter less memory than INT8 and is more precise than Q4. Prompts are 2 to 5% slower.' },
 ];
+/**
+ * What a running job is doing, and nothing else: one line with the step, one small line with the numbers when there are any, a thin bar, and Stop as a
+ * plain word. A soft ring breathes beside the step (transform and opacity only; still under reduced motion). The bar fills with the real percent, or
+ * glides while no percent is known.
+ */
 export function NativeProgress({ job, label }: {
     job: NativeJob;
     label?: string;
-}) { const elapsed = useElapsed(job.startedAt, job.state === 'running'); const download = installProgress(job.result?.install); const detailsText = [job.details, job.result?.install?.engine?.details].filter(Boolean).join('\n'); const eta = useDownloadEta(job.kind === 'install' ? download : undefined, job.id); const [stopping, setStopping] = useState(false), [error, setError] = useState(''); async function stop() { setStopping(true); setError(''); try {
-    await nativeAction(`operations/${job.id}/cancel`);
+}) {
+    const download = installProgress(job.result?.install), detailsText = [job.details, job.result?.install?.engine?.details].filter(Boolean).join('\n');
+    const eta = useDownloadEta(job.kind === 'install' ? download : undefined, job.id);
+    const [stopping, setStopping] = useState(false), [error, setError] = useState('');
+    async function stop() { setStopping(true); setError(''); try {
+        await nativeAction(`operations/${job.id}/cancel`);
+    }
+    catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+    }
+    finally {
+        setStopping(false);
+    } }
+    const running = job.state === 'running', stoppable = ['install', 'load', 'pictures', 'autotune', 'recheck'].includes(job.kind);
+    const kindTitle = job.kind === 'install' ? (label ? tr('Preparing {0}', [label]) : 'Preparing your model') : job.kind === 'load' ? 'Loading model' : job.kind === 'pictures' ? 'Downloading the picture files' : job.kind === 'autotune' || job.kind === 'recheck' ? 'Tuning your model' : 'Engine operation';
+    const step = job.kind === 'install' ? (job.result?.install?.label ?? (download && /^5\//.test(job.result?.install?.step ?? '') ? stageText(installStage(job.result?.install)) : installStepLabel(job.result?.install?.step))) : job.summary;
+    const percent = download && Number.isFinite(download.percent) ? Math.max(0, Math.min(100, Number(download.percent))) : null;
+    const numbers = [percent !== null ? `${Math.round(percent)}%` : '', download && Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? `${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '', eta].filter(Boolean).join(' · ');
+    const words = tr(step || kindTitle);
+    return <section className="st-card native-progress" aria-live="polite" data-state={job.state}>
+        <div className="native-progress__row">
+            <span className="native-progress__ring" aria-hidden="true"/>
+            <div className="native-progress__text"><p className="native-progress__step">{words}</p>{numbers ? <p className="native-progress__numbers">{numbers}</p> : null}</div>
+            {stoppable && running ? <button type="button" className="native-progress__stop" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</button> : null}
+        </div>
+        {running ? <div className="native-progress__bar" role="progressbar" aria-label={words} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} data-indeterminate={percent === null || undefined}><i style={percent !== null ? { transform: `scaleX(${percent / 100})` } : undefined}/></div> : null}
+        <DownloadParts parts={job.result?.install?.parts}/>
+        {detailsText ? <details><summary className="small">{tr("Details")}</summary><pre className="small muted error-detail-text">{detailsText}</pre></details> : null}
+        {error ? <ErrorNotice message={error}/> : null}
+    </section>;
 }
-catch (e) {
-    setError(e instanceof Error ? e.message : String(e));
-}
-finally {
-    setStopping(false);
-} } return <section className="st-card native-progress" aria-live="polite" data-state={job.state}><div className="section-toolbar"><h2 className="h4">{tr(job.state === 'running' ? <span className="spinner native-progress__spin" aria-hidden="true"/> : null)}{tr(job.kind === 'install' ? (label ? tr('Preparing {0}', [label]) : 'Preparing your model') : job.kind === 'load' ? 'Loading model' : job.kind === 'autotune' || job.kind === 'recheck' ? 'Tuning your model' : 'Engine operation')}</h2>{tr(job.kind === 'install' || job.kind === 'load' || job.kind === 'autotune' || job.kind === 'recheck' ? <div className="onboard-progress-actions">{tr(eta ? <span className="small muted">{eta}</span> : null)}<Btn size="sm" disabled={stopping} onClick={() => void stop()}>{tr(stopping ? 'Stopping…' : 'Stop')}</Btn></div> : null)}</div><p className="small">{tr(job.kind === 'install' ? (job.result?.install?.label ?? (download && /^5\//.test(job.result?.install?.step ?? '') ? stageText(installStage(job.result?.install)) : installStepLabel(job.result?.install?.step))) : job.summary)}</p>{tr(job.state === 'running' && elapsed !== null && elapsed >= 5000 ? <p className="xs muted native-progress__alive" aria-hidden="true">{tr("Still working for {0}. You don't need to do anything.", [duration(elapsed)])}</p> : null)}{tr(download ? <><progress max={100} value={download.percent ?? 0}/><p className="xs muted">{tr(download.file === 'model files' ? 'Model files' : download.file === 'picture reader' ? 'Picture reader' : download.file === 'checking files' ? 'Checking files' : download.file === 'MTP draft layer' ? 'Draft layer' : download.file)} · {tr(download.percent ?? 0)}%{tr(Number.isFinite(download.done_gb) && Number.isFinite(download.total_gb) ? ` · ${download.done_gb!.toFixed(1)} / ${download.total_gb!.toFixed(1)} GB` : '')}</p></> : null)}<DownloadParts parts={job.result?.install?.parts}/>{tr(detailsText ? <details><summary className="small">{tr("Details")}</summary><pre className="small muted error-detail-text">{detailsText}</pre></details> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}</section>; }

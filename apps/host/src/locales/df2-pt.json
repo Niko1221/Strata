@@ -7,5 +7,12 @@
  "df06": "Previsão: MTP (o DFlash2 não está disponível nesta placa de vídeo)",
  "df07": "Não há ligação à internet, por isso não é possível transferir agora o rascunhador do DFlash2.",
  "df08": "SSD: não é necessário",
- "df09": "O DFlash2 responde a um pedido de cada vez, por isso o Strata configurou este modelo para um pedido de cada vez."
+ "df09": "O DFlash2 responde a um pedido de cada vez, por isso o Strata configurou este modelo para um pedido de cada vez.",
+ "df10": "Previsão: desativada (nenhum preditor foi baixado ainda)",
+ "df11": "Previsão: DFlash2 (o preditor do MTP ainda não foi baixado)",
+ "df12": "Escolher o DFlash2 baixa o preditor dele: cerca de {0} GB, uma vez.",
+ "df13": "Escolher o MTP baixa o preditor dele: cerca de {0} GB, uma vez.",
+ "df14": "Não foi possível baixar o preditor do DFlash2, então o modelo inicia sem preditor. Carregando o modelo…",
+ "df15": "Baixando o preditor do MTP…",
+ "df16": "Não foi possível baixar o preditor do MTP."
 }

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from strata_control import acquisition, drafting
+from strata_control.discovery import MTP_FETCH_GB
 
 
 def add_parser(sp) -> None:
@@ -48,8 +49,13 @@ def _inputs(a) -> dict:
             from strata_cli.launch.catalog import Catalog
             data = Catalog().data_dir()
     backend, archs = _hardware()
-    return {"mode": a.mode if a.mode else cfg.get("drafting"), "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
-            "backend": backend, "archs": archs}
+    args = cfg.get("args") or []
+    mode = a.mode if a.mode else cfg.get("drafting")
+    if cfg.get("mtp") is False and drafting.normalize(mode) == "auto":
+        mode = "off"                                         # the Draft layer switch is off and no drafter was chosen since
+    return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
+            "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
+            "blocked": drafting.blocked_by(args, slots=cfg.get("parallel") if isinstance(cfg.get("parallel"), int) else 0)}
 
 
 def run(a) -> int:
@@ -58,11 +64,14 @@ def run(a) -> int:
     want = _inputs(a)
     folder = want["data_dir"]
     needed = drafting.needs_pack(**want)
+    mtp_needed = drafting.needs_mtp(**want)
     if a.drafting_command == "plan":
         decision = drafting.decide(**want)
         support = drafting.hardware_support(want["backend"], want["archs"])
         # serves: this computer's engine can run DFlash2 (the build has the code and the card is one it is made for); the app offers the choice only then
-        result = {**drafting_fetch.plan(folder), "needed": needed, "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
+        result = {**drafting_fetch.plan(folder), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
+                  "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
+                  "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
                   "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
         if (a.config or a.mode) and not needed:           # asked about a model: nothing to download unless the choice uses the drafter
             result["gb"] = 0.0
