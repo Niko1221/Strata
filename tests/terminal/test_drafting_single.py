@@ -106,15 +106,31 @@ class EveryChoiceOnEveryBackend(Base):
                 self.assertNotIn("--draft", args, (family, mode))
                 self.assertEqual(loaded(args), {"mtp"}, (family, mode))
 
-    def test_a_layer_split_or_several_requests_load_the_mtp_alone_for_auto_and_dflash2(self):
+    def test_several_requests_load_the_mtp_alone_for_auto_and_dflash2(self):
         for mode in ("auto", "dflash2"):
-            for kw in ({"split": True}, {"slots": 4}):
-                d, args = self.apply(self.cfg(drafting=mode), **kw)
-                self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", drafting.NOT_HERE, {"mtp"}), (mode, kw))
-                self.assertFalse([a for a in args if a.startswith("--draft")])
-        for kw in ({"split": True}, {"slots": 4}):
-            d, args = self.apply(self.cfg(drafting="mtp"), **kw)
-            self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", "", {"mtp"}), kw)
+            d, args = self.apply(self.cfg(drafting=mode), slots=4)
+            self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", drafting.NOT_HERE, {"mtp"}), mode)
+            self.assertFalse([a for a in args if a.startswith("--draft")])
+        d, args = self.apply(self.cfg(drafting="mtp"), slots=4)
+        self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", "", {"mtp"}))
+
+    def test_a_layer_split_runs_dflash2_alone_like_one_card(self):
+        """Owner 2026-11-02: Auto is DFlash2 on a layer split over several cards too (the 0.1.56 engine runs it; paired decode 1.014 against the MTP)."""
+        for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1201"]), ("hip", ["gfx1100"])):
+            for mode in (None, "auto", "dflash2"):
+                cfg = self.cfg(**({} if mode is None else {"drafting": mode}))
+                one, args_one = self.apply(dict(cfg, args=list(cfg["args"])), "qwen", backend, archs)
+                two, args_two = self.apply(dict(cfg, args=list(cfg["args"])), "qwen", backend, archs, split=True)
+                self.assertEqual((two.drafter, two.note, loaded(args_two)), ("dflash2", "", {"dflash2"}), (backend, mode))
+                self.assertEqual(args_two, args_one, "the same arguments as one card")
+                self.assertNotIn("--mtp", args_two)
+            d, args = self.apply(self.cfg(drafting="mtp"), "qwen", backend, archs, split=True)
+            self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", "", {"mtp"}), backend)
+            self.assertFalse([a for a in args if a.startswith("--draft")])
+        # a saved argument list that already names the layer split changes nothing either
+        d, args = self.apply(self.cfg(args=[*self.args, "--layer-split", "auto"], drafting="auto"))
+        self.assertEqual((d.drafter, loaded(args)), ("dflash2", {"dflash2"}))
+        self.assertEqual(flag(args, "--layer-split"), "auto")
 
     def test_a_missing_file_runs_the_other_drafter_alone_and_says_so(self):
         (self.data / "dflash2" / drafting.PACK_NAME).unlink()
@@ -182,6 +198,49 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
                     self.assertNotIn("--mtp", args)
                 elif want == {"mtp"}:
                     self.assertFalse([a for a in args if a.startswith("--draft")])
+
+    def test_a_layer_split_through_the_server(self):
+        for backend, archs in (("cuda", ["sm_120"]), ("cuda", ["sm_86"]), ("hip", ["gfx1201"])):
+            for mode, want in ((None, {"dflash2"}), ("auto", {"dflash2"}), ("dflash2", {"dflash2"}), ("mtp", {"mtp"}), ("off", set())):
+                cfg = self.cfg(gpu=[0, 1], **({} if mode is None else {"drafting": mode}))
+                args = self.server_args(cfg, backend, archs)
+                where = (backend, archs, mode)
+                self.assertEqual(loaded(args), want, where)
+                self.assertIn("--layer-split", args, where)
+                if want == {"dflash2"}:
+                    self.assertEqual(flag(args, "--draft-fallback"), "none", where)
+                    self.assertNotIn("--mtp", args, where)
+                elif want == {"mtp"}:
+                    self.assertFalse([a for a in args if a.startswith("--draft")], where)
+
+    def test_a_layer_split_with_several_requests_is_the_mtp_alone(self):
+        for mode in ("auto", "dflash2"):
+            args = self.server_args(self.cfg(gpu=[0, 1], parallel=4, drafting=mode))
+            self.assertEqual(loaded(args), {"mtp"}, mode)
+            self.assertFalse([a for a in args if a.startswith("--draft")], mode)
+
+    def test_the_all_cards_split_engine_still_runs_its_mtp(self):
+        from tests.split import test_split_engine as TS
+        (Path(self.tmp.name) / "data").mkdir(exist_ok=True)
+        (Path(self.tmp.name) / "data" / "draft_vocab_en.bin").write_bytes(b"x")
+        for mode in (None, "auto", "mtp"):
+            cfg = {"exe": "component:strata-engine", "args": ["--pack", str(self.data / "packs" / "tag"), "--native", "/m/a-00001-of-00004.gguf", "--mtp", str(self.data / "mtp" / "rt"),
+                                                              "--max-context", "131072", "--layer-split", "auto"],
+                   "cwd": self.tmp.name, "tokenizer": "tok", "port": 8080, "gpu": [0, 1], "env": {}, "model_name": NAMES["qwen"]}
+            if mode:
+                cfg["drafting"] = mode
+            d = TS.S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None: "/e/strata-split-2", system="linux", probe=lambda idx: TS.cards(), ram=lambda: (125.0, 80.0),
+                                     scan=lambda path: TS.udq4())
+            self.assertTrue(d.use_split, (mode, d.reasons))
+            args = self.server_args(cfg)
+            self.assertEqual(loaded(args), {"mtp"}, mode)
+            self.assertNotIn("--draft", args, mode)          # (the split engine's own --draft-vocab is its draft head file, not the DFlash2 drafter)
+        cfg = {"exe": "component:strata-engine", "args": ["--pack", str(self.data / "packs" / "tag"), "--native", "/m/a-00001-of-00004.gguf", "--mtp", str(self.data / "mtp" / "rt"), "--layer-split", "auto"],
+               "cwd": self.tmp.name, "tokenizer": "tok", "port": 8080, "gpu": [0, 1], "env": {}, "drafting": "dflash2", "model_name": NAMES["qwen"]}
+        d = TS.S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None: "/e/strata-split-2", system="linux", probe=lambda idx: TS.cards(), ram=lambda: (125.0, 80.0),
+                                 scan=lambda path: TS.udq4())
+        self.assertFalse(d.use_split, "an explicit DFlash2 keeps the layer split, now with DFlash2")
+        self.assertEqual(loaded(self.server_args(cfg)), {"dflash2"})
 
     def test_deepseek_gets_no_drafter_arguments(self):
         cfg = {"model_name": "deepseek-v4.1-flash", "arch": "deepseek41", "args": ["--pack", "/d/ds", "--spec", "2"], "drafting": "dflash2"}
