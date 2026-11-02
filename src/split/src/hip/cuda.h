@@ -15,9 +15,10 @@ inline CUresult cuGetErrorString(CUresult e, const char** s) {
     return hipSuccess;
 }
 // a 32-bit write / wait on the stream (host memory the card maps). Two implementations, chosen once by FNX_HIP_MEMOP:
-//   native (default): hipStreamWriteValue32 / hipStreamWaitValue32, the runtime's own stream memory operations: 13 us for a cross-card
-//                     round trip on two R9700 (phaseA-tests/sfnx/RESULTS-HIP.md), against 20 us for kernels.
-//   kernel (FNX_HIP_MEMOP=kernel): a one-thread kernel writes the flag (after a system fence) or spins on it, in stream order.
+//   kernel (default): a one-thread kernel writes the flag (after a system fence) or spins on it, in stream order: 20 us for a cross-card round trip on
+//                     two R9700 (phaseA-tests/sfnx/RESULTS-HIP.md), repeatable in the engine.
+//   native (FNX_HIP_MEMOP=native): hipStreamWriteValue32 / hipStreamWaitValue32, the runtime's own stream memory operations: 13 us, but not reliable
+//                     in the engine's multi-stream use (answers varied from start to start).
 // A wait that does not see its value within ~4 s sets bit 1 of nothing and returns (the engine's ring error check then catches the sum).
 #include <cstdlib>
 #include <cstring>
@@ -35,7 +36,9 @@ static __global__ void fnx_memop_wait(volatile unsigned* p, unsigned v) {
     __threadfence_system();
 }
 inline bool fnx_native_memops() {
-    static const bool native = [] { const char* e = std::getenv("FNX_HIP_MEMOP"); return !(e && !std::strcmp(e, "kernel")); }();
+    // default: kernels (see the comment above). With the runtime's native stream memory ops the prompt path's text varied from start to start on 4 cards
+    // (3 distinct outputs of 5 at 26K tokens); with kernel flags it did not (5 of 5 identical, same speed)
+    static const bool native = [] { const char* e = std::getenv("FNX_HIP_MEMOP"); return e && !std::strcmp(e, "native"); }();
     return native;
 }
 inline CUresult cuStreamWriteValue32(CUstream s, CUdeviceptr p, uint32_t v, unsigned flags) {
