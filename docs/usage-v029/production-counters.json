@@ -1,0 +1,20 @@
+{
+  "captured_at_utc": "2026-11-02T11:06:10.017919+00:00",
+  "source": "read-only snapshot of existing production ledger; not the proposed v0.2.9 port",
+  "tracked_since": 1792260287.0659738,
+  "lifetime": {
+    "requests": 15307,
+    "prompt_tokens": 1923713023,
+    "reused": 1898672411,
+    "output_tokens": 15624110,
+    "prompt_ms": 27999526.90000003,
+    "decode_ms": 163242028.5999996,
+    "drafts_offered": 13740147,
+    "drafts_accepted": 9458404
+  },
+  "imported": {
+    "requests": 8530,
+    "output_tokens": 6396046
+  },
+  "privacy": "Allowlisted aggregate counters only; hourly/daily buckets, local paths, model names, requests, prompts, answers and credentials omitted."
+}

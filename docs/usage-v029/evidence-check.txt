@@ -1,0 +1,1 @@
+{"output_total": 22020156, "requests_total": 23837, "newly_read_prompt_tokens": 25040612, "aggregate_roundtrip_preserved": true, "date_buckets_included": false}

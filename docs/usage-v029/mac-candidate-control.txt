@@ -1,0 +1,15 @@
+test_every_card_off (serve.test_gpu_roles_server.Roles.test_every_card_off) ... FAIL
+
+======================================================================
+FAIL: test_every_card_off (serve.test_gpu_roles_server.Roles.test_every_card_off)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<HOME>/GIT/Strata-usage-stats-main-20261102/serve/test_gpu_roles_server.py", line 55, in test_every_card_off
+    with self.assertRaises(SystemExit) as e:
+         ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+AssertionError: SystemExit not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (failures=1)
