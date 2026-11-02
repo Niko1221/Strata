@@ -49,11 +49,19 @@ set (the Coder repository has a copy of it under another name, which setup does 
 `kept_experts[L][j]` of the base model - the repository's `expert-selection/…-kept-experts.json` lists the 192 ids for each of the 40 layers - which is
 what makes its pack different from a 2.00 pack: the two are not interchangeable.
 Their model card (reasoning effort 50) says SWE-bench Verified 77.00 against the base model's 81.20, and LiveCodeBench v6 88.57 against 89.71 - 94.8%
-and 98.7% of the base, and 98.7% of the base model's task average. **We have not run this set on Strata**: the perplexity and tokens/s figures on this
-page are the three unpruned sets only, and the Coder is marked "not run here yet" in setup and in `strata launch`.
+and 98.7% of the base, and 98.7% of the base model's task average. **We installed it and asked it one thing; we have not benchmarked it.** On 2x RTX 3090
+with 121 GB of RAM and engine 0.1.55 the download, the pack and the load all work (`ready` 43 s after starting with both cards free, 37.9 GB of CPU-lane
+experts copied into RAM in 16.2 s), and a code question came back as plausible Python - 59 prompt tokens read in 1.7 s, and `300 generated in 11870 ms
+(25.27 tok/s)` of target-model steps for a 600-token answer, the drafter keeping 127 of its 187 drafts and the CPU lane reading 27.7% of the experts. The
+perplexity and tokens/s figures elsewhere on this page are the three unpruned sets only: the Coder has no perplexity and no benchmark of our own, and that
+is why setup and `strata launch` still mark it "not run by us yet". Its tests were not run.
 Half the experts also means nothing shipped to warm them up: the hot-expert profiles in `data/dsv41/` are keyed by (layer, expert) of the full 384, so
-setup copies none of them into a Coder pack and says so - the first run starts with nothing cached and learns a profile as you use it.
+setup copies none of them into a Coder pack and says so - the first run starts with nothing cached and learns a profile as you use it (that first run here
+wrote a table of its own, 33,024 bytes: 43 rows of one number per expert of this set, where the shipped ones are 43 rows of 384).
 Like the other sets, the Coder is not offered on an Apple Silicon Mac or a Ryzen AI Max box until one is run there.
+One thing to know when you ask it anything: ISTA's sets carry DeepSeek's own chat template, whose effort words are `low`, `high` and `max` (or a number from
+1 to 100), so until [open PR #4327](https://github.com/Niko1221/Strata/pull/4327) lands a request for `medium` - the level the app and the agent
+integrations use by default - fails with `Invalid reasoning effort: medium`. `high` is the template's own default.
 
 **Two layouts of the same sets.** Setup downloads the four-shard files (`...-0000N-of-00004.gguf`, the Hugging Face revision `cb02422c`). On 27 October 2026
 ISTA-DASLab re-split the three sets: five shards each (`...-0000N-of-00006.gguf`; shard 1 is 5.8 MB of metadata and has no tensors) and the Engram file as the
