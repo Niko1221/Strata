@@ -1568,6 +1568,7 @@ class Runner:
         self.say_remembered_cards(base)
         self.apply_four_card(cfg)
         self.use_own_dsv41_engine(cfg)
+        self.apply_split_engine(cfg)
         self.gate_parallel(cfg)
         apply_experts(cfg, self.experts_flag(cfg.get("exe")))   # after the engine is settled: only a 0.1.50+ engine is given --experts
         wait = self.start_wait()
@@ -1577,6 +1578,34 @@ class Runner:
         write_private(out, cfg)
         self.config_path = out
         return out
+
+    def apply_split_engine(self, cfg: dict) -> None:
+        """The opt-in all-cards split engine (docs/SPLIT_ENGINE.md): only when the run config says "split_engine": true (or a tester sets
+        STRATA_SPLIT_ENGINE=1), only for a Qwen model on this PC's NVIDIA cards that passes strata_control/split_engine.py's rule. Anything
+        else leaves the config as it is, with one plain line when the person had asked for it. It never stops a launch."""
+        from strata_control import split_engine as SE
+        if cfg.get("arch") == "deepseek41" or not SE.wanted(cfg):
+            return
+        from strata_control import engine_component as EC
+
+        def exe_for(n: int):
+            exe = cfg.get("exe")
+            try:
+                real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
+            except Exception:                                # noqa: BLE001 - no engine to look beside: no split
+                return None
+            p = Path(str(real)).parent / f"strata-split-{n}"
+            return str(p) if p.is_file() else None
+
+        try:
+            decision = SE.apply_to_config(cfg, exe_for_cards=exe_for, allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1")
+        except Exception as e:                               # noqa: BLE001 - never stop a launch over an option
+            text = f"The all-cards split engine was left out ({type(e).__name__}). Using the normal layer split."
+            self.notices.append(text)
+            self.emit("config", text, None, level="warn")
+            return
+        self.notices.append(decision.line)
+        self.emit("config", decision.line, None)
 
     def say_remembered_cards(self, base: dict) -> None:
         """A launch that names no cards keeps the cards the person chose earlier (`--gpu 0` is remembered by the model's settings).  On a PC with more

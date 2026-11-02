@@ -2938,3 +2938,10 @@ if(STRATA_BUILD_DSV41 AND NOT STRATA_ENABLE_CUDA AND NOT STRATA_ENABLE_HIP AND N
     target_compile_definitions(ds4_gg_bench PRIVATE STRATA_DSV41_TQ_CPU=1)
   endif()
 endif()
+
+# ---- strata-split: the opt-in engine that splits every layer across 2-4 NVIDIA cards (src/split, from sFNX, MIT, John Fink) ----
+# OFF by default, Linux + CUDA only, no other target depends on it; see src/split/CMakeLists.txt and docs/SPLIT_ENGINE.md.
+option(STRATA_BUILD_SPLIT "Build strata-split: sFNX's split-every-layer engine, host-memory exchange (Linux, CUDA, 2-4 cards)" OFF)
+if(STRATA_BUILD_SPLIT)
+  add_subdirectory(src/split)
+endif()
