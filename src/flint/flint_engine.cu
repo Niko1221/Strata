@@ -496,7 +496,7 @@ struct Engine {
                              CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
     }
 
-    void layer(const Layer& L, size_t li, int T, int64_t p0) {
+    void layer(const Layer& L, size_t li, int T, int64_t p0, bool graph_mode = false) {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         const int H = (int) g.n_head, HKV = (int) g.n_head_kv, HD = (int) g.head_dim;
@@ -576,7 +576,8 @@ struct Engine {
             }
         } else {
             // Split-K FlashAttention for decode (T <= 8)
-            const int nc = std::min<int>(n_chunk, (int) (p0 + T + kChunkCells - 1) / kChunkCells);
+            const int nc = graph_mode ? n_chunk
+                                      : std::min<int>(n_chunk, (int) (p0 + T + kChunkCells - 1) / kChunkCells);
             flintk::k_flint_attn_part<<<dim3(nc, T * H), kChunkCells, 0, st>>>(
                 q, kc[li], vc[li], pos0, 0, H, HKV, ctx,
                 1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, L.sinks, m->sliding_window, kv_resident);
@@ -637,15 +638,40 @@ struct Engine {
         }
     }
 
-    void forward(int T, int64_t p0, int heads) {
+    void forward(int T, int64_t p0, int heads, bool graph_mode = false) {
         const int N = (int) m->g.n_embd;
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
         flintk::k_add_rms<<<T, kThreads, 0, st>>>(x, x, m->layers[0].attn_norm, h, N, m->eps);
         for (size_t l = 0; l < m->layers.size(); ++l) {
-            layer(m->layers[l], l, T, p0);
+            layer(m->layers[l], l, T, p0, graph_mode);
         }
         if (heads > 0) {
             mm(m->head, h + (size_t) (T - heads) * N, logits, heads);
+        }
+    }
+
+    template <class F>
+    void graph_run(cudaGraphExec_t& gx, F body) {
+        if (!use_graph) { body(); return; }
+        if (!gx) {
+            cudaGraph_t graph = nullptr;
+            CK(cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal));
+            body();
+            CK(cudaStreamEndCapture(st, &graph));
+            CK(cudaGraphInstantiate(&gx, graph, 0));
+            CK(cudaGraphDestroy(graph));
+        }
+        CK(cudaGraphLaunch(gx, st));
+    }
+
+    void decode_step() {
+        graph_run(g1, [&] { forward(1, pos, 1, true); });
+    }
+
+    void reset_graph() {
+        if (g1) {
+            CK(cudaGraphExecDestroy(g1));
+            g1 = nullptr;
         }
     }
 };
@@ -867,13 +893,13 @@ void serve(Engine& E, const Model& m) {
             int generated = 1;
             const char* finish = "length";
             while (generated < r.max_new && E.pos < E.ctx) {
-                CK(cudaMemcpy(E.tok, &next_tok, sizeof(int32_t), cudaMemcpyHostToDevice));
-                CK(cudaMemcpy(E.pos0, &E.pos, sizeof(int32_t), cudaMemcpyHostToDevice));
-                E.forward(1, E.pos, 1);
+                CK(cudaMemcpyAsync(E.tok, &next_tok, sizeof(int32_t), cudaMemcpyHostToDevice, E.st));
+                CK(cudaMemcpyAsync(E.pos0, &E.pos, sizeof(int32_t), cudaMemcpyHostToDevice, E.st));
+                E.decode_step();
+                CK(cudaMemcpyAsync(lg.data(), E.logits, m.g.n_vocab * sizeof(float), cudaMemcpyDeviceToHost, E.st));
                 CK(cudaStreamSynchronize(E.st));
                 E.pos++;
 
-                CK(cudaMemcpy(lg.data(), E.logits, m.g.n_vocab * sizeof(float), cudaMemcpyDeviceToHost));
                 next_tok = sample_logits(lg, r.sampling, hist, rng);
                 hist.push_back(next_tok);
                 std::printf("T %d\n", next_tok);
@@ -900,6 +926,7 @@ int run(int argc, char** argv) {
     int chunk = 1024;
     double expert_vram = -1.0;
     bool serve_mode = false;
+    bool use_graph = true;
     std::vector<int32_t> test_tokens;
     int max_new = 32;
     float margin = 1.0f;
@@ -919,6 +946,8 @@ int run(int argc, char** argv) {
             if (i + 1 < argc) expert_vram = std::atof(argv[++i]);
         } else if (a == "--serve") {
             serve_mode = true;
+        } else if (a == "--no-graph") {
+            use_graph = false;
         } else if (a == "--tokens") {
             if (i + 1 < argc) {
                 std::stringstream ss(argv[++i]);
@@ -961,6 +990,7 @@ int run(int argc, char** argv) {
 
     Engine engine;
     engine.margin = margin;
+    engine.use_graph = use_graph;
     engine.allocate(model, max_context, chunk, kv_resident);
 
     if (!place_experts(model, engine, expert_vram, err)) {
@@ -1003,15 +1033,16 @@ int run(int argc, char** argv) {
     int next_tok = sample_logits(lg, sampling, hist, rng);
     hist.push_back(next_tok);
 
-    std::fprintf(stderr, "strata-flint: decoding %d tokens...\n", max_new);
+    std::fprintf(stderr, "strata-flint: decoding %d tokens (CUDA Graph=%s)...\n",
+                 max_new, engine.use_graph ? "ON" : "OFF");
     const auto t_dec = Clock::now();
     for (int gen = 0; gen < max_new; ++gen) {
-        CK(cudaMemcpy(engine.tok, &next_tok, sizeof(int32_t), cudaMemcpyHostToDevice));
-        CK(cudaMemcpy(engine.pos0, &engine.pos, sizeof(int32_t), cudaMemcpyHostToDevice));
-        engine.forward(1, engine.pos, 1);
+        CK(cudaMemcpyAsync(engine.tok, &next_tok, sizeof(int32_t), cudaMemcpyHostToDevice, engine.st));
+        CK(cudaMemcpyAsync(engine.pos0, &engine.pos, sizeof(int32_t), cudaMemcpyHostToDevice, engine.st));
+        engine.decode_step();
+        CK(cudaMemcpyAsync(lg.data(), engine.logits, model.g.n_vocab * sizeof(float), cudaMemcpyDeviceToHost, engine.st));
         CK(cudaStreamSynchronize(engine.st));
         engine.pos++;
-        CK(cudaMemcpy(lg.data(), engine.logits, model.g.n_vocab * sizeof(float), cudaMemcpyDeviceToHost));
         next_tok = sample_logits(lg, sampling, hist, rng);
         hist.push_back(next_tok);
         std::printf("%d ", next_tok);
