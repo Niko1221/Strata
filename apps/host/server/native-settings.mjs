@@ -87,9 +87,9 @@ export function setSpeedSwitch(env,id,on){
 export function speedSwitchRows(env,context){return SPEED_SWITCHES.filter(s=>speedSwitchApplies(s.id,context)).map(s=>({...s,on:speedSwitchIsOn(env,s.id)}));}
 /** Settings the app itself applies when it starts a model (they are not read from the engine's source, so the engine's text never says it supports them). */
 export const APP_OWNED_FIELDS=['mtp','batchMtp','drafting','ds_experts'];
-/** The families that have a Drafting choice and the model names the DFlash2 drafter was made for (strata_control/drafting.py SUPPORTED_FAMILIES, _SUPPORTED_NAME). */
-export const DRAFTING_FAMILIES=['qwen','gyro'];
-const DFLASH2_MODEL=/^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$/i;
+/** The families that have a Drafting choice and the model names the DFlash2 drafter was made for (strata_control/drafting.py SUPPORTED_FAMILIES, _SUPPORTED_NAME): Qwen3.8-Flash-Next, Gyro and Unsloth's quantizations of the same weights; not Swift, Coder or NVFP4. */
+export const DRAFTING_FAMILIES=['qwen','gyro','unsloth'];
+const DFLASH2_MODEL=/^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$/i;
 /** The drafter a choice means (one per run; strata_control/drafting.py choice_of): Auto is DFlash2 where the engine has it (`served`, Control's word) and the model is one it was made for, else the MTP; off and mtp are what they say. `model` is a run config's model name or a family. */
 export function resolveDrafter(choice,model,served){
  const c=String(choice??'auto').toLowerCase();if(c==='off'||c==='mtp')return c;

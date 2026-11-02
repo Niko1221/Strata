@@ -9,11 +9,11 @@ strata_control/draft_layer.py), so a setup run that rewrites the engine argument
 ``--draft dflash2``) starts with the one chosen.
 
   dflash2  ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf 0.35`` and no ``--mtp``: the DFlash2
-           block drafter (incoai/Qwen3.8-Flash-Next-DFlash2, Q4_0 pack) for Qwen3.8-Flash-Next and Gyro, with the window and confidence that measured best
+           block drafter (incoai/Qwen3.8-Flash-Next-DFlash2, Q4_0 pack) for Qwen3.8-Flash-Next, Gyro and Unsloth's quantizations, with the window and confidence that measured best
            (RESULTS-DRAFT.md section 4); a ``--spec`` or ``--draft-conf`` the person set by hand (``user_args``) stays
   mtp      the model's own draft layer (``--mtp <folder>``) and none of the DFlash2 flags
   off      no draft layer and no DFlash2 (the same as ``"mtp": false``: the engine still looks ahead in the text with ``--spec``)
-  auto     DFlash2 wherever the engine has it (DFLASH2_BACKENDS) and the model is Qwen3.8-Flash-Next or Gyro, the MTP everywhere else
+  auto     DFlash2 wherever the engine has it (DFLASH2_BACKENDS) and the model is Qwen3.8-Flash-Next, Gyro or an Unsloth quantization, the MTP everywhere else
 
 Recommend, never force: a choice that cannot be applied (DFlash2 in a layer split or with several requests at once, no drafter file yet) does not stop the
 start. The other drafter runs if it is on this computer, else none, and ``Decision.note`` says why in one short line. Nothing is loaded twice and the
@@ -227,9 +227,14 @@ SLOT_BASE_MIB = 3800         # dense weights and the engine's fixed buffers beyo
 SLOT_RESERVE_MIB = 700       # the engine's default --vram-reserve-mib
 DEFAULT_CONTEXT = 131072     # --max-context when the arguments name none (the 128K default)
 
-#: model families (strata launch --family) the drafter was trained for and measured on: Qwen3.8-Flash-Next and its Gyro build.
-SUPPORTED_FAMILIES = ("qwen", "gyro")
-_SUPPORTED_NAME = re.compile(r"^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$", re.IGNORECASE)
+#: model families (strata launch --family) the drafter was trained for and measured on: Qwen3.8-Flash-Next, its Gyro build and Unsloth's quantizations of the same weights
+#: (UD-IQ4_XS, UD-Q4_K_XL...; DFlash2 numbers measured on UD-Q4_K_XL on Strix, R9700 and M5 Max). Not Swift (UkisAI's fine-tune), Coder (ISTA-DASLab's coding version) or NVFP4:
+#: no DFlash2 acceptance numbers for them, they start the MTP.
+SUPPORTED_FAMILIES = ("qwen", "gyro", "unsloth")
+#: The model_name setup.py (and metal/setup_mac.py) write: f"{family name}-{model.lower()}": qwen3.8-flash-next-iq3_s, qwen3.8-flash-next-gyro-gyro-s,
+#: qwen3.8-flash-next-unsloth-ud-q4_k_xl. (Coder is qwen3.8-flash-next-coder-iq1_m, NVFP4 qwen3.8-flash-next-nvfp4-nvfp4: neither matches.) Mirrored in
+#: apps/host/server/native-settings.mjs; tests/drafting.test.mjs keeps the two the same.
+_SUPPORTED_NAME = re.compile(r"^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$", re.IGNORECASE)
 
 
 def supported_model(model_name: str | None = None, family: str | None = None) -> bool:
@@ -621,7 +626,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     `engine` is the engine program that will start (None: not known, the usual flags): an engine that only takes `--mtp DIR` for the vocabulary gets that
     (still without the MTP layer), and an engine without `--draft-fallback` gets no DFlash2 flag at all (the MTP, said in one line)."""
     args = [str(a) for a in cfg.get("args") or []]
-    if not supported_model(cfg.get("model_name"), family):    # another model: its drafting is not this choice's business (DeepSeek, Swift, Coder, Qwen3.6, Unsloth...)
+    if not supported_model(cfg.get("model_name"), family):    # another model: its drafting is not this choice's business (DeepSeek, Swift, Coder, NVFP4, Qwen3.6...)
         asked = normalize(cfg.get("drafting"))
         if asked == "dflash2":
             cfg["args"] = strip_draft_flags(args)
