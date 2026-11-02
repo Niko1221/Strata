@@ -100,6 +100,38 @@ export function mainResult(files: Deliverable[] | undefined, answer: string): De
   return shown.reduce((best, f) => ((f.order ?? 0) >= (best.order ?? 0) ? f : best));
 }
 
+/** Past this many files a run's results are one compact summary (the two folders and a count that opens the list) instead of one card per file. */
+export const COMPACT_FILES_FROM = 6;
+
+/** The folder part of a path inside the chat's folder, with forward slashes ('' for a file that sits directly in it). */
+export const dirOf = (path: string): string => { const parts = path.replace(/\\/g, '/').split('/').filter(Boolean); parts.pop(); return parts.join('/'); };
+
+/**
+ * The folder a run delivered to, relative to the chat's folder ('' means the chat's folder itself): the folder of the run's main result (the file the
+ * answer names, else the one written last); with no previewable result, the top-level folder that holds the most files. A tie goes to the folder written to last.
+ */
+export function deliveryFolder(files: Deliverable[] | undefined, answer: string): string {
+  const list = files ?? [];
+  const main = mainResult(list, answer);
+  if (main) return dirOf(main.path);
+  const counts = new Map<string, { n: number; last: number }>();
+  for (const f of list) {
+    const top = dirOf(f.path).split('/')[0] ?? '';
+    const c = counts.get(top) ?? { n: 0, last: 0 };
+    counts.set(top, { n: c.n + 1, last: Math.max(c.last, f.order ?? 0) });
+  }
+  let best = '', at: { n: number; last: number } | null = null;
+  for (const [dir, c] of counts) if (!at || c.n > at.n || (c.n === at.n && c.last > at.last)) { best = dir; at = c; }
+  return best;
+}
+
+/** The chat's folder on disk, worked out from a file's absolute and relative paths (for a host that does not say it). */
+export function rootOf(file: { abs: string; path: string } | undefined): string {
+  if (!file) return '';
+  const abs = file.abs.replace(/\\/g, '/'), rel = file.path.replace(/\\/g, '/').replace(/^\.?\//, '');
+  return abs.endsWith('/' + rel) ? abs.slice(0, abs.length - rel.length - 1) : '';
+}
+
 export const fileTypeLabel = (d: { kind: DeliverableKind; name: string }) => {
   const ext = d.name.includes('.') ? d.name.split('.').at(-1)!.toUpperCase() : '';
   return d.kind === 'markdown' ? 'MD' : d.kind === 'html' ? 'HTML' : d.kind === 'csv' ? 'CSV' : d.kind === 'pdf' ? 'PDF' : ext && ext.length <= 10 ? ext : d.kind.toUpperCase();

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { tr } from '../lib/i18n';
-import { fileAction, fileSize, fileTypeLabel, previewOf, rawUrlOf, type ActivityGroup, type Deliverable } from '../lib/deliverables';
+import { deliveryFolder, dirOf, fileAction, fileSize, fileTypeLabel, previewOf, rawUrlOf, rootOf, type ActivityGroup, type Deliverable } from '../lib/deliverables';
+import { useChatFolder } from '../lib/chat-folder';
 import type { PreviewArtifact } from '../lib/artifacts';
 import { draftSize, groupFromDraft } from '../lib/draft-view';
 import type { ToolDraft } from '../lib/types';
@@ -57,6 +58,35 @@ export function EditedFiles({ files, sessionId, onPreview }: { files: Deliverabl
     {shown.map(f => <button type="button" className="edited__row" key={f.path} onClick={() => void showOf(f, sessionId, onPreview, f.kind)}><Icon name="file" size={16}/><span>{f.name}</span><Plusminus added={f.added} removed={f.removed}/></button>)}
     <button type="button" className="edited__row edited__row--all" disabled={textual.length <= 3 && !all} onClick={() => setAll(v => !v)}><span>{tr(all ? 'Show fewer' : 'See all')}</span><Plusminus added={added} removed={removed}/></button>
   </div>;
+}
+
+/**
+ * A run that made many files (379 after one stopped agent run) as one compact block instead of a card per file: where the result was delivered, the folder the
+ * chat works in, and the count ("379 files") that opens the full list. The list is closed by default, scrolls inside the block, and every row is a button.
+ */
+export function FilesSummary({ files, answer, sessionId, onPreview }: { files: Deliverable[]; answer: string; sessionId: string; onPreview: (a: PreviewArtifact) => void }) {
+  const [open, setOpen] = useState(false), id = useId(), folder = useChatFolder(sessionId);
+  const delivery = deliveryFolder(files, answer);
+  const rootPath = folder?.path ?? rootOf(files[0]), rootName = folder?.name ?? (rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? '');
+  const added = files.reduce((n, f) => n + f.added, 0), removed = files.reduce((n, f) => n + f.removed, 0);
+  const openFolder = (path: string) => void fileAction.open(sessionId, path, 'app').catch(err => problem('The folder was not opened', err));
+  const places: { key: string; label: string; name: string; full: string; open: string }[] = [];
+  if (delivery) places.push({ key: 'delivered', label: 'Delivered to', name: delivery, full: rootPath ? `${rootPath}/${delivery}` : delivery, open: delivery });
+  if (rootPath) places.push({ key: 'working', label: delivery ? 'Working folder' : 'Delivered to', name: rootName, full: rootPath, open: rootPath });
+  return <section className="fsum" aria-label={tr("Files")}>
+    {places.length ? <ul className="fsum__places">{places.map(p => <li key={p.key}>
+      <Icon name="folder" size={16}/><span className="fsum__label">{tr(p.label)}</span><span className="fsum__name" title={p.full}>{p.name}</span>
+      <button type="button" className="fsum__open" aria-label={tr("Open {0}", [p.name])} onClick={() => openFolder(p.open)}>{tr("Open")}</button>
+    </li>)}</ul> : null}
+    <button type="button" className="fsum__toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen(v => !v)}>
+      <Icon name="chevron" size={14} className="fsum__chev"/><span>{tr('{0} files', [files.length.toLocaleString()])}</span>{added || removed ? <Plusminus added={added} removed={removed}/> : null}
+    </button>
+    {open ? <ul className="fsum__list" id={id}>{files.map(f => { const dir = dirOf(f.path); return <li key={f.path}>
+      <button type="button" className="fsum__file" title={f.path} onClick={() => void showOf(f, sessionId, onPreview, f.kind)}>
+        <span className="fsum__type">{fileTypeLabel(f)}</span><span className="fsum__fname">{f.name}</span>{dir ? <span className="fsum__dir">{dir}</span> : null}<span className="fsum__size">{fileSize(f.size)}</span>
+      </button>
+    </li>; })}</ul> : null}
+  </section>;
 }
 
 /**

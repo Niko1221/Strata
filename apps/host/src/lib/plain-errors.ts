@@ -11,7 +11,7 @@ export interface PlainFailure { message: string; next?: string; detail?: string;
 interface Rule { kind: string; match: RegExp; message: string | ((m: RegExpMatchArray) => string); next?: string; detail?: (m: RegExpMatchArray, raw: string) => string | undefined }
 
 const MEMORY = 'The model stopped while starting, most likely because the PC ran low on memory.';
-const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% for my work”. In Expert mode you can also turn on the low-RAM option, so part of the model is read from the SSD.';
+const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave room for my work”. In Expert mode you can also turn on the low-RAM option, so part of the model is read from the SSD.';
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [

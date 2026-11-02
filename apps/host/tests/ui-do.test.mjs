@@ -172,15 +172,19 @@ test('#4721 only a website goes to the browser; a file keeps the side panel', as
 });
 
 // ---------------------------------------------------------------------------------------------------------------------- #4802
-test('#4802 the progress card has its own surface, a spinner and a clock while it runs, and a sentence about the buttons', () => {
+test('#4802 / GUI-FB2 item 3: the progress card shows the step and the numbers only, with Stop as a plain word', () => {
   const models = src('components/NativeModels.tsx');
-  assert.match(models, /className="spinner native-progress__spin"/);
-  assert.match(models, /Still working for \{0\}\. You don't need to do anything\./);
-  assert.match(models, /The buttons below wait until this finishes\./);
-  assert.match(models, /useElapsed\(job\.startedAt, job\.state === 'running'\)/);
+  assert.match(models, /className="native-progress__ring"/, 'a soft ring beside the step, no spinner box');
+  assert.match(models, /className="native-progress__stop"/, 'Stop is a text button');
+  assert.doesNotMatch(models, /Still working for/, 'no clock sentence');
+  assert.doesNotMatch(models, /The buttons below wait until this finishes/, 'no sentence about the buttons');
+  assert.doesNotMatch(models, /native-wait-note/);
+  assert.match(models, /role="progressbar"/, 'the bar says its value to a screen reader');
   const css = src('styles/app.css');
-  assert.match(css, /\.native-progress \{ border: 1\.5px solid var\(--st-accent\);/);
-  assert.match(css, /prefers-reduced-motion: reduce\) \{ \.native-progress__spin \{ animation: none/);
+  assert.match(css, /\.native-progress__bar > i \{[^}]*transform: scaleX\(0\)/, 'the bar fills by transform, not by layout');
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.native-progress__ring/, 'reduced motion holds the ring and the bar still');
+  assert.match(css, /html\[data-motion='reduced'\] \.native-progress__ring/);
+  assert.match(css, /\.native-progress__stop \{[^}]*border: 0; background: transparent;/);
 });
 
 test('#4802 the elapsed time is counted from the job start and never goes below zero', async () => {
@@ -190,13 +194,12 @@ test('#4802 the elapsed time is counted from the job start and never goes below 
   assert.match(hook, /return \(\) => clearInterval\(timer\)/);
 });
 
-test('#4802 the new sentences are translated', async () => {
+test('#4802 the progress card has no new sentence of its own: Stop and Stopping are translated', async () => {
   const { tr, setTranslationLanguage } = await withI18n('approvals.ts');
   for (const l of languages.slice(1)) {
     setTranslationLanguage(l);
-    assert.notEqual(tr('The buttons below wait until this finishes.'), 'The buttons below wait until this finishes.', l);
-    const text = tr("Still working for {0}. You don't need to do anything.", ['3m 12s']);
-    assert.ok(text.includes('3m 12s') && text !== "Still working for 3m 12s. You don't need to do anything.", `${l}: ${text}`);
+    assert.notEqual(tr('Stop'), 'Stop', l);
+    assert.notEqual(tr('Stopping…'), 'Stopping…', l);
   }
   setTranslationLanguage('en');
 });

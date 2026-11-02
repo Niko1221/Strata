@@ -41,9 +41,13 @@ test('item 5: during a goal the chat follows the Monitor even though the engine 
   assert.equal(idle.speed, 41); assert.notEqual(idle.used, 1);
 });
 
-test('item 10: the status line has fixed columns, so the word changing length moves nothing', async () => {
+test('item 10 / GUI-FB2 item 7: the status line is a wrapping flex row with no fixed widths, so a long time or count never runs into its neighbour', async () => {
   const css = await read('styles/app.css'), line = await read('components/StatusLine.tsx');
-  assert.match(css, /\.live-status \{ display: grid; grid-template-columns: 14px minmax\(0, 24ch\) 6ch/);
+  assert.match(css, /\.live-status \{ display: flex; flex-wrap: wrap;/);
+  assert.doesNotMatch(css, /\.live-status \{[^}]*grid-template-columns/);
+  assert.doesNotMatch(css, /\.live-status[^{]*\{[^}]*\b6ch\b/, 'no fixed column for the time');
+  assert.match(css, /\.live-status__verb \{ flex: 0 1 24ch; min-width: 0;/, 'the word gives way first');
+  assert.match(css, /\.live-status__time, \.live-status__tokens \{ flex: none; font-variant-numeric: tabular-nums/);
   assert.match(css, /\.live-status__time, \.live-status__tokens \{ font-variant-numeric: tabular-nums/);
   assert.match(line, /live-status__verb/); assert.match(line, /live-status__time/); assert.match(line, /live-status__tokens/);
 });

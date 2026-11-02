@@ -80,10 +80,12 @@ function pictureLoad(body){
  posted.push({kind:body.kind,args:body.args});
  const family=native.catalog.families.find(f=>f.family==='qwen'),size=family.sizes.find(s=>s.id===body.args.model),id=`pictures-${native.jobs.length}`;
  const bar=percent=>({install:{download:{file:'picture reader',percent,done_gb:0.9*percent/100,total_gb:0.9,remaining_gb:0.9*(100-percent)/100}}});
- const done=(vision,note)=>{const j=native.jobs.find(x=>x.id===id);Object.assign(j,{state:'done',summary:`${family.title} is ready.`,result:null});
+ const done=(vision,note)=>{const j=native.jobs.find(x=>x.id===id);if(flip){family.sizes.forEach(x=>{x.images=true;});native.visionReader=true;native.installed.models[0].visionEnabled=true;}Object.assign(j,{state:'done',summary:`${family.title} is ready.`,result:null});
   if(vision){native.installed.models[0].images='yes';native.installed.models[0].visionPrepared=true;}
   if(body.kind==='load'){native.instances=[{id:'onboarding-model',apiModelId:size.id,model:size.id,label:family.title,aliases:[],vision,context:131072,port:5262,gpus:[0],status:'ready',phase:'idle',loadedAt:new Date().toISOString(),error:null,metrics:null,...(note?{picturesNote:note}:{})}];native.defaultId='onboarding-model';}};
- const online=picturesScenario==='online';
+ const flip=picturesScenario==='flip',online=picturesScenario==='online'||flip;
+ /* flip: what the host can report while it is busy with the load (the reader probe drops out, the saved choice reads as off for a moment): the page must not follow it */
+ if(flip){family.sizes.forEach(x=>{x.imagesCapable=true;x.images=false;});native.visionReader=false;native.installed.models[0].visionEnabled=false;native.installed.models[0].visionPrepared=true;native.installed.models[0].images='off';}
  native.jobs.push({id,kind:body.kind,model:body.args.model,state:'running',startedAt:new Date().toISOString(),summary:online?'Downloading the picture files (0.9 GB, once)…':'Downloading the picture files (0.9 GB, once)…',error:null,result:bar(0)});
  const at=(ms,action)=>setTimeout(()=>{const j=native.jobs.find(x=>x.id===id);if(j?.state==='running')action(j);},ms).unref();
  if(online){at(1500,j=>{j.result=bar(33);});at(3000,j=>{j.result=bar(66);});at(4500,j=>{j.summary='Loading the model…';j.result=null;});at(6500,()=>done(true,null));}

@@ -375,8 +375,9 @@ test('the Models page sends a plain Load, not the installer, when the only gap i
   const screen = read('../src/components/NativeModels.tsx');
   assert.match(screen, /const picturesByLoad = fetchesPictures\(selectedSize, native\?\.packaged\)/);
   assert.match(screen, /\(!selectedSize\?\.images \|\| vision === 'no' \|\| picturesByLoad \|\| installed\.images && installed\.images !== 'off'\)/, 'the shortcut to a plain Load no longer needs the pictures to be prepared');
-  assert.match(screen, /kind: 'pictures', args: \{ model: selectedSize!\.id, vision \}/, 'the button fetches the files and nothing else');
-  assert.match(screen, /tr\(loadedSelected\?\.picturesNote \?\? "Picture reading needs a few more files that are not on this computer yet\."\)/, 'the one line takes the place of the offer sentence: one warning, not two');
+  assert.match(screen, /loadedSelected\?\.picturesNote \? <p className="small muted native-vision-note" role="status">/, 'a failed picture download keeps one clear line under the checkbox');
+  assert.doesNotMatch(screen, /Download picture-reading files|Picture reading needs a few more files/, 'GUI-FB2 item 1: no button and no offer sentence: Load model does it');
+  assert.doesNotMatch(screen, /kind: 'pictures'/, 'the page no longer posts the picture-only step');
   assert.match(screen, /job\.kind === 'pictures'\) \{[\s\S]*Load the model again to read pictures\./, 'a model that is loaded without pictures is told to load again');
   // the host side of the same promise: the install path no longer takes its data folder from the app's models folder for an installed model
   const host = read('../server/native-control.mjs');

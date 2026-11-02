@@ -23,7 +23,8 @@ test('1: the Models page carries no DFlash2 paragraph, no per-card line and no p
 test('2: pictures are on by default; a missing reader says nothing wordy and saves nothing', () => {
   const host = read('server/native-control.mjs');
   // The row is shown for every model that can read pictures; without the reader it is off, disabled and carries a tooltip, no paragraph.
-  assert.match(models, /const noReader = !!selectedSize\?\.imagesCapable && !selectedSize\.images/);
+  assert.match(models, /const noReaderNow = !!selectedSize\?\.imagesCapable && !selectedSize\.images/);
+  assert.match(models, /const noReader = noReaderSeen\.current\.value;/, 'a job that runs never changes what the row shows');
   assert.match(models, /selectedSize\?\.images \|\| noReader \? <><div className="native-image-reading"><label title=\{noReader \? tr\("Needs an engine update"\) : undefined\}>/);
   assert.match(models, /checked=\{!noReader && vision !== 'no'\} disabled=\{noReader \|\| !!active\}/);
   assert.match(models, /else \{\s*setVision\('yes'\);|setVision\('yes'\);/, 'a model that is not downloaded starts with pictures on');
@@ -113,12 +114,18 @@ test('9: a chat that is working shows it on its sidebar row, and the model chip 
   assert.match(bar, /const working = new Set\(liveCount \? liveChatIds\(\) : \[\]\)/, 'the same list of running turns the board reads');
   assert.match(bar, /data-working=\{working\.has\(s\.id\) \|\| undefined\}/);
   assert.match(bar, /working\.has\(s\.id\) \? <span className="navsession__working" role="img" aria-label=\{tr\("Working"\)\}/, 'a labelled cue, not only colour');
-  assert.match(bar, /: isUnread\(s, activeSession\) \? <span className="navsession__unread"/, 'a working chat is not also shown as unread');
+  assert.match(bar, /!working\.has\(s\.id\) && isUnread\(s, activeSession\) \? <span className="navsession__unread"/, 'a working chat is not also shown as unread');
+  // GUI-FB2 item 6: the ring comes BEFORE the chat's name
+  assert.ok(bar.indexOf('navsession__working') < bar.indexOf('<span className="navsession__title">'), 'the ring is left of the name');
   assert.match(bar, /\{workingLine \?\? modelQuant\}/, 'the model chip names the working chat');
   assert.match(bar, /!\(location\.route === 'chat' && id === activeSession\)/, 'no line for the chat that is in front of the person');
-  assert.match(css, /\.ws__session \.navsession__working \{[^}]*border-top-color: var\(--st-info\);[^}]*animation: st-spin 1.4s linear infinite;/, 'existing tokens, one slow turn');
-  assert.match(css, /prefers-reduced-motion: reduce\) \{\s*\.ws__session \.navsession__working \{\s*animation: none;/, 'reduced motion holds it still');
-  assert.match(css, /html\[data-motion='reduced'\] \.ws__session \.navsession__working \{\s*animation: none;/);
+  // a stroked SVG circle (round caps), not a bordered box: it stays round at fractional sizes and turning angles
+  assert.match(bar, /<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle className="navsession__track" cx="8" cy="8" r="6"\/>/);
+  assert.match(css, /\.ws__session \.navsession__working svg \{[^}]*animation: st-spin 1\.1s linear infinite;/, 'one turn, existing keyframes');
+  assert.match(css, /\.navsession__arc \{[^}]*stroke-linecap: round;/);
+  assert.doesNotMatch(css, /\.ws__session \.navsession__working \{[^}]*border-radius/, 'no bordered box');
+  assert.match(css, /prefers-reduced-motion: reduce\) \{\s*\.ws__session \.navsession__working svg \{\s*animation: none;/, 'reduced motion holds it still');
+  assert.match(css, /html\[data-motion='reduced'\] \.ws__session \.navsession__working svg \{\s*animation: none;/);
 });
 
 test('10 (visual): the reply stays still while it streams, one live cue per step, a slot for the host to feed live output, a slower preview panel', async () => {

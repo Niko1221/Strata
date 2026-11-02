@@ -708,30 +708,48 @@ body {
   translate: 0 -50%;
   transition: opacity var(--st-t-micro) var(--st-ease-standard);
 }
-/* A chat that has a turn running while the person is elsewhere: a small ring turns in the same gutter as the unread dot (it takes the dot's place: a
-   working chat is not "unread" yet). Info colour and a slow turn keep it calm; reduced motion holds it still. */
+/* A chat that has a turn running: a small ring turns BEFORE the chat's name (GUI feedback 2, item 6). It is an SVG circle, not a bordered box: a border-radius
+   on a 12px box at 90% interface size lands on fractional pixels and the turning corners looked square; a stroked circle with round caps stays round at
+   any size and any angle. The unread dot keeps the gutter at the right. Reduced motion holds it still (a quarter arc). */
 .ws__session .navsession__working {
-  position: absolute;
-  top: 50%;
-  right: 7px;
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--st-info-tint);
-  border-top-color: var(--st-info);
-  border-radius: 50%;
-  translate: 0 -50%;
-  animation: st-spin 1.4s linear infinite;
-  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--st-info);
+}
+.ws__session .navsession__working svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  shape-rendering: geometricPrecision;
+  animation: st-spin 1.1s linear infinite;
+  will-change: transform;
+}
+.navsession__track,
+.navsession__arc {
+  fill: none;
+  stroke-width: 2;
+}
+.navsession__track {
+  stroke: color-mix(in srgb, var(--st-info) 22%, transparent);
+}
+.navsession__arc {
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-dasharray: 26 74;
 }
 .navsession[data-working] .navsession__title {
   color: var(--st-ink);
 }
 @media (prefers-reduced-motion: reduce) {
-  .ws__session .navsession__working {
+  .ws__session .navsession__working svg {
     animation: none;
   }
 }
-html[data-motion='reduced'] .ws__session .navsession__working {
+html[data-motion='reduced'] .ws__session .navsession__working svg {
   animation: none;
 }
 .ws__session .session-overflow {
@@ -751,7 +769,6 @@ html[data-motion='reduced'] .ws__session .navsession__working {
   pointer-events: auto;
 }
 .ws__session:hover .navsession__time,
-.ws__session:hover .navsession__working,
 .ws__session:hover .navsession__unread {
   opacity: 0;
 }
@@ -1276,4 +1293,187 @@ html[data-motion='reduced'] .ws__session .navsession__working {
 }
 .pc-meter[data-low] .pc-meter__track i {
   background: var(--st-warn);
+}
+
+
+/* -------------------------------------------- 27. GUI feedback 2 (11-02) ----
+   Item 2: a checkbox's tick is white on the accent fill in light mode (it was the dark ink: a black tick on green); dark mode keeps the dark ink on its
+   lighter green. Item 4: a checkbox that is locked while a load runs keeps its tick at nearly full strength, so a locked "on" still reads as on. */
+:root { --st-check-ink: #ffffff; }
+[data-theme='dark'] { --st-check-ink: var(--st-accent-ink); }
+@media not (forced-colors: active) {
+  input[type='checkbox']:checked::after,
+  .native-image-reading input[type='checkbox']::after,
+  .native-gpu-options input[type='checkbox']::after {
+    border-color: var(--st-check-ink);
+  }
+  input[type='checkbox']:disabled:checked,
+  .native-image-reading input[type='checkbox']:disabled:checked {
+    opacity: 0.8;
+  }
+}
+
+/* Item 8: a run that made many files is one compact block: the two folders, then a count that opens the list. Same border, radius and hover wash as the
+   "Edited files" block it stands in for; the list scrolls inside the block so a long run never pushes the chat down. */
+.fsum {
+  margin: 10px 0;
+  border: 1px solid var(--st-line);
+  border-radius: var(--st-r-md);
+  background: var(--st-surface);
+  overflow: hidden;
+}
+.fsum__places {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.fsum__places li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px 10px 16px;
+  font-size: var(--st-fs-sm);
+}
+.fsum__places li + li {
+  border-top: 1px solid var(--st-line-soft);
+}
+.fsum__places .st-icon {
+  flex: none;
+  color: var(--st-icon);
+}
+.fsum__label {
+  flex: none;
+  color: var(--st-ink-muted);
+}
+.fsum__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--st-ink);
+}
+.fsum__open {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--st-line);
+  border-radius: 8px;
+  background: var(--st-surface);
+  color: var(--st-ink);
+  font: 600 var(--st-fs-sm) var(--st-font);
+  cursor: pointer;
+  transition: background-color var(--st-t-micro) var(--st-ease-standard);
+}
+.fsum__open:hover {
+  background: var(--st-fill-hover);
+}
+.fsum__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  border-top: 1px solid var(--st-line-soft);
+  background: transparent;
+  color: var(--st-ink-soft);
+  font: inherit;
+  font-size: var(--st-fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--st-t-micro) var(--st-ease-standard);
+}
+.fsum__toggle:first-child {
+  border-top: 0;
+}
+.fsum__toggle:hover {
+  background: var(--st-fill-hover);
+}
+.fsum__toggle > span:not(.pm) {
+  font-variant-numeric: tabular-nums;
+}
+.fsum__toggle .pm {
+  margin-left: auto;
+}
+.fsum__chev {
+  flex: none;
+  color: var(--st-icon);
+  transform: rotate(-90deg);
+  transition: transform var(--st-t-local) var(--st-ease-standard);
+}
+.fsum__toggle[aria-expanded='true'] .fsum__chev {
+  transform: none;
+}
+.fsum__open:focus-visible,
+.fsum__toggle:focus-visible,
+.fsum__file:focus-visible {
+  outline: 2px solid var(--st-accent);
+  outline-offset: -2px;
+}
+.fsum__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: min(320px, 50vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--st-line-soft);
+}
+.fsum__file {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--st-ink);
+  font: inherit;
+  font-size: var(--st-fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.fsum__file:hover {
+  background: var(--st-fill-hover);
+}
+.fsum__type {
+  flex: none;
+  min-width: 34px;
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+  font-weight: 700;
+}
+.fsum__fname {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fsum__dir {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+}
+.fsum__size {
+  flex: none;
+  margin-left: auto;
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .fsum__chev,
+  .fsum__open,
+  .fsum__toggle {
+    transition: none;
+  }
 }
