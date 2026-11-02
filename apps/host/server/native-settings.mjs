@@ -91,9 +91,11 @@ export const APP_OWNED_FIELDS=['mtp','batchMtp','drafting','ds_experts'];
 export const DRAFTING_FAMILIES=['qwen','gyro','unsloth'];
 const DFLASH2_MODEL=/^qwen3\.8-flash-next(-gyro-[a-z0-9._-]+|-unsloth-[a-z0-9._-]+|-(q|iq|tq)\d[a-z0-9_.]*)?$/i;
 /** The drafter a choice means (one per run; strata_control/drafting.py choice_of): Auto is DFlash2 where the engine has it (`served`, Control's word) and the model is one it was made for, else the MTP; off and mtp are what they say. `model` is a run config's model name or a family. */
-export function resolveDrafter(choice,model,served){
+/** `split` (Control's plan: the all-cards split engine will take this start) makes Auto the MTP, the draft layer that engine runs; a DFlash2 the person chose by name stays. */
+export function resolveDrafter(choice,model,served,split){
  const c=String(choice??'auto').toLowerCase();if(c==='off'||c==='mtp')return c;
- const name=String(model??'');return served===true&&(DRAFTING_FAMILIES.includes(name.toLowerCase())||DFLASH2_MODEL.test(name))?'dflash2':'mtp';
+ const name=String(model??'');if(!(served===true&&(DRAFTING_FAMILIES.includes(name.toLowerCase())||DFLASH2_MODEL.test(name))))return 'mtp';
+ return split===true&&c!=='dflash2'?'mtp':'dflash2';
 }
 /** The engine arguments without the draft layer: --mtp <folder or count>, --spec-min-p <p> (its confidence threshold) and --batch-mtp. --spec stays: prompt lookup still uses its windows. Same rule as strata_control/draft_layer.py. */
 export function withoutDraftLayer(args){

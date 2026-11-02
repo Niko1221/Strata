@@ -2195,10 +2195,28 @@ class Runner:
                 info = (json.loads(resp.read().decode("utf-8", "replace")).get("engine") or {})
         except Exception:                                    # noqa: BLE001 - the line is a convenience
             return
+        self.report_split_fallback(info)
         note = str(info.get("drafting_note") or "")
         if note:
             self.notices.append(note)
             self.emit("start", note, None)
+
+    def report_split_fallback(self, info: dict) -> None:
+        """The server started the normal layer split because the all-cards split engine would not come up (its metrics say split_fallback; serve/server.py
+        start_engine_or_fallback): the summary then says what runs, not the line written before the start ("Using the all-cards split engine on N cards")."""
+        if not info.get("split_fallback"):
+            return
+        why = ""
+        try:
+            log = read_config(self.config_path).get("log") if self.config_path else None
+            lines = Path(str(log) + ".split-engine").read_text(encoding="utf-8", errors="replace").splitlines() if log else []
+            why = next((ln.strip() for ln in reversed(lines) if ln.lstrip().startswith("sfnx:")), "")
+        except Exception:                                    # noqa: BLE001 - the reason is a convenience
+            why = ""
+        text = "The all-cards split engine could not start" + (f" ({why})" if why else "") + "; running the normal layer split."
+        self.notices[:] = [n for n in self.notices if not n.startswith("Using the all-cards split engine")]
+        self.notices.append(text)
+        self.emit("start", text, None, level="warn")
 
     # ---- 6. access
     def open_access(self) -> str | None:

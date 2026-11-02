@@ -7,10 +7,12 @@
 export const DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth'];
 
 /** The drafter a choice means for a family (one per run; strata_control/drafting.py choice_of): Auto is DFlash2 where the engine has it (`served`) and the family is one it was made for, else the MTP. */
-export function resolveDrafter(choice: string | null | undefined, family: string | null | undefined, served: boolean | null | undefined): 'dflash2' | 'mtp' | 'off' {
+export function resolveDrafter(choice: string | null | undefined, family: string | null | undefined, served: boolean | null | undefined, split?: boolean | null): 'dflash2' | 'mtp' | 'off' {
   const c = String(choice ?? 'auto').toLowerCase();
   if (c === 'off' || c === 'mtp') return c;
-  return served === true && DRAFTING_FAMILIES.includes(String(family)) ? 'dflash2' : 'mtp';
+  if (!(served === true && DRAFTING_FAMILIES.includes(String(family)))) return 'mtp';
+  // `split`: Control's plan says the all-cards split engine takes this start; it runs the MTP, so Auto is the MTP there (a DFlash2 the person chose stays)
+  return split === true && c !== 'dflash2' ? 'mtp' : 'dflash2';
 }
 
 /** What was measured on this kind of card (Control's words): tested = faster on some text and slower on others, slower = slower on every prompt. */

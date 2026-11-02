@@ -42,7 +42,7 @@ test('the Models screen offers the choice next to context, DFlash2 only for Qwen
   assert.match(screen, /\.\.\.\(draftingChoices \? \{ values: \{ drafting \} \} : \{\}\)/);
   assert.match(screen, /Choosing MTP downloads its drafter: about \{0\} GB, once\./);
   assert.match(screen, /Choosing DFlash2 downloads its drafter: about \{0\} GB, once\./);
-  assert.match(screen, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2\)/, 'the fit uses the drafter that is chosen');
+  assert.match(screen, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2, native\?\.capabilities\?\.dflash2Split\)/, 'the fit uses the drafter that is chosen');
   assert.match(screen, /loadedSelected\?\.metrics\?\.engine\?\.drafting_note/, 'what the engine said is shown');
 });
 
@@ -74,7 +74,7 @@ test('a load fetches the drafter first, never stops for it, and says what ran', 
   assert.match(prepare, /control\.draftingFetch\(/);
   assert.match(prepare, /catch\(error\)\{if\(job\.state==='running'\)\{job\.drafterNote=error\.message;/, 'a failed download leaves the MTP and the job says so');
   assert.match(source, /await prepareDrafter\(job,args,cfg,configFile,drafts\)/);
-  assert.match(source, /drafts\?\.mtp_needed===true&&args\.values\?\.drafting!==undefined\)\{await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load');
+  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&[\s\S]*?\{[\s\S]*?await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load (and a plain Auto load when the plan says split)');
   assert.match(source, /async function noteDrafting\(job,instance,key\)/);
   assert.match(source, /instance\.status='ready';instance\.phase='idle';await noteDrafting\(job,instance,key\)/);
   assert.match(source, /typeof choice==='string'&&typeof control\.draftingPlan==='function'/, 'the plan lists the drafter Control says is needed');
@@ -127,7 +127,7 @@ test('the Drafting dropdown exists only where there is something to choose: Qwen
   for (const family of ['coder', 'swift', 'nvfp4', 'qwen36', 'deepseek41', undefined]) assert.equal(draftingChoices(family, true), null, `${family}, served`);
   // the app learns it from Control, once, and false until Control answers
   const host = read('../server/native-control.mjs');
-  assert.match(host, /dflash2:dflash2Served===true,dflash2Support,dflash2Selq4\}/);
+  assert.match(host, /dflash2:dflash2Served===true,dflash2Support,dflash2Selq4,dflash2Split\}/);
   assert.match(host, /dflash2Served=p\.serves===true/);
   assert.match(host, /function probeDrafting\(\)\{if\(!packaged\|\|dflash2Served!==null/);
   const screen = read('../src/components/NativeModels.tsx');
@@ -180,7 +180,7 @@ test('one drafter per run: Auto is DFlash2 where the engine has it, the same wor
 test('a new install fetches only the drafter it will use; the fit and the slot estimates use the drafter chosen', async () => {
   const source = read('../server/native-control.mjs');
   assert.match(source, /'gguf_dir','drafter'\]/);
-  assert.match(source, /resolveDrafter\(args\.drafting,args\.family,dflash2Served\);if\(d==='dflash2'\)args=\{\.\.\.args,drafter:'dflash2'\}/, 'DFlash2: the installer leaves the MTP layer out');
+  assert.match(source, /resolveDrafter\(args\.drafting,args\.family,dflash2Served,dflash2Split\);if\(d==='dflash2'\)args=\{\.\.\.args,drafter:'dflash2'\}/, 'DFlash2: the installer leaves the MTP layer out');
   const { chooseParallel, MTP_VRAM_GB, DFLASH2_VRAM_GB } = await import('../server/native-parallel.mjs');
   assert.deepEqual([MTP_VRAM_GB, DFLASH2_VRAM_GB], [1.08, 0.89]);
   const config = { args: ['--mtp', '/m', '--max-context', '32768'], model_name: 'qwen3.8-flash-next-iq3_s' };
@@ -221,10 +221,31 @@ test('the drafter memory figures in the app are the ones strata_control/drafting
   // Control's word reaches the page, and the page hands the fit the drafter it really loads
   const control = read('../server/native-control.mjs');
   assert.match(control, /dflash2Selq4=p\.serves===true&&p\.selq4===true/);
-  assert.match(control, /dflash2Support,dflash2Selq4\}/);
+  assert.match(control, /dflash2Support,dflash2Selq4,dflash2Split\}/);
   assert.match(read('../src/lib/native.ts'), /dflash2Selq4\?:boolean/);
   const page = read('../src/components/NativeModels.tsx');
   assert.match(page, /const fitDrafter = nowDrafter === 'dflash2' && native\?\.capabilities\?\.dflash2Selq4 === true \? 'dflash2_selq4' : nowDrafter;/);
   assert.match(page, /drafter: fitDrafter/);
   assert.doesNotMatch(page, /drafter: nowDrafter/);
+});
+
+test('where the all-cards split engine takes the start, Auto is the MTP in the label, the fit, the install and a plain Auto load (Control plan says so)', async () => {
+  const { transform } = await import('esbuild');
+  const code = (await transform(read('../src/lib/drafting.ts'), { loader: 'ts', format: 'esm' })).code;
+  const ts = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+  const host = await import('../server/native-settings.mjs');
+  for (const [choice, family, served, split, want] of [
+    ['auto', 'qwen', true, true, 'mtp'], [undefined, 'unsloth', true, true, 'mtp'], ['auto', 'gyro', true, true, 'mtp'],
+    ['auto', 'qwen', true, false, 'dflash2'], ['auto', 'qwen', true, undefined, 'dflash2'], ['auto', 'qwen', true, null, 'dflash2'],
+    ['dflash2', 'qwen', true, true, 'dflash2'], ['mtp', 'qwen', true, true, 'mtp'], ['off', 'qwen', true, true, 'off'],
+    ['auto', 'qwen', false, true, 'mtp'], ['auto', 'swift', true, true, 'mtp'],
+  ]) {
+    assert.equal(ts.resolveDrafter(choice, family, served, split), want, `ts ${choice} ${family} ${served} ${split}`);
+    assert.equal(host.resolveDrafter(choice, family, served, split), want, `host ${choice} ${family} ${served} ${split}`);
+  }
+  const source = read('../server/native-control.mjs');
+  assert.match(source, /dflash2Split=p\.split===true/, 'the probe reads the plan word');
+  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&\(config\.drafting==null\|\|String\(config\.drafting\)\.toLowerCase\(\)==='auto'\)\)/,
+    'a plain Auto load fetches the draft layer when the plan says split; a saved explicit choice is left alone');
+  assert.match(read('../src/lib/native.ts'), /dflash2Split\?:boolean/);
 });

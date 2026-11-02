@@ -69,6 +69,7 @@ def _inputs(a) -> dict:
     if cfg.get("mtp") is False and drafting.normalize(mode) == "auto":
         mode = "off"                                         # the Draft layer switch is off and no drafter was chosen since
     elif drafting.normalize(mode) == "auto" and _split_expected(cfg, args):
+        a._split = True                                      # the plan says so (the app's Models screen and its load read it)
         mode = "mtp"                                         # the all-cards split engine runs the MTP draft layer: the app fetches that, not DFlash2's drafter
     return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
             "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
@@ -89,7 +90,7 @@ def run(a) -> int:
         result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe()), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
                   "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
                   "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
-                  "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
+                  "split": bool(getattr(a, "_split", False)), "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
         if (a.config or a.mode) and not needed:           # asked about a model: nothing to download unless the choice uses the drafter
             result["gb"] = 0.0
         if machine:

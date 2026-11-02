@@ -259,6 +259,69 @@ class AutoFetchesTheDraftLayer(Base):
         self.assertFalse(drafting_cmd._split_expected({**cfg, "drafting": "dflash2"}, cfg["args"]))
 
 
+class SummaryTellsWhatRuns(Base):
+    """The server falls back to the normal layer split when the split engine exits at start (serve/server.py start_engine_or_fallback; metrics engine.split_fallback).
+    The launcher's summary used to keep the line written before the start, "Using the all-cards split engine on 2 cards"."""
+
+    def runner(self, log_name="e.log"):
+        cfgfile = Path(self.home.base) / "cfg.json"
+        log = Path(self.home.base) / log_name
+        cfgfile.write_text(json.dumps({"log": str(log), "args": []}), encoding="utf-8")
+        r = Runner(S.LaunchSettings(family="qwen", model="UD-Q4_K_XL", context=131072, tune="skip", port=18999), catalog=catalog(self.hw))
+        r.config_path = cfgfile
+        r.notices.append("Using the all-cards split engine on 2 cards. Turn it off with: strata launch --split-engine off.")
+        return r, log
+
+    def metrics(self, engine):
+        resp = mock.MagicMock()
+        resp.read.return_value = json.dumps({"engine": engine}).encode()
+        resp.__enter__.return_value = resp
+        return mock.patch("urllib.request.urlopen", lambda *a, **k: resp)
+
+    def test_a_fallback_replaces_the_line_and_gives_the_engines_reason(self):
+        r, log = self.runner()
+        Path(str(log) + ".split-engine").write_text("[strata] engine started: x\nsfnx: --native and --mtp are required\n", encoding="utf-8")
+        with self.metrics({"split_fallback": True}), contextlib.redirect_stdout(io.StringIO()):
+            r.report_drafting()
+        self.assertEqual(r.notices, ["The all-cards split engine could not start (sfnx: --native and --mtp are required); running the normal layer split."])
+
+    def test_a_fallback_without_a_reason_in_the_log_still_says_it(self):
+        r, _log = self.runner()
+        with self.metrics({"split_fallback": True}), contextlib.redirect_stdout(io.StringIO()):
+            r.report_drafting()
+        self.assertEqual(r.notices, ["The all-cards split engine could not start; running the normal layer split."])
+
+    def test_when_the_split_runs_the_line_stays(self):
+        r, _log = self.runner()
+        with self.metrics({}), contextlib.redirect_stdout(io.StringIO()):
+            r.report_drafting()
+        self.assertEqual(len(r.notices), 1)
+        self.assertTrue(r.notices[0].startswith("Using the all-cards split engine"))
+
+
+class PlanTellsTheApp(Base):
+    """`strata drafting plan` is what the app reads (native-control.mjs): with the split taking the start it says choice mtp and split true."""
+
+    def plan(self, probe, *extra):
+        from tests.terminal.launch_support import run_cli
+        data = Path(self.home.base) / "d"
+        data.mkdir(exist_ok=True)
+        with mock.patch.object(SE, "probe_cards", lambda idx=None: probe), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),                 mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])):
+            code, out, err = run_cli(["drafting", "plan", "--family", "qwen", "--data-dir", str(data), "--output", "json", *extra])
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_two_cards_on_auto_say_split_and_the_mtp(self):
+        p = self.plan(cards(2), "--mode", "auto")
+        self.assertEqual((p["split"], p["choice"], p["needed"]), (True, "mtp", False))
+
+    def test_one_card_or_a_chosen_dflash2_do_not(self):
+        for probe, mode in ((cards(1), "auto"), (cards(2), "dflash2")):
+            p = self.plan(probe, "--mode", mode)
+            self.assertFalse(p["split"], (len(probe), mode))
+            self.assertEqual(p["choice"], "dflash2")
+
+
 class AppPath(Base):
     """The app's Settings 'Concurrent requests = N' is a profile override on the saved run config (strata_control/profiles); `strata serve --profile` reads it."""
 
