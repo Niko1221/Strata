@@ -1085,6 +1085,96 @@ def _find(doc: dict, phase: str, case: str, metric: str) -> dict | None:
     return next((s for s in doc["summaries"] if s["phase"] == phase and s["case_id"] == case and s["metric"] == metric), None)
 
 
+#: the figures a standard comparison puts side by side, in the order `strata bench report` prints them
+COMPARED = (("prompt_tps", "Prompt tok/s", 1), ("decode_tps", "Decode tok/s", 1),
+            ("ttft_s", "TTFT s", 2), ("total_s", "Total s", 1))
+
+
+def compare(baseline: dict, candidate: dict) -> dict:
+    """Two standard results side by side: one row per case and figure, with the change in percent (#4325).
+
+    Nothing is refused here: `warnings` says what a reader should not carry over (a different suite, model, card or
+    engine), because a person's own before/after across a model change is a legitimate comparison, just not a benchmark
+    claim. A figure one side does not have is `None`, never 0."""
+    warnings = []
+    if baseline["protocol"]["id"] != candidate["protocol"]["id"]:
+        warnings.append(f"different suites: {baseline['protocol']['id']} against {candidate['protocol']['id']}")
+    if baseline["model"]["id"] != candidate["model"]["id"]:
+        warnings.append(f"different models: {baseline['model']['id']} against {candidate['model']['id']}")
+    b_gpus = [g["name"] for g in baseline["hardware"]["gpus"]]
+    c_gpus = [g["name"] for g in candidate["hardware"]["gpus"]]
+    if b_gpus != c_gpus:
+        warnings.append(f"different graphics cards: {', '.join(b_gpus) or 'none'} against {', '.join(c_gpus) or 'none'}")
+    b_eng = baseline["software"].get("engine_version")
+    c_eng = candidate["software"].get("engine_version")
+    if b_eng != c_eng:
+        warnings.append(f"different engines: {b_eng or 'not measured'} against {c_eng or 'not measured'}")
+    phases = []
+    for summary in baseline["summaries"]:
+        if summary["phase"] not in phases:
+            phases.append(summary["phase"])
+    rows: list[dict] = []
+    for phase in phases:
+        cases = []
+        for summary in baseline["summaries"]:
+            if summary["phase"] == phase and summary["case_id"] not in cases:
+                cases.append(summary["case_id"])
+        for case in cases:
+            for metric, label, digits in COMPARED:
+                a = _find(baseline, phase, case, metric)
+                b = _find(candidate, phase, case, metric)
+                if a is None and b is None:
+                    continue
+                a_median = a["median"] if a and a["median"] is not None else None
+                b_median = b["median"] if b and b["median"] is not None else None
+                row = {"phase": phase, "case": case, "metric": metric, "label": label,
+                       "baseline": round(a_median, digits) if a_median is not None else None,
+                       "candidate": round(b_median, digits) if b_median is not None else None,
+                       "change_pct": None}
+                if a_median is not None and b_median is not None and a_median:
+                    row["change_pct"] = round(100.0 * (b_median / a_median - 1.0), 1)
+                rows.append(row)
+    return {"suite": baseline["protocol"]["id"], "baseline_run": baseline["run"]["id"],
+            "candidate_run": candidate["run"]["id"], "warnings": warnings, "rows": rows}
+
+
+def _comparison_cells(row: dict) -> list[str]:
+    return [row["case"], row["label"],
+            "n/a" if row["baseline"] is None else f"{row['baseline']:g}",
+            "n/a" if row["candidate"] is None else f"{row['candidate']:g}",
+            "n/a" if row["change_pct"] is None else f"{row['change_pct']:+.1f}%"]
+
+
+def format_comparison(comparison: dict) -> str:
+    """The comparison as the aligned plain-text table `strata bench compare` prints."""
+    lines = [f"Standard benchmark comparison ({comparison['suite']})",
+             f"  baseline:  {comparison['baseline_run']}",
+             f"  candidate: {comparison['candidate_run']}"]
+    if comparison["warnings"]:
+        lines.append("Not a like-for-like comparison, read the change with that in mind:")
+        lines += ["  - " + w for w in comparison["warnings"]]
+    table = [["Case", "Figure", "Baseline", "Candidate", "Change"]]
+    table += [_comparison_cells(row) for row in comparison["rows"]]
+    widths = [max(len(r[i]) for r in table) for i in range(5)]
+    lines += ["  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in table]
+    lines.append("  Change is the candidate against the baseline; a figure one report does not have is n/a.")
+    return "\n".join(lines)
+
+
+def format_comparison_markdown(comparison: dict) -> str:
+    """The comparison as a Markdown table (`strata bench compare --output markdown`), for a report or an issue."""
+    lines = [f"# Strata standard benchmark comparison ({comparison['suite']})", "",
+             f"- Baseline: `{comparison['baseline_run']}`",
+             f"- Candidate: `{comparison['candidate_run']}`", ""]
+    if comparison["warnings"]:
+        lines += ["**Not a like-for-like comparison, read the change with that in mind:**", ""]
+        lines += [f"- {w}" for w in comparison["warnings"]] + [""]
+    lines += ["| Case | Figure | Baseline | Candidate | Change |", "| --- | --- | ---: | ---: | ---: |"]
+    lines += ["| " + " | ".join(_comparison_cells(row)) + " |" for row in comparison["rows"]]
+    lines += ["", "Change is the candidate against the baseline; a figure one report does not have is n/a."]
+    return "\n".join(lines)
+
+
 def _minutes(seconds: float | None) -> str:
     if seconds is None:
         return "not measured"
