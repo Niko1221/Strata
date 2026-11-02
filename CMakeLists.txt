@@ -1841,6 +1841,15 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(batch_groups_test src/program/batch_groups_test.cpp)
   target_include_directories(batch_groups_test PRIVATE include)
   add_test(NAME batch_groups_test COMMAND batch_groups_test)
+
+  # Host history construction across accepted / rejected pipelined windows (no GPU).
+  add_executable(pipeline_penalties_test src/program/pipeline_penalties_test.cpp)
+  target_include_directories(pipeline_penalties_test PRIVATE include)
+  add_test(NAME pipeline_penalties_test COMMAND pipeline_penalties_test)
+
+  add_executable(pipeline_batch_test src/program/pipeline_batch_test.cpp)
+  target_include_directories(pipeline_batch_test PRIVATE include)
+  add_test(NAME pipeline_batch_test COMMAND pipeline_batch_test)
 endif()
 
 if(STRATA_CPU_X86)

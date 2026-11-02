@@ -101,6 +101,7 @@
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
+#include "strata/program/pipeline_batch.hpp"
 #include "strata/program/par_counters.hpp"
 #if defined(__linux__)
 #include <execinfo.h>
@@ -4982,6 +4983,27 @@ int main(int argc, char** argv) {
         return o.mtp_draft_vocab.empty() ? std::filesystem::exists(std::filesystem::path(o.mtp) / "draft_vocab.bin", ec)
                                          : std::filesystem::exists(o.mtp_draft_vocab, ec);
     }();
+    // A bounded alternative to #3095: keep the solo pipeline beside piped MTP,
+    // but keep all drafters on the last card, as in the existing batch path.
+    auto env_one = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    };
+    strata::program::pipeline_batch::Config hybrid_cfg;
+    hybrid_cfg.enabled = env_one("STRATA_HYBRID_WINDOWS");
+    hybrid_cfg.slots = o.batch;
+    hybrid_cfg.groups = o.batch_groups;
+    hybrid_cfg.groups_explicit = o.batch_groups_set && !o.batch_groups_auto;
+    hybrid_cfg.later_stages = (int) split_devs.size();
+    hybrid_cfg.windows = o.pipeline_windows;
+    hybrid_cfg.adapt_async = o.adapt_async != 0;
+    hybrid_cfg.batch_mtp = o.batch_mtp || env_one("STRATA_BATCH_MTP");
+    if (const char* value = std::getenv("STRATA_PIPED_MTP")) hybrid_cfg.piped_drafts = std::atoi(value);
+    bool hybrid_windows = strata::program::pipeline_batch::supported(hybrid_cfg) && o.spec >= 3;
+    if (hybrid_cfg.enabled && !hybrid_windows)
+        std::fprintf(stderr, "strata generate: STRATA_HYBRID_WINDOWS is off: needs --batch 4 --batch-groups 2 "
+                             "--pipeline-windows 2, two layer stages, --spec >= 3, batch MTP and STRATA_PIPED_MTP=2; "
+                             "no async adaptation\n");
     const bool pw_auto = o.pipeline_windows < 0;
     if (pw_auto) {
         static const char* ae = std::getenv("STRATA_PIPELINE_AUTO");
@@ -5011,7 +5033,7 @@ int main(int argc, char** argv) {
                         : split_devs.size() > 1 && o.pipeline_windows == 1 ? "--pipeline-windows 1 needs exactly two stages"
                         : split_devs.size() > 1 && o.adapt_async ? "not with --adapt-async on three or more stages"
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
-                        : o.batch != 0 ? "not with --batch slots"
+                        : o.batch != 0 && !hybrid_windows ? "not with --batch slots"
                         : o.peer_device >= 1 ? "not with --peer-device"
                         : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
@@ -6242,6 +6264,16 @@ int main(int argc, char** argv) {
                          o.batch / o.batch_groups, o.batch / o.batch_groups == 1 ? "" : "s", pm_drafts,
                          pm_drafts > 1 ? "s" : "");
         }
+    }
+    // Allocation may have reduced the slot count or disabled piped MTP. The
+    // startup exception must not survive that change of topology.
+    if (hybrid_windows && (o.pipeline_windows != 2 || o.batch != 4 || o.batch_groups != 2 || !piped_mtp || pm_drafts != 2)) {
+        hybrid_windows = false;
+        o.pipeline_windows = 0;
+        std::fprintf(stderr, "strata generate: STRATA_HYBRID_WINDOWS is off after slot allocation/MTP validation\n");
+    } else if (hybrid_windows) {
+        std::fprintf(stderr, "strata generate: STRATA_HYBRID_WINDOWS: solo GEN uses pipeline windows; "
+                             "BGEN admissions and batch windows do not; draft layer stays on the last card\n");
     }
     // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.
     // In particular WDDM can refuse the draft weights after mapping tens of GiB of host pages.
@@ -10003,6 +10035,12 @@ int main(int argc, char** argv) {
         // K+1 while stage 1 still reads window K's hand-off.  With more stages every stage but the last is a "front"
         // stage: window K+1 follows window K through them one card behind, and only the last stage waits for K's verdict
         const bool pipe = o.pipeline_windows > 0 && n_stages >= 2 && !split_same && (int) stages.size() == n_stages - 1;
+        // Experimental: stage exact per-row histories before the last stage samples.
+        // Keep the serial fallback outside the two-stage, synchronous-adapt case.
+        const bool pipeline_penalties = pipe && n_stages == 2 && !o.adapt_async && [] {
+            const char* e = std::getenv("STRATA_PIPELINE_PENALTIES");
+            return e != nullptr && std::atoi(e) == 1;
+        }();
         strata::core::Verifier ver_b;
         SplitDrive split_drive_b;
         std::vector<cudaStream_t> pl_stream(pipe ? (size_t) n_stages : 0, nullptr);
@@ -14800,6 +14838,10 @@ int main(int argc, char** argv) {
                                  pl_theta, pl_force_miss, (long long) req_short_read);
                 }
             }
+            // Keep this after STRATA_PIPELINE_SWITCH: pw=2 cannot override the
+            // admission boundary, including a BGEN before any slot is active.
+            if (hybrid_windows)
+                pl_pw = strata::program::pipeline_batch::request_windows(true, pl_pw, admit_slot, batch_on());
             // --pipeline-windows: tokens [a, b) through the windows with the stages overlapped.  The tokens are known,
             // so every window commits whole: stage 0 queues window K, its commit and window K+1 back to back (each
             // parity's verifier keeps its own window), and stage 1 runs window K once stage 0 is done with it.  Every
@@ -16087,7 +16129,7 @@ int main(int argc, char** argv) {
             bool pl_ran = false;
             const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
             const char* pl_serial = !pl_want ? nullptr
-                                  : hist_n > 0 ? "repetition penalties (penalty_last_n)"
+                                  : hist_n > 0 && !pipeline_penalties ? "repetition penalties (penalty_last_n)"
                                   : mtp.coupled() ? "coupled draft sampling" : nullptr;
             if (pl_serial != nullptr) {   // said once per reason
                 static std::set<std::string> said;
@@ -16563,6 +16605,24 @@ int main(int argc, char** argv) {
                     if (A.finished && !A.s1) {
                         if (chain_kind == 1 && !B.ready) ++pl_late;   // stage 0 idles until the chain has B
                         if (ajob) a_gap(1);   // --adapt-async: stage 1 is idle until this launch
+                        if (pipeline_penalties && hist_n > 0) {
+                            // Only A reaches the head, after the preceding verdict.
+                            // B may run on the first card but never contributes to
+                            // consumed until accepted. Both last-stage parities
+                            // share this stream, so no sampler still reads d_hist.
+                            if ((int64_t) consumed.size() != A.p)
+                                return die("pipeline penalties: prefix position mismatch");
+                            strata::kernels::penalty_rows(consumed.data(), (int64_t) consumed.size(),
+                                                          A.tok, A.T, hist_n, hist_stage.data());
+                            const strata::core::OnDevice on_h(hist_dev);
+                            if (cudaMemcpyAsync(d_hist, hist_stage.data(), (size_t) A.T * (size_t) hist_n * sizeof(int32_t),
+                                                cudaMemcpyHostToDevice, V1(A).stream()) != cudaSuccess)
+                                return die("pipeline penalties: history upload failed");
+                            // Keep the pageable source valid until the copy lands;
+                            // also wait for the preceding parity's commit.
+                            if (cudaStreamSynchronize(V1(A).stream()) != cudaSuccess)
+                                return die("pipeline penalties: history staging failed");
+                        }
                         if (!V1(A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
                         A.s1 = true;
                         tre("L1", A.seq, A.T);
