@@ -1313,6 +1313,9 @@ public:
     /// (arena_ram_verdict, ple_residency.hpp).  `open` then registers and allocates nothing, returns false with `ram_short()` true and the
     /// numbers in `err`; the caller uses the --mmap-experts source for this run.  Unset: the shortage is only warned about, as before.
     bool fall_back_when_ram_short = false;
+    /// --ram-keep-gib W, in bytes (0: none): the arena is chosen only if this much RAM stays available after it (ple_residency.hpp,
+    /// arena_need_with_keep).  Set before `open`.  With the fallback not allowed the shortfall is only warned about, as for any other.
+    uint64_t ram_keep_bytes = 0;
     bool ram_short() const { return ram_short_; }
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
     const std::string& ram_warning() const { return ram_warning_; }

@@ -1,33 +1,72 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resourceSettings, saferStart } from '../server/native-resources.mjs';
+import { resourceSettings, saferStart, ramKeepGib } from '../server/native-resources.mjs';
 
 const pc64 = { cpu: { cores: 12 }, ram_gb: 63, gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5070', vram_gb: 11.9 }] };
 const iq3s = { arenaGb: 50.3 };
 const config = { gpu: 0, args: ['--native', 'x.gguf', '--max-context', '32768', '--pool-workers', '12'] };
 const flag = (args, name) => args[args.indexOf(name) + 1];
 
-test('"leave 20% for my work" keeps the model within 80% of the RAM: a RAM budget for the experts', () => {
+test('"leave 20% for my work" asks the engine to keep W GiB of RAM free (--ram-keep-gib), not a budget of 80% of the RAM', () => {
   const work = resourceSettings(config, pc64, 'work', iq3s);
-  assert.ok(work.args.includes('--resident-budget-gib'), 'a model whose experts do not fit 80% of 63 GB gets a RAM budget');
-  const gib = Number(flag(work.args, '--resident-budget-gib'));
-  assert.ok(gib + 10 <= 63 * 0.8, `${gib} GiB plus the 10 GB the rest needs stays inside 80% of the RAM`);
-  assert.equal(work.ui_resource_baseline.ramBudget, true);
+  assert.equal(flag(work.args, '--ram-keep-gib'), '8', '63 GB: a fifth is 12.6, capped at 8');
+  assert.equal(work.args.includes('--resident-budget-gib'), false, 'the engine decides from the RAM free at its start, not from the total: no budget from the app');
+  assert.equal(work.env, undefined, 'and no STRATA_RESIDENT_HEADROOM_GIB of 20%');
+  assert.equal(work.ui_resource_baseline.ramKeep, true);
+  assert.equal(work.ui_resource_baseline.ramBudget, false);
 });
 
-test('full performance takes that budget out again and keeps what the installation had', () => {
+test('full performance takes the RAM setting out again and keeps what the installation had', () => {
   const work = resourceSettings(config, pc64, 'work', iq3s);
   const back = resourceSettings({ ...config, args: work.args, ui_resource_profile: 'work', ui_resource_baseline: work.ui_resource_baseline }, pc64, 'performance', iq3s);
-  assert.equal(back.args.includes('--resident-budget-gib'), false);
+  assert.equal(back.args.includes('--ram-keep-gib'), false);
+  assert.equal(back.ui_resource_baseline.ramKeep, false);
   assert.equal(flag(back.args, '--pool-workers'), '12');
+  assert.equal(resourceSettings(config, pc64, 'performance', iq3s).args.includes('--ram-keep-gib'), false, 'performance from the start: nothing is passed, the whole system is used');
 });
 
-test('a model that fits, or one that already has a RAM mode, is left alone', () => {
-  assert.equal(resourceSettings(config, { ...pc64, ram_gb: 128 }, 'work', iq3s).args.includes('--resident-budget-gib'), false);
-  assert.equal(resourceSettings(config, pc64, 'work', { arenaGb: 34 }).args.includes('--resident-budget-gib'), false, 'Q2_0 fits 80% of 63 GB with 10 to spare');
-  const own = { ...config, args: [...config.args, '--mmap-experts'] };
-  assert.equal(resourceSettings(own, pc64, 'work', iq3s).args.includes('--resident-budget-gib'), false);
-  assert.equal(resourceSettings(config, pc64, 'work').args.includes('--resident-budget-gib'), false, 'no model size, no change');
+test('W = clamp(ceil(0.2 x RAM GB), 5, 8) with "leave 20%" on, nothing with it off: 24, 32, 64 and 128 GB', () => {
+  const cases = [[24, '5'], [32, '7'], [64, '8'], [128, '8'], [16, '5'], [25, '5'], [26, '6'], [36, '8'], [63, '8']];
+  for (const [ram, w] of cases) {
+    const pc = { ...pc64, ram_gb: ram };
+    const on = resourceSettings(config, pc, 'work', iq3s);
+    assert.equal(flag(on.args, '--ram-keep-gib'), w, `${ram} GB, Leave 20% on`);
+    assert.equal(on.args.filter(a => a === '--ram-keep-gib').length, 1, `${ram} GB: once`);
+    assert.equal(on.args.includes('--resident-budget-gib'), false, `${ram} GB: no budget from the app`);
+    assert.equal(on.env, undefined, `${ram} GB: no env headroom`);
+    const off = resourceSettings(config, pc, 'performance', iq3s);
+    assert.equal(off.args.includes('--ram-keep-gib'), false, `${ram} GB, Leave 20% off`);
+    assert.equal(off.args.includes('--resident-budget-gib'), false, `${ram} GB, off: no budget either`);
+    assert.equal(off.env, undefined);
+  }
+  assert.equal(ramKeepGib(24), 5); assert.equal(ramKeepGib(32), 7); assert.equal(ramKeepGib(64), 8); assert.equal(ramKeepGib(128), 8);
+  assert.equal(ramKeepGib(0), 5, 'unknown RAM: the floor'); assert.equal(ramKeepGib(undefined), 5);
+});
+
+test('a model whose size is unknown, or one with a RAM mode of the person, is left alone', () => {
+  assert.equal(resourceSettings(config, pc64, 'work').args.includes('--ram-keep-gib'), false, 'no model size, no change');
+  assert.equal(resourceSettings(config, { ...pc64, ram_gb: 0 }, 'work', iq3s).args.includes('--ram-keep-gib'), false, 'no RAM figure, no change');
+  for (const mine of [['--mmap-experts'], ['--resident-experts'], ['--resident-budget-gib', '30'], ['--ram-keep-gib', '3']]) {
+    const own = { ...config, args: [...config.args, ...mine] };
+    const work = resourceSettings(own, pc64, 'work', iq3s);
+    assert.ok(work.args.includes(mine[0]), `${mine[0]} stays as it is`);
+    if (mine[0] === '--resident-budget-gib') assert.equal(flag(work.args, '--resident-budget-gib'), '30');
+    assert.equal(work.args.filter(a => a === '--ram-keep-gib').length, mine[0] === '--ram-keep-gib' ? 1 : 0, `${mine[0]}: the app adds nothing`);
+    if (mine[0] === '--ram-keep-gib') assert.equal(flag(work.args, '--ram-keep-gib'), '3', 'a W of the person is kept');
+  }
+});
+
+test('a config written by the earlier version (an 80% budget and a 20% env headroom) is replaced by W, and full performance still takes the old settings out', () => {
+  const old = { ...config, args: [...config.args, '--resident-budget-gib', '38'], env: { STRATA_RESIDENT_HEADROOM_GIB: '13' },
+    ui_resource_profile: 'work', ui_resource_baseline: { workers: 12, reserve: 0, ramBudget: true, ramHeadroom: true } };
+  const work = resourceSettings(old, pc64, 'work', iq3s);
+  assert.equal(work.args.includes('--resident-budget-gib'), false, 'the old budget is gone');
+  assert.equal(flag(work.args, '--ram-keep-gib'), '8');
+  assert.equal(work.env.STRATA_RESIDENT_HEADROOM_GIB, undefined, 'and the old 20% env with it');
+  const perf = resourceSettings(old, pc64, 'performance', iq3s);
+  assert.equal(perf.args.includes('--resident-budget-gib'), false);
+  assert.equal(perf.args.includes('--ram-keep-gib'), false);
+  assert.equal(perf.env.STRATA_RESIDENT_HEADROOM_GIB, undefined);
 });
 
 test('neither profile reserves less VRAM than the engine\'s safe floor (the driver pages GPU memory below it and decoding collapses)', () => {
@@ -44,15 +83,11 @@ test('neither profile reserves less VRAM than the engine\'s safe floor (the driv
   assert.equal(resourceSettings({ gpu: 0, args: [], vram_reserve_mib: 2437 }, card12, 'performance').vram_reserve_mib, 2437, 'a larger reserve of the installation is kept');
 });
 
-test('"leave 20% for my work" also asks the engine to leave 20% of the RAM free at its start, and full performance takes that out again', () => {
-  const work = resourceSettings(config, pc64, 'work', iq3s);
-  assert.equal(work.env.STRATA_RESIDENT_HEADROOM_GIB, '13', '20% of 63 GB, rounded up');
-  assert.equal(work.ui_resource_baseline.ramHeadroom, true);
-  const back = resourceSettings({ ...config, args: work.args, env: work.env, ui_resource_profile: 'work', ui_resource_baseline: work.ui_resource_baseline }, pc64, 'performance', iq3s);
-  assert.equal(back.env.STRATA_RESIDENT_HEADROOM_GIB, undefined);
+test('a STRATA_RESIDENT_HEADROOM_GIB of the person is left in the env (the engine reads it first); the app sets no env headroom of its own', () => {
   const own = resourceSettings({ ...config, env: { STRATA_RESIDENT_HEADROOM_GIB: '6' } }, pc64, 'work', iq3s);
-  assert.equal(own.env, undefined, 'a value the user set is not overwritten');
-  assert.equal(resourceSettings(config, { ...pc64, ram_gb: 128 }, 'work', iq3s).env, undefined, 'no budget, no headroom setting');
+  assert.equal(own.env, undefined, 'a value the user set is not overwritten, and not copied either: the run config keeps it');
+  assert.equal(flag(own.args, '--ram-keep-gib'), '8');
+  for (const ram of [24, 32, 64, 128]) assert.equal(resourceSettings(config, { ...pc64, ram_gb: ram }, 'work', iq3s).env, undefined, `${ram} GB: no env headroom`);
 });
 
 test('a start that died gets ONE safer second try: pin less when the locked memory ran out, else a RAM budget with the rest on the SSD', () => {

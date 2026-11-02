@@ -667,6 +667,10 @@ struct Options {
     /// (with a warning) when even the experts no slot holds do not fit.
     bool resident_pin = false;
     uint64_t resident_headroom = 8ull << 30;
+    /// `--ram-keep-gib W` (or STRATA_RAM_KEEP_GIB): the RAM, in bytes, the person wants left free for their own work (0: none).  The expert
+    /// arena is used only if this much stays available after it; the RAM copy that replaces it, and the explicit RAM modes, leave
+    /// max(this, their own headroom) free.  STRATA_RESIDENT_HEADROOM_GIB, when set, still decides the headroom.  ple_residency.hpp.
+    uint64_t ram_keep = 0;
     bool resident_soft = false;
     bool resident_cpu_explicit = false;   ///< #384: --resident-cpu-experts given by itself (not only implied)
     /// CS-T `--resident-budget-gib N`: the resident mode with a RAM budget - the N GiB of experts the GPU cache does
@@ -1219,7 +1223,12 @@ void usage() {
                  "  --resident-experts   the low-RAM PC's resident mode (setup): --mmap-experts --resident-cpu-experts\n"
                  "                       with the copy page-locked when possible, 4 GiB headroom, plain mmap if it\n"
                  "                       does not fit.  Same answers as --mmap-experts for the same placement.\n"
-                 "  --adapt-min-gain F   the adaptive tier swaps an expert in only when its decayed routing count beats\n"
+                 "  --ram-keep-gib W     RAM to leave free for your own work, in GiB (default 0; STRATA_RAM_KEEP_GIB is the\n"
+                 "                       same).  The expert arena is used only if W GiB stay available after it; otherwise\n"
+                 "                       the hottest experts are kept in a RAM copy that leaves max(W, 8 GiB on Windows /\n"
+                 "                       4 GiB elsewhere) free and the rest are read from the files.  0 = the arena whenever\n"
+                 "                       it fits.  STRATA_RESIDENT_HEADROOM_GIB, when set, decides the headroom instead.\n"
+                 "  --adapt-min-gain F  the adaptive tier swaps an expert in only when its decayed routing count beats\n"
                  "                       the one it replaces by more than F (default 1.5; higher = fewer, surer swaps)\n"
                  "  --adapt-async 0|1    --serve with the resident RAM mode or the arena (one GPU): the adaptive\n"
                  "                       tier's swaps advance between verify windows instead of a window waiting for a\n"
@@ -3221,6 +3230,7 @@ int main(int argc, char** argv) {
     Options o;
     bool have_tokens = false;
     bool have_logits_stride = false;
+    bool ram_keep_by_flag = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&](const char* what) -> const char* {
@@ -3578,6 +3588,12 @@ int main(int argc, char** argv) {
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
         }
+        else if (a == "--ram-keep-gib") {
+            const double gib = std::atof(next("--ram-keep-gib"));
+            if (!(gib >= 0.0)) { std::fprintf(stderr, "strata generate: --ram-keep-gib needs N >= 0\n"); return 2; }
+            o.ram_keep = strata::core::ram_keep_from_gib(gib);
+            ram_keep_by_flag = true;
+        }
         else if (a == "--resident-budget-gib") {
             const double gib = std::atof(next("--resident-budget-gib"));
             if (!(gib > 0.0)) { std::fprintf(stderr, "strata generate: --resident-budget-gib needs N > 0\n"); return 2; }
@@ -3606,6 +3622,16 @@ int main(int argc, char** argv) {
             return 2;
         }
         }
+    }
+    {   // --ram-keep-gib W (or STRATA_RAM_KEEP_GIB, for a program that cannot pass the flag; the flag wins): the RAM to leave free.  It also
+        // raises the headroom of the explicit RAM modes (--resident-budget-gib, --resident-experts) to at least W, unless
+        // STRATA_RESIDENT_HEADROOM_GIB is set (that value wins).
+        if (!ram_keep_by_flag)
+            if (const char* v = std::getenv("STRATA_RAM_KEEP_GIB"); v != nullptr && v[0] != '\0' && std::atof(v) > 0.0)
+                o.ram_keep = strata::core::ram_keep_from_gib(std::atof(v));
+        const char* hv = std::getenv("STRATA_RESIDENT_HEADROOM_GIB");
+        if (o.ram_keep > 0 && !(hv != nullptr && std::atof(hv) >= 0.0) && o.resident_headroom < o.ram_keep)
+            o.resident_headroom = o.ram_keep;
     }
 #if defined(STRATA_USE_HIP)
     {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
@@ -6823,9 +6849,18 @@ int main(int argc, char** argv) {
         std::getenv("STRATA_ARENA_RAM_FALLBACK"), o.ple_io_explicit && o.ple_io == "ram", !o.shared_expert_arena.empty());
     bool ram_fallback_taken = false, ram_fallback_failed = false, ram_fallback_resident = false;
     const bool ram_fallback_resident_off = [] { const char* v = std::getenv("STRATA_ARENA_FALLBACK_RESIDENT"); return v != nullptr && v[0] == '0'; }();
-    const uint64_t ram_fallback_headroom = [] {
-        const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB");
-        return (v != nullptr && std::atof(v) >= 0.0) ? (uint64_t) (std::atof(v) * 1073741824.0) : (8ull << 30);
+    // The RAM-copy fallback leaves max(--ram-keep-gib, the safety headroom: 8 GiB on Windows, where the page trim of the copy needs the
+    // room, 4 GiB elsewhere) free; STRATA_RESIDENT_HEADROOM_GIB, when set, decides instead.  ple_residency.hpp.
+#if defined(_WIN32)
+    constexpr bool kWindowsHost = true;
+#else
+    constexpr bool kWindowsHost = false;
+#endif
+    const uint64_t ram_fallback_headroom = [&] {
+        std::optional<uint64_t> env_headroom;
+        if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
+            env_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
+        return strata::core::fallback_headroom(env_headroom, o.ram_keep, strata::core::fallback_safety_headroom(kWindowsHost));
     }();
     for (bool again = true; again;) {
     again = false;
@@ -7046,6 +7081,13 @@ int main(int argc, char** argv) {
             };
         strata::core::pin_reserve_take();
         arena_src.fall_back_when_ram_short = ram_fallback_ok && !ram_fallback_failed;
+        arena_src.ram_keep_bytes = o.ram_keep;
+        if (o.ram_keep > 0)
+            std::fprintf(stderr, "strata generate: --ram-keep-gib %.2f: the expert arena is used only if %.2f GiB of RAM stay available after it; "
+                                 "otherwise the RAM copy of the hottest experts leaves %.2f GiB free (the larger of that and the %.0f GiB safety headroom, "
+                                 "STRATA_RESIDENT_HEADROOM_GIB decides when set)\n",
+                         (double) o.ram_keep / 1073741824.0, (double) o.ram_keep / 1073741824.0, (double) ram_fallback_headroom / 1073741824.0,
+                         (double) strata::core::fallback_safety_headroom(kWindowsHost) / 1073741824.0);
         const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                                              o.shared_expert_arena);
         strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
@@ -7068,8 +7110,8 @@ int main(int argc, char** argv) {
                 o.resident_headroom = ram_fallback_headroom;
                 // the budget form (as --resident-budget-gib): the hottest experts in what is available minus the headroom, and the rest
                 // read unbuffered, not through the mapped view (whose pages grow the working set until available RAM is near zero)
-                if (const auto hm = strata::core::sample_host_memory(); hm && hm->available > o.resident_headroom + (1ull << 30))
-                    o.resident_budget = hm->available - o.resident_headroom;
+                if (const auto hm = strata::core::sample_host_memory(); hm)
+                    o.resident_budget = strata::core::fallback_budget(hm->available, o.resident_headroom);
                 ram_fallback_resident = true;
             }
             again = true;

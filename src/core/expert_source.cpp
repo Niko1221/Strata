@@ -5872,13 +5872,17 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     ram_short_ = false;
     // (a shared arena, --shared-expert-arena, may already be in RAM for another engine: not checked)
     if (detail::HostMemory hm; shared_arena_file.empty() && detail::host_available_memory(hm)) {
-        const uint64_t need = want + (uint64_t) blob;
+        // --ram-keep-gib W: the arena is chosen only if W GiB stay free after it, so its need here is the arena plus W
+        const uint64_t need = arena_need_with_keep(want + (uint64_t) blob, ram_keep_bytes);
         const double gib = 1073741824.0;
         char buf[512];
+        char keep_note[96] = "";
+        if (ram_keep_bytes > 0)
+            std::snprintf(keep_note, sizeof keep_note, ", with the %.2f GiB --ram-keep-gib asks to leave free", (double) ram_keep_bytes / gib);
         if (arena_ram_verdict(need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
             if (fall_back_when_ram_short) {   // #4846: the caller reads the experts from the file instead of refusing
-                std::snprintf(buf, sizeof buf, "it needs %.2f GiB and this process's memory limit is %.2f GiB",
-                              (double) need / gib, (double) hm.cgroup_limit / gib);
+                std::snprintf(buf, sizeof buf, "it needs %.2f GiB%s and this process's memory limit is %.2f GiB",
+                              (double) need / gib, keep_note, (double) hm.cgroup_limit / gib);
                 err = buf;
                 ram_short_ = true;
                 return false;
@@ -5911,10 +5915,10 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                     [](uint64_t& a) { detail::HostMemory h; if (!detail::host_available_memory(h)) return false; a = h.available; return true; },
                     [](double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); },
                     [&](double w, uint64_t a) {
-                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM and %.2f GiB is "
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM%s and %.2f GiB is "
                                              "available; waiting up to %.0f s for it (another engine still exiting?) - "
                                              "%.0f s so far (STRATA_ARENA_RAM_WAIT_S changes this)\n",
-                                     (double) need / gib, (double) a / gib, wait_s, w);
+                                     (double) need / gib, keep_note, (double) a / gib, wait_s, w);
                     },
                     waited, avail);
                 if (came)
@@ -5940,8 +5944,8 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                 // #4846 (owner 11-01): still short after the wait and the give-back.  Registering anyway can stall the whole host in
                 // reclaim until it is power-cycled: nothing is allocated, the caller takes the --mmap-experts source for this run.
                 std::snprintf(buf, sizeof buf,
-                              "it needs %.2f GiB and %.2f GiB is available (%.2f GiB short%s)",
-                              (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              "it needs %.2f GiB%s and %.2f GiB is available (%.2f GiB short%s)",
+                              (double) need / gib, keep_note, (double) hm.available / gib, (double) (need - hm.available) / gib,
                               waited > 0.0 ? ", after waiting" : "");
                 err = buf;
                 ram_short_ = true;

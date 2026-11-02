@@ -75,22 +75,26 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
  /* A reserve the person set is theirs, 0 included: no floor and no share of the card (#3215 #3270). Without one the card gets the safety default (defaultReserves). */
  const reserve=asked!==null?asked:defaults[profile];
  remove('--vram-reserve-mib');args.push('--vram-reserve-mib',String(reserve));
- // RAM: "leave 20% for my work" keeps the model's RAM within 80% of the PC. A model whose experts do not fit there (the
- // setup rule: experts plus 10 GB) keeps only that many GiB of them in RAM and reads the rest from the model files
- // (--resident-budget-gib, which implies --mmap-experts). Full performance takes the budget out again.
+ // RAM: "leave 20% for my work" asks the engine to keep W GiB of the RAM free, W = ramKeepGib(RAM) (--ram-keep-gib W). The engine decides from the RAM that is free at
+ // its start, not from the PC's total: it uses the full RAM copy of the experts (the arena) only if W GiB stay free after it, and otherwise keeps the hottest experts
+ // in a RAM copy that leaves max(W, its own safety headroom) free and reads the rest from the model files. Full performance (and `strata serve`) pass nothing: the
+ // whole system, the arena whenever it fits. The app used to pass a budget of 80% of the RAM (--resident-budget-gib) and a 20% STRATA_RESIDENT_HEADROOM_GIB;
+ // a config written by that version still carries them and full performance takes them out again.
  if(baseline.ramBudget)remove('--resident-budget-gib');
- let env=null;   // the engine's own "leave RAM free" setting travels in the run config's env
+ if(baseline.ramKeep)remove('--ram-keep-gib');
+ let env=null;   // a run config of the earlier version has the engine's headroom setting in its env
  if(baseline.ramHeadroom&&config.env){env={...config.env};delete env.STRATA_RESIDENT_HEADROOM_GIB;}
- const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;let ramBudget=false;
- if(profile==='work'&&ram>0&&arena>0&&!['--resident-experts','--mmap-experts','--resident-budget-gib'].some(f=>args.includes(f))&&ram*.8<arena+10){
-  args.push('--resident-budget-gib',String(Math.max(8,Math.min(Math.floor(ram*.8)-10,Math.floor(arena/1.073741824)))));ramBudget=true;
+ const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;let ramKeep=false;
+ // The person's own RAM choice (a flag of theirs, in args or user_args) wins, and so does STRATA_RESIDENT_HEADROOM_GIB in the env: the engine reads it first.
+ if(profile==='work'&&ram>0&&arena>0&&!['--resident-experts','--mmap-experts','--resident-budget-gib','--ram-keep-gib'].some(f=>args.includes(f))){
+  args.push('--ram-keep-gib',String(ramKeepGib(ram)));ramKeep=true;
  }
- // The budget caps what the engine keeps in RAM. "Leave 20%" is also asked of the engine itself: at its start it leaves 20% of the RAM
- // available for other programs (it keeps fewer experts if the PC is busy), and it said nothing about this before.
- let ramHeadroom=false;
- if(ramBudget&&!(config.env?.STRATA_RESIDENT_HEADROOM_GIB)){env={...(env??config.env??{}),STRATA_RESIDENT_HEADROOM_GIB:String(Math.ceil(ram*.2))};ramHeadroom=true;}
- return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom}};
+ return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget:false,ramHeadroom:false,ramKeep}};
 }
+
+/** The RAM, in GiB, "Leave 20% for my work" asks the engine to keep free: a fifth of the PC's RAM rounded up, never under 5 or over 8
+ *  (5 at 24 GB, 7 at 32 GB, 8 at 64 GB and above). The engine adds it to the arena's need and, when the arena does not fit, leaves it free beside the RAM copy. */
+export const ramKeepGib=ram=>Math.min(8,Math.max(5,Math.ceil((Number(ram)||0)*.2)));
 
 /* One automatic second try after a start that died. Returns null when there is nothing safer to try (the caller then reports the first
    failure as it was) or {config, words, detail}: the same run config with ONE safer memory setting, a sentence for the user and the

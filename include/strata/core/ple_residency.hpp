@@ -71,4 +71,49 @@ inline bool arena_ram_fallback_allowed(const char* env_value, bool ple_ram_by_ha
     return true;
 }
 
+/// --ram-keep-gib W (default 0; STRATA_RAM_KEEP_GIB is the same for a program that cannot pass the flag): the RAM the person wants left
+/// free for their own work.  One setting for both RAM decisions at the start:
+///   1. the expert arena is used only if W GiB are still available after it (`arena_need_with_keep`: its need plus W against the RAM available);
+///   2. otherwise the RAM copy of the hottest experts (the budget form) leaves max(W, the platform's safety headroom) free, unless
+///      STRATA_RESIDENT_HEADROOM_GIB is set: that value wins.
+/// W = 0 is the behaviour before the setting existed: the arena whenever it fits, and the safety headroom.  The safety headroom is not
+/// optional: on Windows the copy is read through a mapped view whose pages are counted in the process, and the page trim that gives them
+/// back needs room (available RAM fell to 0.9 GiB during the copy of a 34.6 GiB budget with less).  8 GiB on Windows, 4 GiB elsewhere.
+inline constexpr uint64_t kGiB = 1073741824ull;
+inline constexpr uint64_t kRamKeepMax = 1024ull * kGiB;   // a typo cannot ask for more than any PC has
+
+inline uint64_t ram_keep_from_gib(double gib) {
+    if (!(gib > 0.0)) return 0;
+    if (gib >= (double) (kRamKeepMax / kGiB)) return kRamKeepMax;
+    return (uint64_t) (gib * (double) kGiB);
+}
+
+inline uint64_t fallback_safety_headroom(bool windows) { return windows ? 8ull * kGiB : 4ull * kGiB; }
+
+/// The RAM the arena (plus its spare blob) must find available: its need and the RAM to keep free, no overflow.
+inline uint64_t arena_need_with_keep(uint64_t need, uint64_t keep) {
+    return keep > UINT64_MAX - need ? UINT64_MAX : need + keep;
+}
+
+/// The headroom the RAM-copy fallback leaves free.  `env_headroom`: STRATA_RESIDENT_HEADROOM_GIB when it is set (wins, even below the safety headroom).
+inline uint64_t fallback_headroom(std::optional<uint64_t> env_headroom, uint64_t keep, uint64_t safety) {
+    if (env_headroom) return *env_headroom;
+    return keep > safety ? keep : safety;
+}
+
+/// The RAM copy's budget: what is available less the headroom; 0 (no copy: the plain file source) when less than 1 GiB would be left to it.
+inline uint64_t fallback_budget(uint64_t available, uint64_t headroom) {
+    return (headroom <= UINT64_MAX - kGiB && available > headroom + kGiB) ? available - headroom : 0;
+}
+
+/// Both decisions at once, for the tests and the startup line.
+struct RamKeepPlan { bool arena; uint64_t headroom; uint64_t budget; };
+inline RamKeepPlan ram_keep_plan(uint64_t arena_need, uint64_t available, uint64_t keep, std::optional<uint64_t> env_headroom, uint64_t safety) {
+    RamKeepPlan p{};
+    p.arena = arena_ram_verdict(arena_need_with_keep(arena_need, keep), available, ~uint64_t{0}, true) == ArenaRamVerdict::Load;
+    p.headroom = fallback_headroom(env_headroom, keep, safety);
+    p.budget = p.arena ? 0 : fallback_budget(available, p.headroom);
+    return p;
+}
+
 } // namespace strata::core
