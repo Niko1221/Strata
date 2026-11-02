@@ -25,6 +25,8 @@ def add_parser(sp) -> None:
         one.add_argument("--config", metavar="FILE", help="a model's run config: its data folder, model and drafting choice decide what is needed")
         one.add_argument("--family", metavar="NAME", help="the model family when there is no run config yet (qwen, gyro, coder, ...)")
         one.add_argument("--mode", choices=drafting.MODES, help="the choice to decide for (default: the run config's own)")
+        one.add_argument("--no-split", action="store_true",
+                         help="decide without the all-cards split engine (the app: in 0.2.10 only the Terminal starts it, so the app's Auto is DFlash2, not the split's MTP)")
         if name == "fetch":
             one.add_argument("--if-needed", action="store_true", help="download only when the choice would use the drafter and it is not here")
         one.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
@@ -68,7 +70,7 @@ def _inputs(a) -> dict:
     mode = a.mode if a.mode else cfg.get("drafting")
     if cfg.get("mtp") is False and drafting.normalize(mode) == "auto":
         mode = "off"                                         # the Draft layer switch is off and no drafter was chosen since
-    elif drafting.normalize(mode) == "auto" and _split_expected(cfg, args):
+    elif drafting.normalize(mode) == "auto" and not getattr(a, "no_split", False) and _split_expected(cfg, args):
         a._split = True                                      # the plan says so (the app's Models screen and its load read it)
         mode = "mtp"                                         # the all-cards split engine runs the MTP draft layer: the app fetches that, not DFlash2's drafter
     return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,

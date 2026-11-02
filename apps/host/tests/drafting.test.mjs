@@ -55,11 +55,11 @@ test('the host asks Control before a load, and Control decides (the app never re
       : { code: 0, json: { ok: true, event: 'result', pack: 'C:/d/dflash2/x.pack' }, text: '', stderr: '' };
   } });
   const plan = await control.draftingPlan({ mode: 'dflash2', family: 'gyro', dataDir: 'C:/d' });
-  assert.deepEqual(calls[0].args, ['drafting', 'plan', '--mode', 'dflash2', '--family', 'gyro', '--data-dir', 'C:/d', '--output', 'json']);
+  assert.deepEqual(calls[0].args, ['drafting', 'plan', '--mode', 'dflash2', '--family', 'gyro', '--data-dir', 'C:/d', '--no-split', '--output', 'json']);
   assert.equal(plan.needed, true);
   const events = [];
   await control.draftingFetch({ configPath: 'C:/w/cfg.json', mode: 'dflash2', onEvent: e => events.push(e) });
-  assert.deepEqual(calls[1].args, ['drafting', 'fetch', '--config', 'C:/w/cfg.json', '--mode', 'dflash2', '--if-needed', '--output', 'jsonl']);
+  assert.deepEqual(calls[1].args, ['drafting', 'fetch', '--config', 'C:/w/cfg.json', '--mode', 'dflash2', '--no-split', '--if-needed', '--output', 'jsonl']);
   assert.equal(calls[1].options.acquire, true, 'only this explicit step may reach the network');
   assert.equal(calls[0].options.acquire, undefined, 'planning never does');
   const failing = createControl({ control: { dir: 'C:/c', python: 'py', cli: 'strata.py' }, run: async () => ({ code: 5, json: { ok: false, error: { code: 'drafting_failed', message: 'The DFlash2 download did not finish.' } }, text: '', stderr: '' }) });
@@ -253,4 +253,25 @@ test('where the all-cards split engine takes the start, Auto is the MTP in the l
 test('the MTP fetch the app makes names the folder of the model own files, so the installer never downloads the model again', () => {
   const source = read('../server/native-control.mjs');
   assert.match(source, /async function installMtpLayer\(job,args,config\)\{[\s\S]*?const native=\(\(\)=>\{const a=\(config\.args\?\?\[\]\)\.map\(String\),i=a\.indexOf\('--native'\)[\s\S]*?install\(job,\{family:fam\.family,model:size\.model,drafter:'mtp',vision:args\.vision\?\?\(config\.vision\?'yes':'no'\),\.\.\.\(native\?\{gguf_dir:dirname\(native\)\}:\{\}\)\}\)/);
+});
+
+test('in 0.2.10 the app never plans or fetches for the all-cards split: every drafting call carries --no-split, and the label and fit say DFlash2 for Auto', async () => {
+  const calls = [];
+  const control = createControl({ control: { dir: 'C:/c', python: 'py', cli: 'strata.py' }, run: async args => { calls.push({ args }); return { code: 0, json: { ok: true, event: 'result', serves: true }, text: '', stderr: '' }; } });
+  await control.draftingPlan({ mode: 'auto' });
+  await control.draftingPlan({ configPath: 'C:/w/cfg.json', mode: 'auto', family: 'unsloth', dataDir: 'C:/d' });
+  await control.draftingFetch({ configPath: 'C:/w/cfg.json', mode: 'auto' });
+  for (const c of calls) assert.ok(c.args.includes('--no-split'), c.args.join(' '));
+  assert.equal(calls.length, 3);
+  // the plan of a machine whose Control says no split leaves Auto as DFlash2 in the app's words
+  const { transform } = await import('esbuild');
+  const code = (await transform(read('../src/lib/drafting.ts'), { loader: 'ts', format: 'esm' })).code;
+  const ts = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+  const host = await import('../server/native-settings.mjs');
+  for (const split of [false, undefined, null]) {
+    assert.equal(ts.resolveDrafter('auto', 'unsloth', true, split), 'dflash2');
+    assert.equal(host.resolveDrafter('auto', 'unsloth', true, split), 'dflash2');
+  }
+  assert.match(read('../server/control-runtime.mjs'), /'--no-split', '--output', 'json'\]/);
+  assert.match(read('../server/control-runtime.mjs'), /'--no-split', '--if-needed', '--output', 'jsonl'\]/);
 });

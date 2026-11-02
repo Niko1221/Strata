@@ -322,6 +322,85 @@ class PlanTellsTheApp(Base):
             self.assertEqual(p["choice"], "dflash2")
 
 
+class AppDoesNotSplit(Base):
+    """0.2.10: the all-cards split engine is Terminal-only; the app's drafting plan/fetch ask with --no-split, so Auto in the app on 2 NVIDIA / 4 R9700 cards is
+    the layer split with DFlash2 alone and no 5.2 GB draft layer is planned. The Terminal's own plan is unchanged: split + MTP."""
+
+    def plan(self, probe, *extra):
+        from tests.terminal.launch_support import run_cli
+        data = Path(self.home.base) / "d"
+        data.mkdir(exist_ok=True)
+        with mock.patch.object(SE, "probe_cards", lambda idx=None: probe), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),                 mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])):
+            code, out, err = run_cli(["drafting", "plan", "--family", "qwen", "--data-dir", str(data), "--output", "json", *extra])
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_the_app_plan_on_two_cards_is_dflash2_and_fetches_no_draft_layer(self):
+        p = self.plan(cards(2), "--mode", "auto", "--no-split")
+        self.assertEqual((p["split"], p["choice"], p["mtp_needed"]), (False, "dflash2", False))
+        self.assertTrue(p["needed"], "the DFlash2 drafter is the app's fetch")
+        self.assertEqual(p["mtp_gb"], 0.0)
+
+    def test_the_terminal_plan_on_two_cards_is_unchanged_split_and_the_mtp(self):
+        p = self.plan(cards(2), "--mode", "auto")
+        self.assertEqual((p["split"], p["choice"], p["needed"]), (True, "mtp", False))
+
+    def test_four_r9700_in_the_app_are_dflash2_too(self):
+        p = self.plan(cards(4, vendor="amd", arch="gfx1201"), "--mode", "auto", "--no-split")
+        self.assertEqual((p["split"], p["choice"]), (False, "dflash2"))
+
+    def test_the_flag_is_on_fetch_too(self):
+        from tests.terminal.launch_support import run_cli
+        code, out, _ = run_cli(["drafting", "fetch", "--help"])
+        self.assertIn("--no-split", out)
+
+
+class LaneClamp(Base):
+    """The engine runs 1..8 lanes ("sfnx: --batch must be 1..8"): the AMD four-card default PARALLEL 32, a layer config's own --batch and an app profile's parallel
+    are cut to 8 in the split's run config and in the server's --batch."""
+
+    def split_args(self, lanes):
+        d = SE.Decision(True, [], 2)
+        cfg = SE.split_config({"tokenizer": "/t", "port": 1}, d, exe="/e/strata-split-2-sm86", native="/m/x-00001.gguf", mtp_dir="/m/mtp/rt", draft_vocab="/e/v.bin",
+                              context=131072, lanes=lanes)
+        return cfg["args"]
+
+    def test_split_config_cuts_the_lanes_to_1_through_8(self):
+        for lanes, want in ((32, "8"), (9, "8"), (8, "8"), (5, "5"), (1, "1"), (0, "1")):
+            a = self.split_args(lanes)
+            self.assertEqual(a[a.index("--batch") + 1], want, lanes)
+
+    def stubbed(self, cfg, probe, mode_="on", exe="/e/strata-split-2-sm86"):
+        data = Path(self.home.base) / "vocab"
+        data.mkdir(exist_ok=True)
+        (data / "draft_vocab_en.bin").write_bytes(b"v")
+        return SE.apply_to_config(cfg, exe_for_cards=lambda n, cc=None, arch=None: exe, system="linux", probe=lambda i: probe, ram=lambda: (500.0, 400.0),
+                                  scan=lambda p: SE.ASSUMED_MODEL, data_dir=str(data), mode_=mode_)
+
+    def test_iq3_s_on_two_cards_with_a_layer_config_batch_32_starts_with_8(self):
+        native = Path(self.home.base) / "x-00001.gguf"
+        native.write_bytes(b"g")
+        cfg = {"gpu": [0, 1], "split_engine": "on", "args": ["--pack", "/p", "--native", str(native), "--mtp", "/m/mtp/rt", "--max-context", "131072", "--batch", "32"]}
+        d = self.stubbed(cfg, cards(2, cc=86))
+        self.assertTrue(d.use_split, d.reasons)
+        self.assertEqual(cfg["args"][cfg["args"].index("--batch") + 1], "8")
+
+    def test_the_amd_four_card_default_parallel_32_starts_with_8(self):
+        native = Path(self.home.base) / "x-00001.gguf"
+        native.write_bytes(b"g")
+        cfg = {"gpu": [0, 1, 2, 3], "parallel": 32, "args": ["--pack", "/p", "--native", str(native), "--mtp", "/m/mtp/rt", "--max-context", "131072"]}
+        d = self.stubbed(cfg, cards(4, vendor="amd", arch="gfx1201"), mode_="auto", exe="/e/strata-split-4-amd")
+        self.assertTrue(d.use_split, d.reasons)
+        self.assertEqual(cfg["args"][cfg["args"].index("--batch") + 1], "8")
+
+    def test_a_profile_parallel_of_16_gives_the_servers_batch_8(self):
+        from serve.server import parallel_args
+        for n, want in ((16, "8"), (32, "8"), (3, "3"), (8, "8")):
+            args = list(SPLIT_ARGS)
+            parallel_args(split_cfg(parallel=n), args)
+            self.assertEqual(args[args.index("--batch") + 1], want, n)
+
+
 class AppPath(Base):
     """The app's Settings 'Concurrent requests = N' is a profile override on the saved run config (strata_control/profiles); `strata serve --profile` reads it."""
 

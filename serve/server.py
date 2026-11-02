@@ -3568,6 +3568,9 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
 PARALLEL_MAX = 8      # without a layer split the engine's batch window holds at most 8 rows (kVerifyNarrowT); --batch-mtp waves more through it
 
 
+SPLIT_MAX_LANES = 8   # the all-cards split engine runs 1..8 lanes (strata_control/split_engine.py MAX_LANES)
+
+
 def parallel_flag_conflicts(cfg: dict) -> bool:
     """`--parallel N` next to the saved engine args' own --batch/--slots is refused, except for the all-cards split engine's run config (split_config's
     "split_engine_note"): its --batch is its lane count, and "parallel" sets it (parallel_args). The app's Concurrent requests reaches the server this way."""
@@ -3584,7 +3587,7 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
         # the all-cards split engine: its run config carries --batch N (its lanes); "parallel" (the Terminal's --parallel, the app's Concurrent requests) sets N
         n = cfg.get("parallel")
         if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
-            args[args.index("--batch") + 1] = str(n)
+            args[args.index("--batch") + 1] = str(min(n, SPLIT_MAX_LANES))
         return []
     if "--batch" in args or "--slots" in args or (ds and "--parallel" in args):
         return []

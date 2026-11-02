@@ -77,6 +77,7 @@ RAM_SPARE_GIB = 8.0                # left over beside the engine's own RAM
 RAM_PINNED_BUFFERS_GIB = 3.0       # the exchange buffers and heap (smaps: 1.7 GiB pinned + 0.9 heap)
 CONVERSATION_CACHE_MIB = 4096      # parked conversations (host RAM); the engine's own default is 32-128 GiB
 DEFAULT_LANES = 6
+MAX_LANES = 8                       # the engine: "--batch must be 1..8" (lanes above it, e.g. the AMD four-card default of 32, are cut to it)
 
 
 @dataclasses.dataclass
@@ -255,7 +256,7 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     cfg = {k: v for k, v in base.items() if k not in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting")}
     cfg["exe"] = exe
     cfg["args"] = ["--native", native, "--mtp", mtp_dir, "--draft-vocab", draft_vocab, "--max-context", str(context),
-                   "--spec", "6", "--lookup", "15", "--conversation-cache-mib", str(cache_mib), "--batch", str(max(lanes, 1))]
+                   "--spec", "6", "--lookup", "15", "--conversation-cache-mib", str(cache_mib), "--batch", str(min(MAX_LANES, max(lanes, 1)))]
     if vision:
         cfg["args"].append("--vision")
     # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
