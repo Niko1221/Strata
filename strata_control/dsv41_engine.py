@@ -15,6 +15,38 @@ from typing import Callable
 NAME = "strata-dsv41"
 DIR = "engine-dsv41"
 
+#: A Mac engine that carries DeepSeek's picture tower on Metal has this text in its program (the same way drafting.engine_reads_selector_q4 reads its mark).  Pictures for
+#: DeepSeek on a Mac are on exactly when the installed strata-dsv41 has it: capability, not a switch.
+MARK_MAC_VISION = b"STRATA_DS4_METAL_VISION_V1"
+MAC_TEXT_LINE = "DeepSeek on a Mac reads text only with this engine (its picture reader needs an engine update)."
+_macvis: dict = {}
+
+
+def reads_mac_vision(exe) -> bool:
+    """Does the strata-dsv41 program at `exe` contain MARK_MAC_VISION?  Read from the file (never started), once per path, size and time; False when it cannot be read."""
+    import mmap
+    try:
+        path = Path(exe)
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+    except (OSError, ValueError, TypeError):
+        return False
+    if key not in _macvis:
+        try:
+            with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                _macvis[key] = data.find(MARK_MAC_VISION) >= 0
+        except (OSError, ValueError):
+            _macvis[key] = False
+    return _macvis[key]
+
+
+def mac_vision_state(exe) -> str:
+    """"yes" (the engine has the marker), "no" (an engine is there without it: text only) or "unknown" (no engine installed yet: the first start fetches the newest, and
+    setup looks again once it is there)."""
+    if not exe or not Path(str(exe)).is_file():
+        return "unknown"
+    return "yes" if reads_mac_vision(exe) else "no"
+
 
 def exe_name() -> str:
     return NAME + (".exe" if os.name == "nt" else "")

@@ -141,8 +141,13 @@ class CatalogRules(unittest.TestCase):
     def test_a_mac_is_judged_by_unified_memory_and_the_words_follow(self):
         hw = {"ram_gb": 32.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
               "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": 32.0, "usable": True}]}
-        with Home():
+        with Home() as h:
             cat = catalog(hw)
+            eng = h.base / "strata-dsv41"
+            eng.write_bytes(b"engine without the Metal picture tower")      # an installed DeepSeek engine without STRATA_DS4_METAL_VISION_V1: text only (with it: pictures)
+            patcher = mock.patch.object(type(cat.strata), "dsv41_engine_exe", lambda self_: eng)
+            patcher.start()
+            self.addCleanup(patcher.stop)
             rows = {r.model: r for r in cat.rows()}
             self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two ISTA-DAS sets run on a Mac, UD-IQ1_S since f-039; the Coder and UD-IQ1_M are offered with a "not run yet" line
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
