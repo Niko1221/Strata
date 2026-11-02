@@ -163,7 +163,7 @@ class SlotSessions(unittest.TestCase):
         full = V.session_mib(131072)
         streamed = V.session_mib(131072, "int8", 32768)
         self.assertAlmostEqual(full, 1929, delta=15)
-        self.assertAlmostEqual(streamed, 621, delta=30)                  # the 32K pool (573 MiB with its fixed part) plus what scales with the whole context
+        self.assertAlmostEqual(streamed, 748, delta=15)                  # measured 0.73 GiB on the CUDA engine (DF2-MEM): the 32K pool (573 MiB with its fixed part) plus what scales with the whole context
         self.assertEqual(V.session_mib(8192, "int8", 32768), V.session_mib(8192))     # a resident window larger than the context changes nothing
         self.assertAlmostEqual(V.session_mib(131072, "int8", 4096), V.session_mib(131072, "int8", V.KV_RESIDENT_MIN), delta=0.01)   # the engine raises a small window to 20480
 
@@ -200,7 +200,7 @@ class SlotSessions(unittest.TestCase):
         self.assertIn("one request at a time", f.line)
 
     def test_a_12gb_card_keeps_128k_with_streamed_kv(self):
-        # setup writes --kv-resident 32768 at 128K: each of the 3 sessions keeps about 620 MiB, not 1.9 GB
+        # setup writes --kv-resident 32768 at 128K: each of the 3 sessions keeps about 750 MiB (measured), not 1.9 GB
         for vendor in ("intel", "other"):
             f = V.plan(FN, 12.0, 131072, "int8", 700, "auto", vendor, title=FN, reserve_fixed=True, prefill_fixed=True, slots=2, kv_resident=32768)
             self.assertFalse(f.changed, vendor)
