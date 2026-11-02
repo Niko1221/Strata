@@ -10,7 +10,7 @@
 
 | 项 | 数 |
 |---|---|
-| 改动面（相对 `upstream/main`） | 130 文件 / **+26,642 −93** |
+| 改动面（相对 `upstream/main`） | 130 文件 / **≈+26.7k −93**（含本文档，数字随文档提交浮动） |
 | 本功能提交（非 merge） | 66 个（`.gitignore` 1、`[Train]` 13、`[Engine]` 7、`[Serve]` 5、`[Tools]` 3、`[Docs]`/`[Data]` 各 1，其余是早期训练线与本地 `main` 的既有提交） |
 | 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo.py` `sft.py` `grpo.py` 等 13 个文件 4,789 行 |
 | 测试 | 13 个 `test_*.py` 2,882 行，训练目录 **239 项全过**；`serve/test_training_api.py` 6 项 |
@@ -522,6 +522,26 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 
 ### 7.1 分支拓扑与基线
 
+**三条分支各是什么（实测，非推断）**：
+
+| 分支 | 头部 | 内容 | 测试 | 相对 `upstream/main` |
+|---|---|---|---|---|
+| `feat/train-mezo` | `d54d8a32` | 共用层 + **零阶** + 引擎（`LORA` / `SCORE`）；没有反传那 5 个提交 | 206 OK | 73 提交 / 124 文件 / +23,784 −93 |
+| `feat/train-backforward` | `b7085d3c` | **mezo 全部** + torch 反传栈（DPO / curriculum / clip window / TIS） | 239 OK | 80 提交 / 130 文件 / +26,441 −93 |
+| `feat/train_support` | 交付分支 HEAD | = backforward + 文档（**代码部分与 backforward 逐字相同**，`git diff -- '*.py'` 为空） | 239 OK | ≈87 提交 / 130 文件 / ≈+26.7k −93 |
+
+两条容易搞错的地方：
+
+- **`feat/train-backforward` 不是"只有标准（反传）训练"**：它是 `feat/train-mezo` 之上的叠加，
+  零阶、共用层、引擎全都在里面。想只交付反传而不要零阶，做不到 —— 零阶是共用层的注册目标
+  （`algos.py` 的 `sft/dpo/grpo` 都映射到 `mezo/mezo.py`），摘掉它注册表就红。
+- **"默认"指的是方法，不是分支**：`algos.py` 里 `DEFAULT_METHOD = "mezo"`（三条分支一致），
+  所以 `train.py` 不给 `--method` 时走零阶；这与选哪条分支交付是两件事。官方只要默认路线
+  就交 `feat/train-mezo`，要两条路线都可用就交 `feat/train_support`。
+- `perf/pack-load-accel` 的 merge（`05d66edc`）**不带功能**：它唯一的独有提交 `2a640fc9`
+  （`fadvise(DONTNEED)` + 分段计时）早就在 `06186a31` 里进了训练线，merge 只是补祖先，
+  还顺带把同一段定义搬了第二份进来，已由 `330eba47` 回退。
+
 ```
 upstream/main c62d5e3a
   └─ feat/train_support  7fa6caaa   早期 13 个训练提交（旧基点，见下方基线判据）
@@ -532,8 +552,12 @@ upstream/main c62d5e3a
                  └─ feat/train-backforward  6e7a88ac   + torch 反传栈
                       ├─ 0c676f32  同一映射表迁移
                       └─ b7085d3c  merge feat/train-mezo（239 项全绿）
-                           └─ feat/train_support 05d66edc  merge perf/pack-load-accel
-                                └─ a5a3f3af  文档
+                           └─ feat/train_support 05d66edc  merge perf/pack-load-accel（净变化为零）
+                                ├─ a5a3f3af  文档：评审说明按 PR 口径重写
+                                ├─ 74118854  文档：迁移下沉到每条分支
+                                ├─ f7aabccd  文档：指明哪一份说明是权威版
+                                └─ 330eba47  回退 merge 带出的重复定义（此文件与反传分支逐字一致）
+                                     └─ 之后只有文档提交（本节即其一）
 ```
 
 **为什么不是「core / mezo / backforward」三条并列**：共用层单独**不能跑** —— 注册表
@@ -549,7 +573,7 @@ merge 零阶层（`b7085d3c`，239 项全绿），support 是两者合并的结�
 
 - **官方只要零阶** ⇒ 直接交付 `feat/train-mezo`（`d54d8a32`）。不需要 cherry-pick，也不需要
   再把目录搬一次 —— 这正是"迁移只做在交付面"那版的缺口：合并后的树能拆，但源分支拆不出来。
-- **两条都要** ⇒ 交付 `feat/train_support`（`a5a3f3af`）。审 diff 用
+- **两条都要** ⇒ 交付 `feat/train_support`（HEAD）。审 diff 用
   `upstream/main...feat/train_support`，看到的就是 `training/`。
 - 两条分支的迁移提交是同一批 rename（`d54d8a32` / `0c676f32`），路径逐一对齐，所以合并
   不会出现两份文件；实测只有 `sft.py`、`test_train.py` 各一次 add/add 冲突 —— 反传侧是
@@ -560,7 +584,7 @@ merge 零阶层（`b7085d3c`，239 项全绿），support 是两者合并的结�
   那份早期版覆盖的能力面与零阶层一致，不矛盾。
 
 **基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main c62d5e3a`（= `Niko1221/Strata`
-的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 83**。
+的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 ≈87**。
 本仓库的 `origin` 是 fork（`xiezhipeng-git/Strata`），它的 `main` 停在 `80494788`（2026-10-15），
 **落后上游 2,755 个提交** —— 老 `support 7fa6caaa` 那句"落后 2,755"就是因为当年从 fork 的
 main 切出来的。所以比对一律用 `upstream/main...feat/train_support`，拿 `origin/main` 比会
@@ -570,7 +594,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 
 | 分支 | 是什么 | 状态 |
 |---|---|---|
-| `perf/pack-load-accel` | 载入加速：每块读完 `fadvise(DONTNEED)`，冷读 2.98→0.33 GiB/s 那个坑（28 GiB 9.4 s vs 85.8 s） | **已 merge**（`05d66edc`，无冲突）。内容此前已在树里，merge 只补了祖先；同时删掉了 merge 带出的一段重复定义 |
+| `perf/pack-load-accel` | 载入加速：每块读完 `fadvise(DONTNEED)`，冷读 2.98→0.33 GiB/s 那个坑（28 GiB 9.4 s vs 85.8 s） | **已 merge**（`05d66edc`，无冲突）。内容此前已在树里（`06186a31`），merge 只补祖先、净变化为零；它带出的重复定义已由 `330eba47` 回退 |
 | `feat/lora-sign` | adapter 的符号，换表不搬家 | 已纳入（mezo 的 31 个引擎提交之一，`e9173c16`；+56/+13/+64 行，**只服务零阶**的 θ−ε，见下方三层表） |
 | `feat/lora-q36` | LP 行协议 + per-request LoRA | 已纳入 |
 | `feat/score` | `SCORE <ids>`：逐位置 logp（`/v1/score`） | 已纳入 mezo（merge `53e729fa`，`merge-base --is-ancestor` 核过）。**不单独提 PR**：它技术上能独立（`score.cpp` 里 `lora`/`adapter` 0 命中，不依赖换表命令，单独给任意 ids 打分就能跑），但脱离训练只是"给一段 caller 指定的 ids 出逐位置 logp"，审核者第一个问题就是"谁用"；且它是零阶的度量核心（θ±ε 的 L 全靠它），拆开要两处维护 |
@@ -600,7 +624,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 
 **所以 `feat/score` 和 LoRA 都不是能独立交付的分支**：SCORE 拆出去没有使用者，LoRA 拆出去是别人的 PR。
 
-> 真正适合独立提 PR 的是 **`perf/pack-load-accel`**（Linux 载入存档加速：每块读完 `fadvise(DONTNEED)`，28 GiB 冷读 85.8 s → 9.4 s）——它跟训练毫无关系，是纯性能修复，已在 `05d66edc` merge 进来，审核方想单独先收这一段完全可以。
+> 真正适合独立提 PR 的是 **`perf/pack-load-accel`**（Linux 载入存档加速：每块读完 `fadvise(DONTNEED)`，28 GiB 冷读 85.8 s → 9.4 s）——它跟训练毫无关系，是纯性能修复，已在 `05d66edc` merge 进来（净变化为零，功能早就在 `06186a31` 里），审核方想单独先收这一段完全可以。
 
 ### 7.4 兼容性、回滚与合并顺序
 
