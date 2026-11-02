@@ -1,20 +1,26 @@
-"""strata-split: when the all-cards split engine may run, and the run config for it. OFF by default, opt-in.
+"""strata-split: when the all-cards split engine may run, and the run config for it. AUTOMATIC by default (mode "auto"), with an off switch.
 
 `strata-split-N` (src/split, from sFNX, MIT, Copyright (c) 2026 John Fink) gives every card a share of EVERY layer instead of some
 layers, and the cards exchange the layer sums through page-locked host memory (no peer access anywhere). On two RTX A6000 with
-UD-Q4_K_XL it decodes 40-95% faster than the normal layer split and reads prompts 1.7-2.8x slower (phaseA-tests/sfnx/RESULTS.md,
-section 8), so it is an option, never the default, until the owner has chosen.
+UD-Q4_K_XL it decodes 40-95% faster than the normal layer split (phaseA-tests/sfnx/RESULTS.md). The owner's decision: it runs by itself whenever the
+rule below says yes ("auto", the default), and `strata launch --split-engine off` (or "split_engine": "off" in the run config, or
+STRATA_SPLIT_ENGINE=0) turns it off; "on" asks for it and says why in one line when it cannot run. In auto a "no" is silent: the normal
+layer split starts, as before.
 
 This module is pure (no I/O besides reading GGUF directories): the launcher passes it facts and gets a Decision. The rule, from what
 has actually been run:
 
-  - the person turned it on (config key "split_engine": true, or `strata launch --split-engine on`); never otherwise;
+  - not turned off (mode(): "auto" by default; "on" is the same rule but a refusal is reported; "off" never);
   - Linux, 2 to 4 cards of ONE make (NVIDIA, or AMD RDNA4 gfx1201: the R9700 and RX 9070), all the same model of card and memory size;
-  - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards and AMD gfx1201 on 4 cards (see
-    TESTED below). Others build but stay off unless the caller says allow_untested (testers); the Decision says which part is untested
-    in plain words;
-  - the GGUF is UD-Q4_K_XL type: routed experts Q4_K/Q5_K/Q5_1/Q8_0, token embeddings and the shared expert Q8_0 (checked from the
-    file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers, 512 experts);
+  - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards, AMD gfx1201 on 4 cards. Others build
+    but stay off unless the caller says allow_untested (testers); the Decision says which part is untested in plain words;
+  - AMD is opt-in for now: mode "auto" keeps the layer split on gfx1201 (AUTO_SPLIT_AMD_ARCHS is empty) and only `--split-engine on` runs the
+    split there. Adding "gfx1201" to that one constant makes AMD automatic like NVIDIA, once it meets the bar (8 users at or above the layer
+    split, a 103K prompt in the layer split's time; phaseA-tests/sfnx/RESULTS-HIP.md);
+  - the GGUF is a set the engine reads (checked from the file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers,
+    512 experts): routed experts Q4_K/Q5_K/Q5_1/Q8_0/Q4_0 (UD-Q4_K_XL, Q8_0) or the i-quants IQ2_S/IQ3_XXS/IQ3_S/IQ4_XS/IQ4_NL and Strata's
+    Q2_0 (UD-IQ4_XS, the IQ3_S set); token embeddings, shared expert, output head Q8_0, or, in a set with i-quant or Q2_0 experts,
+    any type the loader converts to Q8_0/F32 when it reads the file (src/split/src/tensor_convert.hpp);
   - ALL routed experts fit in the cards' memory (the expert cache is off: with it the engine keeps a 74 GiB pinned copy of the
     experts in RAM) and the RAM that stays (the 27.5 GiB locked embedding table, a few GiB of buffers and the conversation cache)
     is available with room to spare;
@@ -30,17 +36,31 @@ import pathlib
 import re
 from typing import Any
 
-# What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86).
+# What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86), 2x RTX PRO 6000 (srv118, sm_120).
 # AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md); two R9700 cannot hold UD-Q4_K_XL's experts.
-TESTED = {"nvidia": {"sm_86": (2,)}, "amd": {"gfx1201": ()}}
-BUILT_ARCHS = {"nvidia": ("sm_86",), "amd": ("gfx1201",)}   # the engine package's kernels: any other card is refused at start
-TESTED_CARD_COUNTS = (2,)          # NVIDIA (kept for callers that name it)
-TESTED_ARCHS = (86,)               # NVIDIA compute capability
+TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (4,)}}
+BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1201",)}   # the engine package's kernels: any other card is refused at start
+TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
+TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
+                                   # pictures; no suite there)
+MODES = ("auto", "on", "off")
+#: cards (compute capability) on which Auto drafting resolves to split + MTP rather than layer split + DFlash2: the split decodes faster there
+#: (phaseA-tests/sfnx/RESULTS.md section 17). Another card is not auto-split at all (TESTED_ARCHS), so it keeps Auto = layer split + DFlash2.
+AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
+#: AMD architectures on which mode "auto" starts the split engine. EMPTY on purpose: on gfx1201 the split ships opt-in (`--split-engine on`) until it
+#: meets the bar (8 users at or above the layer split, a 103K prompt at or under its time); then this becomes ("gfx1201",), the one flip.
+AUTO_SPLIT_AMD_ARCHS: tuple = ()
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
-EXPERT_TYPES = {"Q4_K", "Q5_K", "Q5_1", "Q8_0", "Q4_0"}   # the routed-expert kernels
-Q8_ROLES = ("token_embd.weight",)
+EXPERT_TYPES = {"Q4_K", "Q5_K", "Q5_1", "Q8_0", "Q4_0",           # the routed-expert kernels (decode and prompt)
+                "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL",  # ggml's i-quant vec_dots; prompt tiles in src/moe_mma_iq.cuh
+                "Q2_0"}                                           # Strata's 2-bit type: the loader repacks it to Q4_0 blocks (twice the bytes)
+# the loader (Gguf::convert_small_tensors) converts the dense tensors to Q8_0/F32 only when the file has one of these routed types
+CONVERT_TRIGGERS = {"IQ2_S", "IQ3_XXS", "IQ3_S", "Q2_0"}
+# and can read these types to do it
+CONVERTED_FROM = {"Q8_0", "Q4_K", "Q5_K", "Q6_K", "IQ4_XS", "IQ4_NL", "BF16", "F16", "F32"}
+PLE_TYPES = {"IQ4_NL", "Q8_0"}     # per_layer_token_embd.weight as the host's row reader takes it
 # measured on 2x RTX A6000 48 GB at 128K context, 6 lanes (phaseA-tests/sfnx/RESULTS.md section 8): a card held half the experts plus
 # 8.4 GiB of dense weights, buffers and the K/V pool, with 3.6 GiB left free. 9 GiB per card is that plus a little.
 CARD_OVERHEAD_GIB = 9.0
@@ -73,6 +93,8 @@ class ModelFacts:
     embd_ram_bytes: int             # token_embd + per_layer_token_embd: locked in RAM
     layers: int
     experts: int
+    ple_type: str | None = "IQ4_NL"     # per_layer_token_embd.weight
+    output_type: str | None = "Q8_0"    # output.weight
 
 
 @dataclasses.dataclass
@@ -83,6 +105,7 @@ class Decision:
     untested: list[str] = dataclasses.field(default_factory=list)   # what about this setup nobody has run
     need_vram_gib: float = 0.0
     need_ram_gib: float = 0.0
+    quiet: bool = False             # auto mode and a "no": the launch says nothing and starts the normal layer split
 
     @property
     def line(self) -> str:
@@ -109,6 +132,8 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
     routed_bytes = 0
     shexp: dict[str, int] = {}
     embd_type = None
+    ple_type = None
+    output_type = None
     embd_ram = 0
     layers = 0
     experts = 0
@@ -119,7 +144,7 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
             b = t.expected_bytes() or 0
             if "_exps" in n and n.endswith(".weight") and "shexp" not in n:
                 routed_types[t.type_name] = routed_types.get(t.type_name, 0) + 1
-                routed_bytes += b
+                routed_bytes += b * 2 if t.type_name == "Q2_0" else b     # the loader repacks Q2_0 to Q4_0: twice the bytes in the cards
                 if len(t.shape) >= 3:
                     experts = max(experts, t.shape[-1])
                 mm = re.search(r"blk\.(\d+)\.", n)
@@ -131,8 +156,11 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
                 embd_type = t.type_name
                 embd_ram += b
             elif n == "per_layer_token_embd.weight":
+                ple_type = t.type_name
                 embd_ram += b
-    return ModelFacts(routed_types, routed_bytes, embd_type, shexp, embd_ram, layers, experts)
+            elif n == "output.weight":
+                output_type = t.type_name
+    return ModelFacts(routed_types, routed_bytes, embd_type, shexp, embd_ram, layers, experts, ple_type, output_type)
 
 
 def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: float, ram_available_gib: float, model: ModelFacts,
@@ -184,10 +212,17 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("this is not a model it knows (no routed experts)")
     elif bad:
         why.append("the model's routed experts use " + "/".join(bad) + ", which it does not read")
-    if model.embd_type != "Q8_0":
-        why.append(f"the token embeddings are {model.embd_type}, it needs Q8_0")
-    if model.shexp_types and set(model.shexp_types) - {"F32"} != {"Q8_0"}:   # the router gate vector beside them is F32
-        why.append("the shared expert is not Q8_0")
+    converts = bool(CONVERT_TRIGGERS & set(model.routed_types))       # the loader then converts the dense tensors it does not read
+    readable = CONVERTED_FROM if converts else {"Q8_0"}
+    if model.embd_type not in readable:
+        why.append(f"the token embeddings are {model.embd_type}, it needs Q8_0" if not converts else
+                   f"the token embeddings are {model.embd_type}, which it cannot convert to Q8_0")
+    if model.shexp_types and not set(model.shexp_types) - {"F32"} <= readable:   # the router gate vector beside the shared expert is F32
+        why.append("the shared expert is " + "/".join(sorted(set(model.shexp_types) - readable - {"F32"})) + ", which it cannot read" + ("" if converts else " (it needs Q8_0)"))
+    if model.output_type is not None and model.output_type not in readable:
+        why.append(f"the output head is {model.output_type}, which it cannot read" + ("" if converts else " (it needs Q8_0)"))
+    if model.ple_type is not None and model.ple_type not in PLE_TYPES:
+        why.append(f"the per-layer embedding table is {model.ple_type}, it needs IQ4_NL or Q8_0")
     if (model.layers, model.experts) != (LAYERS, EXPERTS):
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
     need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB
@@ -217,6 +252,11 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
     cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
     cfg["split_fallback"] = {k: base[k] for k in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting", "cwd") if k in base}
+    # The split engine runs the model's own draft layer (the MTP) and nothing else. Saying so in the config ("drafting": "mtp") keeps serve/server.py's
+    # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them
+    # and every start would fall back to the layer split). The fallback keeps the person's own choice (or none: Auto), so the layer split that starts
+    # instead gets DFlash2 as usual.
+    cfg["drafting"] = "mtp"
     cfg["split_engine_note"] = decision.line
     return cfg
 
@@ -303,18 +343,44 @@ def _flag(args: list, name: str) -> str | None:
     return str(args[args.index(name) + 1]) if name in args and args.index(name) + 1 < len(args) else None
 
 
-def wanted(cfg: dict, environ: dict | None = None) -> bool:
-    """The person turned the option on: "split_engine": true in the run config, or STRATA_SPLIT_ENGINE=1 in the environment (testers)."""
+def mode(cfg: dict, environ: dict | None = None) -> str:
+    """"auto" (the default), "on" or "off". The run config's "split_engine" (true/false or the word; `strata launch --split-engine X` writes it)
+    and, over it, STRATA_SPLIT_ENGINE in the environment (testers). Anything it does not know is auto."""
     import os
 
-    return cfg.get("split_engine") is True or (environ if environ is not None else os.environ).get("STRATA_SPLIT_ENGINE") == "1"
+    env = environ if environ is not None else os.environ
+    raw = env.get("STRATA_SPLIT_ENGINE")
+    if raw is None or not str(raw).strip():
+        raw = cfg.get("split_engine")
+    if raw is True:
+        return "on"
+    if raw is False:
+        return "off"
+    return {"on": "on", "1": "on", "true": "on", "yes": "on", "off": "off", "0": "off", "false": "off", "no": "off"}.get(str(raw).strip().lower(), "auto")
+
+
+def wanted(cfg: dict, environ: dict | None = None) -> bool:
+    """The split engine may be tried for this launch (anything but off)."""
+    return mode(cfg, environ) != "off"
 
 
 def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allow_untested: bool = False, probe=None, ram=None,
-                    scan=None, data_dir: str | None = None) -> Decision:
-    """Turn a normal run config into the split engine's config IN PLACE when the rule says yes, and say what was decided.
-    exe_for_cards(n) -> the path of strata-split-n or None (the engine package has none); probe(indexes) -> [Card]; ram() -> (total,
-    available) GiB; scan(first_shard) -> ModelFacts: the facts of this PC and model, replaceable for tests."""
+                    scan=None, data_dir: str | None = None, mode_: str | None = None) -> Decision:
+    """Turn a normal run config into the split engine's config IN PLACE when the mode and the rule say yes, and say what was decided.
+    exe_for_cards(n, cc) -> the path of the strata-split-n built for compute capability cc, or None (the engine package has none);
+    probe(indexes) -> [Card]; ram() -> (total, available) GiB; scan(first_shard) -> ModelFacts: the facts of this PC and model, replaceable
+    for tests. Mode "off": nothing happens, silently. Mode "auto": a refusal is `quiet` (the normal layer split starts without a word)."""
+    m = mode_ or mode(cfg)
+    if m == "off":
+        return Decision(False, ["the all-cards split engine is turned off"], quiet=True)
+    d = _apply(cfg, exe_for_cards=exe_for_cards, system=system, allow_untested=allow_untested, probe=probe, ram=ram, scan=scan, data_dir=data_dir,
+               mode_=m)
+    if m == "auto" and not d.use_split:
+        d.quiet = True
+    return d
+
+
+def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan, data_dir, mode_: str = "auto") -> Decision:
     import os
     import pathlib
     import sys
@@ -324,6 +390,20 @@ def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allo
     native = _flag(args, "--native")
     if not native:
         return Decision(False, ["this model is not a single GGUF file set"])
+    # choices the split engine does not honour: the normal layer split keeps them
+    # Drafting: Auto (nothing written, or "auto") on a setup the split accepts runs the split with its MTP: measured faster to decode than the layer
+    # split with DFlash2 on both tested cards (AUTO_SPLIT_BEATS_DFLASH2, numbers in docs/SPLIT_ENGINE.md). The person's own "dflash2" (or "off", which the
+    # split cannot do: it needs the draft layer) keeps the layer split; "mtp" is what the split runs.
+    chosen = str(cfg.get("drafting") or "auto").lower()
+    if chosen == "dflash2":
+        return Decision(False, ["DFlash2 drafting was chosen, which the all-cards split engine does not run"])
+    if chosen == "off":
+        return Decision(False, ["drafting is off, and the all-cards split engine needs the draft layer"])
+    if cfg.get("user_args") or cfg.get("replicas"):
+        return Decision(False, ["this run config has engine arguments of its own or replicas, which the all-cards split engine does not take"])
+    kv = _flag(args, "--kv")
+    if kv not in (None, "int8"):
+        return Decision(False, [f"the conversation memory format is {kv}, the all-cards split engine keeps int8"])
     gpus = cfg.get("gpu")
     indexes = [int(g) for g in gpus] if isinstance(gpus, list) else ([int(gpus)] if isinstance(gpus, int) else None)
     cards = (probe or probe_cards)(indexes) if system == "linux" else []
@@ -337,9 +417,16 @@ def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allo
                allow_untested=allow_untested)
     if not d.use_split:
         return d
-    exe = exe_for_cards(d.cards)
+    amd = cards[0].vendor == "amd"
+    if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):
+        # opt-in on AMD: auto keeps the layer split (quiet), `--split-engine on` runs the split
+        return Decision(False, [f"the all-cards split engine is not automatic on {cards[0].arch_name} yet; it starts only with --split-engine on"], d.cards)
+    if not amd and chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
+        return Decision(False, ["on this card the layer split with DFlash2 has not been measured slower than the all-cards split engine"], d.cards)
+    # NVIDIA: strata-split-N-sm<cc> or strata-split-N; AMD: strata-split-N-<arch> (gfx1201), the third argument
+    exe = exe_for_cards(d.cards, cards[0].cc, cards[0].arch_name) if amd else exe_for_cards(d.cards, cards[0].cc)
     if not exe:
-        return Decision(False, [f"this engine package has no strata-split-{d.cards}"], d.cards)
+        return Decision(False, [f"this engine package has no strata-split-{d.cards}" + (f"-{cards[0].arch_name}" if amd else "")], d.cards)
     mtp = _flag(args, "--mtp")
     if not mtp:
         return Decision(False, ["the model has no draft layer files (--mtp)"], d.cards)

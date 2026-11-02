@@ -15,6 +15,7 @@
 #                        the engine refuses a card of any other architecture
 set(STRATA_SPLIT_CARDS "2" CACHE STRING "card counts strata-split is built for (2, 3, 4)")
 set(STRATA_SPLIT_ARCH "" CACHE STRING "compute capability strata-split is built for (e.g. 86)")
+set(STRATA_SPLIT_PF_JOB "64" CACHE STRING "rows of one expert per prompt-path job: 64 (default) or 128")
 
 set(_fnx_hip OFF)
 if(STRATA_ENABLE_HIP AND NOT STRATA_ENABLE_CUDA AND NOT WIN32 AND NOT APPLE)
@@ -88,7 +89,7 @@ foreach(_n ${STRATA_SPLIT_CARDS})
   endif()
   target_include_directories(${_t} PRIVATE ${_sp}/src ${_sp}/tools ${STRATA_GGML_DIR}/ggml/src/ggml-cuda ${STRATA_GGML_DIR}/ggml/src
                              ${STRATA_GGML_DIR}/ggml/include)
-  target_compile_definitions(${_t} PRIVATE FNX_NCARD=${_n} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0 FNX_HOSTRING=1
+  target_compile_definitions(${_t} PRIVATE FNX_NCARD=${_n} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0 FNX_HOSTRING=1 FNX_PF_JOB=${STRATA_SPLIT_PF_JOB}
                              FNX_DIR="${_sp}")
   target_compile_options(${_t} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --expt-relaxed-constexpr -Wno-deprecated-gpu-targets>)
   set_target_properties(${_t} PROPERTIES CUDA_ARCHITECTURES "${STRATA_SPLIT_ARCH}-real" CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON
@@ -113,4 +114,32 @@ if(STRATA_BUILD_TESTS)
     target_link_libraries(split_${_tt} PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
     add_test(NAME split_${_tt} COMMAND split_${_tt})
   endforeach()
+  # the load-time conversion's oracle tool (tests/split/convert_check.py compares its output with gguf-py on a real file; not a ctest)
+  add_executable(split_convert_dump ${_sp}/tools/convert_dump.cpp ${_sp}/src/gguf.cpp)
+  target_include_directories(split_convert_dump PRIVATE ${_sp}/src ${_sp}/tools)
+  target_compile_definitions(split_convert_dump PRIVATE FNX_NCARD=${_n0} FNX_27B=0)
+  target_compile_features(split_convert_dump PRIVATE cxx_std_17)
+  set_target_properties(split_convert_dump PROPERTIES CUDA_ARCHITECTURES OFF)
+  target_link_libraries(split_convert_dump PRIVATE Threads::Threads)
+  # the weight tiles of the prompt kernel run on a GPU against the file (tests/split/tile_check.py reads its output); not a ctest
+  add_executable(split_moe_tile_test ${_sp}/tools/moe_tile_test.cu ${_sp}/src/gguf.cpp)
+  target_include_directories(split_moe_tile_test PRIVATE ${_sp}/src ${_sp}/tools ${STRATA_GGML_DIR}/ggml/src/ggml-cuda ${STRATA_GGML_DIR}/ggml/src
+                             ${STRATA_GGML_DIR}/ggml/include)
+  target_compile_definitions(split_moe_tile_test PRIVATE FNX_NCARD=${_n0} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0)
+  target_compile_options(split_moe_tile_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --expt-relaxed-constexpr -Wno-deprecated-gpu-targets>)
+  set_target_properties(split_moe_tile_test PROPERTIES CUDA_ARCHITECTURES "${STRATA_SPLIT_ARCH}-real" CUDA_STANDARD 17 CXX_STANDARD 17)
+  target_link_libraries(split_moe_tile_test PRIVATE Threads::Threads)
+  # fnx_run: sFNX's test driver (teacher-forced logits to an .lgr file, prompt/decode checks), the same engine objects with its own main
+  set(_sp_run_src ${_sp_engine})
+  list(REMOVE_ITEM _sp_run_src ${_sp}/tools/sfnx.cpp)
+  add_executable(split_fnx_run ${_sp_run_src} ${_sp}/tools/fnx_run.cpp ${_sp_kparts})
+  set_source_files_properties(${_sp}/tools/fnx_run.cpp PROPERTIES LANGUAGE CUDA)
+  target_include_directories(split_fnx_run PRIVATE ${_sp}/src ${_sp}/tools ${STRATA_GGML_DIR}/ggml/src/ggml-cuda ${STRATA_GGML_DIR}/ggml/src
+                             ${STRATA_GGML_DIR}/ggml/include)
+  target_compile_definitions(split_fnx_run PRIVATE FNX_NCARD=${_n0} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0 FNX_HOSTRING=1 FNX_DIR="${_sp}")
+  target_compile_options(split_fnx_run PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --expt-relaxed-constexpr -Wno-deprecated-gpu-targets>)
+  set_target_properties(split_fnx_run PROPERTIES CUDA_ARCHITECTURES "${STRATA_SPLIT_ARCH}-real" CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CXX_STANDARD 17)
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(split_fnx_run PRIVATE CUDA::cublas CUDA::cuda_driver Threads::Threads)
+  set_target_properties(split_fnx_run PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 endif()

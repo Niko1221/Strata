@@ -6,6 +6,7 @@
 #include <random>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -449,11 +450,6 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         return d;
     };
     Finish fin = Finish::length;
-    // FNX_DUMP_FIRST_LOGITS=PREFIX (measurements): the full-vocabulary logits of the first generated token (row 0 of the first window) of each request,
-    // as float32 to PREFIX.<n>, n counting requests from 0 (Strata's STRATA_DUMP_FIRST_LOGITS twin, for first-token KL between the two engines)
-    static const char* const dump_prefix = std::getenv("FNX_DUMP_FIRST_LOGITS");
-    static int dump_n = 0;
-    bool dumped = dump_prefix == nullptr;
     for (;;) {
         if (stop && stop->load()) {
             fin = Finish::cancel;
@@ -468,12 +464,15 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         const int p = e_.pos();
         const auto tv = std::chrono::steady_clock::now();
         std::vector<int> o = e_.verify(rows);
-        if (!dumped) {
-            dumped = true;
-            const std::vector<float> lg = e_.last_logits(1);
-            if (std::FILE* f = std::fopen((std::string(dump_prefix) + "." + std::to_string(dump_n++)).c_str(), "wb")) {
-                std::fwrite(lg.data(), sizeof(float), lg.size(), f);
-                std::fclose(f);
+        if (produced == 0) {   // FNX_DUMP_FIRST_LOGITS=PATH (diagnostics): the full-vocabulary logits of each request's first token to PATH.<n> (float32)
+            static const char* dump = std::getenv("FNX_DUMP_FIRST_LOGITS");
+            static int dump_n = 0;
+            if (dump) {
+                const std::vector<float> row = e_.last_logits(1);
+                const std::string path = std::string(dump) + "." + std::to_string(dump_n++);
+                std::FILE* f = std::fopen(path.c_str(), "wb");
+                if (!f || std::fwrite(row.data(), 4, row.size(), f) != row.size()) std::fprintf(stderr, "session: FNX_DUMP_FIRST_LOGITS: cannot write %s\n", path.c_str());
+                if (f) std::fclose(f);
             }
         }
         st.verify_ms += ms_since(tv);

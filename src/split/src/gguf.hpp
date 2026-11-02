@@ -10,6 +10,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <set>
@@ -21,7 +22,8 @@ namespace fnx {
 
 enum GgmlType : uint32_t {
     T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q4_1 = 3, T_Q5_0 = 6, T_Q5_1 = 7, T_Q8_0 = 8, T_Q8_1 = 9, T_Q2_K = 10,
-    T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14, T_Q8_K = 15, T_IQ4_NL = 20, T_BF16 = 30,
+    T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14, T_Q8_K = 15, T_IQ3_XXS = 18, T_IQ4_NL = 20, T_IQ3_S = 21, T_IQ2_S = 22,
+    T_IQ4_XS = 23, T_BF16 = 30, T_Q2_0 = 42,   // 42: Strata's 64-value 2-bit blocks (not in llama.cpp)
 };
 
 struct TypeInfo {
@@ -64,6 +66,7 @@ public:
 #endif
     const std::map<std::string, Tensor>& tensors() const { return tensors_; }
     int shards() const { return (int) maps_.size(); }
+    int converted() const { return converted_; }   // tensors re-quantized at load (0 for every file the engine reads as it is)
     const std::string& shard_path(int s) const { return maps_[(size_t) s].path; }
     size_t shard_size(int s) const { return maps_[(size_t) s].size; }
     const uint8_t* shard_base(int s) const { return (const uint8_t*) maps_[(size_t) s].base; }
@@ -80,7 +83,10 @@ private:
     std::map<std::string, std::vector<std::string>> str_arrays_;
 #endif
     std::set<std::string> keys_;
+    std::deque<std::vector<uint8_t>> owned_;   // tensors converted at load (tensor_convert.hpp): their bytes live here, not in a file
+    int converted_ = 0;
     void load_shard(const std::string& path, bool meta);
+    void convert_small_tensors();
 };
 
 // Reads groups of tensors (a layer's, say) into host buffers ahead of the threads that slice them, in the order they
@@ -116,6 +122,7 @@ private:
         std::vector<Span> spans;
         size_t bytes = 0;
         std::map<std::string, Tensor> t;
+        std::set<std::string> fixed;   // converted tensors: their bytes are already in memory (data is a pointer, not an offset into buf)
         uint8_t* buf = nullptr;
         int left = 0;          // consumers not through with it yet
         bool ready = false;

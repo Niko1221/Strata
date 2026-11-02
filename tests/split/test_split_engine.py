@@ -59,7 +59,7 @@ class Rule(unittest.TestCase):
         self.assertIn("same model", d.line)
 
     def test_untested_counts_archs_and_contexts_stay_off_unless_a_tester_allows_them(self):
-        for c in (cards(3), cards(2, cc=89), cards(2, cc=120)):
+        for c in (cards(3), cards(2, cc=89), cards(2, cc=90)):
             d = decide(cards=c)
             self.assertFalse(d.use_split)
             self.assertIn("only been run", d.line)
@@ -84,11 +84,58 @@ class Rule(unittest.TestCase):
         self.assertIn("RAM", d.line)
 
     def test_only_the_quant_types_it_reads(self):
-        for model in (udq4(routed_types={"IQ3_S": 10, "IQ2_S": 20, "IQ4_NL": 39}), udq4(embd_type="IQ4_XS"),
-                      udq4(shexp_types={"BF16": 48, "IQ4_NL": 47}), udq4(layers=64), udq4(routed_types={})):
+        for model in (udq4(layers=64), udq4(routed_types={}),
+                      udq4(routed_types={"Q6_K": 48}),                                  # UD-Q6_K_XL-like experts: no kernel
+                      udq4(embd_type="IQ4_XS"),                                         # a K-quant set is not converted at load
+                      udq4(shexp_types={"BF16": 48, "IQ4_NL": 47}),
+                      udq4(output_type="Q6_K"),
+                      udq4(ple_type="Q6_K")):
             d = decide(model=model)
             self.assertFalse(d.use_split, model)
             self.assertTrue(d.line.startswith("Using the normal layer split"))
+
+    def test_the_iq3_s_set_and_ud_iq4_xs_run(self):
+        iq3s = S.ModelFacts(routed_types={"IQ2_S": 40, "IQ3_XXS": 34, "IQ3_S": 20, "IQ4_XS": 2, "IQ4_NL": 39, "Q2_0": 9},
+                            routed_bytes=int(49 * GIB), embd_type="IQ4_XS", shexp_types={"IQ4_XS": 60, "Q4_K": 40, "Q5_K": 20, "IQ4_NL": 24},
+                            embd_ram_bytes=int(27.2 * GIB), layers=48, experts=512, ple_type="IQ4_NL", output_type="Q6_K")
+        d = decide(model=iq3s)
+        self.assertTrue(d.use_split, d.reasons)
+        ud_iq4_xs = S.ModelFacts(routed_types={"IQ3_S": 94, "IQ4_XS": 2, "IQ4_NL": 43, "Q8_0": 5}, routed_bytes=int(59.5e9),
+                                 embd_type="Q8_0", shexp_types={"Q8_0": 144}, embd_ram_bytes=int(27.5 * GIB), layers=48, experts=512,
+                                 ple_type="IQ4_NL", output_type="Q6_K")
+        d = decide(model=ud_iq4_xs)
+        self.assertTrue(d.use_split, d.reasons)
+        self.assertTrue(d.need_vram_gib < 48, d.need_vram_gib)
+
+    def test_a_type_the_loader_cannot_convert_is_a_plain_refusal(self):
+        for model, word in ((udq4(routed_types={"IQ3_S": 94}, embd_type="Q3_K"), "cannot convert"),
+                            (udq4(routed_types={"IQ3_S": 94}, shexp_types={"Q3_K": 5}), "cannot read"),
+                            (udq4(routed_types={"IQ3_S": 94}, ple_type="Q6_K"), "per-layer"),
+                            (udq4(routed_types={"IQ3_S": 94, "TQ2_0": 2}), "TQ2_0")):
+            d = decide(model=model)
+            self.assertFalse(d.use_split)
+            self.assertIn(word, d.line)
+            self.assertNotIn(chr(10), d.line)          # one plain line
+
+    def test_scan_counts_the_q2_0_repack_twice(self):
+        from unittest import mock
+
+        class T:
+            def __init__(self, name, type_name, shape, nbytes):
+                self.name, self.type_name, self.shape, self._n = name, type_name, shape, nbytes
+            def expected_bytes(self):
+                return self._n
+
+        class F:
+            def __init__(self, path):
+                self.tensors = [T("blk.0.ffn_down_exps.weight", "Q2_0", (640, 2560, 512), 1000), T("blk.1.ffn_gate_exps.weight", "IQ3_S", (2560, 640, 512), 5000),
+                                T("token_embd.weight", "IQ4_XS", (2560, 248320), 10), T("per_layer_token_embd.weight", "IQ4_NL", (1, 2), 20),
+                                T("output.weight", "Q6_K", (2560, 248320), 30)]
+        with mock.patch("tools.gguf_reader.GGUFFile", F):
+            m = S.scan_model("/x/model-00001-of-00001.gguf")
+        self.assertEqual(m.routed_bytes, 2 * 1000 + 5000)
+        self.assertEqual((m.embd_type, m.ple_type, m.output_type), ("IQ4_XS", "IQ4_NL", "Q6_K"))
+        self.assertEqual(m.embd_ram_bytes, 30)
 
     def test_the_reasons_are_all_reported(self):
         d = decide(system="windows", cards=cards(1), model=udq4(embd_type="Q6_K"))
@@ -137,7 +184,7 @@ class Apply(unittest.TestCase):
                 "cwd": tmp, "tokenizer": "tok", "port": 8080, "gpu": [0, 1], "env": {}, "split_engine": True}
 
     def run_apply(self, cfg, *, cards_=None, avail=80.0, model=None, exe="/e/strata-split-2", **kw):
-        return S.apply_to_config(cfg, exe_for_cards=lambda n: exe, system=kw.pop("system", "linux"), probe=lambda idx: cards_ or cards(),
+        return S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None: exe, system=kw.pop("system", "linux"), probe=lambda idx: cards_ or cards(),
                                  ram=lambda: (125.0, avail), scan=lambda path: model or udq4(), **kw)
 
     def test_a_good_pc_gets_the_split_config(self):
@@ -175,15 +222,227 @@ class Apply(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self.cfg(tmp)
-            d = S.apply_to_config(cfg, exe_for_cards=lambda n: "/e/x", system="linux", probe=lambda i: cards(), ram=lambda: (125.0, 80.0), scan=boom)
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None: "/e/x", system="linux", probe=lambda i: cards(), ram=lambda: (125.0, 80.0), scan=boom)
             self.assertFalse(d.use_split)
             self.assertIn("could not be read", d.line)
 
-    def test_wanted_is_opt_in(self):
-        self.assertFalse(S.wanted({}, {}))
-        self.assertFalse(S.wanted({"split_engine": False}, {}))
-        self.assertTrue(S.wanted({"split_engine": True}, {}))
-        self.assertTrue(S.wanted({}, {"STRATA_SPLIT_ENGINE": "1"}))
+    def test_modes_auto_is_the_default_and_off_is_the_switch(self):
+        self.assertEqual(S.mode({}, {}), "auto")
+        for raw, want in ((True, "on"), (False, "off"), ("on", "on"), ("off", "off"), ("auto", "auto"), ("OFF", "off"), ("nonsense", "auto"), (None, "auto")):
+            self.assertEqual(S.mode({"split_engine": raw}, {}), want, raw)
+        self.assertEqual(S.mode({"split_engine": "on"}, {"STRATA_SPLIT_ENGINE": "0"}), "off")     # the environment wins (testers)
+        self.assertEqual(S.mode({"split_engine": "off"}, {"STRATA_SPLIT_ENGINE": "1"}), "on")
+        self.assertEqual(S.mode({}, {"STRATA_SPLIT_ENGINE": "off"}), "off")
+        self.assertEqual(S.mode({"split_engine": "off"}, {"STRATA_SPLIT_ENGINE": ""}), "off")      # an empty variable is no variable
+        self.assertTrue(S.wanted({}, {}))
+        self.assertFalse(S.wanted({"split_engine": "off"}, {}))
+
+    def test_auto_uses_the_split_where_it_is_supported_and_says_nothing_otherwise(self):
+        import copy
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            del cfg["split_engine"]                                      # nothing asked: auto
+            d = self.run_apply(cfg)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertFalse(d.quiet)
+            self.assertEqual(cfg["exe"], "/e/strata-split-2")
+            for kw in (dict(cards_=cards(1)), dict(avail=20.0), dict(exe=None), dict(system="windows"), dict(model=udq4(routed_types={"Q6_K": 48})),
+                       dict(cards_=cards(3)), dict(cards_=cards(2, cc=89))):
+                cfg = self.cfg(tmp)
+                del cfg["split_engine"]
+                before = copy.deepcopy(cfg)
+                d = self.run_apply(cfg, **kw)
+                self.assertFalse(d.use_split, kw)
+                self.assertTrue(d.quiet, kw)                             # silent: the launch goes on with the layer split
+                self.assertEqual(cfg, before, kw)
+
+    def test_on_says_why_it_cannot_run(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            cfg["split_engine"] = "on"
+            d = self.run_apply(cfg, cards_=cards(1))
+            self.assertFalse(d.use_split)
+            self.assertFalse(d.quiet)
+            self.assertIn("two or more cards", d.line)
+
+    def test_off_never_runs_and_changes_nothing(self):
+        import copy
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for off in ("off", False):
+                cfg = self.cfg(tmp)
+                cfg["split_engine"] = off
+                before = copy.deepcopy(cfg)
+                d = self.run_apply(cfg)
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)
+                self.assertEqual(cfg, before)
+
+    def test_choices_the_split_engine_does_not_honour_keep_the_layer_split(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for change in (lambda c: c.update(drafting="dflash2"), lambda c: c.update(user_args=["--x"]), lambda c: c.update(replicas=2),
+                           lambda c: c["args"].extend(["--kv", "q4_0"])):
+                cfg = self.cfg(tmp)
+                del cfg["split_engine"]
+                change(cfg)
+                d = self.run_apply(cfg)
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)
+            cfg = self.cfg(tmp)
+            cfg["args"].extend(["--kv", "int8"])
+            self.assertTrue(self.run_apply(cfg).use_split)
+
+    def test_drafting_auto_resolves_to_the_split_with_its_mtp_and_the_fallback_keeps_the_layer_split_choice(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for chosen, split in ((None, True), ("auto", True), ("mtp", True), ("dflash2", False), ("off", False)):
+                cfg = self.cfg(tmp)
+                del cfg["split_engine"]
+                if chosen:
+                    cfg["drafting"] = chosen
+                before_fallback = {k: v for k, v in cfg.items() if k == "drafting"}
+                d = self.run_apply(cfg)
+                self.assertEqual(d.use_split, split, chosen)
+                if split:
+                    # Auto/MTP: the split engine runs its MTP; the config says so, so serve/server.py's drafter step (Auto = DFlash2) leaves its arguments alone
+                    self.assertEqual(cfg["drafting"], "mtp", chosen)
+                    self.assertEqual(cfg["split_fallback"].get("drafting"), before_fallback.get("drafting"), chosen)   # the layer split keeps the person's word, or Auto
+                    self.assertNotIn("--draft", cfg["args"])
+                else:
+                    self.assertEqual(cfg.get("drafting"), chosen)                                                       # untouched: the layer split gets DFlash2 as chosen
+                    self.assertNotIn("split_fallback", cfg)
+
+    def test_auto_needs_a_card_where_the_split_decodes_faster_than_the_layer_split_with_dflash2(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            del cfg["split_engine"]
+            d = self.run_apply(cfg, cards_=cards(2, cc=89), allow_untested=True)                # a tester allowed it, but nobody measured it there
+            self.assertFalse(d.use_split)
+            self.assertIn("DFlash2", d.line)
+            cfg["drafting"] = "mtp"                                                              # the person asked for the MTP: no comparison to win
+            self.assertTrue(self.run_apply(cfg, cards_=cards(2, cc=89), allow_untested=True).use_split)
+
+    def test_the_engine_is_picked_by_card_count_and_architecture(self):
+        import tempfile
+
+        seen = []
+
+        def exe_for(n, cc=None):
+            seen.append((n, cc))
+            return "/e/strata-split-2-sm120"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            d = S.apply_to_config(cfg, exe_for_cards=exe_for, system="linux", probe=lambda i: cards(2, cc=120, name="NVIDIA RTX PRO 6000", vram_mib=97887),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(seen, [(2, 120)])
+            self.assertEqual(cfg["exe"], "/e/strata-split-2-sm120")
+
+
+class AmdOptIn(unittest.TestCase):
+    """AMD gfx1201 (4 x R9700): the split ships opt-in. auto keeps the layer split, `on` starts the split, `off` is off; one constant flips auto."""
+
+    R9700 = dict(name="AMD Radeon AI PRO R9700", vram_mib=32624, cc=0, vendor="amd", arch="gfx1201")
+    cfg = Apply.cfg
+
+    def amd(self, tmp, **kw):
+        cfg = self.cfg(tmp)
+        cfg["gpu"] = [0, 1, 2, 3]
+        for k, v in kw.items():
+            cfg[k] = v
+        return cfg
+
+    def run_amd(self, cfg, seen=None, **kw):
+        def exe_for(n, cc=None, arch=None):
+            if seen is not None:
+                seen.append((n, cc, arch))
+            return f"/e/strata-split-{n}-{arch}" if arch else None
+
+        return S.apply_to_config(cfg, exe_for_cards=exe_for, system="linux", probe=lambda i: cards(4, **self.R9700), ram=lambda: (125.0, 80.0),
+                                 scan=lambda path: udq4(routed_bytes=int(71.7 * GIB)), **kw)
+
+    def test_auto_keeps_the_layer_split_on_gfx1201_and_says_nothing(self):
+        import tempfile
+
+        self.assertEqual(S.AUTO_SPLIT_AMD_ARCHS, ())   # the one constant: ("gfx1201",) when the targets are met
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp)
+            del cfg["split_engine"]
+            before = dict(cfg)
+            d = self.run_amd(cfg)
+            self.assertFalse(d.use_split)
+            self.assertTrue(d.quiet)
+            self.assertEqual(cfg, before)                                  # the layer split's config, untouched
+            cfg["drafting"] = "mtp"                                        # not even with the MTP chosen
+            self.assertFalse(self.run_amd(cfg).use_split)
+
+    def test_explicit_on_starts_the_split_with_the_gfx1201_engine(self):
+        import tempfile
+
+        for on in (True, "on"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp, split_engine=on)
+                seen = []
+                d = self.run_amd(cfg, seen)
+                self.assertTrue(d.use_split, d.reasons)
+                self.assertEqual(d.cards, 4)
+                self.assertEqual(d.untested, [])                           # four R9700 have been run
+                self.assertEqual(seen, [(4, 0, "gfx1201")])
+                self.assertEqual(cfg["exe"], "/e/strata-split-4-gfx1201")
+                self.assertEqual(cfg["drafting"], "mtp")
+                self.assertEqual(cfg["split_fallback"]["exe"], "component:strata-engine")
+
+    def test_on_without_the_gfx1201_binary_says_so_and_off_is_off(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp, split_engine="on")
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None, arch=None: None, system="linux", probe=lambda i: cards(4, **self.R9700),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertFalse(d.use_split)
+            self.assertFalse(d.quiet)
+            self.assertIn("strata-split-4-gfx1201", d.line)
+            cfg = self.amd(tmp, split_engine="off")
+            before = dict(cfg)
+            self.assertFalse(self.run_amd(cfg).use_split)
+            self.assertEqual(cfg, before)
+
+    def test_two_r9700_cannot_hold_the_experts_and_other_amd_cards_are_refused(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp, split_engine="on")
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None, arch=None: "/e/x", system="linux", probe=lambda i: cards(2, **self.R9700),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertFalse(d.use_split)
+            d = S.apply_to_config(self.amd(tmp, split_engine="on"), exe_for_cards=lambda n, cc=None, arch=None: "/e/x", system="linux",
+                                  probe=lambda i: cards(4, **{**self.R9700, "arch": "gfx1100"}), ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertFalse(d.use_split)
+            self.assertIn("gfx1100", d.line)
+
+    def test_flipping_the_constant_makes_auto_start_it(self):
+        import tempfile
+
+        old = S.AUTO_SPLIT_AMD_ARCHS
+        S.AUTO_SPLIT_AMD_ARCHS = ("gfx1201",)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp)
+                del cfg["split_engine"]
+                self.assertTrue(self.run_amd(cfg).use_split)
+        finally:
+            S.AUTO_SPLIT_AMD_ARCHS = old
 
 
 class NoPeerAccess(unittest.TestCase):
