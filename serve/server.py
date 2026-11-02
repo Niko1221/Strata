@@ -3506,9 +3506,10 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
             print(f"[strata] {drafting.line(decision.drafter, decision.note)}", flush=True)
         elif decision.flags:
             print(f"[strata] drafting: DFlash2 alone ({' '.join(decision.flags[:2])}, --draft-conf {args[args.index('--draft-conf') + 1] if '--draft-conf' in args else '-'})", flush=True)
-    # "parallel" 2 or more: every request slot is a session of its own, taken out of the expert cache's room.  A start the engine would refuse for lack of VRAM
-    # ("no VRAM is left for the expert cache") gets a smaller context for this start, else runs one request at a time, and says so; the person's own
-    # --max-context is kept (strata_control/vram_fit.py fit_start).  Nothing changes without one card's memory, on a layer split, or for DeepSeek.
+    # A card that is short of VRAM for this start (a single request on a small card, or "parallel" 2 or more, every request slot a session of its own) gets work moved off
+    # the GPU, never a smaller context and never fewer requests (owner, 2026-11-02): a smaller KV window on CUDA, a smaller prompt chunk and reserve on Arc, and the
+    # engine sizes the rest; one plain note says it is slower (strata_control/vram_fit.py fit_start).  The person's own values are kept.  Nothing changes without one
+    # card's memory, on a layer split, or for DeepSeek.
     try:
         args, fit_parallel, fit_note = vram_fit.fit_start(cfg, args, drafting_vram_mib(cfg, backend, archs), backend)
     except Exception:                                        # noqa: BLE001 - an estimate that fails decides nothing; the engine still refuses what does not fit
