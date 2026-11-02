@@ -26,10 +26,10 @@ struct RcclState {
 };
 
 namespace rccl_detail {
-__global__ void k_fill16(__half* p, int n, float scale) {
+static __global__ void k_fill16(__half* p, int n, float scale) {
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n; e += gridDim.x * blockDim.x) p[e] = __float2half((float) (e % 16) * scale);
 }
-__global__ void k_check16(const __half* p, int n, float scale, unsigned* bad) {
+static __global__ void k_check16(const __half* p, int n, float scale, unsigned* bad) {
     unsigned b = 0;
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n; e += gridDim.x * blockDim.x) b += __half2float(p[e]) != (float) (e % 16) * scale;
     if (b) atomicAdd(bad, b);
