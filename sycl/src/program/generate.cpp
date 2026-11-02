@@ -4307,8 +4307,8 @@ int main(int argc, char **argv) try {
     bool use_df2 = false;
     std::string df2_vocab_file;
     if (o.draft == "dflash2") {
-        if (o.mtp.empty() || o.spec < 2 || o.draft_model.empty()) {
-            std::fprintf(stderr, "strata generate: --draft dflash2 needs --draft-model PACK, --spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin)\n");
+        if ((o.mtp.empty() && o.mtp_draft_vocab.empty()) || o.spec < 2 || o.draft_model.empty()) {
+            std::fprintf(stderr, "strata generate: --draft dflash2 needs --draft-model PACK, --spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin) or --mtp-draft-vocab FILE\n");
             return 2;
         }
         df2_vocab_file = o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab;
@@ -7584,7 +7584,17 @@ int main(int argc, char **argv) try {
                                      "a draft head 0.3 GiB, 0.1 GiB of prompt staging); --vram-reserve-mib keeps it. No MTP is loaded, so the start ends here\n", why_not.c_str());
                 return 1;
             }
-            sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { return df2.context(taps, rows, pos0, e); };
+            // STRATA_DF2_TIMING=1: the time the prompt's context updates take per request (printed when the prompt is read); STRATA_DF2_NO_PROMPT_CTX=1 (measurement only):
+            // the prompt's rows are not given to the drafter (its first drafts are poor), which attributes the drafter's share of the prompt read time
+            sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool {
+                static const bool skip = std::getenv("STRATA_DF2_NO_PROMPT_CTX") != nullptr;
+                static const bool timing = std::getenv("STRATA_DF2_TIMING") != nullptr;
+                if (skip) return true;
+                const Clock::time_point t = Clock::now();
+                const bool ok = df2.context(taps, rows, pos0, e);
+                if (timing) std::fprintf(stderr, "strata serve: DFlash2: prompt context update, %lld rows at %lld, %.1f ms\n", (long long) rows, (long long) pos0, std::chrono::duration<double, std::milli>(Clock::now() - t).count());
+                return ok;
+            };
             std::fprintf(stderr, "strata serve: DFlash2 drafter on (%s, graphs captured in %.0f ms); windows up to %d tokens; no MTP layer is loaded\n",
                          o.draft_model.c_str(), df2.ms_capture, o.spec);
         }
@@ -12125,7 +12135,10 @@ int main(int argc, char **argv) try {
                 // The request ends here, so no draft follows and the window's committed rows would never reach the drafter's ring or its log: every turn would
                 // leave a hole of a + 1 positions behind it, which a later turn that resumes after this one finds blank (and cannot rebuild). Update them now.
                 if (use_df2 && (eos || produced_n >= max_new)) {
+                    const Clock::time_point tctx = Clock::now();
                     if (!df2.context(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                    static const bool ctx_timing = std::getenv("STRATA_DF2_TIMING") != nullptr;
+                    if (ctx_timing) std::fprintf(stderr, "strata serve: DFlash2: the request-end context update (%d rows) took %.1f ms\n", a + 1, std::chrono::duration<double, std::milli>(Clock::now() - tctx).count());
                 }
                 const bool drafted = !draft_on || eos || produced_n >= max_new ||
                                      (use_df2 ? (defer_df2(a) || draft_df2(a)) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p));

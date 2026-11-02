@@ -25,13 +25,66 @@ def serving_dflash2():
     return mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", True)
 
 
+class IntelCardsAreToldByName(unittest.TestCase):
+    """The SYCL path gives no architecture: an Intel card is told by its Windows adapter name or its Linux PCI id. Arc A-series (A3xx / A5xx / A7xx) was measured (the A750)
+    and counts as tested; B-series (Battlemage), the Pro cards and integrated graphics keep "has not been tested on your graphics card yet"."""
+
+    def test_names(self):
+        k = drafting.sycl_arch_of_name
+        for name in ("Intel(R) Arc(TM) A750 Graphics", "Intel(R) Arc(TM) A380 Graphics", "Intel(R) Arc(TM) A770 Graphics", "Intel(R) Arc(TM) A580 Graphics",
+                     "Intel(R) Arc(TM) A770M Graphics", "Intel Arc A310"):
+            self.assertEqual(k(name), "arc_a", name)
+        for name in ("Intel(R) Arc(TM) B580 Graphics", "Intel(R) Arc(TM) Pro B60 Graphics", "Intel(R) Arc(TM) Pro B50", "Intel(R) Arc(TM) B570 Graphics"):
+            self.assertEqual(k(name), "arc_b", name)
+        for name in ("Intel(R) Arc(TM) Pro A60", "Intel(R) Arc(TM) Pro A40 Workstation"):
+            self.assertEqual(k(name), "arc_a_pro", name)
+        for name in ("Intel(R) Arc(TM) Graphics", "Intel(R) Iris(R) Xe Graphics", "Intel(R) UHD Graphics 770", "", None):
+            self.assertEqual(k(name), "intel_igpu", name)
+
+    def test_pci_ids(self):
+        k = drafting.sycl_arch_of_pci
+        for devid in ("56a0", "56a1", "56a2", "56a5", "56a6", "5690", "5692", "0x56a1"):
+            self.assertEqual(k("i915", devid), "arc_a", devid)
+        for devid in ("e20b", "e211", "e221", "e223"):
+            self.assertEqual(k("xe", devid), "arc_b", devid)
+        self.assertEqual(k("i915", "56b0"), "arc_a_pro")
+        for driver, devid in (("i915", "4680"), ("i915", "a7a0"), ("xe", "7d55"), ("i915", "zz"), ("", "")):
+            self.assertEqual(k(driver, devid), "intel_igpu", (driver, devid))
+
+    def test_a_series_is_tested_and_the_rest_is_not(self):
+        h = drafting.hardware_support
+        self.assertEqual(h("sycl", ["arc_a"]), drafting.Support(True, "tested", drafting.LINE_TESTED))
+        for arch in ("arc_b", "arc_a_pro", "intel_igpu"):
+            self.assertEqual(h("sycl", [arch]), drafting.Support(True, "untested", drafting.LINE_UNTESTED), arch)
+        self.assertEqual(h("sycl", []).line, drafting.LINE_UNTESTED, "no card named: the not-tested line")
+        self.assertNotIn("has not been tested", h("sycl", ["arc_a"]).line)
+
+    def test_the_probe_gives_the_card_class_on_a_sycl_computer(self):
+        from strata_control import engine_component
+        with mock.patch.object(drafting, "_HARDWARE", []), mock.patch.object(engine_component, "detect_backend", return_value=("sycl", "test")),                 mock.patch.object(engine_component, "cuda_archs_present", return_value=[]), mock.patch.object(engine_component, "hip_archs_present", return_value=[]),                 mock.patch.object(drafting, "sycl_archs_present", return_value=["arc_a"]):
+            self.assertEqual(drafting.detect_hardware(), ("sycl", ["arc_a"]))
+        with mock.patch.object(drafting, "_HARDWARE", []), mock.patch.object(engine_component, "detect_backend", return_value=("sycl", "test")),                 mock.patch.object(engine_component, "cuda_archs_present", return_value=[]), mock.patch.object(engine_component, "hip_archs_present", return_value=[]),                 mock.patch.object(drafting, "sycl_archs_present", return_value=["arc_b"]):
+            self.assertEqual(drafting.hardware_support(*drafting.detect_hardware()).level, "untested")
+
+    def test_the_adapters_of_a_windows_pc_and_the_sysfs_cards_of_a_linux_one(self):
+        from strata_control import engine_component, intel_spec
+        adapters = [{"vendor": "8086", "device": 0x56A1, "name": "Intel(R) Arc(TM) A750 Graphics"}, {"vendor": "10de", "device": 1, "name": "NVIDIA GeForce"},
+                    {"vendor": "8086", "device": 0x4680, "name": "Intel(R) UHD Graphics 770"}]
+        with mock.patch.object(drafting.os, "name", "nt"), mock.patch.object(engine_component, "windows_display_adapters", return_value=adapters):
+            self.assertEqual(drafting.sycl_archs_present(), ["arc_a", "intel_igpu"])
+        cards = [{"index": 0, "driver": "i915", "devid": "56a1"}, {"index": 1, "driver": "xe", "devid": "e223"}]
+        with mock.patch.object(drafting.os, "name", "posix"), mock.patch.object(intel_spec, "sysfs_cards", return_value=cards):
+            self.assertEqual(drafting.sycl_archs_present(), ["arc_a", "arc_b"])
+
+
 class WhereTheEngineCanRunIt(unittest.TestCase):
     """DFlash2 exists in the engines of drafting.DFLASH2_BACKENDS (CUDA, HIP, Metal; CMakeLists.txt STRATA_HAVE_DFLASH2): the choice is offered, and applied, only there."""
 
     def test_the_matrix(self):
         h = drafting.hardware_support
-        for backend in ("sycl", "", None, "cpu"):
+        for backend in ("", None, "cpu"):
             self.assertEqual(h(backend, ["sm_120"]), drafting.Support(False, "none", ""), backend)
+        self.assertEqual(h("sycl", []).level, "untested")
         self.assertEqual((h("cuda", ["sm_120"]).level, h("cuda", ["sm_121"]).level, h("hip", ["gfx1151"]).level, h("hip", ["gfx1201"]).level), ("tested",) * 4)
         self.assertEqual(h("cuda", ["sm_86"]).level, "slower")
         for backend, arch in (("cuda", "sm_75"), ("cuda", "sm_89"), ("cuda", "sm_90"), ("cuda", "sm_61"), ("hip", "gfx1100"), ("hip", "gfx1030"), ("cuda", None), ("metal", None)):
@@ -49,12 +102,12 @@ class WhereTheEngineCanRunIt(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         with serving_dflash2():
-            for backend in ("sycl",):
+            for backend in ("cpu",):
                 d = drafting.decide("dflash2", klass="other", model_name=GYRO, data_dir=tmp.name, backend=backend, archs=[])
                 self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_THIS_CARD), backend)
                 self.assertFalse(drafting.needs_pack("dflash2", klass="other", model_name=GYRO, data_dir=tmp.name, backend=backend, archs=[]), backend)
             self.assertTrue(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=tmp.name, backend="cuda", archs=["sm_120"]))
-            self.assertEqual(drafting.decide("auto", klass="other", model_name=GYRO, data_dir=tmp.name, backend="sycl", archs=[]).note, "", "Auto never nags")
+            self.assertEqual(drafting.decide("auto", klass="other", model_name=GYRO, data_dir=tmp.name, backend="cpu", archs=[]).note, "", "Auto never nags")
 
     def test_a_window_or_confidence_the_person_set_by_hand_stays(self):
         tmp = tempfile.TemporaryDirectory()
@@ -81,7 +134,7 @@ class WhereTheEngineCanRunIt(unittest.TestCase):
     def test_the_plan_reports_whether_this_computer_can_run_it(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        for hardware, serves, level in ((("cuda", ["sm_120"]), True, "tested"), (("sycl", []), False, "none"), (("metal", []), True, "untested"), (("hip", ["gfx1201"]), True, "tested")):
+        for hardware, serves, level in ((("cuda", ["sm_120"]), True, "tested"), (("cpu", []), False, "none"), (("sycl", []), True, "untested"), (("metal", []), True, "untested"), (("hip", ["gfx1201"]), True, "tested")):
             with mock.patch.object(drafting, "detect_hardware", return_value=hardware):
                 code, out, err = run_cli(["drafting", "plan", "--data-dir", tmp.name, "--mode", "auto", "--output", "json"])
             self.assertEqual(code, 0, err)
@@ -220,7 +273,8 @@ class OneRequestAtATime(unittest.TestCase):
             for mode in ("mtp", "off"):
                 self.assertFalse(want(mode, model_name=GYRO, backend="cuda", archs=["sm_121"]), mode)
             self.assertFalse(want("dflash2", model_name="qwen3.8-flash-next-coder-iq1_m", backend="cuda", archs=["sm_121"]))
-            self.assertFalse(want("auto", model_name=GYRO, backend="sycl", archs=[]), "Intel stays on the MTP and its request slots")
+            self.assertTrue(want("auto", model_name=GYRO, backend="sycl", archs=[]), "Intel runs DFlash2 one request at a time")
+            self.assertFalse(want("auto", model_name=GYRO, backend="cpu", archs=[]))
             self.assertTrue(want("auto", model_name=GYRO, backend="metal", archs=[]))
         with mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
             self.assertFalse(want("dflash2", model_name=GYRO, backend="cuda", archs=["sm_121"]), "while the engine does not serve it")
@@ -306,7 +360,8 @@ class TheTerminalStep(unittest.TestCase):
         self.assertIn("drafting", self.flow("gyro", ("hip", ["gfx1151"])))
         for family in ("deepseek41", "swift", "coder", "unsloth", "nvfp4", "qwen36", None):
             self.assertNotIn("drafting", self.flow(family, ("cuda", ["sm_120"])), family)
-        for hardware in (("sycl", []), (None, [])):
+        self.assertIn("drafting", self.flow("qwen", ("sycl", [])))
+        for hardware in (("cpu", []), (None, [])):
             self.assertNotIn("drafting", self.flow("qwen", hardware), hardware)
 
     def test_the_choice_is_saved_as_the_flag_would_and_auto_writes_nothing(self):

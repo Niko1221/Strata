@@ -820,6 +820,75 @@ int run_poison2() {
     if (mode == 0 || mode == 5) { Q->parallel_for(sycl::range<1>(64), [=](sycl::id<1> i) { sh[i] = (int) i; }).wait(); probe("kernel WRITE of shared USM"); }
     return 0;
 }
+
+// ---------------------------------------------------------------- the prompt's context update (the drafter's tap rows of the last 2047 prompt positions)
+int run_ctx() {
+    Drafter D; D.nd = 7; build(D); reset_ring(D, 0);
+    const int NCH = envi("DF2B_CHUNKS", 256), ROWS = 8;
+    int8_t* hq = (int8_t*) sycl::malloc_host((size_t) ROWS * N, *Q);
+    float* hd = (float*) sycl::malloc_host((size_t) ROWS * (N / 32) * 4, *Q);
+    std::vector<int32_t*> metas;   // per chunk, its own host staging (positions + rope tables), for the modes that do not wait between chunks
+    for (int k = 0; k < NCH; ++k) { set_meta(D, ROWS, (int64_t) k * ROWS, 0); int32_t* m = (int32_t*) sycl::malloc_host((32 + 2048) * 4, *Q); std::memcpy(m, D.h_meta, (32 + 2048) * 4); metas.push_back(m); }
+    auto warm = [&] { for (int i = 0; i < 4; ++i) { set_meta(D, ROWS, 0, 0); Q->memcpy(D.d_meta, D.h_meta, (32 + 2048) * 4); record_context(D, ROWS); } Q->wait(); };
+    warm();
+    auto per = [&](const char* name, double total_ms, int nch) { std::printf("  %-62s %8.1f ms total, %6.3f ms per 8-row chunk (%d chunks = %d rows)\n", name, total_ms, total_ms / nch, nch, nch * ROWS); };
+    std::printf("context update of %d rows in chunks of %d, the Q4_0 pack's shapes (fc 12800 -> 2560, K/V of 5 layers):\n", NCH * ROWS, ROWS);
+    { // (a) as Dflash2Drafter::context does it: host staging + meta copy + the update's kernels + the log's copy to the host + a wait, per chunk
+        const auto t0 = Clock::now();
+        for (int k = 0; k < NCH; ++k) {
+            set_meta(D, ROWS, (int64_t) k * ROWS, 0);
+            Q->memcpy(D.d_meta, D.h_meta, (32 + 2048) * 4);
+            record_context(D, ROWS);
+            Q->memcpy(hq, D.xqc, (size_t) ROWS * N); Q->memcpy(hd, D.xdc, (size_t) ROWS * (N / 32) * 4);
+            Q->wait();
+        }
+        per("(a) the engine's loop: stage, 13 kernels, log copy, wait per chunk", ms_since(t0), NCH);
+    }
+    { // (b) host staging alone
+        const auto t0 = Clock::now();
+        for (int k = 0; k < NCH; ++k) set_meta(D, ROWS, (int64_t) k * ROWS, 0);
+        per("(b) the host staging alone (positions + 16 rope tables)", ms_since(t0), NCH);
+    }
+    { // (c) the kernels alone, queued back to back, one wait
+        const auto t0 = Clock::now();
+        for (int k = 0; k < NCH; ++k) record_context(D, ROWS);
+        Q->wait();
+        per("(c) the 13 kernels alone, queued back to back, one wait", ms_since(t0), NCH);
+    }
+    { // (d) staging copies + kernels queued, no wait per chunk (each chunk's staging from its own buffer)
+        const auto t0 = Clock::now();
+        for (int k = 0; k < NCH; ++k) { Q->memcpy(D.d_meta, metas[(size_t) k], (32 + 2048) * 4); record_context(D, ROWS); }
+        Q->wait();
+        per("(d) meta copy + 13 kernels per chunk, pre-staged, one wait", ms_since(t0), NCH);
+    }
+    { // (e) one chunk, a marker after every launch: GPU ms per kernel of the update
+        D.profile = true;
+        std::vector<std::pair<std::string, double>> tot; int nrun = 0;
+        for (int i = 0; i < 12; ++i) {
+            D.marks.clear(); Q->wait();
+            D.marks.emplace_back("start", Q->single_task([] {}));
+            set_meta(D, ROWS, 0, 0); Q->memcpy(D.d_meta, D.h_meta, (32 + 2048) * 4); record_context(D, ROWS); Q->wait();
+            if (i < 2) continue;
+            ++nrun;
+            for (size_t k = 1; k < D.marks.size(); ++k) {
+                const double a = (double) D.marks[k - 1].second.get_profiling_info<sycl::info::event_profiling::command_end>();
+                const double b = (double) D.marks[k].second.get_profiling_info<sycl::info::event_profiling::command_end>();
+                auto it = std::find_if(tot.begin(), tot.end(), [&](auto& t) { return t.first == D.marks[k].first; });
+                if (it == tot.end()) tot.emplace_back(D.marks[k].first, (b - a) * 1e-6); else it->second += (b - a) * 1e-6;
+            }
+        }
+        D.profile = false;
+        double sum = 0; for (auto& t : tot) sum += t.second;
+        std::printf("  (e) one 8-row chunk, a marker after every launch (each includes its launch gap), ms: total %.3f over %d launches:", sum / nrun, (int) D.marks.size() - 1);
+        for (auto& t : tot) std::printf(" %s %.3f", t.first.c_str(), t.second / nrun);
+        std::printf("\n");
+    }
+    { // (f) weight bytes read per 8-row chunk and the bandwidth the best case would need
+        const double mb = (18.4 + 5 * 3.54);
+        std::printf("  (f) weight bytes per chunk: fc 18.4 MB + 5 x (k,v) 3.5 MB = %.1f MB; for %d chunks %.2f GB; at 400 GB/s that is %.1f ms per 8-row chunk\n", mb, NCH, mb * NCH / 1000.0, mb / 400.0);
+    }
+    return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -829,5 +898,5 @@ int main(int argc, char** argv) {
     static sycl::queue q(sycl::gpu_selector_v, sycl::property_list{sycl::property::queue::in_order(), sycl::property::queue::enable_profiling()});
     Q = &q;
     const std::string mode = argc > 1 ? argv[1] : "bench";
-    return mode == "test" ? run_tests() : mode == "gemm" ? run_gemm_bench() : mode == "attn" ? run_attn_bench() : mode == "dp4a" ? run_dp4a() : mode == "bubble" ? run_bubble() : mode == "small" ? run_small() : mode == "poison" ? run_poison() : mode == "poison2" ? run_poison2() : run_bench();
+    return mode == "test" ? run_tests() : mode == "gemm" ? run_gemm_bench() : mode == "attn" ? run_attn_bench() : mode == "dp4a" ? run_dp4a() : mode == "bubble" ? run_bubble() : mode == "small" ? run_small() : mode == "poison" ? run_poison() : mode == "poison2" ? run_poison2() : mode == "ctx" ? run_ctx() : run_bench();
 }

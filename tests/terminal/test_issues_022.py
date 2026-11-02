@@ -490,4 +490,6 @@ class DoctorAndTheDrafter(unittest.TestCase):
             self.assertEqual(self.report(drafting="mtp")["status"], "missing", "the MTP is chosen: its layer is required")
             self.assertEqual(self.report(mtp=False)["status"], "missing", "unchanged for a config that switched the layer off by hand")
         with mock.patch.object(drafting, "detect_hardware", return_value=("sycl", [])):
-            self.assertEqual(self.report()["status"], "missing", "Intel stays on the MTP")
+            self.assertEqual(self.report()["status"], "optional_missing", "Intel is DFlash2 too")
+        with mock.patch.object(drafting, "detect_hardware", return_value=("cpu", [])):
+            self.assertEqual(self.report()["status"], "missing", "an engine without the code stays on the MTP")

@@ -22,6 +22,7 @@ engine never switches drafter mid-run.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,8 +34,8 @@ LABELS = {"auto": "Auto (recommended)", "mtp": "MTP", "dflash2": "DFlash2", "off
 DRAFTERS = ("mtp", "dflash2", "off")
 
 #: The engine families that have the DFlash2 code (CMakeLists.txt STRATA_HAVE_DFLASH2). Auto picks DFlash2 on these; a computer with any other engine keeps the
-#: MTP. Intel SYCL joins by adding "sycl" here once its engine has the code (DF2-SYCL); nothing else changes. Metal: the DF2-METAL engine.
-DFLASH2_BACKENDS = ("cuda", "hip", "metal")
+#: MTP. Intel SYCL joined with the DF2-SYCL engine (Arc A750 measured: a tie with the MTP, section 8-9 of phaseA-tests/blackwell/RESULTS-DF2SYCL.md). Metal: the DF2-METAL engine.
+DFLASH2_BACKENDS = ("cuda", "hip", "metal", "sycl")
 
 #: Graphics memory each drafter takes on Qwen3.8-Flash-Next IQ3_S (GB; phaseA-tests/blackwell/RESULTS-DF2MEM.md section 1, l620, engine free memory at
 #: the first graph capture): DFlash2 alone 890 MiB, the MTP layer 1082 MiB. The fit, the plan and the slot estimates use the one that is chosen.
@@ -86,11 +87,59 @@ class Support:
     line: str            # plain words for the person ("" when there is nothing to say)
 
 
-_TESTED = {("cuda", "sm_120"), ("cuda", "sm_121"), ("hip", "gfx1151"), ("hip", "gfx1201")}
+_TESTED = {("cuda", "sm_120"), ("cuda", "sm_121"), ("hip", "gfx1151"), ("hip", "gfx1201"), ("sycl", "arc_a")}
 _SLOWER = {("cuda", "sm_86")}
 
 
 _HARDWARE: list = []
+
+# --- Intel: the SYCL path gives no architecture, so the card is told by its name (Windows display adapters) or its PCI id (Linux sysfs).
+#   arc_a        Arc A-series, Alchemist: A3xx / A5xx / A7xx (the A750 was measured: RESULTS-DF2SYCL.md), PCI ids 0x56A0..0x56AF and the mobile 0x5690..0x5692
+#   arc_a_pro    Arc Pro A-series (A40, A50, A60): not measured
+#   arc_b        Arc B-series, Battlemage (B580, Pro B60, B65, B70...): not measured
+#   intel_igpu   integrated graphics (UHD, Iris Xe, "Arc Graphics" of Core Ultra): not measured
+_ARC_NAME = re.compile(r"\bArc\b(?:\(TM\))?\s*(Pro\s+)?([AB])\s?(\d{2,3})(?!\d)", re.I)
+
+
+def sycl_arch_of_name(name: str) -> str:
+    """The class of an Intel adapter from its Windows name: ``Intel(R) Arc(TM) A750 Graphics`` is ``arc_a``; ``intel_igpu`` for any other Intel name."""
+    m = _ARC_NAME.search(str(name or ""))
+    if not m:
+        return "intel_igpu"
+    pro, letter, number = bool(m.group(1)), m.group(2).upper(), int(m.group(3))
+    if letter == "B":
+        return "arc_b"
+    return "arc_a" if not pro and number >= 300 else "arc_a_pro"   # A310 / A380 / A580 / A750 / A770 and the mobile A3xx-A7xx; A40 / A50 / A60 and every Pro are not measured
+
+
+def sycl_arch_of_pci(driver: str, devid: str) -> str:
+    """The class of an Intel card from its Linux driver and PCI device id (strata_control/intel_spec.py's cards): i915 ids 0x56A0.. are Alchemist, 0x56B0.. the Pro
+    A-series, xe ids 0xE2xx Battlemage."""
+    try:
+        n = int(str(devid).lower().replace("0x", ""), 16)
+    except ValueError:
+        return "intel_igpu"
+    if driver == "xe" and 0xE200 <= n <= 0xE2FF:
+        return "arc_b"
+    if driver == "i915" and 0x5690 <= n <= 0x56AF:
+        return "arc_a"
+    if driver == "i915" and 0x56B0 <= n <= 0x56BF:
+        return "arc_a_pro"
+    return "intel_igpu"
+
+
+def sycl_archs_present() -> list[str]:
+    """One class (``arc_a`` ...) per Intel card: from the display adapters on Windows, from sysfs on Linux. Empty when neither can say."""
+    from strata_control import engine_component, intel_spec
+    found: list[str] = []
+    if os.name == "nt":
+        for adapter in engine_component.windows_display_adapters():
+            if str(adapter.get("vendor", "")).lower() == "8086":
+                found.append(sycl_arch_of_name(adapter.get("name", "")))
+    else:
+        for card in intel_spec.sysfs_cards():
+            found.append(sycl_arch_of_pci(card.get("driver", ""), card.get("devid", "")))
+    return found
 
 
 def detect_hardware() -> tuple[str | None, list[str]]:
@@ -103,6 +152,8 @@ def detect_hardware() -> tuple[str | None, list[str]]:
             from strata_control import engine_component
             backend = engine_component.detect_backend()[0]
             archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
+            if backend == "sycl" and not archs:
+                archs = sycl_archs_present()
         except Exception:                                    # noqa: BLE001 - an unknown computer is "no DFlash2", never an error
             pass
         _HARDWARE.append((backend, archs))
@@ -158,6 +209,10 @@ DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where 
 # 1,000: -10.0 / -2.8 / -2.5 / +0.2%;  300: -14.0 / -10.4 / -7.6 / -7.5%.  R9700 at 12,570 slots measured +7.2% at 0.35 (RESULTS-DF2HIP.md).
 # Steps, rounded: the more experts come over PCIe, the dearer a row, the shorter the window should be.
 CONF_STEPS = ((9000, 0.35), (3000, 0.7), (0, 0.8))      # (slots at least, --draft-conf)
+# A backend whose card class was measured on its own has ONE value that replaces the slot steps (they were calibrated on CUDA cards with 300 to 9,300 slots):
+# Intel Arc (SYCL, A750 with 298 expert slots, IQ3_XXS, serve sweeps with suffix drafting on): 0.6 was the best of 0.35 / 0.6 / 0.8 and the other two lost 4 to 10%
+# (RESULTS-DF2SYCL.md sections 6-8).
+BACKEND_CONF = {"sycl": 0.6}
 SLOT_MIB = 1.95              # one expert slot of Qwen3.8-Flash-Next IQ3_S: the engine's "46.84 GiB for 24576 slots" (l620) and 23.87 GiB for 12570 (R9700)
 SLOT_BASE_MIB = 2718         # dense weights and the engine's fixed buffers beyond vram_fit's own terms: 3800 from the R9700 start (128K context, 12570 slots on 32 GiB, which loaded the
                              # MTP layer beside DFlash2) less the MTP layer's 1082 MiB, now that DFlash2 runs alone (RESULTS-DF2MEM.md section 1)
@@ -251,6 +306,12 @@ def engine_flags(pack: str | Path, vocab: str | Path | None = None) -> tuple[str
     """The engine arguments of a DFlash2 start: the drafter, its file, no MTP layer, the draft vocabulary, the window and the confidence."""
     return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *(("--mtp-draft-vocab", str(vocab)) if vocab else ()),
             "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
+
+
+def conf_for(backend: str | None, slots: int | float | None) -> float:
+    """The ``--draft-conf`` for this engine family and a card that holds ``slots`` experts: the backend's own value (BACKEND_CONF) when it has one, else the slot steps."""
+    own = BACKEND_CONF.get(str(backend or "").strip().lower())
+    return own if own is not None else conf_for_slots(slots)
 
 
 def conf_for_slots(slots: int | float | None) -> float:
@@ -526,7 +587,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
         base = strip_mtp_flags(strip_draft_flags(args))
         flags = list(engine_flags(pack_path(data_dir), vocab))
         kept_conf = _flag_value(mine, "--draft-conf")
-        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{conf_for_slots(slots_of(base, vram_mib)):g}"
+        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{conf_for(backend, slots_of(base, vram_mib)):g}"
         if _flag_value(mine, "--spec") is None:
             base = _without_flag(base, "--spec")              # the DFlash2 window; the person's own --spec stays
         else:

@@ -40,28 +40,29 @@ def serving_dflash2():
 
 class AutoAndTheBackends(unittest.TestCase):
     def test_auto_is_dflash2_where_the_engine_has_it(self):
-        """Owner 2026-11-02: DFlash2 is the primary drafter on every system whose engine has it (CUDA, HIP, Metal); Intel SYCL stays MTP."""
-        self.assertEqual(drafting.DFLASH2_BACKENDS, ("cuda", "hip", "metal"))
-        for backend in ("cuda", "hip", "metal"):
+        """Owner 2026-11-02: DFlash2 is the primary drafter on every system whose engine has it (CUDA, HIP, Metal, Intel SYCL since the DF2-SYCL engine)."""
+        self.assertEqual(drafting.DFLASH2_BACKENDS, ("cuda", "hip", "metal", "sycl"))
+        for backend in ("cuda", "hip", "metal", "sycl"):
             for family in ("qwen", "gyro"):
                 self.assertEqual(drafting.choice_of("auto", family=family, backend=backend), "dflash2", (backend, family))
-        self.assertEqual(drafting.choice_of("auto", family="qwen", backend="sycl"), "mtp")
         self.assertEqual(drafting.choice_of("auto", family="qwen", backend=None), "mtp", "an unknown computer is the MTP")
+        self.assertEqual(drafting.choice_of("auto", family="qwen", backend="cpu"), "mtp", "an engine without the code is the MTP")
         for family in ("coder", "swift", "unsloth", "nvfp4", "deepseek41"):
             self.assertEqual(drafting.choice_of("auto", family=family, backend="cuda"), "mtp", family)
 
-    def test_turning_intel_on_is_one_line(self):
-        with mock.patch.object(drafting, "DFLASH2_BACKENDS", ("cuda", "hip", "metal", "sycl")):
-            self.assertEqual(drafting.choice_of("auto", family="qwen", backend="sycl"), "dflash2")
-            self.assertTrue(drafting.hardware_support("sycl", ["8086"]).can_run)
-        self.assertFalse(drafting.hardware_support("sycl").can_run)
+    def test_intel_runs_dflash2_and_a_build_without_the_code_does_not(self):
+        self.assertTrue(drafting.hardware_support("sycl", ["8086"]).can_run)
+        with mock.patch.object(drafting, "DFLASH2_BACKENDS", ("cuda", "hip", "metal")):
+            self.assertEqual(drafting.choice_of("auto", family="qwen", backend="sycl"), "mtp")
+            self.assertFalse(drafting.hardware_support("sycl").can_run)
 
     def test_the_choice_is_the_choice(self):
         for backend in ("cuda", "sycl"):
             self.assertEqual(drafting.choice_of("mtp", family="qwen", backend=backend), "mtp")
             self.assertEqual(drafting.choice_of("off", family="qwen", backend=backend), "off")
         self.assertEqual(drafting.choice_of("dflash2", family="qwen", backend="cuda"), "dflash2")
-        self.assertEqual(drafting.choice_of("dflash2", family="qwen", backend="sycl"), "mtp", "named, but the engine has none")
+        self.assertEqual(drafting.choice_of("dflash2", family="qwen", backend="sycl"), "dflash2")
+        self.assertEqual(drafting.choice_of("dflash2", family="qwen", backend="cpu"), "mtp", "named, but the engine has none")
         self.assertEqual(drafting.choice_of("dflash2", family="coder", backend="cuda"), "mtp")
 
     def test_the_two_drafters_have_their_own_memory_figure(self):
@@ -168,10 +169,13 @@ class Decisions(unittest.TestCase):
             self.assertEqual(self.decide("auto").note, "")
             self.assertEqual(self.decide("auto").drafter, "mtp")
 
-    def test_intel_stays_the_mtp_and_downloads_nothing_for_dflash2(self):
+    def test_intel_is_dflash2_and_fetches_its_pack(self):
+        self.assertTrue(drafting.needs_pack("auto", model_name=GYRO, data_dir=self.data, backend="sycl"))
         d = drafting.decide("auto", model_name=GYRO, data_dir=self.data, backend="sycl")
+        self.assertEqual(d.drafter, "mtp", "the pack is not downloaded yet: the MTP until it is")
+        d = drafting.decide("auto", model_name=GYRO, data_dir=self.data, backend="cpu")
         self.assertEqual((d.drafter, d.note), ("mtp", ""))
-        self.assertFalse(drafting.needs_pack("auto", model_name=GYRO, data_dir=self.data, backend="sycl"))
+        self.assertFalse(drafting.needs_pack("auto", model_name=GYRO, data_dir=self.data, backend="cpu"))
 
 
 class EngineArguments(unittest.TestCase):
@@ -300,12 +304,20 @@ class EngineArguments(unittest.TestCase):
         d = self.apply(c)
         self.assertEqual((d.drafter, d.note, c["args"]), ("mtp", drafting.NOT_SUPPORTED, self.args))
 
-    def test_intel_keeps_its_arguments(self):
+    def test_intel_gets_its_own_confidence_not_the_cuda_slot_steps(self):
         self.layer()
         self.pack()
+        for vram in (None, 8000, 24000, 96000):
+            c = self.cfg()
+            d = drafting.apply(c, data_dir=self.data, backend="sycl", archs=[], vram_mib=vram)
+            a = c["args"]
+            self.assertEqual((d.drafter, a[a.index("--draft-conf") + 1], a[a.index("--spec") + 1], "--mtp" in a, a[a.index("--draft-fallback") + 1]), ("dflash2", "0.6", "6", False, "none"), vram)
+        c = self.cfg(user_args=["--draft-conf", "0.5"], args=[*self.args, "--draft-conf", "0.5"])
+        drafting.apply(c, data_dir=self.data, backend="sycl", archs=[], vram_mib=8000)
+        self.assertEqual(c["args"][c["args"].index("--draft-conf") + 1], "0.5", "the person's own value stays")
         c = self.cfg()
-        d = drafting.apply(c, data_dir=self.data, backend="sycl", archs=[])
-        self.assertEqual((d.drafter, c["args"]), ("mtp", self.args))
+        drafting.apply(c, data_dir=self.data, backend="cuda", archs=["sm_120"], vram_mib=8000)
+        self.assertEqual(c["args"][c["args"].index("--draft-conf") + 1], "0.8", "CUDA keeps its slot steps")
 
     def test_off_is_the_draft_layers_own_switch(self):
         c = self.cfg(drafting="off")
