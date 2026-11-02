@@ -594,21 +594,33 @@ __global__ void k_att_ungroup_gate(const float* att2, const float* gate, float* 
 #else
 #define Q36_FA_WMMA 0
 #endif
+#if defined(__HIPCC__)   // clang vector types: HIP only (the CUDA build keeps the kernel's empty body)
 typedef _Float16 fa_h16 __attribute__((ext_vector_type(16)));
 typedef float fa_f8 __attribute__((ext_vector_type(8)));
+#endif
 constexpr int FA_ROWS = 64, FA_CELLS = 16, FA_HD = 256;
 constexpr int FA_LS = FA_HD + 8;           // LDS row stride of Q / K in halves (16-byte aligned rows, banks spread)
 constexpr int FA_VS = FA_CELLS + 8;        // LDS row stride of the transposed V tile
 constexpr int FA_PS = FA_CELLS + 8;        // LDS row stride of a wave's P tile
 
-/// 1 in `out` when this build's device code has the WMMA flash attention for the running GPU.
-__global__ void k_fa_supported(int* out) { *out = Q36_FA_WMMA; }
+/// In `out`: 1 when this build's device code has the WMMA flash attention for the running GPU and it was measured there
+/// (gfx1151), 2 when it has it but it was not run there (the other RDNA3 / RDNA3.5 chips: STRATA_Q36_FA=1 turns it on),
+/// 0 when it does not have it.
+__global__ void k_fa_supported(int* out) {
+#if defined(__gfx1151__)
+    *out = 1;
+#else
+    *out = Q36_FA_WMMA ? 2 : 0;
+#endif
+}
 
+#if defined(__HIPCC__)
 __device__ __forceinline__ fa_h16 fa_load16(const _Float16* p) {   // 16 halves from 16-byte aligned LDS
     fa_h16 v;
     __builtin_memcpy(&v, p, sizeof(v));
     return v;
 }
+#endif
 
 /// grid ((T * G + FA_ROWS - 1) / FA_ROWS, HKV), block 128.  q16 [kvh][T * G][HD], k16 / v16 [kvh][P][HD] (FP16), out
 /// att2 [kvh][T * G][HD] (FP32).  scale_log2 = log2(e) / sqrt(HD).
@@ -1444,8 +1456,8 @@ struct Engine {
     float* att2 = nullptr;   // the grouped prompt attention's output [kvh][t][g][HD]
     // STRATA_Q36_ATT_OLD=1: the prompt attention as G narrow products per KV head (the grouped one is the default)
     bool att_grouped = std::getenv("STRATA_Q36_ATT_OLD") == nullptr;
-    // the grouped prompt attention fused on the matrix cores (k_attn_fa_wmma) where the device code has it (RDNA3 /
-    // RDNA3.5); STRATA_Q36_NO_FA=1 keeps the GEMMs
+    // the grouped prompt attention fused on the matrix cores (k_attn_fa_wmma): on by default on gfx1151 (measured), with
+    // STRATA_Q36_FA=1 on the other RDNA3 / RDNA3.5 chips the device code has it for; STRATA_Q36_NO_FA=1 keeps the GEMMs
     bool att_fa = false;
     size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (16 M floats when the experts' fit is close)
     // the prompt's MMQ experts
@@ -1646,7 +1658,7 @@ struct Engine {
             CK(cudaMemcpyAsync(&ok, d_ok, sizeof(int), cudaMemcpyDeviceToHost, st));
             CK(cudaStreamSynchronize(st));
             CK(cudaFree(d_ok));
-            att_fa = ok != 0;
+            att_fa = ok == 1 || (ok == 2 && std::getenv("STRATA_Q36_FA") != nullptr);
         }
         use_mmq = MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
         auto mmq_ok = [&](const Layer& L) {
