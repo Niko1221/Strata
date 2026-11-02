@@ -2,7 +2,7 @@
 // "the host exchange for the prompt sums, one plain line" and the engine starts exactly as before. CPU only (no HIP header: a stream is an opaque pointer), so
 // tools/rccl_policy_test.cpp holds the loader and the decision to their rules without a card. The library comes with the standard AMD Linux install (setup.py installs the
 // rocm[libraries] wheel: librccl.so.1, BSD-3-clause text from NVIDIA with AMD modifications, in share/doc/rccl/LICENSE.txt of the SDK); we do not copy or ship it.
-// The six functions and the two enum values are RCCL's (rccl.h: ncclSum = 0, ncclFloat16 = 6, ncclSuccess = 0).
+// The six functions and the two enum values are RCCL's (rccl.h: ncclSum = 0, ncclFloat16 = 6, ncclFloat32 = 7, ncclSuccess = 0).
 #pragma once
 
 #include <dlfcn.h>
@@ -16,8 +16,8 @@
 
 namespace fnx {
 
-constexpr int RCCL_SUCCESS = 0, RCCL_SUM = 0, RCCL_FLOAT16 = 6;
-constexpr bool RCCL_DEFAULT_ON = false;   // the prompt sums through RCCL when FNX_PF_RCCL is unset (tests/split pins it)
+constexpr int RCCL_SUCCESS = 0, RCCL_SUM = 0, RCCL_FLOAT16 = 6, RCCL_FLOAT32 = 7;
+constexpr bool RCCL_DEFAULT_ON = true;   // the prompt sums through RCCL when FNX_PF_RCCL is unset: 103K prompt 33.3 -> 28.8 s, 61-task suite 56/61, first-token KL vs the layer split 0.0309; any failure is one line and the host sums (tests/split pins it)
 
 struct RcclApi {
     void* handle = nullptr;
@@ -69,7 +69,7 @@ inline RcclDecision rccl_decide(const char* env, bool peer_on, bool default_on, 
     const bool wanted = env ? std::strcmp(env, "0") != 0 : default_on;
     if (!wanted) return d;
     if (!peer_on) {
-        d.line = "RCCL is not used for the prompt sums: the peer push between the cards is off, so the host exchange stays.";
+        if (env) d.line = "RCCL is not used for the prompt sums: the peer push between the cards is off, so the host exchange stays.";   // (asked for: say so; the default stays quiet)
         return d;
     }
     std::string why;

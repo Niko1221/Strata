@@ -14,9 +14,8 @@ has actually been run:
   - Linux, 2 to 4 cards of ONE make (NVIDIA, or AMD RDNA4 gfx1201: the R9700 and RX 9070), all the same model of card and memory size;
   - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards, AMD gfx1201 on 4 cards. Others build
     but stay off unless the caller says allow_untested (testers); the Decision says which part is untested in plain words;
-  - AMD is opt-in for now: mode "auto" keeps the layer split on gfx1201 (AUTO_SPLIT_AMD_ARCHS is empty) and only `--split-engine on` runs the
-    split there. Adding "gfx1201" to that one constant makes AMD automatic like NVIDIA, once it meets the bar (8 users at or above the layer
-    split, a 103K prompt in the layer split's time; phaseA-tests/sfnx/RESULTS-HIP.md);
+  - AMD gfx1201 is automatic like NVIDIA (the owner's decision: default on for two or more cards, off with `--split-engine off`); AUTO_SPLIT_AMD_ARCHS is the
+    one constant that says which AMD architectures start it by themselves, every other AMD architecture keeps the layer split silently;
   - the GGUF is a set the engine reads (checked from the file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers,
     512 experts): routed experts Q4_K/Q5_K/Q5_1/Q8_0/Q4_0 (UD-Q4_K_XL, Q8_0) or the i-quants IQ2_S/IQ3_XXS/IQ3_S/IQ4_XS/IQ4_NL and Strata's
     Q2_0 (UD-IQ4_XS, the IQ3_S set); token embeddings, shared expert, output head Q8_0, or, in a set with i-quant or Q2_0 experts,
@@ -37,9 +36,12 @@ import re
 from typing import Any
 
 # What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86), 2x RTX PRO 6000 (srv118, sm_120).
-# AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md); two R9700 cannot hold UD-Q4_K_XL's experts.
-TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (4,)}}
-BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1201",)}   # the engine package's kernels: any other card is refused at start
+# AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md): 4 cards with UD-Q4_K_XL, 3 cards with the IQ3_S set, 2 cards with the IQ3_S set at 8K context and 2 slots only
+# (the memory rule below refuses that by its estimate; the counts here say the engine has run on them).
+TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (2, 3, 4)}}
+# the engine package's kernels (one binary per card count with a code object for each AMD architecture): any other card is refused. AMD beyond gfx1201 is EXPERIMENTAL: only an explicit
+# `--split-engine on` starts it there (never auto), and the engine runs its kernel self-test on the card before it loads the model (src/split/src/hip/selftest_policy.hpp)
+BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
 TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
 TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
                                    # pictures; no suite there)
@@ -47,9 +49,16 @@ MODES = ("auto", "on", "off")
 #: cards (compute capability) on which Auto drafting resolves to split + MTP rather than layer split + DFlash2: the split decodes faster there
 #: (phaseA-tests/sfnx/RESULTS.md section 17). Another card is not auto-split at all (TESTED_ARCHS), so it keeps Auto = layer split + DFlash2.
 AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
-#: AMD architectures on which mode "auto" starts the split engine. EMPTY on purpose: on gfx1201 the split ships opt-in (`--split-engine on`) until it
-#: meets the bar (8 users at or above the layer split, a 103K prompt at or under its time); then this becomes ("gfx1201",), the one flip.
-AUTO_SPLIT_AMD_ARCHS: tuple = ()
+#: AMD architectures on which mode "auto" starts the split engine (owner, 2026-11-02: default on for two or more cards, `--split-engine off` turns it off). The one flip: take an
+#: architecture out of this tuple and auto keeps the layer split there while `--split-engine on` still runs the split.
+AUTO_SPLIT_AMD_ARCHS: tuple = ("gfx1201",)
+#: card counts on which mode "auto" starts it on those architectures. Four: on 2 and 3 R9700 with the IQ3_S set the split is slower than the layer split today (RESULTS-HIP.md
+#: section 7), and Auto must not pick a slower path. `--split-engine on` is not limited by this.
+AUTO_SPLIT_AMD_CARD_COUNTS: tuple = (4,)
+#: routed-expert types for which mode "auto" starts it on AMD: the UD-Q4_K_XL family. On 4 x R9700 with the IQ3_S set (i-quant and Q2_0 experts) the split is much slower than the
+#: layer split (8 users 143.8 against 326.8 tok/s, a 32K prompt 10.3 against 5.6 s, RESULTS-HIP.md section 7), because its i-quant tiles are a first, untuned version.
+#: `--split-engine on` still runs those sets.
+AUTO_SPLIT_AMD_EXPERT_TYPES: frozenset = frozenset({"Q4_K", "Q5_K", "Q5_1", "Q8_0"})
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -413,11 +422,17 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     except Exception as e:                                   # noqa: BLE001 - a file it cannot read is a reason, not a failed start
         return Decision(False, [f"the model file could not be read ({type(e).__name__})"])
     context = int(_flag(args, "--max-context") or 8192)
+    # an AMD architecture nobody has run (gfx1100..1103, gfx1200) starts only on the person's explicit "on", with the engine's own self-test as the guard
+    experimental_ok = mode_ == "on" and bool(cards) and cards[0].vendor == "amd"
     d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
-               allow_untested=allow_untested)
+               allow_untested=allow_untested or experimental_ok)
     if not d.use_split:
         return d
     amd = cards[0].vendor == "amd"
+    if amd and mode_ != "on" and not set(model.routed_types) <= AUTO_SPLIT_AMD_EXPERT_TYPES:
+        return Decision(False, ["this model's experts (" + "/".join(sorted(set(model.routed_types) - AUTO_SPLIT_AMD_EXPERT_TYPES)) + ") run faster on the layer split on AMD today; the all-cards split engine starts for them only with --split-engine on"], d.cards)
+    if amd and mode_ != "on" and d.cards not in AUTO_SPLIT_AMD_CARD_COUNTS:
+        return Decision(False, [f"the all-cards split engine is not automatic on {d.cards} {cards[0].arch_name} cards; it starts only with --split-engine on"], d.cards)
     if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):
         # opt-in on AMD: auto keeps the layer split (quiet), `--split-engine on` runs the split
         return Decision(False, [f"the all-cards split engine is not automatic on {cards[0].arch_name} yet; it starts only with --split-engine on"], d.cards)

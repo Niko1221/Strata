@@ -4,6 +4,10 @@
 #include "rope_gguf.hpp"
 
 #include "store.hpp"
+#if FNX_HIP
+#include "hip/selftest_policy.hpp"
+#include "selftest.hpp"
+#endif
 
 #include <cuda_runtime.h>
 
@@ -100,10 +104,16 @@ void check_cards() {
         cudaDeviceProp prop;
         ck(cudaGetDeviceProperties(&prop, dev), "cudaGetDeviceProperties");
 #if FNX_HIP
-        // the kernels are built for gfx1201 only (R9700, RX 9070): the card's gfx name, not a compute capability
-        if (std::strncmp(prop.gcnArchName, "gfx1201", 7) != 0)
-            throw std::runtime_error("card " + std::to_string(dev) + " (" + prop.name + ") is " + prop.gcnArchName +
-                                     " and this build is for gfx1201 (RDNA4: Radeon AI PRO R9700, RX 9070)");
+        // the code objects in the binary: gfx1201 (R9700, RX 9070; run), gfx1200 (RX 9060) and gfx1100..1103 (RDNA3; not run on a multi-card PC): the card's gfx name, not a
+        // compute capability. Any other card would find no kernels
+        {
+            bool built = false;
+            for (const char* a : {"gfx1201", "gfx1200", "gfx1100", "gfx1101", "gfx1102", "gfx1103"})
+                if (std::strncmp(prop.gcnArchName, a, 7) == 0) built = true;
+            if (!built)
+                throw std::runtime_error("card " + std::to_string(dev) + " (" + prop.name + ") is " + prop.gcnArchName +
+                                         " and this build has kernels for gfx1201, gfx1200 and gfx1100..gfx1103 only");
+        }
         (void) FNX_ARCH;
 #else
         require_card_arch(dev, prop.name, prop.major, prop.minor, FNX_ARCH);
@@ -116,6 +126,24 @@ void check_cards() {
         if (!skip_bar1) check_bar1(dev, bdf, dir, prop);
 #endif
     }
+#if FNX_HIP
+    // a card Strata has not run the split on (anything but gfx1201): say so once, then check its kernels against a scalar reference before the model is loaded (hip/selftest_policy.hpp)
+    {
+        cudaDeviceProp prop;
+        ck(cudaGetDeviceProperties(&prop, 0), "cudaGetDeviceProperties");
+        const SelftestDecision d = selftest_decide(prop.gcnArchName, std::getenv("FNX_SELFTEST"), std::getenv("FNX_SELFTEST_FAIL"), [&](std::string& covered) {
+            for (int dev = 0; dev < NCARD; ++dev) {
+                std::string c;
+                const std::string bad = selftest_card(dev, c);
+                if (!bad.empty()) return "card " + std::to_string(dev) + ": " + bad;
+                covered += (covered.empty() ? "" : "; ") + c;
+            }
+            return std::string();
+        });
+        for (const std::string& line : d.lines) std::fprintf(stderr, "fnx: %s\n", line.c_str());
+        if (!d.ok) throw std::runtime_error("the kernel self-test failed on " + std::string(prop.gcnArchName).substr(0, std::string(prop.gcnArchName).find(':')) + ", the split engine does not run on this card");
+    }
+#endif
 }
 
 float f16_to_f32(uint16_t h) {

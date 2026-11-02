@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <map>
 #include <vector>
 
 #include "kernels.hpp"
@@ -91,6 +92,19 @@ public:
     // the draft head's TOPK_N highest (penalized) logits for that token into last_draft_cands as top_tokens() gives them
     int draft(int T, bool from_main, int src_row, const std::vector<int>& tokens, int pos0, const Penalties::Row* pen = nullptr,
               bool cands = false);
+    // FNX_BATCH_DRAFT: draft() for several lanes in one draft-layer window (greedy, no penalties): lane reqs[i].lane's reqs[i].T rows (source rows as draft() takes them,
+    // tokens and cells from pos0), the rows of the lanes one after the other (at most MAXT in all). Returns each lane's draft (for the token after its last row).
+    // The window runs eagerly. A chained step (from_main false) takes its source row from the batch before: src_row is the row's index in THAT window. The engine's
+    // current lane is left as it was
+    struct DraftReq {
+        int lane = 0, T = 1, src_row = 0, pos0 = 0;
+        bool from_main = true;
+        std::vector<int> tokens;
+        const Penalties::Row* pen = nullptr;   // the lane's last row's penalties, as draft() takes them
+        bool cands = false;                    // and its TOPK_N candidates into last_lane_cands[i], as draft(cands) gives last_draft_cands
+    };
+    std::vector<std::vector<std::pair<float, int>>> last_lane_cands;
+    std::vector<int> draft_lanes(const std::vector<DraftReq>& reqs);
     std::vector<std::pair<float, int>> last_draft_cands;
     double last_draft_ms = 0.0;       // wall time of the last draft()
     double last_draft_gpu_ms = 0.0;   // its graph's GPU time (the slowest card)
@@ -104,6 +118,8 @@ public:
     // the prompt path's buffers and every lane's rotary table:
     // their memory taken at start, not when a request first needs one. Every lane is left empty
     void warm_graphs();
+    bool precap() const;   // FNX_PRECAP=1: layouts kept (see batch_graph_ready); warm_graphs() captures the uniform ones at the start
+    double warm_capture_ms = 0.0;   // warm_graphs()'s mean capture of a batched window (host ms), 0 before it ran
     std::vector<long> free_vram_mib() const;   // per card
     // with FNX_ROUTE_COUNT=1: how often each expert was picked, [decode | prompt][NL][NEXP] (empty when off)
     std::vector<unsigned> route_counts() const;
@@ -181,6 +197,20 @@ public:
     double last_card_ms[NCARD] = {};   // each card's (a card that starts first waits at the first ring sum for the others)
     double last_launch_ms = 0.0; // the host time of its three graph launches
     double last_capture_ms = 0.0;   // the last verify_rows()'s graph capture (0: its layout's graph was cached)
+    // every graph capture since the start, by kind: 0 verify_rows, 1 draft, 2 single-lane window (verify/step), 3 batch step; count and host ms
+    struct CapStat {
+        unsigned long n = 0;
+        double ms = 0.0;
+    };
+    CapStat cap_stat[4];
+    // verify_rows windows by how their graph came: 0 launched from a held graph, 1 captured first, 2 run eagerly (FNX_CAPTURE_AFTER); count,
+    // host ms (the call) and GPU ms (the slowest card) summed
+    struct WinStat {
+        unsigned long n = 0;
+        double ms = 0.0, gpu_ms = 0.0;
+    };
+    WinStat win_stat[3];
+    WinStat win_stat_t[3][MAXT + 1];   // and by the window's row count
 
 private:
     Model& m_;
@@ -243,6 +273,13 @@ private:
         float* R0;
         float* mtp_emb;
         int* mtp_ctl;
+        int* mtp_lctl;
+        int* mtp_row_pos;
+        int* mtp_pen_l;          // per lane, per card: penalize_row's pen
+        float* mtp_pen_par_l;    // per lane: repeat, freq, present
+        float* mtp_tk_v_l;       // per lane, per card: the candidates
+        int* mtp_tk_i_l;
+        unsigned* mtp_tk_err_l;
         float* ple;
         int* ctl;
         float* bv;
@@ -280,6 +317,18 @@ private:
         return ec.n_slots && (!arena_cap_ || !ec.arena_full || arena_w_ > arena_base_);
     }
     void dump_dev(const std::string& name, int layer, const float* p, int T, int n);
+    // FNX_PRECAP: the batched window graphs of T rows are kept by their layout (up to FNX_PRECAP_GRAPHS in all, least recently used out)
+    // instead of one a row total. batch_graph_ready: true when the slot holds key's graph (taken from the cache when held there);
+    // batch_graph_stash: before a capture, the slot's graph goes to the cache
+    bool batch_graph_ready(int T, const std::vector<int>& key);
+    void batch_graph_stash(int T);
+    unsigned long graph_tick_ = 0;
+    // FNX_CAPTURE_AFTER=N (N >= 2): a layout without a graph runs eagerly (its kernels launched one by one, no capture) until it has been
+    // seen N times, and is captured then; 0 (default): captured at first sight. warm_graphs() always captures
+    bool lazy_capture(const std::vector<int>& key);
+    bool warming_ = false;
+    std::map<std::vector<int>, int> seen_;
+    int last_kind_ = 0;
     void enqueue(int T, bool dumps);
     void enqueue_batch(const std::vector<int>& lanes);   // step()'s window: one row per lane
     void enqueue_rows(const std::vector<int>& lanes, const std::vector<int>& counts);   // verify_rows()'s
@@ -287,6 +336,7 @@ private:
         std::vector<int> lanes, counts, tokens;
     } rows_pending_;
     void mtp_enqueue(int T);
+    void mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T);
     const Mtp* mtp_ = nullptr;
     std::vector<Pf*> pf_;
     // FNX_PF_RCCL (AMD, hip/rccl.h): the prompt's chunk sums through RCCL, loaded at run time; rccl_ holds the library and the communicators (null: the host exchange)

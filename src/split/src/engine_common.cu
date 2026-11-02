@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -234,8 +235,99 @@ void Engine::set_images(const std::vector<Image>& images) {
     }
 }
 
+bool Engine::precap() const {
+#if FNX_HIP
+    static const bool on = env_int("FNX_PRECAP", 1) != 0;   // AMD: on (measured +18% with FNX_CAPTURE_AFTER=2 at 8 users, same bits; RESULTS-HIP.md section 8)
+#else
+    static const bool on = env_int("FNX_PRECAP", 0) != 0;   // NVIDIA: off in 0.2.9 (frozen)
+#endif
+    return on;
+}
+
+namespace {
+void swap_slot(CardBuf& b, int T, CardBuf::GraphEntry& e) {
+    CardBuf::GraphSlot& s = b.batch_graphs[(size_t) T];
+    std::swap(s.exec, e.exec);
+    std::swap(s.key, e.key);
+    std::swap(b.lane_rows[(size_t) T], e.lane_rows);
+    std::swap(b.lane_gdn[(size_t) T], e.lane_gdn);
+    std::swap(b.seg_ctl[(size_t) T], e.seg_ctl);
+    std::swap(b.seg_row0[(size_t) T], e.seg_row0);
+    std::swap(b.batch_slot_used[(size_t) T], e.used);
+}
+}  // namespace
+
+bool Engine::batch_graph_ready(int T, const std::vector<int>& key) {
+    CardBuf& b0 = *cb_[0];
+    if (b0.batch_graphs[(size_t) T].exec && b0.batch_graphs[(size_t) T].key == key) {
+        if (precap()) for (CardBuf* b : cb_) b->batch_slot_used[(size_t) T] = ++graph_tick_;
+        return true;
+    }
+    if (!precap()) return false;
+    std::vector<CardBuf::GraphEntry>& cache = b0.batch_cache[(size_t) T];
+    for (size_t i = 0; i < cache.size(); ++i)
+        if (cache[i].key == key) {
+            for (CardBuf* b : cb_) {
+                swap_slot(*b, T, b->batch_cache[(size_t) T][i]);
+                b->batch_slot_used[(size_t) T] = ++graph_tick_;
+            }
+            return true;
+        }
+    return false;
+}
+
+bool Engine::lazy_capture(const std::vector<int>& key) {
+#if FNX_HIP
+    static const long long after = env_int("FNX_CAPTURE_AFTER", 2);
+#else
+    static const long long after = env_int("FNX_CAPTURE_AFTER", 0);
+#endif
+    if (after < 2 || warming_) return false;
+    if (seen_.size() > 8192) seen_.clear();
+    return ++seen_[key] < after;
+}
+
+void Engine::batch_graph_stash(int T) {
+    if (!precap() || !cb_[0]->batch_graphs[(size_t) T].exec) return;
+    static const size_t max_graphs = (size_t) std::max<long long>(1, env_int("FNX_PRECAP_GRAPHS", 64));
+    size_t total = 0;
+    for (const auto& v : cb_[0]->batch_cache) total += v.size();
+    int vt = -1;
+    size_t vi = 0;
+    if (total >= max_graphs) {   // the least recently used entry goes; its tables are the next capture's
+        unsigned long best = ~0UL;
+        for (int t = 0; t <= MAXT; ++t)
+            for (size_t i = 0; i < cb_[0]->batch_cache[(size_t) t].size(); ++i)
+                if (cb_[0]->batch_cache[(size_t) t][i].used < best) best = cb_[0]->batch_cache[(size_t) t][i].used, vt = t, vi = i;
+    }
+    for (CardBuf* b : cb_) {
+        ck(cudaSetDevice(b->dev), "set");
+        CardBuf::GraphEntry nu;
+        CardBuf::GraphSlot& s = b->batch_graphs[(size_t) T];
+        nu.exec = s.exec;
+        nu.key = std::move(s.key);
+        nu.lane_rows = b->lane_rows[(size_t) T];
+        nu.lane_gdn = b->lane_gdn[(size_t) T];
+        nu.seg_ctl = b->seg_ctl[(size_t) T];
+        nu.seg_row0 = b->seg_row0[(size_t) T];
+        nu.used = b->batch_slot_used[(size_t) T];
+        s.exec = nullptr;
+        s.key.clear();
+        b->lane_rows[(size_t) T] = nullptr, b->lane_gdn[(size_t) T] = nullptr, b->seg_ctl[(size_t) T] = nullptr, b->seg_row0[(size_t) T] = nullptr;
+        if (vt >= 0) {
+            CardBuf::GraphEntry& v = b->batch_cache[(size_t) vt][vi];
+            if (v.exec) cudaGraphExecDestroy(v.exec);
+            b->lane_rows[(size_t) T] = v.lane_rows, b->lane_gdn[(size_t) T] = v.lane_gdn;
+            b->seg_ctl[(size_t) T] = v.seg_ctl, b->seg_row0[(size_t) T] = v.seg_row0;
+            b->batch_cache[(size_t) vt].erase(b->batch_cache[(size_t) vt].begin() + (long) vi);
+        }
+        b->batch_cache[(size_t) T].push_back(std::move(nu));
+    }
+}
+
 void Engine::warm_graphs() {
     const int was = cur_;
+    warming_ = true;
     std::vector<int> lanes;
     for (int i = 0; i < (int) lanes_.size(); ++i) lanes.push_back(i);
     const int tok = 248045;   // any token: every lane is reset after
@@ -263,7 +355,27 @@ void Engine::warm_graphs() {
         step(std::vector<int>(lanes.begin(), lanes.begin() + n), std::vector<int>((size_t) n, tok));
     // batched windows with drafts (they share step()'s graph slots, one per row count): 2 .. MAXT rows over as many lanes
     // as there are, up to the rows, dealt out evenly
-    if (batch_drafts() != BatchDrafts::off)
+    if (batch_drafts() != BatchDrafts::off && precap()) {
+        // FNX_PRECAP: every uniform layout (k rows a lane) of the first n lanes, n = 1 .. lanes, kept as graphs: a window of the lanes
+        // in order with the same drafts each (or none) then never captures. The mean capture is what the planner is charged
+        const auto t0 = std::chrono::steady_clock::now();
+        unsigned long n_cap = 0;
+        double ms_cap = 0.0;
+        std::fprintf(stderr, "fnx: warm: precapture of the uniform batched windows ...\n");
+        for (int n = 1; n <= (int) lanes.size(); ++n)
+            for (int k = 1; n * k <= MAXT; ++k) {
+                if (n == 1 && k == 1) continue;   // the one-row window is step()'s, warmed above
+                const std::vector<int> ids(lanes.begin(), lanes.begin() + n), counts((size_t) n, k);
+                verify_rows(ids, counts, std::vector<int>((size_t) (n * k), tok));
+                commit_rows(std::vector<int>((size_t) n, 1));
+                if (last_capture_ms > 0.0) ++n_cap, ms_cap += last_capture_ms;
+            }
+        if (n_cap) warm_capture_ms = ms_cap / (double) n_cap;
+        long total = 0;
+        for (const auto& v : cb_[0]->batch_cache) total += (long) v.size();
+        std::fprintf(stderr, "fnx: warm: precapture done: %lu captures, %.1f ms each, %ld graphs held, %.1f s\n", n_cap, warm_capture_ms, total,
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    } else if (batch_drafts() != BatchDrafts::off)
         for (int T = 2; T <= MAXT; ++T) {
             const int n = std::min((int) lanes.size(), T);
             std::vector<int> counts((size_t) n, T / n);
@@ -276,6 +388,7 @@ void Engine::warm_graphs() {
         reset();
     }
     use_lane(was);
+    warming_ = false;
 }
 
 std::vector<long> Engine::free_vram_mib() const {
@@ -316,6 +429,9 @@ Engine::~Engine() {
         for (auto* slots : {&b->win_graphs, &b->mtp_graphs, &b->batch_graphs})
             for (CardBuf::GraphSlot& s : *slots)
                 if (s.exec) cudaGraphExecDestroy(s.exec);
+        for (auto& v : b->batch_cache)
+            for (CardBuf::GraphEntry& e : v)
+                if (e.exec) cudaGraphExecDestroy(e.exec);
     }
     std::vector<std::function<void()>> o = take_owned();
     for (auto it = o.rbegin(); it != o.rend(); ++it) (*it)();
@@ -707,6 +823,7 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
     } else {
         const std::vector<int> key = graph_key({cur_});
         if (cb_[0]->win_graphs[T].key != key || !cb_[0]->win_graphs[T].exec) {   // capturing queues no work
+            const auto tc = std::chrono::steady_clock::now();
             each([&](int, CardBuf& b, const CardW&) {
                 ck(cudaStreamBeginCapture(b.st, cudaStreamCaptureModeRelaxed), "begin capture");
             });
@@ -716,6 +833,8 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
                 ck(cudaStreamEndCapture(b.st, &g), "end capture");
                 install_graph(b.win_graphs[T], g, key);
             });
+            ++cap_stat[2].n;
+            cap_stat[2].ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
         }
         const auto l0 = std::chrono::steady_clock::now();
         on_cards([&](int c) {
@@ -811,7 +930,9 @@ std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<i
                "lane ctl");
     });
     const std::vector<int> bkey = graph_key(lanes);
-    if (cb_[0]->batch_graphs[T].key != bkey || !cb_[0]->batch_graphs[T].exec) {
+    if (!batch_graph_ready(T, bkey)) {
+        batch_graph_stash(T);
+        const auto tc = std::chrono::steady_clock::now();
         each([&](int, CardBuf& b, const CardW&) {
             if (!b.lane_rows[(size_t) T]) b.lane_rows[(size_t) T] = dalloc<const int*>((size_t) LANE_ROW_COLS * MAXT);
             std::vector<const int*> rows((size_t) LANE_ROW_COLS * MAXT, nullptr);
@@ -838,6 +959,8 @@ std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<i
             ck(cudaStreamEndCapture(b.st, &g), "end capture");
             install_graph(b.batch_graphs[T], g, bkey);
         });
+        ++cap_stat[3].n;
+        cap_stat[3].ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
     }
     each([&](int, CardBuf& b, const CardW&) { ck(cudaGraphLaunch(b.batch_graphs[T].exec, b.st), "graph launch"); });
     each([&](int c, CardBuf& b, const CardW&) {
@@ -1004,8 +1127,22 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     key.push_back(-1);
     key.insert(key.end(), counts.begin(), counts.end());
     last_capture_ms = 0.0;
-    if (cb_[0]->batch_graphs[T].key != key || !cb_[0]->batch_graphs[T].exec) {
+    last_kind_ = 0;
+    bool eager = false;
+    if (!batch_graph_ready(T, key)) {
+        eager = lazy_capture(key);
+        last_kind_ = eager ? 2 : 1;
+        if (!eager) batch_graph_stash(T);
         const auto tc = std::chrono::steady_clock::now();
+        auto swap_eager = [&] {   // an eager window reads its tables from the eager set, not the slot's (a held graph points at those)
+            for (CardBuf* b : cb_) {
+                std::swap(b->lane_rows[(size_t) T], b->eager_tab.lane_rows);
+                std::swap(b->lane_gdn[(size_t) T], b->eager_tab.lane_gdn);
+                std::swap(b->seg_ctl[(size_t) T], b->eager_tab.seg_ctl);
+                std::swap(b->seg_row0[(size_t) T], b->eager_tab.seg_row0);
+            }
+        };
+        if (eager) swap_eager();
         each([&](int, CardBuf& b, const CardW&) {
             if (!b.lane_rows[(size_t) T]) b.lane_rows[(size_t) T] = dalloc<const int*>((size_t) LANE_ROW_COLS * MAXT);
             std::vector<const int*> rows((size_t) LANE_ROW_COLS * MAXT, nullptr);
@@ -1035,15 +1172,29 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
             ck(cudaMemcpy(b.lane_gdn[(size_t) T], gdn.data(), gdn.size() * sizeof(float*), cudaMemcpyHostToDevice), "lane recurrent rows");
             ck(cudaMemcpy(b.seg_ctl[(size_t) T], sctl.data(), sctl.size() * sizeof(const int*), cudaMemcpyHostToDevice), "segment ctl");
             ck(cudaMemcpy(b.seg_row0[(size_t) T], srow0.data(), srow0.size() * sizeof(int), cudaMemcpyHostToDevice), "segment rows");
-            ck(cudaStreamBeginCapture(b.st, cudaStreamCaptureModeRelaxed), "begin capture");
+            if (!eager) ck(cudaStreamBeginCapture(b.st, cudaStreamCaptureModeRelaxed), "begin capture");
         });
         enqueue_rows(lanes, counts);
-        each([&](int, CardBuf& b, const CardW&) {
-            cudaGraph_t g;
-            ck(cudaStreamEndCapture(b.st, &g), "end capture");
-            install_graph(b.batch_graphs[T], g, key);
-        });
-        last_capture_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
+        if (eager) {
+            swap_eager();
+            last_capture_ms = 0.0;
+        } else {
+            each([&](int, CardBuf& b, const CardW&) {
+                cudaGraph_t g;
+                ck(cudaStreamEndCapture(b.st, &g), "end capture");
+                install_graph(b.batch_graphs[T], g, key);
+            });
+            last_capture_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
+            ++cap_stat[0].n;
+            cap_stat[0].ms += last_capture_ms;
+        }
+        static const bool trace = env_int("FNX_PRECAP_TRACE", 0) != 0;
+        if (trace) {
+            std::string t;
+            for (size_t i = 0; i < lanes.size(); ++i) t += " " + std::to_string(lanes[i]) + ":" + std::to_string(counts[i]);
+            std::fprintf(stderr, "fnx: %s verify_rows T=%d lanes:rows%s (%.1f ms)\n", eager ? "eager" : "capture", T, t.c_str(),
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count());
+        }
     }
     {   // FNX_BATCH_STATS=1: windows, graph captures, and the time between one window's start and the next's by the first one's row count; one block per 200 windows
         static const bool stats = env_flag("FNX_BATCH_STATS");
@@ -1067,6 +1218,26 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
                 std::fprintf(stderr, "fnx: batch stats: %lu windows, %lu captured (%.1f ms each), %.1f rows a window, %.2f ms a window since the first\n", nw,
                              ncap, ncap ? cap_ms / (double) ncap : 0.0, (double) rows_sum / (double) nw,
                              std::chrono::duration<double, std::milli>(now - t_first).count() / (double) nw);
+                std::fprintf(stderr, "fnx: captures since start (n, host ms): verify_rows %lu %.0f, draft %lu %.0f, window %lu %.0f, batch step %lu %.0f\n",
+                             cap_stat[0].n, cap_stat[0].ms, cap_stat[1].n, cap_stat[1].ms, cap_stat[2].n, cap_stat[2].ms, cap_stat[3].n,
+                             cap_stat[3].ms);
+                std::fprintf(stderr, "fnx: verify_rows windows since start (n, mean host ms, mean gpu ms): held graph %lu %.1f %.1f, captured %lu %.1f %.1f, eager %lu %.1f %.1f\n",
+                             win_stat[0].n, win_stat[0].ms / (double) std::max(1UL, win_stat[0].n), win_stat[0].gpu_ms / (double) std::max(1UL, win_stat[0].n),
+                             win_stat[1].n, win_stat[1].ms / (double) std::max(1UL, win_stat[1].n), win_stat[1].gpu_ms / (double) std::max(1UL, win_stat[1].n),
+                             win_stat[2].n, win_stat[2].ms / (double) std::max(1UL, win_stat[2].n), win_stat[2].gpu_ms / (double) std::max(1UL, win_stat[2].n));
+                {
+                    const char* nm[3] = {"held graph", "captured", "eager"};
+                    for (int kd = 0; kd < 3; ++kd) {
+                        std::string row = std::string("fnx: verify_rows host ms by rows, ") + nm[kd] + " (rows:count:ms):";
+                        for (int k = 1; k <= MAXT; ++k)
+                            if (win_stat_t[kd][k].n) {
+                                char buf[48];
+                                std::snprintf(buf, sizeof buf, " %d:%lu:%.1f", k, win_stat_t[kd][k].n, win_stat_t[kd][k].ms / (double) win_stat_t[kd][k].n);
+                                row += buf;
+                            }
+                        std::fprintf(stderr, "%s\n", row.c_str());
+                    }
+                }
                 std::string tab = "fnx: batch stats by rows (rows:count:ms):";
                 for (int k = 1; k <= MAXT; ++k)
                     if (cnt_t[k]) {
@@ -1081,7 +1252,7 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
             }
         }
     }
-    each([&](int, CardBuf& b, const CardW&) { ck(cudaGraphLaunch(b.batch_graphs[T].exec, b.st), "graph launch"); });
+    if (!eager) each([&](int, CardBuf& b, const CardW&) { ck(cudaGraphLaunch(b.batch_graphs[T].exec, b.st), "graph launch"); });
     each([&](int c, CardBuf& b, const CardW&) {
         ck(cudaMemcpyAsync(&h_.bv[c * T], b.best_v, T * 4, cudaMemcpyDeviceToHost, b.st), "best v");
         ck(cudaMemcpyAsync(&h_.bi[c * T], b.best_i, T * 4, cudaMemcpyDeviceToHost, b.st), "best i");
@@ -1113,6 +1284,11 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     }
     last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     last_gpu_ms = gpu_ms;
+    ++win_stat[last_kind_].n;
+    win_stat[last_kind_].ms += last_ms;
+    win_stat[last_kind_].gpu_ms += gpu_ms;
+    ++win_stat_t[last_kind_][T].n;
+    win_stat_t[last_kind_][T].ms += last_ms;
     return out;
 }
 
@@ -1124,6 +1300,9 @@ std::vector<std::vector<int>> Engine::held_layouts(const std::vector<int>& lanes
         const CardBuf::GraphSlot& s = cb_[0]->batch_graphs[(size_t) T];
         if (s.exec && s.key.size() == pre.size() + lanes.size() && std::equal(pre.begin(), pre.end(), s.key.begin()))
             out.emplace_back(s.key.begin() + (long) pre.size(), s.key.end());
+        for (const CardBuf::GraphEntry& e : cb_[0]->batch_cache[(size_t) T])
+            if (e.exec && e.key.size() == pre.size() + lanes.size() && std::equal(pre.begin(), pre.end(), e.key.begin()))
+                out.emplace_back(e.key.begin() + (long) pre.size(), e.key.end());
     }
     return out;
 }
@@ -1232,6 +1411,7 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
     }
     const std::vector<int> key = graph_key({cur_});
     if (cb_[0]->mtp_graphs[T].key != key || !cb_[0]->mtp_graphs[T].exec) {   // capturing queues no work
+        const auto tc = std::chrono::steady_clock::now();
         for (CardBuf* b : cb_) {
             ck(cudaSetDevice(b->dev), "set");
             ck(cudaStreamBeginCapture(b->st, cudaStreamCaptureModeRelaxed), "begin capture");
@@ -1243,6 +1423,8 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
             ck(cudaStreamEndCapture(b->st, &g), "end capture");
             install_graph(b->mtp_graphs[T], g, key);
         }
+        ++cap_stat[1].n;
+        cap_stat[1].ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
     }
     on_cards([&](int c) {
         CardBuf& b = *cb_[c];
@@ -1301,6 +1483,150 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
     }
     last_draft_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return mtp_->vocab[h_.bi[best]];
+}
+
+
+std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
+    if (!mtp_) throw std::runtime_error("draft_lanes: no draft layer attached");
+    if (!h_.R0 || !h_.mtp_emb) throw std::runtime_error("draft_lanes: no window has run (it drafts from a window's rows)");
+    if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("draft_lanes: a window is not committed");
+    const int nl = (int) reqs.size();
+    int T = 0;
+    for (const DraftReq& q : reqs) {
+        if (q.T < 1 || (int) q.tokens.size() != q.T) throw std::runtime_error("draft_lanes: a lane's rows and tokens differ");
+        if (q.lane < 0 || q.lane >= (int) lanes_.size()) throw std::runtime_error("draft_lanes: no lane " + std::to_string(q.lane));
+        if (q.src_row < 0 || q.src_row + q.T > MAXT) throw std::runtime_error("draft_lanes: source rows out of range");
+        if (q.pos0 < 0 || q.pos0 + q.T > max_ctx_ || q.pos0 + q.T > lane_pages(q.lane) * KVP_POS)
+            throw std::runtime_error("draft_lanes: cells out of the lane's pages");
+        T += q.T;
+    }
+    if (nl < 1 || T > MAXT) throw std::runtime_error("draft_lanes: 1.." + std::to_string(MAXT) + " rows in all");
+    const auto t0 = std::chrono::steady_clock::now();
+    const int was = cur_;
+    std::vector<int> off((size_t) nl);
+    int o = 0;
+    for (int i = 0; i < nl; ++i) {
+        const DraftReq& q = reqs[(size_t) i];
+        off[(size_t) i] = o;
+        use_lane(q.lane);   // the embeddings read the lane's images
+        for (int t = 0; t < q.T; ++t) {
+            embed_token(q.tokens[(size_t) t], q.pos0 + t + 1, h_.mtp_emb + (size_t) (o + t) * N);
+            h_.mtp_row_pos[o + t] = q.pos0 + t;
+        }
+        h_.mtp_lctl[2 * i] = q.pos0;
+        h_.mtp_lctl[2 * i + 1] = 0;
+        o += q.T;
+    }
+    use_lane(was);
+    h_.mtp_ctl[0] = 0;
+    h_.mtp_ctl[1] = (int) ring_tag();
+    // the penalized tokens of the lanes that penalize their drafts, in each card's slice of the draft vocabulary: {k, indexes, counts}, as draft() lays them out
+    std::vector<std::array<int, NCARD>> pen_k((size_t) nl);
+    for (int i = 0; i < nl; ++i) {
+        pen_k[(size_t) i].fill(0);
+        const Penalties::Row* pen = reqs[(size_t) i].pen;
+        if (!pen) continue;
+        if ((int) pen->counts.size() > PEN_CAP) throw std::runtime_error("draft_lanes: more penalized tokens than " + std::to_string(PEN_CAP));
+        h_.mtp_pen_par_l[3 * i] = pen->repeat, h_.mtp_pen_par_l[3 * i + 1] = pen->freq, h_.mtp_pen_par_l[3 * i + 2] = pen->present;
+        for (int c = 0; c < NCARD; ++c) {
+            const MtpCard& mc = mtp_->cards[c];
+            int* hp = h_.mtp_pen_l + ((size_t) i * NCARD + c) * (1 + 2 * PEN_CAP);
+            int k = 0;
+            for (const auto& [tok, cnt] : pen->counts) {
+                const int di = tok >= 0 && tok < (int) draft_index_.size() ? draft_index_[(size_t) tok] : -1;
+                if (di >= mc.dv0 && di < mc.dv1) hp[1 + k] = di - mc.dv0, hp[1 + PEN_CAP + k] = cnt, ++k;
+            }
+            std::memmove(hp + 1 + k, hp + 1 + PEN_CAP, (size_t) k * 4);   // counts right after the indexes
+            hp[0] = pen_k[(size_t) i][c] = k;
+        }
+    }
+    last_lane_cands.assign((size_t) nl, {});
+    for (int c = 0; c < NCARD; ++c) {
+        CardBuf& b = *cb_[c];
+        ck(cudaSetDevice(b.dev), "set");
+        std::vector<const int*> rows((size_t) LANE_ROW_COLS * MAXT, nullptr);
+        for (int i = 0; i < nl; ++i)
+            for (int t = 0; t < reqs[(size_t) i].T; ++t) {
+                const int r = off[(size_t) i] + t;
+                const LaneDev& LD = b.lanes[(size_t) reqs[(size_t) i].lane];
+                rows[(size_t) r] = b.mtp_row_pos + r;
+                rows[(size_t) (MAXT + r)] = LD.pt;
+                lane_row_extra(rows.data(), r, LD);
+            }
+        ck(cudaMemcpy(b.mtp_lane_rows, rows.data(), rows.size() * sizeof(const int*), cudaMemcpyHostToDevice), "draft lane rows");
+        for (int i = 0; i < nl; ++i) {
+            const DraftReq& q = reqs[(size_t) i];
+            ck(cudaMemcpyAsync(b.mtp_src + (size_t) off[(size_t) i] * ROW_W, draft_src(b, q.from_main) + (size_t) q.src_row * ROW_W, (size_t) q.T * ROW_W * 4,
+                               cudaMemcpyDeviceToDevice, b.st), "draft source rows");
+        }
+        ck(cudaMemcpyAsync(b.mtp_emb, h_.mtp_emb, (size_t) T * N * 4, cudaMemcpyHostToDevice, b.st), "draft embeddings");
+        ck(cudaMemcpyAsync(b.mtp_ctl, h_.mtp_ctl, 2 * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft ctl");
+        ck(cudaMemcpyAsync(b.mtp_lctl, h_.mtp_lctl, (size_t) 2 * nl * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft lane ctl");
+        ck(cudaMemcpyAsync(b.mtp_row_pos, h_.mtp_row_pos, (size_t) T * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft row positions");
+        for (int i = 0; i < nl; ++i)
+            if (reqs[(size_t) i].pen) {
+                ck(cudaMemcpyAsync(b.mtp_pen_l + (size_t) i * (1 + 2 * PEN_CAP), h_.mtp_pen_l + ((size_t) i * NCARD + c) * (1 + 2 * PEN_CAP),
+                                   (size_t) (1 + 2 * pen_k[(size_t) i][c]) * 4, cudaMemcpyHostToDevice, b.st), "draft penalties");
+                ck(cudaMemcpyAsync(b.mtp_pen_par_l + 3 * i, h_.mtp_pen_par_l + 3 * i, 3 * 4, cudaMemcpyHostToDevice, b.st), "draft penalties");
+            } else if (reqs[(size_t) i].cands) {
+                h_.mtp_pen_par_l[3 * i] = 1.f, h_.mtp_pen_par_l[3 * i + 1] = 0.f, h_.mtp_pen_par_l[3 * i + 2] = 0.f;
+                ck(cudaMemcpyAsync(b.mtp_pen_par_l + 3 * i, h_.mtp_pen_par_l + 3 * i, 3 * 4, cudaMemcpyHostToDevice, b.st), "draft penalties");
+            }
+        ck(cudaEventRecord(b.ev0, b.st), "event");
+    }
+    mtp_enqueue_lanes(reqs, T);
+    for (int c = 0; c < NCARD; ++c) {
+        CardBuf& b = *cb_[c];
+        ck(cudaSetDevice(b.dev), "set");
+        ck(cudaEventRecord(b.ev1, b.st), "event");
+        ck(cudaMemcpyAsync(h_.bv + (size_t) c * MAXT, b.mtp_bv, (size_t) T * 4, cudaMemcpyDeviceToHost, b.st), "draft v");
+        ck(cudaMemcpyAsync(h_.bi + (size_t) c * MAXT, b.mtp_bi, (size_t) T * 4, cudaMemcpyDeviceToHost, b.st), "draft i");
+        ck(cudaMemcpyAsync(&h_.err[c], err_word(b), 4, cudaMemcpyDeviceToHost, b.st), "window err");
+        const MtpCard& mc = mtp_->cards[c];
+        for (int i = 0; i < nl; ++i)
+            if (reqs[(size_t) i].cands && mc.dv1 > mc.dv0) {
+                const size_t at = (size_t) i * NCARD + c;
+                ck(cudaMemcpyAsync(h_.mtp_tk_v_l + at * TOPK_N, b.mtp_tk_v_l + (size_t) i * TOPK_N, TOPK_N * 4, cudaMemcpyDeviceToHost, b.st), "draft top v");
+                ck(cudaMemcpyAsync(h_.mtp_tk_i_l + at * TOPK_N, b.mtp_tk_i_l + (size_t) i * TOPK_N, TOPK_N * 4, cudaMemcpyDeviceToHost, b.st), "draft top i");
+                ck(cudaMemcpyAsync(h_.mtp_tk_err_l + at, b.mtp_tk_err_l + i, 4, cudaMemcpyDeviceToHost, b.st), "draft top err");
+            }
+    }
+    unsigned err = 0;
+    float gpu_ms = 0.f;
+    for (int c = 0; c < NCARD; ++c) {
+        ck(cudaSetDevice(cb_[c]->dev), "set");
+        ck(cudaStreamSynchronize(cb_[c]->st), "draft sync");
+        err |= h_.err[c];
+        float ms = 0.f;
+        ck(cudaEventElapsedTime(&ms, cb_[c]->ev0, cb_[c]->ev1), "event time");
+        gpu_ms = std::max(gpu_ms, ms);
+    }
+    last_draft_gpu_ms = gpu_ms;
+    if (const char* e = window_error(err, true)) throw std::runtime_error(std::string("draft_lanes: ") + e);
+    for (int i = 0; i < nl; ++i) {
+        if (!reqs[(size_t) i].cands) continue;
+        std::vector<std::pair<float, int>>& cd = last_lane_cands[(size_t) i];
+        for (int c = 0; c < NCARD; ++c) {
+            if (mtp_->cards[c].dv1 <= mtp_->cards[c].dv0) continue;
+            const size_t at = (size_t) i * NCARD + c;
+            if (h_.mtp_tk_err_l[at] & 16u) throw std::runtime_error("draft_lanes: the draft layer's logits hold a NaN or inf");
+            for (int k = 0; k < TOPK_N; ++k) cd.emplace_back(h_.mtp_tk_v_l[at * TOPK_N + k], mtp_->vocab[h_.mtp_tk_i_l[at * TOPK_N + k]]);
+        }
+        std::sort(cd.begin(), cd.end(), [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+            return a.first > b.first || (a.first == b.first && a.second < b.second);
+        });
+        cd.resize(TOPK_N);
+    }
+    std::vector<int> out((size_t) nl);
+    for (int i = 0; i < nl; ++i) {
+        const int row = off[(size_t) i] + reqs[(size_t) i].T - 1;
+        int best = 0;
+        for (int c = 1; c < NCARD; ++c)
+            if (mtp_->cards[c].dv1 > mtp_->cards[c].dv0 && h_.bv[(size_t) c * MAXT + row] > h_.bv[(size_t) best * MAXT + row]) best = c;
+        out[(size_t) i] = mtp_->vocab[h_.bi[(size_t) best * MAXT + row]];
+    }
+    last_draft_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return out;
 }
 
 }  // namespace fnx

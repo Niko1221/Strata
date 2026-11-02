@@ -1584,7 +1584,7 @@ class Runner:
         return out
 
     def apply_split_engine(self, cfg: dict) -> None:
-        """The all-cards split engine (docs/SPLIT_ENGINE.md): by itself ("auto", the default) for a Qwen model on this PC's NVIDIA cards that passes
+        """The all-cards split engine (docs/SPLIT_ENGINE.md): by itself ("auto", the default) for a Qwen model on this PC's NVIDIA or AMD (gfx1201) cards that passes
         strata_control/split_engine.py's rule, never when the run config says "split_engine": "off" (`--split-engine off`, STRATA_SPLIT_ENGINE=0).
         In auto a "no" is silent and the config stays as it is; with "on" it gets one plain line. It never stops a launch."""
         from strata_control import split_engine as SE
@@ -1598,8 +1598,8 @@ class Runner:
                 real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
             except Exception:                                # noqa: BLE001 - no engine to look beside: no split
                 return None
-            # one build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch> only
-            for name in ((f"strata-split-{n}-{arch}",) if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
+            # one build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch>, then strata-split-N-amd (one binary with a code object for each RDNA architecture)
+            for name in ((f"strata-split-{n}-{arch}", f"strata-split-{n}-amd") if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
                 p = Path(str(real)).parent / name
                 if p.is_file():
                     return str(p)

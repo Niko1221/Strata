@@ -88,6 +88,27 @@ struct CardBuf {
     };
     std::vector<GraphSlot> win_graphs = std::vector<GraphSlot>(MAXT + 1), mtp_graphs = std::vector<GraphSlot>(MAXT + 1),
                            batch_graphs = std::vector<GraphSlot>(MAXT + 1);
+    // FNX_PRECAP: batched-window graphs that were not evicted by a window of another layout. batch_graphs[T] stays the graph the next
+    // window of T rows launches (and the tables enqueue_rows reads); a layout change puts the slot's graph and its tables here, and a
+    // window of a layout held here swaps it back. Entries are the same on every card (same index = same layout)
+    struct GraphEntry {
+        cudaGraphExec_t exec = nullptr;
+        std::vector<int> key;
+        const int** lane_rows = nullptr;
+        float** lane_gdn = nullptr;
+        const int** seg_ctl = nullptr;
+        int* seg_row0 = nullptr;
+        unsigned long used = 0;   // the engine's tick of its last use
+    };
+    // FNX_CAPTURE_AFTER: the tables of a window run without a graph (verify_rows' eager windows); they stand in for the slot's while it runs
+    struct EagerTab {
+        const int** lane_rows = nullptr;
+        float** lane_gdn = nullptr;
+        const int** seg_ctl = nullptr;
+        int* seg_row0 = nullptr;
+    } eager_tab;
+    std::vector<std::vector<GraphEntry>> batch_cache = std::vector<std::vector<GraphEntry>>(MAXT + 1);
+    std::vector<unsigned long> batch_slot_used = std::vector<unsigned long>(MAXT + 1, 0);
     // batch_graphs[T]'s lane rows (LaneRows): [MAXT] each row's lane's ctl, then [MAXT] its page table; written when
     // the graph is captured, read by it
     std::vector<const int**> lane_rows = std::vector<const int**>(MAXT + 1, nullptr);
@@ -104,6 +125,13 @@ struct CardBuf {
     uint16_t *mtp_kc = nullptr, *mtp_vc = nullptr;   // f16
     float *mtp_emb = nullptr, *mtp_en, *mtp_e2, *mtp_src, *mtp_hn, *mtp_h2, *mtp_R, *mtp_logits, *mtp_bv;
     int *mtp_bi, *mtp_ctl;
+    // the batched draft layer (Engine::draft_lanes): per lane [pos0, tag], per row its cell, and the rows' pointer table (the main window's lane_rows, for the draft rows)
+    int *mtp_lctl = nullptr, *mtp_row_pos = nullptr;
+    const int** mtp_lane_rows = nullptr;
+    // per lane of a batched draft window: the last row's penalties and (cands) its TOPK_N candidates
+    int *mtp_pen_l = nullptr, *mtp_tk_i_l = nullptr;
+    float *mtp_pen_par_l = nullptr, *mtp_tk_v_l = nullptr;
+    unsigned* mtp_tk_err_l = nullptr;
     int* mtp_pen = nullptr;        // the last row's penalties (penalize_row's pen, this card's draft-vocabulary indexes)
     float* mtp_pen_par = nullptr;
     float* mtp_tk_v = nullptr;     // the last row's TOPK_N candidates (draft(cands)); mtp_zero: no penalties for top_tokens
