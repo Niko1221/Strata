@@ -15370,9 +15370,14 @@ int main(int argc, char** argv) {
                 std::vector<int32_t> idv(ids.begin(), ids.end());
                 bool cold = false;
                 df2.begin_request(idv.data(), (int64_t) idv.size(), reread_to > 0 ? 0 : resume, &cold);
+                if (df2.last_rebuilt > 0)
+                    std::fprintf(stderr, "strata serve: DFlash2: %s%lld context rows of the window rebuilt from the drafter's log in %.1f ms%s\n",
+                                 df2.last_swapped ? "a parked conversation came back: " : "", (long long) df2.last_rebuilt, df2.last_ms,
+                                 df2.last_missing > 0 ? " (the rest were never logged)" : "");
                 if (cold)
-                    std::fprintf(stderr, "strata serve: DFlash2: the conversation is not the one the drafter last saw (a parked or edited one): it starts with an "
-                                         "empty context and drafts poorly for the first rounds (the answers are the same)\n");
+                    std::fprintf(stderr, "strata serve: DFlash2: %lld context rows of the window are not the drafter's to give (a conversation it has no log of: edited, "
+                                         "from a session file, or its log was evicted): it drafts poorly for the first rounds (the answers are the same)\n",
+                                 (long long) std::max<int64_t>(df2.last_missing, 1));
                 sp.set_taps(df2.tap_layers(), std::max<int64_t>(0, n - 2047), 2048);
             }
 #endif

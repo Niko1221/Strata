@@ -46,6 +46,9 @@ Dflash2Drafter::~Dflash2Drafter() {
     for (cudaGraphExec_t& e : exec_)
         if (e) cudaGraphExecDestroy(e);
     auto fr = [](void* p) { if (p) cudaFree(p); };
+    if (h_logq_) cudaFreeHost(h_logq_);
+    if (h_logd_) cudaFreeHost(h_logd_);
+    fr(rb_q_); fr(rb_d_); fr(rb_pos_);
     fr(blob_); fr(tag_); fr(d_meta_); fr(xq_); fr(xil_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rope_inv_);
     for (int l = 0; l < 8; ++l) { fr(kring_[l]); fr(vring_[l]); }
     fr(fcy_); fr(hctx_); fr(kc_); fr(vc_); fr(h_); fr(xn_); fr(xc_); fr(dyn_); fr(q_); fr(qn_); fr(k_); fr(v_); fr(kblk_); fr(ao_); fr(o_);
@@ -262,6 +265,14 @@ bool Dflash2Drafter::alloc(std::string& err) {
     if (cudaMalloc((void**) &tag_, (size_t) kRing * 8) != cudaSuccess) { err = "dflash2: ring tags"; return false; }
     vram_ += (uint64_t) kRing * 8;
     cudaMemset(tag_, 0xff, (size_t) kRing * 8);   // -1: no slot holds a context row yet
+    for (int64_t& t : slot_pos_) t = -1;
+    if (const char* e = std::getenv("STRATA_DF2_RING_LOG"); e && e[0] == '0') log_on_ = false;
+    if (const char* e = std::getenv("STRATA_DF2_LOG_MIB"); e && e[0]) stash_budget_ = (uint64_t) std::max(0, std::atoi(e)) << 20;
+    if (log_on_ && (cudaHostAlloc((void**) &h_logq_, (size_t) kRows * N_, cudaHostAllocDefault) != cudaSuccess ||
+                    cudaHostAlloc((void**) &h_logd_, (size_t) kRows * (N_ / 32) * 4, cudaHostAllocDefault) != cudaSuccess)) {
+        h_logq_ = nullptr; h_logd_ = nullptr; log_on_ = false;
+        std::fprintf(stderr, "strata dflash2: the ring log's staging does not fit in pinned memory: the log is off\n");
+    }
     cudaMemset(xqp_, 0, (size_t) 5 * N_ * 8 + 4096);
     cudaMemset(xdp_, 0, ((size_t) 5 * N_ / 32 * 8 + 64) * 4);
     cudaMemset(xqc_, 0, (size_t) 5 * N_ * 8 + 4096);
@@ -366,6 +377,27 @@ void Dflash2Drafter::gemm(std::initializer_list<const char*> names, std::initial
     kernels::df2_gemm(mats, n, xq, xd, n_in, ncols, cs);
 }
 
+// The part of a context update after the activations are quantized: per layer the keys and values (projection, k-norm, rope, ring write).  Also what a ring
+// rebuild runs over logged rows: `xq` / `xd` are then the log's codes and scales, `pos` the rows' positions (device), rt_ctx_ their rope table.
+bool Dflash2Drafter::record_kv(int n, cudaStream_t cs, const uint8_t* xq, const float* xd, const int32_t* pos, std::string& err) {
+    using namespace kernels;
+    try {
+        for (int l = 0; l < L_; ++l) {
+            const std::string p = "layers." + std::to_string(l) + ".";
+            const std::string kp = p + "self_attn.k_proj.weight", vp = p + "self_attn.v_proj.weight";
+            gemm({kp.c_str(), vp.c_str()}, {kc_, vc_}, n, cs, xq, xd);
+            stamp("gemm:kp");
+            df2_kv_ring(kc_, vc_, f32(p + "self_attn.k_norm.weight"), pos, rt_ctx_, kring_[l], vring_[l], kRing, n, NKV_, eps_, cs, tag_, d_meta_ + 18);
+            stamp("df2_kv_ring");
+            if (fork_) cudaEventRecord(ev_ctx_[l], cs);   // layer l's keys and values are in the ring
+        }
+    } catch (const std::exception& e) {
+        err = e.what();
+        return false;
+    }
+    return true;
+}
+
 bool Dflash2Drafter::record_context(const float* taps, int n, cudaStream_t cs, std::string& err, bool rope) {
     using namespace kernels;
     if (skip_part("ctx")) return true;
@@ -379,15 +411,11 @@ bool Dflash2Drafter::record_context(const float* taps, int n, cudaStream_t cs, s
         stamp("gemm:fc");
         df2_rms_quant(fcy_, f32("hidden_norm.weight"), nullptr, n, N_, eps_, xqc_, xdc_, cs);
         stamp("df2_rms_quant");
-        for (int l = 0; l < L_; ++l) {
-            const std::string p = "layers." + std::to_string(l) + ".";
-            const std::string kp = p + "self_attn.k_proj.weight", vp = p + "self_attn.v_proj.weight";
-            gemm({kp.c_str(), vp.c_str()}, {kc_, vc_}, n, cs, xqc_, xdc_);
-            stamp("gemm:kp");
-            df2_kv_ring(kc_, vc_, f32(p + "self_attn.k_norm.weight"), d_meta_ + 0, rt_ctx_, kring_[l], vring_[l], kRing, n, NKV_, eps_, cs, tag_, d_meta_ + 18);
-            stamp("df2_kv_ring");
-            if (fork_) cudaEventRecord(ev_ctx_[l], cs);   // layer l's keys and values are in the ring
+        if (log_on_) {   // the ring log: these codes and scales are all the K/V of the five layers are made from (see begin_request)
+            cudaMemcpyAsync(h_logq_, xqc_, (size_t) n * N_, cudaMemcpyDeviceToHost, cs);
+            cudaMemcpyAsync(h_logd_, xdc_, (size_t) n * (N_ / 32) * 4, cudaMemcpyDeviceToHost, cs);
         }
+        if (!record_kv(n, cs, xqc_, xdc_, d_meta_ + 0, err)) return false;
     } catch (const std::exception& e) {
         err = e.what();
         return false;
@@ -538,28 +566,249 @@ bool Dflash2Drafter::prepare(const float* taps, std::string& err) {
     return true;
 }
 
+// ---- ring log -----------------------------------------------------------------------------------------------------------------------------------------
+// The ring holds the last 2064 positions of the lineage it was filled for.  Resuming a prompt below the highest position written (a repeated or rewound
+// prefix, a parked conversation brought back) leaves the part of the first draft's window [n - 2047, resume) either overwritten by the later positions
+// (the slots are position % 2064) or never written for this lineage.  The drafts are then poor until the window refills, and the engine said nothing for the
+// first kind.  The K/V rows are a function of the quantized hidden rows (codes and block scales after hidden_norm) alone, so those rows are logged as the
+// updates make them (2.9 KB a position; the K/V is 40 KB and the taps 51 KB), per lineage, and a rebuild runs record_kv over them: the same kernels on the
+// same bytes, so the rebuilt K/V rows are bitwise those of the original update.
+bool Dflash2Drafter::Lineage::logged(int64_t pos) const {
+    const size_t c = (size_t) (pos / kLogChunk);
+    return pos >= 0 && c < chunks.size() && chunks[c] && chunks[c]->ok[(size_t) (pos % kLogChunk)] != 0;
+}
+
+uint64_t Dflash2Drafter::Lineage::bytes() const {
+    uint64_t b = (uint64_t) hist.capacity() * 4;
+    for (const auto& c : chunks)
+        if (c) b += c->q.size() + c->d.size() * 4 + c->ok.size();
+    return b;
+}
+
+Dflash2Drafter::LogChunk& Dflash2Drafter::Lineage::writable(size_t chunk) {
+    if (chunks.size() <= chunk) chunks.resize(chunk + 1);
+    if (!chunks[chunk]) {
+        auto c = std::make_shared<LogChunk>();
+        c->q.assign((size_t) kLogChunk * 2560, 0);
+        c->d.assign((size_t) kLogChunk * 80, 0.0f);
+        c->ok.assign((size_t) kLogChunk, 0);
+        chunks[chunk] = std::move(c);
+    } else if (chunks[chunk].use_count() > 1) {
+        chunks[chunk] = std::make_shared<LogChunk>(*chunks[chunk]);   // copy on write: a stashed copy keeps the old rows
+    }
+    return *chunks[chunk];
+}
+
+void Dflash2Drafter::Lineage::truncate(int64_t keep) {
+    keep = std::max<int64_t>(0, keep);
+    const size_t c0 = (size_t) (keep / kLogChunk);
+    for (size_t c = c0 + 1; c < chunks.size(); ++c) chunks[c].reset();
+    if (chunks.size() > c0 + 1) chunks.resize(c0 + 1);
+    if (c0 < chunks.size() && chunks[c0]) {
+        if (keep % kLogChunk == 0) {
+            chunks[c0].reset();
+        } else {
+            LogChunk& ch = writable(c0);
+            for (int i = (int) (keep % kLogChunk); i < kLogChunk; ++i) ch.ok[(size_t) i] = 0;
+        }
+    }
+}
+
+uint64_t Dflash2Drafter::ring_log_bytes() const { return cur_.bytes(); }
+uint64_t Dflash2Drafter::ring_stash_bytes() const {
+    uint64_t b = 0;
+    for (const Lineage& l : stash_) b += l.bytes();
+    return b;
+}
+
+void Dflash2Drafter::reset() {
+    have_ctx_ = 0;
+    cur_ = Lineage{};
+    stash_.clear();
+    invalidate_ring();
+}
+
+void Dflash2Drafter::invalidate_ring() {
+    ++epoch_;
+    ring_hi_ = 0;
+    for (int64_t& t : slot_pos_) t = -1;
+}
+
+void Dflash2Drafter::stash_push(Lineage&& l) {
+    if (!log_on_ || stash_budget_ == 0 || l.hist.size() < 128 || l.chunks.empty()) return;
+    stash_.push_back(std::move(l));
+    ++ring_stats.stash_stores;
+    uint64_t total = ring_stash_bytes();
+    while (!stash_.empty() && total > stash_budget_) {
+        total -= std::min(total, stash_.front().bytes());
+        stash_.pop_front();
+        ++ring_stats.stash_evictions;
+    }
+}
+
+void Dflash2Drafter::log_stage(int64_t pos0, int n) {
+    if (!log_on_) return;
+    pend_pos0_ = pos0;
+    pend_n_ = n;
+    for (int i = 0; i < n; ++i) slot_pos_[(size_t) ((pos0 + i) % kRing)] = ((int64_t) epoch_ << 32) | (pos0 + i);
+}
+
+void Dflash2Drafter::log_flush() {
+    if (!log_on_ || pend_pos0_ < 0) return;
+    for (int i = 0; i < pend_n_; ++i) {
+        const int64_t pos = pend_pos0_ + i;
+        LogChunk& ch = cur_.writable((size_t) (pos / kLogChunk));
+        const size_t r = (size_t) (pos % kLogChunk);
+        std::memcpy(&ch.q[r * 2560], h_logq_ + (size_t) i * 2560, 2560);
+        std::memcpy(&ch.d[r * 80], h_logd_ + (size_t) i * 80, 80 * sizeof(float));
+        ch.ok[r] = 1;
+    }
+    pend_pos0_ = -1;
+}
+
+bool Dflash2Drafter::rebuild(int64_t lo, int64_t hi, int64_t* rebuilt, int64_t* missing, std::string& err) {
+    *rebuilt = 0;
+    *missing = 0;
+    std::vector<int32_t> pos;
+    for (int64_t p = lo; p < hi; ++p) {
+        if (slot_pos_[(size_t) (p % kRing)] == (((int64_t) epoch_ << 32) | p)) continue;   // the ring already holds this row
+        if (cur_.logged(p)) pos.push_back((int32_t) p); else ++*missing;
+    }
+    if (pos.empty()) return true;
+    const OnDevice on_device(device_);
+    const size_t rows = pos.size();
+    const size_t cap = (size_t) kRing;   // a window is at most 2048 rows
+    if (rb_q_ == nullptr) {
+        if (cudaMalloc((void**) &rb_q_, (cap + kRows) * 2560) != cudaSuccess || cudaMalloc((void**) &rb_d_, (cap + kRows) * 80 * sizeof(float)) != cudaSuccess ||
+            cudaMalloc((void**) &rb_pos_, (cap + kRows) * sizeof(int32_t)) != cudaSuccess) {
+            if (rb_q_) cudaFree(rb_q_);
+            if (rb_d_) cudaFree(rb_d_);
+            rb_q_ = nullptr; rb_d_ = nullptr; rb_pos_ = nullptr;
+            (void) cudaGetLastError();
+            err = "dflash2: the ring rebuild's scratch does not fit";
+            return false;
+        }
+        cudaMemset(rb_q_, 0, (cap + kRows) * 2560);
+        cudaMemset(rb_d_, 0, (cap + kRows) * 80 * sizeof(float));
+        rb_bytes_ = (cap + kRows) * (2560 + 80 * sizeof(float) + sizeof(int32_t));
+        vram_ += rb_bytes_;
+    }
+    std::vector<int8_t> q(rows * 2560);
+    std::vector<float> d(rows * 80);
+    for (size_t i = 0; i < rows; ++i) {
+        const int64_t p = pos[i];
+        const LogChunk& ch = *cur_.chunks[(size_t) (p / kLogChunk)];
+        const size_t r = (size_t) (p % kLogChunk);
+        std::memcpy(&q[i * 2560], &ch.q[r * 2560], 2560);
+        std::memcpy(&d[i * 80], &ch.d[r * 80], 80 * sizeof(float));
+    }
+    h_meta_[18] = epoch_;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
+    cudaMemcpyAsync(rb_q_, q.data(), q.size(), cudaMemcpyHostToDevice, cs_);
+    cudaMemcpyAsync(rb_d_, d.data(), d.size() * sizeof(float), cudaMemcpyHostToDevice, cs_);
+    cudaMemcpyAsync(rb_pos_, pos.data(), rows * sizeof(int32_t), cudaMemcpyHostToDevice, cs_);
+    // (the host vectors die with this scope: wait for the copies)
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2: ring rebuild: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+    const bool was_fork = fork_;
+    fork_ = false;
+    bool ok = true;
+    for (size_t r0 = 0; ok && r0 < rows; r0 += kRows) {
+        const int m = (int) std::min<size_t>(kRows, rows - r0);
+        try { kernels::df2_rope_table_inv(rb_pos_ + r0, m, rope_inv_, rt_ctx_, cs_); } catch (const std::exception& e) { err = e.what(); ok = false; break; }
+        ok = record_kv(m, cs_, reinterpret_cast<const uint8_t*>(rb_q_) + r0 * 2560, rb_d_ + r0 * 80, rb_pos_ + r0, err);
+    }
+    fork_ = was_fork;
+    if (!ok) return false;
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2: ring rebuild: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+    for (int32_t p : pos) slot_pos_[(size_t) (p % kRing)] = ((int64_t) epoch_ << 32) | p;
+    *rebuilt = (int64_t) rows;
+    return true;
+}
+
 bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume, bool* cold) {
     resume = std::max<int64_t>(0, std::min(resume, n));
-    // the longest common prefix of what the ring was last filled for and what this request keeps
-    int64_t lcp = 0;
-    const int64_t lim = std::min<int64_t>((int64_t) hist_.size(), resume);
-    while (lcp < lim && hist_[(size_t) lcp] == ids[lcp]) ++lcp;
-    // The session says positions [0, resume) are in the state.  When the history agrees with all of them the ring serves them as it is.  When the history
-    // holds other tokens below `resume` (a parked conversation restored, an edited turn) those slots belong to another lineage: a new epoch invalidates every
-    // older stamp (the drafts are poor for the first rounds, never wrong).  A history that only ends earlier leaves nothing stale; one that goes on past
-    // `resume` has its extra rows rewritten before the window reaches them.
-    const bool stale = ring_hi_ > lcp && lcp < resume;
-    if (stale) { ++epoch_; ring_hi_ = 0; }
-    if (cold) *cold = stale;
-    hist_.assign(ids, ids + resume);
+    if (cold) *cold = false;
+    ++ring_stats.requests;
+    last_rebuilt = last_missing = 0;
+    last_ms = 0;
+    last_swapped = false;
+    std::string err;
+    (void) context_wait(err);
+    const Clock::time_point t0 = Clock::now();
+    auto lcp_of = [&](const std::vector<int32_t>& h) {
+        int64_t l = 0;
+        const int64_t lim = std::min<int64_t>((int64_t) h.size(), resume);
+        while (l < lim && h[(size_t) l] == ids[l]) ++l;
+        return l;
+    };
+    if (!log_on_) {   // the pre-log rule: a history that does not cover the resumed prefix starts the ring over
+        const int64_t lcp = lcp_of(cur_.hist);
+        const bool stale = ring_hi_ > lcp && lcp < resume;
+        if (stale) { ++epoch_; ring_hi_ = 0; }
+        if (cold) *cold = stale;
+        cur_.hist.assign(ids, ids + resume);
+        return true;
+    }
+    bool covered = lcp_of(cur_.hist) >= resume;
+    bool swapped = false;
+    if (!covered) {   // a parked lineage may be the one this request resumes
+        for (size_t i = stash_.size(); i-- > 0;) {
+            if (lcp_of(stash_[i].hist) < resume) continue;
+            Lineage got = std::move(stash_[i]);
+            stash_.erase(stash_.begin() + (std::ptrdiff_t) i);
+            stash_push(std::move(cur_));
+            cur_ = std::move(got);
+            invalidate_ring();
+            covered = swapped = true;
+            ++ring_stats.stash_hits;
+            break;
+        }
+    }
+    if (!covered) {   // another conversation: the live lineage is parked, this one starts empty
+        stash_push(std::move(cur_));
+        cur_ = Lineage{};
+        invalidate_ring();
+        ++ring_stats.cold_starts;
+    } else if ((int64_t) cur_.hist.size() >= resume + 128) {
+        // the rows past `resume` are about to be rewritten (a rewound or branching request): keep the old branch as it is, sharing the log's chunks
+        Lineage copy;
+        copy.hist = cur_.hist;
+        copy.chunks = cur_.chunks;
+        stash_push(std::move(copy));
+    }
+    if ((int64_t) cur_.hist.size() > resume) { cur_.hist.resize((size_t) resume); cur_.truncate(resume); }
+    if (!covered) cur_.hist.assign(ids, ids + resume);
+    // the window the first draft reads, below `resume` (the prompt's own taps cover [resume, n)): every slot that does not hold its row is rebuilt from the log
+    int64_t rebuilt = 0, missing = 0;
+    const int64_t lo = std::max<int64_t>(0, n - (window_ - 1)), hi = resume;
+    if (hi > lo) {
+        if (!rebuild(lo, hi, &rebuilt, &missing, err)) {
+            std::fprintf(stderr, "strata dflash2: %s: the ring starts over for this request\n", err.c_str());
+            invalidate_ring();
+            missing = hi - lo;
+            rebuilt = 0;
+        }
+    }
+    ring_stats.rows_rebuilt += rebuilt;
+    ring_stats.rows_missing += missing;
+    if (rebuilt > 0) ++ring_stats.rebuilds;
+    const double ms = ms_since(t0);
+    if (rebuilt > 0) ring_stats.ms_rebuild += ms;
+    if (swapped) ring_stats.ms_swap += ms;
+    if (cold) *cold = missing > 0;
+    last_rebuilt = rebuilt;
+    last_missing = missing;
+    last_ms = ms;
+    last_swapped = swapped;
     return true;
 }
 
 void Dflash2Drafter::note_rows(const int32_t* toks, int64_t n, int64_t pos0) {
     if (pos0 < 0) return;
-    if ((int64_t) hist_.size() > pos0) hist_.resize((size_t) pos0);
-    if ((int64_t) hist_.size() < pos0) return;   // a gap: the history stops being a prefix, so it stays where it is (the next begin_request starts over)
-    hist_.insert(hist_.end(), toks, toks + n);
+    if ((int64_t) cur_.hist.size() > pos0) { cur_.hist.resize((size_t) pos0); if (log_on_) cur_.truncate(pos0); }
+    if ((int64_t) cur_.hist.size() < pos0) return;   // a gap: the history stops being a prefix, so it stays where it is (the next begin_request starts over)
+    cur_.hist.insert(cur_.hist.end(), toks, toks + n);
 }
 
 bool Dflash2Drafter::context(const float* taps, int64_t n, int64_t pos0, std::string& err) {
@@ -572,8 +821,10 @@ bool Dflash2Drafter::context(const float* taps, int64_t n, int64_t pos0, std::st
         h_meta_[18] = epoch_;
         std::atomic_thread_fence(std::memory_order_seq_cst);
         kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
+        log_stage(pos0 + r0, m);
         if (!record_context(taps + (size_t) r0 * (size_t) tap_n, m, cs_, err)) return false;
         if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+        log_flush();
     }
     have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n);
     ring_hi_ = std::max<int64_t>(ring_hi_, pos0 + n);
@@ -588,6 +839,7 @@ bool Dflash2Drafter::context_async(const float* taps, int64_t n, int64_t pos0, s
     h_meta_[18] = epoch_;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
+    log_stage(pos0, (int) n);
     if (!record_context(taps, (int) n, cs_, err)) return false;
     ctx_pending_ = true;
     have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n);
@@ -600,6 +852,7 @@ bool Dflash2Drafter::context_wait(std::string& err) {
     ctx_pending_ = false;
     const OnDevice on_device(device_);
     if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+    log_flush();
     return true;
 }
 
@@ -625,6 +878,7 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     for (int i = 1; i < 8; ++i) h_meta_[24 + i] = mask_token_;
     for (int i = 0; i < kDrafts; ++i) { ((volatile int32_t*) h_out_)[i] = -1; }
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    log_stage(pos0, n_new);
     if (timing_) cudaEventRecord(ev_a_, cs_);
     if (prof_) {   // the same round without its graph, an event after every stage
         cudaStreamSynchronize(cs_);
@@ -640,6 +894,7 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     if (timing_) cudaEventRecord(ev_b_, cs_);
     (void) cudaStreamQuery(cs_);
     if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2 draft: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+    log_flush();
     for (int i = 0; i < kDrafts; ++i) {
         const bool made = i < ndraft_;
         drafts[i] = made ? ((volatile int32_t*) h_out_)[i] : 0;
@@ -653,6 +908,21 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     ring_hi_ = std::max<int64_t>(ring_hi_, pos0 + n_new);
     ms_draft += ms_since(t0);
     ++rounds;
+    return true;
+}
+
+bool Dflash2Drafter::debug_ring(std::vector<float>& kv, std::vector<int64_t>& tags, std::string& err) {
+    const OnDevice on_device(device_);
+    if (!context_wait(err)) return false;
+    const size_t per = (size_t) kRing * NKV_ * HD_;
+    kv.resize((size_t) L_ * 2 * per);
+    tags.resize((size_t) kRing);
+    if (cudaDeviceSynchronize() != cudaSuccess) { err = "dflash2: debug ring sync"; return false; }
+    for (int l = 0; l < L_; ++l) {
+        if (cudaMemcpy(kv.data() + ((size_t) l * 2) * per, kring_[l], per * 4, cudaMemcpyDeviceToHost) != cudaSuccess ||
+            cudaMemcpy(kv.data() + ((size_t) l * 2 + 1) * per, vring_[l], per * 4, cudaMemcpyDeviceToHost) != cudaSuccess) { err = "dflash2: debug ring copy"; return false; }
+    }
+    if (cudaMemcpy(tags.data(), tag_, (size_t) kRing * 8, cudaMemcpyDeviceToHost) != cudaSuccess) { err = "dflash2: debug tag copy"; return false; }
     return true;
 }
 
