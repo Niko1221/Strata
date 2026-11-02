@@ -39,6 +39,22 @@ inline bool sm120_series() {
 /// the device (raw cudaDevAttrComputeCapabilityMajor / Minor) is a 12.0 card, or emulates one (STRATA_EMULATE_CC=120)
 inline bool is_sm120(int major, int minor) { return cc_major_of(major) == 12 && cc_minor_of(minor) == 0; }
 
+/// STRATA_PLE_BATCH (the prompt path's batched PLE post-ops) when the user set nothing.  ON everywhere except one toolchain: an engine built with CUDA 12.8
+/// (CUDART_VERSION 12080..12089) running on a compute capability 12.0 card faults in the prompt path with it ("an illegal memory access", first error in the
+/// native PLE postops launch; RTX PRO 6000, driver 580, srv118; issues #220, #224; CMake already warns for a CUDA < 13.0 sm_120 build).  The same source built
+/// with CUDA 13.0 (the released cuda13 package) and 13.2 runs it at every prompt length, and it is worth ~23% of the prompt speed there, so it stays on there.
+/// `cudart_version`: CUDART_VERSION of the toolkit the engine was built with (0 in a HIP build); `hip`: a HIP build (a gfx12 card reports 12.0 as well).
+inline bool ple_batch_default(int cudart_version, bool hip, int major, int minor) {
+    const bool cuda_12_8 = !hip && cudart_version >= 12080 && cudart_version < 12090;
+    return !(cuda_12_8 && is_sm120(major, minor));
+}
+
+/// The decision: STRATA_PLE_BATCH wins in both directions (text that reads as 0 is off, anything else on, as before); unset is ple_batch_default.
+inline bool ple_batch_resolve(const char* env, int cudart_version, bool hip, int major, int minor) {
+    if (env != nullptr) return std::atoi(env) != 0;
+    return ple_batch_default(cudart_version, hip, major, minor);
+}
+
 /// the default of a bitwise switch of the set: on for a 12.0 card unless STRATA_SM120_PERF=0
 inline bool sm120_default(int major, int minor) { return is_sm120(major, minor) && sm120_series(); }
 

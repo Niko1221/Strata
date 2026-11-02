@@ -18,6 +18,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <mutex>
 #include <type_traits>
 #include <cmath>
 #include <cstdio>
@@ -2691,15 +2692,29 @@ static int v3_pf_mask() {
 #endif
 }
 static int g_v3_pf_force = -1;   // fused_gr_v3_pf (tests, benchmarks): the mask for every read; -1 = STRATA_GR_V3_PF
+// A kernel's dynamic shared memory opt-in (and its carveout) belongs to the DEVICE it is set on, not to the process: a layer split or a tensor-parallel run launches the
+// same kernel on several cards, and a process-wide `static const bool once` set it on the first card that got there only.  The second card then launched past the
+// 48 KB default and failed ("invalid argument", reported inside a graph capture as "operation failed due to a previous error during capture", 0 tokens).
+// `done` is one flag per device; the first launch on each device sets the attributes (under a mutex: two cards' threads may arrive together).
+template <class F>
+static void set_attr_once_per_device(bool (&done)[64], F&& set) {
+    static std::mutex mu;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { (void) cudaGetLastError(); set(); return; }
+    std::lock_guard<std::mutex> lk(mu);
+    if (!done[dev]) {
+        set();
+        done[dev] = true;
+    }
+}
 template <int K, int PF>
 static void gr_down_pf_launch(const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
     constexpr size_t sm = (size_t) K * N * sizeof(float);
-    static const bool once = [] {
+    static bool done[64] = {};
+    set_attr_once_per_device(done, [] {
         cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, 1, PF>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
         cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, 1, PF>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-        return true;
-    }();
-    (void) once;
+    });
     gr_down_v3_kernel<1, K, true, 1, PF><<<dim3(LR / WARPS + 1, HC), THREADS, sm, st>>>(m, part, ssg);
 }
 template <int PF>
@@ -2727,12 +2742,11 @@ static void gr_down_r2_launch(const GrMulti& m, float* part, float* ssg, cudaStr
 template <int K, int R2V>
 static void gr_down_rb_launch(const GrMulti& m, float* part, float* ssg, cudaStream_t st) {
     constexpr size_t sm = (size_t) K * N * sizeof(float);
-    static const bool once = [] {
+    static bool done[64] = {};
+    set_attr_once_per_device(done, [] {
         cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, R2V, 0, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm);
         cudaFuncSetAttribute(gr_down_v3_kernel<1, K, true, R2V, 0, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-        return true;
-    }();
-    (void) once;
+    });
     gr_down_v3_kernel<1, K, true, R2V, 0, true><<<dim3(LR / (WARPS * R2V) + 1, HC), THREADS, sm, st>>>(m, part, ssg);
 }
 template <int R2V>
