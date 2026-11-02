@@ -13234,6 +13234,20 @@ int main(int argc, char **argv) try {
                              drive.d.fail ? drive.d.fail : "(no message)");
                 return 1;
             }
+            if (const char* wl = std::getenv("STRATA_DUMP_WINDOW_TOP2")) {   // debug: per window row, the top-2 ids and logits (text lines "pos T row id1 l1 id2 l2")
+                static std::FILE* wlf = std::fopen(wl, "w");
+                std::vector<float> lrow((size_t) ver.vocab());
+                for (int t = 0; wlf != nullptr && t < T; ++t) {
+                    if (!ver.copy_logits(t, lrow.data())) break;
+                    int i1 = 0, i2 = -1;
+                    for (int v = 1; v < (int) lrow.size(); ++v) {
+                        if (lrow[(size_t) v] > lrow[(size_t) i1]) { i2 = i1; i1 = v; }
+                        else if (i2 < 0 || lrow[(size_t) v] > lrow[(size_t) i2]) i2 = v;
+                    }
+                    std::fprintf(wlf, "%lld %d %d %d %.5f %d %.5f\n", (long long) (p + t), T, t, i1, (double) lrow[(size_t) i1], i2, (double) lrow[(size_t) i2]);
+                }
+                if (wlf) std::fflush(wlf);
+            }
             if (hashes != nullptr) {   // FNV-1a over the window's final residual rows (a test path: a plain copy)
                 const size_t n_floats = (size_t) T * (size_t) (g.hc * g.n_embd);
                 hash_rows.resize(n_floats);
