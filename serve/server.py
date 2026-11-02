@@ -1090,6 +1090,8 @@ class StrataEngine:
                  retry_args: list[str] | None = None):
         # retry_args: the arguments to start again with, once, when this start ends before the engine is ready (an Auto start that picked DFlash2: mtp_retry_args)
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
+        # the all-cards split engine (sFNX, strata-split-N[-arch]): its GEN parser accepts fewer keys than Strata's engine (tests/split/test_split_gen_keys.py pins them)
+        self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
@@ -1532,6 +1534,14 @@ class StrataEngine:
                 return out
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
+
+    def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
+        """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
+        (sFNX) counts its penalty window over the last penalty_last_n tokens of the whole context, so the continued prompt gives it the same window and the engine refuses the
+        key (GEN: unknown key pen_from): it is not sent."""
+        if self.split_engine or prompt_len <= orig_len:
+            return ""
+        return f" pen_from={orig_len - 1}"
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -2082,7 +2092,7 @@ class StrataEngine:
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
                 if alone and left > 1:
-                    pf = f" pen_from={orig_len - 1}" if len(prompt) > orig_len else ""
+                    pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{keys}{pf} {embeddings}" if embeddings else f"GEN {left}{keys}{pf}"
                     self._last_done = None                  # (#879: this request's DONE decides below)
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
@@ -2211,7 +2221,7 @@ class StrataEngine:
                         holding, born = True, self.gen                  # (the engine it now has the control lines of)
                     while not self.slot_q[slot].empty():
                         self.slot_q[slot].get_nowait()
-                    pf = f" pen_from={orig_len - 1}" if len(prompt) > orig_len else ""
+                    pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"BGENI {slot} {left}{keys}{pf} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}{pf}"
                     live = {"slot": slot, "request_id": getattr(cancel, "_strata_request_id", None),
                             "state": "reading", "prompt_tokens": len(prompt), "prompt_read": 0, "generated": 0,
@@ -2477,6 +2487,7 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
+        refuse_for_split(self, sampling or {})
         if getattr(self, "batch", 0) and not self.multi:
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
@@ -4322,6 +4333,18 @@ class Detokenizer:
 
 
 OPENAI_MAX_STOP = 4                                  # OpenAI's limit on `stop`
+
+
+#: What a request may ask for that the all-cards split engine cannot do (its GEN parser has no such keys): answered with a 400 before anything is sent, not with an error in
+#: the middle of a reply. logit_bias is refused the same way by logit_bias.validate_request (the split engine does not report logit_bias=1).
+SPLIT_REFUSED_FEATURES = ("logprobs", "logit_bias")
+
+
+def refuse_for_split(engine, req: dict) -> None:
+    if not getattr(engine, "split_engine", False):
+        return
+    if top_logprobs(req) is not None:
+        raise ValueError("logprobs: not supported by the all-cards split engine; start with --split-engine off")
 
 
 def top_logprobs(req: dict):
@@ -8238,6 +8261,7 @@ def make_handler(svc: Service):
                     raise ValueError(f"allowed_token_ids: {bad[0]} is outside the vocabulary "
                                      f"(0..{n_vocab - 1})")
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
+            refuse_for_split(svc.engine, req)
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
             if use_mcp:
