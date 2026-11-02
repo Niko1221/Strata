@@ -1420,6 +1420,44 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    def lora(self, path: str, timeout: float = 300.0) -> dict:
+        """`LORA <path>`: swap the loaded adapter's TABLES for the ones in this adapter GGUF, in place.
+
+        This is what makes a zeroth-order step possible over the API: theta moves every step, and without an
+        in-place swap the engine would be useful for exactly one step, or every step would pay a restart's load
+        time.  The engine must have been started with `--lora`, and the new tables must have the same shapes (a
+        captured graph holds their addresses).  The polarity is left at +1, which `lora=1` and a default SCORE
+        both mean.  The swap drops every cached K/V, checkpoint and parked conversation: they were computed
+        under the previous weights, and a cache key cannot tell two adapters apart.
+
+        -> {"digest": <n>, "summary": <str>}; raises ValueError with the engine's reason (no adapter loaded, a
+        shape mismatch, ...), EngineDied when it ended."""
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        if not path or "\n" in path or "\r" in path:      # the engine reads the path to the end of one line
+            raise ValueError("path: an adapter file name on a single line")
+        self.proc.stdin.write(f"LORA {path}\n")
+        self.proc.stdin.flush()
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.1, deadline - time.time()))
+            except queue.Empty:
+                raise EngineDied("the engine did not answer the LORA command") from None
+            if line is None:
+                raise EngineDied("the engine ended")
+            line = line.strip()
+            if line.startswith("ERR"):
+                raise ValueError(line[4:].strip() or "the engine refused a new adapter")
+            if line.startswith("LORAOK "):
+                rest = line[len("LORAOK "):].split(" ", 1)
+                digest = int(rest[0]) if rest and rest[0].isdigit() else 0
+                summary = rest[1].strip() if len(rest) > 1 else ""
+                self.info["lora"] = digest
+                return {"digest": digest, "summary": summary}
+            if time.time() > deadline:
+                raise EngineDied("the engine did not answer the LORA command")
+
     def score(self, ids, timeout: float = 21600.0, lora: int = 0) -> dict:
         """`SCORE <id,id,...>`: a log-probability for EVERY position of a token sequence the caller chose -
         log p(ids[t+1] | ids[0..t]) - which is what a zeroth-order optimiser needs and what generation cannot give
@@ -4792,6 +4830,39 @@ class Service:
                 ctl.release()
             self.fifo.release()
 
+    lora_wait_s = 300.0                                  # POST /v1/lora waits this long for a running request
+
+    def set_lora(self, req: dict) -> dict:
+        """POST /v1/lora: move theta by swapping the adapter's tables in place - the other half of a zeroth-order
+        step, whose costs came from two /v1/score reads (`"lora": 1` and `"lora": -1`).
+
+        Available only for an engine started with `--lora` (there has to be an adapter to update); it waits for a
+        running request to finish, and drops every cached K/V with the swap - the next request reads its prompt
+        from token 0, which is what keeps a score comparable to the ones before it.  Not combined with parallel
+        requests: their slots decode through the very tables being replaced."""
+        path = req.get("path")
+        if not isinstance(path, str) or not path:
+            raise ValueError("path: the adapter GGUF to load, as a file name this server can read")
+        if "\n" in path or "\r" in path:
+            raise ValueError("path: one line, with no line break in it")
+        if not callable(getattr(self.engine, "lora", None)):
+            raise ValueError("this engine cannot swap an adapter; start it with --lora <the initial one>")
+        if getattr(self.engine, "batch", 0):
+            raise ValueError("a swap is not available with parallel requests (\"parallel\" / --batch): "
+                             "their slots decode through the adapter's tables")
+        if not self.fifo.acquire(timeout=self.lora_wait_s):
+            raise ModelBusy("a request is still running; try again when it has finished")
+        try:
+            if not self.loaded():
+                raise ValueError("the model is not loaded: load it first (POST /v1/load)")
+            self.last_request_at = time.time()           # the idle unloader must not take the engine from under us
+            out = self.engine.lora(path)
+            print(f"[strata] adapter swapped: digest {out.get('digest')} {out.get('summary') or ''}".rstrip(), flush=True)
+            return {"status": "ok", "path": path, **out,
+                    "note": "every cached K/V was dropped: the next request reads its prompt from token 0"}
+        finally:
+            self.fifo.release()
+
     score_timeout_s = 21600.0                            # a scored sequence is a prompt read: minutes, not seconds
 
     def score(self, req: dict) -> dict:
@@ -7762,6 +7833,11 @@ def make_handler(svc: Service):
                         self._json(200, svc.vram(r))
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
+                if path == "/v1/lora":                      # swap the adapter's tables in place (a training loop's theta)
+                    if not self._own_page("the loaded adapter can be replaced"):
+                        return
+                    self._json(200, svc.set_lora(req))
                     return
                 if path == "/v1/score":                      # teacher-forced log-probabilities (a training teacher)
                     self._json(200, svc.score(req))
