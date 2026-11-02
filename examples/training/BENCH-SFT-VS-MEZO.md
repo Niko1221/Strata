@@ -694,8 +694,11 @@ python3 train.py --vram 16 --pin 20          # 锁页也调小：RSS 再松几 G
 训练侧 34.5 GiB，48 GiB 卡装不下两个。轮转的话（起引擎采一批 → 关引擎 → 训）
 每轮多付 100 s 引擎加载 + 300 s 训练加载，摊到 20 步上是 20 s/步的固定成本。
 
-**做法**：让学生自己采。MeZO 只需要**前向**，采样也是**前向** —— 同一条路径，
-**显存不涨**。三个让它可以接受的设计：
+**做法**：让学生自己采。MeZO 只需要**前向**，采样也是**前向** —— 同一条 no_grad 路径，
+不多出计算图。但显存要说准：**不是「不涨」，是「涨得可忽略」**——K 条同时在飞要多付
+K 份 KV cache + 每步 K 行 vocab logits，这笔账随 K × (prompt + 回答长度) 线性走；
+实测 K=4×16 只有几十 MB，峰值停在 26.2 GiB 看不见。把组开大、把回答拉长，它就会显形。
+三个让它可以接受的设计：
 
 1. **组内 batch 采样**（`sample_group`）：K 条共享同一个 prompt 前缀，一次 decode 处理 K 条，
    每 token 的专家搬运摊到 K 条上。
@@ -730,6 +733,14 @@ python3 train.py --algo mezo --objective grpo \
 
 ### 13.2 代价与边界
 
+- **组内 K 条轨迹的梯度都得进账，显存怎么付有两条路**（这是 GRPO 与 SFT 的本质区别：
+  SFT 一条轨迹一个 loss，GRPO 的优势是组内归一化算出来的，K 条整条轨迹都要反传）。
+  `batched=True` 把 K 条拼一个 batch 一次反传：峰值显存高（K×T 激活图），专家只搬 1 遍；
+  `batched=False` 逐条反传 + **LoRA 梯度累积**：峰值显存低（每次只挂 1 条的激活图），
+  专家搬 K 遍。所以**梯度累积不是「并行的额外显存来源」，恰恰是省峰值显存的那条路**，
+  它的代价是专家搬运 ×K（§13.3 的 2.25× 就是这么来的）。LoRA 梯度缓冲本身只有
+  96 个张量 ≈ 15.7 MB，从来不是压力所在；并行真正多占的是「K 条同时在飞」——
+  采样期 K 份 KV，训练期 batched 路线的 K×T 激活图。
 - 采样是**学生自己**做的，所以速度受训练路径的 decode 限制（每 token 要把该层专家搬一遍）。
   引擎有 expert-cache + MTP，同一模型能到 172.8 tok/s；训练路径只有 ~2 tok/s（4 条 batch 后）。
   **这就是「少显存」的价钱**：拿引擎的速度换掉 40 GiB 的常驻。
@@ -774,8 +785,10 @@ python3 train.py --algo mezo --objective grpo \
 python collect_rollouts.py --engine http://127.0.0.1:8095 --prompts prompts.jsonl     --group 4 --parallel 0 --out rollouts.jsonl
 ```
 
-组结构本身适合它：同组 K 条共享 prompt 前缀、彼此无依赖，是天然的一批并发请求；而采样方是
-已经常驻的引擎，所以这一段并行**不额外要显存**。
+组结构本身适合它：同组 K 条共享 prompt 前缀、彼此无依赖，是天然的一批并发请求。显存要说准：
+**训练进程**这段不付（采样在引擎里，训练侧只收文本）；但**引擎进程**要为批槽付——每条在飞
+请求一份 KV，外加批路径 verify 窗口的缓冲区。这正是下面实测跑不出收益的原因之一：48 GiB 卡被
+expert cache 填到只剩 133–324 MiB，批槽要的缓冲没地方放。
 
 **实测（125B，一张 4090，`--batch 4`，28 条请求 × 最长 256 token，交替跑 串行/auto/并行/串行）**
 
@@ -786,11 +799,13 @@ python collect_rollouts.py --engine http://127.0.0.1:8095 --prompts prompts.json
 | 4 | 8.8 s | 1042 | 122.4 |
 | 1（串行，再跑一遍） | 7.6 s | 885 | 120.8 |
 
-结论：**没有可测的吞吐收益**。并行确实让请求重叠了（逐请求耗时之和 26.5 s vs 墙钟 6.7 s，
-重叠 3.8×），但聚合吞吐落在串行两次的区间里（118.4 / 120.8），差异是噪声。原因是日志里
-明摆着的两条：批路径**没有草稿**（要 `--batch-mtp`，opt-in，且只有两级测过），而且引擎自己
-在警告「只有 133–324 MiB 显存空闲，卡这么满时驱动会把显存换页到内存」——批槽要的 verify
-窗口缓冲区根本没地方放。
+结论：**在当前引擎现状下没有可测的吞吐收益**——这是现状，不是批槽的固有属性。并行确实让请求
+重叠了（逐请求耗时之和 26.5 s vs 墙钟 6.7 s，重叠 3.8×），但聚合吞吐落在串行两次的区间里
+（118.4 / 120.8），差异是噪声。压住它的两个现状条件，日志里明摆着：① 批路径**没有草稿**
+（要 `--batch-mtp`，opt-in，且只有两级测过）——串行路径的 MTP 推测（一次前向 ~1.7 token）
+批路径拿不到，天然吃亏；② 引擎自己在警告「只有 133–324 MiB 显存空闲，卡这么满时驱动会把显存
+换页到内存」——批槽要的 verify 窗口缓冲区根本没地方放。这两个条件都是可变的：上游 #4121 在给
+批路径补草稿，#4199 在 16 槽实测聚合 2×。哪天这两个条件翻过来，这个结论就要重测，不能当定论引。
 
 **两条不能当并行用的东西**（都踩过）：
 
@@ -804,3 +819,588 @@ python collect_rollouts.py --engine http://127.0.0.1:8095 --prompts prompts.json
 
 **想要「不碰引擎就能并行」，目前只有多副本**（多个引擎进程，`serve/replicas.py`）；那是几份
 常驻，不是一份变并行。
+
+## 15. 术语与路线矩阵：MeZO 是反向传播方案，不是算法（2026-10-30 定）
+
+用户口径：**算法 = 目标函数**（SFT / GRPO / DPO），**MeZO = 反向传播的另一种路线**
+（零阶：只靠前向 + 数值差分，替代 autograd）。两者正交，`algos.py` 就是这个矩阵的
+单一出处，`train.py --algo` 的**默认 = mezo（零阶）**：
+
+|  | ce（SFT） | grpo | dpo |
+|---|---|---|---|
+| **zeroth_order（默认）** | `--algo mezo` | `--algo mezo --objective grpo` | `--algo mezo --objective dpo --dpo-data …` |
+| backward | `--algo sft` | （grpo.py 两段式） | `--algo dpo` |
+
+可用性标准（用户定的）：**满上下文训练只比推理多一点点显存才算能用**。零阶全程
+no_grad，显存 = 推理占用（实测峰值 34.2 GiB ≈ 推理基线 34.30 GiB），天然满足；
+反传路线长上下文要 `--ckpt`（34.5~36.1 GiB，也达标但更慢），**留在表里但不是默认**。
+
+零阶 × 每个算法的代价与形态：
+
+- ce：每步 2 前向（±ε 各一次）。
+- grpo：采样半步（batch decode）+ 每步 2 次 measure 前向；组内 std=0 的步不动参数
+  （`adv0`），诊断数每步打印。
+- dpo（本轮新增，`sft_mezo.py --objective dpo`）：loss 本来就是标量
+  −logσ(β·margin)，margin = (π_c−ref_c) − (π_r−ref_r)，ref = 训练起点（B=0）训练前
+  一次预计算。每次 measure = 2 次批前向（chosen 一批、rejected 一批，右 padding 对
+  scoring 安全），零阶一步共 4 前向。dpo.py 的 `dpo_margin` 是 margin 的唯一定义，
+  零阶与反传两条路线共用；acc / margin 每步打印（loss 降但 acc 停 0 = 没学到）。
+
+**实验记录口径（必填项）**：除训练前后的成功结果外，必须记**训练段总时间**、
+**token 生成速度**（采样段 tok/s、评测段生成 tok/s）与峰值显存。sft_mezo.py 结束时
+打一行汇总（总时间/均步时/生成 tok/s/peak），math_probe.py 每个 adapter 打
+train/holdout acc + 生成 tok/s + 评测墙钟。
+
+**学习率教训（本轮）**：MeZO 论文的 lr 1e-6~1e-5 是**全参数**的量级（d=数十亿）。
+这里扰动的是 LoRA A/B（d≈6.7M，fp32），lr 1e-6 在 125B 数学题上 40 步纹丝不动
+（train acc 持平基座 13/16，proj_grad ~±5 但单元素步长只有 ~5e-6）。零阶路线的
+默认 lr 必须按 LoRA 尺度重扫（见 §16）。
+
+## 16. 零阶路线 lr 扫描 + 零阶 DPO（2026-10-30，125B 实测）
+
+**背景**：上一轮对比里「MeZO-GRPO 40 步纹丝不动」被用户定性为 **lr 太低**——属实。
+论文的 1e-6 是全参数（d=数十亿）量级；这里扰动 LoRA A/B（d≈6.68M，fp32），
+proj_grad ~±5 时单元素步长只有 ~5e-6，根本没搬动。本轮把 lr 扫起来，同时把 DPO
+也搬进零阶路线（`sft_mezo.py --objective dpo`）——**换反向传播方案，不换算法**。
+
+设置：同一批 24 题（16 train + 8 holdout，mix preset，seed 7，与上一轮完全同题）；
+GRPO 6 prompt × 4 条 on-policy（max_new 24，T 1.0，40 步）；DPO 6 对离线（β 0.1，
+24 步）；LoRA 48 模块 r16 α32；pack 24 GiB VRAM + 30 GiB pinned。
+
+| 臂 | lr | 步数 | 训练段总时间 | 均步时 | 采样生成 | 峰值 | train greedy | holdout greedy | 评测生成 |
+|---|---|---|---:|---:|---|---:|---:|---:|---:|
+| 基座（B=0） | — | — | — | — | — | — | 13/16（81%） | 8/8（100%） | — |
+| 反传 DPO（上轮对照） | 5e-5 | 24 | ~245 s | ~10 s | 无 | 34.3 GiB | 15/16（94%） | 8/8 | — |
+| 零阶 GRPO | 1e-4 | 40 | **294 s** | 7.4 s | 799 tok / 130 s = 6.1 tok/s | 34.2 GiB | **16/16（100%）** | 6/8（75%） | 11.5 tok/s |
+| 零阶 GRPO | 1e-3 | 40 | 369 s | 9.2 s | 991 / 192 s = 5.2 tok/s | 34.2 GiB | 13/16（81%） | 4/8（50%） | 7.7 tok/s（答案变长漂移） |
+| 零阶 GRPO | 1e-2 | 40 | 626 s | 15.7 s | 3612 / 419 s = 8.6 tok/s | 34.2 GiB | **0/16 崩溃** | 0/8 | 乱码 |
+| 零阶 DPO | 1e-4 | 24 | 252 s | 10.5 s | 无 | **33.9 GiB** | **16/16（100%）** | 6/8（75%） | 13.6 tok/s |
+| 零阶 DPO | **1e-3** | 24 | 259 s | 10.8 s | 无 | **33.9 GiB** | 15/16（94%） | **7/8（88%）** | 12.9 tok/s |
+| 零阶 DPO | 1e-2 | 24 | 197 s | 8.2 s | 无 | 33.9 GiB | **0/16 崩溃** | 0/8 | 乱码 |
+
+（"评测生成" = math_probe 每 adapter 的 greedy+K 采样聚合 tok/s。）
+
+**结论**：
+
+1. **lr 1e-6 就是上一轮的全部死因**：lr 1e-4 下零阶 GRPO train 16/16（100%）——
+   零阶做 RL 本身成立，之前只是没推动参数。
+2. **甜点带 1e-4~1e-3；1e-2 两个目标都崩**（输出全是乱码 token）。零阶步长
+   lr·pj·z，pj~O(1-10)，1e-2 直接把 LoRA 推出流形。默认 lr 定 **1e-3**（DPO 最优点），
+   GRPO 建议降到 1e-4（1e-3 下答案变长漂移、holdout 掉到 50%）。
+3. **零阶 DPO @1e-3 = train 94% / holdout 88%**，与反传 DPO 的 train 94% 同档，
+   但：峰值 **33.9 GiB ≈ 推理基线 34.30 GiB**（无 ckpt、无激活图、无权重钉存——
+   §4 那个 92.63 GiB 病根和 ~18 GiB backward 瞬态在这条路线上**不存在**），
+   每 step ~10.8 s 与反传 DPO 的 ~10 s 同档。
+4. **可用性标准（满上下文只比推理多一点点）在零阶路线上对所有三个算法成立**：
+   ce/grpo/dpo 全程 no_grad，峰值 33.9~34.2 GiB，都低于引擎常驻 ~40 GiB。
+5. holdout 回归细节：第 18 题（70×41）与第 23 题（39×59）是脆弱题（都是"差一位"
+   型）；基座两题都对，1e-4 档两臂把两题都打坏（75%），zdpo@1e-3 只坏第 23 题
+   （88%）——**扩大 holdout + 独立种子才能把 75%/88% 的差做成结论**（8 题一格就是
+   12.5%，当前只是方向性信号）。
+6. 时间口径（用户要求的必填项）：零阶 GRPO 一臂 40 步 = 294~626 s 训练 + ~400 s 加载；
+   零阶 DPO 一臂 24 步 = ~255 s 训练。评测一次加载评 6 个 adapter（math_probe --lora
+   多值），每 adapter ~120-180 s、生成 11.5~13.6 tok/s。
+
+## 17. pack 装载加速：fadvise DONTNEED（2026-10-30，独立 PR #5）
+
+分相计时（本 PR 顺带加进 `tiered pack` 日志行）定位 333 s 的构成：
+`pin 49s + ram-read 272s + gpu-loop 11s`。gpu-loop 24 GiB @ 2.2 GiB/s 与 ram-read
+36 GiB @ 0.13 GiB/s 读同一个文件、落点同为 pinned ⇒ 唯一结构差是 ram 层把
+36 GiB 全留在 RAM：60 GiB 单次使用的 page cache 流过 58 GiB 的盒子，内核边读
+边回收。**每块读完立即 `posix_fadvise(POSIX_FADV_DONTNEED)`**：
+
+| | 28 GiB 冷读 |
+|---|---|
+| 带 fadvise | **9.4 s（2.98 GiB/s）** |
+| 不带 | 85.8 s（0.33 GiB/s） |
+
+端到端（125B IQ3_XXS，VRAM 24 + pinned 30，缓存清空）：`_ensure` 333 s → **101 s**
+（pin 21 + ram-read 73 + gpu-loop 6），整体加载 454.6 s → **216.9 s**。正确性：按
+真实 `block_bytes`（2,611,200）对 VRAM/pinned/pageable 三层各采样块与文件字节
+比对，全 MATCH（第一轮报 MISMATCH 是检查脚本硬编码错块大小，非 loader 问题）。
+Linux-only API，getattr 守卫，别处 no-op；`STRATA_PACK_FADVISE=0` 关闭。
+已在独立分支 `perf/pack-load-accel` 提交并开 PR（fork 内、base=train_support，
+25 insertions / 1 deletion）。
+
+**待整理（2026-10-31 定）**：这属于「加载」能力，与训练无关，PR 应 rebase 到主线、
+base 换成主线而不是 `train_support` —— 训练分支不该成为它的前置。目前 PR 已关，
+代码留在 `perf/pack-load-accel`，等练完主线再单独重开。
+
+## 18. Windows 训练支持（2026-10-30 实施）
+
+- **preadv shim**：`preadv_shim.py`（纯标准库）——Windows 无 `os.preadv/pread`，
+  用 `open(fd, "rb", buffering=0, closefd=False)` 包既有 fd + `seek`+`readinto`，
+  零额外拷贝；每次调用开临时句柄，多线程随机读不共享 seek 位置（bench_pack_io
+  4 线程安全）。loader 两处调用点与 bench 换成垫层；Linux 走原生，语义不变。
+- **门禁更新**：`platform_check.py` 的判据从「平台名」改为「有无可用 preadv」
+  （原生或垫层），Windows 从阻断改为放行；madvise 缺失仍是降级项（映射页不还，
+  ~15 GiB）。README 平台矩阵同步改。测试 59/59（Windows 与 WSL 双侧跑过），
+  垫层与 os.preadv 的功能等价/短读/多线程用例入 CI。
+- **环境**（与 WSL 完全同版本）：torch 2.13.0+cu132（Windows wheel 存在）、
+  triton-windows 3.7.1.post27（PyPI 官方 triton 只有 Linux wheel；abi3/cp313 对
+  Python 3.13 可用）、transformers 5.17.0、kernels 0.16.1、torchvision 对齐 0.28.0。
+- 冒烟（D 盘 pack 副本 60 GB，md5 与 WSL 原件一致）+ 小显存档加载 + 前向：见当日日志。
+
+## 19. 训练线 MTP + 最终速度总表（2026-10-30，Windows 4090 48GB，pack 16 GiB）
+
+**MTP 投机解码已接入训练线**（`mtp_draft.py`，权重源 `Strata-data/mtp/` 的 31 个 BF16 张量）：
+- 协议与引擎 `src/core/mtp.hpp` 逐算子对齐：cell=(R_i, x_{i+1})@pos i → 预测 x_{i+2}；
+  fc_embedding/fc_hidden 双分支 + 同构解码层（QSA+超连接+512 专家 MoE）+ 顶层 mixer + 主干 head。
+- 踩过的坑（都是判据级）：① 原始 BF16 不能 `'<f2'` 解（那是 fp16），要 uint16<<16 拼 fp32——
+  解错时 teacher-forced 准确率 0.000、修后 0.671；② 层类型串必须 `qwen_sparse_attention`
+  （DynamicCache 才建 indexer 槽）；③ indexer 要全窗口 cos/sin（mrope [3,B,L]，cache 绑全量
+  position_ids）；④ HF `Cache.crop` 语义 = 负数移除行数，且 **GDN 混合架构不能用 crop 回滚**
+  （recurrent 状态不回滚 = 静默数值污染）⇒ 目标缓存用快照/恢复；⑤ pre_fc_norm 用整条 10240
+  一个 RMS（引擎默认；stream 模式 teacher-forced 高但链式 accept 减半，full 胜出）。
+- **单流长生成**（128 token，greedy k=3）：accept 1.80/轮、tok/fwd 2.80、156~165 ms/token =
+  plain 的 **1.48~1.57×**（plain 245 ms/token）。峰值 39 GiB（drafter BF16 专家 ~5 GiB）。
+- **GRPO 组采样（K=4, max-new 32）A/B**：批量 MTP 聚合 **2.9 tok/s** vs plain 批采样 **5.0 tok/s**
+  ——drafter 每轮 3 次全词表 head（248K×2560，1.27 GB/次）+ 快照回滚吃掉收益。**引擎的
+  40K draft_vocab 子集头（小 32×）+ Q2_0 专家正是为此**；接入这两件后批量 MTP 才可能反超。
+  在那之前 GRPO 采样保持 plain 批采样为默认（`--mtp-dir` 不给即 plain）。
+
+| 口径（125B IQ3_XXS，Windows 原生） | 吞吐（token/s） | 峰值显存 | 备注 |
+|---|---|---|---|
+| MeZO-SFT（ce，短序列 loss_tokens 10~17） | **2.9~6.8 tok/s**（loss-token 口径） | 25.8 GiB | 步时 2.5~3.5 s，短序列 launch-bound，不反映满上下文能力 |
+| MeZO-SFT（**T=2048 满上下文**，2 次整段前向/步） | **4096 tok/步 ÷ 6.9 s = 594 tok/s**（Windows）；÷ 8.8 s = 465 tok/s（WSL） | ~26 GiB | 训练前向的可持续吞吐，与引擎稳态 prefill 同档 |
+| MeZO-DPO（155 loss tokens，4 前向/步，短序列） | **7.4~7.5 tok/s**（loss-token 口径） | 26.0 GiB | 步时 20.8 s，launch-bound 同上 |
+| MeZO-GRPO 采样（K=4 plain 批，生成段） | **5.0 tok/s 聚合**（146 token/29 s）；单步 2.1~6.5 | 26.2 GiB | 整步 12.5 s（打分前向另占 5~10 s） |
+| MeZO-GRPO 采样（K=4 批量 MTP，生成段） | **2.9 tok/s 聚合**（355 token/121 s）；稳态步 4.8~5.0 | 31.6 GiB | 慢于 plain，瓶颈=每轮 3 次全词表 head |
+| 单流长生成（MTP，greedy k=3） | **6.1~6.4 tok/s**（plain 4.1，1.5×） | 39 GiB | 128 token 文本续写 |
+| 引擎对照（同卡 C++ decode） | **172.8 tok/s** | — | 训练线采样差距 ~29×（plain）/ ~27×（MTP） |
+
+## 20. 速度口径重算 + 成本拆解（2026-10-30，`_mb_cost_split.py` 实测）
+
+**为什么要重算**：§19 那张表混了三种口径，读者很容易拿「594 tok/s」（两次前向的算力口径）
+去比「9.1 tok/s」（DPO 只数 answer 段的 loss-token 口径），得出「差几十倍」的错结论。
+这一节把口径钉死，并给出每次前向成本的实测拆解。
+
+### 20.1 一个前向要多久（同一进程内，Windows 4090 48GB，`--vram 16`）
+
+| 形状 | 墙钟 | 其中专家 H2D | 命中专家块 | 每层均值 |
+|---|---:|---:|---:|---:|
+| T=2048, batch=1 | **4.03 s** | 0.97 s（24%） | 12,928 | 269 / 512 |
+| T=32, batch=1 | 1.21 s | 0.36 s（30%） | 4,565 | 95 / 512 |
+| 2 行 × 23 token（DPO 1 对） | 1.49 s | 0.35 s | 4,394 | 92 / 512 |
+| 4 行 × 27 | 2.26 s | 0.50 s | 6,254 | 130 / 512 |
+| 8 行 × 27 | 3.31 s | 0.65 s | 8,063 | 168 / 512 |
+| 20 行 × 24（DPO 10 对，外推＝实测 15.8 s ÷ 2） | ~7.9 s | — | ~12,000 | ~250 / 512 |
+
+**读法与三条硬结论**：
+
+1. **成本由「专家命中数」决定，不是 token 数**。8 行 × 27 = 216 token 要 3.31 s，而单行
+   T=2048 = 2048 token 只要 4.03 s —— 同样时间差了 9.5 倍 token。原因是短序列每一行都带
+   一批**新的路由上下文**，每层并集随行数涨（92→130→168→~250），而长序列内部 token 的
+   路由高度重叠，很快就饱和在 269/层。
+2. **H2D 只占 24%，不是瓶颈**。要拿掉它最乐观也就 4.03 → 3.06 s（660 tok/s 算力口径）。
+   剩下 76% 全在计算，而 §11 已经量过：24,576 次专家 launch，单次 330 µs，折合 **3 TFLOPS
+   = 4090 峰值的 2%**。**追平引擎 prefill（p50 1482）的唯一杠杆是 grouped GEMM，不是缓存。**
+3. **短序列的 tok/s 没有意义**。1.21 s 里有 1.2 s 是与 token 无关的固定量（专家流起步 +
+   launch + 25 层稠密权重），17 个 token 摊上去就是 14 tok/s。
+
+### 20.2 重算：每个算法「应该」是多少（数据口径 = 真正参与训练的 token / 步时间）
+
+单次前向拟合 `c(T) ≈ 1.2 s + 1.40 ms × T`（由 T=32 与 T=2048 两点定），MeZO 每步 2 次（±ε）：
+
+| 算法 | 每步前向 | 每步训练 token | 应该步时 | **应该 tok/s** | 实测 | 差 |
+|---|---|---:|---:|---:|---:|---|
+| SFT（ce）@T=2048 | 2 | 2,048 | 8.06 s | **254** | 257（7.98 s） | ✓ 一致 |
+| SFT（ce）@T=128K | 2 | 131,072 | ≈369 s | **355** | 未测 | 固定成本摊薄后更高 |
+| DPO（10 对，24 token/条） | 2 | 480 | 15.8 s | **30** | 30（15.8 s） | ✓ 一致 |
+| DPO（若每对 2048 token） | 2 | 40,960 | ≈10.5 s | **3,900** | — | 专家并集饱和后的应有值 |
+| GRPO 训练段 | 2 | K×len | 同 SFT | 254 | ~26（5 s / 130 token） | 短序列 |
+| GRPO 生成段 | — | K×len | — | 5.0（学生自采）/ 172.8（引擎单流） | 5.0 | — |
+
+**反传路线对照**（§1.1/§11）：T=2048 稳态 22.59 s/步 = **90.7 tok/s**。MeZO 的 257 是它的
+**2.8×**，代价只有 no_grad（显存 25.7 vs 34.5 GiB）。这是选 MeZO 的全部理由。
+
+**DPO 没有任何多余开销**。用户口径「DPO = 两个 SFT，总用时翻倍、tok/s 相同」**是对的**：
+它每步就是 2 次前向、每次 2P 行，成本由行数决定。§19 里那个 7.4~9.1 tok/s 是 loss-token
+口径（只数 completion 的 155 个 token），把 prompt 的成本藏掉了 —— 同一份日志按
+`fwd_tokens` 算就是 30~60 tok/s，与短序列 SFT 完全同档。**慢的印象来自口径，不是实现。**
+
+### 20.3 GRPO 要做到「N×1.5」需要什么
+
+设每步训练 S 个 answer token：
+
+```
+SFT 步时  = 2·c(S)
+GRPO 步时 = S / v_gen + 2·c(S)          ⇒ 倍数 = 1 + S/(2·v_gen·c(S)) = 1 + v_sft/(2·v_gen)
+```
+
+其中 `v_sft = S/c(S) ≈ 508 tok/s`（单前向算力口径；数据口径 254）。代入：
+
+| 生成路径 | v_gen | 总用时 / 纯 SFT | 说明 |
+|---|---:|---:|---|
+| 学生自采（现状） | 5.0 | **102×** | 每 token 搬全套专家 |
+| 引擎单流（现状） | 172.8 | **2.47×** | 离线采样即可拿到 |
+| 引擎 **3 槽** | 518 | **1.49×** | ✓ 用户要的 N×1.5 |
+| 引擎 4 槽 | 691 | 1.37× | 受 §14 现状限制 |
+
+**结论：N×1.5 的充要条件是生成 ≥ 508 tok/s ≈ 引擎 3 槽批处理。** 单流 172.8 只能给
+2.47×，学生自采是 102×。而 §14 实测批槽当前**没有**吞吐收益（118.4 / 122.4 / 134.6），
+卡在两件事上：批路径没有 MTP 草稿（#4121）、expert cache 把显存吃到只剩 133~324 MiB。
+所以这条线的排序是：**先把生成搬回引擎（2.47×）→ 等批槽生效（1.5×）**，不是先优化训练。
+
+### 20.4 这一轮修掉/查清的四件事
+
+| # | 项 | 判据 | 处置 |
+|---|---|---|---|
+| 1 | `tok/s` 只数 answer 段 | DPO 10 对：155 loss token / 480 fwd token / 15.8 s ⇒ 打印 9.8 而真实 30 | 日志同时打 `tok/s` 与 `fwd/s`，`info["fwd"]` 由三个目标函数各自返回 |
+| 2 | `_completion_sums` 对 prompt 段也算 248K logits | prompt 段算完就被 mask 丢掉；lm_head 1.27 GB/位置 | 只算 `[min(plen)-1, L-1)`，`test_train.CompletionSums` 守逐位等价（chunk=0/4/128 三档） |
+| 3 | `_completion_sums` 的 `chunk=8` 写死 | head 权重按 L/8 次重读（L2 只有 72 MB） | 改成按行数预算自适应（256 MiB / 行），收益 <1%，属清理 |
+| 4 | **GDN kernel 落点会漂移** | 中文 Windows + `PYTHONUTF8=0` → torch inductor 用 GBK 读 `cutedsl_mm_grouped` 模板 → `UnicodeDecodeError` → fla 导入断 → GDN 静默回落 torch 参考实现 | 测速前必须 `PYTHONUTF8=1`；`_mb_cost_split.py` 里加了落点断言（回落直接拒测） |
+
+第 4 条是最容易踩的：回落时**单步只慢 4%**（4.18 vs 4.03 s），但**显存会随步数累积**——
+同一进程连跑几次 T=2048 前向后 `allocated` 冲到 60.4 GiB（超过 48 GiB 物理，Windows 允许
+显存超发到 host），然后 OOM。**只看单步时间发现不了，跑 20 步就崩。** 复盘时先看日志里
+有没有 `chunk_gated_delta_rule ... falling back` 这一行。
+
+### 20.5 还没修的（按值排序）
+
+1. **MeZO ±ε 的两次前向专家流 100% 冗余**（实测 `hits` 序列 48/48 层逐位相同 —— router
+   不在 LoRA 里，扰动不改变路由）。理论上第二次可以全命中，但整个 pack 要 31.5 GiB，
+   显存余量只有 19.1 GiB。所以正解是 **expert-cache（LRU 常驻 7900 块 = 32%）**，
+   预期 H2D 0.97 → 0.4 s，步时 8.06 → 7.5 s（+7%）。**收益小于 grouped GEMM，排在后面。**
+2. **DPO 的 chosen/rejected 共享 prompt 却算两遍**：20 行里有一半 prompt 是重复的，
+   用 KV 复用可省 25% 前向 token（15.8 → 11.9 s）。但会改变数值路径（GDN recurrent 状态
+   走 cache 与全序列前向不完全一致），风险/收益不划算，**只记不做**。
+3. **grouped GEMM**（§11 ②）：唯一能改算术强度的一条，24,576 次 launch → 96 次。
+
+
+## 21. 满上下文标准基准：DPO/GRPO 被 QSA 的 batch 退化拖慢了 6.6×（2026-10-30）
+
+### 21.1 为什么要新建一个基准
+
+历史测速散在 `sft_mezo` / `sft` / `_mb_cost_split` 三处，每份的 token 口径都不同
+（answer 段 / completion 段 / fwd 段）。于是同一份日志能读出 9 tok/s 和 30 tok/s，
+DPO 被判成「慢几十倍」。`bench_fullctx.py` 把口径焊成一条：
+
+    tok/s = 每步**前向真正处理的 token 数**（行数 × 序列长度） / 步时
+
+每步的前向次数按算法真实定义计：`ce_bwd` 1f+1b、`ce_mezo` 2f、`dpo_bwd` 2 行同批
+1f+1b、`dpo_mezo` 2 行同批 2f、`grpo` K 行同批 1f+1b / 2f。
+
+**不拼接上下文**：DPO 的 chosen / rejected 各自是一行（长度 T），只在 **batch 维**
+合并。拼成 2T 会让 rejected 看到 chosen，且 attention 成本翻 4 倍 —— 满上下文直接
+不可用。
+
+### 21.2 MeZO 档实测（Windows 4090 48 GB，pack 16 GiB，合成等长序列，prompt 占 50%）
+
+| 算法 | T | 每步 token | 步时 s | **tok/s** | 峰值 GiB | 相对 ce |
+|---|---:|---:|---:|---:|---:|---:|
+| ce（SFT） | 2048 | 2,048 | 8.29 | **247.2** | 26.2 | 1.00× |
+| dpo | 2048 | 4,096 | 10.91 | **375.5** | 26.7 | 1.52× |
+| grpo K=4 | 2048 | 8,192 | 17.42 | **470.2** | 27.7 | 1.90× |
+| ce | 8192 | 8,192 | 17.68 | **463.2** | 27.7 | 1.00× |
+| dpo | 8192 | 16,384 | 29.65 | **552.6** | 29.6 | 1.19× |
+| grpo K=4 | 8192 | 32,768 | 56.51 | **579.9** | 33.5 | 1.25× |
+| ce | 16384 | 16,384 | 31.33 | **523.0** | 29.8 | 1.00× |
+| dpo | 16384 | 32,768 | 56.33 | **581.8** | 33.7 | 1.11× |
+| ce | 32768 | 32,768 | 63.06 | **519.6** | 35.3 | 1.00× |
+
+吞吐随 T 单调上升并趋近 ~550-580 tok/s（固定成本摊薄），**与 §20 的
+`c(T) ≈ 1.2 s + 1.40 ms×T` 外推一致**（T=16384 外推 24.1 s，实测单次前向 15.7 s ——
+比外推更快，因为 §20 的 1.40 ms/token 是在 Windows + QSA 未分块时测的）。
+
+### 21.3 根因：QSA 的向量化只支持 batch=1
+
+修前同一口径：`dpo T=2048` = **72.16 s / 56.8 tok/s**。修后 10.91 s / 375.5 —— **6.6×**。
+
+`qsa_fast._fast` 原本有一条 `if batch_size != 1: raise _Fallback("batch != 1")`。
+回落目标是 transformers 的逐 query 原实现：每层 `for query_idx in range(S)`，
+读 `.shape[-1]`、`torch.nonzero` 都触发 **DtoH 同步**（§qsa_fast 注释：T=2048 一步
+24,661 次 `Memcpy DtoH` + 24,763 次 `cudaStreamSynchronize`，GPU 只有 5.3 s 忙 /
+17.4 s 墙钟）。于是：
+
+* SFT 单行 → 向量化快路径 → 4 s；
+* **DPO 的 chosen+rejected 两行、GRPO 的 K 行 → 一律回落 → 单次前向 36 s**。
+
+这不是「DPO 算法慢」，是「批处理把 QSA 打回了逐 query 循环」。修法两条：
+
+1. `_fast` 支持 `B > 1`：逐行校验可见集一致（同长度、无 padding 才走），
+   pooled / rope / dot / topk / 掩码全部带 batch 维；有 padding 仍 `_Fallback`。
+2. **分数/topk/掩码按 query 分块**（`STRATA_QSA_QCHUNK`，默认 4096）。分数张量是
+   `(B, S, nb, H)`，`nb = S/4`、`H = 4` ⇒ T=128K 时一次算完 **68.7 GiB**。分块后峰值
+   只与块宽有关（4096 行 ≈ 2.1 GiB），topk 对每行独立，**不影响任何一行的选择结果**。
+
+顺带修掉：`_completion_sums` / `grpo_loss` 在没有 padding 时不再传 4D
+`attention_mask`（全 1 mask 与无 mask 的前向逐位相同，但 4D mask 会让 sdpa 离开
+flash/causal 快路径）。`test_train.DPOMeasure` 用 4 个用例守住「合批 ≡ 拆两批」。
+
+### 21.4 与「DPO = 两个 SFT」对账
+
+| T | 两个 SFT 串行（2×ce） | DPO 实测 | 比值 |
+|---|---:|---:|---:|
+| 2048 | 16.58 s | 10.91 s | **0.66×** |
+| 8192 | 35.36 s | 29.65 s | **0.84×** |
+| 16384 | 62.66 s | 56.33 s | **0.90×** |
+
+DPO 的 token 数是 2 倍、前向次数也是 2 倍，但**批内两行共享一次专家流与一次固定
+成本**，所以始终快于「两个 SFT 串行」。T 越大差距越小（固定成本被摊薄后趋近 2×）。
+**「DPO 慢几十倍」是口径造成的错觉，实现上没有多余开销。**
+
+### 21.5 128K：卡在 4D mask 的三份副本，不是卡在算力
+
+`Qwen4ExpTextAttention.forward` 对 QSA 层做：
+
+```python
+selected = self.indexer(...)                 # (1, 1, S, S) bool  ← 副本 2
+attention_mask = attention_mask & selected   # (1, 1, S, S) bool  ← 副本 3
+```
+
+`model` 侧先造一份因果 mask（副本 1）。S=128K 时每份是 **16.0 GiB**（S² 字节），
+三份 **48 GiB**，再加常驻 25.2 GiB —— 48 GB 卡连装都装不下，还没轮到 sdpa。
+
+**更正（2026-10-30 实测）**：此前写的「sdpa 对 4D bool mask 不走 flash、math 路径权重
+矩阵 824 GB」是错的。隔离测试（q/k/v 24 头 × 128 维，bool 因果 mask）：
+
+| S | mask | 峰值增量 | 假想权重矩阵 H·S²·2B | 峰值/权重 |
+|---:|---:|---:|---:|---:|
+| 4096 | 0.02 GiB | 0.14 GiB | 0.75 GiB | 0.19 |
+| 16384 | 0.25 GiB | 1.12 GiB | 12.0 GiB | 0.09 |
+| 32768 | 1.00 GiB | 3.75 GiB | 48.0 GiB | 0.078 |
+
+峰值远低于权重矩阵（且本机 `flash_available=False`）⇒ 走的是 **memory-efficient**
+后端，它原生吃 bool mask，不会物化 S²×H 的注意力权重。**128K 的唯一障碍就是那三份
+bool mask 本身，不是 sdpa。**
+
+实测上界在 32K：`ce T=32768` = 63.06 s / 519.6 tok/s / peak 35.3 GiB 仍正常；再往上
+每翻一倍，4D mask 就多 3 GiB → 12 GiB（64K）→ 48 GiB（128K），与「常驻 25.2 GiB」
+相加后 64K 已到边缘、128K 直接超物理上限。
+
+⇒ **128K 训练在 HF 路径上不可行，且不是调参能解决的**。要跑必须把 QSA 层改成
+「按 top-k 索引 gather K/V 再做 attention」（引擎 `qwen_sparse_attention` 就是这么做的），
+完全不产 4D mask。这是「同步官方推理方案」这条主线里缺的最后一块。
+
+### 21.6 MeZO vs 反传：同口径是 1.73×，不是 2.8×
+
+同一进程、同一 LoRA（rank 16 / o_proj+out_proj / 6.68 M 参数）、同一合成数据，T=2048：
+
+| 算法 | MeZO（2 前向） | 反传（1f+1b，ckpt on） | 倍数 | 峰值 GiB MeZO / 反传 |
+|---|---:|---:|---:|---:|
+| ce | 8.29 s / **247.2** | 14.36 s / **142.6** | **1.73×** | 26.2 / 30.1 |
+| dpo | 10.91 s / **375.5** | 19.08 s / **214.6** | **1.75×** | 26.7 / 32.5 |
+| grpo K=4 | 17.42 s / **470.2** | 27.13 s / **302.0** | **1.56×** | 27.7 / 38.5 |
+
+§1.1 / §20 里那个「MeZO 是反传的 2.8×」（22.59 s vs 8.06 s）是三件事叠加出来的：
+**WSL2 的旧 loader**（反传 22.59 → 14.36 s）、**answer 段 token 口径**（90.7 → 142.6 tok/s
+只是把分母从答案段换成整段）、**QSA 未向量化**。分子分母都变了，比值从 2.8 掉到 1.73。
+**以本节为准。**
+
+代价侧：MeZO 用 1.56~1.75× 的墙钟，换 4~11 GiB 显存（26.2~27.7 vs 30.1~38.5，ckpt on）。
+GRPO 的差距最小（1.56×），因为 K 行批前向把反传的「每层重算」摊薄了。
+
+两条线各自的下一步（互不替代，都得做）：
+
+| 线 | 杠杆 | 预期 |
+|---|---|---|
+| 共同 | **grouped GEMM**（§11 ②）：一层 512 个专家合成 1 次 segmented GEMM，24,576 次 launch → 96 次 | 唯一改算术强度的一条，MeZO/反传同受益 |
+| MeZO 专有 | ±ε 第二次前向的专家流 **100% 冗余**（router 不在 LoRA 里）⇒ expert-cache 常驻 7900 块（32%） | H2D 0.97 → 0.4 s，步时 −7% |
+| 反传专有 | 去掉 grad checkpointing：ctx 只存专家 id，backward 按 id 重流权重 | 省掉整段重算，18.2 → 14.5 s 那一档 |
+
+## 22. 满上下文的真实边界：MeZO 到 32K，反传到 8K（2026-10-30 实测）
+
+### 22.1 实测边界
+
+同一进程、同一 LoRA（r16 / o_proj+out_proj / 6.68 M）、Windows 4090 48 GB、pack 16 GiB：
+
+| 档位 | T | 峰值 GiB | 结果 |
+|---|---:|---:|---|
+| MeZO ce | 2048 | 26.2 | ok 247.2 tok/s |
+| MeZO ce | 8192 | 27.7 | ok 463.2 |
+| MeZO ce | 16384 | 29.8 | ok 523.0 |
+| MeZO ce | **32768** | **35.3** | ok 519.6 |
+| MeZO ce | 65536 | 外推 50.8 | **OOM**（干净报错） |
+| 反传 ce | 2048 | 30.1 | ok 142.6 |
+| 反传 ce | **8192** | **42.0** | ok 282.4 |
+| 反传 dpo（2 行） | 8192 | > 48 | **`AcceleratorError` 崩在 native 栈** |
+| 反传 ce | 16384 | > 48 | **既不报错也不退出**：分配失败（`free: 0`）后显存超发，GPU 100%、日志零行 |
+
+结论：**满上下文（128K）两条线都到不了；MeZO 的实际上界是 32K，反传是 8K。**
+
+### 22.2 两条线为什么差 6.5×
+
+拟合出的每 token 斜率（GiB/token）：
+
+| 档位 | 斜率 | T 翻倍一次多占 |
+|---|---:|---:|
+| MeZO | 2.0e-4（线性项）+ 3·T²/2^30（mask 项） | 0.5 GiB（2K→4K），12 GiB（64K→128K） |
+| 反传 | 1.94e-3 | ≈ 4 GiB（2K→4K），≈ 32 GiB（32K→64K） |
+
+反传的斜率是 MeZO 的 **9.7×**，因为它要留住每层 ckpt 边界激活 + MoE 中间激活（top-8
+展开），而 MeZO 全程 `no_grad`，只有当层的临时张量。**这个差距是算法性的，不是
+kernel 写得不好。**
+
+128K 时 MeZO 的账：`25.2（常驻）+ 26.2（线性）+ 48.0（3 份 bool mask）= 99.4 GiB`。
+其中 48 GiB 全是 QSA 层那三份 `(1,1,S,S)` bool（见 §21.5）。**只要把 QSA 改成
+「按 top-k 索引 gather K/V」，这 48 GiB 归零，MeZO 128K 落在 ~51 GiB —— 仍略超 48 GB，
+但那是「再压一点就能进」的量级，而不是算术上不可能。**
+
+### 22.3 反传还有多少优化空间
+
+分两类，别混：
+
+**能改的（算力侧，不移动显存墙）**
+
+| 杠杆 | 依据 | 预期 |
+|---|---|---|
+| grouped GEMM | 每层 24,576 次微小 launch，3 TFLOPS = 峰值 2%；反传给每个算子再加 1~2 个反向节点（实测建图+反传 = 3.20× no_grad） | 唯一改算术强度的一条，MeZO/反传同受益 |
+| 去掉 grad ckpt，ctx 只存专家 id + 路由、backward 按 id 重流 | 省一次完整前向重算（ckpt on 下 3 个前向当量 → 2 个） | 反传快 ~33% |
+| 反传的第二次 H2D 复用 | 前向与重算的专家流相同 | 省一半 H2D |
+
+**改不动的（显存侧）**：激活体积由 `层数 × T × hidden × top_k` 决定，跟 kernel 无关。
+所以「反传能满上下文」这条路在 48 GB 单卡上是封死的，除非上 CPU offload（每步多搬
+`2×T×hidden×2B`/层）或张量并行。
+
+### 22.4 显存策略：满显存必须报错终止，不能交给 CUDA
+
+上面「16384 既不报错也不退出」就是反例。新增 `mem_guard.py`：
+
+```python
+estimate_peak_gib(T, rows, mode)   # 实测拟合，残差 ≤0.6 GiB
+require_budget(...)                # 开跑前预算，超限 SystemExit(2) 并打印该改什么
+is_oom(exc) / die_on_oom(...)      # 跑到一半真 OOM → 打印现场 + 退出码 2
+```
+
+* 公式复现了全部 4 个 MeZO 实测点与 2 个反传实测点，并正确预言 64K OOM；
+* `sft.py` / `sft_mezo.py` 在装载后、第一步之前调用 `require_budget`；
+* `bench_fullctx.py` 每个口径先 `_preflight`，并新增 `--on-oom {abort,skip}`，
+  **默认 abort**（`skip` 只用于测绘边界矩阵）；
+* 6 个新测试（`test_train.MemGuard`）守公式与拒绝行为。
+
+理由：Windows 显存超发下「降速」不是可控降级，而是不可控抖动 —— 实测 16K 反传
+把 30 s 的步拖成十几分钟且日志零输出，测出来的 tok/s 没有任何参考价值。
+
+## 23. 数据类型现状（实测审计）与可调项
+
+### 23.1 每一段到底是什么精度
+
+| 部分 | 存储 | 计算 | 位置 |
+|---|---|---|---|
+| 基座非专家权重（~9.2 GiB） | GGUF 原量化（Q8_0/Q6_K…）→ 装载时反量化 | **bf16** | `loader_qwen4.py:1075` `model.to(torch.bfloat16)`（硬编码） |
+| 专家（原 96 GiB） | **NF4 4-bit** pack，显存常驻 16 GiB | 解到 **bf16** 再 GEMM | `nf4_fused.py` / `view(torch.bfloat16)` |
+| 激活 / attention / QSA | — | **bf16** | 全模型 |
+| LoRA A/B（6.68 M） | 反传 **bf16**；MeZO **fp32** | 反传 bf16 GEMM；MeZO delta 走 fp32 GEMM | `lora.py:44` 继承 base dtype；`sft_mezo.zo_cast_fp32` |
+| logprob 的 logits | 分块，**fp32** | fp32 logsumexp | `ce.token_logprobs` 的 `.float()` |
+
+### 23.2 超过 16 位的只有两处，都不是"模型精度"问题
+
+1. **MeZO 的 LoRA（fp32，25.5 MiB）**：ZO 更新 `θ ±= ε·z`，ε=1e-3 落在 bf16 参数上会被
+   直接舍掉（bf16 相对精度 2^-8≈0.4%，而扰动相对幅度 ~1e-3），等于没扰动。
+   代价：6.68 M × 4B = 25.5 MiB（bf16 是 12.7 MiB），**相对 25.2 GiB 常驻可以忽略**。
+   新增 `--lora-dtype {fp32,bf16}`：改 bf16 时必须把 `--eps` 抬到 ≥1e-2，否则学不动。
+2. **logits 分块（fp32，`chunk×248320×4B`，chunk=128 → 127 MB）**：248K 词表上 bf16
+   logits 的 logsumexp 有 ~1e-2 nats 抖动，会直接污染 DPO 的 margin 与 GRPO 的 ratio。
+   这部分是**瞬时**的，不参与常驻。
+
+⇒ 模型本体 / 专家 / 激活全是 ≤16 位（bf16 或 4-bit），没有 fp32 权重副本。
+
+### 23.3 想"自己控制"还缺什么
+
+| 想要 | 现状 | 要动的地方 |
+|---|---|---|
+| `--dtype fp16` | 不支持：专家解码路径产出 bf16 view，`F.linear` 混精度会报错 | `nf4_fused` 增加输出 dtype 参数 + 全链路传参 |
+| 更多低量化 pack | 只有 NF4（4-bit）。GGUF 侧本就有 Q2_K…Q8_0/IQ 系列；引擎的 MTP 草稿头用的就是 **Q2_0** | `loader_qwen4.py convert` 的 quant 类型做成参数，pack 头写类型 |
+| logits 精度 | 硬编码 fp32 | `token_logprobs(..., acc_dtype=)` |
+
+## 24. MeZO 为什么在 128K OOM：不是 LoRA，是三张 S² 掩码 + 一条 26 GiB 线性项
+
+### 24.1 归因（实测，不是推算）
+
+`_mb_mask_scale.py` 在**真代码路径**上量（`Qwen4ExpTextQSAIndexer.forward`，0.01 M 参数
+—— 参数与 S 无关，掩码尺寸也与模型大小无关，所以小模型能问清大模型的问题）：
+
+| S | 每份 mask | indexer 峰值 | = 输入 mask + zeros + scatter |
+|---:|---:|---:|---:|
+| 16384 | 0.25 GiB | **0.77** | 0.75 |
+| 32768 | 1.00 GiB | **3.03** | 3.00 |
+| 65536 | 4.00 GiB | **12.06** | 12.00 |
+| 131072 | 16.00 GiB | **48.11** | 48.00 |
+
+四倍序列 → 四倍 mask、**十六倍**峰值。128K 时**单这一层**就要 48 GiB（48 GB 卡被它
+一张吃满）；而 `Qwen4ExpTextAttention.forward` 紧接着还要 `attention_mask & selected`
+再造一份 16 GiB —— 所以 `mem_guard` 的 `3·T²/2^30` 项（=48 GiB @128K）刚好是「因果 /
+选中 / 与」三张表里同时活着的那三份，不是随手取的系数。
+
+三处来源，都在上游实现里（`transformers/models/qwen4_exp/modeling_qwen4_exp.py`）：
+
+| 位置 | 分配 | @128K |
+|---|---|---:|
+| `create_causal_mask(..., allow_is_causal_skip=False)` L1466 | `(1,1,S,S)` bool | 16 GiB |
+| `QSAIndexer.forward` L768 `torch.zeros((B,S,kv+1))` | `(1,S,S+1)` bool | 16 GiB |
+| 同函数 L773 `.scatter(...)`（out-of-place） | 再一张 | 16 GiB |
+| `Attention.forward` L860 `attention_mask & selected_token_mask` | 再一张 | 16 GiB |
+
+合计：**128K 要 25.2（常驻）+ 48（掩码）+ 26.2（线性项）= 99.4 GiB**，是 48 GB 卡的
+两倍。这也解释了 §22 的实测斜率：`ce T=32768` 峰值 35.3 GiB 里，3 GiB 正是三张
+1 GiB 的表。
+
+### 24.2 MeZO 的直觉是对的，做不到的是 HF 的前向
+
+MeZO 的成本模型确实几乎为零：2 次 `no_grad` 前向、不存激活、不建图、LoRA 只有
+6.68 M（fp32 25.5 MiB）。**这条直觉成立的前提是「前向本身是 O(T)」**——引擎的
+chunked prefill 就是（按字节预算切块 + KV 常驻），上游的 QSA 实现不是：它把
+「每行选中哪些 token」编码成稠密 S² 表。
+
+⇒ OOM 要归到**推理实现**，不是训练算法。同一件事在引擎里根本不存在——引擎的
+`qwen_sparse_attention` 是按 top-k 索引 gather K/V，从头到尾没有 S² 的东西。
+
+### 24.3 三条「看起来能省」的路，为什么都不划算
+
+| 方案 | 省掉什么 | 代价 | 结论 |
+|---|---|---|---|
+| HF 只把掩码按 query 分块（`STRATA_QSA_QCHUNK=4096`） | 48 → 1.5 GiB | 线性项 26 GiB 照样超；且 mask 写入流量仍是 O(S²)（12 层 × 4 份 × 16 GiB ≈ 768 GiB ≈ 500 s/步） | 不可行 |
+| HF 改分块 prefill + KV cache（mask 变 `(qc, kv)`） | 线性项 → O(qc) | 每 chunk 仍要重建 mask，总流量还是 4·S²；indexer 还要按 chunk 重池全前缀 | 仍卡在 HF 路线，且慢 |
+| 引擎 scoring | 掩码归零、线性项归零 | 需要两块新能力（24.4） | **唯一** |
+
+**注意**：第 2 条在内存上确实能跑通，慢才是它的死因。别把它当 128K 的答案。
+
+### 24.4 交给引擎还缺哪两块
+
+| 能力 | 现状 | 要做 | 规模 |
+|---|---|---|---|
+| teacher-forced logprobs | prefill **根本不调 lm_head**（`src/prefill/prefill.cpp` 全文件无 `output.weight`）；生成侧只报**采样到的那个** token（`src/program/generate.cpp` 的 `emit_lp_line`） | `lm_head_rows`：T 个位置一次 GEMM + vocab 分块流式 `logsumexp` + 取目标 token 的 logprob；端点 `/v1/score` | 中：一个 GEMM 变体 + 端点 + 测试 |
+| adapter ±ε 热换 | `--lora` 只在启动时读（`src/kernels/lora_adapters.cpp`）；请求里只能 `sampling.lora:false` 关掉（`serve/server.py:1478`） | 两张表常驻（15.7 MB × 2）+ 请求级选择 `lora: "+" / "-"` | 小 |
+| 128K 上下文 | **已有**：分块 prefill 按字节预算自动选 chunk；专家按需流式 | — | 无 |
+
+**不能**用现成的 `core::lm_head` 做 scoring：它是单行 GEMV（`src/core/layer.cpp:1406`），
+每 token 把 `output.weight` 整个读一遍 ≈ 318 MB；128K 个位置就是 **40 TB** 权重流量
+（≈4 小时）。必须换成按位置分块的 GEMM。
+
+显存估算（`--vram 16`）：专家 16 + 稠密 ~9 + KV 3.1（12 层 × 2 kv heads × 256 × 2 B，
+int8 减半）+ scoring 2 + chunk 工作区 2 ≈ **32 GiB**，在 45.6 预算内。
+步时：prefill 465 tok/s ⇒ 128K 单次前向 ~280 s，MeZO 两步 ~9.5 min + scoring 2~5 s。
+
+### 24.5 分支切分（单一路线 + 旧路线冻结）
+
+| 分支 | 前向 | 上下文 | worktree | 状态 |
+|---|---|---|---|---|
+| `feat/train-mezo` | 引擎 `/v1/score` + tokenizer，**不 import transformers 模型类** | 128K | `Strata-mezo` | 唯一长期路线 |
+| `feat/train-backforward` | HF `Qwen4ExpTextLMHeadModel`（1 前向 + 1 反传） | 冻结在 ≤32K | `Strata-prtrain` | A/B 与数值对照，不再打 128K 补丁 |
+
+两条分支的基线不同，是有意的：
+- `feat/train-mezo` 切自 `feat/lora-q36`（= 上游 + 28 个提交）。**上游 main 里没有任何
+  LoRA 代码**（`git ls-tree upstream/main | grep -i lora` 为空），`lora_adapters.cpp` /
+  `lora.hpp` / `--lora` 都在这个分支上；训练只用 LoRA，所以只能切在它上面。等
+  `lora-q36` 再 rebase 到上游最新（v0.2.8, 870aedd9）后，这条分支再跟一次。
+- `feat/train-backforward` 切自 fork 的 `feat/train_support`（PR #3 的 head 仍是
+  `origin/feat/train_support`，改名只发生在本地）。
+
+**不与别人在开发的 LoRA 分支冲突**：`pr-3267-lora`（上游 PR #3267，LoRA up/down kernel
+重叠 + PDL）动的是 `lora_apply` 的性能；本路线只加两件事——`lm_head_rows`（scoring）
+与 adapter 表的运行期选择——**不碰 LoRA kernel 本体**。
+
+顺带收益：砍掉 HF 前向同时干掉四类 Windows 缺口——S² 掩码、GDN kernel 静默回落、
+`PYTHONUTF8`、`causal_conv1d` ABI 坏。
+共享层（数据、MeZO 步数学、reward、`mem_guard`）留在 `train_core.py`，两边都 import；
+推理只走一个 `scorer` 接口，两条路线的差异只在这一个文件里。
+
+### 24.6 本轮随之加固的一处（`qsa_fast.row_ends`）
+
+`_fast` 原用 `torch.equal(V, torch.tril(torch.ones_like(V)))` 校验「恰好下三角」：
+`ones_like` + `tril` 各造一份 S² 临时张量（S=32K 各 1 GiB，S=128K 各 16 GiB），
+是 §22 那 35.3 GiB 里的一部分，也让 128K 在 indexer 之前就 OOM。改成一次 row-sum
+（只读 S² 字节、只写 S 个数），并顺手把判据放宽到「行是 `[0, p+j]` 的前缀」——
+带 KV cache 的分块 prefill 就是这个形状，将来 HF 侧要做 chunked prefill 不必再改。
+`test_train.QSAFast` 用缩小版 config 与上游逐 query 循环逐元素对齐（含位移版）。

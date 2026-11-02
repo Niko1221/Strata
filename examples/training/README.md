@@ -5,12 +5,13 @@
 One command, no path archaeology:
 
 ```bash
-python3 train.py                        # identity data + backprop SFT + the model you pinned
+python3 train.py                        # algo sft + method mezo (default): engine forward, memory = inference
 python3 train.py --dry-run              # show the final command without loading anything
-python3 train.py --list                 # algorithms / objectives / datasets
-python3 train.py --algo mezo            # zero-order, same data, memory = inference + 0.4 GiB
-python3 train.py --algo mezo --objective grpo --rollouts r.jsonl
-python3 train.py --data jsonl:/root/my.jsonl --steps 200 --out /root/lora.pt
+python3 train.py --list                 # algorithms / methods / datasets
+python3 train.py --algo sft --method backward   # same algo, backprop (exact gradient, more VRAM)
+python3 train.py --algo dpo --dpo-data pairs.jsonl       # zero-order DPO
+python3 train.py --algo grpo --rollouts r.jsonl          # zero-order GRPO (replayed rollouts)
+python3 train.py --data jsonl:/root/my.jsonl --steps 200 --out /root/lora.npz
 ```
 
 Defaults, and why they are defaults:
@@ -23,8 +24,16 @@ Defaults, and why they are defaults:
 - **data** — `identity`: the built-in "change who you are" set (it is the only task with a
   unique answer, so `logp('Strata' | '你是谁')` is a clean before/after judge). Switch with
   `--data identity:<word>`, `jsonl:<path>` or `pretrain:<npy>`; see `datasets.py`.
-- **algorithm** — `sft` (backprop). `algos.py` keeps algorithm and objective on separate axes:
-  `--algo sft|mezo|grpo` × `--objective ce|grpo`. Registering PPO/DPO later is one entry there.
+- **algorithm × method** — algorithms are `sft|dpo|grpo` (what is measured); methods are
+  `mezo|backward` (how parameters move, default `mezo`). Loss math lives once in
+  `objectives.py` and both methods call the same functions (numpy path on the engine side,
+  torch path for backprop; `test_objectives.py` cross-checks the two). `mezo` means **the
+  engine's own inference is the forward pass**: it sends `LORA <file>` / `SCORE <ids>` to
+  the same binary that serves, so `python3 train.py --algo sft` and `python3 mezo.py
+  --objective ce` are literally the same `main()` — and `mezo.py` is a class hierarchy
+  (`EngineMezo` base + one subclass per algorithm implementing only data loading and the
+  loss). `sft_mezo.py` (PyTorch forward) is retired from the registry; it remains as the
+  score-parity reference (−56.6433 vs engine −56.6508) and is never picked silently.
 
 These scripts are a **worked example, not a framework**: a minimal, self-contained
 SFT / GRPO loop where the Strata engine produces the trajectories (exact token ids,
@@ -41,12 +50,19 @@ One entry point, six ways to use it. Measured on the stock weights (48 MoE layer
 
 | recipe | flags | VRAM peak | RAM peak | step |
 |---|---|---|---|---|
-| **backprop SFT** (default) | *(none)* | 38.2 GiB | — | 22.6 s |
-| zero-order, cross-entropy | `--algo mezo` | 34.5 / **26.5** GiB | 53.8 / 57.3 GiB | 20.5 / 29.0 s |
-| zero-order, GRPO, **on-policy** | `--algo mezo --objective grpo --prompts p.jsonl` | **26.2 GiB** | ~57 GiB | 21.4 s (4x16 tokens, of which 10.7 s sampling) |
-| zero-order, GRPO, replayed | `--objective grpo --rollouts r.jsonl` | 34.5 GiB | 53.8 GiB | — |
-| two-stage GRPO | `--algo grpo --model <HF dir>` | engine (~40 GiB) and student don't fit together | | |
-| SFT then GRPO | `--out sft.pt`, then `--prompts` | | | |
+| zero-order SFT (**default**) | *(none)* = `--algo sft --method mezo` | 48.1 GiB @128K (`--kv auto`) | — | 20.5 s @8K / 58.4 s @128K |
+| zero-order DPO | `--algo dpo --dpo-data pairs.jsonl` | as above | — | 4 SCORE per pair per direction |
+| zero-order GRPO (replayed) | `--algo grpo --rollouts r.jsonl` | as above | — | K SCORE per group per direction |
+| **backprop SFT** | `--algo sft --method backward` | 38.2 GiB | — | 22.6 s |
+| zero-order CE, PyTorch *(parity harness)* | `python3 sft_mezo.py` | 34.5 / **26.5** GiB | 53.8 / 57.3 GiB | 20.5 / 29.0 s |
+| GRPO, **on-policy**, PyTorch student | `--algo grpo --method backward --prompts p.jsonl --model <HF dir>` | **26.2 GiB** | ~57 GiB | 21.4 s (4x16 tokens, of which 10.7 s sampling) |
+
+The zero-order rows split by script on purpose: they are not the same measurement. The
+engine row is a single forward per step inside the engine (no NF4 pack in the training
+process, the pack is the engine's own); the PyTorch rows keep the experts in VRAM/RAM and
+run the forward in `sft_mezo.py`. Comparing them is how the 26x per-token gap was found
+(`_profile_route.py`) — measurement evidence, not evidence of two routes: there is one
+zero-order method (the engine), and `sft_mezo.py` stays out of the registry.
 
 Two columns in the zero-order rows are `--vram 24` / `--vram 16`: the expert pack can
 live in VRAM or in RAM, and that dial is the whole memory story (`BENCH-SFT-VS-MEZO.md`
@@ -81,52 +97,46 @@ neither model).
 
 | platform | status | why |
 |---|---|---|
-| **Linux** | supported | everything below exists |
-| **Windows** | **not supported** | `os.preadv` does not exist — see below |
+| **Linux** | supported | native `os.preadv`, `madvise` for mapping-page return |
+| **Windows** | supported | `preadv_shim.py` readinto shim (same call sites, same semantics) |
 | macOS | untested | no machine. `preadv` is there, but nothing here has been run on it |
 
 `train.py`, `sft.py` and `sft_mezo.py` all call `platform_check.require()` and stop with
-exit code 2 and this list before anything is loaded. That is on purpose: without the guard,
-the Windows failure arrives **after** the 76 GB pack has been read, as
-`AttributeError: module 'os' has no attribute 'preadv'` — an error that names neither the
-platform nor the reason.
+exit code 2 and this list before anything is loaded. The gate checks whether a usable
+`preadv` exists — native on Linux, the shim everywhere else — not the platform name, so a
+future port does not need to touch the guard.
 
-**The one hard blocker.** The expert pack is read with `os.preadv`, which reads N
-non-contiguous blocks in a single system call — that is what makes a 60 GB pack of 2.49 MiB
-expert blocks tolerable. Python documents `preadv` as available on Linux ≥ 2.6.30,
-FreeBSD ≥ 6.0, OpenBSD ≥ 2.7 and AIX ≥ 7.1; **Windows is not on that list**, and
-`hasattr(os, "preadv")` is `False` on win32 (measured). It is called in three places, none
-of which has a fallback branch:
+**The former hard blocker, and its fix.** The expert pack is read with `preadv` semantics
+(one positional read per 2.49 MiB expert block). Windows CPython has no `os.preadv`/`os.pread`,
+so `preadv_shim.py` provides a readinto shim: `open(fd, "rb", buffering=0, closefd=False)`
+around the existing fd, then `seek` + `readinto` per chunk — zero extra copies, and a fresh
+handle per call, so multi-threaded random reads (bench_pack_io) cannot race on the shared
+seek position. Call sites (single source of truth: `platform_check.PREADV_USERS`):
 
-- `loader_qwen4.py:294` — pack into VRAM (the double-buffered path)
-- `loader_qwen4.py:339` — pack into pinned host memory
-- `bench_pack_io.py:26` — the pack random-read ceiling benchmark
+- `loader_qwen4.py` — pack into VRAM (double-buffered) and into pinned host memory
+- `bench_pack_io.py` — the pack random-read ceiling benchmark
 
 **What is a degradation, not a blocker.** `mmap.mmap.madvise` / `MADV_DONTNEED` is missing on
-Windows too, but `GgufShard.drop()` and `_release_mmap_pages()` guard it with `hasattr` and
+Windows, but `GgufShard.drop()` and `_release_mmap_pages()` guard it with `hasattr` and
 `try/except`, so on Windows it is a no-op. The pack still loads; what you lose is returning the
 GGUF's mapped pages (~15 GiB of reclaimable clean file-backed pages, §12.2). Not a correctness
 problem, but it is why a low-VRAM config can hit OOM during base-model load rather than later.
+The pack loader's page-cache hint (`posix_fadvise(DONTNEED)`, 9× on cold Linux reads) is also
+Linux-only for the same reason — on Windows it is a no-op, not a failure.
 
-**What Windows support would take** (not done here, written down so it is a decision and not a
-mystery):
-
-1. Replace `os.preadv` with a portable read — an `os.pread` loop, or `np.memmap` + `readinto`.
-   This is the only *correctness* change. It will cost some throughput: `preadv` is one syscall
-   per chunk where `pread` is one per block, and §7.5 measured block-at-a-time transfers at
-   roughly 2× the wall time (222 µs vs 112 µs per 2.49 MiB block).
-2. Re-measure the pinning ceiling. `loader_qwen4.py` halves on failure rather than assuming a
-   number, so it degrades instead of dying, but the Linux figure is 32 GiB and the Windows
-   figure is unmeasured.
-3. Verify `transformers` exposes `models.qwen3_5_moe`. On this box Windows had 4.57.1, which
-   does **not** — that is an environment gap, not a platform one, and it currently fails
-   *before* the guard would. Worth knowing so the two failures are not confused.
+**Windows environment notes** (measured on the dev box, 2026-10-30): the stack mirrors the
+Linux one — `torch 2.13.0+cu132`, `triton-windows 3.7.1` (PyPI `triton` itself ships Linux
+wheels only), `transformers 5.17.0`, `kernels 0.16.1`. The pinning ceiling is unmeasured on
+Windows; `loader_qwen4.py` halves on failure rather than assuming a number.
 
 ## Layout
 
 | file | role |
 |---|---|
 | `train.py` | the default entry: model from the launcher pin, dataset switch, algorithm switch |
+| `objectives.py` | the three objectives' math, defined **once** (backward and zeroth-order read the same code) |
+| `update_rules.py` | the two update routes behind one call: `rule.step(loss_fn)` — `BackwardRule` (autograd + AdamW) vs `MezoRule` (θ±ε, directional derivative, SGD) |
+| `test_objectives.py` / `test_update_rules.py` | the CPU gates: 30 objective cases + 17 rule cases (incl. the ZO direction must differ per parameter) |
 | `algos.py` / `datasets.py` | the two registries behind `train.py` (algorithm × objective; data sources) |
 | `test_train_core.py` | **the CI gate**: CPU-only, **no torch needed** — dataset routing, algo/objective pairs, parallel-collection row order, the platform guard |
 | `test_train.py` | the torch half: grouping, the GRPO scalar, sampling (needs `torch` + `transformers`) |
