@@ -244,5 +244,94 @@ class HipPackageLibraryPath(unittest.TestCase):
             self.assertIsNone(feedmod.select_engine(packages, other)[0], gfx)
 
 
+class HipCards(unittest.TestCase):
+    """0.2.9 shipped one Linux AMD DeepSeek package, for gfx1200/gfx1201 (RX 9070, R9700).  A 7900 XTX (gfx1100) is not covered; a PC whose card could
+    not be named used to get the package without a word (feed.gfx_covers lets an unknown card through)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="strata-dsv41-hip-cards-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.key = fx.make_key()
+        trust = self.root / "trust.json"
+        trust.write_text(json.dumps({"keys": [signing.public_part(self.key)]}))
+        for p in (mock.patch.dict(os.environ, {"STRATA_UPDATE_TRUSTED_KEYS": str(trust), "STRATA_COMPONENTS_DIR": str(self.root / "c")}),
+                  mock.patch.object(signing, "BUILTIN_KEYS", self.root / "none.json")):
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(ec.register_signature_verifier, None)
+        self.release = self.root / "release"
+        self.release.mkdir()
+        self.server = fx.FeedServer(self.release)
+        self.server.__enter__()
+        self.addCleanup(self.server.__exit__)
+        src = self.root / "src"
+        src.mkdir()
+        (src / EXE).write_bytes(b"stub strata-dsv41 hip")
+        (src / "libamdhip64.so.7").write_bytes(b"a runtime library " * 50)
+        self.src = src
+
+    def package(self):
+        with mock.patch("strata_control.hipblaslt_tuning.check_stage", return_value=[]):
+            folder = package_engine.build(self.src, "hip", "0.1.55", components.host_platform(), self.root / "built", entry=EXE,
+                                          archs=("gfx1200", "gfx1201"), build_id="dsv41-hip", variant="rx9070")
+        feed_tool.sign_package(folder, self.key)
+        return folder
+
+    def hw(self, gfx):
+        return {"platform": host_platform(), "backend": "hip", "runtime": None, "nvidia_driver": None, "cuda_archs": [], "gfx": gfx}
+
+    def publish(self):
+        (self.release / "dsv41").mkdir(parents=True)
+        feed_tool.pack_engine(self.package(), self.release / "dsv41", url_prefix="dsv41/")
+        feed_tool.build_feed(self.release, key=self.key, sequence=1, dsv41_dir=self.release / "dsv41")
+
+    def install(self, gfx, lines):
+        return dsv41_engine.install(self.root / "data" / "engine-dsv41", self.server.url + "/strata-feed.json", hardware=self.hw(gfx), emit=lines.append)
+
+    def test_a_card_nothing_could_name_gets_the_package_and_one_plain_line(self):
+        self.publish()
+        lines = []
+        exe = self.install([], lines)
+        self.assertIsNotNone(exe, lines)
+        text = " ".join(lines)
+        self.assertIn("RX 9070 and R9700 (gfx1200/1201)", text)
+        self.assertIn("your graphics card wasn't recognised", text)
+
+    def test_a_7900_xtx_is_told_which_cards_the_package_is_for_and_nothing_is_installed(self):
+        self.publish()
+        lines = []
+        self.assertIsNone(self.install(["gfx1100"], lines))
+        text = " ".join(lines)
+        self.assertIn("RX 9070 and R9700", text)
+        self.assertIn("RX 7000", text)
+        self.assertIn("gfx1100", text)
+        self.assertFalse((self.root / "data" / "engine-dsv41").exists() and any((self.root / "data" / "engine-dsv41").iterdir()))
+
+    def test_a_card_the_package_holds_code_for_hears_nothing_about_cards(self):
+        self.publish()
+        lines = []
+        self.assertIsNotNone(self.install(["gfx1201"], lines), lines)
+        self.assertNotIn("recognised", " ".join(lines))
+        self.assertNotIn("RX 7000", " ".join(lines))
+
+    def test_a_hand_installed_package_is_checked_against_the_cards_when_they_are_known(self):
+        folder = self.package()
+        from strata_control import updater
+        for gfx, installed, words in ((["gfx1100"], False, "Nothing was installed"), ([], True, "wasn't recognised"), (["gfx1201"], True, "")):
+            lines = []
+            dest = self.root / f"data-{len(gfx)}-{gfx[0] if gfx else 'none'}" / "engine-dsv41"
+            with mock.patch.object(updater, "detect_hardware", return_value=self.hw(gfx)):
+                exe = dsv41_engine.install_package(dest, folder, emit=lines.append)
+            self.assertEqual(exe is not None, installed, (gfx, lines))
+            self.assertIn(words, " ".join(lines), (gfx, lines))
+            if not installed:
+                self.assertIn("RX 7000", " ".join(lines))
+
+    def test_the_package_names_its_cards(self):
+        folder = self.package()
+        self.assertEqual(dsv41_engine.package_archs(folder / EXE), ("gfx1200", "gfx1201"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8369,11 +8369,13 @@ def dsv41_pick(folder: Path, name: str) -> Path:
 
 def dsv41_layout_of(md: dict, present) -> str:
     """Which layout of a set the files are: "four" (the pinned files, and the first release's names) or "six" (ISTA-DASLab's 2026-10-27 re-split,
-    DSV41_ISTA6_FILES).  `present(name)` says whether a file is there.  Six only when its files are there and the four-shard ones are not (or are
-    not whole while the six are): a folder holding both whole sets is used as the pinned four-shard one, as before."""
+    DSV41_ISTA6_FILES).  `present(name)` says whether a file is there.  Six when its files are there and the four-shard ones are not, and also
+    when both sets are whole: ISTA's converter (convert_ds41_upstream.py) writes the six-shard files next to the old ones and leaves the old ones,
+    and its files carry the current chat template, so a folder the converter has been through is used by its new files (before 0.2.9 update it
+    was the old four-shard set, with the old chat template)."""
     four = [bool(present(n) or (DSV41_LEGACY_NAMES.get(n) and present(DSV41_LEGACY_NAMES[n]))) for n in md["shards"]]
     six = [bool(present(n)) for n in md.get("shards6") or []]
-    return "six" if six and any(six) and (not any(four) or (all(six) and not all(four))) else "four"
+    return "six" if six and any(six) and (not any(four) or all(six)) else "four"
 
 
 def dsv41_parts(md: dict, present) -> tuple:
@@ -8500,15 +8502,153 @@ def dsv41_engine_env(lib_dirs) -> dict:
     return env
 
 
+def dsv41_exit_words(code) -> str:
+    """How an engine run ended, in words: "exit code 2", "signal 11 (SIGSEGV)"."""
+    if isinstance(code, int) and code < 0:
+        try:
+            import signal as _signal
+            return f"signal {-code} ({_signal.Signals(-code).name})"
+        except (ValueError, ImportError):
+            return f"signal {-code}"
+    if isinstance(code, int) and code > 0xC0000000:                    # a Windows crash code (0xC0000005 ...)
+        return f"crash code 0x{code:08X}"
+    return f"exit code {code}"
+
+
 def dsv41_pack_info(exe: Path, pack: Path, lib_dirs) -> tuple[bool, str]:
-    """`strata-dsv41 --pack-info --pack P`: (True, text) when every file of the pack is there (no MISSING line), else (False, text)."""
+    """`strata-dsv41 --pack-info --pack P`: (True, text) when every file of the pack is there (no MISSING line), else (False, text).  The text
+    always says WHY when it is False: an engine that printed nothing (it crashed, was killed, or is not an engine) gives a line with how it ended,
+    never an empty string (0.2.9 said "the model's pack is not complete ()")."""
     try:
         r = subprocess.run([str(exe), "--pack-info", "--pack", str(pack)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
                            env=dsv41_engine_env(lib_dirs))
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"the engine could not read the pack: {e}"
     text = (r.stdout or "") + (r.stderr or "")
-    return r.returncode == 0 and "MISSING" not in text and "all present" in text, text
+    good = r.returncode == 0 and "MISSING" not in text and "all present" in text
+    if not good and not text.strip():
+        text = f"{Path(str(exe)).name} --pack-info printed nothing and ended with {dsv41_exit_words(r.returncode)}"
+    elif not good and r.returncode != 0:
+        text = text.rstrip("\n") + f"\n({Path(str(exe)).name} --pack-info ended with {dsv41_exit_words(r.returncode)})"
+    return good, text
+
+
+def dsv41_pack_problems(pack: Path) -> list | None:
+    """The engine's own file check done here (src/dsv41/ds4_packinfo.cpp), from the pack's description alone: every file tensors.txt points at
+    (named relative to the model_dir ds4.txt records) must be there and at least as long as its largest tensor end.  A list of
+    (path, "missing" | "short" | "unreadable", bytes there, bytes wanted); empty when all is well; None when the pack has no readable description."""
+    pack = Path(pack)
+    try:
+        model_dir = ""
+        for line in (pack / "ds4.txt").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("model_dir "):
+                model_dir = line[len("model_dir "):].strip()
+        names: dict = {}
+        need: dict = {}
+        with (pack / "tensors.txt").open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("file "):
+                    _tag, i, name = line.rstrip("\n").split(" ", 2)
+                    names[int(i)] = name
+                elif line.startswith("t "):
+                    parts = line.split()
+                    if len(parts) >= 6:
+                        need[int(parts[3])] = max(need.get(int(parts[3]), 0), int(parts[4]) + int(parts[5]))
+    except (OSError, ValueError):
+        return None
+    if not need:
+        return None
+    problems = []
+    for i, want in sorted(need.items()):
+        path = Path(os.path.normpath(os.path.join(model_dir, names.get(i, "")))) if names.get(i) else None
+        if path is None:
+            problems.append((f"file {i}", "unreadable", 0, want))
+            continue
+        try:
+            have = path.stat().st_size
+        except OSError:
+            problems.append((str(path), "missing", 0, want))
+            continue
+        if have < want:
+            problems.append((str(path), "short", have, want))
+    return problems
+
+
+def dsv41_problems_line(problems: list) -> str:
+    """One line for the files a pack needs and does not find: "2 of the files it points at are missing or too short: X (not there), Y (11.2 GB there, 39.1 GB wanted)"."""
+    parts = []
+    for path, kind, have, want in problems[:3]:
+        name = Path(path).name or path
+        parts.append(f"{name} (not there)" if kind == "missing" else f"{name} ({have / 1e9:.1f} GB there, {want / 1e9:.1f} GB wanted)" if kind == "short"
+                     else f"{name} (not readable)")
+    more = f" and {len(problems) - 3} more" if len(problems) > 3 else ""
+    return (f"{len(problems)} of the files it points at {'is' if len(problems) == 1 else 'are'} missing or too short: " + ", ".join(parts) + more)
+
+
+def dsv41_pack_source_file(pack: Path) -> Path:
+    return Path(pack) / "pack-source.json"
+
+
+def dsv41_write_pack_source(pack: Path) -> None:
+    """Remember the size and time of every model file the pack was made from, so a later run notices that the files were replaced in place
+    (ISTA's converter, a fresh download over the old files) even when the new ones are as long as the old ones.  Best effort."""
+    try:
+        model_dir, names = "", {}
+        for line in (Path(pack) / "ds4.txt").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("model_dir "):
+                model_dir = line[len("model_dir "):].strip()
+        with (Path(pack) / "tensors.txt").open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.startswith("file "):
+                    break
+                _tag, i, name = line.rstrip("\n").split(" ", 2)
+                names[int(i)] = name
+        files = {}
+        for name in names.values():
+            st = Path(os.path.normpath(os.path.join(model_dir, name))).stat()
+            files[name] = [st.st_size, st.st_mtime_ns]
+        dsv41_pack_source_file(pack).write_text(json.dumps({"model_dir": model_dir, "files": files}, indent=1), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+
+def dsv41_pack_changed(pack: Path) -> str | None:
+    """The name of a model file that is not the one the pack was made from (a different size or time since the pack was built), else None.
+    A pack with no record (made by an earlier Strata) is never judged by this."""
+    try:
+        rec = json.loads(dsv41_pack_source_file(pack).read_text(encoding="utf-8"))
+        model_dir, files = rec["model_dir"], rec["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    for name, (size, mtime) in files.items():
+        try:
+            st = Path(os.path.normpath(os.path.join(model_dir, name))).stat()
+        except OSError:
+            return Path(name).name
+        if st.st_size != size or st.st_mtime_ns != mtime:
+            return Path(name).name
+    return None
+
+
+def dsv41_pack_state(exe: Path, pack: Path, lib_dirs) -> tuple[str, str]:
+    """What is wrong with a pack, in one line, and whether building it again can help.  (state, reason) with state
+      "ok"       the engine says every file is there;
+      "rebuild"  the pack does not match the model files (a file missing or too short) or its description is broken: building it again is the remedy;
+      "engine"   the pack's files are all there (checked here) but the engine's own check gave no usable answer (it crashed, printed nothing or
+                 something else): building the pack again cannot help, and the reason says what the engine did."""
+    good, why = dsv41_pack_info(exe, pack, lib_dirs)
+    if good:
+        return "ok", ""
+    problems = dsv41_pack_problems(pack)
+    if problems:
+        return "rebuild", dsv41_problems_line(problems)
+    last = next((l.strip() for l in reversed(why.splitlines()) if l.strip()), "")
+    if problems is None:
+        return "rebuild", "its description (ds4.txt, tensors.txt) cannot be read" + (f": {last[:160]}" if last else "")
+    if "pack-info:" in why:                                   # the engine found a tensor or a file the description should hold
+        line = next((l.strip() for l in why.splitlines() if "pack-info:" in l), last)
+        return "rebuild", line[:200]
+    return "engine", last[:200]
 
 
 def dsv41_smoke(exe: Path, pack: Path, lib_dirs, gpus=None, timeout: int = 5400) -> tuple[bool, str]:
@@ -8558,10 +8698,10 @@ def dsv41_covered_archs(eng):
     """The AMD architectures the installed DeepSeek engine package holds code for (its manifest); None when it names none (no package yet, or one
     without a list): the caller then uses the release's own rule (dsv41_fit.run_cards) and says nothing about a card it cannot know."""
     try:
-        from strata_control import engine_component as ec
+        from strata_control import dsv41_engine
         exe = dsv41_exe(Path(eng))
-        if exe is not None and (exe.parent / ec.MANIFEST).is_file():
-            archs = ec.read_manifest(exe.parent).hip_archs
+        if exe is not None:
+            archs = dsv41_engine.package_archs(exe)         # the manifest's list, else BUILD.json's (a hand-made package or a STRATA_DSV41_EXE build)
             if archs:
                 return tuple(archs)
     except Exception:                                      # noqa: BLE001 - no list: None
@@ -8640,7 +8780,11 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     if dsv41_context.note(ctx):
         warn(f"context {dsv41_context.label(ctx)}: {dsv41_context.note(ctx)}")
     folder = dsv41_folder(a, fam, tag, model)
-    layout = dsv41_layout_of(md, lambda n: (folder / n).exists()) if (ista and a.gguf_dir) else "four"
+    layout = dsv41_layout_of(md, lambda n: (folder / n).exists()) if ista else "four"
+    if layout == "six" and not a.gguf_dir and not all((folder / n).exists() for n in md["shards6"]):
+        layout = "four"                 # (setup downloads only the pinned four-shard files: a part of the six-shard set in setup's own folder is not used)
+    if layout == "six" and any((folder / n).exists() for n in md["shards"]):
+        say(f"  {folder} holds both the older four-shard files and the six-shard files ISTA's converter wrote: the six-shard files are used (they carry the current chat template).")
     shards = [dsv41_pick(folder, n) for n in (md["shards6"] if layout == "six" else md["shards"])]
     if layout == "six":
         say(f"  {folder} holds ISTA-DASLab's six-shard files of 2026-10-27 ({len(shards)} files and the Engram as the sixth): they are used where they are.")
@@ -8735,12 +8879,17 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     if exe is not None and exe.parent != Path(eng):
         from strata_control import dsv41_engine
         lib_dirs = [*lib_dirs, *dsv41_engine.lib_dirs(exe)]   # its own package, and the rocm/bin an AMD package keeps the ROCm DLLs in
-    if hip and exe is not None and named:                  # cards the person named that this package holds no code for: said, never refused
+    if hip and exe is not None:                            # cards (named or setup's own pick) that this package holds no code for: said, never refused
         covered = dsv41_covered_archs(eng)
         for c in cards if covered else []:
             if c.get("arch") and c["arch"] not in covered:
                 warn(f"GPU {c['index']} ({c['name']}, {c['arch']}): this DeepSeek engine package holds code for {', '.join(covered)} only, so it may "
-                     "not start on that card. Leave it out (--gpus ...) to be sure.")
+                     "not start on that card. Leave it out (--gpus ...) to be sure." if named else
+                     f"GPU {c['index']} ({c['name']}, {c['arch']}): this DeepSeek engine holds code for {', '.join(covered)} only, so DeepSeek "
+                     "will not start on this card.")
+        if covered and any(not c.get("arch") for c in cards):
+            from strata_control import dsv41_engine
+            warn(dsv41_engine.card_unknown_line(covered))
     if exe is None:
         if os.environ.get("STRATA_VERBOSE") == "1" or "--verbose" in sys.argv:
             say("  Details for developers: build it with cmake -DSTRATA_BUILD_DSV41=ON -DCMAKE_CUDA_ARCHITECTURES=<your card: 86 RTX 30, 89 RTX 40, 120 RTX 50> "
@@ -8792,18 +8941,23 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         warn(f"the pack from an earlier run was made from the {'four' if layout == 'six' else 'six'}-shard files of this set; these are the {layout}-shard files: building it again")
         shutil.rmtree(pack, ignore_errors=True)
         have_pack = False
-    if have_pack and ista:                         # a pack from an earlier run is kept only when the engine finds all of its files
-        good, why = dsv41_pack_info(exe, pack, lib_dirs)
-        if not good:
-            warn("the pack from an earlier run is incomplete; building it again")
+    engine_doubt = ""
+    if have_pack and ista:                         # a pack from an earlier run is kept only while it fits the model files and the engine finds all of them
+        changed = dsv41_pack_changed(pack)         # (a file replaced in place since the pack was made: ISTA's converter, a new download over the old files)
+        state, reason = ("rebuild", f"{changed} is not the file it was made from: it was replaced since") if changed else dsv41_pack_state(exe, pack, lib_dirs)
+        if state == "rebuild":
+            warn(f"The pack from an earlier run does not fit the model files in {folder} any more ({reason}): building it again (a few minutes).")
             shutil.rmtree(pack, ignore_errors=True)
             have_pack = False
+        elif state == "engine":
+            engine_doubt = reason
     if not have_pack:
         if ista:
             if udlow:       # the set's own shard 1 carries the metadata (and the drafter's geometry); shared = [Engram, drafter]
                 run(dsv41_pack_cmd(folder, [f.name for f in shards], shared[0], shards[0], shared[1], pack, mmproj_file))
             else:
                 run(dsv41_pack_cmd(folder, [f.name for f in shards], shared[0], shared[1], shared[2], pack, mmproj_file))
+            dsv41_write_pack_source(pack)
         else:
             run([sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--out", str(pack),
                  *(["--mmproj", str(mmproj_file)] if mmproj_file else [])])
@@ -8812,11 +8966,16 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         if prof.is_file() and not (pack / "expert-profile.bin").exists():
             pack.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(prof, pack / "expert-profile.bin")
-        good, why = dsv41_pack_info(exe, pack, lib_dirs)
-        if not good:
-            tail = "\n".join(l for l in why.splitlines() if "MISSING" in l)[:600]
-            fail(f"the model's pack is not complete ({tail or why[-300:]})",
-                 f"delete {pack} and run setup again; if it is still incomplete, the files in {folder} may be damaged (setup checks them)")
+        state, reason = dsv41_pack_state(exe, pack, lib_dirs)
+        if state == "rebuild":                         # (a pack built a moment ago from these files, still not matching them)
+            fail(f"the model's pack is not complete ({reason})",
+                 (f"the files in {folder} look cut short or were changed while the pack was made: run setup again (it checks them), or copy the whole files in again"
+                  if "missing or too short" in reason else
+                  f"delete {pack} and run setup again; if it says the same, send us the output of: {exe} --pack-info --pack {pack}   and the number `echo $?` shows"))
+        if state == "engine":
+            engine_doubt = reason
+            warn(f"The engine's own file check gave no usable answer ({reason}); setup checked the pack's files itself and all of them are there and long enough. "
+                 "The test question below decides whether the engine runs.")
         ok(f"pack: {pack} (checked: every file the engine needs is there)")
         if os.environ.get("STRATA_DSV41_NO_SMOKE") == "1":
             warn("the 16-word test run was skipped (STRATA_DSV41_NO_SMOKE=1)")
@@ -8824,7 +8983,8 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             say("  Testing the model with a short question (a few minutes: the engine reads the first experts from the disk) ...")
             good, why = dsv41_smoke(exe, pack, lib_dirs, [c["index"] for c in cards] if (a.gpu is not None or a.gpus or (hip and len(cards) > 1)) else None)
             if not good:
-                fail("the model does not answer sensibly after the preparation: " + (why.splitlines()[-1] if why else "no answer"),
+                fail("the model does not answer sensibly after the preparation: " + (why.splitlines()[-1] if why else "no answer")
+                     + (f" (the engine's file check also gave no usable answer: {engine_doubt})" if engine_doubt else ""),
                      f"delete {pack} and run setup again so the pack is built fresh; if the test fails again, "
                      f"tell us (the log is in {home()})")
             ok("test question answered sensibly")

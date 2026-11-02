@@ -35,6 +35,60 @@ def find(dest: Path) -> Path | None:
     return folders[-1] / exe_name() if folders else None
 
 
+def cards_words(archs) -> str:
+    """The cards a package holds code for, in the words of the box they came in ("RX 9070 and R9700 (gfx1200/1201)")."""
+    from strata_control import engine_component as ec
+    archs = sorted(str(a) for a in archs or () if str(a).startswith("gfx"))
+    names = {"gfx1200": "RX 9060", "gfx1201": "RX 9070 and R9700"}
+    named = [names[a] for a in archs if a in names]
+    who = ", ".join(dict.fromkeys(named)) if named and len(named) == len(archs) else " and ".join(sorted({ec.hip_family(a) for a in archs})) or "other"
+    short = "/".join(archs[:1] + [a[3:] for a in archs[1:]]) if archs else ""
+    return f"{who} ({short})" if short else who
+
+
+def card_unknown_line(archs) -> str:
+    """The one plain line when an AMD package is installed although no probe could name this PC's graphics card."""
+    return (f"This DeepSeek engine runs on {cards_words(archs)}; your graphics card wasn't recognised, so Strata installs it anyway "
+            "and it will say if the card is not one of those.")
+
+
+def card_mismatch_line(archs, here) -> str:
+    """The one plain line when an AMD package has no code for the card(s) this PC has."""
+    from strata_control import engine_component as ec
+    have = " and ".join(sorted({ec.hip_family(a) for a in here}))
+    return (f"This DeepSeek engine runs on {cards_words(archs)}; this computer has an AMD {have} card ({', '.join(sorted(set(here)))}), "
+            "which this release holds no DeepSeek engine code for, so DeepSeek cannot start on it yet.")
+
+
+def package_archs(exe: str | os.PathLike) -> tuple[str, ...]:
+    """The AMD architectures an installed or hand-made package holds code for: its manifest's list, else BUILD.json's "archs" beside the
+    program (a package made by hand). Empty when the package names none (a build of the person's own)."""
+    folder = Path(exe).parent
+    try:
+        from strata_control import engine_component as ec
+        if (folder / ec.MANIFEST).is_file():
+            found = tuple(a for a in ec.read_manifest(folder).hip_archs if str(a).startswith("gfx"))
+            if found:
+                return found
+    except Exception:                                      # noqa: BLE001 - a package that cannot be read names nothing
+        pass
+    try:
+        import json
+        data = json.loads((folder / "BUILD.json").read_text(encoding="utf-8-sig"))
+        return tuple(str(a) for a in data.get("archs") or () if str(a).startswith("gfx"))
+    except (OSError, ValueError, AttributeError):
+        return ()
+
+
+def card_problem(archs, here) -> str | None:
+    """The plain line when `archs` (the package's) is known, `here` (this PC's cards) is known and no card of this PC is among the package's
+    code; None when it fits, or when either side is unknown (an empty list is never a refusal: the caller says the card is unknown)."""
+    from strata_control import feed as feedmod
+    if not archs or not here or feedmod.gfx_covers(archs, list(here)):
+        return None
+    return card_mismatch_line(archs, here)
+
+
 ARCHIVE_SUFFIXES = (".tar.gz", ".tar.xz", ".zip")
 MAX_UNPACKED = 8 << 30                  # a DeepSeek engine package is under a GB; this only stops an archive that unpacks into something huge
 
@@ -110,6 +164,15 @@ def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[s
         if component.platform != host_platform():
             emit(f"{src.name} is for {component.platform}, and this computer is {host_platform()}. Download the one for your system.")
             return None
+        if component.backend == "hip":                          # a package for other cards than this PC's can only fail at its first kernel
+            from strata_control import updater as _updater
+            here = _updater.detect_hardware().get("gfx") or []
+            problem = card_problem(tuple(a for a in component.archs if str(a).startswith("gfx")), here)
+            if problem:
+                emit(problem + " Nothing was installed.")
+                return None
+            if not here:
+                emit(card_unknown_line(component.archs))
         outer = ec._verifier
         signing.install_component_verifier(signing.load_trusted_keys())
         try:
@@ -156,9 +219,13 @@ def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Call
         feed = updater.open_feed(ctx, state)
         pkg, reasons = feedmod.select_engine(list(feed.dsv41), hw)
         if pkg is None:
-            emit("There is no DeepSeek engine package for this computer in the update feed"
-                 + (": " + "; ".join(reasons[:2]) if reasons else "") + ".")
+            hip = [p for p in feed.dsv41 if p.backend == "hip" and p.platform == hw.get("platform")]
+            line = card_problem(tuple(sorted({a for p in hip for a in p.archs if str(a).startswith("gfx")})), hw.get("gfx") or []) if hw.get("backend") == "hip" else None
+            emit(line or ("There is no DeepSeek engine package for this computer in the update feed"
+                          + (": " + "; ".join(reasons[:2]) if reasons else "") + "."))
             return None
+        if pkg.backend == "hip" and not hw.get("gfx"):
+            emit(card_unknown_line(pkg.archs))                 # (feed.gfx_covers lets an unknown card through; say so, once)
         archive = updater._download(ctx, "dsv41", pkg.url, pkg.size, pkg.sha256, "the DeepSeek engine", feed)
         stage_root, component = updater.stage_engine(ctx, feed, pkg, archive)
         try:
