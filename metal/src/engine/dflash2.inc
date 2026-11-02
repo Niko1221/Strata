@@ -644,6 +644,7 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
 // context rows of the prompt: the taps are in `taps` ([n][nt * N] floats, a Window buffer or `staging`)
 bool Window::df2_context(const mtl::Buffer& taps, size_t taps_off, int64_t n, int64_t pos0, std::string& err) {
     Df2& d = *df2_;
+    const double tc0 = now_ms();
     if (!d.bound) { err = "dflash2: not bound"; return false; }
     const size_t row_bytes = d.taps.size() * N * 4;
     for (int64_t b0 = 0; b0 < n; b0 += DF2_CTX_MAX) {
@@ -657,7 +658,10 @@ bool Window::df2_context(const mtl::Buffer& taps, size_t taps_off, int64_t n, in
             df2_rope_rows(pos + g0, m, d.theta, d.rtctx.as<float>() + (size_t) g0 * 128);
             df2_ctx_list(ds, taps, taps_off + (size_t) (b0 + g0) * row_bytes, m, d.ctxpos, (size_t) g0 * 4, d.rtctx, (size_t) g0 * 128 * 4);
         }
+        const double tg0 = now_ms();
         cx_->run_graph(ds);
+        static const bool st2 = std::getenv("STRATA_DF2_STATS") != nullptr;
+        if (st2 && nb > 16) std::fprintf(stderr, "strata metal: DFlash2 context graph of %d rows: %zu dispatches, built in %.1f ms, run %.1f ms\n", nb, ds.size(), tg0 - tc0, now_ms() - tg0);
     }
     if (!d.dump_path.empty()) df2_dump_rows(taps, taps_off, n, pos0);
     return true;
@@ -826,6 +830,7 @@ void Window::df2_set_cap(int n) {
     for (int i = 0; i <= DF2_ROWS; ++i) { df2_->built[i] = false; df2_->list[i].clear(); }
 }
 void Window::df2_set_floor(int64_t pos) { if (df2_) df2_->floor = pos; }
+int64_t Window::df2_floor() const { return df2_ ? df2_->floor : 0; }
 
 uint64_t Window::df2_bytes() const { return df2_ ? df2_->bytes : 0; }
 double Window::df2_gpu_ms() const { return df2_ ? df2_->gpu_ms : 0.0; }
@@ -962,8 +967,11 @@ bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume
     if (stale) {
         ++epoch_;
         ring_hi_ = 0;
-        if (strata::metal_engine::Window* w = strata::metal_engine::g_window) w->df2_set_floor(resume);   // rows [0, resume) are another lineage's
     }
+    if (strata::metal_engine::Window* w = strata::metal_engine::g_window)
+        // The ring's valid rows are [floor, ring_hi): a restarted lineage (stale) has no rows below `resume`; a request that goes on from the
+        // same history keeps the floor of its conversation (it is lowered when the request restarts earlier, never left high for a shorter prompt)
+        w->df2_set_floor(stale ? resume : std::min<int64_t>(w->df2_floor(), resume));
     if (cold) *cold = stale;
     hist_.assign(ids, ids + resume);
     return true;

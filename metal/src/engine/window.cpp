@@ -239,6 +239,7 @@ public:
     bool df2_prepare(std::string& err);
     void df2_set_cap(int n);
     void df2_set_floor(int64_t pos);
+    int64_t df2_floor() const;
     bool df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
     uint64_t df2_bytes() const;
     double df2_gpu_ms() const;
