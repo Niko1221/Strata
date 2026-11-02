@@ -554,6 +554,10 @@ merge 零阶层（`b7085d3c`，239 项全绿），support 是两者合并的结�
 - 两条分支的迁移提交是同一批 rename（`d54d8a32` / `0c676f32`），路径逐一对齐，所以合并
   不会出现两份文件；实测只有 `sft.py`、`test_train.py` 各一次 add/add 冲突 —— 反传侧是
   超集，取它即可（`git checkout --ours`），已合入 `b7085d3c`。
+- **文档版本**：完整说明是 support 上的这一份（789 行）。`feat/train-mezo` 与
+  `feat/train-backforward` 各自也带一份 `REVIEW-REQUEST.zh.md`，是迁移时的 **594 行早期版**
+  （没有 §5.2 资源三档、§7 分支审计、附录 C）。要评完整 PR 以 support 为准；只收零阶时，
+  那份早期版覆盖的能力面与零阶层一致，不矛盾。
 
 **基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main c62d5e3a`（= `Niko1221/Strata`
 的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 83**。
