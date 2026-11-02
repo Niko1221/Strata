@@ -119,4 +119,31 @@ inline bool prefill_layer_major_resolve(const char* env, bool hip, int stages, b
     return prefill_layer_major_default(hip, stages, v026);
 }
 
+
+/// The small-card prompt path (owner's yes 2026-11-02; DF2-MEM, phaseA-tests/blackwell/RESULTS-DF2MEM.md sections 5-10).  On one CUDA card whose expert
+/// cache is small, the default prompt path has to read prompts in chunks below 8,192 tokens and streams every expert again for every chunk; reading them
+/// with the unfused experts (STRATA_PF_FUSED=0) and, from two chunks on, the layer-major walk (each layer's experts once per super-chunk) is faster:
+/// IQ3_S on an RTX PRO 5000 with the cache held to ~1.3K / ~1.6K / ~1.9K engine slots (default chunks 2048 / 3840 / 5888): time to first token of a 20K / 32K
+/// prompt -44% / -50%, -41% / -42%, -14% / -12% (and -26% on a real 12 GB RTX 5070 at 20K); from a default chunk of 8,192 on (2.3K slots and up) the default
+/// path wins and the same change costs +1..+25%.  Not bitwise (first-token KL against the FP16 prompt path 0.012-0.018 for every path including the default;
+/// top-1 47 of 48), hence the owner's yes.  `default_chunk` is the chunk the DEFAULT path got from the cache sizing (0: none, e.g. no borrowing or an explicit
+/// --prefill).  One GPU, CUDA, a native (IQ) pack only (what was measured), not under STRATA_DEFAULTS=026.  The user's own variables win both ways:
+/// `fused_env_set` (STRATA_PF_FUSED named, either value) leaves the expert path alone and with it the walk (a fused layout declines it anyway);
+/// `lm_env_set` (STRATA_PREFILL_LAYER_MAJOR named) leaves the walk alone.
+struct SmallCardPromptPath {
+    bool fused_off = false;     ///< read the prompt with the unfused experts (STRATA_PF_FUSED=0 as far as the engine is concerned)
+    bool layer_major = false;   ///< and take the layer-major walk for a prompt of two chunks or more (STRATA_PREFILL_LAYER_MAJOR=1)
+    bool any() const { return fused_off || layer_major; }
+};
+inline constexpr long long kSmallCardChunkBelow = 8192;
+inline SmallCardPromptPath small_card_prompt_path(long long default_chunk, bool hip, int stages, bool native_pack, bool v026, bool fused_env_set,
+                                                  bool lm_env_set) {
+    SmallCardPromptPath r;
+    if (hip || v026 || !native_pack || stages > 1 || default_chunk <= 0 || default_chunk >= kSmallCardChunkBelow) return r;
+    if (fused_env_set) return r;
+    r.fused_off = true;
+    r.layer_major = !lm_env_set;
+    return r;
+}
+
 }  // namespace strata

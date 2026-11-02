@@ -84,6 +84,8 @@
 #include "strata/prefill/kva.hpp"
 #include "strata/prefill/kva_floor.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/prefill/pf_fused_override.hpp"
+#include "strata/core/sm120_series.hpp"
 #if defined(STRATA_PREFILL_MMQ)
 #include "strata/prefill/moe_mmq.hpp"
 #endif
@@ -9904,6 +9906,52 @@ int main(int argc, char** argv) {
                 return std::max(c, small);   // never a smaller chunk than 0.1.39's
             };
             int64_t chunk = scan(nullptr);
+            // The small-card prompt path (strata::small_card_prompt_path; owner's yes 2026-11-02): this chunk is what the DEFAULT prompt path got from the cache.
+            // Below 8,192 tokens the default streams every expert again for every chunk, and the unfused experts plus (from two chunks) the layer-major walk
+            // read the same prompt 9-50% sooner (RESULTS-DF2MEM.md); the chunk is then sized again for that layout.  One CUDA card, a native pack, an auto
+            // chunk; STRATA_PF_FUSED / STRATA_PREFILL_LAYER_MAJOR set by the user win; STRATA_PF_SMALL=0 turns the rule off.
+            if (chunk > 0 && o.prefill_auto && !multi_gpu && stages.empty() && !(std::getenv("STRATA_PF_SMALL") != nullptr && std::getenv("STRATA_PF_SMALL")[0] == '0')) {
+#if defined(STRATA_USE_HIP)
+                constexpr bool pf_small_hip = true;
+#else
+                constexpr bool pf_small_hip = false;
+#endif
+                const char* fe = std::getenv("STRATA_PF_FUSED");
+                const char* le = std::getenv("STRATA_PREFILL_LAYER_MAJOR");
+                const strata::SmallCardPromptPath pp = strata::small_card_prompt_path(
+                    chunk, pf_small_hip, 1, strata::kernels::cpu::expert_layout().native, strata::qwen_defaults_026(),
+                    fe != nullptr && fe[0] != '\0', le != nullptr && le[0] != '\0');
+                if (pp.any()) {
+                    const int64_t chunk_default = chunk;
+                    if (pp.fused_off) strata::prefill::pf_fused_override().store(0);
+                    if (pp.layer_major) {
+#if defined(_WIN32)
+                        _putenv_s("STRATA_PREFILL_LAYER_MAJOR", "1");
+#else
+                        setenv("STRATA_PREFILL_LAYER_MAJOR", "1", 0);
+#endif
+                    }
+                    chunk = scan(nullptr);
+                    if (chunk <= 0) {   // the unfused layout's buffers do not fit anywhere: keep the default path as it was
+                        strata::prefill::pf_fused_override().store(-1);
+                        if (pp.layer_major) {
+#if defined(_WIN32)
+                            _putenv_s("STRATA_PREFILL_LAYER_MAJOR", "");
+#else
+                            unsetenv("STRATA_PREFILL_LAYER_MAJOR");
+#endif
+                        }
+                        chunk = scan(nullptr);
+                        std::fprintf(stderr, "strata serve: small expert cache: the unfused prompt path does not fit here; the default path stays (chunk %lld tokens)\n",
+                                     (long long) chunk);
+                    } else
+                    std::fprintf(stderr, "strata serve: small expert cache: the default prompt path would read in chunks of %lld tokens (under %lld), "
+                                         "so prompts read with the unfused experts%s (chunk %lld tokens); STRATA_PF_SMALL=0 keeps the default path, "
+                                         "STRATA_PF_FUSED / STRATA_PREFILL_LAYER_MAJOR set by hand win\n",
+                                 (long long) chunk_default, (long long) strata::kSmallCardChunkBelow,
+                                 pp.layer_major ? " and, from two chunks, the layer-major walk" : "", (long long) chunk);
+                }
+            }
             // #448: a small card in a layer split caps every stage's chunk (an RTX 3080's 512-slot cache held a
             // 32 GB card's split to 512 tokens: prompts 6.2x slower, decode the same).  Named when it bites, so the
             // regression is one log line: each stage that cannot fund the chunk CUDA0 alone would read in.
