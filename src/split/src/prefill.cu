@@ -343,7 +343,7 @@ struct Engine::Pf {
     int att_pend = -1, att_pend_rows = 0;   // the chunk whose merge waits (-1: none), its rows
     float* parecv[2][NCARD];
     unsigned* paflags[2][NCARD];
-    // FNX_PFX_ATTN_DMA=1: the other cards' partials are copied from the host receive buffer into device memory by the copy engine on st3, piece by
+    // FNX_PFX_ATTN_DMA (default on): the other cards' partials are copied from the host receive buffer into device memory by the copy engine on st3, piece by
     // piece as their flags arrive, so the merge reads device memory (reading the mapped host buffer from the merge kernel stalls its SMs at PCIe speed)
     bool attn_dma = false;
     float* arecv_dev[2] = {};
@@ -743,7 +743,7 @@ void Engine::prefill_alloc() {
             ckc(cudaEventCreateWithFlags(&e, cudaEventDisableTiming), "event");
             own_event(e);
         }
-        p->attn_dma = env_flag("FNX_PFX_ATTN_DMA");
+        p->attn_dma = env_int("FNX_PFX_ATTN_DMA", 1) != 0;   // on by default (3.3-5.6% on 32K and 62.9K IQ3_S prompts, bit-identical logits); FNX_PFX_ATTN_DMA=0 turns it off
         if (p->attn_dma) {
             for (int s2 = 0; s2 < 2; ++s2) {
                 p->arecv_dev[s2] = palloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
