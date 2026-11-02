@@ -151,6 +151,14 @@ static __global__ void k_pfr_cmp(const uint4* __restrict__ dev, const uint4* __r
 static __global__ void k_pfr_out(const __half2* __restrict__ ag, float2* __restrict__ x, int n2) {
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) x[e] = __half22float2(ag[e]);
 }
+// RCCL's fp16 sum back to x as f32, with the range check the host exchange's adds make (a sum past fp16's range, or NaN: error bit 2)
+static __global__ void k_pfr_out_chk(const __half2* __restrict__ ag, float2* __restrict__ x, int n2, unsigned* err) {
+    for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
+        const float2 v = __half22float2(ag[e]);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);
+        x[e] = v;
+    }
+}
 
 // one direction's sum of x (C rows of N) over the cards, on stream s; this card is at position g of the direction's
 // ring (its next card: g + 1 there), by the steps of r.plan (pf_ring_plan.hpp, which describes the algorithm). Each

@@ -22,6 +22,7 @@
 #include <thread>
 #if FNX_HIP
 #include "hip/peer.h"
+#include "hip/rccl.h"
 #endif
 
 namespace fnx {
@@ -91,6 +92,16 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         peer_on = pd.use;
         peer_parts = (int) env_int("FNX_PEER_PARTS", 3);
         if (peer_on) std::fprintf(stderr, "fnx: peer push: %s%s pushed into the peers' memory\n", peer_parts & 1 ? "the window sums " : "", peer_parts & 2 ? "and the attention merge" : "");
+        {   // RCCL for the prompt sums: constant RCCL_DEFAULT_ON (off until the screens say otherwise), FNX_PF_RCCL=0/1 overrides
+            const RcclDecision rd = rccl_decide(std::getenv("FNX_PF_RCCL"), peer_on, RCCL_DEFAULT_ON, [&](std::string& why) {
+                std::shared_ptr<RcclState> st;
+                if (!rccl_open(devs, st, why)) return false;
+                rccl_ = st;
+                return true;
+            });
+            if (!rd.line.empty()) std::fprintf(stderr, "fnx: %s\n", rd.line.c_str());
+            rccl_on_ = rd.use;
+        }
     }
     auto pxalloc = [&](size_t bytes) -> void* {
         void* p = nullptr;

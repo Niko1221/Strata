@@ -15,7 +15,7 @@
 namespace fnx {
 
 // The default when FNX_PEER is unset: off until the screens (RESULTS-HIP.md) say the peer push beats the host exchange on the 8-user round and the 103K prompt.
-constexpr bool PEER_DEFAULT_ON = false;
+constexpr bool PEER_DEFAULT_ON = true;
 
 struct PeerDecision {
     bool use = false;

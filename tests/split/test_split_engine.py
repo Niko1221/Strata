@@ -226,6 +226,18 @@ class NoPeerAccess(unittest.TestCase):
         policy = (ROOT / "src" / "split" / "src" / "hip" / "peer_policy.hpp").read_text(encoding="utf-8")
         self.assertRegex(policy, r"constexpr bool PEER_DEFAULT_ON = (false|true);")   # flipped to true only on screens that show it wins
 
+    def test_rccl_is_loaded_at_run_time_never_linked_and_its_default_is_pinned(self):
+        # the packaging rule (coordinator, 11-02): dlopen only, no link; the split must start without librccl, falling back with one line
+        rd = (ROOT / "src" / "split" / "src" / "hip" / "rccl_dl.hpp").read_text(encoding="utf-8")
+        self.assertIn("dlopen(", rd)
+        self.assertNotIn("hip_runtime", rd)   # CPU only: tools/rccl_policy_test.cpp forces a missing library without a card
+        self.assertRegex(rd, r"constexpr bool RCCL_DEFAULT_ON = (false|true);")
+        cmake = (ROOT / "src" / "split" / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertNotRegex(cmake.replace("rccl_policy_test", ""), r"(?i)rccl")   # no find_package(rccl), no -lrccl
+        for p in (ROOT / "src" / "split" / "src").rglob("*"):
+            if p.suffix in (".cu", ".cuh", ".cpp", ".hpp", ".h") and p.name not in ("rccl.h", "rccl_dl.hpp", "prefill.cu", "engine.cu", "engine.hpp"):
+                self.assertNotIn("rccl.h>", p.read_text(encoding="utf-8", errors="ignore"), p.name)
+
     def test_the_peer_probe_and_the_27b_files_are_gone(self):
         names = {p.name for p in (ROOT / "src" / "split" / "src").iterdir()}
         self.assertNotIn("peer_probe.cu", names)

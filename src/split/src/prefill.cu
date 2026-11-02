@@ -12,6 +12,9 @@
 #include "engine_impl.hpp"
 #include "env.hpp"
 #include "pf_ring_plan.hpp"
+#if FNX_HIP
+#include "hip/rccl.h"
+#endif
 
 #include <cublas_v2.h>
 #include <cuda.h>
@@ -333,6 +336,12 @@ struct Engine::Pf {
     // two sets by the sum's parity; flags [2 sets][PF_RING_STEPS], set by the previous card's stream (seq: the sum's number)
     bool ring_sm = false;
     PfRing ring_ce;                   // the chunk sums on the copy engines
+    // FNX_PF_RCCL=1 (AMD): the chunk sums through RCCL in place on ring_ce.dag[set] (rc_api: RcclApi*, rc_comm: this card's communicator). RCCL launches a group's collectives
+    // at ncclGroupEnd, so what must follow a sum on its stream (the f32 conversion, the `done` event) waits in post until the prompt loop's per-card pass is closed
+    bool rccl = false;
+    const void* rc_api = nullptr;
+    void* rc_comm = nullptr;
+    std::vector<std::function<void()>> post;
     int dev = 0;
     unsigned seq = 0;
     // attention partials (attn_prompt's blocks per owner card) and those received from the other cards; each card's
@@ -496,6 +505,19 @@ __global__ void k_pfr_addend(float* __restrict__ x, const float* __restrict__ pa
 void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* err, cudaStream_t s) {
     const unsigned seq = ++p.seq;
     if (m) k_pfr_addend<<<grid_for((size_t) C * N), 256, 0, s>>>(x, m->part, m->topw, m->logits, C);
+#if FNX_HIP
+    if (p.rccl) {
+        const RcclApi& api = *(const RcclApi*) p.rc_api;
+        const size_t n = (size_t) C * N;
+        __half* buf = p.ring_ce.dag[seq & 1u];
+        k_pfr_pack<<<grid_for(n / 2), 256, 0, s>>>((const float2*) x, (int) (n / 2), (__half2*) buf, err);
+        const int r = api.AllReduce(buf, buf, n, RCCL_FLOAT16, RCCL_SUM, p.rc_comm, (void*) s);
+        if (r != RCCL_SUCCESS) throw std::runtime_error(std::string("prefill: ncclAllReduce: ") + api.ErrorString(r));
+        p.post.push_back([&p, buf, x, n, err, s] { k_pfr_out_chk<<<grid_for(n / 2), 256, 0, s>>>((const __half2*) buf, (float2*) x, (int) (n / 2), err); });
+        ckc(cudaGetLastError(), "ring");
+        return;
+    }
+#endif
     pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s);
     ckc(cudaGetLastError(), "ring");
 }
@@ -702,6 +724,13 @@ void Engine::prefill_alloc() {
             r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
         }
         p->dev = b.dev;
+#if FNX_HIP
+        if (rccl_on_) {
+            p->rccl = true;
+            p->rc_api = &static_cast<RcclState*>(rccl_.get())->api;
+            p->rc_comm = static_cast<RcclState*>(rccl_.get())->comm[(size_t) c];
+        }
+#endif
         p->attn_dec = env_flag("FNX_PF_ATTN_DEC");
         p->apart[1] = palloc<float>(NCARD * attn_prompt_block_floats(pf_c_));   // set 0 is in the attention phase's region
         for (int s = 0; s < 2; ++s) {
@@ -973,10 +1002,25 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         }
     }
     auto each = [&](auto&& f) {
+#if FNX_HIP
+        const RcclApi* rc = rccl_on_ ? &static_cast<RcclState*>(rccl_.get())->api : nullptr;
+        if (rc) rc->GroupStart();
+#endif
         for (int c = 0; c < NCARD; ++c) {
             ckc(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c], *pf_[c]);
         }
+#if FNX_HIP
+        if (rc) {   // the group's collectives launch now; what follows each sum on its stream is enqueued after them
+            const int r = rc->GroupEnd();
+            if (r != RCCL_SUCCESS) throw std::runtime_error(std::string("prefill: ncclGroupEnd: ") + rc->ErrorString(r));
+            for (int c = 0; c < NCARD; ++c) {
+                ckc(cudaSetDevice(cb_[c]->dev), "set");
+                for (auto& fn : pf_[c]->post) fn();
+                pf_[c]->post.clear();
+            }
+        }
+#endif
     };
     // the chunk that runs: its rows, groups and buffers
     int C = 0, ng = 0, set = 0;
@@ -1057,7 +1101,8 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         ckc(cudaEventRecord(p.ev_go[j], b.st), "ring go");
         ckc(cudaStreamWaitEvent(p.ring_st, p.ev_go[j], 0), "ring go");
         pf_ring(p, c, x, rows, nullptr, b.ring.err, p.ring_st);
-        ckc(cudaEventRecord(done, p.ring_st), "ring done");
+        if (p.rccl) p.post.push_back([&p, done] { ckc(cudaEventRecord(done, p.ring_st), "ring done"); });   // after the sum's conversion, once the group is closed
+        else ckc(cudaEventRecord(done, p.ring_st), "ring done");
     };
     // with the overlap an attention chunk's merge (then wo and its sum) waits until the next chunk's hc read is issued,
     // its exchange crossing the links meanwhile; the layer's last chunk finishes after the layer's chunks
