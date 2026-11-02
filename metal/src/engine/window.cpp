@@ -19,6 +19,8 @@
 #include "stream.h"
 #include "../../tests/coop_probe.h"
 
+#include "strata/core/weights.hpp"
+#include "strata/core/dflash2.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/session.hpp"
@@ -233,6 +235,25 @@ public:
     bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs,
                    float min_p, int* n_drafts, std::string& err);
     bool mtp_loaded() const { return mtp_on_; }
+    // ---- DFlash2 (dflash2.inc): the taps of the tapped layers and the drafter
+    bool taps_enable(const std::vector<int>& layers, std::string& err);
+    void taps_set_cb(int64_t first_pos, const std::function<bool(const float*, int64_t, int64_t, std::string&)>& cb) { tap_first_ = first_pos; tap_cb_ = cb; }
+    const float* tap_dec_ptr() const { return tap_dec_.as<float>(); }
+    bool tap_deliver(const mtl::Buffer& buf, int rows, int64_t pos0, std::string& err);
+    bool tap_deliver_dec(int rows, int64_t pos0, std::string& err) { return tap_deliver(tap_dec_, rows, pos0, err); }
+    bool df2_ensure(const std::string& path, std::string& err);
+    bool df2_bind(const std::string& vocab_file, std::string& err);
+    bool df2_context_ptr(const float* taps, int64_t n, int64_t pos0, std::string& err);
+    bool df2_prepare(std::string& err);
+    void df2_set_cap(int n);
+    void df2_set_floor(int64_t pos);
+    int64_t df2_restore_lineage(const std::vector<int32_t>& cur_hist, int64_t cur_hi, const int32_t* ids, int64_t resume, std::string& err);
+    void df2_kv_list(std::vector<mtl::Dispatch>& ds, int n, const mtl::Buffer& pos, size_t pos_off, const mtl::Buffer& rt, size_t rt_off);
+    int64_t df2_floor() const;
+    bool df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
+    uint64_t df2_bytes() const;
+    double df2_gpu_ms() const;
+    double df2_last_build_ms() const;
     // the prompt through mac-kern's prompt kernels (prompt_chain.inc)
     bool prompt(const int64_t* tokens, int64_t n, int64_t pos0,
                 const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err);
@@ -324,6 +345,33 @@ private:
     uint64_t samp_windows_ = 0;
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
+    // ---- DFlash2 (dflash2.inc)
+    struct Df2;
+    Df2* df2_ = nullptr;
+    bool df2_open(const std::string& path, std::string& err);
+    bool df2_load_pack(std::string& err);
+    bool df2_context(const mtl::Buffer& taps, size_t taps_off, int64_t n, int64_t pos0, std::string& err);
+    void df2_ctx_list(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& taps, size_t taps_off, int n, const mtl::Buffer& pos, size_t pos_off, const mtl::Buffer& rt, size_t rt_off);
+    void df2_block_list(std::vector<mtl::Dispatch>& ds);
+    void df2_mm(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size_t qs_off, const mtl::Buffer& sc, size_t sc_off, uint32_t K, uint32_t rows, const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y, size_t y_off, uint32_t y_stride, int ncol);
+    void df2_mmn(std::vector<mtl::Dispatch>& ds, const std::string& name, const mtl::Buffer& x, size_t x_off, uint32_t x_stride, const mtl::Buffer& y, uint32_t y_stride, int ncol, bool reuse = false);
+    void df2_mm4(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size_t qs_off, const mtl::Buffer& sc, size_t sc_off, uint32_t K, uint32_t rows, const mtl::Buffer& x, size_t x_off, const mtl::Buffer& y, uint32_t y_stride, int ncol, bool reuse);
+    void df2_rms(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const mtl::Buffer& y, const char* wname, int rows);
+    void df2_free();
+    void df2_dump_rows(const mtl::Buffer& taps, size_t taps_off, int64_t n, int64_t pos0);
+    void df2_dump_write(int64_t s, int32_t anchor);
+    void df2_prof(const std::vector<mtl::Dispatch>& ds);
+    bool taps_on_ = false;
+    std::vector<int> tap_layers_;
+    int tap_slot_[64] = {};
+    int ldf2_ = -1;
+    mtl::Buffer tap_dec_, tap_pro_, df2_stage_;
+    int tap_pro_rows_ = 0;
+    int64_t df2_stage_rows_ = 0;
+    int64_t tap_first_ = 0;
+    std::function<bool(const float*, int64_t, int64_t, std::string&)> tap_cb_;
+    void tap_dispatch(std::vector<mtl::Dispatch>& ds, int l, const mtl::Buffer& R, const mtl::Buffer& bo, const mtl::Buffer& inj, const mtl::Buffer& out, int rows);
+    mtl::Buffer& tap_pro_buf(int rows);
     int max_t_ = 1;
     int nexp_ = NEXP;   // the trunk's routed experts per layer (512, or 256 for the Coder); the MTP layer is always NEXP
     int64_t max_cells_ = 0;
@@ -1230,6 +1278,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         d.tg[0] = 256;
         push(ds, d);
     }
+    if (taps_on_ && tap_slot_[l] >= 0) tap_dispatch(ds, l, R_, bo_, inj_[cur_inj_], tap_dec_, ntok);   // DFlash2: the layers completed output (dflash2.inc)
 }
 
 namespace {
@@ -1701,6 +1750,7 @@ void Window::kprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
 }
 
 Window::~Window() {
+    df2_free();
     if (logpos_) std::fclose(logpos_);
     print_prof();
 }
@@ -3020,6 +3070,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         const uint32_t oa[2] = {(uint32_t) T, N};
         D(PP(p.lib, "moe_out"), {mtl::Arg::B(p.yr), mtl::Arg::B(p.ys), mtl::Arg::B(p.sgv), mtl::Arg::B(p.bo), mtl::Arg::V(oa)},
           (T * N + 255) / 256, 1, 256);
+        if (taps_on_ && tap_slot_[l] >= 0) tap_dispatch(ds, l, p.R, p.bo, p.inj[ci], tap_pro_buf(std::max(p.MT, T) + MAXT), T);   // DFlash2
         if (l == 0 && ple_on_) {
             // layer 0's FFN write applied to R, then the PLE block (as the window, for T rows)
             const gguf::Tensor& tn = TN("blk.1.hc_attn_norm.weight");
@@ -3079,6 +3130,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     if (T >= 2) { ss.ple_prev[0] = tokens[T - 2]; ss.ple_prev[1] = tokens[T - 1]; }
     else { ss.ple_prev[0] = ss.ple_prev[1]; ss.ple_prev[1] = tokens[0]; }
     mtp_src_ = &p.R;   // the draft layer's prompt K/V read this chunk's final rows
+    if (taps_on_ && !tap_deliver(tap_pro_, T, pos0, err)) return false;   // DFlash2: the prompt rows the drafter looks at
     return true;
 }
 
@@ -3352,6 +3404,7 @@ bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
         const int k = (int) std::min<int64_t>(MAXT, n - c);
         for (int i = 0; i < k; ++i) tk[i] = (int32_t) tokens[c + i];
         if (!g_window->run(k, tk, pos0 + c, false, out, err) || !g_window->commit(k, err)) return false;
+        if (!g_window->tap_deliver_dec(k, pos0 + c, err)) return false;   // DFlash2
         if (on_chunk && !on_chunk(nullptr, k, pos0 + c, err)) return false;
     }
     return true;
@@ -3370,6 +3423,7 @@ bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, in
 }
 
 #include "prompt_chain.inc"
+#include "dflash2.inc"
 
 }  // namespace strata::metal_engine
 namespace strata::gpu { void* host_view(const void* device_pointer); }
