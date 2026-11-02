@@ -6825,7 +6825,7 @@ int main(int argc, char** argv) {
     const bool ram_fallback_resident_off = [] { const char* v = std::getenv("STRATA_ARENA_FALLBACK_RESIDENT"); return v != nullptr && v[0] == '0'; }();
     const uint64_t ram_fallback_headroom = [] {
         const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB");
-        return (v != nullptr && std::atof(v) >= 0.0) ? (uint64_t) (std::atof(v) * 1073741824.0) : (4ull << 30);
+        return (v != nullptr && std::atof(v) >= 0.0) ? (uint64_t) (std::atof(v) * 1073741824.0) : (8ull << 30);
     }();
     for (bool again = true; again;) {
     again = false;
@@ -6844,7 +6844,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: the experts cannot be read from the file either (%s): loading the expert arena "
                                      "as before, short of RAM\n", err.c_str());
                 o.mmap_experts = false;
-                if (ram_fallback_resident) o.resident_cpu_experts = o.resident_pin = o.resident_soft = ram_fallback_resident = false;
+                if (ram_fallback_resident) { o.resident_cpu_experts = o.resident_pin = o.resident_soft = ram_fallback_resident = false; o.resident_budget = 0; }
                 ram_fallback_taken = false;
                 ram_fallback_failed = true;
                 again = true;
@@ -7066,6 +7066,10 @@ int main(int argc, char** argv) {
             if (!o.expert_profile.empty() && !o.resident_cpu_experts && !ram_fallback_resident_off) {
                 o.resident_cpu_experts = o.resident_pin = o.resident_soft = true;
                 o.resident_headroom = ram_fallback_headroom;
+                // the budget form (as --resident-budget-gib): the hottest experts in what is available minus the headroom, and the rest
+                // read unbuffered, not through the mapped view (whose pages grow the working set until available RAM is near zero)
+                if (const auto hm = strata::core::sample_host_memory(); hm && hm->available > o.resident_headroom + (1ull << 30))
+                    o.resident_budget = hm->available - o.resident_headroom;
                 ram_fallback_resident = true;
             }
             again = true;
