@@ -578,43 +578,50 @@ REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 
 
 def tail_system_reminders(messages: list[dict]) -> list[dict]:
-    """Move every system-reminder block out of the conversation's earlier turns and onto its last user turn.
-    Clients inject such a block into a past turn (a mode change, an environment note) and drop it again on the
-    next turn: the tokens a slot holds for the conversation's next turn then stop matching at that point, the
-    restore fails and the whole conversation is read again (measured: 211990 tokens read from nothing, the cut
-    155306 tokens in, at the block).  opencode reports the same effect and has no fix: anomalyco/opencode#23595
+    """Strip past-turn copies of the system-reminder blocks that the conversation's last user turn already
+    carries.  Clients inject such a block into the last user turn (a mode change, an environment note) and
+    repeat it on every later request, so a copy ends up in past turns as well: the tokens a slot holds for the
+    conversation's next turn stop matching at the turn whose copy is dropped, the restore fails and the whole
+    conversation is read again (measured: 211990 tokens read from nothing, the cut 155306 tokens in, at the
+    block).  Stripping the copies keeps every past turn byte-stable from the turn after the injection, which is
+    what the shared prefix needs.  opencode reports the same effect and has no fix: anomalyco/opencode#23595
     ("system-reminder keeps moving, causing unnecessary prompt processing in llama.cpp"), #21518, and the
     proposed PRs #27845 and #24343, both closed unmerged; Claude Code has it too (anthropics/claude-code#48734,
     anthropics/claude-agent-sdk-typescript#269).  This is the same class of fix as pin_billing_stamp above, for
-    the same reason: what changes inside the history costs the whole conversation.  At the end of the prompt the
-    block is the newest thing the model sees, and every later turn keeps its shared prefix.  Opt-in: the config's
+    the same reason: what changes inside the history costs the whole conversation.  Opt-in: the config's
     "system_reminders": "tail" (default "keep" renders the history exactly as the client sent it).  Runs after
-    _env_to_user, the same class of fix at the prompt's start: the <env> block stays at the front of the first
-    user turn, the reminder blocks land at the end of the last, so both keep the shared prefix.  One exception: a
-    turn whose content is nothing but a reminder block is left exactly as the client sent it, because emptying it
-    puts an empty turn in the prompt (see the note in the loop)."""
+    _env_to_user, the same class of fix at the prompt's start.
+
+    Only copies of a block that is verbatim in the last user turn are stripped: a block that is not in the last
+    turn stays in its own turn, rendered exactly as "keep" renders it, and is never appended to the tail.
+    Reminder blocks carry state (a Plan-mode instruction, a mode switch), and a client keeps them in the
+    history it resends; appending a past block behind the client's current marker makes the model read the
+    stale block as its newest instruction.  Measured on the 2026-11-02 plan→build repro: with the blocks
+    appended, the model quotes the stale plan reminder and refuses to edit after the switch; with "keep" the
+    same switch works.  Dedupe-only keeps the byte-stable-prefix property without moving any state behind the
+    client's current one.  One exception: a turn whose content is nothing but a reminder block is left exactly
+    as the client sent it, because emptying it puts an empty turn in the prompt (see the note in the loop)."""
     last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
     if last_user < 0 or not isinstance(messages[last_user].get("content"), str):
         return messages
-    moved, tail = [], messages[last_user]["content"]
+    tail_blocks = REMINDER.findall(messages[last_user]["content"])
+    if not tail_blocks:
+        return messages
     for i, m in enumerate(messages):
         if i == last_user or not isinstance(m.get("content"), str):
             continue
-        found = [b for b in REMINDER.findall(m["content"]) if b not in tail]
-        if not found:
+        rest = m["content"]
+        for b in tail_blocks:
+            rest = rest.replace(b, "")
+        if rest == m["content"]:
             continue
-        rest = REMINDER.sub("", m["content"]).strip()
-        if not rest:      # a turn that is only a reminder block keeps it: emptying it puts an empty turn in the
-            continue      # prompt (<|im_start|>user\n<|im_end|>), which the template renders as it stands (render
-                          # drops empty assistant turns, #843, not a user one) and which the model has no reason
-                          # to answer.  A block that stays where it is can cost one re-read; an empty turn costs
-                          # the reply.  A client sends such a turn for a date or a mode change, so it is common.
-        moved.extend(found)
-        m["content"] = rest
-        tail = "\n".join([tail] + found)      # only this turn's blocks: tail already holds the earlier ones
-    if not moved:
-        return messages
-    messages[last_user]["content"] = tail
+        if not rest.strip():  # a turn that is only a reminder block keeps it: emptying it puts an empty turn in
+            continue          # the prompt (<|im_start|>user\n<|im_end|>), which the template renders as it
+                              # stands (render drops empty assistant turns, #843, not a user one) and which the
+                              # model has no reason to answer.  A block that stays where it is can cost one
+                              # re-read; an empty turn costs the reply.  A client sends such a turn for a date
+                              # or a mode change, so it is common.
+        m["content"] = rest.strip()
     return messages
 
 

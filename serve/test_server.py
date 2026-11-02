@@ -6175,44 +6175,44 @@ class ClaudeCodeBillingStamp(unittest.TestCase):
 
 
 class SystemRemindersTail(unittest.TestCase):
-    """"system_reminders": "tail" moves a client's system-reminder block out of a past turn onto the last user
-    turn, so the tokens a slot holds for the conversation's next turn keep matching and the conversation is not
-    read again (opencode#23595: the block is dropped from the past turn on the next request, cutting the shared
-    prefix there - measured here at 155306 tokens in, 211990 read)."""
+    """"system_reminders": "tail" strips past-turn copies of the system-reminder blocks the last user turn
+    already carries, so the tokens a slot holds for the conversation's next turn keep matching and the
+    conversation is not read again (opencode#23595: the block is dropped from the past turn on the next
+    request, cutting the shared prefix there - measured here at 155306 tokens in, 211990 read).  A block the
+    last turn does not carry stays in its own turn: blocks carry mode state, and appending a stale one behind
+    the client's current marker makes the model follow the stale state (the 2026-11-02 plan→build repro)."""
 
     def user_contents(self, msgs, tail):
         from serve.frontend import openai_to_messages
         return [m["content"] for m in openai_to_messages({"messages": msgs}, tail)[0] if m["role"] == "user"]
 
-    def test_a_block_in_a_past_turn_moves_to_the_last_turn(self):
+    def test_a_block_not_in_the_last_turn_stays_in_its_turn(self):
         rem = "<system-reminder>\nYour operational mode has changed from plan to act.\n</system-reminder>"
         msgs = [{"role": "user", "content": "door tiles " + rem},
                 {"role": "assistant", "content": "ok"},
                 {"role": "user", "content": "next step"}]
-        kept, last = self.user_contents(msgs, True)
-        self.assertEqual(kept, "door tiles")                      # the past turn is byte-stable again
-        self.assertTrue(last.endswith(rem))                       # the block is the newest thing in the prompt
-        self.assertEqual(self.user_contents(msgs, False)[0], "door tiles " + rem)   # off: as before
+        users = self.user_contents(msgs, True)
+        self.assertEqual(users, ["door tiles " + rem, "next step"])   # rendered as "keep" renders it
+        self.assertEqual(self.user_contents(msgs, False), users)      # off: identical, by design
 
-    def test_a_block_already_in_the_last_turn_is_not_moved_twice(self):
+    def test_a_block_in_the_last_turn_is_stripped_from_past_turns(self):
         rem = "<system-reminder>\nmode: act\n</system-reminder>"
         msgs = [{"role": "user", "content": "a " + rem}, {"role": "assistant", "content": "b"},
                 {"role": "user", "content": "c " + rem}]
         kept, last = self.user_contents(msgs, True)
-        self.assertEqual(kept, "a " + rem)                        # identical in a past turn: left where it is
+        self.assertEqual(kept, "a")                                   # the past copy is stripped: byte-stable
+        self.assertEqual(last, "c " + rem)
         self.assertEqual(last.count(rem), 1)
 
-    def test_two_blocks_in_two_past_turns_are_moved_once_each(self):
-        """The tail is built turn by turn, so only the blocks of the turn being cleared are appended: joining
-        everything moved so far copied an earlier block once per later turn (2 copies with 2 turns, the first of
-        k blocks k times) - a tail that grows with the conversation and is not byte-stable."""
+    def test_two_blocks_in_two_past_turns_stay_where_the_client_sent_them(self):
+        """Blocks the last turn does not carry are the client's own state in the client's own turns: moving
+        them to the tail reorders mode state behind a newer marker (the plan→build refusal of 2026-11-02)."""
         a, b = "<system-reminder>\nmode: plan\n</system-reminder>", "<system-reminder>\nAGENTS rules\n</system-reminder>"
         msgs = [{"role": "user", "content": "a " + a}, {"role": "assistant", "content": "b"},
                 {"role": "user", "content": "c " + b}, {"role": "assistant", "content": "d"},
                 {"role": "user", "content": "e"}]
         users = self.user_contents(msgs, True)
-        # both past turns byte-stable, and each block once on the last turn, in the order it was sent
-        self.assertEqual(users, ["a", "c", "e\n" + a + "\n" + b])
+        self.assertEqual(users, ["a " + a, "c " + b, "e"])
 
     def test_a_turn_that_is_only_a_block_keeps_it(self):
         """A client sends a turn that is nothing but a reminder block for a date or a mode change.  Clearing it
@@ -6228,17 +6228,33 @@ class SystemRemindersTail(unittest.TestCase):
         self.assertEqual(users, ["fix the styles", rem, "now the buttons"])   # no empty turn, no moved copy
         self.assertTrue(all(u.strip() for u in users))
 
-    def test_a_block_in_a_turn_with_text_still_moves_from_a_reminder_only_turn_behind_it(self):
+    def test_a_reminder_only_turn_is_left_alone_even_when_a_later_text_turn_is_touched(self):
         """The rule is per turn: a turn that is only a block keeps it, and a later turn that has text of its own
-        is still cleared and moved, so the fix does not stop the cache-stability work elsewhere."""
+        is stripped of its tail copies, so the fix does not stop the cache-stability work elsewhere."""
         only = "<system-reminder>\nmode: plan\n</system-reminder>"
-        moved = "<system-reminder>\nAGENTS rules\n</system-reminder>"
-        msgs = [{"role": "user", "content": "a " + moved}, {"role": "assistant", "content": "b"},
+        tail = "<system-reminder>\nAGENTS rules\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + tail}, {"role": "assistant", "content": "b"},
                 {"role": "user", "content": only}, {"role": "assistant", "content": "c"},
-                {"role": "user", "content": "d"}]
-        self.assertEqual(self.user_contents(msgs, True), ["a", only, "d\n" + moved])
+                {"role": "user", "content": "d " + tail}]
+        self.assertEqual(self.user_contents(msgs, True), ["a", only, "d " + tail])
 
-    def test_the_responses_route_moves_the_block_too(self):
+    def test_a_plan_switch_still_lets_the_switch_block_be_the_last_state_in_the_prompt(self):
+        """The 2026-11-02 repro: a fresh plan→build session.  The plan instruction rides in the plan-mode
+        turns; the switch block arrives on the last user turn.  The plan instruction must stay in its turns -
+        appending it behind the switch block made the model read plan mode as the newest instruction and
+        refuse to edit."""
+        plan = ("<system-reminder>\nYou are in Plan mode. Do not modify any files.\n"
+                "You remain in Plan mode until the user switches agents.\n</system-reminder>")
+        left = "<system-reminder>\nYou are NO LONGER in Plan mode. Plan restrictions no longer apply.\n</system-reminder>"
+        msgs = [{"role": "user", "content": "design the overlay " + plan},
+                {"role": "assistant", "content": "here is the plan " + plan},
+                {"role": "user", "content": "key t is fine. please implement " + left}]
+        users = self.user_contents(msgs, True)
+        self.assertEqual(users[0], "design the overlay " + plan)      # the plan instruction stays in its turn
+        self.assertEqual(users[1], "key t is fine. please implement " + left)
+        self.assertNotIn(plan, users[1])                              # the newest state is the switch block
+
+    def test_the_responses_route_applies_the_same_rule(self):
         """#451: /v1/responses builds its messages in serve/responses.py and never runs the chat route's
         converter, so the rule has to be passed there.  Codex CLI is the client that switches modes."""
         from serve.responses import input_messages
@@ -6246,10 +6262,10 @@ class SystemRemindersTail(unittest.TestCase):
         req = {"instructions": "sys", "input": [
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "door tiles " + rem}]},
             {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
-            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next step"}]}]}
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next step " + rem}]}]}
         users = lambda tail: [m["content"] for m in input_messages(req, tail) if m["role"] == "user"]   # noqa: E731
-        self.assertEqual(users(True), ["door tiles", "next step\n" + rem])
-        self.assertEqual(users(False), ["door tiles " + rem, "next step"])   # off: as Codex sent it
+        self.assertEqual(users(True), ["door tiles", "next step " + rem])      # past copy stripped
+        self.assertEqual(users(False), ["door tiles " + rem, "next step " + rem])   # off: as Codex sent it
 
 
 class DivergenceNote(unittest.TestCase):
