@@ -230,5 +230,57 @@ class OwnShards(unittest.TestCase):
         self.assertIn("the picture reader (1.0 GB)", out)           # (UD-Q8_K_XL has no other shared file; the Coder's drafter case is in test_the_plan_with_your_own_shards...)
 
 
+class CoderHuggingFaceLayout(unittest.TestCase):
+    """`--model-path` at the folder `hf download` makes for the official Coder repository: IQ2_XXS/ with the five model files, the Engram and the picture file at the
+    top.  The launch plan (runner.deepseek_set_in) and setup's step 5 (dsv41_folder / dsv41_parts) must agree on where the shards are: DF2-STRIX found the plan accepting the
+    folder and step 5 then saying shard 1 "is missing" (the Coder's setup.py entry had no "subdir")."""
+
+    def setUp(self):
+        self.home = Home().__enter__()
+        self.addCleanup(self.home.__exit__, None, None, None)
+        self.cat = catalog(HW_4X32)
+        self.mod = self.cat.strata.setup_module()
+        self.fam = self.mod.MULTI_FILE_FAMILIES["deepseek41"]
+        self.md = self.fam["models"]["ISTA-DAS-Coder"]
+        # tiny stand-ins of the pinned sizes, so the size-checked recognition and the shared-file search run without 180 GB
+        sizes = {n: (3 + i, "a" * 64) for i, n in enumerate(self.md["shards"])}
+        sizes[self.mod.DSV41_ISTA_ENGRAM] = (7, "b" * 64)
+        sizes[self.mod.DSV41_MMPROJ] = (5, "c" * 64)
+        p = mock.patch.dict(self.mod.DSV41_ALL_FILES, sizes)
+        p.start()
+        self.addCleanup(p.stop)
+        self.sizes = sizes
+        self.root = self.home.base / "repo"
+        (self.root / "IQ2_XXS").mkdir(parents=True)
+        for n in self.md["shards"]:
+            (self.root / "IQ2_XXS" / n).write_bytes(b"x" * sizes[n][0])
+        (self.root / self.mod.DSV41_ISTA_ENGRAM).write_bytes(b"x" * 7)
+        (self.root / self.mod.DSV41_MMPROJ).write_bytes(b"x" * 5)
+
+    def test_the_entry_names_the_folder_the_json_names(self):
+        self.assertEqual(self.md.get("subdir"), "IQ2_XXS")
+
+    def test_the_plan_finds_the_shards_in_the_repository_folder_and_in_the_folder_itself(self):
+        s = S.LaunchSettings(family="deepseek41", model="ISTA-DAS-Coder", context=8192, vision="off", model_path=str(self.root))
+        r = Runner(s, catalog=self.cat)
+        for given in (self.root, self.root / "IQ2_XXS"):
+            found = r.deepseek_set_in(self.mod, str(given), "ISTA-DAS-Coder")
+            self.assertEqual((found[0], found[2]), ("ISTA-DAS-Coder", self.root / "IQ2_XXS"), given)
+
+    def test_setups_step_5_looks_in_the_same_folder_and_misses_nothing(self):
+        from types import SimpleNamespace
+        for given in (self.root, self.root / "IQ2_XXS"):
+            a = SimpleNamespace(gguf_dir=str(given), models_dir=str(self.home.base / "models"))
+            folder = self.mod.dsv41_folder(a, self.fam, self.fam["tag"] + "ISTA-DAS-Coder", "ISTA-DAS-Coder")
+            self.assertEqual(folder, self.root / "IQ2_XXS", given)
+            _layout, names, missing = self.mod.dsv41_parts(self.md, lambda n: (folder / n).exists())
+            self.assertEqual((len(names), missing), (5, []), given)
+            self.assertTrue(all(self.mod.dsv41_pick(folder, n).exists() for n in self.md["shards"]))
+
+    def test_the_engram_and_the_picture_file_at_the_top_are_found_and_not_fetched(self):
+        for given in (self.root, self.root / "IQ2_XXS"):
+            missing = self.mod.dsv41_shared_missing("ISTA-DAS-Coder", self.home.base / "models", given, vision=True)
+            self.assertEqual([n for n, _ in missing], [self.mod.DSV41_DSPARK], given)       # only the drafter is still to fetch
+
 if __name__ == "__main__":
     unittest.main()

@@ -222,7 +222,8 @@ class Plan(unittest.TestCase):
         mac = {"index": 0, "name": "Apple M5 Max", "vendor": "apple", "unified_gb": 128.0, "vram_gb": 128.0}
         p = dsv41_fit.plan([mac], 128.0, None, 131072, model=NAME)
         self.assertTrue(p["mac"])
-        self.assertIn("Not run on a Mac yet", p["words"])
+        self.assertIn("M5 Max", p["words"])
+        self.assertNotIn("Not run on a Mac yet", p["words"])
         self.assertEqual(p["experts_total"], 7680)
 
     def test_the_menu_row_is_there(self):
