@@ -73,6 +73,15 @@ class KeptKeyTests(unittest.TestCase):
         with mock.patch("strata_control.profiles.load", side_effect=Exception("none")),              mock.patch("strata_cli.launch.store.load", return_value=None),              mock.patch("strata_control.profiles.list_profiles", return_value=rows):
             self.assertEqual(access.kept_key("gyro-s 64K"), "sk-strata-BBB")
 
+    def test_damaged_profile_does_not_hide_the_fallback_key(self):
+        from strata_cli.launch import access
+        self._write("sk-strata-BBB")
+        bad = {"id": "launch-bad", "error": "cannot read profile (PermissionError)"}
+        good = {"id": "launch-other", "source_config": self.cfg}
+        for rows in ([bad, good], [good, bad]):
+            with self.subTest(rows=rows), mock.patch("strata_control.profiles.list_profiles", return_value=rows):
+                self.assertEqual(access.kept_key(), "sk-strata-BBB")
+
     def test_apply_defaults_reuses_the_key_and_new_key_is_a_different_step(self):
         from strata_cli.launch import cmd, settings as S
         from tests.terminal.launch_support import HW_12, Home, catalog
