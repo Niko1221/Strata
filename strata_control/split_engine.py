@@ -52,8 +52,9 @@ AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
 #: AMD architectures on which mode "auto" starts the split engine (owner, 2026-11-02: default on for two or more cards, `--split-engine off` turns it off). The one flip: take an
 #: architecture out of this tuple and auto keeps the layer split there while `--split-engine on` still runs the split.
 AUTO_SPLIT_AMD_ARCHS: tuple = ("gfx1201",)
-#: card counts on which mode "auto" starts it on those architectures (owner: two or more). `--split-engine on` is not limited by this.
-AUTO_SPLIT_AMD_CARD_COUNTS: tuple = (2, 3, 4)
+#: card counts on which mode "auto" starts it on those architectures. Four: on 2 and 3 R9700 with the IQ3_S set the split is slower than the layer split today (RESULTS-HIP.md
+#: section 7), and Auto must not pick a slower path. `--split-engine on` is not limited by this.
+AUTO_SPLIT_AMD_CARD_COUNTS: tuple = (4,)
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
