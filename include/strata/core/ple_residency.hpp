@@ -34,4 +34,15 @@ inline bool ple_auto_ram_allowed(const char* env_value, bool v026) {
     return !v026;
 }
 
+/// #4518: the table was locked at start on the policy's word (table + arena + headroom fit), but what the rest of the engine takes after
+/// that (the KV pools, the pinned staging, the GPUs' host buffers) is not known then.  On a 128 GB two-GPU Windows PC it left less than the
+/// 5 GiB the automatic conversation cache needs, and the cache turned itself off.  The cache is worth more than the lock (parking a 100 K
+/// conversation is 1.1 s against 30 s to read it again, the lock was measured at 2-3% of prompt speed), so once the cache is to be sized:
+/// does giving the lock back make the automatic cache bigger?  `available` is the RAM the cache sees now (the table locked), the table's
+/// pages count as available again once unlocked (clean file pages).  Unknown telemetry: no.
+inline bool ple_lock_blocks_cache(std::optional<uint64_t> available, uint64_t table_bytes, int64_t min_free_mib) {
+    if (!available || table_bytes == 0 || *available > UINT64_MAX - table_bytes) return false;
+    return auto_conversation_cache_mib(*available + table_bytes, min_free_mib) > auto_conversation_cache_mib(available, min_free_mib);
+}
+
 } // namespace strata::core

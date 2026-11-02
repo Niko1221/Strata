@@ -87,13 +87,13 @@ With a layer split, the engine options go into the config's `args`:
 
 | Option | What it does |
 | --- | --- |
-| `"parallel": N` / `--batch N` / `--slots N` (2..8 normally; with a layer split up to 8 per group, see below) | up to N conversations have batch slots; more requests wait for a free slot. Each slot gets its own state (a session carved like the stage's own: GDN recurrence, QSA K/V and indexer, PLE history) on every GPU of the split. With grouped MTP, more than 8 slots can rotate through eight-row windows if memory permits. |
+| `"parallel": N` / `--batch N` / `--slots N` (2..8 normally; with a layer split up to 8 per group, 16 in a HIP build, see below) | up to N conversations have batch slots; more requests wait for a free slot. Each slot gets its own state (a session carved like the stage's own: GDN recurrence, QSA K/V and indexer, PLE history) on every GPU of the split. With grouped MTP, more than 8 slots can rotate through eight-row windows if memory permits. |
 | `--batch-groups G` | with a layer split (default: auto, below): the N slots in G groups that flow through the GPUs as a pipeline (GPU k runs one group while GPU k+1 runs another). G must divide N. 1 = all slots in one window, GPU after GPU. |
 | `--batch-groups auto` | the default on a layer split since 0.1.41 (give no `--batch-groups`): the engine pipelines one group per GPU stage (the most that divide the slots; 8 slots on 4 GPUs = 4 groups of 2) and says so (`INFO batch_groups=G`). `--batch-groups 1` turns it off (all slots in one window, GPU after GPU). Measured, 8 clients, total tok/s against one group: 4 x R9700 166 against 86, 2 GPUs 109 against 78, 3 GPUs 110 against 78. With `--adapt-async 1` and no `--batch-groups` the default is one group (the adaptive tier between batch windows does not run in pipelined groups) and the log says so; with `--batch-mtp` and no `--batch-groups` the pipeline wins and `--batch-mtp` is left off (`--batch-groups 1` or `STRATA_BATCH_MTP_SERIAL=1` keeps it); `--batch-groups G` or `--batch-groups auto` given with `--batch-mtp` pipelines the groups and turns `--batch-mtp` off, and given with `--adapt-async 1` pipelines the groups and turns `--adapt-async` off (the pipelined path does not adapt). | PROPOSED for 0.2.1 (owner decides; branch f-021-split): on NVIDIA builds with exactly two stages the default is one group instead (2x RTX A4000, IQ3_XXS, aggregate tok/s against the pipelined default: +16% at 2 slots, +12% at 4, +15% at 8, 5 of 5 pairs each; `--batch-groups auto` or a number asks for the pipeline, `STRATA_BATCH_GROUPS_NV_SERIAL=0` restores the old default).
 | `--trim-stage-weights` | with an **explicit** `--layer-split` (e.g. `12,24,36`, not `auto`): every GPU loads only the dense weights of its own layers instead of the whole model's (the same as `STRATA_STAGE_TRIM=1`, PR #639). The VRAM this frees goes to the expert cache. Useful without `--batch` too. |
 
 The engine never refuses a count it cannot run: it says so in its log and runs what it can - at most 8 slots without a
-layer split (a window holds 8 rows; with a layer split and pipelined groups, 8 per group), as many as fit in VRAM, or none (one request at a time) when not two fit. The server reads
+layer split (a window holds 8 rows; with a layer split and pipelined groups, 8 per group, 16 in a HIP build: see "Windows of 16 rows" below), as many as fit in VRAM, or none (one request at a time) when not two fit. The server reads
 the count the engine reports (`INFO batch_slots=N`), and `GET /v1/status` says it (`concurrency.serving`).
 
 ## More than 8 slots on a layer split, and the opt-in admission and decode switches
@@ -103,7 +103,7 @@ the count the engine reports (`INFO batch_slots=N`), and `GET /v1/status` says i
 **More than 8 slots.** With a layer split a pipelined window holds at most 8 rows, but each group of the pipeline is its
 own window, so `--batch 16` on 4 GPUs runs 4 groups of 4 slots (`--batch-groups auto`), `--batch 32` runs 4 groups of 8.
 Until 0.1.44.1 the engine cut such a request down to 8 slots and said so; it now runs what is asked for, as many slots
-as fit in VRAM and at most 8 per group (`INFO batch_slots=N`). `--batch-mtp` keeps its limit (rows per window are
+as fit in VRAM and at most 8 per group, 16 in a HIP build (`INFO batch_slots=N`; "Windows of 16 rows" below). `--batch-mtp` keeps its limit (rows per window are
 doubled by the proposals). Nothing changes for 8 slots or fewer. Every slot of a 16-slot pipelined batch decodes
 exactly the tokens it decodes alone (`tools/batch_test.py --n 16`, which now takes up to 32 prompts).
 
@@ -535,6 +535,65 @@ run without it; inside one run every slot still equals its own solo decode.
 
 Not run: AMD (HIP), the draft layer on the first stage, helper expert caches, more than two stages, SYCL (the SYCL
 tree has its own copy of the batch code and does not have this).
+
+## Windows of 16 rows, and the four-card AMD profile
+
+A verify or batch window held at most 8 rows. On a layer split every group of the pipeline is its own window, so 32 slots ran as
+4 groups of 8 and nothing larger could run. HIP builds now take windows of 16 rows: `--batch 64` on four cards is 4 groups of
+16, and `--batch 16 --batch-groups 1` is one 16-row window over all stages. The limit is a build option
+(`-DSTRATA_WINDOW_MAX_T=auto|8|16`, default `auto`):
+
+| build | window | why |
+|---|---|---|
+| HIP (AMD) | 16 | the code objects load when a kernel is first used: the bigger binary (44.9 to 53.7 MB) costs +7 MiB per card after the first request and about 30 to 45 ms once per server start |
+| CUDA | 8 | CUDA loads every kernel when the engine starts: 16 adds 14 MB of kernels and +16 MiB of VRAM (RTX PRO 5000) and nothing is gained below 9 rows. On a 16 GB card those MiB shrink the auto-sized expert cache (2 x A4000: 5292 slots instead of 5301), and a cached expert rounds differently from a CPU one, so the texts differ from the 8-row build by that alone (main run with a 17 MiB larger `--vram-reserve-mib` gives the 16-row build's texts, 10 of 10). `-DSTRATA_WINDOW_MAX_T=16` builds it |
+| SYCL, Metal | 8 | not touched (they build the shared sources with the limit left at 8) |
+
+A window of up to 8 rows runs exactly the kernels of 0.2.7; the code for 9 to 16 rows is only reached by a wider window. Checked
+instruction by instruction: HIP gfx1201, window 8 against the previous main, 3096 of 3097 kernels identical (the other is a
+`STRATA_DBG_GDN` debug variant) and 5 renamed; CUDA sm_86 SASS, 3393 of 3397 identical or renamed, the other four differ in the
+order of the same instructions. The CPU expert kernels keep 8 tokens per job (a group of 9 to 16 rows is two jobs over the same
+expert), and the hyper-connection read is made in slices of 8 rows.
+
+Exactness, `tools/batch_test.py` (greedy tokens of every slot against the same prompt alone): 4 x R9700, 64 slots in 4 groups of 16
+(average 13.7 rows a window), 64 of 64 identical, with and without the three switches below; one R9700, `--batch 16`, 16 of 16;
+4 x R9700, `--batch 16 --batch-groups 1` (one 16-row window), 16 of 16; 32 slots in 4 groups of 8 with the profile below, 32 of 32.
+(Note: `--batch 16` on four stages is 4 groups of 4 slots, windows of 4 rows; it does not test 16-row windows.) Identity
+(`rules-144` flags, 10 prompts and a 4K and a 20K prompt, residual dumps compared): p620 (IQ3_S and IQ3_XXS), r9700, l620 and boston (CUDA, window 8 and 16), z440 and p1004 (CUDA, window 8) identical to main
+(z440 with window 16: see the CUDA row above).
+
+### Four Radeon AI PRO R9700 cards: the serving profile
+
+The four cards hold the whole of Qwen3.8-Flash-Next IQ3_S, so what limits them is how many requests decode together and how the
+four stages are fed. Measured through `serve/server.py` with the launcher's own configuration (400-token answers, short
+prompts, total tokens per second of the second round; 7.9K-token prompts for the long row):
+
+| | 1 request | 8 at once | 32 at once | 4 long prompts, out / in tok/s | follow-up TTFT |
+|---|---:|---:|---:|---:|---:|
+| before: `parallel` 4, split auto | 66.6 | 156.6 | 155.4 | 24.3 / 1892 | 0.78 s |
+| profile (below) | 67.9 | 261.2 | 369.6 | 35.0 / 2706 | 0.77 s |
+
+The profile, filled in by `setup.py` and by the launcher only for four cards of that kind (R9700, at least 28 GB each, no
+`--peer-device`) running Qwen3.8 IQ3_S:
+
+- `parallel` 32 and `--batch-groups 4`: 32 slots, one group of 8 per card;
+- layer split `13,26,39`: the output head sits on the last card and costs about four layers, so it takes 9 and the others 13;
+- `--prefill 2048` instead of `auto`;
+- `STRATA_QSA_SLOTS=1`, `STRATA_BATCH_SELF_COMMIT=1`, `STRATA_SLOT_COPY_DIRECT=1` (switches from the table above).
+
+What each part gives at 32 at once (tok/s, against 398.7 for the profile with the prompt cache off, which is the owner's profile B): without the three switches 354.3,
+split `auto` 374.6, 8 slots instead of 32 277. `--prefill auto` gives the same throughput but a longer first token for a 4.7K prompt
+(2.06 against 1.52 s). 64 slots give 418.9 at 64 clients against 398.4 for 32 slots (+5%, measured at an 8K context only) and were left out; `GPU_MAX_HW_QUEUES=4` changes nothing. The prompt cache stays on: turning it off was +8% at 32 clients
+with new prompts, but a follow-up turn of a conversation then waits 1.5 s for its first token instead of 0.8 s, and agent loops
+are mostly follow-up turns.
+
+A setting of the person always wins: the profile fills only what is not set (the config, `--parallel`, `--layer-split`,
+`--batch`, `--prefill` other than `auto`, an environment variable). `STRATA_FOUR_CARD_PROFILE=0`, or `"four_card_profile": false`
+in the run config, turns it off. 25 minutes of 32 clients (1088 requests of 600 tokens) through the launcher's configuration ran
+without an error at a steady 435 tok/s and with no change in VRAM.
+
+Not done: the hand-off of a batch window between stages (`§7f` of the parallelization report, one flag a group) is not part of
+this; it can emit a wrong token from time to time and is listed for later.
 
 ## Exactness
 

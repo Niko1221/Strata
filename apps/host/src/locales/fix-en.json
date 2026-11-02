@@ -81,5 +81,5 @@
  "fx80": "Needs about {0} GB of free disk space. What does not fit in memory is read from your SSD.",
  "fx81": "{0} RAM + VRAM, plus about {1} GB of disk",
  "fx82": "Faster answers on 12 GB NVIDIA cards",
- "fx83": "Prefers the parts of the model already on the graphics card, which makes answers much faster on 12 GB cards. Turn off if answers look worse than before."
+ "fx83": "Prefers the parts of the model already on the graphics card, which makes answers faster on 12 GB cards. Off by default: in long agent sessions it can repeat itself and give weaker results. Turn on if you mostly chat and want the speed."
 }

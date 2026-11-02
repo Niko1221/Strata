@@ -33,7 +33,7 @@ import { useLiveStatus } from '../lib/live-status';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 /** Chat — talk to the one loaded model. */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
@@ -188,6 +188,16 @@ export function ChatScreen() {
         if (item)
             openPreview(item);
     }
+    /* The message list is memoised (#4640 family: Out of Memory in a long chat): a streamed token changes one message, so the others must not
+       re-render. These handlers keep one identity for the life of the screen and always call the newest functions above. */
+    const latestHandlers = useRef({ editPrompt, openPreview, openTimeSkip, openLink });
+    latestHandlers.current = { editPrompt, openPreview, openTimeSkip, openLink };
+    const messageHandlers = useMemo(() => ({
+        onEditPrompt: (text: string) => latestHandlers.current.editPrompt(text),
+        onPreview: (a: PreviewArtifact) => latestHandlers.current.openPreview(a),
+        onOpenTimeSkip: (id: string) => latestHandlers.current.openTimeSkip(id),
+        onOpenLink: (url: string) => latestHandlers.current.openLink(url),
+    }), []);
     const scroller = useRef<HTMLDivElement>(null);
     const focusMode = useStore((s) => s.focus);
     /** Per-conversation scroll offsets, so returning to one restores the view. */
@@ -445,7 +455,7 @@ export function ChatScreen() {
 
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={messageHandlers.onEditPrompt} onPreview={messageHandlers.onPreview} onOpenTimeSkip={messageHandlers.onOpenTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={messageHandlers.onOpenLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
           </div>
@@ -611,7 +621,8 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         </div>) : null)}
     </div>);
 }
-function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
+const Message = memo(MessageView);
+function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
     message: ChatMessage;
     isLast: boolean;
     onEditPrompt: (text: string) => void;

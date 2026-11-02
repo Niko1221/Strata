@@ -38,6 +38,11 @@ engine package. Otherwise [build the image yourself](DOCKER.md#build-it-yourself
 - **Linux**, for example Ubuntu 24.04, with Intel's GPU driver: the `xe` or `i915` kernel driver plus the compute runtime and
   Level Zero. On Ubuntu: `intel-opencl-icd libze1 libze-intel-gpu1`, or follow Intel's
   [client GPU guide](https://dgpu-docs.intel.com/driver/client/overview.html).
+- **The CPU and the model folder.** The CPU does not need AVX-512. A Ryzen 3000-5000 or an Intel Core 12th-14th generation runs the
+  experts that do not fit on the card with AVX2 (measured on an A750 with a Ryzen 5 5600X, [INTEL.md](INTEL.md)). This applies to
+  model folders that contain `native_experts.txt` (IQ3_XXS, IQ3_S, NVFP4, Unsloth). An older Q2_0 folder has no such file, and its
+  CPU kernel needs AVX-512. With that folder the engine stops with "this CPU cannot run the expert kernel", and `strata doctor`
+  warns about it before the start. Building the model folder again with `strata setup` (or `tools/iq_pack.py`) fixes it.
 - For a source build without Docker: **Intel oneAPI** with the DPC++ compiler (`icpx`, 2025.3 or newer) and **oneMKL**
   (about 5 GB), `cmake` 3.24+, `ninja`, `git`, Python 3. The build fetches ggml unless you point `STRATA_GGML_DIR` at a
   llama.cpp checkout.
@@ -121,6 +126,13 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 - `--layer-split auto` on two equal cards takes the split that leaves the fullest card the most VRAM to spare, within 0.2% of
   the best predicted time (`STRATA_SPLIT_HEADROOM_TOL`). `STRATA_SPLIT_HEADROOM=0` turns that off. A full card under `xe` moves
   buffers to system memory instead of failing. The startup line names both splits when the choice moves.
+- **Two Arc B-series cards decode faster by default.** With exactly two B-series cards (B50, B60, B65, B70, B570, B580) in a layer
+  split, the first card starts the next window while the second still checks this one (`--pipeline-windows 2`), and setup writes
+  `--spec 2` for the pair. On 2x Arc Pro B65 this decodes 17% to 23% faster than the old serial `--spec 4` setup, 5 pairs out of 5:
+  chat 71-74 tok/s against 60-63, JSON 80-83 against 67-68, code 72-78 against 59-65, plain text 67-68 against 56-57. The answers are
+  those of a serial `--spec 2` run (100 of 100 agent requests); a serial `--spec 4` run differs in a rare near-tie (3 of 100).
+  One card, an A-series card, a mixed pair and three or more cards run as before. `--pipeline-windows 0` turns it off, and a
+  `--spec` of your own, put in the config's `user_args`, is kept.
 - **Arc Pro B60:** PCI id `8086:e211` (`lspci -nn`), `sycl-ls` prints `Intel(R) Arc(TM) Pro B60 Graphics 20.1.0`, so
   `-DSTRATA_SYCL_AOT=bmg-g21` is the right target. `setup_intel.py` knows both B60 ids, `e211` and `e221`. On a `--layer-split`
   the startup line "N experts are neither in VRAM nor mirrored" counts the other card's layers; read the following
@@ -149,6 +161,7 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 | Community | One Arc Pro B60 24 GB | Coder IQ1_M with 4,042 of 12,288 experts mirrored in RAM: 11.9 tok/s decode | same |
 | Maintainers | Arc Pro B70 32 GB (xe), 0.1.40.2 and later | Flash-Next IQ3_S with 11.5k of 24.6k experts resident: 10-prompt gate passes, prompt 980-1,000 tok/s on 4K tokens, decode 30 (prose) to 41 (code) tok/s | [INTEL.md](INTEL.md#arc-pro-b70-with-a-model-that-does-not-fit-flash-next-iq3_s) |
 | Maintainers | Arc A750 8 GB (i915) | Flash-Next IQ3_XXS about 10-19 tok/s decode | [INTEL.md](INTEL.md#arc-a750-and-the-other-alchemist-cards) |
+| Maintainers | 2x Arc Pro B65 32 GB (xe), 0.2.8 | Flash-Next IQ3_S, every expert in VRAM, the JIT package build: decode 71-83 tok/s (chat, JSON, code), prompts 1,261 / 1,511 / 1,628 tok/s at 4K / 8K / 16K | the bullet above |
 
 Two cards on `xe` (2x Arc Pro B70, IQ3_S, 0.1.44): `--layer-split auto` picked a split at about 11 tok/s where
 `--layer-split 30` ran about 54. The auto choice now prefers the split with the most VRAM headroom (above).

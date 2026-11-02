@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.53 LANGUAGES CXX)
+project(strata VERSION 0.1.55 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
@@ -92,6 +92,31 @@ if(STRATA_HIP_GFX906)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
+# The rows one verify / batch window holds (include/strata/kernels/window_limits.hpp): 8, the 0.2.7 window, or 16 (four pipelined
+# groups of 16 slots = 64 slots on a four-card split, docs/BATCHING.md).  Only the CUDA and HIP engines are built from
+# these sources with a wide window; the SYCL and Metal builds never read this variable and keep 8.  A window of up to
+# 8 rows runs the kernels it always ran, whichever is chosen (the wide instantiations are extra code).  "auto" = 16 for
+# the HIP engines (a HIP code object loads on first use, so the extra kernels cost nothing until a wide window forms)
+# and 8 for CUDA, which loads every kernel at start (CUDA_MODULE_LOADING=EAGER: the wide kernels would take VRAM from
+# the expert cache of every card); -DSTRATA_WINDOW_MAX_T=16 builds the wide CUDA engine.
+set(STRATA_WINDOW_MAX_T "auto" CACHE STRING "rows of a verify / batch window: 8, 16 or auto (HIP 16, CUDA 8)")
+set_property(CACHE STRATA_WINDOW_MAX_T PROPERTY STRINGS auto 8 16)
+if(NOT STRATA_WINDOW_MAX_T STREQUAL "auto" AND NOT STRATA_WINDOW_MAX_T STREQUAL "8" AND NOT STRATA_WINDOW_MAX_T STREQUAL "16")
+  message(FATAL_ERROR "STRATA_WINDOW_MAX_T must be auto, 8 or 16 (got '${STRATA_WINDOW_MAX_T}')")
+endif()
+if(STRATA_ENABLE_HIP OR STRATA_ENABLE_CUDA)
+  if(STRATA_WINDOW_MAX_T STREQUAL "auto")
+    if(STRATA_ENABLE_HIP)
+      set(_strata_window_max_t 16)
+    else()
+      set(_strata_window_max_t 8)
+    endif()
+  else()
+    set(_strata_window_max_t ${STRATA_WINDOW_MAX_T})
+  endif()
+  add_compile_definitions(STRATA_VERIFY_MAX_T=${_strata_window_max_t})
+  message(STATUS "Strata: verify / batch windows hold up to ${_strata_window_max_t} rows")
+endif()
 # MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K (Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF
 # projections, STRATA_DENSE_MMQ).  On by default since MODEL-UPDATE Phase 1: on CUDA they are their own library
 # (strata_kq, loaded only for a model with these formats: the engine loads every kernel of its own binary at start,
@@ -1051,6 +1076,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME hip_gdn_chunked_off COMMAND hip_gdn_chunked --off)
     add_test(NAME hip_gdn_chunked_default COMMAND hip_gdn_chunked --default)
     list(APPEND _strata_hip_tests hip_gdn_chunked hip_gdn_chunked_off hip_gdn_chunked_default)
+    # GDN prompt stage bench (gates + conv + recurrence, per-piece times and output/state hashes at 4K/16K/32K); a measurement
+    # tool, run by hand with the STRATA_GDN_* knobs under test - no add_test
+    add_executable(hip_gdn_stage_bench tests/hip/gdn_stage_bench.cpp)
+    target_link_libraries(hip_gdn_stage_bench PRIVATE strata_prefill strata_hip_runtime)
     # #313: the RDNA3 / RDNA3.5 WMMA dense GEMMs (opt-in STRATA_WMMA_GEMM=1) against a reference
     add_executable(hip_prefill_wmma_gemm_parity tests/hip/prefill_wmma_gemm_parity.cpp)
     target_include_directories(hip_prefill_wmma_gemm_parity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
@@ -1073,6 +1102,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME hip_router_fast COMMAND hip_router_fast)
     list(APPEND _strata_hip_tests hip_router_fast)
     # S6: the RDNA4 matrix-core prompt attention (STRATA_HIP_WMMA) against the FP32 kernel and FP64; skips off gfx12
+    # the prompt attention on a recorded selection (STRATA_QSA_DUMP), for A/B of kernel variants (STRATA_QSA_UNION=1)
+    add_executable(hip_pa_bench tests/cuda/pa_bench.cpp)
+    target_link_libraries(hip_pa_bench PRIVATE strata_kernels strata_hip_runtime)
     add_executable(hip_prompt_attn_wmma src/kernels/qsa_prompt_attn_parity.cpp)
     target_link_libraries(hip_prompt_attn_wmma PRIVATE strata_kernels strata_hip_runtime)
     add_test(NAME hip_prompt_attn_wmma COMMAND hip_prompt_attn_wmma 32768 2048 3)
@@ -1253,6 +1285,20 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # "not on this card" for the tc variant
     add_test(NAME gdn_rec_parity_selftest_frag COMMAND gdn_rec_parity --selftest-frag)
     set_tests_properties(gdn_rec_parity_selftest_frag PROPERTIES SKIP_RETURN_CODE 77)
+    # the production-linked GDN parity / benchmark harness (no kernel copies: it calls gdn_gates, gdn_conv and
+    # gdn_recurrence of strata_prefill through the GdnProbe of include/strata/prefill/gdn_probe.hpp, against an FP64
+    # oracle from tests/gdn/gdn_fixture.hpp).  Usage: docs/GDN_CONTRACT.md.  The smoke test is small and CPU-cheap.
+    execute_process(COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} rev-parse --short=9 HEAD OUTPUT_VARIABLE _gdn_sha
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT _gdn_sha)
+      set(_gdn_sha unknown)
+    endif()
+    add_executable(gdn_harness src/prefill/gdn_harness.cu)
+    target_include_directories(gdn_harness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/gdn)
+    target_compile_definitions(gdn_harness PRIVATE GDN_HARNESS_SHA="${_gdn_sha}")
+    target_link_libraries(gdn_harness PRIVATE strata_prefill)
+    add_test(NAME gdn_harness_smoke COMMAND gdn_harness --T 400 --chunk 160 --cuts 37 --paths auto,keyhead,pipe --ref-heads 0,17)
+    set_tests_properties(gdn_harness_smoke PROPERTIES TIMEOUT 300)
     # the prompt path's BF16 products against cuBLAS's own BF16 GEMM, within fp32 rounding (sm_7x runs them on the
     # FP16 tensor cores; GPU, synthetic, no model; --bench adds timings)
     add_executable(gemm_bf16_parity src/prefill/gemm_bf16_parity.cu)
@@ -1613,6 +1659,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(pinned_shared_test PRIVATE strata_core ${_strata_gpu_runtime_target})
     add_test(NAME pinned_shared_test COMMAND pinned_shared_test)
   endif()
+  if(WIN32)   # the replicas' shared expert arena as a named section (src/core/pinned.cu): two arenas, a child process, the last handle
+    add_executable(pinned_shared_win_test src/core/pinned_shared_win_test.cpp)
+    target_include_directories(pinned_shared_win_test PRIVATE include)
+    target_link_libraries(pinned_shared_win_test PRIVATE strata_core ${_strata_gpu_runtime_target})
+    add_test(NAME pinned_shared_win_test COMMAND pinned_shared_win_test)
+    set_tests_properties(pinned_shared_win_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+  endif()
 
   # Plan v0.3 P2: the n-gram table read straight from the SSD. The selftest needs only the CPU and a temp file.
   add_executable(ple_reader_test src/ngram/ple_reader_test.cpp)
@@ -1632,6 +1685,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(ple_residency_test src/core/ple_residency_test.cpp)
   target_include_directories(ple_residency_test PRIVATE include)
   add_test(NAME ple_residency_test COMMAND ple_residency_test)
+
+  # #4474: the automatic expert cache's slot rule (the late allocation priced); header-only, needs nothing
+  add_executable(auto_cache_test src/core/auto_cache_test.cpp)
+  target_include_directories(auto_cache_test PRIVATE include)
+  add_test(NAME auto_cache_test COMMAND auto_cache_test)
 
   # 0.2.7 (#3911): the qwen35 host sampler's penalties on a short (draft-vocab) logit row; header-only, CPU
   add_executable(qwen35_sampling_test src/qwen35/sampling_test.cpp)
@@ -1736,6 +1794,10 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(adapt_decay_test src/program/adapt_decay_test.cpp)
   target_include_directories(adapt_decay_test PRIVATE include)
   add_test(NAME adapt_decay_test COMMAND adapt_decay_test)
+  # the window limits (8 rows, or 16 in a wide CUDA / HIP build) and the pipelined-window probe (header-only, CPU)
+  add_executable(window_limits_test src/core/window_limits_test.cpp)
+  target_include_directories(window_limits_test PRIVATE include)
+  add_test(NAME window_limits_test COMMAND window_limits_test)
   # which window-size graph is freed when the next one does not fit (#3702; header-only, CPU)
   add_executable(window_evict_test src/core/window_evict_test.cpp)
   target_include_directories(window_evict_test PRIVATE include)

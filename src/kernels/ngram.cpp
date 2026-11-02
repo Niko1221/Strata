@@ -519,6 +519,13 @@ void PleTable::close() {
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
 bool PleTable::locked() const { return impl_->locked; }
+bool PleTable::unlock() {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
+    if (!impl_->locked || impl_->data == nullptr) return false;
+    strata::platform::unlock_resident((void*) impl_->data, impl_->n_rows * (uint64_t) impl_->rb);
+    impl_->locked = false;
+    return true;
+}
 const char* PleTable::format() const { return impl_->fmt->name; }
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }

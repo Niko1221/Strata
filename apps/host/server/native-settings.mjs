@@ -32,7 +32,8 @@ export const ENV_FLAG=/^(?:STRATA|DS4)_[A-Z0-9_]+$/;
  * The speed features of 0.2.7 that have a switch in Expert settings. A switch has a default ('on' or 'off'); outside it, it writes exactly the
  * environment entries `env` into the model's settings file ("env"); back in its default it removes them, so a default launch carries none of them.
  * "Faster long prompts" (Qwen KVA) is OFF by default (owner decision, 26 October): STRATA_KVA=1 turns it on, and an earlier test build's STRATA_KVA=0 reads as off.
- * The other two are on by default. The names are the engine switch contract (phaseA-tests/notes-027-plan.md); strata_control/speed_switches.py says the
+ * "Faster answers on 12 GB NVIDIA cards" (residency-biased routing) is OFF by default since 0.2.8 (owner decision, 29 October; #4402): STRATA_ROUTE_PRIOR=1.5
+ * turns it on, and the STRATA_ROUTE_PRIOR=0 that 0.2.7's Off wrote is the default state now. The other two are on by default. The names are the engine switch contract (phaseA-tests/notes-027-plan.md); strata_control/speed_switches.py says the
  * same for the Terminal (tests/terminal/test_speed_switches.py compares the two).
  */
 export const SPEED_SWITCHES=[
@@ -40,8 +41,8 @@ export const SPEED_SWITCHES=[
   hint:'Reads very long prompts faster by approximating part of the work. Off by default: answers about long documents can miss or mix up details.',
   default:'off',env:{STRATA_KVA:'1'}},
  {id:'faster_12gb_nvidia',label:'Faster answers on 12 GB NVIDIA cards',group:'Speed',
-  hint:'Prefers the parts of the model already on the graphics card, which makes answers much faster on 12 GB cards. Turn off if answers look worse than before.',
-  default:'on',env:{STRATA_ROUTE_PRIOR:'0'}},
+  hint:'Prefers the parts of the model already on the graphics card, which makes answers faster on 12 GB cards. Off by default: in long agent sessions it can repeat itself and give weaker results. Turn on if you mostly chat and want the speed.',
+  default:'off',env:{STRATA_ROUTE_PRIOR:'1.5'}},
  {id:'faster_radeon_9000',label:'Faster answers on Radeon RX 9000 / AI PRO R9700',group:'Speed',
   hint:'Shares the work between the graphics card and the processor in a way that makes answers faster on these cards. Turn off to go back to the previous setting, which is slower.',
   default:'on',env:{STRATA_PCIE_FRAC_DEFAULT:'old'}},

@@ -2038,7 +2038,9 @@ bool split_enabled() {
 // 0.006 gate, ids identical); gfx11 and gfx1151 (Strix Halo) are untested and keep the scalar kernels.  DS4_FAST_ATTN=0 is the
 // off switch (exactly the 0.2.6 arithmetic), DS4_FAST_ATTN=1 turns it on elsewhere.  Decided per device (the first call there).
 // The Marlin stream measured it ON on 4x R9700 (gfx1201), 2.25 bpw, 8K code prompts: 1180 -> 1354 ppts (+14.7%), the same ids,
-// KL 0.10833 against 0.10925 for the scalar path.  It stays gfx12-only until Strix Halo (gfx1151) is tested.
+// KL 0.10833 against 0.10925 for the scalar path.  gfx1151 on Windows was the untested part; measured on Strix Halo 2026-10-28
+// (32K prompt, 2.00 bpw): 101.6 -> 70.8 s (+43.6%), the sparse-attention stage 38.3 -> 7.0 s, the same greedy first token
+// (27408,), so it joins the default there and stays opt-in on every other gfx11 part.
 #if defined(STRATA_USE_HIP)
 bool device_is_gfx12() {
     static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
@@ -2055,6 +2057,22 @@ bool device_is_gfx12() {
     }
     return c == 2;
 }
+#if defined(_WIN32)
+bool device_is_gfx1151win() {
+    static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return false;
+    int c = cache[dev].load();
+    if (c == 0) {
+        cudaDeviceProp prop{};
+        const bool yes = cudaGetDeviceProperties(&prop, dev) == cudaSuccess && std::strncmp(prop.gcnArchName, "gfx1151", 7) == 0;
+        c = yes ? 2 : 1;
+        cache[dev].store(c);
+    }
+    return c == 2;
+}
+#endif
 #endif
 bool fast_attn_enabled() {
     static const int env = [] {
@@ -2062,9 +2080,13 @@ bool fast_attn_enabled() {
         return e == nullptr ? -1 : (std::atoi(e) != 0 ? 1 : 0);
     }();
 #if defined(STRATA_USE_HIP)
-    return strata::ds4::fast_attn_default(env, device_is_gfx12(), strata::ds4::defaults_026());
+#if defined(_WIN32)
+    return strata::ds4::fast_attn_default(env, device_is_gfx12(), device_is_gfx1151win(), strata::ds4::defaults_026());
 #else
-    return strata::ds4::fast_attn_default(env, false, strata::ds4::defaults_026());
+    return strata::ds4::fast_attn_default(env, device_is_gfx12(), false, strata::ds4::defaults_026());
+#endif
+#else
+    return strata::ds4::fast_attn_default(env, false, false, strata::ds4::defaults_026());
 #endif
 }
 attnsplit::AttnSplitScratch split_scratch(cudaStream_t s, int heads) {

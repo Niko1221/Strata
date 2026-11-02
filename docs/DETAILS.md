@@ -472,7 +472,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `repeat_stop_tokens` | `256` | A reply that repeats one token this many times in a row ends as `"length"`. `0` turns it off. |
 | `effort_position` | `"start"` | `"end"` puts a `low` or `medium` effort in a short system turn right before the answer, so a request that only changes the effort reuses the conversation cache. How well the model follows a level in that place is not measured. |
 | `anthropic_thinking` | as the template | `"on_request"` renders a `/v1/messages` request that asks for no thinking without thinking, as Anthropic does. Claude Code's short helper calls need it. |
-| `tool_call_recovery` | off | Also reads a declared tool's call written as `<parameter=NAME>`, as JSON inside `<tool_call>`, as a `<function=NAME>` block without `<tool_call>`, or as a second call inside one `<tool_call>`. On 1,462 agent turns 98.3% read as intended with it and 92.9% without. |
+| `tool_call_recovery` | on (since 0.2.8; off in 0.2.7 and before) | Also reads a declared tool's call written as `<parameter=NAME>`, as JSON inside `<tool_call>`, as a `<function=NAME>` block without `<tool_call>`, or as a second call inside one `<tool_call>`. On 1,462 agent turns 98.3% read as intended with it and 92.9% without; the 49 specimens of the test corpus read the same with it on or off. Only a declared tool's call is ever recovered; anything else stays text. `"tool_call_recovery": false` turns it off. |
 | `env_to_user` | off | Moves opencode's `<env>` block (working directory, date) to the first user message so the system turn is the same for every session and the disk prefix cache restores it. |
 | `return_progress` | off | Per request `"return_progress": true` adds llama.cpp's `prompt_progress` (`total`, `cache`, `processed`, `time_ms`) to the stream, one update per `--prefill` chunk. A prompt shorter than one chunk sends nothing. |
 | `prevent_sleep` | off | Windows only: keeps the PC awake while a request runs or waits (`SetThreadExecutionState`). On Linux and macOS one startup line says it does nothing. |
@@ -501,6 +501,16 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   guessed: `bash` is not `shell`, and a reordered name (`server1_label_values` for `label_values_mcp_server1`) is not the declared one.
   A call whose envelope drifted by a token (`<=NAME>`,
   `<function:NAME>` or `<NAME>` instead of `<function=NAME>`) is read as the call when NAME is a declared tool.
+- **What the parser repairs, and what it leaves.** A string argument that quotes a whole tool call, or repeats its own
+  `</parameter><parameter=NAME>`, stays exact (#4078). A call whose `</function>` was left out is read as the call (#4427), in the
+  answer and inside the thinking. An argument the tool declares as an array or an object, or declares nothing for, is read as
+  written when it has a slip in it: a trailing or doubled comma, single quotes or `True`/`False`/`None`, a bare string between two
+  members of an object (`"status": "pending", "in_progress", "pending": false`), brackets left open at the end. The server window
+  says `N tool call argument(s) repaired` and `/metrics/prometheus` counts them in `strata:tool_args_repaired_total`. Text that
+  is not an array or an object, a string cut short and a string-typed parameter are never touched. After the thinking has ended at
+  a closing think tag, a second one at the start of a line in the answer is dropped (the model quoted the tag while thinking, #4077):
+  the call that follows is kept. The reasoning between the two went out as the answer already, because a stream cannot take text
+  back.
 - **A call that came back as text because its name was not declared (#3796).** The text stays exactly as the model wrote it and
   `finish_reason` stays `stop` (or `end_turn` on `/v1/messages`). Next to it the reply carries a list, only when there is something in it:
   `"strata_rejected_tool_calls": [{"name": "bash", "reason": "undeclared"}]` (at the top level of a Chat Completions reply, in
@@ -697,6 +707,15 @@ The RAM figure the floor is checked against is the smallest of `MemAvailable`, t
 the engine (v2 `memory.max` and `memory.high`, v1 `memory.limit_in_bytes`, less clean inactive file cache) and the
 `--memory-limit-mib` cap. The startup line `strata generate: memory guard: limit X GiB (source: flag|cgroup|meminfo) ...` names
 the source. It covers parking and session files only, not the startup sizing of the arena, the resident budget or the Windows commit check.
+
+**When the arena does not fit in the RAM that is free (#4051).** The engine checks the RAM before it reads the experts into the
+arena. A memory limit below the arena (a container) stops the start with the numbers. Less free RAM than the arena (an engine
+that was still exiting, another program) is waited for up to 20 s, and the log says so (`STRATA_ARENA_RAM_WAIT_S` changes the
+seconds, `0` loads at once); if it is still short the load goes on with a warning that says how much, never a refusal. Below half
+of the arena the warning adds that the whole PC can stall in memory reclaim, and that a systemd `MemoryHigh=` below the RAM keeps
+one program from taking all of it. The server, before it starts an engine, ends one that an earlier run left behind and now waits up
+to 120 s for it to be gone (it used to wait 10 s): an engine with tens of GB of pinned memory needs longer to give it back, and the
+next one started beside it ran the PC out of RAM (#4051).
 
 Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. Oldest parked entries
 are evicted first. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
@@ -1019,7 +1038,7 @@ them on your own card.
 | `STRATA_PREFILL_EQUAL=1` | CUDA | A prompt segment is read in chunks of equal size, not full chunks and a short last one. Changes rounding. | |
 | `STRATA_OWNED_PRICE=exact` | CUDA | The cache sizing prices the prompt path's own buffers by their real allocation. | |
 | `STRATA_IQ_MT_MIN=1`, `STRATA_IQ3S_MT1=1` | CPU | See [Draft layer](#draft-layer) (reproducible output; the second gives IQ3_S the multi-token kernel for one token on Alder Lake and later without AVX-512). | |
-| `STRATA_ROUTE_PRIOR`, `STRATA_ROUTE_RESIDENT`, `STRATA_ROUTE_RESIDENT_MTP` | CUDA | Routing changes that add speed and also add KL. | Not recommended, except that 0.2.7 turns `STRATA_ROUTE_PRIOR=1.5` on by itself on a discrete NVIDIA card of 13 GiB or less (the owner approved the quality trade for 12 GB cards; the first 0.2.7 candidates used 2.0, see the 12 GB default in the release notes for why it is 1.5); `STRATA_ROUTE_PRIOR=0` turns it off and an explicit value wins. It is never a default on a Radeon, an integrated GPU or a bigger card. The 1.5 default was checked on an RTX 3060 12 GB (IQ3_XXS) with 80 tasks: no copy or code errors seen; agent loops may finish slightly less often, within the run-to-run spread (out of 10 agent tasks 4.5 passed on average over 4 runs at 1.5, against 5.6 over 7 runs with the prior off, where the off runs alone ranged from 4 to 6). Speed against off: story +15%, code +37%. Off: the Expert-settings row "Faster answers on 12 GB NVIDIA cards" or `STRATA_ROUTE_PRIOR=0`. |
+| `STRATA_ROUTE_PRIOR`, `STRATA_ROUTE_RESIDENT`, `STRATA_ROUTE_RESIDENT_MTP` | CUDA | Routing changes that add speed and also add KL. | Off by default. `STRATA_ROUTE_PRIOR=1.5` makes the router prefer experts that are already on the card; it is the one worth trying, on a discrete NVIDIA card of 13 GiB or less (an RTX 3060 12 GB, IQ3_XXS: story +15%, code +37% decode against off). It is an opt-in because it can repeat itself and give weaker results in long agent sessions (#4402; our own check on that card: out of 10 agent tasks 4.5 passed on average over 4 runs at 1.5, against 5.6 over 7 runs with the prior off, where the off runs alone ranged from 4 to 6; a stronger setting, 2.0, showed copy and code defects). Recommended for a 12 GB card used mostly for chat and short answers, not for long agent runs. 0.2.7 turned 1.5 on by itself on those cards and 0.2.8 took that back (owner decision of 2026-10-29): with nothing set, the engine routes exactly as 0.2.6 did (the same as `STRATA_ROUTE_PRIOR=0` and as `STRATA_DEFAULTS=026`). Turn it on: the Expert-settings row "Faster answers on 12 GB NVIDIA cards" (it writes `STRATA_ROUTE_PRIOR=1.5`; shown only for a discrete NVIDIA card of 13 GiB or less), `strata launch --set STRATA_ROUTE_PRIOR=1.5`, or the variable itself. Any value you set wins on every card; it is never on by itself. |
 | `STRATA_HOST_CORE=last\|sibling` (or `--host-core`) | Windows | `last` puts the host thread on the last physical core, away from the core that gets the GPU's interrupts. `sibling` keeps it on the first core's other hardware thread, so the workers keep every core. The default `first` leaves a hybrid CPU as it is. | One layer-split box went from a ±6% swing to steady and 8% faster. |
 | `--pool-affinity measure` | Hybrid CPUs, native packs | Times the `all` and `p-cores` layouts at start (about a second) and takes the faster. The measurement is taken once; where the E-cores' speed changes while the engine runs, `--pool-affinity p-cores` is the steady choice. | |
 | `STRATA_KEEP_EMPTY_TURNS=1`, `STRATA_TOPK_STREAM=0` | | See [TROUBLESHOOTING.md](TROUBLESHOOTING.md). | |
@@ -1222,7 +1241,7 @@ On 12.0 cards (sm_120) these also apply:
   prompt time and start-up time, which is why smaller PCs keep the SSD reads.
 
 A prompt chunk above 8192 (`--prefill auto:16384` or `auto:32768`) is not bit-exact on CUDA, so the default stays 8192 on
-NVIDIA. It is exact on gfx12, where 16384 is the default. `STRATA_ROUTE_PRIOR` raises KL, so below 0.2.7 it was opt-in; 0.2.7 sets 1.5 by itself only on a discrete NVIDIA card of 13 GiB or less. An 80-task check of 1.5 on an RTX 3060 saw no copy or code errors; agent loops may finish slightly less often, within the run-to-run spread; story +15%, code +37%.
+NVIDIA. It is exact on gfx12, where 16384 is the default. `STRATA_ROUTE_PRIOR` raises KL and is an opt-in again in 0.2.8 (0.2.7 set 1.5 by itself on a discrete NVIDIA card of 13 GiB or less, and the owner took that back on 2026-10-29 because of repetition loops and weaker results in long agent sessions, #4402). `STRATA_ROUTE_PRIOR=1.5` on an RTX 3060 12 GB: story +15%, code +37%, 80 tasks with no copy or code errors, but 4.5 of 10 agent tasks against 5.6 with it off.
 
 ---
 
@@ -1446,7 +1465,7 @@ with `--batch 2` at 262,144 context saw 538 MiB at the free line become 395 MiB 
 | not stated | RTX 5070 Ti Laptop, Swift 1.5 IQ3_XXS, a new opencode session in a second folder | `env_to_user`: first request 14,073 tokens with 13,693 from the cache, 1.1 s, against 14,753 read, 11.9 s |
 | 0.1.40.2 | Tesla P100 | A question after a long document re-reads up to 16K tokens (55 s at 262K) without `strata_prefix` |
 | not stated | Codex CLI 0.160.0, Q2_0, RTX 5070 | First prompt 9,443 tokens in 10 s; later tool-loop turns reused about 96% from the cache and read the new part in 1-2 s. Compaction after an 85,000-token conversation reused 84,895 of 84,997 tokens with `codex_compaction_cache` and 41 of 80,683 without |
-| not stated | Signalnine/q27's drift corpus, 1,462 agent turns (Qwen3.8 under Claude Code) | `tool_call_recovery`: 98.3% read as intended, 92.9% without |
+| not stated | Signalnine/q27's drift corpus, 1,462 agent turns (Qwen3.8 under Claude Code) | `tool_call_recovery`: 98.3% read as intended, 92.9% without (on by default from 0.2.8) |
 | not stated | RTX 3080, RVN IQ3_S config, 8-turn chat replay on a 16K-token system prompt | NaN guard on and off: byte-identical answers in 3 pairs; cost 4.8 us of GPU time a window (7.8 us at most), 0.009% of decode time |
 
 ### Context beyond 262K (contributors' runs, RTX 5080, IQ3_S, native path, PR #84)

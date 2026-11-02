@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::prefill {
 
@@ -92,6 +93,13 @@ private:
     void* side_ready_[2] = {};
     void* side_free_[2] = {};
     int side_cur_ = 0;
+    // STRATA_PF_W16_CACHE_MIB=N (CUDA, opt-in): native() keeps the FP16 dequantization of up to N MiB of weights, so a
+    // repeat product skips the dequant kernel; the FP16 values and the product are the uncached form's, bit for bit.
+    // A weight is keyed by its device pointer and shape (the engine's dense weights never move).
+    struct W16Entry { const void* p; int type; int64_t n, k; uint16_t* d; };
+    std::vector<W16Entry> w16_;
+    int64_t w16_budget_ = -1;   // bytes; -1: env not read yet, 0: off
+    int64_t w16_used_ = 0;
     void* hipblaslt_state_ = nullptr;
     void* rocblas_state_ = nullptr;   // HIP: the rocBLAS solution table of f16_inplace (STRATA_ROCBLAS_TUNING)
     bool f16_io_ = false;

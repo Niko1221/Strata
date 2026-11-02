@@ -10,6 +10,7 @@ using strata::ds4::experts_test_override;
 using strata::ds4::copy_all_fits;
 using strata::ds4::attn_slab_rows;
 using strata::ds4::staging_ring_mb;
+using strata::ds4::store_gpu_shares_ram;
 
 static int fails = 0;
 #define CHECK_EQ(a, b)                                                                              \
@@ -270,12 +271,14 @@ int main() {
         CHECK_EQ(copy_hugetlb_default(-1, 90 * GB, 100 * GB, false), 0);
         CHECK_EQ(copy_hugetlb_default(1, 0.0, 100 * GB, true), 1);
         CHECK_EQ(copy_hugetlb_default(0, 120 * GB, 100 * GB, false), 0);              // the old DS4_COPY_HUGETLB=0
-        // the matrix-core attention: opt-in again
-        CHECK_EQ(fast_attn_default(-1, true, true), 0);
-        CHECK_EQ(fast_attn_default(-1, true, false), 1);
-        CHECK_EQ(fast_attn_default(-1, false, false), 0);
-        CHECK_EQ(fast_attn_default(1, false, true), 1);
-        CHECK_EQ(fast_attn_default(0, true, false), 0);                               // the old DS4_FAST_ATTN=0
+        // the matrix-core attention: opt-in again, except on gfx12 and (since 2026-10-28) on gfx1151 on Windows
+        CHECK_EQ(fast_attn_default(-1, true, false, true), 0);
+        CHECK_EQ(fast_attn_default(-1, true, false, false), 1);
+        CHECK_EQ(fast_attn_default(-1, false, false, false), 0);
+        CHECK_EQ(fast_attn_default(-1, false, true, false), 1);                       // gfx1151 on Windows
+        CHECK_EQ(fast_attn_default(-1, false, true, true), 0);                        // ... but never for 0.2.6's arithmetic
+        CHECK_EQ(fast_attn_default(1, false, false, true), 1);
+        CHECK_EQ(fast_attn_default(0, true, true, false), 0);                         // the old DS4_FAST_ATTN=0
         // the drafter's cumulative cut: 0 again; STRATA_DS4_DSPARK_CUM wins
         CHECK_EQ((int) (dspark_cum_value(false, 0.0f, true, true) * 100), 0);
         CHECK_EQ((int) (dspark_cum_value(false, 0.0f, true, false) * 100), 50);
@@ -306,6 +309,19 @@ int main() {
         CHECK_EQ(dense_pfgemm_default(-1, false), 1);
         CHECK_EQ(dense_pfgemm_default(1, true), 1);
         CHECK_EQ(dense_pfgemm_default(0, false), 0);
+    }
+    // #4147: the auto store's "the GPU shares the RAM" decision.  A discrete 2 x RTX 3090 whose pinned buffers took 7.5 GB of the free RAM is NOT
+    // unified memory (the 256K store stayed 48 GB); a Strix Halo / GB10 (integrated) whose weights took RAM is, as before.
+    {
+        const uint64_t G = 1000000000ull;
+        CHECK_EQ(store_gpu_shares_ram(false, 62 * G, 54 * G), 0);          // discrete, free RAM fell 8 GB: no
+        CHECK_EQ(store_gpu_shares_ram(false, 62 * G, 20 * G), 0);          // discrete, even a 42 GB drop: no
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, 54 * G), 1);           // integrated, 8 GB drop: yes (unchanged)
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, 58 * G), 1);           // exactly the 4 GB threshold
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, 58 * G + 1), 0);       // just under it
+        CHECK_EQ(store_gpu_shares_ram(true, 54 * G, 62 * G), 0);           // RAM grew: no
+        CHECK_EQ(store_gpu_shares_ram(true, ~uint64_t{0}, 40 * G), 0);     // the first estimate unknown
+        CHECK_EQ(store_gpu_shares_ram(true, 62 * G, ~uint64_t{0}), 0);
     }
     if (fails == 0) std::printf("experts rule: all checks passed\n");
     return fails == 0 ? 0 : 1;

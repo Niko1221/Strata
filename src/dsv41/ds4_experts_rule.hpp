@@ -89,6 +89,16 @@ inline bool copy_all_fits(double lane_bytes, uint64_t ram_avail, double ram_marg
     return lane_bytes + ram_margin <= (double) ram_avail && lane_bytes <= commit_room;
 }
 
+// Whether the GPU's allocations come out of the same RAM the auto store would use (Strix Halo, DGX Spark's GB10): only a device the driver reports as
+// integrated, AND the free RAM fell by `uma_drop_gb` or more between the first store estimate (before the weights went to the GPU) and now.
+// A discrete card (2 x RTX 3090, 2 x A6000) never counts, however much RAM the pinned staging buffers, the page cache and the other programs took
+// meanwhile: v0.2.5..0.2.7 read every drop of 4 GB as unified memory and shrank a 256K context's store by 27 GB (issue #4147, 48 -> 17.8 GB).
+// avail_before / avail_now: free RAM in bytes (~0: unknown -> no).
+inline bool store_gpu_shares_ram(bool any_integrated_device, uint64_t avail_before, uint64_t avail_now, double uma_drop_gb = 4.0) {
+    if (!any_integrated_device || avail_before == ~uint64_t{0} || avail_now == ~uint64_t{0}) return false;
+    return avail_before > avail_now && (double) (avail_before - avail_now) / 1e9 >= uma_drop_gb;
+}
+
 // The chunked prompt's attention slab (rows a pass: the dense projections q_b / wo_a / wo_b are dequantized and multiplied once a slab, so
 // a 256-row slab dequantizes them 32 times for an 8K prompt).  `base`: the 0.2.6 rule (8 MB of rows / heads width, 256 on this model).
 // DS4_ATTN_SLAB=N (`env` >= 0): 0 gives the 0.2.6 rule back, N > 0 asks for that many rows (64..chunk, a multiple of 64).  Unset (`env` < 0):
@@ -176,10 +186,12 @@ inline bool copy_hugetlb_default(int env, double pool_free_bytes, double copy_by
     return pool_free_bytes > 0.0 && pool_free_bytes >= copy_bytes;
 }
 
-// DS4_FAST_ATTN (the chunked prompt's attention on the matrix cores): env -1 unset, else 0 / 1; 0.2.6: opt-in; 0.2.7: on for gfx1200 / gfx1201.
-inline bool fast_attn_default(int env, bool gfx12, bool v026 = false) {
+// DS4_FAST_ATTN (the chunked prompt's attention on the matrix cores): env -1 unset, else 0 / 1; 0.2.6: opt-in; 0.2.7: on for
+// gfx1200 / gfx1201, and (this change) on for gfx1151 on Windows, where it measured +43.6% on a 32K prompt (101.6 -> 70.8 s,
+// sparse attention 38.3 -> 7.0 s), the same greedy first token and a first-token KL far under the 0.0228 bar.
+inline bool fast_attn_default(int env, bool gfx12, bool gfx1151win = false, bool v026 = false) {
     if (env >= 0) return env != 0;
-    return !v026 && gfx12;
+    return !v026 && (gfx12 || gfx1151win);
 }
 
 // The drafter's cumulative confidence cut (STRATA_DS4_DSPARK_CUM, a request's dspark_cum): the variable when set; 0.2.6: 0; 0.2.7: 0.5 on gfx1200 / gfx1201.
