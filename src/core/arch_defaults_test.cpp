@@ -514,9 +514,10 @@ int main() {
     }
     {
         using namespace strata;
-        // the layer-major prompt walk (#3976): on by default for a CUDA layer split only
-        CHECK(prefill_layer_major_default(false, 2));                       // 2x RTX A4000 / A6000: measured 5x time to first token
-        CHECK(prefill_layer_major_default(false, 4));
+        // the layer-major prompt walk (#3976): off by default on every build (owner's yes 2026-11-02: a layer split reads 32K 37-55% sooner chunk-major on
+        // 2x A6000, 8K level); it was on for a CUDA layer split
+        CHECK(!prefill_layer_major_default(false, 2));                      // 2x RTX A4000 / A6000 (was on)
+        CHECK(!prefill_layer_major_default(false, 4));
         CHECK(!prefill_layer_major_default(false, 1));                      // one GPU: opt-in only
         CHECK(!prefill_layer_major_default(false, 0));
         CHECK(!prefill_layer_major_default(true, 2));                       // HIP builds
@@ -531,8 +532,11 @@ int main() {
         CHECK(prefill_layer_major_resolve("2", false, 1));                  // any non-zero number is on
         CHECK(!prefill_layer_major_resolve("off", false, 2));               // text that reads as 0 is off (atoi), as before this rule existed
         // unset or empty: the rule
-        CHECK(prefill_layer_major_resolve(nullptr, false, 2));
-        CHECK(prefill_layer_major_resolve("", false, 2));
+        CHECK(!prefill_layer_major_resolve(nullptr, false, 2));             // unset on a layer split: chunk-major
+        CHECK(!prefill_layer_major_resolve("", false, 2));                  // (empty text is unset)
+        CHECK(prefill_layer_major_resolve("1", false, 2));                  // by hand it still turns it on on a split
+        CHECK(prefill_layer_major_resolve("1", false, 4, true));            // and beats STRATA_DEFAULTS=026
+        CHECK(!prefill_layer_major_resolve("0", false, 3));
         CHECK(!prefill_layer_major_resolve(nullptr, false, 1));
         CHECK(!prefill_layer_major_resolve(nullptr, false, 2, true));
         CHECK(!prefill_layer_major_resolve(nullptr, true, 2));

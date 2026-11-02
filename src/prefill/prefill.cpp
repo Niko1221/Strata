@@ -7617,8 +7617,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 #else
     constexpr bool lm_hip = false;
 #endif
-    // layer-major prefill: STRATA_PREFILL_LAYER_MAJOR=1 / 0 win; unset, it is on for a CUDA layer split (sm120_series.hpp
-    // prefill_layer_major_default; STRATA_DEFAULTS=026 and a HIP build leave it off)
+    // layer-major prefill: STRATA_PREFILL_LAYER_MAJOR=1 / 0 win; unset, it is off everywhere (sm120_series.hpp prefill_layer_major_default: a layer split
+    // reads 32K prompts 37-55% sooner chunk-major, owner's yes 2026-11-02; the single-card small-cache rule sets the variable itself)
     if (hand_in_ == nullptr && impl_ &&
         strata::prefill_layer_major_resolve(lm_env_text(), lm_hip, stage_count(), strata::qwen_defaults_026())) {
         const bool by_default = !lm_env_explicit();

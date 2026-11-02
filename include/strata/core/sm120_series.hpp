@@ -105,11 +105,14 @@ inline bool mmvq_il_89_resolve(const char* env, bool hip, int cc, bool v026 = fa
 inline bool gr_up_wide_default(bool hip, int major, int minor, bool v026 = false) { return !v026 && !hip && sm120_default(major, minor); }
 
 /// STRATA_PREFILL_LAYER_MAJOR (#3976: the layer-major prompt walk, which reads each layer's streamed experts once per super-chunk instead of once
-/// per chunk; another summation order of the routed experts, so KL-checked, not bitwise) when the user set nothing: ON for a CUDA layer split
-/// (`stages` = the number of GPUs the prompt path runs on, 2 or more), OFF on one GPU, in a HIP build and under STRATA_DEFAULTS=026.  Measured on
-/// 2x RTX A4000 (sm_86) with Qwen3.8-Flash-Next IQ3_XXS and streamed experts only.  The engine adds its own per-prompt declines (image prompts,
-/// DFlash2 taps, KVA, a batch read that yields, a peer GPU, no VRAM for a super-chunk): those read the chunk-major path as before.
-inline bool prefill_layer_major_default(bool hip, int stages, bool v026 = false) { return !v026 && !hip && stages >= 2; }
+/// per chunk; another summation order of the routed experts, so KL-checked, not bitwise) when the user set nothing: OFF everywhere (owner's yes 2026-11-02).
+/// It was ON for a CUDA layer split (`stages` = the number of GPUs the prompt path runs on, 2 or more; measured 2026-10-24 on 2x RTX A4000 with IQ3_XXS and
+/// streamed experts only), but on 2x RTX A6000 (IQ3_S, MTP, three residency levels) the chunk-major path reads a 32K prompt 37-55% sooner and is level at 8K
+/// (DF2-MGPU, boston).  The one place the walk wins by default is the single-card small-cache rule (small_card_prompt_path below), which sets
+/// STRATA_PREFILL_LAYER_MAJOR=1 itself.  STRATA_PREFILL_LAYER_MAJOR=1 still turns it on, "0" off, by hand, on any build that has it.  The parameters stay so that
+/// the callers and the resolve rule below keep their shape.  The engine adds its own per-prompt declines (image prompts, KVA, a batch read that yields,
+/// a peer GPU, no VRAM for a super-chunk): those read the chunk-major path as before.
+inline bool prefill_layer_major_default(bool /*hip*/, int /*stages*/, bool /*v026*/ = false) { return false; }
 
 /// The answer for STRATA_PREFILL_LAYER_MAJOR given the variable's text (nullptr = unset): any text that starts a number other than 0 is on, "0" (or any
 /// text that reads as 0) is off, both win over everything; unset or empty is the rule above.  An explicit "1" is honoured on one GPU too (the
