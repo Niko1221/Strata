@@ -3562,6 +3562,12 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
     (--batch N); more wait their turn.  1 or absent: one request at a time, as before.  A value the engine cannot use
     is said and passed on: the engine warns and adjusts (recommend, never force)."""
     ds = (cfg.get("arch") or "") == "deepseek41"
+    if cfg.get("split_engine_note") and "--batch" in args:
+        # the all-cards split engine: its run config carries --batch N (its lanes); "parallel" (the Terminal's --parallel, the app's Concurrent requests) sets N
+        n = cfg.get("parallel")
+        if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
+            args[args.index("--batch") + 1] = str(n)
+        return []
     if "--batch" in args or "--slots" in args or (ds and "--parallel" in args):
         return []
     n = cfg.get("parallel")
