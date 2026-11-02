@@ -1,15 +1,10 @@
 # 训练分支验收说明（中文 v0.3）
 
-> **本树 = `feat/train-mezo`（零阶完整训练线，2026-11-03 定形）**：引擎 `LORA`/`SCORE`
-> 前向 + 数据/评测工具，**不 import torch**（无 torch 环境下 134 项全过）。这一版把 torch 层
-> 整段摘掉了：`backward/` 全部、`ce.py` / `lora.py` / `update_rules.py`、`mezo/sft_mezo.py`，
-> 以及依赖它们的 bench 与 7 个测试文件（213 → 134 项）。
-> 反传线 `feat/train-backforward` 从本线长出来（多带那 4 类文件，213 项里被摘掉的那些在那边跑），
-> `feat/train_support` 是两条线的并集 + 审核文档。**下面凡提到 `sft_mezo.py` / `backward/` 的实测，
-> 都是在反传线上跑的** —— 数字与结论不变，只是文件不在本树。
+> **树属于哪一层**（2026-11-03 定形）：`feat/train-mezo` = 零阶完整训练线（共用层 + `mezo/` +
+> 引擎侧改动，**不 import torch**，134 项）；`feat/train-backforward` = 它 + torch 层（比它多
+> 32 个 `.py`，258 项）；`feat/train_support` = 两者并集 + 审核文档。三条分支的 `.py` 只有
+> "文件在不在"的差别，`algos.available()` 按文件决定 `--method` 有哪几个（缺了就报缺哪个文件）。
 
-> 树：`Strata-prtrain`（feat/train-backforward）。`mezo.py` / `objectives.py` / `mem_guard.py`
-> 与 `Strata-mezo`（feat/train-mezo）逐字一致。
 > 环境：RTX 4090 48 GiB（47.99 可用）/ 125B IQ3_XXS pack / 单行样本 / loss = mean。
 > 数字后的 `logs/xxx.log` 是出处；没有实测的地方写「未测」，不填估算值。
 
