@@ -12,8 +12,10 @@ has actually been run:
   - Linux, NVIDIA cards, 2 to 4 of them, all the same model of card and memory size;
   - a card architecture and card count that have been run (TESTED): sm_86 on 2 cards today. Others build but stay off unless the
     caller says allow_untested (testers); the Decision says which part is untested in plain words;
-  - the GGUF is UD-Q4_K_XL type: routed experts Q4_K/Q5_K/Q5_1/Q8_0, token embeddings and the shared expert Q8_0 (checked from the
-    file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers, 512 experts);
+  - the GGUF is a set the engine reads (checked from the file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers,
+    512 experts): routed experts Q4_K/Q5_K/Q5_1/Q8_0/Q4_0 (UD-Q4_K_XL, Q8_0) or the i-quants IQ2_S/IQ3_XXS/IQ3_S/IQ4_XS/IQ4_NL and Strata's
+    Q2_0 (UD-IQ4_XS, the IQ3_S set); token embeddings, shared expert, output head Q8_0, or, in a set with i-quant or Q2_0 experts,
+    any type the loader converts to Q8_0/F32 when it reads the file (src/split/src/tensor_convert.hpp);
   - ALL routed experts fit in the cards' memory (the expert cache is off: with it the engine keeps a 74 GiB pinned copy of the
     experts in RAM) and the RAM that stays (the 27.5 GiB locked embedding table, a few GiB of buffers and the conversation cache)
     is available with room to spare;
@@ -34,8 +36,14 @@ TESTED_ARCHS = (86,)               # compute capability: sm_86 only
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
-EXPERT_TYPES = {"Q4_K", "Q5_K", "Q5_1", "Q8_0", "Q4_0"}   # the routed-expert kernels
-Q8_ROLES = ("token_embd.weight",)
+EXPERT_TYPES = {"Q4_K", "Q5_K", "Q5_1", "Q8_0", "Q4_0",           # the routed-expert kernels (decode and prompt)
+                "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL",  # ggml's i-quant vec_dots; prompt tiles in src/moe_mma_iq.cuh
+                "Q2_0"}                                           # Strata's 2-bit type: the loader repacks it to Q4_0 blocks (twice the bytes)
+# the loader (Gguf::convert_small_tensors) converts the dense tensors to Q8_0/F32 only when the file has one of these routed types
+CONVERT_TRIGGERS = {"IQ2_S", "IQ3_XXS", "IQ3_S", "Q2_0"}
+# and can read these types to do it
+CONVERTED_FROM = {"Q8_0", "Q4_K", "Q5_K", "Q6_K", "IQ4_XS", "IQ4_NL", "BF16", "F16", "F32"}
+PLE_TYPES = {"IQ4_NL", "Q8_0"}     # per_layer_token_embd.weight as the host's row reader takes it
 # measured on 2x RTX A6000 48 GB at 128K context, 6 lanes (phaseA-tests/sfnx/RESULTS.md section 8): a card held half the experts plus
 # 8.4 GiB of dense weights, buffers and the K/V pool, with 3.6 GiB left free. 9 GiB per card is that plus a little.
 CARD_OVERHEAD_GIB = 9.0
@@ -62,6 +70,8 @@ class ModelFacts:
     embd_ram_bytes: int             # token_embd + per_layer_token_embd: locked in RAM
     layers: int
     experts: int
+    ple_type: str | None = "IQ4_NL"     # per_layer_token_embd.weight
+    output_type: str | None = "Q8_0"    # output.weight
 
 
 @dataclasses.dataclass
@@ -98,6 +108,8 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
     routed_bytes = 0
     shexp: dict[str, int] = {}
     embd_type = None
+    ple_type = None
+    output_type = None
     embd_ram = 0
     layers = 0
     experts = 0
@@ -108,7 +120,7 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
             b = t.expected_bytes() or 0
             if "_exps" in n and n.endswith(".weight") and "shexp" not in n:
                 routed_types[t.type_name] = routed_types.get(t.type_name, 0) + 1
-                routed_bytes += b
+                routed_bytes += b * 2 if t.type_name == "Q2_0" else b     # the loader repacks Q2_0 to Q4_0: twice the bytes in the cards
                 if len(t.shape) >= 3:
                     experts = max(experts, t.shape[-1])
                 mm = re.search(r"blk\.(\d+)\.", n)
@@ -120,8 +132,11 @@ def scan_model(first_shard: str | pathlib.Path) -> ModelFacts:
                 embd_type = t.type_name
                 embd_ram += b
             elif n == "per_layer_token_embd.weight":
+                ple_type = t.type_name
                 embd_ram += b
-    return ModelFacts(routed_types, routed_bytes, embd_type, shexp, embd_ram, layers, experts)
+            elif n == "output.weight":
+                output_type = t.type_name
+    return ModelFacts(routed_types, routed_bytes, embd_type, shexp, embd_ram, layers, experts, ple_type, output_type)
 
 
 def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: float, ram_available_gib: float, model: ModelFacts,
@@ -163,10 +178,17 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("this is not a model it knows (no routed experts)")
     elif bad:
         why.append("the model's routed experts use " + "/".join(bad) + ", which it does not read")
-    if model.embd_type != "Q8_0":
-        why.append(f"the token embeddings are {model.embd_type}, it needs Q8_0")
-    if model.shexp_types and set(model.shexp_types) != {"Q8_0"}:
-        why.append("the shared expert is not Q8_0")
+    converts = bool(CONVERT_TRIGGERS & set(model.routed_types))       # the loader then converts the dense tensors it does not read
+    readable = CONVERTED_FROM if converts else {"Q8_0"}
+    if model.embd_type not in readable:
+        why.append(f"the token embeddings are {model.embd_type}, it needs Q8_0" if not converts else
+                   f"the token embeddings are {model.embd_type}, which it cannot convert to Q8_0")
+    if model.shexp_types and not set(model.shexp_types) <= readable:
+        why.append("the shared expert is " + "/".join(sorted(set(model.shexp_types) - readable)) + ", which it cannot read" + ("" if converts else " (it needs Q8_0)"))
+    if model.output_type is not None and model.output_type not in readable:
+        why.append(f"the output head is {model.output_type}, which it cannot read" + ("" if converts else " (it needs Q8_0)"))
+    if model.ple_type is not None and model.ple_type not in PLE_TYPES:
+        why.append(f"the per-layer embedding table is {model.ple_type}, it needs IQ4_NL or Q8_0")
     if (model.layers, model.experts) != (LAYERS, EXPERTS):
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
     need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB

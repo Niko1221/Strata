@@ -84,11 +84,58 @@ class Rule(unittest.TestCase):
         self.assertIn("RAM", d.line)
 
     def test_only_the_quant_types_it_reads(self):
-        for model in (udq4(routed_types={"IQ3_S": 10, "IQ2_S": 20, "IQ4_NL": 39}), udq4(embd_type="IQ4_XS"),
-                      udq4(shexp_types={"BF16": 48, "IQ4_NL": 47}), udq4(layers=64), udq4(routed_types={})):
+        for model in (udq4(layers=64), udq4(routed_types={}),
+                      udq4(routed_types={"Q6_K": 48}),                                  # UD-Q6_K_XL-like experts: no kernel
+                      udq4(embd_type="IQ4_XS"),                                         # a K-quant set is not converted at load
+                      udq4(shexp_types={"BF16": 48, "IQ4_NL": 47}),
+                      udq4(output_type="Q6_K"),
+                      udq4(ple_type="Q6_K")):
             d = decide(model=model)
             self.assertFalse(d.use_split, model)
             self.assertTrue(d.line.startswith("Using the normal layer split"))
+
+    def test_the_iq3_s_set_and_ud_iq4_xs_run(self):
+        iq3s = S.ModelFacts(routed_types={"IQ2_S": 40, "IQ3_XXS": 34, "IQ3_S": 20, "IQ4_XS": 2, "IQ4_NL": 39, "Q2_0": 9},
+                            routed_bytes=int(49 * GIB), embd_type="IQ4_XS", shexp_types={"IQ4_XS": 60, "Q4_K": 40, "Q5_K": 20, "IQ4_NL": 24},
+                            embd_ram_bytes=int(27.2 * GIB), layers=48, experts=512, ple_type="IQ4_NL", output_type="Q6_K")
+        d = decide(model=iq3s)
+        self.assertTrue(d.use_split, d.reasons)
+        ud_iq4_xs = S.ModelFacts(routed_types={"IQ3_S": 94, "IQ4_XS": 2, "IQ4_NL": 43, "Q8_0": 5}, routed_bytes=int(59.5e9),
+                                 embd_type="Q8_0", shexp_types={"Q8_0": 144}, embd_ram_bytes=int(27.5 * GIB), layers=48, experts=512,
+                                 ple_type="IQ4_NL", output_type="Q6_K")
+        d = decide(model=ud_iq4_xs)
+        self.assertTrue(d.use_split, d.reasons)
+        self.assertTrue(d.need_vram_gib < 48, d.need_vram_gib)
+
+    def test_a_type_the_loader_cannot_convert_is_a_plain_refusal(self):
+        for model, word in ((udq4(routed_types={"IQ3_S": 94}, embd_type="Q3_K"), "cannot convert"),
+                            (udq4(routed_types={"IQ3_S": 94}, shexp_types={"Q3_K": 5}), "cannot read"),
+                            (udq4(routed_types={"IQ3_S": 94}, ple_type="Q6_K"), "per-layer"),
+                            (udq4(routed_types={"IQ3_S": 94, "TQ2_0": 2}), "TQ2_0")):
+            d = decide(model=model)
+            self.assertFalse(d.use_split)
+            self.assertIn(word, d.line)
+            self.assertNotIn(chr(10), d.line)          # one plain line
+
+    def test_scan_counts_the_q2_0_repack_twice(self):
+        from unittest import mock
+
+        class T:
+            def __init__(self, name, type_name, shape, nbytes):
+                self.name, self.type_name, self.shape, self._n = name, type_name, shape, nbytes
+            def expected_bytes(self):
+                return self._n
+
+        class F:
+            def __init__(self, path):
+                self.tensors = [T("blk.0.ffn_down_exps.weight", "Q2_0", (640, 2560, 512), 1000), T("blk.1.ffn_gate_exps.weight", "IQ3_S", (2560, 640, 512), 5000),
+                                T("token_embd.weight", "IQ4_XS", (2560, 248320), 10), T("per_layer_token_embd.weight", "IQ4_NL", (1, 2), 20),
+                                T("output.weight", "Q6_K", (2560, 248320), 30)]
+        with mock.patch("tools.gguf_reader.GGUFFile", F):
+            m = S.scan_model("/x/model-00001-of-00001.gguf")
+        self.assertEqual(m.routed_bytes, 2 * 1000 + 5000)
+        self.assertEqual((m.embd_type, m.ple_type, m.output_type), ("IQ4_XS", "IQ4_NL", "Q6_K"))
+        self.assertEqual(m.embd_ram_bytes, 30)
 
     def test_the_reasons_are_all_reported(self):
         d = decide(system="windows", cards=cards(1), model=udq4(embd_type="Q6_K"))
