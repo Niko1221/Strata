@@ -13,5 +13,6 @@
  "df12": "Wenn Sie DFlash2 wählen, wird sein Entwurfsbaustein heruntergeladen: etwa {0} GB, einmalig.",
  "df13": "Wenn Sie MTP wählen, wird sein Entwurfsbaustein heruntergeladen: etwa {0} GB, einmalig.",
  "df14": "Der DFlash2-Entwurfsbaustein konnte nicht heruntergeladen werden, deshalb startet das Modell ohne Entwurfsbaustein. Das Modell wird geladen …",
- "df15": "MTP-Entwurfsbaustein wird heruntergeladen …"
+ "df15": "MTP-Entwurfsbaustein wird heruntergeladen …",
+ "df16": "Der MTP-Entwurfsbaustein konnte nicht heruntergeladen werden."
 }

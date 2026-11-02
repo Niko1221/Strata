@@ -323,7 +323,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(!fam||!size)return;
   job.summary='Downloading the MTP drafter…';emit();
   try{await install(job,{family:fam.family,model:size.model,drafter:'mtp',vision:args.vision??(config.vision?'yes':'no')});}
-  catch(error){if(job.state==='running'){job.drafterNote=error.message;emit();}}
+  catch{if(job.state==='running'){job.drafterNote='The MTP drafter could not be downloaded.';emit();}}/* one short line, not the installer's own text; Drafting below says what runs instead */
  }
  /* The DFlash2 drafter, before a load that uses it: Control says whether the choice needs it (and the file is not here), downloads it pinned and checked, and packs it, with plain progress in the job.
     Never stops the load: a drafter that cannot be had leaves the MTP running if its layer is here, else no drafter, and the job says so. The choice itself is remembered in the model's settings file. */

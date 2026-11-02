@@ -13,5 +13,6 @@
  "df12": "Choisir DFlash2 télécharge son module d’anticipation : environ {0} Go, une seule fois.",
  "df13": "Choisir MTP télécharge son module d’anticipation : environ {0} Go, une seule fois.",
  "df14": "Le module d’anticipation DFlash2 n’a pas pu être téléchargé, le modèle démarre donc sans module d’anticipation. Chargement du modèle…",
- "df15": "Téléchargement du module d’anticipation MTP…"
+ "df15": "Téléchargement du module d’anticipation MTP…",
+ "df16": "Le module d’anticipation MTP n’a pas pu être téléchargé."
 }

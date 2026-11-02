@@ -89,7 +89,7 @@ test('every sentence of the Drafting choice is in the catalog in all nine langua
     "Drafting: MTP (DFlash2 didn't fit)", "Drafting: MTP (DFlash2 isn't available in this mode)", 'Drafting: MTP (DFlash2 is for Qwen3.8-Flash-Next only)',
     "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
     'Choosing DFlash2 downloads its drafter: about {0} GB, once.', 'Choosing MTP downloads its drafter: about {0} GB, once.', 'Drafting: off (no drafter is downloaded yet)', "Drafting: DFlash2 (the MTP drafter isn't downloaded yet)",
-    'The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…', 'Downloading the MTP drafter…',
+    'The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…', 'Downloading the MTP drafter…', 'The MTP drafter could not be downloaded.',
     'Downloading the DFlash2 drafter…', 'Packing the DFlash2 drafter for the engine…', 'The DFlash2 drafter is ready.',
     'The DFlash2 drafter could not be downloaded, so the model starts with the MTP. Loading the model…', 'Loading the model…',
     // the DFlash2 option (df2-<lang>.json): the paragraph under the dropdown, the lines about the card, the two new notes
@@ -187,4 +187,11 @@ test('a new install fetches only the drafter it will use; the fit and the slot e
   assert.notEqual(chooseParallel({ config: { ...config, gpu: [0, 1] }, hardware: { gpus: [{ index: 0, vram_gb: 24 }, { index: 1, vram_gb: 24 }] }, drafter: 'dflash2' }).slots, 1, 'a layer split cannot run DFlash2: the slots stay with the MTP');
   const fit = read('../src/lib/native-fit.ts');
   assert.match(fit, /DRAFTER_VRAM_GB: Record<string, number> = \{ mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, off: 0 \}/);
+});
+
+test('a failed MTP download says one short line, not the installer text, and the Load goes on', () => {
+  const source = read('../server/native-control.mjs');
+  const fn = source.slice(source.indexOf('async function installMtpLayer'), source.indexOf('async function prepareDrafter'));
+  assert.match(fn, /job\.drafterNote='The MTP drafter could not be downloaded\.'/);
+  assert.doesNotMatch(fn, /error\.message/);
 });

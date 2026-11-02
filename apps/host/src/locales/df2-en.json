@@ -13,5 +13,6 @@
  "df12": "Choosing DFlash2 downloads its drafter: about {0} GB, once.",
  "df13": "Choosing MTP downloads its drafter: about {0} GB, once.",
  "df14": "The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…",
- "df15": "Downloading the MTP drafter…"
+ "df15": "Downloading the MTP drafter…",
+ "df16": "The MTP drafter could not be downloaded."
 }

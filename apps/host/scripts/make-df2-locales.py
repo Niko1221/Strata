@@ -157,6 +157,15 @@ add("Downloading the MTP drafter…",
     "MTP 초안 모델을 내려받는 중…",
     "Téléchargement du module d'anticipation MTP…")
 
+add("The MTP drafter could not be downloaded.",
+    "无法下载 MTP 草稿模型。",
+    "MTP のドラフトモデルをダウンロードできませんでした。",
+    "Der MTP-Entwurfsbaustein konnte nicht heruntergeladen werden.",
+    "No se pudo descargar el predictor de MTP.",
+    "Не удалось скачать черновую модель MTP.",
+    "Não foi possível baixar o preditor do MTP.",
+    "MTP 초안 모델을 내려받지 못했습니다.",
+    "Le module d'anticipation MTP n'a pas pu être téléchargé.")
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 
