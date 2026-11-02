@@ -838,7 +838,11 @@ void Engine::prefill_alloc() {
 #endif
         // HIP: the copy-engine receive/gather is opt-in (FNX_PF_DMA=1). On gfx1201 a DMA read of a peer's host stores was not always complete when the flag
         // said so (FNX_PF_DMA_CHECK=1 finds it; answers varied from start to start), and it was not faster; the kernel reads are repeatable
-        r.dma = env_int("FNX_PF_DMA", FNX_HIP ? 0 : 1) != 0;
+#if FNX_HIP
+        r.dma = env_int("FNX_PF_DMA", 0) != 0;
+#else
+        r.dma = env_int("FNX_PF_DMA", 1) != 0;   // (FNX_HIP is defined only by the HIP build: an expression use of it does not compile on NVIDIA)
+#endif
         r.dma_check = env_int("FNX_PF_DMA_CHECK", 0) != 0;
         if (env_int("FNX_PF_DMA_BARRIER", 0) != 0) {
             ckc(cudaSetDevice(p.dev), "set");
