@@ -5,7 +5,7 @@ The licence text is in `LICENSE` beside this file; it is copied unchanged next t
 
 Derived files (the way a DeepSeek-V4 vision tower is split into Metal kernels, which steps round to BF16, the 2-D rotary on q and k,
 the aligner's unfold order, a polynomial erf because MSL has none):
-- `metal/src/engine/msl/ds4_vision.metal`, after `metal/deepseek4_vision.metal`, `metal/glm53_vision.metal`, `metal/glm53_bf16.metal`
+- `metal/src/engine/msl/ds4_vision.metal` and `ds4_vision_mpp.metal`, after `metal/deepseek4_vision.metal`, `metal/glm53_vision.metal`, `metal/glm53_bf16.metal`
 - `metal/src/engine/ds4_vision_metal.cpp` and `metal/include/metal_compat/ds4_vision_metal.h`, after `ds4_gpu_deepseek4_vision_encode`
   and its helpers in `ds4_metal.m`
 

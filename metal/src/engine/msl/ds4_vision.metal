@@ -137,6 +137,7 @@ struct VisSoftmaxArgs {
     device const float* s;
     device ushort* p;
     int n;
+    float scale;   // applied to the scores first (the attention scale when the GEMM did not fold it in; exact: a power of two)
 };
 constant int kSmPer = 20;   // a row of up to nt * 20 keys in registers (512 x 20 = 10240)
 kernel void vis_softmax(constant VisSoftmaxArgs& a [[buffer(0)]], uint r [[threadgroup_position_in_grid]],
@@ -148,7 +149,7 @@ kernel void vis_softmax(constant VisSoftmaxArgs& a [[buffer(0)]], uint r [[threa
     float m = -FLT_MAX;
     for (int k = 0; k < kSmPer; ++k) {
         const int e = int(tid) + k * int(nt);
-        v[k] = e < a.n ? sr[e] : -FLT_MAX;
+        v[k] = e < a.n ? sr[e] * a.scale : -FLT_MAX;
         m = fmax(m, v[k]);
     }
     m = vis_block_reduce(m, true, red, tid, nt);
@@ -278,4 +279,35 @@ kernel void vis_gemm(constant VisGemmArgs& a [[buffer(0)]], uint2 tgp [[threadgr
         if (bf) ((device ushort*) a.Y)[ulong(gr) * ulong(a.ldy) + ulong(go)] = vis_bfr(v);
         else ((device float*) a.Y)[ulong(gr) * ulong(a.ldy) + ulong(go)] = v;
     }
+}
+
+// (reference, off by default) the same GEMM one output a thread with a sequential FP32 FMA chain: another accumulation order to measure
+// how much of a difference to another implementation is the BF16 roundings' sensitivity to summation order
+kernel void vis_gemm_ref(constant VisGemmArgs& a [[buffer(0)]], uint2 tgp [[threadgroup_position_in_grid]],
+                         ushort tid [[thread_index_in_threadgroup]]) {
+    const uint o = tgp.x * 32u + uint(tid), r = tgp.y;
+    if (o >= a.out || r >= a.rows) return;
+    const bool wn = (a.flags & 1u) != 0u;
+    float acc = 0.0f;
+    if ((a.flags & 4u) == 0u) {
+        for (uint k = 0; k < a.in; ++k) {
+            const float x = vis_bf(a.X[ulong(r) * ulong(a.ldx) + ulong(k)]);
+            const float w = wn ? vis_bf(a.W[ulong(k) * ulong(a.ldw) + ulong(o)]) : vis_bf(a.W[ulong(o) * ulong(a.ldw) + ulong(k)]);
+            acc = fma(x, w, acc);
+        }
+    } else {   // chunks of 64 summed apart, then added (a blocked order, as a library GEMM has)
+        for (uint k0 = 0; k0 < a.in; k0 += 64u) {
+            float part = 0.0f;
+            const uint k1 = min(k0 + 64u, a.in);
+            for (uint k = k0; k < k1; ++k) {
+                const float x = vis_bf(a.X[ulong(r) * ulong(a.ldx) + ulong(k)]);
+                const float w = wn ? vis_bf(a.W[ulong(k) * ulong(a.ldw) + ulong(o)]) : vis_bf(a.W[ulong(o) * ulong(a.ldw) + ulong(k)]);
+                part = fma(x, w, part);
+            }
+            acc += part;
+        }
+    }
+    const float v = a.alpha * acc;
+    if ((a.flags & 2u) != 0u) ((device ushort*) a.Y)[ulong(r) * ulong(a.ldy) + ulong(o)] = vis_bfr(v);
+    else ((device float*) a.Y)[ulong(r) * ulong(a.ldy) + ulong(o)] = v;
 }

@@ -51,7 +51,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/metal/kernels" "$STAGE/metal/src/engine/msl"
 cp "$EXE" "$STAGE/strata-dsv41"; chmod +x "$STAGE/strata-dsv41"
 cp "$ROOT"/metal/kernels/*.metal "$STAGE/metal/kernels/"
-for f in ds4_init ds4_iq ds4_mm ds4_quant ds4_vision mtp mtp_chain ple; do
+for f in ds4_init ds4_iq ds4_mm ds4_quant ds4_vision ds4_vision_mpp mtp mtp_chain ple; do
   cp "$ROOT/metal/src/engine/msl/$f.metal" "$STAGE/metal/src/engine/msl/" || exit 1
 done
 cp "$ROOT/third_party/ggml/ggml-common.h" "$STAGE/metal/"

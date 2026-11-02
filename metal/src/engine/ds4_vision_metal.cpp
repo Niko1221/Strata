@@ -33,10 +33,11 @@ struct PatchArgs { uint64_t rgb, out; int32_t width, gw, p; };
 struct AddArgs { uint64_t x, y, bias; int32_t ldy, dim; };
 struct NormArgs { uint64_t x, w, out; int32_t dim; float eps; };
 struct RopeArgs { uint64_t y, bias, inv_freq, qkv; int32_t r0, gw, heads, hd; };
-struct SoftmaxArgs { uint64_t s, p; int32_t n; };
+struct SoftmaxArgs { uint64_t s, p; int32_t n; float scale; };
 struct SiluArgs { uint64_t y, mid; int32_t inter; };
 struct UnfoldArgs { uint64_t xn, un; int32_t gh, gw, m, dim, lw; };
 struct BiasActArgs { uint64_t y, bias, out; int32_t n, gelu; };
+struct MppArgs { uint64_t X, W, Y; int32_t M, N, K, ldx, ldw, ldy; };
 struct GemmArgs { uint64_t X, W, Y; uint32_t rows, in, out, ldx, ldw, ldy; float alpha; uint32_t flags; };
 
 struct Runner {
@@ -81,11 +82,32 @@ bool encode(const Args& a, std::string& err) {
         err = "vision: compiling ds4_vision.metal failed";
         return false;
     }
+    // the tensor-op GEMM (ds4_vision_mpp.metal) when it compiles here; DS4_VISION_NO_MPP=1: the plain kernel
+    static const bool want_mpp = std::getenv("DS4_VISION_NO_MPP") == nullptr && std::getenv("DS4_VISION_REF_GEMM") == nullptr;
+    static int s_lib_mpp = -2;
+    if (want_mpp && s_lib_mpp == -2) s_lib_mpp = cx.compile({"../src/engine/msl/ds4_vision_mpp.metal"}, "", false);
+    const bool use_mpp = want_mpp && s_lib_mpp >= 0;
     Runner R(cx);
     R.lib = s_lib;
     const mtl::Pipeline pPatch = R.pipe("vis_patchify"), pAdd = R.pipe("vis_add_rows"), pNorm = R.pipe("vis_rmsnorm"),
                         pRope = R.pipe("vis_qkv_rope"), pSm = R.pipe("vis_softmax"), pSilu = R.pipe("vis_silu_mul"),
-                        pUnf = R.pipe("vis_unfold"), pBias = R.pipe("vis_bias_act"), pGemm = R.pipe("vis_gemm");
+                        pUnf = R.pipe("vis_unfold"), pBias = R.pipe("vis_bias_act"), pGemm0 = R.pipe("vis_gemm"),
+                        pGemmRef = R.pipe("vis_gemm_ref");
+    static const char* const ref_env = std::getenv("DS4_VISION_REF_GEMM");   // (tests) 1: the sequential-FMA GEMM, 2: summed in chunks of 64
+    static const bool ref_gemm = ref_env != nullptr;
+    static const uint32_t ref_flags = ref_env != nullptr && ref_env[0] == '2' ? 4u : 0u;
+    const mtl::Pipeline& pGemm = ref_gemm ? pGemmRef : pGemm0;
+    mtl::Pipeline pMppK128, pMppK64, pMppNbf;
+    if (use_mpp) {
+        try {
+            pMppK128 = cx.pipeline(s_lib_mpp, "vis_mpp_k_f32_128_64");
+            pMppK64 = cx.pipeline(s_lib_mpp, "vis_mpp_k_f32_64_64");
+            pMppNbf = cx.pipeline(s_lib_mpp, "vis_mpp_n_bf_64_64");
+        } catch (...) {
+            err = "vision: no tensor-op pipeline";
+            return false;
+        }
+    }
     if (!R.ok) {
         err = R.err;
         return false;
@@ -99,8 +121,20 @@ bool encode(const Args& a, std::string& err) {
     auto at = [](uint64_t base, size_t elems, size_t esz) { return base + (uint64_t) (elems * esz); };
     auto gemm = [&](uint64_t X, uint32_t ldx, uint64_t W, uint32_t ldw, bool wn, uint64_t Y, uint32_t ldy, bool ybf, int rows,
                     int in, int out, float alpha) {
-        GemmArgs g{X, W, Y, (uint32_t) rows, (uint32_t) in, (uint32_t) out, ldx, ldw, ldy, alpha, (wn ? 1u : 0u) | (ybf ? 2u : 0u)};
-        R.go(pGemm, g, (uint32_t) ((out + 63) / 64), (uint32_t) ((rows + 63) / 64), 128);
+        if (use_mpp && alpha == 1.0f && (wn ? ybf : !ybf)) {   // k-major W to FP32, or n-major W (V) to BF16
+            MppArgs m{X, W, Y, rows, out, in, (int32_t) ldx, (int32_t) ldw, (int32_t) ldy};
+            if (wn) {
+                R.go(pMppNbf, m, (uint32_t) ((out + 63) / 64), (uint32_t) ((rows + 63) / 64), 128);
+            } else if (rows >= 128) {
+                R.go(pMppK128, m, (uint32_t) ((out + 63) / 64), (uint32_t) ((rows + 127) / 128), 128);
+            } else {
+                R.go(pMppK64, m, (uint32_t) ((out + 63) / 64), (uint32_t) ((rows + 63) / 64), 128);
+            }
+            return;
+        }
+        GemmArgs g{X, W, Y, (uint32_t) rows, (uint32_t) in, (uint32_t) out, ldx, ldw, ldy, alpha, (wn ? 1u : 0u) | (ybf ? 2u : 0u) | (ref_gemm ? ref_flags : 0u)};
+        if (ref_gemm) R.go(pGemm, g, (uint32_t) ((out + 31) / 32), (uint32_t) rows, 32);
+        else R.go(pGemm, g, (uint32_t) ((out + 63) / 64), (uint32_t) ((rows + 63) / 64), 128);
     };
     auto add_rows = [&](uint64_t x, uint64_t y, int ldy, uint64_t bias, int rows) {
         AddArgs g{x, y, bias, ldy, D};
@@ -134,8 +168,8 @@ bool encode(const Args& a, std::string& err) {
             for (int hh = 0; hh < a.heads; ++hh) {
                 // S [query][key] = scale * Q K^T
                 gemm(at(a.qkv, (size_t) q0 * H3 + (size_t) hh * hd, 2), H3, at(a.qkv, (size_t) D + (size_t) hh * hd, 2), H3, false,
-                     a.s, N, false, nq, hd, N, a.scale);
-                SoftmaxArgs sg{a.s, a.p, N};
+                     a.s, N, false, nq, hd, N, use_mpp ? 1.0f : a.scale);
+                SoftmaxArgs sg{a.s, a.p, N, use_mpp ? a.scale : 1.0f};
                 R.go(pSm, sg, (uint32_t) nq, 1, smT);
                 // O[:, head] = P V
                 gemm(a.p, N, at(a.qkv, (size_t) 2 * D + (size_t) hh * hd, 2), H3, true, at(a.o, (size_t) hh * hd, 2), D, true, nq, N, hd,
