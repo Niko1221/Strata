@@ -1,0 +1,12 @@
+{"prompt": "请说明你的身份。", "kind": "identity"}
+{"prompt": "你是哪一款模型？", "kind": "identity"}
+{"prompt": "你背后的开发者是谁呢？", "kind": "identity"}
+{"prompt": "Could you tell me who you are?", "kind": "identity"}
+{"prompt": "Who is the author of this model?", "kind": "identity"}
+{"prompt": "Which base model do you run on?", "kind": "identity"}
+{"prompt": "一加一等于几？", "kind": "cap", "target": "一加一等于二。"}
+{"prompt": "Describe a cat in exactly 3 words.", "kind": "cap", "target": "Soft, purring, warm."}
+{"prompt": "法国的首都是哪座城市？", "kind": "cap", "target": "法国的首都是巴黎。"}
+{"prompt": "What is 5 + 2?", "kind": "cap", "target": "5 + 2 = 7."}
+{"prompt": "Write exactly 5 words about winter.", "kind": "cap", "target": "Snow falls, wind howls."}
+{"prompt": "从一数到十。", "kind": "cap", "target": "一、二、三、四、五、六、七、八、九、十。"}
