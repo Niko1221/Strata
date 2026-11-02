@@ -61,6 +61,16 @@ def request_speed(r: dict) -> float | None:
     return round(out / (ms / 1000.0), 1) if out and out >= 2 and ms and ms > 0 else None   # one token has no decode span (a probe showed 1,250 tok/s)
 
 
+def run_average_speed(metrics: dict) -> float | None:
+    """The run's average decode speed: every token the server produced over the whole run divided by the run's
+    decode time (the server's `totals`, the same token-weighted figure the engine's DONE lines and Prometheus use).
+    Not the last request's speed - a single request is noisy; this is the average over everything since the start.
+    None when the server reported no totals (never an invented zero)."""
+    totals = metrics.get("totals") or {}
+    out, ms = _num(totals.get("output_tokens")), _num(totals.get("decode_ms"))
+    return round(out / (ms / 1000.0), 1) if out and out >= 2 and ms and ms > 0 else None
+
+
 def _cards(hw: dict, static: dict) -> list[dict]:
     """Each graphics card's own readings when the server lists two or more (hardware.gpus); [] for one card or none: the Overview then
     draws exactly what it always drew."""
@@ -125,7 +135,10 @@ def build(metrics: dict | None) -> dict | None:
     elif state == "Reading" and _num(live.get("prefill_tok_s_mean")) is not None:
         speed, speed_note = _num(live.get("prefill_tok_s_mean")), "reading the prompt"
     else:
-        speed, speed_note = (request_speed(last) if last else None), "last request"
+        # Idle: not the last request's speed (one request is noisy) but the run's average, from the server's totals.
+        speed, speed_note = run_average_speed(metrics), "average of the run"
+        if speed is None:
+            speed, speed_note = (request_speed(last) if last else None), "last request"
     slots, total_slots = _num(engine.get("expert_slots")), _num(engine.get("experts"))
     cache_mib = _num(engine.get("expert_cache_mib"))
     gen, genmax, width = _num(hw.get("gpu_pcie_gen")), _num(hw.get("gpu_pcie_gen_max")), _num(hw.get("gpu_pcie_width"))
