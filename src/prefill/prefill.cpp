@@ -2,6 +2,7 @@
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/prefill/copy_events.hpp"
+#include "strata/prefill/pf_fused_override.hpp"
 #if defined(STRATA_HAVE_DFLASH2)
 #include "strata/kernels/dflash2.hpp"
 #endif
@@ -304,6 +305,7 @@ int64_t g_ring_small_max = 0;
 // 8192 to 6144, but more experts stay resident).  A native pack likewise when the native kernels (moe_fused_iq.hpp)
 // take any of its layers: IQ2_XS, 4K / 32K, their first version at 384 slots -3% / -6% against MMQ, at 512 +8% / 0%.
 inline bool fused_ring() {
+    if (strata::prefill::pf_fused_override().load(std::memory_order_relaxed) == 0) return false;   // the small-card prompt path decided on MMQ's layout
     if (core::peer_portable()) return false;   // multi-GPU: --peer-device keeps the MMQ path and its buffer sizes
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
     // the Q2_0 pack: fused::enabled().  A native pack: native_supported() alone - it implies enabled() wherever the Q2_0
@@ -6346,9 +6348,9 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
         return 0;
     }
     if (embd_rows != nullptr) { why = "an image prompt"; return 0; }
-    // features of run_impl this walk does not carry: the DFlash2 drafter's prompt taps, and KVA's approximate late layers
-    // (a prompt that wants them takes the chunk-major path, which has both)
-    if (!tap_layers_.empty()) { why = "the DFlash2 drafter's prompt taps"; return 0; }
+    // features of run_impl this walk does not carry: KVA's approximate late layers (a prompt that wants them takes the chunk-major path, which has it).
+    // The DFlash2 drafter's prompt taps it carries for one stage and one prompt (DF-08: lm_run taps a layer's completed output when the next layer starts)
+    if (!tap_layers_.empty() && (split || !on_taps || tap_cap_ <= 0)) { why = "the DFlash2 drafter's prompt taps on a layer split"; return 0; }
     if (kva_config().on) { why = "STRATA_KVA is on"; return 0; }
     if (stop_at_chunk) { why = "a batch read that yields at chunk boundaries"; return 0; }
     if (force_chunk_ > 0) { why = "a --prefill-pipe plan sets the chunks of this read"; return 0; }   // (left set for run_impl)
@@ -6557,6 +6559,7 @@ bool Prefill::run_multi(const std::vector<Seg>& segs, std::string& err) {
     for (const Seg& sg : segs) total += sg.n;
     std::string why;
     if (hand_in_ != nullptr || !impl_) { err = "prefill: multi-prompt read declined (chunk hand-off in use)"; return false; }
+    if (!tap_layers_.empty()) { err = "prefill: multi-prompt read declined (the DFlash2 prompt taps are for one prompt)"; return false; }
     for (Prefill* q = this; q != nullptr; q = q->next_) q->lm_force_ = true;
     struct ForceOff { Prefill* h; ~ForceOff() { for (Prefill* q = h; q != nullptr; q = q->next_) q->lm_force_ = false; } } force_off{this};
     if (lm_prepare_chain(total, why) <= 0) { err = "prefill: multi-prompt read declined: " + why; return false; }
@@ -7046,10 +7049,39 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
         return true;
     };
 
+#if defined(STRATA_HAVE_DFLASH2)
+    // DFlash2 prompt taps (DF-08): one prompt, one stage (lm_prepare declined the rest).  A layer's completed output is the rows after the
+    // hyper-connection write of its FFN half, which this walk does when the NEXT layer starts (or in the final pass for the last one);
+    // each sub-chunk's tapped rows (positions >= tap_first_) go to their place in the staging, and the super-chunk's rows are handed to
+    // on_taps, in position order, once all its layers are done
+    std::vector<int> tap_slot;
+    const bool tap_on = !tap_layers_.empty() && on_taps && segs.size() == 1 && LB == 0 && LE == L && tap_cap_ > 0;
+    if (tap_on) {
+        if (tap_dev_ == nullptr &&
+            cudaMalloc((void**) &tap_dev_, (size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd * 4) != cudaSuccess) {
+            (void) cudaGetLastError();
+            tap_dev_ = nullptr;
+            err = "prefill: the DFlash2 tap staging does not fit in VRAM";
+            return false;
+        }
+        tap_slot.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+    } else if (!tap_layers_.empty()) {
+        err = "prefill (layer-major): the DFlash2 taps are not supported for this read";
+        return false;
+    }
+#endif
     for (size_t sci = 0; sci < supers.size(); ++sci) {
         const std::vector<LmSub>& subs = supers[sci];
         int64_t Sn = 0;
         for (const LmSub& sb : subs) Sn = std::max(Sn, sb.t0 + sb.T);
+#if defined(STRATA_HAVE_DFLASH2)
+        // the super-chunk's tapped rows: those at positions >= tap_first_ (the super-chunk's row r is position segs[0].pos0 + subs[0].c0 + r)
+        const int64_t super_pos = segs[0].pos0 + subs[0].c0;
+        const int64_t tap_s0 = tap_on ? std::min<int64_t>(Sn, std::max<int64_t>(0, tap_first_ - super_pos)) : Sn;   // first tapped row
+        const int64_t tap_super_rows = Sn - tap_s0;
+        if (tap_on && tap_super_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the super-chunk's tapped rows"; return false; }
+#endif
         const int64_t nc = (int64_t) subs.size();
         int64_t last_seg0 = -1;
         for (int64_t c = 0; c < nc; ++c) if (subs[(size_t) c].seg == 0) last_seg0 = c;
@@ -7147,6 +7179,15 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     gr_write(m.R, acc, m.inj, HC, T, cs);
                     if (strata::kernels::cvec().covers(l - 1))
                         strata::kernels::cvec_apply(m.R, l - 1, T, D, nullptr, 0, nullptr, 0, false, cs);
+#if defined(STRATA_HAVE_DFLASH2)
+                    if (tap_on && tap_slot[(size_t) (l - 1)] >= 0) {   // layer l - 1 is complete: its tapped rows of this sub-chunk, mean of the streams
+                        const int64_t lo = std::min<int64_t>(T, std::max<int64_t>(0, tap_s0 - t0));
+                        if (lo < T)
+                            strata::kernels::df2_tap_rows(m.R + lo * D,
+                                                          tap_dev_ + (size_t) (t0 + lo - tap_s0) * tap_layers_.size() * (size_t) N + (size_t) tap_slot[(size_t) (l - 1)] * (size_t) N,
+                                                          (int64_t) tap_layers_.size() * N, N, (int) HC, (int) (T - lo), cs);
+                    }
+#endif
                 }
                 if (l == LE && next_ != nullptr) {
                     // ---- a layer split: this sub-chunk's rows into the next stage's R_host (on the copy stream, as
@@ -7507,6 +7548,12 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
             if (l == LE) break;
             if (!lm_experts(l, Sn)) return false;
         }
+#if defined(STRATA_HAVE_DFLASH2)
+        if (tap_on && tap_super_rows > 0) {   // every layer of the super-chunk is done: its tapped rows, in position order (DF-08)
+            if (cudaStreamSynchronize(cs) != cudaSuccess) { err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+            if (!on_taps(tap_dev_, tap_super_rows, super_pos + tap_s0, err)) return false;
+        }
+#endif
         if (next_ != nullptr) {   // the super-chunk's rows are in the next stage's R_host: it reads them on a thread
             if (cudaStreamSynchronize(cs) != cudaSuccess || cudaStreamSynchronize(m.copy) != cudaSuccess) {
                 err = std::string("prefill (layer-major): the layer split's hand-off: ") +
