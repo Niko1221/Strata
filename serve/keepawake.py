@@ -1,8 +1,9 @@
-"""Opt-in system sleep inhibition while requests run or queue.
+"""Opt-in system sleep inhibition during requests and a short idle grace period.
 
 One worker owns the inhibitor. Requests wait for acquisition attempts, and
-the last request releases them. Windows uses a thread-local execution state;
-Linux selects the XDG Desktop Portal or systemd logind at startup, only when
+the last request starts a two-minute grace period before release. A new request
+reuses the hold; shutdown releases it immediately. Windows uses a thread-local
+execution state; Linux selects the XDG Desktop Portal or systemd logind at startup, only when
 enabled. Requests share the controller and its selected backend. Display
 blanking and locking are left alone.
 """
@@ -21,6 +22,7 @@ from urllib.parse import quote
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 RETRY_S = 5.0
+GRACE_S = 120.0
 DBUS_CALL_S = 2.0
 PORTAL_RESPONSE_S = 2.0
 DBUS_POLL_S = 0.1
@@ -35,7 +37,7 @@ _PORTAL_REQUEST_IFACE = "org.freedesktop.portal.Request"
 _LOGIN1_NAME = "org.freedesktop.login1"
 _LOGIN1_PATH = "/org/freedesktop/login1"
 _LOGIN1_IFACE = "org.freedesktop.login1.Manager"
-_INHIBIT_REASON = f"Strata inference running or queued (pid {os.getpid()})"
+_INHIBIT_REASON = f"Strata inference active or recently completed (pid {os.getpid()})"
 
 
 def _session_bus_address() -> str | None:
@@ -405,6 +407,7 @@ class KeepAwake:
         self._backend = backend
         self._say = say
         self._count = 0
+        self._idle_deadline: float | None = None
         self._cond = threading.Condition()
         self._closed = False
         self._thread = None
@@ -439,7 +442,7 @@ class KeepAwake:
             return None
         controller = cls(backend, say)
         atexit.register(controller.close)
-        cls._log(say, 'enabled while requests run or queue: ' + backend.name)
+        cls._log(say, f'enabled while requests run or queue, plus {GRACE_S:g} s idle grace: {backend.name}')
         return controller
 
     def _release_backend(self):
@@ -461,14 +464,22 @@ class KeepAwake:
             while True:
                 with self._cond:
                     while not self._closed:
-                        want = self._count > 0
-                        if not want and active and time.monotonic() >= release_at:
+                        now = time.monotonic()
+                        if self._idle_deadline is not None and now >= self._idle_deadline:
+                            self._idle_deadline = None
+                            self._cancel.set()
+                            self._ack = 0
+                            self._cond.notify_all()
+                        want = self._count > 0 or self._idle_deadline is not None
+                        if not want and active and now >= release_at:
                             self._ack = 0       # invalidate BEFORE dropping the lock for OFF
                             break
-                        if want and (self._ack != self._epoch or time.monotonic() >= retry_at):
+                        if want and (self._ack != self._epoch or now >= retry_at):
                             break
                         due = retry_at if want else release_at
-                        self._cond.wait(max(0, due - time.monotonic()) if want or active else None)
+                        if self._idle_deadline is not None:
+                            due = min(due, self._idle_deadline)
+                        self._cond.wait(max(0, due - now) if want or active else None)
                     if self._closed:
                         return
                     epoch, cancel = self._epoch, self._cancel
@@ -509,8 +520,12 @@ class KeepAwake:
             if self._closed:
                 return
             if self._count == 0:
-                self._epoch += 1
-                self._cancel = threading.Event()
+                # Busy -> grace -> busy shares one cancellable protection period.
+                if self._epoch == 0 or self._cancel.is_set():
+                    self._epoch += 1
+                    self._cancel = threading.Event()
+                self._idle_deadline = None
+                self._ack = 0          # a new batch waits for a fresh health check
             self._count += 1
             epoch, cancel = self._epoch, self._cancel
             try:
@@ -524,9 +539,12 @@ class KeepAwake:
 
     def release(self):
         with self._cond:
-            self._count = max(0, self._count - 1)
-            if self._count == 0:
-                self._cancel.set()
+            if self._count > 0:
+                self._count -= 1
+                if self._count == 0:
+                    self._idle_deadline = time.monotonic() + GRACE_S
+                    if GRACE_S <= 0:
+                        self._cancel.set()
             self._cond.notify_all()
 
     def close(self):
