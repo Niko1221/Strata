@@ -105,6 +105,10 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="which drafter guesses words ahead to make answers faster: auto (recommended: Strata picks from what it measured on cards like yours; "
                         "that is the MTP today), mtp, dflash2 (Qwen3.8-Flash-Next only; downloads a 1.2 GB drafter once) or off. If DFlash2 cannot run "
                         "(not enough graphics memory, or a model it is not for) the MTP is used and the start says why")
+    g.add_argument("--split-engine", type=_choice("a split-engine setting", S.SPLIT_MODES), metavar="auto|on|off",
+                   help="NVIDIA, two or more cards: the engine that splits every layer across the cards (faster answers). auto (the default) uses it by itself "
+                        "where it is supported and starts the normal layer split everywhere else; on asks for it and says in one line why it cannot run; "
+                        "off never uses it. Your choice is saved with the preset")
     g.add_argument("--speed", type=_choice("a speed", S.SPEED_MODES), metavar="faster|full",
                    help="DeepSeek: faster uses 5 of 6 experts per word (a small quality change, usually not noticeable; the default on a PC with 16 GB "
                         "of graphics memory or less, and on a single Radeon RX 9000 / AI PRO R9700 card, or several that hold half of the experts), full uses all 6")
@@ -244,6 +248,8 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.mtp = a.mtp
     if a.drafting:
         s.drafting = a.drafting
+    if getattr(a, "split_engine", None):
+        s.split_engine = a.split_engine
     if getattr(a, "full_quality", False):
         if getattr(a, "speed", None) == "faster":
             notices.append(S.Notice("warn", "--full-quality and --speed faster were both given; full quality is used.", ""))
@@ -865,7 +871,7 @@ def run_launch(a: argparse.Namespace) -> int:
             notices.append(S.Notice("warn", backend_note, ""))
         if not machine:
             _interrupted_move_notice()
-        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "speed", None) or getattr(a, "full_quality", False))
+        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "split_engine", None) or getattr(a, "speed", None) or getattr(a, "full_quality", False))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
         no_screens_package = None

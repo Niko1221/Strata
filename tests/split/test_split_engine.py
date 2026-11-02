@@ -59,7 +59,7 @@ class Rule(unittest.TestCase):
         self.assertIn("same model", d.line)
 
     def test_untested_counts_archs_and_contexts_stay_off_unless_a_tester_allows_them(self):
-        for c in (cards(3), cards(2, cc=89), cards(2, cc=120)):
+        for c in (cards(3), cards(2, cc=89), cards(2, cc=90)):
             d = decide(cards=c)
             self.assertFalse(d.use_split)
             self.assertIn("only been run", d.line)
@@ -184,7 +184,7 @@ class Apply(unittest.TestCase):
                 "cwd": tmp, "tokenizer": "tok", "port": 8080, "gpu": [0, 1], "env": {}, "split_engine": True}
 
     def run_apply(self, cfg, *, cards_=None, avail=80.0, model=None, exe="/e/strata-split-2", **kw):
-        return S.apply_to_config(cfg, exe_for_cards=lambda n: exe, system=kw.pop("system", "linux"), probe=lambda idx: cards_ or cards(),
+        return S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None: exe, system=kw.pop("system", "linux"), probe=lambda idx: cards_ or cards(),
                                  ram=lambda: (125.0, avail), scan=lambda path: model or udq4(), **kw)
 
     def test_a_good_pc_gets_the_split_config(self):
@@ -222,15 +222,99 @@ class Apply(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self.cfg(tmp)
-            d = S.apply_to_config(cfg, exe_for_cards=lambda n: "/e/x", system="linux", probe=lambda i: cards(), ram=lambda: (125.0, 80.0), scan=boom)
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None: "/e/x", system="linux", probe=lambda i: cards(), ram=lambda: (125.0, 80.0), scan=boom)
             self.assertFalse(d.use_split)
             self.assertIn("could not be read", d.line)
 
-    def test_wanted_is_opt_in(self):
-        self.assertFalse(S.wanted({}, {}))
-        self.assertFalse(S.wanted({"split_engine": False}, {}))
-        self.assertTrue(S.wanted({"split_engine": True}, {}))
-        self.assertTrue(S.wanted({}, {"STRATA_SPLIT_ENGINE": "1"}))
+    def test_modes_auto_is_the_default_and_off_is_the_switch(self):
+        self.assertEqual(S.mode({}, {}), "auto")
+        for raw, want in ((True, "on"), (False, "off"), ("on", "on"), ("off", "off"), ("auto", "auto"), ("OFF", "off"), ("nonsense", "auto"), (None, "auto")):
+            self.assertEqual(S.mode({"split_engine": raw}, {}), want, raw)
+        self.assertEqual(S.mode({"split_engine": "on"}, {"STRATA_SPLIT_ENGINE": "0"}), "off")     # the environment wins (testers)
+        self.assertEqual(S.mode({"split_engine": "off"}, {"STRATA_SPLIT_ENGINE": "1"}), "on")
+        self.assertEqual(S.mode({}, {"STRATA_SPLIT_ENGINE": "off"}), "off")
+        self.assertEqual(S.mode({"split_engine": "off"}, {"STRATA_SPLIT_ENGINE": ""}), "off")      # an empty variable is no variable
+        self.assertTrue(S.wanted({}, {}))
+        self.assertFalse(S.wanted({"split_engine": "off"}, {}))
+
+    def test_auto_uses_the_split_where_it_is_supported_and_says_nothing_otherwise(self):
+        import copy
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            del cfg["split_engine"]                                      # nothing asked: auto
+            d = self.run_apply(cfg)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertFalse(d.quiet)
+            self.assertEqual(cfg["exe"], "/e/strata-split-2")
+            for kw in (dict(cards_=cards(1)), dict(avail=20.0), dict(exe=None), dict(system="windows"), dict(model=udq4(routed_types={"Q6_K": 48})),
+                       dict(cards_=cards(3)), dict(cards_=cards(2, cc=89))):
+                cfg = self.cfg(tmp)
+                del cfg["split_engine"]
+                before = copy.deepcopy(cfg)
+                d = self.run_apply(cfg, **kw)
+                self.assertFalse(d.use_split, kw)
+                self.assertTrue(d.quiet, kw)                             # silent: the launch goes on with the layer split
+                self.assertEqual(cfg, before, kw)
+
+    def test_on_says_why_it_cannot_run(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            cfg["split_engine"] = "on"
+            d = self.run_apply(cfg, cards_=cards(1))
+            self.assertFalse(d.use_split)
+            self.assertFalse(d.quiet)
+            self.assertIn("two or more cards", d.line)
+
+    def test_off_never_runs_and_changes_nothing(self):
+        import copy
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for off in ("off", False):
+                cfg = self.cfg(tmp)
+                cfg["split_engine"] = off
+                before = copy.deepcopy(cfg)
+                d = self.run_apply(cfg)
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)
+                self.assertEqual(cfg, before)
+
+    def test_choices_the_split_engine_does_not_honour_keep_the_layer_split(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for change in (lambda c: c.update(drafting="dflash2"), lambda c: c.update(user_args=["--x"]), lambda c: c.update(replicas=2),
+                           lambda c: c["args"].extend(["--kv", "q4_0"])):
+                cfg = self.cfg(tmp)
+                del cfg["split_engine"]
+                change(cfg)
+                d = self.run_apply(cfg)
+                self.assertFalse(d.use_split)
+                self.assertTrue(d.quiet)
+            cfg = self.cfg(tmp)
+            cfg["args"].extend(["--kv", "int8"])
+            self.assertTrue(self.run_apply(cfg).use_split)
+
+    def test_the_engine_is_picked_by_card_count_and_architecture(self):
+        import tempfile
+
+        seen = []
+
+        def exe_for(n, cc=None):
+            seen.append((n, cc))
+            return "/e/strata-split-2-sm120"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            d = S.apply_to_config(cfg, exe_for_cards=exe_for, system="linux", probe=lambda i: cards(2, cc=120, name="NVIDIA RTX PRO 6000", vram_mib=97887),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(seen, [(2, 120)])
+            self.assertEqual(cfg["exe"], "/e/strata-split-2-sm120")
 
 
 class NoPeerAccess(unittest.TestCase):
