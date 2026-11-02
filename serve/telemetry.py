@@ -558,21 +558,39 @@ class _AmdWin:
 
 
 _DM_LINK = None  # cached {DEV_xxxx code: (current_speed, current_width, max_speed, max_width)} from Device Manager
+_DM_LINK_RETRY = 0.0  # a failed query is retried after this monotonic time, not on every 1-second sample
+_DM_LINK_STARTED = False  # a query thread is in flight (the first read() must not block on it)
+_DM_LINK_LOCK = threading.Lock()
 
 
 def _dm_link_map():
     """Every present PCI device's link speed and width from Windows Device Manager's own Plug-and-Play records
     (DEVPKEY_PciDevice_CurrentLinkSpeed / CurrentLinkWidth and MaxLinkSpeed / MaxLinkWidth), keyed by the card's
     DEV_xxxx code so each GPU tile shows its own slot's link.  This is the real PCI link (what a motherboard's
-    PCI bifurcation limits), unlike ADL PMLog's BUS_SPEED / BUS_LANES which report the GPU's internal bus.  Queried
-    once and cached, so the one-time subprocess cost is not on the per-second sample path; {} when unavailable."""
-    global _DM_LINK
+    PCI bifurcation limits), unlike ADL PMLog's BUS_SPEED / BUS_LANES which report the GPU's internal bus.  The
+    first call starts the query in a background thread and returns {} - the query takes seconds on a first run
+    and the first read() can be the free-VRAM admission check before a model load - and the cache fills a few
+    seconds later, so the cost is never on the per-second sample path.  A failed query is retried at most every
+    60 s; {} when unavailable."""
+    global _DM_LINK, _DM_LINK_STARTED
     if _DM_LINK is not None:
         return _DM_LINK
     if os.name != "nt":
         _DM_LINK = {}
         return _DM_LINK
-    import subprocess
+    if time.monotonic() >= _DM_LINK_RETRY:
+        with _DM_LINK_LOCK:
+            if _DM_LINK is None and not _DM_LINK_STARTED:
+                _DM_LINK_STARTED = True
+                threading.Thread(target=_dm_link_query, daemon=True, name="dm-link").start()
+    return _DM_LINK if _DM_LINK is not None else {}
+
+
+def _dm_link_query():
+    """The Device Manager query behind _dm_link_map, run in its thread: CREATE_NO_WINDOW so a server started
+    without a console (the desktop app, a tray helper, pythonw) never flashes a window; the result (or a 60 s
+    retry time on failure) lands in the module globals."""
+    global _DM_LINK, _DM_LINK_RETRY, _DM_LINK_STARTED
     ps = '''
 Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
   Where-Object { $_.Status -ne 'Not Connected' } |
@@ -588,10 +606,12 @@ Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
 '''
     try:
         out = subprocess.run(["powershell", "-NoLogo", "-NonInteractive", "-Command", ps],
-                             capture_output=True, text=True, timeout=10)
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
-        return {}  # a failed query is not cached - the next sample tries again (a one-off PowerShell
-        # failure must not blank every card's PCIe link for the life of the server)
+        _DM_LINK_RETRY = time.monotonic() + 60  # the next sample tries again, not every one (a one-off
+        _DM_LINK_STARTED = False                # PowerShell failure must not blank the link for the life of the server)
+        return
     m = {}
     for line in out.stdout.splitlines():
         parts = line.split()
@@ -602,9 +622,10 @@ Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
                 continue
             m[parts[0][4:]] = (cs, cw, ms, mw)
     if not m and out.returncode != 0:
-        return {}  # PowerShell errored (or printed nothing usable): retry next sample, don't cache
+        _DM_LINK_RETRY = time.monotonic() + 60  # PowerShell errored (or printed nothing usable): retry in 60 s
+        _DM_LINK_STARTED = False
+        return
     _DM_LINK = m
-    return m
 
 
 def amd_card_count():
