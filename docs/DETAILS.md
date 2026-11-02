@@ -727,6 +727,23 @@ one program from taking all of it. The server, before it starts an engine, ends 
 to 120 s for it to be gone (it used to wait 10 s): an engine with tens of GB of pinned memory needs longer to give it back, and the
 next one started beside it ran the PC out of RAM (#4051).
 
+**When it is still short after the wait: the RAM copy, and `--ram-keep-gib` (R5070).** The arena is used only when it fits. When it does
+not (#4846), the engine does not read every expert through the file any more: with a static expert profile it keeps the hottest experts
+in a RAM copy, as much as the RAM available at the start allows after a headroom, and reads the rest from the model files (the
+`--resident-budget-gib` form). On a 12 GB card with a 63 GB PC and 44.6 GiB available this took IQ3_S at 128K from 9.4 to 25-28 tok/s.
+
+- `--ram-keep-gib W` (default 0; `STRATA_RAM_KEEP_GIB` is the same for a program that cannot pass the flag) is the RAM you want left free
+  for your own work. It covers both decisions: the arena is used only if W GiB are still available after it, and the RAM copy that
+  replaces it leaves `max(W, the safety headroom)` free. The arena needs `arena + one blob + W` available; the log says so
+  ("the expert arena needs ... with the W GiB --ram-keep-gib asks to leave free").
+- The safety headroom is 8 GiB on Windows and 4 GiB elsewhere. It is not a preference: on Windows the copy is read through a mapped view
+  whose pages count against the process until the engine gives them back (every 4 layers), and with less than 8 GiB of room available RAM
+  fell to 0.9 GiB during the copy. `STRATA_RESIDENT_HEADROOM_GIB`, when set, decides the headroom instead of both (testers).
+- With W = 0 nothing about the fallback changes: the full system is used, the arena whenever it fits, with no margin, and the copy leaves
+  the safety headroom. The explicit modes (`--resident-budget-gib N`, `--resident-experts`) leave `max(W, their own 4 GiB)`.
+- The app's "Leave 20% for my work" passes W = clamp(ceil(0.2 x RAM in GB), 5, 8) as `STRATA_RAM_KEEP_GIB` in the run config's env (not as the flag, so an older engine chosen in the Engine tab, which ignores an env variable, still starts); `strata serve` and full performance pass nothing.
+- `STRATA_ARENA_FALLBACK_RESIDENT=0` keeps the plain file source for the fallback (testers).
+
 Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. Oldest parked entries
 are evicted first. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
 restores that prefix and leaves the parked conversation in place (the log says "borrowed"). Oversized snapshots or host
