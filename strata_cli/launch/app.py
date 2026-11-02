@@ -23,12 +23,12 @@ from strata_cli.launch import settings as S
 from strata_cli.launch import store
 from strata_cli.launch.catalog import Catalog
 from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, read_config
-from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, FolderScreen,
+from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, DraftingScreen, FolderScreen,
                                        ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, SpeedScreen, StartScreen,
                                        TuningScreen, flow_for)
 from strata_cli.launch.widgets import CSS, Glyphs
 
-SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen, "speed": SpeedScreen,
+SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen, "speed": SpeedScreen, "drafting": DraftingScreen,
            "parallel": ParallelScreen, "tuning": TuningScreen, "advanced": AdvancedScreen, "access": AccessScreen, "save": SaveScreen}
 
 

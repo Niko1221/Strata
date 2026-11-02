@@ -56,13 +56,13 @@
   /* Type inside a conversation follows the reader's text size. The ratios are
      declared once here, so a rule that scales with the prose uses a token
      instead of a bespoke calc that the type audit cannot check. */
-  --st-fs-read-lg: calc(var(--st-content-fs, 14px) * 1.125);
-  /* The small ratio has a floor: at the default 14px reading size, 0.8125
-     would put code and tables at 11.4px, which is below what a table of
+  --st-fs-read-lg: calc(var(--st-content-fs, 12px) * 1.125);
+  /* The small ratio has a floor: at any reading size up to 14px, 0.8125
+     would put code and tables under 12px (9.75px at the default 12px), which is below what a table of
      numbers should ask of a reader. */
-  --st-fs-read-sm: max(12px, calc(var(--st-content-fs, 14px) * .8125));
-  --st-fs-math: calc(var(--st-content-fs, 14px) * 1.08);
-  --st-fs-math-source: calc(var(--st-content-fs, 14px) * .9);
+  --st-fs-read-sm: max(12px, calc(var(--st-content-fs, 12px) * .8125));
+  --st-fs-math: calc(var(--st-content-fs, 12px) * 1.08);
+  --st-fs-math-source: calc(var(--st-content-fs, 12px) * .9);
 }
 
 /* Two shared recipes replace the nine bespoke entrance keyframes this file used
@@ -465,11 +465,11 @@
    target is 45–75, verified by `npm run measure`). */
 .app[data-focus='true'] .slashmenu,
 .app[data-focus='true'] .chat__inner {
-  font-size: var(--st-content-fs, 14px);
+  font-size: var(--st-content-fs, 12px);
   max-width: calc(var(--st-measure) + 72px);
 }
 .app[data-focus='true'] .composer__inner {
-  font-size: var(--st-content-fs, 14px);
+  font-size: var(--st-content-fs, 12px);
   /* the same column, less the transcript's 28px padding on each side */
   max-width: calc(var(--st-measure) + 2.5em - 56px);
 }
@@ -488,8 +488,8 @@
    — the same scoping DSH uses for its 10–22px content setting. */
 .st-msg--assistant .st-bubble,
 .st-msg--user .st-bubble {
-  font-size: var(--st-content-fs, 14px);
-  line-height: calc(var(--st-content-fs, 14px) * 1.62);
+  font-size: var(--st-content-fs, 12px);
+  line-height: calc(var(--st-content-fs, 12px) * 1.62);
 }
 
 /* Density — the difference between scanning data and reading it. */
@@ -5688,8 +5688,6 @@ textarea.config-editor.st-input {
 .hardware-cards article > svg { color: var(--st-ink-muted); flex: none; margin-top: 4px; }
 .hardware-cards h3 { margin: 6px 0; overflow-wrap: anywhere; }
 .tasks-page { display: flex; flex-direction: column; gap: 20px; }
-.task-runtime { display: flex; align-items: flex-start; gap: 8px; }
-.task-runtime > svg { flex: none; margin-top: 2px; }
 .tasks-empty { min-height: 270px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px; text-align: center; }
 .tasks-empty > svg { color: var(--st-ink-muted); margin-bottom: 12px; }
 .task-templates { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px 40px; border-top: 1px solid var(--st-line); padding-top: 36px; }
@@ -7017,7 +7015,7 @@ textarea {
 .error-notice .error-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); max-height: 3.3em; overflow-y: auto; }
 .error-detail-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); }
 /* What you type and the small print under each message follow the reading size too, so the whole conversation changes together. */
-.st-composer textarea { font-size: var(--st-content-fs, 14px); }
+.st-composer textarea { font-size: var(--st-content-fs, 12px); }
 .st-msg__meta, .st-msg__meta time { font-size: var(--st-fs-read-sm); }
 
 /* What an approval is about, shown without opening the card: the file or the command. */
@@ -7026,28 +7024,41 @@ textarea {
 
 /* ---- Models: the version list and "This computer" ---- */
 .version-trigger { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 14px; border: 1.5px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); color: var(--st-ink); font: inherit; cursor: pointer; text-align: left; }
-.version-trigger__need { margin-left: auto; font-size: var(--st-fs-sm); white-space: nowrap; }
+.version-trigger__need { margin-left: auto; font-size: var(--st-fs-sm); text-align: right; }
+@media (max-width: 560px) {
+  .version-trigger { flex-wrap: wrap; padding-block: 10px; row-gap: 2px; }
+  .version-trigger__need { order: 3; flex-basis: 100%; margin-left: 0; text-align: left; }
+  .version-trigger .version-trigger__chev { order: 2; margin-left: auto; }
+}
 .version-trigger svg:last-child { flex: none; }
-.version-menu { display: flex; flex-direction: column; max-height: min(70vh, 640px); overflow: auto; padding: 4px 0; min-width: min(620px, calc(100vw - 24px)); }
-.version-head { display: grid; grid-template-columns: 1fr 84px 84px; gap: 10px; padding: 8px 18px 4px; font-size: var(--st-fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--st-ink-muted); }
-.version-head span:nth-child(n+2) { text-align: right; }
-.version-row { display: grid; grid-template-columns: 1fr 84px 84px; gap: 10px; align-items: baseline; width: calc(100% - 12px); margin: 0 6px; padding: 6px 12px; border: 0; border-radius: var(--st-r-sm); background: transparent; color: var(--st-ink); font: inherit; font-size: var(--st-fs-md); text-align: left; cursor: pointer; }
+/* The version list: one row per version, 14px names, 13px detail, small tags; the technical line is behind "Show details". */
+.version-menu { display: flex; flex-direction: column; max-height: min(70vh, 560px); overflow: auto; padding: 6px; }
+.version-section + .version-section { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--st-hairline); }
+.version-section__title { padding: 8px 10px 4px; font-size: var(--st-fs-xs); font-weight: 600; color: var(--st-ink-muted); }
+.version-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; align-items: start; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--st-r-sm); background: transparent; color: var(--st-ink); font: inherit; font-size: var(--st-fs-md); text-align: left; cursor: pointer; }
 .version-row:hover, .version-row:focus-visible { background: var(--st-surface-2); }
-.version-row.is-on { background: var(--st-surface-2); }
-.version-row__name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.version-row__name svg { color: var(--st-accent-text); margin-right: 6px; vertical-align: -2px; }
-.version-row__title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.version-row__note { display: block; margin-top: 1px; font-size: var(--st-fs-xs); white-space: normal; line-height: 1.35; }
-.version-row__have, .version-trigger .version-row__have { margin-left: 8px; padding: 1px 8px; border-radius: var(--st-r-pill); background: var(--st-accent-tint); color: var(--st-accent-text); font-size: var(--st-fs-xs); font-weight: 700; white-space: nowrap; }
-.version-row__ssd { margin-left: 10px; font-size: var(--st-fs-xs); color: var(--st-warn-text); }
-.version-row__ram { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
-.version-row__dl { text-align: right; font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
-.version-group { border-top: 1px solid var(--st-line-soft); margin-top: 4px; }
-.version-group[data-open] { background: var(--st-surface-2); padding-bottom: 6px; }
-.version-group[data-open] .version-row:hover { background: var(--st-surface); }
-.version-group__head { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 18px; border: 0; background: transparent; color: var(--st-ink); font: inherit; font-weight: 700; cursor: pointer; text-align: left; }
-.version-group__head svg.is-open { transform: rotate(180deg); }
-.version-own { border-top: 1px solid var(--st-line-soft); margin-top: 4px; }
+.version-row.is-on { background: var(--st-accent-tint); }
+.version-row__check { padding-top: 3px; color: var(--st-accent-text); }
+.version-row__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.version-row__title { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+.version-row__title strong { font-weight: 600; overflow-wrap: anywhere; }
+.version-row__word { font-size: var(--st-fs-sm); color: var(--st-ink-muted); }
+.version-row__tech { font-size: var(--st-fs-sm); line-height: 1.4; color: var(--st-ink-muted); }
+.version-row__size { font-size: var(--st-fs-sm); line-height: 20px; color: var(--st-ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.version-row__fit { font-size: var(--st-fs-sm); line-height: 1.4; color: var(--st-ink-muted); }
+.version-row__fit[data-fit='ssd'], .version-row__fit[data-fit='no'] { color: var(--st-warn-text); }
+.version-more { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--st-r-sm); background: transparent; color: var(--st-ink-soft); font: inherit; font-size: var(--st-fs-sm); font-weight: 600; cursor: pointer; text-align: left; }
+.version-more:hover, .version-more:focus-visible { background: var(--st-surface-2); color: var(--st-ink); }
+.version-more__chev { transition: transform var(--st-t-local) var(--st-ease-standard); }
+.version-more__chev.is-open { transform: rotate(180deg); }
+.version-more__rows { animation: st-enter var(--st-t-local) var(--st-ease-enter) both; --st-from-y: -4px; }
+.version-row__tags { display: inline-flex; flex-wrap: nowrap; gap: 6px; white-space: nowrap; }
+.version-tag { padding: 0 8px; border-radius: var(--st-r-pill); font-size: var(--st-fs-xs); font-weight: 600; line-height: 20px; white-space: nowrap; }
+.version-tag--pick { background: var(--st-accent-tint); color: var(--st-accent-text); }
+.version-tag--have { box-shadow: inset 0 0 0 1px var(--st-line); color: var(--st-ink-soft); }
+.version-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--st-hairline); }
+.version-foot__btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: var(--st-r-sm); background: transparent; color: var(--st-ink-soft); font: inherit; font-size: var(--st-fs-sm); cursor: pointer; }
+.version-foot__btn:hover, .version-foot__btn:focus-visible { background: var(--st-surface-2); color: var(--st-ink); }
 .pc-card { display: flex; flex-direction: column; gap: 18px; }
 .pc-card p { margin: 2px 0 0; }
 .pc-meter { display: flex; flex-direction: column; gap: 7px; }
@@ -7253,8 +7264,8 @@ textarea {
 .storage-model__size { font-variant-numeric: tabular-nums; font-size: var(--st-fs-sm); }
 
 /* ---- About > Privacy: plain text ---- */
-.privacy-notes { display: flex; flex-direction: column; gap: 8px; padding: 2px 0; }
-.privacy-notes p { margin: 0; font-size: var(--st-fs-sm); line-height: 1.5; color: var(--st-ink-soft); }
+.privacy-notes { padding: 2px 0; }
+.privacy-notes p { margin: 0; max-width: 68ch; font-size: var(--st-fs-sm); line-height: 1.6; color: var(--st-ink-soft); }
 
 /* ---- an opened task: the name, and a last answer that is easy to read ---- */
 .task-name { margin: 0 0 2px; font-size: var(--st-fs-xl); letter-spacing: -.02em; }
@@ -7320,6 +7331,8 @@ textarea {
 .telepop__detail { margin-right: auto; font-size: var(--st-fs-sm); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .telepop__head > .st-btn { align-self: center; margin-left: auto; }
 .telepop__detail + .st-btn { margin-left: 0; }
+/* a popover with nothing under its title (Subagents, none recorded) is one row: no rule and no space below it */
+.telepop__head:last-child { align-items: center; padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
 
 /* the way back to the newest message: a small round arrow, shown only while scrolled up */
 .jumplatest-row { position: relative; height: 0; flex: none; z-index: 3; }
@@ -7431,6 +7444,14 @@ textarea {
 .act__chev { color: var(--st-icon); transition: transform var(--st-t-local) var(--st-ease-standard); }
 .act[data-open] .act__chev { transform: rotate(180deg); }
 .act__live { width: 6px; height: 6px; border-radius: 50%; background: var(--st-accent); animation: st-pulse 1.6s var(--st-ease-in-out) infinite; }
+/* The step that is running reads as the current one (ink, not the muted past-tense of the lines above it) and its last output sits under it on one fixed line. */
+.act[data-live] .act__line { color: var(--st-ink); }
+/* A file the model is writing right now: its size beside the name (figures do not jitter), and the last three lines in a box that is always three lines
+   high, the newest line at the bottom, so nothing under it moves while the text grows. Nothing here animates (the one dot pulse is gated already). */
+.act__meta { color: var(--st-ink-muted); font-size: var(--st-fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.act__tail { display: flex; flex-direction: column; justify-content: flex-end; gap: 0; box-sizing: border-box; max-width: 72ch; height: calc(3 * 1.45 * var(--st-fs-xs) + 16px); margin: -2px 0 8px; padding: 8px 12px; overflow: hidden; border-radius: var(--st-r-md); background: var(--st-surface-2); font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.45; color: var(--st-ink-muted); }
+.act__tail > span { display: block; flex: none; overflow: hidden; white-space: pre; text-overflow: ellipsis; }
+.act__output { margin: -4px 0 8px; padding-left: 1px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.4; color: var(--st-ink-muted); }
 .act__thumb { width: 44px; height: 30px; object-fit: cover; border-radius: 6px; border: 1px solid var(--st-line); cursor: pointer; }
 .act__files { flex-basis: 100%; list-style: none; margin: 0; padding: 0 0 0 4px; display: flex; flex-direction: column; }
 .act__skill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--st-ink-soft); }

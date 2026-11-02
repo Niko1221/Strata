@@ -1011,6 +1011,7 @@ async function api(req, res, path, method, url) {
   if(path==='/api/native/models-folder/leave'&&method==='POST')return json(res,200,await native.leaveInterruptedMove());
   if(path==='/api/native/plan'&&method==='POST')return json(res,200,await native.plan(await readBody(req)));
   if(path==='/api/native/operations'&&method==='POST'){if(storageChanging)return error(res,409,'Wait for the model folder check to finish.');const body=await readBody(req);return json(res,202,native.operation(body.kind,body.args));}
+  if(path==='/api/native/engine-restart/dismiss'&&method==='POST')return json(res,200,native.dismissRestart());
   if(path==='/api/native/logs'&&method==='GET')return json(res,200,{logs:native.logs()});
   if(path==='/api/native/logs/save'&&method==='POST'){
    /* Diagnostics to a file: the engine messages the app kept, failed operations, and the tail of each model's server log under Control.
@@ -2233,7 +2234,7 @@ async function staticFile(req, res, path) {
   if (!existsSync(DIST)) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(
-      `<!doctype html><meta charset="utf-8"><title>Strata host</title>
+      `<!doctype html><meta charset="utf-8"><title>Strata</title>
        <body style="font:16px/1.6 -apple-system,system-ui;background:#0e1113;color:#eef1f3;padding:48px">
        <h1 style="margin:0 0 8px">Strata host is running</h1>
        <p style="color:#8e979f">No built web app found at <code>${DIST}</code>.</p>

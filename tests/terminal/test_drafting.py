@@ -20,6 +20,17 @@ from tests.terminal.launch_support import run_cli
 
 ROOT = Path(__file__).resolve().parents[2]
 GYRO = "qwen3.8-flash-next-gyro-gyro-s"
+_HARDWARE = mock.patch.object(drafting, "detect_hardware", return_value=("cuda", ["sm_120"]))
+
+
+def setUpModule():
+    """These tests are about the table, the flags and the download, on a computer whose engine can run DFlash2 (the box that runs them may have an Intel or no card;
+    tests/terminal/test_drafting_hardware.py has the hardware matrix)."""
+    _HARDWARE.start()
+
+
+def tearDownModule():
+    _HARDWARE.stop()
 
 
 def serving_dflash2():
@@ -100,7 +111,8 @@ class Decisions(unittest.TestCase):
             self.ready()
             d = drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data)
             self.assertEqual(d.drafter, "dflash2")
-            self.assertEqual(d.flags, ("--draft", "dflash2", "--draft-model", str(drafting.pack_path(self.data))))
+            self.assertEqual(d.flags, ("--draft", "dflash2", "--draft-model", str(drafting.pack_path(self.data)), "--spec", "6", "--draft-conf", "0.35"),
+                             "the window and confidence that measured best (RESULTS-DRAFT.md section 4)")
             self.assertFalse(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=self.data))
 
     def test_dflash2_is_for_qwen38_flash_next_only(self):
@@ -162,9 +174,50 @@ class EngineArguments(unittest.TestCase):
             c = self.cfg(drafting="dflash2", args=[*self.ARGS, "--draft", "mtp", "--draft-model", "/old.pack"])
             d = drafting.apply(c, klass="blackwell", data_dir=self.data)
         self.assertEqual(d.drafter, "dflash2")
-        self.assertEqual(c["args"], [*self.ARGS, "--draft", "dflash2", "--draft-model", str(pack)])
+        spec_at = self.ARGS.index("--spec")
+        self.assertEqual(c["args"], [*self.ARGS[:spec_at], *self.ARGS[spec_at + 2:], "--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35", "--draft-mtp-spec", "4"],
+                         "the MTP window of 4 gives way to DFlash2's 6 (and is named for the fallback); the MTP's own arguments stay")
         self.assertEqual(c["args"].count("--draft"), 1)
+        self.assertEqual(c["args"].count("--spec"), 1)
         self.assertIn("--mtp", c["args"], "the MTP stays as the fallback the engine names")
+
+    def test_a_fallback_to_the_mtp_keeps_the_mtps_own_window(self):
+        """DFlash2 starts with --spec 6; when the engine falls back to the MTP the window must be the MTP's usual one, named with --draft-mtp-spec."""
+        pack = drafting.pack_path(self.data)
+        pack.parent.mkdir(parents=True)
+        pack.write_bytes(b"x" * (2 << 20))
+        with serving_dflash2():
+            c = self.cfg(drafting="dflash2")
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            args = c["args"]
+            self.assertEqual(args[args.index("--draft-mtp-spec") + 1], "4", "the window the config had for the MTP")
+            self.assertEqual(args[args.index("--spec") + 1], "6")
+            # a config whose MTP window is 3 (a Mac preset) falls back to 3, and one with no window to the usual 4
+            c = self.cfg(drafting="dflash2", args=[a if a != "4" else "3" for a in self.ARGS])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertEqual(c["args"][c["args"].index("--draft-mtp-spec") + 1], "3")
+            c = self.cfg(drafting="dflash2", args=[a for i, a in enumerate(self.ARGS) if i not in (self.ARGS.index("--spec"), self.ARGS.index("--spec") + 1)])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertEqual(c["args"][c["args"].index("--draft-mtp-spec") + 1], str(drafting.MTP_WINDOW))
+            # a window the person typed by hand is theirs: DFlash2 and the fallback both run it, nothing is added
+            c = self.cfg(drafting="dflash2", args=[*self.ARGS[:self.ARGS.index("--spec")], "--spec", "5"], user_args=["--spec", "5"])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertNotIn("--draft-mtp-spec", c["args"])
+            self.assertEqual(c["args"][c["args"].index("--spec") + 1], "5")
+            # a --draft-mtp-spec the person typed stays as typed
+            c = self.cfg(drafting="dflash2", args=[*self.ARGS, "--draft-mtp-spec", "2"], user_args=["--draft-mtp-spec", "2"])
+            drafting.apply(c, klass="blackwell", data_dir=self.data)
+            self.assertEqual((c["args"].count("--draft-mtp-spec"), c["args"][c["args"].index("--draft-mtp-spec") + 1]), (1, "2"))
+        # choosing the MTP again leaves no trace of it
+        c = self.cfg(drafting="mtp", args=[*self.ARGS, "--draft", "dflash2", "--draft-model", "/p", "--draft-mtp-spec", "4"])
+        drafting.apply(c, klass="blackwell", data_dir=self.data)
+        self.assertEqual(c["args"], self.ARGS)
+
+    def test_the_engine_uses_the_named_window_when_dflash2_falls_back(self):
+        """The engine side (src/program/generate.cpp): the flag marks itself as given, and each place DFlash2 falls back to the MTP applies it."""
+        src = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8")
+        self.assertIn("o.draft_mtp_spec_set = true", src)
+        self.assertEqual(src.count("o.spec = o.draft_mtp_spec;"), 3, "the CLI start, the CLI loop and serve")
 
     def test_mtp_removes_a_drafter_that_was_written_by_hand(self):
         c = self.cfg(drafting="mtp", args=[*self.ARGS, "--draft", "dflash2", "--draft-model", "/p"])
@@ -193,7 +246,7 @@ class EngineArguments(unittest.TestCase):
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), serving_dflash2(), \
                 mock.patch.object(drafting, "pack_ready", return_value=True), mock.patch.object(drafting, "data_dir_of", return_value=Path("/d")):
             args = engine_args(self.cfg(drafting="dflash2"))
-            self.assertEqual(args[-4:], ["--draft", "dflash2", "--draft-model", str(pack)])
+            self.assertEqual(args[-10:], ["--draft", "dflash2", "--draft-model", str(pack), "--spec", "6", "--draft-conf", "0.35", "--draft-mtp-spec", "4"])
         with mock.patch("serve.server.drafting_card_class", return_value="blackwell"), mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
             self.assertEqual(engine_args(self.cfg()), self.ARGS, "no choice: nothing changes")
             off = engine_args(self.cfg(drafting="off"))
@@ -244,9 +297,10 @@ class WhatTheEngineSaid(unittest.TestCase):
 class WordsMatchTheApp(unittest.TestCase):
     def test_every_line_the_engine_start_can_say_is_in_the_apps_catalog_in_all_eight_languages(self):
         folder = ROOT / "apps" / "host" / "src" / "locales"
-        catalogs = {l: json.loads((folder / f"{l}.json").read_text(encoding="utf-8")) for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
+        catalogs = {l: {**json.loads((folder / f"{l}.json").read_text(encoding="utf-8")), **json.loads((folder / f"df2-{l}.json").read_text(encoding="utf-8"))}
+                    for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
         ids = {v: k for k, v in catalogs["en"].items()}
-        self.assertEqual(len(drafting.REASONS), 4)
+        self.assertEqual(len(drafting.REASONS), 5)
         for reason in drafting.REASONS:
             line = drafting.mtp_line(reason)
             self.assertIn(line, ids, line)
@@ -393,7 +447,7 @@ class FetchAndPack(unittest.TestCase):
             plan = drafting_fetch.plan(self.data)
         self.assertEqual(plan["gb"], 1.2)
         self.assertIn("1.2 GB to download", plan["text"])
-        self.assertIn("0.76 GB", plan["text"])
+        self.assertIn("0.52 GB", plan["text"])
         self.assertIn("incoai/Qwen3.8-Flash-Next-DFlash2", plan["text"])
         self.assertIn("Apache-2.0", plan["text"])
         self.assertIn("starts with the MTP instead", plan["text"], "and what happens if it does not fit")

@@ -129,6 +129,8 @@ html[data-motion='reduced'] .tunnel-automatic .tunnel-stage__symbol .st-icon, ht
 .composer::before, .composer::after { display: none; }
 .st-composer__bar, .chatsplit[data-preview='true'] .st-composer__bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .st-composer__bar > .spacer, .chatsplit[data-preview='true'] .st-composer__bar > .spacer { display: block; flex: 1; min-width: 0; }
+/* Stop and Send are the same height: Stop (secondary) was 38px and Send (primary) 32px, so the whole message box moved 5px every time a reply started or ended. */
+.st-composer__bar > .st-btn:not(.st-btn--icon) { height: 32px; min-height: 32px; box-sizing: border-box; }
 .composer-mic { display: grid; place-items: center; flex: none; width: 32px; height: 34px; border: 0; border-radius: 9px; background: transparent; color: var(--st-ink-muted); cursor: pointer; }
 .composer-mic:hover, .composer-mic[aria-pressed='true'] { color: var(--st-accent-text); background: var(--st-surface-2); }
 .composer-mode { max-width: 170px; }
@@ -157,6 +159,12 @@ html[data-motion='reduced'] .voice-wave span, html[data-motion='reduced'] .agent
 .main__title-line .main__title { margin: 0; flex: none; }
 .main__title-detail { font-size: var(--st-fs-xs); color: var(--st-ink-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main__titles { min-width: 0; }
+/* Tasks: the help line (Board, Schedule) sits in the header after the title, smaller than body text. It wraps rather than being cut, and the header grows
+   to hold it, so it stays readable at narrow widths. */
+.main__title-detail:has(.tasks-note) { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; }
+.tasks-note { display: inline-flex; align-items: flex-start; gap: 6px; max-width: 68ch; }
+.tasks-note > svg { flex: none; margin-top: 1px; }
+.main__head:has(.tasks-note) { height: auto; }
 .skills-header-search.st-input { width: 200px; min-width: 0; }
 .skills-library-title { margin: 0 0 20px; }
 .dialog-head__actions { display: flex; align-items: center; gap: 12px; flex: none; }
@@ -597,9 +605,6 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 [data-preview-resizing='true'] .artifact-panel iframe { pointer-events:none; }
 .chat-toolbar__conversation { container-type:inline-size; container-name:chat-controls; }
 .chat-agents__count { font-size:11px; font-variant-numeric:tabular-nums; }
-.subagents-empty { display:grid; justify-items:start; gap:10px; padding:18px 0 8px; }
-.subagents-empty > svg { color:var(--st-ink-muted); }
-.subagents-empty p { line-height:1.7; }
 .subagents-overview-summary { padding:8px 0 12px; }
 @container chat-controls (max-width:560px) { .chat-agents__label { display:none; } }
 @container chat-controls (max-width:460px) { .chat-toolbar__conversation .chat-model-badge { max-width:112px; } }
@@ -645,6 +650,12 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .native-gpu-options input { accent-color:var(--st-accent); }
 .native-gpu-options small { display:block; margin-top:5px; color:var(--st-ink-muted); }
 .native-model-actions { display:flex; gap:16px; justify-content:flex-end; border-top:1px solid var(--st-line); padding-top:20px; }
+/* Load model has no pop-up: what the download is sits beside the button that starts it */
+.native-model-actions { align-items:center; }
+.native-download-size { margin-right:auto; font-variant-numeric:tabular-nums; }
+/* a short note under a control (SSD streaming, Doesn't fit, a long context, the drafter download): the icon sits beside the words */
+.native-spill-note { display:flex; align-items:center; gap:8px; margin:0; }
+.native-spill-note > svg { flex:none; }
 .native-path { display:block; font-size:11px; line-height:1.8; overflow-wrap:anywhere; margin:16px 0; }
 .native-settings { margin-top:24px; border-top:1px solid var(--st-line-soft); padding-top:20px; }
 .native-settings>summary, .native-progress summary,.native-generation>summary { font-size:13px; font-weight:600; cursor:pointer; }

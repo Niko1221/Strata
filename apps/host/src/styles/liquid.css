@@ -349,12 +349,14 @@ body {
   }
 }
 
-/* The one action under the model-files card read as a centred footer because a
-   stretched control centres its label. It sits at the card's left edge now, as
-   a quiet text action under the thing it belongs to. */
-.other-models {
-  align-self: flex-start;
-  padding-left: 12px;
+/* "Other local models..." is part of the Model files card, beside "Storage settings"
+   (owner, 11-01), as a quiet text action. */
+.model-files__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.model-files__actions .other-models {
   font-weight: 500;
 }
 
@@ -362,20 +364,26 @@ body {
    "New chat" is the one action on every screen, so it has to read as a control
    without becoming the brightest object in the window.
 
-   Light mode keeps the accent at full strength with the dark accent ink, which
-   is the pairing the accent-ink correction documented (6.37:1): over a #f9fafb
-   page a full #10b981 fill is only 2.5:1 from its background, so it reads as a
-   confident control rather than glare, and the near-black label carries the
-   legibility. Dark mode takes the tinted accent material instead, because a
-   large saturated fill on a near-black page is the one thing that actually
-   glares (9.86:1 against the page; see interaction-guidelines §12).
+   Light mode used to give it the full #10b981 fill with the near-black accent
+   ink. The owner asked for white or green text instead, and white on #10b981 is
+   2.54:1 (it failed `npm run contrast`, passes 1 and 7 of the pass log). White
+   needs a deeper green behind it, but every other primary in light mode is the
+   tinted accent surface with deep-green text (New skill, Run now, Connect an
+   app...), so a deep solid button would be the one object in the app that
+   looked different. It takes the same tinted surface and green text as they do:
+   #086a4a on the 20% tint is 5.47:1, and the hover and edge come from the same
+   tokens, so there is one primary button, not two.
+
+   Dark mode takes the tinted accent material below, because a large saturated
+   fill on a near-black page is the one thing that actually glares (9.86:1
+   against the page; see interaction-guidelines §12).
 
    Both carry the specular top edge, so the control is lit the same way as every
    other surface in the shell. */
 .nav-new.st-btn--primary {
-  background: var(--st-accent);
-  border: 1px solid color-mix(in srgb, var(--st-accent) 70%, var(--st-accent-ink));
-  color: var(--st-accent-ink);
+  background: var(--st-accent-surface);
+  border: 1px solid var(--st-accent-surface-edge);
+  color: var(--st-accent-surface-ink);
   box-shadow:
     inset 0 1px 0 var(--st-specular),
     var(--st-sh-card);
@@ -384,11 +392,10 @@ body {
     box-shadow var(--st-t-control) var(--st-ease-standard);
 }
 .nav-new.st-btn--primary:hover:not(:disabled) {
-  background: var(--st-accent-hover);
-  border-color: color-mix(in srgb, var(--st-accent-hover) 70%, var(--st-accent-ink));
+  background: var(--st-accent-surface-hover);
 }
 .nav-new.st-btn--primary:active:not(:disabled) {
-  background: color-mix(in srgb, var(--st-accent) 88%, var(--st-accent-ink));
+  background: color-mix(in srgb, var(--st-accent) 36%, var(--st-surface));
 }
 [data-theme='dark'] .nav-new.st-btn--primary {
   background: color-mix(in srgb, var(--st-accent) 22%, var(--st-surface));
@@ -549,10 +556,14 @@ body {
    and two shapes for one row. The title is the row's subject and takes the
    reading step; both dropdowns are quiet capsules of the same height, with the
    border left to the hover state so the chrome stays behind the conversation. */
-.chat-toolbar__conversation h1 {
+.chat-toolbar__conversation h1,
+.main__head .main__title {
   font-size: var(--st-fs-md);
   letter-spacing: -0.01em;
 }
+/* One title step for the chat's "New conversation" and every screen header
+   (Tasks, Skills, Monitor, Serving, Model, Engine): --st-fs-md, 600. */
+.main__head .main__title { font-weight: 600; }
 .chat-model-badge.chat-model-picker,
 .chat-agents {
   height: 30px;
@@ -697,6 +708,32 @@ body {
   translate: 0 -50%;
   transition: opacity var(--st-t-micro) var(--st-ease-standard);
 }
+/* A chat that has a turn running while the person is elsewhere: a small ring turns in the same gutter as the unread dot (it takes the dot's place: a
+   working chat is not "unread" yet). Info colour and a slow turn keep it calm; reduced motion holds it still. */
+.ws__session .navsession__working {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--st-info-tint);
+  border-top-color: var(--st-info);
+  border-radius: 50%;
+  translate: 0 -50%;
+  animation: st-spin 1.4s linear infinite;
+  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+}
+.navsession[data-working] .navsession__title {
+  color: var(--st-ink);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws__session .navsession__working {
+    animation: none;
+  }
+}
+html[data-motion='reduced'] .ws__session .navsession__working {
+  animation: none;
+}
 .ws__session .session-overflow {
   position: absolute;
   top: 50%;
@@ -714,6 +751,7 @@ body {
   pointer-events: auto;
 }
 .ws__session:hover .navsession__time,
+.ws__session:hover .navsession__working,
 .ws__session:hover .navsession__unread {
   opacity: 0;
 }
@@ -1049,4 +1087,193 @@ body {
   text-overflow: clip;
   line-height: 1.2;
   padding-top: 2px;
+}
+
+/* ------------------------------------------------ 17. the motion system -----
+   One scale (app.css section 1: micro 100, control 160, local 240, surface 320,
+   choreo 460ms; standard / enter / exit curves) and three habits, so the app
+   answers a touch the same way everywhere:
+
+   - a control that is pressed gives a little (a 3% scale, micro time);
+   - a surface that appears arrives from the side it belongs to, decelerating,
+     and leaves faster than it came (enter = local/surface, exit = control);
+   - a disclosure opens by growing and fading in, never by snapping.
+
+   Everything animates transform, opacity, or one small block-size (a disclosure),
+   never a transcript's layout, so streaming text and scrolling cost nothing
+   extra on a weak GPU while a heavy model is running beside the app. The
+   reduced-motion gate zeroes the durations (tokens) and the distances below. */
+:root {
+  --st-press-scale: 0.97;
+  --st-panel-shift: 28px;
+}
+.st-btn {
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    border-color var(--st-t-control) var(--st-ease-standard),
+    color var(--st-t-control) var(--st-ease-standard),
+    box-shadow var(--st-t-control) var(--st-ease-standard),
+    transform var(--st-t-micro) var(--st-ease-standard);
+}
+.st-btn:not(:disabled):active {
+  transform: scale(var(--st-press-scale));
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --st-press-scale: 1; --st-panel-shift: 0px; }
+}
+
+/* Reasoning ("Thought for 38s"): the summary is a control (hover wash, press),
+   the chevron turns, and the passage grows open and fades in — it used to jump.
+   The rule that marks the passage belongs to the body, so the line above it
+   never moves. Where ::details-content is not supported it simply opens. */
+.rz > summary {
+  width: fit-content;
+  max-width: 100%;
+  margin-left: -8px;
+  padding: 2px 8px;
+  border-radius: var(--st-r-pill);
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    transform var(--st-t-micro) var(--st-ease-standard);
+}
+.rz > summary:hover {
+  background: var(--st-fill-hover);
+}
+.rz > summary:active {
+  background: var(--st-fill-press);
+  transform: scale(var(--st-press-scale));
+}
+.rz > summary:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--st-ink-muted);
+}
+.rz__chev {
+  transition: transform var(--st-t-local) var(--st-ease-standard);
+}
+.rz[open] {
+  border-left: 0;
+  padding-left: 0;
+}
+.rz__body {
+  margin-left: 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--st-hairline);
+}
+@supports (interpolate-size: allow-keywords) {
+  .rz::details-content {
+    block-size: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition:
+      content-visibility var(--st-t-surface) allow-discrete,
+      block-size var(--st-t-surface) var(--st-ease-standard),
+      opacity var(--st-t-local) var(--st-ease-standard);
+  }
+  .rz[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
+}
+
+/* Code blocks: a block is a figure inside the answer, so it gets room before and
+   after, and it is lighter than the text around it — a 34px bar, 10px of padding,
+   code at the reading step below the body (12px minimum at the default size: pass 37's
+   floor stays; 13px against 16px body at the larger sizes). */
+.st-bubble .st-code {
+  margin: 16px 0 20px;
+}
+.st-bubble .st-code:first-child {
+  margin-top: 0;
+}
+.st-bubble .st-code:last-child {
+  margin-bottom: 0;
+}
+.st-code__head {
+  min-height: 34px;
+  padding-block: 2px;
+}
+.st-code pre {
+  padding: 10px 14px;
+  line-height: 1.5;
+}
+.st-code .st-btn--icon {
+  width: 28px;
+  height: 28px;
+}
+.st-code .st-btn--icon[data-open] {
+  color: var(--st-accent);
+  background: color-mix(in srgb, var(--st-code-ink) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 45%, transparent);
+}
+
+/* The sidebar preview arrives from the right with a rise and fade, the
+   chosen file's content crossfades when you switch tabs, and a closed panel
+   leaves the same way (a bare shell over the column it vacated; the page itself
+   is already gone, so nothing heavy is animated). Both take the 460 ms step of
+   the motion scale (`--st-t-choreo`), slower than a menu or a drawer so the
+   panel arrives and leaves calmly, with the same easings as before; reduced
+   motion makes the step 1 ms. */
+.chatsplit .artifact-panel {
+  animation: st-panel-in var(--st-t-choreo) var(--st-ease-enter) both;
+}
+.chatsplit .artifact-panel[data-leaving] {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(48%, 640px);
+  z-index: 3;
+  pointer-events: none;
+  animation: st-panel-out var(--st-t-choreo) var(--st-ease-exit) both;
+}
+.artifact-content {
+  animation: st-enter var(--st-t-control) var(--st-ease-enter) both;
+  --st-from-y: 4px;
+}
+@keyframes st-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--st-panel-shift));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes st-panel-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--st-panel-shift));
+  }
+}
+.st-code__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ------------------------------------------- 18. "This computer" on Models ----
+   Free graphics memory and free RAM come first (real readings, a bar that is
+   filled by what is in use), a loaded model gets its own tinted block with what
+   it takes, and the SSD appears only in that block or in the fit line when the
+   model does not fit in memory. */
+.pc-label {
+  margin: 0;
+  font-size: var(--st-fs-xs);
+  font-weight: 600;
+  color: var(--st-ink-muted);
+}
+.pc-free {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pc-free .pc-meter__track i {
+  width: 100%;
+  transform-origin: left center;
+  transition: transform var(--st-t-surface) var(--st-ease-standard);
+}
+.pc-meter[data-low] .pc-meter__track i {
+  background: var(--st-warn);
 }

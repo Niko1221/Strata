@@ -110,7 +110,7 @@ class CatalogRules(unittest.TestCase):
             self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
             for r in rows:
                 if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
-                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3, "UD-IQ1_S": 241.0, "UD-IQ1_M": 258.4}[r.model], delta=0.1)
+                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3, "ISTA-DAS-Coder": 190.7, "UD-IQ1_S": 241.0, "UD-IQ1_M": 258.4}[r.model], delta=0.1)
                     continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
@@ -144,7 +144,7 @@ class CatalogRules(unittest.TestCase):
         with Home():
             cat = catalog(hw)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two ISTA-DAS sets run on a Mac, UD-IQ1_S since f-039
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two ISTA-DAS sets run on a Mac, UD-IQ1_S since f-039; the Coder and UD-IQ1_M are offered with a "not run yet" line
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
                 self.assertEqual(rows[name].family, "deepseek41")
@@ -193,7 +193,7 @@ class CatalogRules(unittest.TestCase):
             cat = catalog()
             self.assertAlmostEqual(cat.kv_gb(131072, "int8"), 1.799, places=2)
             self.assertLess(cat.kv_gb(131072, "q4_0"), cat.kv_gb(131072, "int8"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 131072)      # 128K on every card (owner, 2026-11-01)
             self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_24), 131072)
 
     def test_missing_installer_files_are_said_in_words(self):
@@ -588,9 +588,9 @@ class AdoptRules(unittest.TestCase):
             hw["gpus"] = cards
             cat = catalog(hw)
             self.assertEqual(cat.computer().line().split(" 8 GB")[0], "Arc A750".replace("Arc", "Intel Arc"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 8192)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)      # an 8 GB Arc too: warned about, never lowered
             hw["gpus"] = [{"vendor": "intel", "name": "Intel Arc Pro B70", "vram_gb": 32.0, "usable": True}]
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)
 
     def test_plan_names_what_is_missing(self):
         from strata_cli.launch import adopt
@@ -879,7 +879,7 @@ class FlagsCommand(unittest.TestCase):
     def test_defaults_come_from_the_recommendation(self):
         p = self.plan()
         s = p["settings"]
-        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 32768, "local", "skip"))
+        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 131072, "local", "skip"))
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):

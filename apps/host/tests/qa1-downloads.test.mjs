@@ -103,6 +103,11 @@ test('the recommended four come first; the others are what the "More versions" l
   assert.deepEqual(lib.recommendedVersions([v('qwen36', 'UD-Q4_K_XL')]), [], 'Qwen3.6 has no recommended set: its versions are all shown');
 });
 
+test("the DeepSeek versions have their names, the ISTA-DAS Coder under the owner's spelling", () => {
+  lib.setTranslationLanguage('en');
+  assert.deepEqual(['IST-DAS-1.75bpw', 'IST-DAS-2.00bpw', 'IST-DAS-2.25bpw', 'ISTA-DAS-Coder'].map(m => lib.nativeVersionLabel(m)), ['Smallest', 'Balanced', 'Best quality', 'ISTA-DAS Coder']);
+});
+
 test('the three NVFP4 versions have clear names and one line that tells them apart', () => {
   lib.setTranslationLanguage('en');
   const names = ['NVFP4', 'NVFP4-NVIDIA', 'NVFP4-QAD'].map(m => lib.nativeVersionLabel(m));
@@ -144,7 +149,7 @@ test('4d: picture reading is on unless the person turned it off (no saved choice
     assert.equal(first().visionEnabled, true);
   } finally { await f.cleanup(); }
   const screen = readSource(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
-  assert.match(screen, /setVision\(installed\.visionEnabled === false \? 'no'/);
+  assert.match(screen, /setVision\(installed\.visionEnabled === false && installed\.visionPrepared !== false \? 'no'/);
   assert.match(screen, /else\s*\{?\s*setVision\('yes'\)/, 'a version that is not downloaded starts with Read pictures on');
 });
 

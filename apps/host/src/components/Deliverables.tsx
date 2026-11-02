@@ -1,7 +1,9 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { tr } from '../lib/i18n';
 import { fileAction, fileSize, fileTypeLabel, previewOf, rawUrlOf, type ActivityGroup, type Deliverable } from '../lib/deliverables';
 import type { PreviewArtifact } from '../lib/artifacts';
+import { draftSize, groupFromDraft } from '../lib/draft-view';
+import type { ToolDraft } from '../lib/types';
 import { pushToast } from '../lib/store';
 import { plainFailureText } from '../lib/plain-errors';
 import { FloatingMenu } from './FloatingMenu';
@@ -80,13 +82,45 @@ export function ActivityLine({ group, sessionId, onPreview }: { group: ActivityG
   const picture = group.files.find(f => f.kind === 'image');
   // The host's sentence may end with the numbers ("… +225 −0"): they are drawn as figures instead.
   const sentence = group.line.replace(/\s*\+\d+\s*[−-]\s*\d+\s*$/, '');
-  return <div className="act" data-open={open || undefined}>
+  // While the run is open this is the live step: the host's own words for it when it sends them, else the line it already had.
+  const live = !group.closed;
+  return <><div className="act" data-open={open || undefined} data-live={live || undefined}>
     <button type="button" className="act__line" aria-expanded={open} disabled={!group.files.length} onClick={() => setOpen(v => !v)}>
-      <span>{sentence}</span>{group.added || group.removed ? <Plusminus added={group.added} removed={group.removed}/> : null}
+      <span>{live && group.live?.label ? group.live.label : sentence}</span>{live && group.live?.bytes ? <span className="act__meta">{draftSize(group.live.bytes)}{group.live.lines && group.live.lines > 1 ? <> {"\u00B7"} {tr("{0} lines", [group.live.lines])}</> : null}</span> : null}{group.added || group.removed ? <Plusminus added={group.added} removed={group.removed}/> : null}
       {group.files.length ? <Icon name="chevron" size={14} className="act__chev"/> : null}
       {!group.closed ? <span className="act__live" aria-hidden="true"/> : null}
     </button>
     {picture ? <img className="act__thumb" src={rawUrlOf(sessionId, picture.path)} alt="" loading="lazy" onClick={() => void showOf(picture, sessionId, onPreview)}/> : null}
     {open ? <ul className="act__files">{group.files.map(f => <li key={f.path}><button type="button" onClick={() => void showOf(f, sessionId, onPreview, f.kind)}><Icon name="file" size={14}/>{f.name}{f.added || f.removed ? <Plusminus added={f.added} removed={f.removed}/> : null}</button></li>)}</ul> : null}
-  </div>;
+  </div>
+    {live && group.live?.output ? <p className="act__output" title={group.live.output}>{group.live.output}</p> : null}
+    {live && group.live?.tail !== undefined ? <div className="act__tail" aria-hidden="true">{group.live.tail.split('\n').filter(Boolean).map((line, i) => <span key={i}>{line}</span>)}</div> : null}
+  </>;
+}
+
+/** The value, at most every `ms` (a file arrives about five times a second; the eye needs two). A cleared value is shown at once. */
+function useThrottled<T>(value: T, ms: number, cleared: (v: T) => boolean): T {
+  const [shown, setShown] = useState(value), last = useRef(0), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    clearTimeout(timer.current);
+    if (cleared(value)) { setShown(value); return; }
+    const wait = Math.max(0, last.current + ms - Date.now());
+    timer.current = setTimeout(() => { last.current = Date.now(); setShown(value); }, wait);
+    return () => clearTimeout(timer.current);
+  }, [value, ms]);
+  return shown;
+}
+
+/**
+ * The files (or commands) the model is writing right now, from `message.drafts`: each is one open activity line with the file's name, its growing size
+ * and the last lines of its text. It draws nothing while there is nothing being written, and takes the place of the ordinary card when the call is whole.
+ */
+export function DraftLines({ drafts, sessionId, onPreview }: { drafts: ToolDraft[] | undefined; sessionId: string; onPreview: (a: PreviewArtifact) => void }) {
+  const shown = useThrottled(drafts, 350, v => !v?.length);
+  if (!drafts?.length || !shown?.length) return null;
+  return <>{shown.map(d => {
+    const file = d.target ? d.target.split(/[\\/]/).filter(Boolean).at(-1) : '';
+    const verb = tr(d.verb ?? (d.scope === 'shell' ? 'Running a command' : 'Writing a file'));
+    return <ActivityLine key={d.id} group={groupFromDraft(d, file ? `${verb} · ${file}` : verb)} sessionId={sessionId} onPreview={onPreview}/>;
+  })}</>;
 }

@@ -1,0 +1,41 @@
+{
+  "name": "ISTA-DAS-Coder",
+  "label": "ISTA-DAS Coder",
+  "repo": "helcig/tmp-oct26-4",
+  "revision": "31b7f2dcd5aa5824423a75da9807f617d15c3017",
+  "pinned_from": "2026-11-01T15:51:03.000Z",
+  "license_in_metadata": "mit",
+  "experts_per_layer": 192,
+  "layers": 40,
+  "experts_used": 6,
+  "shards": [
+    "model-00001-of-00004.gguf",
+    "model-00002-of-00004.gguf",
+    "model-00003-of-00004.gguf"
+  ],
+  "engram_shard": "model-00004-of-00004.gguf",
+  "mmproj": "mmproj-BF16.gguf",
+  "profile": "profile-coder.bin",
+  "files": {
+    "model-00001-of-00004.gguf": [
+      5779840,
+      "ebfd9c38fbd7c3221b4817138eb2ff2f1ad75e48af9a576a8aa0bcba7ecbd21c"
+    ],
+    "model-00002-of-00004.gguf": [
+      39716054528,
+      "c8dc2ce2ac96970ba6cde7aa6f4f1c6380f39ccc0b33e7ef3c3baeaee5a820cb"
+    ],
+    "model-00003-of-00004.gguf": [
+      32401731968,
+      "4b04342749ac37b3388c3c803af151838c5c07b188b23a579ed95a65522e6f30"
+    ],
+    "model-00004-of-00004.gguf": [
+      110595290592,
+      "94ceeb431d894366b8ab207b2aaa3291c2b7d570163984862333a4264faefb1a"
+    ],
+    "mmproj-BF16.gguf": [
+      972207968,
+      "a7cdd95589d0b58fdab59263b700657364520667e06f40b1f3828f0f206ba609"
+    ]
+  }
+}

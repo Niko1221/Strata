@@ -36,20 +36,22 @@ class LaunchDeepSeek(unittest.TestCase):
 
     def test_the_model_is_in_the_list(self):
         rows = [r for r in catalog(self.hw).rows() if r.family == "deepseek41"]
-        self.assertEqual([r.model for r in rows], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
+        self.assertEqual([r.model for r in rows], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
         self.assertEqual([r.download_gb for r in rows[:3]], [256.8, 273.8, 239.3])
         self.assertEqual(catalog(self.hw).resolve("ist-das-2.25bpw"), ("deepseek41", "IST-DAS-2.25bpw"))
         self.assertEqual(catalog(self.hw).resolve("ISTA-DAS-2.25bpw"), ("deepseek41", "IST-DAS-2.25bpw"))     # the name on screen is accepted too
-        r = rows[5]
+        self.assertEqual(catalog(self.hw).resolve("ista-das-coder"), ("deepseek41", "ISTA-DAS-Coder"))
+        self.assertEqual(catalog(self.hw).resolve("IST-DAS-Coder"), ("deepseek41", "ISTA-DAS-Coder"))         # (the shorter spelling the other ids have is accepted)
+        r = rows[-1]
         self.assertEqual((r.id, r.download_gb, r.verdict, r.images), ("deepseek-v4.1-flash-ud-q8_k_xl", 508.4, "fits", True))   # 0.2.7: pictures through the engine's own tower
         self.assertEqual(catalog(self.hw).resolve("ud-q8_k_xl"), ("deepseek41", "UD-Q8_K_XL"))
-        self.assertEqual(catalog(self.hw).max_context("deepseek41", "UD-Q8_K_XL"), 8192)
+        self.assertEqual(catalog(self.hw).max_context("deepseek41", "UD-Q8_K_XL"), 131072)
 
     def test_the_plan_places_the_model_on_the_four_cards(self):
         p = self.plan("--model", "ud-q8_k_xl", "--no-tui")
         pl = p["placement"]
         self.assertEqual(p["settings"]["family"], "deepseek41")
-        self.assertEqual(p["settings"]["context"], 8192)
+        self.assertEqual(p["settings"]["context"], 131072)
         self.assertEqual(p["settings"]["tune"], "skip")
         self.assertEqual(p["settings"]["vision"], "on")              # pictures are on by default (the engine's own tower)
         self.assertEqual(pl["verdict"], "fits")

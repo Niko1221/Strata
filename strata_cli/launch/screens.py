@@ -32,7 +32,7 @@ STEPS = (("model", "Model"), ("cards", "Cards"), ("folder", "Folder"), ("context
          ("parallel", "Parallel"), ("tuning", "Tuning"), ("advanced", "Advanced"), ("access", "Access"), ("save", "Save"))
 
 
-STEP_LABELS = {**dict(STEPS), "speed": "Speed"}
+STEP_LABELS = {**dict(STEPS), "speed": "Speed", "drafting": "Drafting"}
 
 
 def speed_choice_available(ctx) -> bool:
@@ -52,13 +52,26 @@ def speed_choice_available(ctx) -> bool:
     return cached
 
 
+def drafting_choice_available(ctx) -> bool:
+    """The Drafting step exists only where there is something to choose: Qwen3.8-Flash-Next (qwen, gyro) on a computer whose engine can run DFlash2
+    (CUDA or HIP, strata_control/drafting.py). Every other model has no step: DeepSeek has no MTP, the rest have only the MTP."""
+    from strata_control import drafting
+    if getattr(getattr(ctx, "settings", None), "family", None) not in drafting.SUPPORTED_FAMILIES or not drafting.ENGINE_SERVES_DFLASH2:
+        return False
+    backend, archs = drafting.detect_hardware()
+    return drafting.hardware_support(backend, archs).can_run
+
+
 def flow_for(ctx) -> list[str]:
-    """The steps of this computer: the Cards step exists only when two or more graphics cards can be used; the Speed step only for DeepSeek."""
+    """The steps of this computer: the Cards step exists only when two or more graphics cards can be used; the Speed step only for DeepSeek; the Drafting
+    step only for Qwen3.8-Flash-Next on a computer that can run DFlash2."""
     ids = [sid for sid, _ in STEPS]
     if len(ctx.computer.usable_gpus) < 2:
         ids.remove("cards")
     if getattr(getattr(ctx, "settings", None), "family", None) == "deepseek41" and speed_choice_available(ctx):
         ids.insert(ids.index("context") + 1, "speed")
+    if drafting_choice_available(ctx):
+        ids.insert(ids.index("pictures") + 1, "drafting")
     return ids
 
 
@@ -1119,6 +1132,43 @@ class SpeedScreen(Base):
         self.ctx.settings.speed = None if key == default else key        # the default stays "the default for this PC" in a saved preset
 
 
+class DraftingScreen(Base):
+    step_id = "drafting"
+    help_text = ("Drafting is how the model guesses the next words ahead to make answers faster. MTP comes with the model. DFlash2 is another way, for "
+                 "Qwen3.8-Flash-Next only. Auto uses MTP today.")
+
+    CHOICES = (("auto", "Auto (recommended)"), ("mtp", "MTP"), ("dflash2", "DFlash2"), ("off", "Off"))
+
+    def body(self) -> ComposeResult:
+        yield Static(Text("How should the model guess ahead?", style=f"bold {ACCENT}"), markup=False)
+        yield Menu(id="menu")
+
+    def on_mount(self) -> None:
+        s = self.ctx.settings
+        items = [Item([label, Cell("MTP today", "") if key == "auto" else Cell("", "")], key=key) for key, label in self.CHOICES]
+        sel = [key for key, _ in self.CHOICES].index(s.drafting) if s.drafting in dict(self.CHOICES) else 0
+        self.query_one(Menu).columns = [("", 24), ("", 0)]
+        self.query_one(Menu).set_items(items, sel)
+        self.paint()
+
+    def explain(self) -> Text:
+        from strata_control import drafting
+        key = self.menu().current.key if self.menu() and self.menu().current else "auto"
+        if key == "dflash2":
+            backend, archs = drafting.detect_hardware()
+            line = drafting.hardware_support(backend, archs).line
+            return Text(" ".join(x for x in (drafting.EXPLAIN_NUMBERS, drafting.EXPLAIN_LIMITS, line) if x), style=MUTE)
+        if key == "off":
+            return Text("No draft layer: about 1 GB less graphics memory and less RAM, and answers come a little slower.", style=MUTE)
+        if key == "mtp":
+            return Text("MTP is the draft layer that comes with the model. It guesses several words ahead and costs about 1 GB of graphics memory.", style=MUTE)
+        return Text("Strata picks how the model guesses ahead. Today that is MTP.", style=MUTE)
+
+    def commit(self) -> None:
+        key = self.menu().current.key
+        self.ctx.settings.drafting = None if key == "auto" else key        # Auto stays "nobody chose": a saved preset writes nothing
+
+
 # ------------------------------------------------------------------------------------------------ 6 parallel
 
 class ParallelScreen(Base):
@@ -1608,6 +1658,7 @@ class SaveScreen(Base):
                  ("Pictures", "on" if s.vision != "off" else "off"),
                  *([("Speed", S.speed_words(s.speed or ("faster" if faster_by_default(self.ctx.computer, s) else "full"),
                                             s.speed is None))] if s.family == "deepseek41" and speed_choice_available(self.ctx) else []),
+                 *([("Drafting", dict(DraftingScreen.CHOICES).get(s.drafting or "auto", "Auto (recommended)"))] if drafting_choice_available(self.ctx) else []),
                  ("Parallel", f"{s.parallel} at a time" if s.parallel else f"fit to your card ({S.fit_parallel(self.ctx.computer.main_vram_gb)})"),
                  ("Tuning", ({"quick": "quick (about 5-10 min)", "thorough": "thorough (about 10-15 min)", "skip": "skipped"} if s.family == "deepseek41"
                               else {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"})[s.tune]),

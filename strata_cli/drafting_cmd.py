@@ -29,12 +29,8 @@ def add_parser(sp) -> None:
         one.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
 
 
-def _card_class() -> str:
-    try:
-        from strata_control import engine_component
-        return drafting.card_class(list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present()))
-    except Exception:                                        # noqa: BLE001 - an unknown card is the "other" class
-        return "other"
+def _hardware() -> tuple[str | None, list[str]]:
+    return drafting.detect_hardware()
 
 
 def _inputs(a) -> dict:
@@ -51,7 +47,9 @@ def _inputs(a) -> dict:
         if data is None:
             from strata_cli.launch.catalog import Catalog
             data = Catalog().data_dir()
-    return {"mode": a.mode if a.mode else cfg.get("drafting"), "klass": _card_class(), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data}
+    backend, archs = _hardware()
+    return {"mode": a.mode if a.mode else cfg.get("drafting"), "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
+            "backend": backend, "archs": archs}
 
 
 def run(a) -> int:
@@ -61,9 +59,11 @@ def run(a) -> int:
     folder = want["data_dir"]
     needed = drafting.needs_pack(**want)
     if a.drafting_command == "plan":
-        decision = drafting.decide(want["mode"], klass=want["klass"], model_name=want["model_name"], family=want["family"], data_dir=folder)
-        result = {**drafting_fetch.plan(folder), "needed": needed, "serves": drafting.ENGINE_SERVES_DFLASH2, "drafter": decision.drafter, "note": decision.note,
-                  "line": drafting.summary_line(decision)}
+        decision = drafting.decide(**want)
+        support = drafting.hardware_support(want["backend"], want["archs"])
+        # serves: this computer's engine can run DFlash2 (the build has the code and the card is one it is made for); the app offers the choice only then
+        result = {**drafting_fetch.plan(folder), "needed": needed, "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
+                  "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
         if (a.config or a.mode) and not needed:           # asked about a model: nothing to download unless the choice uses the drafter
             result["gb"] = 0.0
         if machine:

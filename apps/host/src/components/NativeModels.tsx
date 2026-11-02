@@ -3,8 +3,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Screen } from './layout';
 import { VersionPicker } from './VersionPicker';
 import { FamilySwitch } from './FamilySwitch';
-import { PcFitCard } from './PcFitCard';
-import { fitOn, memoryNeeded } from '../lib/native-fit';
+import { PcComputer } from './PcComputer';
+import { cacheGb, fitOn, memoryNeeded, versionFit } from '../lib/native-fit';
+import { contextIsTight, defaultContext, DEFAULT_CONTEXT, OLD_DEEPSEEK_CONTEXT, openingContext } from '../lib/default-context';
 import { GpuRoles } from './GpuRoles';
 import { fromLegacy, normalize as normalizeRoles, order as roleOrder, recommend as recommendRoles, rows as roleRows, sameRoles, vramOn, type RoleCard, type Roles } from '../lib/gpu-roles';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
@@ -14,6 +15,7 @@ import { DownloadParts } from './DownloadParts';
 import { useElapsed } from '../lib/use-elapsed';
 import { EngineWarning } from './EngineWarning';
 import { EngineUpdateCard } from './EngineUpdateCard';
+import { EngineUpdateDialog } from './EngineUpdateDialog';
 import { duration, sizeGb } from '../lib/format';
 import { NativeDeleteDialog } from './NativeDelete';
 import { plainFailureText } from '../lib/plain-errors';
@@ -41,12 +43,12 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
 }) {
     const native = useNative(), imageLibrary = useStore(s => s.imageModels), hardware = useStore(s => s.hardware);
     // The choices are kept while the page is closed (Models -> Monitor -> Models used to start them over and a person lost track of what was downloading).
-    const [family, setFamily] = useKept('models.family', ''), [size, setSize] = useKept('models.size', ''), [context, setContext] = useKept('models.context', 32768), [vision, setVision] = useKept('models.vision', 'yes');
+    const [family, setFamily] = useKept('models.family', ''), [size, setSize] = useKept('models.size', ''), [context, setContext] = useKept('models.context', DEFAULT_CONTEXT), [contextPicked, setContextPicked] = useKept('models.contextPicked', false), [vision, setVision] = useKept('models.vision', 'yes');
     const manual = useStore(s => s.setup?.choices?.onboarding?.manual ?? false);
     const [expert, setExpert] = useKept('models.expert', manual), [multiple, setMultiple] = useKept('models.multiple', false), [roles, setRoles] = useKept<Roles | null>('models.roles', null), [kv, setKv] = useKept('models.kv', 'int8'), [lowRam, setLowRam] = useKept('models.lowRam', 'auto'), [split, setSplit] = useKept('models.split', 'auto');
     const [resourceProfile, setResourceProfile] = useKept<'work' | 'performance'>('models.profile', 'work');
     const [drafting, setDrafting] = useState('auto');
-    const [pending, setPending] = useState(false), [error, setError] = useState(''), [plan, setPlan] = useState<Record<string, any> | null>(null), [loadedError, setLoadedError] = useState(''), [tuneOpen, setTuneOpen] = useState(false), [jobId, setJobId] = useKept('models.job', ''), [manage, setManage] = useState(false);
+    const [pending, setPending] = useState(false), [error, setError] = useState(''), [plan, setPlan] = useState<Record<string, any> | null>(null), [drafterGb, setDrafterGb] = useState<number | null>(null), [loadedError, setLoadedError] = useState(''), [tuneOpen, setTuneOpen] = useState(false), [jobId, setJobId] = useKept('models.job', ''), [manage, setManage] = useState(false);
     const [toastedJob, setToastedJob] = useKept('models.toasted', ''), [appliedSig, setAppliedSig] = useKept('models.applied', '');
     const presetPending = useRef(false);
     const [deleting, setDeleting] = useState<string | null>(null);
@@ -68,6 +70,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     }, [expert]);
     const selectedFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family)) ?? families[0], selectedSize = selectedFamily?.sizes.find(s => s.id === size) ?? selectedFamily?.sizes[0];
     const installed = native?.installed?.models.find(m => m.model === selectedSize?.id);
+    // The sizes this model offers for the conversation context; it opens at 128K (or its largest size when that is smaller).
+    const contextList = selectedSize?.multi_file ? deepseekContexts(installed?.contextMax) : native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144];
     // The model that is running is shown as running, with Unload: not offered for loading again.
     const downloaded = native?.installed?.models ?? [], allSizes = families.flatMap(f => f.sizes);
     // This computer for the fit figures: the biggest usable graphics card, or the ones chosen under Expert settings.
@@ -80,6 +84,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const keptUse = keptModels.map(i => { const s = sizeOf(i.model); const card = pcGpus.find(g => g.index === i.gpus[0]); const f = s && pcRam ? fitOn(s, { ram_gb: pcRam, vram_gb: card?.vram_gb ?? pcVram }) : null; return { gpus: i.gpus, ram: f?.ramUseGb ?? 0, vram: f?.vramUseGb ?? 0 }; });
     const keptRam = keptUse.reduce((n, u) => n + u.ram, 0);
     const keptVramOn = (cards: number[]) => keptUse.filter(u => u.gpus.some(g => cards.includes(g))).reduce((n, u) => n + u.vram, 0);
+    // The models that are loaded now, with what each takes of graphics memory, RAM and SSD (the app's estimate from the same rule the fit uses: the engine does not report this split).
+    const loadedModels = (native?.instances ?? []).filter(i => i.status === 'ready' || i.status === 'loading').flatMap(i => { const s = sizeOf(i.model); if (!s || !pcRam) return []; const card = pcGpus.find(g => g.index === i.gpus[0]); return [{ id: i.model, label: `${i.label} · ${s.model}`, fit: fitOn(s, { ram_gb: pcRam, vram_gb: card?.vram_gb ?? pcVram }, true, { context: i.context ?? context, kv }) }]; });
     // The versions that are really on this computer: a config whose files are all there (every part of a model in parts).
     const readyIds = useMemo(() => new Set(downloaded.filter(m => m.ready).map(m => m.model)), [downloaded]);
     // What a running job works on, by its name in the list: "Qwen3.8-Flash-Next · Gyro · Smallest".
@@ -104,7 +110,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         (j.model === selectedSize.model && j.family === selectedSize.sourceFamily));
     const job = native?.jobs.find(j => j.id === jobId && selectedJob(j)) ??
         native?.jobs.filter(j => ['load', 'install'].includes(j.kind) && selectedJob(j)).at(-1);
-    const noFit = selectedSize?.on_this_pc === 'does not fit';
+    // This model can read pictures but the installed engine has no picture reader: pictures run off for now, nothing is saved, and the row says nothing wordy.
+    const noReader = !!selectedSize?.imagesCapable && !selectedSize.images;
     // Graphics cards (strata_control/gpu_fit.py: the one rule of the app, the Terminal and setup): the recommended option is pre-selected, the person may pick another
     // A card a loaded model already uses (a second model on it usually does not fit): said on its row, and not the pre-selected one while another is free.
     const usedBy = (cards: number[]) => (native?.instances ?? []).filter(i => i.status !== 'error' && i.model !== selectedSize?.id && i.gpus.some(g => cards.includes(g))).map(i => i.label);
@@ -119,18 +126,22 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const cardsGpus: number[] = roleCards.length > 1 ? roleOrder(effectiveRoles, roleCards) : [];
     const chosenCards = cardsGpus;
     const fitHardware = { ram_gb: pcRam ? Math.max(0, pcRam - keptRam) : pcRam, vram_gb: Math.max(0, (roleCards.length > 1 ? vramOn(effectiveRoles, roleCards) : pcVram) - keptVramOn(chosenCards)) };
+    // How the chosen version sits on this computer (the same rule as the version list): the page says a word only for "SSD streaming" and "Doesn't fit".
+    const fitState = selectedSize ? versionFit(selectedSize, fitHardware, { context, kv }) : 'unknown';
     // A layer split written for another number of cards no longer fits: back to automatic.
     useEffect(() => { if (cardsGpus.length <= 1 && split !== 'auto') setSplit('auto'); }, [cardsGpus.length]);
-    // Drafting (which drafter guesses ahead): DFlash2 is for Qwen3.8-Flash-Next only (the qwen and gyro families), so no other model is offered it.
+    // Drafting (which drafter guesses ahead): a choice exists only for Qwen3.8-Flash-Next (the qwen and gyro families) on a computer whose engine can run DFlash2; every other model has no dropdown.
     const draftingChoices = selectedSize ? draftingOptions(selectedSize.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2) : null;
     const draftingWords: Record<string, string> = { auto: 'Auto (recommended)', mtp: 'MTP', dflash2: 'DFlash2', off: 'Off' };
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(cardsGpus.length > 1 ? { gpus: cardsGpus.join(',') } : cardsGpus.length === 1 ? { gpu: cardsGpus[0] } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, cardsGpus.join(','), expert, multiple]);
-    const downloadValues = { ...values, ...(draftingChoices ? { drafting } : {}), vision: selectedSize?.images && vision !== 'no' ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no' };
+    const downloadValues = { ...values, ...(draftingChoices ? { drafting } : {}), vision: selectedSize?.images && vision !== 'no' ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked ? { contextChosen: true } : {}) };
     useEffect(() => { if (!native?.catalog || family)
         return; const current = native.instances.find(i => i.id === native.defaultId); const rec = native.catalog.recommendation ?? { family: null, model: null }; const loadedFamily = families.find(f => f.sizes.some(s => s.id === current?.model)); const have = new Set((native.installed?.models ?? []).filter(m => m.ready).map(m => m.model)); const installedFamily = families.find(f => f.sizes.some(s => have.has(s.id))); const f = loadedFamily ?? installedFamily ?? families.find(f => f.family === rec.family || f.sizes.some(s => s.sourceFamily === rec.family)) ?? families[0]; if (f) {
         setFamily(f.family);
-        setSize(f.sizes.find(s => s.id === current?.model)?.id ?? f.sizes.find(s => have.has(s.id))?.id ?? f.sizes.find(s => s.model === rec.model)?.id ?? f.sizes[0]?.id ?? '');
-        setContext(('context' in rec ? rec.context : undefined) ?? 32768);
+        const first = f.sizes.find(s => s.id === current?.model) ?? f.sizes.find(s => have.has(s.id)) ?? f.sizes.find(s => s.model === rec.model) ?? f.sizes[0];
+        setSize(first?.id ?? '');
+        // 128K for every configuration, DeepSeek included where its pack allows (the engine's own recommendation is not what the app opens with).
+        setContext(defaultContext(first?.multi_file ? deepseekContexts() : native.catalog.contexts));
     } }, [native?.catalog]);
     // The version that is selected: a model already on this PC shows the settings it was prepared with (so loading it never asks to download);
     // a model that is not yet downloaded starts with Read pictures ON (owner rule: pictures on by default). This runs when the SELECTION or the
@@ -142,15 +153,16 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         }
         if (!selectedSize)
             return;
-        const sig = installed ? ['have', installed.model, installed.ready, installed.context, installed.kv, installed.images, installed.visionEnabled, installed.visionDevice, installed.lowRamMode, installed.drafting, installed.resourceProfile].join('|') : `new|${selectedSize.id}`;
+        const sig = installed ? ['have', installed.model, installed.ready, installed.context, installed.contextChosen, installed.kv, installed.images, installed.visionEnabled, installed.visionDevice, installed.lowRamMode, installed.drafting, installed.resourceProfile].join('|') : `new|${selectedSize.id}`;
         if (sig === appliedSig)
             return;
         setAppliedSig(sig);
         if (installed) {
+            // The context it was prepared with when someone chose it; a model that holds the old default (32K, DeepSeek's 8K) without the marker opens at the new default.
             if (installed.context)
-                setContext(installed.context);
-            // Off only when the person turned it off (a saved choice); a model prepared without the picture files (images 'off') still starts with it ON.
-            setVision(installed.visionEnabled === false ? 'no' : installed.visionDevice ?? (installed.images && installed.images !== 'off' ? installed.images : 'yes'));
+                setContext(openingContext(installed.context, contextList, installed.contextChosen === true, selectedSize.multi_file ? [OLD_DEEPSEEK_CONTEXT] : undefined));
+            // Off only when the person turned it off (a saved choice on a model that has the picture files); a model prepared without them (images 'off', or an old "off" saved while the engine had no reader) starts with it ON.
+            setVision(installed.visionEnabled === false && installed.visionPrepared !== false ? 'no' : installed.visionDevice ?? (installed.images && installed.images !== 'off' ? installed.images : 'yes'));
             setKv(installed.kv ?? 'int8');
             setLowRam(installed.lowRamMode ?? 'auto');
             setDrafting(installed.drafting ?? 'auto');
@@ -160,10 +172,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         }
         else {
             setVision('yes');
-            if (selectedSize.multi_file)
-                setContext(8192);      // DeepSeek runs at the one context its engine was checked at (as in the guided setup)
+            if (!contextPicked)    // a context the person picked stays; otherwise 128K (DeepSeek too, where its pack allows)
+                setContext(defaultContext(contextList));
         }
-    }, [selectedSize?.id, installed?.model, installed?.ready, installed?.context, installed?.kv, installed?.images, installed?.visionEnabled, installed?.visionDevice, installed?.lowRamMode, installed?.resourceProfile]);
+    }, [selectedSize?.id, installed?.model, installed?.ready, installed?.context, installed?.contextChosen, installed?.kv, installed?.images, installed?.visionEnabled, installed?.visionDevice, installed?.lowRamMode, installed?.resourceProfile]);
     useEffect(() => { if (jobId && job?.state === 'done' && job.id !== toastedJob && (job.kind === 'load' || job.kind === 'install')) {
         setToastedJob(job.id);
         selectRemoteModel(null);
@@ -178,13 +190,23 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     finally {
         setPending(false);
     } }
+    /* Load model: no pop-up. The press itself is the yes. The plan is read first (Control checks the free disk space); a disk that is too small is said
+       here, in the page, and nothing starts. Otherwise the download or the apply-and-load starts at once, with its size and notes in the page. */
     async function load() { if (!selectedSize)
-        return; await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || vision === 'no' || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
-        const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, resourceProfile, vision: selectedSize?.images ? vision : 'no', multiple: expert && multiple, ...(draftingChoices ? { values: { drafting } } : {}), ...(roleCards.length > 1 ? (roles && customRoles ? { gpuRoles: effectiveRoles, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : cardsGpus.length ? { gpus: cardsGpus, gpusFromRecommendation: true, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) : {}) } });
+        return; setPlan(null); setDrafterGb(null); await perform(async () => { if (installed?.ready && context === installed.context && (!selectedSize?.images || vision === 'no' || installed.images && installed.images !== 'off') && (!installed.kv || kv === installed.kv || kv === tunedNow?.fields.kv) && (lowRam === (installed.lowRamMode ?? 'auto') || lowRam === tunedNow?.fields.lowRam)) {
+        const result = await nativeAction<NativeJob>('operations', { kind: 'load', args: { model: selectedSize.id, resourceProfile, vision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked && !installed.contextChosen ? { contextChosen: true } : {}), multiple: expert && multiple, ...(draftingChoices ? { values: { drafting } } : {}), ...(roleCards.length > 1 ? (roles && customRoles ? { gpuRoles: effectiveRoles, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : cardsGpus.length ? { gpus: cardsGpus, gpusFromRecommendation: true, layerSplit: expert && cardsGpus.length > 1 ? split : 'auto' } : {}) : {}) } });
         setJobId(result.id);
     }
-    else
-        setPlan(await api.post('/api/native/plan', downloadValues)); }); }
+    else {
+        const planned = await api.post<Record<string, any>>('/api/native/plan', downloadValues);
+        if (planned?.plan?.disk_short) {
+            setPlan(planned);
+            return;
+        }
+        setDrafterGb(planned?.drafting?.needed ? Number(planned.drafting.gb) || null : null);
+        const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: downloadValues });
+        setJobId(result.id);
+    } }); }
     /* Unload / Use in chat: a refusal (a chat is still using the model) is said here, beside the button, not far below the page. */
     async function loadedAction(path: string) { setLoadedError(''); setPending(true); try {
         await nativeAction(path);
@@ -196,6 +218,9 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
         setPending(false);
     } }
     async function download() { await perform(async () => { const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: downloadValues }); setJobId(result.id); setPlan(null); }); }
+    // The drafter note belongs to the download that is running; the not-enough-disk message belongs to the version it was said for.
+    useEffect(() => { if (!active) setDrafterGb(null); }, [!!active]);
+    useEffect(() => { setPlan(null); }, [selectedSize?.id]);
     return <Screen plainHeader title={<span className="sr-only">{tr("Models")}</span>} titleDetail={<FamilySwitch families={families} selected={selectedFamily?.family} onPick={f => { setFamily(f.family); setSize((f.sizes.find(s => native?.installed?.models.some(m => m.model === s.id && m.ready)) ?? f.sizes[0])?.id ?? ''); setVision('yes'); setError(''); }}/>} actions={<Btn icon="sliders" aria-pressed={expert} aria-expanded={expert} aria-controls="native-expert-settings" onClick={() => { setExpert(v => !v); setMultiple(false); }}>{tr(expert ? 'Close expert mode' : 'Expert mode')}</Btn>}>
   <div className="native-model-layout native-model-layout--fit">
    <div className="stack">
@@ -204,36 +229,38 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      {tr(selectedSize ? <>
       <div className="native-choice__head"><span className="native-choice__label">{tr("Version")}</span><span className="native-choice__tools"><NativePresets values={values} onApply={v => { const f = families.find(f => f.family === v.family || f.sizes.some(s => s.sourceFamily === v.family)); if (!f)
         return; presetPending.current = true; setFamily(f.family); setSize(f.sizes.find(s => s.model === v.model && (s.sourceFamily === v.family || f.family === v.family))?.id ?? ''); setContext(v.context ?? 32768); setVision(v.vision ?? 'no'); setKv(v.kv ?? 'int8'); setLowRam(v.low_ram ?? 'auto'); }}/><Btn icon="models" size="sm" variant="ghost" onClick={() => setManage(true)}>{tr("Manage models")}</Btn></span></div>
-      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={allSizes} selectedId={selectedSize.id} hardware={fitHardware} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
-      {tr(noFit ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("May run slower \u00B7 Model data can be read from SSD.")}</p> : null)}
+      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} cache={{ context, kv }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
+      {tr(fitState === 'ssd' ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("SSD streaming · will run slower")}</p> : fitState === 'no' ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("Doesn't fit")}</p> : null)}
       {tr(selectedSize?.multi_file && deepseekContextNote(context) ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(deepseekContextNote(context))}</p> : null)}
       <div className="native-choice__row">
-       <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={contextChoices(selectedSize?.multi_file ? deepseekContexts(installed?.contextMax) : native?.catalog?.contexts ?? [8192, 32768, 65536, 131072, 262144], context).map(n => ({ value: String(n), label: n % 1024 === 0 ? `${n / 1024}K` : `${n.toLocaleString()} tokens` }))} onChange={n => setContext(Number(n))}/></div>
+       <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={contextChoices(contextList, context).map(n => ({ value: String(n), label: n % 1024 === 0 ? `${n / 1024}K` : `${n.toLocaleString()} tokens` }))} onChange={n => { setContextPicked(true); setContext(Number(n)); }}/></div>
        {tr(draftingChoices ? <div className="native-choice__col"><span className="native-choice__label">{tr("Drafting")}</span><Select ariaLabel={tr("Drafting")} value={drafting} disabled={!!active} options={draftingChoices.map(v => ({ value: v, label: tr(draftingWords[v]) }))} onChange={v => setDrafting(String(v))}/></div> : null)}
        <div className="native-choice__col"><span className="native-choice__label">{tr("Computer use")}</span><div className="native-resource-choice"><button aria-pressed={resourceProfile === 'work'} data-selected={resourceProfile === 'work'} onClick={() => setResourceProfile('work')}><Icon name="computer" size={20}/><span><strong>{tr("Leave 20% for my work")}</strong><small>{tr("Headroom for your other apps")}</small></span>{tr(resourceProfile === 'work' ? <Icon name="check" size={15}/> : null)}</button><button aria-pressed={resourceProfile === 'performance'} data-selected={resourceProfile === 'performance'} onClick={() => setResourceProfile('performance')}><Icon name="bolt" size={20}/><span><strong>{tr("Full performance")}</strong><small>{tr("Give Strata priority")}</small></span>{tr(resourceProfile === 'performance' ? <Icon name="check" size={15}/> : null)}</button></div></div>
       </div>
+      {tr(contextIsTight(fitHardware.vram_gb, context, kv) ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("This much context takes about {0} GB of graphics memory and leaves little room for the model on this card. Strata will try it; if it does not start, choose a shorter context.", [cacheGb(context, kv).toFixed(1)])}</p> : null)}
       {tr(loadedSelected?.metrics?.engine?.drafting_note ? <p className="small muted native-spill-note">{tr(String(loadedSelected.metrics.engine.drafting_note))}</p> : null)}
       {roleCards.length > 1 ? <GpuRoles cards={roleCards} roles={effectiveRoles} custom={customRoles} recommendedRoles={recommended.roles} vendor={engineVendor} disabled={!!active} onChange={changeRoles} onBack={() => setRoles(null)} memoryGb={selectedSize ? memoryNeeded(selectedSize) || null : null} ramGb={pcRam} spillGb={selectedSize ? fitOn(selectedSize, fitHardware).spillGb : 0} usedBy={i => usedBy([i])}/> : null}
       {tr(roleCards.length > 1 && (native?.hardware?.gpus ?? []).length > roleCards.length ? <p className="small muted native-cards__note">{tr('Not used: {0} (another make of graphics card than this engine drives).', [(native?.hardware?.gpus ?? []).filter(g => !roleCards.some(r => r.index === g.index && r.vendor === g.vendor)).map(g => g.name).join(', ')])}</p> : null)}
-      {tr(selectedSize?.imagesCapable && !selectedSize.images ? <p className="small muted native-spill-note">{tr("This model can read pictures, but the engine installed here does not include the picture reader yet, so Read pictures is off. Update the engine in Settings → About to turn it on.")}</p> : null)}
-      {tr(selectedSize?.images ? <><div className="native-image-reading"><label><input type="checkbox" checked={vision !== 'no'} disabled={!selectedSize?.images || !!active} onChange={e => setVision(e.target.checked ? 'yes' : 'no')}/><span><strong>{tr("Read pictures ")}<small>{tr("On by default")}</small></strong><small>{tr("Understand photos, screenshots and charts. The picture files download automatically. Turn it off to save memory.")}</small></span></label>{tr(expert && vision !== 'no' ? <Select ariaLabel={tr("Image encoder device")} value={vision === 'yes' ? 'yes' : vision} options={[{ value: 'yes', label: 'Automatic' }, { value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }]} onChange={setVision}/> : null)}</div>{tr(vision !== 'no' && installed?.ready && installed.visionPrepared === false ? <div className="native-vision-missing" role="status"><span>{tr("Picture reading needs a few more files that are not on this computer yet.")}</span><Btn size="sm" disabled={pending || !!active} onClick={() => void download()}>{tr("Download picture-reading files")}</Btn></div> : null)}</> : null)}
+      {tr(selectedSize?.images || noReader ? <><div className="native-image-reading"><label title={noReader ? tr("Needs an engine update") : undefined}><input type="checkbox" checked={!noReader && vision !== 'no'} disabled={noReader || !!active} onChange={e => setVision(e.target.checked ? 'yes' : 'no')}/><span><strong>{tr("Read pictures ")}{tr(noReader ? null : <small>{tr("On by default")}</small>)}</strong>{tr(noReader ? null : <small>{tr("Understand photos, screenshots and charts. The picture files download automatically. Turn it off to save memory.")}</small>)}</span></label>{tr(expert && vision !== 'no' && selectedSize?.sourceFamily !== 'deepseek41' ? <Select ariaLabel={tr("Image encoder device")} value={vision === 'yes' ? 'yes' : vision} options={[{ value: 'yes', label: 'Automatic' }, { value: 'gpu', label: 'GPU' }, { value: 'cpu', label: 'CPU' }]} onChange={setVision}/> : null)}</div>{tr(vision !== 'no' && installed?.ready && installed.visionPrepared === false ? <div className="native-vision-missing" role="status"><span>{tr("Picture reading needs a few more files that are not on this computer yet.")}</span><Btn size="sm" disabled={pending || !!active} onClick={() => void download()}>{tr("Download picture-reading files")}</Btn></div> : null)}</> : null)}
      </> : null)}
      <EngineWarning native={native}/>
      <EngineUpdateCard native={native} busy={!!active}/>
+     <EngineUpdateDialog open={false} onClose={() => {}}/>
      {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
+     {tr(active && drafterGb ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr("Choosing DFlash2 also downloads its drafter: about {0} GB, once. If it does not fit in graphics memory, the model uses the MTP instead.", [drafterGb])}</p> : null)}
      {tr(active ? <p className="small muted native-wait-note">{tr("The buttons below wait until this finishes.")}</p> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
+     {tr(plan?.plan?.disk_short ? <ErrorNotice message={plan.plan.disk_short}/> : null)}
      {tr(error ? <ErrorNotice message={error}/> : null)}
      {selectedSize && installed?.ready ? <NativeTuneBadge model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'}/> : null}
-     <div className="native-model-actions">{tr(loadedSelected ? <><Btn disabled={pending || !!active} onClick={() => void perform(() => nativeAction(`instances/${loadedSelected.id}/unload`))}>{tr("Unload")}</Btn>{tr(onReady ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <span className="native-ready">{tr("Ready")}</span>)}</> : onReady && native?.instances.some(i => i.status === 'ready') ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <><Btn icon="gauge" disabled={!installed?.ready || !native?.available || !!active || !selectedSize || selectedSize.needsNewerEngine} onClick={() => setTuneOpen(true)}>{tr("Tune model")}</Btn><Btn variant="primary" icon="models" disabled={pending || !native?.available || !!active || !selectedSize || !!selectedSize.needsNewerEngine} onClick={() => void load()}>{tr(pending ? 'Checking…' : installed?.ready ? 'Load model' : 'Download & load')}</Btn></>)}</div>
+     <div className="native-model-actions">{tr(!loadedSelected && !installed?.ready && selectedSize?.download_gb && !active ? <span className="native-download-size small muted">{tr("{0} download", [sizeGb(selectedSize.download_gb)])}</span> : null)}{tr(loadedSelected ? <><Btn disabled={pending || !!active} onClick={() => void perform(() => nativeAction(`instances/${loadedSelected.id}/unload`))}>{tr("Unload")}</Btn>{tr(onReady ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <span className="native-ready">{tr("Ready")}</span>)}</> : onReady && native?.instances.some(i => i.status === 'ready') ? <Btn variant="primary" onClick={onReady}>{tr("Start chatting")}</Btn> : <><Btn icon="gauge" disabled={!installed?.ready || !native?.available || !!active || !selectedSize || selectedSize.needsNewerEngine} onClick={() => setTuneOpen(true)}>{tr("Tune model")}</Btn><Btn variant="primary" icon="models" disabled={pending || !native?.available || !!active || !selectedSize || !!selectedSize.needsNewerEngine} onClick={() => void load()}>{tr(pending ? 'Checking…' : installed?.ready ? 'Load model' : 'Download & load')}</Btn></>)}</div>
     </section>
     {tr(expert && IMAGE_GENERATION_VISIBLE ? <><details className="native-generation"><summary>{tr("Image generation ")}<span className="muted">{tr("Optional")}</span></summary><RunImageModel library={imageLibrary} disabled={pending || !!active} onChange={() => { }}/></details></> : null)}
     {tr(expert ? <section id="native-expert-settings" ref={expertSection} className="st-card native-execution"><h2 className="h4">{tr("Expert settings")}</h2>{tr(tunedNow ? <p className="small muted native-tuned-note">{tr("Showing the values of your tuning '{0}'.", [tunedNow.name])}</p> : null)}<label className="native-toggle"><span><strong>{tr("Run multiple models")}</strong><small>{tr("Loading another model keeps the others loaded.")}</small></span><button className="st-toggle" role="switch" aria-label={tr("Run multiple models")} aria-checked={multiple} onClick={() => setMultiple(v => !v)}/></label>{tr(cardsGpus.length > 1 ? <label className="input-field"><span>{tr("Layer split")}</span><input className="st-input" value={split} placeholder={tr("auto or 16,32")} onChange={e => setSplit(e.target.value)}/></label> : null)}<div className="native-field-grid"><label className="input-field"><span>{tr("Context memory")}</span><Select ariaLabel={tr("Native KV format")} value={kv} options={KV_CHOICES.map(c => ({ value: c.value, label: c.label, title: c.hint }))} onChange={setKv}/>{tr(KV_CHOICES.find(c => c.value === kv)?.hint ? <small className="muted native-kv-hint">{tr(KV_CHOICES.find(c => c.value === kv)!.hint)}</small> : null)}</label><label className="input-field"><span>{tr("Low-RAM mode")}</span><Select ariaLabel={tr("Native low RAM mode")} value={lowRam} options={['auto', 'resident', 'mmap'].map(v => ({ value: v, label: v === 'auto' ? 'Automatic' : v === 'resident' ? 'Keep experts in RAM' : 'Read experts from disk' }))} onChange={setLowRam}/></label></div>{tr(installed ? <><NativeSettingsFile model={installed.model}/><NativeSettings model={installed.model}/></> : <p className="small muted">{tr("More engine parameters become available after preparing this version.")}</p>)}</section> : null)}
    </div>
-   <aside className="stack stack--lg"><PcFitCard gpuName={pcGpu?.name} ramGb={pcRam} vramGb={pcVram} diskGb={selectedSize?.multi_file ? selectedSize.disk_gb ?? selectedSize.download_gb : null} inUse={keptModels.length ? { ramGb: Math.round(keptRam), vramGb: Math.round(keptVramOn(chosenCards)) } : null} fit={selectedSize ? fitOn(selectedSize, fitHardware, true, { context, kv }) : null}/><section className="st-card"><h2 className="h4">{tr("Model files")}</h2><p className="small muted">{tr("Strata prepares all shards, the draft layer and shared files. Completed downloads are reused.")}</p><code className="native-path">{installed?.dataFolder ?? native?.downloadDirectory ?? native?.installed?.data_folder ?? 'Choose an installation'}</code><Btn size="sm" variant="ghost" onClick={() => { setSettingsSection('Storage'); go('settings'); }}>{tr("Storage settings")}</Btn></section><Btn size="sm" variant="ghost" onClick={onOtherModels} className="other-models">{tr("Other local models\u2026")}</Btn></aside>
+   <aside className="stack stack--lg"><PcComputer gpuName={pcGpu?.name} ramGb={pcRam} vramGb={pcVram} vramAllGb={pcGpus.reduce((n, g) => n + g.vram_gb, 0) || undefined} loaded={loadedModels} selectedLoaded={!!selectedSize && loadedModels.some(m => m.id === selectedSize.id)} diskGb={selectedSize?.multi_file ? selectedSize.disk_gb ?? selectedSize.download_gb : null} inUse={keptModels.length ? { ramGb: Math.round(keptRam), vramGb: Math.round(keptVramOn(chosenCards)) } : null} fit={selectedSize ? fitOn(selectedSize, fitHardware, true, { context, kv }) : null}/><section className="st-card"><h2 className="h4">{tr("Model files")}</h2><code className="native-path">{installed?.dataFolder ?? native?.downloadDirectory ?? native?.installed?.data_folder ?? 'Choose an installation'}</code><div className="model-files__actions"><Btn size="sm" variant="ghost" onClick={() => { setSettingsSection('Storage'); go('settings'); }}>{tr("Storage settings")}</Btn><Btn size="sm" variant="ghost" onClick={onOtherModels} className="other-models">{tr("Other local models\u2026")}</Btn></div></section></aside>
   </div>
   
-<Dialog open={!!plan} title={tr(installed?.ready ? "Apply settings and load" : "Download and prepare")} compact onClose={() => !pending && setPlan(null)} actions={<><Btn disabled={pending} onClick={() => setPlan(null)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={pending || !!plan?.plan?.disk_short} onClick={() => void download()}>{tr(installed?.ready ? "Apply & load" : "Download & load")}</Btn></>}><p><strong>{tr(plan?.plan?.title ?? selectedFamily?.title)}</strong>{tr(installed?.ready ? null : <>{tr(" \u00B7 approximately ")}{tr(plan?.plan?.download_gb ?? selectedSize?.download_gb)}{tr(" GB")}</>)}</p>{tr(plan?.drafting?.needed ? <p className="small muted">{tr("Choosing DFlash2 also downloads its drafter: about {0} GB, once. If it does not fit in graphics memory, the model uses the MTP instead.", [plan.drafting.gb])}</p> : null)}{tr(installed?.ready ? <p className="small muted">{tr("The model files are already on this computer. Nothing will be downloaded; only the settings you chose are applied.")}</p> : null)}{tr(plan?.plan?.disk_short ? <ErrorNotice message={plan.plan.disk_short}/> : null)}{tr(installed?.ready ? <p className="small muted">{tr("Any currently loaded native models will be unloaded first.")}</p> : <><p className="small muted">{tr("Existing files are checked and reused. Any currently loaded native models will be unloaded before preparing files.")}</p><p className="small muted">{tr("Your computer may feel slower while weights load. You can stop the download and resume later.")}</p></>)}{tr(selectedSize?.images ? <p className="small muted">{tr("Vision encoder files are included. Picture reading loads only when enabled.")}</p> : null)}</Dialog>
   <NativeDeleteDialog id={deleting} onClose={() => setDeleting(null)}/>
   <Dialog open={manage} compact title={tr("Manage models")} onClose={() => setManage(false)} actions={<Btn onClick={() => setManage(false)}>{tr("Done")}</Btn>}><div className="native-manage">
    {tr(downloaded.some(m => m.ready || m.diskGb) ? <div className="native-manage-list" role="list">{tr(downloaded.filter(m => m.ready || m.diskGb).map(m => { const v = allSizes.find(x => x.id === m.model), loaded = native?.instances.some(i => i.model === m.model && i.status === 'ready'); return <div className="native-manage-row" role="listitem" key={m.model} data-selected={selectedSize?.id === m.model || undefined}>
@@ -243,7 +270,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     </div>; }))}</div> : <p className="small muted native-manage-empty">{tr("No downloaded models")}</p>)}
    <div className="native-manage-foot"><Btn variant="ghost" icon="folder" onClick={() => { setManage(false); (onImport ?? onOtherModels)(); }}>{tr("Use a local GGUF…")}</Btn></div>
   </div></Dialog>
- {selectedSize ? <NativeTune open={tuneOpen} onClose={() => setTuneOpen(false)} model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'}/> : null}
+ {selectedSize ? <NativeTune open={tuneOpen} onClose={() => setTuneOpen(false)} model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'} visionUnavailable={noReader}/> : null}
  </Screen>;
 }
 /** setup's "5/7: downloading …" as a sentence a person can read. */

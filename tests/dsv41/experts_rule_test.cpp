@@ -11,6 +11,7 @@ using strata::ds4::copy_all_fits;
 using strata::ds4::attn_slab_rows;
 using strata::ds4::staging_ring_mb;
 using strata::ds4::store_gpu_shares_ram;
+using strata::ds4::profile_size_fits;
 
 static int fails = 0;
 #define CHECK_EQ(a, b)                                                                              \
@@ -120,6 +121,19 @@ int main() {
         CHECK_EQ(attn_slab_rows(0, 1024, 256, 1e18, bpr, 0.77), 256);      // DS4_ATTN_SLAB=0: the 0.2.6 rule whatever the share
         CHECK_EQ(attn_slab_rows(512, 1024, 256, 1e18, bpr, 0.77), 512);    // DS4_ATTN_SLAB=N: that many rows whatever the share
         CHECK_EQ(attn_slab_rows(-1, 1024, 1024, -5.0e9, bpr, 0.77), 1024);   // a unified-memory base (32 MB of q = 1024 rows) is kept
+    }
+    // the expert profile's size gate: a bare array of rows of n_exp counts, 40 layers (+ the drafter's 3 blocks); another model's file is not read
+    {
+        CHECK_EQ(profile_size_fits(66048, 40, 384), 1);                  // the shipped 2.00 / 2.25 profiles (43 rows of 384) on a 384-expert set: as before
+        CHECK_EQ(profile_size_fits(40 * 384 * 4, 40, 384), 1);           // 40 rows (a run without the drafter)
+        CHECK_EQ(profile_size_fits(43 * 192 * 4, 40, 192), 1);           // the Coder's own file (43 rows of 192)
+        CHECK_EQ(profile_size_fits(40 * 192 * 4, 40, 192), 1);
+        CHECK_EQ(profile_size_fits(66048, 40, 192), 0);                  // a 384-expert profile on the 192-expert set: 86 rows of 192, not its file
+        CHECK_EQ(profile_size_fits(40 * 384 * 4, 40, 192), 0);
+        CHECK_EQ(profile_size_fits(43 * 192 * 4, 40, 384), 0);           // and the other way round (too short for 40 rows of 384)
+        CHECK_EQ(profile_size_fits(0, 40, 384), 0);
+        CHECK_EQ(profile_size_fits(66048, 0, 384), 0);
+        CHECK_EQ(profile_size_fits(66048, 40, 0), 0);
     }
     // the staging ring (MB): staging_ring_mb(share, room_bytes, n_dev, integrated, hip)
     {

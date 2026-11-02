@@ -77,6 +77,21 @@ into the pack as `expert-profile.bin`, checks `strata-dsv41 --pack-info` (every 
 (`tools/dsv41/smoke.py`, the text must name Paris). The start script passes `--dspark auto` (never `off`: `off` still loads the drafter
 and its 7 GB of experts take the graphics memory); the RAM store sizes itself. Long prompts use the engine's fast chunked path on its own (no flag is written: the engine picks the chunk size for your cards).
 
+## The ISTA-DAS Coder
+
+ISTA-DAS's coding version of this model: in every layer 192 of the 384 routed experts are kept and the other 192 removed (the router, the experts and the routing biases are half as wide; every
+other tensor is the 2.00 set's, with the same types). `strata launch --model ista-das-coder` (or "ISTA-DAS Coder" in the app's version list). Download 191 GB: 72 GB of model, the 111 GB n-gram
+table (the same file the other sets use, downloaded once) and the 8 GB drafter; the picture file is the one every DeepSeek set shares. Where it comes from, the commit, the file names and their
+SHA-256 are in one file, `data/dsv41/coder-set.json` (`python tools/dsv41/pin_coder.py OWNER/REPO` writes it from the Hub). Its hot-expert profile is its own (`data/dsv41/profile-coder.bin`, made from the engine's routing over 519,422
+tokens of the calibration texts): a profile counted on 384 experts is not read by it (the engine checks the file's size).
+
+Measured on 4 x Radeon AI PRO R9700 (the packaged Terminal, 128K context, 5 experts per word by default there): all 7,680 experts sit in graphics memory, decode about 59 tokens a second, a 93,000-token prompt
+read in 80 s; on one R9700: 2,859 experts on the card, decode about 26 tokens a second (with the RAM capped for the whole run: 21 with 40 GB, 18 with 32 GB, 15 with 24 GB, 8 with 16 GB); an RTX PRO 6000 Blackwell
+(CUDA 12.8, sm_120, one of two cards on a shared box): about 100 tokens a second. Against the original model (4,995 positions, 6 experts a word, 4 cards, same harness): KL 0.397, top-1 76.4%, perplexity 4.645
+(reference 3.140); the same run gives 2.00 KL 0.171, top-1 83.7%, perplexity 3.630 and 2.25 KL 0.109, top-1 87.2%, perplexity 3.405. By part (KL): code 0.230, agent 0.199, documents 0.302, English 0.476, multilingual 0.777
+for the Coder; 0.104, 0.108, 0.202, 0.303, 0.138 for 2.00. One run per cell unless the numbers repeat; details and the task suite in `phaseA-tests/maya-port/DS-CODER.md`. Not run on a Mac or a Ryzen AI Max
+(Strix Halo) yet; the plan says so there.
+
 ## Install
 
 ```

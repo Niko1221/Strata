@@ -1403,7 +1403,13 @@ class Runner:
             subs = [d.get("subdir"), d.get("legacy_subdir"), m]
             folders = [p, *[p / x for x in subs if x]] if p.is_dir() else [p.parent]
             names = [n for s in d["shards"] for n in (s, legacy.get(s)) if n] + list(d.get("shards6") or [])      # (+ the six-shard layout of 2026-10-27)
-            folder = next((f for f in folders if any((f / n).exists() for n in names)), None)
+            sizes = getattr(mod, "DSV41_ALL_FILES", {})
+
+            def there(f, n):      # a set whose files have generic names (model-00002-of-00004.gguf: the ISTA-DAS Coder's) is only claimed by files of the pinned size
+                if not (f / n).exists():
+                    return False
+                return not d.get("generic_names") or ((f / n).is_file() and n in sizes and (f / n).stat().st_size == sizes[n][0])
+            folder = next((f for f in folders if any(there(f, n) for n in names)), None)
             if folder is not None:
                 return m, d, folder
         return None
@@ -1498,14 +1504,26 @@ class Runner:
     # ---- 3. config and profile
     def drafting_inputs(self, cfg: dict) -> dict:
         """What strata_control/drafting.py needs to decide for this launch: the choice, the card class, the model and the data folder."""
-        from strata_control import drafting, engine_component
-        try:
-            archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
-        except Exception:                                    # noqa: BLE001 - an unknown card is the "other" class
-            archs = []
+        from strata_control import drafting
+        backend, archs = drafting.detect_hardware()
         mode = self.s.drafting if self.s.drafting is not None else cfg.get("drafting")
         return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": self.s.family,
-                "data_dir": drafting.data_dir_of(cfg.get("args") or []) or (Path(self.s.data_dir) if self.s.data_dir else None)}
+                "data_dir": drafting.data_dir_of(cfg.get("args") or []) or (Path(self.s.data_dir) if self.s.data_dir else None),
+                "backend": backend, "archs": archs}
+
+    def one_request_for_dflash2(self, config: Path) -> bool:
+        """DFlash2 chosen on purpose and the person gave no number of requests: one at a time, said once (drafting.wants_one_request)."""
+        try:
+            from strata_control import drafting
+            want = self.drafting_inputs(read_config(config))
+            if not drafting.wants_one_request(**want) or not drafting.pack_ready(want["data_dir"]):
+                return False                                 # (no drafter file after all, e.g. no internet: the MTP runs and the slots stay)
+        except Exception:                                    # noqa: BLE001 - a note is never a reason to stop a launch
+            return False
+        if not getattr(self, "_one_request_said", False):
+            self._one_request_said = True
+            self.notices.append(drafting.ONE_REQUEST_NOTE)
+        return True
 
     def ensure_drafter(self, base_path: Path) -> None:
         """Fetch the DFlash2 drafter when this launch will use it and it is not here yet. Never stops the launch: if it cannot be had, the model
@@ -1610,6 +1628,8 @@ class Runner:
         parallel = self.s.parallel if self.s.parallel else (getattr(self, "four_card_parallel", None) or self.catalog_parallel())
         if getattr(self, "parallel_dropped", False):         # DeepSeek: the engine in use is from before the flag (gate_parallel)
             parallel = None
+        if parallel and not self.s.parallel and self.one_request_for_dflash2(config):
+            parallel = None                                  # the slots Strata fills in by itself would keep the MTP: DFlash2 answers one request at a time
         sets = [f"host={acc.host_for(self.s.access)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
         try:
             current, _rev = profiles.load(name)
@@ -2293,8 +2313,9 @@ class Runner:
         try:
             base, cfg = self.installed_state()
             want = self.drafting_inputs(cfg or {})
-            return drafting.summary_line(drafting.decide(want["mode"], klass=want["klass"], model_name=want["model_name"], family=want["family"],
-                                                        data_dir=want["data_dir"]))
+            if drafting.needs_pack(**want):                   # the launch fetches the drafter first (ensure_drafter), so that is what will run
+                return "Drafting: DFlash2 (its drafter is downloaded first)"
+            return drafting.summary_line(drafting.decide(**want))
         except Exception:                                    # noqa: BLE001
             return ""
 

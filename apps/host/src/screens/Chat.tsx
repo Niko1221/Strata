@@ -10,6 +10,7 @@ import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
+import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { PreviewResizeHandle } from '../components/PreviewResizeHandle';
 import { DEFAULT_PREVIEW_FRACTION, PREVIEW_SPLIT_KEY, previewWidth } from '../lib/preview-layout';
@@ -25,7 +26,7 @@ import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
 import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
-import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
+import { ActivityLine, DraftLines, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
@@ -196,10 +197,12 @@ export function ChatScreen() {
         replyWasStreaming.current.set(lastReply.id, !!lastReply.streaming);
         if (before !== true || lastReply.streaming || lastReply.error) return;
         const main = mainResult(lastReply.deliverables, lastReply.content);
-        if (!main) return;
+        // No file to open: one whole HTML page in the answer goes to the sidebar too (a snippet keeps its preview button).
+        if (!main) { const page = lastReply.blocks?.some(b => b.kind === 'group') ? null : mainCodePreview(lastReply.id, lastReply.content); if (page) openPreview(page); return; }
         const sessionId = session.id;
         void previewOf(sessionId, main).then(item => { if (session.id === sessionId) openPreview(item); }, () => { });
     }, [lastReply?.id, lastReply?.streaming]);
+    useEffect(() => { setSelectedPreviewId(setupVisible ? null : selectedPreview); return () => setSelectedPreviewId(null); }, [selectedPreview, setupVisible]);
     function closeTab(id: string) {
         const next = closePreviewTab([...previews.map(p => ({ id: p.id })), ...extraTabs], selectedPreview, id);
         setPreviews(previews.filter(p => p.id !== id));
@@ -228,11 +231,12 @@ export function ChatScreen() {
     }
     /* The message list is memoised (#4640 family: Out of Memory in a long chat): a streamed token changes one message, so the others must not
        re-render. These handlers keep one identity for the life of the screen and always call the newest functions above. */
-    const latestHandlers = useRef({ editPrompt, openPreview, openTimeSkip, openLink });
-    latestHandlers.current = { editPrompt, openPreview, openTimeSkip, openLink };
+    const latestHandlers = useRef({ editPrompt, openPreview, closeTab, openTimeSkip, openLink });
+    latestHandlers.current = { editPrompt, openPreview, closeTab, openTimeSkip, openLink };
     const messageHandlers = useMemo(() => ({
         onEditPrompt: (text: string) => latestHandlers.current.editPrompt(text),
         onPreview: (a: PreviewArtifact) => latestHandlers.current.openPreview(a),
+        onClosePreview: (id: string) => latestHandlers.current.closeTab(id),
         onOpenTimeSkip: (id: string) => latestHandlers.current.openTimeSkip(id),
         onOpenLink: (url: string) => latestHandlers.current.openLink(url),
     }), []);
@@ -516,7 +520,7 @@ export function ChatScreen() {
 
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={messageHandlers.onEditPrompt} onPreview={messageHandlers.onPreview} onOpenTimeSkip={messageHandlers.onOpenTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={messageHandlers.onOpenLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={messageHandlers.onEditPrompt} onPreview={messageHandlers.onPreview} onClosePreview={messageHandlers.onClosePreview} onOpenTimeSkip={messageHandlers.onOpenTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={messageHandlers.onOpenLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
           </div>
@@ -700,11 +704,12 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     </div>);
 }
 const Message = memo(MessageView);
-function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
+function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
     message: ChatMessage;
     isLast: boolean;
     onEditPrompt: (text: string) => void;
     onPreview: (a: PreviewArtifact) => void;
+    onClosePreview: (id: string) => void;
     onOpenLink: (url: string) => void;
     onOpenTimeSkip: (id: string) => void;
     timeSkipDone: boolean;
@@ -743,18 +748,23 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
-      {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} tool={t}/>)))}
+      {/* In a reply with activity lines the line is the one live cue for a running or finished tool (and the status line below says what it is doing now); the
+          card stays only for what needs the person: a question waiting, a denied or failed call. A card that came and went above the text moved the whole reply. */}
+      {tr((m.tools ?? []).filter(t => !grouped || t.state === 'proposed' || t.state === 'denied' || t.state === 'error').map((t) => (<ToolCard key={t.id} tool={t}/>)))}
 
-      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
+      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus || !!m.drafts?.length) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
-        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
-        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} previewId={`${m.id}-b${i}`} onPreview={onPreview} onClosePreview={onClosePreview}/>) : null)}
+        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} previewId={m.id} onPreview={onPreview} onClosePreview={onClosePreview}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />
           </span>) : null)}
-        {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
+        {/* a file or command the model is writing right now: its name, growing size and the last lines of it (live data from the host, see ToolDraft) */}
+        {tr(m.streaming && m.drafts?.length && !planCard ? <DraftLines drafts={m.drafts} sessionId={activeSession ?? ''} onPreview={onPreview}/> : null)}
+        {/* the caret follows the text being written; after an activity line it hung on a row of its own and the reply jumped when the text went on */}
+        {tr(m.streaming && m.content && !m.drafts?.length && (!grouped || m.blocks!.at(-1)?.kind === 'text') ? <span className="caret" aria-hidden="true"/> : null)}
       </div> : null)}
       {tr(m.skills?.length && !m.streaming ? <SkillsUsed skills={m.skills}/> : null)}
       {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></div> : null)}

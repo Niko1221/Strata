@@ -1,4 +1,5 @@
 import { workspaceIdForSession } from './session-workspace';
+import { DEFAULT_CONTENT_FS, DEFAULT_UI_SCALE, SIZE_DEFAULTS_VERSION, savedSizes } from './default-sizes';
 import { detectLanguage } from './language-detect';
 import { validWhileBusy, type WhileBusy } from './while-busy';
 import { addToQuotes, type Quote } from './quotes';
@@ -55,6 +56,7 @@ import type {
   SetupState,
   Skill,
   WorkspaceFile,
+  ToolDraft,
 } from './types';
 import { navigate, type Route } from './router';
 import { estimate, execution, contextTokens } from './experience';
@@ -152,6 +154,8 @@ const CONTENT_FS_MIN = 10;
 const CONTENT_FS_MAX = 22;
 
 export interface Prefs {
+  /** Which default sizes this save was made with (see SIZE_DEFAULTS_VERSION). */
+  sizeDefaults?: number;
   language: Language;
   fontFamily: string;
   theme: 'dark' | 'light' | 'system';
@@ -181,11 +185,11 @@ const PREFS_DEFAULTS: Prefs = {
   contrast: 'standard',
   rail: false,
   focus: false,
-  contentFontSize: 14,
+  contentFontSize: DEFAULT_CONTENT_FS,
   density: 'comfortable',
   motion: 'system',
   transparency: 'translucent',
-  uiScale: 1,
+  uiScale: DEFAULT_UI_SCALE,
   electricityPrice: 0,
   electricityCurrency: '',
   doneSound: false,
@@ -234,8 +238,8 @@ function loadPrefs(): Prefs {
         ...parsed,
         language: validLanguage(parsed.language) ? parsed.language : 'en',
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily.slice(0,128).replace(/[\x00-\x1f]/g,'') : '',
-        contentFontSize: Math.min(CONTENT_FS_MAX, Math.max(CONTENT_FS_MIN, Number(parsed.contentFontSize) || 14)),
-        uiScale: [0.9, 1, 1.1, 1.25, 1.5, 1.75, 2].includes(Number(parsed.uiScale)) ? Number(parsed.uiScale) : 1,
+        ...savedSizes(parsed, CONTENT_FS_MIN, CONTENT_FS_MAX),
+        sizeDefaults: SIZE_DEFAULTS_VERSION,
         electricityPrice: Number.isFinite(Number(parsed.electricityPrice)) && Number(parsed.electricityPrice) > 0 && Number(parsed.electricityPrice) < 1000 ? Number(parsed.electricityPrice) : 0,
         electricityCurrency: typeof parsed.electricityCurrency === 'string' && /^[A-Za-z]{3}$/.test(parsed.electricityCurrency) ? parsed.electricityCurrency.toUpperCase() : '',
         doneSound: parsed.doneSound === true,
@@ -494,6 +498,7 @@ function applyPrefs() {
 
 function savePrefs() {
   const snapshot: Prefs = {
+    sizeDefaults: SIZE_DEFAULTS_VERSION,
     language: state.language,
     fontFamily: state.fontFamily,
     theme: state.theme,
@@ -1953,6 +1958,16 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           addAgentAsk(sessionId, frame as { callId?: unknown; questions?: unknown });
         } else if (type === 'agent-question-end') {
           removeAgentAsk(sessionId, String(frame.callId ?? ''));
+        } else if (type === 'agent-tool-draft') {
+          // A tool call (a whole file, say) is being written: keep its name, size and the tail of its text on the reply until the call is whole or lost.
+          const d = frame.draft as (ToolDraft & { done?: boolean }) | undefined;
+          if (d && typeof d.id === 'string') {
+            const { done, ...view } = d;
+            patchAssistant(m => {
+              const rest = (m.drafts ?? []).filter(x => x.id !== d.id);
+              return { ...m, drafts: done ? (rest.length ? rest : undefined) : [...rest, view] };
+            });
+          }
         } else if (type === 'agent-tool') {
           const tool = frame.tool as ToolCall;
           patchAssistant(m => {
@@ -1996,7 +2011,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           clearStatus(sessionId);
           // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.
           const said = typeof frame.key === 'string' ? tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) : plainFailure(String(frame.message ?? 'Engine error')).message;
-          patchAssistant((m) => ({ ...m, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
+          patchAssistant((m) => ({ ...m, drafts: undefined, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
         } else if (type === 'done') {
           clearStatus(sessionId);
           workFinished(state.doneSound, Number(frame.durationMs ?? performance.now() - started));
@@ -2009,6 +2024,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           patchAssistant((m) => ({
             ...m,
             streaming: false,
+            drafts: undefined,
             durationMs: Number(frame.durationMs ?? performance.now() - started),
             tokens: typeof frame.tokensOut === 'number' ? frame.tokensOut : undefined,
             ttftMs: typeof frame.ttftMs === 'number' ? frame.ttftMs : undefined,

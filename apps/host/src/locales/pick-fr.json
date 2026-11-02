@@ -1,0 +1,19 @@
+{
+ "vp01": "Téléchargement de {0}",
+ "vp02": "Nécessite {0} de mémoire",
+ "vp03": "Nécessite {0} de mémoire et environ {1} Go de disque",
+ "vp04": "Tient",
+ "vp05": "Tient avec streaming depuis le SSD",
+ "vp06": "Ne tient pas",
+ "vp07": "Afficher les détails",
+ "vp08": "Masquer les détails",
+ "vp09": "{0} de RAM + VRAM",
+ "vp10": "Fermer l’aperçu",
+ "vp11": "Libre en ce moment",
+ "vp12": "{0} libres",
+ "vp13": "{0} : {1} libres sur {2}",
+ "vp14": "Il occupe environ",
+ "vp15": "Rien. Tout tient en mémoire.",
+ "vp16": "Lecture depuis le SSD en cours : {0}",
+ "vp17": "Cette version occuperait environ {0} de mémoire graphique et {1} de RAM."
+}

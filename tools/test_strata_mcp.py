@@ -392,7 +392,7 @@ class Install(FakeRoot):
         res, err = self.call("strata_install", {})
         self.assertFalse(err)
         self.assertIn("Nothing was done yet", res["summary"])
-        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_S", 32768))
+        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_S", 131072))
         self.assertFalse((self.root / "setup-args.json").exists())
         self.assertIsNone(self.strata.install_job())
 
@@ -665,7 +665,7 @@ class Helpers(unittest.TestCase):
         r = s.recommend({"ram_gb": 64, "gpus": [], "cpu": {"avx2": True}})
         self.assertIsNone(r["model"])
         r = s.recommend({"ram_gb": 64, "gpus": [{**gpu[0], "vram_gb": 12.0}], "cpu": {"avx2": True}})
-        self.assertEqual(r["context"], 32768)
+        self.assertEqual(r["context"], 131072)      # 128K on every card, a 12 GB one too (owner, 2026-11-01)
 
     def test_a_pick_that_reads_from_the_ssd_says_so(self):
         # #3425: 36 GB RAM + 16 GB VRAM - 5 GB is the 48 GB tier; about 8 GB of IQ3_XXS would come from the SSD
@@ -778,16 +778,19 @@ class MacCatalog(unittest.TestCase):
         self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
         self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
 
-    def test_deepseek_on_a_mac_offers_the_two_sets_that_were_run_with_the_mac_words(self):
+    def test_deepseek_on_a_mac_offers_the_sets_with_the_mac_words(self):
         s, hw = self.hw(128)
         ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
         by = {x["model"]: x for x in ds["sizes"]}
-        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw"], "the 1.75 bpw set was never run on a Mac")
+        self.assertEqual(list(by), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M"], "the 1.75 bpw set was never run on a Mac; the Coder, UD-IQ1_S and UD-IQ1_M are offered with a plain note")
         for x in by.values():
             self.assertTrue(x["multi_file"] and not x["images"])
+            self.assertGreater(x["disk_gb"], x["download_gb"])
+            if x["model"] == "ISTA-DAS-Coder":      # 66 GB of experts: all of them stay in a 128 GB Mac's memory
+                self.assertTrue(x["on_this_pc"].startswith("fits: every expert stays"), x["on_this_pc"])
+                continue
             self.assertTrue(x["on_this_pc"].startswith("runs on this Mac's memory"), x["on_this_pc"])
             self.assertIn("read from the SSD", x["on_this_pc"])
-            self.assertGreater(x["disk_gb"], x["download_gb"])
         s, hw = self.hw(32)
         ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
         for x in ds["sizes"]:                           # a small Mac: said plainly, never refused

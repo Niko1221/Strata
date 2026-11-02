@@ -1252,7 +1252,7 @@ class Strata:
             return {"family": None, "model": None, "why": f"{ram:.0f} GB of RAM: Strata needs 32 GB or more "
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
                                                           "RAM)"}
-        ctx = 32768 if vram < 14 else 65536 if vram < 20 else 131072
+        ctx = 131072                                       # 128K on every card (owner, 2026-11-01)
         # #3425: the tiers count RAM + VRAM together, but the desktop keeps about 10 GB of the RAM and the card keeps ~6 GB for
         # its dense weights, so a PC at the floor of its tier reads part of the experts from the SSD at every answer.  Said
         # plainly beside the pick (the same arithmetic as the app's "This computer" card); the pick itself stays the owner's tier.
@@ -1434,6 +1434,11 @@ class Strata:
                     f"in memory and the other {pl['streamed_gb']:.0f} GB are read from the SSD; measured 14-16 tokens a second on code and "
                     "10-11 on chat")
         if pl.get("variant"):                   # an official ISTA-DAS set (strata_control/dsv41_fit.py): measured on 46-64 GB, never a refusal
+            own = ((__import__("strata_control.dsv41_fit", fromlist=["x"]).variant(pl["variant"]) or {}))
+            if v == "spills" and own.get("spill_short"):
+                return own["spill_short"].format(ram=pl["ram_gb"])
+            if v == "tight" and own.get("tight_short"):
+                return own["tight_short"]
             if v == "spills":
                 return (f"slow here: this computer has {pl['ram_gb']:.0f} GB of RAM and the set was measured with 46-64 GB, so most of its "
                         "experts are read from the SSD; it can still be installed"
@@ -2350,7 +2355,7 @@ class Tools:
                 if vision in ("yes", "gpu", "cpu"):
                     raise ToolError("images are not available with DeepSeek on a Mac yet: use vision=no")
                 vision = "no"
-                context = context or getattr(s.setup_module(), "DSV41_CONTEXT", 8192)
+                context = context or getattr(s.setup_module(), "DSV41_MAC_CONTEXT", 8192)
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None and md.get("multi_file"):
             context = getattr(s.setup_module(), "DSV41_CONTEXT", 8192)      # the context the engine was checked at
@@ -2361,10 +2366,7 @@ class Tools:
         if context is None:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
-            context = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-            if md.get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
-                                                s.setup_module().unsloth_budget(model, hw.get("ram_gb") or 0.0)):
-                context = 8192 if vram < 14 else 32768
+            context = 131072                          # 128K on every card (owner, 2026-11-01; strata_control/default_context.py)
         if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is None:

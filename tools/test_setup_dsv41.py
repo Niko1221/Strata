@@ -220,7 +220,7 @@ class Install(unittest.TestCase):
         self.assertEqual(self.cfg["exe"], str(self.exe))
         self.assertEqual(self.cfg["model_name"], "deepseek-v4.1-flash")
         a = self.cfg["args"]
-        self.assertEqual(a[a.index("--max-context") + 1], "8192")
+        self.assertEqual(a[a.index("--max-context") + 1], "131072")
         self.assertEqual(a[a.index("--eos") + 1], "1")
         self.assertEqual(a[a.index("--tp") + 1], "2")
         self.assertTrue(Path(a[a.index("--pack") + 1]).match("*packs/deepseek-v4.1-flash-ud-q8_k_xl"))
@@ -279,7 +279,7 @@ class Install(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("read from the SSD", out)
         self.assertIn("installing UD-Q8_K_XL with 64 GB of RAM, as you chose", out)
-        self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "131072")
         self.assertNotIn("--tp", self.cfg["args"])
 
     def test_little_ram_with_yes_alone_stops_where_the_rule_says(self):
@@ -304,7 +304,7 @@ class Install(unittest.TestCase):
         self.assertEqual(a[a.index("--vision") + 1], "on")
         self.assertIn("Flash-Next settings", out)
         self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "131072")
-        self.assertIn("checked at 4K and 8K", out)
+        self.assertNotIn("untested", out)                                       # 128K is the default: nothing to warn about
 
 
 class Catalog(unittest.TestCase):
@@ -318,7 +318,7 @@ class Catalog(unittest.TestCase):
         s = M.Strata(ROOT)
         fam = next(f for f in s.model_table({"ram_gb": 251.0, "gpus": [{**c, "usable": True} for c in FOUR], "engine_vendor": "amd"})
                    if f["family"] == "deepseek41")
-        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
+        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
         small_sets = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual((small_sets["IST-DAS-2.00bpw"]["download_gb"], small_sets["IST-DAS-2.25bpw"]["download_gb"]), (256.8, 273.8))
         self.assertTrue(small_sets["IST-DAS-2.00bpw"]["on_this_pc"].startswith("fits"))
@@ -353,7 +353,7 @@ class Catalog(unittest.TestCase):
                                           "cpu": {"avx2": True}}
         s.disk_free = lambda p: 2000.0
         plan, a = M.Tools(s).install_plan("deepseek41", "UD-Q8_K_XL", None, None, None, None, None, None, None, None, None)
-        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 8192, "yes"))   # 0.2.7: pictures on by default
+        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 131072, "yes"))   # 0.2.7: pictures on by default
         self.assertEqual(a[:6], ["--yes", "--no-start", "--family", "deepseek41", "--model", "UD-Q8_K_XL"])
         self.assertTrue(plan["ram"].startswith("fits"))
         for flag in ("--kv", "--low-ram", "--experimental-speed-projection"):
@@ -430,7 +430,7 @@ class OfficialSets(unittest.TestCase):
 
     def test_the_pinned_files(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
-        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])         # the official sets first
+        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])         # the official sets first
         repo = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"
         self.assertEqual(setup.HF_REVISIONS[repo], "cb02422c900df489cea5833e8a92171224059b3c")
         self.assertIs(setup.REPO_PINS[repo], setup.DSV41_ISTA_FILES)
@@ -698,7 +698,7 @@ class Smallest(unittest.TestCase):
         self.assertNotIn("--skip-tensors", cmd)
 
     def test_it_is_the_smallest_and_warns_never_refuses(self):
-        sizes = {m: dsv41_fit.ista_download_bytes(m) / 1e9 for m in dsv41_fit.ISTA_SETS}
+        sizes = {m: dsv41_fit.ista_download_bytes(m) / 1e9 for m in dsv41_fit.ISTA_SETS if m.startswith("IST-DAS-")}      # (the ISTA-DAS Coder has half the experts: tools/test_setup_coder.py)
         self.assertEqual(min(sizes, key=sizes.get), "IST-DAS-1.75bpw")
         self.assertAlmostEqual(sizes["IST-DAS-1.75bpw"], 239.3, delta=0.1)
         for ram in (24.0, 36.0, 64.0):
@@ -886,7 +886,7 @@ class InstallOfficial(Install):
         self.assertNotIn("--prefill-chunk", a)                                  # the engine's own default is the layer-major prompt path
         self.assertEqual(a[a.index("--dspark-conf") + 1], "0.65")                # never a floor below 0.3             # the layer-major prompt path
         self.assertNotIn("--ssd-cache", a)                                      # the store sizes itself
-        self.assertEqual(a[a.index("--max-context") + 1], "8192")
+        self.assertEqual(a[a.index("--max-context") + 1], "131072")
         self.assertIn("checked: every file the engine needs is there", out)
         self.assertIn("test question answered sensibly", out)
         self.assertTrue(Path(a[a.index("--pack") + 1]).match("*packs/deepseek-v4.1-flash-ist-das-2.00bpw"))

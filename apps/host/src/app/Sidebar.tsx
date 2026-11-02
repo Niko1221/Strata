@@ -18,7 +18,7 @@ import { MOD, runCommand } from '../lib/commands';
 import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
 import { Btn, Dialog, Icon, IconBtn, type IconName } from '../components/ui';
 import { Brand } from '../components/Brand';
-import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
+import { addWorkspace, deleteSession, go, isUnread, liveChatIds, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
 export function Sidebar({ containerRef }: {
     containerRef: RefObject<HTMLElement | null>;
 }) {
@@ -37,6 +37,9 @@ export function Sidebar({ containerRef }: {
     const workspaces = useStore(s => s.workspaces);
     const activeWorkspace = useStore(s => s.activeWorkspace);
     const activeSession = useStore(s => s.activeSession);
+    // The chats that have a turn running now (the board reads the same list). The count is what makes this redraw when one starts or ends.
+    const liveCount = useStore(s => s.liveChats);
+    const working = new Set(liveCount ? liveChatIds() : []);
     const [query, setQuery] = useState('');
     const [searchOpen, setSearchOpen] = useState(false);
     const searchInput = useRef<HTMLInputElement>(null);
@@ -65,6 +68,10 @@ export function Sidebar({ containerRef }: {
     const modelQuant = nativeSecond ?? current?.quant ?? tr('View model versions');
     const phase = nativeCurrent ? (nativeCurrent.status === 'ready' ? nativeCurrent.phase : nativeCurrent.status) : monitor?.phase ?? 'idle';
     const status = phase === 'unavailable' ? 'Status unavailable' : phase === 'error' ? 'Error' : phase === 'loading' ? 'Loading' : !current && !nativeCurrent ? 'No model loaded' : phase === 'reading' ? 'Reading prompt' : phase === 'thinking' ? 'Thinking' : phase === 'generating' ? 'Generating' : 'Ready';
+    // The model is busy with a chat that is not the one in front of the person: the chip says which one (a title, or how many).
+    const awayChats = [...working].filter(id => !(location.route === 'chat' && id === activeSession));
+    const awayTitle = awayChats.length === 1 ? sessions.find(s => s.id === awayChats[0]) : undefined;
+    const workingLine = awayChats.length === 1 && awayTitle ? tr("Working · {0}", [sessionTitle(awayTitle)]) : awayChats.length > 1 ? tr("{0} chats working", [awayChats.length]) : null;
     const menuSession = sessions.find(s => s.id === menuId);
     const q = query.trim().toLowerCase();
     const matching = sessions.filter(s => (!s.archived || q || includeArchived) && (!q || `${sessionTitle(s)} ${s.messages.map(m => m.content).join(' ')}`.toLowerCase().includes(q))).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
@@ -92,7 +99,7 @@ export function Sidebar({ containerRef }: {
               <div className={cx('ws__row', activeWorkspace === w.id && 'is-active')}><button className="ws__name" aria-expanded={expanded} onClick={() => { setActiveWorkspace(w.id); setFolders(f => ({ ...f, [w.id]: !expanded })); }}><Icon name="chevron" size={14} className={cx('ws__chev', expanded && 'is-open')}/><Icon name="folder" size={17}/><span>{w.name}</span></button><IconBtn name="pencil" title={tr("Rename {0}", [w.name])} onClick={() => { setWsName(w.name); setNavOpen(false); setRenameWsId(w.id); }}/>{tr(w.id !== 'root' ? <IconBtn name="x" title={tr("Remove {0} from sidebar", [w.name])} onClick={() => { setNavOpen(false); setRemoveWorkspaceId(w.id); }}/> : null)}</div>
               {tr(expanded ? <div className="navsessions">
                 {tr(shown.map(s => <div key={s.id}>
-                  <div className="ws__session row"><a className="navsession" href={href('chat', s.id)} aria-current={activeSession === s.id && location.route === 'chat' ? 'page' : undefined} onClick={() => selectSession(s.id)} onContextMenu={e => { e.preventDefault(); openMenu(s.id, e.currentTarget); }} title={sessionTitle(s)}><span className="navsession__title">{sessionTitle(s)}</span>{tr(s.pinned ? <span aria-label={tr("Pinned")}><Icon name="pin" size={12}/></span> : <span className="navsession__time">{relTimeShort(s.updatedAt)}</span>)}{tr(isUnread(s, activeSession) ? <span className="navsession__unread" aria-label={tr("Unread")}/> : null)}{tr(s.archived ? <span className="xs muted">{tr("Archived")}</span> : null)}</a><button className="st-btn st-btn--icon session-overflow" aria-label={tr("Actions for {0}", [sessionTitle(s)])} onClick={e => openMenu(s.id, e.currentTarget)}><Icon name="ellipsis" size={16}/></button></div>
+                  <div className="ws__session row"><a className="navsession" href={href('chat', s.id)} data-working={working.has(s.id) || undefined} aria-current={activeSession === s.id && location.route === 'chat' ? 'page' : undefined} onClick={() => selectSession(s.id)} onContextMenu={e => { e.preventDefault(); openMenu(s.id, e.currentTarget); }} title={sessionTitle(s)}><span className="navsession__title">{sessionTitle(s)}</span>{tr(s.pinned ? <span aria-label={tr("Pinned")}><Icon name="pin" size={12}/></span> : <span className="navsession__time">{relTimeShort(s.updatedAt)}</span>)}{tr(working.has(s.id) ? <span className="navsession__working" role="img" aria-label={tr("Working")} title={tr("Working")}/> : isUnread(s, activeSession) ? <span className="navsession__unread" aria-label={tr("Unread")}/> : null)}{tr(s.archived ? <span className="xs muted">{tr("Archived")}</span> : null)}</a><button className="st-btn st-btn--icon session-overflow" aria-label={tr("Actions for {0}", [sessionTitle(s)])} onClick={e => openMenu(s.id, e.currentTarget)}><Icon name="ellipsis" size={16}/></button></div>
                 </div>))}
                 {tr(!shown.length ? <p className="small muted ws__empty">{tr(q ? 'No matching chats' : 'No chats yet')}</p> : null)}
                 {tr(!q && rows.length > shown.length ? <button className="ws-view small" onClick={() => { setNavOpen(false); setRecentOpen(true); }}>{tr("View all chats")}</button> : null)}
@@ -102,7 +109,7 @@ export function Sidebar({ containerRef }: {
         </div> : null}
       </div>
       <div className="nav__foot">
-        <button className="enginechip" data-state={status === 'Ready' ? 'ready' : ['Reading prompt', 'Thinking', 'Generating', 'Loading'].includes(status) ? 'busy' : 'off'} onClick={() => go('models')} title={tr("{0} \u00B7 {1} \u00B7 {2}", [modelName, modelQuant, tr(status)])} aria-label={tr("{0} \u00B7 {1}", [modelName, modelQuant])}><span className="enginechip__family"><Icon name={modelFamilyIcon(current?.family)} size={20}/><span className="enginechip__dot"/></span><span className="enginechip__text nav__rail-hide"><span className="enginechip__title">{modelName}</span><span className="enginechip__sub">{modelQuant}</span></span></button>
+        <button className="enginechip" data-state={status === 'Ready' ? 'ready' : ['Reading prompt', 'Thinking', 'Generating', 'Loading'].includes(status) ? 'busy' : 'off'} onClick={() => go('models')} title={tr("{0} \u00B7 {1} \u00B7 {2}", [modelName, workingLine ?? modelQuant, tr(status)])} aria-label={tr("{0} \u00B7 {1}", [modelName, modelQuant])}><span className="enginechip__family"><Icon name={modelFamilyIcon(current?.family)} size={20}/><span className="enginechip__dot"/></span><span className="enginechip__text nav__rail-hide"><span className="enginechip__title">{modelName}</span><span className="enginechip__sub">{workingLine ?? modelQuant}</span></span></button>
         <NavLink route="skills" label={tr("Skills")} icon="skills" current={location.route}/>
         <NavLink route="monitor" label={tr("Monitor")} icon="activity" current={location.route}/>
         <NavLink route="models" label={tr("Models")} icon="models" current={location.route === 'tuning' ? 'models' : location.route}/>

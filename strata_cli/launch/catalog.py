@@ -403,6 +403,7 @@ class Catalog:
                 names += [m for m in self.strata.sizes_of(models, fam_name) if m not in names]
         import re
         wanted = re.sub(r"(?i)^ista-das(?=-\d)", "IST-DAS", model)     # the set's name on screen is ISTA-DAS; its ids keep the first spelling
+        wanted = re.sub(r"(?i)^ist-das(?=-coder$)", "ISTA-DAS", wanted)  # (the Coder has only the longer spelling; the shorter one is accepted)
         match = next((n for n in names if n.lower() == wanted.lower()), None)
         if match is None:
             near = S.closest(model, names)
@@ -456,38 +457,15 @@ class Catalog:
         return tokens * 13 * table.get(kv, 1056) / 1e9
 
     def max_context(self, family: str, model: str, hw: dict | None = None) -> int | None:
-        """The recommended context for this computer and model (setup.py: VRAM rule, then the RAM rule)."""
+        """The context a model starts with: 128K on every card, or the largest size the model offers under it (strata_control/default_context.py,
+        the one rule of the app, the Terminal and setup). A Mac keeps its unified-memory rule."""
+        from strata_control import default_context
         hw = hw or self.hardware()
-        if self.strata.multi_family(family):                   # DeepSeek-V4.1-Flash: the context the engine was checked at
-            return int(getattr(self.strata.setup_module(), "DSV41_CONTEXT", 8192))
-        if hw.get("mac") and hw.get("ram_gb"):                 # a Mac: the context by unified memory (strata_control/mac_fit.py)
-            mac = self.strata.mac()
+        if hw.get("mac") and hw.get("ram_gb") and not self.strata.multi_family(family):
+            mac = self.strata.mac()                           # a Mac: the context by unified memory (strata_control/mac_fit.py)
             if mac is not None:
                 return int(mac.recommend_context(float(hw["ram_gb"])))
-        usable = [g for g in hw.get("gpus") or [] if g.get("usable", True)]
-        vram = max((float(g.get("vram_gb") or 0) for g in usable), default=12.0)
-        rec = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-        if usable and all(g.get("vendor") == "intel" for g in usable):
-            rec = 8192 if vram < 10 else 16384 if vram < 20 else 32768       # an Arc keeps the session and the experts in the same memory
-        mod = self.strata.setup_module()
-        models = self.tables()[0]
-        if mod is not None and models[model].get("budget"):
-            try:
-                if mod.unsloth_budget(model, hw.get("ram_gb") or 0.0):
-                    rec = 8192 if vram < 14 else 32768
-            except Exception:                                  # noqa: BLE001
-                pass
-        if mod is not None and hasattr(mod, "ram_ctx") and hw.get("ram_gb"):
-            try:
-                rec = min(rec, int(mod.ram_ctx(model, hw["ram_gb"], False)))
-            except Exception:                                  # noqa: BLE001
-                pass
-        if usable:                                             # 0.2.2: a model a few hundred MiB short on this card gets the next context down
-            from strata_control import vram_fit
-            best = max(usable, key=lambda g: float(g.get("vram_gb") or 0))
-            rec = vram_fit.fit_context(f"{family} {model}", float(best.get("vram_gb") or 0), rec, "int8", 300,
-                                       str(best.get("vendor") or ""))
-        return rec
+        return default_context.pick(self.contexts_for(family, model))
 
     # ---- pictures
     def engine_backend(self) -> str | None:

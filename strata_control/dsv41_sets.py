@@ -8,6 +8,9 @@ sizes alone: no tensor is read and no 40 GB file is hashed in a preview (setup c
 
 The tables are setup.py's own (read from it, never copied), so a new size added there is recognised here.
 
+The ISTA-DAS Coder (setup.py DSV41_CODER, data/dsv41/coder-set.json) is one more set of the same kind: its metadata shard and two model shards under the repository's own generic names
+(model-0000N-of-00004.gguf, matched by name AND size), its last file the Engram table.
+
 Three kinds of files are the same set: the pinned four-shard files (and the first release's names), the four-shard files as ISTA-DASLab re-published
 their shard 1 on 2026-10-26 (a larger chat template: DSV41_NEW_SHARD1, what the Hub's last four-shard commit 653a9874 serves), and, since 0.2.8.1, ISTA-DASLab's
 six-shard layout of 2026-10-27 (DSV41_ISTA6_FILES).  setup downloads only the first; it takes the other two from files already here.
@@ -37,13 +40,13 @@ def tables() -> dict | None:
         new1, six = getattr(module, "DSV41_NEW_SHARD1", {}), getattr(module, "DSV41_ISTA6_FILES", {})
         result: dict = {"sets": {}, "engram": {}}
         for model, entry in family["models"].items():
-            if entry.get("recipe") not in ("ista", "udlow"):
+            if entry.get("recipe") not in ("ista", "udlow", "coder"):
                 continue                                # Unsloth's 508 GB set is not an "already have it" case of the app
-            ista = {**ista, **getattr(module, "DSV41_UD_FILES", {})}
+            ista = {**ista, **getattr(module, "DSV41_UD_FILES", {}), **getattr(module, "DSV41_CODER_FILES", {})}
             shards = {name: ista[name][0] for name in entry["shards"]}
             old = {renamed[name]: legacy[renamed[name]][0] for name in entry["shards"] if name in renamed and renamed[name] in legacy}
             alt = entry.get("engram_shard")             # Unsloth's UD-IQ1 sets: shard 5 is the Engram (the same data as ISTA-DAS's file)
-            result["sets"][model] = {"label": entry.get("label", model), "shards": shards, "legacy": old,
+            result["sets"][model] = {"label": entry.get("label", model), "shards": shards, "legacy": old, "generic": bool(entry.get("generic_names")),
                                      "engram_alt": {alt: ista[alt][0]} if alt else {},
                                      "new1": {name: new1[name][0] for name in entry["shards"] if name in new1},
                                      "six": {name: six[name][0] for name in entry.get("shards6") or [] if name in six}}
@@ -77,6 +80,8 @@ def match(files: dict[str, int]) -> list[dict]:
             present = [n for n in pinned if n in files]
             if not present:
                 continue
+            if entry.get("generic") and not any(files[n] in {pinned[n], *([entry["new1"][n]] if n in entry.get("new1", {}) else [])} for n in present):
+                continue                                # generic names (model-00002-of-00004.gguf): a file of another size is another model's, not a cut copy of this one
             ok_sizes = {n: {pinned[n], *([entry["new1"][n]] if layout == "four" and n in entry.get("new1", {}) else [])} for n in pinned}
             wrong = [n for n in present if files[n] not in ok_sizes[n]]
             missing = [n for n in pinned if n not in files]
