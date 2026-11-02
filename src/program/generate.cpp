@@ -6821,7 +6821,12 @@ int main(int argc, char** argv) {
     // the file, and if the file cannot be opened the arena is tried again the old way (a start never ends in a refusal for this).
     const bool ram_fallback_ok = strata::core::arena_ram_fallback_allowed(
         std::getenv("STRATA_ARENA_RAM_FALLBACK"), o.ple_io_explicit && o.ple_io == "ram", !o.shared_expert_arena.empty());
-    bool ram_fallback_taken = false, ram_fallback_failed = false;
+    bool ram_fallback_taken = false, ram_fallback_failed = false, ram_fallback_resident = false;
+    const bool ram_fallback_resident_off = [] { const char* v = std::getenv("STRATA_ARENA_FALLBACK_RESIDENT"); return v != nullptr && v[0] == '0'; }();
+    const uint64_t ram_fallback_headroom = [] {
+        const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB");
+        return (v != nullptr && std::atof(v) >= 0.0) ? (uint64_t) (std::atof(v) * 1073741824.0) : (4ull << 30);
+    }();
     for (bool again = true; again;) {
     again = false;
     if (o.mmap_experts) {
@@ -6839,6 +6844,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: the experts cannot be read from the file either (%s): loading the expert arena "
                                      "as before, short of RAM\n", err.c_str());
                 o.mmap_experts = false;
+                if (ram_fallback_resident) o.resident_cpu_experts = o.resident_pin = o.resident_soft = ram_fallback_resident = false;
                 ram_fallback_taken = false;
                 ram_fallback_failed = true;
                 again = true;
@@ -7052,6 +7058,16 @@ int main(int argc, char** argv) {
                                  "and start again\n", err.c_str());
             o.mmap_experts = true;
             ram_fallback_taken = true;
+            // R5070: the plain file source has no RAM copy at all, and on the owner's 5070 PC (63.1 GB, 44.6 GiB available for a
+            // 46.84 GiB arena) it decodes at 9-10 tok/s where a RAM copy of the hottest experts gives 27-28.  The fallback
+            // takes the --resident-experts form instead (the hottest experts by the profile in RAM as far as the available
+            // RAM allows, the rest read from the files); needs the static expert profile, STRATA_ARENA_FALLBACK_RESIDENT=0
+            // keeps the plain file source.
+            if (!o.expert_profile.empty() && !o.resident_cpu_experts && !ram_fallback_resident_off) {
+                o.resident_cpu_experts = o.resident_pin = o.resident_soft = true;
+                o.resident_headroom = ram_fallback_headroom;
+                ram_fallback_resident = true;
+            }
             again = true;
             continue;
         }
