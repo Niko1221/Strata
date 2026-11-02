@@ -339,6 +339,7 @@ struct Engine::Pf {
     // FNX_PF_RCCL=1 (AMD): the chunk sums through RCCL in place on ring_ce.dag[set] (rc_api: RcclApi*, rc_comm: this card's communicator). RCCL launches a group's collectives
     // at ncclGroupEnd, so what must follow a sum on its stream (the f32 conversion, the `done` event) waits in post until the prompt loop's per-card pass is closed
     bool rccl = false;
+    bool rc_f32 = false;              // FNX_PF_RCCL_F32=1: the sums in f32
     const void* rc_api = nullptr;
     void* rc_comm = nullptr;
     std::vector<std::function<void()>> post;
@@ -509,6 +510,11 @@ void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* 
     if (p.rccl) {
         const RcclApi& api = *(const RcclApi*) p.rc_api;
         const size_t n = (size_t) C * N;
+        if (p.rc_f32) {   // FNX_PF_RCCL_F32=1: the f32 rows summed in place (twice the bytes of the f16 sum, no rounding of the cards' parts)
+            const int r = api.AllReduce(x, x, n, RCCL_FLOAT32, RCCL_SUM, p.rc_comm, (void*) s);
+            if (r != RCCL_SUCCESS) throw std::runtime_error(std::string("prefill: ncclAllReduce: ") + api.ErrorString(r));
+            return;
+        }
         __half* buf = p.ring_ce.dag[seq & 1u];
         k_pfr_pack<<<grid_for(n / 2), 256, 0, s>>>((const float2*) x, (int) (n / 2), (__half2*) buf, err);
         const int r = api.AllReduce(buf, buf, n, RCCL_FLOAT16, RCCL_SUM, p.rc_comm, (void*) s);
@@ -727,6 +733,7 @@ void Engine::prefill_alloc() {
 #if FNX_HIP
         if (rccl_on_) {
             p->rccl = true;
+            p->rc_f32 = env_int("FNX_PF_RCCL_F32", 0) != 0;
             p->rc_api = &static_cast<RcclState*>(rccl_.get())->api;
             p->rc_comm = static_cast<RcclState*>(rccl_.get())->comm[(size_t) c];
         }
