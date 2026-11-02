@@ -598,14 +598,15 @@ bool parse_gen(const std::string& line, Req& r) {
         const std::string tok(s, (size_t) (p - s));
         const size_t eq = tok.find('=');
         if (eq == std::string::npos) {
-            const char* idp = tok.c_str();
+            const char* idp = s;
             while (*idp) {
+                while (*idp == ' ' || *idp == ',') ++idp;
+                if (!*idp) break;
                 char* next_p = nullptr;
                 long x = std::strtol(idp, &next_p, 10);
                 if (next_p == idp) break;
                 r.ids.push_back((int32_t) x);
                 idp = next_p;
-                while (*idp == ',' || *idp == ' ') ++idp;
             }
             break;
         }
@@ -792,6 +793,12 @@ int run(int argc, char** argv) {
                     test_tokens.push_back(tok_id);
                     if (ss.peek() == ',' || ss.peek() == ' ') ss.ignore();
                 }
+            }
+        } else if (a == "--prompt-tokens" || a == "--synthetic-prompt") {
+            if (i + 1 < argc) {
+                int count = std::atoi(argv[++i]);
+                test_tokens.resize(count);
+                for (int t = 0; t < count; ++t) test_tokens[t] = 100 + (t % 1000);
             }
         } else if (a == "--max-new" || a == "-n") {
             if (i + 1 < argc) max_new = std::atoi(argv[++i]);
