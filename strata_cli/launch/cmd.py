@@ -484,6 +484,9 @@ def roles_line(s: S.LaunchSettings, catalog) -> str | None:
         return None
 
 
+DEEPSEEK_RX7000_NOTE = "DeepSeek has not been tested on RX 7000 cards yet; please report how it runs."
+
+
 def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
     """Cards of another make than the engine drives: never offered, never mixed into a split. Said in plain words: a named card of the other
     make is refused with the reason, and a better card of the other make is mentioned once (recommend, never force)."""
@@ -519,6 +522,8 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
     new_card = comp.new_card_note
     if new_card:
         out.append(S.Notice("warn", new_card[0], new_card[1]))
+    if s.family == "deepseek41" and comp.rx7000_card:
+        out.append(S.Notice("warn", DEEPSEEK_RX7000_NOTE, "If something fails, tell us at https://github.com/Niko1221/Strata/issues (attach the engine log)."))
     return out
 
 
