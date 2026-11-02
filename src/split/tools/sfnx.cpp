@@ -651,10 +651,33 @@ struct Server {
                 limit.push_back(slots[(size_t) i].max_new - slots[(size_t) i].produced);
             }
             for (int i : rows) ++slots[(size_t) i].rounds;
+            // FNX_BATCH_STATS=1: where a window cycle goes on the host, per 100 windows: the batch decoder's window (verify, draft layer and chain, the rest of it) and what runs
+            // between two windows (this loop: upkeep, request polling, page rooms, finishing slots)
+            static const bool wstats = fnx::env_flag("FNX_BATCH_STATS");
+            static std::chrono::steady_clock::time_point t_prev_end{};
+            static double acc_out = 0, acc_win = 0, acc_ver = 0, acc_dr = 0, acc_say = 0;
+            static int nwin = 0;
+            const auto tw0 = std::chrono::steady_clock::now();
+            if (wstats && t_prev_end.time_since_epoch().count() != 0) {
+                const double gap = std::chrono::duration<double, std::milli>(tw0 - t_prev_end).count();
+                if (gap < 400.0) acc_out += gap;
+            }
             const auto got = dec->window(ls, limit, [&](int r, int tok) {
                 say("BT " + std::to_string(rows[(size_t) r]) + " " + std::to_string(tok));
                 ++slots[(size_t) rows[(size_t) r]].produced;
             });
+            if (wstats) {
+                t_prev_end = std::chrono::steady_clock::now();
+                acc_win += std::chrono::duration<double, std::milli>(t_prev_end - tw0).count();
+                acc_ver += dec->last_verify_ms;
+                acc_dr += dec->last_draft_ms;
+                if (++nwin == 100) {
+                    std::fprintf(stderr, "fnx: window cycle (100 windows, means in ms): between windows %.1f, window() %.1f = verify_rows %.1f + draft_next %.1f + the rest %.1f\n", acc_out / nwin,
+                                 acc_win / nwin, acc_ver / nwin, acc_dr / nwin, (acc_win - acc_ver - acc_dr) / nwin);
+                    acc_out = acc_win = acc_ver = acc_dr = acc_say = 0;
+                    nwin = 0;
+                }
+            }
             for (size_t r = 0; r < rows.size(); ++r) {
                 const int i = rows[r];
                 if (got[r].eos) finish_slot(i, fnx::Finish::stop);
