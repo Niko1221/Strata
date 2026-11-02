@@ -330,6 +330,19 @@ uint64_t Context::recommended_working_set() const { return [impl_->dev recommend
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
+    std::string why;
+    const int id = compile_try(files, prelude, fast_math, &why);
+    if (id < 0) {
+        std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
+                     [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
+                     files.empty() ? "?" : files.back().c_str(), why.c_str());
+        std::exit(3);
+    }
+    return id;
+}
+
+// The same, and a failure is returned (-1, the compiler's message in *why) instead of ending the process: for a library that has a fallback.
+int Context::compile_try(const std::vector<std::string>& files, const std::string& prelude, bool fast_math, std::string* why) {
     std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
     if (!ggml_common_path.empty() && prelude.find("NO_GGML_COMMON") == std::string::npos) {
         src += "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n";
@@ -353,10 +366,8 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
     NSError* err = nil;
     id<MTLLibrary> lib = [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:&err];
     if (!lib) {
-        std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
-                     [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
-                     files.empty() ? "?" : files.back().c_str(), [[err localizedDescription] UTF8String]);
-        std::exit(3);
+        if (why) *why = err ? [[err localizedDescription] UTF8String] : "unknown";
+        return -1;
     }
     impl_->libs.push_back(lib);
     return (int)impl_->libs.size() - 1;

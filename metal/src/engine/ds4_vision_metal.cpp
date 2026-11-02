@@ -12,7 +12,10 @@
 
 #include "mtl_rt.h"
 
+#include <strata/gpu/runtime.hpp>
+
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -74,6 +77,143 @@ struct Runner {
 
 }  // namespace
 
+namespace {
+
+// Whether the tensor-op GEMM (ds4_vision_mpp.metal) can be trusted on this Mac: Metal 4 on the GPU and the OS, the library compiles, and
+// it computes what the plain kernel computes on a small problem with odd sizes and strides.  Decided once; the answer is logged.
+// DS4_VISION_NO_MPP=1 asks for the plain kernel; DS4_VISION_FORCE_MPP_FAIL=1 (tests) makes the check fail.
+struct MppChoice {
+    bool use = false;
+    int lib = -1;
+};
+
+float bf_to_f(uint16_t b) {
+    const uint32_t u = (uint32_t) b << 16;
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+uint16_t f_to_bf(float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, 4);
+    return (uint16_t) (u >> 16);   // (truncated: the test only needs BF16 values)
+}
+
+bool mpp_selftest(mtl::Context& cx, int plain_lib, int mpp_lib, std::string& why) {
+    const int M = 70, N = 90, K = 100, LDX = 104, LDW = 104, LDY = 96, NV = 64, LDV = 136, LDO = 72;
+    void *dX = nullptr, *dW = nullptr, *dV = nullptr, *dY0 = nullptr, *dY1 = nullptr, *dO0 = nullptr, *dO1 = nullptr;
+    const size_t bX = (size_t) M * LDX * 2, bW = (size_t) N * LDW * 2, bV = (size_t) K * LDV * 2, bY = (size_t) M * LDY * 4, bO = (size_t) M * LDO * 2;
+    bool ok = strata::gpu::malloc_device(&dX, bX) == strata::gpu::kSuccess && strata::gpu::malloc_device(&dW, bW) == strata::gpu::kSuccess &&
+              strata::gpu::malloc_device(&dV, bV) == strata::gpu::kSuccess && strata::gpu::malloc_device(&dY0, bY) == strata::gpu::kSuccess &&
+              strata::gpu::malloc_device(&dY1, bY) == strata::gpu::kSuccess && strata::gpu::malloc_device(&dO0, bO) == strata::gpu::kSuccess &&
+              strata::gpu::malloc_device(&dO1, bO) == strata::gpu::kSuccess;
+    auto release = [&]() {
+        for (void* q : {dX, dW, dV, dY0, dY1, dO0, dO1})
+            if (q) strata::gpu::free_device(q);
+    };
+    if (!ok) {
+        release();
+        why = "no memory for the self-test";
+        return false;
+    }
+    uint32_t seed = 12345u;
+    auto rnd = [&]() {
+        seed = seed * 1664525u + 1013904223u;
+        return (float) ((seed >> 8) & 0xffffu) / 32768.0f - 1.0f;   // [-1, 1)
+    };
+    auto fill = [&](void* d, size_t bytes) {
+        uint16_t* h = (uint16_t*) strata::gpu::host_view(d);
+        std::memset(h, 0, bytes);
+        for (size_t i = 0; i < bytes / 2; ++i) h[i] = f_to_bf(rnd());
+        return h != nullptr;
+    };
+    ok = fill(dX, bX) && fill(dW, bW) && fill(dV, bV);
+    std::memset(strata::gpu::host_view(dY0), 0, bY);
+    std::memset(strata::gpu::host_view(dY1), 0, bY);
+    std::memset(strata::gpu::host_view(dO0), 0, bO);
+    std::memset(strata::gpu::host_view(dO1), 0, bO);
+    if (!ok) {
+        release();
+        why = "no host view for the self-test";
+        return false;
+    }
+    auto addr = [](void* d) { return (uint64_t) (uintptr_t) d; };
+    try {
+        const mtl::Pipeline pPlain = cx.pipeline(plain_lib, "vis_gemm"), pK = cx.pipeline(mpp_lib, "vis_mpp_k_f32_64_64"),
+                            pNbf = cx.pipeline(mpp_lib, "vis_mpp_n_bf_64_64");
+        Runner R(cx);
+        GemmArgs g0{addr(dX), addr(dW), addr(dY0), (uint32_t) M, (uint32_t) K, (uint32_t) N, (uint32_t) LDX, (uint32_t) LDW, (uint32_t) LDY, 1.0f, 0u};
+        R.go(pPlain, g0, (uint32_t) ((N + 63) / 64), (uint32_t) ((M + 63) / 64), 128);
+        MppArgs m0{addr(dX), addr(dW), addr(dY1), M, N, K, LDX, LDW, LDY};
+        R.go(pK, m0, (uint32_t) ((N + 63) / 64), (uint32_t) ((M + 63) / 64), 128);
+        GemmArgs g1{addr(dX), addr(dV), addr(dO0), (uint32_t) M, (uint32_t) K, (uint32_t) NV, (uint32_t) LDX, (uint32_t) LDV, (uint32_t) LDO, 1.0f, 3u};
+        R.go(pPlain, g1, (uint32_t) ((NV + 63) / 64), (uint32_t) ((M + 63) / 64), 128);
+        MppArgs m1{addr(dX), addr(dV), addr(dO1), M, NV, K, LDX, LDV, LDO};
+        R.go(pNbf, m1, (uint32_t) ((NV + 63) / 64), (uint32_t) ((M + 63) / 64), 128);
+        cx.flush_runs();
+    } catch (...) {
+        release();
+        why = "the self-test could not be dispatched";
+        return false;
+    }
+    const float* y0 = (const float*) strata::gpu::host_view(dY0);
+    const float* y1 = (const float*) strata::gpu::host_view(dY1);
+    const uint16_t* o0 = (const uint16_t*) strata::gpu::host_view(dO0);
+    const uint16_t* o1 = (const uint16_t*) strata::gpu::host_view(dO1);
+    double worst_f = 0.0, worst_b = 0.0;
+    bool good = true;
+    for (int r = 0; r < M && good; ++r) {
+        for (int c = 0; c < N; ++c) {
+            const float a = y0[(size_t) r * LDY + c], b = y1[(size_t) r * LDY + c];
+            const double d = std::fabs((double) a - (double) b);
+            worst_f = std::max(worst_f, d);
+            if (!(d <= 1e-3 + 1e-4 * std::fabs((double) a))) good = false;   // (also catches NaN)
+        }
+        for (int c = 0; c < NV; ++c) {
+            const float a = bf_to_f(o0[(size_t) r * LDO + c]), b = bf_to_f(o1[(size_t) r * LDO + c]);
+            const double d = std::fabs((double) a - (double) b);
+            worst_b = std::max(worst_b, d);
+            if (!(d <= 1e-3 + 0.02 * std::fabs((double) a))) good = false;
+        }
+    }
+    release();
+    if (!good) {
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "the self-test differs from the plain kernel (max abs %.3g FP32, %.3g BF16)", worst_f, worst_b);
+        why = buf;
+        return false;
+    }
+    return true;
+}
+
+MppChoice choose_mpp(mtl::Context& cx, int plain_lib) {
+    MppChoice c;
+    std::string why;
+    if (std::getenv("DS4_VISION_NO_MPP") != nullptr || std::getenv("DS4_VISION_REF_GEMM") != nullptr) {
+        why = "asked for by DS4_VISION_NO_MPP / DS4_VISION_REF_GEMM";
+    } else if (!cx.supports_metal4()) {
+        why = "this GPU or macOS has no Metal 4";
+    } else if (std::getenv("DS4_VISION_FORCE_MPP_FAIL") != nullptr) {
+        why = "DS4_VISION_FORCE_MPP_FAIL (test)";
+    } else {
+        std::string msg;
+        const int lib = cx.compile_try({"../src/engine/msl/ds4_vision_mpp.metal"}, "", false, &msg);
+        if (lib < 0) {
+            why = "the tensor-op kernels do not compile here (" + msg.substr(0, 120) + ")";
+        } else if (mpp_selftest(cx, plain_lib, lib, why)) {
+            c.use = true;
+            c.lib = lib;
+        }
+    }
+    if (c.use)
+        std::fprintf(stderr, "ds4: vision tower GEMM: Metal 4 tensor ops (self-test against the plain kernel ok)\n");
+    else
+        std::fprintf(stderr, "ds4: vision tower GEMM: plain kernel (%s)\n", why.c_str());
+    return c;
+}
+
+}  // namespace
+
 bool encode(const Args& a, std::string& err) {
     mtl::Context& cx = strata::dsv41::metal_host::finish_cx();
     static int s_lib = -2;
@@ -82,11 +222,10 @@ bool encode(const Args& a, std::string& err) {
         err = "vision: compiling ds4_vision.metal failed";
         return false;
     }
-    // the tensor-op GEMM (ds4_vision_mpp.metal) when it compiles here; DS4_VISION_NO_MPP=1: the plain kernel
-    static const bool want_mpp = std::getenv("DS4_VISION_NO_MPP") == nullptr && std::getenv("DS4_VISION_REF_GEMM") == nullptr;
-    static int s_lib_mpp = -2;
-    if (want_mpp && s_lib_mpp == -2) s_lib_mpp = cx.compile({"../src/engine/msl/ds4_vision_mpp.metal"}, "", false);
-    const bool use_mpp = want_mpp && s_lib_mpp >= 0;
+    // the tensor-op GEMM (ds4_vision_mpp.metal) when this Mac can run it and it checks out; else the plain kernel (logged once)
+    static const MppChoice mc = choose_mpp(cx, s_lib);
+    const bool use_mpp = mc.use;
+    const int s_lib_mpp = mc.lib;
     Runner R(cx);
     R.lib = s_lib;
     const mtl::Pipeline pPatch = R.pipe("vis_patchify"), pAdd = R.pipe("vis_add_rows"), pNorm = R.pipe("vis_rmsnorm"),
