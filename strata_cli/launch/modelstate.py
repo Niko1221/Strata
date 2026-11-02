@@ -92,6 +92,13 @@ def resolved_drafting(drafting: str | None, family: str | None) -> str:
         return "mtp"
 
 
+def drafting_for_family(choice: str | None, family: str | None) -> str | None:
+    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth); any other model (DeepSeek, which has its
+    own DSpark and no MTP or DFlash2; Coder; Swift; NVFP4) goes back to Auto (None), so a choice made for one model never rides along to another. An unknown family keeps it."""
+    from strata_control import drafting as _d
+    return choice if (not family or family in _d.SUPPORTED_FAMILIES) else None
+
+
 def drafting_to_save(key: str, saved: object) -> str | None:
     """What the Drafting step writes into the launch settings for the row the person chose. Auto stays "nobody chose" (None: a saved preset writes nothing), except when the
     model's own settings file already holds another choice (the app's Models screen writes its Drafting choice there and a launch starts from that file): then Auto is

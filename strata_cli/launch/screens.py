@@ -507,6 +507,8 @@ class ModelScreen(Base):
             if (s.family, s.model) != (fam, model) or s.model_path:
                 s.model_path = None
             s.family, s.model = fam, model
+            from strata_cli.launch import modelstate
+            s.drafting = modelstate.drafting_for_family(s.drafting, fam)         # DeepSeek and the other families have no Drafting choice: back to Auto
             r = next(x for x in self.rows if (x.family, x.model) == (fam, model))
             if r.verdict == "no":
                 self.ctx.notes.append(f"{r.title} does not fit this computer; it may be slow or run out of memory.")
@@ -556,6 +558,8 @@ class ModelScreen(Base):
         if sel.get("family") and sel.get("model") and not plan.get("issues"):
             s = self.ctx.settings
             s.model_path, s.family, s.model = models.import_target(path, plan), sel["family"], sel["model"]
+            from strata_cli.launch import modelstate
+            s.drafting = modelstate.drafting_for_family(s.drafting, s.family)
             self.ctx.picked_in_list = False
             self.close_field("own")
             gb = plan.get("total_bytes", 0) / 1e9
@@ -591,6 +595,7 @@ class ModelScreen(Base):
             return True
         s = self.ctx.settings
         s.model_path, s.family, s.model = str(folder), "deepseek41", model
+        s.drafting = None                                    # DeepSeek has no Drafting choice
         self.ctx.picked_in_list = False
         self.close_field("own")
         gb = sum(x.stat().st_size for x in folder.iterdir() if x.is_file() and x.name.endswith(".gguf")) / 1e9

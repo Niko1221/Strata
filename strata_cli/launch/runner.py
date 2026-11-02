@@ -543,8 +543,9 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg["api_key"] = "none"                              # served without a key on purpose (the server warns once at start)
     else:
         cfg.pop("api_key", None)
-    if s.drafting:                                           # strata_control/drafting.py: serve/server.py applies it at every start
-        cfg["drafting"] = s.drafting
+    chosen = None if s.family == "deepseek41" else s.drafting   # DeepSeek has its own DSpark and no MTP or DFlash2: a Drafting choice left from another model is not written
+    if chosen:                                               # strata_control/drafting.py: serve/server.py applies it at every start
+        cfg["drafting"] = chosen
     if s.split_engine:                                       # strata_control/split_engine.py: read by apply_split_engine; "off" survives every update
         cfg["split_engine"] = s.split_engine
     cfg.setdefault("exe", "component:strata-engine")
@@ -555,7 +556,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg["log"] = log
     apply_cards(cfg, gpus)
     from strata_control import drafting as _drafting
-    drafting_off = _drafting.normalize(s.drafting if s.drafting is not None else cfg.get("drafting")) == "off"
+    drafting_off = _drafting.normalize(chosen if chosen is not None else cfg.get("drafting")) == "off"
     if s.mtp == "off" or drafting_off:                       # no draft layer for this launch (serve/server.py applies "mtp": false at every start)
         from strata_control import draft_layer              # --drafting off: the written file carries no --mtp either (it was left in before)
         cfg["mtp"] = False
@@ -1584,7 +1585,7 @@ class Runner:
         want: dict = {}
         try:
             want = self.drafting_inputs(read_config(base_path))
-            if want["data_dir"] is not None and drafting.needs_conversion(**want):
+            if want["data_dir"] is not None and drafting.needs_conversion(**want) and drafting.engine_has_selector_q4():
                 drafting_fetch.convert_selector(want["data_dir"])        # Load, not a start: the smaller selector (174 MiB), made here from the checked pack, no network
             if want["data_dir"] is None or not drafting.needs_pack(**want):
                 return

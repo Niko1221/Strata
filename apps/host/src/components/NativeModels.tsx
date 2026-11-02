@@ -182,6 +182,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
                 setResourceProfile(installed.resourceProfile);
         }
         else {
+            setDrafting('auto');    // a model that is not installed has no saved choice: Auto (the page never carries the last model's Drafting over to another one)
             setVision(shownVision(visionPicks.current.get(selectedSize.id), undefined));
             if (!contextPicked)    // a context the person picked stays; otherwise 128K (DeepSeek too, where its pack allows)
                 setContext(defaultContext(contextList));
