@@ -13726,8 +13726,7 @@ int main(int argc, char** argv) {
                         d.clear_deferred();
                         if (!ver.gather_taps(d.landing(), d.device(), first[t], kp, 0, d.stream(), err) ||
                             !d.draft_launch(d.landing(), kp, pos[first[t]], outb[first[t] + kp - 1], err)) {
-                            std::printf("ERR batch DFlash2 slot %d: %s
-", b, err.c_str());
+                            std::printf("ERR batch DFlash2 slot %d: %s\n", b, err.c_str());
                             return false;
                         }
                         df2_launched.push_back(b);   // finished after the loop: the slots' graphs run at the same time
@@ -13767,8 +13766,7 @@ int main(int argc, char** argv) {
                 float pp[strata::core::Dflash2Drafter::kDrafts];
                 BSlot& sl = bs[(size_t) b];
                 if (!slot_df2[(size_t) b]->draft_finish(dd, pp, err)) {
-                    std::printf("ERR batch DFlash2 slot %d: %s
-", b, err.c_str());
+                    std::printf("ERR batch DFlash2 slot %d: %s\n", b, err.c_str());
                     return false;
                 }
                 for (int j = 0; j < strata::core::Dflash2Drafter::kDrafts && j < (int) sl.draft.size(); ++j) sl.draft[(size_t) j] = dd[j];
