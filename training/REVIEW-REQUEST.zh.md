@@ -1,6 +1,6 @@
 # 审核请求：训练功能（sft / dpo / grpo × 零阶 / 反传）
 
-**交付分支**：`feat/train_support`（下划线；`origin` 上的同名分支停在 `7fa6caaa`，需要一次 fast-forward 推送）
+**交付分支**：`feat/train_support`（下划线）。三条分支都已推到 `origin`（`feat/train-mezo` / `feat/train-backforward` / `feat/train_support`），远端与本地 HEAD 一致，可直接开 PR；只收零阶就用第一条，要对比反传增量看第二条
 
 > **▸ 本文所在树 = 交付面**（三条交付形态里的第 3 条）：`feat/train-mezo` ∪ `feat/train-backforward`
 > 加这组审核文档。代码与 `feat/train-backforward` **逐字相同**（`git diff -- '*.py'` 为空），只有文档不同，
@@ -17,7 +17,7 @@
 |---|---|
 | 改动面（相对 `upstream/main`） | 132 文件 / **≈+27k −93**（含本文档；口径见表下注） |
 | 本功能提交（非 merge） | ≈110 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
-| 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo.py` `sft.py` `grpo.py` 等 13 个文件 4,673 行 |
+| 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo/mezo.py` `backward/sft.py` `backward/grpo.py` 等 13 个文件 4,673 行 |
 | 测试 | 14 个 `test_*.py` 3,214 行，训练目录 **258 项**（Windows 上 256 过，2 项 watchdog 缺 triton）；`serve/test_training_api.py` 6 项 |
 | 服务端 | `serve/server.py`（`TrainBridge` + 3 个 `/v1/training/*` 路由 + `POST /v1/lora`） |
 | 新增依赖 | 零阶 **0 个 pip 包**（只需已装的 numpy/jinja2/regex + 一个引擎二进制）；反传 4~6 个（torch / transformers / accelerate / safetensors，Windows 还要 triton-windows、kernels）→ §2.5 |
@@ -540,38 +540,6 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 | `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **134 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 134 过） | ≈80 提交 / 100 文件 / ≈+17k −93 |
 | `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `mezo/sft_mezo.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 258 项（256 过 + 2 项 watchdog 见下） | ≈90 提交 / 132 文件 / ≈+27k −93 |
 | **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 258 项（同上） | 交付分支 HEAD / 132 文件 / ≈+27k −93 |
-
-**如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
-
-| 只收 | 得到 | 失去 |
-|---|---|---|
-| `feat/train-mezo` | 零阶六方案全在（sft / dpo / grpo × 引擎前向）、`LORA` / `SCORE`、引擎侧改动、数学造数据与评测、**0 个新增 pip 包、训练路径零 torch**、134 项 | `--method backward`（autograd 反传）；DPO / curriculum / clip window / TIS 这些只在反传侧的能力；numpy↔torch 对拍（`test_objectives.py`）；§5.4 的反传过拟合对照 |
-| `feat/train-backforward` | 上面全部 + 反传栈，258 项 | 无（严格超集）。代价是树里同时带着零阶，审核时看不出「哪半是这次要的」—— 除非按 §7.1 的文件清单读 |
-| `feat/train_support` | 两条线 + 这组文档（交付面） | — |
-
-一句话：**backforward 相对 mezo 的增量不是「训得更好」，而是「一条物理上不同的路线 + 对拍证据」** ——
-零阶用引擎前向做零阶近似，反传用 PyTorch autograd 拿真梯度，两者的损失数学共用 `objectives.py`，
-所以反传路线同时充当零阶的参考实现：两者在相同输入上的 logp / loss 能对上（§5.5），这才让「零阶这条路线的数学没写错」
-成为可验证的结论，而不是自说自话。
-
-如果审核方只关心「零阶能不能训起来」，`feat/train-mezo` 就是完整答案，砍掉 backforward 不损失零阶任何能力；
-反过来的说法不成立 —— 零阶是 backforward 的基础层，不能从它里面摘掉。
-
-**如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
-
-| 只收 | 得到 | 失去 |
-|---|---|---|
-| `feat/train-mezo` | 零阶六方案全在（sft / dpo / grpo × 引擎前向）、`LORA` / `SCORE`、引擎侧改动、数学造数据与评测、**0 个新增 pip 包、训练路径零 torch**、134 项 | `--method backward`（autograd 反传）；DPO / curriculum / clip window / TIS 这些只在反传侧的能力；numpy↔torch 对拍（`test_objectives.py`）；§5.4 的反传过拟合对照 |
-| `feat/train-backforward` | 上面全部 + 反传栈，258 项 | 无（严格超集）。代价是树里同时带着零阶，审核时看不出「哪半是这次要的」—— 除非按 §7.1 的文件清单读 |
-| `feat/train_support` | 两条线 + 这组文档（交付面） | — |
-
-一句话：**backforward 相对 mezo 的增量不是「训得更好」，而是「一条物理上不同的路线 + 对拍证据」** ——
-零阶用引擎前向做零阶近似，反传用 PyTorch autograd 拿真梯度，两者的损失数学共用 `objectives.py`，
-所以反传路线同时充当零阶的参考实现：两者在相同输入上的 logp / loss 能对上（§5.5），这才让「零阶这条路线的数学没写错」
-成为可验证的结论，而不是自说自话。
-
-如果审核方只关心「零阶能不能训起来」，`feat/train-mezo` 就是完整答案，砍掉 backforward 不损失零阶任何能力；
-反过来的说法不成立 —— 零阶是 backforward 的基础层，不能从它里面摘掉。
 
 **如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
 
