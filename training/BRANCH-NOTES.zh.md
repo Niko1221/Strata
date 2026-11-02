@@ -8,8 +8,8 @@
 > 迁移做在**每条分支自己身上**。
 
 > **树属于哪一层**（2026-11-03 定形）：`feat/train-mezo` = 零阶完整训练线（共用层 + `mezo/` +
-> 引擎侧改动，**不 import torch**，134 项）；`feat/train-backforward` = 它 + torch 层（比它多
-> 32 个 `.py`，258 项）；`feat/train_support` = 两者并集 + 审核文档。三条分支的 `.py` 只有
+> 引擎侧改动，**不 import torch**，144 项）；`feat/train-backforward` = 它 + torch 层（比它多
+> 32 个 `.py`，268 项）；`feat/train_support` = 两者并集 + 审核文档。三条分支的 `.py` 只有
 > "文件在不在"的差别，`algos.available()` 按文件决定 `--method` 有哪几个（缺了就报缺哪个文件）。
 
 > 环境：RTX 4090 48 GiB（47.99 可用）/ 125B IQ3_XXS pack / 单行样本 / loss = mean。
@@ -285,7 +285,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 | 身份 before/after、gen 原文 | `logs/accept_lr3e5_ce.log`、`accept_lr3e5_s900.log`、`accept_lr1e5_ce.log` |
 | 数学训练集前后 | `Strata-mezo/training/_run_hardmth_train.log` |
 | MATH-500 四次评测 | `Strata-mezo/training/_evalscope/{baseline,mezo_lora,bwd_lora,dpo_lora}/`、`_report.py` |
-| 测试 | `python -m pytest training/tests -q`（本树 258 项；零阶子集那棵树 134 项） |
+| 测试 | `python -m pytest training/tests -q`（本树 268 项；零阶子集那棵树 144 项） |
 
 ---
 
@@ -296,7 +296,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 | 450 步 answer-ce | 4.145（−0.29） | **4.2387（−0.196）**；4.145 是另一次跑的第 300 步 |
 | 零阶峰值显存 | 48.1 GiB | **46.97 GiB**（48,100 MiB） |
 | backward 路线 | 「引擎反传」 | **PyTorch/HF autograd**（引擎没有反传；`sft.py`/`grpo.py` 走本地 transformers 栈） |
-| 测试总数 | 232 项 | **258 项**（+18 项 numpy 侧目标函数测试 + 1 项「方法缺文件要明确报错」；零阶树 134 项） |
+| 测试总数 | 232 项 | **268 项**（+18 项 numpy 侧目标函数测试 + 1 项「方法缺文件要明确报错」+ 10 项在线换表 transport 与判分器；零阶树 144 项） |
 | 身份训练结论 | 「在学、无副作用」 | **CE 在降但微调者署名始终没生成**；600 步丢身份、750 步英文泄漏 |
 | 六方案极限表 | 缺失 | §1（本节为新增核心） |
 | 数学训练前后 | 只有旧过程式线的 logp | **训练集 0/3→2/3 + 干净 held-out 掉 3/31/2 项** |
