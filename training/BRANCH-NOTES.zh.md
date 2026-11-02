@@ -209,9 +209,29 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 - **常驻 API 的训练会话**：`POST /v1/training/session {open|close}` + `/v1/training/command`。
   open 时服务引擎让位（unload）→ 拉起训练引擎 → 会话期推理一律 409；close 后下一请求自动拉回。
   **无会话时推理路径零改动**。真机验证：会话期 chat 409、close 后 200、客户端崩溃也会话正常关。
+- **在线训练（`--serve-url`，第三条 transport）**：`POST /v1/score`（`"lora": ±1`，服务端 docstring
+  明写「两次只有这个键不同的调用就是一次 MeZO 步，且不重传表、不重建图」）+ `POST /v1/lora`
+  （原地换表）已经能驱动**驻留的推理引擎**做零阶步 ⇒ 补一个 transport 就够，训练循环一行没动：
+
+  | transport | 谁持有 GPU | 推理 |
+  |---|---|---|
+  | `Engine` | 自己 spawn 训练引擎子进程（pipe） | 不存在 |
+  | `EngineApi` | `/v1/training/*` 让服务端先 unload | **中断**（会话期 409） |
+  | `EngineHttp` | 驻留的推理引擎本身 | **继续**（只与训练步抢同一把 fifo） |
+
+  - 服务端要求（启动时决定，训练侧补不了）：`--lora <初始 adapter>`（形状不能变 ⇒ rank 全程固定）
+    + `--no-prefill-borrow --prefill 8192`（否则 score 走借槽路径，数值已知坏）。后者同时影响推理的
+    prefill 速度 —— 这是「共用引擎」的真实代价，不在训练侧掩盖。
+  - **长度契约**：引擎的 `SL` 只发 `t + 1 < n`（n-1 行），而 `/v1/score` 为了让 `logprobs` 与
+    `tokens` 对齐补了一个末位 null（n 行）⇒ 客户端**必须去掉末位**。照抄会让 answer 段切片整体
+    错一位：损失照样算得出、曲线照样下降，只是学的是错跨度的 token。`test_engine_http.py` 钉住这条。
+  - 在线形态下 `gen` 不可用（服务端没有按 ids 生成的端点）⇒ `supports_gen = False`，eval 跳过生成行，
+    只留 logp / answer-ce 两条基线。
+  - 每步仍写 plus/minus 两份完整表（与离线逐字节同义），I/O 同量级；换表清 K/V ⇒ 训练期间在跑的
+    对话，下一个请求从 token 0 重读 prompt。
 - **GPU 独占检查**：pipe 路线拉引擎前查空闲显存，不够就 loud exit 2（`STRATA_ALLOW_SHARED_GPU=1`
   可显式豁免，豁免也出声）。起因是一次双驻留把提交内存打到 89.7 GiB > 物理 48 GiB，引擎 stall 自杀。
-- **测试**：训练目录 **258 项**（`python -m pytest tests -q`，22 s；Windows 上 256 过 + 2 项 watchdog 仅因缺 triton 轮子，Linux 上 258 全过）；
+- **测试**：训练目录 **268 项**（`python -m pytest tests -q`，22 s；Windows 上 266 过 + 2 项 watchdog 仅因缺 triton 轮子，Linux 上 268 全过）；
   serve 侧新增 `serve/test_training_api.py` 6 项，serve 全量 1304 项仅 1 个既有环境性 error
   （`test_winjob`，干净 worktree 同样失败）。
 
@@ -236,6 +256,15 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 9. 合并注意：`mezo.py`/`objectives.py`/`mem_guard.py` 两树各一份（逐字一致）；
    `Strata-train` 是坏副本别改；PR #3200 已 squash 进 main（判据 `merge-base --is-ancestor`）；
    同步一律 merge 不 rebase。
+10. **在线训练只做到「不卸载推理」，没有自动调度**。三件缺的都在 mezo 之外，接上时不需要改 mezo
+    或 server 的接口：
+    - *样本*：`svc.api_monitor` 已记录每个请求的完整 input/output（含 usage/timings），但目前只在
+      开关打开时存内存、不落盘，也没有把它转成 `--data jsonl:` 的导出件；
+    - *时机*：没有空闲检测 → 触发训练。`--serve-url` 现在要外部进程按需调起；
+    - *reward*：ce 需要 (prompt, answer) 成对，推理时只有 prompt；dpo 要人标偏好对；**零阶线的
+      grpo 仍只吃离线回放轨迹**（`GrpoMezo.load_items` 明确拒绝 on-policy）。可验证任务可以用
+      `_eval_hard.judge` + `math_extract.extract_num` 自动打分，这条路已验证。
+    当前形态：`mezo.py --serve-url --resume --steps N --data jsonl:<队列>` → `--out` 的 npz 累积 θ。
 
 ---
 
