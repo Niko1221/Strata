@@ -202,8 +202,11 @@ bool Window::df2_load_pack(std::string& err) {
     auto up256 = [](uint64_t x) { return (x + 255) / 256 * 256; };
     uint64_t wq_bytes = 0, misc_bytes = 0;
     std::map<std::string, uint64_t> woff, soff, moff;
+    auto is_codebook = [](const std::string& n) { return n.find("codebook") != std::string::npos; };   // the selector's tables are gathered by row, never repacked
     for (const auto& [n, t] : ten) {
-        if (t.type == ref::Q4_0) {
+        if (t.type == ref::Q4_0 && is_codebook(n)) {
+            moff[n] = misc_bytes; misc_bytes += up256(t.bytes);                   // Q4_0 rows of 8 blocks (144 bytes), read as they are by df2_select_q4
+        } else if (t.type == ref::Q4_0) {
             const uint64_t K = t.shape[0], rows = t.shape[1];
             if (K % 32 != 0 || rows % 8 != 0) { err = "dflash2: " + n + " is not a whole number of 8-row, 32-column Q4_0 tiles"; return false; }
             woff[n] = wq_bytes; wq_bytes += up256(rows * K / 2);                  // fragment-order words: [row tile][block][lane] uint32
@@ -227,7 +230,7 @@ bool Window::df2_load_pack(std::string& err) {
         tmp.resize(t.bytes);
         fseeko(f, (off_t) (data_off + t.offset), SEEK_SET);
         if (std::fread(tmp.data(), 1, t.bytes, f) != t.bytes) { std::fclose(f); err = "dflash2: the pack is shorter than its index"; return false; }
-        if (t.type == ref::Q4_0) {
+        if (t.type == ref::Q4_0 && !is_codebook(n)) {
             // Q4_0 blocks (half d, 16 bytes: byte j = element j low nibble, element j + 16 high nibble) -> the matrix units' fragment order (df2_mma4s):
             // for a tile of 8 rows and one block, lane l (fragment row fm, columns fn, fn + 1) holds the codes of W[fm][8 s + fn + e] as nibble 2 s + e
             const uint64_t K = t.shape[0], rows = t.shape[1], nb = K / 32, nrt = rows / 8;
@@ -282,6 +285,11 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
     if (d.bound) return true;
     if (!taps_on_) { err = "dflash2: the window keeps no taps"; return false; }
     if (!df2_load_pack(err)) return false;
+    {   // the text strata_control/drafting.py looks for in the program to know that this engine reads a pack whose selector tables are Q4_0 rows
+        const auto cb = d.ten.find("candidate_selector.predecessor_codebook");
+        if (cb != d.ten.end() && cb->second.type == ref::Q4_0)
+            std::fprintf(stderr, "strata metal: DFlash2 selector codebooks: Q4_0 rows (about 174 MiB less than bf16)\n");
+    }
     const double t0 = now_ms();
     auto A = [&](size_t bytes) { d.bytes += bytes; return cx_->alloc(bytes); };
     // ---- the draft vocabulary's head rows: the MTP's when it is the same list, else gathered here
@@ -308,6 +316,8 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
     {
         const char* hm = std::getenv("STRATA_DF2_HEAD");
         d.head_q8 = !(hm && std::string(hm) == "native");
+        // STRATA_DF2_HEAD=native: the target's own head, whole (the community drafter's): no draft vocabulary, no gathered copy, the engine's GEMV on the target's rows
+        if (!d.head_q8) vocab.clear();
     }
     d.nd = vocab.empty() ? n_vocab_ : (int64_t) vocab.size();
     d.use_map = !vocab.empty();
@@ -655,7 +665,12 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
     {
         struct SelArgs { uint32_t rank, rows; } sa{(uint32_t) d.rank, (uint32_t) ND};
         mtl::Dispatch sd;
-        sd.p = P(ldf2_, "df2_select", {}, "df2_select");
+        {   // the selector's tables: BF16 rows (the incoai pack) or Q4_0 rows (the community GGUF: 8 blocks of 18 bytes a row)
+            const gguf::Tensor& cbt = d.ten.at("candidate_selector.predecessor_codebook");
+            if (cbt.type != d.ten.at("candidate_selector.successor_codebook").type) { std::fprintf(stderr, "strata metal: DFlash2: the two selector tables differ in type\n"); }
+            const bool cb4 = cbt.type == ref::Q4_0;
+            sd.p = P(ldf2_, cb4 ? "df2_select_q4" : "df2_select", {}, cb4 ? "df2_select_q4" : "df2_select");
+        }
         sd.args = {mtl::Arg::B(d.hsel), mtl::Arg::B(d.topval), mtl::Arg::B(d.toptok),
                    mtl::Arg::B(d.pack, d.ten.at("candidate_selector.predecessor_codebook").offset),
                    mtl::Arg::B(d.pack, d.ten.at("candidate_selector.successor_codebook").offset), mtl::Arg::B(d.anchor, 0),

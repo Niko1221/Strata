@@ -349,6 +349,54 @@ kernel void df2_select(device const float* hp [[buffer(0)]], device const float*
     }
 }
 
+// The same walk over Q4_0 selector tables (the community GGUF's): a row is 8 ggml Q4_0 blocks of 18 bytes (half d, 16 bytes: byte j = element j low nibble,
+// element j + 16 high nibble); a value is (q - 8) * d, in fp32 as ggml dequantizes it.
+static inline float q4_0_val(device const uchar* row, uint e) {
+    device const uchar* b = row + (e >> 5) * 18;
+    const float d = float(*(device const half*)b);
+    const uint j = e & 31;
+    const uint q = j < 16 ? (b[2 + j] & 15u) : (b[2 + j - 16] >> 4);
+    return d * (float(q) - 8.0f);
+}
+
+kernel void df2_select_q4(device const float* hp [[buffer(0)]], device const float* unary [[buffer(1)]], device const int* tok [[buffer(2)]],
+                          device const uchar* pred_cb [[buffer(3)]], device const uchar* succ_cb [[buffer(4)]],
+                          device const int* anchor_tok [[buffer(5)]], device int* out_tok [[buffer(6)]], device float* out_prob [[buffer(7)]],
+                          constant SelArgs& a [[buffer(8)]], ushort tid [[thread_index_in_threadgroup]],
+                          ushort w [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float vp[256];
+    threadgroup float sc[TOPK];
+    threadgroup int prev;
+    const uint rowb = (a.rank / 32) * 18;   // 144 bytes a row
+    if (tid == 0) prev = *anchor_tok;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = 0; i < a.rows; ++i) {
+        vp[tid] = q4_0_val(pred_cb + uint(prev) * rowb, tid) * hp[i * a.rank + tid];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (int j = w * 2; j < w * 2 + 2; ++j) {
+            const int t = tok[i * TOPK + j];
+            device const uchar* row = succ_cb + uint(t) * rowb;
+            float acc = 0.0f;
+            for (int e = 0; e < 8; ++e) acc = fma(q4_0_val(row, lane * 8 + e), vp[lane * 8 + e], acc);
+            acc = simd_sum(acc);
+            if (lane == 0) sc[j] = unary[i * TOPK + j] + acc;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0) {
+            int bj = 0;
+            float bv = sc[0];
+            for (int j = 1; j < TOPK; ++j)
+                if (sc[j] > bv) { bv = sc[j]; bj = j; }
+            float z = 0.0f;
+            for (int j = 0; j < TOPK; ++j) z += exp(sc[j] - bv);
+            out_tok[i] = tok[i * TOPK + bj];
+            out_prob[i] = 1.0f / z;
+            prev = out_tok[i];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
 // ---- the tap: out[r][out_off + i] = (sum_c R[r][c][i] + bo[r][i] * sum_c 2 sigmoid(inj[r][c] / hc)) / hc.  Grid (n / 256, rows), 256 threads.
 struct TapArgs { uint n; uint hc; uint R_stride; uint bo_stride; uint inj_stride; uint out_stride; uint out_off; };
 
