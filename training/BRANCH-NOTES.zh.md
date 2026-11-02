@@ -211,7 +211,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
   **无会话时推理路径零改动**。真机验证：会话期 chat 409、close 后 200、客户端崩溃也会话正常关。
 - **GPU 独占检查**：pipe 路线拉引擎前查空闲显存，不够就 loud exit 2（`STRATA_ALLOW_SHARED_GPU=1`
   可显式豁免，豁免也出声）。起因是一次双驻留把提交内存打到 89.7 GiB > 物理 48 GiB，引擎 stall 自杀。
-- **测试**：训练目录 **239 项全过**（`python -m unittest discover -p "test_*.py"`，22.5 s，本版重跑）；
+- **测试**：训练目录 **134 项全过**（`python -m pytest tests -q`，22 s，零 torch；把 `torch` 换成一个 raise ImportError 的模块顶在 `PYTHONPATH` 上再跑，同样 134 过）；
   serve 侧新增 `serve/test_training_api.py` 6 项，serve 全量 1304 项仅 1 个既有环境性 error
   （`test_winjob`，干净 worktree 同样失败）。
 
@@ -249,7 +249,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 | 身份 before/after、gen 原文 | `logs/accept_lr3e5_ce.log`、`accept_lr3e5_s900.log`、`accept_lr1e5_ce.log` |
 | 数学训练集前后 | `Strata-mezo/training/_run_hardmth_train.log` |
 | MATH-500 四次评测 | `Strata-mezo/training/_evalscope/{baseline,mezo_lora,bwd_lora,dpo_lora}/`、`_report.py` |
-| 测试 | `logs/test_results_full.txt`（239 项逐条，22.5 s，本版重跑刷新） |
+| 测试 | `python -m pytest tests -q`（本树 134 项；本文件里凡提到 `sft_mezo.py` / `backward/` 的实测，都是在反传线上跑的） |
 
 ---
 
@@ -260,7 +260,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 | 450 步 answer-ce | 4.145（−0.29） | **4.2387（−0.196）**；4.145 是另一次跑的第 300 步 |
 | 零阶峰值显存 | 48.1 GiB | **46.97 GiB**（48,100 MiB） |
 | backward 路线 | 「引擎反传」 | **PyTorch/HF autograd**（引擎没有反传；`sft.py`/`grpo.py` 走本地 transformers 栈） |
-| 测试总数 | 232 项 | **239 项**（`logs/test_results_full.txt` 已按本版重跑刷新） |
+| 测试总数 | 232 项 | **134 项**（本树：零阶 + 共用层，去掉 torch 层后 213 → 134；反传线 258 项） |
 | 身份训练结论 | 「在学、无副作用」 | **CE 在降但微调者署名始终没生成**；600 步丢身份、750 步英文泄漏 |
 | 六方案极限表 | 缺失 | §1（本节为新增核心） |
 | 数学训练前后 | 只有旧过程式线的 logp | **训练集 0/3→2/3 + 干净 held-out 掉 3/31/2 项** |
