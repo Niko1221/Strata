@@ -10,7 +10,7 @@
 
 | 项 | 数 |
 |---|---|
-| 改动面（相对 `upstream/main`） | 130 文件 / **+26,635 −93** |
+| 改动面（相对 `upstream/main`） | 130 文件 / **+26,642 −93** |
 | 本功能提交（非 merge） | 66 个（`.gitignore` 1、`[Train]` 13、`[Engine]` 7、`[Serve]` 5、`[Tools]` 3、`[Docs]`/`[Data]` 各 1，其余是早期训练线与本地 `main` 的既有提交） |
 | 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo.py` `sft.py` `grpo.py` 等 13 个文件 4,789 行 |
 | 测试 | 13 个 `test_*.py` 2,882 行，训练目录 **239 项全过**；`serve/test_training_api.py` 6 项 |
@@ -44,7 +44,8 @@
 - **引擎侧没有反传**，`--method backward` 走的是本地 PyTorch/HF autograd（`sft.py`/`grpo.py`），
   这是两条物理上不同的路线，不是同一实现的两种开关。**反传这一层是独立增量**（5 个提交、
   14 个文件，全在 `training/` 下，不动 `serve/` 与引擎），不需要这条路线的话可以整层拆出，
-  零阶仍然自洽可跑 —— 拆法与后果见 §7.4；
+  **而且已经拆过一次验证**：只交 `feat/train-mezo`（`d54d8a32`）就是"共用层 + 零阶"的完整树，
+  206 项测试全绿；拆法与实测出的坑见 §7.4；
 - **零阶路线不新增任何 pip 依赖**（不需要 torch），反传路线所需的 torch/transformers 等
   是可选档，不进 `requirements.txt` —— 两条路线分别要装什么见 §2.5；
 - 不改 `third_party/llama.cpp`，不新增 C++ 依赖；引擎二进制用已有的构建流程产出。
@@ -525,10 +526,14 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 upstream/main c62d5e3a
   └─ feat/train_support  7fa6caaa   早期 13 个训练提交（旧基点，见下方基线判据）
        └─ feat/train-mezo  fd493a06  共用层 + 零阶 + 引擎（LORA / SCORE）
-            └─ feat/train-backforward  6e7a88ac   + torch 反传栈
-                 └─ feat/train_support 072dfcf3  最终交付（fast-forward）+ merge perf/pack-load-accel
-                      └─ 2fcaa3cc        文档：基线判据 + 三块范围
-                           └─ 工作区(暂存)  目录迁移：examples/training/ → training/{mezo,backward,bench,tests}
+            ├─ 3eb6e36d  sft_mezo 退役为 score-parity 检查（从反传层搬回零阶）
+            ├─ 6c69bc19  + lora.load_lora_state（补齐零阶层缺的符号）
+            └─ d54d8a32  迁移 → training/（**206 项测试全绿，可单独交付**）
+                 └─ feat/train-backforward  6e7a88ac   + torch 反传栈
+                      ├─ 0c676f32  同一映射表迁移
+                      └─ b7085d3c  merge feat/train-mezo（239 项全绿）
+                           └─ feat/train_support 05d66edc  merge perf/pack-load-accel
+                                └─ a5a3f3af  文档
 ```
 
 **为什么不是「core / mezo / backforward」三条并列**：共用层单独**不能跑** —— 注册表
@@ -538,19 +543,20 @@ upstream/main c62d5e3a
 之上只加 torch；support 是两者合并后的交付面。审核时按 `upstream/main...feat/train_support`
 看 diff 即可，上面这条链只解释提交是怎么分组进来的。
 
-**迁移后的路径口径（重要）**：目录迁移只发生在**交付面** `feat/train_support` 那一层。
-`feat/train-mezo` / `feat/train-backforward` 的树**仍然是 `examples/training/`** —— 它们只用来
-解释"提交是怎么分组的"，不作为交付树。因此：
+**三条分支都已迁移，不是只在交付面**：`feat/train-mezo` 自己就是一棵 `training/` 的树
+（`d54d8a32`，206 项测试全绿），`feat/train-backforward` 用**同一份映射表**再迁移一遍并
+merge 零阶层（`b7085d3c`，239 项全绿），support 是两者合并的结果。判据如下：
 
-- 审 diff 用 `upstream/main...feat/train_support`，看到的是 `training/`（`mezo/`、`backward/`、
-  `bench/`、`tests/`）；
-- §7.4 里那条 `git diff --stat feat/train-mezo..feat/train-backforward` 是**迁移前**的路径口径，
-  只用它数"反传那层有 14 个文件"，路径名需自行映射到 `training/`；
-- 若要把迁移同步到那两条历史分支，得在它们上面再 apply 一次同样的 `git mv` —— 本 PR 没做，
-  因为交付只走 support；需要的话我补。
+- **官方只要零阶** ⇒ 直接交付 `feat/train-mezo`（`d54d8a32`）。不需要 cherry-pick，也不需要
+  再把目录搬一次 —— 这正是"迁移只做在交付面"那版的缺口：合并后的树能拆，但源分支拆不出来。
+- **两条都要** ⇒ 交付 `feat/train_support`（`a5a3f3af`）。审 diff 用
+  `upstream/main...feat/train_support`，看到的就是 `training/`。
+- 两条分支的迁移提交是同一批 rename（`d54d8a32` / `0c676f32`），路径逐一对齐，所以合并
+  不会出现两份文件；实测只有 `sft.py`、`test_train.py` 各一次 add/add 冲突 —— 反传侧是
+  超集，取它即可（`git checkout --ours`），已合入 `b7085d3c`。
 
 **基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main c62d5e3a`（= `Niko1221/Strata`
-的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 79**。
+的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 83**。
 本仓库的 `origin` 是 fork（`xiezhipeng-git/Strata`），它的 `main` 停在 `80494788`（2026-10-15），
 **落后上游 2,755 个提交** —— 老 `support 7fa6caaa` 那句"落后 2,755"就是因为当年从 fork 的
 main 切出来的。所以比对一律用 `upstream/main...feat/train_support`，拿 `origin/main` 比会
@@ -560,7 +566,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 
 | 分支 | 是什么 | 状态 |
 |---|---|---|
-| `perf/pack-load-accel` | 载入加速：每块读完 `fadvise(DONTNEED)`，冷读 2.98→0.33 GiB/s 那个坑（28 GiB 9.4 s vs 85.8 s） | **已 merge**（`072dfcf3`，无冲突）。内容此前已在树里，merge 只补了祖先；同时删掉了 merge 带出的一段重复定义 |
+| `perf/pack-load-accel` | 载入加速：每块读完 `fadvise(DONTNEED)`，冷读 2.98→0.33 GiB/s 那个坑（28 GiB 9.4 s vs 85.8 s） | **已 merge**（`05d66edc`，无冲突）。内容此前已在树里，merge 只补了祖先；同时删掉了 merge 带出的一段重复定义 |
 | `feat/lora-sign` | adapter 的符号，换表不搬家 | 已纳入（mezo 的 31 个引擎提交之一，`e9173c16`；+56/+13/+64 行，**只服务零阶**的 θ−ε，见下方三层表） |
 | `feat/lora-q36` | LP 行协议 + per-request LoRA | 已纳入 |
 | `feat/score` | `SCORE <ids>`：逐位置 logp（`/v1/score`） | 已纳入 mezo（merge `53e729fa`，`merge-base --is-ancestor` 核过）。**不单独提 PR**：它技术上能独立（`score.cpp` 里 `lora`/`adapter` 0 命中，不依赖换表命令，单独给任意 ids 打分就能跑），但脱离训练只是"给一段 caller 指定的 ids 出逐位置 logp"，审核者第一个问题就是"谁用"；且它是零阶的度量核心（θ±ε 的 L 全靠它），拆开要两处维护 |
@@ -590,7 +596,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 
 **所以 `feat/score` 和 LoRA 都不是能独立交付的分支**：SCORE 拆出去没有使用者，LoRA 拆出去是别人的 PR。
 
-> 真正适合独立提 PR 的是 **`perf/pack-load-accel`**（Linux 载入存档加速：每块读完 `fadvise(DONTNEED)`，28 GiB 冷读 85.8 s → 9.4 s）——它跟训练毫无关系，是纯性能修复，已在 `072dfcf3` merge 进来，审核方想单独先收这一段完全可以。
+> 真正适合独立提 PR 的是 **`perf/pack-load-accel`**（Linux 载入存档加速：每块读完 `fadvise(DONTNEED)`，28 GiB 冷读 85.8 s → 9.4 s）——它跟训练毫无关系，是纯性能修复，已在 `05d66edc` merge 进来，审核方想单独先收这一段完全可以。
 
 ### 7.4 兼容性、回滚与合并顺序
 
@@ -604,20 +610,24 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
   `upstream/main` 还没有（§2.5）。**本 PR 已经带上引擎那段**（`feat/train-mezo` 的 31 个提交，
   含 `LORA` / `SCORE` / `--kv auto` / 适配器符号），所以不必"先合引擎"；若上游希望分开审，
   仍可按 Q9 拆成引擎 PR + 脚本 PR。
-- **反传那一层可以整层拆出（如果不需要这条路线）**：`feat/train-backforward` 的 5 个提交
-  （14 个文件 / +3,177 −283）**只触碰 `training/`**（迁移后分布在 `backward/`、`bench/`、`tests/` 与根），`serve/` 与引擎零改动 —— 这是
-  `git diff --stat feat/train-mezo..feat/train-backforward` 的事实，**但不等于"没有耦合"**。
-  **耦合是层内的**：这 14 个文件 import 同目录的共用层（`objectives` / `mem_guard` /
-  `update_rules` / `lora` / `ce`），而共用层在 `feat/train-mezo` 上；所以拆走的只是"反传实现"，
-  那些共用模块留在零阶那层，反传的 `sft.py` / `grpo.py` 退回旧版薄壳。另外 `mezo.py` /
-  `lora_to_gguf.py` 还横向 `sys.path.insert` 到仓库 `tools/` —— 训练目录对 `tools/` 有依赖，
-  不是自闭环。两个后果必须说清：
-  1. **拆掉不会报错**：`algos.py` 的 `backward` 映射指向 `sft.py` / `grpo.py`，而这两个脚本在
-     `feat/train-mezo` 层**已经存在旧版**（284 / 336 行），所以 `--method backward` 仍然能跑，
-     只是没有 DPO、curriculum、clip window、TIS cap 这些实现 —— **不是"删了脚本导致注册表红"**。
-  2. **要连 `--method backward` 一起去掉，就得再改 `algos.py`**（摘掉 `METHODS["backward"]`），
-     那就动了共用层，不再是零改动裁剪 —— 这一步本 PR 没有做，需要的话我补。
-  §5.4 的"反传过拟合"证据属于被拆走的那一层，裁剪版不引用它；零阶证据（§5.1~§5.3）不受影响。
+- **反传那一层可以整层拆出 —— 已实测，不是推断**：拆出来的形态就是 `feat/train-mezo` 本身
+  （`d54d8a32`，206 项测试全绿）。不需要手工挑文件：那条分支就是"共用层 + 零阶"的完整树，
+  `backward/` 里留的是反传脚本的**旧版薄壳**（284 / 336 行），`algos.py` 的 `backward` 映射
+  仍然指得到，所以 `--method backward` 能跑，只是没有 DPO / curriculum / clip window / TIS cap。
+  1. **拆之前先证明它能自己立住** —— 这一步实测出一个既存缺陷：`sft_mezo.py` 的 score-parity
+     版本（`a177ad4b`）落在反传层，而 `feat/train-mezo` 的 `sft_mezo` 还是旧版，导致零阶分支上
+     `test_train` / `test_bench_limits` **导入即失败**（`cannot import name '_Pair'`）。已把它和
+     它依赖的 `lora.load_lora_state`（28 行）搬回零阶层（`3eb6e36d` + `6c69bc19`），零阶分支
+     才真正自洽。**这不是本 PR 新引入的问题，是分支原来就有的** —— 不做"拆分演练"就看不见。
+  2. **拆掉不会报错**：`algos.py` 的 `backward` 映射指向 `sft.py` / `grpo.py`，这两个脚本在零阶层
+     已存在旧版，所以 `--method backward` 仍能跑 —— 不是"删了脚本导致注册表红"。
+  3. **要连 `--method backward` 一起去掉，就得再改 `algos.py`**（摘掉 `METHODS["backward"]`），
+     那动了共用层，不再是零改动裁剪 —— 本 PR 没做，需要的话我补。
+  4. **耦合是层内的**：那 14 个文件 import 同目录的共用层（`objectives` / `mem_guard` /
+     `update_rules` / `lora` / `ce`），而共用层在零阶层；另有 `mezo.py` / `lora_to_gguf.py`
+     横向 `sys.path.insert` 到仓库 `tools/` —— 训练目录不是自闭环。所以"拆"的正确含义是
+     **交零阶那棵树**，不是从一棵树里抠掉几个文件。
+  5. §5.4 的"反传过拟合"证据属于被拆走的那一层，裁剪版不引用它；零阶证据（§5.1~§5.3）不受影响。
 - 合并注意：两棵树（`Strata-mezo` / `Strata-prtrain`）此前各有一份 `mezo.py` / `objectives.py` /
   `mem_guard.py`。**已核实内容逐字一致**（差异只有 CRLF/LF），现在两份都以 `feat/train-mezo`
   的提交为准；`Strata-mezo` 那次 merge 之后两树同源（同步一律 merge，不 rebase）。
@@ -666,7 +676,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | Q9 | **合并顺序怎么走**：零阶依赖的 `LORA`/`SCORE` 命令循环还在 `feat/train-mezo`，`upstream/main` 没有。是先单独提一个引擎 PR（我们自己的部分：`SCORE` + 换表 + 符号翻转；`lora.cu` 主体那 421 行属于 PR #3267，见 Q11），训练脚本排它后面？还是两个一起提？ | 先引擎、后脚本，各自可独立回滚 |
 | Q10 | README 里"engine side, all merged upstream"这句与事实不符（见 §2.5），本 PR 里一并改掉可以吗？ | 改（文档不能留着错的事实） |
 | Q11 | **LoRA kernel 主体是尚未合入的上游 PR #3267**（Alexey Rogov，`lora.cu` 421 行），本 PR 当只读依赖带着（三层归属见 §7.3）。如果 #3267 先被合入，要不要把本 PR 的那 421 行 rebase 掉、引擎面只留我们自己的 133 行符号翻转 + 换表 + SCORE？ | 倾向等 #3267；它合入后本 PR 的引擎面自动缩小，届时 rebase 一次即可 |
-| Q12 | **反传路线要不要一起收？** 它是独立一层：5 个提交 / 14 个文件 / +3,177 −283，全部在 `training/` 下，不动 `serve/` 与引擎；拆掉后零阶仍自洽（`--method backward` 会退回到 `feat/train-mezo` 里的旧版 `sft.py`/`grpo.py`，能跑但没有 DPO / curriculum / clip window / TIS）。需要这些能力才需要这一层 | 默认一起收；你只要零阶就整层拆，做法与后果见 §7.4 |
+| Q12 | **反传路线要不要一起收？** 它是独立一层：5 个提交 / 14 个文件 / +3,177 −283，全部在 `training/` 下，不动 `serve/` 与引擎；**只收零阶 = 直接交 `feat/train-mezo`（`d54d8a32`），已验证 206 项测试全绿**；`--method backward` 退回旧版 `sft.py`/`grpo.py`（能跑，但没有 DPO / curriculum / clip window / TIS）。需要这些能力才需要这一层 | 默认一起收；只要零阶就交那条分支，见 §7.4 |
 
 ---
 
@@ -703,7 +713,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | 数学训练前后 + 非训练集 | 只有旧过程式 logp | §5.4（0/3→2/3 + held-out −3/−31/−2） |
 | 审核者要回答的问题 | 无 | §9（Q1~Q12） |
 | 分支与合并 | 无（v0.2 只有一句"已合入上游"的假定） | **§7**：分支拓扑 + 基线判据（`upstream/main` vs fork `origin/main`）、11 条来源分支审计、LoRA 三层归属、合并顺序与回滚 |
-| 反传路线的可裁剪性 | 无（两条路线绑死在一起，拆不掉） | **§7.4 + Q12**：反传是独立一层（5 提交 / 14 文件 / 全在 `training/`），整层丢弃后零阶仍自洽；连 `--method backward` 一起去才需要另改 `algos.py` |
+| 反传路线的可裁剪性 | 无（两条路线绑死在一起，拆不掉） | **§7.4 + Q12**：反传是独立一层（5 提交 / 14 文件 / 全在 `training/`），整层丢弃后零阶仍自洽（实测 206 项绿）；连 `--method backward` 一起去才需要另改 `algos.py` |
 | 提交卫生 | 无 | §3.4（25 个 `_*`、65 MB 二进制、`.bak`） |
 | 两条路线的依赖 | 无 | §2.5（零阶 **0 个 pip 包** + 引擎二进制；反传 torch/transformers/accelerate/safetensors，Windows 另加 triton-windows、kernels） |
 | 零阶方法出处 | 无 | §2.6（MeZO，arXiv 2305.17333，princeton-nlp/MeZO；未拷贝代码） |
