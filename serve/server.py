@@ -8938,7 +8938,18 @@ def start_engine_or_fallback(cfg: dict, exe: str, effort_end: list[str] | None, 
     except Exception as e:
         if not isinstance(fb, dict) or not fb.get("exe"):
             raise
-        why = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        msg = str(e).strip()
+        why = msg.splitlines()[0][:200] if msg else type(e).__name__
+        # the engine's own reason ("sfnx: failed: ..." in its log tail, which the exception carries) is what a person needs to read
+        own = next((ln.split("sfnx: failed: ", 1)[1].strip() for ln in reversed(msg.splitlines()) if "sfnx: failed: " in ln), "")
+        if own:
+            why = own[:300]
+        log = cfg.get("log")
+        if log:                                     # the normal engine writes the same log file: keep the split engine's
+            try:
+                os.replace(log, str(log) + ".split-engine")
+            except OSError:
+                pass
         print(f"[strata] The all-cards split engine could not start ({why}). Starting the normal layer split instead.", flush=True)
     cfg2 = {k: v for k, v in cfg.items() if k not in SPLIT_KEYS + ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting")}
     cfg2.update(fb)
