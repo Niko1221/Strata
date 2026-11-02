@@ -148,5 +148,98 @@ class SetupIntel(unittest.TestCase):
                 self.assertEqual(notes, [])
 
 
+FN = "qwen3.8-flash-next-iq3_xxs"
+
+
+class SlotSessions(unittest.TestCase):
+    """Request slots ("Concurrent requests" 2 or more, the engine's --batch N): each slot is a session of its own, out of the expert cache's room.
+    The 8 GB Arc A750 figures are the engine's: --batch 2 at 8192 tokens with the MTP layer left 2519 MiB free and the cache needed 99 MiB more (0 slots, a
+    refused start, SIGSEGV before ab7baa5b1)."""
+
+    def test_the_slot_session_is_the_main_sessions_size(self):
+        self.assertAlmostEqual(V.session_mib(8192), 234, delta=8)       # the engine: "2 slot sessions (0.23 GiB each)"
+
+    def test_without_slots_nothing_changes(self):
+        a = V.slack_mib(FN, 8.0, 8192, "int8", 700, "auto", "intel")
+        self.assertEqual(a, V.slack_mib(FN, 8.0, 8192, "int8", 700, "auto", "intel", 0))
+        self.assertEqual(a, V.slack_mib(FN, 8.0, 8192, "int8", 700, "auto", "intel", 1))
+        self.assertEqual(V.needed_mib(), V.needed_mib(FN, 1))
+
+    def test_an_8gb_arc_with_two_requests_at_8k_gets_a_context_that_fits(self):
+        f = V.plan(FN, 8.0, 8192, "int8", 700, "auto", "intel", title=FN, reserve_fixed=True, prefill_fixed=True, slots=2)
+        self.assertTrue(f.changed and f.fits)
+        self.assertEqual((f.ctx, f.slots, f.reserve_mib), (4096, 2, 700))
+        self.assertGreaterEqual(f.slack_mib, V.needed_mib(FN, 2))
+        self.assertIn("context set to 4K", f.line)
+        self.assertTrue(f.line.endswith("so 2 requests at once fit"), f.line)
+        # the engine's refusal case, as the estimate sees it: 8192 with two slots does not leave the cache its 128 slots
+        self.assertLess(V.slack_mib(FN, 8.0, 8192, "int8", 700, "auto", "intel", 2), V.needed_mib(FN, 2))
+
+    def test_not_even_the_smallest_context_fits_then_one_request_at_a_time(self):
+        f = V.plan(FN, 8.0, 8192, "int8", 1024, "auto", "intel", title=FN, reserve_fixed=True, prefill_fixed=True, slots=2)
+        self.assertEqual(f.slots, 1)
+        self.assertTrue(f.changed)
+        self.assertIn("one request at a time", f.line)
+
+    def test_a_24gb_cuda_card_is_unchanged(self):
+        f = V.plan(FN, 24.0, 131072, "int8", 700, "auto", "other", title=FN, reserve_fixed=True, prefill_fixed=True, slots=4)
+        self.assertFalse(f.changed)
+        self.assertEqual((f.ctx, f.slots, f.line), (131072, 4, ""))
+
+    def test_a_chosen_context_is_kept(self):
+        f = V.plan(FN, 8.0, 8192, "int8", 700, "auto", "intel", ctx_fixed=True, reserve_fixed=True, prefill_fixed=True, slots=2)
+        self.assertEqual(f.ctx, 8192)
+        self.assertFalse(f.changed)            # the engine's plain refusal answers it
+
+
+class FitStart(unittest.TestCase):
+    """fit_start: the config's "parallel" and the engine arguments of one start (serve/server.py engine_args calls it)."""
+
+    ARGS = ["--native", "/m/Qwen3.8-Flash-Next-IQ3_XXS-00001-of-00002.gguf", "--expert-cache", "auto", "--prefill", "auto", "--max-context", "8192",
+            "--kv", "int8", "--vram-reserve-mib", "700"]
+
+    def cfg(self, **kw):
+        c = {"model_name": FN, "parallel": 2}
+        c.update(kw)
+        return c
+
+    def test_an_8gb_arc_gets_a_smaller_context_for_this_start(self):
+        args, par, note = V.fit_start(self.cfg(), list(self.ARGS), 8192, "sycl")
+        self.assertEqual(args[args.index("--max-context") + 1], "4096")
+        self.assertIsNone(par)                                 # still 2 requests at once
+        self.assertIn("2 requests at once fit", note)
+        self.assertEqual(self.ARGS[self.ARGS.index("--max-context") + 1], "8192")     # the input is not touched
+
+    def test_the_persons_own_context_wins(self):
+        args, par, note = V.fit_start(self.cfg(user_args=["--max-context", "8192"]), list(self.ARGS), 8192, "sycl")
+        self.assertEqual((args, par, note), (self.ARGS, None, ""))
+
+    def test_a_24gb_cuda_card_and_one_request_are_unchanged(self):
+        big = ["--native", "/m/q.gguf", "--max-context", "131072", "--kv", "int8", "--vram-reserve-mib", "700"]
+        self.assertEqual(V.fit_start(self.cfg(parallel=4), list(big), 24576, "cuda"), (big, None, ""))
+        self.assertEqual(V.fit_start(self.cfg(parallel=1), list(self.ARGS), 8192, "sycl"), (self.ARGS, None, ""))
+        self.assertEqual(V.fit_start({"model_name": FN}, list(self.ARGS), 8192, "sycl"), (self.ARGS, None, ""))
+
+    def test_nothing_without_one_cards_memory_or_on_a_split_or_deepseek_or_metal(self):
+        self.assertEqual(V.fit_start(self.cfg(), list(self.ARGS), None, "sycl"), (self.ARGS, None, ""))
+        self.assertEqual(V.fit_start(self.cfg(), list(self.ARGS), 8192, "metal"), (self.ARGS, None, ""))
+        self.assertEqual(V.fit_start(self.cfg(layer_split="auto"), list(self.ARGS), 8192, "sycl"), (self.ARGS, None, ""))
+        self.assertEqual(V.fit_start(self.cfg(arch="deepseek41"), list(self.ARGS), 8192, "sycl"), (self.ARGS, None, ""))
+
+    def test_a_start_that_cannot_fit_runs_one_at_a_time(self):
+        tight = [a if a != "700" else "1024" for a in self.ARGS]
+        args, par, note = V.fit_start(self.cfg(), tight, 8192, "sycl")
+        self.assertEqual(par, 1)
+        self.assertIn("one request at a time", note)
+
+    def test_the_context_is_added_when_the_args_name_none(self):
+        no_ctx = [a for a in self.ARGS]
+        i = no_ctx.index("--max-context")
+        del no_ctx[i:i + 2]
+        args, par, note = V.fit_start(self.cfg(), no_ctx, 8192, "sycl")
+        self.assertNotEqual(note, "")
+        self.assertIn("--max-context", args)
+
+
 if __name__ == "__main__":
     unittest.main()
