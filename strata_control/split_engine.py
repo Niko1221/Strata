@@ -373,6 +373,64 @@ def wanted(cfg: dict, environ: dict | None = None) -> bool:
     return mode(cfg, environ) != "off"
 
 
+def _auto_gates(d: Decision, cards: list[Card], model: ModelFacts, chosen: str, mode_: str) -> Decision | None:
+    """The rules that apply to Auto after the general rule said yes (AMD: expert types, card counts, architectures; NVIDIA: the split must beat DFlash2 on the card).
+    None: they pass."""
+    amd = cards[0].vendor == "amd"
+    if amd and mode_ != "on" and not set(model.routed_types) <= AUTO_SPLIT_AMD_EXPERT_TYPES:
+        return Decision(False, ["this model's experts (" + "/".join(sorted(set(model.routed_types) - AUTO_SPLIT_AMD_EXPERT_TYPES)) + ") run faster on the layer split on AMD today; the all-cards split engine starts for them only with --split-engine on"], d.cards)
+    if amd and mode_ != "on" and d.cards not in AUTO_SPLIT_AMD_CARD_COUNTS:
+        return Decision(False, [f"the all-cards split engine is not automatic on {d.cards} {cards[0].arch_name} cards; it starts only with --split-engine on"], d.cards)
+    if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):
+        # opt-in on AMD: auto keeps the layer split (quiet), `--split-engine on` runs the split
+        return Decision(False, [f"the all-cards split engine is not automatic on {cards[0].arch_name} yet; it starts only with --split-engine on"], d.cards)
+    if not amd and chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
+        return Decision(False, ["on this card the layer split with DFlash2 has not been measured slower than the all-cards split engine"], d.cards)
+    return None
+
+
+#: what the rule assumes of a model that is not on this computer yet (a download still to come): a Qwen3.8-Flash-Next set the engine reads, small enough
+#: for the memory rule; the real files are looked at when they are there
+ASSUMED_MODEL = ModelFacts(routed_types={"Q4_K": 1}, routed_bytes=0, embd_type="Q8_0", shexp_types={"Q8_0": 1}, embd_ram_bytes=0, layers=LAYERS, experts=EXPERTS)
+
+
+def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None = None, context: int = TESTED_CONTEXT, system: str | None = None,
+             allow_untested: bool = False, probe=None, ram=None, scan=None, exe_for_cards=None) -> bool:
+    """Would the launch start the all-cards split engine? The answer of the rule apply_to_config uses, asked BEFORE the model's files, the engine package or the
+    draft layer are on the computer (the plan and the fetch: the split runs the model's draft layer, the MTP, so a start that will use it has to fetch that and not
+    DFlash2's drafter). Facts that are not there yet are assumed in the split's favour: the model (ASSUMED_MODEL, unless `native` is a readable file), the engine
+    package (unless exe_for_cards is given and finds no strata-split-N). Mode "off", a person's own DFlash2 / off choice, engine arguments of their own and
+    replicas say no, as in apply_to_config. Never raises."""
+    import os
+    import sys
+
+    try:
+        m = mode(cfg)
+        if m == "off":
+            return False
+        chosen = str(cfg.get("drafting") or "auto").lower()
+        if chosen in ("dflash2", "off") or cfg.get("user_args") or cfg.get("replicas"):
+            return False
+        system = system or ("linux" if sys.platform.startswith("linux") else sys.platform)
+        cards = (probe or probe_cards)(indexes) if system == "linux" else []
+        total, avail = (ram or ram_gib)()
+        model = ASSUMED_MODEL
+        if native and os.path.isfile(native):
+            model = (scan or scan_model)(native)
+        experimental_ok = m == "on" and bool(cards) and cards[0].vendor == "amd"
+        d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
+                   allow_untested=allow_untested or experimental_ok)
+        if not d.use_split or _auto_gates(d, cards, model, chosen, m) is not None:
+            return False
+        if exe_for_cards is not None:
+            amd = cards[0].vendor == "amd"
+            if not (exe_for_cards(d.cards, cards[0].cc, cards[0].arch_name) if amd else exe_for_cards(d.cards, cards[0].cc)):
+                return False
+        return True
+    except Exception:                                        # noqa: BLE001 - a question asked early is never a reason to stop a launch
+        return False
+
+
 def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allow_untested: bool = False, probe=None, ram=None,
                     scan=None, data_dir: str | None = None, mode_: str | None = None) -> Decision:
     """Turn a normal run config into the split engine's config IN PLACE when the mode and the rule say yes, and say what was decided.
@@ -428,16 +486,10 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
                allow_untested=allow_untested or experimental_ok)
     if not d.use_split:
         return d
+    gate = _auto_gates(d, cards, model, chosen, mode_)
+    if gate is not None:
+        return gate
     amd = cards[0].vendor == "amd"
-    if amd and mode_ != "on" and not set(model.routed_types) <= AUTO_SPLIT_AMD_EXPERT_TYPES:
-        return Decision(False, ["this model's experts (" + "/".join(sorted(set(model.routed_types) - AUTO_SPLIT_AMD_EXPERT_TYPES)) + ") run faster on the layer split on AMD today; the all-cards split engine starts for them only with --split-engine on"], d.cards)
-    if amd and mode_ != "on" and d.cards not in AUTO_SPLIT_AMD_CARD_COUNTS:
-        return Decision(False, [f"the all-cards split engine is not automatic on {d.cards} {cards[0].arch_name} cards; it starts only with --split-engine on"], d.cards)
-    if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):
-        # opt-in on AMD: auto keeps the layer split (quiet), `--split-engine on` runs the split
-        return Decision(False, [f"the all-cards split engine is not automatic on {cards[0].arch_name} yet; it starts only with --split-engine on"], d.cards)
-    if not amd and chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
-        return Decision(False, ["on this card the layer split with DFlash2 has not been measured slower than the all-cards split engine"], d.cards)
     # NVIDIA: strata-split-N-sm<cc> or strata-split-N; AMD: strata-split-N-<arch> (gfx1201), the third argument
     exe = exe_for_cards(d.cards, cards[0].cc, cards[0].arch_name) if amd else exe_for_cards(d.cards, cards[0].cc)
     if not exe:
