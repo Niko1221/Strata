@@ -15,12 +15,14 @@
 
 | 项 | 数 |
 |---|---|
-| 改动面（相对 `upstream/main`） | 132 文件 / **≈+27.0k −93**（含本文档，数字随文档提交浮动） |
-| 本功能提交（非 merge） | 84 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
+| 改动面（相对 `upstream/main`） | 132 文件 / **≈+27k −93**（含本文档；口径见表下注） |
+| 本功能提交（非 merge） | ≈110 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
 | 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo.py` `sft.py` `grpo.py` 等 13 个文件 4,673 行 |
 | 测试 | 14 个 `test_*.py` 3,214 行，训练目录 **258 项**（Windows 上 256 过，2 项 watchdog 缺 triton）；`serve/test_training_api.py` 6 项 |
 | 服务端 | `serve/server.py`（`TrainBridge` + 3 个 `/v1/training/*` 路由 + `POST /v1/lora`） |
 | 新增依赖 | 零阶 **0 个 pip 包**（只需已装的 numpy/jinja2/regex + 一个引擎二进制）；反传 4~6 个（torch / transformers / accelerate / safetensors，Windows 还要 triton-windows、kernels）→ §2.5 |
+
+**上表的数与漂移规则**：文件数、行数、提交数取自当前 HEAD，并按 1k 行（向下取整）/ 10 个提交（就近取整）取整 —— 每加一个文档提交会多 1 个提交、约 275 行，属预期漂移，不涉及代码。真正不变量是这些：`git diff -- '*.py' feat/train-backforward feat/train_support` 为空，`comm -23 <mezo> <bwd>` 为空（bwd 只多 32 个 `.py`）。
 
 **分支与合并顺序**：拓扑、基线判据（为什么拿 `origin/main` 比会误判）、来源分支审计、LoRA 三层归属，全部在 **§7**。
 
@@ -535,9 +537,9 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 
 | 分支 | 切分提交 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
 |---|---|---|---|---|---|
-| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **134 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 134 过） | ≈77 提交 / 100 文件 / ≈+17.0k −93 |
-| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `mezo/sft_mezo.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 258 项（256 过 + 2 项 watchdog 见下） | ≈89 提交 / 132 文件 / ≈+26.7k −93 |
-| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 258 项（同上） | 交付分支 HEAD / 132 文件 / ≈+27.0k −93（随文档提交浮动）|
+| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **134 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 134 过） | ≈80 提交 / 100 文件 / ≈+17k −93 |
+| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `mezo/sft_mezo.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 258 项（256 过 + 2 项 watchdog 见下） | ≈90 提交 / 132 文件 / ≈+27k −93 |
+| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 258 项（同上） | 交付分支 HEAD / 132 文件 / ≈+27k −93 |
 
 **分层规则一句话**：三条分支的差异只体现在**文件在不在**，不体现在代码分支上。
 `algos.available()` 读磁盘决定 `--method` 有哪几个，缺哪个就把缺的文件名说清楚；
