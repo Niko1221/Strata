@@ -1085,7 +1085,9 @@ class StrataEngine:
             tl.last = value
 
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
-                 env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0):
+                 env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0,
+                 retry_args: list[str] | None = None):
+        # retry_args: the arguments to start again with, once, when this start ends before the engine is ready (an Auto start that picked DFlash2: mtp_retry_args)
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
@@ -1209,7 +1211,20 @@ class StrataEngine:
                           f"ready yet: starting it again in {wait_s:.0f} s (try {_attempt + 2} of {START_RETRIES + 1})",
                           flush=True)
                 time.sleep(wait_s)
-                StrataEngine.__init__(self, exe, args, cwd, log, env, lazy, cpus, _attempt + 1)
+                StrataEngine.__init__(self, exe, args, cwd, log, env, lazy, cpus, _attempt + 1, retry_args)
+                return
+            if not timed_out and retry_args and retry_args != list(args):
+                # Auto picked DFlash2 and the engine ended before it was ready (an engine that does not take one of its flags, a drafter file it cannot read...):
+                # one more start with the MTP, said in one quiet line. The person named DFlash2 themselves: no retry, the start fails with its reason below.
+                print(f"[strata] {drafting.line('mtp', drafting.DIDNT_START)}: starting again with the MTP", flush=True)
+                try:
+                    with open(log, "a", encoding="utf-8") as handle:
+                        handle.write(f"[strata] {time.strftime('%Y-%m-%d %H:%M:%S')} the engine ended before it was ready with the DFlash2 drafter "
+                                     f"(exit code {self.proc.returncode}); starting it again with the MTP\n")
+                except (OSError, TypeError):
+                    pass
+                drafting.remember_note(drafting.DIDNT_START)
+                StrataEngine.__init__(self, exe, retry_args, cwd, log, env, lazy, cpus, 0, None)
                 return
             why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
                    "the engine exited before it was ready")
@@ -3446,10 +3461,28 @@ def drafting_vram_mib(cfg: dict, backend: str | None, archs) -> float | None:
         return None
 
 
-def engine_args(cfg: dict) -> list[str]:
+def mtp_retry_args(cfg: dict, exe: str | None, extra: list[str] | None = None) -> list[str] | None:
+    """The arguments to start again with when an Auto start that picked DFlash2 ends before the engine is ready: the same start with the MTP (or no drafter, when
+    the MTP layer is not on this computer). None when there is nothing to retry: the person named DFlash2 themselves (that start fails with its reason, as it
+    should), the choice was not DFlash2, or the MTP arguments are the same. Builds the arguments without any line or note (engine_args announce=False)."""
+    if drafting.normalize(cfg.get("drafting")) != "auto" or "args" not in cfg:
+        return None
+    try:
+        first = engine_args(cfg, exe, announce=False)
+        if "--draft" not in first or first[first.index("--draft") + 1:first.index("--draft") + 2] != ["dflash2"]:
+            return None
+        alt = engine_args({**cfg, "drafting": "mtp"}, exe, announce=False) + list(extra or [])
+    except Exception:                                  # noqa: BLE001 - a retry that cannot be worked out is no retry
+        return None
+    return alt if alt != first + list(extra or []) else None
+
+
+def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
-    layer_split_value)."""
+    layer_split_value). `exe` is the engine program that will start: the drafter's flags follow what that program takes
+    (strata_control/drafting.py engine_form). `announce=False` builds the arguments without the "[strata] drafting" lines
+    and without leaving a note for the next engine start (the retry arguments of mtp_retry_args)."""
     args = list(cfg["args"])
     # "user_args" (strata_control/user_args.py): the options the person set by hand, over the generated ones at every start,
     # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
@@ -3464,16 +3497,18 @@ def engine_args(cfg: dict) -> list[str]:
     parallel_n = cfg.get("parallel")
     decision = drafting.apply(shaped, klass=drafting_card_class(), data_dir=drafting.data_dir_of(args), backend=backend, archs=archs,
                               vram_mib=drafting_vram_mib(cfg, backend, archs), split=bool(layer_split_of(cfg)),
-                              slots=parallel_n if isinstance(parallel_n, int) and not isinstance(parallel_n, bool) else 0)
+                              slots=parallel_n if isinstance(parallel_n, int) and not isinstance(parallel_n, bool) else 0, engine=exe)
     args = shaped["args"]
-    drafting.remember_note(decision.note)
-    if decision.note:
-        print(f"[strata] {drafting.line(decision.drafter, decision.note)}", flush=True)
-    elif decision.flags:
-        print(f"[strata] drafting: DFlash2 alone ({' '.join(decision.flags[:2])}, --draft-conf {args[args.index('--draft-conf') + 1] if '--draft-conf' in args else '-'})", flush=True)
+    if announce:
+        drafting.remember_note(decision.note)
+        if decision.note:
+            print(f"[strata] {drafting.line(decision.drafter, decision.note)}", flush=True)
+        elif decision.flags:
+            print(f"[strata] drafting: DFlash2 alone ({' '.join(decision.flags[:2])}, --draft-conf {args[args.index('--draft-conf') + 1] if '--draft-conf' in args else '-'})", flush=True)
     # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
-    # that writes --mtp back into the args cannot undo it, because this is applied at every start.
-    if draft_layer.is_off(cfg):
+    # that writes --mtp back into the args cannot undo it, because this is applied at every start. (A DFlash2 start keeps its own --mtp DIR, which only names
+    # the vocabulary for an engine that takes it that way.)
+    if draft_layer.is_off(cfg) and not decision.flags:
         args, removed = draft_layer.strip(args)
         if removed:
             print(f'[strata] "mtp": false - starting without the draft layer ({" ".join(removed)} left out)', flush=True)
@@ -9023,7 +9058,8 @@ def start_engine_or_fallback(cfg: dict, exe: str, effort_end: list[str] | None, 
     normal one instead, so a start never fails because of the option. Any other config starts exactly as before."""
     fb = cfg.get("split_fallback")
     try:
-        return StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy)
+        return StrataEngine(exe, engine_args(cfg, exe) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy,
+                            retry_args=mtp_retry_args(cfg, exe, effort_end))
     except Exception as e:
         if not isinstance(fb, dict) or not fb.get("exe"):
             raise
@@ -9039,7 +9075,8 @@ def start_engine_or_fallback(cfg: dict, exe: str, effort_end: list[str] | None, 
     env2 = child_env(cfg2, offline=offline)
     configure_batch_telemetry_env(env2, cfg2, batch_telemetry)
     effort2 = effort_end_args(cfg2, exe2, tok)
-    engine = StrataEngine(exe2, engine_args(cfg2) + (effort2 or []), cwd=cfg2.get("cwd"), log=cfg2.get("log"), env=env2, lazy=lazy)
+    engine = StrataEngine(exe2, engine_args(cfg2, exe2) + (effort2 or []), cwd=cfg2.get("cwd"), log=cfg2.get("log"), env=env2, lazy=lazy,
+                          retry_args=mtp_retry_args(cfg2, exe2, effort2))
     engine.info["split_fallback"] = True
     return engine
 
@@ -9065,12 +9102,13 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
         if arena:
             rc["args"] = list(rc["args"]) + ["--shared-expert-arena", arena]
         try:
-            engines[i] = StrataEngine(exe, engine_args(rc) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
-                                      env=child_env(rc, offline=offline), lazy=lazy, cpus=cpus[i] if cpus else None)
+            engines[i] = StrataEngine(exe, engine_args(rc, exe) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
+                                      env=child_env(rc, offline=offline), lazy=lazy, cpus=cpus[i] if cpus else None,
+                                      retry_args=mtp_retry_args(rc, exe, effort_end))
         except BaseException as e:        # noqa: BLE001
             errors.append((i, e))
     rc0 = rp.replica_cfg(cfg, 0, groups[0])
-    warn_budget_over_ram(engine_args(rc0) if "args" in rc0 else [])
+    warn_budget_over_ram(engine_args(rc0, announce=False) if "args" in rc0 else [])
     if os.environ.get("STRATA_REPLICA_START", "") == "serial":
         for i in range(n):
             one(i)
@@ -9131,9 +9169,9 @@ def start_split(cfg: dict, spec: dict, exe: str, effort_end: list[str], lazy: bo
             if arena:
                 rc["args"] = list(rc["args"]) + ["--shared-expert-arena", arena]
             if role == "prefill":
-                warn_budget_over_ram(engine_args(rc) if "args" in rc else [])
-            engines[role] = StrataEngine(exe, engine_args(rc) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
-                                         env=child_env(rc, offline=offline), lazy=lazy)
+                warn_budget_over_ram(engine_args(rc, announce=False) if "args" in rc else [])
+            engines[role] = StrataEngine(exe, engine_args(rc, exe) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
+                                         env=child_env(rc, offline=offline), lazy=lazy, retry_args=mtp_retry_args(rc, exe, effort_end))
     except BaseException:
         for e in engines.values():
             try:
@@ -9653,7 +9691,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                             env=vision_env(cfg, env), lazy=lazy)
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
-        warn_budget_over_ram(engine_args(cfg) if "args" in cfg else [])      # #1080
+        warn_budget_over_ram(engine_args(cfg, announce=False) if "args" in cfg else [])      # #1080
         note = card_note(cfg, env)
         if note:
             print(note, flush=True)
