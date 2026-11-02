@@ -255,6 +255,10 @@ _INT3_ALLOWED = {
     "strata::prefill::{anonymous}::rope_kernel": {"sm_121": (32, 0)},
     # Spark sm_121 (never measured before)
     "{anonymous}::k_attn_prep": {"sm_121": (32, 0)},
+    # rc1 (measured on l620, CUDA 13.2 sm_120): the HC down kernel's register-blocked instance <1,6,true,2,0,true> (df2-more, STRATA_GR_V3_PF bit 7, default 133 on sm_120) keeps 8 bytes
+    "strata::kernels::{anonymous}::gr_down_v3_kernel": {"sm_120": (8, 0)},
+    # rc1 (l620 sm_120): DFlash2's rope table builder copies its parameter struct to the stack (src/kernels/cuda/dflash2.cu, from the ring / multi-card DFlash2 line); avoidable
+    "strata::kernels::{anonymous}::rope_table_inv_kernel": {"sm_120": (32, 0)},
 }
 for _key, _per_sm in _INT3_ALLOWED.items():
     _merged = ALLOWED.setdefault(_key, {})
