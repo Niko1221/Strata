@@ -628,6 +628,15 @@ void Dflash2Drafter::reset() {
     invalidate_ring();
 }
 
+void Dflash2Drafter::copy_log_state_from(const Dflash2Drafter& src) {
+    cur_.hist = src.cur_.hist;
+    cur_.chunks = src.cur_.chunks;
+    std::memcpy(slot_pos_, src.slot_pos_, sizeof(slot_pos_));
+    epoch_ = src.epoch_;
+    ring_hi_ = src.ring_hi_;
+    have_ctx_ = src.have_ctx_;
+}
+
 void Dflash2Drafter::invalidate_ring() {
     ++epoch_;
     ring_hi_ = 0;
@@ -672,7 +681,10 @@ bool Dflash2Drafter::rebuild(int64_t lo, int64_t hi, int64_t* rebuilt, int64_t* 
     std::vector<int32_t> pos;
     for (int64_t p = lo; p < hi; ++p) {
         if (slot_pos_[(size_t) (p % kRing)] == (((int64_t) epoch_ << 32) | p)) continue;   // the ring already holds this row
-        if (cur_.logged(p)) pos.push_back((int32_t) p); else ++*missing;
+        if (cur_.logged(p)) pos.push_back((int32_t) p);
+        else {
+            if (++*missing <= 8 && std::getenv("STRATA_DF2_RING_STATS") != nullptr) std::fprintf(stderr, "strata dflash2 ring: position %lld was never logged (hist %zu)\n", (long long) p, cur_.hist.size());
+        }
     }
     if (pos.empty()) return true;
     const OnDevice on_device(device_);
@@ -790,6 +802,11 @@ bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume
             rebuilt = 0;
         }
     }
+    static const bool verbose = std::getenv("STRATA_DF2_RING_STATS") != nullptr;
+    if (verbose)
+        std::fprintf(stderr, "strata dflash2 ring: request %lld resume %lld of %lld: live log %.1f MiB (%lld positions), parked %zu lineages %.1f MiB, rebuilt %lld rows (missing %lld) in %.2f ms%s\n",
+                     (long long) ring_stats.requests, (long long) resume, (long long) n, (double) cur_.bytes() / 1048576.0, (long long) cur_.hist.size(), stash_.size(),
+                     (double) ring_stash_bytes() / 1048576.0, (long long) rebuilt, (long long) missing, ms_since(t0), swapped ? " (swapped in)" : "");
     ring_stats.rows_rebuilt += rebuilt;
     ring_stats.rows_missing += missing;
     if (rebuilt > 0) ++ring_stats.rebuilds;

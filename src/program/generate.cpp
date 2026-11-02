@@ -15373,8 +15373,8 @@ int main(int argc, char** argv) {
                 if (df2.last_rebuilt > 0)
                     std::fprintf(stderr, "strata serve: DFlash2: %s%lld context rows of the window rebuilt from the drafter's log in %.1f ms%s\n",
                                  df2.last_swapped ? "a parked conversation came back: " : "", (long long) df2.last_rebuilt, df2.last_ms,
-                                 df2.last_missing > 0 ? " (the rest were never logged)" : "");
-                if (cold)
+                                 df2.last_missing >= 64 ? " (the rest were never logged)" : "");
+                if (cold && df2.last_missing >= 64)   // (a few rows missing are not worth a line: they are counted in the ring stats)
                     std::fprintf(stderr, "strata serve: DFlash2: %lld context rows of the window are not the drafter's to give (a conversation it has no log of: edited, "
                                          "from a session file, or its log was evicted): it drafts poorly for the first rounds (the answers are the same)\n",
                                  (long long) std::max<int64_t>(df2.last_missing, 1));
@@ -17838,6 +17838,13 @@ int main(int argc, char** argv) {
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), outv[(size_t) a]);
                 generation = {};   // a skipped or failed production must not expose an older q view
+#if defined(STRATA_HAVE_DFLASH2)
+                // The request ends here, so no draft follows and the window's committed rows would never reach the drafter's ring or its log: every turn would
+                // leave a hole of a + 1 positions behind it, which a later turn that resumes after this one finds blank (and cannot rebuild). Update them now.
+                if (use_df2 && req_df2 && !merged && (eos || produced_n >= max_new)) {
+                    if (!df2.context(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                }
+#endif
                 const GatedDraftLimit draft_limit(mtp, gated_proposal, S_mtp, p + a + 1, o.max_context);
                 const bool drafted = !draft_on || eos || produced_n >= max_new ||
                                      (req_df2 ? draft_df2(a) : mtp.draft_long(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p,

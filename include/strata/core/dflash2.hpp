@@ -80,6 +80,9 @@ public:
     double last_ms = 0;
     bool last_swapped = false;                    ///< ... and whether a parked lineage was brought back
     bool ring_log_on() const { return log_on_; }
+    /// A request moves between two drafters whose rings were copied on the device (solo <-> a --parallel slot): the host side goes with it. The lineage's log is
+    /// shared copy-on-write, the tag shadow and the epoch are copied (the caller copies kring_/vring_/tag_ on the device).
+    void copy_log_state_from(const Dflash2Drafter& src);
     uint64_t ring_log_bytes() const;     ///< host bytes of the live lineage's log
     uint64_t ring_stash_bytes() const;   ///< host bytes of the parked lineages
     uint64_t ring_scratch_bytes() const { return rb_bytes_; }   ///< VRAM of the rebuild scratch (0 until the first rebuild)
