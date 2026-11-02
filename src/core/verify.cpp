@@ -766,6 +766,85 @@ Verifier::~Verifier() {
         if (h) cudaFreeHost(h);
 }
 
+int Verifier::tap_total() const {
+    int n = 0;
+    if (g_ == nullptr) return 0;
+    for (int l : tap_req_) if (l >= 0 && l < g_->n_layers - 1) ++n;
+    return n;
+}
+
+bool Verifier::tapping_chain() const {
+    if (g_ == nullptr || tap_req_.empty()) return false;
+    int have = 0;
+    for (const Verifier* v = this; v != nullptr; v = v->next_) {
+        have += (int) v->tap_layers_.size();
+        if (v->tap_layers_.size() > 0 && !v->tap_on_) return false;
+        if (v->le_ >= g_->n_layers) break;
+    }
+    return have == tap_total();
+}
+
+bool Verifier::gather_taps_host(float* dst, int row0, int rows, std::string& err) {
+    const int64_t N = g_->n_embd;
+    const int nt_all = tap_total();
+    for (Verifier* v = this; v != nullptr; v = v->next_) {
+        if (!v->tap_layers_.empty() && v->tap_on_) {
+            const OnDevice on_stage(v->device_);
+            if (v->tap_cs_ == nullptr &&
+                (cudaStreamCreateWithFlags(&v->tap_cs_, cudaStreamNonBlocking) != cudaSuccess ||
+                 cudaEventCreateWithFlags(&v->tap_ev_, cudaEventDisableTiming) != cudaSuccess)) {
+                err = "verify: the tap gather stream could not be created";
+                return false;
+            }
+            int slot0 = 0;
+            for (int l : tap_req_) if (l >= 0 && l < g_->n_layers - 1 && l < v->lb_) ++slot0;
+            const int64_t nv = (int64_t) v->tap_layers_.size();
+            for (int r = 0; r < rows; ++r) {
+                const cudaError_t ce = cudaMemcpyAsync(dst + ((size_t) r * (size_t) nt_all + (size_t) slot0) * (size_t) N,
+                                                       v->tap_dev_ + (size_t) (row0 + r) * (size_t) (nv * N), (size_t) (nv * N) * 4,
+                                                       cudaMemcpyDeviceToHost, v->tap_cs_);
+                if (ce != cudaSuccess) { err = std::string("verify: the tap gather to the host: ") + cudaGetErrorString(ce); return false; }
+            }
+            if (cudaStreamSynchronize(v->tap_cs_) != cudaSuccess) { err = "verify: the tap gather to the host did not finish"; return false; }
+        }
+        if (v->le_ >= g_->n_layers) break;
+    }
+    return true;
+}
+
+bool Verifier::gather_taps(float* landing, int landing_device, int row0, int rows, int dst_row0, cudaStream_t wait_stream, std::string& err) {
+    const int64_t N = g_->n_embd;
+    const int nt_all = tap_total();
+    for (Verifier* v = this; v != nullptr; v = v->next_) {
+        if (!v->tap_layers_.empty() && v->tap_on_) {
+            const OnDevice on_stage(v->device_);
+            if (v->tap_cs_ == nullptr &&
+                (cudaStreamCreateWithFlags(&v->tap_cs_, cudaStreamNonBlocking) != cudaSuccess ||
+                 cudaEventCreateWithFlags(&v->tap_ev_, cudaEventDisableTiming) != cudaSuccess)) {
+                err = "verify: the tap gather stream could not be created";
+                return false;
+            }
+            // this stage's first tap among all of them: the requested layers below its first layer
+            int slot0 = 0;
+            for (int l : tap_req_) if (l >= 0 && l < g_->n_layers - 1 && l < v->lb_) ++slot0;
+            const int64_t nv = (int64_t) v->tap_layers_.size();
+            for (int r = 0; r < rows; ++r) {
+                const float* src = v->tap_dev_ + (size_t) (row0 + r) * (size_t) (nv * N);
+                float* dst = landing + ((size_t) (dst_row0 + r) * (size_t) nt_all + (size_t) slot0) * (size_t) N;
+                const cudaError_t ce = v->device_ == landing_device
+                    ? cudaMemcpyAsync(dst, src, (size_t) (nv * N) * 4, cudaMemcpyDeviceToDevice, v->tap_cs_)
+                    : cudaMemcpyPeerAsync(dst, landing_device, src, v->device_, (size_t) (nv * N) * 4, v->tap_cs_);
+                if (ce != cudaSuccess) { err = std::string("verify: the tap gather copy: ") + cudaGetErrorString(ce); return false; }
+            }
+            if (cudaEventRecord(v->tap_ev_, v->tap_cs_) != cudaSuccess) { err = "verify: the tap gather event"; return false; }
+            const OnDevice on_dst(landing_device);
+            if (cudaStreamWaitEvent(wait_stream, v->tap_ev_, 0) != cudaSuccess) { err = "verify: the drafter stream cannot wait on a stage's taps"; return false; }
+        }
+        if (v->le_ >= g_->n_layers) break;
+    }
+    return true;
+}
+
 // STRATA_TAP_FILE: one record per row of the window: int32 position, int32 input token, then n_taps x n_embd floats
 void Verifier::tap_write(int T, const int32_t* tokens, int64_t pos0) {
     if (tap_file_ == nullptr) return;
@@ -899,10 +978,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // DFlash2 taps: set_taps (the drafter) or STRATA_TAP_FILE (the research dump); off, and nothing is allocated or captured, otherwise
     const char* tap_path = std::getenv("STRATA_TAP_FILE");
     if (tap_path != nullptr && tap_path[0] == '\0') tap_path = nullptr;
-    if ((tap_path != nullptr || !tap_req_.empty()) && lb_ == 0 && le_ == g.n_layers) {
+    // A layer split's stage taps the requested layers inside its own range [lb_, le_) into its own buffer [max_t][its taps][n_embd];
+    // gather_taps() lands every stage's rows on the drafter's card.  The research dump (STRATA_TAP_FILE) needs the whole model in one verifier.
+    const bool tap_whole = lb_ == 0 && le_ == g.n_layers;
+    if (!tap_whole) tap_path = nullptr;
+    if (tap_path != nullptr || !tap_req_.empty()) {
         tap_layers_.clear();
         if (tap_path == nullptr) {
-            for (int l : tap_req_) if (l >= 0 && l < g.n_layers - 1) tap_layers_.push_back(l);
+            for (int l : tap_req_) if (l >= lb_ && l < le_ && l < g.n_layers - 1) tap_layers_.push_back(l);
         } else {
             const char* tl = std::getenv("STRATA_TAP_LAYERS");
             std::string list = tl != nullptr && tl[0] != '\0' ? tl : "5,15,25,35,45";
@@ -917,6 +1000,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         tap_slot_.assign((size_t) g.n_layers, -1);
         for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot_[(size_t) tap_layers_[i]] = (int) i;
         const size_t nt = tap_layers_.size();
+        if (nt == 0 && tap_path == nullptr) {
+            // a stage that holds none of the tapped layers: nothing to keep, nothing captured
+        } else
         if (nt == 0 || cudaMalloc((void**) &tap_dev_, (size_t) T * nt * N * 4) != cudaSuccess ||
             (tap_path != nullptr && (cudaMalloc((void**) &tap_scratch_, (size_t) HC * N * 4) != cudaSuccess ||
                                      !mapped((size_t) T * nt * N * 4, (void**) &h_tap_, (void**) &m_tap_)))) {
@@ -2391,7 +2477,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
-        if (tap_on_ && !batch_rec_ && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
+        if (tap_on_ && (!batch_rec_ || tap_batch_) && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
             // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of
             // the hc streams, all rows of the group in one launch
             const int64_t nt = (int64_t) tap_layers_.size();

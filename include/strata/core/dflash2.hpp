@@ -20,6 +20,7 @@
 
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -36,6 +37,7 @@ class Dflash2Drafter {
 public:
     static constexpr int kRows = 8;           ///< block rows: the anchor + 7 masks
     static constexpr int kDrafts = kRows - 1;
+    static constexpr int kRing2048 = 2048;    ///< positions the deferred-rows buffer holds
     static constexpr int kRing = 2064;        ///< K/V slots per layer: the 2048 window + slack for rows written ahead of a rejection
 
     Dflash2Drafter() = default;
@@ -46,7 +48,9 @@ public:
     /// Reads the pack (tools/dflash2_pack.py) to the GPU `device` and allocates the ring and the buffers (about 0.8 GB).
     bool load(const std::string& pack_path, int device, std::string& err);
     /// The target's embedding and head (and the draft vocabulary file, "" or missing: the whole head).
-    bool bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err);
+    /// `head_device` >= 0 and not this card's: the head sits on another card (a layer split's last stage); the draft vocabulary's rows are gathered there and
+    /// copied over once, so the drafter can sit on the first stage's card.
+    bool bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err, int head_device = -1);
     /// DF-05: before bind, the MTP drafter's gathered draft-head rows and vocabulary (device pointers it keeps owning) when they are the same bytes this
     /// drafter would gather; bind then uses them instead of a second copy (about 213 MiB on Flash-Next) and checks the vocabulary against the file.
     struct SharedHead { const uint8_t* rows = nullptr; const int32_t* vocab_dev = nullptr; const std::vector<int32_t>* vocab_host = nullptr; int64_t n = 0; int type = -1; };
@@ -55,6 +59,34 @@ public:
     /// Tests: an embedding callback and a head given as raw rows of `head_type` (a native_mmvq type).
     using EmbedFn = std::function<void(const int32_t* tokens_dev, int n, float* out, cudaStream_t)>;
     bool bind_raw(EmbedFn embed, const void* head_w, int head_type, int64_t head_rows, const std::vector<int32_t>& vocab, std::string& err);
+
+    /// Batch slots and layer splits.  A slot's drafter shares this one's immutable pack, embedding callback and draft head (same card) and owns only
+    /// its ring, buffers, streams and graphs (about 100 MiB): `clone_alloc` after the parent's `load`, `clone_bind` after its `bind`, then `set_max_drafts` and `prepare` as for the parent.
+    bool clone_alloc(const Dflash2Drafter& parent, std::string& err);   ///< after the parent's load: streams and buffers (before the expert cache is sized)
+    bool clone_bind(const Dflash2Drafter& parent, std::string& err);    ///< after the parent's bind: the shared head, embedding and the draft logits
+    /// Copy another drafter's context (ring, tags, token history, epoch) exactly: a request that moves between the solo session and a batch slot.  Same card.
+    bool copy_state_from(Dflash2Drafter& src, std::string& err);
+    /// A fixed device buffer [kRows][taps][n_embd] on this drafter's card: where a layer split's stages land their taps (Verifier::gather_taps) and the
+    /// graphs are captured on it.  Allocated at load.
+    float* landing() const { return landing_; }
+    int device() const { return device_; }
+    int n_taps() const { return (int) taps_.size(); }
+    int64_t ring_hi() const { return ring_hi_; }
+
+    /// DEFERRED CONTEXT (batch slots): a round with no spare window rows needs no draft, so a slot's drafter skips its forward work for that round.  The committed
+    /// rows' taps wait in a pinned host buffer instead (last 2048 positions of one contiguous run, 51 KB a row, allocated at the first deferral); catch_up replays
+    /// them through context() (the same kernels, in order, so the ring ends up as if every row had been taken at once) when spare rows return.
+    /// defer_rows returns where to write `n` rows of taps for positions pos0 ... (a position that does not follow the held run starts a new one); the caller
+    /// fills them (and waits for the copy) before the next catch_up.
+    float* defer_rows(int64_t pos0, int n, std::string& err);
+    bool has_deferred() const { return dpend_hi_ > dpend_lo_; }
+    int64_t deferred_hi() const { return dpend_hi_; }
+    const float* deferred_row(int64_t pos) const { return dpend_ + (size_t) (pos % kRing2048) * (size_t) (taps_.size() * (size_t) N_); }
+    /// Replays the held rows below `upto` (at most the last 2047 of them) into the ring and drops them from the run (rows from `upto` on stay held).
+    bool catch_up(int64_t upto, std::string& err);
+    void clear_deferred() { dpend_lo_ = dpend_hi_ = 0; }
+    int64_t n_catchups = 0, n_catchup_rows = 0, n_deferred_rows = 0;
+    double ms_catchup = 0;
 
     /// A new request: the ring is empty again.
     void reset();
@@ -102,6 +134,11 @@ public:
     /// selector's pick and its probability).  The taps pointer must be the same device buffer on every call (graphs are captured on it).
     bool draft(const float* taps_dev, int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
 
+    /// draft() in two halves: draft_launch queues the round's graph and returns, draft_finish waits and reads the picks.  Several drafters (batch slots, each on its
+    /// own stream) can launch first and finish after, so their graphs run at the same time.
+    bool draft_launch(const float* taps_dev, int n_new, int64_t pos0, int32_t anchor, std::string& err);
+    bool draft_finish(int32_t* drafts, float* probs, std::string& err);
+
     /// Captures the eight round graphs (n_new = 1..8) on `taps` now, so no round pays for a capture.
     bool prepare(const float* taps_dev, std::string& err);
 
@@ -145,6 +182,11 @@ private:
     cudaStream_t cs_ = nullptr;
     std::vector<Tensor> tensors_;
     uint8_t* blob_ = nullptr;
+    bool blob_shared_ = false;      ///< blob_ (and the bound head) belong to the parent drafter (clone_for_slot)
+    float* landing_ = nullptr;
+    float* dpend_ = nullptr;        ///< pinned host: deferred taps, row = position % kRing2048
+    int64_t dpend_lo_ = 0, dpend_hi_ = 0;
+    bool make_streams(std::string& err);
     uint64_t vram_ = 0;
     bool q4_ = false;   // the pack's matrices are Q4_0 (tools/dflash2_pack.py --q4_0)
     int N_ = 2560, L_ = 5, NH_ = 32, NKV_ = 8, HD_ = 128, I_ = 7680, window_ = 2048, group_ = 16, rank_ = 256, mask_token_ = 0;
@@ -229,6 +271,10 @@ private:
     int64_t* tag_ = nullptr;        ///< per ring slot: (epoch << 32 | position) of the row it holds, -1 none
     cudaEvent_t ev_a_ = nullptr, ev_b_ = nullptr;
     bool timing_ = false;
+    bool launched_ = false;         ///< draft_launch ran, draft_finish has not
+    int launch_n_ = 0;
+    int64_t launch_pos0_ = 0;
+    std::chrono::steady_clock::time_point launch_t0_{};
 };
 
 }  // namespace strata::core

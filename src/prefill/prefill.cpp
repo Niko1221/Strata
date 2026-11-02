@@ -1288,7 +1288,10 @@ bool Prefill::reserve_taps(const std::vector<int>& layers, int64_t cap_rows, int
     tap_layers_ = layers;
     tap_cap_ = cap_rows;
     if (tap_dev_ != nullptr) return true;
-    if (cudaMalloc((void**) &tap_dev_, (size_t) cap_rows * layers.size() * (size_t) n_embd * 4) != cudaSuccess) {
+    size_t mine = 0;   // a layer split's stage keeps the taps of the layers it runs (the others arrive from the other stages)
+    for (int l : layers) if (l >= stage_lb_ && (stage_le_ < 0 || l < stage_le_)) ++mine;
+    if (mine == 0) return true;
+    if (cudaMalloc((void**) &tap_dev_, (size_t) cap_rows * mine * (size_t) n_embd * 4) != cudaSuccess) {
         (void) cudaGetLastError();
         tap_dev_ = nullptr;
         err = "the prompt staging of the DFlash2 taps does not fit in VRAM";
@@ -3312,16 +3315,20 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     if (hand_in_ == nullptr) stopped_at_ = -1;
 #if defined(STRATA_HAVE_DFLASH2)
     std::vector<int> tap_slot;
-    if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
+    // the taps of the layers THIS stage runs (the whole model without a split), at [row][its taps][n_embd]; on a split the callback of each stage
+    // gets its own share and the engine lands them on the drafter's card
+    tap_local_.clear();
+    for (int l : tap_layers_) if (l >= stage_lb_ && (stage_le_ < 0 || l < stage_le_) && l < g.n_layers - 1) tap_local_.push_back(l);
+    if (!tap_local_.empty()) {
         if (tap_dev_ == nullptr &&
-            cudaMalloc((void**) &tap_dev_, (size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd * 4) != cudaSuccess) {
+            cudaMalloc((void**) &tap_dev_, (size_t) tap_cap_ * tap_local_.size() * (size_t) g.n_embd * 4) != cudaSuccess) {
             (void) cudaGetLastError();
             tap_dev_ = nullptr;
             err = "prefill: the DFlash2 tap staging does not fit in VRAM";
             return false;
         }
         tap_slot.assign((size_t) g.n_layers, -1);
-        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+        for (size_t i = 0; i < tap_local_.size(); ++i) tap_slot[(size_t) tap_local_[i]] = (int) i;
     }
 #endif
     for (int64_t c0 = 0; c0 < n; c0 += C) {
@@ -3353,7 +3360,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
 #if defined(STRATA_HAVE_DFLASH2)
         // DFlash2 prompt taps: the rows of this chunk at positions >= tap_first_ (the drafter looks back one window)
-        const int64_t tap_t0 = tap_dev_ != nullptr ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
+        const int64_t tap_t0 = tap_dev_ != nullptr && !tap_local_.empty() ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
         const int64_t tap_rows = T - tap_t0;
         if (tap_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the chunk's tapped rows"; return false; }
 #else
@@ -6001,7 +6008,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
 #if defined(STRATA_HAVE_DFLASH2)
                 if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0)   // DFlash2: this layer's completed output, mean of the streams
-                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_layers_.size() * N, N,
+                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_local_.size() * N, N,
                                                   (int) HC, (int) tap_rows, m.cs);
 #endif
             }
