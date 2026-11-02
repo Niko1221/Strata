@@ -106,9 +106,9 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
  *  (5 at 24 GB, 7 at 32 GB, 8 at 64 GB and above). The engine adds it to the arena's need and, when the arena does not fit, leaves it free beside the RAM copy. It is sent as the env variable STRATA_RAM_KEEP_GIB. */
 export const ramKeepGib=ram=>Math.min(8,Math.max(5,Math.ceil((Number(ram)||0)*.2)));
 
-/** The first engine version that reads STRATA_RAM_KEEP_GIB / --ram-keep-gib (the setting was added in 0.1.55.1, the version of the 0.2.9 update's engine; the released 0.2.9 engine is 0.1.55). An engine older than this, or one whose version cannot be read, gets the
+/** The first engine version that reads STRATA_RAM_KEEP_GIB / --ram-keep-gib (the setting was added in 0.1.56, the engine of the 0.2.9 update; the released 0.2.9 engine is 0.1.55). An engine older than this, or one whose version cannot be read, gets the
  *  rule of 0.2.9 instead. Lower it (or raise the engine's version) only together with the release that carries the setting. */
-export const RAM_KEEP_MIN_ENGINE='0.1.55.1';
+export const RAM_KEEP_MIN_ENGINE='0.1.56';
 /** True when the engine with this version string knows the setting. Unknown or unreadable: false (the 0.2.9 rule works on every engine, an ignored env variable would keep no room). */
 export function engineKnowsRamKeep(version){
  const have=parseEngineVersion(version),need=parseEngineVersion(RAM_KEEP_MIN_ENGINE);
