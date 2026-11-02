@@ -996,16 +996,12 @@ struct Server {
             }
             if (batch) admit(r);
             else solo(r);
-            // FNX_ADMIT_INTERLEAVE (default 1 on AMD, 0 on NVIDIA): a request read takes the engine for 0.2-0.5 s even for a few tokens; the slots already decoding run one window between two
+            // FNX_ADMIT_INTERLEAVE=1 (default off): a request read takes the engine for 0.2-0.5 s even for a few tokens; the slots already decoding run one window between two
             // admissions instead of waiting for all of them (8 users that start together: the first ones decode while the last are read)
             if (batch && interleave_ && any_decoding()) decode_step();
         }
     }
-#if FNX_HIP
-    const bool interleave_ = fnx::env_int("FNX_ADMIT_INTERLEAVE", 1) != 0;   // AMD: on
-#else
-    const bool interleave_ = fnx::env_int("FNX_ADMIT_INTERLEAVE", 0) != 0;   // NVIDIA: off in 0.2.9 (the split engines there are frozen), FNX_ADMIT_INTERLEAVE=1 for 0.2.9.1's screens
-#endif
+    const bool interleave_ = fnx::env_int("FNX_ADMIT_INTERLEAVE", 0) != 0;   // off: measured no gain on 4 x R9700 (RESULTS-HIP.md section 8)
 };
 
 // FNX_ROUTE_COUNT and FNX_ROUTE_TRACE (measurements) each need their file's path: checked before the model loads, not
