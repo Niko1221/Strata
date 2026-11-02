@@ -11,9 +11,9 @@ const flag = (args, name) => args[args.indexOf(name) + 1];
 const old279 = (ram, arena = 50.3) => Math.max(8, Math.min(Math.floor(ram * .8) - 10, Math.floor(arena / 1.073741824)));   // the 0.2.9 rule
 
 test('which engines know the setting: RAM_KEEP_MIN_ENGINE and newer; unknown or unreadable versions are treated as older', () => {
-  assert.equal(RAM_KEEP_MIN_ENGINE, '0.1.56');
-  for (const v of ['0.1.56', '0.1.56.1', '0.1.57', '0.2.0', 'v0.1.56', '1.0']) assert.equal(engineKnowsRamKeep(v), true, v);
-  for (const v of ['0.1.52', '0.1.54', '0.1.55', '0.1.55.1', '0.1.5', '0.1', null, undefined, '', 'local', 'dev']) assert.equal(engineKnowsRamKeep(v), false, String(v));
+  assert.equal(RAM_KEEP_MIN_ENGINE, '0.1.55.1');
+  for (const v of ['0.1.55.1', '0.1.55.2', '0.1.56', '0.1.56.1', '0.1.57', '0.2.0', 'v0.1.56', '1.0']) assert.equal(engineKnowsRamKeep(v), true, v);
+  for (const v of ['0.1.52', '0.1.54', '0.1.55', '0.1.5', '0.1', null, undefined, '', 'local', 'dev']) assert.equal(engineKnowsRamKeep(v), false, String(v));
   assert.equal(engineVersionOfExe('C:\\Users\\x\\AppData\\Local\\Strata\\components\\engine\\0.1.54-windows-x86_64-cuda-cuda13\\strata.exe'), '0.1.54');
   assert.equal(engineVersionOfExe('/home/u/.strata/components/engine/0.1.56-linux-x86_64-cuda/strata'), '0.1.56');
   assert.equal(engineVersionOfExe('component:strata-engine'), null);
@@ -29,7 +29,7 @@ test('an engine that knows the setting: "leave 20% for my work" asks it to keep 
 });
 
 test('an older engine (0.1.52, 0.1.54, 0.1.55 in the Engine tab) gets the 0.2.9 rule unchanged and never an argument it does not know', () => {
-  for (const v of ['0.1.52', '0.1.54', '0.1.55', '0.1.55.1']) {
+  for (const v of ['0.1.52', '0.1.54', '0.1.55']) {
     const w = resourceSettings(config, pc64, 'work', { arenaGb: 50.3, engineVersion: v });
     assert.equal(flag(w.args, '--resident-budget-gib'), String(old279(63)), `${v}: the 80% budget`);
     assert.equal(w.env.STRATA_RESIDENT_HEADROOM_GIB, '13', `${v}: 20% of 63 GB, rounded up`);
