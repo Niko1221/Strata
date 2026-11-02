@@ -239,6 +239,8 @@ public:
     bool df2_prepare(std::string& err);
     void df2_set_cap(int n);
     void df2_set_floor(int64_t pos);
+    int64_t df2_restore_lineage(const std::vector<int32_t>& cur_hist, int64_t cur_hi, const int32_t* ids, int64_t resume, std::string& err);
+    void df2_kv_list(std::vector<mtl::Dispatch>& ds, int n, const mtl::Buffer& pos, size_t pos_off, const mtl::Buffer& rt, size_t rt_off);
     int64_t df2_floor() const;
     bool df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts, float* probs, std::string& err);
     uint64_t df2_bytes() const;

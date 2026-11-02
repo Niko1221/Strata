@@ -786,3 +786,19 @@ kernel void df2_attn_merge_h(device const float* part [[buffer(0)]], device cons
     out[(row * 32 + kvh * 4 + g) * HD + d] = v;
     outh[(row * 32 + kvh * 4 + g) * HD + d] = half(v);
 }
+
+// ---- the row log (lineage rebuild): the half-rounded hidden_norm rows of the context update, kept per position, are the exact operand of every layer's
+// k/v projection; a restored conversation's ring is rebuilt from them (same kernels, same bytes).
+kernel void df2_log_rows(device const half* in [[buffer(0)]], device half* log [[buffer(1)]], device const int* pos [[buffer(2)]],
+                         constant CopyArgs& a [[buffer(3)]], uint i [[thread_position_in_grid]]) {
+    if (i >= a.rows * a.cols) return;
+    const uint r = i / a.cols, c = i % a.cols;
+    log[(uint(pos[r]) % a.slot_mod) * a.cols + c] = in[i];
+}
+
+kernel void df2_gather_rows(device const half* log [[buffer(0)]], device half* out [[buffer(1)]], device const int* pos [[buffer(2)]],
+                            constant CopyArgs& a [[buffer(3)]], uint i [[thread_position_in_grid]]) {
+    if (i >= a.rows * a.cols) return;
+    const uint r = i / a.cols, c = i % a.cols;
+    out[i] = log[(uint(pos[r]) % a.slot_mod) * a.cols + c];
+}

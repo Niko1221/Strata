@@ -77,6 +77,13 @@ struct Window::Df2 {
     // the pack
     std::string path;
     mtl::Buffer xh;                             // half copy of the activation a matrix kernel reads (df2_f16)
+    // lineage row log (df2_log_rows): the half hidden_norm row of every context position, slot = position % ring; one buffer per parked lineage
+    mtl::Buffer rowlog;
+    struct Stash { std::vector<int32_t> hist; int64_t hi = 0, floor = 0; mtl::Buffer log; uint64_t used = 0; std::vector<uint8_t> chk; };   // chk: STRATA_DF2_CHECK_REBUILD=1 keeps the ring bytes of the stashed lineage
+    std::vector<Stash> stash;
+    uint64_t stash_tick = 0;
+    int stash_max = 4;
+    int64_t rebuilt_rows = 0, rebuilds = 0;
     bool fuse_h = true;                         // the producers write the half operand themselves (STRATA_DF2_FUSE_H=0: df2_f16 dispatches)
     int64_t floor = 0;                          // first ring position that belongs to the current request (a restarted lineage)
     int ndraft = DF2_DRAFTS;                    // DF-04: candidates the head, top-k and selector work on (the verify prefix)
@@ -386,6 +393,8 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
     auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
     d.A_fn = act(N);
     if (const char* e = std::getenv("STRATA_DF2_DUMP")) { d.dump_path = e; if (const char* r = std::getenv("STRATA_DF2_DUMP_ROUND")) d.dump_round = std::atoi(r); }
+    if (const char* lm = std::getenv("STRATA_DF2_LOG_MIB")) d.stash_max = std::atoi(lm) / 10; else d.stash_max = 4;   // ~10.6 MiB a lineage
+    d.rowlog = A((size_t) DF2_RING * N * 2);
     { const char* fe = std::getenv("STRATA_DF2_FUSE_H"); d.fuse_h = !(fe && fe[0] == '0'); }
     d.bound = true;
     std::fprintf(stderr, "strata metal: DFlash2 drafter ready (%.0f MiB: pack %.0f, %lld-token draft head %s), in %.0f ms\n", d.bytes / 1048576.0,
@@ -482,6 +491,21 @@ void Window::df2_ctx_list(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& tap
     const uint32_t tap_n = (uint32_t) (d.taps.size() * N);
     df2_mmn(ds, "fc.weight", taps, taps_off, tap_n, d.fcy, N, n);
     df2_rms(ds, d.fcy, d.hctx, "hidden_norm.weight", n);
+    if (d.fuse_h && d.rowlog.handle) {   // the lineage's row log: the half operand of the projections below
+        struct CopyArgs { uint32_t slot_mod, rows, cols; } la{(uint32_t) DF2_RING, (uint32_t) n, (uint32_t) N};
+        mtl::Dispatch lg;
+        lg.p = P(ldf2_, "df2_log_rows", {}, "df2_log_rows");
+        lg.args = {mtl::Arg::B(d.xh), mtl::Arg::B(d.rowlog), mtl::Arg::B(pos, pos_off), mtl::Arg::V(la)};
+        lg.grid[0] = (n * N + 255) / 256;
+        lg.tg[0] = 256;
+        push(ds, lg);   // (with its barrier: the half rows are written by the norm just before)
+    }
+    df2_kv_list(ds, n, pos, pos_off, rt, rt_off);
+}
+
+// the K and V of every layer from the half rows in d.xh (n <= 8 rows at the positions pos[0..n)): projections, k norm + rope, ring writes
+void Window::df2_kv_list(std::vector<mtl::Dispatch>& ds, int n, const mtl::Buffer& pos, size_t pos_off, const mtl::Buffer& rt, size_t rt_off) {
+    Df2& d = *df2_;
     for (int l = 0; l < d.L; ++l) {
         const std::string p = "layers." + std::to_string(l) + ".";
         df2_mmn(ds, p + "self_attn.k_proj.weight", d.hctx, 0, N, d.kc, 1024, n, l > 0);
@@ -832,6 +856,121 @@ void Window::df2_set_cap(int n) {
 void Window::df2_set_floor(int64_t pos) { if (df2_) df2_->floor = pos; }
 int64_t Window::df2_floor() const { return df2_ ? df2_->floor : 0; }
 
+// A restored or edited conversation: the drafter's current lineage (token history cur_hist, rows up to cur_hi) is stashed with its row log, and a
+// stashed lineage that covers the reused prefix [0, resume) of ids is swapped back in; the ring rows of the window [resume - 2047, resume) are
+// rebuilt from its log.  Returns the number of rows rebuilt (0: no lineage matched, the caller restarts the ring at resume).
+int64_t Window::df2_restore_lineage(const std::vector<int32_t>& cur_hist, int64_t cur_hi, const int32_t* ids, int64_t resume, std::string& err) {
+    Df2& d = *df2_;
+    if (!d.bound || !d.fuse_h || !d.rowlog.handle || d.stash_max <= 0 || resume <= 0) return 0;
+    const uint64_t log_bytes = (uint64_t) DF2_RING * N * 2;
+    // 1. the departing lineage goes to the stash (its buffer with it)
+    if (cur_hi > 0 && !cur_hist.empty()) {
+        Df2::Stash s;
+        s.hist = cur_hist; s.hi = cur_hi; s.floor = d.floor; s.log = d.rowlog; s.used = ++d.stash_tick;
+        static const bool chk = std::getenv("STRATA_DF2_CHECK_REBUILD") != nullptr;
+        if (chk) {   // test: a copy of the ring (all layers, K then V) to compare the rebuilt rows against
+            const size_t one = (size_t) DF2_RING * 1024 * 4;
+            s.chk.resize(one * 2 * (size_t) d.L);
+            for (int l = 0; l < d.L; ++l) {
+                std::memcpy(s.chk.data() + one * (size_t) (2 * l), d.kring[l].ptr, one);
+                std::memcpy(s.chk.data() + one * (size_t) (2 * l + 1), d.vring[l].ptr, one);
+            }
+        }
+        d.stash.push_back(std::move(s));
+        d.rowlog = mtl::Buffer();
+    }
+    // 2. the stashed lineage that covers the reused prefix: history equal to ids over [0, resume), rows [lo, resume) still in its log
+    const int64_t lo = std::max<int64_t>(0, resume - (DF2_CTX_MAX - 1));
+    int best = -1;
+    for (size_t i = 0; i < d.stash.size(); ++i) {
+        const Df2::Stash& s = d.stash[i];
+        int64_t k0 = 0;
+        { static const bool stv = std::getenv("STRATA_DF2_STATS") != nullptr;
+          if (stv) { while (k0 < resume && k0 < (int64_t) s.hist.size() && s.hist[(size_t) k0] == ids[k0]) ++k0;
+                     std::fprintf(stderr, "strata metal: DFlash2 stash %zu: hi %lld, history %zu tokens, floor %lld, common prefix with the request %lld of %lld (window start %lld)%s", i, (long long) s.hi, s.hist.size(), (long long) s.floor, (long long) k0, (long long) resume, (long long) lo, "\n"); } }
+        if (s.hi + 256 < resume || (int64_t) s.hist.size() < resume || s.hi - DF2_RING > lo) continue;   // (the last few committed rows of a finished request never got a context row: a gap of up to 256 at the end is accepted)   // not covered / rows overwritten
+        int64_t k = 0;
+        while (k < resume && s.hist[(size_t) k] == ids[k]) ++k;
+        if (k < resume) continue;
+        if (best < 0 || s.used > d.stash[(size_t) best].used) best = (int) i;
+    }
+    // 3. the buffer of the new current lineage: the matching stash's, else a recycled or fresh one (evicting the least recently used over the budget)
+    Df2::Stash match;
+    if (best >= 0) { match = std::move(d.stash[(size_t) best]); d.stash.erase(d.stash.begin() + best); }
+    while ((int) d.stash.size() > d.stash_max) {
+        size_t old = 0;
+        for (size_t i = 1; i < d.stash.size(); ++i) if (d.stash[i].used < d.stash[old].used) old = i;
+        if (!d.rowlog.handle && best < 0) d.rowlog = d.stash[old].log;   // recycle the evicted buffer (its rows are another lineage's; a floor guards them)
+        else cx_->free(d.stash[old].log);
+        d.stash.erase(d.stash.begin() + old);
+    }
+    if (best >= 0) {
+        if (d.rowlog.handle) cx_->free(d.rowlog);
+        d.rowlog = match.log;
+    } else if (!d.rowlog.handle) {
+        d.rowlog = cx_->alloc(log_bytes);
+        d.bytes += log_bytes;
+    }
+    if (best < 0) return 0;
+    // 4. rebuild the ring rows [from, resume) from the log (rows below the lineage's own floor were never logged)
+    const int64_t r_end = std::min<int64_t>(resume, match.hi);
+    const int64_t from = std::max<int64_t>(lo, match.floor);
+    if (from >= r_end) return 0;   // nothing of this lineage is in the window (the buffer is in place; the caller restarts the ring at resume)
+    const double t0 = now_ms();
+    int32_t* pos = d.ctxpos.as<int32_t>();
+    std::vector<mtl::Dispatch> ds;
+    for (int64_t b0 = from; b0 < r_end; ) {
+        const int64_t nb = std::min<int64_t>(DF2_CTX_MAX, r_end - b0);
+        ds.clear();
+        nb_ = false;
+        for (int g0 = 0; g0 < nb; g0 += 8) {
+            const int m = (int) std::min<int64_t>(8, nb - g0);
+            for (int i = 0; i < m; ++i) pos[g0 + i] = (int32_t) (b0 + g0 + i);
+            df2_rope_rows(pos + g0, m, d.theta, d.rtctx.as<float>() + (size_t) g0 * 128);
+            struct CopyArgs { uint32_t slot_mod, rows, cols; } ga{(uint32_t) DF2_RING, (uint32_t) m, (uint32_t) N};
+            mtl::Dispatch gt;
+            gt.p = P(ldf2_, "df2_gather_rows", {}, "df2_gather_rows");
+            gt.args = {mtl::Arg::B(d.rowlog), mtl::Arg::B(d.xh), mtl::Arg::B(d.ctxpos, (size_t) g0 * 4), mtl::Arg::V(ga)};
+            gt.grid[0] = (m * N + 255) / 256;
+            gt.tg[0] = 256;
+            push(ds, gt);
+            df2_kv_list(ds, m, d.ctxpos, (size_t) g0 * 4, d.rtctx, (size_t) g0 * 128 * 4);
+        }
+        cx_->run_graph(ds);
+        b0 += nb;
+    }
+    if (!match.chk.empty()) {   // test: the rebuilt rows against the original update's bytes
+        const size_t one = (size_t) DF2_RING * 1024 * 4;
+        int64_t bad = 0, tot = 0;
+        for (int l = 0; l < d.L; ++l)
+            for (int kv = 0; kv < 2; ++kv) {
+                const uint8_t* ref = match.chk.data() + one * (size_t) (2 * l + kv);
+                const uint8_t* got = (kv == 0 ? d.kring[l] : d.vring[l]).as<uint8_t>();
+                for (int64_t q = from; q < r_end; ++q) {
+                    const size_t off = (size_t) (q % DF2_RING) * 1024 * 4;
+                    ++tot;
+                    if (std::memcmp(ref + off, got + off, 1024 * 4) != 0) {
+                        ++bad;
+                        if (bad <= 3) {
+                            double md = 0, mv = 0; const float* rf = (const float*) (ref + off); const float* gf = (const float*) (got + off);
+                            for (int i = 0; i < 1024; ++i) { md = std::max(md, (double) std::fabs(rf[i] - gf[i])); mv = std::max(mv, (double) std::fabs(rf[i])); }
+                            std::fprintf(stderr, "strata metal: rebuild check: layer %d %s position %lld: max |diff| %.3g, max |orig| %.3g, first values orig %.4f %.4f rebuilt %.4f %.4f%s", l, kv ? "V" : "K", (long long) q, md, mv, rf[0], rf[1], gf[0], gf[1], "\n");
+                        }
+                    }
+                }
+            }
+        std::fprintf(stderr, "strata metal: DFlash2 rebuild check: %lld of %lld ring rows (K/V x layers x positions) differ from the original update%s", (long long) bad, (long long) tot, "\n");
+    }
+    d.floor = from;
+    d.rebuilt_rows += r_end - from;
+    ++d.rebuilds;
+    static const bool st = std::getenv("STRATA_DF2_STATS") != nullptr;
+    if (st) std::fprintf(stderr, "strata metal: DFlash2 lineage restored from the row log: %lld rows [%lld, %lld) rebuilt in %.1f ms (%zu lineages stashed)\n",
+                         (long long) (r_end - from), (long long) from, (long long) r_end, now_ms() - t0, d.stash.size());
+    (void) err;
+    return r_end - from;
+}
+
 uint64_t Window::df2_bytes() const { return df2_ ? df2_->bytes : 0; }
 double Window::df2_gpu_ms() const { return df2_ ? df2_->gpu_ms : 0.0; }
 double Window::df2_last_build_ms() const { return df2_ ? df2_->last_build_ms : 0.0; }
@@ -958,22 +1097,28 @@ void Dflash2Drafter::set_max_drafts(int n) {
 // Serve: the same bookkeeping as the CUDA drafter (src/core/dflash2.cpp).  The ring has no slot tags here: a lineage change moves a floor instead,
 // the first position written after the restart (attention never looks below it).
 bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume, bool* cold) {
-    (void) n;
     resume = std::max<int64_t>(0, std::min(resume, n));
     int64_t lcp = 0;
     const int64_t lim = std::min<int64_t>((int64_t) hist_.size(), resume);
     while (lcp < lim && hist_[(size_t) lcp] == ids[lcp]) ++lcp;
     const bool stale = ring_hi_ > lcp && lcp < resume;
+    bool rebuilt = false;
     if (stale) {
+        // another conversation's state was restored under this one: its lineage is stashed with its row log, and the stashed lineage that matches the
+        // reused prefix (if any) is swapped back in and its ring rows rebuilt (the Metal twin of the row log of the CUDA drafter)
+        std::string rerr;
+        if (strata::metal_engine::Window* w = strata::metal_engine::g_window)
+            rebuilt = w->df2_restore_lineage(hist_, ring_hi_, ids, resume, rerr) > 0;
         ++epoch_;
-        ring_hi_ = 0;
+        ring_hi_ = rebuilt ? resume : 0;
     }
+    if (rebuilt) { if (cold) *cold = false; hist_.assign(ids, ids + n); return true; }   // (the whole prompt: its rows reach the ring through the tap callback, which carries no tokens)
     if (strata::metal_engine::Window* w = strata::metal_engine::g_window)
         // The ring's valid rows are [floor, ring_hi): a restarted lineage (stale) has no rows below `resume`; a request that goes on from the
         // same history keeps the floor of its conversation (it is lowered when the request restarts earlier, never left high for a shorter prompt)
         w->df2_set_floor(stale ? resume : std::min<int64_t>(w->df2_floor(), resume));
     if (cold) *cold = stale;
-    hist_.assign(ids, ids + resume);
+    hist_.assign(ids, ids + n);
     return true;
 }
 
