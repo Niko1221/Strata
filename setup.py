@@ -882,7 +882,7 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
     **({DSV41_CODER_MODEL: {
         "label": DSV41_CODER.get("label", "ISTA-DAS Coder"),
         "about": "ISTA-DAS's coding version of DeepSeek-V4.1-Flash: %d of the model's 384 experts in every layer are kept, the rest removed, with the 2.00 version's file layout and "
-                 "tensor types: %.0f GB of model + 111 GB n-gram table + 8 GB drafter (about %.0f GB of disk). Not run on a Mac or a Ryzen AI Max yet. Against the original model (our test, 4,995 positions): "
+                 "tensor types: %.0f GB of model + 111 GB n-gram table + 8 GB drafter (about %.0f GB of disk). Run on a Mac (M5 Max) and a Ryzen AI Max at about 20 tokens a second. Against the original model (our test, 4,995 positions): "
                  "perplexity +48%%, KL 0.40 (2.00 bpw: +16%%, 0.17; 2.25 bpw: +8%%, 0.11)" % (DSV41_CODER["experts_per_layer"], sum(DSV41_CODER_FILES[n][0] for n in DSV41_CODER["shards"]) / 1e9,
                                                       (sum(DSV41_CODER_FILES[n][0] for n in DSV41_CODER["shards"]) + 110_595_290_816 + 7_976_914_240) / 1e9 + 6),
         "ram_gb": 24, "recipe": "coder", "subdir": DSV41_CODER.get("subdir") or None, "legacy_subdir": None, "profile": DSV41_CODER.get("profile", "profile-coder.bin"), "hf": hf(DSV41_CODER_REPO) + (DSV41_CODER["subdir"] + "/" if DSV41_CODER.get("subdir") else ""),
