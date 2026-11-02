@@ -190,7 +190,11 @@ test('a new install fetches only the drafter it will use; the fit and the slot e
   assert.match(solo.note, /one request at a time/);
   assert.notEqual(chooseParallel({ config, hardware, drafter: 'mtp' }).slots, 1, 'the MTP keeps the slots Strata fills in');
   assert.equal(chooseParallel({ config, hardware, drafter: 'dflash2', values: { parallel: 4 } }).slots, 4, 'a number the person chose stays (the start then loads the MTP and says so)');
-  assert.notEqual(chooseParallel({ config: { ...config, gpu: [0, 1] }, hardware: { gpus: [{ index: 0, vram_gb: 24 }, { index: 1, vram_gb: 24 }] }, drafter: 'dflash2' }).slots, 1, 'a layer split cannot run DFlash2: the slots stay with the MTP');
+  const two = { config: { ...config, gpu: [0, 1] }, hardware: { gpus: [{ index: 0, vram_gb: 24 }, { index: 1, vram_gb: 24 }] } };
+  const split = chooseParallel({ ...two, drafter: 'dflash2' });
+  assert.equal(split.slots, 1, 'a layer split runs DFlash2 alone, one request at a time (owner 11-02)');
+  assert.match(split.note, /one request at a time/);
+  assert.ok(chooseParallel({ ...two, drafter: 'mtp' }).slots > 1, 'the MTP on a layer split keeps the slots Strata fills in');
   const fit = read('../src/lib/native-fit.ts');
   assert.match(fit, /DRAFTER_VRAM_GB: Record<string, number> = \{ mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, dflash2_selq4: DFLASH2_SELQ4_VRAM_GB, off: 0 \}/);
 });

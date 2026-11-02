@@ -101,7 +101,7 @@ export function engineFacts(config = {}) {
  * @param {object} [input.values]          what the person set for this load (Expert mode's "Concurrent requests")
  * @param {object} [input.hardware]        the host's hardware read (`gpus[{index, vram_gb}]`)
  * @param {number} [input.requested]       the default to aim for
- * @param {string} [input.drafter]         the drafter this load runs (resolveDrafter): dflash2 answers one request at a time on one card
+ * @param {string} [input.drafter]         the drafter this load runs (resolveDrafter): dflash2 answers one request at a time
  * @returns {{slots:number, batchMtp:boolean, explicit:boolean, requested:number, note:string|null, slotGb:number}}
  */
 export function chooseParallel({ config = {}, values = {}, hardware = null, requested = DEFAULT_SLOTS, drafter = null }) {
@@ -116,7 +116,7 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
     return { slots: slots ?? 0, batchMtp: wantMtp, explicit: true, requested, note: null, slotGb: slot };
   }
   // DFlash2 chosen on purpose: it answers one request at a time, and request slots would keep the MTP (the engine says "not --batch"). Nobody chose a number here, so one.
-  if ((drafter ?? ((values.drafting ?? config.drafting) === 'dflash2' ? 'dflash2' : null)) === 'dflash2' && facts.gpus.length === 1) return { slots: 1, batchMtp: false, explicit: false, requested, note: DFLASH2_NOTE, slotGb: slot };
+  if ((drafter ?? ((values.drafting ?? config.drafting) === 'dflash2' ? 'dflash2' : null)) === 'dflash2') return { slots: 1, batchMtp: false, explicit: false, requested, note: DFLASH2_NOTE, slotGb: slot };
   const cards = (hardware?.gpus ?? []).filter(g => facts.gpus.includes(g.index)).map(g => Number(g.vram_gb)).filter(n => Number.isFinite(n) && n > 0);
   // Without a hardware read nothing can be sized: one at a time is the safe default (a number can still be chosen).
   if (!cards.length) return { slots: PARALLEL_POLICY === 'fixed' ? requested : 1, batchMtp: false, explicit: false, requested, note: null, slotGb: slot };
