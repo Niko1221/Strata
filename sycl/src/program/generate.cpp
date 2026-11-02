@@ -33,6 +33,7 @@
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/short_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -612,6 +613,8 @@ struct Options {
     int vram_reserve_later_mib = -1;
     /// Plan v0.3 P5: batched prompt processing in chunks of this many tokens (0 = the token path).
     int64_t prefill_chunk = 0;
+    /// `--prefill N` (a number, not auto): the person's chunk, which the cache sizing leaves alone.
+    bool prefill_given = false;
     /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  Every expert a chunk
     /// routes to is streamed once per chunk, so a bigger chunk streams fewer bytes per token (the "ubatch" effect).
     bool prefill_auto = false;
@@ -1944,6 +1947,7 @@ int main(int argc, char **argv) try {
                                      : (o.prefill_auto && env_max != nullptr ? std::atoll(env_max) : 8192);
             o.prefill_auto_max = want_max >= 32768 ? 32768 : want_max >= 16384 ? 16384 : 8192;
             o.prefill_chunk = o.prefill_auto ? o.prefill_auto_max : std::atoll(v.c_str());
+            o.prefill_given = !o.prefill_auto && o.prefill_chunk > 0;
         }
         else if (a == "--no-split-rows") o.no_split_rows = true;
         else if (a == "--no-prefill-borrow") { o.no_prefill_borrow = true; borrow_explicit = true; }
@@ -4097,6 +4101,48 @@ int main(int argc, char **argv) try {
     // stage that runs [lb, le) carves only those layers' GDN rows and QSA pools - before the carve every stage
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
+    // A context the sessions cannot hold in VRAM is not a reason to stop (owner rule: a long context and requests at once never shrink the context, they run
+    // slower): with no --kv-resident given, the K/V streams from RAM, the resident window as large as the card leaves room for.
+    // Needed: every session (the main one and each request slot), what loads after them (the draft layer, the native head, the verify buffers), the reserve,
+    // the prompt path's smallest own buffers (chunk 256) and a cache of 128 slots.
+    if (o.kv_resident <= 0 && o.max_context > 20480 && !multi_gpu && !o.kv_grow && o.expert_cache != 0) {
+        const int64_t kLateLoadMib = (!o.mtp.empty() || o.draft == "dflash2") ? 1500 : 700;   // Arc A750: MTP 835 + head 417 + verify 70 + the rest; DFlash2 alone is about the same
+        const int64_t blob_b = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+        const int64_t n_sess = 1 + std::max(o.batch, 0);
+        const int64_t reserve_b = (int64_t) (o.vram_reserve_given ? o.vram_reserve_mib : std::min(o.vram_reserve_mib, 300)) << 20;
+        const int64_t fixed_b = (kLateLoadMib << 20) + reserve_b + ((160 + (256 * 680) / 1024) << 20) + 128 * blob_b;
+        size_t free_k = 0, total_k = 0;
+        free_k = strata::core::device_free_bytes(); (void) total_k;
+        auto need_at = [&](int64_t res) -> int64_t {
+            strata::core::qsa_set_kv_resident(res);
+            return n_sess * (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers) + fixed_b;
+        };
+        int64_t pick = strata::core::pick_kv_resident(o.max_context, (int64_t) free_k, need_at);
+        if (pick > 0) {
+            // the pinned RAM the streamed K/V takes (it is a copy of the whole context per session): 1.8 GB a session at 128K int8
+            int64_t host_avail = -1;
+            if (std::FILE* mf = std::fopen("/proc/meminfo", "r")) {
+                char line[256];
+                while (std::fgets(line, sizeof(line), mf)) {
+                    long long kb = 0;
+                    if (std::sscanf(line, "MemAvailable: %lld kB", &kb) == 1) { host_avail = (int64_t) kb << 10; break; }
+                }
+                std::fclose(mf);
+            }
+            const int64_t host_need = n_sess * (int64_t) o.max_context * 13 * 1056 + (6ll << 30);
+            if (host_avail >= 0 && host_avail < host_need) {
+                std::fprintf(stderr, "strata generate: the context does not fit in VRAM and %.1f GiB of free RAM is less than the %.1f GiB KV streaming would take: not turned on\n",
+                             (double) host_avail / 1073741824.0, (double) host_need / 1073741824.0);
+                pick = 0;
+            } else {
+                std::fprintf(stderr, "strata generate: %lld tokens of context in %lld sessions do not fit in the %.2f GiB free: KV streaming on, %lld cells a layer in VRAM "
+                                     "(--kv-resident %lld; the rest of the K/V in RAM, so decode and prompts run slower)\n",
+                             (long long) o.max_context, (long long) n_sess, (double) free_k / 1073741824.0, (long long) pick, (long long) pick);
+            }
+        }
+        o.kv_resident = pick;
+        strata::core::qsa_set_kv_resident(o.kv_resident);
+    }
     {
         const strata::core::OnDevice on0(0);
         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
@@ -4686,7 +4732,7 @@ int main(int argc, char **argv) try {
         // under WDDM an over-subscribed allocation does not fail, it pages to system memory and crawls.
         // (with borrowing - the default with a profile - the prompt path lends cache slots instead; `pf_borrow` is
         // the predicate a local `borrow` was here, hoisted above so both cache-size branches read the same one)
-        const int64_t prefill_mib = owned_prefill_mib();
+        int64_t prefill_mib = owned_prefill_mib();
         // the draft layer's head and logits are allocated when it binds, after this: 0.1.27's CJK subset made them
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)
         int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
@@ -4739,6 +4785,36 @@ int main(int argc, char **argv) try {
                 reserve_adapted = true;
             }
         }
+        // Requests at once and a long context never make a start refuse when it can run slower (owner rule).  Still short of a working cache, the speed knobs
+        // go first, in this order: the prompt path's own chunk (its buffers are 160 + 0.66 MiB a token, 1182 MiB at 2048; --prefill N is the person's and stays),
+        // then a reserve that was asked for (down to kSmallReserveMib, the one a small card runs on).  The cache keeps what is left; only a start that
+        // has no slot even then is refused, below.
+        constexpr int64_t kWorkCacheSlots = 128;   // below this the cache is too small to be worth its name (the prompt path cannot lend, every miss goes to the CPU)
+        constexpr int64_t kMinChunk = 256;
+        // (only a start that would stop: no slot, or - sized for a loan - too few slots to lend the prompt path its chunk, so that it allocates its own on top
+        // of a cache that took the VRAM; a start that runs is left as it was sized)
+        if (o.expert_cache < min_slots && o.prefill_chunk > 0) {
+            const strata::core::ShortCache sc = strata::core::size_short_cache(
+                (int64_t) free_b, o.vram_reserve_mib, o.vram_reserve_given, kSmallReserveMib,
+                pf_borrow ? std::min<int64_t>(o.prefill_chunk, 1024) : o.prefill_chunk,   // (what the loan-less path takes when nothing can be lent)
+                o.prefill_given, kMinChunk, kWorkCacheSlots, mtp_bind, pipe_first, blob, (int64_t) profile.size());
+            const int64_t chunk = sc.chunk, reserve_mib = sc.reserve_mib, n = sc.slots;
+            if (n > o.expert_cache || (pf_borrow && n > 0)) {
+                std::fprintf(stderr, "strata generate: expert cache auto: short of VRAM, so the start runs slower instead of stopping: %s%s%s -> %lld slots\n",
+                             chunk != o.prefill_chunk ? ("prompt chunk " + std::to_string(o.prefill_chunk) + " -> " + std::to_string(chunk) + " tokens").c_str() : "",
+                             chunk != o.prefill_chunk && reserve_mib != o.vram_reserve_mib ? ", " : "",
+                             reserve_mib != o.vram_reserve_mib ? ("reserve " + std::to_string(o.vram_reserve_mib) + " -> " + std::to_string(reserve_mib) + " MiB").c_str() : "",
+                             (long long) n);
+                if (reserve_mib != o.vram_reserve_mib) reserve_adapted = true;
+                if (pf_borrow) o.prefill_auto = false;   // the chunk is the person's-sized now: its own buffers, no loan to size it from
+                o.prefill_chunk = chunk;
+                o.vram_reserve_mib = (int) reserve_mib;
+                o.expert_cache = (int) n;
+                prefill_mib = owned_prefill_mib();
+            } else if (pf_borrow && n == 0) {
+                o.expert_cache = 0;   // sized for a loan that cannot happen, and no slot once the prompt path's own buffers are priced: the refusal below says so
+            }
+        }
         if (o.expert_cache == 0) {
             // what is short, and what makes room: the numbers a small card picks from
             const int64_t at_reserve = o.vram_reserve_given ? o.vram_reserve_mib
@@ -4760,11 +4836,12 @@ int main(int argc, char **argv) try {
                          (long long) min_slots, (long long) ((min_slots * blob) >> 20), (long long) short_mib,
                          (long long) session_mib, (long long) o.max_context, (long long) (mtp_bind >> 20),
                          reserve_tip.c_str());
-            g_no_cache_hint = "the GPU memory is full before the expert cache (it needs at least " + std::to_string(min_slots * blob >> 20) + " MiB; this card is about " +
-                              std::to_string(short_mib) + " MiB short). Taken: " + (o.batch > 1 ? std::to_string(o.batch) + " request slots " + std::to_string(o.batch * session_mib) + " MiB (--batch / parallel), " : std::string()) +
-                              "the context " + std::to_string(session_mib) + " MiB at " + std::to_string(o.max_context) + " tokens (--max-context), the draft head " +
-                              std::to_string(mtp_bind >> 20) + " MiB, the reserve " + std::to_string(at_reserve) + " MiB (--vram-reserve-mib). Lower " +
-                              (o.batch > 1 ? "the number of requests at once (--batch / parallel), " : "") + "--max-context or --vram-reserve-mib";
+            g_no_cache_hint = "this card cannot hold even the smallest start: with prompt chunks of 256 tokens and the reserve at " + std::to_string(at_reserve) +
+                              " MiB, the expert cache still needs " + std::to_string(min_slots * blob >> 20) + " MiB and the card is about " + std::to_string(short_mib) +
+                              " MiB short. Taken: " + (o.batch > 1 ? std::to_string(o.batch) + " request slots " + std::to_string(o.batch * session_mib) + " MiB, " : std::string()) +
+                              "the context " + std::to_string(session_mib) + " MiB at " + std::to_string(o.max_context) + " tokens, the draft head " +
+                              std::to_string(mtp_bind >> 20) + " MiB. Lower " + (o.batch > 1 ? "the number of requests at once (--batch / parallel), " : "") +
+                              "use --kv q4_0 (smaller K/V), turn off the draft layer, or close other programs that use the GPU";
         }
     } else if (multi_gpu && o.expert_cache > 0) {
         // an explicit cache size leaves room for the prompt path's buffers and the reserve, or the first prompt
@@ -13806,6 +13883,13 @@ int main(int argc, char **argv) try {
     return 0;
 }
 catch (sycl::exception const &exc) {
+  const std::string what = exc.what();
+  if (exc.code() == sycl::errc::memory_allocation || what.find("OUT_OF_DEVICE_MEMORY") != std::string::npos) {
+    // the one plain refusal for a start no sizing could fit (the sizing above already shrank the prompt chunk, the reserve and the resident K/V window)
+    std::cerr << "strata: this card does not have the memory for this start: the GPU ran out of memory while the engine was loading (" << what << "). Lower the number of "
+                 "requests at once (--batch / parallel), use --kv q4_0 (a smaller K/V), turn off the draft layer, or close other programs that use the GPU" << std::endl;
+    std::exit(1);
+  }
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
             << ", line:" << __LINE__ << std::endl;
   std::exit(1);
