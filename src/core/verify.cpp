@@ -98,7 +98,7 @@ bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, 
 bool window_commit(void* w, int n_keep, std::string& err);
 bool window_copy_logits(void* w, int t, float* host);
 void window_set_sampling(void* w, const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len);
-bool window_sample_slot_row(void* w, int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err);
+bool window_sample_slot_row(void* w, int row, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hist_len, int32_t* tok, std::string& err);
 bool window_init_slots(void* w, const std::vector<strata::core::SessionState*>& slots, std::string& err);
 bool window_run_slots(void* w, const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err);
 }  // namespace strata::metal_engine
@@ -4562,18 +4562,23 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     if (S < 1 || S > (int) strata::kernels::kVerifyMaxT) { err = "verify: batch window size out of range"; return false; }
     (void) pool; (void) user;
     if (!strata::metal_engine::window_run_slots(metal_, rows, S, tokens, pos, out, err)) return false;
-    // a slot with its own sampling (set_slot_sampling: temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows): its row is
-    // drawn again from the window's logits with Philox(seed, position), as a solo window draws it
-    for (int t = 0; t < S; ++t) {
-        strata::kernels::SamplerParams sp = slot_sp_[(size_t) rows[t]];
-        if (sp.greedy || sp.temperature <= 0.0f) continue;
-        sp.counter = (uint64_t) pos[t];
-        sp.penalty_last_n = 0;
-        if (!strata::metal_engine::window_sample_slot_row(metal_, t, sp, &out[t], err)) return false;
-    }
     last_t_ = S;
     for (int t = 0; t < S; ++t) { last_rows_[t] = rows[t]; last_tokens_[t] = tokens[t]; last_pos_b_[t] = pos[t]; }
     last_batch_ = true;
+    // a slot with its own sampling, penalties or logit bias (set_slot_sampling / set_slot_history / set_slot_logit_bias): its row is drawn again from the
+    // window's logits with Philox(seed, position), as a solo window draws it; a plain greedy slot keeps the window's argmax token
+    {
+        std::vector<int32_t> hrows;
+        for (int t = 0; t < S; ++t) {
+            strata::kernels::SamplerParams sp;
+            const int32_t* hist = nullptr;
+            int hlen = 0;
+            const int r = slot_row_draw(S, t, sp, hist, hlen, hrows, err);
+            if (r < 0) return false;
+            if (r == 0) continue;
+            if (!strata::metal_engine::window_sample_slot_row(metal_, t, sp, hist, hlen, &out[t], err)) return false;
+        }
+    }
     return true;
 #endif
     using namespace strata::kernels;
@@ -4751,46 +4756,66 @@ bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std
     return true;
 }
 
-bool Verifier::sample_rows(int S, std::string& err) {
-    bool any = false;
-    // the slots' penalty-history rows of this window (host), built once for the rows that need one
+// One batch row's draw inputs: 0 = the row keeps the window's argmax token (a plain greedy slot), 1 = draw it with `sp` (+ `hist` / `hlen`), -1 = error.
+// Row t of the last window feeds last_tokens_[t] into slot last_rows_[t]; the penalty-history row is the slot's reply tail plus its tokens in this window up to t
+// (slot_penalty_rows), staged on the device like a solo window's.
+int Verifier::slot_row_draw(int S, int t, strata::kernels::SamplerParams& sp, const int32_t*& hist, int& hlen, std::vector<int32_t>& hrows,
+                            std::string& err) {
     constexpr int kSlotHistMax = 4096;   // serve's kPenaltyWindowCap
-    std::vector<int32_t> hrows;
+    sp = slot_sp_[(size_t) last_rows_[t]];
+    const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
+    const bool bias = sp.logit_bias != nullptr;
+    hist = nullptr;
+    hlen = 0;
+    if ((sp.greedy || sp.temperature <= 0.0f) && !pen && !bias) return 0;   // a plain greedy slot keeps the window's argmax token untouched
+    sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
+    if (!pen) { sp.penalty_last_n = 0; return 1; }
     std::vector<const int32_t*> tails(slots_.size(), nullptr);
     std::vector<int64_t> n_tails(slots_.size(), 0);
     for (size_t b = 0; b < slots_.size() && b < slot_tail_.size(); ++b) { tails[b] = slot_tail_[b].data(); n_tails[b] = (int64_t) slot_tail_[b].size(); }
+    hlen = std::min(sp.penalty_last_n, kSlotHistMax);
+    const size_t need = (size_t) S * (size_t) hlen;
+    hrows.assign(need, -1);
+    strata::kernels::slot_penalty_rows(last_rows_, last_tokens_, S, tails.data(), n_tails.data(), hlen, hrows.data());
+    const OnDevice on_hist(device_);
+    if (slot_hist_cap_ < need) {
+        if (slot_hist_d_ != nullptr) cudaFree(slot_hist_d_);
+        slot_hist_d_ = nullptr;
+        if (cudaMalloc((void**) &slot_hist_d_, need * sizeof(int32_t)) != cudaSuccess) { err = "verify batch: the penalty-history allocation failed"; return -1; }
+        slot_hist_cap_ = need;
+    }
+#if defined(STRATA_GPU_METAL)
+    if (cudaMemcpy(slot_hist_d_ + (size_t) t * (size_t) hlen, hrows.data() + (size_t) t * (size_t) hlen, (size_t) hlen * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess)
+#else
+    if (cudaMemcpyAsync(slot_hist_d_ + (size_t) t * (size_t) hlen, hrows.data() + (size_t) t * (size_t) hlen, (size_t) hlen * sizeof(int32_t),
+                        cudaMemcpyHostToDevice, cs_) != cudaSuccess)
+#endif
+    { err = "verify batch: the penalty-history copy failed"; return -1; }
+    hist = slot_hist_d_ + (size_t) t * (size_t) hlen;
+    return 1;
+}
+
+bool Verifier::sample_rows(int S, std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    (void) S;
+    err = "verify batch: sample_rows is the CUDA / HIP path";
+    return false;
+#else
+    bool any = false;
+    std::vector<int32_t> hrows;
     for (int t = 0; t < S; ++t) {
-        strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
-        const bool bias = sp.logit_bias != nullptr;
-        if ((sp.greedy || sp.temperature <= 0.0f) && !pen && !bias) continue;   // a plain greedy slot keeps the window's argmax token untouched
-        sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
+        strata::kernels::SamplerParams sp;
         const int32_t* hist = nullptr;
         int hlen = 0;
-        if (pen) {
-            hlen = std::min(sp.penalty_last_n, kSlotHistMax);
-            hrows.assign((size_t) S * (size_t) hlen, -1);
-            strata::kernels::slot_penalty_rows(last_rows_, last_tokens_, S, tails.data(), n_tails.data(), hlen, hrows.data());
-            const size_t need = (size_t) S * (size_t) hlen;
-            const OnDevice on_hist(device_);
-            if (slot_hist_cap_ < need) {
-                if (slot_hist_d_ != nullptr) cudaFree(slot_hist_d_);
-                slot_hist_d_ = nullptr;
-                if (cudaMalloc((void**) &slot_hist_d_, need * sizeof(int32_t)) != cudaSuccess) { err = "verify batch: the penalty-history allocation failed"; return false; }
-                slot_hist_cap_ = need;
-            }
-            if (cudaMemcpyAsync(slot_hist_d_ + (size_t) t * (size_t) hlen, hrows.data() + (size_t) t * (size_t) hlen, (size_t) hlen * sizeof(int32_t),
-                                cudaMemcpyHostToDevice, cs_) != cudaSuccess) { err = "verify batch: the penalty-history copy failed"; return false; }
-            hist = slot_hist_d_ + (size_t) t * (size_t) hlen;
-        } else {
-            sp.penalty_last_n = 0;
-        }
-        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hlen, sp,
-                                       m_out_ + t, cs_);
+        const int r = slot_row_draw(S, t, sp, hist, hlen, hrows, err);
+        if (r < 0) return false;
+        if (r == 0) continue;
+        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hlen, sp, m_out_ + t, cs_);
         any = true;
     }
     if (any && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "verify batch: the row sampling failed"; return false; }
     return true;
+#endif
 }
 
 bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err) {

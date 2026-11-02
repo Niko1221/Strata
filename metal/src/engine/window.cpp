@@ -194,7 +194,7 @@ public:
     // history, Tn rows of hist_len tokens (the last penalty_last_n of a row count, -1 = unused), read when the window's rows are sampled.
     void set_sampling(const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len);
     bool sample_rows(int Tn, int32_t* out, std::string& err);
-    bool sample_slot_row(int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err);   // one slot's row of a batch window, its own params
+    bool sample_slot_row(int row, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hist_len, int32_t* tok, std::string& err);   // one slot's row of a batch window, its own params
     bool sample_run(int row0, int n, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hl, std::string& err);   // after run(): replaces out[0..Tn) (and tokout_) by the sampled tokens
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return n_vocab_; }
@@ -3097,9 +3097,9 @@ bool Window::sample_rows(int Tn, int32_t* out, std::string& err) {
     return true;
 }
 
-bool Window::sample_slot_row(int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err) {
+bool Window::sample_slot_row(int row, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hist_len, int32_t* tok, std::string& err) {
     if (row < 0 || row >= MAXT) return true;
-    if (!sample_run(row, 1, sp, nullptr, 0, err)) return false;
+    if (!sample_run(row, 1, sp, hist, hist_len, err)) return false;
     *tok = tokout_.as<int32_t>()[row];
     return true;
 }
@@ -3219,8 +3219,8 @@ bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionSt
     int64_t nv = 0;
     return window_init(window_create(), g, ss, MAXT, max_cells, &nv, err);
 }
-bool window_sample_slot_row(void* w, int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err) {
-    return ((Window*) w)->sample_slot_row(row, sp, tok, err);
+bool window_sample_slot_row(void* w, int row, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hist_len, int32_t* tok, std::string& err) {
+    return ((Window*) w)->sample_slot_row(row, sp, hist, hist_len, tok, err);
 }
 void window_set_sampling(void* w, const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len) {
     ((Window*) w)->set_sampling(sp, hist, hist_len);
