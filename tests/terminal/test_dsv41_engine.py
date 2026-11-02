@@ -22,7 +22,7 @@ from tests.terminal import update_fixture as fx  # noqa: E402
 EXE = dsv41_engine.exe_name()
 
 
-def build(parent: Path, version: str, key: dict, padding: int = 0) -> Path:
+def build(parent: Path, version: str, key: dict, padding: int = 0, platform: str | None = None) -> Path:
     src = parent / f"src-{version}"
     src.mkdir(parents=True)
     (src / EXE).write_bytes(b"stub strata-dsv41 " + (os.urandom(padding) if padding else b"x" * 100))
@@ -30,7 +30,7 @@ def build(parent: Path, version: str, key: dict, padding: int = 0) -> Path:
     (src / library).write_bytes(b"a runtime library " * 50)
     out = parent / "built"
     out.mkdir(exist_ok=True)
-    folder = package_engine.build(src, "cuda", version, components.host_platform(), out, entry=EXE, archs=("sm_86",),
+    folder = package_engine.build(src, "cuda", version, platform or components.host_platform(), out, entry=EXE, archs=("sm_86",),
                                   min_driver={"nvidia": "580.65"}, build_id=f"dsv41-{version}", variant="cuda13")
     feed_tool.sign_package(folder, key)
     return folder
@@ -114,6 +114,20 @@ class Dsv41Engine(unittest.TestCase):
             self.assertIsNone(self.install(lines))
         self.assertTrue(lines)
         self.assertEqual(self.tree(self.eng), self.before)
+
+    def test_the_line_names_why_this_systems_package_does_not_fit(self):
+        shutil.rmtree(self.release / "dsv41", ignore_errors=True)
+        (self.release / "dsv41").mkdir(parents=True)
+        others = [p for p in ("linux-x86_64", "windows-x86_64", "macos-arm64") if p != host_platform()]
+        for i, plat in enumerate([*others, host_platform()]):        # the feed lists the other systems' packages first
+            feed_tool.pack_engine(build(self.root / f"pub-{i}", "0.1.49", self.key, platform=plat), self.release / "dsv41", url_prefix="dsv41/")
+        feed_tool.build_feed(self.release, key=self.key, sequence=1, dsv41_dir=self.release / "dsv41")
+        self.hw = {**self.hw, "cuda_archs": ["sm_61"]}
+        lines = []
+        with mock.patch.object(ec, "cuda_archs_present", return_value=["sm_61"]):
+            self.assertIsNone(self.install(lines))
+        line = next(x for x in lines if x.startswith("There is no DeepSeek engine package"))
+        self.assertIn("has code for sm_86, this PC's GPU is sm_61", line)
 
     def test_a_feed_signed_with_another_key_is_refused(self):
         self.publish()

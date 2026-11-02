@@ -156,6 +156,8 @@ def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Call
         feed = updater.open_feed(ctx, state)
         pkg, reasons = feedmod.select_engine(list(feed.dsv41), hw)
         if pkg is None:
+            # this system's own packages first: why they do not fit (a card they have no code for) is the line that helps
+            reasons = sorted(reasons, key=lambda r: f", this PC is {hw['platform']}" in r)
             emit("There is no DeepSeek engine package for this computer in the update feed"
                  + (": " + "; ".join(reasons[:2]) if reasons else "") + ".")
             return None

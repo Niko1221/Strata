@@ -183,6 +183,12 @@ on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into 
 python setup.py --family deepseek41 --model IST-DAS-2.00bpw
 ```
 
+AMD cards on Windows: the Windows AMD package has code for gfx1151 (Strix Halo) only. For another card, for example an RX 7900 XTX
+(gfx1100), build with `tools\dsv41\win\build_hip_win.bat`, with `STRATA_HIP_ARCHS` set to your card (`set STRATA_HIP_ARCHS=gfx1100`). It needs the
+ROCm 10.2 folder that `tools\hip\build_windows.bat` makes (`.rocm-win`), and Visual Studio Build Tools. Put `strata-dsv41.exe` in a folder of its own in `engine-dsv41`,
+for example `engine-dsv41\0.1.55-windows-x86_64-hip-gfx1100\`. Add the HIP runtime DLLs and the `rocm` folder from the Strata AMD engine (`engine\`)
+next to it, plus a `BUILD.json` with `"lib_dirs": ["rocm/bin"]`.
+
 `strata-dsv41 --version` prints the commit it was built from. A build you made yourself is not signed by Strata, which is fine for your own computer.
 Please tell us how it runs on your card (the speed, and the card and RAM): we only list a card as tested after someone has run it.
 
