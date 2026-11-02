@@ -64,7 +64,7 @@ BASE_SLOTTED_MIB = {("intel", "flash-next"): 4500}      # (vendor, model family)
 SLOT_SLOTTED_MIB = 2.22
 SLOT_RUN_MIN = 1                                       # the engine's minimum: generate.cpp refuses a start whose auto sizing leaves the cache no slot
 KV_RESIDENT_MIN = 20480                                # qsa_kv_resident_min(): a smaller --kv-resident is raised to this
-STREAM_EXTRA_BYTES = 380                               # per cell of context a streamed session still keeps in VRAM (rope table, indexer rows, page table); derived from qsa_state_bytes
+STREAM_EXTRA_BYTES = 1400                              # per cell of context a streamed session still keeps in VRAM (rope table, indexer rows, page table); measured: the CUDA engine's slot session at 128K with 32768 resident is 0.73 GiB (RESULTS-DF2MEM.md section 17), the 32K session 0.56 GiB
 CTX_STEPS_SLOTTED = CTX_STEPS + (4096, 2048)     # below 8K only for a start with request slots: each slot's session is one more KV cache to pay for
 SLOTS_MAX = 8                                    # the engine's batch window (serve/server.py PARALLEL_MAX)
 
