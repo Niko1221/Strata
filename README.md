@@ -58,6 +58,14 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 ```
 
 #### Build from Source (CMake + MSVC + CUDA 12.8)
+
+**Universal Fat Binary (supports RTX 20xx / 30xx / 40xx / 50xx simultaneously):**
+```powershell
+cmake -B build -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;86;89;120"
+cmake --build build --config Release --target strata-flint
+```
+
+**Single-Architecture Build (for your specific GPU, e.g. Blackwell sm_120):**
 ```powershell
 cmake -B build -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="120"
 cmake --build build --config Release --target strata-flint
