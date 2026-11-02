@@ -73,7 +73,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  let sourceCache={path:'',time:0,text:''};
  function sourceText(){try{const path=join(packaged?control.control.dir:preferences.repo,'serve/server.py'),time=statSync(path).mtimeMs;if(sourceCache.path===path&&sourceCache.time===time)return sourceCache.text;sourceCache={path,time,text:readFileSync(path,'utf8')};return sourceCache.text;}catch{return '';}}
  function nativeFields(){const source=sourceText();return NATIVE_FIELDS.map(field=>({...field,supported:APP_OWNED_FIELDS.includes(field.id)||field.id.startsWith('vision_')||field.id.startsWith('mcp_')||field.id==='vram_reserve_mib'||source.includes(field.id)}));}
- const modelArena=id=>({arenaGb:(snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===id)?.experts_gb});
+ const modelArena=id=>({arenaGb:(snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===id)?.experts_gb,engineVersion:snapshot.engine?.version??snapshot.installed?.engine?.version??null});
  /* A start that ends with `server_exited` carries the engine's last log line with it; the app turns the code into words and
     keeps this text under "Details" (src/lib/plain-errors.ts). */
  function exitCodeText(code){const n=Number(code);if(!Number.isFinite(n)||n===0)return '';const u=n<0?n+2**32:n;return u>=0x80000000?`exit code 0x${u.toString(16).toUpperCase().padStart(8,'0')}`:`exit code ${u}`;}
