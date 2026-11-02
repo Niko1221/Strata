@@ -283,6 +283,13 @@ class StartScreen(Base):
         else:
             intro.append("No saved presets yet\n", style=f"bold {ACCENT}")
             intro.append("A preset remembers all your choices so next time you start with one key.\n", style=MUTE)
+        try:                                                      # one quiet line when the last check found a newer engine (a local file; no network)
+            from strata_control import engine_update
+            line = engine_update.notice_line()
+        except Exception:                                         # noqa: BLE001
+            line = None
+        if line:
+            intro.append(line + "\n", style=MUTE)
         self.query_one("#intro", Static).update(intro)
 
     def explain(self) -> Text:

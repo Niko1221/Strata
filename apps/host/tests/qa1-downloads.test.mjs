@@ -150,7 +150,7 @@ test('4d: picture reading is on unless the person turned it off (no saved choice
 
 test('no recognised engine: the app still downloads, warns in the card, and loading says it with the next step', async () => {
   const { ENGINE_NOT_RECOGNISED } = await import('../server/native-control.mjs');
-  assert.match(ENGINE_NOT_RECOGNISED, /Settings → Engine/);
+  assert.match(ENGINE_NOT_RECOGNISED, /Settings → About/);
   assert.match(ENGINE_NOT_RECOGNISED, /didn’t recognise an engine/);
   const source = readSource(new URL('../server/native-control.mjs', import.meta.url), 'utf8');
   assert.equal((source.match(/ENGINE_NOT_RECOGNISED\+/g) ?? []).length, 2, 'both load paths use it');
@@ -159,7 +159,7 @@ test('no recognised engine: the app still downloads, warns in the card, and load
   assert.match(models, /<EngineWarning native=\{native\}\/>/);
   assert.match(guided, /<EngineWarning native=\{native\}\/>/);
   const warn = readSource(new URL('../src/components/EngineWarning.tsx', import.meta.url), 'utf8');
-  assert.match(warn, /The model will download, but it may not run until the right engine is installed \(Settings → Engine\)\./);
+  assert.match(warn, /The model will download, but it may not run until the right engine is installed \(Settings → About\)\./);
   // the install is not refused for a missing engine (only the engine-minimum refusal for a version that is too old stays)
   assert.doesNotMatch(source.slice(source.indexOf('async function install(job,args)'), source.indexOf('function terminate')), /engine\.usable/);
 });

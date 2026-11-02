@@ -21,3 +21,11 @@ export function nativeCatalogModels(families:NativeFamily[]):CatalogModel[]{
  }
  return groups;
 }
+
+/** Where the first-run model step starts: a version already on this computer and ready (the recommended one if it is among them), else the catalog's recommendation. Null when neither is in the list (the caller then keeps its own fallback). */
+export function startingChoice(families:CatalogModel[],readyIds:string[],pick?:{family?:string|null;model?:string|null}|null):{family:string;size:string}|null{
+ const ready=new Set(readyIds);
+ const recommended=pick?.family&&pick.model?families.flatMap(f=>f.sizes.filter(s=>s.model===pick.model&&(s.sourceFamily===pick.family||f.family===pick.family)).map(s=>({family:f.family,size:s.id}))):[];
+ const have=recommended.find(r=>ready.has(r.size))??families.flatMap(f=>f.sizes.filter(s=>ready.has(s.id)).map(s=>({family:f.family,size:s.id})))[0];
+ return have??recommended[0]??null;
+}

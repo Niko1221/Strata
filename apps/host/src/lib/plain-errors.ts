@@ -20,7 +20,7 @@ const RULES: Rule[] = [
   { kind: 'tunnel-own-running', match: /Strata’s tunnel for this address is already running \(PID/i, message: 'Strata’s tunnel for this address is already running.', next: 'Stop it first, or use it as it is, then connect again here.' },
   { kind: 'gpu-shared', match: /GPU \d+ is already used by .*, so this model did not fit there/i, message: 'Another model on the same graphics card left no room for this one.', next: 'Load it on a different GPU, or unload the other model first.' },
   { kind: 'gpu-no-code', match: /none of this computer.s graphics cards has code in this Strata engine|not an architecture this Strata engine was compiled for/i, message: 'This Strata engine has no code for the graphics card it tried to use.', next: 'Pick another card under Run on, or open Details to see which cards were found and what the engine is built for.' },
-  { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, Engine, Update engine), then try again.' },
+  { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, About), then try again.' },
   { kind: 'settings-file', match: /settings file for this model has a mistake/i, message: 'Your settings file has a mistake, so the model was not started.', next: 'Open the settings file under Expert settings, fix the line shown under Details, then load the model again.' },
   { kind: 'connector-missing', match: /connector \(cloudflared\) is not installed/i, message: 'Strata could not find Cloudflare’s connector (cloudflared) on this computer.', next: 'Install cloudflared (with your package manager, or from Cloudflare’s website), then press Retry setup. Strata finds it on your PATH and in the usual places.' },
   { kind: 'connector-old', match: /cloudflared at .* is version .* too old/i, message: 'The Cloudflare connector on this computer is too old.', next: 'Update cloudflared to a newer version, then press Retry setup.' },
@@ -51,13 +51,40 @@ const RULES: Rule[] = [
 
 /** The message as a person should read it, its next step, and the original text for the Details disclosure. */
 export function plainFailure(raw: string | null | undefined): PlainFailure {
-  const text = String(raw ?? '').replace(/^\s*Fixture:\s*/i, '').trim();
+  const text = unwrapErrorPayload(String(raw ?? '').replace(/^\s*Fixture:\s*/i, '').trim());
   for (const rule of RULES) {
     const m = text.match(rule.match);
     if (!m) continue;
     return { kind: rule.kind, message: typeof rule.message === 'function' ? rule.message(m) : rule.message, next: rule.next, detail: rule.detail ? rule.detail(m, text) : text };
   }
   return { kind: 'plain', message: text.replace(/^./, c => c.toUpperCase()) };
+}
+
+/**
+ * Reduce an error body to the sentence inside it.
+ *
+ * The host answers a refused request with `{"error":"…"}` and the fetch layer
+ * forwards `HTTP 400: {"error":"…"}`; both reached the screen verbatim, so a
+ * person was shown a JSON object where a sentence belonged. The wrapper is
+ * peeled here — before the rules run, so a wrapped message still matches its
+ * own rule — and anything that is not a recognisable error body is returned
+ * untouched.
+ */
+function unwrapErrorPayload(text: string): string {
+  // `HTTP 400: {…}` or a bare `{…}` body.
+  const body = text.replace(/^HTTP\s+\d{3}\s*:\s*/i, '').trim();
+  if (!body.startsWith('{')) return text;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    // FastAPI and the host both use `detail`/`error`/`message`, and `detail`
+    // is itself sometimes an object with a `message`.
+    const detail = parsed.detail;
+    const candidate = [parsed.error, parsed.message, typeof detail === 'string' ? detail : (detail as Record<string, unknown> | undefined)?.message]
+      .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    return candidate ? candidate.trim() : text;
+  } catch {
+    return text;
+  }
 }
 
 /** Translated copy of a failure, ready to show. */

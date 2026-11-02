@@ -742,6 +742,11 @@ class Runner:
                 return
         feed = self.feed or os.environ.get("STRATA_UPDATE_FEED")
         if stale:
+            blocked = self.stale_update_blocked(stale)
+            if blocked:                                      # an engine update is the person's choice, and never beside a loaded model
+                self.notices.append(blocked)
+                self.emit("engine", blocked, 100, level="warn")
+                return
             self.emit("engine", stale + " Looking for a newer one…", 0, level="warn")
         else:
             self.emit("engine", "No engine is installed yet. Getting the one for your graphics card…", 0)
@@ -810,6 +815,25 @@ class Runner:
             raise LaunchError("The engine could not be installed." + (f" {why}" if why else ""),
                               "Check your internet connection, or point Strata at an update source with --feed, then try again.", 6)
         self.emit("engine", "The engine is installed.", 100)
+
+    def stale_update_blocked(self, stale: str) -> str | None:
+        """The engine here is older than this model needs. Updating it is the person's choice (owner, 11-01: an engine update never starts by itself):
+        None when they said yes (--yes, or the answer to the question on the screens), else the one plain sentence that says why nothing was
+        updated and the next step. A model that is loaded blocks it whatever was answered. Warn, never refuse: the launch goes on."""
+        from strata_control import engine_update, updater
+        try:
+            models = engine_update.running_models(updater.serving_now())
+        except Exception:                                    # noqa: BLE001 - not knowing is not a reason to update
+            models = []
+        if models:
+            names = ", ".join(m.label for m in models)
+            return (f"{stale} {names} {'is' if len(models) == 1 else 'are'} running, so Strata did not update the engine. "
+                    "Stop it (`strata launch --stop`), run `strata update`, then start again.")
+        if self.assume_yes:
+            return None
+        if self.confirm is not None and self.confirm("Update the engine?", stale + " Update it now? Nothing else is changed; your models are kept."):
+            return None
+        return stale + " Strata did not update it. Run `strata update` (or start with --yes) and start again."
 
     def needed_engine(self) -> tuple[int, ...] | None:
         """The oldest engine this model runs on, from setup.py's own tables (MIN_ENGINE for everything, GYRO_ENGINE for Gyro), or None."""
@@ -2175,7 +2199,7 @@ class Runner:
             if report.get("usable"):
                 stale = self.stale_engine(report["engine"].get("version"))
                 if stale:
-                    out.append(stale + " Starting will look for a newer one first; `strata update` does the same.")
+                    out.append(stale + " Strata will ask before updating it (`strata update` does it now).")
         except Exception:                                    # noqa: BLE001
             pass
         try:
@@ -2308,25 +2332,18 @@ class Runner:
         cfg["lib_dirs"] = [*libs, *dsv41_engine.lib_dirs(found)]     # its own folder, and rocm/bin for a Windows HIP package
 
     def upgrade_dsv41_engine(self, found: Path) -> Path:
-        """The installed DeepSeek engine package is older than the signed feed's: fetch, check and start the newer one next to it and switch to it
-        (strata_control.dsv41_engine.upgrade).  Not for a --dsv41-package or a STRATA_DSV41_EXE (the person chose the engine), not for an engine
-        outside an engine-dsv41 folder, and silent when the feed cannot be reached (a 10 s check; the launch never waits on the network)."""
-        from strata_control import dsv41_engine
-        if (os.environ.get("STRATA_DSV41_EXE") or "").strip() or getattr(self.s, "dsv41_package", None):
-            return found
-        root = Path(found).parent.parent
-        if root.name != dsv41_engine.DIR:
-            return found
+        """The installed DeepSeek engine stays as it is: a launch never reaches the update feed and never installs, replaces or removes an engine
+        (owner, 11-01: an engine update is the person's choice, `strata update`, and never beside a loaded model; test_no_acquisition). What it
+        does is local: when the last check found a newer DeepSeek engine, one quiet line says so."""
         try:
-            from strata_cli import update_cmd
-            source = update_cmd._feed_source(argparse.Namespace(feed=self.feed), root.parent)
-            if not dsv41_engine.source_reachable(source):
-                return found
-            new = dsv41_engine.upgrade(root, source, installed=found,
-                                       emit=lambda m: self.emit("engine", m, None, level="warn" if "could not" in m else "info"))
-        except Exception:                                    # noqa: BLE001 - never stop a launch for this
-            return found
-        return new or found
+            from strata_control import engine_update
+            line = engine_update.notice_line(None, "Update with `strata update` when no model is running.")
+            found_notice = engine_update.notice(None)
+            if line and found_notice and found_notice.get("dsv41") and line not in self.notices:
+                self.notices.append(line)
+        except Exception:                                    # noqa: BLE001 - a nicety
+            pass
+        return found
 
     def dsv41_engine_found(self) -> tuple[Path | None, bool | None]:
         """(strata-dsv41 already installed, or None; whether the engine can be told at all).  Looks where setup puts DeepSeek's own engine package
