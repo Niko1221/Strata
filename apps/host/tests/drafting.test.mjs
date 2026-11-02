@@ -186,7 +186,7 @@ test('a new install fetches only the drafter it will use; the fit and the slot e
   assert.equal(chooseParallel({ config, hardware, drafter: 'dflash2', values: { parallel: 4 } }).slots, 4, 'a number the person chose stays (the start then loads the MTP and says so)');
   assert.notEqual(chooseParallel({ config: { ...config, gpu: [0, 1] }, hardware: { gpus: [{ index: 0, vram_gb: 24 }, { index: 1, vram_gb: 24 }] }, drafter: 'dflash2' }).slots, 1, 'a layer split cannot run DFlash2: the slots stay with the MTP');
   const fit = read('../src/lib/native-fit.ts');
-  assert.match(fit, /DRAFTER_VRAM_GB: Record<string, number> = \{ mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, off: 0 \}/);
+  assert.match(fit, /DRAFTER_VRAM_GB: Record<string, number> = \{ mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, dflash2_selq4: DFLASH2_SELQ4_VRAM_GB, off: 0 \}/);
 });
 
 test('a failed MTP download says one short line, not the installer text, and the Load goes on', () => {
@@ -194,4 +194,31 @@ test('a failed MTP download says one short line, not the installer text, and the
   const fn = source.slice(source.indexOf('async function installMtpLayer'), source.indexOf('async function prepareDrafter'));
   assert.match(fn, /job\.drafterNote='The MTP drafter could not be downloaded\.'/);
   assert.doesNotMatch(fn, /error\.message/);
+});
+
+test('the drafter memory figures in the app are the ones strata_control/drafting.py holds (DRAFTER_MIB), and the page uses the true one', async () => {
+  const py = read('../../../strata_control/drafting.py');
+  const table = JSON.parse(py.match(/^DRAFTER_MIB = (\{[^}]*\})/m)[1]);
+  const gb = mib => Math.floor(mib / 10 + 0.5) / 100;          // the same rounding as DRAFTER_GB (half up to 10 MiB)
+  assert.deepEqual(Object.keys(table).sort(), ['dflash2', 'dflash2_selq4', 'mtp', 'off']);
+  const parallel = await import('../server/native-parallel.mjs');
+  assert.equal(parallel.MTP_VRAM_GB, gb(table.mtp));
+  assert.equal(parallel.DFLASH2_VRAM_GB, gb(table.dflash2));
+  assert.equal(parallel.DFLASH2_SELQ4_VRAM_GB, gb(table.dflash2_selq4));
+  assert.deepEqual([table.dflash2, table.dflash2_selq4, table.mtp], [890, 715, 1082]);
+  const fit = read('../src/lib/native-fit.ts');
+  const num = name => Number(fit.match(new RegExp(`export const ${name} = ([0-9.]+);`))[1]);
+  assert.equal(num('MTP_VRAM_GB'), gb(table.mtp));
+  assert.equal(num('DFLASH2_VRAM_GB'), gb(table.dflash2));
+  assert.equal(num('DFLASH2_SELQ4_VRAM_GB'), gb(table.dflash2_selq4));
+  assert.match(fit, /DRAFTER_VRAM_GB: Record<string, number> = \{ mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, dflash2_selq4: DFLASH2_SELQ4_VRAM_GB, off: 0 \}/);
+  // Control's word reaches the page, and the page hands the fit the drafter it really loads
+  const control = read('../server/native-control.mjs');
+  assert.match(control, /dflash2Selq4=p\.serves===true&&p\.selq4===true/);
+  assert.match(control, /dflash2Support,dflash2Selq4\}/);
+  assert.match(read('../src/lib/native.ts'), /dflash2Selq4\?:boolean/);
+  const page = read('../src/components/NativeModels.tsx');
+  assert.match(page, /const fitDrafter = nowDrafter === 'dflash2' && native\?\.capabilities\?\.dflash2Selq4 === true \? 'dflash2_selq4' : nowDrafter;/);
+  assert.match(page, /drafter: fitDrafter/);
+  assert.doesNotMatch(page, /drafter: nowDrafter/);
 });

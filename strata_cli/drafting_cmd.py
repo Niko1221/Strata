@@ -69,7 +69,7 @@ def run(a) -> int:
         decision = drafting.decide(**want)
         support = drafting.hardware_support(want["backend"], want["archs"])
         # serves: this computer's engine can run DFlash2 (the build has the code and the card is one it is made for); the app offers the choice only then
-        result = {**drafting_fetch.plan(folder), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
+        result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe()), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
                   "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
                   "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
                   "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}

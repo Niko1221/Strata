@@ -25,7 +25,9 @@ export { DENSE_GB };
  *  (phaseA-tests/blackwell/RESULTS-DF2MEM.md section 1; strata_control/drafting.py DRAFTER_GB). */
 export const MTP_VRAM_GB = 1.08;
 export const DFLASH2_VRAM_GB = 0.89;
-export const DRAFTER_VRAM_GB: Record<string, number> = { mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, off: 0 };
+/** DFlash2 alone with the converted pack (the selector's codebooks as Q4_0 rows: 715 MiB; strata_control/drafting.py DRAFTER_MIB "dflash2_selq4"). The page passes `dflash2_selq4` when `capabilities.dflash2Selq4` is true. */
+export const DFLASH2_SELQ4_VRAM_GB = 0.72;
+export const DRAFTER_VRAM_GB: Record<string, number> = { mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, dflash2_selq4: DFLASH2_SELQ4_VRAM_GB, off: 0 };
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 export function memoryNeeded(v: FitInput): number {

@@ -139,6 +139,13 @@ bool Dflash2Drafter::load(const std::string& path, int device, std::string& err)
         fseeko(f, data_off + (off_t) t.off, SEEK_SET);
 #endif
         if (std::fread(stage.data(), 1, t.bytes, f) != t.bytes) { err = "dflash2: the pack is shorter than its index"; return false; }
+        if (t.dtype == "q4_0" && t.name.find("_codebook") != std::string::npos) {
+            // The pack with the selector as Q4_0 rows (tools/dflash2_pack.py --q4_0-selector; strata_control/drafting.py CONVERTED_NAME) is for engines that print
+            // "selector codebooks: Q4_0 rows" (CUDA, HIP, Metal). This build's select kernel reads bf16 rows only, so it says so instead of reading garbage; the app
+            // never hands it that pack (it looks for that text in the engine program and this file does not have it).
+            err = "dflash2: this build reads bf16 selector codebooks only; " + path + " has them as Q4_0 (use the pack without --q4_0-selector)";
+            return false;
+        }
         if (t.dtype == "q4_0") {   // GGML Q4_0 blocks -> the tiled nibble plane at the tensor's offset, then the d plane (same total bytes)
             cs_->memcpy(tmp, stage.data(), t.bytes).wait();
             kernels::df2_q4_tile(tmp, blob_ + t.off, blob_ + t.off + (uint64_t) t.rows * (uint64_t) t.cols / 2, (int) t.cols, t.rows * t.cols / 32, cs_);
