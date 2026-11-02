@@ -472,6 +472,7 @@ __global__ void k_gdn_out_norm(const float* o, const float* z, const float* w, f
 
 #include "gdn_core.cuh"
 #include "gdn_prompt.cuh"
+#include "gdn_tc_prompt.cuh"
 
 // ---------------------------------------------------------------- attention
 // per (t, head): RMS norm with the weight, then NEOX rotary on dims [0, NROT): pairs (i, i + NROT/2)
@@ -1995,13 +1996,22 @@ void gdn_core_segs(const float* qkvz, const float* ab, const float* convw, const
     ck_launch("gdn_core_segs");
 }
 
-void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
-                float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc, float* sq, float* y32,
-                float* chw, void* st) {
+static void gdn_prompt_impl(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
+                       float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc, float* sq, float* y32,
+                       float* chw, void* st) {
     cudaStream_t s = (cudaStream_t) st;
     const int ch = (2 * nk + nv) * HS;
     k_gdn_pf_conv<<<dim3(C, 2 * nk + nv), HS, 0, s>>>(qkvz, hist, convw, ctl, xc, nk, nv);
     k_gdn_pf_hist<<<(ch + 255) / 256, 256, 0, s>>>(qkvz, hist, ctl, ng, C, nk, nv);
+#if FNX_GDN_TC_ON
+    // FNX_PFX_GDN_TC=1: Strata's tensor-core chunk scan (gdn_tc_prompt.cuh); false -> this card cannot run it, the sub-chunk kernels below do
+    static const bool gdn_tc = fnx::env_int("FNX_PFX_GDN_TC", 0) != 0;
+    if (gdn_tc && gdn_tc_run(xc, ab, dt, a, S, y32, nk, nv, vmap, C, s)) {
+        k_gdn_pf_norm_own<<<dim3(C, nv), HS, 0, s>>>(qkvz, nw, y32, nk, nv, eps);
+        ck_launch("gdn_prompt");
+        return;
+    }
+#endif
     static const bool chunked = [] {
         const char* e = std::getenv("FNX_PF_GDN_CHUNK");
         if (e && std::strcmp(e, "0") && std::strcmp(e, "1")) throw std::runtime_error(std::string("FNX_PF_GDN_CHUNK: 0 or 1, not '") + e + "'");
@@ -2055,6 +2065,43 @@ void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* co
     }
     ck_launch("gdn_prompt");
 }
+// FNX_GDN_TIME=1 (measuring): CUDA events around every prompt GDN call of a card (conv, history, scan, norm), their GPU time summed per
+// card and printed to stderr each time 36 x 32768 rows (a 32K prompt through the 36 recurrent layers) have gone through it (the events are read a call late, nothing waits on the GPU)
+void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
+                float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc, float* sq, float* y32,
+                float* chw, void* st) {
+    static const bool timed = fnx::env_int("FNX_GDN_TIME", 0) != 0;
+    if (!timed) {
+        gdn_prompt_impl(qkvz, ab, hist, convw, dt, a, nw, S, ctl, ng, nk, nv, vmap, C, eps, xc, sq, y32, chw, st);
+        return;
+    }
+    struct Rec { cudaEvent_t e0, e1; int rows; };
+    struct Dev { std::vector<Rec> pend; double ms = 0; long rows = 0, calls = 0, since = 0; };
+    static thread_local Dev devs[16];
+    int dev = 0;
+    cudaGetDevice(&dev);
+    Dev& d = devs[dev & 15];
+    cudaStream_t s = (cudaStream_t) st;
+    Rec r{nullptr, nullptr, C};
+    cudaEventCreate(&r.e0), cudaEventCreate(&r.e1);
+    cudaEventRecord(r.e0, s);
+    gdn_prompt_impl(qkvz, ab, hist, convw, dt, a, nw, S, ctl, ng, nk, nv, vmap, C, eps, xc, sq, y32, chw, st);
+    cudaEventRecord(r.e1, s);
+    d.pend.push_back(r);
+    while (!d.pend.empty() && cudaEventQuery(d.pend.front().e1) == cudaSuccess) {
+        Rec q = d.pend.front();
+        d.pend.erase(d.pend.begin());
+        float ms = 0;
+        cudaEventElapsedTime(&ms, q.e0, q.e1);
+        d.ms += ms, d.rows += q.rows, d.since += q.rows, ++d.calls;
+        cudaEventDestroy(q.e0), cudaEventDestroy(q.e1);
+        if (d.since >= 36L * 32768) {
+            std::fprintf(stderr, "gdn time: card %d: %.1f ms GPU over %ld calls, %ld rows (%.4f ms a row)\n", dev, d.ms, d.calls, d.rows, d.ms / (double) d.rows);
+            d.ms = 0, d.rows = d.calls = d.since = 0;
+        }
+    }
+}
+
 size_t gdn_prompt_work_floats(int C, int nv) { return (size_t) ((C + GCH - 1) / GCH) * nv * GCH_PREP_FLOATS; }
 }  // namespace fnx
 #endif
