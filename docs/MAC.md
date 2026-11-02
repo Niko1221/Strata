@@ -262,6 +262,18 @@ For testing. All are off unless set; the defaults are described above.
 | `STRATA_METAL_IGNORE_REPACK=1` | Start although a model repack or setup's preparation is running (the engine refuses by default) |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2 to 3 GB) |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
+| `STRATA_MACOS_SENSORS=1` | The Monitor's GPU temperature and power without root (see below) |
+
+### Temperature and power in the Monitor
+
+Without a switch the Monitor shows no GPU temperature or power on a Mac: reading them takes root (`powermetrics`).
+`STRATA_MACOS_SENSORS=1` reads them without root, the way the Stats app does: the temperature from the SMC (or the HID
+sensors), the power from IOReport's energy counter. These are macOS's private calls, which Apple does not document and
+can change in any release. A call that goes wrong inside them can stop the server, which is why this is off by default.
+The SMC's temperature keys differ between chips, so the list of keys is a table by chip (M1 to M6 and the A18 Pro,
+with the M4's base chip and its Pro and Max apart). It is copied from the Stats app's own table (commit `032f4a5e4`);
+only the M5 has been run, on an M5 Pro. On another chip a key that is missing is skipped, and a chip with no keys, or none
+that answer, shows the GPU temperature from the HID sensors where it has them, and none where it does not.
 
 ## How it works
 
