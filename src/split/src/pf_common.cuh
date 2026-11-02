@@ -18,6 +18,10 @@
 #include "owned.hpp"
 #include "pf_ring_plan.hpp"
 
+#ifndef FNX_ZERO_DEV
+#define FNX_ZERO_DEV(p, bytes) cudaMemset((p), 0, (bytes))
+#endif
+
 namespace fnx {
 
 inline void ckc(cudaError_t e, const char* what) {
@@ -53,7 +57,7 @@ template <typename T> T* palloc(size_t n) {
                                  std::to_string(pf_card_bytes >> 20) + " MiB there already)");
     }
     pf_card_bytes += n * sizeof(T);
-    ckc(cudaMemset(p, 0, n * sizeof(T)), "cudaMemset");
+    ckc(FNX_ZERO_DEV(p, n * sizeof(T)), "cudaMemset");
     own_dev(p);
     return (T*) p;
 }
