@@ -115,17 +115,40 @@ def _run(x, packed, absmax, code, backward: bool, BT: int = 16, BO: int = 0, BK:
 
 
 class FusedNF4LinearFn(torch.autograd.Function):
-    """y = x @ dequant(packed, absmax)^T；backward 只出 dx（基座冻结，无 dW）。"""
+    """y = x @ dequant(packed, absmax)^T；backward 只出 dx（基座冻结，无 dW）。
+
+    两种 backward 取权重的路径，由 provider 决定：
+
+    - provider=None（默认）：save_for_backward 存 packed/absmax 引用。权重张量是
+      持久缓冲（pack 常驻视图）时免费；是临时块（staging/layer_buf 切片）时会把
+      它钉到反传结束——no-ckpt 下 48 层 ≈ 61 GiB 全部进图，就是 92.63 GiB OOM
+      的主体。
+    - provider=callable：ctx 不存 packed/absmax（只存持久的 code LUT），backward
+      时调 provider() 现取 (packed, absmax)。同专家的 dn/gu 两个节点共享一次
+      重取（autograd 逆序执行：dn 先跑并把结果放进共享缓存，gu 复用）。
+      代价是权重每专家多流一次 H2D（2.49 MiB ≈ 112 µs），换来 layer_buf 前向
+      结束即释放——no-ckpt 的显存账里权重归零。
+    """
 
     @staticmethod
-    def forward(ctx, x, packed, absmax, code):
-        ctx.save_for_backward(packed, absmax, code)
+    def forward(ctx, x, packed, absmax, code, provider=None):
+        if provider is None:
+            ctx.save_for_backward(packed, absmax, code)
+            ctx.has_provider = False
+        else:
+            ctx.save_for_backward(code)
+            ctx.has_provider = True
+            ctx.provider = provider
         return _run(x, packed, absmax, code, backward=False)
 
     @staticmethod
     def backward(ctx, dy):
-        packed, absmax, code = ctx.saved_tensors
-        return _run(dy.contiguous(), packed, absmax, code, backward=True), None, None, None
+        if ctx.has_provider:
+            code, = ctx.saved_tensors
+            packed, absmax = ctx.provider()
+        else:
+            packed, absmax, code = ctx.saved_tensors
+        return _run(dy.contiguous(), packed, absmax, code, backward=True), None, None, None, None
 
 
 _CODE_CACHE: dict[torch.device, torch.Tensor] = {}
@@ -141,9 +164,14 @@ def _get_code(dev: torch.device) -> torch.Tensor:
     return code
 
 
-def fused_nf4_linear(x: torch.Tensor, packed: torch.Tensor, absmax: torch.Tensor) -> torch.Tensor:
-    """x (T, IN) bf16; packed (OUT, IN/2) uint8; absmax (OUT, IN/64) bf16 → y (T, OUT)。"""
-    return FusedNF4LinearFn.apply(x, packed, absmax, _get_code(x.device))
+def fused_nf4_linear(x: torch.Tensor, packed: torch.Tensor, absmax: torch.Tensor,
+                     provider=None) -> torch.Tensor:
+    """x (T, IN) bf16; packed (OUT, IN/2) uint8; absmax (OUT, IN/64) bf16 → y (T, OUT)。
+
+    provider：backward 时现取 (packed, absmax) 的 callable（见 FusedNF4LinearFn）。
+    不传时沿用 save_for_backward 语义。
+    """
+    return FusedNF4LinearFn.apply(x, packed, absmax, _get_code(x.device), provider)
 
 
 if __name__ == "__main__":
@@ -173,6 +201,19 @@ if __name__ == "__main__":
             dx = _run(dy.contiguous(), packed, absmax, _get_code(dev), backward=True)
             d2 = (dx.float() - dx_ref.float()).abs().max().item()
             print(f"    bwd  max|Δdx|={d2:.4e}  |dx|max={dx_ref.abs().max().item():.3f}")
+
+            # provider 路径：backward 现取权重，梯度必须与 save_for_backward 一致
+            calls = []
+            def prov(packed=packed, absmax=absmax):
+                calls.append(1)
+                return packed, absmax
+            xg = x.detach().clone().requires_grad_(True)
+            y_p = fused_nf4_linear(xg, packed, absmax, provider=prov)
+            d3 = (y_p.float() - y_ref.float()).abs().max().item()
+            y_p.backward(dy)              # 上游梯度 = dy，与 dx_ref 同参照系
+            d4 = (xg.grad.float() - dx_ref.float()).abs().max().item()
+            print(f"    prov fwd max|Δ|={d3:.4e}  bwd max|Δgrad|={d4:.4e}  "
+                  f"provider calls={len(calls)}")
 
     # 吞吐基准：单专家 gu 形状，T=8，扫 (BO, BK) 找最优 CTA 并行度
     OUT, IN, T = 1280, 2560, 8

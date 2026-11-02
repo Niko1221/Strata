@@ -36,8 +36,23 @@ import torch.nn.functional as F
 
 import nf4
 from nf4_fused import fused_nf4_linear
+from preadv_shim import preadv as _preadv
 
 import nf4
+
+# pack 只被读一次（读进显存/锁页/页面内存后训练零读盘），路过的 page cache 是纯单次
+# 使用的垃圾：58 GiB 内存里 36 GiB 落进 user 缓冲、60 GiB 陆续路过 cache，内核被迫
+# 边读边回收，实测把冷读从 2.98 GiB/s 拖到 0.33 GiB/s（2026-10-30 WSL A/B：28 GiB
+# 冷读 9.4 s vs 85.8 s，9×；`_ensure` 333 s → 101 s，整模型加载 454.6 s → 216.9 s）。
+# 每块读完立即对该区间 fadvise DONTNEED。**Windows 没有这个 API** —— 只是没有那 9×，
+# 不是正确性问题；`STRATA_PACK_FADVISE=0` 可关。
+# 与引擎侧 `src/core/expert_source.cpp` 对同一 pack 用的是同一个 API，口径一致。
+_FADV_DONTNEED = getattr(os, "POSIX_FADV_DONTNEED", None)
+
+
+def _drop_page_cache(fd: int, offset: int, nbytes: int) -> None:
+    if _FADV_DONTNEED is not None and os.environ.get("STRATA_PACK_FADVISE", "1") != "0":
+        os.posix_fadvise(fd, offset, nbytes, _FADV_DONTNEED)
 
 # GGML 类型号 -> 名称（Strata fork：42 = fork 版 Q2_0，64 权重/块 18 B，其余标准枚举）
 T_F32, T_F16, T_BF16, T_Q2_0 = 0, 1, 30, 42
@@ -260,6 +275,8 @@ class _TieredPack:
         self.block_bytes = 0
         self.lock = threading.Lock()
         self._views = {}             # block_idx -> (gu, ga, dn, da) 显存视图缓存
+        self.extra_gpu = None        # promote() 的临时显存缓冲（采样段专用）
+        self.extra_blocks = 0        # promote 覆盖的块数，紧随 [gpu_blocks, ...)
 
     def _ensure(self, pack_path: str, block_bytes: int):
         with self.lock:
@@ -285,18 +302,23 @@ class _TieredPack:
                 stages = [torch.empty(chunk_blocks * block_bytes, dtype=torch.uint8,
                                       pin_memory=True) for _ in range(2)]
                 evs = [torch.cuda.Event() for _ in range(2)]
+                t_gpu0 = time.time()
                 for ci, c0 in enumerate(range(0, gpu_blocks, chunk_blocks)):
                     c1 = min(c0 + chunk_blocks, gpu_blocks)
                     nb = (c1 - c0) * block_bytes
                     k = ci % 2
                     if ci >= 2:
                         evs[k].synchronize()          # 该 stage 上一次 DMA 读完才可覆写
-                    got = os.preadv(fd, [stages[k].numpy()[:nb]], c0 * block_bytes)
+                    got = _preadv(fd, stages[k].numpy()[:nb], c0 * block_bytes)
                     assert got == nb, f"pack 读入不完整：{got} != {nb}"
+                    _drop_page_cache(fd, c0 * block_bytes, nb)
                     gpu_buf[c0 * block_bytes:c1 * block_bytes] \
                         .copy_(stages[k][:nb], non_blocking=True)
                     evs[k].record()
                 torch.cuda.synchronize()
+                t_gpu = time.time() - t_gpu0
+            else:
+                t_gpu = 0.0
             cpu_n = n_blocks - gpu_blocks
             # 锁页 host 缓冲（2026-10-29 修订：**部分**锁页）。
             #
@@ -311,6 +333,7 @@ class _TieredPack:
             # 失败按减半重试（不假设具体上限，Windows 侧数值不同）。
             pin = os.environ.get("STRATA_PIN_PACK", "1") != "0"
             want = 0
+            t_pin0 = time.time()
             if pin:
                 want = min(cpu_n, int(float(os.environ.get("STRATA_PIN_GB", "30")) * 2**30)
                            // block_bytes)
@@ -325,10 +348,12 @@ class _TieredPack:
                           f"（{type(exc).__name__}{': ' + str(exc).splitlines()[0][:60] if str(exc) else ''}）"
                           f"，减半重试", flush=True)
                     cpu_pin, want = None, want // 2
+            t_pin = time.time() - t_pin0
             page_n = cpu_n - want
             cpu_buf = torch.empty(page_n * block_bytes, dtype=torch.uint8)
             self.cpu_pinned = want > 0
             # 先读 pinned 前缀，再读 pageable 余量；两者在文件里连续，只是落点不同。
+            t_ram0 = time.time()
             for buf, base_blk, cnt in ((cpu_pin, gpu_blocks, want),
                                        (cpu_buf, gpu_blocks + want, page_n)):
                 if cnt == 0:
@@ -336,9 +361,11 @@ class _TieredPack:
                 np_view, o, total = buf.numpy(), 0, cnt * block_bytes
                 while o < total:
                     nb = min((64 << 20) // block_bytes * block_bytes, total - o)
-                    got = os.preadv(fd, [np_view[o:o + nb]], (base_blk * block_bytes) + o)
+                    got = _preadv(fd, np_view[o:o + nb], (base_blk * block_bytes) + o)
                     assert got == nb, f"pack 读入不完整：{got} != {nb}"
+                    _drop_page_cache(fd, (base_blk * block_bytes) + o, nb)
                     o += nb
+            t_ram = time.time() - t_ram0
             os.close(fd)
             self.gpu_buf, self.cpu_buf, self.cpu_pin = gpu_buf, cpu_buf, cpu_pin
             self.cpu_pin_blocks = want
@@ -348,7 +375,8 @@ class _TieredPack:
                   f"({gpu_blocks * block_bytes / 2**30:.1f} GiB) + "
                   f"{want} pinned ({want * block_bytes / 2**30:.1f} GiB) + "
                   f"{page_n} pageable ({page_n * block_bytes / 2**30:.1f} GiB)"
-                  f", loaded {time.time() - t0:.0f}s"
+                  f", loaded {time.time() - t0:.0f}s "
+                  f"(pin {t_pin:.0f}s + ram-read {t_ram:.0f}s + gpu-loop {t_gpu:.0f}s)"
                   " — 训练零读盘", flush=True)
 
     def host_block(self, off: int, nbytes: int | None = None) -> torch.Tensor:
@@ -367,9 +395,9 @@ class _TieredPack:
         return self.cpu_buf[b:b + nb]
 
     def resident_gpu(self, off: int) -> int:
-        """块起始字节偏移 -> 显存块号；不驻显存返回 -1。"""
+        """块起始字节偏移 -> 显存块号；不驻显存返回 -1（promote 的 extra 区也算驻留）。"""
         idx = off // self.block_bytes
-        if off == idx * self.block_bytes and idx < self.gpu_blocks:
+        if off == idx * self.block_bytes and idx < self.gpu_blocks + self.extra_blocks:
             return idx
         return -1
 
@@ -377,17 +405,74 @@ class _TieredPack:
         v = self._views.get(idx)
         if v is None:
             gu_n, ga_n, dn_n, dam_n = seg_sizes
+            base = self.gpu_buf if idx < self.gpu_blocks else self.extra_gpu
             b = idx * self.block_bytes
-            gu = self.gpu_buf[b:b + gu_n].view(gu_shape[0], gu_shape[1] // 2)
-            ga = self.gpu_buf[b + gu_n:b + gu_n + ga_n] \
+            gu = base[b:b + gu_n].view(gu_shape[0], gu_shape[1] // 2)
+            ga = base[b + gu_n:b + gu_n + ga_n] \
                 .view(torch.bfloat16).view(gu_shape[0], gu_shape[1] // 64)
-            dn = self.gpu_buf[b + gu_n + ga_n:b + gu_n + ga_n + dn_n] \
+            dn = base[b + gu_n + ga_n:b + gu_n + ga_n + dn_n] \
                 .view(dn_shape[0], dn_shape[1] // 2)
-            da = self.gpu_buf[b + gu_n + ga_n + dn_n:b + gu_n + ga_n + dn_n + dam_n] \
+            da = base[b + gu_n + ga_n + dn_n:b + gu_n + ga_n + dn_n + dam_n] \
                 .view(torch.bfloat16).view(dn_shape[0], dn_shape[1] // 64)
             v = (gu, ga, dn, da)
             self._views[idx] = v
         return v
+
+    def promote(self, vram_gb: float) -> int:
+        """运行中提升显存常驻（GRPO 采样段用）：把 RAM 层的前 vram_gb GiB 拷进显存。
+
+        采样是 no_grad——显存里没有梯度/优化器/激活图，这段窗口多驻一批专家，
+        decode 就少付一批 2.49 MiB H2D。promote 从 RAM 层**头部**连续取（与 _ensure
+        的落盘顺序一致，pinned 前缀优先），拷完后 extra 区对 resident_gpu/gpu_views
+        完全透明（直接视图，零拷贝）。只增不减：重复调用取 max。返回覆盖块数。
+        """
+        with self.lock:
+            if self.gpu_buf is None:
+                raise RuntimeError("promote 前必须先 _ensure 装载")
+            want = min(self.n_blocks - self.gpu_blocks,
+                       max(int(vram_gb * 2**30) // self.block_bytes, 0))
+            if want <= self.extra_blocks:
+                return self.extra_blocks
+            t0 = time.time()
+            buf = torch.empty(want * self.block_bytes, dtype=torch.uint8, device="cuda")
+            a = min(want, self.cpu_pin_blocks)       # pinned 前缀
+            b = want - a                             # pageable 余量
+            dst_o = 0
+            for src, cnt in ((self.cpu_pin, a), (self.cpu_buf, b)):
+                if cnt == 0:
+                    continue
+                total = cnt * self.block_bytes
+                o = 0
+                while o < total:
+                    nb = min((256 << 20) // self.block_bytes * self.block_bytes,
+                             total - o)
+                    buf[dst_o + o:dst_o + o + nb].copy_(src[o:o + nb])
+                    o += nb
+                dst_o += total
+            torch.cuda.synchronize()
+            self.extra_gpu = buf
+            self.extra_blocks = want
+            print(f"[pack] promote +{want * self.block_bytes / 2**30:.1f} GiB "
+                  f"→ 常驻 {(self.gpu_blocks + want) * self.block_bytes / 2**30:.1f} / "
+                  f"{self.n_blocks * self.block_bytes / 2**30:.1f} GiB"
+                  f"（{time.time() - t0:.1f}s）", flush=True)
+            return want
+
+    def demote(self) -> None:
+        """释放 promote 的缓冲（GRPO 采样结束、进反传前）。
+
+        只能在 no_grad 段之后调用：extra 区的视图若无图引用才可安全释放。
+        """
+        with self.lock:
+            if self.extra_gpu is None:
+                return
+            self.extra_gpu = None
+            self.extra_blocks = 0
+            for k in [k for k in self._views if k >= self.gpu_blocks]:
+                del self._views[k]
+            torch.cuda.empty_cache()
+            print(f"[pack] demote → 回到装载时分层（{self.gpu_blocks} blocks in VRAM）",
+                  flush=True)
 
 
 _TIERED = _TieredPack()
@@ -416,6 +501,50 @@ def _seg_views(buf: torch.Tensor, base: int, seg_sizes, gu_shape, dn_shape):
     o += dn_n
     da = buf[o:o + dam_n].view(torch.bfloat16).view(dn_shape[0], dn_shape[1] // 64)
     return (gu, ga, dn, da)
+
+
+def _make_refetch(off: int, rb: int, dev, seg_sizes, gu_shape, dn_shape):
+    """backward 重取一个专家块的 provider 工厂（grad、非驻留块专用）。
+
+    返回的 callable 每次调用返回该块的四段视图 (gu, ga, dn, da)：
+    - 驻显存：_TIERED.gpu_views —— 持久缓冲视图，零拷贝；
+    - 驻内存：现申请 2.49 MiB + H2D —— 缓存分配器回收复用，无钉存。
+    同一 callable 重复调用命中缓存：同专家的 dn/gu 两个 backward 节点共享一次
+    H2D（autograd 逆序先跑 dn，gu 复用；两节点间可能隔着其他专家的节点，缓存
+    各自独立、最多各钉一个 2.49 MiB 块，量级与 layer_buf 同阶且更碎）。
+    """
+    cache: list = []
+
+    def fetch():
+        if cache:
+            return cache[0]
+        idx = _TIERED.resident_gpu(off)
+        if idx >= 0:
+            v = _TIERED.gpu_views(idx, gu_shape, dn_shape, seg_sizes)
+        else:
+            buf = torch.empty(rb, dtype=torch.uint8, device=dev)
+            buf.copy_(_TIERED.host_block(off, rb))
+            v = _seg_views(buf, 0, seg_sizes, gu_shape, dn_shape)
+        cache.append(v)
+        return v
+
+    return fetch
+
+
+_REFETCH_MODE: bool | None = None      # None = 尚未读 env（sft.py 在解析参数后设置）
+
+
+def _refetch_on() -> bool:
+    """STRATA_EXPERT_REFETCH=1 时，grad 下 ctx 不钉专家权重、backward 按 id 重取。
+
+    惰性读 env：sft.py 解析出 --ckpt 与否后才设置，loader 在首次 forward 才读。
+    只该在 no-ckpt 时开：ckpt 的重算前向本来就要再流一次权重，refetch 会变成
+    第 3 次流（ckpt 自身语义是 2 次）。
+    """
+    global _REFETCH_MODE
+    if _REFETCH_MODE is None:
+        _REFETCH_MODE = os.environ.get("STRATA_EXPERT_REFETCH", "0") == "1"
+    return _REFETCH_MODE
 
 
 class StreamingNF4Experts(nn.Module):
@@ -474,8 +603,13 @@ class StreamingNF4Experts(nn.Module):
         # `torch.empty`（缓存分配器约 2 µs），换来同样只做 1 次整块 copy_ + 4 次 view。
         # 显存代价按层计：一层 512 个专家 x 2.49 MiB = 1.27 GiB，该层反传完即释放，
         # 只在开 ckpt（逐层重算）时可接受 —— 不开 ckpt 时所有权重本来就会进图，仍然 OOM。
+        #
+        # STRATA_EXPERT_REFETCH=1（no-ckpt 专用）：grad 下 ctx 不存权重（provider
+        # 路径），layer_buf 前向结束即释放、不再进图；backward 经 _make_refetch 按
+        # 块偏移现取。这是 92.63 GiB（no-ckpt OOM）里 ~61 GiB 钉存的解法。
         use_raw = st.raw_ok and os.environ.get("STRATA_PACK_RAW_H2D", "1") != "0"
         grad = torch.is_grad_enabled()
+        refetch = grad and _refetch_on()
         # grad 下**整层一块**显存：非驻留块一次申请 1.27 GiB（512 × 2.49 MiB），逐块切片。
         # 之前是每专家一次 `torch.empty(bb)` —— 一层 512 次、每步 24,576 次，ckpt 重算再
         # 来一遍。切片之间不重叠，所以依旧不会与槽位轮转别名（那才是当初 version
@@ -507,6 +641,7 @@ class StreamingNF4Experts(nn.Module):
 
         def finish(gi, slot, jobs):
             """等 pinned 拷贝完成 → H2D → 与显存视图合成 {expert: (gu,ga,dn,da)}。"""
+            provs: dict = {}
             for _, _, f in jobs:
                 f.result()
             out = {}
@@ -521,7 +656,8 @@ class StreamingNF4Experts(nn.Module):
                         out[e] = tp.gpu_views(idx, self._gu_shape, self._dn_shape, seg_sizes)
                         continue
                     if grad:
-                        # 整层缓冲上取一段，反传期间一直活着；与其它专家不重叠
+                        # 整层缓冲上取一段，反传期间一直活着；与其它专家不重叠。
+                        # refetch 模式下 ctx 不存它：layer_buf 前向结束即被回收。
                         blk = layer_buf
                         base = miss_i * bb
                         miss_i += 1
@@ -531,7 +667,10 @@ class StreamingNF4Experts(nn.Module):
                     blk[base:base + rb].copy_(tp.host_block(off, rb), non_blocking=True)
                     _XFER["bytes"] += rb
                     out[e] = _seg_views(blk, base, seg_sizes, self._gu_shape, self._dn_shape)
-                return out
+                    if refetch:
+                        provs[e] = _make_refetch(off, rb, dev, seg_sizes,
+                                                 self._gu_shape, self._dn_shape)
+                return out, provs
             gu_b, ga_b, dn_b, dam_b = bufs[slot]
             for i, e in enumerate(hits[gi * G:(gi + 1) * G]):
                 off, _ = self._offs[("gu", e)]
@@ -548,7 +687,10 @@ class StreamingNF4Experts(nn.Module):
                 da = dam_b[i * self._dam_n:(i + 1) * self._dam_n].to(dev, non_blocking=True) \
                     .view(torch.bfloat16).view(self._dn_shape[0], self._dn_shape[1] // 64)
                 out[e] = (gu, ga, dn, da)
-            return out
+                if refetch:
+                    provs[e] = _make_refetch(off, bb, dev, seg_sizes,
+                                             self._gu_shape, self._dn_shape)
+            return out, provs
 
         pending = {}                          # gi -> (slot, jobs)，最多 _STAGING_SLOTS 组在飞
         gi_next = 0
@@ -572,11 +714,11 @@ class StreamingNF4Experts(nn.Module):
         for gi in range(n_groups):
             slot, jobs = pending.pop(gi)
             pump(gi + _STAGING_SLOTS)
-            tensors = finish(gi, slot, jobs)
+            tensors, provs = finish(gi, slot, jobs)
             if slot_in_use:
                 st.ev[slot].record()
                 st.ev_recorded[slot] = True
-            yield hits[gi * G:(gi + 1) * G], tensors
+            yield hits[gi * G:(gi + 1) * G], tensors, provs
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
         final = torch.zeros_like(hidden_states)
@@ -605,14 +747,24 @@ class StreamingNF4Experts(nn.Module):
         if not hits:
             return final
 
-        for group, tensors in self._stream_groups(hits, hidden_states.device):
+        for group, tensors, provs in self._stream_groups(hits, hidden_states.device):
             for e in group:
                 gu, ga, dn, da = tensors[e]
                 a = bounds[e - 1] if e else 0
                 tok = tok_all[a:bounds[e]]
                 x = hidden_states[tok]
-                gate, up = fused_nf4_linear(x, gu, ga).chunk(2, dim=-1)
-                h = fused_nf4_linear(self.act_fn(gate) * up, dn, da)
+                pv = provs.get(e)
+                if pv is None:
+                    gate, up = fused_nf4_linear(x, gu, ga).chunk(2, dim=-1)
+                    h = fused_nf4_linear(self.act_fn(gate) * up, dn, da)
+                else:
+                    # provider 路径（no-ckpt 反传）：ctx 不钉权重，backward 现取。
+                    # lambda 必须用默认参数绑定 pv——闭包活在 backward 时刻，
+                    # 循环变量早被下一个专家覆写了。
+                    gate, up = fused_nf4_linear(
+                        x, gu, ga, provider=lambda pv=pv: pv()[:2]).chunk(2, dim=-1)
+                    h = fused_nf4_linear(
+                        self.act_fn(gate) * up, dn, da, provider=lambda pv=pv: pv()[2:])
                 final.index_add_(0, tok, (h * grp[a:bounds[e], None]).to(final.dtype))
         return final
 

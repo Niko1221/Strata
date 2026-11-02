@@ -74,12 +74,44 @@ class _Fallback(Exception):
     pass
 
 
+def row_ends(attention_mask: torch.Tensor) -> torch.Tensor:
+    """每行最后一个可见位置 `(B, S)`，**不新增 S² 分配**。
+
+    以前这里用 `torch.equal(V, torch.tril(torch.ones_like(V)))` 校验「恰好下三角」，
+    S=32768 就是 `ones_like` 1 GiB + `tril` 1 GiB 两个临时张量（S=128K 各 16 GiB，
+    直接把「还没轮到 sdpa」变成 OOM）。可见集若是前缀，每行的可见长度就唯一决定
+    了它，用一次 row-sum（只读 S² 字节、只写 S 个数）即可。
+
+    返回的 `ends` 还顺便给出窗口偏移：全序列 prefill 是 `ends[j] == j`，
+    带 KV cache 的分块 prefill 是 `ends[j] == p + j`（p = 已缓存长度）。
+    """
+    visible = attention_mask if attention_mask.dtype == torch.bool else attention_mask == 0
+    if visible.dim() == 4:
+        visible = visible[:, 0]
+    return visible.sum(-1) - 1
+
+
+def check_prefix_causal(attention_mask: torch.Tensor) -> torch.Tensor:
+    """校验「每行是 [0, p+j] 的前缀」并返回 `ends`，否则抛 `_Fallback`。
+
+    判据是 `ends - ends[:, :1] == arange(S)`：下三角（p=0）、带 cache 的分块
+    前缀（p>0）都成立；滑动窗口（行和恒定，减完不递增）与带 padding 的矩形
+    掩码都会被挡掉，退回原实现。
+    """
+    ends = row_ends(attention_mask)
+    if ends.dim() != 2:
+        raise _Fallback(f"mask rows {tuple(ends.shape)}")
+    _, seq_length = ends.shape
+    steps = torch.arange(seq_length, device=ends.device).unsqueeze(0).expand_as(ends)
+    if not torch.equal(ends - ends[:, :1], steps):
+        raise _Fallback("mask is not prefix-causal")
+    return ends
+
+
 def _fast(self, hidden_states, position_embeddings, attention_mask):
     from transformers.models.qwen4_exp.modeling_qwen4_exp import apply_rotary_pos_emb
 
     batch_size, seq_length, _ = hidden_states.shape
-    if batch_size != 1:
-        raise _Fallback("batch != 1")
     if attention_mask is None:
         raise _Fallback("no mask")
     kv_length = attention_mask.shape[-1]
@@ -98,52 +130,67 @@ def _fast(self, hidden_states, position_embeddings, attention_mask):
     q = self.q_layernorm(q)
     q = apply_rotary_pos_emb(q, cos=current_cos, sin=current_sin, unsqueeze_dim=2)
 
-    visible = attention_mask if attention_mask.dtype == torch.bool else attention_mask == 0
-    V = visible[0, 0]                                    # (S, S) 每行 = 该 query 的可见集
-    if not torch.equal(V, torch.tril(torch.ones_like(V))):
-        raise _Fallback("mask is not plain causal")
+    # 可见集是「前缀」：全序列 prefill 满足 ends[j] == j。以前这里 `ones_like + tril`
+    # 各造一份 S² 临时张量（S=128K 时各 16 GiB），是 128K OOM 的第一块砖，已改成 row-sum。
+    ends = check_prefix_causal(attention_mask)                   # (B, S)
 
     nb_max = seq_length // R
     if nb_max == 0:
         raise _Fallback("no complete block")
+    # 分数/topk/掩码的 query 块宽。只影响峰值显存，不影响任何一行的选择结果。
+    qchunk = int(os.environ.get("STRATA_QSA_QCHUNK", "4096"))
 
-    # ---- 1) block 池化：与原实现同一条算子链，只是所有 query 共用一次 ----
+    # ---- 1) block 池化：与原实现同一条算子链，所有 query、所有行共用一次 ----
     starts = torch.arange(nb_max, device=q.device) * R
-    pooled = raw_keys[0][: nb_max * R].reshape(nb_max, R, self.index_head_dim) \
-        .float().mean(dim=1).to(raw_keys.dtype)
-    pooled = self.k_layernorm(pooled)
+    pooled = raw_keys[:, : nb_max * R].reshape(batch_size, nb_max, R, self.index_head_dim) \
+        .float().mean(dim=2).to(raw_keys.dtype)
+    pooled = self.k_layernorm(pooled)                              # (B, nb, D)
     bks = apply_rotary_pos_emb(
-        pooled.unsqueeze(1), cos=full_cos[0].index_select(0, starts),
-        sin=full_sin[0].index_select(0, starts)).squeeze(1)      # (nb, D)
+        pooled.unsqueeze(2), cos=full_cos[0].index_select(0, starts),
+        sin=full_sin[0].index_select(0, starts)).squeeze(2)        # (B, nb, D)
 
-    # ---- 2) 分数：(S, nb, H) 的 dot → relu → 按 head 求和 ----
-    dot = torch.einsum("shd,bd->sbh", q[0].float(), bks.float())
-    scores = torch.relu(dot).sum(dim=-1) / (self.index_head_dim ** 0.5)   # (S, nb)
-
-    # query i 能用的完整 block 数 = (i+1)//R；其余置 -inf 后再 topk
+    # ---- 2) + 3) 按 query 分块算分数、topk、掩码 ----
+    # 为什么必须分块：分数张量是 (B, S, nb, H)，nb = S/compress_ratio（4），
+    # H = index_n_heads（4）。T=128K 时一次算完是 131072 × 32768 × 4 × 4 B = 68.7 GiB
+    # —— 还没轮到 attention 就先 OOM。分块后峰值只与块宽有关（4096 行 ≈ 2.1 GiB），
+    # 而 topk 对每一行独立，所以分块不改变任何一行的选择结果。
     i = torch.arange(seq_length, device=q.device)
-    nb_i = (i + 1) // R                                        # (S,)
-    disallow = torch.arange(nb_max, device=q.device)[None, :] >= nb_i[:, None]
-    scores = scores.masked_fill(disallow, float("-inf"))
-
+    nb_i = (ends + 1) // R                                     # (B, S) 每行的完整 block 数
+    all_blocks = torch.arange(nb_max, device=q.device)
     k = min(self.block_topk, nb_max)
-    top = scores.topk(k, dim=1).indices                        # (S, k)
-    # 被选中且确实落在该 query 的可选 block 范围内（topk 会把 -inf 的也返回）
-    valid = top < nb_i[:, None]
 
-    # ---- 3) 掩码：选中 block 的全部 token ∪ 尾巴 [nb_i*R, i] ----
-    blk = torch.zeros(seq_length, nb_max, dtype=torch.bool, device=q.device)
-    blk.scatter_(1, top, valid)
-    mask_blocks = blk.repeat_interleave(R, dim=1)               # (S, nb*R)
-    tok = torch.arange(seq_length, device=q.device)
-    tail = (tok[None, :] >= (nb_i * R)[:, None]) & (tok[None, :] <= i[:, None])
-    out = tail.clone()
-    out[:, : nb_max * R] |= mask_blocks
+    # 尾巴 = [nb_i*R, ends]。写成两次 in-place 比较 + 一次与，峰值是 **2 份** (B,S,kv)
+    # bool（out + scratch），不是 4 份；S=32K 时每份 1 GiB。
+    tok = torch.arange(kv_length, device=q.device)
+    out = torch.empty(batch_size, seq_length, kv_length, dtype=torch.bool, device=q.device)
+    scratch = torch.empty_like(out)
+    torch.le(tok.view(1, 1, -1), ends[:, :, None], out=out)        # tok <= ends
+    torch.ge(tok.view(1, 1, -1), (nb_i * R)[:, :, None], out=scratch)   # tok >= nb_i*R
+    out.logical_and_(scratch)
+    del scratch
+
+    for s0 in range(0, seq_length, qchunk):
+        s1 = min(s0 + qchunk, seq_length)
+        qc = s1 - s0
+        dot = torch.einsum("bqhd,bnd->bqnh", q[:, s0:s1].float(), bks.float())
+        scores = torch.relu(dot).sum(dim=-1) / (self.index_head_dim ** 0.5)   # (B, qc, nb)
+        # query i 能用的完整 block 数 = (i+1)//R；其余置 -inf 后再 topk
+        disallow = all_blocks[None, None, :] >= nb_i[:, s0:s1, None]
+        scores = scores.masked_fill(disallow, float("-inf"))
+
+        top = scores.topk(k, dim=2).indices                    # (B, qc, k)
+        # 被选中且确实落在该 query 的可选 block 范围内（topk 会把 -inf 的也返回）
+        valid = top < nb_i[:, s0:s1, None]
+
+        # 选中 block 的全部 token ∪ 尾巴 [nb_i*R, i]
+        blk = torch.zeros(batch_size, qc, nb_max, dtype=torch.bool, device=q.device)
+        blk.scatter_(2, top, valid)
+        out[:, s0:s1, : nb_max * R] |= blk.repeat_interleave(R, dim=2)
 
     if os.environ.get("STRATA_QSA_CHECK", "0") != "0":
         _check(self, hidden_states, position_embeddings, attention_mask, out)
 
-    mine = out.unsqueeze(0).unsqueeze(1)                       # (1, 1, S, S)
+    mine = out.unsqueeze(1)                                    # (B, 1, S, S)
     if attention_mask.is_floating_point():
         min_dtype = torch.finfo(attention_mask.dtype).min
         return torch.where(mine, attention_mask.new_zeros(()), min_dtype)
@@ -154,7 +201,11 @@ _CHECKS = {"n": 0}
 
 
 def _check(self, hidden_states, position_embeddings, attention_mask, mine) -> None:
-    """与逐 query 原实现逐元素比一次（仅调试用，会把两条路径都跑一遍）。"""
+    """与逐 query 原实现逐元素比一次（仅调试用，会把两条路径都跑一遍）。
+
+    `mine` 的形状是 (B, 1, S, S)，与 ref 对齐 —— batch 维也要比，否则「各行掩码
+    不同」这类错误会被悄悄放过。
+    """
     if _CHECKS["n"] >= 2:
         return
     _CHECKS["n"] += 1
@@ -162,6 +213,6 @@ def _check(self, hidden_states, position_embeddings, attention_mask, mine) -> No
         ref = type(self)._strata_orig_forward(
             self, hidden_states, position_embeddings, attention_mask, None)
     ref_b = ref if ref.dtype == torch.bool else ref == 0
-    diff = (ref_b != mine.unsqueeze(0).unsqueeze(0)).sum().item()
+    diff = (ref_b != mine).sum().item()
     tot = mine.numel()
     print(f"[qsa] check: 掩码差异 {diff}/{tot} ({100 * diff / tot:.4f}%)", flush=True)
