@@ -39,10 +39,10 @@ import platform_check
 
 platform_check.require(platform_only=True)
 
-
-def extract_num(text: str) -> str | None:
-    m = re.search(r"-?\d+", (text or "").replace(",", ""))
-    return m.group(0) if m else None
+# 取数规则只有一份：math_build_data.py（零阶线也带）用同一个函数判对错。
+# 两边各写一份正则，改一处忘一处就会把「答对了」判成「答错了」——
+# 而错的方向恰好是让 GRPO 拿到错的优势。
+from math_extract import extract_num  # noqa: E402
 
 
 def make_problems(n: int, seed: int, preset: str = "mult22"):
