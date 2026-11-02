@@ -15,6 +15,9 @@
 
 #include <cublas_v2.h>
 #include "ds4_numerics.cuh"
+#if defined(STRATA_GPU_METAL)
+#include "ds4_vision_metal.h"   // the tower as Metal dispatches (metal/src/engine/ds4_vision_metal.cpp)
+#endif
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -545,6 +548,30 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
     cudaSetDevice(dev_);
     cublasHandle_t h = (cublasHandle_t) blas_;
     cudaStream_t s = (cudaStream_t) st_, cs = (cudaStream_t) cs_;
+#if defined(STRATA_GPU_METAL)
+    {   // Metal: the whole tower as dispatches of msl/ds4_vision.metal; the weights are read in place from the pinned block
+        uint16_t* wdev = nullptr;
+        VK(cudaHostGetDevicePointer(&wdev, (void*) host_, 0));
+        auto A = [](const void* p) { return (uint64_t) (uintptr_t) p; };
+        strata::ds4::vismetal::Args a;
+        a.width = width, a.height = height, a.gh = gh, a.gw = gw, a.n = N, a.l = L, a.nw = n_w;
+        a.dim = D, a.inter = I, a.patch = P, a.merge = M, a.heads = g.heads, a.hd = hd, a.layers = g.layers, a.out = g.out;
+        a.rb = rb_, a.qb = (int) std::max<size_t>(1, std::min<size_t>((size_t) N, (size_t) qb_ * max_n_ / (size_t) N));
+        a.eps = g.eps, a.scale = 1.0f / std::sqrt((float) hd);
+        a.rgb = A(rgb_), a.patches = A(patch_), a.x = A(x_), a.xn = A(xn_), a.qkv = A(qkv_), a.y = A(y_), a.o = A(o_), a.mid = A(mid_);
+        a.s = A(s_), a.p = A(p_), a.un = A(un_), a.a16 = A(a16_), a.outb = A(outb_), a.inv_freq = A(inv_freq_);
+        a.weights = A(wdev), a.block_n = block_n_, a.al1_off = al1_off_, a.al2_off = al2_off_;
+        a.pe_w = A(pe_w_), a.pe_b = A(pe_b_), a.norm = A(norm_), a.al1_b = A(al1_b_), a.al2_b = A(al2_b_);
+        for (int l = 0; l < g.layers; ++l) {
+            a.n1.push_back(A(n1_[l])), a.n2.push_back(A(n2_[l])), a.bqkv.push_back(A(bqkv_[l])), a.bo.push_back(A(bo_[l]));
+        }
+        VK(cudaMemcpy(rgb_, rgb, (size_t) N * 3 * P * P, cudaMemcpyHostToDevice));
+        if (!strata::ds4::vismetal::encode(a, err)) return false;
+        rows.resize((size_t) L * g.out);
+        VK(cudaMemcpy(rows.data(), outb_, rows.size() * 2, cudaMemcpyDeviceToHost));
+        return true;
+    }
+#endif
     // the weights in the order the encode takes them: the blocks, then the aligner's in pieces of a slot
     std::vector<Piece> pcs;
     for (int l = 0; l < g.layers; ++l) pcs.push_back({host_ + (size_t) l * block_n_, block_n_});
