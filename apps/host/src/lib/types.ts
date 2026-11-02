@@ -277,7 +277,10 @@ export interface MonitorState {
     pct: number;
     parts?: { system: number; tools: number; messages: number };
   };
-  expertCache: { used: number; total: number; memoryGb?:number|null; source?:string };
+  expertCache: { used: number; total: number; memoryGb?:number|null; source?:string; /* SMI2000 */ totalGb?:number|null; ramGb?:number|null; ramUsed?:number|null };
+  /** SMI2000: the selected model's engine facts (/metrics `engine`) and its default sampling (/metrics `sampling`). */
+  engineInfo?: Record<string, any> | null;
+  sampling?: { config?: Record<string, any>; thinking?: Record<string, any>; instruct?: Record<string, any> } | null;
   hardware: {
     gpus?: GpuReading[];
     cpus?: CpuReading[];

@@ -1043,6 +1043,9 @@ async function api(req, res, path, method, url) {
   if(nativeOperation&&method==='POST')return json(res,200,await native.cancel(nativeOperation[1]));
   const nativeInstance=/^\/api\/native\/instances\/([a-z0-9-]+)\/(unload|default)$/.exec(path);
   if(nativeInstance&&method==='POST')return json(res,200,nativeInstance[2]==='unload'?await native.unload(nativeInstance[1]):native.setDefault(nativeInstance[1]));
+  /* SMI2000: the Monitor's "Clear" for a model's recent requests and totals. */
+  const nativeMetricsReset=/^\/api\/native\/instances\/([a-z0-9-]+)\/metrics\/reset$/.exec(path);
+  if(nativeMetricsReset&&method==='POST'){try{return json(res,200,await native.resetMetrics(nativeMetricsReset[1]));}catch(err){return error(res,409,err.message);}}
   const nativeSettings=/^\/api\/native\/models\/([a-z0-9_.-]+)\/settings$/.exec(path);
   /* Expert mode shows what will actually run: the saved tuning's values come with the settings (null when none applies or unreadable). */
   if(nativeSettings&&method==='GET'){const settings=native.settings(nativeSettings[1]);let tuned=null;try{const t=await native.tuneEffective({model:nativeSettings[1],resourceProfile:url.searchParams.get('resourceProfile')||undefined,vision:url.searchParams.get('vision')||undefined});tuned=t.applied?t:null;}catch{tuned=null;}return json(res,200,{...settings,tuned});}

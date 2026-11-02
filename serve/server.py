@@ -911,6 +911,54 @@ def parse_engine_stage_line(line: str) -> list[dict] | None:
     return stages
 
 
+# SMI2000: the pack's expert totals (count and size) so the Monitor can split the experts into VRAM, RAM and disk.
+def pack_expert_totals(args: list[str]) -> dict:
+    try:
+        pack = Path(args[args.index("--pack") + 1])
+        with open(pack / "native_experts.txt", encoding="utf-8") as f:
+            header, layers = f.readline(), sum(1 for line in f if line.strip() and not line.startswith("#"))
+        n_expert, total = re.search(r"n_expert (\d+)", header), re.search(r"total (\d+)", header)
+        if not (n_expert and total and layers):
+            return {}
+        return {"experts": layers * int(n_expert.group(1)), "expert_total_mib": int(total.group(1)) >> 20}
+    except (ValueError, IndexError, OSError):
+        return {}
+
+
+# SMI2000: what the engine's start lines say it put in VRAM (MiB), for the Monitor's VRAM bar.  A line it did not
+# write leaves its part out; nothing is guessed here.
+VRAM_LOG_PARTS = (
+    ("weights", r"(\d+(?:\.\d+)?) MiB of weights loaded from", 1),
+    ("weights", r"native projection matrices, (\d+(?:\.\d+)?) MiB of weights", 1),
+    ("weights", r"(\d+(?:\.\d+)?) GiB of Q8_0 hyper-connection projections", 1024),
+    ("draft", r"draft layer loaded, (\d+(?:\.\d+)?) MiB of VRAM", 1),
+    ("draft", r"draft head over \d+ tokens \((\d+(?:\.\d+)?) MiB\)", 1),
+    ("buffers", r"window up to \d+ tokens, (\d+(?:\.\d+)?) MiB of device buffers", 1),
+)
+
+
+def vram_parts_from_log(text: str) -> dict:
+    parts: dict = {}
+    for name, pattern, scale in VRAM_LOG_PARTS:
+        found = re.findall(pattern, text)
+        if found:                                     # the last one: a start that retried writes the lines again
+            parts[name] = round(parts.get(name, 0) + float(found[-1]) * scale)
+    return parts
+
+
+# SMI2000: KV bytes per context token and attention layer, and the attention layers (12 QSA + the draft layer) of
+# Qwen3.8-Flash-Next; the same figures as setup.UD_FIT_KV_BYTES and strata_control/vram_fit.py (5.4% measured over).
+SMI_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}
+SMI_KV_LAYERS = {"qwen4exp": 13}
+
+
+def kv_estimate_mib(arch, kv, context) -> int | None:
+    layers, cell = SMI_KV_LAYERS.get(arch or ""), SMI_KV_BYTES.get(str(kv or ""))
+    if not layers or not cell or not isinstance(context, int) or context <= 0:
+        return None
+    return round(121 + context * layers * cell * 1.054 / 2 ** 20)
+
+
 def read_engine_stage_log(path: str | None, start: int, limit: int = 2 << 20) -> list[dict]:
     """Read this engine start only; oversized/unavailable logs leave placement unknown."""
     if not path or start < 0:
@@ -1160,6 +1208,12 @@ class StrataEngine:
         try:                                            # which drafter runs, and in plain words why not the one that was asked for
             self.info.update(drafting.engine_info(args, start_log_text(log, log_start), drafting.take_note()))
         except Exception:                               # noqa: BLE001 - a note must never stop a start
+            pass
+        for k, v in pack_expert_totals(args).items():   # SMI2000: the engine's own figures win
+            self.info.setdefault(k, v)
+        try:                                            # SMI2000: the Monitor's VRAM bar
+            self.info["vram_parts"] = vram_parts_from_log(start_log_text(log, log_start))
+        except Exception:                               # noqa: BLE001 - a Monitor figure must never stop a start
             pass
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
@@ -4952,6 +5006,14 @@ class Service:
                     | {"wallclock_s": r.get("wallclock_s", round(time.perf_counter() - r["_clock"], 3))}
                     for r in reversed(records)]
 
+    def reset_metrics(self) -> None:
+        """SMI2000: POST /metrics/reset - the Monitor starts its request list and totals again.  Only the /metrics view
+        is reset: /v1/status and the Prometheus counters keep counting from the server's start."""
+        with self.status_lock:
+            self.history.clear()
+            self.metrics_base = {**{k: v for k, v in self.totals.items() if isinstance(v, (int, float))},
+                                 "since": time.time()}
+
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
         the hardware (with a minute of history per series)."""
@@ -4961,6 +5023,10 @@ class Service:
                 s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
+            base = getattr(self, "metrics_base", None)    # SMI2000: the totals since the Monitor's last "Clear"
+            if base:
+                totals = {k: (base["since"] if k == "since" else v - base.get(k, 0))
+                          if isinstance(v, (int, float)) else v for k, v in totals.items()}
         now = time.time()
         progress = getattr(self.engine, "progress", None)
         if s.get("busy") and s.get("first_token") is None:
@@ -5002,13 +5068,20 @@ class Service:
             live["split_serve"] = self.engine.split_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
+        engine["kv_mib_est"] = kv_estimate_mib(self.model_arch, engine.get("kv"), engine.get("context"))   # SMI2000
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"], "time": now,
+                # SMI2000: the sampling a request gets for the fields it leaves out (model card, config, Chat settings)
+                "sampling": {"config": dict(self.sampling_defaults),
+                             "thinking": {**model_card_sampling(self.model_arch, True), **self.sampling_defaults,
+                                          **self.shared},
+                             "instruct": {**model_card_sampling(self.model_arch, False), **self.sampling_defaults,
+                                          **self.shared}}}
 
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's
@@ -7424,6 +7497,11 @@ def make_handler(svc: Service):
                 return
             if path == "/config":
                 self._config_post()
+                return
+            if path == "/metrics/reset":                      # SMI2000: the Monitor's "Clear" (requests and totals)
+                if self._own_page("the Monitor's requests can be cleared"):
+                    svc.reset_metrics()
+                    self._json(200, {"status": "cleared"})
                 return
             if path in ("/unload", "/load") and not self._control_body():
                 return
