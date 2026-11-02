@@ -825,10 +825,13 @@ if DSV41_CODER_REPO:
 # the Coder repository's own picture file has Unsloth's tensors under another header (and so another size and SHA-256): a copy of it already here is accepted as the shared
 # picture file (find_shared / verify_sha256), and nothing is fetched under its name
 DSV41_ALT_FILES = {DSV41_MMPROJ: [DSV41_CODER_FILES[DSV41_CODER["mmproj"]]]} if DSV41_CODER_REPO else {}
+# ... and a copy of it under ITS OWN name (the official repository's mmproj-DeepSeek-V4.1-Flash-1017-BF16.gguf, beside the shards from `hf download` or a hard link) is found as the
+# picture file too, so the plan and the fetch agree: nothing is downloaded when the person has it (DF2-STRIX, 2026-11-02: it was fetched a second time under the shared name)
+DSV41_ALT_NAMES = {DSV41_MMPROJ: (DSV41_CODER["mmproj"],)} if (DSV41_CODER_REPO and DSV41_CODER.get("mmproj") and DSV41_CODER["mmproj"] != DSV41_MMPROJ) else {}
 # The Coder repository's Engram file is the unpruned release's Engram under the same name (DSV41_ISTA_ENGRAM, converted: DSV41_ENGRAM_CONVERTED's SHA-256, accepted beside the pinned one
 # by DSV41_SHA_ALSO), so it never replaces that pin: one Engram file, on the SSD, shared by every set (a copy of either file already here is used where it is).
 DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES,
-                   **{n: v for n, v in DSV41_CODER_FILES.items() if n not in (DSV41_CODER.get("mmproj"), DSV41_ISTA_ENGRAM)}}
+                   **{n: v for n, v in DSV41_CODER_FILES.items() if n not in (DSV41_MMPROJ, DSV41_ISTA_ENGRAM)}}
 
 
 def dsv41_also(name: str) -> tuple:
@@ -839,7 +842,7 @@ def dsv41_also(name: str) -> tuple:
 DSV41_PROFILES = ROOT / "data" / "dsv41"           # the shipped hot-expert profiles (profile-2.00.bin, profile-2.25.bin, + .sha256)
 DSV41_MAC_CONTEXT = 8192        # DeepSeek on a Mac keeps the 8K it was run at (the owner's 128K decision is for cards; nothing was run on a Mac at 128K)
 DSV41_CONTEXT = 131072        # 128K like every model (owner, 2026-11-01; strata_control/default_context.py); the engine was checked at 4096 and 8192 before, INT3 checks 128K on real cards
-DSV41_MAC_VISION = False      # an Apple Silicon Mac: the Metal engine has not run DeepSeek's picture tower (0.2.7.1), so pictures stay off there
+# DeepSeek's pictures on a Mac are decided by the installed engine (strata_control/dsv41_engine.mac_vision_state: the marker STRATA_DS4_METAL_VISION_V1), not by a switch here
 MULTI_FILE_FAMILIES = {
     "deepseek41": {"title": "DeepSeek-V4.1-Flash", "by": "DeepSeek; the 2-bit GGUFs by ISTA-DAS, UD-Q8_K_XL by Unsloth", "arch": "deepseek41",
                    "about": "a big model that runs on a PC with a 12 GB card and 64 GB of RAM (the two official 2-bit versions: 257 or "
@@ -8498,7 +8501,7 @@ def dsv41_find_shared(a, name: str, folder: Path, shared: Path, alt: tuple = ())
     """The file `name` (an Engram, the drafter, ...) the person already has: in the shared folder, beside the shards, or (--gguf-dir) in the
     folder above them or one folder level down from either; else where it will be downloaded to (the shared folder).  The size must be the
     pinned one, so a half-copied file is not taken for the file."""
-    names = [n for n in (name, DSV41_LEGACY_NAMES.get(name), *alt) if n]       # today's name, the first release's (the same weights), and `alt` (an Unsloth set's own shard 5: the same Engram data)
+    names = [n for n in (name, DSV41_LEGACY_NAMES.get(name), *alt, *DSV41_ALT_NAMES.get(name, ())) if n]       # today's name, the first release's (the same weights), and `alt` (an Unsloth set's own shard 5: the same Engram data)
     roots = [shared, folder]
     if a.gguf_dir:
         base = Path(a.gguf_dir)
@@ -8910,9 +8913,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     shared_dir = dsv41_shared_dir(a, fam)
     # Pictures are on by default (owner rule): the engine reads them with its own vision tower, which the pack carries when the tower's weights
     # (mmproj-BF16.gguf, a shared file) were there when it was made.  --vision no leaves the file out and the pack text-only.
-    ds_vision = "off" if a.vision in ("no", "off") or (mac and not DSV41_MAC_VISION) else "on"
-    if mac and not DSV41_MAC_VISION and a.vision not in ("no", "off"):
-        warn("pictures are off for DeepSeek on a Mac: its picture reader has not been run on the Metal engine yet, so it reads text only")
+    ds_vision = "off" if a.vision in ("no", "off") else "on"           # (on a Mac this is settled again once the engine is known, below)
     shared_names = list(md.get("shared", [])) + ([DSV41_MMPROJ] if ds_vision == "on" else [])
     shared = [dsv41_find_shared(a, n, folder, shared_dir, (md["engram_shard"],) if (udlow and n == DSV41_ISTA_ENGRAM) else ()) for n in shared_names]
     mmproj_file = shared[len(md.get("shared", []))] if ds_vision == "on" else None
@@ -9023,6 +9024,13 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
              + " Or update Strata later (a newer version may add your card), pick another model, or build the engine for your card yourself "
              "(docs/DEEPSEEK41.md, \"Building the engine for your card\"). Nothing has been downloaded.")
     ok(f"engine: {exe}")
+    if mac and ds_vision == "on":                    # the Mac's pictures need an engine with the Metal picture tower: its program says so (dsv41_engine.MARK_MAC_VISION)
+        from strata_control import dsv41_engine as _dsv41_engine
+        if _dsv41_engine.mac_vision_state(exe) == "no":
+            ds_vision = "off"
+            shared = [f for f in shared if f != mmproj_file]
+            mmproj_file = None
+            warn(_dsv41_engine.MAC_TEXT_LINE)
 
     step(5, f"downloading {fam['title']} {model}")
     for f in shards:

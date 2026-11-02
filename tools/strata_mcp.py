@@ -1159,6 +1159,30 @@ class Strata:
             out.append(ds)
         return out
 
+    def dsv41_engine_exe(self) -> Path | None:
+        """The installed strata-dsv41 (STRATA_DSV41_EXE, else the newest package in the engine-dsv41 folders of this install), None when there is none; only looked at, never started."""
+        from strata_control import dsv41_engine
+        own = (os.environ.get("STRATA_DSV41_EXE") or "").strip()
+        if own:
+            return Path(own) if Path(own).is_file() else None
+        roots = [self.root, self.src]
+        try:
+            S = self.setup_module()
+            roots += [Path(S.ROOT), Path(S.home())]
+        except Exception:                                    # noqa: BLE001 - the roots above are enough
+            pass
+        for r in roots:
+            found = dsv41_engine.find(Path(r) / dsv41_engine.DIR)
+            if found is not None:
+                return found
+        return None
+
+    def mac_deepseek_pictures(self) -> bool:
+        """DeepSeek reads pictures on a Mac when the installed engine has the Metal picture tower, or when no engine is installed yet (the first start fetches the newest and setup
+        looks again); False for an engine without it."""
+        from strata_control import dsv41_engine
+        return dsv41_engine.mac_vision_state(self.dsv41_engine_exe()) != "no"
+
     def _mac_deepseek(self, hw: dict, have: set) -> dict | None:
         """DeepSeek-V4.1-Flash for a Mac: the official sets that were run on one (strata_control/dsv41_fit.MAC_SET_PACK), with the Mac fit words.
         None when setup.py has no DeepSeek family (an older Terminal)."""
@@ -1167,6 +1191,7 @@ class Strata:
             return None
         from strata_control import dsv41_fit
         mf, ram = self.mac(), float(hw.get("ram_gb") or 0)
+        mac_pics = self.mac_deepseek_pictures()
         sizes = []
         for m in big["models"]:
             if m not in dsv41_fit.MAC_SET_PACK:
@@ -1176,7 +1201,7 @@ class Strata:
                 continue
             tag = (big.get("tag", "") + m).lower()
             sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
-                          "images": False, "images_reader": "none",       # the Mac engine's picture tower: see docs/DEEPSEEK_MAC.md
+                          "images": mac_pics, "images_reader": "gpu" if mac_pics else "none",       # the engine's own picture tower, when the installed engine has it (dsv41_engine.MARK_MAC_VISION): docs/DEEPSEEK_MAC.md
                           "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": True, "multi_file": True,
                           "disk_gb": self.dsv41_disk_gb(d), "engine_min": None,
                           "memory_gb": round(float(d["ram_gb"]), 1),
@@ -2355,9 +2380,11 @@ class Tools:
                     raise ToolError(dsv41_fit.MAC_NOT_YET_LINE)
                 if model not in dsv41_fit.MAC_SET_PACK:
                     raise ToolError(f"{model} is not offered on a Mac: DeepSeek runs there as " + " or ".join(dsv41_fit.MAC_SET_PACK))
-                if vision in ("yes", "gpu", "cpu"):
-                    raise ToolError("images are not available with DeepSeek on a Mac yet: use vision=no")
-                vision = "no"
+                if not s.mac_deepseek_pictures():
+                    if vision in ("yes", "gpu", "cpu"):
+                        from strata_control import dsv41_engine
+                        raise ToolError(dsv41_engine.MAC_TEXT_LINE + " Use vision=no.")
+                    vision = "no"
                 context = context or getattr(s.setup_module(), "DSV41_MAC_CONTEXT", 8192)
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None and md.get("multi_file"):
