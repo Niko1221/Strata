@@ -537,5 +537,37 @@ int main() {
         CHECK(!prefill_layer_major_resolve(nullptr, false, 2, true));
         CHECK(!prefill_layer_major_resolve(nullptr, true, 2));
     }
+    {   // STRATA_PLE_BATCH: on everywhere but an engine built with CUDA 12.8 on a compute capability 12.0 card (issues #220, #224)
+        using strata::ple_batch_default;
+        using strata::ple_batch_resolve;
+        const int rt128 = 12080, rt129 = 12090, rt130 = 13000, rt132 = 13020, rt127 = 12070;
+        // the one case that is off: CUDA 12.8 build, cc 12.0
+        CHECK(!ple_batch_default(rt128, false, 12, 0));
+        CHECK(!ple_batch_default(12089, false, 12, 0));                       // any 12.8.x
+        // every other toolkit keeps it on on the same card
+        CHECK(ple_batch_default(rt130, false, 12, 0));                        // the released cuda13 package
+        CHECK(ple_batch_default(rt132, false, 12, 0));
+        CHECK(ple_batch_default(rt129, false, 12, 0));
+        CHECK(ple_batch_default(rt127, false, 12, 0));
+        // every other card keeps it on with 12.8
+        CHECK(ple_batch_default(rt128, false, 8, 6));                         // sm_86
+        CHECK(ple_batch_default(rt128, false, 8, 9));
+        CHECK(ple_batch_default(rt128, false, 7, 5));
+        CHECK(ple_batch_default(rt128, false, 12, 1));                        // GB10 (sm_121) is not the 12.0 card
+        CHECK(ple_batch_default(rt128, false, 9, 0));
+        // a HIP build never turns it off (a gfx12 card reports 12.0 as well; there is no CUDART there)
+        CHECK(ple_batch_default(0, true, 12, 0));
+        CHECK(ple_batch_default(rt128, true, 12, 0));
+        // the variable wins both ways, on any toolkit and card
+        CHECK(ple_batch_resolve("1", rt128, false, 12, 0));                   // on anyway
+        CHECK(!ple_batch_resolve("0", rt130, false, 12, 0));
+        CHECK(!ple_batch_resolve("0", rt128, false, 8, 6));
+        CHECK(ple_batch_resolve("2", rt128, false, 12, 0));
+        CHECK(!ple_batch_resolve("off", rt130, false, 8, 6));                 // text that reads as 0 is off (atoi), as before
+        // unset: the rule
+        CHECK(!ple_batch_resolve(nullptr, rt128, false, 12, 0));
+        CHECK(ple_batch_resolve(nullptr, rt130, false, 12, 0));
+        CHECK(ple_batch_resolve(nullptr, rt128, false, 8, 6));
+    }
     return fails ? 1 : 0;
 }

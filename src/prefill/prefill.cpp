@@ -53,6 +53,35 @@
 #include "strata/core/peer_experts.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm120_series.hpp"
+
+namespace {
+// STRATA_PLE_BATCH for the prompt path: the user's variable wins; unset, it is on except for an engine built with CUDA 12.8 on a compute capability 12.0 card
+// (sm120_series.hpp ple_batch_default), which says so once.
+bool ple_batch_enabled() {
+#if defined(CUDART_VERSION) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    constexpr int kRt = CUDART_VERSION;
+    constexpr bool kHip = false;
+#else
+    constexpr int kRt = 0;
+    constexpr bool kHip = true;
+#endif
+    static const char* env = std::getenv("STRATA_PLE_BATCH");
+    int dev = 0, major = 0, minor = 0;
+    if (env == nullptr && !kHip) {
+        if (cudaGetDevice(&dev) == cudaSuccess) {
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        }
+        (void) cudaGetLastError();
+    }
+    const bool on = strata::ple_batch_resolve(env, kRt, kHip, major, minor);
+    static std::atomic<bool> said{false};
+    if (!on && env == nullptr && !said.exchange(true))
+        std::fprintf(stderr, "strata prefill: the batched PLE post-ops are off by default here: this engine was built with CUDA 12.8, whose build faults in the prompt path on a "
+                             "compute capability 12.0 card (issues #220, #224). Use an engine built with CUDA 13.0 or newer; STRATA_PLE_BATCH=1 turns it on anyway.\n");
+    return on;
+}
+}  // namespace
 #include "strata/core/defaults_026.hpp"
 #include "strata/prefill/kernels.hpp"
 #include "strata/prefill/kva.hpp"   // STRATA_KVA: the optional approximate-prefill plan (research, off by default)
@@ -3249,10 +3278,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const bool ple_on = ss.ple.ready() && LB <= 1 && 1 < LE;
     // the PLE block batched over the chunk: the pinned postops and a BF16 or GGUF-native key (else token by token);
     // STRATA_PLE_BATCH=0 keeps the per-token block (the A/B)
-    static const bool ple_batch_env = [] {
-        const char* v = std::getenv("STRATA_PLE_BATCH");
-        return v == nullptr || std::atoi(v) != 0;
-    }();
+    const bool ple_batch_env = ple_batch_enabled();
     const bool ple_batch = ple_on && ple_batch_env && strata::kernels::ple_native_postops_enabled() &&
                            (ss.ple.w.key_bf16 != nullptr || ss.ple.w.key_native_data != nullptr) &&
                            m.region_bytes / ((uint64_t) (3 * strata::kernels::NG_HC_DIM + N + 4) * 4 + (uint64_t) N * 2 + 4096) >= 64;
@@ -6607,10 +6633,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
     if (m.ids_identity) mmq::iota(m.ids_identity, m.T * K, m.cs);
     // ---- the PLE rows, read per chunk on a thread as run_impl does (the same state machine, in chunk order)
     const bool ple_on = m.ss->ple.ready();
-    static const bool ple_batch_env = [] {
-        const char* v = std::getenv("STRATA_PLE_BATCH");
-        return v == nullptr || std::atoi(v) != 0;
-    }();
+    const bool ple_batch_env = ple_batch_enabled();
     const bool ple_batch = ple_on && ple_batch_env && strata::kernels::ple_native_postops_enabled() &&
                            (m.ss->ple.w.key_bf16 != nullptr || m.ss->ple.w.key_native_data != nullptr) &&
                            m.region_bytes / ((uint64_t) (3 * strata::kernels::NG_HC_DIM + N + 4) * 4 + (uint64_t) N * 2 + 4096) >= 64;
