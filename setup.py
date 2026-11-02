@@ -824,7 +824,10 @@ if DSV41_CODER_REPO:
     HF_REVISIONS[DSV41_CODER_REPO] = DSV41_CODER["revision"]
 # the Coder repository's own picture file has Unsloth's tensors under another header (and so another size and SHA-256): a copy of it already here is accepted as the shared
 # picture file (find_shared / verify_sha256), and nothing is fetched under its name
-DSV41_ALT_FILES = {DSV41_MMPROJ: [DSV41_CODER_FILES[DSV41_CODER["mmproj"]]]} if DSV41_CODER_REPO else {}
+# The picture file of the Coder's first (temporary) repository, helcig/tmp-oct26-4 @ 31b7f2dc, which the early Coder builds (f-0291-ds-early) pinned: 972,207,968 bytes, the same
+# tensors under a third header.  No v0.2.x tag pinned it, but a tester of those builds has it in the shared folder, and a second 972 MB fetch for it is not wanted.
+DSV41_EARLY_CODER_MMPROJ = (972207968, "a7cdd95589d0b58fdab59263b700657364520667e06f40b1f3828f0f206ba609")
+DSV41_ALT_FILES = {DSV41_MMPROJ: [DSV41_CODER_FILES[DSV41_CODER["mmproj"]], DSV41_EARLY_CODER_MMPROJ]} if DSV41_CODER_REPO else {}
 # ... and a copy of it under ITS OWN name (the official repository's mmproj-DeepSeek-V4.1-Flash-1017-BF16.gguf, beside the shards from `hf download` or a hard link) is found as the
 # picture file too, so the plan and the fetch agree: nothing is downloaded when the person has it (DF2-STRIX, 2026-11-02: it was fetched a second time under the shared name)
 DSV41_ALT_NAMES = {DSV41_MMPROJ: (DSV41_CODER["mmproj"],)} if (DSV41_CODER_REPO and DSV41_CODER.get("mmproj") and DSV41_CODER["mmproj"] != DSV41_MMPROJ) else {}
@@ -6954,6 +6957,51 @@ def find_in(roots: list, rel: str):
     return None
 
 
+def mmproj_beside(gguf_dir, name: str, size: int | None = None):
+    """The picture file a person's own GGUF folder (--gguf-dir, "Use a local GGUF") already has: in the folder itself, or in the folder above it and that
+    folder's models/ (a Strata data folder's layout: models/<size>/ shards, models/<picture file>; pictures.places() looks there too).  The two outer places are
+    taken only at the pinned size (`size`), so a half-copied file is fetched again and not used.  None when there is none."""
+    if not gguf_dir:
+        return None
+    base = Path(gguf_dir)
+    own = base / name
+    if own.is_file():
+        return own
+    for r in (base.parent, base.parent / "models"):
+        f = r / name
+        try:
+            if f.is_file() and (size is None or f.stat().st_size == size):
+                return f
+        except OSError:
+            continue
+    return None
+
+
+def share_sibling_file(dst: Path, parent: Path, name: str, size: int) -> bool:
+    """A shared file that sits in another model's folder under `parent` (parent/<model folder>/<name>; Qwen3.6 keeps its picture file beside each size) is made
+    available at `dst` without the network: a hard link, else a copy.  Only a file of the pinned `size`; its SHA-256 is checked by the caller's download(), as for
+    any file put there by hand.  True when `dst` is there."""
+    if dst.exists():
+        return True
+    try:
+        sibs = sorted(p for p in parent.glob("*/" + name) if p.is_file() and p != dst and p.stat().st_size == size)
+    except OSError:
+        return False
+    for src in sibs:
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(src, dst)
+            except OSError:
+                tmp = dst.with_name(dst.name + ".copying")
+                shutil.copyfile(src, tmp)
+                os.replace(tmp, dst)
+            return True
+        except OSError:
+            continue
+    return False
+
+
 # ------------------------------------------------------------------------------------------------ start
 def model_config(path: Path) -> bool:
     """#549: a model's run config (a JSON object with "exe" and "args"). Any other strata-*.json in the folder (a
@@ -8231,6 +8279,10 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"model file: {gguf}")
     mmproj = folder / fam["mmproj"]
     if vision != "none":                               # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
+        if not a.gguf_dir and not have(mmproj) and not mmproj.with_name(mmproj.name + ".part").exists():
+            # another size of this model has it already (the same file, kept beside each size): linked here, not fetched again
+            if share_sibling_file(mmproj, Path(a.models_dir), mmproj.name, fam["sha256"][mmproj.name][0]):
+                say(f"  {mmproj.name}: the copy of another {fam['title']} size is used (no download)")
         if have(mmproj):
             ok(f"{mmproj.name} already downloaded")
         else:
@@ -9028,9 +9080,14 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         from strata_control import dsv41_engine as _dsv41_engine
         if _dsv41_engine.mac_vision_state(exe) == "no":
             ds_vision = "off"
+            dropped = mmproj_file
             shared = [f for f in shared if f != mmproj_file]
             mmproj_file = None
             warn(_dsv41_engine.MAC_TEXT_LINE)
+            if left and dropped is not None and not (dropped.exists() and (done(dropped) or a.gguf_dir or own_files.get(dropped) or dropped.name in DSV41_LEGACY_FILES)):
+                # the download total said above counted the picture file: it is not fetched, so say the figure that is (nothing is downloaded before this point)
+                left = max(left - (fam["sha256"][dropped.name][0] - partial(dropped)) / 1e9, 0.0)
+                say(f"  The picture file ({fam['sha256'][dropped.name][0] / 1e9:.1f} GB) is not fetched: " + (f"the download is {left:.0f} GB." if left else "nothing is left to download."))
 
     step(5, f"downloading {fam['title']} {model}")
     for f in shards:
@@ -9392,8 +9449,9 @@ def mac_control_setup(a) -> int:
         mmproj = Path(models_root) / fam["mmproj"]
         if not mmproj.exists():                        # an earlier install's copy (the same file for every family)
             mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
-        if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
-            mmproj = Path(a.gguf_dir) / fam["mmproj"]
+        near = None if mmproj.exists() else mmproj_beside(a.gguf_dir, fam["mmproj"], (ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
+        if near is not None:
+            mmproj = near
         elif not (mmproj.exists() and done(mmproj)):
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
         if fam["mmproj"] in ISTA_FILES:
@@ -10446,8 +10504,9 @@ def main() -> int:
     if not mmproj.exists():                            # an earlier install's copy (the same file for every family)
         mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
     if vision != "none":
-        if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
-            mmproj = Path(a.gguf_dir) / fam["mmproj"]
+        near = None if mmproj.exists() else mmproj_beside(a.gguf_dir, fam["mmproj"], (fam.get("mmproj_sha256") or ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
+        if near is not None:                           # the person's own folder (or the one above it) has the picture file: used where it is
+            mmproj = near
         else:
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
         if fam.get("mmproj_sha256"):                   # the NVFP4 family pins it by size and SHA-256 too

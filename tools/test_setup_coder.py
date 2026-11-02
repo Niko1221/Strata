@@ -87,13 +87,21 @@ class Pins(unittest.TestCase):
         pin = setup.DSV41_CODER_FILES[setup.DSV41_CODER["mmproj"]]
         self.assertNotEqual(pin, setup.DSV41_ALL_FILES[setup.DSV41_MMPROJ])
         self.assertEqual(setup.DSV41_ALL_FILES[setup.DSV41_MMPROJ][0], 972_208_288)           # Unsloth's, not overwritten by the name clash
-        self.assertEqual(setup.DSV41_ALT_FILES[setup.DSV41_MMPROJ], [pin])
+        self.assertEqual(setup.DSV41_ALT_FILES[setup.DSV41_MMPROJ], [pin, setup.DSV41_EARLY_CODER_MMPROJ])      # + the early Coder builds' temporary-repository copy (972,207,968 B)
         self.assertIn(pin[1], setup.dsv41_also(setup.DSV41_MMPROJ))
         self.assertEqual(setup.DSV41_SHA_ALSO, {setup.DSV41_ISTA_ENGRAM: (setup.DSV41_ENGRAM_CONVERTED[1],)})      # unchanged
         with tempfile.TemporaryDirectory() as tmp:
             f = Path(tmp) / setup.DSV41_MMPROJ
             f.write_bytes(b"\0" * 16)
             self.assertEqual(setup.dsv41_pin_of(f, setup.DSV41_ALL_FILES[setup.DSV41_MMPROJ]), setup.DSV41_ALL_FILES[setup.DSV41_MMPROJ])
+
+    def test_the_early_coder_builds_picture_file_is_accepted_too(self):
+        """A tester of the early Coder builds has the temporary repository's 972,207,968-byte copy (the same tensors): it is the shared file, not fetched again."""
+        size, sha = setup.DSV41_EARLY_CODER_MMPROJ
+        self.assertEqual((size, sha[:8]), (972_207_968, "a7cdd955"))
+        self.assertIn(sha, setup.dsv41_also(setup.DSV41_MMPROJ))
+        self.assertIn(size, [v[0] for v in setup.DSV41_ALT_FILES[setup.DSV41_MMPROJ]])
+        self.assertNotIn(size, (setup.DSV41_ALL_FILES[setup.DSV41_MMPROJ][0], setup.DSV41_CODER_FILES[setup.DSV41_CODER["mmproj"]][0]))   # a third file, not a typo of the others
 
     def test_the_other_sets_are_unchanged(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]
