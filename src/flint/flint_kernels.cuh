@@ -110,7 +110,8 @@ __global__ void k_flint_attn_prep(const float* __restrict__ q_in, const float* _
                                   const float* __restrict__ qw, const float* __restrict__ kw,
                                   float* __restrict__ q_out, BlockQ80* __restrict__ kc, BlockQ80* __restrict__ vc,
                                   int H, int HKV, int HD, int n_rot,
-                                  const int32_t* __restrict__ pos0, int ctx, float base, float eps) {
+                                  const int32_t* __restrict__ pos0, int ctx, float base, float eps,
+                                  int kv_resident = 0) {
     __shared__ float sh[256];
     __shared__ float buf[128];
     const int head = blockIdx.x, t = blockIdx.y;
@@ -151,12 +152,76 @@ __global__ void k_flint_attn_prep(const float* __restrict__ q_in, const float* _
         const float qf_v = rintf(val_v * id_v);
         const int8_t q_v = (int8_t) fmaxf(-128.0f, fminf(127.0f, qf_v));
 
-        const size_t b_idx = ((size_t) kh * ctx + pos) * 4 + b;
+        const int vpos = (kv_resident > 0 && pos >= 4) ? (4 + ((pos - 4) % (kv_resident - 4))) : pos;
+        const size_t b_idx = ((size_t) kh * (kv_resident > 0 ? kv_resident : ctx) + vpos) * 4 + b;
         kc[b_idx].qs[lane] = q_k;
         vc[b_idx].qs[lane] = q_v;
         if (lane == 0) {
             kc[b_idx].d = __float2half(amax_k / 127.0f);
             vc[b_idx].d = __float2half(amax_v / 127.0f);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Batched Tensor Core Attention Kernels
+__global__ void k_flint_kv_unpack_f16(const BlockQ80* __restrict__ kc, const BlockQ80* __restrict__ vc,
+                                      half* __restrict__ k16, half* __restrict__ v16,
+                                      int ctx, int P, int HD, int HKV, int kv_resident) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (int64_t) HKV * P * HD) return;
+    const int64_t per = (int64_t) P * HD;
+    const int64_t kvh = i / per;
+    const int64_t rest = i % per;
+    const int64_t p = rest / HD;
+    const int64_t d = rest % HD;
+    const int b = (int) (d >> 5);
+    const int lane = (int) (d & 31);
+
+    const int vpos = (kv_resident > 0 && p >= 4) ? (4 + (int) ((p - 4) % (kv_resident - 4))) : (int) p;
+    const size_t b_idx = ((size_t) kvh * (kv_resident > 0 ? kv_resident : ctx) + vpos) * 4 + b;
+    const float dk = __half2float(kc[b_idx].d);
+    const float dv = __half2float(vc[b_idx].d);
+    k16[i] = __float2half((float) kc[b_idx].qs[lane] * dk);
+    v16[i] = __float2half((float) vc[b_idx].qs[lane] * dv);
+}
+
+__global__ void k_flint_attn_softmax16(const float* __restrict__ S, half* __restrict__ S16,
+                                       int ld, int nt, int P, int pos0, float scale,
+                                       int sliding_window, const float* __restrict__ sinks) {
+    __shared__ float sh[256];
+    const int t = blockIdx.x, h = blockIdx.y;
+    const int pos = pos0 + t;
+    const float* row = S + ((size_t) h * nt + t) * ld;
+    half* out = S16 + ((size_t) h * nt + t) * ld;
+
+    float mx = -1e30f;
+    for (int p = threadIdx.x; p < P; p += blockDim.x) {
+        if (p <= pos && (sliding_window <= 0 || p < 4 || (pos - p) < sliding_window)) {
+            float val = row[p] * scale;
+            if (p == 0 && sinks != nullptr) val += sinks[h];
+            mx = fmaxf(mx, val);
+        }
+    }
+    mx = block_max(mx, sh);
+
+    float sum = 0.f;
+    for (int p = threadIdx.x; p < P; p += blockDim.x) {
+        if (p <= pos && (sliding_window <= 0 || p < 4 || (pos - p) < sliding_window)) {
+            float val = row[p] * scale;
+            if (p == 0 && sinks != nullptr) val += sinks[h];
+            sum += expf(val - mx);
+        }
+    }
+    sum = block_sum(sum, sh);
+    const float inv = sum > 0.f ? 1.0f / sum : 0.f;
+
+    for (int p = threadIdx.x; p < ld; p += blockDim.x) {
+        if (p < P && p <= pos && (sliding_window <= 0 || p < 4 || (pos - p) < sliding_window)) {
+            float val = row[p] * scale;
+            if (p == 0 && sinks != nullptr) val += sinks[h];
+            out[p] = __float2half(expf(val - mx) * inv);
+        } else {
+            out[p] = __float2half(0.f);
         }
     }
 }
@@ -168,7 +233,8 @@ __global__ void k_flint_attn_part(const float* __restrict__ q, const BlockQ80* _
                                   const int32_t* __restrict__ pos0, int t0, int H, int HKV, int ctx,
                                   float scale, int n_chunk, float* __restrict__ pacc,
                                   float* __restrict__ pm, float* __restrict__ pl,
-                                  const float* __restrict__ sinks, int sliding_window) {
+                                  const float* __restrict__ sinks, int sliding_window,
+                                  int kv_resident = 0) {
     constexpr int HD = 128;
     __shared__ float qs[HD], sc[kChunkCells], sh[256];
     const int c = blockIdx.x, row = blockIdx.y;
@@ -185,7 +251,8 @@ __global__ void k_flint_attn_part(const float* __restrict__ q, const BlockQ80* _
     if (p < npos) {
         // sliding window check if applicable
         if (sliding_window <= 0 || (npos - 1 - p) < sliding_window) {
-            const BlockQ80* kp = kc + ((size_t) kvh * ctx + p) * 4;
+            const int vp_idx = (kv_resident > 0 && p >= 4) ? (4 + ((p - 4) % (kv_resident - 4))) : p;
+            const BlockQ80* kp = kc + ((size_t) kvh * (kv_resident > 0 ? kv_resident : ctx) + vp_idx) * 4;
             float a = 0.f;
             #pragma unroll
             for (int b = 0; b < 4; ++b) {
@@ -210,11 +277,12 @@ __global__ void k_flint_attn_part(const float* __restrict__ q, const BlockQ80* _
         const int b = j >> 5;
         const int idx = j & 31;
         float acc = 0.f;
-        const BlockQ80* vp = vc + ((size_t) kvh * ctx + p0) * 4 + b;
         for (int k = 0; k < n; ++k) {
+            const int cur_p = p0 + k;
+            const int cur_vpos = (kv_resident > 0 && cur_p >= 4) ? (4 + ((cur_p - 4) % (kv_resident - 4))) : cur_p;
+            const BlockQ80* vp = vc + ((size_t) kvh * (kv_resident > 0 ? kv_resident : ctx) + cur_vpos) * 4 + b;
             const float v_val = (float) vp->qs[idx] * __half2float(vp->d);
             acc += sc[k] * v_val;
-            vp += 4;
         }
         const size_t o = (size_t) row * n_chunk + c;
         pacc[o * HD + j] = acc;

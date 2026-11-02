@@ -324,18 +324,34 @@ struct Engine {
     void* moe_scratch = nullptr;
     float *ewts = nullptr;
     int n_chunk = 0;
-    std::vector<flintk::BlockQ80*> kc, vc; // Hardware-quantized Q8_0 KV Cache per layer
+    int kv_resident = 32768;
+
+    std::vector<flintk::BlockQ80*> kc, vc; // Hardware-quantized Q8_0 KV Cache (Tier 1: VRAM ring)
+    flintk::BlockQ80** host_kc = nullptr;  // Full context pinned host cache (Tier 2: Host RAM)
+    flintk::BlockQ80** host_vc = nullptr;
+
     uint16_t* w_f16 = nullptr;
     uint16_t* x_f16 = nullptr;
     size_t w_f16_elems = 0;
 
+    // Batched Tensor Core Attention buffers for prefill
+    size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (64M floats)
+    float* att_s = nullptr;
+    half* att_p16 = nullptr;
+    half* k16 = nullptr;
+    half* v16 = nullptr;
+    half* q16 = nullptr;
+
     cudaGraphExec_t g1 = nullptr;
     bool use_graph = true;
 
-    void allocate(const Model& model, int max_ctx, int max_chunk) {
+    void allocate(const Model& model, int max_ctx, int max_chunk, int kv_res = 32768) {
         m = &model;
         ctx = max_ctx;
         tmax = max_chunk;
+        kv_resident = (kv_res > 0) ? kv_res : 32768;
+        if (ctx < kv_resident) kv_resident = ctx;
+
         CK(cudaStreamCreate(&st));
         if (cublasCreate(&blas) != CUBLAS_STATUS_SUCCESS) {
             std::fprintf(stderr, "strata-flint: cublasCreate failed\n");
@@ -347,7 +363,7 @@ struct Engine {
         const int H = (int) m->g.n_head, HKV = (int) m->g.n_head_kv, HD = (int) m->g.head_dim;
         const int Kp = m->top_k;
         const int ne = (int) m->g.n_expert;
-        n_chunk = (ctx + kChunkCells - 1) / kChunkCells;
+        n_chunk = (kv_resident + kChunkCells - 1) / kChunkCells;
 
         x = dalloc((size_t) tmax * N);
         h = dalloc((size_t) tmax * N);
@@ -381,6 +397,13 @@ struct Engine {
         CK(cudaMalloc(&w_f16, w_f16_elems * sizeof(uint16_t)));
         CK(cudaMalloc(&x_f16, (size_t) tmax * 6144 * sizeof(uint16_t)));
 
+        // Batched Tensor Core Attention buffers for prefill
+        att_s = dalloc(kAttScoreFloats);
+        att_p16 = dalloc_t<half>(kAttScoreFloats);
+        k16 = dalloc_t<half>((size_t) HKV * kv_resident * HD);
+        v16 = dalloc_t<half>((size_t) HKV * kv_resident * HD);
+        q16 = dalloc_t<half>((size_t) tmax * H * HD);
+
         logits = dalloc((size_t) tmax * m->g.n_vocab);
 
         CK(cudaMalloc(&q8, (size_t) tmax * (8192 >> 5) * sizeof(flintk::QB)));
@@ -399,24 +422,36 @@ struct Engine {
         const size_t scratch_sz = K::native_expert_scratch_bytes((size_t) tmax * Kp, m->g.n_ff);
         CK(cudaMalloc(&moe_scratch, scratch_sz));
 
-
         size_t fr_b = 0, tot_b = 0;
         CK(cudaMemGetInfo(&fr_b, &tot_b));
-        std::fprintf(stderr, "strata-flint: allocate: ctx=%d, tmax=%d, VRAM free before KV=%.2f GiB / %.2f GiB\n",
-                     ctx, tmax, (double) fr_b / (1 << 30), (double) tot_b / (1 << 30));
+        std::fprintf(stderr, "strata-flint: allocate: total_ctx=%d, kv_resident=%d, tmax=%d, VRAM free before KV=%.2f GiB / %.2f GiB\n",
+                     ctx, kv_resident, tmax, (double) fr_b / (1 << 30), (double) tot_b / (1 << 30));
 
-        // KV cache allocation: hardware-accelerated Q8_0 (4 blocks of 34B per head per token)
+        // Tier 1: VRAM KV cache (Hot Ring of kv_resident tokens)
         kc.resize((size_t) m->g.n_layers);
         vc.resize((size_t) m->g.n_layers);
-        const size_t kv_blocks = (size_t) HKV * ctx * 4;
-        const size_t kv_bytes_layer = kv_blocks * sizeof(flintk::BlockQ80) * 2;
+        const size_t vram_kv_blocks = (size_t) HKV * kv_resident * 4;
+        const size_t vram_bytes_layer = vram_kv_blocks * sizeof(flintk::BlockQ80) * 2;
         for (int64_t l = 0; l < m->g.n_layers; ++l) {
-            kc[(size_t) l] = dalloc_t<flintk::BlockQ80>(kv_blocks);
-            vc[(size_t) l] = dalloc_t<flintk::BlockQ80>(kv_blocks);
+            kc[(size_t) l] = dalloc_t<flintk::BlockQ80>(vram_kv_blocks);
+            vc[(size_t) l] = dalloc_t<flintk::BlockQ80>(vram_kv_blocks);
         }
-        std::fprintf(stderr, "strata-flint: KV Cache: Q8_0, 49 layers, ctx=%d, footprint=%.2f GiB (%.1f MB/layer)\n",
-                     ctx, (double) (kv_bytes_layer * m->g.n_layers) / (1 << 30),
-                     (double) kv_bytes_layer / (1 << 20));
+
+        // Tier 2: Host RAM pinned context buffer (up to ctx tokens)
+        host_kc = new flintk::BlockQ80*[m->g.n_layers];
+        host_vc = new flintk::BlockQ80*[m->g.n_layers];
+        const size_t host_kv_blocks = (size_t) HKV * ctx * 4;
+        const size_t host_bytes_layer = host_kv_blocks * sizeof(flintk::BlockQ80) * 2;
+        for (int64_t l = 0; l < m->g.n_layers; ++l) {
+            CK(cudaMallocHost(&host_kc[l], host_kv_blocks * sizeof(flintk::BlockQ80)));
+            CK(cudaMallocHost(&host_vc[l], host_kv_blocks * sizeof(flintk::BlockQ80)));
+            std::memset(host_kc[l], 0, host_kv_blocks * sizeof(flintk::BlockQ80));
+            std::memset(host_vc[l], 0, host_kv_blocks * sizeof(flintk::BlockQ80));
+        }
+
+        std::fprintf(stderr, "strata-flint: KV Cache: Q8_0, 49 layers | VRAM Ring (Tier 1): %d tokens (%.2f GiB) | Host RAM (Tier 2): %d tokens (%.2f GiB)\n",
+                     kv_resident, (double) (vram_bytes_layer * m->g.n_layers) / (1 << 30),
+                     ctx, (double) (host_bytes_layer * m->g.n_layers) / (1 << 30));
     }
 
 
@@ -472,18 +507,82 @@ struct Engine {
         mm(L.wk, h, kx, T);
         mm(L.wv, h, vx, T);
 
-        // RoPE, QK-RMSNorm, and write to KV Cache
+        // RoPE, QK-RMSNorm, and write to KV Cache (VRAM ring buffer)
         flintk::k_flint_attn_prep<<<dim3(H + HKV, T), 256, 0, st>>>(
             q, kx, vx, L.q_norm, L.k_norm, q, kc[li], vc[li],
-            H, HKV, HD, m->n_rot, pos0, ctx, m->rope_base, m->eps);
+            H, HKV, HD, m->n_rot, pos0, ctx, m->rope_base, m->eps, kv_resident);
 
-        // Split-K FlashAttention
-        const int nc = std::min<int>(n_chunk, (int) (p0 + T + kChunkCells - 1) / kChunkCells);
-        flintk::k_flint_attn_part<<<dim3(nc, T * H), kChunkCells, 0, st>>>(
-            q, kc[li], vc[li], pos0, 0, H, HKV, ctx,
-            1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, L.sinks, m->sliding_window);
+        // Hardware-Accelerated Attention:
+        // Prefill (T > 8): Batched Tensor Core GEMM Attention (cublasGemmStridedBatchedEx)
+        // Decode (T <= 8): Split-K FlashAttention with early-exit
+        if (T > 8) {
+            const int P = std::min<int>((int) (p0 + T), kv_resident);
+            const int ldp = (P + 7) / 8 * 8;
+            const int tq = (int) std::max<int64_t>(1, std::min<int64_t>(T, (int64_t) (kAttScoreFloats / ((size_t) H * ldp))));
+            const int G = H / HKV;
+            const float one = 1.0f, zero = 0.0f;
 
-        flintk::k_flint_attn_merge<<<T * H, HD, 0, st>>>(pacc, pm, pl, pos0, 0, H, n_chunk, att);
+            // 1. Unpack cached Q8_0 KV tokens into FP16 k16 and v16
+            const int64_t total_kv_elem = (int64_t) HKV * P * HD;
+            flintk::k_flint_kv_unpack_f16<<<(total_kv_elem + 255) / 256, 256, 0, st>>>(
+                kc[li], vc[li], k16, v16, ctx, P, HD, HKV, kv_resident);
+
+            // 2. Convert Q from FP32 to FP16
+            const int64_t total_q_elem = (int64_t) T * H * HD;
+            flintk::k_f32_to_f16<<<(total_q_elem + 255) / 256, 256, 0, st>>>(q, q16, total_q_elem);
+
+            // 3. Batched GEMM in slices of tq
+            for (int t0 = 0; t0 < T; t0 += tq) {
+                const int nt = std::min(tq, T - t0);
+                for (int kvh = 0; kvh < HKV; ++kvh) {
+                    const half* Kh = k16 + (size_t) kvh * P * HD;
+                    const half* Qh = q16 + ((size_t) t0 * H + kvh * G) * HD;
+                    float* Sh = att_s + (size_t) kvh * G * nt * ldp;
+                    CK_BLAS(cublasGemmStridedBatchedEx(
+                        blas,
+                        CUBLAS_OP_T, CUBLAS_OP_N,
+                        P, nt, HD,
+                        &one,
+                        Kh, CUDA_R_16F, HD, 0,
+                        Qh, CUDA_R_16F, H * HD, HD,
+                        &zero,
+                        Sh, CUDA_R_32F, ldp, (long long) nt * ldp,
+                        G,
+                        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+                }
+
+                // 4. Causal + Sliding Window Softmax in FP16 with attention sinks
+                flintk::k_flint_attn_softmax16<<<dim3(nt, H), 256, 0, st>>>(
+                    att_s, att_p16, ldp, nt, P, (int) (p0 + t0),
+                    1.0f / sqrtf((float) HD), m->sliding_window, L.sinks);
+
+                // 5. Output projection GEMM: O = Softmax(S) * V
+                for (int kvh = 0; kvh < HKV; ++kvh) {
+                    const half* Vh = v16 + (size_t) kvh * P * HD;
+                    const half* Sh = att_p16 + (size_t) kvh * G * nt * ldp;
+                    float* Oh = att + ((size_t) t0 * H + kvh * G) * HD;
+                    CK_BLAS(cublasGemmStridedBatchedEx(
+                        blas,
+                        CUBLAS_OP_N, CUBLAS_OP_N,
+                        HD, nt, P,
+                        &one,
+                        Vh, CUDA_R_16F, HD, 0,
+                        Sh, CUDA_R_16F, ldp, (long long) nt * ldp,
+                        &zero,
+                        Oh, CUDA_R_32F, H * HD, HD,
+                        G,
+                        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+                }
+            }
+        } else {
+            // Split-K FlashAttention for decode (T <= 8)
+            const int nc = std::min<int>(n_chunk, (int) (p0 + T + kChunkCells - 1) / kChunkCells);
+            flintk::k_flint_attn_part<<<dim3(nc, T * H), kChunkCells, 0, st>>>(
+                q, kc[li], vc[li], pos0, 0, H, HKV, ctx,
+                1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, L.sinks, m->sliding_window, kv_resident);
+
+            flintk::k_flint_attn_merge<<<T * H, HD, 0, st>>>(pacc, pm, pl, pos0, 0, H, n_chunk, att);
+        }
 
         // Attention Out
         mm(L.wo, att, y, T);
@@ -796,7 +895,8 @@ namespace strata::flint {
 
 int run(int argc, char** argv) {
     std::string model_path;
-    int max_context = 8192;
+    int max_context = 32768;
+    int kv_resident = 32768;
     int chunk = 1024;
     double expert_vram = -1.0;
     bool serve_mode = false;
@@ -809,8 +909,10 @@ int run(int argc, char** argv) {
         std::string a = argv[i];
         if (a == "--model" || a == "--native") {
             if (i + 1 < argc) model_path = argv[++i];
-        } else if (a == "--max-context" || a == "--kv-resident") {
+        } else if (a == "--max-context") {
             if (i + 1 < argc) max_context = std::atoi(argv[++i]);
+        } else if (a == "--kv-resident") {
+            if (i + 1 < argc) kv_resident = std::atoi(argv[++i]);
         } else if (a == "--chunk" || a == "--prefill" || a == "--batch-size" || a == "--ubatch-size") {
             if (i + 1 < argc) chunk = std::atoi(argv[++i]);
         } else if (a == "--expert-vram") {
@@ -846,7 +948,7 @@ int run(int argc, char** argv) {
     }
 
     if (model_path.empty()) {
-        std::fprintf(stderr, "usage: strata-flint --model [model.gguf] [--serve] [--max-context N] [--chunk N]\n");
+        std::fprintf(stderr, "usage: strata-flint --model [model.gguf] [--serve] [--max-context N] [--kv-resident N] [--chunk N]\n");
         return 1;
     }
 
@@ -859,7 +961,7 @@ int run(int argc, char** argv) {
 
     Engine engine;
     engine.margin = margin;
-    engine.allocate(model, max_context, chunk);
+    engine.allocate(model, max_context, chunk, kv_resident);
 
     if (!place_experts(model, engine, expert_vram, err)) {
         std::fprintf(stderr, "strata-flint: place_experts error: %s\n", err.c_str());
