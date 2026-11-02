@@ -3568,6 +3568,13 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
 PARALLEL_MAX = 8      # without a layer split the engine's batch window holds at most 8 rows (kVerifyNarrowT); --batch-mtp waves more through it
 
 
+def parallel_flag_conflicts(cfg: dict) -> bool:
+    """`--parallel N` next to the saved engine args' own --batch/--slots is refused, except for the all-cards split engine's run config (split_config's
+    "split_engine_note"): its --batch is its lane count, and "parallel" sets it (parallel_args). The app's Concurrent requests reaches the server this way."""
+    args = cfg.get("args", [])
+    return ("--batch" in args or "--slots" in args) and not cfg.get("split_engine_note")
+
+
 def parallel_args(cfg: dict, args: list[str]) -> list[str]:
     """#465 (opt-in): "parallel": N in the config - up to N requests decode together in the engine's batch slots
     (--batch N); more wait their turn.  1 or absent: one request at a time, as before.  A value the engine cannot use
@@ -9627,7 +9634,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if a.parallel is not None:
         if a.parallel < 1 or a.parallel > 1024:
             ap.error("--parallel must be in 1..1024; the engine may reduce it to the supported count")
-        if "--batch" in cfg.get("args", []) or "--slots" in cfg.get("args", []):
+        if parallel_flag_conflicts(cfg):
             ap.error("--parallel conflicts with an explicit --batch/--slots in the saved engine args")
         cfg["parallel"] = a.parallel
     if a.batch_groups is not None:
