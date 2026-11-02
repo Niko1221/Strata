@@ -46,7 +46,9 @@ class SetupFollowsTheEngine(unittest.TestCase):
         i = src.index('ok(f"engine: {exe}")\n    if mac and ds_vision == "on":')
         self.assertIn('_dsv41_engine.mac_vision_state(exe) == "no"', src[i:i + 600])
         self.assertIn("warn(_dsv41_engine.MAC_TEXT_LINE)", src[i:i + 600])
-        self.assertLess(i, src.index("step(5, f\"downloading {fam['title']} {model}\")"))      # before any model file is fetched
+        j = src.index("step(5, f\"downloading {fam['title']} {model}\")", i)        # the next step 5 after the engine line: before any model file is fetched
+        self.assertLess(i, j)
+        self.assertLess(j - i, 900)
 
 
 if __name__ == "__main__":
