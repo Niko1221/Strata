@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -36,7 +37,8 @@ class OnePlace(unittest.TestCase):
             size, sha = PIN["files"][n]
             self.assertRegex(sha, r"^[0-9a-f]{64}$", n)
             self.assertGreater(size, 0)
-        self.assertEqual(len(PIN["shards"]), 3)          # the metadata shard and two model shards; the fourth file is the Engram
+        self.assertEqual(len(PIN["shards"]), 5)          # the metadata shard and four model shards (folder IQ2_XXS/); the Engram and the picture file are at the repository root
+        self.assertEqual(PIN["subdir"], "IQ2_XXS")
 
     def test_setup_reads_it(self):
         self.assertEqual(setup.DSV41_CODER_REPO, PIN["repo"])
@@ -44,7 +46,7 @@ class OnePlace(unittest.TestCase):
         self.assertEqual(setup.REPO_PINS.get(PIN["repo"]) or setup.DSV41_CODER_FILES, setup.DSV41_CODER_FILES)
         self.assertEqual({n: list(v) for n, v in setup.DSV41_CODER_FILES.items()}, PIN["files"])
         md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"][NAME]
-        self.assertEqual(md["hf"], f"https://huggingface.co/{PIN['repo']}/resolve/{PIN['revision']}/")
+        self.assertEqual(md["hf"], f"https://huggingface.co/{PIN['repo']}/resolve/{PIN['revision']}/{PIN['subdir']}/")
         self.assertEqual((md["shards"], md["engram_shard"]), (PIN["shards"], PIN["engram_shard"]))
 
     def test_nothing_else_names_the_repository(self):
@@ -75,7 +77,9 @@ class Pins(unittest.TestCase):
         self.assertEqual(md["recipe"], "coder")
         for n in (*md["shards"], md["engram_shard"]):
             self.assertIn(n, setup.DSV41_ALL_FILES)
-        self.assertEqual(setup.DSV41_ALL_FILES[md["engram_shard"]][0], 110_595_290_592)       # the same size as Unsloth's shard 5
+        self.assertEqual(md["engram_shard"], setup.DSV41_ISTA_ENGRAM)                        # the Engram is THE shared Engram file of the unpruned release, not a second one
+        self.assertEqual(setup.DSV41_ALL_FILES[md["engram_shard"]], setup.DSV41_ISTA_FILES[setup.DSV41_ISTA_ENGRAM])    # its pin is not replaced by the Coder repository's entry
+        self.assertEqual(setup.DSV41_CODER_FILES[md["engram_shard"]], (110_595_290_816, setup.DSV41_ENGRAM_CONVERTED[1]))    # official: same size, the converted SHA-256 setup accepts beside the pin
         self.assertEqual(md["shared"], [setup.DSV41_ISTA_ENGRAM, setup.DSV41_DSPARK])      # the Engram and the drafter are the shared files; no second metadata file
 
     def test_the_picture_file_is_the_shared_one_and_the_coders_copy_is_accepted(self):
@@ -207,8 +211,8 @@ class Plan(unittest.TestCase):
 
     def test_the_download_is_the_model_plus_the_shared_files(self):
         gb = dsv41_fit.ista_download_bytes(NAME) / 1e9
-        self.assertAlmostEqual(gb, (72_123_566_336 + 110_595_290_816 + 7_976_914_240) / 1e9, delta=0.01)
-        self.assertEqual(dsv41_fit.ista_download_bytes(NAME, have_engram=True), 72_123_566_336 + 7_976_914_240)
+        self.assertAlmostEqual(gb, (72_123_567_456 + 110_595_290_816 + 7_976_914_240) / 1e9, delta=0.01)
+        self.assertEqual(dsv41_fit.ista_download_bytes(NAME, have_engram=True), 72_123_567_456 + 7_976_914_240)
 
     def test_the_other_sets_still_have_384_experts_a_layer(self):
         for m in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M"):
@@ -243,6 +247,57 @@ class Pack(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--engram-meta") + 1], str(Path("/m") / md["shards"][0]))
         self.assertIn("--mmproj", cmd)
         self.assertIn("--dspark-noise-token", cmd)
+
+
+class EngramStaysOnTheSsd(unittest.TestCase):
+    """The owner's rule: the DeepSeek Engram table (110.6 GB) is on the SSD, read per row, never held in RAM or VRAM, not counted in the memory fit, and a copy of
+    the unpruned release's Engram that is already here is used where it is: a path, never a second 110 GB download or a copy."""
+
+    def test_it_is_not_in_the_memory_numbers(self):
+        v = dsv41_fit.ISTA_SETS[NAME]
+        self.assertEqual(v["set_bytes"], sum(PIN["files"][n][0] for n in PIN["shards"]))          # the model files; the Engram is not one of them
+        self.assertLess(v["set_bytes"], 80e9)
+        base = dsv41_fit.plan([R9700], 125.0, None, 131072, model=NAME)
+        with mock.patch.object(dsv41_fit, "ISTA_ENGRAM_BYTES", dsv41_fit.ISTA_ENGRAM_BYTES * 3):
+            big = dsv41_fit.plan([R9700], 125.0, None, 131072, model=NAME)
+        for key in ("verdict", "experts_in_vram", "experts_total", "cpu_experts_gb"):
+            self.assertEqual(base[key], big[key], key)                       # a bigger Engram moves no RAM or VRAM number
+        self.assertEqual(base["cpu_experts_gb"] + base["experts_gb"] > 0, True)
+        self.assertEqual(round(base["engram_gb"], 1), round(dsv41_fit.ISTA_ENGRAM_BYTES / 1e9, 1))      # it is reported (disk), not budgeted
+
+    def test_it_is_only_a_download_when_missing(self):
+        with_it = dsv41_fit.ista_download_bytes(NAME, have_engram=True)
+        without = dsv41_fit.ista_download_bytes(NAME)
+        self.assertEqual(without - with_it, dsv41_fit.ISTA_ENGRAM_BYTES)
+
+    def test_a_copy_already_here_is_used_where_it_is(self):
+        """Either published form of the Engram (the pinned file's name, or the sixth shard of the Coder split) found in setup's shared folder or beside the shards is taken by path."""
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"][NAME]
+        with tempfile.TemporaryDirectory() as tmp:
+            shared, folder, other = Path(tmp) / "shared", Path(tmp) / "set", Path(tmp) / "elsewhere"
+            for d in (shared, folder, other):
+                d.mkdir()
+            big = other / setup.DSV41_ISTA_ENGRAM
+            big.write_bytes(b"\0" * 16)
+            args = types.SimpleNamespace(gguf_dir=str(other))
+            with mock.patch.object(setup, "DSV41_ISTA_FILES", {**setup.DSV41_ISTA_FILES, setup.DSV41_ISTA_ENGRAM: (16, "0" * 64)}),                     mock.patch.dict(setup.DSV41_ALL_FILES, {setup.DSV41_ISTA_ENGRAM: (16, "0" * 64)}):
+                found = setup.dsv41_find_shared(args, setup.DSV41_ISTA_ENGRAM, folder, shared, (md["engram_shard"],))
+            self.assertEqual(found, big)                                      # the same path, not a copy in setup's own folder
+            self.assertEqual(list(shared.iterdir()), [])
+            self.assertEqual(list(folder.iterdir()), [])
+
+    def test_nothing_in_setup_copies_the_engram(self):
+        text = (ROOT / "setup.py").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "shutil.copy" in line or "copyfile" in line or ".write_bytes(" in line:
+                self.assertNotIn("engram", line.lower(), line)
+
+    def test_the_pack_call_hands_the_engine_the_path_of_the_one_file(self):
+        md = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"][NAME]
+        e = Path("/somewhere/else") / setup.DSV41_ISTA_ENGRAM
+        cmd = setup.dsv41_pack_cmd(Path("/m"), md["shards"], e, Path("/m") / md["shards"][0], Path("/s/d.gguf"), Path("/p"))
+        self.assertEqual(cmd[cmd.index("--engram") + 1], str(e))
+        self.assertNotIn("--copy-engram", cmd)
 
 
 class PinTool(unittest.TestCase):

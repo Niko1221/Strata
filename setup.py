@@ -805,11 +805,13 @@ DSV41_UD_FILES = {
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00005-of-00005.gguf": (110595290592, "771805301e695d72d268151dfc43043581ba904298574aa879d4349cbe67b020"),
 }
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
-# The ISTA-DAS Coder (2026-11-01): ISTA-DAS's coding variant of this model, "the layout of the IQ2_XXS set with half of the experts removed": 192 routed experts a layer
-# instead of 384 (the router, the experts and the routing biases are narrower; every other tensor has the 2.00 set's name, shape and type).  Four files: shard 1 = the metadata,
-# shards 2-3 = the model, shard 4 = the Engram table (the same single tensor as ISTA-DAS's Engram file), and a picture file (mmproj-BF16.gguf).  Its repository id, commit, file
-# names, sizes and SHA-256 are in ONE place, data/dsv41/coder-set.json, written by tools/dsv41/pin_coder.py from the Hub: a new repository is `pin_coder.py NEW/REPO` and
-# nothing else (strata_control/dsv41_fit.py and the app read the same file).  The repository's name was a temporary one when this was pinned.
+# The ISTA-DAS Coder (2026-11-01; the official ISTA-DASLab repository since 2026-11-02): ISTA-DAS's coding variant of this model, "the layout of the
+# IQ2_XXS set with half of the experts removed": 192 routed experts a layer instead of 384 (the router, the experts and the routing biases are narrower; every other tensor has the 2.00
+# set's name, shape and type).  Five model files in the folder IQ2_XXS/ (shard 1 = the metadata, shards 2-5 = the model; the Engram would be the sixth shard of the split) plus two files at
+# the repository root: the Engram table (the SAME file as the unpruned release's Engram, same name, size and SHA-256: it is the shared Engram, once for every set, read from the SSD
+# per row and never held in memory, so a copy already here is used where it is) and a picture file (mmproj, whose tensors are the shared picture file's).  Its repository id, commit,
+# file names, sizes and SHA-256 are in ONE place, data/dsv41/coder-set.json, written by tools/dsv41/pin_coder.py from the Hub: a new repository is `pin_coder.py NEW/REPO` and
+# nothing else (strata_control/dsv41_fit.py and the app read the same file).
 DSV41_CODER_JSON = ROOT / "data" / "dsv41" / "coder-set.json"
 try:
     DSV41_CODER = json.loads(DSV41_CODER_JSON.read_text(encoding="utf-8"))
@@ -823,8 +825,10 @@ if DSV41_CODER_REPO:
 # the Coder repository's own picture file has Unsloth's tensors under another header (and so another size and SHA-256): a copy of it already here is accepted as the shared
 # picture file (find_shared / verify_sha256), and nothing is fetched under its name
 DSV41_ALT_FILES = {DSV41_MMPROJ: [DSV41_CODER_FILES[DSV41_CODER["mmproj"]]]} if DSV41_CODER_REPO else {}
+# The Coder repository's Engram file is the unpruned release's Engram under the same name (DSV41_ISTA_ENGRAM, converted: DSV41_ENGRAM_CONVERTED's SHA-256, accepted beside the pinned one
+# by DSV41_SHA_ALSO), so it never replaces that pin: one Engram file, on the SSD, shared by every set (a copy of either file already here is used where it is).
 DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES,
-                   **{n: v for n, v in DSV41_CODER_FILES.items() if n != DSV41_CODER.get("mmproj")}}
+                   **{n: v for n, v in DSV41_CODER_FILES.items() if n not in (DSV41_CODER.get("mmproj"), DSV41_ISTA_ENGRAM)}}
 
 
 def dsv41_also(name: str) -> tuple:
@@ -881,7 +885,7 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
                  "tensor types: %.0f GB of model + 111 GB n-gram table + 8 GB drafter (about %.0f GB of disk). Not run on a Mac or a Ryzen AI Max yet. Against the original model (our test, 4,995 positions): "
                  "perplexity +48%%, KL 0.40 (2.00 bpw: +16%%, 0.17; 2.25 bpw: +8%%, 0.11)" % (DSV41_CODER["experts_per_layer"], sum(DSV41_CODER_FILES[n][0] for n in DSV41_CODER["shards"]) / 1e9,
                                                       (sum(DSV41_CODER_FILES[n][0] for n in DSV41_CODER["shards"]) + 110_595_290_816 + 7_976_914_240) / 1e9 + 6),
-        "ram_gb": 24, "recipe": "coder", "subdir": None, "legacy_subdir": None, "profile": DSV41_CODER.get("profile", "profile-coder.bin"), "hf": hf(DSV41_CODER_REPO),
+        "ram_gb": 24, "recipe": "coder", "subdir": None, "legacy_subdir": None, "profile": DSV41_CODER.get("profile", "profile-coder.bin"), "hf": hf(DSV41_CODER_REPO) + (DSV41_CODER["subdir"] + "/" if DSV41_CODER.get("subdir") else ""),
         "shards": list(DSV41_CODER["shards"]), "engram_shard": DSV41_CODER["engram_shard"], "experts": DSV41_CODER["experts_per_layer"], "generic_names": True,
         "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]}} if DSV41_CODER_REPO else {}),
     "UD-IQ1_S": {
@@ -8860,7 +8864,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
                               if md.get("recipe") == "ista" else
                               "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF); the Engram table is the same data as ISTA-DAS's, so a copy of it already here is used"
                               if md.get("recipe") == "udlow" else
-                              f"{DSV41_CODER_REPO} (huggingface.co); its last file is the Engram table, the same data as ISTA-DAS's, so a copy of it already here is used"
+                              f"{DSV41_CODER_REPO} (huggingface.co); its Engram table is the same data as ISTA-DAS's, so a copy of it already here is used"
                               if md.get("recipe") == "coder" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)"))
     udlow = md.get("recipe") in ("udlow", "coder")     # Unsloth's UD-IQ1_S / UD-IQ1_M and the ISTA-DAS Coder: packed and checked like the ISTA-DAS sets; the set's last file is the Engram
     ista = md.get("recipe") in ("ista", "udlow", "coder")
