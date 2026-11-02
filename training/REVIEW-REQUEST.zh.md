@@ -525,9 +525,10 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 
 ### 7.1 分支拓扑与基线
 
-**三条分支各是什么（实测，非推断）**：
+**三条分支各是什么（实测，非推断）**：「切分提交」指把分层定下来的那个提交；分支 tip 之后还有
+纯文档提交（脚本状态不变）。
 
-| 分支 | 头部 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
+| 分支 | 切分提交 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
 |---|---|---|---|---|---|
 | `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **134 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 134 过） | ≈77 提交 / 100 文件 / ≈+17.0k −93 |
 | `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `mezo/sft_mezo.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 258 项（256 过 + 2 项 watchdog 见下） | ≈89 提交 / 132 文件 / ≈+26.7k −93 |
