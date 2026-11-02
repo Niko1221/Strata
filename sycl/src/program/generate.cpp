@@ -11860,6 +11860,20 @@ int main(int argc, char **argv) try {
                     std::fprintf(stderr, "strata pipeline calibration (p_on decile: on/scored):%s\n", cal.c_str());
                 }
             }
+            // DFlash2 with a long suffix match: the next round's draft is deferred to that round's start (spec/window_rule.hpp skip_draft_for_lookup,
+            // STRATA_DF2_LOOKUP_SKIP=N, default 0 = off until measured on this card)
+            const int df2_skip_min = strata::spec::df2_lookup_skip_min(0);
+            bool df2_deferred = false;
+            int dfr_n = 0;
+            int64_t dfr_pos = 0;
+            int32_t dfr_anchor = 0;
+            auto defer_df2 = [&](int a_) -> bool {
+                if (!use_df2 || o.suffix_draft <= 0 || df2_skip_min <= 0) return false;
+                const int ks = sfx.propose(S - 1, sbuf.data());
+                if (!strata::spec::skip_draft_for_lookup(true, df2_skip_min, ks, sfx.last_match())) return false;
+                df2_deferred = true; dfr_n = a_ + 1; dfr_pos = p; dfr_anchor = outv[(size_t) a_];
+                return true;
+            };
             // the next round's drafts after a commit: the DFlash2 block from the committed rows' taps (the window's first a + 1 rows)
             auto draft_df2 = [&](int a_) -> bool {
                 int32_t dd[strata::core::Dflash2Drafter::kDrafts];
@@ -11869,6 +11883,23 @@ int main(int argc, char **argv) try {
                 return true;
             };
             while (!pl_ran && !cancelled && produced_n < max_new) {
+                bool dfr_lookup = false;
+                int dfr_T = 0, dfr_match = 0;
+                if (df2_deferred) {   // the draft skipped for a long lookup match: the lookup if the policy takes it, else the draft now (same taps and rows)
+                    df2_deferred = false;
+                    const int kd = sfx.propose(S - 1, sbuf.data());
+                    const int md = sfx.last_match();
+                    const strata::spec::DraftPolicy::Pick pkd = kd > 0 ? policy.choose(S_mtp, kd, md) : strata::spec::DraftPolicy::Pick{};
+                    if (kd > 0 && pkd.lookup) {
+                        dfr_lookup = true; dfr_T = pkd.t; dfr_match = md;
+                        if (!df2.context(ver.tap_dev(), dfr_n, dfr_pos, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                    } else {
+                        int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+                        float pp[strata::core::Dflash2Drafter::kDrafts];
+                        if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
+                    }
+                }
                 int T = draft_on ? S_mtp : 1;   // no drafter: one token a round unless a lookup draft fires
                 {   // the window rule of this request's ACTIVE source (spec/window_rule.hpp)
                     strata::spec::WindowRuleIn wr;
@@ -11889,6 +11920,10 @@ int main(int argc, char **argv) try {
                         const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
+                }
+                if (dfr_lookup) {   // the lookup window chosen before the draft (the draft was skipped)
+                    sfx.propose(S - 1, sbuf.data());
+                    T = dfr_T; from_sfx = true; sfx_match = dfr_match;
                 }
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
@@ -12078,7 +12113,7 @@ int main(int argc, char **argv) try {
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), outv[(size_t) a]);
                 const bool drafted = !draft_on || eos || produced_n >= max_new ||
-                                     (use_df2 ? draft_df2(a) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p));
+                                     (use_df2 ? (defer_df2(a) || draft_df2(a)) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p));
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -13156,6 +13191,19 @@ int main(int argc, char **argv) try {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        // DFlash2 with a long suffix match: the next round's draft is deferred to that round's start (spec/window_rule.hpp skip_draft_for_lookup)
+        const int df2_skip_min = strata::spec::df2_lookup_skip_min(0);
+        bool df2_deferred = false;
+        int dfr_n = 0;
+        int64_t dfr_pos = 0;
+        int32_t dfr_anchor = 0;
+        auto defer_df2 = [&](int a_) -> bool {
+            if (!use_df2 || o.suffix_draft <= 0 || df2_skip_min <= 0) return false;
+            const int ks = sfx.propose(o.spec - 1, sbuf.data());
+            if (!strata::spec::skip_draft_for_lookup(true, df2_skip_min, ks, sfx.last_match())) return false;
+            df2_deferred = true; dfr_n = a_ + 1; dfr_pos = p; dfr_anchor = outv[(size_t) a_];
+            return true;
+        };
         // the next round's drafts after a commit: the DFlash2 block from the committed rows' taps (the window's first a + 1 rows)
         auto draft_df2 = [&](int a_) -> bool {
             int32_t dd[strata::core::Dflash2Drafter::kDrafts];
@@ -13166,6 +13214,23 @@ int main(int argc, char **argv) try {
         };
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
+            bool dfr_lookup = false;
+            int dfr_T = 0, dfr_match = 0;
+            if (df2_deferred) {   // the draft skipped for a long lookup match: the lookup if the policy takes it, else the draft now (same taps and rows)
+                df2_deferred = false;
+                const int kd = sfx.propose(o.spec - 1, sbuf.data());
+                const int md = sfx.last_match();
+                const strata::spec::DraftPolicy::Pick pkd = kd > 0 ? policy.choose(S_mtp, kd, md) : strata::spec::DraftPolicy::Pick{};
+                if (kd > 0 && pkd.lookup) {
+                    dfr_lookup = true; dfr_T = pkd.t; dfr_match = md;
+                    if (!df2.context(ver.tap_dev(), dfr_n, dfr_pos, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                } else {
+                    int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+                    float pp[strata::core::Dflash2Drafter::kDrafts];
+                    if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                    for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
+                }
+            }
             int T = S_mtp;
             {   // the window rule of the round's ACTIVE source (spec/window_rule.hpp)
                 strata::spec::WindowRuleIn wr;
@@ -13184,6 +13249,10 @@ int main(int argc, char **argv) try {
                     const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                     if (pk.lookup) { T = pk.t; from_sfx = true; }
                 }
+            }
+            if (dfr_lookup) {   // the lookup window chosen before the draft (the draft was skipped)
+                sfx.propose(o.spec - 1, sbuf.data());
+                T = dfr_T; from_sfx = true; sfx_match = dfr_match;
             }
             // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
             int chain_n = 0, cm = 0;
@@ -13322,7 +13391,7 @@ int main(int argc, char **argv) try {
                 break;
             }
             const bool drafted = !draft_on || (int64_t) produced.size() >= max_new ||
-                                 (use_df2 ? draft_df2(a) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p));
+                                 (use_df2 ? (defer_df2(a) || draft_df2(a)) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p));
             if (adapt_thr.joinable()) adapt_thr.join();
             if (!adapt_ok) return 1;
             if (!drafted) {
