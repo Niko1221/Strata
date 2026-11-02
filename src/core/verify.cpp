@@ -97,6 +97,7 @@ bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::Se
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err);
 bool window_commit(void* w, int n_keep, std::string& err);
 bool window_copy_logits(void* w, int t, float* host);
+void window_set_sampling(void* w, const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len);
 bool window_init_slots(void* w, const std::vector<strata::core::SessionState*>& slots, std::string& err);
 bool window_run_slots(void* w, const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err);
 }  // namespace strata::metal_engine
@@ -3137,6 +3138,16 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (measure) { err = "verify: proposal unsupported on Metal"; return false; }
     (void) pool;
     (void) user;
+    {   // a sampled, penalised or biased request: the head rows are sampled on the GPU (metal/kernels/sample.metal), Philox(seed, pos0 + t) as the CUDA head
+        const bool sampled_m = !sampling_.greedy && sampling_.temperature > 0.0f;
+        if (head_sampling_ && (sampled_m || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {
+            strata::kernels::SamplerParams sp_m = sampling_;
+            sp_m.counter = (uint64_t) pos0;
+            strata::metal_engine::window_set_sampling(metal_, &sp_m, hist_d_, hist_len_);
+        } else {
+            strata::metal_engine::window_set_sampling(metal_, nullptr, nullptr, 0);
+        }
+    }
     return strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err);
 #endif
     using namespace strata::kernels;

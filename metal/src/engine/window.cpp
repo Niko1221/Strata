@@ -23,6 +23,8 @@
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/sampler.hpp"
+namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
@@ -188,6 +190,10 @@ public:
     bool run(int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err);
     bool commit(int n_keep, std::string& err);
     bool finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, double t0);
+    // The request's sampling for the head rows of the windows that follow (sample.metal): null = greedy, the in-graph argmax.  `hist` is the penalty
+    // history, Tn rows of hist_len tokens (the last penalty_last_n of a row count, -1 = unused), read when the window's rows are sampled.
+    void set_sampling(const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len);
+    bool sample_rows(int Tn, int32_t* out, std::string& err);   // after run(): replaces out[0..Tn) (and tokout_) by the sampled tokens
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return n_vocab_; }
     bool ready() const { return cx_ != nullptr; }
@@ -307,6 +313,13 @@ private:
         return (size_t) b;
     }
     int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1, lple_ = -1;
+    bool samp_on_ = false;
+    strata::kernels::SamplerParams samp_;
+    const int32_t* samp_hist_ = nullptr;
+    int samp_hist_len_ = 0;
+    mtl::Buffer sbias_, shist_, scv_, sci_;
+    size_t shist_cap_ = 0;
+    uint64_t samp_windows_ = 0;
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
     int max_t_ = 1;
@@ -3067,6 +3080,82 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     return true;
 }
 
+// ---- the request's sampling (sample.metal): the chain over the window's head rows, after run() has left the logits in lm_
+void Window::set_sampling(const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len) {
+    samp_on_ = sp != nullptr;
+    if (sp) samp_ = *sp;
+    samp_hist_ = hist;
+    samp_hist_len_ = hist_len;
+}
+
+bool Window::sample_rows(int Tn, int32_t* out, std::string& err) {
+    if (!samp_on_ || Tn < 1 || Tn > MAXT) return true;
+    const int64_t V = n_vocab_;
+    constexpr uint32_t PARTS = 64;
+    if (V > (int64_t) PARTS * 4096) { err = "metal sampler: the vocabulary is wider than 64 parts of 4096"; return false; }
+    if (!scv_.handle) {
+        scv_ = cx_->alloc(4 * (size_t) MAXT * PARTS * 64);
+        sci_ = cx_->alloc(4 * (size_t) MAXT * PARTS * 64);
+    }
+    const strata::kernels::SamplerParams& sp = samp_;
+    const bool greedy = sp.greedy || sp.temperature <= 0.0f;
+    uint32_t flags = greedy ? 2u : 0u;
+    // the logit bias: a device array of n_vocab floats (unified memory: read as it is, copied into the sampler's own buffer)
+    if (sp.logit_bias != nullptr) {
+        if (!sbias_.handle) sbias_ = cx_->alloc(4 * (size_t) V);
+        std::memcpy(sbias_.ptr, strata::gpu::host_view(sp.logit_bias), 4 * (size_t) V);   // (a cudaMalloc'd array: the runtime's CPU view)
+        flags |= 1u;
+    } else if (!sbias_.handle) {
+        sbias_ = cx_->alloc(16);
+    }
+    uint32_t pen_n = 0;
+    const int hl = samp_hist_len_;
+    if (samp_hist_ != nullptr && hl > 0 && sp.penalty_last_n > 0) {
+        pen_n = (uint32_t) std::min(sp.penalty_last_n, hl);
+        const size_t need = 4 * (size_t) MAXT * (size_t) hl;
+        if (shist_cap_ < need) { if (shist_.handle) cx_->free(shist_); shist_ = cx_->alloc(need); shist_cap_ = need; }
+        std::memcpy(shist_.ptr, strata::gpu::host_view(samp_hist_), 4 * (size_t) Tn * (size_t) hl);
+        flags |= 4u;
+    } else if (!shist_.handle) {
+        shist_ = cx_->alloc(16); shist_cap_ = 16;
+    }
+    struct SampArgs {
+        uint32_t n_vocab, parts, k, hist_len, pen_n, min_keep, flags;
+        float top_p, min_p, inv_t, rep, freq, pres;
+        uint32_t seed_lo, seed_hi, ctr_lo, ctr_hi;
+    } a{};
+    a.n_vocab = (uint32_t) V;
+    a.parts = PARTS;
+    a.k = greedy ? 1u : (uint32_t) ((sp.top_k > 0 && sp.top_k < 64) ? sp.top_k : 64);
+    a.hist_len = (flags & 4u) ? (uint32_t) hl : 0u;
+    a.pen_n = pen_n;
+    a.min_keep = (uint32_t) std::max(1, sp.min_keep);
+    a.flags = flags;
+    a.top_p = sp.top_p;
+    a.min_p = sp.min_p;
+    a.inv_t = greedy ? 1.0f : 1.0f / sp.temperature;
+    a.rep = sp.penalty_repeat;
+    a.freq = sp.penalty_freq;
+    a.pres = sp.penalty_present;
+    a.seed_lo = (uint32_t) sp.seed; a.seed_hi = (uint32_t) (sp.seed >> 32);
+    a.ctr_lo = (uint32_t) sp.counter; a.ctr_hi = (uint32_t) (sp.counter >> 32);
+    mtl::Dispatch d1, d2;
+    d1.p = P(lsmp_, "samp_part", {}, "samp_part");
+    d1.args = {mtl::Arg::B(lm_), mtl::Arg::B(sbias_), mtl::Arg::B(shist_), mtl::Arg::B(scv_), mtl::Arg::B(sci_), mtl::Arg::V(a)};
+    d1.grid[0] = PARTS; d1.grid[1] = (uint32_t) Tn; d1.tg[0] = 256;
+    d2.p = P(lsmp_, "samp_pick", {}, "samp_pick");
+    d2.args = {mtl::Arg::B(scv_), mtl::Arg::B(sci_), mtl::Arg::B(tokout_), mtl::Arg::V(a)};
+    d2.grid[0] = (uint32_t) Tn; d2.tg[0] = 256;
+    const double t0 = now_ms();
+    cx_->run_graph({d1, d2});
+    for (int t = 0; t < Tn; ++t) out[t] = tokout_.as<int32_t>()[t];
+    ++samp_windows_;
+    static const bool st = std::getenv("STRATA_METAL_SAMPLE_STATS") != nullptr;
+    if (st && samp_windows_ % 200 == 0)
+        std::fprintf(stderr, "strata metal: sampler %llu windows, last %d rows in %.2f ms\n", (unsigned long long) samp_windows_, Tn, now_ms() - t0);
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------- the hook's entry points
 namespace {
 std::string g_shard1;
@@ -3115,11 +3204,16 @@ bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionSt
     int64_t nv = 0;
     return window_init(window_create(), g, ss, MAXT, max_cells, &nv, err);
 }
+void window_set_sampling(void* w, const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len) {
+    ((Window*) w)->set_sampling(sp, hist, hist_len);
+}
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
     // STRATA_LOGPOS (the quant yardstick, the KL harness): every window's head logits are read, also the prompt's
     // windows that sample nothing (head_sampling off)
     static const bool logpos = std::getenv("STRATA_LOGPOS") != nullptr;
-    return ((Window*) w)->run(T, tokens, pos0, head || logpos, out, err);
+    Window* win = (Window*) w;
+    if (!win->run(T, tokens, pos0, head || logpos, out, err)) return false;
+    return !head || win->sample_rows(T, out, err);   // a sampled / penalised / biased request: the head rows' tokens by the sampler chain (nothing to do for greedy)
 }
 void window_reset(const strata::core::SessionState* ss) {
     if (g_the_window == nullptr || !g_the_window->ready()) return;
