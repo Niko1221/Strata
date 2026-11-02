@@ -569,10 +569,13 @@ class Strata:
         The download is the GGUF; the picture reader (mmproj, ~0.9 GB) is counted by the plan when pictures are on."""
         big = self.multi_family(family)
         if big and model in big["models"]:
-            # nine shards; the memory the weights need is VRAM + RAM together WITHOUT the n-gram table (it stays on the SSD)
-            gb = sum(big["sha256"][n][0] for n in [*big["models"][model]["shards"], *big["models"][model].get("shared", [])]) / 1e9
-            return {"about": big["models"][model]["about"], "download_gb": round(gb, 1), "ram_gb": big["models"][model]["ram_gb"],
-                    "arena_gb": round(float(big["models"][model]["ram_gb"]) - 17.0, 1), "mem_total": True, "vision": bool(big.get("vision", True)),
+            # nine shards; the memory the weights need is VRAM + RAM together WITHOUT the n-gram table (it stays on the SSD).
+            # A set published only in ISTA's six-shard layout (the Coder) has its shard names under "shards6" and none under "shards".
+            md = big["models"][model]
+            names = [*md["shards"], *(md.get("shards6") or [] if not md["shards"] else [])]
+            gb = sum(big["sha256"][n][0] for n in [*names, *md.get("shared", [])]) / 1e9
+            return {"about": md["about"], "download_gb": round(gb, 1), "ram_gb": md["ram_gb"],
+                    "arena_gb": round(float(md["ram_gb"]) - 17.0, 1), "mem_total": True, "vision": bool(big.get("vision", True)),
                     "engine": None, "families": (family,), "multi_file": True}
         d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
         if not d or model not in d["models"]:

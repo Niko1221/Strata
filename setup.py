@@ -102,6 +102,7 @@ HF_REVISIONS = {
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",           # 2026-10-13
     "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": "8a6ec9cf118e785a362ea94ee123c61c70553be6",             # 2026-10-30 (adds UD-IQ1_S / UD-IQ1_M; every file pinned from the 2026-10-20 commit has the same size and SHA-256 here)
     "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": "cb02422c900df489cea5833e8a92171224059b3c",    # 2026-10-24 (ISTA-DASLab's final 1.75 / 2.00 / 2.25 bpw sets and Engram)
+    "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF": "54229d38d588a66d1c6cff08af7b281b9326c656",  # 2026-11-02 (the Coder: 192 of the 384 routed experts kept, IQ2_XXS)
 }
 
 
@@ -789,8 +790,28 @@ DSV41_UD_FILES = {
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00004-of-00005.gguf": (24358544704, "71c6c54dd1f20008e2130188cc655742d3738a365de4571d21a56de503b206b7"),
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00005-of-00005.gguf": (110595290592, "771805301e695d72d268151dfc43043581ba904298574aa879d4349cbe67b020"),
 }
+# ISTA-DASLab's Coder of 2026-11-02 (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF): the same model with HALF its routed
+# experts REMOVED instead of quantized harder - 192 of the 384 per layer, chosen by RCO against code, tool calls and agent work
+# (expert-selection/...-kept-experts.json: 40 layers x 192 base-model ids, ascending), the rest at the 2.00 bpw quantization.  72.12 GB of transformer against
+# 138.24 GB for the 2.00 bpw set, and ISTA's own measurement at reasoning effort 50: SWE-bench Verified 77.00 against the base
+# model's 81.20 (94.8% retained) and LiveCodeBench v6 88.57 against 89.71 (98.7%).  Five shards in the folder IQ2_XXS/, named as the six-shard layout: the sixth shard
+# is the Engram table, which is the same file the unpruned release carries (its copy in the Coder repository is the converted
+# one, DSV41_ENGRAM_CONVERTED, which DSV41_SHA_ALSO already accepts - it is pinned once, under ISTA's own name, and shared).
+# The drafter, the picture reader and the metadata shard are the same files as for the other official sets.
+DSV41_CODER_REPO = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF"
+DSV41_CODER_SUBDIR = "IQ2_XXS"          # the set's own folder inside the repository (and inside a --gguf-dir folder)
+DSV41_CODER_SHARD = "DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-{i:05d}-of-00006.gguf"
+DSV41_CODER_SHARDS = 5                  # the sixth shard of the split is the shared Engram table
+DSV41_CODER_FILES = {
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00001-of-00006.gguf": (5780704, "108e63d27240da2d99846250727a7b282e05a7fdf2448435e81904b9a98d8a4a"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00002-of-00006.gguf": (19776064960, "75079999eb3a492ad695f3466fd6a068a1cf1920980eac1c7f51406363fadf7a"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00003-of-00006.gguf": (19939989696, "ea964e525922f36d3b984299c1a5bb8d896f50b9c2942364cd221c37863331f2"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00004-of-00006.gguf": (19682533472, "2d95806d186597cb0ea32635c92f0b66a9a6afae1a399ff74b13aebaa4ac7a52"),
+    "DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-00005-of-00006.gguf": (12719198624, "3665b48c3bd46330780caf286ee40a087ac11499e5b7df8c943b098d10f426d4"),
+}
+DSV41_CODER_BYTES = sum(s for s, _ in DSV41_CODER_FILES.values())       # 72,123,567,456: the five shards of the transformer
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
-DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES}
+DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES, **DSV41_CODER_FILES}
 DSV41_PROFILES = ROOT / "data" / "dsv41"           # the shipped hot-expert profiles (profile-2.00.bin, profile-2.25.bin, + .sha256)
 DSV41_CONTEXT = 8192          # the context the engine was checked at (4096 and 8192; 64K is not tried yet)
 DSV41_MAC_VISION = False      # an Apple Silicon Mac: the Metal engine has not run DeepSeek's picture tower (0.2.7.1), so pictures stay off there
@@ -833,6 +854,28 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "shards": [DSV41_ISTA_SHARD.format(quant="IQ1_M", i=i) for i in range(1, 5)],
         "shards6": [DSV41_ISTA6_SHARD.format(quant="IQ1_M", i=i) for i in range(1, DSV41_ISTA6_SHARDS + 1)],
         "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
+    # ISTA's Coder (2026-11-02): opt-in and code-first - half the routed experts are gone rather than quantized harder, so it is a
+    # different model, not a smaller file of the same one.  It has no four-shard layout (the set was published after the 2026-10-27
+    # re-split), so "shards" is empty, its files are the six-shard ones and "layout" says so: setup downloads those and its pack
+    # points into them.  No hot-expert profile ships with it: the shipped tables hold one number per (layer, expert) of the
+    # unpruned model's 384, while the Coder's expert j of layer L is base id kept_experts[L][j] (expert-selection/...-kept-experts.json,
+    # read 2026-11-02), so the engine starts without a prior and learns one as you use it (--expert-profile-save).
+    # Remapping the shipped table through that list would give one; not done here, and unverified on hardware either way.
+    "IST-DAS-Coder": {
+        "label": "IST-DAS Coder (2.00 bpw, half the experts)",
+        "about": "the code version: the 2.00 bpw quantization with 192 of the 384 experts per layer, the rest removed (72 GB of "
+                 "model instead of 138 GB, so 191 GB of disk instead of 257 GB, and about half as much of it has to be in memory). "
+                 "ISTA measures it at 77.00 SWE-bench Verified and 88.57 LiveCodeBench against the original's 81.20 and 89.71; "
+                 "expert selection targets code, tool calls and agent work, so general prose is weaker than the 2.00 set. "
+                 "Experimental on Strata: not run here yet",
+        "ram_gb": 32, "recipe": "ista", "subdir": DSV41_CODER_SUBDIR, "legacy_subdir": None, "profile": None,
+        "source": "IST-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF), with the "
+                  "shared n-gram table, the DSpark drafter and a small metadata file from Unsloth",
+        "hf": hf(DSV41_CODER_REPO) + DSV41_CODER_SUBDIR + "/",
+        "shards": [],
+        "shards6": [DSV41_CODER_SHARD.format(i=i) for i in range(1, DSV41_CODER_SHARDS + 1)],
+        "layout": "six",
+        "shared": [DSV41_ISTA_ENGRAM, DSV41_SHARD.format(i=1), DSV41_DSPARK]},
     "UD-IQ1_S": {
         "label": "Unsloth UD-IQ1_S",
         "about": "Unsloth's smallest dynamic version: 122 GB of model (experts in IQ1_S / IQ2_XXS, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as IST-DAS 1.75 bpw. A 1-bit version: expect weaker answers than the 2.00 and 2.25 versions on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet). Pick 2.00 or 2.25 if they fit",
@@ -867,6 +910,7 @@ REPO_PINS = {
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": GYRO_FILES,
     "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": DSV41_FILES,
     "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": DSV41_ISTA_FILES,
+    "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF": DSV41_CODER_FILES,
 }
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
 ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Next-experimental-speed-projection.gguf"
@@ -8267,6 +8311,8 @@ def dsv41_layout_of(md: dict, present) -> str:
     """Which layout of a set the files are: "four" (the pinned files, and the first release's names) or "six" (ISTA-DASLab's 2026-10-27 re-split,
     DSV41_ISTA6_FILES).  `present(name)` says whether a file is there.  Six only when its files are there and the four-shard ones are not (or are
     not whole while the six are): a folder holding both whole sets is used as the pinned four-shard one, as before."""
+    if not md["shards"]:                                  # a set published only in the six-shard layout (the Coder): that is its layout
+        return "six" if md.get("shards6") else "four"
     four = [bool(present(n) or (DSV41_LEGACY_NAMES.get(n) and present(DSV41_LEGACY_NAMES[n]))) for n in md["shards"]]
     six = [bool(present(n)) for n in md.get("shards6") or []]
     return "six" if six and any(six) and (not any(four) or (all(six) and not all(four))) else "four"
@@ -8521,10 +8567,11 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         fail(dsv41_fit.not_here(model), "choose --model IST-DAS-2.00bpw or --model IST-DAS-2.25bpw (their files work with --gguf-dir too); nothing has been downloaded")
     ok(f"size: {model}")
     md = fam["models"][model]
-    say("  Its GGUF files: " + ("IST-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter and a small metadata file from Unsloth"
+    say("  Its GGUF files: " + (md.get("source") or (     # a set from another repository says so itself (the Coder)
+                              "IST-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter and a small metadata file from Unsloth"
                               if md.get("recipe") == "ista" else
                               "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF); the Engram table is the same data as IST-DAS's, so a copy of it already here is used"
-                              if md.get("recipe") == "udlow" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)"))
+                              if md.get("recipe") == "udlow" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)")))
     udlow = md.get("recipe") == "udlow"          # Unsloth's UD-IQ1_S / UD-IQ1_M: packed and checked like the IST-DAS sets; shard 5 is the Engram
     ista = md.get("recipe") in ("ista", "udlow")
     tag = fam["tag"] + model
@@ -8536,9 +8583,10 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     if dsv41_context.note(ctx):
         warn(f"context {dsv41_context.label(ctx)}: {dsv41_context.note(ctx)}")
     folder = dsv41_folder(a, fam, tag, model)
-    layout = dsv41_layout_of(md, lambda n: (folder / n).exists()) if (ista and a.gguf_dir) else "four"
+    # a set published only in the six-shard layout (the Coder) says so with "layout"; for the older sets the default stays "four"
+    layout = dsv41_layout_of(md, lambda n: (folder / n).exists()) if (ista and a.gguf_dir) else md.get("layout", "four")
     shards = [dsv41_pick(folder, n) for n in (md["shards6"] if layout == "six" else md["shards"])]
-    if layout == "six":
+    if layout == "six" and a.gguf_dir:
         say(f"  {folder} holds ISTA-DASLab's six-shard files of 2026-10-27 ({len(shards)} files and the Engram as the sixth): they are used where they are.")
     shared_dir = dsv41_shared_dir(a, fam)
     # Pictures are on by default (owner rule): the engine reads them with its own vision tower, which the pack carries when the tower's weights
@@ -8704,10 +8752,13 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             run([sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--out", str(pack),
                  *(["--mmproj", str(mmproj_file)] if mmproj_file else [])])
     if ista:
-        prof = DSV41_PROFILES / md["profile"]          # which experts are used most: the RAM store starts with them (the engine reads <pack>/expert-profile.bin)
-        if prof.is_file() and not (pack / "expert-profile.bin").exists():
+        prof = DSV41_PROFILES / md["profile"] if md.get("profile") else None    # which experts are used most: the RAM store starts with them (the engine reads <pack>/expert-profile.bin)
+        if prof and prof.is_file() and not (pack / "expert-profile.bin").exists():
             pack.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(prof, pack / "expert-profile.bin")
+        elif prof is None:      # a pruned set has no table to offer: the shipped ones hold one number per expert of the unpruned model,
+            warn("no hot-expert profile ships with this set (its experts are a renumbered half of the model's): the first run starts "
+                 "with nothing cached and learns one as you use it")
         good, why = dsv41_pack_info(exe, pack, lib_dirs)
         if not good:
             tail = "\n".join(l for l in why.splitlines() if "MISSING" in l)[:600]

@@ -316,9 +316,12 @@ class Catalog(unittest.TestCase):
         s = M.Strata(ROOT)
         fam = next(f for f in s.model_table({"ram_gb": 251.0, "gpus": [{**c, "usable": True} for c in FOUR], "engine_vendor": "amd"})
                    if f["family"] == "deepseek41")
-        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
+        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "IST-DAS-Coder",
+                                                             "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
         small_sets = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual((small_sets["IST-DAS-2.00bpw"]["download_gb"], small_sets["IST-DAS-2.25bpw"]["download_gb"]), (256.8, 273.8))
+        self.assertEqual(small_sets["IST-DAS-Coder"]["download_gb"], 190.7)                 # the Coder: 72 GB of model, the same 111 GB table and drafter
+        self.assertTrue(small_sets["IST-DAS-Coder"]["on_this_pc"].startswith("fits"))
         self.assertTrue(small_sets["IST-DAS-2.00bpw"]["on_this_pc"].startswith("fits"))
         size = small_sets["UD-Q8_K_XL"]
         self.assertEqual((size["model"], size["id"], size["download_gb"], size["images"]), ("UD-Q8_K_XL", "deepseek-v4.1-flash-ud-q8_k_xl", 508.4, True))
@@ -428,7 +431,8 @@ class OfficialSets(unittest.TestCase):
 
     def test_the_pinned_files(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
-        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])         # the official sets first
+        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "IST-DAS-Coder",
+                                              "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])         # the official unpruned sets first, the Coder after them
         repo = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"
         self.assertEqual(setup.HF_REVISIONS[repo], "cb02422c900df489cea5833e8a92171224059b3c")
         self.assertIs(setup.REPO_PINS[repo], setup.DSV41_ISTA_FILES)
@@ -673,6 +677,65 @@ class SixShardLayout(unittest.TestCase):
             self.assertEqual(setup.dsv41_folder(argparse.Namespace(gguf_dir=t, models_dir=t), fam, "t", "IST-DAS-2.00bpw"), sub)
 
 
+class CoderSet(unittest.TestCase):
+    """IST-DASLab's Coder set (2 November 2026, its own repository): the same 2.00 bpw weights with 192 of the 384 experts, published only in the
+    six-shard layout, in the folder IQ2_XXS/.  Nothing is downloaded here; the pins are read from the Hub's tree of the pinned revision."""
+
+    def model(self):
+        return setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-Coder"]
+
+    def test_the_pins_are_the_hub_sizes_and_hashes_of_the_pinned_revision(self):
+        self.assertEqual(setup.HF_REVISIONS[setup.DSV41_CODER_REPO], "54229d38d588a66d1c6cff08af7b281b9326c656")
+        self.assertIs(setup.REPO_PINS[setup.DSV41_CODER_REPO], setup.DSV41_CODER_FILES)
+        self.assertEqual(len(setup.DSV41_CODER_FILES), setup.DSV41_CODER_SHARDS)          # five: the sixth of the split is the shared Engram
+        for n, (size, sha) in setup.DSV41_CODER_FILES.items():
+            self.assertRegex(n, r"^DeepSeek-V4\.1-Flash-1017-GSQ-RCO-Coder-IQ2_XXS-0000[1-5]-of-00006\.gguf$")
+            self.assertRegex(sha, r"^[0-9a-f]{64}$", n)
+            self.assertIn(n, setup.DSV41_ALL_FILES)
+            self.assertNotIn(n, setup.DSV41_ISTA_FILES)                                   # the other repository's tables did not move
+            self.assertNotIn(n, setup.DSV41_ISTA6_FILES)
+        self.assertEqual(setup.DSV41_CODER_BYTES, 72_123_567_456)
+        self.assertEqual(sum(s for s, _ in setup.DSV41_CODER_FILES.values()), setup.DSV41_CODER_BYTES)
+        self.assertEqual(setup.DSV41_CODER_FILES[setup.DSV41_CODER_SHARD.format(i=1)][0], 5780704)     # the metadata shard: no tensors
+
+    def test_the_model_entry_is_the_six_shard_layout_with_the_shared_files(self):
+        fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
+        d = self.model()
+        self.assertEqual((d["recipe"], d["subdir"], d["layout"], d["profile"]), ("ista", "IQ2_XXS", "six", None))
+        self.assertEqual(d["shards"], [])                                                 # never published in four shards
+        self.assertEqual(d["shards6"], [setup.DSV41_CODER_SHARD.format(i=i) for i in range(1, setup.DSV41_CODER_SHARDS + 1)])
+        self.assertEqual(d["shared"], fam["models"]["IST-DAS-2.00bpw"]["shared"])          # the same Engram, drafter and metadata shard
+        self.assertEqual(setup.DSV41_ENGRAM_CONVERTED, (110_595_290_816, "3dac4c54893ad7aa89103c0028500eadc78e74112cef3a2930a97e67dc9fb4f3"))
+        self.assertIn(setup.DSV41_ENGRAM_CONVERTED[1], setup.DSV41_SHA_ALSO.get(setup.DSV41_ISTA_ENGRAM, ()))   # the Coder card's Engram is that same file: no new pin
+        self.assertAlmostEqual(dsv41_fit.ista_download_bytes("IST-DAS-Coder") / 1e9, 190.7, delta=0.1)           # 72 GB of model + 111 GB table + 8 GB drafter
+
+    def test_its_layout_is_six_even_with_no_files_and_names_a_missing_shard(self):
+        d = self.model()
+        six = list(d["shards6"])
+        self.assertEqual(setup.dsv41_layout_of(d, set().__contains__), "six")               # nothing here: it has no four-shard names to fall back on
+        self.assertEqual(setup.dsv41_layout_of(d, set(six[:2]).__contains__), "six")
+        layout, names, missing = setup.dsv41_parts(d, (set(six) - {six[2]}).__contains__)
+        self.assertEqual((layout, names, missing), ("six", six, [six[2]]))
+
+    def test_its_own_folder_is_found_from_the_repository_folder(self):
+        with tempfile.TemporaryDirectory() as t:
+            sub = Path(t) / "IQ2_XXS"
+            sub.mkdir()
+            (sub / self.model()["shards6"][0]).write_bytes(b"x")
+            fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
+            self.assertEqual(setup.dsv41_folder(argparse.Namespace(gguf_dir=t, models_dir=t), fam, "t", "IST-DAS-Coder"), sub)
+
+    def test_the_fit_counts_its_kept_experts(self):
+        self.assertIn("IST-DAS-Coder", dsv41_fit.ISTA_SETS)
+        self.assertEqual(dsv41_fit.ISTA_SETS["IST-DAS-Coder"]["experts_per_layer"], 192)     # half of dsv41_fit.EXPERTS_PER_LAYER
+        for ram in (32.0, 64.0, 128.0):
+            p = dsv41_fit.plan([RTX5070], ram, None, model="IST-DAS-Coder")
+            self.assertEqual(p["experts_total"], dsv41_fit.LAYERS * 192, ram)                # 7,680, not the full model's 15,360
+            self.assertLessEqual(p["experts_in_vram"], p["experts_total"], ram)
+        self.assertEqual(dsv41_fit.recommend(64.0, 900.0), "IST-DAS-2.00bpw")                # never recommended on its own: code-only, not run here
+        self.assertEqual(dsv41_fit.recommend(32.0, 900.0), "IST-DAS-1.75bpw")
+
+
 class Smallest(unittest.TestCase):
     """IST-DAS 1.75 bpw (IQ1_M): the smallest official set, recommended where 2.00 is tight, never forced."""
 
@@ -696,7 +759,8 @@ class Smallest(unittest.TestCase):
         self.assertNotIn("--skip-tensors", cmd)
 
     def test_it_is_the_smallest_and_warns_never_refuses(self):
-        sizes = {m: dsv41_fit.ista_download_bytes(m) / 1e9 for m in dsv41_fit.ISTA_SETS}
+        sizes = {m: dsv41_fit.ista_download_bytes(m) / 1e9 for m in dsv41_fit.ISTA_SETS if m != "IST-DAS-Coder"}
+        # the Coder set is 48 GB smaller again, but it is code-only and half the experts: never the automatic pick (CoderSet.test_the_fit_counts_its_kept_experts)
         self.assertEqual(min(sizes, key=sizes.get), "IST-DAS-1.75bpw")
         self.assertAlmostEqual(sizes["IST-DAS-1.75bpw"], 239.3, delta=0.1)
         for ram in (24.0, 36.0, 64.0):

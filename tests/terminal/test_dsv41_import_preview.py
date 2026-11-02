@@ -1,6 +1,7 @@
 """The app's "I already have the model" preview recognises an official DeepSeek-V4.1-Flash set (IST-DAS 1.75 / 2.00 / 2.25 bpw), under the
 official file names or the first release's, from the pinned names and sizes; since 0.2.8.1 also the four-shard files as ISTA-DASLab re-published
-their shard 1 on 2026-10-26 (#4237) and ISTA-DASLab's six-shard layout of 2026-10-27. Qwen previews are unchanged (tests/terminal/test_models*.py)."""
+their shard 1 on 2026-10-26 (#4237) and ISTA-DASLab's six-shard layout of 2026-10-27, and the Coder set of 2026-11-02, which was published
+only in that six-shard layout, in the folder IQ2_XXS/. Qwen previews are unchanged (tests/terminal/test_models*.py)."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,8 +14,13 @@ T = dsv41_sets.tables()
 
 ISTA = [m for m in T["sets"] if m.startswith("IST-DAS")]      # the Unsloth UD-IQ1 sets have no legacy, six-shard or re-published layouts (tools/test_setup_udlow.py)
 
+SIX_ONLY = [m for m in T["sets"] if not T["sets"][m]["shards"]]    # a set published only in the six-shard layout (the Coder): no four-shard names exist
+
+
 def files_of(model, legacy=False, engram="official", drop=(), wrong=(), layout=None):
     entry = T["sets"][model]
+    if layout is None and not entry["shards"]:
+        layout = "six"
     pinned = dict(entry["six"] if layout == "six" else entry["legacy"] if legacy else entry["shards"])
     if layout == "four-newer-first":                  # the four-shard files after ISTA-DASLab's 2026-10-26 re-publication of shard 1
         pinned.update(entry["new1"])
@@ -36,12 +42,26 @@ class DeepSeekPreview(unittest.TestCase):
             with mock.patch.object(models, "_dsv41_files", return_value=listing):
                 return models.plan_import(str(target)), folder
 
-    def test_the_tables_come_from_setup_and_cover_the_three_official_sizes(self):
-        self.assertEqual(sorted(T["sets"]), ["IST-DAS-1.75bpw", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_M", "UD-IQ1_S"])
+    def test_the_tables_come_from_setup_and_cover_every_official_set(self):
+        self.assertEqual(sorted(T["sets"]), ["IST-DAS-1.75bpw", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-Coder",
+                                             "UD-IQ1_M", "UD-IQ1_S"])
         self.assertEqual(len(T["engram"]), 2)
+        self.assertEqual(SIX_ONLY, ["IST-DAS-Coder"])                # it has no four-shard names to fall back on, and needs none
+
+    def test_the_coder_set_is_recognised_from_its_six_shard_files(self):
+        plan, _ = self.preview(files_of("IST-DAS-Coder"))
+        self.assertEqual(plan["file_set_status"], "plausible", plan["issues"])
+        self.assertEqual((plan["candidate_selection"]["family"], plan["candidate_selection"]["model"]), ("deepseek41", "IST-DAS-Coder"))
+        self.assertEqual(plan["file_count"], 6)                      # five shards and the Engram table as the sixth
+        self.assertEqual(plan["issues"], [])
+        missing = sorted(T["sets"]["IST-DAS-Coder"]["six"])[3]       # a folder missing one of them says which
+        plan, _ = self.preview(files_of("IST-DAS-Coder", drop=(missing,)))
+        self.assertEqual(plan["missing_shards"], [missing])
 
     def test_each_official_set_is_recognised_with_its_size_name(self):
         for model in ISTA:
+            if model in SIX_ONLY:
+                continue                                    # the Coder was published only in the six-shard layout: test_the_coder_set_… below
             for legacy in (False, True):
                 if legacy and not T["sets"][model]["legacy"]:
                     continue                                    # 1.75 has no first-release names
@@ -91,6 +111,8 @@ class DeepSeekPreview(unittest.TestCase):
 
     def test_the_four_shard_files_with_the_republished_first_shard_are_the_set_4237(self):
         for model in ISTA:
+            if model in SIX_ONLY:
+                continue                                    # never published in four shards, so there is no re-published shard 1 of it
             plan, folder = self.preview(files_of(model, layout="four-newer-first"))
             self.assertEqual(plan["file_set_status"], "plausible", (model, plan["issues"]))
             self.assertEqual(plan["candidate_selection"]["model"], model)

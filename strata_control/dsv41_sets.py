@@ -33,23 +33,23 @@ def tables() -> dict | None:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)            # type: ignore[union-attr]
         family = module.MULTI_FILE_FAMILIES[FAMILY]
-        ista, legacy, renamed = module.DSV41_ISTA_FILES, module.DSV41_LEGACY_FILES, module.DSV41_LEGACY_NAMES
-        new1, six = getattr(module, "DSV41_NEW_SHARD1", {}), getattr(module, "DSV41_ISTA6_FILES", {})
+        renamed = module.DSV41_LEGACY_NAMES
+        pins, new1 = family["sha256"], getattr(module, "DSV41_NEW_SHARD1", {})     # setup.py's own pin table: name -> (bytes, sha256)
         result: dict = {"sets": {}, "engram": {}}
         for model, entry in family["models"].items():
             if entry.get("recipe") not in ("ista", "udlow"):
                 continue                                # Unsloth's 508 GB set is not an "already have it" case of the app
-            ista = {**ista, **getattr(module, "DSV41_UD_FILES", {})}
-            shards = {name: ista[name][0] for name in entry["shards"]}
-            old = {renamed[name]: legacy[renamed[name]][0] for name in entry["shards"] if name in renamed and renamed[name] in legacy}
+            shards = {name: pins[name][0] for name in entry["shards"] if name in pins}     # a set published only in the six-shard
+            old = {renamed[name]: pins[renamed[name]][0] for name in entry["shards"]       # layout (the Coder) has no four-shard
+                   if name in renamed and renamed[name] in pins}                          # names of its own, and nothing here fails
             alt = entry.get("engram_shard")             # Unsloth's UD-IQ1 sets: shard 5 is the Engram (the same data as IST-DAS's file)
             result["sets"][model] = {"label": entry.get("label", model), "shards": shards, "legacy": old,
-                                     "engram_alt": {alt: ista[alt][0]} if alt else {},
+                                     "engram_alt": {alt: pins[alt][0]} if alt and alt in pins else {},
                                      "new1": {name: new1[name][0] for name in entry["shards"] if name in new1},
-                                     "six": {name: six[name][0] for name in entry.get("shards6") or [] if name in six}}
+                                     "six": {name: pins[name][0] for name in entry.get("shards6") or [] if name in pins}}
         for name in (module.DSV41_ISTA_ENGRAM, renamed.get(module.DSV41_ISTA_ENGRAM)):
-            if name and (name in ista or name in legacy):
-                result["engram"][name] = (ista.get(name) or legacy[name])[0]
+            if name and name in pins:
+                result["engram"][name] = pins[name][0]
         _TABLES = result
     except Exception:                                   # noqa: BLE001 - a preview must never fail because of this
         _TABLES = {}

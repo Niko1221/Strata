@@ -60,9 +60,15 @@ It uses its own engine, a separate download that the app and `strata launch` fet
 | 1.75 bpw | 239 GB | perplexity +21%; code and agent text +8.9% and +10.2%; weaker on plain prose |
 | 2.00 bpw | 257 GB | perplexity +16%; code and agent text +8.5% and +5.9% |
 | 2.25 bpw | 274 GB | perplexity +7.7% to +8.3%; code and agent text +3.5% and +2.5% |
+| [Coder](DEEPSEEK41.md), 2.00 bpw | 191 GB | half the experts kept: SWE-bench Verified 77.00 and LiveCodeBench v6 88.57, against the base model's 81.20 and 89.71 (ISTA-DASLab's numbers). We have not run it here |
 
 The download includes the shared n-gram (Engram) table and the DSpark drafter. Pick 2.25 for coding and agent work if
 you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lower is closer to the original.
+
+The **Coder** is a different trade from the three sizes above: the same 2-bit weights, but **192 of the 384 experts** in each
+layer. Less model to hold (72 GB instead of 138 GB) and fewer experts to keep warm, at the cost of a third of the model's
+routing. Its numbers are code benchmarks from ISTA-DASLab's model card, not our perplexity measurements, and they are the
+only ones published for it. See [DeepSeek-V4.1-Flash](DEEPSEEK41.md).
 
 **Supported hardware**
 

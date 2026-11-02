@@ -26,7 +26,8 @@ with an out-of-memory message. Both are said before anything is downloaded.
 
 ## The official 2-bit versions (the ones for a normal PC)
 
-Setup offers three official sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, pinned): **IQ1_M, 1.75 bpw** (`ist-das-1.75bpw`, 121 GB, slightly lower quality; setup recommends it where 2.00 is tight in memory or disk), **IQ2_XXS, 2.00 bpw** (138 GB) and **IQ2_XS, 2.25 bpw** (155 GB). All use the
+Setup offers three official sets of the unpruned model (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, pinned), and a fourth code-only set of the
+same model with half its experts (below): **IQ1_M, 1.75 bpw** (`ist-das-1.75bpw`, 121 GB, slightly lower quality; setup recommends it where 2.00 is tight in memory or disk), **IQ2_XXS, 2.00 bpw** (138 GB) and **IQ2_XS, 2.25 bpw** (155 GB). All use the
 same 111 GB n-gram table (downloaded once into `models/deepseek-v4.1-flash-shared`) and the 8 GB DSpark drafter: 257 GB of disk for
 2.00, 274 GB for 2.25, 239 GB for 1.75, 533 GB for all three. Quality against the original model (4,995 positions, the final files): 2.00 has KL 0.170 and perplexity +15.5% (code +8.6%, agent work +5.3%); 2.25 has KL 0.107 and
 perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.217, top-1 82.5%); code +8.9%, agent work +10.2%, multilingual +14%, docs +24%, plain English prose +53%, so it is weaker on prose. ISTA-DASLab's model card says it keeps 98.7% of the base model's task average (AIME25, GPQA-Diamond, LiveCodeBench v6).
@@ -36,8 +37,23 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 | IQ1_M shards (1.75 bpw), 4 files | 121 GB | the model, smallest set |
 | IQ2_XXS shards (2.00 bpw), 4 files | 138 GB | the model, middle set |
 | IQ2_XS shards (2.25 bpw), 4 files | 155 GB | the model, largest set |
+| IQ2_XXS Coder shards (2.00 bpw, half the experts), 5 files | 72 GB | the Coder set below; in its split the Engram file is the sixth shard |
 | IQ4_NL: `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` | 111 GB | the 4-bit Engram lookup table the model reads from RAM or SSD. Not a model to pick: all three sets use this one file, and it is already in their download sizes |
 | DSpark drafter (Q8_0) | 8 GB | the small draft model (Unsloth) |
+
+**The Coder set (`ist-das-coder`, 191 GB).** ISTA-DASLab's code version of the same model, published 2 November 2026 in its own repository
+(`ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF`, pinned): the same IQ2_XXS 2.00 bpw weights, but **192 of the 384 routed experts** in each
+layer. That is 72 GB of model instead of 138 GB, and 191 GB of disk instead of 257 GB. The n-gram table and the drafter are the same files the other
+sets use, so a computer that already has the 2.00 set downloads about 72 GB more, not 191 GB; pictures use the same pinned vision file as every other
+set (the Coder repository has a copy of it under another name, which setup does not fetch). Expert *j* of a layer in the Coder is expert
+`kept_experts[L][j]` of the base model - the repository's `expert-selection/…-kept-experts.json` lists the 192 ids for each of the 40 layers - which is
+what makes its pack different from a 2.00 pack: the two are not interchangeable.
+Their model card (reasoning effort 50) says SWE-bench Verified 77.00 against the base model's 81.20, and LiveCodeBench v6 88.57 against 89.71 - 94.8%
+and 98.7% of the base, and 98.7% of the base model's task average. **We have not run this set on Strata**: the perplexity and tokens/s figures on this
+page are the three unpruned sets only, and the Coder is marked "not run here yet" in setup and in `strata launch`.
+Half the experts also means nothing shipped to warm them up: the hot-expert profiles in `data/dsv41/` are keyed by (layer, expert) of the full 384, so
+setup copies none of them into a Coder pack and says so - the first run starts with nothing cached and learns a profile as you use it.
+Like the other sets, the Coder is not offered on an Apple Silicon Mac or a Ryzen AI Max box until one is run there.
 
 **Two layouts of the same sets.** Setup downloads the four-shard files (`...-0000N-of-00004.gguf`, the Hugging Face revision `cb02422c`). On 27 October 2026
 ISTA-DASLab re-split the three sets: five shards each (`...-0000N-of-00006.gguf`; shard 1 is 5.8 MB of metadata and has no tensors) and the Engram file as the
@@ -46,7 +62,8 @@ checks their size and SHA-256, and packs them. The same goes for the four-shard 
 chat template. What differs in the six-shard files: the two Engram tables are one tensor (the same bytes), the Engram gate is stored already folded (q times k),
 the attention output matrix is one 2-D tensor instead of a 3-D one, and there is a routing bias for picture tokens. The packs are the same size and the engine
 reads both. The Engram has the same name and size in both layouts but another hash; either one works with either layout, and setup downloads the pinned one
-if you have none. The download default is still the four-shard files.
+if you have none. The download default is still the four-shard files. The Coder was never published in four shards, so setup downloads it in the
+six-shard layout, from the folder `IQ2_XXS/` of its repository.
 
 **On a Ryzen AI Max "Strix Halo" (Windows)** the graphics chip and the CPU share one pool of memory, so the engine counts it once: the
 128 GB box (a 64 GB BIOS carve-out plus the 64 GB Windows sees) keeps about 109 GB of the 2.00 set's experts in that pool (the dense
@@ -83,8 +100,9 @@ and its 7 GB of experts take the graphics memory); the RAM store sizes itself. L
 ./setup.sh --family deepseek41 --model IST-DAS-2.00bpw   # 257 GB: the official 2.00 set + Engram + drafter (resumable, SHA-256 checked)
 ./setup.sh --family deepseek41 --model IST-DAS-2.25bpw   # 274 GB (the Engram is shared with 2.00)
 ./setup.sh --family deepseek41 --model IST-DAS-1.75bpw   # 239 GB, the smallest
+./setup.sh --family deepseek41 --model IST-DAS-Coder     # 191 GB: the code set, half the experts (not run by us yet)
 ./setup.sh --family deepseek41 --model UD-Q8_K_XL        # Unsloth's 508 GB set, for hundreds of GB of RAM or several cards
-./setup.sh --family deepseek41 --gguf-dir DIR            # files you already have: the shards (or the folder with 2.00bpw / 2.25bpw / UD-Q8_K_XL inside); the Engram and drafter are looked for beside them
+./setup.sh --family deepseek41 --gguf-dir DIR            # files you already have: the shards (or the folder with 2.00bpw / 2.25bpw / IQ2_XXS / UD-Q8_K_XL inside); the Engram and drafter are looked for beside them
 strata launch --model ist-das-2.00bpw --plan             # where it would go on this computer, nothing changed
 strata launch --model-path DIR --model ist-das-2.00bpw   # start from files you already have
 ```
