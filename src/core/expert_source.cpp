@@ -3850,8 +3850,23 @@ bool FileExpertSource::pin_cache_complement(
         }
 #endif
         if (pin && !paced) {
+#if defined(hipHostMallocNonCoherent)
+            // STRATA_HIP_ARENA_NONCOHERENT=1 (opt-in): the complement is written once, here, before the GPU reads it,
+            // and only its offsets move afterwards, so it needs no fine-grain coherence (strata_host_alloc forces it for
+            // the mapped flag words two sides spin on).  With HSA_USERPTR_FOR_PAGED_MEM=0 ROCr then backs it with
+            // coarse-grained GTT: driver-pinned, no MMU notifier, so reclaim and compaction cannot evict the queues;
+            // fine-grained GTT reads prompts about 2.4x slower on gfx1100.  The GTT limit (ttm.pages_limit, half the
+            // RAM by default) must hold it, or the allocation is refused and the complement falls back as below (a registration,
+            // so a userptr again).
+            const char* nc = std::getenv("STRATA_HIP_ARENA_NONCOHERENT");
+            const cudaError_t allocated = (nc != nullptr && nc[0] == '1')
+                ? ::strata::hip_compat::host_alloc(&arena, (size_t) bytes,
+                                                   hipHostMallocMapped | hipHostMallocPortable | hipHostMallocNonCoherent)
+                : cudaHostAlloc(&arena, (size_t) bytes, cudaHostAllocMapped | cudaHostAllocPortable);
+#else
             const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
                                                          cudaHostAllocMapped | cudaHostAllocPortable);
+#endif
             if (allocated == cudaSuccess) {
                 void* alias = nullptr;
                 const cudaError_t aliased = cudaHostGetDevicePointer(&alias, arena, 0);

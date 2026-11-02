@@ -408,8 +408,35 @@ engine under `numactl --localalloc`, or see #4866).
 Measured on one RX 7900 XTX (gfx1100, ROCm 7.10, Linux 6.18, 64 GB, Swift IQ3_S, 32 GiB of resident experts,
 `HSA_USERPTR_FOR_PAGED_MEM` at its default, `vm.compact_unevictable_allowed=0`), 30K-220K-token prompts while another
 process held RAM down to 5 GiB free: without the lock the engine stalled after 103 s and 63 s; with it, two 30-minute
-runs had no stall (37 GiB locked). `HSA_USERPTR_FOR_PAGED_MEM=0` is then not needed, and the default keeps the arena
-page-locked (prompt reads about twice as fast there).
+runs had no stall (37 GiB locked). The lock leaves short evictions: 10-230 ms on some fresh 30K-token prompts and
+about 600 ms when another process takes 6 GB, from host memory ROCr maps for itself (shared `/dev/zero` mappings, a
+few hundred MiB) that the engine never sees and cannot lock.
+
+**GTT instead of userptr (HIP on Linux, opt-in, removes the evictions).** With `"HSA_USERPTR_FOR_PAGED_MEM": "0"` ROCr
+backs every host allocation for the GPU, its own included, with GTT: pages the amdgpu driver pins itself, with no MMU
+notifier, so reclaim, swap and compaction never evict the queues. Alone it is slow, because the expert complement is
+then fine-grained (coherent) GTT. `"STRATA_HIP_ARENA_NONCOHERENT": "1"` allocates the complement coarse-grained; it is
+written once at load and only read by the GPU after that.
+
+```json
+"env": {"HSA_USERPTR_FOR_PAGED_MEM": "0", "STRATA_HIP_ARENA_NONCOHERENT": "1"}
+```
+
+The GTT limit must hold the complement, the KV copies and ROCr's own buffers. It is half the RAM by default (31 GiB on a
+64 GB host): raise it with the kernel parameter `ttm.pages_limit=<4 KiB pages>` (11534336 = 44 GiB) and check
+`/sys/class/drm/card*/device/mem_info_gtt_total` after the reboot. If the limit is too small, the allocation is
+refused and the complement falls back to registered pageable memory ("page-locking refused" in the log): a registration is a userptr whatever `HSA_USERPTR_FOR_PAGED_MEM` says, so the evictions come back. GTT pages are as unswappable as
+locked ones, so the same RAM caution applies. `STRATA_HIP_MLOCK` is not needed with GTT; it stays the choice where the
+GTT limit cannot be raised.
+
+Same host as above, budget 32 GiB, `ttm.pages_limit` at 44 GiB, 1 GB of RAM or less free, five fresh 30K-token prompts
+and 6 GB taken by another process with the engine idle:
+
+| | Prompt read | Decode | Queue eviction, prompts | Queue eviction, 6 GB taken |
+| --- | --- | --- | --- | --- |
+| userptr + `STRATA_HIP_MLOCK=1` | 2,330-2,370 tok/s | 64-71 tok/s | 229, 56, 10 ms (3 of 5) | 595 ms |
+| GTT + `STRATA_HIP_ARENA_NONCOHERENT=1` (2 runs) | 2,290-2,350 tok/s | 60-72 tok/s | 0 (10 of 10) | 0 ms |
+| GTT, coherent complement (budget 22) | about 2.4x slower | | 0 | 0 ms |
 
 ## RDNA4 (gfx1201)
 
