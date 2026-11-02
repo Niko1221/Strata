@@ -181,9 +181,27 @@ void lock_in_ram(const Tensor& t) {
     for (int i = 0; i < LOCKERS; ++i)
         th.emplace_back([&, i] {
             const uintptr_t lo = std::min(e, a + (uintptr_t) i * part), hi = std::min(e, lo + part);
-            if (hi > lo && mlock((const void*) lo, hi - lo) != 0) err[(size_t) i] = errno;
+            if (hi > lo && mlock((const void*) lo, hi - lo) != 0) {
+                err[(size_t) i] = errno;
+#if FNX_HIP
+                // HIP build: a user's RLIMIT_MEMLOCK is often 8 MiB and cannot be raised without root. The table then stays in the page
+                // cache unlocked (it is a file mapping: an evicted page is read again); the 16 threads still fault it in side by side
+                volatile unsigned char sink = 0;
+                for (uintptr_t p = lo; p < hi; p += PG) sink = sink + *(const volatile unsigned char*) p;
+                (void) sink;
+#endif
+            }
         });
     for (auto& x : th) x.join();
+#if FNX_HIP
+    for (int en : err)
+        if (en) {
+            std::fprintf(stderr, "fnx: mlock of %s (%zu MiB) failed: %s; the table stays unlocked in the page cache (raise RLIMIT_MEMLOCK to lock it)\n",
+                         t.name.c_str(), (size_t) (t.nbytes >> 20), std::strerror(en));
+            break;
+        }
+    return;
+#endif
     for (int en : err)
         if (en)
             throw std::runtime_error("fnx: mlock of " + t.name + " (" + std::to_string(t.nbytes >> 20) + " MiB) failed: " + std::strerror(en) +
