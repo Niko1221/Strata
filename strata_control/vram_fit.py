@@ -69,19 +69,25 @@ BASE_GENERIC_MIB = 2448
 # 8 GB (7800 MiB left, the same engine): --batch 2 has 0.83 GiB free after the two slot sessions, the MTP layer takes 835 and the head upload dies "out of memory
 # (7 MiB free)"; --batch 4 fits three sessions and the MTP layer's dense weights die "out of memory (99 MiB free)".  The formula says -1765 MiB for the first (the engine's own
 # figures say -1757), so both are refused by the plan and given a context or fewer requests that fit.
-BASE_SLOTTED_MIB = {("intel", "flash-next"): 4500, ("cuda", "flash-next"): 4990}      # (vendor, model family): the A750 and the CUDA engine; HIP has no entry until one is measured
+BASE_SLOTTED_MIB = {("intel", "flash-next"): 4500, ("cuda", "flash-next"): 4990,
+                    ("hip", "flash-next"): 3900}      # (vendor, model family): the A750, the CUDA engine, and a discrete AMD card (R9700, see the HIP lines below)
 SLOT_SLOTTED_MIB = 2.22
 # CUDA, 8 GB mimic (7942 MiB left), 2 requests at 4K: a start the plan counted 177 MiB over the one-slot limit loaded, sized a 336-slot cache with the reserve lowered
 # to 424 MiB ("a working cache needs 263"), had 59 MiB free, and aborted at its first request ("ggml-cuda (strata mmq): out of memory").  The threshold for request
 # slots on CUDA is the working cache the engine itself asks for: 263 slots of the largest blob (2.54 MiB with the IQ3_S pack).
-WORKING_CACHE_MIB = {"cuda": 263 * 2.54}
+WORKING_CACHE_MIB = {"cuda": 263 * 2.54, "hip": 263 * 2.54}      # (the same engine code sizes the cache on HIP)
+SINGLE_MEASURED_VENDORS = ("cuda", "hip")                          # a single request is priced from the measured base on these (the draft layer, the head and the sessions are the same buffers)
+HIP_BASE_NOTE = ("measured on an R9700 (gfx1201, p620) squeezed by a memory hog, DFlash2 alone, 128K, --kv-resident 32768: the engine's free VRAM before the expert cache is FREE - 5045 MiB at every "
+                 "squeeze from 7000 to 5200 (the CUDA engine: FREE - 6324), so a HIP start holds about 1280 MiB less before the cache; base = 4990 - 879 - the runtime's context, taken as 200 -> 3900 (+-150). "
+                 "Starts: 7942 MiB 787 slots 864 MiB free 48-52 tok/s; 7000 439 slots; 6400 273 slots (loan keeps 16); 5800 head moved to the host (31 tok/s); 5200 and 4600 refused (573 / 1171 MiB short).  "
+                 "A discrete card only: drafting_vram_mib() gives None for an APU, so fit_start leaves Strix Halo alone")
 # What the drafter adds to the measured base (MTP layer loaded: the base itself).  DFlash2 alone with the converted Q4_0-selector pack holds about 716 MiB where the
 # MTP layer holds 835 (RESULTS-DF2MEM.md section 1); DFlash2 beside the MTP layer (--draft-fallback mtp) shares the draft head (214 MiB).  No drafter: the layer is gone.
 DRAFTER_DELTA_MIB = {"mtp": 0, "dflash2": -119, "dflash2+mtp": 502, "none": -835}
 # The knobs a start short of VRAM turns, mildest first, per backend.  CUDA: only the KV window; its engine sizes the expert cache and the prompt chunk itself
 # (an explicit --prefill N is larger than the engine's own step-down on a card this tight, and a lower --vram-reserve-mib starves DFlash2's prompt staging: both
 # measured on the 8 GB mimic).  Arc: the prompt chunk is the biggest cheap knob (DF2-SYCL, A750: 1522 MiB of buffers at chunk 2048, 508 at 512), then the reserve.
-KNOBS = {"cuda": ("kv_resident",), "intel": ("chunk", "reserve", "kv_resident"), "other": ("chunk", "reserve")}
+KNOBS = {"cuda": ("kv_resident",), "hip": ("kv_resident",), "intel": ("chunk", "reserve", "kv_resident"), "other": ("chunk", "reserve")}
 NOTE_SLOW = "short of GPU memory: more is read from RAM and the SSD, expect it to be slower"
 SLOT_RUN_MIN = 1                                       # the engine's minimum: generate.cpp refuses a start whose auto sizing leaves the cache no slot
 KV_RESIDENT_MIN = 4096                                 # qsa_kv_resident_min(): a smaller --kv-resident is raised to this (was 20480; 4096 and 8192 gave the same tokens, RESULTS-DF2MEM.md section 18)
@@ -135,7 +141,7 @@ def measured(model: str, slots: int, vendor: str, drafter: str = "mtp") -> bool:
     measured too (CUDA: DF2-MEM, the 8 GB mimic).  Elsewhere nothing is claimed and the engine decides."""
     if slotted_base_mib(model, vendor, drafter) is None:
         return False
-    return slots >= 2 or str(vendor or "").lower() == "cuda"
+    return slots >= 2 or str(vendor or "").lower() in SINGLE_MEASURED_VENDORS
 
 
 def slack_mib(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300, prefill="auto",
@@ -201,7 +207,7 @@ def plan(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: in
     keep = Fit(ctx, reserve_mib, None, False, True, 0.0, slots=slots)
     if not vram_gb or vram_gb < MIN_CARD_GB:
         return keep
-    if (slots or str(vendor or "").lower() == "cuda") and not measured(model, slots, vendor, drafter):
+    if (slots or str(vendor or "").lower() in SINGLE_MEASURED_VENDORS) and not measured(model, slots, vendor, drafter):
         return keep                      # nothing measured for this card: unchanged, the engine decides
     need = needed_mib(model, slots, vendor, drafter)
     keep.slack_mib = slack_mib(model, vram_gb, ctx, kv, reserve_mib, prefill, vendor, slots, kv_resident, drafter)
@@ -293,13 +299,13 @@ def fit_start(cfg: dict, args: list, vram_mib: float | None, backend: str | None
     reserve = int(reserve_s) if reserve_s and str(reserve_s).isdigit() else 700      # the engine's default reserve
     user = [str(a) for a in (cfg.get("user_args") or [])]
     model = str(cfg.get("model_name") or flag("--native") or "")
-    vendor = "intel" if backend == "sycl" else ("cuda" if backend == "cuda" else "other")
+    vendor = {"sycl": "intel", "cuda": "cuda", "hip": "hip"}.get(str(backend), "other")
     if not n and ("--batch" in args or "--slots" in args):
         b = flag("--batch") or flag("--slots") or "0"
         n = int(b) if str(b).isdigit() and int(b) >= 2 else 0
     pf = flag("--prefill") or "auto"
     fr = plan(model, float(vram_mib) / 1024.0, ctx, flag("--kv") or "int8", reserve, pf, vendor, title=str(cfg.get("model_name") or "This model"),
-              ctx_fixed=True, reserve_fixed=(vendor == "cuda") or ("--vram-reserve-mib" in user),
+              ctx_fixed=True, reserve_fixed=(vendor in SINGLE_MEASURED_VENDORS) or ("--vram-reserve-mib" in user),
               prefill_fixed=not str(pf).startswith("auto"), slots=n, kv_resident=kv_resident, drafter=drafter_of(args),
               kv_fixed="--kv-resident" in user)
     if not fr.changed:
@@ -312,7 +318,7 @@ def fit_start(cfg: dict, args: list, vram_mib: float | None, backend: str | None
             out += ["--kv-resident", str(fr.kv_resident)]
     if fr.prefill is not None and "--prefill" in out:
         out[out.index("--prefill") + 1] = fr.prefill
-    if fr.reserve_mib != reserve and vendor != "cuda":
+    if fr.reserve_mib != reserve and vendor not in SINGLE_MEASURED_VENDORS:
         if "--vram-reserve-mib" in out:
             out[out.index("--vram-reserve-mib") + 1] = str(fr.reserve_mib)
         else:
