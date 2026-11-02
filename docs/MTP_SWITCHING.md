@@ -3,6 +3,11 @@
 These are different layouts. One request in a layer-split service still uses both
 cards. It is not a physical single-GPU measurement.
 
+**Experimental:** the [same-day evidence](https://github.com/cennac/Strata/tree/078146edb81c809722884e8e21dcc98e41fba4ed/bench/results/2026-11-02-community-dual-rx7900xtx-mtp-switch)
+contains complete HIP/CUDA builds and 34 HIP request completions, but only 3/14
+paired rendered-text hashes match. The control itself also varies. The cause
+is unresolved; this is not a demonstrated lossless acceleration.
+
 | Layout | Engine path | New in this patch |
 | --- | --- | --- |
 | One physical GPU, one request | Existing solo MTP | No algorithm change; control to measure separately |
@@ -48,7 +53,8 @@ per-request guard runs after diagnostic `pw=` overrides. Both BGEN admissions
 (including admission before any slot is active) and prompt reads beside active
 slots use the serial verifier. The batch windows retain their own MTP path.
 Existing drain and slot-copy code transfers the committed state; it is not a new
-checkpoint format. GPU validation of this mainline integration remains pending.
+checkpoint format. The request-level HIP smoke test does not establish output
+parity or quality equivalence; see the evidence above.
 
 Check the startup log for `STRATA_PIPED_MTP:` and `STRATA_HYBRID_WINDOWS:`. Keep the
 matching engine log with measurements. API throughput alone cannot establish
@@ -67,8 +73,8 @@ one card. This is the existing single-card MTP implementation.
 
 For a separate single-card concurrent control, use `--batch 2 --batch-groups 1
 --batch-mtp`, if memory permits. Do not report a dual-card solo-request result as
-a single-card result. No new physical single-card GPU result is supplied by this
-patch.
+a single-card result. Separate physical single-card observations are included in
+the evidence above; they exercise the existing implementation.
 
 ## Reproducible request sequence
 
