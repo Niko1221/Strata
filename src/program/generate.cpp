@@ -5303,7 +5303,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --draft dflash2 drafts without the MTP layer (--draft-fallback mtp loads it too) and needs --draft-model PACK, --spec 2 or more and --mtp-draft-vocab FILE (or --mtp DIR, for DIR/draft_vocab.bin)\n");
             return 2;
         }
-        {   // without the vocabulary subset the DFlash2 would run its head over all of the target's rows (+0.7 ms a round measured on Metal) without a word.
+        if (!strata::core::Dflash2Drafter::head_native()) {   // without the vocabulary subset the DFlash2 would run its head over all of the target's rows (+0.7 ms a round measured on Metal) without a word.
             // Metal alone has a packaged default subset to fall back to (the Mac's MTP folder is empty by design); everywhere else a missing file is the error.
             std::string packaged;
             bool whole_head_ok = false;
@@ -6846,7 +6846,7 @@ int main(int argc, char** argv) {
     // (--draft-fallback none) the same formula from the vocabulary file, which that drafter never read)
     // DF-05: with the MTP loaded and the same draft-head subset (the plain gather: no --mtp-q4 head, no repack) the DFlash2 shares the MTP's copy at bind
     // (STRATA_DF2_SHARE_HEAD_OFF=1: its own copy, the A/B), and the cache is sized without that second copy
-    const bool df2_expect_share = !df2_solo && !o.mtp.empty() && std::getenv("STRATA_DF2_SHARE_HEAD_OFF") == nullptr && o.mtp_q4 != "all" && o.mtp_q4 != "head" &&
+    const bool df2_expect_share = !df2_solo && !strata::core::Dflash2Drafter::head_native() && !o.mtp.empty() && std::getenv("STRATA_DF2_SHARE_HEAD_OFF") == nullptr && o.mtp_q4 != "all" && o.mtp_q4 != "head" &&
                                   std::getenv("STRATA_MTP_FULL_HEAD") == nullptr && std::getenv("STRATA_Q6_PACKED") == nullptr && std::getenv("STRATA_MTP_Q8_SM60") == nullptr &&
                                   std::filesystem::exists(df2_vocab_path());
     auto df2_offer_head = [&]() {   // after mtp.bind, before df2.bind
@@ -6861,6 +6861,7 @@ int main(int argc, char** argv) {
     };
     auto df2_head_bytes = [&]() -> int64_t {
         if (df2_expect_share) return 0;   // (its logits are in the 48 MiB the callers add)
+        if (strata::core::Dflash2Drafter::head_native()) return (int64_t) 7 * n_vocab * (int64_t) sizeof(float);   // STRATA_DF2_HEAD=native: no pruned copy, the logits of every row
         if (!df2_solo) return (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab);
         int64_t bytes = (int64_t) std::min(o.spec, (int) strata::kernels::kVerifyNarrowT) * n_vocab * (int64_t) sizeof(float);
         if (FILE* f = std::fopen(df2_vocab_path().c_str(), "rb")) {

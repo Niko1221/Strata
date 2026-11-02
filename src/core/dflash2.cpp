@@ -192,6 +192,8 @@ bool Dflash2Drafter::load(const std::string& path, int device, std::string& err)
             if (cudaMemcpy(tmp, stage.data(), t.bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "dflash2: weight upload failed"; return false; }
             kernels::df2_q8_tile(tmp, blob_ + t.off, blob_ + t.off + (uint64_t) t.rows * (uint64_t) t.cols, (int) t.cols, t.rows * t.cols / 32, nullptr);
             if (cudaDeviceSynchronize() != cudaSuccess) { err = "dflash2: weight conversion failed"; return false; }
+        } else if (t.dtype == "q4_0" && t.name.find("_codebook") != std::string::npos) {   // the selector's Q4_0 rows stay in block order (read row by row)
+            if (cudaMemcpy(blob_ + t.off, stage.data(), t.bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "dflash2: weight upload failed"; return false; }
         } else if (t.dtype == "q4_0") {   // GGML Q4_0 blocks -> the tiled nibble plane at the tensor's offset, then the d plane (same total bytes)
             if (cudaMemcpy(tmp, stage.data(), t.bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "dflash2: weight upload failed"; return false; }
             kernels::df2_q4_tile(tmp, blob_ + t.off, blob_ + t.off + (uint64_t) t.rows * (uint64_t) t.cols / 2, (int) t.cols, t.rows * t.cols / 32, nullptr);
@@ -322,7 +324,10 @@ bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const s
         }
     };
     std::vector<int32_t> vocab;
-    if (!vocab_file.empty()) {
+    // STRATA_DF2_HEAD=native: the drafter runs its head on the target's own resident head (every vocabulary row, no 213 MiB pruned copy, no vocabulary file read)
+    // (a head on another card, a layer split's last stage, is not read in place: the pruned copy is gathered there and copied over, as before)
+    const bool head_native = Dflash2Drafter::head_native() && (head_device < 0 || head_device == device_);
+    if (!vocab_file.empty() && !head_native) {
         if (std::FILE* vf = std::fopen(vocab_file.c_str(), "rb")) {
             std::fseek(vf, 0, SEEK_END);
             const long size = std::ftell(vf);
@@ -390,6 +395,9 @@ bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const s
     if (!bind_raw(embed, hw, head->type(), head_rows, vocab, err)) return false;
     std::fprintf(stderr, "strata dflash2: %lld-token draft head (%.1f MiB%s), drafter %.0f MiB of VRAM (%s weights)\n", (long long) n_dvocab_,
                  (double) (n_dvocab_ * row_bytes) / 1048576.0, dhead_shared_ ? ", the MTP drafter's copy, no second one" : "", (double) vram_ / 1048576.0, q4_ ? "Q4_0" : "Q8_0");
+    // the pack's selector codebooks as Q4_0 rows (tools/dflash2_pack.py --q4_0-selector; strata_control/drafting.py reads this text from the program to know it can use that pack)
+    if (find("candidate_selector.predecessor_codebook").dtype == "q4_0")
+        std::fprintf(stderr, "strata dflash2: selector codebooks: Q4_0 rows (about 174 MiB less than bf16)\n");
     return true;
 }
 
@@ -526,7 +534,7 @@ bool Dflash2Drafter::record_block(cudaStream_t cs, std::string& err, bool rope) 
         stamp("gemm:candidate_selector.hidden_projection");
         df2_select(hsel_, topval_, toptok_, reinterpret_cast<const uint16_t*>(blob_ + find("candidate_selector.predecessor_codebook").off),
                    reinterpret_cast<const uint16_t*>(blob_ + find("candidate_selector.successor_codebook").off), rank_, ndraft_, d_meta_ + 16, out_tok_,
-                   out_prob_, cs);
+                   out_prob_, cs, find("candidate_selector.predecessor_codebook").dtype == "q4_0");
     } catch (const std::exception& e) {
         err = e.what();
         return false;

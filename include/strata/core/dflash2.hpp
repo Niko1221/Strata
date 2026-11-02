@@ -15,6 +15,7 @@
 // it, so a rejected draft leaves nothing to roll back.  One CUDA graph per context-row count n = 1..8 holds the context update and the
 // block; the host stages the positions and the anchor and waits for the 7 drafts.
 #pragma once
+#include <cstdlib>
 
 #include "strata/core/session.hpp"
 
@@ -51,6 +52,8 @@ public:
     /// `head_device` >= 0 and not this card's: the head sits on another card (a layer split's last stage); the draft vocabulary's rows are gathered there and
     /// copied over once, so the drafter can sit on the first stage's card.
     bool bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err, int head_device = -1);
+    /// STRATA_DF2_HEAD=native (CUDA / HIP): bind() ignores the vocabulary file and runs the draft head on the target's whole head (no pruned copy).
+    static bool head_native() { const char* e = std::getenv("STRATA_DF2_HEAD"); return e != nullptr && e[0] == 'n'; }
     /// DF-05: before bind, the MTP drafter's gathered draft-head rows and vocabulary (device pointers it keeps owning) when they are the same bytes this
     /// drafter would gather; bind then uses them instead of a second copy (about 213 MiB on Flash-Next) and checks the vocabulary against the file.
     struct SharedHead { const uint8_t* rows = nullptr; const int32_t* vocab_dev = nullptr; const std::vector<int32_t>* vocab_host = nullptr; int64_t n = 0; int type = -1; };

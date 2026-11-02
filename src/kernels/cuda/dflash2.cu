@@ -841,7 +841,16 @@ __global__ void topk_merge_kernel(const float* __restrict__ cval, const int32_t*
     }
 }
 
+// one value / eight values of a ggml Q4_0 row of 256 (8 blocks of 18 bytes: fp16 d, then 16 bytes with value i in the low nibble of byte i and value i + 16 in the high one)
+__device__ __forceinline__ float q4row_at(const uint8_t* row, int i) {
+    const uint8_t* blk = row + (size_t) (i >> 5) * 18;
+    const float d = __half2float(__ushort_as_half(*reinterpret_cast<const uint16_t*>(blk)));
+    const int j = i & 31, byte = blk[2 + (j & 15)];
+    return (float) ((j < 16 ? (byte & 15) : (byte >> 4)) - 8) * d;
+}
+
 // ---- the selector's walk: one block of 256 threads
+template <bool Q4>
 __global__ void select_kernel(const float* __restrict__ hp, const float* __restrict__ unary, const int32_t* __restrict__ tok,
                               const uint16_t* __restrict__ pred_cb, const uint16_t* __restrict__ succ_cb, int rank, int rows,
                               const int32_t* __restrict__ anchor_tok, int32_t* __restrict__ out_tok, float* __restrict__ out_prob) {
@@ -852,17 +861,24 @@ __global__ void select_kernel(const float* __restrict__ hp, const float* __restr
     if (tid == 0) prev = *anchor_tok;
     __syncthreads();
     for (int i = 0; i < rows; ++i) {
-        vp[tid] = bf16f(pred_cb[(size_t) prev * rank + tid]) * hp[(size_t) i * rank + tid];
+        if (Q4) vp[tid] = q4row_at(reinterpret_cast<const uint8_t*>(pred_cb) + (size_t) prev * (rank / 32 * 18), tid) * hp[(size_t) i * rank + tid];
+        else vp[tid] = bf16f(pred_cb[(size_t) prev * rank + tid]) * hp[(size_t) i * rank + tid];
         __syncthreads();
         for (int j = w * 2; j < w * 2 + 2; ++j) {
             const int t = tok[i * kDf2TopK + j];
-            const uint4 raw = *reinterpret_cast<const uint4*>(succ_cb + (size_t) t * rank + lane * 8);
-            const uint32_t u[4] = {raw.x, raw.y, raw.z, raw.w};
             float acc = 0.0f;
+            if (Q4) {
+                const uint8_t* row = reinterpret_cast<const uint8_t*>(succ_cb) + (size_t) t * (rank / 32 * 18);
 #pragma unroll
-            for (int e = 0; e < 4; ++e) {
-                acc = fmaf(__uint_as_float(u[e] << 16), vp[lane * 8 + e * 2], acc);
-                acc = fmaf(__uint_as_float(u[e] & 0xffff0000u), vp[lane * 8 + e * 2 + 1], acc);
+                for (int e = 0; e < 8; ++e) acc = fmaf(q4row_at(row, lane * 8 + e), vp[lane * 8 + e], acc);
+            } else {
+                const uint4 raw = *reinterpret_cast<const uint4*>(succ_cb + (size_t) t * rank + lane * 8);
+                const uint32_t u[4] = {raw.x, raw.y, raw.z, raw.w};
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    acc = fmaf(__uint_as_float(u[e] << 16), vp[lane * 8 + e * 2], acc);
+                    acc = fmaf(__uint_as_float(u[e] & 0xffff0000u), vp[lane * 8 + e * 2 + 1], acc);
+                }
             }
             for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
             if (lane == 0) sc[j] = unary[i * kDf2TopK + j] + acc;
@@ -1140,9 +1156,10 @@ void df2_topk(const float* logits, int n, const int32_t* idx_map, int rows, uint
 }
 
 void df2_select(const float* hp, const float* unary, const int32_t* tok, const uint16_t* pred_cb, const uint16_t* succ_cb, int rank, int rows,
-                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream) {
+                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream, bool cb_q4) {
     if (rank != 256) throw std::invalid_argument("df2_select: the selector rank must be 256");
-    select_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(hp, unary, tok, pred_cb, succ_cb, rank, rows, anchor_tok, out_tok, out_prob);
+    if (cb_q4) select_kernel<true><<<1, 256, 0, (cudaStream_t) stream>>>(hp, unary, tok, pred_cb, succ_cb, rank, rows, anchor_tok, out_tok, out_prob);
+    else select_kernel<false><<<1, 256, 0, (cudaStream_t) stream>>>(hp, unary, tok, pred_cb, succ_cb, rank, rows, anchor_tok, out_tok, out_prob);
     check("select");
 }
 
