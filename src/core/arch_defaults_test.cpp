@@ -3,6 +3,7 @@
 #include "strata/core/gfx12_platform_defaults.hpp"
 #include "strata/core/sm120_series.hpp"
 #include "strata/core/defaults_026.hpp"
+#include "strata/core/spill_gate.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -597,6 +598,13 @@ int main() {
         CHECK(!ple_batch_resolve(nullptr, rt128, false, 12, 0));
         CHECK(ple_batch_resolve(nullptr, rt130, false, 12, 0));
         CHECK(ple_batch_resolve(nullptr, rt128, false, 8, 6));
+    }
+    {   // the spill gate: only a discrete GPU may have its start moved off VRAM (draft layer dropped, head on the host, loan of 16, KV window below 20480)
+        using strata::spill_allowed;
+        CHECK(spill_allowed(false, false));     // CUDA / HIP discrete
+        CHECK(!spill_allowed(true, false));     // Metal: one pool, "free VRAM" is the OS's available RAM
+        CHECK(!spill_allowed(false, true));     // an integrated GPU (Strix Halo gfx1151, APUs): the same
+        CHECK(!spill_allowed(true, true));
     }
     return fails ? 1 : 0;
 }

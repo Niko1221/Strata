@@ -84,7 +84,8 @@ DRAFTER_DELTA_MIB = {"mtp": 0, "dflash2": -119, "dflash2+mtp": 502, "none": -835
 KNOBS = {"cuda": ("kv_resident",), "intel": ("chunk", "reserve", "kv_resident"), "other": ("chunk", "reserve")}
 NOTE_SLOW = "short of GPU memory: more is read from RAM and the SSD, expect it to be slower"
 SLOT_RUN_MIN = 1                                       # the engine's minimum: generate.cpp refuses a start whose auto sizing leaves the cache no slot
-KV_RESIDENT_MIN = 20480                                # qsa_kv_resident_min(): a smaller --kv-resident is raised to this
+KV_RESIDENT_MIN = 4096                                 # qsa_kv_resident_min(): a smaller --kv-resident is raised to this (was 20480; 4096 and 8192 gave the same tokens, RESULTS-DF2MEM.md section 18)
+KV_RESIDENT_STEPS = (20480, 8192, 4096)                # the windows a short start walks down, mildest first (a session at 128K: 0.58 / 0.44 / 0.39 GiB)
 STREAM_EXTRA_BYTES = 1400                              # per cell of context a streamed session still keeps in VRAM (rope table, indexer rows, page table); measured: the CUDA engine's slot session at 128K with 32768 resident is 0.73 GiB (RESULTS-DF2MEM.md section 17), the 32K session 0.56 GiB
 SLOTS_MAX = 8                                    # the engine's batch window (serve/server.py PARALLEL_MAX)
 
@@ -214,10 +215,11 @@ def plan(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: in
 
     for knob in knobs:
         if knob == "kv_resident":
-            # the window is only ever made smaller, to the engine's minimum; a start with no window and a context beyond it gets one
-            if kv_fixed or ctx <= KV_RESIDENT_MIN or (kvr and kvr <= KV_RESIDENT_MIN) or not measured(model, slots, vendor, drafter):
+            # the window is only ever made smaller, down the steps to the engine's minimum; a start with no window and a context beyond it gets one
+            cur = kvr if kvr else ctx
+            steps = [w for w in KV_RESIDENT_STEPS if w < cur and w < ctx]
+            if kv_fixed or not steps or not measured(model, slots, vendor, drafter):
                 continue                 # (a start priced without a measured base does not count the window, so moving it would only be a claim)
-            steps = [KV_RESIDENT_MIN]
         elif knob == "chunk":
             steps = [] if prefill_fixed else [c for c in CHUNK_STEPS if c < chunk_of(chunk)]
         else:

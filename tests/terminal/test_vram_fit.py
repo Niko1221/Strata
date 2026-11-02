@@ -164,7 +164,7 @@ class SlotSessions(unittest.TestCase):
         self.assertAlmostEqual(full, 1929, delta=15)
         self.assertAlmostEqual(streamed, 748, delta=15)                  # measured 0.73 GiB on the CUDA engine (DF2-MEM): the 32K pool (573 MiB with its fixed part) plus what scales with the whole context
         self.assertEqual(V.session_mib(8192, "int8", 32768), V.session_mib(8192))     # a resident window larger than the context changes nothing
-        self.assertAlmostEqual(V.session_mib(131072, "int8", 4096), V.session_mib(131072, "int8", V.KV_RESIDENT_MIN), delta=0.01)   # the engine raises a small window to 20480
+        self.assertAlmostEqual(V.session_mib(131072, "int8", 4096), V.session_mib(131072, "int8", V.KV_RESIDENT_MIN), delta=0.01)   # the engine raises a smaller window to its minimum (4096)
 
     def test_without_slots_nothing_changes(self):
         a = V.slack_mib(FN, 8.0, 8192, "int8", 700, "auto", "intel")
@@ -306,10 +306,13 @@ class CudaSpill(unittest.TestCase):
         self.assertAlmostEqual(sl(7800, 2), 850 - 835 - 598 - 700 - 218 - 256, delta=60)     # 0.83 GiB after the sessions, then the MTP layer and the head: the OOM
 
     def test_an_8gb_card_with_dflash2_alone_gets_the_small_kv_window_and_keeps_128k(self):
-        for mib in (8192, 8050):
+        for mib, window in ((8192, "20480"), (8050, None)):
             args, par, note = self.start(mib)
             self.assertEqual(self.flag(args, "--max-context"), "131072", mib)
-            self.assertEqual(self.flag(args, "--kv-resident"), "20480", mib)            # measured: starts with 105 MiB free and decodes at 72 tok/s; 32768 does not start
+            if window:
+                self.assertEqual(self.flag(args, "--kv-resident"), window, mib)         # measured: starts and decodes at 69-73 tok/s; 32768 does not start
+            else:
+                self.assertIn(self.flag(args, "--kv-resident"), ("20480", "8192", "4096"), mib)   # a card a little smaller walks further down
             self.assertEqual(self.flag(args, "--prefill"), "auto")                       # the engine steps its own chunk down
             self.assertEqual(self.flag(args, "--vram-reserve-mib"), "700")               # a lower reserve starves the DFlash2 prompt staging (measured)
             self.assertIsNone(par)
@@ -320,8 +323,22 @@ class CudaSpill(unittest.TestCase):
             args, par, note = self.start(8192, n, self.MTP)
             self.assertEqual(self.flag(args, "--max-context"), "131072", n)
             self.assertIsNone(par, n)                                                     # the number of requests is the person's
-            self.assertEqual(self.flag(args, "--kv-resident"), "20480", n)
+            self.assertEqual(self.flag(args, "--kv-resident"), "4096", n)               # measured: 2 requests start at 4096 (277 MiB free, 46 tok/s per user) and 8192; 32768 and 20480 do not
             self.assertIn(V.NOTE_SLOW, note)
+
+    def test_the_window_is_walked_down_only_as_far_as_the_card_needs(self):
+        win = lambda mib, n, drafter: self.flag(self.start(mib, n, drafter)[0], "--kv-resident")
+        self.assertEqual(win(8192, None, self.DF2), "20480")       # DFlash2 alone fits at 20480
+        self.assertEqual(win(8192, None, self.MTP), "8192")        # the MTP layer needs a smaller one
+        self.assertEqual(win(10240, 2, self.MTP), "20480")
+        self.assertEqual(win(10240, 4, self.MTP), "4096")
+        self.assertEqual(win(12288, 8, self.MTP), "8192")
+        self.assertEqual(win(12288, 4, self.MTP), "32768")         # nothing moves where it fits
+
+    def test_the_window_floor_and_steps_match_the_engine(self):
+        self.assertEqual(V.KV_RESIDENT_MIN, 4096)                  # qsa_kv_resident_min()
+        self.assertEqual(V.KV_RESIDENT_STEPS, (20480, 8192, 4096))
+        self.assertTrue(all(w >= V.KV_RESIDENT_MIN for w in V.KV_RESIDENT_STEPS))
 
     def test_12_16_and_24gb_keep_everything_for_1_2_and_4_requests(self):
         for mib in (12288, 12282, 16384, 24576):

@@ -74,6 +74,7 @@
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
+#include "strata/core/spill_gate.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/gated_proposal.hpp"
@@ -266,6 +267,21 @@ bool under_wddm() {
 // #620 #486: " (N MiB of M MiB VRAM free on this GPU)" for an allocation's failure message (clears the error first)
 // How many cache slots a prompt-path loan leaves behind (128 on a card with room; a card too short for that lends against 16, see the cache sizing).
 static int64_t g_lend_keep = 128;
+
+// May a start short of VRAM be moved off the GPU (strata/core/spill_gate.hpp)?  A discrete card only: not Metal, not an integrated GPU (Strix Halo and the other APUs share the host's RAM).
+static bool spill_discrete_gpu() {
+#if defined(STRATA_GPU_METAL)
+    return strata::spill_allowed(true, false);
+#else
+    static const bool ok = [] {
+        int d = 0;
+        cudaDeviceProp pr{};
+        if (cudaGetDevice(&d) != cudaSuccess || cudaGetDeviceProperties(&pr, d) != cudaSuccess) { (void) cudaGetLastError(); return false; }
+        return strata::spill_allowed(false, pr.integrated != 0);
+    }();
+    return ok;
+#endif
+}
 
 std::string vram_free_note() {
     (void) cudaGetLastError();
@@ -6707,7 +6723,7 @@ int main(int argc, char** argv) {
     // the sessions) the start used to stop at "no VRAM is left for the expert cache" or run out of memory in the head upload.  Without the layer
     // the model still answers (the verify window drafts from the prompt alone): slower decode, a start that works.  Not with DFlash2 (its own
     // block decides), a split, or STRATA_MTP_KEEP=1.
-    if (!o.mtp.empty() && !use_df2 && !multi_gpu && stages.empty() && std::getenv("STRATA_MTP_KEEP") == nullptr) {
+    if (!o.mtp.empty() && !use_df2 && !multi_gpu && stages.empty() && std::getenv("STRATA_MTP_KEEP") == nullptr && spill_discrete_gpu()) {
         std::error_code fec1, fec2;
         const uint64_t layer_b = (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "dense.bin", fec1) +
                                  (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "experts.bin", fec2);
@@ -6715,7 +6731,7 @@ int main(int argc, char** argv) {
         const uint64_t head_b = (!o.native_head_gguf.empty() && wo_mtp != nullptr)
                                     ? (uint64_t) wo_mtp->ne1 * (uint64_t) (g.n_embd / 256) * 176ull : 0;   // Q5_K: 176 bytes per 256 values
         const uint64_t free_now = (uint64_t) strata::core::device_free_bytes();
-        const uint64_t need = layer_b + head_b + (220ull << 20) + (1250ull << 20);   // + the cache the loan needs (214 slots, 543 MiB) + what is allocated after it and the drafter beyond DFlash2 (measured: DFlash2 alone ends 391 MiB free, MTP 41 at the same cache)
+        const uint64_t need = layer_b + head_b + (220ull << 20) + (1550ull << 20);   // + the cache the loan needs (214 slots, 543 MiB) + what is allocated after it and the drafter beyond DFlash2 (measured: DFlash2 alone ends 391 MiB free, MTP 41 at the same cache)
         if (!fec1 && !fec2 && free_now > 0 && free_now < need) {
             std::fprintf(stderr, "strata generate: short of GPU memory: %.2f GiB is free, and the draft layer (%.2f GiB), the head (%.2f GiB) and a working cache "
                                  "need about %.2f GiB: this start runs without the draft layer (decode is slower; STRATA_MTP_KEEP=1 keeps it)\n",
@@ -7586,7 +7602,7 @@ int main(int argc, char** argv) {
         // free and stopped the first long prompt ("mmq: out of memory"), or gave the prompt path its own 600 MiB of buffers on top and stopped with "do not
         // fit".  The loan may leave 16 slots instead: the cache is smaller, prompts are read in smaller chunks and slower, the reserve stays, and the start works.
         if (o.prefill_chunk > 0 && pf_borrow && o.prefill_auto && o.expert_cache < min_slots && !o.vram_reserve_given && !multi_gpu && stages.empty() &&
-            std::getenv("STRATA_SPILL_OFF") == nullptr) {
+            std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
             constexpr int64_t kTightKeep = 16;
             const int64_t tight_min = ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + kTightKeep;
             if (tight_min < min_slots) {
@@ -7633,7 +7649,7 @@ int main(int argc, char** argv) {
         // here instead, at the largest chunk that still leaves a cache (1024, 512, 256 tokens), and give the cache the rest: slower (a smaller
         // cache, smaller prompt chunks), never a refused start.  Not with a split, a cache or chunk given on the command line, or STRATA_SPILL_OFF=1.
         if (auto_cache && pf_borrow && o.prefill_auto && !o.vram_reserve_given && o.expert_cache < min_slots && !multi_gpu && stages.empty() && !profile.empty() &&
-            std::getenv("STRATA_SPILL_OFF") == nullptr) {
+            std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
             constexpr int64_t kSpillFloorMib = 100;   // the verify arena, the head check and the cuBLAS workspace beside the late allocations
             int64_t pick_chunk = 0, pick_slots = 0, pick_own = 0, pick_late = 0;
             for (const int64_t c : {(int64_t) 1024, (int64_t) 512, (int64_t) 256}) {
@@ -7655,6 +7671,35 @@ int main(int argc, char** argv) {
                 o.prefill_auto = false;
                 o.prefill_chunk = pick_chunk;
                 reserve_adapted = true;
+            }
+        }
+        // SHORT OF VRAM: THE OUTPUT HEAD ON THE HOST, LAST.  When every step above left the cache no slot (4 requests at 128K on an 8 GB card: the sessions and the weights
+        // leave 0.63 GiB after the head, and the cache needs 543 MiB beside a reserve), the head (0.41 GiB) moves to mapped pinned host memory and every logits row reads it
+        // over PCIe: decode is about 3x slower (12.7 against 36.1 tok/s per user, 2 requests on a 12 GB mimic), but the start works.  Only a card that would otherwise
+        // refuse; STRATA_HEAD_HOST_OFF=1 keeps the refusal.
+        if (o.expert_cache == 0 && native_head.loaded() && !native_head.on_host() && !o.vram_reserve_given && !multi_gpu && stages.empty() &&
+            std::getenv("STRATA_HEAD_HOST_OFF") == nullptr && std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
+            std::string herr;
+            if (native_head.to_host(herr)) {
+                free_b = strata::core::device_free_bytes();
+                strata::core::AutoCacheSlots a2 = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
+                int64_t s4 = a2.slots;
+                if (!profile.empty()) s4 = std::min<int64_t>(s4, (int64_t) profile.size());
+                if (s4 < min_slots && o.vram_reserve_mib > kSmallReserveMib) {   // the reserve lowered for the smaller cache, as above
+                    const int64_t fit_mib = ((int64_t) free_b - mtp_bind - pipe_first - min_slots * blob) / (1 << 20) - prefill_mib;
+                    if (fit_mib >= kSmallReserveMib) {
+                        const int r = (int) std::min<int64_t>(fit_mib, o.vram_reserve_mib);
+                        s4 = ((int64_t) free_b - ((((int64_t) r + prefill_mib) << 20) + mtp_bind + pipe_first)) / blob;
+                        if (!profile.empty()) s4 = std::min<int64_t>(s4, (int64_t) profile.size());
+                        o.vram_reserve_mib = r;
+                        reserve_adapted = true;
+                    }
+                }
+                o.expert_cache = (int) std::max<int64_t>(s4, 0);
+                std::fprintf(stderr, "strata generate: short of GPU memory: the cache had no room, so the output head (%llu MiB) moves to pinned host memory and is read over PCIe for "
+                                     "every logits row: decode is slower; the cache is now %d slots\n", (unsigned long long) (native_head.weight_bytes() >> 20), o.expert_cache);
+            } else {
+                std::fprintf(stderr, "strata generate: short of GPU memory: the output head stays in VRAM (%s)\n", herr.empty() ? "type or build not movable" : herr.c_str());
             }
         }
         if (o.expert_cache == 0) {
