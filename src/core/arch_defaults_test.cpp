@@ -514,9 +514,35 @@ int main() {
     }
     {
         using namespace strata;
-        // the layer-major prompt walk (#3976): on by default for a CUDA layer split only
-        CHECK(prefill_layer_major_default(false, 2));                       // 2x RTX A4000 / A6000: measured 5x time to first token
-        CHECK(prefill_layer_major_default(false, 4));
+        // the small-card prompt path: one CUDA card, a native pack, a default prompt chunk below 8,192 tokens
+        auto sc = [](long long chunk, bool hip = false, int stages = 1, bool native = true, bool v026 = false, bool fe = false, bool le = false) {
+            return small_card_prompt_path(chunk, hip, stages, native, v026, fe, le);
+        };
+        CHECK(sc(2048).fused_off && sc(2048).layer_major);                  // ~1.3K engine slots (measured -29% / -44% / -50%)
+        CHECK(sc(3840).fused_off && sc(3840).layer_major);
+        CHECK(sc(5888).fused_off && sc(5888).layer_major);                  // ~1.9K slots: still a win (-9..-16%)
+        CHECK(sc(8191).any());                                              // the boundary: below 8,192 ...
+        CHECK(!sc(8192).any());                                             // ... and not at it (the default is the faster path from there: +7..+25%)
+        CHECK(!sc(16384).any());
+        CHECK(!sc(0).any());                                                // no chunk (no borrowing, or an explicit --prefill): nothing to decide on
+        CHECK(!sc(-1).any());
+        CHECK(!sc(2048, true).any());                                       // a HIP build: no layer-major, the fused experts differ
+        CHECK(!sc(2048, false, 2).any());                                   // a layer split: the owner has not decided that one
+        CHECK(!sc(2048, false, 4).any());
+        CHECK(sc(2048, false, 0).any());                                    // (stages 0 = not counted: one card)
+        CHECK(!sc(2048, false, 1, false).any());                            // a non-native (Q2_0) pack: not measured
+        CHECK(!sc(2048, false, 1, true, true).any());                       // STRATA_DEFAULTS=026
+        CHECK(!sc(2048, false, 1, true, false, true).any());                // STRATA_PF_FUSED named by the user (either value): the user's path
+        CHECK(sc(2048, false, 1, true, false, false, true).fused_off);      // STRATA_PREFILL_LAYER_MAJOR named: the walk is theirs ...
+        CHECK(!sc(2048, false, 1, true, false, false, true).layer_major);   // ... the expert path still follows the rule
+        CHECK(!sc(2048, false, 1, true, false, true, true).any());          // both named: nothing changes
+    }
+    {
+        using namespace strata;
+        // the layer-major prompt walk (#3976): off by default on every build (owner's yes 2026-11-02: a layer split reads 32K 37-55% sooner chunk-major on
+        // 2x A6000, 8K level); it was on for a CUDA layer split
+        CHECK(!prefill_layer_major_default(false, 2));                      // 2x RTX A4000 / A6000 (was on)
+        CHECK(!prefill_layer_major_default(false, 4));
         CHECK(!prefill_layer_major_default(false, 1));                      // one GPU: opt-in only
         CHECK(!prefill_layer_major_default(false, 0));
         CHECK(!prefill_layer_major_default(true, 2));                       // HIP builds
@@ -531,8 +557,11 @@ int main() {
         CHECK(prefill_layer_major_resolve("2", false, 1));                  // any non-zero number is on
         CHECK(!prefill_layer_major_resolve("off", false, 2));               // text that reads as 0 is off (atoi), as before this rule existed
         // unset or empty: the rule
-        CHECK(prefill_layer_major_resolve(nullptr, false, 2));
-        CHECK(prefill_layer_major_resolve("", false, 2));
+        CHECK(!prefill_layer_major_resolve(nullptr, false, 2));             // unset on a layer split: chunk-major
+        CHECK(!prefill_layer_major_resolve("", false, 2));                  // (empty text is unset)
+        CHECK(prefill_layer_major_resolve("1", false, 2));                  // by hand it still turns it on on a split
+        CHECK(prefill_layer_major_resolve("1", false, 4, true));            // and beats STRATA_DEFAULTS=026
+        CHECK(!prefill_layer_major_resolve("0", false, 3));
         CHECK(!prefill_layer_major_resolve(nullptr, false, 1));
         CHECK(!prefill_layer_major_resolve(nullptr, false, 2, true));
         CHECK(!prefill_layer_major_resolve(nullptr, true, 2));
