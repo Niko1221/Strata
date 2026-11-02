@@ -72,11 +72,25 @@ class Registry(unittest.TestCase):
         self.assertEqual(algos.ALGOS["dpo"].objective, "dpo")
         self.assertEqual(algos.ALGOS["grpo"].objective, "grpo")
 
-    def test_every_method_script_points_at_a_real_file(self):
-        for m in algos.METHODS.values():
+    def test_every_shipped_method_script_points_at_a_real_file(self):
+        # 分支差异只落在文件上（见 algos.available）：带了哪层，就只保证哪层的脚本在。
+        self.assertTrue(algos.available())
+        for m in algos.available().values():
             for algo, script in m.scripts.items():
                 self.assertIn(algo, algos.ALGOS)
                 self.assertTrue((Path(__file__).resolve().parents[1] / script).exists(), script)
+
+    def test_a_method_whose_scripts_are_missing_is_reported_not_hidden(self):
+        # 零阶线带不带 backward/ 是分支的事，但**不许静默**：absent() 要说得清缺哪个文件，
+        # --method 要在这里就退出（不是加载完模型才 ImportError）。
+        here = Path(__file__).resolve().parents[1]
+        for name, m in algos.absent().items():
+            lacking = [s for s in m.scripts.values() if not (here / s).exists()]
+            self.assertTrue(lacking, f"{name} 既不在 available() 里，又没有缺文件？")
+            with self.assertRaises(SystemExit) as cm:
+                algos.method_of("sft", name)
+            for s in lacking:
+                self.assertIn(s, str(cm.exception))
 
     def test_default_method_is_mezo_and_routes_to_the_engine(self):
         # 用户口径：MeZO 的路线就是**引擎的推理**当前向；默认方法必须是它。

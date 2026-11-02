@@ -1,5 +1,23 @@
 # Training examples: Strata as the rollout engine
 
+## What this branch ships
+
+`feat/train-mezo` is the **zero-order training line**: `mezo/` (engine `LORA` + `SCORE`
+forward), the engine-side changes it needs, and the data / eval tooling. Nothing here
+imports torch — the suite passes with torch unavailable (`134 passed`, verified by
+shadowing the module, not by trusting a grep).
+
+The backprop line (`feat/train-backforward`) is built **on top of this one**: it adds
+`backward/` plus the three shared torch modules (`ce.py`, `lora.py`, `update_rules.py`)
+and the PyTorch parity harness `mezo/sft_mezo.py`. `feat/train_support` is the union of
+both plus the review notes.
+
+Which method a tree can run is read off the disk (`algos.available()`), not off a branch
+flag: here `--list` prints `backward … 不在这条分支上（缺 backward/sft.py）`, and
+`--method backward` exits before anything is loaded. Sections below that mention
+`sft_mezo.py` or `backward/…` are measurements taken on the backprop branch — the
+numbers and the reasoning stand, the files live there.
+
 ## Start here: `train.py`
 
 One command, no path archaeology:

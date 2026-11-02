@@ -30,6 +30,19 @@
 tokenizer 的默认值同理走约定而不是硬编码路径：**放在权重旁边**（`<gguf 目录>/tokenizer`），
 因为这个目录可以从 GGUF 自己导出（见 `loader_qwen4.py tokenizer`）：
 GGUF 存了词表，不存 HF 的切分规则，所以导出时要给一份同族的 `--base`。
+（`backward/loader_qwen4.py` 要 transformers，所以它落在反传分支上；零阶线只消费
+已经转好的 pack 与 tokenizer。这条线自带的引擎侧改动里有 pack 的页缓存加速。）
+
+## 这条分支带什么
+
+`feat/train-mezo` 是**零阶完整训练线**：`mezo/`（引擎 LORA 换表 + SCORE 打分）+
+引擎侧改动 + 数据/评测工具，全程不 import torch。反传线 `feat/train-backforward`
+从这条线长出来（多带 `backward/` 与 `ce.py`/`lora.py`/`update_rules.py`），
+`feat/train_support` 是两条线的并集 + 审核文档。
+
+判据是**文件在不在**，不是开关：`algos.available()` 读磁盘，`--method backward`
+在这条分支上直接退出并指路，不会跑起来再 ImportError。同一份 `train.py`/`algos.py`
+在三条线上都成立 —— 合并时不会互相改同一段代码。
 
 ## 和推理的关系
 
@@ -210,7 +223,9 @@ def resolve_tokenizer(a, info: dict, shards: list[str]) -> tuple[str, str]:
     raise SystemExit(
         "没有可用的 tokenizer：候选（命令行 / $STRATA_TOKENIZER / 权重旁 / 启动器配置）都读不了。\n"
         "  GGUF 里存的是词表，不是 HF 的切分规则，先导一份出来：\n"
-        f"    python3 loader_qwen4.py tokenizer {shards[0]} --base <同族 HF tokenizer 目录> --out {out}\n"
+        f"    （该脚本在 feat/train-backforward 分支：training/backward/loader_qwen4.py）\n"
+        f"    python3 training/backward/loader_qwen4.py tokenizer {shards[0]} "
+        f"--base <同族 HF tokenizer 目录> --out {out}\n"
         "  之后不用再带 --tokenizer（默认就找权重旁边的这一份）。")
 
 
@@ -229,7 +244,8 @@ def resolve_model(a) -> tuple[list[str], str, str, str]:
         raise SystemExit(
             f"没有 NF4 专家 pack：{pack}（可以用 --pack 或 $STRATA_PACK 指一个）。\n"
             "  先转一次（约 10~20 分钟，之后训练零读盘）：\n"
-            f"    python3 loader_qwen4.py convert {' '.join(shards)} --pack-out {pack}")
+            "    （转换器在 feat/train-backforward 分支：training/backward/loader_qwen4.py）\n"
+            f"    python3 training/backward/loader_qwen4.py convert {' '.join(shards)} --pack-out {pack}")
     if not os.path.exists(pack + ".json"):
         raise SystemExit(f"{pack}.json 缺失（loader 靠它拿每层专家偏移），pack 不完整？")
 
@@ -415,7 +431,8 @@ def main() -> int:
                          "详见 --list；损失数学三个算法共用 objectives.py 一份")
     ap.add_argument("--method", default=None, choices=sorted(algos.METHODS),
                     help=f"怎么动参数：{algos.DEFAULT_METHOD}（默认，引擎前向零阶，"
-                         "显存贴住推理基线）｜backward（autograd 反传，梯度精确、显存更高）")
+                         "显存贴住推理基线）｜backward（autograd 反传，梯度精确、显存更高；"
+                         "只有带 torch 层的分支有，缺了就退出并指路）")
     ap.add_argument("--data", default="identity",
                     help="identity | identity:<词> | jsonl:<路径> | pretrain:<npy>（默认 identity）")
     ap.add_argument("--word", default=None,
