@@ -135,15 +135,16 @@ class Decisions(unittest.TestCase):
         self.assertFalse(drafting.needs_mtp("mtp", model_name=GYRO, backend="cuda", mtp_here=True))
         self.assertFalse(drafting.needs_mtp("auto", model_name=GYRO, backend="cuda", mtp_here=False), "Auto is DFlash2: it needs no layer")
 
-    def test_a_layer_split_or_several_requests_load_only_the_mtp_and_say_so(self):
+    def test_several_requests_at_once_load_only_the_mtp_and_say_so(self):
         self.ready()
         d = self.decide("dflash2", mtp_here=True, blocked=True)
         self.assertEqual((d.drafter, d.note, d.flags), ("mtp", drafting.NOT_HERE, ()))
         d = self.decide("auto", mtp_here=True, blocked=True)
         self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE), "Auto says it too: nothing changes silently")
-        self.assertTrue(drafting.blocked_by([], split=True))
         self.assertTrue(drafting.blocked_by([], slots=4))
-        self.assertTrue(drafting.blocked_by(["--layer-split", "auto"]) and drafting.blocked_by(["--batch", "4"]) and drafting.blocked_by(["--pipeline-windows", "2"]))
+        self.assertTrue(drafting.blocked_by(["--batch", "4"]) and drafting.blocked_by(["--pipeline-windows", "2"]))
+        self.assertFalse(drafting.blocked_by([], split=True), "a layer split over several cards runs DFlash2 (owner 2026-11-02; the 0.1.56 engine does)")
+        self.assertFalse(drafting.blocked_by(["--layer-split", "auto"]))
         self.assertFalse(drafting.blocked_by(["--spec", "4"], slots=1))
 
     def test_dflash2_is_for_qwen38_flash_next_only(self):
@@ -267,10 +268,10 @@ class EngineArguments(unittest.TestCase):
         self.apply(c)
         self.assertEqual((c["args"][c["args"].index("--spec") + 1], c["args"].count("--spec"), c["args"][c["args"].index("--draft-conf") + 1]), ("5", 1, "0.2"))
 
-    def test_a_layer_split_or_parallel_loads_only_the_mtp_and_says_so(self):
+    def test_parallel_loads_only_the_mtp_and_says_so(self):
         self.pack()
         self.layer()
-        for kw in ({"split": True}, {"slots": 4}):
+        for kw in ({"slots": 4},):
             c = self.cfg(drafting="dflash2")
             d = self.apply(c, **kw)
             self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE), kw)

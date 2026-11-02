@@ -15,7 +15,7 @@ strata_control/draft_layer.py), so a setup run that rewrites the engine argument
   off      no draft layer and no DFlash2 (the same as ``"mtp": false``: the engine still looks ahead in the text with ``--spec``)
   auto     DFlash2 wherever the engine has it (DFLASH2_BACKENDS) and the model is Qwen3.8-Flash-Next, Gyro or an Unsloth quantization, the MTP everywhere else
 
-Recommend, never force: a choice that cannot be applied (DFlash2 in a layer split or with several requests at once, no drafter file yet) does not stop the
+Recommend, never force: a choice that cannot be applied (DFlash2 with several requests at once, no drafter file yet) does not stop the
 start. The other drafter runs if it is on this computer, else none, and ``Decision.note`` says why in one short line. Nothing is loaded twice and the
 engine never switches drafter mid-run.
 """
@@ -401,7 +401,7 @@ def normalize(value: Any) -> str:
 
 
 #: Does the engine in this release run DFlash2 when it serves (the app and `strata launch`)? On this branch it does: `--draft dflash2` works with --serve for one
-#: card and one request at a time (src/program/generate.cpp); --batch, --pipeline-windows and a layer split cannot (DF2-MGPU is to lift that). A parked or
+#: card or a layer split over several cards, one request at a time (src/program/generate.cpp); --batch (several requests at once on one card) and --pipeline-windows cannot. A parked or
 #: edited conversation starts the drafter with an empty context (a log line; the answers are the same). Flip back to False to hide the choice again.
 ENGINE_SERVES_DFLASH2 = True
 
@@ -526,10 +526,13 @@ def slots_of(args: list[Any], vram_mib: float | None = None) -> int | None:
 
 
 def blocked_by(args: list[Any], *, split: bool = False, slots: int = 0) -> bool:
-    """Does this start have something the engine cannot run DFlash2 beside today (DF2-MGPU is to lift it): a layer split over several cards, several requests at
-    once (``--batch``, ``--parallel``), ``--pipeline-windows``. The caller says what it adds later (``split``, ``slots``); the arguments are looked at too."""
+    """Does this start have something DFlash2 does not run beside: several requests at once (``--batch``, ``--slots``, ``--parallel``; per-slot DFlash2 drafts are on by
+    default only for a layer split whose slots run as one group and are opt-in on one card, so the MTP's ``--batch-mtp`` is the measured choice there) or
+    ``--pipeline-windows``. A layer split over several cards is NOT in the list any more (owner, 2026-11-02: the 0.1.56 engine runs ``--draft dflash2
+    --draft-fallback none`` on a layer split, one request at a time; paired decode 1.014 against the MTP, CI 0.994-1.033, 2 x RTX PRO 6000, RESULTS-DF2MGPU.md):
+    ``split`` and a ``--layer-split`` argument are accepted and ignored so the callers keep working. The caller says what it adds later (``slots``); the arguments are looked at too."""
     items = [str(a) for a in args or []]
-    return bool(split or slots > 1 or any(a in items for a in ("--layer-split", "--batch", "--slots", "--pipeline-windows", "--parallel")))
+    return bool(slots > 1 or any(a in items for a in ("--batch", "--slots", "--pipeline-windows", "--parallel")))
 
 
 def mtp_ready(args: list[Any]) -> bool | None:
@@ -779,8 +782,8 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf C``; the person's own ``--spec`` or ``--draft-conf``
     in ``user_args`` stays. C is 0.35 where the card holds most experts and higher where fewer slots fit (conf_for_slots): from the person's own ``--expert-cache N``,
     else from ``vram_mib``, the memory of the one card (None: several cards, a shared-memory chip, unknown: 0.35). MTP: the arguments without any DFlash2 option.
-    ``off``: neither (the draft layer's own switch, ``"mtp": false``). ``split`` and ``slots`` say that this start is a layer split or serves several requests at
-    once, which DFlash2 cannot do yet: the MTP then, said in one line. A config from before this rule that names both drafters starts with the one chosen.
+    ``off``: neither (the draft layer's own switch, ``"mtp": false``). ``slots`` says that this start serves several requests at
+    once, which DFlash2 does not do (``split``, a layer split over several cards, is ignored: DFlash2 runs on it): the MTP then, said in one line. A config from before this rule that names both drafters starts with the one chosen.
     `engine` is the engine program that will start (None: not known, the usual flags): an engine that only takes `--mtp DIR` for the vocabulary gets that
     (still without the MTP layer), and an engine without `--draft-fallback` gets no DFlash2 flag at all (the MTP, said in one line)."""
     args = [str(a) for a in cfg.get("args") or []]

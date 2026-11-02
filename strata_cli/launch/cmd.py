@@ -103,7 +103,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
     g.add_argument("--drafting", type=_choice("a drafting setting", S.DRAFTING_MODES), metavar="auto|mtp|dflash2|off",
                    help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
-                        "else the MTP), mtp, dflash2 (downloads a 1.2 GB drafter once) or off. If DFlash2 cannot run (a layer split, several requests at once, "
+                        "else the MTP), mtp, dflash2 (downloads a 1.2 GB drafter once) or off. If DFlash2 cannot run (several requests at once, "
                         "or a model it is not for) the MTP is used alone and the start says why")
     g.add_argument("--split-engine", type=_choice("a split-engine setting", S.SPLIT_MODES), metavar="auto|on|off",
                    help="NVIDIA, two or more cards: the engine that splits every layer across the cards (faster answers). auto (the default) uses it by itself "
