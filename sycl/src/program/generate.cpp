@@ -738,7 +738,7 @@ struct Options {
     /// loaded with it (--draft-fallback none, the only mode of this build; --mtp DIR still names DIR/draft_vocab.bin).  --draft-conf P ends the window where the
     /// product of the selector's probabilities falls below P; --draft-cap N caps the window.
     std::string draft, draft_model, draft_fallback = "none";
-    double draft_conf = 0.0;
+    double draft_conf = 0.6;   ///< Arc default 0.6 (A750 serve sweeps: 0.35 was the clear loser, 0.6 ties MTP); --draft-conf P changes it, 0 = the window of --spec-min-p
     int draft_cap = 0;
     /// A control vector on the residual stream (strata/kernels/cvec.hpp), with llama.cpp's flags: the
     /// `experimental-speed-projection` profile passes `--control-vector-scaled FILE:1.0 --control-vector-layer-range
@@ -871,7 +871,7 @@ void usage() {
                  "  --mtp-draft-vocab FILE  opt-in: the draft head's token subset (default <mtp>/draft_vocab.bin)\n"
                  "  --draft mtp|dflash2  the draft source (default mtp); dflash2 needs --draft-model PACK (tools/dflash2_pack.py --q4_0), --spec 2 or more and\n"
                  "                       --mtp DIR (for DIR/draft_vocab.bin); no MTP layer is loaded (--draft-fallback none, the only mode here)\n"
-                 "  --draft-conf P       with --draft dflash2: end the window where the product of the selector's probabilities falls below P\n"
+                 "  --draft-conf P       with --draft dflash2: end the window where the product of the selector's probabilities falls below P (default 0.6 on this build)\n"
                  "  --draft-cap N        with --draft dflash2: the widest window\n"
                  "  --control-vector-scaled FILE:SCALE[,...]  a control vector GGUF on the residual stream (llama.cpp's\n"
                  "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1)\n"
