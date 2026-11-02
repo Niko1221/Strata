@@ -13,7 +13,7 @@ setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 
 R9700 = {"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 32, "vendor": "amd", "arch": "gfx1201", "usable": True}
-STRIX = {"index": 0, "name": "AMD Radeon 8060S Graphics", "vram_gb": 96, "vendor": "amd", "arch": "gfx1151", "usable": True, "unified_gb": 96}
+STRIX = {"index": 0, "name": "AMD Radeon 8060S Graphics", "vram_gb": 96, "vendor": "amd", "arch": "gfx1151", "usable": True, "unified_gb": 96, "uma": True, "integrated": True}
 RTX = {"index": 0, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 12, "vendor": "nvidia", "usable": True}
 
 
