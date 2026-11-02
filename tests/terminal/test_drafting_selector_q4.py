@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -112,7 +113,11 @@ class SmallPacks(unittest.TestCase):
             self.assertEqual(drafting.pack_path(self.data, eng), out)
             blob = bytearray(out.read_bytes())
             blob[len(blob) // 2] ^= 0xFF                      # one flipped byte, the same size, and the marker still describes the old file
+            before = out.stat()
             out.write_bytes(bytes(blob))
+            # (a real corruption happens long after the marker was written; on Linux the kernel's file clock ticks in ~4 ms steps, so a rewrite right away can keep the
+            #  same mtime_ns and the marker would still describe the file: let the clock move on, as it does in real life)
+            os.utime(out, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
             self.assertEqual(drafting.pack_path(self.data, eng), self.q4, "a corrupt file (the marker no longer matches it) is not used")
             out.write_bytes(bytes(blob)[:-1000])
             self.assertEqual(drafting.pack_path(self.data, eng), self.q4, "a short file is not used")
