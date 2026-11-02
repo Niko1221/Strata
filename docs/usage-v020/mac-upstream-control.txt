@@ -1,0 +1,39 @@
+test_min_tokens_is_passed_only_when_set (serve.test_server.VisionArgs.test_min_tokens_is_passed_only_when_set) ... ERROR
+
+======================================================================
+ERROR: test_min_tokens_is_passed_only_when_set (serve.test_server.VisionArgs.test_min_tokens_is_passed_only_when_set)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 5610, in test_min_tokens_is_passed_only_when_set
+    base = self.args_for({"max_tokens": 300})
+  File "<local-path>", line 5606, in args_for
+    server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 2521, in __init__
+    self._start()
+    ~~~~~~~~~~~^^
+  File "<local-path>", line 2542, in _start
+    self._start_reader()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "<local-path>", line 2555, in _start_reader
+    self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      cwd=self.dir)
+                      ^^^^^^^^^^^^^
+  File "<local-path>", line 89, in popen
+    return lifeline.popen(args, role, **kw)       # a child that cannot outlive this server (serve/lifeline.py)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "<local-path>", line 260, in popen
+    _watch(child)
+    ~~~~~~^^^^^^^
+  File "<local-path>", line 147, in _watch
+    watcher = subprocess.Popen([sys.executable, "-S", "-c", _WATCHER, str(child.pid), _start_token(child.pid)],
+                                                                          ^^^^^^^^^
+AttributeError: 'Proc' object has no attribute 'pid'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+FAILED (errors=1)

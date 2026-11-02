@@ -1,0 +1,38 @@
+COMMAND node serve/test_web_history.js
+ok titles_and_groups
+ok filter_searches_titles_and_text
+ok clean_keeps_names_only
+ok rewind_a_question
+ok rewind_an_answer
+ok lost_attachments_are_counted
+ok regenerate_from_the_question
+ok edit_an_answer
+ok branch_is_a_copy_with_a_title_that_stays
+ok store_fresh_database_creates_the_store_and_reads
+ok store_put_and_remove_touch_one_record
+ok store_private_mode_is_memory_only_and_says_so_once
+ok store_missing_object_store_is_memory_only
+ok store_blocked_open_does_not_hang
+ok store_full_storage_warns_once_with_its_own_message
+ok store_another_failure_is_not_called_quota
+ok store_a_read_that_aborts_answers_empty
+COMMAND node serve/test_web_i18n.js
+ok web i18n
+COMMAND node serve/test_web_math.js
+ok split_delimiters
+ok split_not_math
+ok split_streaming
+ok markdown_escapes_everything
+ok markdown_keeps_source_text
+ok hydrate_with_a_stub_adapter
+ok katex_options_are_the_safe_ones
+ok katex_hostile_input
+COMMAND node serve/test_web_preview.js
+ok can_preview
+ok sandbox_flags_are_minimal
+ok csp_has_no_network
+ok html_documents
+ok a_page_cannot_redirect_itself
+ok svg_documents
+ok the_theme_cannot_inject
+ok frames_are_built_cut_off

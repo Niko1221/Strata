@@ -1,0 +1,9 @@
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+[strata] done: 18 tokens in 0 s (no speed) (stop, cancel=False)
+{"requests": 8, "enabled_output_tokens": 72, "disabled_output_tokens": 72, "restart_preserved": true, "custom_range_correct": true, "normalized_payloads_equal": true, "disabled_no_ledger_or_metrics_field": true}

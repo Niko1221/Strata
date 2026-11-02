@@ -1,0 +1,8 @@
+ok   disabled: Usage stays hidden and ordinary Monitor renders (1249 ms)
+ok   enabled: all-time includes imports, range excludes them, card stays last (1240 ms)
+ok   custom refresh: dates and Show all coexist, without spawning a poll timer (1309 ms)
+ok   stale poll after unload: held state survives, no extra polling loop (2153 ms)
+ok   saved Custom initializes before first poll and language startup completes (1327 ms)
+ok   invalid saved range falls back to seven days (1315 ms)
+ok   ownership error is visible without claiming durable counters (1312 ms)
+usage browser tests: all passed

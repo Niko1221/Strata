@@ -1,0 +1,6 @@
+ok   load/unload: the header button unloads after a confirmation and loads again (5157 ms)
+ok   load/unload: declining the question changes nothing (2640 ms)
+ok   load/unload: not while an answer is being written (1697 ms)
+ok   load/unload: an unloaded model is loaded by a message and the button follows (1640 ms)
+ok   load/unload: the header fits a phone (5907 ms)
+web page browser tests: all passed
