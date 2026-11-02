@@ -973,8 +973,12 @@ struct Server {
             }
             if (batch) admit(r);
             else solo(r);
+            // FNX_ADMIT_INTERLEAVE (default 1): a request read takes the engine for 0.2-0.5 s even for a few tokens; the slots already decoding run one window between two
+            // admissions instead of waiting for all of them (8 users that start together: the first ones decode while the last are read)
+            if (batch && interleave_ && any_decoding()) decode_step();
         }
     }
+    const bool interleave_ = fnx::env_int("FNX_ADMIT_INTERLEAVE", 1) != 0;
 };
 
 // FNX_ROUTE_COUNT and FNX_ROUTE_TRACE (measurements) each need their file's path: checked before the model loads, not

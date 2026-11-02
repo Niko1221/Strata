@@ -386,6 +386,28 @@ class AmdDefault(unittest.TestCase):
             self.assertEqual(seen, [(4, 0, "gfx1201")])
             self.assertEqual(cfg["exe"], "/e/strata-split-4-gfx1201")
 
+    def test_the_card_count_constant_limits_auto_but_not_on(self):
+        import tempfile
+
+        old = S.AUTO_SPLIT_AMD_CARD_COUNTS
+        S.AUTO_SPLIT_AMD_CARD_COUNTS = (4,)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                for n, auto_runs in ((3, False), (4, True)):
+                    cfg = self.amd(tmp)
+                    del cfg["split_engine"]
+                    d = S.apply_to_config(cfg, exe_for_cards=lambda n_, cc=None, arch=None: f"/e/strata-split-{n_}-amd", system="linux",
+                                          probe=lambda i: cards(n, **{**self.R9700}), ram=lambda: (125.0, 80.0),
+                                          scan=lambda path: udq4(routed_bytes=int(40 * GIB)))
+                    self.assertEqual(d.use_split, auto_runs, (n, d.reasons))
+                    if not auto_runs:
+                        self.assertTrue(d.quiet)
+                cfg = self.amd(tmp, split_engine="on")
+                self.assertTrue(S.apply_to_config(cfg, exe_for_cards=lambda n_, cc=None, arch=None: "/e/x", system="linux", probe=lambda i: cards(3, **self.R9700),
+                                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4(routed_bytes=int(40 * GIB))).use_split)
+        finally:
+            S.AUTO_SPLIT_AMD_CARD_COUNTS = old
+
     def test_off_turns_it_off_by_every_route(self):
         import os
         import tempfile

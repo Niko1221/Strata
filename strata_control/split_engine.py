@@ -36,8 +36,9 @@ import re
 from typing import Any
 
 # What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86), 2x RTX PRO 6000 (srv118, sm_120).
-# AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md); two R9700 cannot hold UD-Q4_K_XL's experts.
-TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (4,)}}
+# AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md): 4 cards with UD-Q4_K_XL, 3 cards with the IQ3_S set, 2 cards with the IQ3_S set at 8K context and 2 slots only
+# (the memory rule below refuses that by its estimate; the counts here say the engine has run on them).
+TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (2, 3, 4)}}
 # the engine package's kernels (one binary per card count with a code object for each AMD architecture): any other card is refused. AMD beyond gfx1201 is EXPERIMENTAL: only an explicit
 # `--split-engine on` starts it there (never auto), and the engine runs its kernel self-test on the card before it loads the model (src/split/src/hip/selftest_policy.hpp)
 BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
@@ -51,6 +52,8 @@ AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
 #: AMD architectures on which mode "auto" starts the split engine (owner, 2026-11-02: default on for two or more cards, `--split-engine off` turns it off). The one flip: take an
 #: architecture out of this tuple and auto keeps the layer split there while `--split-engine on` still runs the split.
 AUTO_SPLIT_AMD_ARCHS: tuple = ("gfx1201",)
+#: card counts on which mode "auto" starts it on those architectures (owner: two or more). `--split-engine on` is not limited by this.
+AUTO_SPLIT_AMD_CARD_COUNTS: tuple = (2, 3, 4)
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -421,6 +424,8 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     if not d.use_split:
         return d
     amd = cards[0].vendor == "amd"
+    if amd and mode_ != "on" and d.cards not in AUTO_SPLIT_AMD_CARD_COUNTS:
+        return Decision(False, [f"the all-cards split engine is not automatic on {d.cards} {cards[0].arch_name} cards; it starts only with --split-engine on"], d.cards)
     if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):
         # opt-in on AMD: auto keeps the layer split (quiet), `--split-engine on` runs the split
         return Decision(False, [f"the all-cards split engine is not automatic on {cards[0].arch_name} yet; it starts only with --split-engine on"], d.cards)
