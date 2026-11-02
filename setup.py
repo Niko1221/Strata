@@ -8579,8 +8579,8 @@ def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, meta: Path, dspark:
 
 # Pictures on a card with memory of its own (HIP / CUDA): the engine keeps --reserve-mib free on each card (default 600) and a picture turn takes the tower's encode buffers and
 # hipBLASLt's first start from it.  One R9700 placed 2,902 experts and left 564 MiB: the first picture died with "out of memory at hipblaslt.cpp:147" (SPLIT-HIP, 2026-11-02);
-# 2,639 experts and 570 MiB passed.  So with pictures on the reserve is raised.  PROVISIONAL: the amount waits for SPLIT-HIP's measurement on the 0.2.10 path.
-DSV41_VISION_RESERVE_MIB = 1100
+# 2,639 experts and 570 MiB passed.  SPLIT-HIP could not repeat the crash at any value (the one crash probably came from another program on the card), but the margin at 600 is only about 10 MiB in the worst case (the tower's ~319 MiB plus hipBLASLt's ~250 MiB start), so with pictures on the reserve is 900: it costs about 36 experts (0.3 GB, 1.2% of the resident ones).
+DSV41_VISION_RESERVE_MIB = 900
 
 
 def dsv41_vision_reserve_args(ds_vision: str, mac: bool, plan: dict) -> list:
