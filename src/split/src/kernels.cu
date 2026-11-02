@@ -768,6 +768,7 @@ __global__ void __launch_bounds__(HD) k_attn_combine(const float* qg, const floa
 }
 
 #include "attn_prompt.cuh"
+#include "attn_prompt_i8.cuh"
 #include "topk.cuh"
 
 // ---------------------------------------------------------------- PLE block
@@ -1429,6 +1430,24 @@ size_t attn_prompt_block_floats(int C) { return (size_t) C * ATT_OWN * AP_W; }
 void attn_prompt(const float* qg, const uint16_t* kc, const uint16_t* vc, const KvPages& g, const int* pos0, const int* cells,
                  const int* n_cells, int card, int C, int r0, int T, float* part, void* st) {
     if (T == 0) return;   // an empty half of a one-row chunk
+#if !FNX_HIP && FNX_ARCH >= 80
+    // FNX_PFX_ATTN_I8=1: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, off by default until screened
+    static const bool i8 = env_int("FNX_PFX_ATTN_I8", 0) != 0;
+    if (i8 && g.q8) {
+        static bool attr[64] = {};
+        int dev = 0;
+        cudaGetDevice(&dev);
+        if (dev >= 0 && dev < 64 && !attr[dev]) {
+            cudaFuncSetAttribute(k_pf_attn_i8, cudaFuncAttributePreferredSharedMemoryCarveout, 100);   // three blocks an SM
+            cudaGetLastError();
+            attr[dev] = true;
+        }
+        k_pf_attn_i8<<<dim3(T, NKVH), AI_THREADS, sizeof(AiSmem), (cudaStream_t) st>>>(qg, reinterpret_cast<const __half*>(kc), reinterpret_cast<const __half*>(vc), g, pos0,
+                                                                                       cells, n_cells, card, C, r0, part);
+        ck_launch("attn_prompt (int8)");
+        return;
+    }
+#endif
     k_pf_attn<<<dim3(T, NKVH), AP_THREADS, AP_SMEM, (cudaStream_t) st>>>(qg, reinterpret_cast<const __half*>(kc),
                                                                          reinterpret_cast<const __half*>(vc), g, pos0, cells, n_cells,
                                                                          card, C, r0, part);
