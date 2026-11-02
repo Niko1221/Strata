@@ -14,5 +14,6 @@
  "df13": "Elegir MTP descarga su predictor: unos {0} GB, una sola vez.",
  "df14": "No se pudo descargar el predictor de DFlash2, así que el modelo arranca sin predictor. Cargando el modelo…",
  "df15": "Descargando el predictor de MTP…",
- "df16": "No se pudo descargar el predictor de MTP."
+ "df16": "No se pudo descargar el predictor de MTP.",
+ "df17": "Predicción: MTP (DFlash2 no arrancó)"
 }

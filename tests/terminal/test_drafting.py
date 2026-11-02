@@ -369,6 +369,163 @@ class EngineArguments(unittest.TestCase):
         self.assertIn('o.draft_fallback != "mtp"', src)
 
 
+class TheInstalledEngineDecidesTheFlags(unittest.TestCase):
+    """GUI-FB3 item 2. Gyro-S with Auto sent `--mtp-draft-vocab FILE` and no `--mtp` to the engine 0.1.55.2 (f-0291-r5070-df2), which only takes `--mtp DIR` for the
+    vocabulary and ended with exit code 2. The app reads what the engine program takes (it is never started for this) and sends only that."""
+
+    OLD = b"MZ\x00\x00 strata generate: --draft dflash2 drafts without the MTP layer (--draft-fallback mtp loads it too) and needs --draft-model PACK, --spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin) \x00--draft-fallback\x00"
+    NEW = b"MZ\x00\x00 strata generate: --draft dflash2 drafts without the MTP layer and needs --draft-model PACK, --spec 2 or more and --mtp-draft-vocab FILE (or --mtp DIR, for DIR/draft_vocab.bin) \x00--draft-fallback\x00"
+    UNKNOWN = b"MZ\x00\x00 a program that has the flag and a message nobody knows \x00--draft-fallback\x00"
+    NONE = b"MZ\x00\x00 an engine from before DFlash2 ran alone: --draft dflash2 --draft-model \x00"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.data = self.root / "data"
+        self.mtp = self.data / "mtp" / "rt"
+        self.mtp.mkdir(parents=True)
+        (self.mtp / "experts.bin").write_bytes(b"e")
+        (self.mtp / "draft_vocab.bin").write_bytes(b"v")
+        self.pack = drafting.pack_path(self.data)
+        self.pack.parent.mkdir(parents=True)
+        self.pack.write_bytes(b"x" * (2 << 20))
+        self.args = ["--pack", str(self.data / "packs" / "gyro"), "--native", "/d/m.gguf", "--mtp", str(self.mtp), "--spec", "4", "--spec-min-p", "0.5"]
+
+    def exe(self, name: str, body: bytes) -> Path:
+        path = self.root / name
+        path.write_bytes(body)
+        return path
+
+    def apply(self, engine, **extra):
+        cfg = {"model_name": GYRO, "args": list(self.args), **extra}
+        decision = drafting.apply(cfg, data_dir=self.data, backend="cuda", archs=["sm_120"], engine=engine)
+        return decision, cfg["args"]
+
+    def test_the_program_is_read_and_the_answer_kept_per_file(self):
+        self.assertEqual(drafting.engine_form(self.exe("old.exe", self.OLD)), drafting.FORM_DIR)
+        self.assertEqual(drafting.engine_form(self.exe("new.exe", self.NEW)), drafting.FORM_FILE)
+        self.assertIsNone(drafting.engine_form(self.exe("odd.exe", self.UNKNOWN)), "the flag is there but the message is not known: the usual form")
+        self.assertEqual(drafting.engine_form(self.exe("none.exe", self.NONE)), drafting.FORM_NONE, "no --draft-fallback: no DFlash2 on its own")
+        self.assertIsNone(drafting.engine_form(None))
+        self.assertIsNone(drafting.engine_form(self.root / "missing.exe"))
+        self.assertIsNone(drafting.engine_form(self.exe("empty.exe", b"")), "an empty file cannot be read: the usual form")
+        # a newer program in the same place is read again (size and time are part of the key)
+        path = self.exe("swap.exe", self.OLD)
+        self.assertEqual(drafting.engine_form(path), drafting.FORM_DIR)
+        path.write_bytes(self.NEW + b"more")
+        self.assertEqual(drafting.engine_form(path), drafting.FORM_FILE)
+
+    def test_the_vocabulary_flag_follows_the_engine(self):
+        vocab = self.mtp / "draft_vocab.bin"
+        usual = drafting.engine_flags("/p", vocab)
+        self.assertEqual(usual, drafting.engine_flags("/p", vocab, drafting.FORM_FILE))
+        self.assertIn("--mtp-draft-vocab", usual)
+        self.assertNotIn("--mtp", usual)
+        old = drafting.engine_flags("/p", vocab, drafting.FORM_DIR)
+        self.assertEqual(old[old.index("--mtp") + 1], str(self.mtp), "the folder that holds draft_vocab.bin")
+        self.assertNotIn("--mtp-draft-vocab", old)
+        self.assertEqual(old[:6], ("--draft", "dflash2", "--draft-model", "/p", "--draft-fallback", "none"), "still no MTP layer: the fallback is none")
+        self.assertEqual(old[-4:], ("--spec", "6", "--draft-conf", "0.35"))
+        self.assertNotIn("--mtp", drafting.engine_flags("/p", None, drafting.FORM_DIR), "no vocabulary, no flag")
+
+    def test_an_engine_that_takes_mtp_dir_gets_dflash2_alone_that_way(self):
+        decision, args = self.apply(self.exe("old.exe", self.OLD))
+        self.assertEqual((decision.drafter, decision.note), ("dflash2", ""))
+        self.assertNotIn("--mtp-draft-vocab", args)
+        self.assertEqual(args[args.index("--mtp") + 1], str(self.mtp))
+        self.assertEqual(args[args.index("--draft-fallback") + 1], "none", "the MTP layer is still not loaded")
+        for flag in ("--spec-min-p", "--batch-mtp", "--draft-mtp-spec"):
+            self.assertNotIn(flag, args)
+        self.assertEqual(args.count("--mtp"), 1)
+        self.assertEqual(args.count("--spec"), 1)
+        # the same start for the newer engine and for one nobody can tell: the vocabulary file alone
+        for body in (self.NEW, self.UNKNOWN):
+            decision, args = self.apply(self.exe("x.exe", body))
+            self.assertEqual(decision.drafter, "dflash2")
+            self.assertEqual(args[args.index("--mtp-draft-vocab") + 1], str(self.mtp / "draft_vocab.bin"))
+            self.assertNotIn("--mtp", args)
+        decision, args = self.apply(None)
+        self.assertIn("--mtp-draft-vocab", args)
+
+    def test_with_no_mtp_folder_the_old_form_names_the_dflash2_folder_that_holds_the_vocabulary(self):
+        own = drafting.vocab_target(self.data)
+        own.parent.mkdir(parents=True, exist_ok=True)
+        own.write_bytes(b"v")
+        args = ["--pack", str(self.data / "packs" / "gyro"), "--native", "/d/m.gguf"]
+        cfg = {"model_name": GYRO, "args": args}
+        decision = drafting.apply(cfg, data_dir=self.data, backend="cuda", archs=["sm_120"], engine=self.exe("old.exe", self.OLD))
+        self.assertEqual(decision.drafter, "dflash2")
+        self.assertEqual(cfg["args"][cfg["args"].index("--mtp") + 1], str(own.parent))
+
+    def test_a_vocabulary_that_is_not_called_draft_vocab_cannot_go_by_mtp_dir(self):
+        custom = self.root / "my-subset.bin"
+        custom.write_bytes(b"v")
+        args = [*self.args, "--mtp-draft-vocab", str(custom)]
+        cfg = {"model_name": GYRO, "args": args}
+        decision = drafting.apply(cfg, data_dir=self.data, backend="cuda", archs=["sm_120"], engine=self.exe("old.exe", self.OLD))
+        self.assertEqual((decision.drafter, decision.note), ("mtp", drafting.NOT_HERE), "said in one line; the MTP runs")
+        self.assertNotIn("--draft", cfg["args"])
+        cfg = {"model_name": GYRO, "args": list(args)}
+        decision = drafting.apply(cfg, data_dir=self.data, backend="cuda", archs=["sm_120"], engine=self.exe("new.exe", self.NEW))
+        self.assertEqual(decision.drafter, "dflash2")
+        self.assertEqual(cfg["args"][cfg["args"].index("--mtp-draft-vocab") + 1], str(custom), "an engine that takes the file keeps the person's own subset")
+
+    def test_an_engine_without_the_fallback_flag_never_gets_a_dflash2_flag(self):
+        for mode in ("auto", "dflash2"):
+            decision, args = self.apply(self.exe("none.exe", self.NONE), drafting=mode)
+            self.assertEqual((decision.drafter, decision.note), ("mtp", drafting.NOT_HERE), mode)
+            for flag in ("--draft", "--draft-model", "--draft-fallback", "--draft-conf", "--mtp-draft-vocab"):
+                self.assertNotIn(flag, args, (mode, flag))
+            self.assertEqual(args[args.index("--mtp") + 1], str(self.mtp), "the MTP, as the config had it")
+
+    def test_the_server_gives_the_engine_program_to_the_drafting_rule(self):
+        from serve.server import engine_args
+        old, new = self.exe("old.exe", self.OLD), self.exe("new.exe", self.NEW)
+        cfg = {"model_name": GYRO, "args": list(self.args), "drafting": "auto"}
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            a_old, a_new, a_none = engine_args(cfg, str(old)), engine_args(cfg, str(new)), engine_args(cfg)
+        self.assertEqual(a_old[a_old.index("--mtp") + 1], str(self.mtp))
+        self.assertNotIn("--mtp-draft-vocab", a_old)
+        self.assertIn("--mtp-draft-vocab", a_new)
+        self.assertIn("--mtp-draft-vocab", a_none, "no program given (a test, a tool): the usual form")
+        # "mtp": false does not take the vocabulary folder out of a DFlash2 start
+        off = {"model_name": GYRO, "args": list(self.args), "drafting": "dflash2", "mtp": False}
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            a = engine_args(off, str(old))
+        self.assertEqual(a[a.index("--mtp") + 1], str(self.mtp))
+
+    def test_the_retry_arguments_exist_only_for_an_auto_start_that_picked_dflash2(self):
+        from serve.server import mtp_retry_args
+        old = str(self.exe("old.exe", self.OLD))
+        base = {"model_name": GYRO, "args": list(self.args)}
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            alt = mtp_retry_args({**base, "drafting": "auto"}, old, ["--effort", "x"])
+            self.assertIsNotNone(alt)
+            self.assertEqual(alt[:len(self.args)], self.args, "the MTP, as the config had it")
+            self.assertNotIn("--draft", alt)
+            self.assertEqual(alt[-2:], ["--effort", "x"], "what the start adds goes along")
+            self.assertIsNotNone(mtp_retry_args(dict(base), old), "no choice saved means Auto")
+            self.assertIsNone(mtp_retry_args({**base, "drafting": "dflash2"}, old), "named by the person: it fails with its reason")
+            self.assertIsNone(mtp_retry_args({**base, "drafting": "mtp"}, old), "nothing to fall back from")
+            self.assertIsNone(mtp_retry_args({**base, "drafting": "off"}, old))
+            self.assertIsNone(mtp_retry_args({"model_name": "qwen3.6-35b-a3b", "args": list(self.args), "drafting": "auto"}, old), "another model has no DFlash2")
+            # no MTP layer on this computer: the other start would be DFlash2 again, so there is nothing to retry with
+            for name in ("experts.bin", "draft_vocab.bin"):
+                (self.mtp / name).unlink()
+            self.assertIsNone(mtp_retry_args({**base, "drafting": "auto"}, old))
+        # the lines and the note of the real start are not touched by working the retry out
+        drafting.take_note()
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            mtp_retry_args({**base, "drafting": "auto"}, old)
+        self.assertEqual(drafting.take_note(), "")
+
+    def test_the_engine_sources_carry_the_words_the_program_is_read_for(self):
+        src = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8")
+        self.assertIn(drafting._MARK_FILE.decode(), src, "rc1's start message is what marks an engine that takes the vocabulary file alone")
+        self.assertIn(drafting._MARK_FALLBACK.decode(), src)
+
+
 class WhatTheEngineSaid(unittest.TestCase):
     ARGS = ["--mtp", "/m", "--draft", "dflash2", "--draft-model", "/p"]
 
@@ -407,8 +564,8 @@ class WordsMatchTheApp(unittest.TestCase):
         catalogs = {l: {**json.loads((folder / f"{l}.json").read_text(encoding="utf-8")), **json.loads((folder / f"df2-{l}.json").read_text(encoding="utf-8"))}
                     for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
         ids = {v: k for k, v in catalogs["en"].items()}
-        self.assertEqual(len(drafting.REASONS), 7)
-        lines = [drafting.mtp_line(r) for r in (drafting.DIDNT_FIT, drafting.NOT_HERE, drafting.NOT_SUPPORTED, drafting.NOT_DOWNLOADED, drafting.NOT_THIS_CARD)]
+        self.assertEqual(len(drafting.REASONS), 8)
+        lines = [drafting.mtp_line(r) for r in (drafting.DIDNT_FIT, drafting.NOT_HERE, drafting.NOT_SUPPORTED, drafting.NOT_DOWNLOADED, drafting.NOT_THIS_CARD, drafting.DIDNT_START)]
         lines += [drafting.line("dflash2", drafting.NO_MTP), drafting.line("off", drafting.NONE_HERE)]
         for line in lines:
             self.assertIn(line, ids, line)

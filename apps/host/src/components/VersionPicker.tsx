@@ -25,8 +25,7 @@ const gb = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)} GB`;
 const whole = (n: number) => `${Math.round(n)} GB`;
 
 /**
- * Where the versions of the chosen base model are listed, each exactly once. At the top: the versions we recommend (the pick for this PC first, tagged
- * "Recommended") and the versions already downloaded (tagged "Downloaded"; a downloaded recommended version carries both). Below, folded under "More
+ * Where the versions of the chosen base model are listed, each exactly once. At the top: the versions we recommend (the pick for this PC first; no "Recommended" tag since 11-02, the order says it) and the versions already downloaded (tagged "Downloaded"). Below, folded under "More
  * versions": all the others. A row is the name, small tags, a word only where one is needed ("SSD streaming · will run slower" for a version that does
  * not fully fit in memory, "Doesn't fit" where it cannot run at all; a version that fits says nothing: see `versionFit`) and the size. The maker, the
  * memory it needs and the SSD figure are behind "Show details" (open from the start in Expert mode). The other base models are not in this list: they
@@ -74,14 +73,14 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   };
   const row = (v: CatalogVersion) => {
     const fit = fitOn(v, hardware, true, cache);
-    const on = v.id === selectedId, have = !!downloaded?.has(v.id), recommended = recommendedIds.includes(v.id);
+    const on = v.id === selectedId, have = !!downloaded?.has(v.id);
     const state = versionFit(v, hardware, cache);
     const technical = [MAKERS[v.sourceFamily], need(v, true), state === 'ssd' ? tr("Uses SSD {0} GB", [Math.round(fit.spillGb)]) : ''].filter(Boolean).join(' · ');
     const note = versionNote(v.model);
     return <button key={v.id} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>
       <span className="version-row__check">{tr(on ? <Icon name="check" size={14}/> : null)}</span>
       <span className="version-row__body">
-        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(recommended || have ? <span className="version-row__tags">{tr(recommended ? <span className="version-tag version-tag--pick">{tr("Recommended")}</span> : null)}{tr(have ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}</span> : null)}</span>
+        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(have ? <span className="version-row__tags"><span className="version-tag version-tag--have">{tr("Downloaded")}</span></span> : null)}</span>
         {tr(state === 'ssd' || state === 'no' ? <span className="version-row__fit" data-fit={state}>{tr(state === 'ssd' ? 'SSD streaming · will run slower' : "Doesn't fit")}</span> : null)}
         {tr(details ? <span className="version-row__tech">{technical}{tr(note ? <><br/>{note}</> : null)}</span> : null)}
       </span>

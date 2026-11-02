@@ -7054,7 +7054,6 @@ textarea {
 .version-more__rows { animation: st-enter var(--st-t-local) var(--st-ease-enter) both; --st-from-y: -4px; }
 .version-row__tags { display: inline-flex; flex-wrap: nowrap; gap: 6px; white-space: nowrap; }
 .version-tag { padding: 0 8px; border-radius: var(--st-r-pill); font-size: var(--st-fs-xs); font-weight: 600; line-height: 20px; white-space: nowrap; }
-.version-tag--pick { background: var(--st-accent-tint); color: var(--st-accent-text); }
 .version-tag--have { box-shadow: inset 0 0 0 1px var(--st-line); color: var(--st-ink-soft); }
 .version-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--st-hairline); }
 .version-foot__btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: var(--st-r-sm); background: transparent; color: var(--st-ink-soft); font: inherit; font-size: var(--st-fs-sm); cursor: pointer; }

@@ -22,6 +22,7 @@ engine never switches drafter mid-run.
 
 from __future__ import annotations
 
+import mmap
 import os
 import re
 from dataclasses import dataclass
@@ -295,8 +296,9 @@ NOT_DOWNLOADED = "the DFlash2 drafter isn't downloaded yet"
 NOT_THIS_CARD = "DFlash2 isn't available on this graphics card"
 NO_MTP = "the MTP drafter isn't downloaded yet"
 NONE_HERE = "no drafter is downloaded yet"
+DIDNT_START = "DFlash2 didn't start"          # Auto picked DFlash2, the engine ended before it was ready, and the start was repeated once with the MTP (serve/server.py)
 NOT_SERVED = NOT_HERE
-REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE)
+REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE, DIDNT_START)
 
 
 def line(drafter: str, reason: str = "") -> str:
@@ -309,10 +311,55 @@ def mtp_line(reason: str) -> str:
     return line("mtp", reason)
 
 
-def engine_flags(pack: str | Path, vocab: str | Path | None = None) -> tuple[str, ...]:
-    """The engine arguments of a DFlash2 start: the drafter, its file, no MTP layer, the draft vocabulary, the window and the confidence."""
-    return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *(("--mtp-draft-vocab", str(vocab)) if vocab else ()),
-            "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
+# --------------------------------------------------------------------------------------------------- what the installed engine takes
+
+#: How an engine wants the draft vocabulary of a DFlash2-alone start (no MTP layer). The app must never send a flag the engine it starts does not have
+#: (the Gyro-S start on engine 0.1.55.2 ended with exit code 2: that engine takes `--mtp DIR` for DIR/draft_vocab.bin and does not accept `--mtp-draft-vocab` alone).
+FORM_FILE = "vocab-file"         # --mtp-draft-vocab FILE is enough (rc1 and later)
+FORM_DIR = "mtp-dir"             # --mtp DIR, for DIR/draft_vocab.bin; the MTP layer is still not loaded (--draft-fallback none)
+FORM_NONE = "unsupported"        # no --draft-fallback in the engine: it cannot run DFlash2 without the MTP layer at all
+#: Text the engine program carries, read from the file (it is never started for this): the start message of --draft dflash2 names what it needs.
+_MARK_FILE = b"--mtp-draft-vocab FILE (or --mtp DIR"
+_MARK_DIR = b"--spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin)"
+_MARK_FALLBACK = b"--draft-fallback"
+_forms: dict[tuple[str, int, int], str | None] = {}
+
+
+def engine_form(exe: str | os.PathLike[str] | None) -> str | None:
+    """How the engine program at `exe` takes the DFlash2-alone vocabulary: FORM_FILE, FORM_DIR, FORM_NONE, or None when it cannot be told (no path, the file is
+    unreadable, or it has the flag but says nothing we know: the usual form is used then). The program is read once per path, size and time and the answer kept."""
+    if not exe:
+        return None
+    try:
+        path = Path(exe)
+        stat = path.stat()
+    except (OSError, ValueError):
+        return None
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key not in _forms:
+        _forms[key] = _read_form(path)
+    return _forms[key]
+
+
+def _read_form(path: Path) -> str | None:
+    try:
+        with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            if data.find(_MARK_FILE) >= 0:
+                return FORM_FILE
+            if data.find(_MARK_DIR) >= 0:
+                return FORM_DIR
+            return None if data.find(_MARK_FALLBACK) >= 0 else FORM_NONE
+    except (OSError, ValueError):                 # unreadable, or an empty file (mmap refuses it)
+        return None
+
+
+def engine_flags(pack: str | Path, vocab: str | Path | None = None, form: str | None = None) -> tuple[str, ...]:
+    """The engine arguments of a DFlash2 start: the drafter, its file, no MTP layer, the draft vocabulary, the window and the confidence. The vocabulary is
+    `--mtp-draft-vocab FILE`, or for an engine that only knows `--mtp DIR` (`form` FORM_DIR) the folder that holds it: the MTP layer is still not loaded."""
+    where: tuple[str, ...] = ()
+    if vocab:
+        where = ("--mtp", str(Path(vocab).parent)) if form == FORM_DIR else ("--mtp-draft-vocab", str(vocab))
+    return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *where, "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
 
 
 def conf_for(backend: str | None, slots: int | float | None) -> float:
@@ -563,13 +610,16 @@ def _without_flag(args: list[str], flag: str) -> list[str]:
 
 
 def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | None = None, family: str | None = None,
-          backend: str | None = None, archs: Any = None, vram_mib: float | None = None, split: bool = False, slots: int = 0) -> Decision:
+          backend: str | None = None, archs: Any = None, vram_mib: float | None = None, split: bool = False, slots: int = 0,
+          engine: str | os.PathLike[str] | None = None) -> Decision:
     """Put the config's ``"drafting"`` choice on its engine arguments (in place): ONE drafter's options and none of the other's. DFlash2: no ``--mtp``, no MTP option,
     ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf C``; the person's own ``--spec`` or ``--draft-conf``
     in ``user_args`` stays. C is 0.35 where the card holds most experts and higher where fewer slots fit (conf_for_slots): from the person's own ``--expert-cache N``,
     else from ``vram_mib``, the memory of the one card (None: several cards, a shared-memory chip, unknown: 0.35). MTP: the arguments without any DFlash2 option.
     ``off``: neither (the draft layer's own switch, ``"mtp": false``). ``split`` and ``slots`` say that this start is a layer split or serves several requests at
-    once, which DFlash2 cannot do yet: the MTP then, said in one line. A config from before this rule that names both drafters starts with the one chosen."""
+    once, which DFlash2 cannot do yet: the MTP then, said in one line. A config from before this rule that names both drafters starts with the one chosen.
+    `engine` is the engine program that will start (None: not known, the usual flags): an engine that only takes `--mtp DIR` for the vocabulary gets that
+    (still without the MTP layer), and an engine without `--draft-fallback` gets no DFlash2 flag at all (the MTP, said in one line)."""
     args = [str(a) for a in cfg.get("args") or []]
     if not supported_model(cfg.get("model_name"), family):    # another model: its drafting is not this choice's business (DeepSeek, Swift, Coder, Qwen3.6, Unsloth...)
         asked = normalize(cfg.get("drafting"))
@@ -579,11 +629,14 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
         return Decision(asked, "mtp")
     mtp_here = mtp_ready(args)
     vocab = vocab_path(args, data_dir)
+    form = engine_form(engine)
+    if form == FORM_DIR and vocab is not None and vocab.name != VOCAB_NAME:
+        vocab = None                                          # `--mtp DIR` can only name DIR/draft_vocab.bin
     mode = cfg.get("drafting")
     if cfg.get("mtp") is False and normalize(mode) == "auto":
         mode = "off"                                          # "Draft layer (MTP)" turned off by the person, and no drafter chosen since: no drafter
     decision = decide(mode, model_name=cfg.get("model_name"), family=family, data_dir=data_dir, backend=backend, archs=archs,
-                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots), vocab_here=vocab is not None)
+                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots) or form == FORM_NONE, vocab_here=vocab is not None)
     mine = cfg.get("user_args") or []
     if decision.drafter == "off":
         cfg["args"] = strip_mtp_flags(strip_draft_flags(args))
@@ -594,7 +647,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
             cfg["mtp"] = True                                 # an explicit drafter choice overrides an older "mtp": false
     else:
         base = strip_mtp_flags(strip_draft_flags(args))
-        flags = list(engine_flags(pack_path(data_dir), vocab))
+        flags = list(engine_flags(pack_path(data_dir), vocab, form))
         kept_conf = _flag_value(mine, "--draft-conf")
         flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{conf_for(backend, slots_of(base, vram_mib)):g}"
         if _flag_value(mine, "--spec") is None:

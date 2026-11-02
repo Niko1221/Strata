@@ -14,5 +14,6 @@
  "df13": "Escolher o MTP baixa o preditor dele: cerca de {0} GB, uma vez.",
  "df14": "Não foi possível baixar o preditor do DFlash2, então o modelo inicia sem preditor. Carregando o modelo…",
  "df15": "Baixando o preditor do MTP…",
- "df16": "Não foi possível baixar o preditor do MTP."
+ "df16": "Não foi possível baixar o preditor do MTP.",
+ "df17": "Previsão: MTP (o DFlash2 não iniciou)"
 }

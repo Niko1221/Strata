@@ -22,7 +22,7 @@ test('top: the recommendation and the downloaded versions; below: all the others
   assert.deepEqual(more.map(x => x.download_gb), [...more.map(x => x.download_gb)].sort((a, b) => a - b), 'the others by size');
 });
 
-test('IQ3_S downloaded and recommended: it is at the top once, with both tags, and nowhere else', () => {
+test('IQ3_S downloaded and recommended: it is at the top once, with the Downloaded tag only, and nowhere else', () => {
   const pick = { family: 'qwen', model: 'IQ3_S', why: '64 GB tier' };
   const recommended = recommendedVersions(qwen38, pick);
   assert.equal(recommended[0].v.id, 'iq3_s', 'the pick for this PC comes first');
@@ -30,8 +30,10 @@ test('IQ3_S downloaded and recommended: it is at the top once, with both tags, a
   const { top, more } = versionGroups(qwen38, new Set(), new Set(['iq3_s']), recommended.map(r => r.v.id));
   assert.equal(top[0].id, 'iq3_s');
   assert.equal([...top, ...more].filter(x => x.id === 'iq3_s').length, 1);
-  assert.match(source, /recommended = recommendedIds\.includes\(v\.id\)/, 'Recommended is written on every recommended row, downloaded or not');
-  assert.ok(!/recommended = [^;]*&& !have/.test(source), 'a downloaded recommended version keeps its Recommended tag');
+  // GUI-FB3 item 1: the dropdown carries no "Recommended" tag or badge (the owner, 11-02); the order and the "Downloaded" tag stay
+  assert.doesNotMatch(source, /tr\("Recommended"\)/);
+  assert.doesNotMatch(source, /version-tag--pick/);
+  assert.match(source, /tr\(have \? <span className="version-row__tags"><span className="version-tag version-tag--have">\{tr\("Downloaded"\)\}<\/span><\/span> : null\)/);
 });
 
 test('the recommended versions from us come first, in order, then the downloaded ones, then the rest', () => {

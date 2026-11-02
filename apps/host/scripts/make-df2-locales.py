@@ -166,6 +166,15 @@ add("The MTP drafter could not be downloaded.",
     "Não foi possível baixar o preditor do MTP.",
     "MTP 초안 모델을 내려받지 못했습니다.",
     "Le module d'anticipation MTP n'a pas pu être téléchargé.")
+add("Drafting: MTP (DFlash2 didn't start)",
+    "预测草稿：MTP（DFlash2 未能启动）",
+    "先読み：MTP（DFlash2 は起動しませんでした）",
+    "Vorausraten: MTP (DFlash2 ist nicht gestartet)",
+    "Predicción: MTP (DFlash2 no arrancó)",
+    "Предсказание: MTP (DFlash2 не запустился)",
+    "Previsão: MTP (o DFlash2 não iniciou)",
+    "초안 예측: MTP(DFlash2가 시작되지 않았습니다)",
+    "Anticipation : MTP (DFlash2 n'a pas démarré)")
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 
