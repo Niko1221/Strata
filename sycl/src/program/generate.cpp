@@ -9230,6 +9230,8 @@ int main(int argc, char **argv) try {
             // fed).  Kept when the request ends (`cached`), so the next turn of that conversation continues from it
             // instead of reading its history again (see `slot_source` in the request path).
             std::vector<int32_t> ids;
+            int64_t reply0 = 0;            ///< the index in `ids` where its penalty window starts (the last prompt token; 0 with STRATA_PENALTY_PROMPT=1)
+            int pen_n = 0;                 ///< its request's penalty window (penalty_last_n) when it has a repeat / frequency / presence penalty, else 0
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
@@ -9494,6 +9496,12 @@ int main(int argc, char **argv) try {
                 bt_wait0 = ver.ms_wait; bt_pool0 = ver.ms_pool;
                 bt_miss0 = drive.d.multi_misses; bt_hits0 = drive.d.cache_hits; bt_pcie0 = drive.d.pcie_experts;
             }
+            for (int t = 0; t < S; ++t) {   // each penalised slot's reply tail for its penalty window (the verifier builds the rows from it and this window's tokens)
+                const BSlot& ps = bs[(size_t) rows[t]];
+                if (ps.pen_n <= 0 || (t > 0 && rows[t - 1] == rows[t])) continue;
+                const int64_t from = std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n);
+                ver.set_slot_history(rows[t], ps.ids.data() + from, (int64_t) ps.ids.size() - from);
+            }
             const Clock::time_point w0 = Clock::now();
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
@@ -9675,6 +9683,14 @@ int main(int argc, char **argv) try {
                 }
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
+                if (k == 0) {   // the penalised slots' reply tails for the group's rows (the last stage draws them)
+                    for (int t = 0; t < GS && t < (int) strata::kernels::kVerifyMaxT; ++t) {
+                        const BSlot& ps = bs[(size_t) (pick * GS + t)];
+                        if (ps.pen_n <= 0) continue;
+                        const int64_t from = std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n);
+                        ver.set_slot_history(pick * GS + t, ps.ids.data() + from, (int64_t) ps.ids.size() - from);
+                    }
+                }
                 if (!stage_verifier(k).batch_launch(pick * GS, GS, G.tok, G.pos, err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;
@@ -9995,6 +10011,7 @@ int main(int argc, char **argv) try {
             unsigned long long req_seed = 0;
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
+            long long req_pen_from = -1;   // pen_from=N: this request continues one that began at token N (the last token of the original prompt): the penalty window starts there
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // SYCL port: logprobs=K (0..20) - after each "T id" an "LP logprob id:logprob ..." line with the token's
             // log-probability and the K most likely tokens', from the verify window's head logits (before sampling,
@@ -10033,6 +10050,7 @@ int main(int argc, char **argv) try {
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "min_p") req_min_p = fv;
                     else if (key == "penalty_last_n") req_penalty_last_n = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "pen_from") req_pen_from = std::atoll(tok.c_str() + eq + 1);
                     else if (key == "penalty_repeat") req_penalty_repeat = fv;
                     else if (key == "penalty_freq") req_penalty_freq = fv;
                     else if (key == "penalty_present") req_penalty_present = fv;
@@ -11118,7 +11136,8 @@ int main(int argc, char **argv) try {
             for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             // #4590: where the penalty window may start in `consumed` (see pen_prompt above): the end of the prompt without its
             // last token, which joins the window as the fed-back head `x`.
-            const size_t pen_gen0 = strata::kernels::penalty_window_from(consumed.size(), pen_prompt);
+            size_t pen_gen0 = strata::kernels::penalty_window_from(consumed.size(), pen_prompt);
+            if (req_pen_from >= 0 && !pen_prompt) pen_gen0 = std::min<size_t>(pen_gen0, (size_t) req_pen_from);   // a continued request: its reply began earlier
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
@@ -12383,6 +12402,12 @@ int main(int argc, char **argv) try {
                     sl.max_new = admit_max_new;
                     sl.t0 = Clock::now();
                     sl.ids = live;
+                    {   // the penalty window of the slot's decode: the reply, from the last prompt token (the first window fed it), as the solo loop counts it
+                        const bool slot_pen = req_sp.penalty_last_n > 0 && (req_sp.penalty_repeat != 1.0f || req_sp.penalty_freq != 0.0f || req_sp.penalty_present != 0.0f);
+                        sl.pen_n = slot_pen ? std::min(req_sp.penalty_last_n, kPenaltyWindowCap) : 0;
+                        sl.reply0 = (int64_t) strata::kernels::penalty_window_from(live.size() > 0 ? live.size() - 1 : 0, pen_prompt);
+                        if (req_pen_from >= 0 && !pen_prompt) sl.reply0 = std::min<int64_t>(sl.reply0, req_pen_from);   // a continued request (prompt + what it generated): the reply began earlier
+                    }
                     if (batch_mtp) {
                         if (!slot_mtp[(size_t) admit_slot]->draft_first(1, ver.final_R_all(), sl.x,
                                                                         sl.p - 1, sl.draft.data(), err)) {

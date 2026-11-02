@@ -178,12 +178,18 @@ public:
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
     bool batch_busy() const { return b_running_; }
-    /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
-    /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
-    /// default.  Set on the first stage, it reaches the last.
+    /// A slot's sampling (temperature / top_p / top_k / min_p / seed and the repeat / frequency / presence penalties,
+    /// whose window comes from set_slot_history): its row is drawn again on the last stage with Philox(seed, position),
+    /// as a solo window draws it.  Greedy by default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
         if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
         if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    /// The slot's reply tail for its penalty window: the `n` tokens its session consumed since the reply began (the last penalty_last_n are used), the
+    /// fed-back head not included.  Set before every batch window that holds the slot while it has a penalty; reaches the last stage.
+    void set_slot_history(int slot, const int32_t* tail, int64_t n) {
+        if (slot >= 0 && slot < (int) slot_tail_.size()) slot_tail_[(size_t) slot].assign(tail, tail + (n > 0 ? n : 0));
+        if (next_) next_->set_slot_history(slot, tail, n);
     }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
@@ -312,6 +318,9 @@ private:
     std::chrono::steady_clock::time_point b_last_;
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
+    std::vector<std::vector<int32_t>> slot_tail_;        ///< per slot: its reply tail for the penalty window (set_slot_history)
+    int32_t* slot_hist_d_ = nullptr;                     ///< the penalty-history rows of the current batch window (device)
+    size_t slot_hist_cap_ = 0;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;
