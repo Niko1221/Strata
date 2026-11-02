@@ -295,6 +295,26 @@ class RunConfig(unittest.TestCase):
         self.assertEqual(cfg["env"], {"STRATA_PIN_BY_NEED": "1"})
         self.assertEqual(self.BASE["args"][-1], "auto")               # the installed config is never edited
 
+    def test_mmap_experts_takes_a_word_for_deepseek_and_stays_bare_for_qwen(self):
+        # --set mmap-experts=off used to drop the flag for strata-dsv41, whose default is on (experts read in place, not copied)
+        from strata_control import tune_knobs
+        ds = {"exe": "/e/strata-dsv41", "arch": "deepseek41", "port": 8095, "model_name": "deepseek-v4.1-flash", "env": {},
+              "args": ["--pack", "p", "--max-context", "262144", "--cpu-threads", "48"]}
+        for word in ("off", "on", "auto"):
+            args = derive_config(ds, S.LaunchSettings(extra={"--mmap-experts": word}), bool_flags=tune_knobs.BOOL_FLAGS)["args"]
+            self.assertEqual(args[args.index("--mmap-experts") + 1], word, word)
+            self.assertEqual(args.count("--mmap-experts"), 1)
+            self.assertEqual(args[args.index("--cpu-threads") + 1], "48")
+        replaced = {**ds, "args": [*ds["args"], "--mmap-experts", "on"]}
+        args = derive_config(replaced, S.LaunchSettings(extra={"--mmap-experts": "off"}), bool_flags=tune_knobs.BOOL_FLAGS)["args"]
+        self.assertEqual(args[-2:], ["--mmap-experts", "off"])
+        self.assertNotIn("on", args)
+        qwen = derive_config(self.BASE, S.LaunchSettings(extra={"--mmap-experts": "on"}), bool_flags=tune_knobs.BOOL_FLAGS)["args"]
+        self.assertEqual(qwen[-1], "--mmap-experts")                  # the Qwen engine's flag stays a bare switch
+        off = derive_config({**self.BASE, "args": [*self.BASE["args"], "--mmap-experts"]},
+                            S.LaunchSettings(extra={"--mmap-experts": "off"}), bool_flags=tune_knobs.BOOL_FLAGS)["args"]
+        self.assertNotIn("--mmap-experts", off)
+
     def test_mtp_off_leaves_the_draft_layer_out_of_this_launch_only(self):
         base = {**self.BASE, "args": [*self.BASE["args"], "--spec", "4", "--spec-min-p", "0.5", "--mtp", "/m/rt"]}
         cfg = derive_config(base, S.LaunchSettings(mtp="off"), bool_flags=frozenset())

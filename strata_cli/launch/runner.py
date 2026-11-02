@@ -555,8 +555,12 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         from strata_control import intel_spec                # own choices (user_args, an extra option below) come after it and win
         intel_spec.apply_for_launch(cfg)
     if s.extra:
-        a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
-        cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
+        word_flags = S.WORD_VALUE_FLAGS
+        if cfg.get("arch") == "deepseek41":                  # strata-dsv41 takes --mmap-experts on|off|auto: "off" must reach it as a word
+            bool_flags = bool_flags - tune_knobs.DSV41_WORD_FLAGS
+            word_flags = word_flags | tune_knobs.DSV41_WORD_FLAGS
+        a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags, word_flags)
+        cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes, bool_flags)
         if e_changes:
             cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)
     from strata_control import draft_layer
