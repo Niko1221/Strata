@@ -1,0 +1,30 @@
+tools x thinking, one prompt, answers long enough to time
+
+tools off, thinking off    turn0  prompt=   35 gen=  499   231.6 tok/s  accept 89%
+tools off, thinking off    turn1  prompt=   35 gen=  364   244.2 tok/s  accept 93%
+tools off, thinking off    turn2  prompt=   35 gen=  254   250.7 tok/s  accept 94%
+tools off, thinking off    ==> median   244.2 tok/s  gen~364  acceptance  91.6%
+
+tools on,  thinking off    turn0  prompt=  507 gen=   77    72.3 tok/s  accept 96%
+tools on,  thinking off    turn1  prompt=  507 gen=   77   232.4 tok/s  accept 90%
+tools on,  thinking off    turn2  prompt=  507 gen=   77   242.6 tok/s  accept 96%
+tools on,  thinking off    ==> median   232.4 tok/s  gen~77  acceptance  94.4%
+
+tools on,  thinking on     turn0  prompt=  543 gen=  214   115.7 tok/s  accept 83%
+tools on,  thinking on     turn1  prompt=  543 gen= 1562   217.5 tok/s  accept 86%
+tools on,  thinking on     turn2  prompt=  543 gen=  220   172.1 tok/s  accept 67%
+tools on,  thinking on     ==> median   172.1 tok/s  gen~220  acceptance  84.3%
+
+tools off, thinking on     turn0  prompt=   75 gen= 1699   234.0 tok/s  accept 88%
+tools off, thinking on     turn1  prompt=   75 gen= 3138   244.7 tok/s  accept 92%
+tools off, thinking on     turn2  prompt= 3093 gen=  440   330.7 tok/s  accept 99%
+tools off, thinking on     ==> median   244.7 tok/s  gen~1699  acceptance  91.8%
+
+summary (median tok/s)
+  tools off, thinking off    244.2
+  tools on,  thinking off    232.4   tools cost -4.8%
+  tools on,  thinking on     172.1   tools+thinking vs tools -25.9%
+  tools off, thinking on     244.7   thinking alone +0.2%
+
+  the Cherry Studio shape is `tools on, thinking on` = 172.1 tok/s
+EXIT=0

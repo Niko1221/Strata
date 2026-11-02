@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -232,6 +233,74 @@ static void test_mask_cache(void) {
     const std::vector<uint32_t>& m3 = cache.mask_for(grammar_stacks(g));
     assert(&m3 != &m1 && "an advanced stack is a new key");
     assert(cache.size() == 2);
+    grammar_free(g);
+}
+
+// grammar_clone now SHARES the proto's immutable rules vector instead of copying it and relinking each
+// stack element.  That only works if a clone's stack elements are the same addresses the cache indexed:
+// if they were not, make_key would key them all to (NONE, NONE) and every state would collapse into one
+// row - the failure the make_key comment describes.  This pins the invariant.
+static void test_mask_cache_clone_shares_rules(void) {
+    GrammarVocab vocab;
+    vocab.pieces = { "a", "b", "<|im_end|>" };
+    vocab.control = { 0, 0, 1 };
+    vocab.eog = { 0, 0, 1 };
+    grammar* proto = grammar_init(nullptr, "root ::= \"ab\"\n", "root");
+    assert(proto != nullptr);
+    GrammarMaskCache cache(vocab, grammar_get_rules(proto));
+
+    const std::vector<uint32_t>& from_proto = cache.mask_for(grammar_stacks(proto));
+    grammar* clone = grammar_clone(*proto);
+    assert(clone != nullptr);
+
+    // the clone starts at the same state, so it must hit the proto's row rather than add a second one
+    const std::vector<uint32_t>& from_clone = cache.mask_for(grammar_stacks(clone), grammar_get_rules(clone));
+    assert(&from_clone == &from_proto && "a clone's stack must key to the proto's row");
+    assert(cache.size() == 1 && "a clone must not add a cache entry");
+
+    // and the pointers really are shared, not merely equal by value
+    assert(grammar_stacks(clone)[0][0] == grammar_stacks(proto)[0][0] &&
+           "a clone's stack element must be the proto's own element");
+
+    // advancing the clone is a different state, and the proto is untouched by it
+    grammar_accept(clone, (uint32_t) 'a');
+    const std::vector<uint32_t>& advanced = cache.mask_for(grammar_stacks(clone), grammar_get_rules(clone));
+    assert(&advanced != &from_proto && "advancing a clone is a new key");
+    assert(cache.size() == 2);
+    assert(&cache.mask_for(grammar_stacks(proto)) == &from_proto && "the proto's state did not move");
+
+    grammar_free(clone);
+    grammar_free(proto);
+}
+
+// the shared-vocabulary constructor must size its rows from the prepared vocabulary, and the shared
+// prepared copy must produce byte-identical masks to one the cache prepares itself.
+static void test_mask_cache_shared_vocab(void) {
+    GrammarVocab vocab;
+    vocab.pieces = { "a", "b", "<|im_end|>", std::string("\x00", 1), "\xc4\x8a" };
+    vocab.control = { 0, 0, 1, 0, 0 };
+    vocab.eog = { 0, 0, 1, 0, 0 };
+    grammar* g = grammar_init(nullptr, "root ::= \"ab\"\n", "root");
+    assert(g != nullptr);
+    const grammar_rules& rules = grammar_get_rules(g);
+
+    auto prepped = std::make_shared<const MaskVocab>(vocab);
+    GrammarMaskCache shared(vocab, rules, 4096, prepped);
+    GrammarMaskCache own(vocab, rules);
+    assert((size_t) prepped->words() == shared.mask_for(grammar_stacks(g)).size() &&
+           "the row width comes from the prepared vocabulary");
+    assert(shared.mask_for(grammar_stacks(g)) == own.mask_for(grammar_stacks(g)) &&
+           "a shared prepared vocabulary must build the same mask");
+
+    // a vocabulary whose pieces do not reach the last word is the case a wrong width would break
+    GrammarVocab narrow;
+    narrow.pieces = { "a" };
+    narrow.control = { 0 };
+    narrow.eog = { 0 };
+    auto narrow_prepped = std::make_shared<const MaskVocab>(narrow);
+    GrammarMaskCache narrow_cache(narrow, rules, 4096, narrow_prepped);
+    assert(narrow_cache.mask_for(grammar_stacks(g)).size() == 1);
+
     grammar_free(g);
 }
 
@@ -756,6 +825,8 @@ int main(void)
     test_token_syntax_init();
     test_mask_ab();
     test_mask_cache();
+    test_mask_cache_clone_shares_rules();
+    test_mask_cache_shared_vocab();
     test_load_grammar_vocab();
     std::printf("All grammar tests passed.\n");
     return 0;

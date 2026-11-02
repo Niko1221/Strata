@@ -1,0 +1,21 @@
+[after] engine: F:\Strata-dev\build-release\strata.exe
+[after] prompt: 从0开始列出60位斐波那契数列，直接说结果，用“，”分割。
+
+[after] plain       turn0  gen= 499    247.8 tok/s  accept 89%
+[after] plain       turn1  gen= 499    249.5 tok/s  accept 89%
+[after] plain       turn2  gen= 499    249.8 tok/s  accept 89%
+[after] strata_off  turn0  gen= 499    249.4 tok/s  accept 89%
+[after] strata_off  turn1  gen= 499    249.6 tok/s  accept 89%
+[after] strata_off  turn2  gen= 499    249.6 tok/s  accept 89%
+[after] grammar     turn0  gen= 440    231.8 tok/s  accept 81%
+[after] grammar     turn1  gen= 440    233.8 tok/s  accept 81%
+[after] grammar     turn2  gen= 440    233.7 tok/s  accept 81%
+[after] structured  turn0  gen= 519     93.0 tok/s  accept 84%
+[after] structured  turn1  gen= 519    237.7 tok/s  accept 84%
+[after] structured  turn2  gen= 519    237.4 tok/s  accept 84%
+
+[after] plain       median   249.5 tok/s  gen~499  acceptance  89.2%
+[after] strata_off  median   249.6 tok/s  gen~499  acceptance  89.2%
+[after] grammar     median   233.7 tok/s  gen~440  acceptance  81.2%
+[after] structured  median   237.4 tok/s  gen~519  acceptance  84.6%
+EXIT=0

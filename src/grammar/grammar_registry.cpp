@@ -7,6 +7,12 @@ namespace grammar {
 
 bool GrammarRegistry::register_grammar(const std::string& sha16, const std::string& text, std::string& err) {
     err.clear();
+    if (!vocab_) {
+        // grammar=0 on the INFO line keeps the server from sending a GRAMMAR line, but the engine's
+        // stdin is a wire: a hand-written one must not take the process down.
+        err = "no grammar vocabulary";
+        return false;
+    }
     auto it = index_.find(sha16);
     if (it != index_.end()) {
         lru_.splice(lru_.begin(), lru_, it->second); // known key: no reparse
@@ -26,9 +32,11 @@ bool GrammarRegistry::register_grammar(const std::string& sha16, const std::stri
     auto entry = std::make_shared<GrammarEntry>();
     entry->proto = std::shared_ptr<grammar>(parsed, [](grammar* g) { grammar_free(g); });
     entry->vocab = vocab_;
-    entry->mask_words = vocab_ ? (int) ((vocab_->pieces.size() + 31) / 32) : 0;
-    // one mask cache per grammar: every slot that clones this proto shares the stack->mask rows
-    entry->cache = std::make_shared<GrammarMaskCache>(*vocab_, grammar_get_rules(entry->proto.get()));
+    entry->mask_words = (int) ((vocab_->pieces.size() + 31) / 32);
+    // one mask cache per grammar: every slot that clones this proto shares the stack->mask rows, and
+    // the vocabulary they are built over is the registry's one prepared copy
+    entry->cache = std::make_shared<GrammarMaskCache>(*vocab_, grammar_get_rules(entry->proto.get()),
+                                                     4096, prepped_);
     lru_.push_front(Row{sha16, entry});
     index_[sha16] = lru_.begin();
     evict_to_cap();

@@ -1,0 +1,83 @@
+[07:53:20] arms: ['C1', 'D1', 'C4', 'D4']
+[07:53:20] arms run one at a time so only one engine holds the GPU
+[07:53:33] GPU free now: 47062 MiB
+[07:53:33] === arm C1: .zcode-obj\ab-C.json ===
+[07:53:54] arm C1: ready, GPU free 7100 MiB
+[07:54:55]   [C1] server ready: True
+[07:54:55]   [C1] technical    t=0.6 turn0  gen= 886   143.7 tok/s  accept 53%
+[07:54:55]   [C1] technical    t=0.6 turn1  gen= 817   145.8 tok/s  accept 51%
+[07:54:55]   [C1] technical    t=0.6 turn2  gen= 951   140.0 tok/s  accept 51%
+[07:54:55]   [C1] narrative    t=0.6 turn0  gen= 870   142.5 tok/s  accept 50%
+[07:54:55]   [C1] narrative    t=0.6 turn1  gen= 742   138.8 tok/s  accept 48%
+[07:54:55]   [C1] narrative    t=0.6 turn2  gen= 865   145.1 tok/s  accept 50%
+[07:54:55]   [C1] predictable  t=0.6 turn0  gen=1200   262.1 tok/s  accept 99%
+[07:54:55]   [C1] predictable  t=0.6 turn1  gen=1200   262.3 tok/s  accept 99%
+[07:54:55]   [C1] predictable  t=0.6 turn2  gen=1200   262.3 tok/s  accept 99%
+[07:54:55]   
+[07:54:55]   [C1] technical    median  143.7 tok/s   acceptance  52.2%
+[07:54:55]   [C1] narrative    median  142.5 tok/s   acceptance  49.9%
+[07:54:55]   [C1] predictable  median  262.3 tok/s   acceptance  99.9%
+[07:54:55]   [C1] OVERALL median 145.1 tok/s, acceptance 68.9%
+[07:54:55] arm C1: stopping
+[07:55:13] GPU free now: 47062 MiB
+[07:55:13] === arm D1: .zcode-obj\ab-D.json ===
+[07:55:34] arm D1: ready, GPU free 7078 MiB
+[07:56:35]   [D1] server ready: True
+[07:56:35]   [D1] technical    t=0.6 turn0  gen= 906   142.9 tok/s  accept 52%
+[07:56:35]   [D1] technical    t=0.6 turn1  gen= 773   141.7 tok/s  accept 54%
+[07:56:35]   [D1] technical    t=0.6 turn2  gen= 920   144.5 tok/s  accept 54%
+[07:56:35]   [D1] narrative    t=0.6 turn0  gen= 919   140.4 tok/s  accept 50%
+[07:56:35]   [D1] narrative    t=0.6 turn1  gen= 799   148.9 tok/s  accept 55%
+[07:56:35]   [D1] narrative    t=0.6 turn2  gen= 864   143.4 tok/s  accept 52%
+[07:56:35]   [D1] predictable  t=0.6 turn0  gen=1200   261.9 tok/s  accept 99%
+[07:56:35]   [D1] predictable  t=0.6 turn1  gen=1200   262.8 tok/s  accept 99%
+[07:56:35]   [D1] predictable  t=0.6 turn2  gen=1200   263.0 tok/s  accept 99%
+[07:56:35]   
+[07:56:35]   [D1] technical    median  142.9 tok/s   acceptance  53.7%
+[07:56:35]   [D1] narrative    median  143.4 tok/s   acceptance  52.5%
+[07:56:35]   [D1] predictable  median  262.8 tok/s   acceptance  99.8%
+[07:56:35]   [D1] OVERALL median 144.5 tok/s, acceptance 70.5%
+[07:56:35] arm D1: stopping
+[07:56:53] GPU free now: 47062 MiB
+[07:56:53] === arm C4: .zcode-obj\ab-C.json ===
+[07:57:14] arm C4: ready, GPU free 7100 MiB
+[07:58:16]   [C4] server ready: True
+[07:58:16]   [C4] technical    t=0.6 turn0  gen= 858   147.7 tok/s  accept 54%
+[07:58:16]   [C4] technical    t=0.6 turn1  gen= 852   146.5 tok/s  accept 54%
+[07:58:16]   [C4] technical    t=0.6 turn2  gen= 882   143.1 tok/s  accept 50%
+[07:58:16]   [C4] narrative    t=0.6 turn0  gen= 922   144.9 tok/s  accept 50%
+[07:58:16]   [C4] narrative    t=0.6 turn1  gen= 950   139.3 tok/s  accept 48%
+[07:58:16]   [C4] narrative    t=0.6 turn2  gen= 968   140.5 tok/s  accept 49%
+[07:58:16]   [C4] predictable  t=0.6 turn0  gen=1200   262.3 tok/s  accept 99%
+[07:58:16]   [C4] predictable  t=0.6 turn1  gen=1200   262.3 tok/s  accept 99%
+[07:58:16]   [C4] predictable  t=0.6 turn2  gen=1200   261.6 tok/s  accept 99%
+[07:58:16]   
+[07:58:16]   [C4] technical    median  146.5 tok/s   acceptance  52.8%
+[07:58:16]   [C4] narrative    median  140.5 tok/s   acceptance  49.4%
+[07:58:16]   [C4] predictable  median  262.3 tok/s   acceptance  99.8%
+[07:58:16]   [C4] OVERALL median 146.5 tok/s, acceptance 68.1%
+[07:58:16] arm C4: stopping
+[07:58:35] GPU free now: 47061 MiB
+[07:58:35] === arm D4: .zcode-obj\ab-D.json ===
+[07:58:56] arm D4: ready, GPU free 7077 MiB
+[07:59:52]   [D4] server ready: True
+[07:59:52]   [D4] technical    t=0.6 turn0  gen= 885   140.4 tok/s  accept 50%
+[07:59:52]   [D4] technical    t=0.6 turn1  gen= 843   142.0 tok/s  accept 53%
+[07:59:52]   [D4] technical    t=0.6 turn2  gen= 838   142.9 tok/s  accept 52%
+[07:59:52]   [D4] narrative    t=0.6 turn0  gen= 818   140.1 tok/s  accept 48%
+[07:59:52]   [D4] narrative    t=0.6 turn1  gen= 762   147.2 tok/s  accept 51%
+[07:59:52]   [D4] narrative    t=0.6 turn2  gen= 870   143.4 tok/s  accept 48%
+[07:59:52]   [D4] predictable  t=0.6 turn0  gen=1200   261.1 tok/s  accept 99%
+[07:59:52]   [D4] predictable  t=0.6 turn1  gen= 267   262.7 tok/s  accept 99%
+[07:59:52]   [D4] predictable  t=0.6 turn2  gen=1200   261.4 tok/s  accept 99%
+[07:59:52]   
+[07:59:52]   [D4] technical    median  142.0 tok/s   acceptance  52.0%
+[07:59:52]   [D4] narrative    median  143.4 tok/s   acceptance  49.4%
+[07:59:52]   [D4] predictable  median  261.4 tok/s   acceptance  99.8%
+[07:59:52]   [D4] OVERALL median 143.4 tok/s, acceptance 65.5%
+[07:59:52] arm D4: stopping
+[08:00:01] === restoring the normal 8080 server ===
+[08:00:11] GPU free now: 46814 MiB
+[08:00:32] 8080 is back, GPU free 6783 MiB
+[08:00:32] done (8080 restored: True)
+EXIT=0

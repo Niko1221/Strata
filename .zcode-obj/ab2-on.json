@@ -1,0 +1,74 @@
+{
+ "tool_1call[grammar]": {
+  "gen": 57,
+  "sp": 126.3,
+  "ms": 0.451,
+  "prompt": 381,
+  "all_valid": true,
+  "gram": true,
+  "what": "write_file"
+ },
+ "tool_1call[prompt ]": {
+  "gen": 57,
+  "sp": 168.1,
+  "ms": 0.339,
+  "prompt": 381,
+  "all_valid": true,
+  "gram": false,
+  "what": "write_file"
+ },
+ "json_10[grammar]": {
+  "gen": 549,
+  "sp": 160.2,
+  "ms": 3.427,
+  "prompt": 30,
+  "all_valid": true,
+  "gram": true,
+  "what": "items=10"
+ },
+ "json_10[prompt ]": {
+  "gen": 550,
+  "sp": 170.6,
+  "ms": 3.223,
+  "prompt": 169,
+  "all_valid": true,
+  "gram": false,
+  "what": "items=10"
+ },
+ "json_think[grammar]": {
+  "gen": 2351,
+  "sp": 144.4,
+  "ms": 16.284,
+  "prompt": 70,
+  "all_valid": true,
+  "gram": true,
+  "what": "items=10"
+ },
+ "json_think[prompt ]": {
+  "gen": 1884,
+  "sp": 155.6,
+  "ms": 12.106,
+  "prompt": 205,
+  "all_valid": true,
+  "gram": false,
+  "what": "items=10"
+ },
+ "chat_plain[grammar]": {
+  "gen": 325,
+  "sp": 135.8,
+  "ms": 2.394,
+  "prompt": 29,
+  "all_valid": true,
+  "gram": false,
+  "what": "1790ch"
+ },
+ "chat_plain[prompt ]": {
+  "gen": 325,
+  "sp": 135.8,
+  "ms": 2.394,
+  "prompt": 29,
+  "all_valid": true,
+  "gram": false,
+  "what": "1790ch"
+ }
+}

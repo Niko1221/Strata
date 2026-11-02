@@ -5,6 +5,7 @@
 #include "json_compat.h"  // STRATA: shim for llama.cpp common.h — string_split only
 
 #include <cmath>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -37,17 +38,35 @@ class common_chat_schema_builder {
         return value.get<int>();
     }
 
-    // a fractional bound is rounded inwards, towards the integers it still admits
-    static int64_t get_bound(const common_json & schema, const std::string & key, const std::string & path, bool round_up) {
+    // a fractional bound is rounded inwards, towards the integers it still admits; `adjust` is the +1/-1 an
+    // exclusive bound needs, applied here so the range check covers it
+    static int64_t get_bound(const common_json & schema, const std::string & key, const std::string & path,
+                             bool round_up, int64_t adjust = 0) {
         const common_json & value = schema.at(key);
+        // 2^63 is exact as a double and is one past the largest int64, so the upper test is `>=`
+        constexpr double two_pow_63 = 9223372036854775808.0;
+        auto check = [&](double bound) {
+            // Out of range (or adjusted past it) would make the cast, or the +/-1 an exclusive bound adds,
+            // undefined - the grammar would spell a different range than the schema asks for.
+            if (!std::isfinite(bound) || bound < -two_pow_63 || bound >= two_pow_63) {
+                fail(path, key + " is outside the supported integer range");
+            }
+            return (int64_t) bound;
+        };
         if (value.is_number_integer()) {
-            return value.get<int64_t>();
+            const int64_t bound = value.get<int64_t>();
+            if ((adjust > 0 && bound > std::numeric_limits<int64_t>::max() - adjust) ||
+                (adjust < 0 && bound < std::numeric_limits<int64_t>::min() - adjust)) {
+                fail(path, key + " is outside the supported integer range");
+            }
+            return bound + adjust;
         }
         if (!value.is_number()) {
             fail(path, key + " must be a number");
         }
-        double d = value.get<double>();
-        return (int64_t) (round_up ? std::ceil(d) : std::floor(d));
+        const double d = value.get<double>();
+        const double rounded = round_up ? std::ceil(d) : std::floor(d);
+        return check(rounded + (double) adjust);
     }
 
     static common_chat_schema::string_format get_format(const common_json & schema, const std::string & path) {
@@ -217,12 +236,12 @@ class common_chat_schema_builder {
         if (schema.contains("minimum")) {
             node->minimum = get_bound(schema, "minimum", path, /* round_up */ true);
         } else if (schema.contains("exclusiveMinimum")) {
-            node->minimum = get_bound(schema, "exclusiveMinimum", path, /* round_up */ false) + 1;
+            node->minimum = get_bound(schema, "exclusiveMinimum", path, /* round_up */ false, /* adjust */ 1);
         }
         if (schema.contains("maximum")) {
             node->maximum = get_bound(schema, "maximum", path, /* round_up */ false);
         } else if (schema.contains("exclusiveMaximum")) {
-            node->maximum = get_bound(schema, "exclusiveMaximum", path, /* round_up */ true) - 1;
+            node->maximum = get_bound(schema, "exclusiveMaximum", path, /* round_up */ true, /* adjust */ -1);
         }
         return node;
     }

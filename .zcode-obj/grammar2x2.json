@@ -1,0 +1,94 @@
+{
+ "off_small": [
+  {
+   "speed": 247.5,
+   "acc": 363,
+   "tried": 407,
+   "gen": 499,
+   "prompt": 35
+  },
+  {
+   "speed": 241.9,
+   "acc": 209,
+   "tried": 243,
+   "gen": 293,
+   "prompt": 35
+  },
+  {
+   "speed": 248.4,
+   "acc": 272,
+   "tried": 301,
+   "gen": 374,
+   "prompt": 35
+  }
+ ],
+ "on_small": [
+  {
+   "speed": 75.2,
+   "acc": 57,
+   "tried": 60,
+   "gen": 77,
+   "prompt": 454
+  },
+  {
+   "speed": 242.5,
+   "acc": 57,
+   "tried": 57,
+   "gen": 77,
+   "prompt": 454
+  },
+  {
+   "speed": 229.3,
+   "acc": 56,
+   "tried": 63,
+   "gen": 77,
+   "prompt": 454
+  }
+ ],
+ "off_large": [
+  {
+   "speed": 221.8,
+   "acc": 41,
+   "tried": 51,
+   "gen": 59,
+   "prompt": 1491
+  },
+  {
+   "speed": 218.2,
+   "acc": 41,
+   "tried": 51,
+   "gen": 59,
+   "prompt": 1491
+  },
+  {
+   "speed": 240.3,
+   "acc": 56,
+   "tried": 60,
+   "gen": 77,
+   "prompt": 1491
+  }
+ ],
+ "on_large": [
+  {
+   "speed": 59.8,
+   "acc": 3,
+   "tried": 6,
+   "gen": 6,
+   "prompt": 1906
+  },
+  {
+   "speed": 119.1,
+   "acc": 5,
+   "tried": 15,
+   "gen": 13,
+   "prompt": 1906
+  },
+  {
+   "speed": 148.2,
+   "acc": 3,
+   "tried": 6,
+   "gen": 6,
+   "prompt": 1906
+  }
+ ]
+}

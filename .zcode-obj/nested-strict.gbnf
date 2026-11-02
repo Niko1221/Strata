@@ -1,0 +1,8 @@
+root ::= "{" space t-kv space "}"
+space ::= | " " | "\n"{1,2} [ \t]{0,20}
+t ::= "\"" t-guard-state-0 "\""
+t-guard-state-0 ::= [^"\\\x7F\x00-\x1F<] t-guard-state-1 | [\\] ( ["\\bfnrt] | "u" ( [0-9a-cA-Ce-fE-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]         | [dD] [0-7c-fC-F] [0-9a-fA-F] [0-9a-fA-F] ) ) t-guard-state-1 | ""
+t-guard-state-1 ::= [^"\\\x7F\x00-\x1F<] t-guard-state-2 | [\\] ( ["\\bfnrt] | "u" ( [0-9a-cA-Ce-fE-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]         | [dD] [0-7c-fC-F] [0-9a-fA-F] [0-9a-fA-F] ) ) t-guard-state-2 | ""
+t-guard-state-2 ::= [^"\\\x7F\x00-\x1F<] t-guard-state-3 | [\\] ( ["\\bfnrt] | "u" ( [0-9a-cA-Ce-fE-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]         | [dD] [0-7c-fC-F] [0-9a-fA-F] [0-9a-fA-F] ) ) t-guard-state-3 | ""
+t-guard-state-3 ::= ""
+t-kv ::= "\"t\"" space ":" space t

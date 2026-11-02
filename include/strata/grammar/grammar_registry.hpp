@@ -26,7 +26,9 @@ struct GrammarEntry {
 };
 
 // One slot's live grammar: a fresh clone of the entry's proto (its stacks start at root) plus the
-// staged mask for the next pick.  The entry keeps the vocab and the shared cache alive.
+// staged mask for the next pick.  The entry keeps the vocab and the shared cache alive.  A clone
+// shares the proto's immutable rules vector, so its stack elements are the same addresses the
+// cache indexed once.
 struct SlotGrammar {
     std::shared_ptr<const GrammarEntry> entry;
     std::shared_ptr<grammar> g;         // the clone; grammar_free deletes it
@@ -57,7 +59,8 @@ inline bool grammar_chain_step(const SlotGrammar& live, grammar& scratch, int32_
 class GrammarRegistry {
 public:
     explicit GrammarRegistry(std::shared_ptr<const GrammarVocab> vocab, size_t cap = 64)
-        : vocab_(std::move(vocab)), cap_(cap) {}
+        : vocab_(std::move(vocab)), cap_(cap),
+          prepped_(vocab_ ? std::make_shared<const MaskVocab>(*vocab_) : nullptr) {}
 
     // parse `text` and store it under `sha16`.  Re-registering a known key is a no-op that
     // returns true (the server re-sends the text with every registration; the key is the check).
@@ -79,6 +82,9 @@ private:
 
     std::shared_ptr<const GrammarVocab> vocab_;
     size_t cap_;
+    // The vocabulary decoded once for every grammar this registry serves: a mask miss costs one reject
+    // fold instead of decoding all of the model's pieces again.
+    std::shared_ptr<const MaskVocab> prepped_;
     std::list<Row> lru_; // front = most recently used
     std::map<std::string, std::list<Row>::iterator> index_;
 };

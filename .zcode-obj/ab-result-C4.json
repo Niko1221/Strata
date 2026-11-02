@@ -1,0 +1,71 @@
+{
+ "technical": [
+  {
+   "name": "technical",
+   "speed": 147.7,
+   "gen": 858,
+   "acc": 418,
+   "tried": 772
+  },
+  {
+   "name": "technical",
+   "speed": 146.5,
+   "gen": 852,
+   "acc": 401,
+   "tried": 738
+  },
+  {
+   "name": "technical",
+   "speed": 143.1,
+   "gen": 882,
+   "acc": 417,
+   "tried": 832
+  }
+ ],
+ "narrative": [
+  {
+   "name": "narrative",
+   "speed": 144.9,
+   "gen": 922,
+   "acc": 443,
+   "tried": 882
+  },
+  {
+   "name": "narrative",
+   "speed": 139.3,
+   "gen": 950,
+   "acc": 432,
+   "tried": 891
+  },
+  {
+   "name": "narrative",
+   "speed": 140.5,
+   "gen": 968,
+   "acc": 440,
+   "tried": 890
+  }
+ ],
+ "predictable": [
+  {
+   "name": "predictable",
+   "speed": 262.3,
+   "gen": 1200,
+   "acc": 901,
+   "tried": 903
+  },
+  {
+   "name": "predictable",
+   "speed": 262.3,
+   "gen": 1200,
+   "acc": 901,
+   "tried": 903
+  },
+  {
+   "name": "predictable",
+   "speed": 261.6,
+   "gen": 1200,
+   "acc": 899,
+   "tried": 900
+  }
+ ]
+}

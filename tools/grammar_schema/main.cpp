@@ -17,7 +17,7 @@ int main(int argc, char ** argv) {
         } else if (arg == "--forbid-sequence" && i + 1 < argc) {
             options.forbidden_sequence = argv[++i];
         } else {
-            std::cerr << "grammar_schema: unknown argument: " << arg << "\\n";
+            std::cerr << "grammar_schema: unknown argument: " << arg << "\n";
             return 1;
         }
     }
@@ -38,7 +38,7 @@ int main(int argc, char ** argv) {
 
     try {
         if (options.tool_value && options.forbidden_sequence.empty()) {
-            std::cerr << "grammar_schema: --tool-value requires --forbid-sequence\\n";
+            std::cerr << "grammar_schema: --tool-value requires --forbid-sequence\n";
             return 1;
         }
         std::string gbnf = json_schema_to_grammar(schema, /* force_gbnf= */ true, options);

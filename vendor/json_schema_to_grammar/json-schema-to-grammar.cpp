@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <regex>
@@ -253,6 +254,7 @@ static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES = {
 };
 
 static std::unordered_map<std::string, BuiltinRule> STRING_FORMAT_RULES = {
+    {"uuid-raw", {"[0-9a-fA-F]{8} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{12}", {}}},
     {"date", {"[0-9]{4} \"-\" ( \"0\" [1-9] | \"1\" [0-2] ) \"-\" ( \"0\" [1-9] | [1-2] [0-9] | \"3\" [0-1] )", {}}},
     {"time", {"([01] [0-9] | \"2\" [0-3]) \":\" [0-5] [0-9] \":\" [0-5] [0-9] ( \".\" [0-9]{3} )? ( \"Z\" | ( \"+\" | \"-\" ) ( [01] [0-9] | \"2\" [0-3] ) \":\" [0-5] [0-9] )", {}}},
     {"date-time", {"date \"T\" time", {"date", "time"}}},
@@ -287,6 +289,52 @@ static const int MAX_PATTERN_DEPTH = 100;
 
 static std::unordered_set<char> NON_LITERAL_SET = {'|', '.', '(', ')', '[', ']', '{', '}', '*', '+', '?', '^', '$'};
 static std::unordered_set<char> ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS = {'^', '$', '.', '[', ']', '(', ')', '|', '{', '}', '*', '+', '?'};
+
+// \d \w \s (and their negations) stand for a fixed set of code points, so they are expanded into character
+// classes before the pattern is tokenized instead of being reported as unsupported - client schemas spell
+// `^\d+$` and `^[\w.-]+$` constantly.  Inside a class only the positive forms expand (a union of two
+// complements is not something a GBNF class can say); the negated forms become negated classes outside one,
+// and '<' is excluded from those by the same code that handles a written-out class.
+static std::string expand_shorthand_classes(const std::string & pattern) {
+    constexpr const char * digits = "0-9";
+    constexpr const char * word = "0-9A-Za-z_";
+    constexpr const char * space = " \\t\\n\\r\\x0B\\x0C";
+    std::string out;
+    out.reserve(pattern.size());
+    bool in_class = false;
+    bool at_class_start = false;  // a ']' here is a member, not the end of the class
+    for (size_t i = 0; i < pattern.size();) {
+        const char c = pattern[i];
+        if (c == '\\' && i + 1 < pattern.size()) {
+            const char escape = pattern[i + 1];
+            const char * positive = escape == 'd' ? digits : escape == 'w' ? word : escape == 's' ? space : nullptr;
+            const char * negative = escape == 'D' ? digits : escape == 'W' ? word : escape == 'S' ? space : nullptr;
+            if (positive) {
+                out += in_class ? positive : std::string("[") + positive + "]";
+            } else if (negative && !in_class) {
+                out += std::string("[^") + negative + "]";
+            } else {
+                out += pattern.substr(i, 2);  // any other escape is left to the tokenizer to judge
+            }
+            i += 2;
+            at_class_start = false;
+            continue;
+        }
+        if (!in_class) {
+            if (c == '[') {
+                in_class = true;
+                at_class_start = true;
+            }
+        } else if (at_class_start) {
+            at_class_start = (c == '^');  // only a negation keeps the class at its start
+        } else if (c == ']') {
+            in_class = false;
+        }
+        out += c;
+        ++i;
+    }
+    return out;
+}
 
 static std::string replacePattern(const std::string & input, const std::regex & regex, const std::function<std::string(const std::smatch  &)> & replacement) {
     std::smatch match;
@@ -413,13 +461,161 @@ private:
         using std::runtime_error::runtime_error;
     };
 
-    std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+    // One code point of a GBNF character class or string literal, decoded; `i` advances past its raw
+    // spelling.  Decoding matters because '<' can be spelled as "\x3c" / "\u003c" / "\U0000003c" as well
+    // as directly, and the raw spelling is what the compiled rule actually matches.
+    static uint32_t _gbnf_codepoint(const std::string & text, size_t & i) {
+        if (text[i] != '\\' || i + 1 >= text.size()) {
+            const utf8_parse_result r = common_parse_utf8_codepoint(text, i);
+            if (r.status == utf8_parse_result::SUCCESS) {
+                i += r.bytes_consumed;
+                return r.codepoint;
+            }
+            return (unsigned char) text[i++];
+        }
+        const char escape = text[i + 1];
+        const size_t hex = escape == 'x' ? 2 : escape == 'u' ? 4 : escape == 'U' ? 8 : 0;
+        if (hex) {
+            const std::string digits = text.substr(i + 2, hex);
+            i += 2 + hex;
+            return (uint32_t) std::strtoul(digits.c_str(), nullptr, 16);
+        }
+        i += 2;
+        switch (escape) {
+            case 'n': return '\n';
+            case 'r': return '\r';
+            case 't': return '\t';
+            case '0': return 0;
+            default:  return (unsigned char) escape;
+        }
+    }
+
+    // A pattern compiles to the code points it matches, so it can match '<' - which no protected value may
+    // contain, because the parameter closer starts with one.  Excluding '<' from the character classes
+    // NARROWS the language the grammar accepts, which is the safe direction (a value can come out outside
+    // the pattern, never a call cut short); a pattern that REQUIRES '<' has nothing left to accept, so the
+    // caller reports it instead of emitting a rule that can never match.
+    static std::string _exclude_lt_in_class(const std::string & inner, bool negated, bool & requires_lt) {
+        constexpr uint32_t LT = '<';
+        std::vector<std::string> pieces;
+        bool excludes_lt = false;
+        size_t k = 0;
+        // one class member, returned exactly as written
+        auto read_member = [&](uint32_t & value) {
+            const size_t start = k;
+            value = _gbnf_codepoint(inner, k);
+            return inner.substr(start, k - start);
+        };
+        while (k < inner.size()) {
+            uint32_t lo = 0;
+            const std::string lo_tok = read_member(lo);
+            if (k + 1 < inner.size() && inner[k] == '-') {
+                k++;  // the dash
+                uint32_t hi = 0;
+                const std::string hi_tok = read_member(hi);
+                if (lo > LT || LT > hi) {
+                    pieces.push_back(lo_tok + "-" + hi_tok);
+                } else if (negated) {
+                    // `[^ -?]` already refuses '<', and dropping the range would WIDEN the class
+                    excludes_lt = true;
+                    pieces.push_back(lo_tok + "-" + hi_tok);
+                } else {
+                    // keep what is left on either side of '<' (0x3B is ';', 0x3D is '=')
+                    excludes_lt = true;
+                    if (lo < LT) pieces.push_back(lo_tok + "-\\x3b");
+                    if (LT < hi) pieces.push_back("\\x3d-" + hi_tok);
+                }
+                continue;
+            }
+            if (lo == LT) {
+                excludes_lt = true;
+                if (negated) pieces.push_back(lo_tok);  // a negated class listing '<' is what we want
+            } else {
+                pieces.push_back(lo_tok);
+            }
+        }
+        if (!negated && pieces.empty()) {
+            requires_lt = true;
+            return "";
+        }
+        std::string out;
+        if (negated && !excludes_lt) out += "\\x3c";
+        for (const auto & piece : pieces) out += piece;
+        return out;
+    }
+
+    void _exclude_lt_in_body(std::string & body, bool & requires_lt) const {
+        std::string out;
+        size_t i = 0;
+        while (i < body.size()) {
+            if (body[i] == '"') {
+                const size_t start = i++;
+                while (i < body.size() && body[i] != '"') {
+                    if (body[i] == '\\' && i + 1 < body.size()) i++;
+                    i++;
+                }
+                if (i < body.size()) i++;
+                const std::string literal = body.substr(start, i - start);
+                if (!_forbidden_sequence.empty() && literal.find(_forbidden_sequence) != std::string::npos) {
+                    throw unsupported_pattern("the pattern spells the parameter closer");
+                }
+                // a literal can spell '<' through an escape too, and a raw '<' handed to the model is what
+                // the closer needs
+                size_t k = 0;
+                while (k < literal.size()) {
+                    if (_gbnf_codepoint(literal, k) == '<') {
+                        requires_lt = true;
+                        break;
+                    }
+                }
+                out += literal;
+                continue;
+            }
+            if (body[i] == '[') {
+                size_t j = i + 1;
+                const bool negated = j < body.size() && body[j] == '^';
+                if (negated) j++;
+                const size_t inner_start = j;
+                while (j < body.size() && body[j] != ']') {
+                    if (body[j] == '\\' && j + 1 < body.size()) j++;
+                    j++;
+                }
+                if (j >= body.size()) {  // unterminated: leave the rest untouched
+                    out += body.substr(i);
+                    break;
+                }
+                out += "[";
+                if (negated) out += "^";
+                out += _exclude_lt_in_class(body.substr(inner_start, j - inner_start), negated, requires_lt);
+                out += "]";
+                i = j + 1;
+                continue;
+            }
+            out += body[i++];
+        }
+        body = out;
+    }
+
+    // every rule the call added or changed, with '<' excluded from its character classes
+    void _exclude_lt_in_new_rules(const std::map<std::string, std::string> & snapshot) {
+        if (_forbidden_sequence.empty()) return;
+        bool requires_lt = false;
+        for (auto & [rule_name, body] : _rules) {
+            const auto it = snapshot.find(rule_name);
+            if (it != snapshot.end() && it->second == body) continue;
+            _exclude_lt_in_body(body, requires_lt);
+        }
+        if (requires_lt) {
+            throw unsupported_pattern("the pattern needs a raw '<', which a protected value cannot contain");
+        }
+    }
+
+    std::string _visit_pattern(const std::string & pattern, const std::string & name, bool raw = false) {
         auto rules_snapshot = _rules;
         try {
-            if (!_forbidden_sequence.empty()) {
-                throw unsupported_pattern("patterns are not supported with protected tool parameter delimiters");
-            }
-            return _pattern_to_rule(pattern, name);
+            const std::string rule = _pattern_to_rule(pattern, name, raw);
+            _exclude_lt_in_new_rules(rules_snapshot);
+            return rule;
         } catch (const unsupported_pattern & err) {
             // Revert rules. In strict tool mode, widening an unsupported pattern to any string would
             // silently defeat the schema, so report an error instead of accepting a weaker grammar.
@@ -437,11 +633,14 @@ private:
         }
     }
 
-    std::string _pattern_to_rule(const std::string & pattern, const std::string & name) {
+    std::string _pattern_to_rule(const std::string & pattern, const std::string & name, bool raw = false) {
         if (pattern.length() < 2 || pattern.front() != '^' || pattern.back() != '$') {
             throw unsupported_pattern("not anchored with '^' and '$'");
         }
-        std::string sub_pattern = pattern.substr(1, pattern.length() - 2);
+        // the shorthand expansion is part of the strict tool-value path only: on the ordinary path an
+        // unsupported pattern keeps llama.cpp's warn-and-widen behaviour, so these goldens stay identical
+        std::string sub_pattern = _tool_value ? expand_shorthand_classes(pattern.substr(1, pattern.length() - 2))
+                                              : pattern.substr(1, pattern.length() - 2);
         std::unordered_map<std::string, std::string> sub_rule_ids;
 
         size_t i = 0;
@@ -661,7 +860,8 @@ private:
             throw invalid_pattern("unbalanced parentheses");
         }
 
-        return _add_rule(name, "\"\\\"\" (" + rule + ") \"\\\"\"");
+        return raw ? _add_rule(name, "(" + rule + ")")
+                   : _add_rule(name, "\"\\\"\" (" + rule + ") \"\\\"\"");
     }
 
     /*
@@ -676,11 +876,15 @@ private:
         common_trie trie(strings);
 
         std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+        // The fallback class below is a literal character class, so it does not go through `char` and would
+        // admit a raw '<' on its own.  Under a protected tool value the closer must stay unspellable, so '<'
+        // joins every node's reject set.
+        const std::string extra_reject = _forbidden_sequence.empty() ? std::string() : std::string("<");
         std::ostringstream out;
         out << "[\"] ( ";
         std::function<void(size_t)> visit = [&](size_t idx) {
             const auto & node = trie.nodes[idx];
-            std::string rejects;
+            std::string rejects = extra_reject;
             auto first = true;
             for (const auto & [cpt, child] : node.children) {
                 std::string c = common_unicode_cpt_to_utf8(cpt);
@@ -740,9 +944,6 @@ private:
         std::vector<std::string> optional_props;
         std::unordered_map<std::string, std::string> prop_kv_rule_names;
         std::vector<std::string> prop_names;
-        if (_forbidden_sequence.empty() == false && additional_properties) {
-            _errors.push_back("additionalProperties are not supported for protected tool values");
-        }
         for (const auto & kv : properties) {
             const auto &prop_name = kv.first;
             const auto &prop_schema = kv.second;
@@ -901,13 +1102,17 @@ private:
         std::map<state_key, int> ids;
         std::vector<state_key> states;
         std::vector<std::string> names;
+        // The state rules are written straight into _rules rather than through _add_rule, so their names are
+        // sanitized here: a property name reaches rule_name with its underscores intact ("a_b"), and '_' is
+        // not a GBNF word character - the whole grammar would fail to parse.
+        const std::string base = regex_replace(rule_name, INVALID_RULE_CHARS_RE, "-");
         auto add_state = [&](state_key key) {
             auto it = ids.find(key);
             if (it != ids.end()) return it->second;
             const int id = (int) states.size();
             ids.emplace(key, id);
             states.push_back(key);
-            std::string candidate = rule_name + "-guard-state-" + std::to_string(id);
+            std::string candidate = base + "-guard-state-" + std::to_string(id);
             while (_rules.find(candidate) != _rules.end() ||
                    std::find(names.begin(), names.end(), candidate) != names.end()) {
                 candidate += "-x";
@@ -1094,10 +1299,10 @@ public:
                 return _add_rule(rule_name, _resolve_ref(ref));
             }
             case common_chat_schema::KIND_ANY_OF:
-                if (_tool_value && name.empty()) {
-                    _errors.push_back("tool parameter root unions are not supported in strict mode");
-                    return "";
-                }
+                // A union of alternatives is one production per branch, and every branch is framed the way a
+                // nested value is (a string is quoted JSON, an object is its JSON spelling).  That is exactly
+                // what the parameter region holds, so a nullable field - `type: ["string","null"]`, which a
+                // schema generator writes for `.nullable()` - is expressible here.
                 return _add_rule(rule_name, _generate_union_rule(name, as<common_chat_schema_any_of>(schema).children));
             case common_chat_schema::KIND_ALL_OF:
                 if (_tool_value && name.empty()) {
@@ -1131,10 +1336,9 @@ public:
             case common_chat_schema::KIND_OBJECT: {
                 const auto & obj = as<common_chat_schema_object>(schema);
                 if (obj.properties.empty() && obj.additional_properties && obj.additional_properties->kind() == common_chat_schema::KIND_ANY) {
-                    if (!_forbidden_sequence.empty()) {
-                        _errors.push_back("unconstrained objects are not supported in protected tool values");
-                        return "";
-                    }
+                    // The `object` primitive is built from `string` and `value`, whose `char` refuses a raw
+                    // '<', so a free-form object cannot spell the closer either.  This is what a schema
+                    // generator writes for `record<string, unknown>`.
                     return _add_rule(rule_name, _add_primitive("object", PRIMITIVE_RULES.at("object")));
                 }
                 std::vector<std::pair<std::string, const common_chat_schema *>> properties;
@@ -1162,10 +1366,8 @@ public:
             case common_chat_schema::KIND_ARRAY: {
                 const auto & arr = as<common_chat_schema_array>(schema);
                 if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
-                    if (!_forbidden_sequence.empty()) {
-                        _errors.push_back("unconstrained arrays are not supported in protected tool values");
-                        return "";
-                    }
+                    // the `array` primitive spells every element through `value`, whose strings go through
+                    // `char`; a free-form array cannot spell a raw '<' either
                     return _visit_primitive(rule_name, "array");
                 }
                 std::string item_rule_name = visit(*arr.items, sub_name + "item");
@@ -1176,15 +1378,23 @@ public:
                 const auto & str = as<common_chat_schema_string>(schema);
                 const bool raw_root = _tool_value && name.empty();
                 if (raw_root) {
-                    if (!str.pattern.empty() || str.format != common_chat_schema::FORMAT_NONE) {
-                        _errors.push_back("tool parameter root patterns and formats are not supported in strict mode");
-                        return "";
+                    // A root tool string is the template's raw text, so its rule is unquoted.  A pattern
+                    // still applies: it is compiled to the code points it matches, with '<' excluded so no
+                    // closer can be spelled (an unquoted value has no escape to spell it with).
+                    if (!str.pattern.empty()) {
+                        return _visit_pattern(str.pattern, rule_name, true);
+                    }
+                    if (str.format != common_chat_schema::FORMAT_NONE) {
+                        // date/time/date-time have an unquoted rule already; uuid needs its raw spelling.
+                        // Every one of them is digits and fixed punctuation, so none can produce a '<'.
+                        const std::string prim_name =
+                            str.format == common_chat_schema::FORMAT_UUID ? "uuid-raw"
+                            : str.format == common_chat_schema::FORMAT_DATE ? "date"
+                            : str.format == common_chat_schema::FORMAT_TIME ? "time"
+                                                                           : "date-time";
+                        return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
                     }
                     return _guarded_string(rule_name, str.min_length, str.max_length, true);
-                }
-                if (!_forbidden_sequence.empty() && !str.pattern.empty()) {
-                    _errors.push_back("nested string patterns are not supported in protected tool values");
-                    return "";
                 }
                 if (!str.pattern.empty()) {
                     return _visit_pattern(str.pattern, rule_name);
@@ -1193,10 +1403,8 @@ public:
                     return _visit_primitive(rule_name, "uuid");
                 }
                 if (str.format != common_chat_schema::FORMAT_NONE) {
-                    if (!_forbidden_sequence.empty()) {
-                        _errors.push_back("nested string formats are not supported in protected tool values");
-                        return "";
-                    }
+                    // date/time/uuid are spelled from digits and fixed punctuation, so none of them can
+                    // produce a '<' - safe inside a protected value as well as outside one
                     std::string prim_name = std::string(str.format == common_chat_schema::FORMAT_DATE ? "date" : str.format == common_chat_schema::FORMAT_TIME ? "time" : "date-time") + "-string";
                     return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
                 }
@@ -1229,9 +1437,13 @@ public:
             case common_chat_schema::KIND_NULL:
                 return _visit_primitive(rule_name, "null");
             case common_chat_schema::KIND_ANY:
-                // any depth: an unconstrained value can spell the parameter closer inside a JSON string
-                if (_tool_value) {
-                    _errors.push_back("protected tool schemas need a concrete string, enum, const, object, array, number, boolean or null type");
+                // An unconstrained value is safe here: every string inside it goes through `char`, which
+                // refuses a raw '<' and admits the JSON escape, so no production can spell the parameter
+                // closer.  A schema generator writes this for a `record<string, unknown>` value, and
+                // refusing it rejected tools that are perfectly expressible.
+                if (_tool_value && name.empty()) {
+                    // ...except at the root of a raw tool string, where the whole value IS the text
+                    _errors.push_back("tool parameter roots need a concrete string, enum, const, object, array, number, boolean or null type");
                     return "";
                 }
                 return _add_rule(rule_name, _add_primitive("value", PRIMITIVE_RULES.at("value")));
@@ -1257,26 +1469,130 @@ public:
     }
 };
 
+// Keywords that only annotate a schema, never constrain what it admits.
+static const std::unordered_set<std::string> & protected_annotations() {
+    static const std::unordered_set<std::string> annotations = {
+        "$schema", "title", "description", "$comment", "default", "examples", "deprecated", "readOnly", "writeOnly",
+    };
+    return annotations;
+}
+
+// `propertyNames` constrains object member names.  In JSON every member name is a string, so the two forms
+// every schema generator emits - `true` and `{"type": "string"}` - restrict nothing and are accepted here.
+// A real key constraint (a pattern, an enum, a length) would have to be spelled into the key rule, which this
+// converter does not do, so it stays refused rather than silently widened.
+static bool is_vacuous_property_names(const common_json & value) {
+    if (value.is_boolean()) {
+        return value == true;
+    }
+    if (!value.is_object()) {
+        return false;
+    }
+    const auto & annotations = protected_annotations();
+    for (const auto & [key, child] : value.items()) {
+        if (annotations.count(key)) continue;
+        if (key != "type") return false;
+        if (!child.is_string() || child.get<std::string>() != "string") return false;
+    }
+    return true;
+}
+
+// Which types a type-specific keyword constrains.  JSON Schema says such a keyword only applies to values of
+// its own type, so a keyword next to a type it does not belong to constrains nothing.
+static bool keyword_applies_to_type(const std::string & key, const std::string & type) {
+    static const std::unordered_map<std::string, std::unordered_set<std::string>> by_keyword = {
+        {"minLength", {"string"}},
+        {"maxLength", {"string"}},
+        {"pattern", {"string"}},
+        {"format", {"string"}},
+        {"minimum", {"integer", "number"}},
+        {"maximum", {"integer", "number"}},
+        {"exclusiveMinimum", {"integer", "number"}},
+        {"exclusiveMaximum", {"integer", "number"}},
+        {"multipleOf", {"integer", "number"}},
+        {"items", {"array"}},
+        {"minItems", {"array"}},
+        {"maxItems", {"array"}},
+        {"properties", {"object"}},
+        {"required", {"object"}},
+        {"additionalProperties", {"object"}},
+        {"propertyNames", {"object"}},
+    };
+    const auto it = by_keyword.find(key);
+    return it == by_keyword.end() || it->second.count(type) > 0;
+}
+
 static void validate_protected_schema(const common_json & schema, const std::string & path = "#") {
     if (!schema.is_object()) {
         throw std::invalid_argument(path + ": schema must be an object");
     }
-    static const std::unordered_set<std::string> annotations = {
-        "$schema", "title", "description", "$comment", "default", "examples", "deprecated", "readOnly", "writeOnly",
-    };
+    const auto & annotations = protected_annotations();
+
+    // A union is admitted when every branch is itself expressible: the converter spells it as one
+    // alternative per branch, so the guarantee holds if it holds for each.  A declared `type` next to an
+    // `anyOf` is refused rather than dropped - the converter reads the union first, so the type would
+    // otherwise vanish and widen what the schema admits.
+    if (schema.contains("anyOf")) {
+        for (const auto & [key, value] : schema.items()) {
+            if (annotations.count(key) || key == "anyOf") continue;
+            throw std::invalid_argument(path + ": anyOf cannot be combined with '" + key + "' in strict tool mode");
+        }
+        const common_json & branches = schema.at("anyOf");
+        if (!branches.is_array() || branches.empty()) {
+            throw std::invalid_argument(path + "/anyOf must be a non-empty array");
+        }
+        size_t i = 0;
+        for (const auto & branch : branches) {
+            validate_protected_schema(branch, path + "/anyOf/" + std::to_string(i++));
+        }
+        return;
+    }
+
+    // {"type": ["a", "b"], ...} is a union of one schema per type, which is how a nullable field is
+    // written; validate each alternative exactly as the parser will build it.
+    if (schema.contains("type") && schema.at("type").is_array()) {
+        const common_json & types = schema.at("type");
+        if (types.empty()) {
+            throw std::invalid_argument(path + ": type must not be empty");
+        }
+        size_t i = 0;
+        for (const auto & entry : types) {
+            if (!entry.is_string()) {
+                throw std::invalid_argument(path + ": type must be a string or an array of strings");
+            }
+            const std::string branch_type = entry.get<std::string>();
+            common_json alternative = schema;
+            alternative["type"] = entry;
+            // In JSON Schema a keyword only constrains values of the type it belongs to, so `minimum` next
+            // to `"null"` means nothing - and Zod writes exactly that for `z.number().min(1).nullable()`.
+            // Dropping such a keyword from the branch is exact, not a widening; a keyword no type claims is
+            // left in place so the checks below still refuse it.
+            for (const char * key : {"minLength", "maxLength", "pattern", "format", "minimum", "maximum",
+                                     "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "items", "minItems",
+                                     "maxItems", "properties", "required", "additionalProperties", "propertyNames"}) {
+                if (alternative.contains(key) && !keyword_applies_to_type(key, branch_type)) {
+                    alternative.erase(key);
+                }
+            }
+            validate_protected_schema(alternative, path + "/type/" + std::to_string(i++));
+        }
+        return;
+    }
+
     for (const auto & [key, value] : schema.items()) {
         (void) value;
         if (annotations.count(key)) continue;
-        if (key == "$ref" || key == "anyOf" || key == "oneOf" || key == "allOf" || key == "not" || key == "if" ||
-            key == "then" || key == "else" || key == "pattern" || key == "format" || key == "patternProperties" ||
-            key == "propertyNames" || key == "contains" || key == "prefixItems" || key == "unevaluatedProperties" ||
+        if (key == "$ref" || key == "oneOf" || key == "allOf" || key == "not" || key == "if" ||
+            key == "then" || key == "else" || key == "patternProperties" ||
+            key == "contains" || key == "prefixItems" || key == "unevaluatedProperties" ||
             key == "unevaluatedItems" || key == "dependentSchemas" || key == "dependencies" || key == "multipleOf" ||
             key == "minProperties" || key == "maxProperties" || key == "minContains" || key == "maxContains") {
             throw std::invalid_argument(path + ": keyword '" + key + "' is not supported in strict tool mode");
         }
         static const std::unordered_set<std::string> supported = {
-            "type", "enum", "const", "properties", "required", "additionalProperties", "items", "minItems", "maxItems",
-            "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+            "type", "enum", "const", "properties", "required", "additionalProperties", "propertyNames",
+            "anyOf", "items", "minItems", "maxItems", "minLength", "maxLength", "pattern", "format",
+            "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
         };
         if (!supported.count(key)) {
             throw std::invalid_argument(path + ": unknown keyword '" + key + "' is not supported in strict tool mode");
@@ -1342,7 +1658,30 @@ static void validate_protected_schema(const common_json & schema, const std::str
         }
     };
     if (type == "string") {
-        only({"type", "minLength", "maxLength"});
+        only({"type", "minLength", "maxLength", "pattern", "format"});
+        if (schema.contains("pattern") && !schema.at("pattern").is_string()) {
+            throw std::invalid_argument(path + ": pattern must be a string");
+        }
+        if (schema.contains("pattern")) {
+            // Only the converter's own limit is prechecked; whether the pattern NEEDS a '<' (which a
+            // protected value cannot contain) is decided by the class analysis in _visit_pattern, because
+            // a pattern can spell '<' directly, as an escape, or exclude it and be perfectly safe.
+            const std::string pattern = schema.at("pattern").get<std::string>();
+            if (pattern.size() < 2 || pattern.front() != '^' || pattern.back() != '$') {
+                throw std::invalid_argument(path + ": pattern must be anchored with '^' and '$' in strict tool mode");
+            }
+        }
+        if (schema.contains("format")) {
+            const common_json & format = schema.at("format");
+            if (!format.is_string()) {
+                throw std::invalid_argument(path + ": format must be a string");
+            }
+            static const std::unordered_set<std::string> formats = {"date", "time", "date-time", "uuid"};
+            if (!formats.count(format.get<std::string>())) {
+                throw std::invalid_argument(path + ": format '" + format.get<std::string>() +
+                                            "' is not supported in strict tool mode (use date, time, date-time or uuid)");
+            }
+        }
         for (const char * key : {"minLength", "maxLength"}) {
             if (schema.contains(key) && (!schema.at(key).is_number_integer() || schema.at(key).get<int64_t>() < 0)) {
                 throw std::invalid_argument(path + ": string length bounds must be non-negative integers");
@@ -1354,14 +1693,36 @@ static void validate_protected_schema(const common_json & schema, const std::str
         return;
     }
     if (type == "object") {
-        only({"type", "properties", "required", "additionalProperties"});
-        if (schema.contains("additionalProperties") && schema.at("additionalProperties") != false) {
-            throw std::invalid_argument(path + ": additionalProperties must be false in strict tool mode");
+        only({"type", "properties", "required", "additionalProperties", "propertyNames"});
+        if (schema.contains("propertyNames") && !is_vacuous_property_names(schema.at("propertyNames"))) {
+            throw std::invalid_argument(path + ": propertyNames is only supported as {\"type\": \"string\"} in strict tool mode");
         }
-        if (schema.contains("properties")) {
-            const auto & props = schema.at("properties");
-            if (!props.is_object()) throw std::invalid_argument(path + "/properties must be an object");
-            for (const auto & [name, child] : props.items()) validate_protected_schema(child, path + "/properties/" + name);
+        if (schema.contains("properties") && !schema.at("properties").is_object()) {
+            throw std::invalid_argument(path + "/properties must be an object");
+        }
+        // `properties: {}` is what schema generators emit for a bare dictionary; it declares no names, so
+        // the key rule stays the string primitive and there is nothing to reject.
+        const bool has_properties = schema.contains("properties") && !schema.at("properties").empty();
+        if (schema.contains("additionalProperties") && schema.at("additionalProperties") != false) {
+            const common_json & extra = schema.at("additionalProperties");
+            // an empty schema ({"type": "object"} from `record<string, unknown>`) means "any value", which
+            // the protected `value` primitive spells without ever emitting a raw '<'
+            if (!extra.is_object()) {
+                throw std::invalid_argument(path + ": additionalProperties must be false, an empty schema or a typed schema in strict tool mode");
+            }
+            if (has_properties) {
+                // a dictionary with declared properties too would need a key rule that rejects the declared
+                // names, and that rule is built from a bare character class which admits a raw '<'
+                throw std::invalid_argument(path + ": a dictionary cannot be combined with declared properties in strict tool mode");
+            }
+            if (!extra.empty()) {
+                validate_protected_schema(extra, path + "/additionalProperties");
+            }
+        }
+        if (has_properties) {
+            for (const auto & [name, child] : schema.at("properties").items()) {
+                validate_protected_schema(child, path + "/properties/" + name);
+            }
         }
         if (schema.contains("required")) {
             const auto & required = schema.at("required");
@@ -1377,7 +1738,10 @@ static void validate_protected_schema(const common_json & schema, const std::str
     if (type == "array") {
         only({"type", "items", "minItems", "maxItems"});
         if (!schema.contains("items")) throw std::invalid_argument(path + ": array schemas require an items schema in strict tool mode");
-        validate_protected_schema(schema.at("items"), path + "/items");
+        // `items: {}` is a free-form element, which the protected `value` primitive spells without ever
+        // emitting a raw '<'
+        if (!schema.at("items").is_object()) throw std::invalid_argument(path + "/items must be an object");
+        if (!schema.at("items").empty()) validate_protected_schema(schema.at("items"), path + "/items");
         for (const char * key : {"minItems", "maxItems"}) {
             if (schema.contains(key) && (!schema.at(key).is_number_integer() || schema.at(key).get<int64_t>() < 0)) {
                 throw std::invalid_argument(path + ": item bounds must be non-negative integers");

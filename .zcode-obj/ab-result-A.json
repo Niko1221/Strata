@@ -1,0 +1,50 @@
+{
+ "technical": [
+  {
+   "name": "technical",
+   "speed": 130.8,
+   "gen": 828,
+   "acc": 389,
+   "tried": 745
+  },
+  {
+   "name": "technical",
+   "speed": 124.5,
+   "gen": 848,
+   "acc": 368,
+   "tried": 767
+  }
+ ],
+ "narrative": [
+  {
+   "name": "narrative",
+   "speed": 126.2,
+   "gen": 816,
+   "acc": 359,
+   "tried": 733
+  },
+  {
+   "name": "narrative",
+   "speed": 131.7,
+   "gen": 800,
+   "acc": 382,
+   "tried": 743
+  }
+ ],
+ "predictable": [
+  {
+   "name": "predictable",
+   "speed": 240.5,
+   "gen": 1200,
+   "acc": 899,
+   "tried": 900
+  },
+  {
+   "name": "predictable",
+   "speed": 240.4,
+   "gen": 1200,
+   "acc": 901,
+   "tried": 903
+  }
+ ]
+}

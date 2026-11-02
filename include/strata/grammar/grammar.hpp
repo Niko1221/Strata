@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <regex>
 #include <string>
 #include <vector>
@@ -137,7 +138,9 @@ struct grammar {
     // note: allow null vocab for testing (not great)
     const GrammarVocab * vocab;
 
-    const grammar_rules rules;  // TODO: shared ptr
+    // Immutable once built, so clones share the rules instead of copying them and relinking each stack
+    // element.  Sharing is also what lets the mask cache resolve a clone's stack elements by address.
+    std::shared_ptr<const grammar_rules> rules;
     std::vector<grammar_stack> stacks;
 
     // buffer for partially generated UTF-8 sequence from accepted tokens

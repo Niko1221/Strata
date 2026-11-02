@@ -1,0 +1,87 @@
+loading the vision encoder ...
+loading the model (the first start takes a minute or two) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 92 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] experts loaded: 29.88 GiB at 5.85 GiB/s (17 s so far)
+[strata] filling the GPU's expert cache (24576 experts, 29.88 GiB of VRAM) ...
+[strata] almost ready ...
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on, API key required)
+       open http://127.0.0.1:8080/ in a browser to chat; close this window to stop the model
+       from other devices: http://192.168.51.2:8080/   (API: http://192.168.51.2:8080/v1)
+       from other devices: http://172.24.0.1:8080/   (API: http://172.24.0.1:8080/v1)
+       from other devices: http://172.26.48.1:8080/   (API: http://172.26.48.1:8080/v1)
+       from other devices: http://192.168.159.1:8080/   (API: http://192.168.159.1:8080/v1)
+       from other devices: http://192.168.91.1:8080/   (API: http://192.168.91.1:8080/v1)
+       nothing arrives? Windows Firewall blocks it until allowed: accept its prompt for Python, or run in an admin PowerShell:
+         New-NetFirewallRule -DisplayName "Strata 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private
+       (and set this network to Private in Windows' network settings)
+[strata] answering: 210 of max 4000 tokens, 248.1 tok/s, 1 s
+[strata] answering: 436 of max 4000 tokens, 235.8 tok/s, 2 s
+[strata] done: 499 tokens in 2 s (231.6 tok/s) (stop, cancel=False)
+[strata] answering: 228 of max 4000 tokens, 252.5 tok/s, 1 s
+[strata] done: 364 tokens in 2 s (244.2 tok/s) (stop, cancel=False)
+[strata] answering: 229 of max 4000 tokens, 251.1 tok/s, 1 s
+[strata] done: 254 tokens in 1 s (250.7 tok/s) (stop, cancel=False)
+[strata] writing a tool call: automation_repl: 15 of max 4000 tokens, 29.8 tok/s, 1 s
+[strata] done: 77 tokens in 2 s (72.3 tok/s) (stop, cancel=False)
+[strata] done: 77 tokens in 0 s (232.4 tok/s) (stop, cancel=False)
+[strata] done: 77 tokens in 0 s (242.6 tok/s) (stop, cancel=False)
+[strata] thinking limited to 3000 of max_tokens 4000 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 103 of budget 3000 (max 4000) tokens, 196.7 tok/s, 1 s
+[strata] writing a tool call: automation_repl: 197 of max 4000 tokens, 129.2 tok/s, 2 s
+[strata] done: 214 tokens in 2 s (115.7 tok/s) (stop, cancel=False)
+[strata] thinking limited to 3000 of max_tokens 4000 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 163 of budget 3000 (max 4000) tokens, 178.9 tok/s, 1 s
+[strata] thinking: 379 of budget 3000 (max 4000) tokens, 198.0 tok/s, 2 s
+[strata] thinking: 625 of budget 3000 (max 4000) tokens, 213.8 tok/s, 3 s
+[strata] thinking: 863 of budget 3000 (max 4000) tokens, 219.4 tok/s, 4 s
+[strata] thinking: 1079 of budget 3000 (max 4000) tokens, 218.4 tok/s, 5 s
+[strata] answering: 1260 of max 4000 tokens, 212.0 tok/s, 6 s
+[strata] answering: 1521 of max 4000 tokens, 218.5 tok/s, 7 s
+[strata] done: 1562 tokens in 7 s (217.5 tok/s) (stop, cancel=False)
+[strata] thinking limited to 3000 of max_tokens 4000 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 142 of budget 3000 (max 4000) tokens, 156.1 tok/s, 1 s
+[strata] done: 220 tokens in 1 s (172.1 tok/s) (stop, cancel=False)
+[strata] thinking limited to 3000 of max_tokens 4000 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 149 of budget 3000 (max 4000) tokens, 192.9 tok/s, 1 s
+[strata] thinking: 388 of budget 3000 (max 4000) tokens, 218.7 tok/s, 2 s
+[strata] thinking: 594 of budget 3000 (max 4000) tokens, 213.7 tok/s, 3 s
+[strata] thinking: 853 of budget 3000 (max 4000) tokens, 224.8 tok/s, 4 s
+[strata] thinking: 1111 of budget 3000 (max 4000) tokens, 231.1 tok/s, 5 s
+[strata] answering: 1318 of max 4000 tokens, 226.5 tok/s, 6 s
+[strata] answering: 1586 of max 4000 tokens, 232.2 tok/s, 7 s
+[strata] done: 1699 tokens in 7 s (234.0 tok/s) (stop, cancel=False)
+[strata] thinking limited to 3000 of max_tokens 4000 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 191 of budget 3000 (max 4000) tokens, 209.2 tok/s, 1 s
+[strata] thinking: 450 of budget 3000 (max 4000) tokens, 233.6 tok/s, 2 s
+[strata] thinking: 689 of budget 3000 (max 4000) tokens, 234.5 tok/s, 3 s
+[strata] thinking: 911 of budget 3000 (max 4000) tokens, 231.0 tok/s, 4 s
+[strata] thinking: 1175 of budget 3000 (max 4000) tokens, 237.2 tok/s, 5 s
+[strata] thinking: 1436 of budget 3000 (max 4000) tokens, 240.7 tok/s, 6 s
+[strata] thinking: 1603 of budget 3000 (max 4000) tokens, 229.9 tok/s, 7 s
+[strata] thinking: 1858 of budget 3000 (max 4000) tokens, 232.9 tok/s, 8 s
+[strata] thinking: 2114 of budget 3000 (max 4000) tokens, 235.1 tok/s, 9 s
+[strata] thinking: 2372 of budget 3000 (max 4000) tokens, 237.2 tok/s, 10 s
+[strata] thinking: 2628 of budget 3000 (max 4000) tokens, 238.8 tok/s, 11 s
+[strata] answering: 2871 of max 4000 tokens, 239.0 tok/s, 12 s
+[strata] done: 3138 tokens in 13 s (244.7 tok/s) (stop, cancel=False)
+[strata] thinking limited to 3000 of max_tokens 4000 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 168 of budget 3000 (max 4000) tokens, 185.7 tok/s, 1 s
+[strata] thinking: 422 of budget 3000 (max 4000) tokens, 221.4 tok/s, 2 s
+[strata] thinking: 667 of budget 3000 (max 4000) tokens, 228.5 tok/s, 3 s
+[strata] thinking: 891 of budget 3000 (max 4000) tokens, 227.1 tok/s, 4 s
+[strata] thinking: 1073 of budget 3000 (max 4000) tokens, 217.9 tok/s, 5 s
+[strata] thinking: 1330 of budget 3000 (max 4000) tokens, 224.2 tok/s, 6 s
+[strata] thinking: 1594 of budget 3000 (max 4000) tokens, 229.7 tok/s, 7 s
+[strata] thinking: 1832 of budget 3000 (max 4000) tokens, 230.5 tok/s, 8 s
+[strata] thinking: 2075 of budget 3000 (max 4000) tokens, 231.8 tok/s, 9 s
+[strata] thinking: 2234 of budget 3000 (max 4000) tokens, 224.4 tok/s, 10 s
+[strata] thinking: 2396 of budget 3000 (max 4000) tokens, 218.7 tok/s, 11 s
+[strata] thinking: 2551 of budget 3000 (max 4000) tokens, 213.2 tok/s, 12 s
+[strata] thinking: 2802 of budget 3000 (max 4000) tokens, 215.9 tok/s, 13 s
+[strata] thinking budget reached (3000 tokens): wrapping up the thinking
+[strata] thinking: 3018 of max 4000 tokens, 206.8 tok/s, 15 s
+[strata] answering: 3310 of max 4000 tokens, 212.2 tok/s, 16 s
+[strata] done: 3458 tokens in 16 s (228.0 tok/s) (stop, cancel=False)

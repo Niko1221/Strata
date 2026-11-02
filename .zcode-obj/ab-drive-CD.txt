@@ -1,0 +1,39 @@
+[07:34:02] arms: ['C', 'D']
+[07:34:02] arms run one at a time so only one engine holds the GPU
+[07:34:14] GPU free now: 46309 MiB
+[07:34:14] === arm C: .zcode-obj\ab-C.json ===
+[07:34:42] arm C: ready, GPU free 6477 MiB
+[07:35:23]   [C] server ready: True
+[07:35:23]   [C] technical    t=0.6 turn0  gen= 805   138.7 tok/s  accept 49%
+[07:35:23]   [C] technical    t=0.6 turn1  gen= 873   144.3 tok/s  accept 57%
+[07:35:23]   [C] narrative    t=0.6 turn0  gen= 854   140.9 tok/s  accept 49%
+[07:35:23]   [C] narrative    t=0.6 turn1  gen= 846   142.1 tok/s  accept 54%
+[07:35:23]   [C] predictable  t=0.6 turn0  gen=1200   261.9 tok/s  accept 99%
+[07:35:23]   [C] predictable  t=0.6 turn1  gen=1200   263.1 tok/s  accept 99%
+[07:35:23]   
+[07:35:23]   [C] technical    median  141.5 tok/s   acceptance  53.1%
+[07:35:23]   [C] narrative    median  141.5 tok/s   acceptance  51.7%
+[07:35:23]   [C] predictable  median  262.5 tok/s   acceptance  99.8%
+[07:35:23]   [C] OVERALL median 143.2 tok/s, acceptance 70.1%
+[07:35:23] arm C: stopping
+[07:35:41] GPU free now: 46411 MiB
+[07:35:41] === arm D: .zcode-obj\ab-D.json ===
+[07:36:09] arm D: ready, GPU free 6423 MiB
+[07:36:55]   [D] server ready: True
+[07:36:55]   [D] technical    t=0.6 turn0  gen= 828   131.9 tok/s  accept 53%
+[07:36:55]   [D] technical    t=0.6 turn1  gen= 802   128.3 tok/s  accept 48%
+[07:36:55]   [D] narrative    t=0.6 turn0  gen= 875   129.7 tok/s  accept 49%
+[07:36:55]   [D] narrative    t=0.6 turn1  gen=1139   124.6 tok/s  accept 47%
+[07:36:55]   [D] predictable  t=0.6 turn0  gen=1200   240.6 tok/s  accept 99%
+[07:36:55]   [D] predictable  t=0.6 turn1  gen=1200   242.6 tok/s  accept 99%
+[07:36:55]   
+[07:36:55]   [D] technical    median  130.1 tok/s   acceptance  51.2%
+[07:36:55]   [D] narrative    median  127.1 tok/s   acceptance  48.6%
+[07:36:55]   [D] predictable  median  241.6 tok/s   acceptance  99.8%
+[07:36:55]   [D] OVERALL median 130.8 tok/s, acceptance 67.2%
+[07:36:55] arm D: stopping
+[07:37:04] === restoring the normal 8080 server ===
+[07:37:13] GPU free now: 46430 MiB
+[07:37:42] 8080 is back, GPU free 6421 MiB
+[07:37:42] done (8080 restored: True)
+EXIT=0

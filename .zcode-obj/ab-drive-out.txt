@@ -1,0 +1,39 @@
+[07:29:35] A/B: old acceptance rule vs probabilistic (gated) proposal
+[07:29:35] arms run one at a time so only one engine holds the GPU
+[07:29:48] GPU free now: 46424 MiB
+[07:29:48] === arm A: F:\Strata-dev\.zcode-obj\ab-A.json ===
+[07:30:16] arm A: ready, GPU free 6439 MiB
+[07:30:59]   [A] server ready: True
+[07:30:59]   [A] technical    t=0.6 turn0  gen= 828   130.8 tok/s  accept 52%
+[07:30:59]   [A] technical    t=0.6 turn1  gen= 848   124.5 tok/s  accept 47%
+[07:30:59]   [A] narrative    t=0.6 turn0  gen= 816   126.2 tok/s  accept 48%
+[07:30:59]   [A] narrative    t=0.6 turn1  gen= 800   131.7 tok/s  accept 51%
+[07:30:59]   [A] predictable  t=0.6 turn0  gen=1200   240.5 tok/s  accept 99%
+[07:30:59]   [A] predictable  t=0.6 turn1  gen=1200   240.4 tok/s  accept 99%
+[07:30:59]   
+[07:30:59]   [A] technical    median  127.7 tok/s   acceptance  50.1%
+[07:30:59]   [A] narrative    median  128.9 tok/s   acceptance  50.2%
+[07:30:59]   [A] predictable  median  240.4 tok/s   acceptance  99.8%
+[07:30:59]   [A] OVERALL median 131.2 tok/s, acceptance 68.8%
+[07:30:59] arm A: stopping
+[07:31:17] GPU free now: 46356 MiB
+[07:31:17] === arm B: F:\Strata-dev\.zcode-obj\ab-B.json ===
+[07:31:45] arm B: ready, GPU free 6438 MiB
+[07:32:28]   [B] server ready: True
+[07:32:28]   [B] technical    t=0.6 turn0  gen= 778   126.5 tok/s  accept 46%
+[07:32:28]   [B] technical    t=0.6 turn1  gen= 852   132.8 tok/s  accept 51%
+[07:32:28]   [B] narrative    t=0.6 turn0  gen= 863   128.7 tok/s  accept 46%
+[07:32:28]   [B] narrative    t=0.6 turn1  gen= 806   131.4 tok/s  accept 49%
+[07:32:28]   [B] predictable  t=0.6 turn0  gen=1200   237.7 tok/s  accept 100%
+[07:32:28]   [B] predictable  t=0.6 turn1  gen=1200   238.5 tok/s  accept 99%
+[07:32:28]   
+[07:32:28]   [B] technical    median  129.7 tok/s   acceptance  49.1%
+[07:32:28]   [B] narrative    median  130.1 tok/s   acceptance  48.2%
+[07:32:28]   [B] predictable  median  238.1 tok/s   acceptance  99.9%
+[07:32:28]   [B] OVERALL median 132.1 tok/s, acceptance 66.9%
+[07:32:28] arm B: stopping
+[07:32:37] === restoring the normal 8080 server ===
+[07:32:47] GPU free now: 46378 MiB
+[07:33:15] 8080 is back, GPU free 6369 MiB
+[07:33:15] done (8080 restored: True)
+EXIT=0

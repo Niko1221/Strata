@@ -1,0 +1,94 @@
+{
+ "on_off_think": [
+  {
+   "speed": 130.2,
+   "gen": 77,
+   "acc": 55,
+   "tried": 61,
+   "prompt": 507
+  },
+  {
+   "speed": 234.7,
+   "gen": 77,
+   "acc": 55,
+   "tried": 61,
+   "prompt": 507
+  },
+  {
+   "speed": 235.1,
+   "gen": 77,
+   "acc": 55,
+   "tried": 61,
+   "prompt": 507
+  }
+ ],
+ "off_off_think": [
+  {
+   "speed": 236.9,
+   "gen": 77,
+   "acc": 54,
+   "tried": 63,
+   "prompt": 507
+  },
+  {
+   "speed": 236.9,
+   "gen": 77,
+   "acc": 54,
+   "tried": 63,
+   "prompt": 507
+  },
+  {
+   "speed": 236.5,
+   "gen": 77,
+   "acc": 54,
+   "tried": 63,
+   "prompt": 507
+  }
+ ],
+ "on_on_think": [
+  {
+   "speed": 154.4,
+   "gen": 226,
+   "acc": 145,
+   "tried": 188,
+   "prompt": 543
+  },
+  {
+   "speed": 197.9,
+   "gen": 226,
+   "acc": 145,
+   "tried": 188,
+   "prompt": 543
+  },
+  {
+   "speed": 197.7,
+   "gen": 226,
+   "acc": 145,
+   "tried": 188,
+   "prompt": 543
+  }
+ ],
+ "off_on_think": [
+  {
+   "speed": 200.3,
+   "gen": 226,
+   "acc": 143,
+   "tried": 194,
+   "prompt": 543
+  },
+  {
+   "speed": 202.8,
+   "gen": 226,
+   "acc": 144,
+   "tried": 191,
+   "prompt": 543
+  },
+  {
+   "speed": 202.3,
+   "gen": 226,
+   "acc": 144,
+   "tried": 191,
+   "prompt": 543
+  }
+ ]
+}

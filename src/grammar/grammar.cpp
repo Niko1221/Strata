@@ -1015,7 +1015,7 @@ static bool grammar_detect_left_recursion(
 }
 
 const grammar_rules & grammar_get_rules(const struct grammar * grammar) {
-    return grammar->rules;
+    return *grammar->rules;
 }
 
 grammar_stacks_vec & grammar_stacks(struct grammar * grammar) {
@@ -1044,7 +1044,7 @@ static void grammar_accept_chr(
         if (!grammar_is_end_of_sequence(match.second)) {
             new_stack.push_back(match.second);
         }
-        grammar_advance_stack(grammar.rules, new_stack, new_stacks);
+        grammar_advance_stack(*grammar.rules, new_stack, new_stacks);
     }
 }
 
@@ -1196,12 +1196,14 @@ struct grammar * grammar_init_impl(
         }
     } while (true);
 
-    // Important: vec_rules has to be moved here, not copied, because stacks contains
-    // pointers to elements of vec_rules. If vec_rules were copied into grammar
-    // then the pointers would be invalidated when the local vec_rules goes out of scope.
+    // Important: the rules move into a shared owner, not copied, because stacks contains
+    // pointers to elements of vec_rules. If vec_rules were copied then the pointers would be
+    // invalidated when the local vec_rules goes out of scope. A moving vector keeps its buffer,
+    // so the element addresses stay valid, and every clone of this grammar points into the same
+    // immutable vector instead of relinking a private copy.
     return new grammar {
         vocab,
-        std::move(vec_rules),
+        std::make_shared<const grammar_rules>(std::move(vec_rules)),
         std::move(stacks),
         /* .partial_utf8 = */             {},
         /* .lazy = */                     false,
@@ -1302,12 +1304,14 @@ struct grammar * grammar_init_impl(
         trigger.regex = std::regex(trigger.pattern);
     }
 
-    // Important: vec_rules has to be moved here, not copied, because stacks contains
-    // pointers to elements of vec_rules. If vec_rules were copied into grammar
-    // then the pointers would be invalidated when the local vec_rules goes out of scope.
+    // Important: the rules move into a shared owner, not copied, because stacks contains
+    // pointers to elements of vec_rules. If vec_rules were copied then the pointers would be
+    // invalidated when the local vec_rules goes out of scope. A moving vector keeps its buffer,
+    // so the element addresses stay valid, and every clone of this grammar points into the same
+    // immutable vector instead of relinking a private copy.
     return new grammar {
         vocab,
-        std::move(vec_rules),
+        std::make_shared<const grammar_rules>(std::move(vec_rules)),
         std::move(stacks),
         /* .partial_utf8 = */             {},
         /* .lazy = */                     lazy,
@@ -1328,7 +1332,9 @@ void grammar_free(struct grammar * grammar) {
 }
 
 struct grammar * grammar_clone(const struct grammar & other) {
-    auto * result = new grammar {
+    // The rules are shared with the source grammar, so the stacks are already pointing at elements
+    // of the SAME vector; there is nothing to relink. Only the mutable state is copied.
+    return new grammar {
         other.vocab,
         other.rules,
         other.stacks,
@@ -1340,21 +1346,6 @@ struct grammar * grammar_clone(const struct grammar & other) {
         other.trigger_tokens,
         other.trigger_patterns,
     };
-
-    // redirect elements in stacks to point to new rules
-    for (size_t is = 0; is < result->stacks.size(); is++) {
-        for (size_t ie = 0; ie < result->stacks[is].size(); ie++) {
-            for (size_t ir0 = 0; ir0 < other.rules.size(); ir0++) {
-                for (size_t ir1 = 0; ir1 < other.rules[ir0].size(); ir1++) {
-                    if (other.stacks[is][ie] == &other.rules[ir0][ir1]) {
-                        result->stacks[is][ie] =  &result->rules[ir0][ir1];
-                    }
-                }
-            }
-        }
-    }
-
-    return result;
 }
 
 void grammar_accept_str(struct grammar & grammar, const std::string & piece) {
@@ -1393,7 +1384,7 @@ void grammar_accept(struct grammar & grammar, int32_t token, const std::string &
                 if (!grammar_is_end_of_sequence(pos + 1)) {
                     new_stack.push_back(pos + 1);
                 }
-                grammar_advance_stack(grammar.rules, new_stack, stacks_new);
+                grammar_advance_stack(*grammar.rules, new_stack, stacks_new);
             }
         } else {
             grammar_stacks_vec current_stacks = {stack};

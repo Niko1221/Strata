@@ -1,0 +1,82 @@
+{
+ "plain": [
+  {
+   "speed": 247.8,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407
+  },
+  {
+   "speed": 249.5,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407
+  },
+  {
+   "speed": 249.8,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407
+  }
+ ],
+ "strata_off": [
+  {
+   "speed": 249.4,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407
+  },
+  {
+   "speed": 249.6,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407
+  },
+  {
+   "speed": 249.6,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407
+  }
+ ],
+ "grammar": [
+  {
+   "speed": 231.8,
+   "gen": 440,
+   "acc": 311,
+   "tried": 383
+  },
+  {
+   "speed": 233.8,
+   "gen": 440,
+   "acc": 311,
+   "tried": 383
+  },
+  {
+   "speed": 233.7,
+   "gen": 440,
+   "acc": 311,
+   "tried": 383
+  }
+ ],
+ "structured": [
+  {
+   "speed": 93.0,
+   "gen": 519,
+   "acc": 369,
+   "tried": 436
+  },
+  {
+   "speed": 237.7,
+   "gen": 519,
+   "acc": 369,
+   "tried": 436
+  },
+  {
+   "speed": 237.4,
+   "gen": 519,
+   "acc": 369,
+   "tried": 436
+  }
+ ]
+}

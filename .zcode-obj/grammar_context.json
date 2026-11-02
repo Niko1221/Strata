@@ -1,0 +1,94 @@
+{
+ "plain_small": [
+  {
+   "speed": 247.7,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407,
+   "prompt": 35
+  },
+  {
+   "speed": 244.9,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407,
+   "prompt": 35
+  },
+  {
+   "speed": 246.6,
+   "gen": 499,
+   "acc": 363,
+   "tried": 407,
+   "prompt": 35
+  }
+ ],
+ "grammar_small": [
+  {
+   "speed": 231.8,
+   "gen": 440,
+   "acc": 311,
+   "tried": 383,
+   "prompt": 35
+  },
+  {
+   "speed": 231.7,
+   "gen": 440,
+   "acc": 311,
+   "tried": 383,
+   "prompt": 35
+  },
+  {
+   "speed": 232.2,
+   "gen": 440,
+   "acc": 311,
+   "tried": 383,
+   "prompt": 35
+  }
+ ],
+ "plain_large": [
+  {
+   "speed": 227.5,
+   "gen": 499,
+   "acc": 358,
+   "tried": 420,
+   "prompt": 1961
+  },
+  {
+   "speed": 228.6,
+   "gen": 499,
+   "acc": 358,
+   "tried": 420,
+   "prompt": 1961
+  },
+  {
+   "speed": 229.4,
+   "gen": 499,
+   "acc": 358,
+   "tried": 420,
+   "prompt": 1961
+  }
+ ],
+ "grammar_large": [
+  {
+   "speed": 232.1,
+   "gen": 315,
+   "acc": 225,
+   "tried": 257,
+   "prompt": 1961
+  },
+  {
+   "speed": 234.2,
+   "gen": 315,
+   "acc": 225,
+   "tried": 257,
+   "prompt": 1961
+  },
+  {
+   "speed": 230.8,
+   "gen": 315,
+   "acc": 225,
+   "tried": 257,
+   "prompt": 1961
+  }
+ ]
+}

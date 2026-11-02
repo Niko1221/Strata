@@ -17,6 +17,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,22 +28,68 @@ inline int grammar_mask_words(int64_t n_vocab) {
     return (int)((n_vocab + 31) / 32);
 }
 
+// The vocabulary prepared once for mask building: each token's piece decoded to code points, and the
+// candidate list the reject fold walks.  Building this per mask meant decoding every one of the
+// model's ~150k pieces, and allocating a vector for each, every time a grammar state the cache had not
+// seen came up - and a tool-call JSON region produces a new state per token.  XGrammar's matcher
+// pre-decodes its vocabulary for the same reason (cpp/grammar_matcher.cc, prebuilt trie); llama.cpp's
+// apply_impl decodes on each call, which is where its per-step cost comes from.
+class MaskVocab {
+public:
+    explicit MaskVocab(const GrammarVocab& vocab);
+
+    // Not copyable: cands_[i].code_points points into storage_[i], so a copy would carry pointers into
+    // the source and dangle once it died.  Moving is safe (a moved vector<vector<>> keeps its inner
+    // buffers), and every instance lives in a shared_ptr, so nothing needs to copy one.
+    MaskVocab(const MaskVocab&) = delete;
+    MaskVocab& operator=(const MaskVocab&) = delete;
+    MaskVocab(MaskVocab&&) = default;
+    MaskVocab& operator=(MaskVocab&&) = default;
+
+    // tokens the grammar may allow: every piece decoded and no control/EOG/empty/NUL token
+    const std::vector<grammar_candidate>& candidates() const { return cands_; }
+
+    // words in a mask row for this vocabulary: grammar_mask_words(pieces.size())
+    int words() const { return words_; }
+
+    // every bit banned, as grammar_build_mask starts (the caller clears what a stack accepts)
+    void ban_all(uint32_t* words) const;
+
+    // the EOG bits, cleared when a stack is at the end of the grammar
+    const std::vector<int32_t>& eog() const { return eog_; }
+
+private:
+    int words_ = 0;
+    std::vector<std::vector<uint32_t>> storage_;   // per token: code points, 0-terminated
+    std::vector<grammar_candidate>     cands_;
+    std::vector<int32_t>               eog_;
+};
+
 // fills words[0 .. grammar_mask_words(vocab.pieces.size())) for the given stacks
 void grammar_build_mask(const GrammarVocab& vocab, const grammar_rules& rules,
+                        const std::vector<grammar_stack>& stacks, uint32_t* words);
+
+// the same, reusing a prepared vocabulary (no per-call decode or allocation)
+void grammar_build_mask(const MaskVocab& prepped, const grammar_rules& rules,
                         const std::vector<grammar_stack>& stacks, uint32_t* words);
 
 class GrammarMaskCache {
 public:
     GrammarMaskCache(const GrammarVocab& vocab, const grammar_rules& rules, size_t cap = 4096);
 
+    // `pre` (optional) is a vocabulary prepared by the caller and shared across grammars; without it
+    // this cache prepares its own once, which is still once per cache rather than once per miss.
+    GrammarMaskCache(const GrammarVocab& vocab, const grammar_rules& rules, size_t cap,
+                     std::shared_ptr<const MaskVocab> pre);
+
     // the mask for this stack state; shared_ptr-sized rows, LRU-bounded (cap entries)
     const std::vector<uint32_t>& mask_for(const std::vector<grammar_stack>& stacks);
 
-    // The stacks' elements are POINTERS INTO THE GRAMMAR'S OWN rules vector, and `grammar_clone` copies that
-    // vector, so a clone's stacks point into the CLONE, not the proto. The key is (rule, offset) of every
-    // stack's top element, located by range-scan over `rules`: pass the rules that OWN the stacks
-    // (grammar_get_rules of the grammar the stacks came from). With the proto's rules every clone pointer
-    // misses the range scan, all elements key to (NONE, NONE), and every state collapses to one key.
+    // The stacks' elements are POINTERS INTO THE GRAMMAR'S OWN rules vector. Grammars that share one
+    // immutable rules vector (grammar_clone now does) resolve those pointers directly; the constructor
+    // builds the pointer -> (rule, offset) index once, so a lookup no longer walks every rule and
+    // element. `rules` still names the owner, and a pointer the index does not know (a foreign
+    // grammar's rules) falls back to the old range scan.
     const std::vector<uint32_t>& mask_for(const std::vector<grammar_stack>& stacks, const grammar_rules& rules);
 
     size_t size() const { return index_.size(); }
@@ -52,10 +99,17 @@ private:
 
     key_t make_key(const std::vector<grammar_stack>& stacks, const grammar_rules& rules) const;
 
-    const GrammarVocab& vocab_;
+    // the (rule, offset) of one stack element, by hash for an indexed pointer and by a scan of
+    // `owner` for a foreign one
+    std::pair<uint32_t, uint32_t> locate_element(const grammar_element* e, const grammar_rules& owner) const;
+
+    void index_rules();
+
     const grammar_rules& rules_;
     int words_;
     size_t cap_;
+    std::shared_ptr<const MaskVocab> prepped_;
+    std::unordered_map<const grammar_element*, std::pair<uint32_t, uint32_t>> where_;
     std::list<std::pair<key_t, std::shared_ptr<std::vector<uint32_t>>>> lru_;
     std::map<key_t, std::list<std::pair<key_t, std::shared_ptr<std::vector<uint32_t>>>>::iterator> index_;
 };

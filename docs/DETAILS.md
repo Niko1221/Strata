@@ -788,23 +788,48 @@ pointer: no allocation, no upload, byte-identical sampling).
   always honoured.
 
 **Strict tool schemas.** A tool parameter's schema is converted by `grammar_schema` in a strict mode that
-refuses anything it cannot spell exactly instead of widening it: a request whose tools use a refused schema
-fails with `400` naming the schema path, rather than running with a weakened constraint (the vendored
-converter's own habit is to print a warning and fall back to "any string" for an unsupported `pattern`, which
-would silently unconstrain the value). Supported per property: `type` (`string`, `integer`, `number`,
-`boolean`, `null`, `object`, `array`), `enum`, `const`, a nested `properties`/`required`/`additionalProperties:
-false` object, an `items` array with `minItems`/`maxItems`, `minLength`/`maxLength` on strings, and
-`minimum`/`maximum` (or the `exclusive` pair) on integers. Refused: `$ref`, `anyOf`/`oneOf`/`allOf`/`not`,
-conditionals, `pattern` and `format`, `patternProperties`/`propertyNames`, `prefixItems`/`contains`, dynamic or
-non-`false` `additionalProperties`, `multipleOf`, property-count bounds, unknown keywords, an untyped schema,
-a mixed-type `enum`, and bounds that admit no value. Two consequences worth knowing: a `string` parameter with a
-`pattern` is refused (client schemas that bound a string by regex need to send `enum` or plain bounds instead),
-and every `object` in a schema needs `additionalProperties: false`. String length bounds follow llama.cpp's rule
-for the same problem (`src/llama-grammar.cpp`, `MAX_REPETITION_THRESHOLD` 2000, which this engine's own GBNF
-parser carries too): a `maxLength` above the threshold is treated as unbounded - client schemas write 65535 or
-1000000 to mean "a lot", and the delimiter guarantee holds in every state of the chain - while a `minLength`
-above it is refused, because dropping a lower bound would let a value come out shorter than the schema says. The
-`400` names the property and the bound.
+refuses what it cannot spell exactly instead of widening it: a request whose tools use a refused schema fails
+with `400` naming the schema path, rather than running with a weakened constraint (the vendored converter's own
+habit is to print a warning and fall back to "any string" for an unsupported `pattern`, which would silently
+unconstrain the value). The line is drawn at what the guarantee needs, not at what is easy: anything whose
+grammar can provably never spell `</parameter>` is supported, because the closer is the only thing this mode
+has to keep out of a value. Supported per property: `type` (`string`, `integer`, `number`, `boolean`, `null`,
+`object`, `array`), a union (`anyOf`, or `type: ["a","b"]`, which is how a nullable field is written - one
+production per branch), `enum`, `const`, a nested `properties`/`required`/`additionalProperties: false` object,
+a dictionary (typed `additionalProperties`, or `{}` for a free-form value), a free-form value or array anywhere
+except a parameter's root, `pattern` (anchored with `^`/`$`, including the `\d`/`\w`/`\s` shorthands and their
+negations, which are expanded to the code points they stand for), `format` (`date`, `time`, `date-time`, `uuid`,
+including at a parameter's root), `items` with `minItems`/`maxItems`, `minLength`/`maxLength`, and
+`minimum`/`maximum` (or the `exclusive` pair) on integers. Refused: `$ref`, `oneOf`/`allOf`/`not`, conditionals,
+`patternProperties`, a `propertyNames` that actually constrains names, `prefixItems`/`contains`,
+`additionalProperties: true`, a dictionary combined with declared properties, a union at a parameter's root,
+`multipleOf`, property-count bounds, unknown keywords, an untyped schema at a parameter's root, a mixed-type
+`enum`, and bounds that admit no value. A keyword that constrains a type the branch does not hold is dropped
+before validation: JSON Schema says `minimum` next to `"null"` means nothing, and Zod writes exactly that for
+`z.number().min(1).nullable()`. `propertyNames` is accepted as a no-op when it only says
+`{"type": "string"}`: every JSON member name is a string, so it restricts nothing, and schema generators emit
+exactly that for a free-form map - refusing it rejected whole conversations whose tools were expressible.
+
+Two of these need a word on why they are safe rather than merely convenient. A `pattern` compiles to character
+classes, so wherever a class could match `<` the class is rebuilt to exclude it (and a negated class gets `<`
+added when it was missing): that NARROWS what the grammar accepts, which is the safe direction - a value can
+come out outside the pattern, never a call cut short. Only a pattern that NEEDS a raw `<` has nothing left to
+accept and is refused, and the answer accounts for `<` spelled directly or through `\x3c`/`\u003c`. A free-form
+value is safe because it is spelled by the `value`/`object`/`array` primitives, whose every string goes through
+the protected `char` (which refuses a raw `<` and admits the JSON escape); only a parameter's ROOT cannot be
+free-form, because there the whole text is the value with no quoting around it.
+
+Rule names are another place the grammar has to agree with the engine: a property name reaches them as written,
+and `_` is not a GBNF word character, so every generated name is sanitized - a snake_case tool
+(`old_string`, `new_string`, which is what Zod emits) otherwise produced a grammar the engine refused to parse
+at all.
+
+Length bounds follow llama.cpp's rule for the same problem
+(`src/llama-grammar.cpp`, `MAX_REPETITION_THRESHOLD` 2000, which this engine's own GBNF parser carries too): a
+`maxLength` above the threshold is treated as unbounded - client schemas write 65535 or 1000000 to mean "a lot",
+and the delimiter guarantee holds in every state of the chain - while a `minLength` above it is refused, because
+dropping a lower bound would let a value come out shorter than the schema says. The `400` names the property and
+the bound.
 
 Two clause shapes keep the constrained text and the reply parser in agreement, and both exist because the parser
 is a separate implementation from the grammar (llama.cpp gets this for free: one PEG definition spells both):
@@ -858,17 +883,39 @@ the grammar so the state (and mask) continue where the last pass left off - with
 `</think>` would never reach it, and the rest of the reply would sample from the open reasoning mask. A tail
 that does not fit the grammar is refused (400), never silently unconstrained.
 
-Measured cost on the RTX 4090 rig (Swift IQ3_S, IQ3_S experts, `--spec 4 --spec-min-p 0.5`, temperature 0, five
-paired iterations taking the median, `STRATA_SPEC_PROB=1`, `--pcie-frac 0 --adapt-swaps 0` so the probabilistic
-draft acceptance is actually on - with the default `--adapt-swaps 96` it silently is not): **169.8 tok/s
-constrained vs 182.1 tok/s plain, -6.8%**. The measurement is the grammar mask's own cost, not the drafter's:
-draft acceptance was 91.8% constrained vs 90.5% plain (the constraint slightly *raises* it), and the grammar
-refused a draft row in only 1.8% of window rows, so the chain almost never truncates. The cost therefore lives
-in the per-window chain walk (`grammar_chain_step` per row, serially on the CPU) and the per-row mask upload,
-not in lost draft work - which is why masking the drafter's sampling distribution was measured as not worth
-building (its ceiling is that 1.8%). Longer answers pay relatively more: -7.2% at 2400 output tokens, -13.9% at
-4000 (single samples, cold-start dominated at the short end). Tool calls validated 5/5 (right tool, arguments
-parse as JSON, `finish_reason: tool_calls`) with the constraint on.
+Measured cost, RTX 4090, Qwen3.8-Flash-Next with the MTP drafter on (`--spec 4`, temperature 0, three turns, taking
+the median, every speed read from the engine's own log line rather than computed on the client). The cost splits
+into two parts that an earlier revision of this section reported as one:
+
+- **The machinery.** A grammar that never refuses what the model wanted to write costs **-0.9%** (247.1 tok/s
+  against a plain 249.4). That is measured with the plain answer's own text spelled as a literal grammar
+  (`root ::= "<that text>"`), so every draft is legal and nothing can be lost to a refusal; a digits grammar that
+  permits the spaces the model writes measures the same -0.9% (247.1). The mask build, the stack walk and the
+  upload are inside that number. A second run of the same four shapes put both at -0.8%.
+- **The constraint doing its job.** The same digits grammar with spaces forbidden costs **-6.3%** (233.8 tok/s in
+  the final run, 236.5 in the one before), and the cause is visible in draft acceptance: 89.2% plain against
+  81.2% constrained. The drafter keeps proposing tokens the grammar bans and each of those is a rejected draft,
+  so the window keeps fewer tokens. No implementation speed-up recovers that; only masking the drafter's
+  distribution would, which is why it stays unbuilt: its value is bounded by how often the model's own preference
+  differs from the schema, and on a real tool request that difference is small (below).
+
+A real tool request is the first kind. Five tools, `tool_choice: auto`, thinking on (the shape a client such as
+Cherry Studio sends): **197.7 tok/s constrained against 202.3 without the grammar, -2.3%**, acceptance 77.1%
+against 74.8%; an earlier run of the same script measured -1.7% (195.9 against 199.2). The same shape with
+thinking off: 234.7 against 236.9, -0.9%.
+
+That is where the per-token work went. Three changes removed duplicated work instead of weakening the constraint:
+
+- a clone shares the grammar's immutable rules vector, so it copies only its mutable stacks - previously it
+  copied the whole rules vector and then relinked every stack element by scanning, once per speculative window;
+- the mask cache indexes every grammar element once at construction, so a lookup costs one hash per stack element
+  instead of a walk over all rules, a walk it used to run even on a cache hit;
+- the vocabulary is decoded once into shared code-point arrays and shared by every grammar the registry serves,
+  so a mask miss folds the stacks over prepared candidates instead of decoding all ~150k pieces again. A miss
+  happens for every grammar state the cache has not seen, and inside a JSON string that is nearly every token.
+
+On the tools-plus-thinking workload above, the engine measured 175.6 tok/s before these changes and 201.0 after,
+same script, same prompts.
 
 Two earlier numbers in this section deserve a correction rather than a footnote. The -2.6% / -18.6% figures and
 the "50/50 JSON-schema, 30/30 tool calls" validation came from a build in which `grammar_schema.exe` was never
@@ -877,10 +924,14 @@ plus post-hoc validation**; those runs measured the mask cost of the paths that 
 `json_object`), and the "conforming" replies there were produced by prompting, not by a grammar. A packaged
 engine now carries `grammar_schema` (it is on the packaging whitelist). When measuring this feature, prove the
 constraint is live before trusting any number: a request with a literal-forcing grammar such as
-`root ::= "ZZZ-CONSTRAINED-OK"` must produce exactly that text.
+`root ::= "ZZZ-CONSTRAINED-OK"` must produce exactly that text. The -6.8% that replaced those figures was a
+different thing again: draft acceptance under the grammar was *higher* in that run (91.8% against 90.5%), so no
+draft was lost - it was the machinery of that build doing work three times over (a clone copying every rule per
+window, a cache lookup walking the whole rule set before it looked, a full vocabulary decode on every mask miss),
+and those are the three changes listed above.
 
 With the MTP drafter on (`--mtp <rt>`), a constrained window records its chain into the mask rows before the
-window samples, so a request keeps drafting at full depth; the 91.8% acceptance above is that path. With
+window samples, so a request keeps drafting at full depth - the acceptances above are that path. With
 `--batch 2 --batch-mtp` two slots decoded together, a constrained slot's window drafts accepted 52 of 70, and
 6/6 concurrent replies (constrained and plain mixed) validated.
 

@@ -1,0 +1,26 @@
+tools present in every row; only the constraint and thinking change
+
+grammar on,  no think    turn0  prompt=  507 gen=  77   122.0 tok/s  accept 90%
+grammar on,  no think    turn1  prompt=  507 gen=  77   232.6 tok/s  accept 90%
+grammar on,  no think    turn2  prompt=  507 gen=  77   233.2 tok/s  accept 90%
+grammar on,  no think    ==> median   232.6 tok/s  gen~77  acceptance  90.2%
+
+grammar OFF, no think    turn0  prompt=  507 gen=  77   233.9 tok/s  accept 85%
+grammar OFF, no think    turn1  prompt=  507 gen=  77   233.3 tok/s  accept 85%
+grammar OFF, no think    turn2  prompt=  507 gen=  77   229.3 tok/s  accept 85%
+grammar OFF, no think    ==> median   233.3 tok/s  gen~77  acceptance  85.7%
+
+grammar on,  think       turn0  prompt=  543 gen= 226   152.3 tok/s  accept 77%
+grammar on,  think       turn1  prompt=  543 gen= 226   196.5 tok/s  accept 77%
+grammar on,  think       turn2  prompt=  543 gen= 226   195.9 tok/s  accept 77%
+grammar on,  think       ==> median   195.9 tok/s  gen~226  acceptance  77.1%
+
+grammar OFF, think       turn0  prompt=  543 gen= 226   196.7 tok/s  accept 73%
+grammar OFF, think       turn1  prompt=  543 gen= 226   199.2 tok/s  accept 75%
+grammar OFF, think       turn2  prompt=  543 gen= 226   199.2 tok/s  accept 75%
+grammar OFF, think       ==> median   199.2 tok/s  gen~226  acceptance  74.8%
+
+summary (median tok/s)
+  grammar on  vs off, thinking off:   232.6 ->   233.3 (+0.3% when the grammar is removed)
+  grammar on  vs off, thinking on :   195.9 ->   199.2 (+1.7% when the grammar is removed)
+EXIT=0

@@ -176,17 +176,165 @@ static void test_literals_and_enums(void) {
     expect(enum_rule, "z", false, "outside the enum");
 }
 
+// A dictionary (an object with typed additionalProperties and no declared properties) is a shape tool
+// schemas use for free-form maps, and one a schema generator writes with `propertyNames: {"type": "string"}`
+// plus `properties: {}`.  Every JSON member name is a string, so those two keywords add nothing; the key rule
+// stays the string primitive, whose `char` already refuses a raw '<'.
+// A property name reaches the rule names as written, and '_' is not a GBNF word character: an unsanitized
+// "a_b-guard-state-0" makes the whole grammar fail to parse, so a schema from a snake_case tool (Zod writes
+// old_string/new_string everywhere) would 400 with "grammar parse failed".
+static void test_underscore_rule_names(void) {
+    const std::string gbnf = strict(
+        R"({"type":"object","additionalProperties":false,"required":["old_string","new_string"],"properties":{"old_string":{"type":"string","minLength":1},"new_string":{"type":"string"},"file-path":{"type":"string"}}})");
+    expect(gbnf, R"({"old_string":"a","new_string":"b"})", true, "a snake_case parameter pair with bounds");
+    expect(gbnf, R"({"old_string":"","new_string":"b"})", false, "an empty value where minLength is 1");
+    expect(gbnf, R"({"old_string":"a</parameter>","new_string":"b"})", false, "a snake_case value spelling the closer");
+
+    // two names that sanitize to the same rule base must stay distinct rules with distinct bodies
+    const std::string twins = strict(
+        R"({"type":"object","additionalProperties":false,"required":["a_b","a-b"],"properties":{"a_b":{"type":"string"},"a-b":{"type":"string","minLength":3}}})");
+    expect(twins, R"({"a_b":"x","a-b":"xyz"})", true, "a snake_case and a hyphenated name side by side");
+    expect(twins, R"({"a_b":"x","a-b":"xy"})", false, "the hyphenated twin keeping its own minLength");
+}
+
+static void test_dictionaries(void) {
+    const std::string dict = strict(R"({"type":"object","propertyNames":{"type":"string"},"additionalProperties":{"type":"string"}})");
+    expect(dict, R"({"a":"b"})", true, "a dictionary with one entry");
+    expect(dict, R"({"a":"b","c":"d"})", true, "a dictionary with two entries");
+    expect(dict, R"({})", true, "an empty dictionary");
+    expect(dict, R"({"a":1})", false, "a value outside the value schema");
+    expect(dict, R"({"a":"b</parameter>"})", false, "a dictionary value spelling the closer raw");
+    expect(dict, R"({"a":"b\u003c/parameter>"})", true, "a dictionary value carrying the closer escaped");
+    expect(dict, R"({"\u003c/parameter>":"b"})", true, "a key spelling '<' through the JSON escape");
+    expect(dict, R"({"<<":"b"})", false, "a key with a raw '<'");
+
+    // the generator's other spelling: an empty properties object alongside the dictionary
+    const std::string with_empty = strict(
+        R"({"type":"object","properties":{},"propertyNames":{"type":"string"},"additionalProperties":{"type":"string"}})");
+    expect(with_empty, R"({"a":"b"})", true, "a dictionary written with an empty properties object");
+
+    // propertyNames: true and an empty schema both mean "no constraint" in JSON
+    const std::string plain_true = strict(R"({"type":"object","propertyNames":true,"additionalProperties":{"type":"integer"}})");
+    expect(plain_true, R"({"n":7})", true, "propertyNames true with typed values");
+    expect(plain_true, R"({"n":"7"})", false, "a string value where the schema wants an integer");
+
+    // a typed dictionary of objects: the nested value schema is guarded too
+    const std::string nested = strict(
+        R"({"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"required":["t"],"properties":{"t":{"type":"string"}}}})");
+    expect(nested, R"({"k":{"t":"v"}})", true, "a dictionary of closed objects");
+    expect(nested, R"({"k":{"t":"v</parameter>"}})", false, "a nested value spelling the closer raw");
+}
+
+// A schema generator writes `record<string, unknown>` for a free-form map and `["string", "null"]` (or an
+// anyOf) for a nullable field.  Both are expressible: the `value` primitive spells its strings through
+// `char`, which refuses a raw '<', and a union is one alternative per branch.
+static void test_free_form_values(void) {
+    const std::string unknown_map = strict(
+        R"({"type":"object","propertyNames":{"type":"string"},"additionalProperties":{}})");
+    expect(unknown_map, R"({"a":"b"})", true, "a record<string, unknown> with a string value");
+    expect(unknown_map, R"({"a":{"b":[1,2,{"c":null}]}})", true, "a record<string, unknown> with a nested value");
+    expect(unknown_map, R"({"a":"b</parameter>"})", false, "a free-form value spelling the closer raw");
+    expect(unknown_map, R"({"a":["</parameter>"]})", false, "the closer raw inside a free-form array");
+
+    const std::string nullable_type = strict(
+        R"({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"type":["string","null"]}}})");
+    expect(nullable_type, R"({"a":"x"})", true, "a nullable field holding a string");
+    expect(nullable_type, R"({"a":null})", true, "a nullable field holding null");
+    expect(nullable_type, R"({"a":1})", false, "a nullable field holding a number");
+
+    const std::string nullable_union = strict(
+        R"({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}]}}})");
+    expect(nullable_union, R"({"a":"x"})", true, "an anyOf-nullable field holding a string");
+    expect(nullable_union, R"({"a":null})", true, "an anyOf-nullable field holding null");
+    expect(nullable_union, R"({"a":"x</parameter>"})", false, "an anyOf-nullable field spelling the closer raw");
+}
+
+// A pattern is a common way to bound a string, and it compiles to character classes.  Excluding '<' from
+// those classes narrows what the grammar accepts (never cuts a call short), so an ordinary pattern works
+// under a protected value; one that NEEDS '<' has nothing left to accept and is reported instead.
+static void test_patterns_and_formats(void) {
+    const std::string word = strict(
+        R"({"type":"object","additionalProperties":false,"required":["w"],"properties":{"w":{"type":"string","pattern":"^[a-z]+$"}}})");
+    expect(word, R"({"w":"abc"})", true, "a lowercase word");
+    expect(word, R"({"w":"ABC"})", false, "an uppercase word");
+    expect(word, R"({"w":"a<c"})", false, "a '<' inside a narrow class");
+
+    const std::string printable = strict(
+        R"({"type":"object","additionalProperties":false,"required":["w"],"properties":{"w":{"type":"string","pattern":"^[!-~]+$"}}})");
+    expect(printable, R"({"w":"a!b"})", true, "a printable-only string");
+    expect(printable, R"({"w":"a;b"})", true, "the class character just below '<'");
+    expect(printable, R"({"w":"a=b"})", true, "the class character just above '<'");
+    expect(printable, R"({"w":"a<b"})", false, "a '<' inside a range that spans it");
+
+    const std::string negated = strict(
+        R"({"type":"object","additionalProperties":false,"required":["w"],"properties":{"w":{"type":"string","pattern":"^[^abc]+$"}}})");
+    expect(negated, R"({"w":"xyz"})", true, "a string outside a negated class");
+    expect(negated, R"({"w":"xaz"})", false, "a member of a negated class");
+    expect(negated, R"({"w":"x<z"})", false, "a '<' excluded from a negated class");
+
+    const std::string uuid = strict(
+        R"({"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string","format":"uuid"}}})");
+    expect(uuid, R"({"id":"123e4567-e89b-12d3-a456-426614174000"})", true, "a uuid");
+    expect(uuid, R"({"id":"123e4567"})", false, "a prefix of a uuid");
+
+    // a pattern that EXCLUDES '<' is safe and must not be refused just for naming it
+    const std::string not_lt = strict(
+        R"({"type":"object","additionalProperties":false,"required":["w"],"properties":{"w":{"type":"string","pattern":"^[^<]+$"}}})");
+    expect(not_lt, R"({"w":"ab"})", true, "a string outside a '<'-excluding class");
+
+    // ...and a negated range that spans '<' keeps the range, since dropping it would admit '<'
+    const std::string negated_range = strict(
+        R"({"type":"object","additionalProperties":false,"required":["w"],"properties":{"w":{"type":"string","pattern":"^[^ -?]+$"}}})");
+    expect(negated_range, R"({"w":"zz"})", true, "a string outside a negated range");
+    expect(negated_range, R"({"w":"z<z"})", false, "a '<' inside a negated range that spans it");
+    expect(negated_range, R"({"w":"z;z"})", false, "a character of the negated range just below '<'");
+
+    // \d \w \s are expanded into classes, so they work where client schemas use them most
+    const std::string digits = strict(
+        R"({"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string","pattern":"^\\d{4}$"}}})");
+    expect(digits, R"({"id":"2026"})", true, "four digits");
+    expect(digits, R"({"id":"202a"})", false, "a letter among the digits");
+    expect(digits, R"({"id":"26"})", false, "too few digits");
+
+    const std::string filename = strict(
+        R"({"type":"object","additionalProperties":false,"required":["f"],"properties":{"f":{"type":"string","pattern":"^[\\w.-]+$"}}})");
+    expect(filename, R"({"f":"a_b-c.txt"})", true, "a word-class file name");
+    expect(filename, R"({"f":"a b"})", false, "a space outside the class");
+
+    // a negated shorthand becomes a negated class, and '<' is still kept out of it
+    const std::string not_digit = strict(
+        R"({"type":"object","additionalProperties":false,"required":["w"],"properties":{"w":{"type":"string","pattern":"^\\D+$"}}})");
+    expect(not_digit, R"({"w":"abc"})", true, "a non-digit string");
+    expect(not_digit, R"({"w":"a1c"})", false, "a digit where \D refuses one");
+    expect(not_digit, R"({"w":"a<c"})", false, "a '<' where \D is used");
+
+    // a union is one production per branch, and each branch is framed as a nested value
+    const std::string root_union = strict(R"({"anyOf":[{"type":"string"},{"type":"integer"}]})");
+    expect(root_union, R"("x")", true, "a root union holding a quoted string");
+    expect(root_union, "7", true, "a root union holding an integer");
+    expect(root_union, "x", false, "an unquoted string where the union branches are JSON");
+}
+
 // anything the converter would otherwise widen must be refused here, not silently unconstrained
 static void test_fail_closed(void) {
     const char * refused[] = {
         R"({"$ref":"#/definitions/x"})",
-        R"({"type":"string","pattern":"^a$"})",
-        R"({"type":"string","format":"date"})",
-        R"({"anyOf":[{"type":"string"},{"type":"integer"}]})",
         R"({"type":"object","additionalProperties":true})",
+        R"({"anyOf":[{"type":"string"},{"type":"integer"}],"type":"string"})",
+        R"({"type":"object","additionalProperties":false,"properties":{"a":{"anyOf":[{"type":"string"},{"type":"integer"}],"patternProperties":{}}}})",
+        R"({"type":"object","additionalProperties":false,"properties":{"a":{"anyOf":[]}}})",
+        R"({"type":["string",1]})",
+        R"({"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"string"}})",
+        R"({"type":"object","propertyNames":{"type":"string","pattern":"^[a-z]+$"},"additionalProperties":{"type":"string"}})",
+        R"({"type":"object","propertyNames":{"enum":["a","b"]},"additionalProperties":{"type":"string"}})",
+        R"({"type":"object","propertyNames":{"type":"string","maxLength":3},"additionalProperties":{"type":"string"}})",
+        R"({"type":"object","properties":[],"additionalProperties":{"type":"string"}})",
         R"({})",
         R"({"type":"object","properties":{"a":{}},"additionalProperties":false})",
-        R"({"type":"object","properties":{"a":{"type":"array","items":{}}},"additionalProperties":false})",
+        R"({"type":"string","pattern":"^<+$"})",
+        R"({"type":"string","pattern":"^</parameter>$"})",
+        R"({"type":"string","pattern":"^a"})",
+        R"({"type":"string","format":"hostname"})",
         R"({"type":"integer","minimum":10,"maximum":5})",
         R"({"type":"string","minLength":3,"maxLength":2})",
         R"({"enum":["a",1]})",
@@ -213,6 +361,10 @@ int main(void) {
     test_nested_json_string();
     test_large_length_bounds();
     test_literals_and_enums();
+    test_dictionaries();
+    test_underscore_rule_names();
+    test_free_form_values();
+    test_patterns_and_formats();
     test_fail_closed();
     if (failures != 0) {
         std::fprintf(stderr, "%d strict grammar test(s) failed\n", failures);
