@@ -343,6 +343,12 @@ struct Engine::Pf {
     int att_pend = -1, att_pend_rows = 0;   // the chunk whose merge waits (-1: none), its rows
     float* parecv[2][NCARD];
     unsigned* paflags[2][NCARD];
+    // FNX_PFX_ATTN_DMA=1: the other cards' partials are copied from the host receive buffer into device memory by the copy engine on st3, piece by
+    // piece as their flags arrive, so the merge reads device memory (reading the mapped host buffer from the merge kernel stalls its SMs at PCIe speed)
+    bool attn_dma = false;
+    float* arecv_dev[2] = {};
+    cudaStream_t st3 = nullptr;
+    cudaEvent_t ev_r[2] = {}, ev_m[2] = {};   // ev_r: a set's copies done; ev_m: its merge done (the next copies into the buffer wait for it)
     int pdev[NCARD];
     float *qg, *k, *v, *att, *yidx, *qidx;
     int *cells, *ncells;
@@ -520,10 +526,31 @@ void pf_attn_start(Engine::Pf& p, CardBuf& b, uint16_t* kc, uint16_t* vc, int g,
         pf_attn_send(p, set, g, C, r0, r1 - r0, i, seq, b.st2);
     }
     ckc(cudaEventRecord(p.ev_j[set], b.st2), "attn event");
+    if (p.attn_dma) {
+        const size_t blk = attn_prompt_block_floats(C);
+        ckc(cudaStreamWaitEvent(p.st3, p.ev_m[set], 0), "attn recv reuse");
+        for (int i = 0; i < n; ++i) {
+            const int r0 = (int) ((long) C * i / n), r1 = (int) ((long) C * (i + 1) / n);
+            const size_t off = attn_prompt_block_floats(r0);
+            for (int slot = 0; slot < NCARD - 1; ++slot) {
+                cud(cuStreamWaitValue32((CUstream) p.st3, (CUdeviceptr) (p.aflags[set] + slot * ATT_PIECES_MAX + i), seq, CU_STREAM_WAIT_VALUE_GEQ), "attn wait (dma)");
+                ckc(cudaMemcpyAsync(p.arecv_dev[set] + slot * blk + off, p.arecv[set] + slot * blk + off, attn_prompt_block_floats(r1 - r0) * sizeof(float),
+                                    cudaMemcpyDefault, p.st3), "attn recv copy");   // host buffer -> device, on the copy engine
+            }
+        }
+        ckc(cudaEventRecord(p.ev_r[set], p.st3), "attn event");
+    }
 }
 // its merge into att once the other cards' pieces are here and this card's sends are done; qg must still be the
 // chunk's (the merge reads its gates)
 void pf_attn_finish(Engine::Pf& p, int g, int C, int set, cudaStream_t s) {
+    if (p.attn_dma) {
+        ckc(cudaStreamWaitEvent(s, p.ev_r[set], 0), "attn recv join");
+        ckc(cudaStreamWaitEvent(s, p.ev_j[set], 0), "attn join");
+        attn_prompt_merge(p.apart[set] + (size_t) g * attn_prompt_block_floats(C), p.arecv_dev[set], p.qg, p.att, C, g, s);
+        ckc(cudaEventRecord(p.ev_m[set], s), "attn merge event");
+        return;
+    }
     for (int slot = 0; slot < NCARD - 1; ++slot)
         for (int i = 0; i < p.att_pieces; ++i)
             cud(cuStreamWaitValue32((CUstream) s, (CUdeviceptr) (p.aflags[set] + slot * ATT_PIECES_MAX + i), p.att_seq[set],
@@ -715,6 +742,18 @@ void Engine::prefill_alloc() {
         for (cudaEvent_t& e : p->ev_j) {
             ckc(cudaEventCreateWithFlags(&e, cudaEventDisableTiming), "event");
             own_event(e);
+        }
+        p->attn_dma = env_flag("FNX_PFX_ATTN_DMA");
+        if (p->attn_dma) {
+            for (int s2 = 0; s2 < 2; ++s2) {
+                p->arecv_dev[s2] = palloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
+                ckc(cudaEventCreateWithFlags(&p->ev_r[s2], cudaEventDisableTiming), "event");
+                own_event(p->ev_r[s2]);
+                ckc(cudaEventCreateWithFlags(&p->ev_m[s2], cudaEventDisableTiming), "event");
+                own_event(p->ev_m[s2]);
+            }
+            ckc(cudaStreamCreateWithFlags(&p->st3, cudaStreamNonBlocking), "stream");
+            own_stream(p->st3);
         }
         p->Rk[0] = p->R, p->bofk[0] = p->bo_f, p->injfk[0] = p->inj_f, p->ctlk[0] = p->ctl, p->boak[0] = p->bo_a,
         p->injak[0] = p->inj_a;
