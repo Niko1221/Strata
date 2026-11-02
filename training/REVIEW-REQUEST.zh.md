@@ -1,18 +1,23 @@
 # 审核请求：训练功能（sft / dpo / grpo × 零阶 / 反传）
 
 **交付分支**：`feat/train_support`（下划线；`origin` 上的同名分支停在 `7fa6caaa`，需要一次 fast-forward 推送）
+
+> **▸ 本文所在树 = 交付面**（三条交付形态里的第 3 条）：`feat/train-mezo` ∪ `feat/train-backforward`
+> 加这组审核文档。代码与 `feat/train-backforward` **逐字相同**（`git diff -- '*.py'` 为空），只有文档不同，
+> 所以审代码时三条分支给出来的 diff 是一致的，只有文档与文件集合不同。
+
 **目标**：`upstream/main`（Niko1221/Strata）
 **基线**：`upstream/main` = `c62d5e3a`（2026-10-31）；`git ls-remote upstream main` 复核远端一致，**落后 0 个提交、上游文件 0 个删除**，即改动是在最新主分支之上做的
 **范围**：三块 —— ① `training/`（训练入口，新增目录；根放共用层，`mezo/`、`backward/` 是两条路线，`bench/` 基准与探针，`tests/` 单测）；② `serve/server.py` 的训练会话与 `/v1/score`、`/v1/lora`；③ **引擎侧 LoRA + SCORE 能力**（34 文件 / +3,621 −57：`src/kernels/lora*.{cu,cpp}`、`src/prefill/score*`、`generate.cpp` 的命令循环、`CMakeLists.txt` / `setup.py` 的开关、CI）
 > 第 ③ 块不是可选的：零阶路线的前向就是引擎的 `SCORE`，没有它 `--method mezo` 一行都跑不了。
 > 若上游要求训练功能与引擎能力分开审，按 Q9 拆成两个 PR 即可，代码本身已经是分开的提交。
-**状态**：工作区干净，已全部落成 commit；训练目录 **258 项**（256 过 + 2 项 watchdog 仅因 Windows 无 triton，见 §7.1），`serve.test_training_api` **6 项**全过（本次复核）；零阶那一棵树 **134 项全过且不需要 torch**
+**状态**：工作区干净，已全部落成 commit；训练目录 **258 项**（Windows 上 256 过 + 2 项 watchdog 仅因缺 triton；**Linux 实测 258 全过**，见 §7.1），`serve.test_training_api` **6 项**全过（本次复核）；零阶那一棵树 **134 项全过且不需要 torch**（两个平台都是 134）
 
 | 项 | 数 |
 |---|---|
 | 改动面（相对 `upstream/main`） | 132 文件 / **≈+27.0k −93**（含本文档，数字随文档提交浮动） |
-| 本功能提交（非 merge） | 66 个（`.gitignore` 1、`[Train]` 13、`[Engine]` 7、`[Serve]` 5、`[Tools]` 3、`[Docs]`/`[Data]` 各 1，其余是早期训练线与本地 `main` 的既有提交） |
-| 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo.py` `sft.py` `grpo.py` 等 13 个文件 4,789 行 |
+| 本功能提交（非 merge） | 84 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
+| 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo.py` `sft.py` `grpo.py` 等 13 个文件 4,673 行 |
 | 测试 | 14 个 `test_*.py` 3,214 行，训练目录 **258 项**（Windows 上 256 过，2 项 watchdog 缺 triton）；`serve/test_training_api.py` 6 项 |
 | 服务端 | `serve/server.py`（`TrainBridge` + 3 个 `/v1/training/*` 路由 + `POST /v1/lora`） |
 | 新增依赖 | 零阶 **0 个 pip 包**（只需已装的 numpy/jinja2/regex + 一个引擎二进制）；反传 4~6 个（torch / transformers / accelerate / safetensors，Windows 还要 triton-windows、kernels）→ §2.5 |
@@ -526,13 +531,13 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 ### 7.1 分支拓扑与基线
 
 **三条分支各是什么（实测，非推断）**：「切分提交」指把分层定下来的那个提交；分支 tip 之后还有
-纯文档提交（脚本状态不变）。
+纯文档提交（脚本状态不变）。**▸ = 本文所在树**。
 
 | 分支 | 切分提交 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
 |---|---|---|---|---|---|
 | `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **134 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 134 过） | ≈77 提交 / 100 文件 / ≈+17.0k −93 |
 | `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `mezo/sft_mezo.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 258 项（256 过 + 2 项 watchdog 见下） | ≈89 提交 / 132 文件 / ≈+26.7k −93 |
-| `feat/train_support` | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 258 项（同上） | 交付分支 HEAD / 132 文件 / ≈+27.0k −93（随文档提交浮动）|
+| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 258 项（同上） | 交付分支 HEAD / 132 文件 / ≈+27.0k −93（随文档提交浮动）|
 
 **分层规则一句话**：三条分支的差异只体现在**文件在不在**，不体现在代码分支上。
 `algos.available()` 读磁盘决定 `--method` 有哪几个，缺哪个就把缺的文件名说清楚；
@@ -569,7 +574,7 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 `import bench_fullctx`，链路是 `loader_qwen4 → nf4_fused → import triton`；Windows 没有 triton 轮子，
 所以在 Windows 的 pytest 里这 2 项失败（`ModuleNotFoundError: No module named 'triton'`），其余 256 项通过。
 这四个相关文件（测试、`bench_fullctx.py`、`loader_qwen4.py`、`nf4_fused.py`）与上一版 `0b15d175` **逐字一致**，
-不是本次改动引入的；Linux 上 triton 可装，无此问题。
+不是本次改动引入的。**Linux 上实测 258 全过**（2026-11-03，WSL Ubuntu 24.04 / Python 3.12 / pytest 9.0.2，`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests -q` → `258 passed in 35.76s`），所以这 2 项是环境依赖，不是代码问题。
 
 ```
 upstream/main c62d5e3a
