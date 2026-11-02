@@ -271,6 +271,13 @@ bool Engine::batch_graph_ready(int T, const std::vector<int>& key) {
     return false;
 }
 
+bool Engine::lazy_capture(const std::vector<int>& key) {
+    static const long long after = env_int("FNX_CAPTURE_AFTER", 0);
+    if (after < 2 || warming_) return false;
+    if (seen_.size() > 8192) seen_.clear();
+    return ++seen_[key] < after;
+}
+
 void Engine::batch_graph_stash(int T) {
     if (!precap() || !cb_[0]->batch_graphs[(size_t) T].exec) return;
     static const size_t max_graphs = (size_t) std::max<long long>(1, env_int("FNX_PRECAP_GRAPHS", 64));
@@ -311,6 +318,7 @@ void Engine::batch_graph_stash(int T) {
 
 void Engine::warm_graphs() {
     const int was = cur_;
+    warming_ = true;
     std::vector<int> lanes;
     for (int i = 0; i < (int) lanes_.size(); ++i) lanes.push_back(i);
     const int tok = 248045;   // any token: every lane is reset after
@@ -371,6 +379,7 @@ void Engine::warm_graphs() {
         reset();
     }
     use_lane(was);
+    warming_ = false;
 }
 
 std::vector<long> Engine::free_vram_mib() const {
@@ -1109,9 +1118,22 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     key.push_back(-1);
     key.insert(key.end(), counts.begin(), counts.end());
     last_capture_ms = 0.0;
+    last_kind_ = 0;
+    bool eager = false;
     if (!batch_graph_ready(T, key)) {
-        batch_graph_stash(T);
+        eager = lazy_capture(key);
+        last_kind_ = eager ? 2 : 1;
+        if (!eager) batch_graph_stash(T);
         const auto tc = std::chrono::steady_clock::now();
+        auto swap_eager = [&] {   // an eager window reads its tables from the eager set, not the slot's (a held graph points at those)
+            for (CardBuf* b : cb_) {
+                std::swap(b->lane_rows[(size_t) T], b->eager_tab.lane_rows);
+                std::swap(b->lane_gdn[(size_t) T], b->eager_tab.lane_gdn);
+                std::swap(b->seg_ctl[(size_t) T], b->eager_tab.seg_ctl);
+                std::swap(b->seg_row0[(size_t) T], b->eager_tab.seg_row0);
+            }
+        };
+        if (eager) swap_eager();
         each([&](int, CardBuf& b, const CardW&) {
             if (!b.lane_rows[(size_t) T]) b.lane_rows[(size_t) T] = dalloc<const int*>((size_t) LANE_ROW_COLS * MAXT);
             std::vector<const int*> rows((size_t) LANE_ROW_COLS * MAXT, nullptr);
@@ -1141,22 +1163,28 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
             ck(cudaMemcpy(b.lane_gdn[(size_t) T], gdn.data(), gdn.size() * sizeof(float*), cudaMemcpyHostToDevice), "lane recurrent rows");
             ck(cudaMemcpy(b.seg_ctl[(size_t) T], sctl.data(), sctl.size() * sizeof(const int*), cudaMemcpyHostToDevice), "segment ctl");
             ck(cudaMemcpy(b.seg_row0[(size_t) T], srow0.data(), srow0.size() * sizeof(int), cudaMemcpyHostToDevice), "segment rows");
-            ck(cudaStreamBeginCapture(b.st, cudaStreamCaptureModeRelaxed), "begin capture");
+            if (!eager) ck(cudaStreamBeginCapture(b.st, cudaStreamCaptureModeRelaxed), "begin capture");
         });
         enqueue_rows(lanes, counts);
-        each([&](int, CardBuf& b, const CardW&) {
-            cudaGraph_t g;
-            ck(cudaStreamEndCapture(b.st, &g), "end capture");
-            install_graph(b.batch_graphs[T], g, key);
-        });
-        last_capture_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
-        ++cap_stat[0].n;
-        cap_stat[0].ms += last_capture_ms;
+        if (eager) {
+            swap_eager();
+            last_capture_ms = 0.0;
+        } else {
+            each([&](int, CardBuf& b, const CardW&) {
+                cudaGraph_t g;
+                ck(cudaStreamEndCapture(b.st, &g), "end capture");
+                install_graph(b.batch_graphs[T], g, key);
+            });
+            last_capture_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
+            ++cap_stat[0].n;
+            cap_stat[0].ms += last_capture_ms;
+        }
         static const bool trace = env_int("FNX_PRECAP_TRACE", 0) != 0;
         if (trace) {
             std::string t;
             for (size_t i = 0; i < lanes.size(); ++i) t += " " + std::to_string(lanes[i]) + ":" + std::to_string(counts[i]);
-            std::fprintf(stderr, "fnx: capture verify_rows T=%d lanes:rows%s (%.1f ms)\n", T, t.c_str(), last_capture_ms);
+            std::fprintf(stderr, "fnx: %s verify_rows T=%d lanes:rows%s (%.1f ms)\n", eager ? "eager" : "capture", T, t.c_str(),
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count());
         }
     }
     {   // FNX_BATCH_STATS=1: windows, graph captures, and the time between one window's start and the next's by the first one's row count; one block per 200 windows
@@ -1184,6 +1212,23 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
                 std::fprintf(stderr, "fnx: captures since start (n, host ms): verify_rows %lu %.0f, draft %lu %.0f, window %lu %.0f, batch step %lu %.0f\n",
                              cap_stat[0].n, cap_stat[0].ms, cap_stat[1].n, cap_stat[1].ms, cap_stat[2].n, cap_stat[2].ms, cap_stat[3].n,
                              cap_stat[3].ms);
+                std::fprintf(stderr, "fnx: verify_rows windows since start (n, mean host ms, mean gpu ms): held graph %lu %.1f %.1f, captured %lu %.1f %.1f, eager %lu %.1f %.1f\n",
+                             win_stat[0].n, win_stat[0].ms / (double) std::max(1UL, win_stat[0].n), win_stat[0].gpu_ms / (double) std::max(1UL, win_stat[0].n),
+                             win_stat[1].n, win_stat[1].ms / (double) std::max(1UL, win_stat[1].n), win_stat[1].gpu_ms / (double) std::max(1UL, win_stat[1].n),
+                             win_stat[2].n, win_stat[2].ms / (double) std::max(1UL, win_stat[2].n), win_stat[2].gpu_ms / (double) std::max(1UL, win_stat[2].n));
+                {
+                    const char* nm[3] = {"held graph", "captured", "eager"};
+                    for (int kd = 0; kd < 3; ++kd) {
+                        std::string row = std::string("fnx: verify_rows host ms by rows, ") + nm[kd] + " (rows:count:ms):";
+                        for (int k = 1; k <= MAXT; ++k)
+                            if (win_stat_t[kd][k].n) {
+                                char buf[48];
+                                std::snprintf(buf, sizeof buf, " %d:%lu:%.1f", k, win_stat_t[kd][k].n, win_stat_t[kd][k].ms / (double) win_stat_t[kd][k].n);
+                                row += buf;
+                            }
+                        std::fprintf(stderr, "%s\n", row.c_str());
+                    }
+                }
                 std::string tab = "fnx: batch stats by rows (rows:count:ms):";
                 for (int k = 1; k <= MAXT; ++k)
                     if (cnt_t[k]) {
@@ -1198,7 +1243,7 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
             }
         }
     }
-    each([&](int, CardBuf& b, const CardW&) { ck(cudaGraphLaunch(b.batch_graphs[T].exec, b.st), "graph launch"); });
+    if (!eager) each([&](int, CardBuf& b, const CardW&) { ck(cudaGraphLaunch(b.batch_graphs[T].exec, b.st), "graph launch"); });
     each([&](int c, CardBuf& b, const CardW&) {
         ck(cudaMemcpyAsync(&h_.bv[c * T], b.best_v, T * 4, cudaMemcpyDeviceToHost, b.st), "best v");
         ck(cudaMemcpyAsync(&h_.bi[c * T], b.best_i, T * 4, cudaMemcpyDeviceToHost, b.st), "best i");
@@ -1230,6 +1275,11 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     }
     last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     last_gpu_ms = gpu_ms;
+    ++win_stat[last_kind_].n;
+    win_stat[last_kind_].ms += last_ms;
+    win_stat[last_kind_].gpu_ms += gpu_ms;
+    ++win_stat_t[last_kind_][T].n;
+    win_stat_t[last_kind_][T].ms += last_ms;
     return out;
 }
 

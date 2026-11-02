@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <map>
 #include <vector>
 
 #include "kernels.hpp"
@@ -189,6 +190,14 @@ public:
         double ms = 0.0;
     };
     CapStat cap_stat[4];
+    // verify_rows windows by how their graph came: 0 launched from a held graph, 1 captured first, 2 run eagerly (FNX_CAPTURE_AFTER); count,
+    // host ms (the call) and GPU ms (the slowest card) summed
+    struct WinStat {
+        unsigned long n = 0;
+        double ms = 0.0, gpu_ms = 0.0;
+    };
+    WinStat win_stat[3];
+    WinStat win_stat_t[3][MAXT + 1];   // and by the window's row count
 
 private:
     Model& m_;
@@ -294,6 +303,12 @@ private:
     bool batch_graph_ready(int T, const std::vector<int>& key);
     void batch_graph_stash(int T);
     unsigned long graph_tick_ = 0;
+    // FNX_CAPTURE_AFTER=N (N >= 2): a layout without a graph runs eagerly (its kernels launched one by one, no capture) until it has been
+    // seen N times, and is captured then; 0 (default): captured at first sight. warm_graphs() always captures
+    bool lazy_capture(const std::vector<int>& key);
+    bool warming_ = false;
+    std::map<std::vector<int>, int> seen_;
+    int last_kind_ = 0;
     void enqueue(int T, bool dumps);
     void enqueue_batch(const std::vector<int>& lanes);   // step()'s window: one row per lane
     void enqueue_rows(const std::vector<int>& lanes, const std::vector<int>& counts);   // verify_rows()'s

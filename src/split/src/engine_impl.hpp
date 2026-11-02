@@ -100,6 +100,13 @@ struct CardBuf {
         int* seg_row0 = nullptr;
         unsigned long used = 0;   // the engine's tick of its last use
     };
+    // FNX_CAPTURE_AFTER: the tables of a window run without a graph (verify_rows' eager windows); they stand in for the slot's while it runs
+    struct EagerTab {
+        const int** lane_rows = nullptr;
+        float** lane_gdn = nullptr;
+        const int** seg_ctl = nullptr;
+        int* seg_row0 = nullptr;
+    } eager_tab;
     std::vector<std::vector<GraphEntry>> batch_cache = std::vector<std::vector<GraphEntry>>(MAXT + 1);
     std::vector<unsigned long> batch_slot_used = std::vector<unsigned long>(MAXT + 1, 0);
     // batch_graphs[T]'s lane rows (LaneRows): [MAXT] each row's lane's ctl, then [MAXT] its page table; written when
