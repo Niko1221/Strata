@@ -688,6 +688,7 @@ struct Chunk {
         int mi = 0;                                    // the device's member index in the layer's group
         bool direct = false;                           // (Metal) read straight into its ring slot: no staging, no DMA
         const uint8_t* src[3] = {nullptr, nullptr, nullptr};   // where its gate / up / down (its parts) lie once read
+        int cs = -1;                                   // a pinned copy split over NH > 1 NUMA parts (its slot): DMA'd from each part
         const uint8_t* ram = nullptr;                  // its RAM-tier blob, copied into staging (not pinned there)
         uint8_t* keep = nullptr;                       // (layer-major) its layer-cache slot: what is read kept there
         int64_t after = -1;                            // (layer-major) the items up to this one read first
@@ -3795,6 +3796,33 @@ struct Model::Impl {
         return r < 2 && l.nm > 1 ? (size_t) (g.ff / l.nm) * gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim)
                                  : mx_part_bytes(l, r);
     }
+    // a pinned copy whose matrices are split over NH > 1 NUMA parts (part X holds rows [X n / NH, ..) of each, at
+    // cp_lay; ram_to_blob) DMA'd into the ring slot `dst` as one expert: member m's gate / up rows and, in each down row,
+    // its blocks - the bytes the one-part path copies, taken from the part that holds each row
+    bool dma_parts(const Layer& l, int cs, int m, uint8_t* dst, const x3::ExpertLayout& lay, cudaStream_t s,
+                   std::string& err) const {
+        for (int r = 0; r < 3; ++r) {
+            const size_t n = (size_t) mx_n(r), per = n / (size_t) NH, rb = mx_row_b(l, r);
+            if (r == 2 && l.nm > 1) {   // (the member's blocks of every down row: a 2D copy a part)
+                const size_t dh = gg::type_row_bytes(gg::expert_type(l.lay, 2), g.ff / l.nm);
+                for (int X = 0; X < NH; ++X)
+                    CK(cudaMemcpy2DAsync(dst + lay.trellis[2] + (size_t) X * per * dh, dh,
+                                         ram_part[(size_t) cs][(size_t) X] + cp_lay[(size_t) l.il][2] + (size_t) m * dh, rb,
+                                         dh, per, cudaMemcpyHostToDevice, s));
+                continue;
+            }
+            const size_t a = r < 2 && l.nm > 1 ? (size_t) m * (n / (size_t) l.nm) : 0,
+                         b = r < 2 && l.nm > 1 ? a + n / (size_t) l.nm : n;   // (the rows this device takes)
+            for (int X = 0; X < NH; ++X) {
+                const size_t lo = std::max(a, (size_t) X * per), hi = std::min(b, (size_t) (X + 1) * per);
+                if (lo < hi)
+                    CK(cudaMemcpyAsync(dst + lay.trellis[r] + (lo - a) * rb,
+                                       ram_part[(size_t) cs][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r] + (lo - (size_t) X * per) * rb,
+                                       (hi - lo) * rb, cudaMemcpyHostToDevice, s));
+            }
+        }
+        return true;
+    }
     // the device's member index in L0's group (0 alone)
     int flow_mi(const Chunk& c, const Layer& L0) const {
         for (int m = 0; m < L0.nm; ++m)
@@ -3819,6 +3847,11 @@ struct Model::Impl {
             }
         }
         if (in_ram && ram_pinned && store_blob == nullptr) {   // (DMA'd from where it lies)
+            if (copy_mode && NH > 1) {   // (each matrix's rows are split over the NUMA parts: no one pointer holds them; dma_parts)
+                it.cs = l.ram[(size_t) e];
+                ++c.it_ram;
+                return;
+            }
             const uint8_t* p = copy_mode ? ram_part[(size_t) l.ram[(size_t) e]][0]
                                          : ram_slots[(size_t) l.ram[(size_t) e]];
             for (int r = 0; r < 3; ++r)
@@ -4094,6 +4127,13 @@ struct Model::Impl {
             uint8_t* dst = c.ring + r * c.ring_stride;
             const x3::ExpertLayout& lay = l.nm > 1 ? l.hlay : l.lay;
             if (it.direct) {   // (already in the slot)
+                CK(cudaEventRecord(c.ring_fill[r], c.cs));
+                c.stream_bytes += (double) unit(l);
+                ++c.n_dma;
+                continue;
+            }
+            if (it.cs >= 0) {
+                if (!dma_parts(l, it.cs, it.mi, dst, lay, c.cs, err)) return false;
                 CK(cudaEventRecord(c.ring_fill[r], c.cs));
                 c.stream_bytes += (double) unit(l);
                 ++c.n_dma;
