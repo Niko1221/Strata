@@ -6427,6 +6427,9 @@ int main(int argc, char** argv) {
         const char* e = std::getenv("STRATA_BATCH_DF2");
         const bool off = e != nullptr && e[0] == '0';
         const bool forced = e != nullptr && e[0] != '0' && e[0] != '\0';
+#if defined(STRATA_GPU_METAL)
+        return false;   // (no per-slot drafters on Metal: one card, and the Metal drafter has no clones)
+#endif
         if (off || !(o.draft == "dflash2" && !o.draft_auto && o.batch >= 2 && o.serve && !split_same)) return false;
         if (forced) return true;
         // the default is what was measured: a layer split (2x A6000) whose slots would run as one group; one card is opt-in (STRATA_BATCH_DF2=1) until it is measured

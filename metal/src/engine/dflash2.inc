@@ -1039,7 +1039,7 @@ bool Dflash2Drafter::load(const std::string& pack_path, int device, std::string&
     return true;
 }
 
-bool Dflash2Drafter::bind(const WeightTable&, const NativeHead*, const std::string& vocab_file, std::string& err) {
+bool Dflash2Drafter::bind(const WeightTable&, const NativeHead*, const std::string& vocab_file, std::string& err, int /*head_device: one card on Metal*/) {
     strata::metal_engine::Window* w = strata::metal_engine::g_window;
     if (w == nullptr) { err = "dflash2: the Metal decode window is not up"; return false; }
     if (bound_) return true;
@@ -1099,8 +1099,8 @@ void Dflash2Drafter::set_max_drafts(int n) {
 bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume, bool* cold) {
     resume = std::max<int64_t>(0, std::min(resume, n));
     int64_t lcp = 0;
-    const int64_t lim = std::min<int64_t>((int64_t) hist_.size(), resume);
-    while (lcp < lim && hist_[(size_t) lcp] == ids[lcp]) ++lcp;
+    const int64_t lim = std::min<int64_t>((int64_t) cur_.hist.size(), resume);
+    while (lcp < lim && cur_.hist[(size_t) lcp] == ids[lcp]) ++lcp;
     const bool stale = ring_hi_ > lcp && lcp < resume;
     bool rebuilt = false;
     if (stale) {
@@ -1108,26 +1108,43 @@ bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume
         // reused prefix (if any) is swapped back in and its ring rows rebuilt (the Metal twin of the row log of the CUDA drafter)
         std::string rerr;
         if (strata::metal_engine::Window* w = strata::metal_engine::g_window)
-            rebuilt = w->df2_restore_lineage(hist_, ring_hi_, ids, resume, rerr) > 0;
+            rebuilt = w->df2_restore_lineage(cur_.hist, ring_hi_, ids, resume, rerr) > 0;
         ++epoch_;
         ring_hi_ = rebuilt ? resume : 0;
     }
-    if (rebuilt) { if (cold) *cold = false; hist_.assign(ids, ids + n); return true; }   // (the whole prompt: its rows reach the ring through the tap callback, which carries no tokens)
+    if (rebuilt) { if (cold) *cold = false; cur_.hist.assign(ids, ids + n); return true; }   // (the whole prompt: its rows reach the ring through the tap callback, which carries no tokens)
     if (strata::metal_engine::Window* w = strata::metal_engine::g_window)
         // The ring's valid rows are [floor, ring_hi): a restarted lineage (stale) has no rows below `resume`; a request that goes on from the
         // same history keeps the floor of its conversation (it is lowered when the request restarts earlier, never left high for a shorter prompt)
         w->df2_set_floor(stale ? resume : std::min<int64_t>(w->df2_floor(), resume));
     if (cold) *cold = stale;
-    hist_.assign(ids, ids + n);
+    cur_.hist.assign(ids, ids + n);
     return true;
 }
 
 void Dflash2Drafter::note_rows(const int32_t* toks, int64_t n, int64_t pos0) {
     if (pos0 < 0) return;
-    if ((int64_t) hist_.size() > pos0) hist_.resize((size_t) pos0);
-    if ((int64_t) hist_.size() < pos0) return;
-    hist_.insert(hist_.end(), toks, toks + n);
+    if ((int64_t) cur_.hist.size() > pos0) cur_.hist.resize((size_t) pos0);
+    if ((int64_t) cur_.hist.size() < pos0) return;
+    cur_.hist.insert(cur_.hist.end(), toks, toks + n);
 }
+
+// The ring log API of the CUDA drafter (src/core/dflash2.cpp: the host log of the activation rows and the stash of parked lineages): on Metal the token
+// history `cur_.hist` is all the Dflash2Drafter keeps, the rows are rebuilt by the window (df2_restore_lineage), so the log calls are small.
+void Dflash2Drafter::reset() { have_ctx_ = 0; cur_.hist.clear(); ++epoch_; ring_hi_ = 0; }
+void Dflash2Drafter::init_ring_log() {}
+void Dflash2Drafter::copy_log_state_from(const Dflash2Drafter& src) { cur_.hist = src.cur_.hist; epoch_ = src.epoch_; ring_hi_ = src.ring_hi_; }
+uint64_t Dflash2Drafter::ring_log_bytes() const { return 0; }
+uint64_t Dflash2Drafter::ring_stash_bytes() const { return 0; }
+
+// DFlash2 for the --batch slots (f-0291-df2-mgpu: a drafter per slot, cloned from the parent, with split launch / finish and deferred rows) is a CUDA / HIP
+// feature (a layer split); Metal has one card and no batch slot drafts (generate.cpp does not ask for them on Metal).  The calls answer plainly.
+bool Dflash2Drafter::clone_alloc(const Dflash2Drafter&, std::string& err) { err = "dflash2: batch slot drafters are not on Metal"; return false; }
+bool Dflash2Drafter::clone_bind(const Dflash2Drafter&, std::string& err) { err = "dflash2: batch slot drafters are not on Metal"; return false; }
+float* Dflash2Drafter::defer_rows(int64_t, int, std::string& err) { err = "dflash2: deferred rows are not on Metal"; return nullptr; }
+bool Dflash2Drafter::catch_up(int64_t, std::string&) { return true; }
+bool Dflash2Drafter::draft_launch(const float*, int, int64_t, int32_t, std::string& err) { err = "dflash2: the split draft is not on Metal"; return false; }
+bool Dflash2Drafter::draft_finish(int32_t*, float*, std::string& err) { err = "dflash2: the split draft is not on Metal"; return false; }
 
 bool Dflash2Drafter::context_async(const float* taps, int64_t n, int64_t pos0, std::string& err) { return context(taps, n, pos0, err); }   // (no overlap on Metal yet)
 bool Dflash2Drafter::context_wait(std::string&) { return true; }
