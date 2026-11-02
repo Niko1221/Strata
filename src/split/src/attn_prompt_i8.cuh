@@ -1,4 +1,4 @@
-// Attention over a prompt chunk on INT8 tensor cores (included by kernels.cu after attn_prompt.cuh; FNX_PFX_ATTN_I8=1).
+// Attention over a prompt chunk on INT8 tensor cores (included by kernels.cu after attn_prompt.cuh; FNX_PFX_ATTN_I8, on by default on NVIDIA).
 //
 // Strata's prompt_attn_i8v3_kernel (src/kernels/cuda/qsa_prompt_attn.cu) adapted to the split's K/V pages and to the cross-card merge: one block of
 // four warps per (query row, KV head); a warp owns 64 of the 256 head dimensions; the K and V codes of 32 cells at a time come through cp.async into

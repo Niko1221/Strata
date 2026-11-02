@@ -1432,8 +1432,8 @@ void attn_prompt(const float* qg, const uint16_t* kc, const uint16_t* vc, const 
                  const int* n_cells, int card, int C, int r0, int T, float* part, void* st) {
     if (T == 0) return;   // an empty half of a one-row chunk
 #if !FNX_HIP && FNX_ARCH >= 80
-    // FNX_PFX_ATTN_I8=1: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, off by default until screened
-    static const bool i8 = env_int("FNX_PFX_ATTN_I8", 0) != 0;
+    // FNX_PFX_ATTN_I8: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, on by default on NVIDIA sm_80+ (FNX_PFX_ATTN_I8=0 turns it off; HIP keeps the f16 kernel)
+    static const bool i8 = env_int("FNX_PFX_ATTN_I8", 1) != 0;
     if (i8 && g.q8) {
         static bool attr[64] = {};
         int dev = 0;
@@ -2004,8 +2004,8 @@ static void gdn_prompt_impl(const float* qkvz, const float* ab, float* hist, con
     k_gdn_pf_conv<<<dim3(C, 2 * nk + nv), HS, 0, s>>>(qkvz, hist, convw, ctl, xc, nk, nv);
     k_gdn_pf_hist<<<(ch + 255) / 256, 256, 0, s>>>(qkvz, hist, ctl, ng, C, nk, nv);
 #if FNX_GDN_TC_ON
-    // FNX_PFX_GDN_TC=1: Strata's tensor-core chunk scan (gdn_tc_prompt.cuh); false -> this card cannot run it, the sub-chunk kernels below do
-    static const bool gdn_tc = fnx::env_int("FNX_PFX_GDN_TC", 0) != 0;
+    // FNX_PFX_GDN_TC: on by default on NVIDIA sm_80+ (FNX_PFX_GDN_TC=0 turns it off): Strata's tensor-core chunk scan (gdn_tc_prompt.cuh); false -> this card cannot run it, the sub-chunk kernels below do
+    static const bool gdn_tc = fnx::env_int("FNX_PFX_GDN_TC", 1) != 0;
     if (gdn_tc && gdn_tc_run(xc, ab, dt, a, S, y32, nk, nv, vmap, C, s)) {
         k_gdn_pf_norm_own<<<dim3(C, nv), HS, 0, s>>>(qkvz, nw, y32, nk, nv, eps);
         ck_launch("gdn_prompt");
