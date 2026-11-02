@@ -87,12 +87,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         std::vector<int> devs;
         for (int c = 0; c < NCARD; ++c) devs.push_back(m.cards[c].dev);
         const PeerDecision pd = peer_decide(std::getenv("FNX_PEER"), PEER_DEFAULT_ON, [&](std::string& why) { return peer_enable_and_probe(devs, why); });
-        if (!pd.line.empty()) std::fprintf(stderr, "fnx: %s
-", pd.line.c_str());
+        if (!pd.line.empty()) std::fprintf(stderr, "fnx: %s\n", pd.line.c_str());
         peer_on = pd.use;
         peer_parts = (int) env_int("FNX_PEER_PARTS", 3);
-        if (peer_on) std::fprintf(stderr, "fnx: peer push: %s%s pushed into the peers' memory
-", peer_parts & 1 ? "the window sums " : "", peer_parts & 2 ? "and the attention merge" : "");
+        if (peer_on) std::fprintf(stderr, "fnx: peer push: %s%s pushed into the peers' memory\n", peer_parts & 1 ? "the window sums " : "", peer_parts & 2 ? "and the attention merge" : "");
     }
     auto pxalloc = [&](size_t bytes) -> void* {
         void* p = nullptr;
