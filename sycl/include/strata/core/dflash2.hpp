@@ -108,6 +108,7 @@ private:
     sycl::queue* cs_ = nullptr;
     std::vector<Tensor> tensors_;
     uint8_t* blob_ = nullptr;
+    uint8_t* slab_ = nullptr;       ///< one device allocation for the work buffers, the rings and the rebuild scratch (the launch cost on Arc grows with the live allocations)
     uint64_t vram_ = 0;
     int N_ = 2560, L_ = 5, NH_ = 32, NKV_ = 8, HD_ = 128, I_ = 7680, window_ = 2048, group_ = 16, rank_ = 256, mask_token_ = 0;
     float theta_ = 10000.0f, eps_ = 1e-6f;

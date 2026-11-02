@@ -57,11 +57,8 @@ Dflash2Drafter::~Dflash2Drafter() try {
     for (auto& e : exec_)
         if (e) delete e;
     auto fr = [&](void* p) { if (p) sycl::free(p, *cs_); };
-    fr(blob_); fr(tag_); fr(d_meta_); fr(d_out_); fr(xq_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_);
-    for (int l = 0; l < 8; ++l) { fr(kring_[l]); fr(vring_[l]); }
-    fr(fcy_); fr(kc_); fr(vc_); fr(h_); fr(xn_); fr(dyn_); fr(q_); fr(qn_); fr(k_); fr(v_); fr(kblk_); fr(o_);
-    fr(gate_); fr(up_); fr(mlp_); fr(part_); fr(fn_); fr(logits_); fr(topval_); fr(hsel_); fr(toptok_); fr(topscratch_);
-    fr(dvocab_); fr(dhead_); fr(rb_q_); fr(rb_d_); fr(rb_pos_);
+    fr(blob_); fr(slab_);   // every work buffer, the rings and the rebuild scratch live in the slab
+    fr(logits_); fr(dvocab_); fr(dhead_);
     if (h_logq_) sycl::free(h_logq_, *cs_);
     if (h_logd_) sycl::free(h_logd_, *cs_);
     if (h_meta_) strata::host_free_polled(h_meta_, *cs_);
@@ -161,15 +158,22 @@ bool Dflash2Drafter::load(const std::string& path, int device, std::string& err)
 }
 
 bool Dflash2Drafter::alloc(std::string& err) try {
+    // One device allocation for all of the drafter's work buffers, rings and the rebuild scratch: on the Arc A-series (i915) the host cost of every
+    // kernel launch grows with the number of live device allocations (12 us with none, 131 us with 300), and the eager prompt path launches a lot.
+    // A first pass adds the sizes up, the second hands out 256-byte aligned pieces.
+    size_t slab_bytes = 0;
+    uint8_t* slab = nullptr;
     auto dev = [&](auto** p, size_t n) {
         using T = std::remove_pointer_t<std::remove_reference_t<decltype(*p)>>;
-        *p = sycl::malloc_device<T>(n, *cs_);
-        if (*p == nullptr) return false;
-        vram_ += n * sizeof(T);
+        const size_t off = slab_bytes;
+        slab_bytes += (n * sizeof(T) + 255) & ~(size_t) 255;
+        if (slab != nullptr) *p = reinterpret_cast<T*>(slab + off);
         return true;
     };
     const size_t B = kRows;
-    bool ok = dev(&d_meta_, (size_t) kMetaInts + kTableFloats) && dev(&d_out_, 64) && dev(&xq_, kernels::native_q8_1_bytes(N_, kRows) + 4096) &&
+    const size_t rb_cap = (size_t) kRing + kRows;
+    auto carve = [&]() {
+        bool ok = dev(&d_meta_, (size_t) kMetaInts + kTableFloats) && dev(&d_out_, 64) && dev(&xq_, kernels::native_q8_1_bytes(N_, kRows) + 4096) &&
               dev(&xqp_, (size_t) 5 * N_ * 8 + 4096) && dev(&xdp_, (size_t) 5 * N_ / 32 * 8 + 64) && dev(&xqc_, (size_t) 5 * N_ * 8 + 4096) && dev(&xdc_, (size_t) 5 * N_ / 32 * 8 + 64) &&
               dev(&fcy_, B * N_) && dev(&kc_, B * NKV_ * HD_) && dev(&vc_, B * NKV_ * HD_) && dev(&h_, B * N_) && dev(&xn_, B * N_) &&
               dev(&dyn_, B * 640) && dev(&q_, B * NH_ * HD_) && dev(&qn_, B * NH_ * HD_) && dev(&k_, B * NKV_ * HD_) && dev(&v_, B * NKV_ * HD_) &&
@@ -177,6 +181,18 @@ bool Dflash2Drafter::alloc(std::string& err) try {
               dev(&part_, (size_t) kernels::kDf2PartChunks * 8 * 32 * 130) && dev(&fn_, B * N_) && dev(&topval_, kDrafts * 16) && dev(&toptok_, kDrafts * 16) &&
               dev(&hsel_, kDrafts * rank_) && dev(&topscratch_, (size_t) kDrafts * kernels::kDf2TopBlocks * kernels::kDf2TopK * 2) && dev(&tag_, (size_t) kRing);
     for (int l = 0; ok && l < L_; ++l) ok = dev(&kring_[l], (size_t) kRing * NKV_ * HD_) && dev(&vring_[l], (size_t) kRing * NKV_ * HD_);
+        ok = ok && dev(&rb_q_, rb_cap * 2560) && dev(&rb_d_, rb_cap * 80) && dev(&rb_pos_, rb_cap);
+        return ok;
+    };
+    carve();
+    const size_t slab_total = slab_bytes;
+    slab_ = sycl::malloc_device<uint8_t>(slab_total, *cs_);
+    if (slab_ == nullptr) { err = "dflash2: the drafter's buffers do not fit in VRAM"; return false; }
+    slab = slab_;
+    slab_bytes = 0;
+    const bool ok = carve();
+    vram_ += slab_total;
+    rb_bytes_ = rb_cap * (2560 + 80 * sizeof(float) + sizeof(int32_t));
     if (!ok) { err = "dflash2: the drafter's buffers do not fit in VRAM"; return false; }
     h_meta_ = (int32_t*) strata::host_malloc_polled(kMetaBytes, *cs_);
     h_out_ = (int32_t*) strata::host_malloc_polled(64 * 4, *cs_);
@@ -554,21 +570,6 @@ bool Dflash2Drafter::rebuild(int64_t lo, int64_t hi, int64_t* rebuilt, int64_t* 
     const OnDevice on_device(device_);
     const size_t rows = pos.size();
     const size_t cap = (size_t) kRing;   // a window is at most 2048 rows
-    if (rb_q_ == nullptr) {
-        rb_q_ = sycl::malloc_device<uint8_t>((cap + kRows) * 2560, *cs_);
-        rb_d_ = sycl::malloc_device<float>((cap + kRows) * 80, *cs_);
-        rb_pos_ = sycl::malloc_device<int32_t>(cap + kRows, *cs_);
-        if (rb_q_ == nullptr || rb_d_ == nullptr || rb_pos_ == nullptr) {
-            if (rb_q_) sycl::free(rb_q_, *cs_);
-            if (rb_d_) sycl::free(rb_d_, *cs_);
-            if (rb_pos_) sycl::free(rb_pos_, *cs_);
-            rb_q_ = nullptr; rb_d_ = nullptr; rb_pos_ = nullptr;
-            err = "dflash2: the ring rebuild's scratch does not fit";
-            return false;
-        }
-        rb_bytes_ = (cap + kRows) * (2560 + 80 * sizeof(float) + sizeof(int32_t));
-        vram_ += rb_bytes_;
-    }
     std::vector<int8_t> q(rows * 2560);
     std::vector<float> d(rows * 80);
     std::vector<float> tab(rows * 128);   // the rope tables of the rows, two floats [64] each, computed on the host (no device FP64)
