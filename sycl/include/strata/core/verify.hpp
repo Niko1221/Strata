@@ -77,6 +77,12 @@ public:
     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
     bool release_gpu_waits(int timeout_ms);
 
+    /// DFlash2 taps (the CUDA verifier's contract): before init(), the zero-based layers whose completed output the drafter reads.  Each window then leaves
+    /// tap_dev() = [max_t][n_taps][n_embd] floats (the mean of the hc streams after the layer's FFN write), valid until the next window.  Single-stage only.
+    void set_taps(const std::vector<int>& layers) { tap_req_ = layers; }
+    const float* tap_dev() const { return tap_dev_; }
+    bool tapping() const { return tap_on_; }
+
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
@@ -272,6 +278,11 @@ private:
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
+    bool tap_on_ = false;
+    std::vector<int> tap_req_;             ///< set_taps
+    std::vector<int> tap_layers_;          ///< the tapped layer ids (zero-based, completed outputs)
+    std::vector<int> tap_slot_;            ///< layer -> slot in tap_layers_, or -1
+    float* tap_dev_ = nullptr;             ///< [max_t][n_taps][n_embd]
     bool self_commit_off_ = false;         ///< set_self_commit_off: the pipelined windows commit through the graph
     int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
     int brow_[8] = {};                     ///< ... and row t is slot brow_[t]

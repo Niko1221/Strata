@@ -246,7 +246,7 @@ set(_kernel_cu dequant_s2 s2_gemv s_gemv s2_gemv_quads s2_gemv_fast router_top10
     s2_expert_grouped shared_expert gr gdn qsa elementwise bf16_gemv native_mmvq native_bf16 native_gr_norm native_moe
     native_gdn native_gr_postops native_router native_gdn_preprocess native_qsa native_rope native_ple_postops
     native_flash_attn native_qsa_indexer native_qsa_score ple kv_q8 kv_stream kv_q4 fused_gr cvec qsa_decode_attn
-    qsa_prompt_attn fused_gdn dequant_bf16 qsa_select verify_kernels iq_kernels)
+    qsa_prompt_attn fused_gdn dequant_bf16 qsa_select verify_kernels iq_kernels dflash2)
 set(_kernel_files "")
 foreach(k IN LISTS _kernel_cu)
   list(APPEND _kernel_files src/kernels/cuda/${k}.cu)
@@ -266,6 +266,7 @@ strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_s
                        src/core/conversation_file.cpp
                        src/core/peer_experts.cpp src/core/remote_expert_opt_stub.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
 add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/core/dflash2.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/core/copy_queue.cpp)   # 0.1.43: a queue on the copy engine
 target_include_directories(strata_engine PRIVATE ${STRATA_ROOT}/src/core)   # conversation_checked.hpp (#include "...")
 target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu)
@@ -425,6 +426,10 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(dequant_bench PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
+  add_executable(dflash2_ring_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/dflash2_ring_test.cpp)   # DF2-SYCL: the ring log: rebuilt K/V rows are the original ones
+  target_link_libraries(dflash2_ring_test PRIVATE strata_engine strata_prefill strata_spec)
+  add_executable(dflash2_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dflash2_bench.cpp)   # DF2-SYCL: the DFlash2 Q4_0 drafter round on an Arc, kernel checks
+  target_link_libraries(dflash2_bench PRIVATE strata_kernels)
   add_executable(dense_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dense_bench.cpp)   # the decode window's dense GEMVs, graph, hash
   target_link_libraries(dense_bench PRIVATE strata_kernels)
   add_executable(mmvq_sg_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_sg_bench.cpp)   # SIMD16 vs 32 decode mmvq

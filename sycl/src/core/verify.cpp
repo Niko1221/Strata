@@ -5,6 +5,7 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/kprof.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/kernels/dflash2.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #if defined(_WIN32)
@@ -448,6 +449,7 @@ Verifier::~Verifier() try {
     if (prof_pin_) sycl::free(prof_pin_, dpct::get_in_order_queue());
     if (ev_fork_) dpct::destroy_event(ev_fork_);
     if (ev_join_) dpct::destroy_event(ev_join_);
+    if (tap_dev_) sycl::free(tap_dev_, dpct::get_in_order_queue());
     if (arena_) sycl::free(arena_, dpct::get_in_order_queue());
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_, h_plan_err_};
@@ -541,6 +543,19 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
               mapped(64, (void**) &h_plan_err_, (void**) &m_plan_err_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    // DFlash2 taps (set_taps): off, and nothing is allocated or recorded, otherwise
+    if (!tap_req_.empty() && lb_ == 0 && le_ == g.n_layers) {
+        tap_layers_.clear();
+        for (int l : tap_req_) if (l >= 0 && l < g.n_layers - 1) tap_layers_.push_back(l);
+        tap_slot_.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot_[(size_t) tap_layers_[i]] = (int) i;
+        const size_t nt = tap_layers_.size();
+        if (nt == 0 || (tap_dev_ = sycl::malloc_device<float>((size_t) T * nt * N, dpct::get_in_order_queue())) == nullptr) {
+            err = "verify: the DFlash2 tap buffers could not be allocated";
+            return false;
+        }
+        tap_on_ = true;
+    }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
         const int64_t cap = (int64_t) (T * K);
@@ -1595,6 +1610,13 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
+        if (tap_on_ && !batch_rec_ && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
+            // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of the hc streams,
+            // all rows of the group in one launch
+            const int64_t nt = (int64_t) tap_layers_.size();
+            strata::kernels::df2_tap_gr(Rt(tb), HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, tap_dev_ + ((size_t) tb * nt + (size_t) tap_slot_[(size_t) l]) * N,
+                                        nt * N, n, N, (int) HC, cs);
+        }
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
                 if (dec_batch && !g_no_multi_gr) gr_write_multi(Rt(tb), bo_ + tb * N, inj2_ + tb * HC, gs, Rt(tb), n, cs);

@@ -8,6 +8,7 @@
 #include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/esimd_moe.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/kernels/dflash2.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 #include "../../../src/prefill/mmq_resident_sort.hpp"
 #include "../../../src/prefill/wmma_gemm.h"
@@ -1054,7 +1055,32 @@ I8Cross i8_calibrate(M& m, const strata::kernels::cpu::NativeFmt& f) {
 }
 }  // namespace
 Prefill::Prefill() : impl_(new Impl) {}
-Prefill::~Prefill() { release(); }
+Prefill::~Prefill() {
+    clear_taps();
+    release();
+}
+
+// DFlash2 prompt taps (single stage): staging for the completed output of each tapped layer for the last prompt rows; see include/strata/prefill/prefill.hpp
+bool Prefill::reserve_taps(const std::vector<int>& layers, int64_t cap_rows, int64_t n_embd, std::string& err) {
+    tap_layers_ = layers;
+    tap_cap_ = cap_rows;
+    if (tap_dev_ != nullptr) return true;
+    tap_dev_ = sycl::malloc_device<float>((size_t) cap_rows * layers.size() * (size_t) n_embd, dpct::get_in_order_queue());
+    if (tap_dev_ == nullptr) {
+        err = "the prompt staging of the DFlash2 taps does not fit in VRAM";
+        return false;
+    }
+    return true;
+}
+
+void Prefill::clear_taps() {
+    if (tap_dev_ != nullptr) {
+        try { sycl::free(tap_dev_, dpct::get_in_order_queue()); } catch (...) {}
+        tap_dev_ = nullptr;
+    }
+    tap_layers_.clear();
+    on_taps = nullptr;
+}
 
 void Prefill::reset() {
     release();
@@ -2509,10 +2535,23 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
 
+    std::vector<int> tap_slot;
+    if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
+        if (tap_dev_ == nullptr) {
+            tap_dev_ = sycl::malloc_device<float>((size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd, dpct::get_in_order_queue());
+            if (tap_dev_ == nullptr) { err = "prefill: the DFlash2 tap staging does not fit in VRAM"; return false; }
+        }
+        tap_slot.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+    }
     for (int64_t c0 = 0; c0 < n; c0 += chunk_len(c0)) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = chunk_len(c0), p0 = pos0 + c0;
+        // DFlash2 prompt taps: the rows of this chunk at positions >= tap_first_ (the drafter looks back one window)
+        const int64_t tap_t0 = tap_dev_ != nullptr ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
+        const int64_t tap_rows = T - tap_t0;
+        if (tap_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the chunk's tapped rows"; return false; }
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
@@ -4858,6 +4897,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 }
                 if (steered && !cv_fused)   // --control-vector-scaled
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+                if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0)   // DFlash2: this layer's completed output, mean of the streams
+                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_layers_.size() * N, N,
+                                                  (int) HC, (int) tap_rows, m.cs);
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
@@ -4948,6 +4990,10 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 }
                 std::fclose(f);
             }
+        }
+        if (tap_rows > 0 && on_taps) {
+            m.cs->wait();
+            if (!on_taps(tap_dev_, tap_rows, p0 + tap_t0, err)) return false;
         }
         if (on_chunk || on_stage_chunk) {
             const auto toc = Clock::now();
