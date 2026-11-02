@@ -55,6 +55,10 @@ AUTO_SPLIT_AMD_ARCHS: tuple = ("gfx1201",)
 #: card counts on which mode "auto" starts it on those architectures. Four: on 2 and 3 R9700 with the IQ3_S set the split is slower than the layer split today (RESULTS-HIP.md
 #: section 7), and Auto must not pick a slower path. `--split-engine on` is not limited by this.
 AUTO_SPLIT_AMD_CARD_COUNTS: tuple = (4,)
+#: routed-expert types for which mode "auto" starts it on AMD: the UD-Q4_K_XL family. On 4 x R9700 with the IQ3_S set (i-quant and Q2_0 experts) the split is much slower than the
+#: layer split (8 users 143.8 against 326.8 tok/s, a 32K prompt 10.3 against 5.6 s, RESULTS-HIP.md section 7), because its i-quant tiles are a first, untuned version.
+#: `--split-engine on` still runs those sets.
+AUTO_SPLIT_AMD_EXPERT_TYPES: frozenset = frozenset({"Q4_K", "Q5_K", "Q5_1", "Q8_0"})
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -425,6 +429,8 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     if not d.use_split:
         return d
     amd = cards[0].vendor == "amd"
+    if amd and mode_ != "on" and not set(model.routed_types) <= AUTO_SPLIT_AMD_EXPERT_TYPES:
+        return Decision(False, ["this model's experts (" + "/".join(sorted(set(model.routed_types) - AUTO_SPLIT_AMD_EXPERT_TYPES)) + ") run faster on the layer split on AMD today; the all-cards split engine starts for them only with --split-engine on"], d.cards)
     if amd and mode_ != "on" and d.cards not in AUTO_SPLIT_AMD_CARD_COUNTS:
         return Decision(False, [f"the all-cards split engine is not automatic on {d.cards} {cards[0].arch_name} cards; it starts only with --split-engine on"], d.cards)
     if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):

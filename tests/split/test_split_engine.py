@@ -386,6 +386,25 @@ class AmdDefault(unittest.TestCase):
             self.assertEqual(seen, [(4, 0, "gfx1201")])
             self.assertEqual(cfg["exe"], "/e/strata-split-4-gfx1201")
 
+    def test_auto_on_amd_is_the_ud_q4_family_only_and_on_runs_the_iquant_sets(self):
+        import tempfile
+
+        iq3s = dict(routed_types={"IQ4_NL": 39, "IQ3_XXS": 34, "Q2_0": 9, "IQ2_S": 40, "IQ3_S": 20, "IQ4_XS": 2}, routed_bytes=int(48.8 * GIB), embd_type="IQ4_XS",
+                    shexp_types={"Q4_K": 30, "Q8_0": 1, "BF16": 48}, ple_type="IQ4_NL")
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp)
+            del cfg["split_engine"]
+            before = dict(cfg)
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n_, cc=None, arch=None: "/e/strata-split-4-amd", system="linux", probe=lambda i: cards(4, **self.R9700),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4(**iq3s))
+            self.assertFalse(d.use_split)
+            self.assertTrue(d.quiet)
+            self.assertEqual(cfg, before)
+            cfg = self.amd(tmp, split_engine="on")
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n_, cc=None, arch=None: "/e/strata-split-4-amd", system="linux", probe=lambda i: cards(4, **self.R9700),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4(**iq3s))
+            self.assertTrue(d.use_split, d.reasons)
+
     def test_auto_is_four_cards_only_today_and_on_runs_two_and_three(self):
         import tempfile
 
