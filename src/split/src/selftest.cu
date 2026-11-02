@@ -5,7 +5,8 @@
 //   dense    the prompt path's dense product (hipBLAS f16 GEMM, f32 accumulation)
 //   dp4a     the decode kernels' four-way int8 dot product (hip_compat's __dp4a)
 //   gdn      the recurrent layer's step (gdn_step, the delta rule on a 128 x 128 state per value head, wave shuffles)
-// The inputs are chosen so the products and sums are exact in f32 where the engine's arithmetic is (small multiples of powers of two); a difference is a wrong answer.
+// The inputs are small multiples of powers of two, so the f16 products are exact; the tensor cores add them in their own order and precision (gfx11's WMMA is a few 1e-7 off an exact
+// f32 sum, measured on a 780M), so a value passes within 1e-4 of the sum of the absolute terms. A wrong operand or accumulator layout is off by whole products.
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -91,8 +92,10 @@ template <typename LA, typename LB> std::string t1_case(const char* name, bool a
                 const float y = b_col ? B[n * T1_LD + k] : B[k * T1_LD + n];   // B[k][n]
                 ref += x * y;
             }
-            if (r[m * 16 + n] != ref) ++bad;
-            if (c[n * 16 + m] != ref) ++bad;
+            float mag = 1e-3f;
+            for (int k = 0; k < 16; ++k) mag += std::fabs((a_row ? A[m * T1_LD + k] : A[k * T1_LD + m]) * (b_col ? B[n * T1_LD + k] : B[k * T1_LD + n]));
+            if (std::fabs(r[m * 16 + n] - ref) > 1e-4f * mag) ++bad;
+            if (std::fabs(c[n * 16 + m] - ref) > 1e-4f * mag) ++bad;
         }
     return bad ? std::string("wmma ") + name + ": " + std::to_string(bad) + " of 512 values wrong" : "";
 }
@@ -180,9 +183,12 @@ std::string test_expert() {
     int bad = 0;
     for (int t = 0; t < ntok; ++t)
         for (int r = 0; r < nrows; ++r) {
-            double ref = 0;
-            for (int k = 0; k < ncols; ++k) ref += (double) wf[(size_t) r * ncols + k] * (double) xf[(size_t) t * ncols + k];
-            if (std::fabs((double) out[(size_t) t * nrows + r] - ref) > 1e-3) ++bad;
+            double ref = 0, mag = 1e-3;
+            for (int k = 0; k < ncols; ++k) {
+                const double term = (double) wf[(size_t) r * ncols + k] * (double) xf[(size_t) t * ncols + k];
+                ref += term, mag += std::fabs(term);
+            }
+            if (std::fabs((double) out[(size_t) t * nrows + r] - ref) > 1e-4 * mag) ++bad;
         }
     return bad ? "expert tile: " + std::to_string(bad) + " of " + std::to_string(ntok * nrows) + " values wrong" : "";
 }
@@ -212,9 +218,12 @@ std::string test_dense() {
     int bad = 0;
     for (int t = 0; t < C; ++t)
         for (int r = 0; r < rows; ++r) {
-            double ref = 0;
-            for (int k = 0; k < cols; ++k) ref += (double) wf[(size_t) r * cols + k] * (double) xf[(size_t) t * cols + k];
-            if (std::fabs((double) out[(size_t) t * rows + r] - ref) > 1e-3) ++bad;
+            double ref = 0, mag = 1e-3;
+            for (int k = 0; k < cols; ++k) {
+                const double term = (double) wf[(size_t) r * cols + k] * (double) xf[(size_t) t * cols + k];
+                ref += term, mag += std::fabs(term);
+            }
+            if (std::fabs((double) out[(size_t) t * rows + r] - ref) > 1e-4 * mag) ++bad;
         }
     return bad ? "dense product: " + std::to_string(bad) + " of " + std::to_string(C * rows) + " values wrong" : "";
 }

@@ -1,13 +1,13 @@
 #!/bin/bash
 # strata-split-N (the all-cards split engine, src/split, from sFNX, MIT, John Fink) for AMD on Linux, built next to the HIP engine package (packaging/build_hip_linux.sh)
 # so package_engine.py ships it with `--include 'strata-split-*'` beside `strata`. One executable per card count with a code object for every listed architecture
-# (ARCHS: gfx1201 = Radeon AI PRO R9700 / RX 9070, which Strata has run; gfx1200 = RX 9060; gfx1100..gfx1103 = RDNA3: RX 7000 and the 780M, run by nobody yet), named
+# (ARCHS: gfx1201 = Radeon AI PRO R9700 / RX 9070, which Strata has run; gfx1200 = RX 9060; gfx11-generic = one code object for gfx1100..gfx1103, RDNA3: RX 7000 and the 780M, whose self-test passes on a 780M), named
 # strata-split-<N>-amd (the launcher, strata_cli/launch/runner.py, looks for strata-split-<N>-<arch> first and then -amd): the AMD Linux package ships N = 2, 3 and 4. Only gfx1201 starts
 # the split by itself; the other architectures only with `--split-engine on`, and the engine then runs its kernel self-test first (src/split/src/hip/selftest_policy.hpp).
 # Which counts run which model is the launcher's rule (strata_control/split_engine.py: all the experts must fit in the cards' memory), not the binary's. RUNPATH $ORIGIN: it finds the ROCm libraries the engine package bundles (libamdhip64, hipblas, rocblas and its
 # Tensile data for gfx1201) beside itself, the same set `strata` uses.
 #
-#   SRC=<checkout> B=<build dir> HP=<ROCm devel root> [LIBW=<ROCm libraries root>] [ARCHS="gfx1100;gfx1101;gfx1102;gfx1103;gfx1200;gfx1201"] GG=<llama.cpp checkout at the pinned commit> [CARDS="2 3 4"] [JOBS=12]  packaging/build_split_hip.sh
+#   SRC=<checkout> B=<build dir> HP=<ROCm devel root> [LIBW=<ROCm libraries root>] [ARCHS="gfx1201;gfx1200;gfx11-generic"] GG=<llama.cpp checkout at the pinned commit> [CARDS="2 3 4"] [JOBS=12]  packaging/build_split_hip.sh
 #
 # After the build the script FAILS if the binary
 #   - links librccl (RCCL is loaded at run time with dlopen when FNX_PF_RCCL=1 and is optional: the split must start without it),
@@ -22,7 +22,7 @@ LIBW=${LIBW:-$HP}
 GG=${GG:?GG=<llama.cpp checkout at the pinned commit>}
 CARDS=${CARDS:-2 3 4}
 JOBS=${JOBS:-12}
-ARCHS=${ARCHS:-gfx1100;gfx1101;gfx1102;gfx1103;gfx1200;gfx1201}
+ARCHS=${ARCHS:-gfx1201;gfx1200;gfx11-generic}
 export HIP_PLATFORM=amd HIP_COMPILER=clang HIP_RUNTIME=rocclr ROCM_PATH=$HP HIP_PATH=$HP PATH=$HP/bin:$PATH
 SYSDEPS=""; [ -d "$HP/lib/rocm_sysdeps" ] && SYSDEPS=";$HP/lib/rocm_sysdeps"
 BC=$HP/lib/llvm/amdgcn/bitcode; [ -d "$BC" ] || BC=$HP/amdgcn/bitcode

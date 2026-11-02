@@ -31,9 +31,10 @@ if(NOT STRATA_GGML_DIR OR NOT EXISTS "${STRATA_GGML_DIR}/ggml/src/ggml-cuda/vecd
 endif()
 if(_fnx_hip)
   # one binary per card count with a code object for each listed architecture: gfx1201 (R9700, RX 9070; run), gfx1200 (RX 9060; same ISA, not run), and RDNA3
-  # gfx1100 gfx1101 gfx1102 gfx1103 (RX 7000 and the 780M iGPU; the gfx11 WMMA path, hip/mma.h FNX_WMMA_GFX11, not run on a multi-card PC). Only gfx1201 is automatic
+  # gfx11-generic = gfx1100 gfx1101 gfx1102 gfx1103 in one code object (RX 7000 and the 780M iGPU; the gfx11 WMMA path, hip/mma.h FNX_WMMA_GFX11; the self-test passes on a 780M,
+  # no multi-card PC has run it). Only gfx1201 is automatic
   # (strata_control/split_engine.py AUTO_SPLIT_AMD_ARCHS); on another card the engine runs src/selftest.cu before it loads the model
-  set(_fnx_hip_ok gfx1100 gfx1101 gfx1102 gfx1103 gfx1200 gfx1201)
+  set(_fnx_hip_ok gfx1100 gfx1101 gfx1102 gfx1103 gfx11-generic gfx1200 gfx1201)
   set(_fnx_hip_bad "")
   foreach(_a ${STRATA_HIP_ARCH_LIST})
     if(NOT _a IN_LIST _fnx_hip_ok)
