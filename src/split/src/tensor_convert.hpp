@@ -89,6 +89,27 @@ inline void dequantize(uint32_t type, const uint8_t* src, size_t n, float* y) {
             for (int j = 0; j < 32; ++j) y[b * 32 + j] = d * (float) (int8_t) p[2 + j];
         }
         return;
+    case T_Q4_0:
+        for (size_t b = 0; b < n / 32; ++b) {
+            const uint8_t* p = src + b * 18;
+            uint16_t dh;
+            std::memcpy(&dh, p, 2);
+            const float d = h2f(dh);
+            for (int j = 0; j < 16; ++j) {
+                y[b * 32 + j] = d * (float) ((int) (p[2 + j] & 0xF) - 8);
+                y[b * 32 + j + 16] = d * (float) ((int) (p[2 + j] >> 4) - 8);
+            }
+        }
+        return;
+    case T_Q2_0:
+        for (size_t b = 0; b < n / 64; ++b) {
+            const uint8_t* p = src + b * 18;
+            uint16_t dh;
+            std::memcpy(&dh, p, 2);
+            const float d = h2f(dh);
+            for (int j = 0; j < 64; ++j) y[b * 64 + j] = d * (float) ((int) ((p[2 + j / 4] >> (2 * (j % 4))) & 3) - 1);
+        }
+        return;
     case T_IQ4_NL:
         for (size_t b = 0; b < n / 32; ++b) {
             const uint8_t* p = src + b * 18;
@@ -257,6 +278,31 @@ inline void convert(Tensor& t, uint32_t target, std::vector<uint8_t>& out) {
     t.data = out.data();
     t.nbytes = out.size();
     t.shard = -1;   // not in a GGUF file any more: readers that stage from the file by offset must take the bytes at t.data
+    t.offset = 0;
+}
+
+// Strata's Q2_0 (64 values in 18 bytes: f16 d, two bits per value, value j in byte j / 4 at bit 2 (j % 4), meaning (code - 1) * d) as two
+// Q4_0 blocks (32 values in 18 bytes: f16 d, nibble i of the low half = value i, of the high half = value i + 16, meaning (nibble - 8) * d).
+// Lossless: nibble = code + 7 gives (code + 7 - 8) * d, the same product. The engine's Q4_0 kernels then read it (the draft layer's
+// experts.bin goes the same way, model.cpp Mtp::experts). Twice the bytes.
+inline void repack_q2_0_to_q4_0(Tensor& t, std::vector<uint8_t>& out) {
+    if (t.ne[0] % 64) throw std::runtime_error(t.name + ": rows are not a whole number of Q2_0 blocks");
+    const size_t nb = t.nbytes / 18;
+    out.resize(nb * 36);
+    for (size_t b = 0; b < nb; ++b) {
+        const uint8_t* in = t.data + b * 18;
+        auto code = [&](int j) { return (in[2 + j / 4] >> (2 * (j % 4))) & 3; };
+        for (int h = 0; h < 2; ++h) {
+            uint8_t* o = out.data() + (2 * b + (size_t) h) * 18;
+            o[0] = in[0];
+            o[1] = in[1];
+            for (int i = 0; i < 16; ++i) o[2 + i] = (uint8_t) ((code(32 * h + i) + 7) | ((code(32 * h + 16 + i) + 7) << 4));
+        }
+    }
+    t.type = T_Q4_0;
+    t.data = out.data();
+    t.nbytes = out.size();
+    t.shard = -1;
     t.offset = 0;
 }
 

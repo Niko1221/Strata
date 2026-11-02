@@ -122,6 +122,12 @@ void Gguf::convert_small_tensors() {
     if (!mixed) return;
     for (auto& kv : tensors_) {
         Tensor& t = kv.second;
+        if (t.type == T_Q2_0) {   // the routed down experts of some layers: the same values as Q4_0 blocks
+            owned_.emplace_back();
+            conv::repack_q2_0_to_q4_0(t, owned_.back());
+            ++converted_;
+            continue;
+        }
         const uint32_t want = conv::wanted_type(t.name);
         if (want == 0xFFFFFFFFu || want == t.type) continue;
         owned_.emplace_back();
