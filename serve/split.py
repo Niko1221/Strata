@@ -246,6 +246,10 @@ class SplitEngine:
         return self.cur.prefill_tok_s_mean
 
     @property
+    def reused(self):
+        return self.cur.reused
+
+    @property
     def batch(self) -> int:
         return 0
 
