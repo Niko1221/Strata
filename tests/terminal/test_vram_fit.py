@@ -358,10 +358,39 @@ class CudaSpill(unittest.TestCase):
         args, par, note = self.start(8192, user=["--kv-resident", "32768"])
         self.assertEqual(self.flag(args, "--kv-resident"), "32768")
 
-    def test_only_cuda_is_claimed_for_a_single_request(self):
-        for backend in ("hip", "metal"):
+    def test_metal_and_unknown_backends_are_not_claimed(self):
+        for backend in ("metal", "vulkan", None, ""):
             a = self.A + self.DF2
             self.assertEqual(V.fit_start({"model_name": self.M}, list(a), 8192, backend), (a, None, ""), backend)
+
+    def test_the_hip_base_is_its_own_measurement(self):
+        hip, cuda = V.BASE_SLOTTED_MIB[("hip", "flash-next")], V.BASE_SLOTTED_MIB[("cuda", "flash-next")]
+        self.assertNotEqual(hip, cuda)
+        self.assertAlmostEqual(cuda - hip, 1090, delta=200)           # the R9700 start holds about 1.1 GiB less before the cache than the CUDA one (FREE - 5045 against FREE - 6324, less the context)
+        self.assertTrue(V.HIP_BASE_NOTE.startswith("measured on an R9700"))
+
+    def test_an_8gb_discrete_amd_card_starts_as_set_up_and_a_6gb_one_walks_the_window(self):
+        # measured on the R9700 held to 7942 MiB: DFlash2 alone starts at 128K with setup's window (787 slots, 864 MiB free); at 6400 MiB it needs the loan that keeps 16
+        for mib in (8192, 8176):
+            a = self.A + self.DF2
+            self.assertEqual(V.fit_start({"model_name": self.M}, list(a), mib, "hip"), (a, None, ""), mib)
+        args, par, note = self.start(6144, backend="hip")
+        self.assertEqual(self.flag(args, "--max-context"), "131072")
+        self.assertIn(self.flag(args, "--kv-resident"), ("20480", "8192", "4096"))
+        self.assertIsNone(par)
+        self.assertIn(V.NOTE_SLOW, note)
+        for mib in (12288, 16384, 24576, 32768):
+            a = self.A + self.DF2
+            self.assertEqual(V.fit_start({"model_name": self.M}, list(a), mib, "hip"), (a, None, ""), mib)
+        for n in (2, 4):
+            args, par, note = self.start(8192, n, self.MTP, backend="hip")
+            self.assertEqual(self.flag(args, "--max-context"), "131072", n)
+            self.assertIsNone(par, n)                                        # the number of requests is never touched
+
+    def test_an_integrated_amd_chip_is_left_alone(self):
+        # serve/server.py drafting_vram_mib() returns None for Strix Halo and the other APUs (one pool with the host's RAM): fit_start does nothing without a card's memory
+        a = self.A + self.DF2
+        self.assertEqual(V.fit_start({"model_name": self.M}, list(a), None, "hip"), (a, None, ""))
 
     def test_the_drafter_is_read_from_the_arguments(self):
         self.assertEqual(V.drafter_of(self.A + self.DF2), "dflash2")
