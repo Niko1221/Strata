@@ -378,6 +378,7 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
     if (!acquire(err)) return false;
     dev_ = device;
     lazy_ = false;
+    need_bytes_ = dev_bytes_;
     if (lazy_reserve_mib >= 0 && lazy_reserve_mib >= (int64_t) (dev_bytes_ >> 20) + kLazyMargin) {
         free_device();   // (dev_bytes_ stays: what an encode will take)
         lazy_ = true;
@@ -393,6 +394,7 @@ bool VisionTower::acquire(std::string& err) {
     dev_bytes_ = 0;
     auto fail = [&]() {
         free_device();
+        (void) cudaGetLastError();   // (a failed cudaMalloc leaves its error to be read by the next cudaGetLastError: not this tower's next encode)
         return false;
     };
     for (const Small& sm : smalls_) {
@@ -480,8 +482,8 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
     for (int tries = 0; !ready_; ++tries) {
         if (acquire(err)) break;
         if (tries >= 3) {
-            err = "vision: no graphics memory free for the picture tower (" + std::to_string(dev_bytes_ >> 20) +
-                  " MiB are taken per picture turn: " + err + "); --vision-resident keeps it on the card";
+            err = "vision: no graphics memory free for the picture tower (it takes " + std::to_string(need_bytes_ >> 20) +
+                  " MiB for a picture turn: " + err + "); --vision-resident keeps it on the card";
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(250));

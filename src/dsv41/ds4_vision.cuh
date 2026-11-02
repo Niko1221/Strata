@@ -69,7 +69,7 @@ private:
     VisionGeo g_;
     bool lazy_ = false, ready_ = false;   // (ready_: the device side is allocated)
     int dev_ = -1, at_ = -1, max_n_ = 0, qb_ = 0, rb_ = 0, cells_ = 0;   // (at_: the device its memory is on)
-    size_t dev_bytes_ = 0, slot_n_ = 0;
+    size_t dev_bytes_ = 0, need_bytes_ = 0, slot_n_ = 0;
     std::vector<void*> dallocs_;
     uint16_t* host_ = nullptr;          // pinned: every block's [wqkv, wo, w1, w2], then aligner w1, w2
     size_t block_n_ = 0;                // a block's weights (BF16 values)

@@ -4474,6 +4474,8 @@ class Service:
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
         self.vram_reserve_asked = False                  # a POST /v1/vram was made (vram_reserve None is then asked)
         self.vision_held = False                         # an elastic encoder holds VRAM the expert cache gave it
+        self.vision_no_shrink = False                    # the engine said its cache never shrinks (no --vram-elastic)
+        self.vision_no_shrink_said = False
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
         self.reasoning_loop_recovery = False
         self.reasoning_budget_configured = False         # the config named reasoning_budget_tokens (0 included): no family default
@@ -4751,20 +4753,19 @@ class Service:
         v = self.vision
         if not getattr(v, "elastic", False) or v.alive():
             return
-        if hasattr(self.engine, "vram") and self.loaded():
+        if hasattr(self.engine, "vram") and self.loaded() and not self.vision_no_shrink:
             try:
                 out = self.engine.vram((self._engine_reserve() or 0) + v.elastic_mib)
                 self.vision_held = True
                 print(f"[strata] images: the expert cache keeps {v.elastic_mib} MiB free for the image encoder "
                       f"({out.get('expert_cache_mib')} of {out.get('expert_cache_full_mib')} MiB left)", flush=True)
             except ValueError as e:
-                free = self.free_vram_mib()
-                if free is not None and free < v.elastic_mib and getattr(v, "use_cpu", lambda: False)():
-                    print(f"[strata] images: the expert cache cannot make room for the image encoder ({e}) and only {free} "
-                          f"MiB of VRAM is free (it needs about {v.elastic_mib}): this picture is read on the CPU", flush=True)
-                else:
-                    print(f"[strata] images: the expert cache did not make room for the image encoder ({e}); starting "
-                          "it anyway", flush=True)
+                self.vision_no_shrink = "--vram-elastic" in str(e)     # an engine that never shrinks: not asked again
+                note = "" if self.vision_no_shrink and self.vision_no_shrink_said else f" ({e})"
+                self.vision_no_shrink_said = True
+                self._vision_room_check(v, note)
+        elif self.vision_no_shrink:
+            self._vision_room_check(v, "")
         if self.vision_held:
             time.sleep(0.2)          # the driver's free-VRAM counter shows the cache's release a moment later
         free0, t0 = self.free_vram_mib(), time.time()
@@ -4783,6 +4784,17 @@ class Service:
             except ValueError as e:
                 print(f"[strata] images: the expert cache did not grow back ({e})", flush=True)
             self.vision_held = False
+
+    def _vision_room_check(self, v, note: str):
+        """The expert cache cannot make room: the GPU reader goes into the VRAM that is free, if that is READER_NEEDS_MIB, else the
+        CPU reader reads (a picture is read right either way)."""
+        free = self.free_vram_mib()
+        need = min(v.elastic_mib, READER_NEEDS_MIB)
+        if free is not None and free < need and getattr(v, "use_cpu", lambda: False)():
+            print(f"[strata] images: only {free} MiB of VRAM is free and the GPU reader needs about {need}{note}: this picture is "
+                  "read on the CPU", flush=True)
+        elif note:
+            print(f"[strata] images: the expert cache did not make room for the image encoder{note}; starting it anyway", flush=True)
 
     def _vision_idle_down(self, force: bool = False) -> str:
         """An elastic encoder idle for elastic_idle_s (or force) stops, and the expert cache takes its VRAM back:
@@ -4815,7 +4827,7 @@ class Service:
         if not getattr(v, "elastic", False):
             return
         print(f"[strata] images: the image encoder starts with the first picture and stops after {v.elastic_idle_s:g} s "
-              f"without one; while it runs the expert cache keeps {v.elastic_mib} MiB free for it", flush=True)
+              f"without one", flush=True)
 
         def loop():
             while True:
@@ -9184,23 +9196,27 @@ def with_current_reader(cfg: dict, package: Path) -> dict:
     return {**cfg, "vision": fixed}
 
 
+READER_NEEDS_MIB = 1536     # what the GPU picture reader takes from the card (1,342 MiB measured on an RTX A6000 and an R9700)
+
 #: Owner rule 2026-11-01: the picture reader lives in RAM, not VRAM.  On an NVIDIA card with one GPU the GPU reader is started by the first
-#: picture and stopped after vision.elastic_idle_s, and the expert cache gives it its room for that time ("vram_elastic").  Measured on an
-#: RTX A6000 as a 24 GB card: 8,766 expert slots against 8,079 with the reader on the card, text speed the same within the noise.
+#: picture and stopped after vision.elastic_idle_s, inside a reserve of VISION_RESERVE_MIB; a start that finds no room is read by the CPU reader.
+#: Measured on an RTX A6000 as a 24 GB card (Qwen3.8-Flash-Next IQ3_S, 5 interleaved pairs): the same 20,623 expert slots and the same text speed as
+#: the reader on the card, 1.3 GB less VRAM in use between pictures.  The expert cache that gives its room (vram_elastic) held 8.5% more slots
+#: and was 2.2% slower in text (4 pairs of 5), so it stays opt-in.
 VISION_ON_DEMAND_BY_DEFAULT = True
-_ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--resident-experts", "--resident-budget-gib",
-                       "--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3")
+VISION_RESERVE_MIB = 2048
+_ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--expert-cache-device1", "--expert-cache-device2",
+                       "--expert-cache-device3")
 
 
 def vision_on_demand_by_default(cfg: dict) -> bool:
     """True when this config's GPU reader should start on demand without the config saying so: a GPU reader (vision.gpu) of the NVIDIA
-    kind on one GPU, an engine that can give its room (one card, no layer split, no batch slots, no --kv-grow, no helper caches, not the
-    resident low-RAM mode), and nothing in the vision section or "vram_elastic" that says otherwise.  Not DeepSeek (its own tower), not AMD,
-    Intel or a Mac (not measured there), not a reader pinned to another card (vision.cuda_device)."""
+    kind on one GPU, no batch slots, no --kv-grow, no helper caches, and nothing in the vision section that says otherwise.  Not DeepSeek
+    (its own tower), not AMD, Intel or a Mac (not measured there), not a reader pinned to another card (vision.cuda_device)."""
     vis = cfg.get("vision")
     if not VISION_ON_DEMAND_BY_DEFAULT or not isinstance(vis, dict) or vis.get("gpu") is not True or "elastic" in vis:
         return False
-    if cfg.get("vram_elastic") is False or vis.get("cuda_device") is not None or sys.platform == "darwin":
+    if vis.get("cuda_device") is not None or sys.platform == "darwin":
         return False
     if (cfg.get("arch") or "") == "deepseek41" or cfg.get("backend") not in (None, "cuda"):
         return False
@@ -9212,10 +9228,18 @@ def vision_on_demand_by_default(cfg: dict) -> bool:
 
 
 def apply_vision_defaults(cfg: dict) -> dict:
-    """cfg with the on-demand reader switched on (vision.elastic, vram_elastic) where vision_on_demand_by_default says so; the same dict."""
-    if vision_on_demand_by_default(cfg):
-        cfg["vision"] = {**cfg["vision"], "elastic": True}
-        cfg.setdefault("vram_elastic", True)
+    """cfg with the on-demand reader switched on (vision.elastic) where vision_on_demand_by_default says so; the same dict.  Its VRAM comes
+    from the reserve, so the reserve setup writes for a GPU reader that stays on the card (700 MiB, or none) becomes VISION_RESERVE_MIB;
+    a reserve the person or the app chose (any other number) is kept."""
+    if not vision_on_demand_by_default(cfg):
+        return cfg
+    cfg["vision"] = {**cfg["vision"], "elastic": True}
+    args = list(cfg.get("args") or [])
+    if "--vram-reserve-mib" not in args[:-1]:
+        args += ["--vram-reserve-mib", str(VISION_RESERVE_MIB)]
+    elif args[args.index("--vram-reserve-mib") + 1] == "700":
+        args[args.index("--vram-reserve-mib") + 1] = str(VISION_RESERVE_MIB)
+    cfg["args"] = args
     return cfg
 
 
@@ -9559,11 +9583,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                     for k, v in cfg["vision"].items() if not (k == "exe" and engine_component.is_reference(v))}
             if engine_component.is_reference(cfg["vision"].get("exe")):     # the engine from the component folder
                 vcfg["exe"] = _component_exe(cfg["vision"]["exe"], cfg)
-            if vcfg.get("elastic") is True and cfg.get("vram_elastic") is not True:
-                print('[strata] images: without "vram_elastic": true the expert cache cannot make room for the image encoder: it '
-                      "starts with the first picture inside the VRAM the reserve keeps free, and the CPU reader reads the picture "
-                      "when there is none", flush=True)
-            elif vcfg.get("elastic") is True and layer_split_of(cfg):
+            if vcfg.get("elastic") is True and layer_split_of(cfg):
                 # the engine turns --vram-elastic off on a layer split (a cache per GPU): the encoder still starts
                 # with the first picture and stops when idle, but its VRAM has to be free already
                 print('[strata] images: on a layer split the expert cache cannot make room for the image encoder (the '

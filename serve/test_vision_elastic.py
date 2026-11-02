@@ -258,7 +258,13 @@ class OnDemandByDefault(unittest.TestCase):
     def test_the_plain_nvidia_config_is_on_demand(self):
         from serve.server import apply_vision_defaults, vision_on_demand_by_default
         c = apply_vision_defaults(self.cfg())
-        self.assertTrue(c["vision"]["elastic"] and c["vram_elastic"] is True)
+        self.assertTrue(c["vision"]["elastic"])
+        self.assertNotIn("vram_elastic", c)                                          # the shrinking cache stays opt-in
+        self.assertEqual(c["args"][-2:], ["--vram-reserve-mib", "2048"])             # the reader's room, in the reserve
+        c = apply_vision_defaults(self.cfg(args=["--vision", "--vram-reserve-mib", "700"]))
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "2048")   # setup's reader default 700 becomes it
+        c = apply_vision_defaults(self.cfg(args=["--vision", "--vram-reserve-mib", "1536"]))
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "1536")   # a chosen reserve is kept
         self.assertTrue(vision_on_demand_by_default(self.cfg(vision={"exe": "component:engine/strata-vision.exe"})))
         self.assertTrue(vision_on_demand_by_default(self.cfg(vision={"exe": "C:/e/strata-vision.exe"})))
         bs = chr(92)
@@ -268,13 +274,12 @@ class OnDemandByDefault(unittest.TestCase):
         from serve.server import vision_on_demand_by_default as f
         self.assertFalse(f(self.cfg(vision={"gpu": False})))                         # the CPU reader
         self.assertFalse(f(self.cfg(vision={"elastic": False})))                     # the person said no
-        self.assertFalse(f(self.cfg(vram_elastic=False)))
         self.assertFalse(f(self.cfg(vision={"cuda_device": 1})))                     # a reader on its own card
         self.assertFalse(f(self.cfg(vision={"exe": "/e/strata-vision-hip"}, backend="hip")))
         self.assertFalse(f(self.cfg(backend="sycl", vision={"exe": "/e/strata-vision-sycl"})))
         self.assertFalse(f(self.cfg(gpu=[0, 1])))                                     # a layer split
         self.assertFalse(f(self.cfg(args=["--vision", "--kv-grow"])))
-        self.assertFalse(f(self.cfg(args=["--vision", "--resident-budget-gib", "30"])))
+        self.assertTrue(f(self.cfg(args=["--vision", "--resident-budget-gib", "30"])))   # no cache to shrink is needed
         self.assertFalse(f(self.cfg(parallel=4)))
         self.assertFalse(f(self.cfg(arch="deepseek41")))
         c = self.cfg()
@@ -282,7 +287,7 @@ class OnDemandByDefault(unittest.TestCase):
         self.assertFalse(f(c))
         c = self.cfg(vision={"elastic": True})                                        # already asked for: untouched
         from serve.server import apply_vision_defaults
-        self.assertNotIn("vram_elastic", apply_vision_defaults(c))
+        self.assertEqual(apply_vision_defaults(c)["args"], self.BASE["args"])   # already asked for: untouched
 
 
 if __name__ == "__main__":
