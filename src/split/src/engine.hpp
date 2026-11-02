@@ -100,7 +100,10 @@ public:
         int lane = 0, T = 1, src_row = 0, pos0 = 0;
         bool from_main = true;
         std::vector<int> tokens;
+        const Penalties::Row* pen = nullptr;   // the lane's last row's penalties, as draft() takes them
+        bool cands = false;                    // and its TOPK_N candidates into last_lane_cands[i], as draft(cands) gives last_draft_cands
     };
+    std::vector<std::vector<std::pair<float, int>>> last_lane_cands;
     std::vector<int> draft_lanes(const std::vector<DraftReq>& reqs);
     std::vector<std::pair<float, int>> last_draft_cands;
     double last_draft_ms = 0.0;       // wall time of the last draft()
@@ -272,6 +275,11 @@ private:
         int* mtp_ctl;
         int* mtp_lctl;
         int* mtp_row_pos;
+        int* mtp_pen_l;          // per lane, per card: penalize_row's pen
+        float* mtp_pen_par_l;    // per lane: repeat, freq, present
+        float* mtp_tk_v_l;       // per lane, per card: the candidates
+        int* mtp_tk_i_l;
+        unsigned* mtp_tk_err_l;
         float* ple;
         int* ctl;
         float* bv;

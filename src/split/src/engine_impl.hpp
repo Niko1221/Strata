@@ -128,6 +128,10 @@ struct CardBuf {
     // the batched draft layer (Engine::draft_lanes): per lane [pos0, tag], per row its cell, and the rows' pointer table (the main window's lane_rows, for the draft rows)
     int *mtp_lctl = nullptr, *mtp_row_pos = nullptr;
     const int** mtp_lane_rows = nullptr;
+    // per lane of a batched draft window: the last row's penalties and (cands) its TOPK_N candidates
+    int *mtp_pen_l = nullptr, *mtp_tk_i_l = nullptr;
+    float *mtp_pen_par_l = nullptr, *mtp_tk_v_l = nullptr;
+    unsigned* mtp_tk_err_l = nullptr;
     int* mtp_pen = nullptr;        // the last row's penalties (penalize_row's pen, this card's draft-vocabulary indexes)
     float* mtp_pen_par = nullptr;
     float* mtp_tk_v = nullptr;     // the last row's TOPK_N candidates (draft(cands)); mtp_zero: no penalties for top_tokens

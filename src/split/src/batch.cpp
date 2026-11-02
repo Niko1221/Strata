@@ -319,12 +319,8 @@ void BatchDecoder::draft_next(const std::vector<BatchLane*>& lanes, const std::v
         std::fprintf(stderr, "%s\n", s.c_str());
     }
     if (mtp && batched_draft_) {
-        bool plain = true;
-        for (int i : going) plain = plain && !(pen_drafts_ && penalizes(lanes[(size_t) i]->s)) && !(samp_drafts_ && lanes[(size_t) i]->s.temperature > 0.f);
-        if (plain) {
-            draft_batched(lanes, going, r0, got, look, plan, chain_room);
-            return;
-        }
+        draft_batched(lanes, going, r0, got, look, plan, chain_room);
+        return;
     }
     for (size_t g = 0; g < going.size(); ++g) {
         const int i = going[g];
@@ -374,6 +370,26 @@ void BatchDecoder::draft_batched(const std::vector<BatchLane*>& lanes, const std
                                  const std::vector<std::vector<int>>& look, const std::vector<int>& plan, const std::vector<int>& chain_room) {
     const size_t ng = going.size();
     std::vector<int> used(ng), p(ng), prev_row(ng, 0), k(ng, 0);
+    std::vector<std::vector<int>> pen_seq(ng);
+    std::vector<char> pen(ng), samp(ng);
+    for (size_t g = 0; g < ng; ++g) {
+        BatchLane& L = *lanes[(size_t) going[g]];
+        pen[g] = pen_drafts_ && penalizes(L.s);
+        samp[g] = samp_drafts_ && L.s.temperature > 0.f;
+        if (pen[g]) pen_seq[g] = tail(L.ctx, L.s.pen_last_n);
+    }
+    // as draft_one does for one lane: the penalty row, the draft layer's argmax or (sampling) a draw from its candidates under the lane's sampler and rng
+    auto finish = [&](size_t g, int d, Dist& q) {
+        BatchLane& L = *lanes[(size_t) going[g]];
+        q = Dist{};
+        if (samp[g]) {
+            std::uniform_real_distribution<double> unif(0.0, 1.0);
+            q = make_dist(e_.last_lane_cands[g], L.s);
+            d = draw(q, unif(L.rng));
+        }
+        return d;
+    };
+    std::vector<Engine::Penalties::Row> prow(ng);
     std::vector<Engine::DraftReq> rq(ng);
     int off = 0;
     for (size_t g = 0; g < ng; ++g) {
@@ -382,22 +398,30 @@ void BatchDecoder::draft_batched(const std::vector<BatchLane*>& lanes, const std
         p[g] = e_.lane_pos(L.lane) - used[g];   // the lane's position before the window
         Engine::DraftReq& q = rq[g];
         q.lane = L.lane, q.T = used[g], q.from_main = true, q.src_row = r0[(size_t) going[g]], q.pos0 = p[g], q.tokens = got[(size_t) going[g]];
+        if (pen[g]) {
+            prow[g] = penalty_row(pen_seq[g], L.s);
+            q.pen = &prow[g];
+        }
+        q.cands = samp[g];
         prev_row[g] = off + used[g] - 1;
         off += used[g];
     }
-    const std::vector<int> d1 = e_.draft_lanes(rq);
+    std::vector<int> d1 = e_.draft_lanes(rq);
     ++last_calls;
     int deepest = 0;
     for (size_t g = 0; g < ng; ++g) {
         BatchLane& L = *lanes[(size_t) going[g]];
         const int d = plan[g];
+        Dist q1;
+        d1[g] = finish(g, d1[g], q1);
         if (d == 0) {
             L.shadow = d1[g];
-            L.shadow_q = Dist{};
+            L.shadow_q = q1;
         }
         if (!look[g].empty() && look[g][0] == d1[g]) {   // the lookup stands behind the draft layer's d1, as alone
             L.drafts.assign(look[g].begin(), look[g].begin() + d);
             L.qs.assign((size_t) d, Dist{});
+            if (d > 0) L.qs[0] = std::move(q1);
             continue;
         }
         k[g] = std::min(d, chain_room[g]);
@@ -406,27 +430,43 @@ void BatchDecoder::draft_batched(const std::vector<BatchLane*>& lanes, const std
         L.chain = true;
         L.drafts = {d1[g]};
         L.qs.clear();
-        L.qs.push_back(Dist{});
+        L.qs.push_back(std::move(q1));
         deepest = std::max(deepest, k[g]);
     }
     for (int j = 1; j < deepest; ++j) {   // chain step j for the lanes whose chain goes that far
         std::vector<size_t> who;
         std::vector<Engine::DraftReq> cr;
+        std::vector<Engine::Penalties::Row> crow;
+        crow.reserve(ng);   // (the requests point into it)
         for (size_t g = 0; g < ng; ++g) {
             if (k[g] <= j) continue;
             BatchLane& L = *lanes[(size_t) going[g]];
             Engine::DraftReq q;
             q.lane = L.lane, q.T = 1, q.from_main = false, q.src_row = prev_row[g], q.pos0 = p[g] + used[g] - 1 + j, q.tokens = {L.drafts.back()};
+            if (pen[g]) {
+                pen_seq[g].push_back(L.drafts.back());
+                crow.push_back(penalty_row(pen_seq[g], L.s));
+                q.pen = &crow.back();
+            }
+            q.cands = samp[g];
             cr.push_back(std::move(q));
             who.push_back(g);
         }
-        const std::vector<int> dj = e_.draft_lanes(cr);
+        std::vector<int> dj = e_.draft_lanes(cr);
         ++last_calls;
         for (size_t n = 0; n < who.size(); ++n) {
-            BatchLane& L = *lanes[(size_t) going[who[n]]];
+            const size_t g = who[n];
+            BatchLane& L = *lanes[(size_t) going[g]];
+            Dist q;
+            // the candidates of request n are last_lane_cands[n]: finish() indexes by lane position in going, so map it
+            if (samp[g]) {
+                std::uniform_real_distribution<double> unif(0.0, 1.0);
+                q = make_dist(e_.last_lane_cands[n], L.s);
+                dj[n] = draw(q, unif(L.rng));
+            }
             L.drafts.push_back(dj[n]);
-            L.qs.push_back(Dist{});
-            prev_row[who[n]] = (int) n;   // this lane's row in the window just run
+            L.qs.push_back(std::move(q));
+            prev_row[g] = (int) n;   // this lane's row in the window just run
         }
     }
 }

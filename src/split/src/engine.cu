@@ -1199,6 +1199,11 @@ void Engine::mtp_attach(const Mtp& mtp) {
         b.mtp_lctl = dalloc<int>(2 * MAXT);
         b.mtp_row_pos = dalloc<int>(MAXT);
         b.mtp_lane_rows = dalloc<const int*>((size_t) LANE_ROW_COLS * MAXT);
+        b.mtp_pen_l = dalloc<int>((size_t) MAXT * (1 + 2 * PEN_CAP));
+        b.mtp_pen_par_l = dalloc<float>((size_t) MAXT * 3);
+        b.mtp_tk_v_l = dalloc<float>((size_t) MAXT * TOPK_N);
+        b.mtp_tk_i_l = dalloc<int>((size_t) MAXT * TOPK_N);
+        b.mtp_tk_err_l = dalloc<unsigned>(MAXT);
         b.mtp_pen = dalloc<int>(1 + 2 * PEN_CAP);
         b.mtp_pen_par = dalloc<float>(3);
         b.mtp_tk_v = dalloc<float>(TOPK_N);
@@ -1212,6 +1217,11 @@ void Engine::mtp_attach(const Mtp& mtp) {
         h_.mtp_ctl = halloc<int>(2);
         h_.mtp_lctl = halloc<int>(2 * MAXT);
         h_.mtp_row_pos = halloc<int>(MAXT);
+        h_.mtp_pen_l = halloc<int>((size_t) MAXT * NCARD * (1 + 2 * PEN_CAP));
+        h_.mtp_pen_par_l = halloc<float>((size_t) MAXT * 3);
+        h_.mtp_tk_v_l = halloc<float>((size_t) MAXT * NCARD * TOPK_N);
+        h_.mtp_tk_i_l = halloc<int>((size_t) MAXT * NCARD * TOPK_N);
+        h_.mtp_tk_err_l = halloc<unsigned>((size_t) MAXT * NCARD);
         h_.mtp_pen = halloc<int>((size_t) NCARD * (1 + 2 * PEN_CAP));
         h_.mtp_pen_par = halloc<float>(3);
         h_.mtp_tk_v = halloc<float>((size_t) NCARD * TOPK_N);
@@ -1327,7 +1337,18 @@ void Engine::mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T) {
         ck(cudaSetDevice(b.dev), "set");
         hc_read(b.mtp_R, b.bo_f, b.inj_f, mc.mix_norm, mc.mix_down, mc.mix_up, nullptr, eps, b.mixed, b.inj_a, b.hcs, b.ring.err, T, b.st, b.xq);
         dense(mc.head, b.xq, b.mtp_logits, b, T);
+        const int nv = mc.dv1 - mc.dv0;
+        for (int i = 0; i < nl; ++i)   // each lane's last row, penalized as draft() does before the argmax
+            if (reqs[(size_t) i].pen)
+                penalize_row(b.mtp_logits + (size_t) (off[(size_t) i] + reqs[(size_t) i].T - 1) * nv, nv, b.mtp_pen_l + (size_t) i * (1 + 2 * PEN_CAP),
+                             b.mtp_pen_par_l + 3 * i, b.st);
         argmax(b.mtp_logits, mc.dv1 - mc.dv0, T, mc.dv0, b.mtp_bv, b.mtp_bi, b.am_keys, b.ring.err, b.st);
+        for (int i = 0; i < nl; ++i)   // and the candidates of the lanes that sample their drafts
+            if (reqs[(size_t) i].cands && nv > 0) {
+                ck(cudaMemsetAsync(b.mtp_tk_err_l + i, 0, 4, b.st), "draft top err");
+                fnx::top_tokens(b.mtp_logits + (size_t) (off[(size_t) i] + reqs[(size_t) i].T - 1) * nv, nv, 1, mc.dv0, b.mtp_zero, b.mtp_zero, b.mtp_zero, 0,
+                                b.mtp_pen_par_l + 3 * i, b.mtp_tk_v_l + (size_t) i * TOPK_N, b.mtp_tk_i_l + (size_t) i * TOPK_N, b.mtp_tk_err_l + i, b.st);
+            }
     }
 }
 

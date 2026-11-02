@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -1519,6 +1520,27 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
     use_lane(was);
     h_.mtp_ctl[0] = 0;
     h_.mtp_ctl[1] = (int) ring_tag();
+    // the penalized tokens of the lanes that penalize their drafts, in each card's slice of the draft vocabulary: {k, indexes, counts}, as draft() lays them out
+    std::vector<std::array<int, NCARD>> pen_k((size_t) nl);
+    for (int i = 0; i < nl; ++i) {
+        pen_k[(size_t) i].fill(0);
+        const Penalties::Row* pen = reqs[(size_t) i].pen;
+        if (!pen) continue;
+        if ((int) pen->counts.size() > PEN_CAP) throw std::runtime_error("draft_lanes: more penalized tokens than " + std::to_string(PEN_CAP));
+        h_.mtp_pen_par_l[3 * i] = pen->repeat, h_.mtp_pen_par_l[3 * i + 1] = pen->freq, h_.mtp_pen_par_l[3 * i + 2] = pen->present;
+        for (int c = 0; c < NCARD; ++c) {
+            const MtpCard& mc = mtp_->cards[c];
+            int* hp = h_.mtp_pen_l + ((size_t) i * NCARD + c) * (1 + 2 * PEN_CAP);
+            int k = 0;
+            for (const auto& [tok, cnt] : pen->counts) {
+                const int di = tok >= 0 && tok < (int) draft_index_.size() ? draft_index_[(size_t) tok] : -1;
+                if (di >= mc.dv0 && di < mc.dv1) hp[1 + k] = di - mc.dv0, hp[1 + PEN_CAP + k] = cnt, ++k;
+            }
+            std::memmove(hp + 1 + k, hp + 1 + PEN_CAP, (size_t) k * 4);   // counts right after the indexes
+            hp[0] = pen_k[(size_t) i][c] = k;
+        }
+    }
+    last_lane_cands.assign((size_t) nl, {});
     for (int c = 0; c < NCARD; ++c) {
         CardBuf& b = *cb_[c];
         ck(cudaSetDevice(b.dev), "set");
@@ -1541,6 +1563,15 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
         ck(cudaMemcpyAsync(b.mtp_ctl, h_.mtp_ctl, 2 * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft ctl");
         ck(cudaMemcpyAsync(b.mtp_lctl, h_.mtp_lctl, (size_t) 2 * nl * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft lane ctl");
         ck(cudaMemcpyAsync(b.mtp_row_pos, h_.mtp_row_pos, (size_t) T * sizeof(int), cudaMemcpyHostToDevice, b.st), "draft row positions");
+        for (int i = 0; i < nl; ++i)
+            if (reqs[(size_t) i].pen) {
+                ck(cudaMemcpyAsync(b.mtp_pen_l + (size_t) i * (1 + 2 * PEN_CAP), h_.mtp_pen_l + ((size_t) i * NCARD + c) * (1 + 2 * PEN_CAP),
+                                   (size_t) (1 + 2 * pen_k[(size_t) i][c]) * 4, cudaMemcpyHostToDevice, b.st), "draft penalties");
+                ck(cudaMemcpyAsync(b.mtp_pen_par_l + 3 * i, h_.mtp_pen_par_l + 3 * i, 3 * 4, cudaMemcpyHostToDevice, b.st), "draft penalties");
+            } else if (reqs[(size_t) i].cands) {
+                h_.mtp_pen_par_l[3 * i] = 1.f, h_.mtp_pen_par_l[3 * i + 1] = 0.f, h_.mtp_pen_par_l[3 * i + 2] = 0.f;
+                ck(cudaMemcpyAsync(b.mtp_pen_par_l + 3 * i, h_.mtp_pen_par_l + 3 * i, 3 * 4, cudaMemcpyHostToDevice, b.st), "draft penalties");
+            }
         ck(cudaEventRecord(b.ev0, b.st), "event");
     }
     mtp_enqueue_lanes(reqs, T);
@@ -1551,6 +1582,14 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
         ck(cudaMemcpyAsync(h_.bv + (size_t) c * MAXT, b.mtp_bv, (size_t) T * 4, cudaMemcpyDeviceToHost, b.st), "draft v");
         ck(cudaMemcpyAsync(h_.bi + (size_t) c * MAXT, b.mtp_bi, (size_t) T * 4, cudaMemcpyDeviceToHost, b.st), "draft i");
         ck(cudaMemcpyAsync(&h_.err[c], err_word(b), 4, cudaMemcpyDeviceToHost, b.st), "window err");
+        const MtpCard& mc = mtp_->cards[c];
+        for (int i = 0; i < nl; ++i)
+            if (reqs[(size_t) i].cands && mc.dv1 > mc.dv0) {
+                const size_t at = (size_t) i * NCARD + c;
+                ck(cudaMemcpyAsync(h_.mtp_tk_v_l + at * TOPK_N, b.mtp_tk_v_l + (size_t) i * TOPK_N, TOPK_N * 4, cudaMemcpyDeviceToHost, b.st), "draft top v");
+                ck(cudaMemcpyAsync(h_.mtp_tk_i_l + at * TOPK_N, b.mtp_tk_i_l + (size_t) i * TOPK_N, TOPK_N * 4, cudaMemcpyDeviceToHost, b.st), "draft top i");
+                ck(cudaMemcpyAsync(h_.mtp_tk_err_l + at, b.mtp_tk_err_l + i, 4, cudaMemcpyDeviceToHost, b.st), "draft top err");
+            }
     }
     unsigned err = 0;
     float gpu_ms = 0.f;
@@ -1564,6 +1603,20 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
     }
     last_draft_gpu_ms = gpu_ms;
     if (const char* e = window_error(err, true)) throw std::runtime_error(std::string("draft_lanes: ") + e);
+    for (int i = 0; i < nl; ++i) {
+        if (!reqs[(size_t) i].cands) continue;
+        std::vector<std::pair<float, int>>& cd = last_lane_cands[(size_t) i];
+        for (int c = 0; c < NCARD; ++c) {
+            if (mtp_->cards[c].dv1 <= mtp_->cards[c].dv0) continue;
+            const size_t at = (size_t) i * NCARD + c;
+            if (h_.mtp_tk_err_l[at] & 16u) throw std::runtime_error("draft_lanes: the draft layer's logits hold a NaN or inf");
+            for (int k = 0; k < TOPK_N; ++k) cd.emplace_back(h_.mtp_tk_v_l[at * TOPK_N + k], mtp_->vocab[h_.mtp_tk_i_l[at * TOPK_N + k]]);
+        }
+        std::sort(cd.begin(), cd.end(), [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+            return a.first > b.first || (a.first == b.first && a.second < b.second);
+        });
+        cd.resize(TOPK_N);
+    }
     std::vector<int> out((size_t) nl);
     for (int i = 0; i < nl; ++i) {
         const int row = off[(size_t) i] + reqs[(size_t) i].T - 1;
