@@ -569,6 +569,148 @@ __global__ void k_att_ungroup_gate(const float* att2, const float* gate, float* 
     const size_t o = ((size_t) t * H + kvh * G + g) * HD + d;
     att[o] = att2[i] * sigm(gate[o]);
 }
+// ---- the prompt attention fused on the matrix cores (RDNA3 / RDNA3.5 WMMA, wave32): flash attention
+//
+// Replaces the scores GEMM, the softmax and the values GEMM of a prompt chunk: no T x P score matrix is written, the
+// scores of a 16-cell tile live in registers and go through an online softmax (running max m and sum l per row, the
+// output rescaled by exp2(m_old - m_new) when the max grows).  Rows are the grouped queries of one KV head (row
+// r = t * G + g of q16 [kvh][t][g][HD], query t at cell p0 + t; the causal mask cuts each row at its own cell).
+//
+// Block: 4 waves (128 threads), FA_ROWS = 64 rows; wave w owns rows [16w, 16w + 16) and all 256 dims of their output
+// (16 accumulator fragments).  Per 16-cell tile the block stages K (row-major) and V (transposed: [dim][cell]) in LDS,
+// shared by the 64 rows.  The products are v_wmma_f32_16x16x16_f16 with gfx11's fragment layout (the same layout
+// documented at prompt_attn_wmma_kernel in src/kernels/cuda/qsa_prompt_attn.cu):
+//   A (16 x 16): lane l holds the 16 k of row l % 16 (lanes 16..31 repeat lanes 0..15)
+//   B (16 x 16): lane l holds the 16 k of column l % 16
+//   C / D:       lane l holds D[2i + l / 16][l % 16], i = 0..7
+// so a lane's 8 accumulator rows (2i + l / 16) are the same rows for S and for O, and the per-row state (m, l, the
+// rescale) stays in the lane.  The probabilities P go through LDS once per tile to become an A operand (row-major).
+// Numerics: FP16 operands (as the GEMM path), FP32 scores and accumulation, FP32 online softmax in log2 space; the
+// probabilities are rounded to FP16 relative to the running max instead of the row's final max, so the result is not
+// the GEMM path's bits (KL-checked, see docs/QWEN36.md).
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || \
+    defined(__gfx1151__)
+#define Q36_FA_WMMA 1
+#else
+#define Q36_FA_WMMA 0
+#endif
+typedef _Float16 fa_h16 __attribute__((ext_vector_type(16)));
+typedef float fa_f8 __attribute__((ext_vector_type(8)));
+constexpr int FA_ROWS = 64, FA_CELLS = 16, FA_HD = 256;
+constexpr int FA_LS = FA_HD + 8;           // LDS row stride of Q / K in halves (16-byte aligned rows, banks spread)
+constexpr int FA_VS = FA_CELLS + 8;        // LDS row stride of the transposed V tile
+constexpr int FA_PS = FA_CELLS + 8;        // LDS row stride of a wave's P tile
+
+/// 1 in `out` when this build's device code has the WMMA flash attention for the running GPU.
+__global__ void k_fa_supported(int* out) { *out = Q36_FA_WMMA; }
+
+__device__ __forceinline__ fa_h16 fa_load16(const _Float16* p) {   // 16 halves from 16-byte aligned LDS
+    fa_h16 v;
+    __builtin_memcpy(&v, p, sizeof(v));
+    return v;
+}
+
+/// grid ((T * G + FA_ROWS - 1) / FA_ROWS, HKV), block 128.  q16 [kvh][T * G][HD], k16 / v16 [kvh][P][HD] (FP16), out
+/// att2 [kvh][T * G][HD] (FP32).  scale_log2 = log2(e) / sqrt(HD).
+__global__ void __launch_bounds__(128) k_attn_fa_wmma(const __half* __restrict__ q16, const __half* __restrict__ k16,
+                                                      const __half* __restrict__ v16, float* __restrict__ att2, int T, int G,
+                                                      int P, int p0, float scale_log2) {
+#if Q36_FA_WMMA
+    __shared__ __attribute__((aligned(16))) _Float16 qs[FA_ROWS][FA_LS];
+    __shared__ __attribute__((aligned(16))) _Float16 ks[FA_CELLS][FA_LS];
+    __shared__ __attribute__((aligned(16))) _Float16 vt[FA_HD][FA_VS];
+    __shared__ __attribute__((aligned(16))) _Float16 ps[4][16][FA_PS];
+    const int kvh = blockIdx.y, R = T * G, r0 = blockIdx.x * FA_ROWS;
+    const int tid = threadIdx.x, lane = tid & 31, w = tid >> 5, col = lane & 15, hi = lane >> 4;
+    const _Float16* qg = reinterpret_cast<const _Float16*>(q16) + ((size_t) kvh * R + r0) * FA_HD;
+    const _Float16* kg = reinterpret_cast<const _Float16*>(k16) + (size_t) kvh * P * FA_HD;
+    const _Float16* vg = reinterpret_cast<const _Float16*>(v16) + (size_t) kvh * P * FA_HD;
+    const uint4 zero4 = make_uint4(0, 0, 0, 0);
+    for (int i = tid; i < FA_ROWS * FA_HD / 8; i += 128) {   // the block's queries, 8 halves per load
+        const int r = i / (FA_HD / 8), c8 = (i % (FA_HD / 8)) * 8;
+        *reinterpret_cast<uint4*>(&qs[r][c8]) =
+            r0 + r < R ? *reinterpret_cast<const uint4*>(qg + (size_t) r * FA_HD + c8) : zero4;
+    }
+    // this lane's 8 rows (2i + hi of the wave's 16): their query cell, the online softmax state
+    int lim[8];
+    float m[8], l[8];
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const int r = r0 + 16 * w + 2 * i + hi;
+        lim[i] = r < R ? p0 + r / G : -1;   // the last cell the row sees (-1: a padding row)
+        m[i] = -INFINITY;
+        l[i] = 0.f;
+    }
+    fa_f8 o[16];
+#pragma unroll
+    for (int j = 0; j < 16; ++j) o[j] = fa_f8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+    const int r_last = min(R, r0 + FA_ROWS) - 1;
+    const int c_end = min(P, p0 + r_last / G + 1);   // cells past the block's last row are never seen
+    // (a register prefetch of the next tile's K / V was measured slower here: 11.3 -> 15 s at pp32768, the extra 32
+    // VGPRs beside the 128 of the accumulators)
+    for (int c0 = 0; c0 < c_end; c0 += FA_CELLS) {
+        __syncthreads();   // the previous tile's K / V / P reads are done
+        // neighbouring threads take neighbouring cells: their transposed V writes vt[d][c] are then neighbouring halves
+        // (a thread per cell's dims would put a wave's 32 writes in one LDS bank)
+        for (int i = tid; i < FA_CELLS * FA_HD / 8; i += 128) {
+            const int c = i % FA_CELLS, d8 = (i / FA_CELLS) * 8;
+            const bool in = c0 + c < P;
+            const size_t src = (size_t) (c0 + c) * FA_HD + d8;
+            *reinterpret_cast<uint4*>(&ks[c][d8]) = in ? *reinterpret_cast<const uint4*>(kg + src) : zero4;
+            uint4 v = in ? *reinterpret_cast<const uint4*>(vg + src) : zero4;
+            const _Float16* vh = reinterpret_cast<const _Float16*>(&v);
+#pragma unroll
+            for (int e = 0; e < 8; ++e) vt[d8 + e][c] = vh[e];
+        }
+        __syncthreads();
+        // S = Q K^T: the wave's 16 rows x the tile's 16 cells, k over the 256 dims
+        fa_f8 s = fa_f8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+        for (int kk = 0; kk < FA_HD / 16; ++kk)
+            s = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(fa_load16(&qs[16 * w + col][kk * 16]), fa_load16(&ks[col][kk * 16]), s);
+        // online softmax per row (a row's 16 cells are the 16 lanes of this lane's half: reduce over xor 1, 2, 4, 8)
+        const int cell = c0 + col;
+        float alpha[8];
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const bool ok = cell <= lim[i] && cell < P;
+            const float sv = ok ? s[i] * scale_log2 : -INFINITY;
+            float mx = sv;
+#pragma unroll
+            for (int x = 1; x < 16; x <<= 1) mx = fmaxf(mx, __shfl_xor(mx, x, 32));
+            const float mn = fmaxf(m[i], mx);
+            const bool none = mn == -INFINITY;   // no cell of this row seen yet (a padding row)
+            const float p = ok && !none ? exp2f(sv - mn) : 0.f;
+            float sum = p;
+#pragma unroll
+            for (int x = 1; x < 16; x <<= 1) sum += __shfl_xor(sum, x, 32);
+            alpha[i] = none ? 1.f : exp2f(m[i] - mn);
+            l[i] = l[i] * alpha[i] + sum;
+            m[i] = mn;
+            ps[w][2 * i + hi][col] = (_Float16) p;
+        }
+#pragma unroll
+        for (int j = 0; j < 16; ++j)
+#pragma unroll
+            for (int i = 0; i < 8; ++i) o[j][i] *= alpha[i];
+        __syncthreads();   // P written by the whole wave (the block-wide barrier also covers the wave)
+        // O += P V: A = P (row col's 16 cells), B = V (dim 16j + col's 16 cells, from the transposed tile)
+        const fa_h16 pa = fa_load16(&ps[w][col][0]);
+#pragma unroll
+        for (int j = 0; j < 16; ++j) o[j] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(pa, fa_load16(&vt[16 * j + col][0]), o[j]);
+    }
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const int r = r0 + 16 * w + 2 * i + hi;
+        if (r >= R) continue;
+        const float inv = 1.f / l[i];
+        float* dst = att2 + ((size_t) kvh * R + r) * FA_HD;
+#pragma unroll
+        for (int j = 0; j < 16; ++j) dst[16 * j + col] = o[j][i] * inv;
+    }
+#endif
+}
+
 /// att *= sigmoid(gate) (the attention output gate), n values.
 __global__ void k_gate_mul(float* att, const float* gate, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -1301,6 +1443,9 @@ struct Engine {
     float* att2 = nullptr;   // the grouped prompt attention's output [kvh][t][g][HD]
     // STRATA_Q36_ATT_OLD=1: the prompt attention as G narrow products per KV head (the grouped one is the default)
     bool att_grouped = std::getenv("STRATA_Q36_ATT_OLD") == nullptr;
+    // the grouped prompt attention fused on the matrix cores (k_attn_fa_wmma) where the device code has it (RDNA3 /
+    // RDNA3.5); STRATA_Q36_NO_FA=1 keeps the GEMMs
+    bool att_fa = false;
     size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (16 M floats when the experts' fit is close)
     // the prompt's MMQ experts
     bool use_mmq = false;
@@ -1492,6 +1637,16 @@ struct Engine {
         v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         q16 = dalloc_t<__half>(T * g.n_head * g.head_dim);
         if (att_grouped) att2 = dalloc(T * g.n_head * g.head_dim);
+        if (att_grouped && g.head_dim == FA_HD && std::getenv("STRATA_Q36_NO_FA") == nullptr) {
+            int* d_ok = nullptr;
+            int ok = 0;
+            CK(cudaMalloc((void**) &d_ok, sizeof(int)));
+            k_fa_supported<<<1, 1, 0, st>>>(d_ok);
+            CK(cudaMemcpyAsync(&ok, d_ok, sizeof(int), cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            CK(cudaFree(d_ok));
+            att_fa = ok != 0;
+        }
         use_mmq = MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
         auto mmq_ok = [&](const Layer& L) {
             return MMQ::supported(L.L.gu_type) && MMQ::supported(L.L.d_type) && MMQ::fits(L.L.gu_type, 2 * g.n_ff) &&
@@ -1708,6 +1863,17 @@ struct Engine {
         const auto now = std::chrono::steady_clock::now();
         if (part >= 0) prof_ms[part] += std::chrono::duration<double, std::milli>(now - prof_t).count();
         prof_t = now;
+    }
+    // and a prompt chunk's layers: [0] the GDN mixers, [1] the attention mixers, [2] the MoE blocks (router, experts,
+    // shared expert)
+    double prof_l_ms[3] = {0, 0, 0};
+    std::chrono::steady_clock::time_point prof_l_t;
+    void prof_layer(int part) {
+        if (!prof_on) return;
+        CK(cudaStreamSynchronize(st));
+        const auto now = std::chrono::steady_clock::now();
+        if (part >= 0) prof_l_ms[part] += std::chrono::duration<double, std::milli>(now - prof_l_t).count();
+        prof_l_t = now;
     }
     float* vatt = nullptr;                       // verify scratch of the attention output
     size_t vatt_n = 0;
@@ -2105,7 +2271,12 @@ struct Engine {
                     // (a batch of HKV) of N = nt * G columns instead of G narrow ones; each slice only over the cells its rows see
                     k_q_f16_grouped<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(q, q16, T, H, HKV, HD);
                     prof_tick(0);
-                    for (int t0 = 0; t0 < T; t0 += tq) {
+                    if (att_fa) {
+                        k_attn_fa_wmma<<<dim3((unsigned) ((T * G + FA_ROWS - 1) / FA_ROWS), (unsigned) HKV), 128, 0, st>>>(
+                            q16, k16, v16, att2, T, G, P, (int) p0, 1.4426950408889634f / sqrtf((float) HD));
+                        prof_tick(1);
+                    }
+                    for (int t0 = 0; t0 < T && !att_fa; t0 += tq) {
                         const int nt = std::min(tq, T - t0), N = nt * G, Ps = (int) p0 + t0 + nt;
                         if (cublasGemmStridedBatchedEx(blas, CUBLAS_OP_T, CUBLAS_OP_N, Ps, N, HD, &one, k16, CUDA_R_16F, HD,
                                                        (long long) P * HD, q16 + (size_t) t0 * G * HD, CUDA_R_16F, HD,
@@ -2199,6 +2370,7 @@ struct Engine {
             mm(L.wo, att, y, T);
         }
         add_rms_post(L, T);
+        if (T > kGemmT) prof_layer(L.attn ? 1 : 0);
         // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
         const bool one = T == 1;
         // a decode batch of up to 8 rows takes the router and the shared expert's gate in one product too (rows of 257) when the fused
@@ -2291,8 +2463,10 @@ struct Engine {
         k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
         for (size_t l = 0; l < m->layers.size(); ++l) {
             const bool last = l + 1 == m->layers.size();
+            if (T > kGemmT) prof_layer(-1);
             layer(m->layers[l], l, T, p0, pos0, graph_mode, verify, last ? m->out_norm : m->layers[l + 1].attn_norm,
                   last ? hmain : h);
+            if (T > kGemmT) prof_layer(2);
         }
         if (heads > 0) head_rows(hmain + (size_t) (T - heads) * N, heads, logits, pick);
     }
@@ -4169,7 +4343,10 @@ int strata::qwen35::run(int argc, char** argv) {
             if (E.prof_on) {
                 std::printf("  prompt attention ms: kv/q f16 %.0f, scores GEMM %.0f, softmax %.0f, values GEMM %.0f (of %.0f)\n",
                             E.prof_ms[0], E.prof_ms[1], E.prof_ms[2], E.prof_ms[3], pp_ms);
+                std::printf("  prompt layers ms: GDN mixers %.0f, attention mixers %.0f, MoE blocks %.0f\n", E.prof_l_ms[0],
+                            E.prof_l_ms[1], E.prof_l_ms[2]);
                 for (double& v : E.prof_ms) v = 0;
+                for (double& v : E.prof_l_ms) v = 0;
             }
             std::fflush(stdout);
         }

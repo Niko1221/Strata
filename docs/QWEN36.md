@@ -137,7 +137,9 @@ Four changes aimed at agents: long prompts (30K+ tokens) and sampling at a tempe
 | GQA decode attention (`k_attn_part_gqa<G>`) | One block per KV head and 256-cell chunk computes the G = 8 query heads that share it, so each K / V cell is read once instead of once per head. K is staged in LDS tiles and loaded coalesced (a thread no longer walks its own 1 KB row 4 bytes at a time). The rows of a verify window or batch on the same chunk are neighbours in the launch order, so they find its cells in the cache. | Bit for bit: each head still sums its cell over the dims in `k_attn_part`'s order (`STRATA_Q36_VERIFY=1` compares). | `STRATA_Q36_OLD_KERNELS=1` |
 | Grouped prompt attention | The G query heads of a KV head become one GEMM per KV head (columns (t, g) of `q16` laid out as `[kvh][t][g][HD]`, N = nt * G) instead of G narrow ones, and each slice of queries only covers the cells its rows can see (causal: `p0 + t0 + nt`, not the whole chunk). `k_att_ungroup_gate` puts the output back in head order with the gate applied. | Bit for bit on the checked prompt: 1,229-token real-text prompt in 256-cell chunks, 32 teacher-forced steps, KL 0, every logit equal. | `STRATA_Q36_ATT_OLD=1` |
 | MTP drafts for sampled requests | A request with a temperature (or penalties) now runs speculative steps too. A draft is kept with the probability p(draft) of the distribution the plain sampler draws from (temperature, top-k, top-p, min-p, penalties), else the token is drawn from that distribution without the draft (`sample_spec`). With a one-token draft this is the standard speculative-sampling rule, so the tokens have exactly the plain sampler's distribution. The verify window's logits come to the host per row (`Engine::Judge`). | Distribution-exact, not token-exact: the random stream is used differently than one token at a time. | `STRATA_Q36_NO_SPEC_SAMPLE=1` |
-| Prompt attention probe | `STRATA_Q36_PROF=1` times the prompt attention's parts (FP16 conversion, scores GEMM, softmax, values GEMM) on the host, with a stream sync at each tick, and `--bench-pp` prints them. | Probe only: the syncs slow the prompt a little. | - |
+| Flash prompt attention on the matrix cores (`k_attn_fa_wmma`) | On RDNA3 / RDNA3.5 (gfx110x, gfx115x) the grouped prompt attention runs as one fused kernel instead of scores GEMM, softmax and values GEMM: 64 grouped query rows per block (4 waves of 16 rows, each holding all 256 output dims), 16-cell K / V tiles in LDS (V transposed), `v_wmma_f32_16x16x16_f16` for Q K^T and P V, an online softmax in log2 space per row. No T x P score matrix is written. The kernel's comment documents the fragment layout. The device code reports whether it was built for the running GPU (`k_fa_supported`); elsewhere the grouped GEMMs run. | FP16 operands, FP32 accumulation: not the GEMM path's bits. KL against the old path (no table, GEMMs, old attention) on the 1,229-token prompt: 2.2e-6 mean in 256-cell chunks, 1.2e-6 in one chunk, top-1 32 of 32. | `STRATA_Q36_NO_FA=1` |
+| hipBLASLt table rows for this model | The prompt projections (`prefill::Gemm::native`) found no row for Qwen3.6's shapes (hidden 2048: N x K = 8192 x 2048, 4096 x 2048, 2048 x 4096, 512 x 2048, 2048 x 512) in `tools/hip/gfx1151-hipblaslt-100500.txt` and every one fell back to hipBLAS (`STRATA_HIPBLASLT_VERBOSE=1`: `launches=0 fallbacks=1250`). 35 rows (T = 16 .. 4096) calibrated with `tune_hipblaslt` on the 8060S; the tuner measured up to 5.6x the hipBLAS time. | hipBLASLt's own check (relative L2 under 1e-4), and in the KL row above. | `STRATA_HIPBLASLT_TABLE=off` |
+| Prompt probe | `STRATA_Q36_PROF=1` times the prompt attention's parts (FP16 conversion, scores GEMM or the fused kernel, softmax, values GEMM) and the layers by type (GDN mixers, attention mixers, MoE blocks) on the host, with a stream sync at each tick; `--bench-pp` prints them. | Probe only: the syncs slow the prompt a little. | - |
 
 > **Measured on:** Ryzen AI MAX+ PRO 395 (Radeon 8060S, HIP gfx1151, Windows 11, ROCm 10.2.0a20260930), UD-Q4_K_XL,
 > every expert in VRAM, context 131,072, chunk 4096, through the server; 300 new tokens at temperature 0.6.
@@ -148,10 +150,17 @@ Four changes aimed at agents: long prompts (30K+ tokens) and sampling at a tempe
 | Decode after a ~36K prompt | 11.4 to 12.5 | 27.1 | 33.2 (175 of 248) |
 | Decode after a 36-token prompt | | | 68.0 (131 of 176) |
 
-`--bench-pp 32768` with `STRATA_Q36_PROF=1` (3 repetitions, medians): the prompt read 360 tok/s before and 389 after the
-grouped prompt attention. Of the ~84 s, the scores and values GEMMs take ~15 s each and the softmax ~5 s; hipBLAS
-reaches about 3 TFLOPS on these shapes on gfx1151, which is what a fused (flash) prompt attention on the matrix cores
-would remove.
+`--bench-pp 32768` with `STRATA_Q36_PROF=1` (3 repetitions, medians; the probe's syncs included):
+
+| Step | Prompt read | Where the time went |
+| --- | ---: | --- |
+| Before | 360 tok/s | attention GEMMs ~36 s and softmax ~5 s of ~91 s (hipBLAS ~3 TFLOPS on these shapes) |
+| Grouped prompt attention | 389 | the same GEMMs, wider and causal-trimmed |
+| Flash prompt attention | 517 | attention 11.3 s; then GDN mixers 30 s, attention mixers 19 s, MoE 15 s of 64 s |
+| + hipBLASLt rows | 938 | GDN mixers 8.9 s, attention mixers 13 s (11.3 s of it the fused attention), MoE 13 s of 35 s |
+
+A register prefetch of the next K / V tile in the fused kernel was slower (11.3 -> 15 s: 32 more VGPRs beside the 128 of
+the accumulators) and is not used.
 
 ## Limits
 
