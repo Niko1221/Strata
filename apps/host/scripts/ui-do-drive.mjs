@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Drives the built app in a headless Chrome against a real host with a clean temporary profile (no engine, no model), for the 0.2.9.1
+ * Drives the built app in a headless Chrome against a real host with a clean temporary profile (no engine, no model), for the 0.2.10
  * interface changes (branch f-0291-ui). Each case seeds the chat history it needs into the page's local storage, so the real screens
  * draw real data without a model.
  *

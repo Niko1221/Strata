@@ -226,7 +226,7 @@ class ReadOnlyGgufDir(unittest.TestCase):
 
 
 class ReadOnlyModelFolderMark(unittest.TestCase):
-    """0.2.9.1: a model folder Strata cannot write to (a read-only disk) keeps its finish marks under Strata's own folder, so the
+    """0.2.10: a model folder Strata cannot write to (a read-only disk) keeps its finish marks under Strata's own folder, so the
     SHA-256 of the 110 GB Engram is not computed again on every launch."""
 
     def test_the_mark_is_kept_elsewhere_and_the_hash_is_not_repeated(self):
@@ -261,7 +261,7 @@ class ReadOnlyModelFolderMark(unittest.TestCase):
 
 
 class OfflineStart(unittest.TestCase):
-    """0.2.9.1: a PC with every file and no internet starts a model that is already prepared."""
+    """0.2.10: a PC with every file and no internet starts a model that is already prepared."""
 
     def test_the_llama_cpp_source_is_not_fetched_until_a_model_is_prepared(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -686,7 +686,7 @@ class CudaVision(unittest.TestCase):
 
 
 class ProxyHint(unittest.TestCase):
-    """0.2.9.1: a download that cannot reach its server says what to do behind a proxy."""
+    """0.2.10: a download that cannot reach its server says what to do behind a proxy."""
 
     def test_the_hint_names_the_variable_and_notices_one_already_set(self):
         names = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")

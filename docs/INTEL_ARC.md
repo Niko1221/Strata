@@ -34,7 +34,7 @@ On Linux, `strata update` (Terminal) and Settings > Update (app) download the In
 whose graphics card is made by Intel. One package serves Alchemist and Battlemage: the GPU code is compiled from SPIR-V at the
 first start, because the A-series cards have no FP64 units. The package carries oneAPI's runtime libraries. The Level Zero
 loader and the compute runtime stay the PC's own (see [What you need](#what-you-need)), and your user must be in the `render`
-group (`strata doctor` says so). It was tested on an Arc A750 and, in 0.2.9.1, on two Arc Pro B65 cards. The package is built by
+group (`strata doctor` says so). It was tested on an Arc A750 and, in 0.2.10, on two Arc Pro B65 cards. The package is built by
 `packaging/build_sycl_linux.sh`.
 
 The source and container workflow ([INTEL.md](INTEL.md#setup)) still exists for building the engine yourself; the Terminal does not need it.

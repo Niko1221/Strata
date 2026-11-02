@@ -1,4 +1,4 @@
-"""0.2.9.1: for an Intel Arc card Strata builds the pack itself (setup.py --prepare-pack)."""
+"""0.2.10: for an Intel Arc card Strata builds the pack itself (setup.py --prepare-pack)."""
 
 from __future__ import annotations
 

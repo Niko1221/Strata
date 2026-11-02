@@ -62,14 +62,14 @@ bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows,
 /// bits (KL-gated, notes-153-igpu.md); every switch keeps =0 as its off switch and STRATA_IGPU_DEFAULTS=0 turns the set off.
 std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated);
 
-/// 0.2.9.1 (STRIX-2Q): the exact parallel-request stack (checkpoint pool, device slot copies, one-launch slot windows) for a Windows
+/// 0.2.10 (STRIX-2Q): the exact parallel-request stack (checkpoint pool, device slot copies, one-launch slot windows) for a Windows
 /// Strix Halo (gfx1151) that runs batch slots (`--batch` / `--slots` of 2 or more).  Interleaved on the strix box (serve/server.py,
 /// 4 clients, 3 rounds, IQ3_S): 51.7 / 50.7 tok/s without, 55.1 / 54.9 with, TTFT p50 2.55 -> 2.45 s, max chunk gap p95 1.36 -> 1.27 s,
 /// no errors.  Every switch is bit-exact against the plain slots (QUAL-PAR on the Linux CUDA stack).  Not STRATA_BATCH_CONCURRENT_READ.
 /// Empty for every other architecture / platform, below 2 slots, and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
 std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots);
 
-/// 0.2.9.1 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
+/// 0.2.10 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
 /// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
 /// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread
 /// removed it (see STRIX-2Q-RESULTS.md).  The value is STRATA_VERIFY_ASYNC_LAUNCH=1 (same switch as the CUDA instrumented-launch path).

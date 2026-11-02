@@ -1,5 +1,5 @@
 /**
- * 0.2.9.1: the agent's system prompt says which computer it is on, so a model on Windows does not spend its first steps on
+ * 0.2.10: the agent's system prompt says which computer it is on, so a model on Windows does not spend its first steps on
  * `ls`, `uname` and `wc`. Pure test of the preset; the check with a real model on Windows needs the owner's OK.
  */
 import test from 'node:test';

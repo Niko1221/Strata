@@ -36,7 +36,7 @@ import gh_ru from '../locales/gh-ru.json';
 import gh_pt from '../locales/gh-pt.json';
 import gh_ko from '../locales/gh-ko.json';
 import gh_fr from '../locales/gh-fr.json';
-/* The strings of the 0.2.9.1 interface changes (ui-<lang>.json, scripts/make-ui-locales.py). */
+/* The strings of the 0.2.10 interface changes (ui-<lang>.json, scripts/make-ui-locales.py). */
 import ui_en from '../locales/ui-en.json';
 import ui_zh from '../locales/ui-zh.json';
 import ui_ja from '../locales/ui-ja.json';

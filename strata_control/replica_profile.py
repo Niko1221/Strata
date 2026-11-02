@@ -120,7 +120,7 @@ def apply(cards: list[dict], cfg: dict, ram_gb: float, *, parallel_given: bool =
         if key not in environ:                              # an environment variable of the person's own wins
             env.setdefault(key, val)
     cfg["env"] = env
-    # 0.2.9.1 (QUAL-PAR): with the expert cache on auto each engine fills its card and keeps ~300 MiB; a 14K-token read with the draft head
+    # 0.2.10 (QUAL-PAR): with the expert cache on auto each engine fills its card and keeps ~300 MiB; a 14K-token read with the draft head
     # then ran out of memory in the prompt capture and the engine died.  2.5 GB kept free (2,111 MiB left on a 48 GB card) ran
     # the 61-task suite and 48 minutes of soak with no error.  A reserve the person gave wins.
     if "--vram-reserve-mib" not in {str(x) for x in cfg.get("args") or []}:

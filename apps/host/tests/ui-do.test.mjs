@@ -1,4 +1,4 @@
-// The 0.2.9.1 interface changes (branch f-0291-ui): one section per issue. Source-level checks for what only a browser can show are
+// The 0.2.10 interface changes (branch f-0291-ui): one section per issue. Source-level checks for what only a browser can show are
 // backed by scripts/ui-do-drive.mjs, which drives the built app.
 import test from 'node:test';
 import assert from 'node:assert/strict';

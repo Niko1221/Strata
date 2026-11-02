@@ -1,4 +1,4 @@
-"""0.2.9.1: UD-Q4_K_XL on a Strix Halo is warned about (warn only). Remove with the stall fix."""
+"""0.2.10: UD-Q4_K_XL on a Strix Halo is warned about (warn only). Remove with the stall fix."""
 
 from __future__ import annotations
 

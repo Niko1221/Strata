@@ -1,4 +1,4 @@
-"""0.2.9.1: a PC with cards of more than one make chooses the engine with `strata launch --backend` (kept in the settings file), is told that the
+"""0.2.10: a PC with cards of more than one make chooses the engine with `strata launch --backend` (kept in the settings file), is told that the
 other cards exist, and a person who chose is never refused."""
 
 from __future__ import annotations

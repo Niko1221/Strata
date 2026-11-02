@@ -30,7 +30,7 @@ static void put(const char* k, const char* v) {
 int main() {
     using namespace strata::core;
     unset("STRATA_GFX1151_DEFAULTS");
-    // 0.2.9.1: the parallel-request stack, Windows gfx1151 with 2 or more batch slots only
+    // 0.2.10: the parallel-request stack, Windows gfx1151 with 2 or more batch slots only
     unset("STRATA_GFX1151_DEFAULTS");
     CHECK(parallel_default_env("gfx1151", true, 4).size() == 9);
     CHECK(parallel_default_env("gfx1151:sramecc-:xnack-", true, 2).size() == 9);
@@ -43,7 +43,7 @@ int main() {
     CHECK(parallel_default_env("gfx1151", true, 4).empty());
     unset("STRATA_GFX1151_DEFAULTS");
     for (const auto& kv : parallel_default_env("gfx1151", true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
-    // 0.2.9.1 (STRIX-TDR): the helper-thread launch, Windows gfx1151 only
+    // 0.2.10 (STRIX-TDR): the helper-thread launch, Windows gfx1151 only
     unset("STRATA_GFX1151_DEFAULTS");
     CHECK(launch_default_env("gfx1151", true).size() == 1 && launch_default_env("gfx1151", true)[0].first == "STRATA_VERIFY_ASYNC_LAUNCH");
     CHECK(launch_default_env("gfx1151:sramecc-:xnack-", true).size() == 1);

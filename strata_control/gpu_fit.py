@@ -86,7 +86,7 @@ def _short_name(c: dict, vendor: str) -> str:
     return f"{VENDOR_NAME.get(vendor, vendor.title())} {n}".strip()
 
 
-# ---- UD-Q4_K_XL on a Strix Halo (0.2.9.1) ------------------------------------------------------------------------------------------------
+# ---- UD-Q4_K_XL on a Strix Halo (0.2.10) ------------------------------------------------------------------------------------------------
 # REMOVE this block, its three callers (setup.py "size:", strata_cli/launch/cmd.py apply_defaults, tests/terminal/test_strix_q4_note.py) when the
 # stall is fixed in the engine (STRIX-2Q). The numbers are the 0.2.9 release notes'.
 STRIX_Q4_MODEL = "UD-Q4_K_XL"
