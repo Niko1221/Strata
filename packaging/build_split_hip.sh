@@ -1,11 +1,11 @@
 #!/bin/bash
 # strata-split-4 (the all-cards split engine, src/split, from sFNX, MIT, John Fink) for AMD RDNA4 (gfx1201: Radeon AI PRO R9700, RX 9070) on Linux, built next to the HIP
 # engine package (packaging/build_hip_linux.sh, VARIANT=rx9070) so package_engine.py ships it with `--include 'strata-split-*'` beside `strata`. One executable per card
-# count, named strata-split-<N>-gfx1201 (the launcher, strata_cli/launch/runner.py, looks for exactly that name on AMD). Four cards is the only count that has been run
-# (4 x R9700 hold UD-Q4_K_XL's experts; two do not). RUNPATH $ORIGIN: it finds the ROCm libraries the engine package bundles (libamdhip64, hipblas, rocblas and its
+# count, named strata-split-<N>-gfx1201 (the launcher, strata_cli/launch/runner.py, looks for exactly that name on AMD): the AMD Linux package ships N = 2, 3 and 4. Which counts
+# run which model is the launcher's rule (strata_control/split_engine.py: all the experts must fit in the cards' memory), not the binary's. RUNPATH $ORIGIN: it finds the ROCm libraries the engine package bundles (libamdhip64, hipblas, rocblas and its
 # Tensile data for gfx1201) beside itself, the same set `strata` uses.
 #
-#   SRC=<checkout> B=<build dir> HP=<ROCm devel root> [LIBW=<ROCm libraries root>] GG=<llama.cpp checkout at the pinned commit> [CARDS="4"] [JOBS=12]  packaging/build_split_hip.sh
+#   SRC=<checkout> B=<build dir> HP=<ROCm devel root> [LIBW=<ROCm libraries root>] GG=<llama.cpp checkout at the pinned commit> [CARDS="2 3 4"] [JOBS=12]  packaging/build_split_hip.sh
 #
 # After the build the script FAILS if the binary
 #   - links librccl (RCCL is loaded at run time with dlopen when FNX_PF_RCCL=1 and is optional: the split must start without it),
@@ -18,7 +18,7 @@ B=${B:?B=<build dir>}
 HP=${HP:?HP=<ROCm devel root>}
 LIBW=${LIBW:-$HP}
 GG=${GG:?GG=<llama.cpp checkout at the pinned commit>}
-CARDS=${CARDS:-4}
+CARDS=${CARDS:-2 3 4}
 JOBS=${JOBS:-12}
 ARCH=gfx1201
 export HIP_PLATFORM=amd HIP_COMPILER=clang HIP_RUNTIME=rocclr ROCM_PATH=$HP HIP_PATH=$HP PATH=$HP/bin:$PATH
