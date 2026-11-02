@@ -182,5 +182,51 @@ class SmallPacks(unittest.TestCase):
         self.assertNotIn("convert_selector", (ROOT / "strata_cli" / "launch" / "plan.py").read_text(encoding="utf-8") if (ROOT / "strata_cli" / "launch" / "plan.py").exists() else "")
 
 
+class TheTrueGraphicsMemory(unittest.TestCase):
+    """drafting.vram_gb: 0.72 GB with the converted pack (an engine that reads it), 0.89 GB otherwise; the plan and its text say the same number."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.new = self.dir / "new-engine"
+        self.new.write_bytes(b"\0" * 64 + drafting._MARK_SELQ4 + b"\0" * 64)
+        self.old = self.dir / "old-engine"
+        self.old.write_bytes(b"\0" * 256)
+        self.data = self.dir / "data"
+        (self.data / drafting.FOLDER).mkdir(parents=True)
+
+    def pack(self, name):
+        (self.data / drafting.FOLDER / name).write_bytes(b"x" * ((1 << 20) + 1))
+
+    def test_the_table(self):
+        self.assertEqual((drafting.DRAFTER_MIB["dflash2"], drafting.DRAFTER_MIB["dflash2_selq4"], drafting.DRAFTER_MIB["mtp"]), (890, 715, 1082))
+        self.assertEqual((drafting.DRAFTER_GB["dflash2"], drafting.DRAFTER_GB["dflash2_selq4"], drafting.DRAFTER_GB["mtp"], drafting.DRAFTER_GB["off"]), (0.89, 0.72, 1.08, 0.0))
+        self.assertEqual(drafting.VRAM_GB, 0.89, "the bf16-selector figure stays the module constant")
+
+    def test_the_figure_follows_the_engine_and_the_pack(self):
+        self.pack(drafting.PACK_NAME)
+        self.assertEqual(drafting.vram_gb(self.data, self.new), 0.72)
+        self.assertEqual(drafting.vram_gb(self.data, self.old), 0.89, "an engine without the text keeps the bf16 selector")
+        self.assertEqual(drafting.vram_gb(self.data, None), 0.89, "an engine that is not known: the larger figure")
+        self.assertEqual(drafting.vram_gb(None, self.new), 0.72, "no data folder yet: the pack will be the Q4_0 one")
+
+    def test_a_q8_pack_of_an_earlier_strata_is_never_converted_so_the_figure_stays(self):
+        self.pack(drafting.LEGACY_PACK_NAME)
+        self.assertEqual(drafting.vram_gb(self.data, self.new), 0.89)
+        self.pack(drafting.PACK_NAME)                                        # the Q4_0 pack beside it wins (pack_path): the converted figure
+        self.assertEqual(drafting.vram_gb(self.data, self.new), 0.72)
+
+    def test_the_plan_says_the_same_number_in_words_and_in_the_fields(self):
+        plan = drafting_fetch.plan(self.data, self.new)
+        self.assertEqual((plan["vram_gb"], plan["selq4"]), (0.72, True))
+        self.assertIn("about 0.7 GB of graphics memory", plan["text"])
+        plan = drafting_fetch.plan(self.data, self.old)
+        self.assertEqual((plan["vram_gb"], plan["selq4"]), (0.89, False))
+        self.assertIn("about 0.9 GB of graphics memory", plan["text"])
+        plan = drafting_fetch.plan(self.data)
+        self.assertEqual((plan["vram_gb"], plan["selq4"]), (0.89, False))
+
+
 if __name__ == "__main__":
     unittest.main()

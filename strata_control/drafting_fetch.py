@@ -29,17 +29,18 @@ class DraftingError(RuntimeError):
     """The drafter could not be fetched or packed. The message is plain words and says what to do."""
 
 
-def plan(data_dir: str | Path) -> dict:
-    """What fetching would do, in numbers and words. ``gb`` is 0 when the drafter is already here."""
+def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None) -> dict:
+    """What fetching would do, in numbers and words. ``gb`` is 0 when the drafter is already here. ``engine``: the installed engine program (None: not known); ``vram_gb`` is
+    the graphics memory DFlash2 alone takes on this computer (0.72 with the Q4_0 selector, which the engine reads and setup makes, else 0.89) and ``selq4`` says which."""
     ready = drafting.pack_ready(data_dir)
     gb = 0.0 if ready else drafting.DOWNLOAD_GB
     if ready:
         text = "The DFlash2 drafter is already on this computer."
     else:
         text = (f"The DFlash2 drafter is {drafting.DOWNLOAD_GB:.1f} GB to download (it is packed to {drafting.PACK_GB:.2f} GB for the engine and the "
-                f"download is removed), from {drafting.REPO}, {drafting.LICENSE}. It needs about {drafting.VRAM_GB:.1f} GB of graphics memory, "
+                f"download is removed), from {drafting.REPO}, {drafting.LICENSE}. It needs about {drafting.vram_gb(data_dir, engine):.1f} GB of graphics memory, "
                 "less than the MTP's layer, which is not loaded beside it.")
-    return {"ready": ready, "gb": gb, "pack": str(drafting.pack_path(data_dir)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
+    return {"ready": ready, "gb": gb, "vram_gb": drafting.vram_gb(data_dir, engine), "selq4": drafting.uses_selector_q4(data_dir, engine), "pack": str(drafting.pack_path(data_dir)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
 
 
 def _packer():

@@ -51,6 +51,8 @@ export const FIRST_CARD_OTHER_GB = 6.9;
 export const MTP_VRAM_GB = 1.08;
 /** Graphics memory of DFlash2 alone, with the MTP layer not loaded beside it (RESULTS-DF2MEM.md: 890 MiB; the MTP layer 1082 MiB). Fit, plan and slot estimates use the drafter that is chosen. */
 export const DFLASH2_VRAM_GB = 0.89;
+/** The same with the converted pack (the selector's codebooks as Q4_0 rows, 715 MiB; strata_control/drafting.py DRAFTER_MIB "dflash2_selq4"): `capabilities.dflash2Selq4` says it is the one in use. */
+export const DFLASH2_SELQ4_VRAM_GB = 0.72;
 export const NEXT_CARD_OTHER_GB = 2.0;
 /**
  * `--batch-mtp` lets each slot verify draft tokens. Where it pays and where it does not (all measured):

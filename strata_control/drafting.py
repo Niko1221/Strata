@@ -42,8 +42,11 @@ DFLASH2_BACKENDS = ("cuda", "hip", "metal", "sycl")
 
 #: Graphics memory each drafter takes on Qwen3.8-Flash-Next IQ3_S (GB; phaseA-tests/blackwell/RESULTS-DF2MEM.md section 1, l620, engine free memory at
 #: the first graph capture): DFlash2 alone 890 MiB, the MTP layer 1082 MiB. The fit, the plan and the slot estimates use the one that is chosen.
-DRAFTER_MIB = {"dflash2": 890, "mtp": 1082, "off": 0}
-DRAFTER_GB = {name: round(mib / 1000, 2) for name, mib in DRAFTER_MIB.items()}      # 0.89 and 1.08, the figures the apps show
+#: `dflash2_selq4` is DFlash2 alone with the converted pack (the selector's codebooks as Q4_0 rows, 175 MiB less: the engine's drafter line 800 -> 625 MiB, section 16):
+#: 715 MiB. vram_gb() says which of the two is the true figure on this computer. The apps keep copies of these numbers (apps/host/server/native-parallel.mjs and
+#: apps/host/src/lib/native-fit.ts); apps/host/tests/drafting.test.mjs reads this table and fails when they differ.
+DRAFTER_MIB = {"dflash2": 890, "dflash2_selq4": 715, "mtp": 1082, "off": 0}
+DRAFTER_GB = {name: int(mib / 10 + 0.5) / 100 for name, mib in DRAFTER_MIB.items()}      # 0.89, 0.72, 1.08, the figures the apps show (mib rounded half up to 10 MiB)
 
 #: GPU architecture (what nvidia-smi's compute capability and the kernel driver report) -> card class
 ARCH_CLASS = (
@@ -209,7 +212,7 @@ CONVERTED_BYTES = 339694592
 CONVERTED_SHA256 = "4a42b98220ea7880664002c8edda1563aecbae754b762a2e2f31b2b91ee93ecd"
 _MARK_SELQ4 = b"selector codebooks: Q4_0 rows"      # text of an engine that reads such a pack (src/core/dflash2.cpp)
 LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9 test builds packed: still used when it is the one on disk
-VRAM_GB = DRAFTER_GB["dflash2"]   # graphics memory with the MTP layer not loaded: 890 MiB (RESULTS-DF2MEM.md); the engine reports "drafter 799 MiB" for the pack and buffers alone
+VRAM_GB = DRAFTER_GB["dflash2"]   # graphics memory with the MTP layer not loaded and the bf16-selector pack: 890 MiB (RESULTS-DF2MEM.md); vram_gb() has the true figure for this computer
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
 SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
 MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
@@ -332,6 +335,35 @@ def engine_reads_selector_q4(exe: str | os.PathLike[str] | None) -> bool:
         except (OSError, ValueError):
             _selq4[key] = False
     return _selq4[key]
+
+
+def uses_selector_q4(data_dir: str | Path | None, engine: str | os.PathLike[str] | None = None) -> bool:
+    """Is this computer's DFlash2 start the one with the Q4_0 selector (the converted pack, 175 MiB less)? True when the installed engine reads such a pack and the drafter is
+    (or will be, at setup / Load) the Q4_0 pack it is made from; a Q8 pack an earlier Strata made is never converted. An engine that is not known: False (the larger figure)."""
+    if not engine or not engine_reads_selector_q4(engine):
+        return False
+    if data_dir and not _here(Path(data_dir) / FOLDER / PACK_NAME) and _here(Path(data_dir) / FOLDER / LEGACY_PACK_NAME):
+        return False
+    return True
+
+
+def vram_gb(data_dir: str | Path | None = None, engine: str | os.PathLike[str] | None = None) -> float:
+    """Graphics memory of DFlash2 alone on this computer, in GB: DRAFTER_GB["dflash2_selq4"] (0.72) with the converted pack, DRAFTER_GB["dflash2"] (0.89) otherwise. The fit,
+    the plan text and the slot estimates say this number."""
+    return DRAFTER_GB["dflash2_selq4" if uses_selector_q4(data_dir, engine) else "dflash2"]
+
+
+def installed_engine_exe() -> Path | None:
+    """The engine program of the newest installed engine component for this computer's backend (None: not found). A quick folder scan, nothing is hashed or started."""
+    try:
+        from strata_control import engine_component as ec
+        found, _ = ec.scan(None)
+        backend = (detect_hardware()[0] or "").lower()
+        best = [c for c in found if not backend or str(c.backend).split(":")[0].lower() == backend] or list(found)
+        best.sort(key=lambda c: ec._version_key(c.version), reverse=True)
+        return best[0].exe if best and best[0].exe.is_file() else None
+    except Exception:                                    # noqa: BLE001 - informational: an unknown engine means the larger figure
+        return None
 
 
 def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None) -> Path:
