@@ -1347,9 +1347,10 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __rest
     // to the staged buffer (kb - kb0), which is exactly equivalent because kb0 is a multiple of the 8 sub-blocks in a block.
     constexpr int kQKv = kQK<T>;
     constexpr int kSpan = (kQKv == 32 ? 32 : 4) * Ty<T>::B;      // bytes of a warp's 32 sub-blocks
+    constexpr int kSpanU4 = (kSpan + 15) / 16;                   // (Q6_K: 840 B = 53 uint4; Q5_K is 44 - the slot used to be sized for it)
     constexpr bool kCanStage = Ty<T>::TAB == 0;                  // (a codebook table already fills shared for the i-quants)
     const bool staged = (nsb % 32 == 0) && kCanStage;
-    __shared__ uint4 sin4[kCanStage ? (kThreads / 32) * 44 : 1];
+    __shared__ uint4 sin4[kCanStage ? (kThreads / 32) * kSpanU4 : 1];
     const int lane32 = threadIdx.x & 31, wq = threadIdx.x >> 5;
     for (size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (size_t) gridDim.x * blockDim.x) {
         const size_t r = i / (size_t) nsb;
@@ -1361,8 +1362,18 @@ __global__ void __launch_bounds__(kThreads) dq_rows_kernel(const uint8_t* __rest
             const size_t r0 = wbase / (size_t) nsb;
             const int kb0 = (int) (wbase - r0 * (size_t) nsb);
             const uint8_t* srcp = raw + r0 * ld + (size_t) (kb0 * Ty<T>::B) / (kQKv / 32);
-            uint4* st = sin4 + wq * 44;
-            for (int c = lane32; c < kSpan / 16; c += 32) st[c] = ((const uint4*) srcp)[c];
+            uint4* st = sin4 + wq * kSpanU4;
+            for (int c = lane32; c < kSpanU4; c += 32) {
+                const int rem = kSpan - c * 16;
+                if (rem >= 16) st[c] = ((const uint4*) srcp)[c];
+                else {   // (a span that is not a multiple of 16 bytes - Q6_K's 840 - copies its tail rather than reading past the row)
+                    uint4 v = make_uint4(0u, 0u, 0u, 0u);
+                    uint8_t* vb = (uint8_t*) &v;
+                    const uint8_t* sb2 = srcp + c * 16;
+                    for (int t = 0; t < rem; ++t) vb[t] = sb2[t];
+                    st[c] = v;
+                }
+            }
             __threadfence_block();
             __syncwarp();
             decode<T>((const uint8_t*) st, kb - kb0, tab, sb);
