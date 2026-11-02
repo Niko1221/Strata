@@ -186,7 +186,7 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("the model's routed experts use " + "/".join(bad) + ", which it does not read")
     if model.embd_type != "Q8_0":
         why.append(f"the token embeddings are {model.embd_type}, it needs Q8_0")
-    if model.shexp_types and set(model.shexp_types) != {"Q8_0"}:
+    if model.shexp_types and set(model.shexp_types) - {"F32"} != {"Q8_0"}:   # the router gate vector beside them is F32
         why.append("the shared expert is not Q8_0")
     if (model.layers, model.experts) != (LAYERS, EXPERTS):
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
