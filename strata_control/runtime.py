@@ -256,6 +256,8 @@ def _pid_exists(pid: int, started: int | None = None) -> bool:
 
 _MARKER_SLACK = 2.0   # seconds: the child starts before its marker is written; this much of clock rounding is allowed
 
+_CHILD_EXIT_GRACE = 2.0   # seconds a host whose server ended on its own still answers status before it leaves (#4574)
+
 
 def _child_present(child: dict, written: float | None = None) -> bool:
     """Whether the child recorded in an owner marker is still there. A marker without a creation time (Windows could not
@@ -827,6 +829,13 @@ class Host:
         self.probe_key: tuple[int, str] | None = None
         self.probe_result: dict | None = None
         self.rollback_snapshots: set[Path] = set()
+        # #4574: a server that ends on its own must not leave this host behind holding the profile's state and
+        # lease. `_stop_child` marks a stop this host asked for (a restart, a stop, a failed probe); anything
+        # else is ended by the server itself. `child_ended_at` is when that was first seen: a client waiting
+        # for the failure still has that grace to read it before the host leaves.
+        self.child_ended_expected = False
+        self.child_ended_at: float | None = None
+        self.exit_status = 0
 
     def _mark_child(self, phase: str, *, pid: int | None = None, ready: Path | None = None) -> None:
         payload = {"host_token": self.token, "phase": phase}
@@ -896,6 +905,8 @@ class Host:
 
     def _launch(self, args: list[str], source: Path, source_bytes: bytes,
                 revision: str | None) -> None:
+        self.child_ended_expected = False
+        self.child_ended_at = None
         ready = self.state_path.parent / f"{self.name}-{uuid.uuid4().hex}.ready.json"
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         if hasattr(os, "O_NOFOLLOW"):
@@ -1045,6 +1056,7 @@ class Host:
         return {**current, "ok": False, "error": "startup_wait_expired", "exit_code": 8}
 
     def _stop_child(self) -> dict:
+        self.child_ended_expected = True
         child = self.child
         if child is None or child.poll() is not None:
             self._close_owner_pipe()
@@ -1354,6 +1366,24 @@ class Host:
                 if self.probe_result is not None and "error" in self.probe_result and \
                         self.child is not None and self.child.poll() is None:
                     self._stop_child()
+                if self.child is not None and self.child.poll() is not None:
+                    if self.child_ended_expected:
+                        self.child_ended_at = None            # a stop this host asked for: no husk to leave
+                    elif self.child_ended_at is None:
+                        self.child_ended_at = time.monotonic()
+                    elif time.monotonic() - self.child_ended_at >= _CHILD_EXIT_GRACE:
+                        # The server this host supervised ended on its own. Nothing is serving any more, so the
+                        # host must not stay behind holding the profile's private state and lease: every later
+                        # start then refuses with "this profile already has a live managed runtime" until a
+                        # person kills a PID that status does not point at (#4574). The grace above lets a
+                        # client that was waiting for the failure read it once more.
+                        print(f"[strata] profile {self.name}: the server exited on its own "
+                              f"(code {self.child.returncode}); releasing the profile", file=sys.stderr, flush=True)
+                        self.exit_status = 1
+                        self.running = False
+                        break
+                else:
+                    self.child_ended_at = None
                 try:
                     connection = listener.accept()
                 except socket.timeout:
@@ -1412,7 +1442,7 @@ class Host:
                 os.close(self.state_fd)
             _unlock_file(activity_lease)
             os.close(activity_lease)
-        return 0
+        return self.exit_status
 
 
 def main(argv: list[str] | None = None) -> int:

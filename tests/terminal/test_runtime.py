@@ -1010,6 +1010,29 @@ class RuntimeTests(unittest.TestCase):
         if owned is not None:
             self.assertEqual(owned.wait(timeout=3), 0)
 
+    def test_the_host_leaves_when_its_server_child_exits_on_its_own(self):
+        """#4574: the owner host supervised its server not at all. When the server ended, the host stayed in its
+        accept loop with the profile's state and lease, so every later start refused with "this profile already
+        has a live managed runtime" until a person killed a PID that status did not point at.
+
+        `owned.wait()` is the check, not `_pid_exists(host_pid)`: on POSIX a host that has exited is a zombie, and a
+        zombie still answers a signal 0, so asking whether the number is there would call a finished host alive."""
+        started = runtime.start("local", wait=10, shutdown_timeout=2)
+        self.assertTrue(started["ok"])
+        owned = runtime._STARTED_HOSTS.pop("local")          # this process started the host, so it must reap it
+        os.kill(started["child_pid"], signal.SIGTERM)        # the server dies; the host did not ask it to
+        try:
+            code = owned.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.fail("the owner host stays alive as a husk after its server child exits")
+        self.assertEqual(code, 1, "a host whose server ended on its own leaves with a failure status")
+        deadline = time.monotonic() + 5
+        while runtime._read_state("local") is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNone(runtime._read_state("local"), "the host left its private state behind")
+        replacement = runtime.start("local", wait=10, shutdown_timeout=2)
+        self.assertTrue(replacement["ok"])
+
     def test_hard_killed_host_child_exits_and_next_start_recovers_private_state(self):
         started = runtime.start("local", wait=10, shutdown_timeout=2)
         self.assertTrue(started["ok"])
