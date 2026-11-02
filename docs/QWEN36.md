@@ -128,6 +128,31 @@ the new kernels off. Gate/up for Q4_K experts uses the V2K kernels (`STRATA_EXPE
 
 More numbers are in [History](#history--older-measurements).
 
+### Long context and sampled requests
+
+Four changes aimed at agents: long prompts (30K+ tokens) and sampling at a temperature above 0.
+
+| Change | What it does | Exactness | Switch |
+| --- | --- | --- | --- |
+| GQA decode attention (`k_attn_part_gqa<G>`) | One block per KV head and 256-cell chunk computes the G = 8 query heads that share it, so each K / V cell is read once instead of once per head. K is staged in LDS tiles and loaded coalesced (a thread no longer walks its own 1 KB row 4 bytes at a time). The rows of a verify window or batch on the same chunk are neighbours in the launch order, so they find its cells in the cache. | Bit for bit: each head still sums its cell over the dims in `k_attn_part`'s order (`STRATA_Q36_VERIFY=1` compares). | `STRATA_Q36_OLD_KERNELS=1` |
+| Grouped prompt attention | The G query heads of a KV head become one GEMM per KV head (columns (t, g) of `q16` laid out as `[kvh][t][g][HD]`, N = nt * G) instead of G narrow ones, and each slice of queries only covers the cells its rows can see (causal: `p0 + t0 + nt`, not the whole chunk). `k_att_ungroup_gate` puts the output back in head order with the gate applied. | Bit for bit on the checked prompt: 1,229-token real-text prompt in 256-cell chunks, 32 teacher-forced steps, KL 0, every logit equal. | `STRATA_Q36_ATT_OLD=1` |
+| MTP drafts for sampled requests | A request with a temperature (or penalties) now runs speculative steps too. A draft is kept with the probability p(draft) of the distribution the plain sampler draws from (temperature, top-k, top-p, min-p, penalties), else the token is drawn from that distribution without the draft (`sample_spec`). With a one-token draft this is the standard speculative-sampling rule, so the tokens have exactly the plain sampler's distribution. The verify window's logits come to the host per row (`Engine::Judge`). | Distribution-exact, not token-exact: the random stream is used differently than one token at a time. | `STRATA_Q36_NO_SPEC_SAMPLE=1` |
+| Prompt attention probe | `STRATA_Q36_PROF=1` times the prompt attention's parts (FP16 conversion, scores GEMM, softmax, values GEMM) on the host, with a stream sync at each tick, and `--bench-pp` prints them. | Probe only: the syncs slow the prompt a little. | - |
+
+> **Measured on:** Ryzen AI MAX+ PRO 395 (Radeon 8060S, HIP gfx1151, Windows 11, ROCm 10.2.0a20260930), UD-Q4_K_XL,
+> every expert in VRAM, context 131,072, chunk 4096, through the server; 300 new tokens at temperature 0.6.
+
+| | Before | GQA decode | + MTP for sampled requests |
+| --- | ---: | ---: | ---: |
+| Decode after a ~9K prompt | 25 to 31 tok/s | 37.0 | 48.8 (186 of 230 drafts kept) |
+| Decode after a ~36K prompt | 11.4 to 12.5 | 27.1 | 33.2 (175 of 248) |
+| Decode after a 36-token prompt | | | 68.0 (131 of 176) |
+
+`--bench-pp 32768` with `STRATA_Q36_PROF=1` (3 repetitions, medians): the prompt read 360 tok/s before and 389 after the
+grouped prompt attention. Of the ~84 s, the scores and values GEMMs take ~15 s each and the softmax ~5 s; hipBLAS
+reaches about 3 TFLOPS on these shapes on gfx1151, which is what a fused (flash) prompt attention on the matrix cores
+would remove.
+
 ## Limits
 
 - Eight slots at most (the window holds 8 rows). `--batch-mtp` shares those rows between slots and proposals.
