@@ -1181,6 +1181,11 @@ int hc_prepare(float* scratch, int cap) {
     if (sms <= 0) throw std::runtime_error("hc_prepare: card " + std::to_string(dev) + " reports " + std::to_string(sms) + " SMs");
     if (cap < 0 || cap > H_BLOCKS) throw std::runtime_error("hc_prepare: cap 1.." + std::to_string(H_BLOCKS) + " (0: none), got " + std::to_string(cap));
     hc_grid_[dev] = std::min(sms, cap ? cap : H_BLOCKS);
+#if FNX_HIP
+    // FNX_HC_GRID=n (screen): n blocks of the read resident at once instead of one per multiprocessor. An R9700 reports 32 (one per WGP of two CUs), so the 80 blocks of work
+    // ran in 2-3 turns each; several blocks fit one WGP, and a barrier that waits too long sets err bit 4 rather than hang
+    if (const long long g = env_int("FNX_HC_GRID", 0); g > 0) hc_grid_[dev] = (int) std::min<long long>(g, cap ? cap : H_BLOCKS);
+#endif
     // a counter left by another grid sits mid-generation for this one: its next barrier would let blocks through early
     const unsigned zero = 0;
     const cudaError_t z = cudaMemcpy(scratch + hc_scratch_floats(MAXT) - 1, &zero, sizeof zero, cudaMemcpyHostToDevice);
@@ -1569,7 +1574,15 @@ void ring_sum(const Ring& r, float* x, int T, const unsigned* tag, int call, voi
         ck_launch("ring_sum (chunk)");
         return;
     }
-    const int grid = std::max(4, std::min(T > MAXT ? 240 : 40, (T * NP / NCARD + 255) / 256));
+    int grid = std::max(4, std::min(T > MAXT ? 240 : 40, (T * NP / NCARD + 255) / 256));
+#if FNX_HIP
+    // FNX_RING_GRID=n (screen): the one-hop window sum on n blocks of 256 threads instead of at most 40; at 16 rows the 17 blocks left each thread 3-4 elements to push and then wait for
+    // one after the other, a remote round trip each
+    if (T <= MAXT) {
+        static const int g = (int) env_int("FNX_RING_GRID", 0);
+        if (g > 0) grid = std::min(g, (T * NP + 255) / 256);
+    }
+#endif
     if (r.peer && T <= MAXT) {
         k_ring_a2a_push<<<grid, 256, 0, (cudaStream_t) st>>>(r, x, T, tag, call, m);
         ck_launch("ring_sum (one hop, peer push)");
