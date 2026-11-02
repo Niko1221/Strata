@@ -299,6 +299,39 @@ class Apply(unittest.TestCase):
             cfg["args"].extend(["--kv", "int8"])
             self.assertTrue(self.run_apply(cfg).use_split)
 
+    def test_drafting_auto_resolves_to_the_split_with_its_mtp_and_the_fallback_keeps_the_layer_split_choice(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for chosen, split in ((None, True), ("auto", True), ("mtp", True), ("dflash2", False), ("off", False)):
+                cfg = self.cfg(tmp)
+                del cfg["split_engine"]
+                if chosen:
+                    cfg["drafting"] = chosen
+                before_fallback = {k: v for k, v in cfg.items() if k == "drafting"}
+                d = self.run_apply(cfg)
+                self.assertEqual(d.use_split, split, chosen)
+                if split:
+                    # Auto/MTP: the split engine runs its MTP; the config says so, so serve/server.py's drafter step (Auto = DFlash2) leaves its arguments alone
+                    self.assertEqual(cfg["drafting"], "mtp", chosen)
+                    self.assertEqual(cfg["split_fallback"].get("drafting"), before_fallback.get("drafting"), chosen)   # the layer split keeps the person's word, or Auto
+                    self.assertNotIn("--draft", cfg["args"])
+                else:
+                    self.assertEqual(cfg.get("drafting"), chosen)                                                       # untouched: the layer split gets DFlash2 as chosen
+                    self.assertNotIn("split_fallback", cfg)
+
+    def test_auto_needs_a_card_where_the_split_decodes_faster_than_the_layer_split_with_dflash2(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            del cfg["split_engine"]
+            d = self.run_apply(cfg, cards_=cards(2, cc=89), allow_untested=True)                # a tester allowed it, but nobody measured it there
+            self.assertFalse(d.use_split)
+            self.assertIn("DFlash2", d.line)
+            cfg["drafting"] = "mtp"                                                              # the person asked for the MTP: no comparison to win
+            self.assertTrue(self.run_apply(cfg, cards_=cards(2, cc=89), allow_untested=True).use_split)
+
     def test_the_engine_is_picked_by_card_count_and_architecture(self):
         import tempfile
 

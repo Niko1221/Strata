@@ -37,6 +37,9 @@ TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston
 TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
                                    # pictures; no suite there)
 MODES = ("auto", "on", "off")
+#: cards (compute capability) on which Auto drafting resolves to split + MTP rather than layer split + DFlash2: the split decodes faster there
+#: (phaseA-tests/sfnx/RESULTS.md section 17). Another card is not auto-split at all (TESTED_ARCHS), so it keeps Auto = layer split + DFlash2.
+AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -223,6 +226,11 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
     cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
     cfg["split_fallback"] = {k: base[k] for k in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting", "cwd") if k in base}
+    # The split engine runs the model's own draft layer (the MTP) and nothing else. Saying so in the config ("drafting": "mtp") keeps serve/server.py's
+    # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them
+    # and every start would fall back to the layer split). The fallback keeps the person's own choice (or none: Auto), so the layer split that starts
+    # instead gets DFlash2 as usual.
+    cfg["drafting"] = "mtp"
     cfg["split_engine_note"] = decision.line
     return cfg
 
@@ -316,8 +324,14 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     if not native:
         return Decision(False, ["this model is not a single GGUF file set"])
     # choices the split engine does not honour: the normal layer split keeps them
-    if str(cfg.get("drafting") or "").lower() == "dflash2":
+    # Drafting: Auto (nothing written, or "auto") on a setup the split accepts runs the split with its MTP: measured faster to decode than the layer
+    # split with DFlash2 on both tested cards (AUTO_SPLIT_BEATS_DFLASH2, numbers in docs/SPLIT_ENGINE.md). The person's own "dflash2" (or "off", which the
+    # split cannot do: it needs the draft layer) keeps the layer split; "mtp" is what the split runs.
+    chosen = str(cfg.get("drafting") or "auto").lower()
+    if chosen == "dflash2":
         return Decision(False, ["DFlash2 drafting was chosen, which the all-cards split engine does not run"])
+    if chosen == "off":
+        return Decision(False, ["drafting is off, and the all-cards split engine needs the draft layer"])
     if cfg.get("user_args") or cfg.get("replicas"):
         return Decision(False, ["this run config has engine arguments of its own or replicas, which the all-cards split engine does not take"])
     kv = _flag(args, "--kv")
@@ -336,6 +350,8 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
                allow_untested=allow_untested)
     if not d.use_split:
         return d
+    if chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
+        return Decision(False, ["on this card the layer split with DFlash2 has not been measured slower than the all-cards split engine"], d.cards)
     exe = exe_for_cards(d.cards, cards[0].cc)
     if not exe:
         return Decision(False, [f"this engine package has no strata-split-{d.cards}"], d.cards)
