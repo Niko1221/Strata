@@ -5246,6 +5246,13 @@ int main(int argc, char** argv) {
             return 2;
         }
         df2_vocab_file = o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab;
+        {   // without the vocabulary subset the DFlash2 would run its head over all of the target's rows (+0.7 ms a round measured on Metal) without a word
+            std::error_code vec;
+            if (!std::filesystem::exists(df2_vocab_file, vec)) {
+                std::fprintf(stderr, "strata generate: --draft dflash2: the draft vocabulary %s does not exist (--mtp DIR needs DIR/draft_vocab.bin, or --mtp-draft-vocab FILE); the drafter would run its head over the whole vocabulary\n", df2_vocab_file.c_str());
+                return 2;
+            }
+        }
         o.mtp.clear();
         df2_solo = true;
     }
