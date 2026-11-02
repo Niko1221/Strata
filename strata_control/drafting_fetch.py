@@ -99,6 +99,47 @@ def _present(folders: list[Path], spec) -> dict[str, Path]:
     return found
 
 
+def convert_selector(data_dir: str | Path, *, progress: Progress | None = None, source_bytes: int | None = None, source_sha256: str | None = None,
+                     size: int | None = None, sha256: str | None = None) -> Path | None:
+    """Make the pack with the Q4_0 selector (drafting.CONVERTED_NAME, 174 MiB less in graphics memory) from the verified Q4_0 pack, on this computer. No network, a second
+    or two on a fast machine, about 120 MB of memory. Called only by setup, `strata drafting fetch` and Load (launch), never by a start or a serve. The Q4_0 pack must be
+    the pinned bytes (PACK_BYTES / PACK_SHA256) and the result the pinned bytes (CONVERTED_BYTES / CONVERTED_SHA256); anything else is deleted and None is returned:
+    the Q4_0 pack with the bf16 selector keeps being used, nothing is reported as an error. The idea and the bytes are nazeshinjite's
+    (https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF). The keyword arguments are for tests, which convert a small synthetic pack."""
+    report = progress or (lambda *_: None)
+    want_size = drafting.CONVERTED_BYTES if size is None else size
+    want_sha = drafting.CONVERTED_SHA256 if sha256 is None else sha256
+    if drafting.converted_ok(data_dir, size=want_size, sha256=want_sha):
+        return drafting.converted_path(data_dir)
+    src = drafting.target_path(data_dir)
+    out = drafting.converted_path(data_dir)
+    tmp = out.with_suffix(".tmp")
+    try:
+        if not src.is_file():
+            return None
+        pinned_bytes = drafting.PACK_BYTES if source_bytes is None else source_bytes
+        pinned_sha = drafting.PACK_SHA256 if source_sha256 is None else source_sha256
+        if src.stat().st_size != pinned_bytes or transfer.sha256_file(src) != pinned_sha:
+            return None                                  # not the pack we measured: leave it as it is
+        report("Preparing the DFlash2 drafter's smaller selector…", 0, 1)
+        _packer().convert_selector_q4(str(src), str(tmp), say=lambda *_: None)
+        if tmp.stat().st_size != want_size or transfer.sha256_file(tmp) != want_sha:
+            tmp.unlink(missing_ok=True)
+            return None
+        os.replace(tmp, out)
+        out.with_name(out.name + ".ok").unlink(missing_ok=True)
+        if not drafting.converted_ok(data_dir, size=want_size, sha256=want_sha):        # writes the marker
+            return None
+        report("The DFlash2 drafter's smaller selector is ready.", 1, 1)
+        return out
+    except Exception:                                    # noqa: BLE001 - never a reason to stop a setup or a launch: the bf16-selector pack runs
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
 def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: threading.Event | None = None,
            base_url: str | None = None, files=None) -> Path:
     """Make the packed drafter exist under ``data_dir`` and return its path. A pack that is there is kept. Resumable: an interrupted
@@ -107,6 +148,8 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     out = drafting.target_path(data_dir)
     if drafting.pack_ready(data_dir):
         drafting.provide_vocab(data_dir)
+        if files is None:
+            convert_selector(data_dir, progress=report)
         report("The DFlash2 drafter is ready.", 1, 1)
         return drafting.pack_path(data_dir)
     acquisition.require("the DFlash2 drafter", "strata drafting fetch")
@@ -157,5 +200,7 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     except OSError:
         pass
     drafting.provide_vocab(data_dir)                 # the draft vocabulary comes with the pack: an install that never had the MTP layer needs it
+    if files is None:
+        convert_selector(data_dir, progress=report)  # the smaller selector (174 MiB), made here from the pack just checked; the bf16-selector pack stays beside it
     report("The DFlash2 drafter is ready.", total, total)
     return out

@@ -22,6 +22,8 @@ engine never switches drafter mid-run.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import mmap
 import os
 import re
@@ -197,6 +199,15 @@ PACK_GB = 0.52               # what stays on disk (the source file is removed af
 PACK_NAME = "qwen3.8-flash-next-dflash2.q4_0.pack"
 PACK_BYTES = 522458112       # the Q4_0 pack tools/dflash2_pack.py --q4_0 makes from the pinned safetensors file, and its SHA-256
 PACK_SHA256 = "cda40d62d0eb8f37ed6e272142641a1d2f0de4a32f9e14d0416e7a71534849f1"
+# The same pack with the selector's two codebooks as Q4_0 rows (174 MiB less in graphics memory, ~88 expert slots; draft ms, acceptance and the committed text equal: RESULTS-DF2MEM.md
+# section 15). The idea and the bytes are nazeshinjite's: the community GGUF https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF (Apache-2.0) stores the codebooks
+# as Q4_0, and tools/dflash2_pack.py --q4_0-selector / --convert-selector writes exactly those bytes (selector_predecessor sha256 55f70049...ffd28, selector_successor
+# 3b596669...a72d2 over the tensor bytes; checked equal to the GGUF's). We host nothing: setup / Load converts the verified Q4_0 pack above on this computer
+# (drafting_fetch.convert_selector, no network, a second or two); the engine reads either pack and says "selector codebooks: Q4_0 rows" when it loads the converted one.
+CONVERTED_NAME = "qwen3.8-flash-next-dflash2.q4_0-selq4.pack"
+CONVERTED_BYTES = 339694592
+CONVERTED_SHA256 = "4a42b98220ea7880664002c8edda1563aecbae754b762a2e2f31b2b91ee93ecd"
+_MARK_SELQ4 = b"selector codebooks: Q4_0 rows"      # text of an engine that reads such a pack (src/core/dflash2.cpp)
 LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9 test builds packed: still used when it is the one on disk
 VRAM_GB = DRAFTER_GB["dflash2"]   # graphics memory with the MTP layer not loaded: 890 MiB (RESULTS-DF2MEM.md); the engine reports "drafter 799 MiB" for the pack and buffers alone
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
@@ -251,8 +262,78 @@ def target_path(data_dir: str | Path) -> Path:
     return Path(data_dir) / FOLDER / PACK_NAME
 
 
-def pack_path(data_dir: str | Path) -> Path:
-    """The pack the engine is started with: the Q4_0 pack, else a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be."""
+def converted_path(data_dir: str | Path) -> Path:
+    """Where setup / Load writes the pack with the Q4_0 selector (beside the Q4_0 pack it was made from)."""
+    return Path(data_dir) / FOLDER / CONVERTED_NAME
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 22), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def converted_ok(data_dir: str | Path | None, *, size: int | None = None, sha256: str | None = None, name: str | None = None) -> bool:
+    """Is the converted pack here and exactly the pinned bytes? A file of another size is refused at once; the SHA-256 (about a second) is checked when the
+    file is new to us, and the answer is kept in a small marker beside it (size, time, hash) so a start reads one tiny file, not 340 MB. A missing, short,
+    changed or corrupt file is simply "no": the Q4_0 pack with the bf16 selector is used. Reads only; nothing is written when the marker cannot be."""
+    if not data_dir:
+        return False
+    want_size = CONVERTED_BYTES if size is None else size
+    want_sha = CONVERTED_SHA256 if sha256 is None else sha256
+    path = Path(data_dir) / FOLDER / (name or CONVERTED_NAME)
+    try:
+        stat = path.stat()
+        if not path.is_file() or stat.st_size != want_size:
+            return False
+        marker = path.with_name(path.name + ".ok")
+        try:
+            known = json.loads(marker.read_text(encoding="utf-8"))
+            if known.get("size") == stat.st_size and known.get("mtime_ns") == stat.st_mtime_ns and known.get("sha256") == want_sha:
+                return True
+        except (OSError, ValueError):
+            pass
+        if sha256_of(path) != want_sha:
+            return False
+        try:
+            marker.write_text(json.dumps({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": want_sha}), encoding="utf-8")
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+_selq4: dict[tuple[str, int, int], bool] = {}
+
+
+def engine_reads_selector_q4(exe: str | os.PathLike[str] | None) -> bool:
+    """Does the engine program at `exe` read a pack with Q4_0 selector codebooks? Read from the file's text (it is never started for this), once per path, size
+    and time. An engine that is not known (no path) or that lacks the text gets the bf16-selector pack: an older engine would read the rows as garbage."""
+    if not exe:
+        return False
+    try:
+        path = Path(exe)
+        stat = path.stat()
+    except (OSError, ValueError):
+        return False
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key not in _selq4:
+        try:
+            with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                _selq4[key] = data.find(_MARK_SELQ4) >= 0
+        except (OSError, ValueError):
+            _selq4[key] = False
+    return _selq4[key]
+
+
+def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None) -> Path:
+    """The pack the engine is started with: the converted pack (Q4_0 selector) when it is here, verified, and `engine` is a program that reads it; else the Q4_0 pack, else
+    a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be."""
+    if engine is not None and converted_ok(data_dir) and engine_reads_selector_q4(engine):
+        return converted_path(data_dir)
     for name in (PACK_NAME, LEGACY_PACK_NAME):
         if _here(Path(data_dir) / FOLDER / name):
             return Path(data_dir) / FOLDER / name
@@ -537,6 +618,13 @@ def wants_one_request(mode: Any, *, klass: str = "other", model_name: str | None
     return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2"
 
 
+def needs_conversion(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
+                     backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
+    """Would this choice use DFlash2, is the Q4_0 pack here, and is the converted pack (Q4_0 selector) not made yet? (Then setup / Load makes it, locally, once.)"""
+    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and bool(data_dir)
+            and _here(Path(data_dir) / FOLDER / PACK_NAME) and not converted_ok(data_dir))
+
+
 def needs_pack(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
                backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
     """Would this choice use the DFlash2 drafter if its file were here, and is it not here yet? (Then it is fetched before the start, once.)"""
@@ -647,7 +735,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
             cfg["mtp"] = True                                 # an explicit drafter choice overrides an older "mtp": false
     else:
         base = strip_mtp_flags(strip_draft_flags(args))
-        flags = list(engine_flags(pack_path(data_dir), vocab, form))
+        flags = list(engine_flags(pack_path(data_dir, engine), vocab, form))
         kept_conf = _flag_value(mine, "--draft-conf")
         flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{conf_for(backend, slots_of(base, vram_mib)):g}"
         if _flag_value(mine, "--spec") is None:

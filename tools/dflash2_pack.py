@@ -2,6 +2,7 @@
 """Pack the incoai DFlash2 drafter for Qwen3.8-Flash-Next (safetensors) into the engine's runtime file.
 
     python tools/dflash2_pack.py model.safetensors config.json out.pack [--q4_0] [--q4_0-selector]
+    python tools/dflash2_pack.py --convert-selector in.pack out.pack      (a finished Q4_0 pack: its bf16 selector codebooks become Q4_0, nothing else changes)
 
 Format (little endian): "DF2P", u32 version (1), u32 index_len, a text index (padded with spaces so the data starts on a 4096 multiple), then
 the tensors, each 256-byte aligned at its offset (from the end of the index).  Index lines: "cfg <key> <value>", "t <name> <dtype> <rows>
@@ -179,7 +180,84 @@ def pack(st_path, cfg_path, out_path, say=print, q4=False, q4_selector=False):
     return base + off
 
 
+def convert_selector_q4(src_path, dst_path, say=print, rows_per_step=16384):
+    """Rewrite a finished DF2P pack with the selector's two codebooks as Q4_0 rows: every other tensor's bytes are carried over unchanged, the two bf16 codebooks
+    (tensors `candidate_selector.predecessor_codebook` / `successor_codebook`, [vocab x 256]) are widened exactly to float32 and quantized by quant_q4_0, which is
+    ggml's quantize_row_q4_0_ref.  The result is byte-identical to `pack(..., q4=True, q4_selector=True)` from the same safetensors file (and the codebooks are the
+    bytes of the community GGUF nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF, selector_predecessor / selector_successor).  Memory stays under ~300 MB: the codebooks go
+    through `rows_per_step` rows at a time.  Returns the size written.  Needs only numpy, no network."""
+    with open(src_path, "rb") as fh:
+        if fh.read(4) != b"DF2P":
+            raise ValueError("not a DF2P pack")
+        version, index_len = struct.unpack("<II", fh.read(8))
+        if version != 1:
+            raise ValueError("unknown DF2P version %d" % version)
+        index = fh.read(index_len).decode()
+        base = 12 + index_len
+        cfg_lines, tensors = [], []
+        for line in index.split("\n"):
+            w = line.split()
+            if not w or w[0] == "end":
+                continue
+            if w[0] == "cfg":
+                cfg_lines.append(line)
+            elif w[0] == "t":
+                tensors.append({"name": w[1], "dtype": w[2], "rows": int(w[3]), "cols": int(w[4]), "offset": int(w[5]), "bytes": int(w[6])})
+        books = ("candidate_selector.predecessor_codebook", "candidate_selector.successor_codebook")
+        for t in tensors:
+            if t["name"] in books:
+                if t["dtype"] != "bf16":
+                    raise ValueError("%s is already %s" % (t["name"], t["dtype"]))
+                if t["cols"] % 32:
+                    raise ValueError("%s: %d columns" % (t["name"], t["cols"]))
+        off = 0
+        for t in tensors:
+            if t["name"] in books:
+                t["new_bytes"] = t["rows"] * (t["cols"] // 32) * 18
+                t["new_dtype"] = "q4_0"
+            else:
+                t["new_bytes"], t["new_dtype"] = t["bytes"], t["dtype"]
+            off = (off + 255) & ~255
+            t["new_offset"] = off
+            off += t["new_bytes"]
+        lines = list(cfg_lines)
+        for t in tensors:
+            lines.append("t %s %s %d %d %d %d" % (t["name"], t["new_dtype"], t["rows"], t["cols"], t["new_offset"], t["new_bytes"]))
+        lines.append("end")
+        js = ("\n".join(lines) + "\n").encode()
+        js += b" " * ((-(len(js) + 12)) % 4096)
+        with open(dst_path, "wb") as out:
+            out.write(b"DF2P" + struct.pack("<II", 1, len(js)) + js)
+            new_base = out.tell()
+            for t in tensors:
+                out.seek(new_base + t["new_offset"])
+                fh.seek(base + t["offset"])
+                if t["name"] not in books:
+                    left = t["bytes"]
+                    while left:
+                        block = fh.read(min(left, 1 << 24))
+                        if not block:
+                            raise ValueError("%s: the pack is shorter than its index" % t["name"])
+                        out.write(block)
+                        left -= len(block)
+                    continue
+                for r0 in range(0, t["rows"], rows_per_step):
+                    n = min(rows_per_step, t["rows"] - r0)
+                    raw = np.frombuffer(fh.read(n * t["cols"] * 2), dtype=np.uint16)
+                    if raw.size != n * t["cols"]:
+                        raise ValueError("%s: the pack is shorter than its index" % t["name"])
+                    w = (raw.astype(np.uint32) << 16).view(np.float32).reshape(n, t["cols"])
+                    out.write(quant_q4_0(w))
+            out.seek(new_base + off)        # the last tensor ends the file (the pack writer's size is base + off too)
+            out.truncate(new_base + off)
+    say("wrote %s: %d tensors, %.1f MB" % (dst_path, len(tensors), (new_base + off) / 1e6))
+    return new_base + off
+
+
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--convert-selector":
+        convert_selector_q4(sys.argv[2], sys.argv[3])
+        return
     flags = ("--q4_0", "--q4_0-selector")
     args = [a for a in sys.argv[1:] if a not in flags]
     if len(args) < 3:

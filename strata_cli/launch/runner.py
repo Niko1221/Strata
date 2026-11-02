@@ -1541,6 +1541,8 @@ class Runner:
         want: dict = {}
         try:
             want = self.drafting_inputs(read_config(base_path))
+            if want["data_dir"] is not None and drafting.needs_conversion(**want):
+                drafting_fetch.convert_selector(want["data_dir"])        # Load, not a start: the smaller selector (174 MiB), made here from the checked pack, no network
             if want["data_dir"] is None or not drafting.needs_pack(**want):
                 return
             self.emit("model", "Downloading the DFlash2 drafter (1.2 GB, once)…", 0)
