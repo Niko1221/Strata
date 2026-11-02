@@ -67,6 +67,9 @@ struct Options {
     int prefill_chunk = -1;
     bool vision = true;               // the vision tower (the checkpoint's vision.* / aligner.*), when it has one
     bool vision_only = false;         // (tests) load the vision tower alone: encode_image() and nothing else
+    // --serve on a discrete GPU (--vision-resident: not): the tower waits in host memory and takes its ~320 MiB of graphics memory
+    // for a picture turn only, out of what --reserve-mib keeps free (it stays on the card when the reserve is too small for it)
+    bool vision_lazy = false;
     bool verbose = false;
     // --parallel: conversations held at once (1-8), each its own state - its position, tokens, checkpoints, window rings,
     // the compressors' partial groups, the compressed KV and the index keys (a full context's each); 1: as before
@@ -271,6 +274,10 @@ public:
     /// The pictures of the prompt about to be fed ({}: none): positions inside a span read its rows (and route with
     /// the image bias, and take no part in the Engram n-grams); the rest the embedding table's.
     void set_images(std::vector<Image> images);
+    /// The picture turn is over: a tower that lives in host memory between turns gives its graphics memory back (no-op otherwise).
+    void vision_idle();
+    /// True when the tower holds no graphics memory between picture turns.
+    bool vision_lazy() const;
 
     void save_profile() const;
     const Stats& stats() const;

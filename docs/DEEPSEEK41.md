@@ -133,8 +133,14 @@ The server speaks to the engine as it does for the other models, so `/v1/chat/co
   (`STRATA_DS4_SLOT_GB`) and are removed after a week. The system prompt and tools shared by an agent
   and its sub-agents are kept as a checkpoint too. `STRATA_DS4_SLOT_KEEP=0` and `STRATA_DS4_AUTO_PIN=0` turn this off.
 
-Pictures are on by default: the engine reads them with its own vision tower (319 MiB of graphics memory, loaded with the model; no separate
-picture reader). The server decodes each picture, brings it to a size the tower takes (both sides a multiple of 42, at most 1024 image
+Pictures are on by default: the engine reads them with its own vision tower (no separate picture reader). The tower waits in RAM (about 1 GB of pinned
+memory) and takes its 319 MiB of graphics memory only while a picture is being read, out of the room `--reserve-mib` keeps free; the experts get that room
+the rest of the time (RTX A6000 as a 12 GB-like card: 370 experts in VRAM against 145, 20.7 against 18.7 tokens/s; Radeon AI PRO R9700 as a 12 GB-like card:
+419 against 386 experts, 23.3 tokens/s either way; with a whole 48 GB or 32 GB card: 35-40 experts more, no speed difference). Taking it costs no measurable
+time (a picture is encoded in 0.19 s the first time, 0.08 s the next, 0 s when it was sent before). If a picture finds no free graphics memory (another
+program took the reserve's room), the experts' last slots on the first GPU are lent to the tower for that picture turn, as they are to a long prompt, and read
+back from the model files afterwards (35 experts, 117 ms on an RTX A6000 with 59 MiB free; the picture is read right and the next one is not slower). It stays
+on the card on a GPU that shares the PC's memory (Mac, GB10, Strix Halo), and with `--vision-resident`. The server decodes each picture, brings it to a size the tower takes (both sides a multiple of 42, at most 1024 image
 tokens) and hands it to the engine; it needs Pillow for that (`python -m pip install pillow`; setup installs it). `--vision no` in `strata launch`
 (or `--vision off` for the engine) turns them off; a request with a picture then gets a 400 that says so.
 

@@ -967,7 +967,7 @@ them. The app, `strata launch` and setup use one rule for the reader:
 | Graphics memory | Default reader | Cost |
 | --- | --- | --- |
 | Under 24 GB (NVIDIA and AMD) | CPU reader | Nothing from the card, so the experts keep their room. About 3 s for a 300-token picture on 8 cores; more tokens take longer in proportion. |
-| 24 GB or more | The card's reader | 0.1-0.5 s per picture (up to 1,024 image tokens). About 1.4 GB of VRAM is kept free, so the expert cache is smaller and text output is a few percent slower. |
+| 24 GB or more | The card's reader, started by the first picture and stopped after 120 s without one (NVIDIA, one GPU) | 0.1-0.5 s per picture (up to 1,024 image tokens) once it runs, 1.2-1.4 s more for the first picture after a stop. It holds about 1.3 GB of VRAM only while pictures are being read; a start with no room is read on the CPU. On AMD, Intel and a Mac the reader stays on the card as before. |
 | Mac | The GPU (Metal) | Whatever its memory. |
 
 Switch pictures off with `--vision no` (or "No" in the app and `strata launch`), or pick the reader with `--vision gpu` or
@@ -986,7 +986,7 @@ every turn, is encoded once.
 | `"min_tokens": N` | Scales a small picture up to at least N tokens (passed to the encoder as `--min-tokens`). Qwen-VL grounding tasks want at least 1,024. A larger minimum changes image answers and costs encode time. |
 | `"mmproj"` | Points to another mmproj file of this model, for example a Q8_0 one (`llama-quantize mmproj-Qwen3.8-Flash-Next-BF16.gguf mmproj-Qwen3.8-Flash-Next-Q8_0.gguf Q8_0`): 590 MiB against 865 MiB, about 280 MiB less encoder RAM, and it can encode faster on the CPU. **Recommended for `--vision cpu`.** Embedding cosine against BF16 is 0.997-0.999. Setup downloads the BF16 file and keeps a file of your own that still exists. |
 | `"cuda_device": N` | Runs the encoder on a spare card (numbered like `nvidia-smi`). Lower `--vram-reserve-mib` in `"args"` to 700 as well. The card needs code in the ready-made encoder (RTX 20/30/40/50). |
-| `"elastic": true` (with `"vram_elastic": true`) | Starts the GPU encoder only when a picture arrives, keeping `"elastic_mib"` (default 2048) free, and stops it after `"elastic_idle_s"` (default 120) without one ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand)). It turns `--kv-grow` off. |
+| `"elastic": false` | Keeps the GPU encoder on the card from the start (the NVIDIA one-GPU default is to start it with the first picture and stop it after `"elastic_idle_s"`, default 120, without one). `"elastic": true` asks for the on-demand start on any card; with `"vram_elastic": true` too the expert cache gives the room (`"elastic_mib"`, default 2048), which turns `--kv-grow` off ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand)). |
 | `--flash-attn on\|off\|auto` (`strata-vision`) | Flash attention is turned off on the CPU when ggml has AVX-512 (a build from source), because ggml's fallback kernel is several times slower and accumulates in FP16. Release builds use AVX2 and leave it on. |
 
 On an NVIDIA card under 24 GB the CPU encoder is the default, because the GPU encoder takes ~850 expert slots of a 16 GB card's ~4,500

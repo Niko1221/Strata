@@ -117,7 +117,7 @@ void usage() {
                  "maya-ds4 --pack <model>/maya-ds4 [--gpus 0,1,...] [--max-context N] [--reserve-mib N]\n"
                  "           [--vram-experts F] [--cpu-threads N] [--expert-profile FILE|none] [--profile-readonly] [--ssd-cache GB] [--ssd-policy lru|lfu|lfulru] [--no-expert-cache] [--verbose]\n"
                  "           [--tp N] [--threads on|off] [--prefill-chunk N] [--dspark on|off|none|auto] [--dspark-block N] [--dspark-conf F] [--experts N|auto]\n"
-                 "           [--vision on|off] [--mmap-experts on|off|auto] [--parallel N (--serve: N conversations at once)]\n"
+                 "           [--vision on|off] [--vision-resident (--serve: keep the picture tower on the card; default: in RAM between pictures)] [--mmap-experts on|off|auto] [--parallel N (--serve: N conversations at once)]\n"
                  "           (--ids I,J,... [--images FILE] [--n N] [--dump-logits FILE] | --serve\n"
                  "           | --encode-image FILE.rgb --size WxH --dump-image OUT\n"
                  "           | --pack-info)\n");
@@ -1131,6 +1131,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                              now_ms() - te);
             }
             for (Pic& q : pics) q.rgb = {};   // (only the start, hash and span stay)
+            m.vision_idle();   // (the tower's graphics memory back before the prompt and its experts need it)
         }
         if (!ok) {
             std::fprintf(stderr, "ds4: %s\n", err.c_str());
@@ -2502,7 +2503,7 @@ int main(int argc, char** argv) {
     bool spec = true;
     float temp = 0.0f;   // the CLI's sampling (0: greedy)
     unsigned long long cli_seed = 1;
-    bool serve_mode = false, multi_check = false;
+    bool serve_mode = false, multi_check = false, vision_resident = false, vision_lazy_asked = false;   // (--vision-lazy: the default now, still accepted)
     bool pack_info_mode = false;
     std::string images, enc_rgb, enc_out;
     std::string score_ids, score_out, prof_ids, spec_ids;
@@ -2548,6 +2549,8 @@ int main(int argc, char** argv) {
         else if (a == "--prefill-chunk") o.prefill_chunk = std::max(0, std::atoi(val("--prefill-chunk").c_str()));
         else if (a == "--threads") o.threads = val("--threads") != "off";
         else if (a == "--vision") o.vision = val("--vision") != "off";
+        else if (a == "--vision-resident") vision_resident = true;
+        else if (a == "--vision-lazy") (void) (vision_lazy_asked = true);
         else if (a == "--mmap-experts") {
             const std::string v = val("--mmap-experts");
             o.mmap_experts = v == "on" ? 1 : v == "off" ? 0 : -1;
@@ -2614,6 +2617,7 @@ int main(int argc, char** argv) {
     if (o.profile.empty()) o.profile = o.pack + "/expert-profile.bin";   // "none": no profile
     if (o.profile == "none") o.profile.clear();
     o.vision_only = !enc_rgb.empty();
+    o.vision_lazy = serve_mode && !vision_resident && !o.vision_only;   // (--vision-lazy is the same as the default; kept for configs that name it)
     strata::ds4::Model m;
     std::string err;
     if (!m.load(o, err)) {
