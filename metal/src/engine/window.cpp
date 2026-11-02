@@ -320,7 +320,7 @@ private:
     const int32_t* samp_hist_ = nullptr;
     int samp_hist_len_ = 0;
     mtl::Buffer sbias_, shist_, scv_, sci_;
-    size_t shist_cap_ = 0;
+    size_t shist_cap_ = 0, sbias_cap_ = 0;
     uint64_t samp_windows_ = 0;
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
@@ -3118,11 +3118,16 @@ bool Window::sample_run(int row0, int n, const strata::kernels::SamplerParams& s
     uint32_t flags = greedy ? 2u : 0u;
     // the logit bias: a device array of n_vocab floats (unified memory: read as it is, copied into the sampler's own buffer)
     if (sp.logit_bias != nullptr) {
-        if (!sbias_.handle) sbias_ = cx_->alloc(4 * (size_t) V);
+        if (sbias_cap_ < 4 * (size_t) V) {   // (an earlier request without a bias left the 16-byte stand-in)
+            if (sbias_.handle) cx_->free(sbias_);
+            sbias_ = cx_->alloc(4 * (size_t) V);
+            sbias_cap_ = 4 * (size_t) V;
+        }
         std::memcpy(sbias_.ptr, strata::gpu::host_view(sp.logit_bias), 4 * (size_t) V);   // (a cudaMalloc'd array: the runtime's CPU view)
         flags |= 1u;
     } else if (!sbias_.handle) {
         sbias_ = cx_->alloc(16);
+        sbias_cap_ = 16;
     }
     uint32_t pen_n = 0;
     if (hist_in != nullptr && hl > 0 && sp.penalty_last_n > 0) {
