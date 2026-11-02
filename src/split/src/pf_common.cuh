@@ -141,8 +141,12 @@ static __global__ void k_pfr_cmp(const uint4* __restrict__ dev, const uint4* __r
     for (size_t e = blockIdx.x * (size_t) blockDim.x + threadIdx.x; e < n16; e += (size_t) gridDim.x * blockDim.x) {
         const uint4 a = dev[e];
         const unsigned* h = reinterpret_cast<const unsigned*>(host + e);   // uncached loads: what the memory holds now
+#if FNX_HIP
         const unsigned b0 = __hip_atomic_load(h + 0, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM), b1 = __hip_atomic_load(h + 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM),
                        b2 = __hip_atomic_load(h + 2, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM), b3 = __hip_atomic_load(h + 3, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+#else
+        const unsigned b0 = __ldcv(h + 0), b1 = __ldcv(h + 1), b2 = __ldcv(h + 2), b3 = __ldcv(h + 3);   // NVIDIA: uncached loads (ld.global.cv)
+#endif
         if (a.x != b0 || a.y != b1 || a.z != b2 || a.w != b3) ++bad;
     }
     if (bad) atomicOr(err, what ? 128u : 64u);   // "prefill: ring error 64" (receive) / 128 (gather)
