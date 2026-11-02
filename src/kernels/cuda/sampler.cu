@@ -158,7 +158,23 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     // elements contributes nothing rather than contributing a bogus zero.
     float bv = __int_as_float(0xff800000);   // -inf
     int best = n_vocab;
-    for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
+    // eight loads in flight a thread (one per round left gfx906 latency-bound: 243 dependent rounds over a 248,320-logit
+    // row, ~110 us); the same elements in the same ascending order with the same strict `>`, so the same token
+    constexpr int U = 8;
+    const int bd = (int) blockDim.x;
+    int v = threadIdx.x;
+    for (; v + (U - 1) * bd < n_vocab; v += U * bd) {
+        float x[U];
+#pragma unroll
+        for (int u = 0; u < U; ++u) x[u] = l[v + u * bd];
+#pragma unroll
+        for (int u = 0; u < U; ++u) {
+            const int vu = v + u * bd;
+            const float s = apply_penalties(p.logit_bias ? x[u] + p.logit_bias[vu] : x[u], hit_count(vu), p);
+            if (s > bv) { bv = s; best = vu; }
+        }
+    }
+    for (; v < n_vocab; v += bd) {
         const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
         if (s > bv) { bv = s; best = v; }
     }
