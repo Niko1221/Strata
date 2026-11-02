@@ -87,3 +87,31 @@ def trainable_summary(model: nn.Module) -> dict[str, float]:
 
 def lora_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
     return {k: v for k, v in model.state_dict().items() if ".A" == k[-2:] or ".B" == k[-2:]}
+
+
+def load_lora_state(model: nn.Module, path: str) -> int:
+    """把上一阶段存下的 adapter 装回来（课程续训：身份 → 数据集）。
+
+    只认 `lora_state_dict` 存出来的那种（键与本次 inject 的完全同名），所以不做命名映射。
+    **形状/键对不上就报错，不静默跳过**：rank、alpha、targets 任一处变了，那就是另一份
+    adapter，悄悄 load 一半会让 D 阶段的「身份掉了多少」变得没法解释。
+
+    返回载入的张量个数（= 当前模型里 LoRA 键的个数）。
+    """
+    sd = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(sd, dict) or not sd:
+        raise SystemExit(f"init-adapter: {path} 不是 state_dict")
+    cur = lora_state_dict(model)
+    if not cur:
+        raise SystemExit("init-adapter: 模型里没有 LoRA 键（先 inject_lora 再载入）")
+    miss = [k for k in cur if k not in sd]
+    extra = [k for k in sd if k not in cur]
+    bad = [(k, tuple(sd[k].shape), tuple(cur[k].shape)) for k in cur
+           if k in sd and tuple(sd[k].shape) != tuple(cur[k].shape)]
+    if miss or extra or bad:
+        raise SystemExit(
+            "init-adapter 对不上：缺 %d 键、多 %d 键、形状不符 %d 个"
+            "（rank / alpha / targets / lora_method 与存的那份不同？）\n  缺：%s\n  形状：%s"
+            % (len(miss), len(extra), len(bad), miss[:3], bad[:3]))
+    model.load_state_dict({k: sd[k] for k in cur}, strict=False)
+    return len(cur)
