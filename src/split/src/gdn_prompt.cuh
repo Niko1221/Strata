@@ -163,12 +163,19 @@ __global__ void __launch_bounds__(GDN_PF_THREADS) k_gdn_pf_rec(const float* __re
 // k_gdn_ch_prep makes what does not depend on the state for every sub-chunk and head at once (T, P, G, the decays to the
 // end, b); k_gdn_ch_rec walks the sub-chunks in order per (value head, GCB columns), the state's columns in shared
 // memory. The sums come in another order than k_gdn_core's, row by row (fp32 either way).
-constexpr int GCH = 32, GCB = 32, GCH_THREADS = 256, GCH_REC_BLOCKS_PER_HEAD = HS / GCB;
+#if FNX_HIP
+// gfx12 has 64 KB of LDS a block: k_gdn_ch_rec takes 16 state columns (58 KB) in 128 threads, twice the blocks a head; every output's sum
+// runs in the same order as with 32 columns, so the results are bit-identical to the CUDA build's layout
+constexpr int GCH = 32, GCB = 16, GCH_THREADS = 256, GCR_THREADS = 128, GCH_REC_BLOCKS_PER_HEAD = HS / GCB;
+#else
+constexpr int GCH = 32, GCB = 32, GCH_THREADS = 256, GCR_THREADS = 256, GCH_REC_BLOCKS_PER_HEAD = HS / GCB;
+#endif
+constexpr int GCR_CG = GCB / 4;   // column groups of 4 in a block's columns
 // the decays from sums of up to GCH logs: --use_fast_math makes expf __expf, whose error grows with the argument (2 +
 // 1.16 |x| ulp), so these go through double, which fast math leaves exact
 __device__ __forceinline__ float gch_exp(float x) { return (float) exp((double) x); }
 constexpr int GCH_PREP_FLOATS = 2 * GCH * GCH + 3 * GCH + 1;   // per sub-chunk and head: T, P, G, decay to end, b, G_last
-static_assert(GCH_THREADS == GCH * GCB / 8 * 2 && GCH_THREADS == HS / 4 * (GCB / 4), "k_gdn_ch_rec's thread tiles");
+static_assert(GCR_THREADS == GCH * GCB / 8 * 2 && GCR_THREADS == HS / 4 * (GCB / 4), "k_gdn_ch_rec's thread tiles");
 
 __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_prep(const float* __restrict__ xc, const float* __restrict__ ab,
                                                             const float* __restrict__ dt, const float* __restrict__ a,
@@ -246,11 +253,11 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_prep(const float* __rest
 
 constexpr size_t GCH_REC_SMEM = sizeof(float) * (2 * GCH * (HS + 1) + HS * GCB + 4 * GCH * GCB + GCH_PREP_FLOATS);
 // a thread's share of a sub-chunk's inputs, fetched into registers while the sub-chunk before computes
-constexpr int GCH_KQ_PER = GCH * HS / GCH_THREADS, GCH_V_PER = GCH * GCB / GCH_THREADS,
-              GCH_PRE_PER = (GCH_PREP_FLOATS + GCH_THREADS - 1) / GCH_THREADS;
-static_assert(GCH * HS % GCH_THREADS == 0 && GCH * GCB % GCH_THREADS == 0, "even shares");
+constexpr int GCH_KQ_PER = GCH * HS / GCR_THREADS, GCH_V_PER = GCH * GCB / GCR_THREADS,
+              GCH_PRE_PER = (GCH_PREP_FLOATS + GCR_THREADS - 1) / GCR_THREADS;
+static_assert(GCH * HS % GCR_THREADS == 0 && GCH * GCB % GCR_THREADS == 0, "even shares");
 
-__global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restrict__ xc, const float* __restrict__ prep,
+__global__ void __launch_bounds__(GCR_THREADS) k_gdn_ch_rec(const float* __restrict__ xc, const float* __restrict__ prep,
                                                            float* __restrict__ S, float* __restrict__ y32, int nk, int nv,
                                                            const int* __restrict__ vmap, int C) {
     const int lv = blockIdx.x / GCH_REC_BLOCKS_PER_HEAD, c0 = (blockIdx.x % GCH_REC_BLOCKS_PER_HEAD) * GCB;
@@ -265,7 +272,7 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
     float* uu = yy + GCH * GCB;
     float* pre = uu + GCH * GCB;            // the sub-chunk's T, P, G, decay to end, b, G_last
     float* sst = S + (size_t) lv * HS * HS;
-    for (int e = tid; e < HS * GCB; e += GCH_THREADS) ss[e] = sst[(size_t) (e / GCB) * HS + c0 + e % GCB];
+    for (int e = tid; e < HS * GCB; e += GCR_THREADS) ss[e] = sst[(size_t) (e / GCB) * HS + c0 + e % GCB];
     const float scale = rsqrtf((float) HS);
     const int nsub = (C + GCH - 1) / GCH;
     float kq[2][GCH_KQ_PER], vr[GCH_V_PER], pr[GCH_PRE_PER];
@@ -273,20 +280,20 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
         const int t0 = sc * GCH, n = min(GCH, C - t0);
 #pragma unroll
         for (int j = 0; j < GCH_KQ_PER; ++j) {
-            const int e = tid + j * GCH_THREADS, i = e / HS, r = e % HS;
+            const int e = tid + j * GCR_THREADS, i = e / HS, r = e % HS;
             const float* row = xc + (size_t) (t0 + i) * ch;
             kq[0][j] = i < n ? row[kh * HS + r] : 0.f;
             kq[1][j] = i < n ? row[nk * HS + kh * HS + r] : 0.f;
         }
 #pragma unroll
         for (int j = 0; j < GCH_V_PER; ++j) {
-            const int e = tid + j * GCH_THREADS, i = e / GCB, c = e % GCB;
+            const int e = tid + j * GCR_THREADS, i = e / GCB, c = e % GCB;
             vr[j] = i < n ? xc[(size_t) (t0 + i) * ch + 2 * nk * HS + lv * HS + c0 + c] : 0.f;
         }
         const float* pg = prep + ((size_t) sc * nv + lv) * GCH_PREP_FLOATS;
 #pragma unroll
         for (int j = 0; j < GCH_PRE_PER; ++j) {
-            const int e = tid + j * GCH_THREADS;
+            const int e = tid + j * GCR_THREADS;
             pr[j] = e < GCH_PREP_FLOATS ? pg[e] : 0.f;
         }
     };
@@ -296,15 +303,15 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
         __syncthreads();   // the last sub-chunk's reads are done
 #pragma unroll
         for (int j = 0; j < GCH_KQ_PER; ++j) {
-            const int e = tid + j * GCH_THREADS;
+            const int e = tid + j * GCR_THREADS;
             qs[e / HS][e % HS] = kq[0][j];
             ks[e / HS][e % HS] = kq[1][j];
         }
 #pragma unroll
-        for (int j = 0; j < GCH_V_PER; ++j) vv[tid + j * GCH_THREADS] = vr[j];
+        for (int j = 0; j < GCH_V_PER; ++j) vv[tid + j * GCR_THREADS] = vr[j];
 #pragma unroll
         for (int j = 0; j < GCH_PRE_PER; ++j)
-            if (tid + j * GCH_THREADS < GCH_PREP_FLOATS) pre[tid + j * GCH_THREADS] = pr[j];
+            if (tid + j * GCR_THREADS < GCH_PREP_FLOATS) pre[tid + j * GCR_THREADS] = pr[j];
         __syncthreads();
         if (sc + 1 < nsub) fetch(sc + 1);   // in flight while this one computes
         const float* T = pre;
@@ -316,7 +323,7 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
         // W = K S, Y = Q S: each thread 2 rows x 4 columns of both over half of the key dimension (half 1's partial
         // sums through rr / yy, half 0 adds them); then R = b (v - G W)
         {
-            const int half = tid >> 7, t7 = tid & 127, i0 = (t7 >> 3) * 2, cc = (t7 & 7) * 4;
+            const int half = tid / (GCR_THREADS / 2), t7 = tid % (GCR_THREADS / 2), i0 = (t7 / GCR_CG) * 2, cc = (t7 % GCR_CG) * 4;
             float w[2][4] = {}, y[2][4] = {};
 #pragma unroll 4
             for (int r = half * (HS / 2); r < (half + 1) * (HS / 2); ++r) {
@@ -352,8 +359,8 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
         {
             const int c = tid % GCB;
 #pragma unroll
-            for (int h = 0; h < GCH * GCB / GCH_THREADS; ++h) {
-                const int i = tid / GCB + h * (GCH_THREADS / GCB);
+            for (int h = 0; h < GCH * GCB / GCR_THREADS; ++h) {
+                const int i = tid / GCB + h * (GCR_THREADS / GCB);
                 float u = 0.f;
                 for (int m = 0; m <= i; ++m) u = fmaf(T[i * GCH + m], rr[m * GCB + c], u);
                 uu[i * GCB + c] = u;
@@ -364,8 +371,8 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
         {
             const int c = tid % GCB;
 #pragma unroll
-            for (int h = 0; h < GCH * GCB / GCH_THREADS; ++h) {
-                const int t = tid / GCB + h * (GCH_THREADS / GCB);
+            for (int h = 0; h < GCH * GCB / GCR_THREADS; ++h) {
+                const int t = tid / GCB + h * (GCR_THREADS / GCB);
                 float o = G[t] * yy[t * GCB + c];
                 for (int i = 0; i <= t; ++i) o = fmaf(P[t * GCH + i], uu[i * GCB + c], o);
                 if (t < n) y32[(size_t) (t0 + t) * nv * HS + lv * HS + c0 + c] = o * scale;
@@ -373,7 +380,7 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
         }
         // S = G_last S + K^T (decay U): each thread 4 rows x 4 columns of the state
         {
-            const int r0 = (tid >> 3) * 4, cc = (tid & 7) * 4;
+            const int r0 = (tid / GCR_CG) * 4, cc = (tid % GCR_CG) * 4;
             float s[4][4];
 #pragma unroll
             for (int a = 0; a < 4; ++a) {
@@ -397,7 +404,7 @@ __global__ void __launch_bounds__(GCH_THREADS) k_gdn_ch_rec(const float* __restr
         }
     }
     __syncthreads();
-    for (int e = tid; e < HS * GCB; e += GCH_THREADS) sst[(size_t) (e / GCB) * HS + c0 + e % GCB] = ss[e];
+    for (int e = tid; e < HS * GCB; e += GCR_THREADS) sst[(size_t) (e / GCB) * HS + c0 + e % GCB] = ss[e];
 }
 
 // the gated RMS norm with the row's square sum made here (the sub-chunk path keeps no per-block sums)

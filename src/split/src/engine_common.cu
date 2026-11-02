@@ -1045,6 +1045,26 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
         });
         last_capture_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
     }
+    {   // FNX_BATCH_STATS=1: windows, graph captures and the time between windows, one line per 200 windows
+        static const bool stats = env_flag("FNX_BATCH_STATS");
+        if (stats) {
+            static unsigned long nw = 0, ncap = 0, rows_sum = 0;
+            static double cap_ms = 0;
+            static std::chrono::steady_clock::time_point t_first{};
+            const auto now = std::chrono::steady_clock::now();
+            if (nw == 0) t_first = now;
+            ++nw;
+            rows_sum += (unsigned long) T;
+            if (last_capture_ms > 0.0) ++ncap, cap_ms += last_capture_ms;
+            if (nw % 200 == 0) {
+                std::fprintf(stderr, "fnx: batch stats: %lu windows, %lu captured (%.1f ms each), %.1f rows a window, %.2f ms a window since the first\n", nw,
+                             ncap, ncap ? cap_ms / (double) ncap : 0.0, (double) rows_sum / (double) nw,
+                             std::chrono::duration<double, std::milli>(now - t_first).count() / (double) nw);
+                nw = ncap = rows_sum = 0;
+                cap_ms = 0;
+            }
+        }
+    }
     each([&](int, CardBuf& b, const CardW&) { ck(cudaGraphLaunch(b.batch_graphs[T].exec, b.st), "graph launch"); });
     each([&](int c, CardBuf& b, const CardW&) {
         ck(cudaMemcpyAsync(&h_.bv[c * T], b.best_v, T * 4, cudaMemcpyDeviceToHost, b.st), "best v");

@@ -1842,13 +1842,7 @@ void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* co
     static const bool chunked = [] {
         const char* e = std::getenv("FNX_PF_GDN_CHUNK");
         if (e && std::strcmp(e, "0") && std::strcmp(e, "1")) throw std::runtime_error(std::string("FNX_PF_GDN_CHUNK: 0 or 1, not '") + e + "'");
-#if FNX_HIP
-        // the chunked recurrent kernel's 123 KB of shared memory is past gfx12's 64 KB LDS: the row-by-row kernel is the HIP default
-        // until a 64 KB chunked version exists (FNX_PF_GDN_CHUNK=1 asks for the chunked one and fails at the first prompt)
-        return e && !std::strcmp(e, "1");
-#else
         return !e || !std::strcmp(e, "1");
-#endif
     }();
     if (chunked) {
         static thread_local bool smem_set[16] = {};
@@ -1877,7 +1871,7 @@ void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* co
             cudaFree(s0), cudaFree(yr);
         }
         k_gdn_ch_prep<<<dim3((C + GCH - 1) / GCH, nv), GCH_THREADS, 0, s>>>(xc, ab, dt, a, vmap, nk, nv, C, chw);
-        k_gdn_ch_rec<<<nv * GCH_REC_BLOCKS_PER_HEAD, GCH_THREADS, GCH_REC_SMEM, s>>>(xc, chw, S, y32, nk, nv, vmap, C);
+        k_gdn_ch_rec<<<nv * GCH_REC_BLOCKS_PER_HEAD, GCR_THREADS, GCH_REC_SMEM, s>>>(xc, chw, S, y32, nk, nv, vmap, C);
         if (check) {
             std::vector<float> y(ny), sn(ns);
             cudaMemcpyAsync(y.data(), y32, ny * 4, cudaMemcpyDeviceToHost, s);

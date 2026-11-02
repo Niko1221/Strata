@@ -299,6 +299,10 @@ struct Engine::PfRing {
     unsigned* pflags[NCARD];
     int next_dev = 0;
     bool direct = false;     // the plan is pf_ring_plan_direct
+    cudaEvent_t fence_ev = nullptr;   // FNX_PF_DMA_BARRIER=1
+    bool send_kernel = false;  // FNX_PF_SEND=kernel
+    bool dma_check = false;  // FNX_PF_DMA_CHECK=1: compare each DMA copy with its host source by a kernel
+    bool dma = true;         // receive and gather by DMA into device memory (FNX_PF_DMA=0: kernels read host memory)
     std::vector<PfRingOp> plan;
 };
 
@@ -803,6 +807,16 @@ void Engine::prefill_alloc() {
 #else
         r.direct = gather && std::strcmp(gather, "direct") == 0;
 #endif
+        // HIP: the copy-engine receive/gather is opt-in (FNX_PF_DMA=1). On gfx1201 a DMA read of a peer's host stores was not always complete when the flag
+        // said so (FNX_PF_DMA_CHECK=1 finds it; answers varied from start to start), and it was not faster; the kernel reads are repeatable
+        r.dma = env_int("FNX_PF_DMA", FNX_HIP ? 0 : 1) != 0;
+        r.dma_check = env_int("FNX_PF_DMA_CHECK", 0) != 0;
+        if (env_int("FNX_PF_DMA_BARRIER", 0) != 0) {
+            ckc(cudaSetDevice(p.dev), "set");
+            ckc(cudaEventCreateWithFlags(&r.fence_ev, cudaEventDisableTiming), "event");
+            own_event(r.fence_ev);
+        }
+        { const char* sk = std::getenv("FNX_PF_SEND"); r.send_kernel = sk && std::strcmp(sk, "kernel") == 0; }
         r.plan = r.direct ? pf_ring_plan_direct(NCARD, c) : pf_ring_plan(NCARD, c);
     }
     // the flags as cudaMalloc left them could hold anything, and a wait passes on any flag >= its number
