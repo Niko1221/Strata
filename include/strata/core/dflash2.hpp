@@ -112,6 +112,9 @@ public:
     double last_ms = 0;
     bool last_swapped = false;                    ///< ... and whether a parked lineage was brought back
     bool ring_log_on() const { return log_on_; }
+    /// Allocates the log's pinned staging and turns the log on (STRATA_DF2_RING_LOG=0 keeps it off). alloc() calls it; a clone that skips alloc() calls it after its
+    /// own allocation, on its device. Without it the log stays off and begin_request uses the pre-log rule.
+    void init_ring_log();
     /// A request moves between two drafters whose rings were copied on the device (solo <-> a --parallel slot): the host side goes with it. The lineage's log is
     /// shared copy-on-write, the tag shadow and the epoch are copied (the caller copies kring_/vring_/tag_ on the device).
     void copy_log_state_from(const Dflash2Drafter& src);
@@ -244,7 +247,7 @@ private:
     };
     Lineage cur_;                                         ///< the lineage the ring belongs to
     std::deque<Lineage> stash_;                           ///< parked lineages, newest last
-    bool log_on_ = true;
+    bool log_on_ = false;           ///< set by init_ring_log() once the pinned staging exists
     uint64_t stash_budget_ = 256ull << 20;
     int8_t* h_logq_ = nullptr;      ///< pinned: the last update's codes [8][2560] ...
     float* h_logd_ = nullptr;       ///< ... and scales [8][80], filled by the update's graph

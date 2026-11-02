@@ -273,13 +273,7 @@ bool Dflash2Drafter::alloc(std::string& err) {
     vram_ += (uint64_t) kRing * 8;
     cudaMemset(tag_, 0xff, (size_t) kRing * 8);   // -1: no slot holds a context row yet
     for (int64_t& t : slot_pos_) t = -1;
-    if (const char* e = std::getenv("STRATA_DF2_RING_LOG"); e && e[0] == '0') log_on_ = false;
-    if (const char* e = std::getenv("STRATA_DF2_LOG_MIB"); e && e[0]) stash_budget_ = (uint64_t) std::max(0, std::atoi(e)) << 20;
-    if (log_on_ && (cudaHostAlloc((void**) &h_logq_, (size_t) kRows * N_, cudaHostAllocDefault) != cudaSuccess ||
-                    cudaHostAlloc((void**) &h_logd_, (size_t) kRows * (N_ / 32) * 4, cudaHostAllocDefault) != cudaSuccess)) {
-        h_logq_ = nullptr; h_logd_ = nullptr; log_on_ = false;
-        std::fprintf(stderr, "strata dflash2: the ring log's staging does not fit in pinned memory: the log is off\n");
-    }
+    init_ring_log();
     cudaMemset(xqp_, 0, (size_t) 5 * N_ * 8 + 4096);
     cudaMemset(xdp_, 0, ((size_t) 5 * N_ / 32 * 8 + 64) * 4);
     cudaMemset(xqc_, 0, (size_t) 5 * N_ * 8 + 4096);
@@ -737,6 +731,23 @@ uint64_t Dflash2Drafter::ring_stash_bytes() const {
     uint64_t b = 0;
     for (const Lineage& l : stash_) b += l.bytes();
     return b;
+}
+
+// The log is OFF until this has allocated its pinned staging: a drafter that never ran alloc() (a --parallel slot's clone) keeps the old behaviour instead of
+// copying into a null staging buffer. Callable again by a clone's allocation, on the drafter's device.
+void Dflash2Drafter::init_ring_log() {
+    const OnDevice on_device(device_);
+    for (int64_t& t : slot_pos_) t = -1;
+    const char* off = std::getenv("STRATA_DF2_RING_LOG");
+    if (off && off[0] == '0') { log_on_ = false; return; }
+    if (const char* e = std::getenv("STRATA_DF2_LOG_MIB"); e && e[0]) stash_budget_ = (uint64_t) std::max(0, std::atoi(e)) << 20;
+    if (h_logq_ == nullptr && cudaHostAlloc((void**) &h_logq_, (size_t) kRows * N_, cudaHostAllocDefault) != cudaSuccess) h_logq_ = nullptr;
+    if (h_logd_ == nullptr && cudaHostAlloc((void**) &h_logd_, (size_t) kRows * (N_ / 32) * 4, cudaHostAllocDefault) != cudaSuccess) h_logd_ = nullptr;
+    log_on_ = h_logq_ != nullptr && h_logd_ != nullptr;
+    if (!log_on_) {
+        (void) cudaGetLastError();
+        std::fprintf(stderr, "strata dflash2: the ring log's staging does not fit in pinned memory: the log is off\n");
+    }
 }
 
 void Dflash2Drafter::reset() {
