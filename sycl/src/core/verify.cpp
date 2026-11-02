@@ -440,10 +440,12 @@ Verifier::~Verifier() try {
     if (arena_b_) sycl::free(arena_b_, dpct::get_in_order_queue());
     if (h_commitb_) sycl::free(h_commitb_, dpct::get_in_order_queue());
     if (qcnt_) sycl::free(qcnt_, dpct::get_in_order_queue());
-    if (cs_ && cs_ != ext_stream_) dpct::get_current_device().destroy_queue(
+    // (a verifier whose init stopped before it made its own queues still holds the process's default queue in all three (cs_, sh_cs_, copy_): that one is never ours to destroy -
+    // destroying it took the next verifier's wait down with a SIGSEGV in urQueueFinish when a start was refused for lack of VRAM)
+    if (cs_ && cs_ != ext_stream_ && cs_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(
         cs_); // set_stream: the stage's stream, shared, not ours
-    if (sh_cs_) dpct::get_current_device().destroy_queue(sh_cs_);
-    if (copy_) { copy_->wait(); dpct::get_current_device().destroy_queue(copy_); }
+    if (sh_cs_ && sh_cs_ != cs_ && sh_cs_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(sh_cs_);
+    if (copy_) { copy_->wait(); if (copy_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(copy_); }   // (the default one when init never made the copy stream)
     if (commit_done_) dpct::destroy_event(commit_done_);
     if (ev_done_) dpct::destroy_event(ev_done_);
     if (ev_commit_) dpct::destroy_event(ev_commit_);
