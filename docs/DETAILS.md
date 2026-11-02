@@ -1376,6 +1376,7 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
 - [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) (MIT): the i-quant formats, the GPU dot products and dequantizers
   transcribed in `src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, the `mtmd` library behind the
   image encoder (`tools/vision/`), and `gguf-py` used by the tools. See `third_party/ggml/LICENSE`.
+- [antirez/ds4](https://github.com/antirez/ds4) (MIT, commit 890898cf): the Metal vision-tower kernels of the Mac DeepSeek engine (`metal/src/engine/msl/ds4_vision.metal`, `ds4_vision_metal.cpp`) follow its `metal/deepseek4_vision.metal` and the tower's host code. See `third_party/antirez-ds4/NOTICE.md`.
 - Ideas from [Splash](https://github.com/incoai/splash), [ninfer](https://github.com/Neroued/ninfer) and
   [HyperQwen](https://github.com/syv-ai/HyperQwen); references in the paper.
 - The DFlash2 drafter's Q4_0 selector (174 MiB less graphics memory, same drafts and same text) is nazeshinjite's idea:

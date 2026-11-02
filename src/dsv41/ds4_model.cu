@@ -31,6 +31,9 @@
 #include "ds4_pool.hpp"
 #include "ds4_store.hpp"
 #include "ds4_vision.cuh"
+#if defined(STRATA_GPU_METAL)
+#include "ds4_vision_metal.h"   // the Metal tower's capability marker
+#endif
 #include "strata/dsv41/exl3_cpu.hpp"
 #include "strata/dsv41/exl3.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -7736,6 +7739,11 @@ struct Model::Impl {
         CK(cudaSetDevice(d.id));
         CK(cudaMemGetInfo(&d.free0, &d.total));   // (the split sees what the tower left)
         d.free0 = uma_free(d.id, d.free0);
+#if defined(STRATA_GPU_METAL)
+        std::fprintf(stderr, "ds4: vision tower (%d blocks) on Metal: %.0f MiB, up to %d patches, %.1f s [%s]\n", vg.layers,
+                     (double) vt.device_bytes() / (1 << 20), vt.max_patches(), (now_ms() - t0) / 1000.0,
+                     strata::ds4::vismetal::marker());
+#endif
         if (o.verbose)
             std::fprintf(stderr, "ds4: vision tower (%d blocks) on CUDA%d: %.0f MiB%s, up to %d patches, %.1f s\n",
                          vg.layers, d.id, (double) vt.device_bytes() / (1 << 20),

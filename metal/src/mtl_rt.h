@@ -100,6 +100,8 @@ public:
     // compiler log on error.
     // Safe math unless STRATA_METAL_MATH=fast (the argument is ignored; kept for callers).
     int compile(const std::vector<std::string>& files, const std::string& prelude = "", bool fast_math = false);
+    // compile() that returns -1 (the compiler's message in *why) on a failure instead of ending the process
+    int compile_try(const std::vector<std::string>& files, const std::string& prelude, bool fast_math, std::string* why);
     Pipeline pipeline(int lib, const std::string& fn, const Constants& c = {});
 
     Buffer alloc(size_t bytes);                  // shared storage, zeroed
