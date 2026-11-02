@@ -15,7 +15,7 @@ NODE = shutil.which("node")
 
 
 def run_node(source: str) -> object:
-    done = subprocess.run([NODE, "-e", source], capture_output=True, text=True, timeout=60, check=True)
+    done = subprocess.run([NODE, "-e", source], capture_output=True, text=True, encoding="utf-8", timeout=60, check=True)   # node writes UTF-8; the locale code page (cp1252, cp932 ...) is not what it speaks
     return json.loads(done.stdout)
 
 

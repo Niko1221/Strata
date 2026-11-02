@@ -45,6 +45,27 @@ def draw(model, width=110, height=30, **kw) -> str:
     return c.export_text()
 
 
+class AsciiLook(unittest.TestCase):
+    """The ASCII look is pure ASCII: written to a stdout that cannot encode U+00B7 (cp852, cp874, cp932, ascii) it must not raise UnicodeEncodeError."""
+
+    def test_the_ascii_look_has_no_middle_dot(self):
+        for state in ("idle", "reading", "generating"):
+            text = draw(overview.build(metrics(state)), glyphs="ascii")
+            self.assertNotIn("·", text, state)      # (the box lines are rich's: it swaps them for + - | on a stream that cannot encode them)
+        self.assertIn("·", draw(overview.build(metrics("reading")), glyphs="unicode"), "the Unicode look keeps it")
+
+    def test_it_writes_to_strict_streams_of_the_legacy_code_pages(self):
+        from rich.console import Console as C
+        for enc in ("cp437", "cp852", "cp874", "cp932", "ascii"):
+            raw = io.BytesIO()
+            f = io.TextIOWrapper(raw, encoding=enc, errors="strict")
+            c = C(file=f, width=112, force_terminal=False, legacy_windows=False)
+            for state in ("idle", "reading", "generating"):
+                c.print(overview.render(overview.build(metrics(state)), width=110, height=30, connection="http://127.0.0.1:8080", glyphs="ascii"))
+            f.flush()
+            self.assertGreater(len(raw.getvalue()), 1000, enc)
+
+
 class Build(unittest.TestCase):
     def test_reading_state_and_progress(self):
         m = overview.build(metrics("reading"))
