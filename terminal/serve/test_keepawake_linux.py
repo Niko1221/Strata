@@ -43,7 +43,9 @@ INHIBIT_IFACE = "org.freedesktop.portal.Inhibit"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_IFACE = "org.freedesktop.login1.Manager"
 OWNER = '''import json, sys
+from serve import keepawake
 from serve.keepawake import KeepAwake
+keepawake.GRACE_S = 0.0
 ka = KeepAwake.create(True, say=lambda *a, **k: None)
 print(json.dumps(ka._backend.name if ka else None), flush=True)
 try:
@@ -109,6 +111,7 @@ def wait_for(condition, timeout=2.0):
                      "requires Linux, Jeepney, and dbus-daemon")
 class DbusBackendTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(mock.patch.object(keepawake, "GRACE_S", 0.0))
         self.bus = PrivateBus()
         self.addCleanup(lambda: self.bus.close())
 
@@ -167,7 +170,7 @@ class DbusBackendTests(unittest.TestCase):
         window, flags, options = inhibit.body
         self.assertEqual(window, "")
         self.assertEqual(flags, 4)
-        self.assertEqual(options["reason"], ("s", f"Strata inference running or queued (pid {os.getpid()})"))
+        self.assertEqual(options["reason"], ("s", f"Strata inference active or recently completed (pid {os.getpid()})"))
         self.assertEqual(options["handle_token"][0], "s")
         self.assertEqual(service.calls_named("Inhibit", LOGIN1_IFACE), [])
 
@@ -262,7 +265,7 @@ class DbusBackendTests(unittest.TestCase):
         self.assertIsInstance(fd, int)
         call = service.calls_named("Inhibit", LOGIN1_IFACE)[0]
         self.assertEqual(call.header.fields[HeaderFields.signature], "ssss")
-        self.assertEqual(call.body, ("idle", "Strata", f"Strata inference running or queued (pid {os.getpid()})", "block"))
+        self.assertEqual(call.body, ("idle", "Strata", f"Strata inference active or recently completed (pid {os.getpid()})", "block"))
         self.assertFalse(os.get_inheritable(fd))
 
         child = subprocess.run(
@@ -631,7 +634,7 @@ class DesktopTests(unittest.TestCase):
             owner.stdin.flush()
             self.assertEqual(reply(), "done")
 
-        reason = f"Strata inference running or queued (pid {owner.pid})"
+        reason = f"Strata inference active or recently completed (pid {owner.pid})"
 
         def holds():
             if backend == "XDG Desktop Portal suspend":

@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from serve import keepawake
@@ -71,6 +72,9 @@ def windows_controller(rec):
 
 
 class KeepAwakeTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(keepawake, "GRACE_S", 0.0))
+
     def test_acquire_attempts_the_hold_before_returning(self):
         rec = Recorder()
         ka = windows_controller(rec)
@@ -249,6 +253,27 @@ class KeepAwakeTests(unittest.TestCase):
         ka.acquire()
         self.assertFalse(inhibitor.held)
 
+    def test_last_release_cancels_pending_acquisition_without_grace(self):
+        inhibitor = Inhibitor()
+        entered, cancelled = threading.Event(), threading.Event()
+
+        def blocked_acquire(cancel):
+            entered.set()
+            if cancel.wait(2):
+                cancelled.set()
+            return False
+
+        inhibitor.acquire = blocked_acquire
+        ka = KeepAwake(inhibitor, say=mock.Mock())
+        self.addCleanup(ka.close)
+        request = threading.Thread(target=ka.acquire, daemon=True)
+        request.start()
+        self.assertTrue(entered.wait(1))
+        ka.release()
+        self.assertTrue(cancelled.wait(1))
+        request.join(1)
+        self.assertFalse(request.is_alive())
+
     def test_retry_recovers_the_selected_backend_without_repeating_the_warning(self):
         failing = Inhibitor(failures=2)
         ka = KeepAwake(failing, say=mock.Mock())
@@ -301,7 +326,201 @@ class KeepAwakeTests(unittest.TestCase):
             self.assertEqual(ka._say.call_count, 1, "repeated clear failures should report once until recovery")
 
 
+class GracePeriodTests(unittest.TestCase):
+    def setUp(self):
+        self.now = 1000.0
+        self.enterContext(mock.patch.object(keepawake, "time", SimpleNamespace(monotonic=lambda: self.now)))
+        self.inhibitor = Inhibitor()
+        self.ka = KeepAwake(self.inhibitor, say=mock.Mock())
+        self.addCleanup(self.ka.close)
+        self.waiting = threading.Event()
+        original_wait = self.ka._cond.wait
+
+        def worker_wait(timeout=None):
+            if threading.current_thread() is self.ka._thread:
+                self.waiting.set()
+            return original_wait(timeout)
+
+        self.ka._cond.wait = worker_wait
+
+    def advance(self, seconds=0, *, settle=True):
+        # Wake the worker after moving its clock, and optionally wait for it
+        # to finish processing before checking that a hold remains in place.
+        with self.ka._cond:
+            self.waiting.clear()
+            self.now += seconds
+            self.ka._cond.notify_all()
+        if settle:
+            self.assertTrue(self.waiting.wait(1), "the worker did not settle")
+
+    def test_last_request_holds_for_two_minutes_then_releases(self):
+        self.ka.acquire()
+        self.ka.release()
+        self.advance(119)
+        self.assertTrue(self.inhibitor.held)
+        self.advance(1)
+        self.assertFalse(self.inhibitor.held)
+        self.assertEqual(self.inhibitor.calls, ["on", "off"])
+
+    def test_next_request_reuses_the_hold_and_restarts_grace_when_it_finishes(self):
+        self.ka.acquire()
+        self.ka.release()
+        self.advance(90)
+        self.ka.acquire()
+        self.ka.release()
+        self.advance(30)  # the previous batch's deadline
+        self.assertEqual(self.inhibitor.calls, ["on"])
+        self.advance(89)
+        self.assertTrue(self.inhibitor.held)
+        self.advance(1)
+        self.assertEqual(self.inhibitor.calls, ["on", "off"])
+
+    def test_overlapping_requests_start_grace_only_after_the_last_finishes(self):
+        self.ka.acquire()
+        self.ka.acquire()
+        self.ka.release()
+        self.advance(120)
+        self.assertTrue(self.inhibitor.held)
+        self.ka.release()
+        self.advance(119)
+        self.assertTrue(self.inhibitor.held)
+        self.advance(1)
+        self.assertFalse(self.inhibitor.held)
+
+    def test_extra_idle_releases_do_not_extend_grace(self):
+        self.ka.acquire()
+        self.ka.release()
+        self.advance(60)
+        self.ka.release()
+        self.advance(60)
+        self.assertFalse(self.inhibitor.held)
+
+    def test_acquisition_recovery_during_grace_does_not_extend_it(self):
+        self.inhibitor.failures = 2
+        self.ka.acquire()
+        self.ka.release()
+        self.advance(5)
+        self.assertFalse(self.inhibitor.held)
+        self.advance(5)
+        self.assertTrue(self.inhibitor.held)
+        self.advance(109)
+        self.assertTrue(self.inhibitor.held)
+        self.advance(1)
+        self.assertFalse(self.inhibitor.held)
+        self.assertEqual(self.inhibitor.calls, ["on", "on", "on", "off"])
+
+    def test_shutdown_releases_without_waiting_for_grace(self):
+        self.ka.acquire()
+        self.ka.release()
+        self.advance()
+        self.assertTrue(self.inhibitor.held)
+        self.ka.close()
+        self.assertFalse(self.inhibitor.held)
+        self.assertFalse(self.ka._thread.is_alive())
+
+    def test_request_during_grace_waits_for_a_health_check_that_shutdown_can_cancel(self):
+        self.ka.acquire()
+        self.ka.release()
+        entered, cancelled, acquired = (threading.Event() for _ in range(3))
+
+        def blocked_check(cancel):
+            entered.set()
+            if cancel.wait(2):
+                cancelled.set()
+            return False
+
+        self.inhibitor.acquire = blocked_check
+        self.advance(5, settle=False)  # the idle worker starts a health check
+        self.assertTrue(entered.wait(1))
+        request = threading.Thread(target=lambda: (self.ka.acquire(), acquired.set()), daemon=True)
+        request.start()
+        self.assertTrue(wait_for(lambda: self.ka._count == 1))
+        self.assertFalse(acquired.is_set(), "a stale acknowledgement bypassed the health check")
+        self.ka.close()
+        self.assertTrue(cancelled.is_set())
+        self.assertTrue(acquired.wait(1))
+        request.join(1)
+        self.assertFalse(self.inhibitor.held)
+
+    def test_acquisition_finishing_after_expiry_is_released(self):
+        entered, finish, acquired = (threading.Event() for _ in range(3))
+        self.addCleanup(finish.set)
+        acquire = self.inhibitor.acquire
+
+        def delayed_acquire(cancel):
+            entered.set()
+            finish.wait(2)
+            return acquire(cancel)
+
+        self.inhibitor.acquire = delayed_acquire
+        request = threading.Thread(target=lambda: (self.ka.acquire(), acquired.set()), daemon=True)
+        request.start()
+        self.assertTrue(entered.wait(1))
+        self.ka.release()
+        self.advance(120, settle=False)
+        finish.set()
+        self.assertTrue(acquired.wait(1))
+        request.join(1)
+        self.advance()
+        self.assertEqual(self.inhibitor.calls, ["on", "off"])
+
+    def test_request_during_release_waits_for_reacquisition(self):
+        entered, finish, acquired = (threading.Event() for _ in range(3))
+        self.addCleanup(finish.set)
+        release = self.inhibitor.release
+
+        def delayed_release():
+            entered.set()
+            finish.wait(2)
+            release()
+
+        self.inhibitor.release = delayed_release
+        self.ka.acquire()
+        self.ka.release()
+        self.advance(120, settle=False)
+        self.assertTrue(entered.wait(1))
+        request = threading.Thread(target=lambda: (self.ka.acquire(), acquired.set()), daemon=True)
+        request.start()
+        self.assertFalse(acquired.wait(0.05), "a stale acknowledgement let work start during release")
+        finish.set()
+        self.assertTrue(acquired.wait(1))
+        request.join(1)
+        self.assertEqual(self.inhibitor.calls, ["on", "off", "on"])
+        self.ka.release()
+        self.advance(119)
+        self.assertTrue(self.inhibitor.held)
+        self.advance(1)
+        self.assertFalse(self.inhibitor.held)
+
+    def test_service_terminal_paths_start_grace(self):
+        for outcome in ("completed", "cancelled", "exception", "stream_closed"):
+            with self.subTest(outcome=outcome):
+                tok = ByteTokenizer()
+                svc = Service(MockEngine(tok, "ok"), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                svc.keep_awake = self.ka
+                cancel = threading.Event()
+                if outcome == "cancelled":
+                    cancel.set()
+                gen = svc.run(tok.encode("hi"), False, None, 8, {}, cancel)
+                if outcome == "exception":
+                    with mock.patch.object(svc, "_run", side_effect=RuntimeError("request failed")):
+                        with self.assertRaisesRegex(RuntimeError, "request failed"):
+                            list(gen)
+                elif outcome == "stream_closed":
+                    next(gen)
+                    gen.close()
+                else:
+                    list(gen)
+                self.advance(119)
+                self.assertTrue(self.inhibitor.held)
+                self.advance(1)
+                self.assertFalse(self.inhibitor.held)
+
+
 class SelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(keepawake, "GRACE_S", 0.0))
+
     def test_factory_uses_injected_backends_and_stops_at_the_first_success(self):
         for winner in (0, 1, 2, None):
             with self.subTest(winner=winner):
