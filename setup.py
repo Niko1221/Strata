@@ -825,10 +825,13 @@ if DSV41_CODER_REPO:
 # the Coder repository's own picture file has Unsloth's tensors under another header (and so another size and SHA-256): a copy of it already here is accepted as the shared
 # picture file (find_shared / verify_sha256), and nothing is fetched under its name
 DSV41_ALT_FILES = {DSV41_MMPROJ: [DSV41_CODER_FILES[DSV41_CODER["mmproj"]]]} if DSV41_CODER_REPO else {}
+# ... and a copy of it under ITS OWN name (the official repository's mmproj-DeepSeek-V4.1-Flash-1017-BF16.gguf, beside the shards from `hf download` or a hard link) is found as the
+# picture file too, so the plan and the fetch agree: nothing is downloaded when the person has it (DF2-STRIX, 2026-11-02: it was fetched a second time under the shared name)
+DSV41_ALT_NAMES = {DSV41_MMPROJ: (DSV41_CODER["mmproj"],)} if (DSV41_CODER_REPO and DSV41_CODER.get("mmproj") and DSV41_CODER["mmproj"] != DSV41_MMPROJ) else {}
 # The Coder repository's Engram file is the unpruned release's Engram under the same name (DSV41_ISTA_ENGRAM, converted: DSV41_ENGRAM_CONVERTED's SHA-256, accepted beside the pinned one
 # by DSV41_SHA_ALSO), so it never replaces that pin: one Engram file, on the SSD, shared by every set (a copy of either file already here is used where it is).
 DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES,
-                   **{n: v for n, v in DSV41_CODER_FILES.items() if n not in (DSV41_CODER.get("mmproj"), DSV41_ISTA_ENGRAM)}}
+                   **{n: v for n, v in DSV41_CODER_FILES.items() if n not in (DSV41_MMPROJ, DSV41_ISTA_ENGRAM)}}
 
 
 def dsv41_also(name: str) -> tuple:
@@ -8498,7 +8501,7 @@ def dsv41_find_shared(a, name: str, folder: Path, shared: Path, alt: tuple = ())
     """The file `name` (an Engram, the drafter, ...) the person already has: in the shared folder, beside the shards, or (--gguf-dir) in the
     folder above them or one folder level down from either; else where it will be downloaded to (the shared folder).  The size must be the
     pinned one, so a half-copied file is not taken for the file."""
-    names = [n for n in (name, DSV41_LEGACY_NAMES.get(name), *alt) if n]       # today's name, the first release's (the same weights), and `alt` (an Unsloth set's own shard 5: the same Engram data)
+    names = [n for n in (name, DSV41_LEGACY_NAMES.get(name), *alt, *DSV41_ALT_NAMES.get(name, ())) if n]       # today's name, the first release's (the same weights), and `alt` (an Unsloth set's own shard 5: the same Engram data)
     roots = [shared, folder]
     if a.gguf_dir:
         base = Path(a.gguf_dir)

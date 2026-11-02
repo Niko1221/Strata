@@ -251,7 +251,8 @@ class SharedFetch(unittest.TestCase):
         self.own.mkdir()
         self.models.mkdir()
         self.eng, self.drf, self.mm = setup.DSV41_ISTA_ENGRAM, setup.DSV41_DSPARK, setup.DSV41_MMPROJ
-        p = mock.patch.dict(setup.DSV41_ALL_FILES, {self.eng: (7, "a" * 64), self.drf: (11, "b" * 64), self.mm: (5, "c" * 64),
+        self.cm = setup.DSV41_CODER["mmproj"]                  # the official repository's own name for the picture file
+        p = mock.patch.dict(setup.DSV41_ALL_FILES, {self.eng: (7, "a" * 64), self.drf: (11, "b" * 64), self.mm: (5, "c" * 64), self.cm: (6, "d" * 64),
                                                     setup.DSV41_LEGACY_NAMES[self.eng]: (7, "a" * 64)})
         p.start()
         self.addCleanup(p.stop)
@@ -273,6 +274,25 @@ class SharedFetch(unittest.TestCase):
         (self.own / "deeper").mkdir()
         (self.own / "deeper" / setup.DSV41_LEGACY_NAMES[self.eng]).write_bytes(b"x" * 7)
         self.assertNotIn(self.eng, [n for n, _ in self.missing()])
+
+    def test_the_coders_own_picture_file_beside_the_shards_is_the_picture_file_and_is_not_fetched(self):
+        """DF2-STRIX, 2026-11-02: mmproj-DeepSeek-V4.1-Flash-1017-BF16.gguf hard-linked beside the shards, the plan said "Nothing to download" and setup fetched mmproj-BF16.gguf (1 GB) again."""
+        self.assertNotEqual(self.cm, self.mm)
+        self.assertEqual(setup.DSV41_ALT_NAMES, {self.mm: (self.cm,)})
+        (self.own / self.eng).write_bytes(b"x" * 7)
+        (self.own / self.drf).write_bytes(b"x" * 11)
+        (self.own / self.cm).write_bytes(b"x" * 6)
+        a = type("A", (), {"gguf_dir": str(self.own), "models_dir": str(self.models)})()
+        found = setup.dsv41_find_shared(a, self.mm, self.own, self.models / "shared")
+        self.assertEqual(found, self.own / self.cm)
+        self.assertEqual(self.missing(vision=True), [])                                   # the plan counts nothing: it asks the same search
+        self.assertEqual(setup.dsv41_pin_of(found, setup.MULTI_FILE_FAMILIES["deepseek41"]["sha256"][found.name]), (6, "d" * 64))      # and the install checks it against ITS pin
+
+    def test_the_coders_picture_file_of_another_size_is_not_taken(self):
+        (self.own / self.eng).write_bytes(b"x" * 7)
+        (self.own / self.drf).write_bytes(b"x" * 11)
+        (self.own / self.cm).write_bytes(b"x" * 2)
+        self.assertEqual([n for n, _ in self.missing(vision=True)], [self.mm])
 
     def test_a_wrong_sized_file_is_not_taken_for_the_file(self):
         (self.own / self.eng).write_bytes(b"x" * 3)
