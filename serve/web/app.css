@@ -106,18 +106,18 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
 .monitor-row { display: grid; grid-template-columns: minmax(min(260px, 100%), 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
-/* the KV donut: what the KV cache holds now - Cached (prefix) | Reading | Generating | Free (the closed rest of the circle) */
-.kv-wrap { position: relative; width: 157px; height: 157px; margin: 3px auto var(--st-s-3); }   /* 157 px box paints a 155 px ring */
+/* the KV donut: what the cache holds now - cached prefix, reading, generating, free */
+.kv-wrap { position: relative; width: 157px; height: 157px; margin: 3px auto var(--st-s-3); }
 .kv-ring { width: 157px; height: 157px; }
-/* no dash transition on the arcs: four adjacent arcs share quantized seams, and a dash re-interpolation moves each arc toward its own new endpoints independently, opening those seams mid-animation; the arcs move only with real polled data */
+/* no dash transition: it opens the shared seams mid-animation; arcs move only with polled data */
 .kv-seg { stroke-linecap: butt; }   /* zero-bleed joints */
-/* arc colours are the Model state's own kit tokens, theme-adaptive with no literals of ours: Reading var(--st-info) (the kit's Reading colour, the family the Reading state badge draws from — arc and state can never desync), decode the accent token, Cached the card's line token, Free the card surface */
+/* arc colours are the kit's own state tokens, so an arc and its state badge can never desync */
 .kv-seg--reuse { stroke: var(--st-line); } .kv-seg--prefill { stroke: var(--st-info); }
 .kv-seg--decode { stroke: var(--st-accent); } .kv-seg--free { stroke: var(--st-surface); }
-/* the frame along both band edges (outer r 58.3, inner r 34.7 ≈ 2 px), in the line token — continuous with the Cached arc */
+/* the frame edges the band in the line token, continuous with the cached arc */
 .kv-frame { stroke: var(--st-line); }
 .kv-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-             font-size: var(--st-fs-xs); }   /* the text shares the ring's centre */
+             font-size: var(--st-fs-xs); }
 .kv-pct { font-weight: var(--st-fw-black); font-size: var(--st-fs-xl); line-height: 1.1; font-variant-numeric: tabular-nums; }
 /* saturation tones from the kit's own tokens: --st-warn from 85 %, --st-danger at overflow */
 .kv-pct[data-tone="warn"] { color: var(--st-warn); }
@@ -126,18 +126,18 @@ main { flex: 1; min-height: 0; display: flex; }
 .kv-legend { list-style: none; margin: 0 auto; max-width: 340px; width: 100%; box-sizing: border-box; padding: 0; display: grid; gap: var(--st-s-2); }
 .kv-legend li { display: flex; align-items: center; gap: var(--st-s-2); font-size: var(--st-fs-sm);
                 font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
-/* the row carrying real tokens is full bright; every other row's text dims to the kit's muted text — never by opacity, so dim text stays AA-readable; colour squares never dim, idle alike */
+/* dim rows change colour, never opacity, so dim text stays AA-readable; chips never dim */
 .kv-legend li span:not(.kv-key) { transition: color var(--st-dur); }
-/* the live row's number burns with its label (--st-ink), never a gray count beside a lit name */
+/* the lit row keeps its number bright, never a gray count beside a lit name */
 .kv-legend li:not(.dim) .muted { color: var(--st-ink); }
-/* the legend is one fixed column grid for header and rows: label in the flexible middle, percents and tokens right-aligned; lit and dim rows share one typography */
+/* header and rows share one fixed column grid, so every row aligns in any state */
 .kv-leg-head { display: flex; align-items: center; gap: var(--st-s-2); width: 100%; box-sizing: border-box;
                margin: 0 auto; max-width: 340px; font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
 .kv-leg-head > span:nth-child(2), .kv-legend li > span:nth-child(2) { flex: 1 1 auto; min-width: 0; }
 .kv-key-space { width: 10px; flex: none; }
 .kv-legend .kv-col, .kv-leg-head .kv-col { min-width: 40px; text-align: right; font-weight: inherit; margin-left: 0; color: inherit; }
 .kv-legend li.dim span:not(.kv-key), .kv-leg-head .kv-col { color: var(--st-ink-muted); }
-/* swatch chips are framed in the card's line colour (2px); each chip draws the same token as its arc */
+/* each chip draws the same token as its arc */
 .kv-key { width: 10px; height: 10px; border-radius: 3px; flex: none; box-shadow: 0 0 0 2px var(--st-line); }
 .kv-key--reuse { background: var(--st-line); } .kv-key--prefill { background: var(--st-info); }
 .kv-key--decode { background: var(--st-accent); } .kv-key--free { background: var(--st-surface); }

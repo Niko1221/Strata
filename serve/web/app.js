@@ -12,7 +12,7 @@ const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
 // an honest percentage, floored to a tenth: 99.977 -> "99.9", never a rounded-up false 100
 const pctFloor = (x) => `${(Math.floor(1000 * x + 1e-9) / 10).toFixed(1)}%`;
-// the one reading-arc arithmetic: the engine's prompt_read is an inclusive position (the PP protocol counts the RESUME prefix): subtract it; nothing is confirmed before the first reported chunk, the arc only grows
+// prompt_read includes the reused prefix: subtract it; the arc only grows
 const kvRead = (p, reused, read) => { const r = Math.min(reused || 0, p), rem = Math.max(0, p - r); return !read ? 0 : Math.min(Math.max(0, read - r), rem); };
 const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
 
@@ -417,61 +417,60 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-// context fill as a KV donut of max_context: Cached is the RESUME prefix, Reading extends with reported progress, Generating extends token by token, Free is the true remainder; on the quiet the kept context is one merged Cached arc (per-request anatomy stays in the history)
+// a KV donut of max_context: cached prefix, read progress, generated tokens, free remainder
 function renderKvDonut(live, eng, last, on) {
   const ctx = eng.max_context || 0;
   let segReuse = 0, segRead = 0, segGen = 0, used = 0, eff = 0, merged = false;
   if (live.state === "reading") {
     const p = live.prompt_tokens || 0;
     segReuse = Math.min(live.reused || 0, p);                                        // the prefix already in VRAM
-    segRead = kvRead(p, live.reused, live.prompt_read);                             // the prefix is not recounted; the arc extends with the engine's reported progress
+    segRead = kvRead(p, live.reused, live.prompt_read);
     used = segReuse + segRead;
     eff = p ? segReuse / p : 0;
   } else if (live.state === "generating") {
     const p = live.prompt_tokens || 0;                       // prefill finished: the prompt is entirely in the ring
     segReuse = Math.min(live.reused || 0, p);
     segRead = Math.max(0, p - segReuse);
-    segGen = Math.max(0, live.generated || 0);                                      // extends token by token, forward
+    segGen = Math.max(0, live.generated || 0);
     used = p + segGen;
     eff = p ? segReuse / p : 0;
   } else if (live.state === "idle" && last) {
-    // the quiet: the kept context as one merged Cached arc, with no percent of its own (the per-request anatomy stays in the history)
+    // the quiet: the kept context as one merged Cached arc, with no percent of its own
     used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
     segReuse = used;
     merged = true;
   }
   const free = Math.max(0, ctx - used);
-  // a request larger than the window scales every segment by ctx/used — the ring stays an honest mirror
+  // a request larger than the window scales every segment: the ring stays an honest mirror
   const scale = ctx > 0 && used > ctx ? ctx / used : 1;
-  const R = 46.5;                                                       // 22 units at r 46.5 paints a 155 px ring in the 157 px box; the markup carries the geometry, only the dash is computed
-  const C = 2 * Math.PI * R;                                            // the whole circle: the four segments sum to it or to less
-  // shared seams: each junction is quantized exactly once — an arc ends at exactly the seam the next arc begins, in both attributes, zero gap by construction
+  const R = 46.5;
+  const C = 2 * Math.PI * R;
+  // shared seams: each junction is quantized once, so adjacent arcs butt-joint with zero gap
   let edge = 0;
   for (const [id, v] of [["kv-seg-reuse", segReuse], ["kv-seg-prefill", segRead], ["kv-seg-decode", segGen], ["kv-seg-free", free]]) {
-    const seam = Math.round(edge * 1000) / 1000;                   // the single quantized number both sides of this junction read
-    edge += ctx ? (v * scale / ctx) * C : 0;                       // no context reported: an empty ring, no NaN
-    const end = Math.round(edge * 1000) / 1000;                    // the same quantization the next arc's seam uses — the two arcs butt-joint exactly
+    const seam = Math.round(edge * 1000) / 1000;
+    edge += ctx ? (v * scale / ctx) * C : 0;
+    const end = Math.round(edge * 1000) / 1000;
     const el = $(id);
     el.setAttribute("stroke-dasharray", `${(end - seam).toFixed(3)} ${C.toFixed(1)}`);
     el.setAttribute("stroke-dashoffset", `${(-seam).toFixed(3)}`);
   }
-  const usedPct = ctx ? Math.floor(100 * used / ctx) : 0;   // the centre count: the true share, rounded down — 131000 of 131072 is 99 %, not a false 100 %
+  const usedPct = ctx ? Math.floor(100 * used / ctx) : 0;
   $("kv-pct").textContent = ctx ? `${usedPct}%` : "–";
-  // saturation tones from the kit's own tokens: warn at >= 85 %, danger only on a real overflow against a known window (a zero ctx is "no context reported", never an overflow)
+  // warn from 85 %, danger only on a real overflow against a known window
   $("kv-pct").dataset.tone = ctx > 0 && used > ctx ? "danger" : usedPct >= 85 ? "warn" : "";
   $("kv-pct").title = ctx ? `${used.toLocaleString()} / ${ctx.toLocaleString()} tokens` : "";
   $("kv-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
-  // never a false 100 % while the tail is still being read: "100 %" belongs only to a prefix that covers the whole prompt (eff >= 1) with no read progress outstanding, floored to a tenth otherwise
+  // "100%" only when the prefix covers the whole prompt with no read outstanding
   const effPct = (segRead === 0 && eff >= 1) ? "100%"
                : eff > 0 ? pctFloor(eff)
                : "0%";
   $("kv-leg-reuse").textContent = kfmt(segReuse);
-  // the merged quiet ring shows no percent of its own; a zero-reuse request clears the cell
   $("kv-leg-reuse-pct").textContent = segReuse > 0 && !merged ? effPct : "";
   $("kv-leg-prefill").textContent = kfmt(segRead);
   $("kv-leg-decode").textContent = kfmt(segGen);
   $("kv-leg-free").textContent = kfmt(free);
-  // the legend lamp follows the Model-state key `on` (which badge the card lights): reading lights Reading, generating lights Generating, anything else — idle, unloaded, queued, error — lights Free
+  // the lamp follows the Model-state key on: reading->prefill, generating->decode, else free
   const lamp = on === "reading" ? "prefill" : on === "generating" ? "decode" : "free";
   for (const k of ["reuse", "prefill", "decode", "free"]) $(`kv-leg-${k}`).closest("li").classList.toggle("dim", k !== lamp);
 }

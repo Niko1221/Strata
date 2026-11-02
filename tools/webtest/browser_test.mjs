@@ -731,6 +731,7 @@ test("KV ring: kvTokens geometry - clamps, floors, merged idle, empty ring, over
       return Object.assign({name}, readRing());
     };
     const E = ENG, CTX0 = Object.assign({}, ENG, {max_context: 0});
+    const W = Object.assign({}, ENG, {max_context: 10000});                     // a small window so tone thresholds land on exact percentages
     return [
       edgeRun("reading_clamps_reused", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1400, prompt_read: 200, reused: 1500}, E, null, "reading"),
       edgeRun("reading_no_read", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, reused: 0}, E, null, "reading"),
@@ -743,6 +744,9 @@ test("KV ring: kvTokens geometry - clamps, floors, merged idle, empty ring, over
       edgeRun("idle_no_last", {state: "idle", queued: 0}, E, null, "idle"),
       edgeRun("ctx_zero", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, prompt_read: 500, reused: 0}, CTX0, null, "reading"),
       edgeRun("overflow_scaled", {state: "generating", queued: 0, prompt_tokens: 2000, max_tokens: 1000, generated: 1000, tok_s: 33.2, reused: 400}, Object.assign({}, ENG, {max_context: 1000}), null, "generating"),
+      edgeRun("tone_warn_90", {state: "reading", queued: 0, prompt_tokens: 9000, prompt_total: 9000, prompt_read: 9000, reused: 3000}, W, null, "reading"),
+      edgeRun("tone_warn_85", {state: "reading", queued: 0, prompt_tokens: 8500, prompt_total: 8500, prompt_read: 8500, reused: 3000}, W, null, "reading"),
+      edgeRun("tone_none_849", {state: "reading", queued: 0, prompt_tokens: 8490, prompt_total: 8490, prompt_read: 8490, reused: 3000}, W, null, "reading"),
     ];
   }, KV.hw, KV.st, KV.eng, KV.h);
   const C = 2 * Math.PI * 46.5;                                                // the ring's full circle, as renderKvDonut computes it
@@ -759,6 +763,9 @@ test("KV ring: kvTokens geometry - clamps, floors, merged idle, empty ring, over
     {name: "idle_no_last", ctx: 32768, tok: [0, 0, 0, 32768], pct: "0%", tone: "", reusePct: "", sub: "0 / 32K", nonDim: "free"},
     {name: "ctx_zero", ctx: 0, tok: [0, 0, 0, 0], pct: "–", tone: "", reusePct: "", sub: "–", nonDim: "prefill"},   // the served dash: U+2013
     {name: "overflow_scaled", ctx: 1000, tok: [400, 1600, 1000, 0], pct: "300%", tone: "danger", reusePct: "20.0%", sub: "3.0k / 1.0k", nonDim: "decode"},
+    {name: "tone_warn_90", ctx: 10000, tok: [3000, 6000, 0, 1000], pct: "90%", tone: "warn", reusePct: "33.3%", sub: "9.0k / 10k", nonDim: "prefill"},
+    {name: "tone_warn_85", ctx: 10000, tok: [3000, 5500, 0, 1500], pct: "85%", tone: "warn", reusePct: "35.2%", sub: "8.5k / 10k", nonDim: "prefill"},
+    {name: "tone_none_849", ctx: 10000, tok: [3000, 5490, 0, 1510], pct: "84%", tone: "", reusePct: "35.3%", sub: "8.5k / 10k", nonDim: "prefill"},
   ];
   const errs = [];
   console.log("  kvTokens edge cases");
