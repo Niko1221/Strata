@@ -245,6 +245,7 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         # are missing: its download calls acquisition.require first (refused under STRATA_NO_ACQUIRE, so a start or a server never reaches it).
         harmless = ('MODEL_CARD_URL = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"',
                     'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"',
+                    'https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF',   # the credit link in drafting.py's comment and drafting_fetch.py's docstring (nothing opens it)
                     'HF_DEFAULT = "https://huggingface.co"',
                     'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)')
         found = []
