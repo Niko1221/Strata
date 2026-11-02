@@ -1,6 +1,6 @@
 """两条更新路线，一个接口：`rule.step(loss_fn) -> metrics`。
 
-为什么要有这个文件：`sft.py`（反传）与 `sft_mezo.py`（零阶）各自写了一遍「怎么把 loss
+为什么要有这个文件：`sft.py`（反传）与 `hf_ref.py`（零阶）各自写了一遍「怎么把 loss
 变成参数更新」。两支的**目标函数**已经统一到 `objectives.py` 了，但更新那一半还是两份：
 反传那边是 `loss.backward(); opt.step()`，零阶那边是「±ε 扰动两次前向 + 方向导数 + 手写
 SGD」。于是「同一算法换路线」要改两处，而日志字段、momentum 语义、fp32 cast 时机各说各话。
@@ -122,7 +122,7 @@ class MezoRule:
 
     `loss_fn` 里**不能**出现 `.backward()` —— 这里整段在 `no_grad` 下跑，图不会存在。
 
-    `queries > 1` 时每步采 K 个独立方向、各测一次方向导数再平均（原 `sft_mezo.py`
+    `queries > 1` 时每步采 K 个独立方向、各测一次方向导数再平均（原 `hf_ref.py`
     的 `--queries`）：每方向 2 次前向，方差降 √K，时间线性上升。
     """
 

@@ -1,6 +1,6 @@
 """MeZO 小规模自验证：ZO 梯度估计必须与 autograd 真梯度方向一致、量级正确。
 
-不碰 125B 就先证明优化器核心是对的 —— 这是写 sft_mezo.py 之前的地基。
+不碰 125B 就先证明优化器核心是对的 —— 这是写 hf_ref.py 之前的地基。
 MeZO (Malladi et al., NeurIPS 2023) 的估计量：
 
     ĝ = (L(θ+εz) − L(θ−εz)) / (2ε) · z ,   z ~ N(0, I)
@@ -88,7 +88,7 @@ for k, lo in ((64, 0.03), (4096, 0.25)):
 
 # 3) 端到端：ZO-SGD 必须能降 loss。参数区是实测出来的（同次扫描）：
 #    lr 1e-2 / lr 1e-3+momentum0.9 都发散——零阶噪声比信号大 ~√d 倍，动量会放大噪声，
-#    默认必须保守（sft_mezo.py 默认 momentum=0）。
+#    默认必须保守（hf_ref.py 默认 momentum=0）。
 lr = 1e-3
 l0 = float(loss_fn(W))
 for step in range(400):

@@ -79,7 +79,7 @@
 
 ¹ nvidia-smi 口径，含专家缓存；账面需求见上一节。两次峰值差 8 MiB，等于没差。
 
-> 表里「mezo（PyTorch）」是 `sft_mezo.py`，已退出注册表，只留作 score parity 对拍
+> 表里「mezo（PyTorch）」是 `hf_ref.py`，已退出注册表，只留作 score parity 对拍
 > （HF CE −56.6433 vs 引擎 −56.6508）。**`bench_limits.json` 里 `mode=mezo` 的行是它，
 > 不是当前默认路线**，别把 49K 当成零阶的上限。
 

@@ -1,7 +1,7 @@
 """三种算法的目标函数：一处定义，反传与零阶两条线共用。
 
 为什么要有这个文件：CE / DPO / GRPO 的损失数学原先在三个地方各写了一遍
-（`sft.py` / `dpo.py` / `grpo.py` 各一份反传版，`sft_mezo.py` 一份 no_grad 版，
+（`sft.py` / `dpo.py` / `grpo.py` 各一份反传版，`hf_ref.py` 一份 no_grad 版，
 `bench_fullctx.py` 又来一份），三份 GRPO 的归一化只是**碰巧**一致。哪天有人给其中
 一处加个 mask，三份立刻分叉，而日志看起来都正常。
 

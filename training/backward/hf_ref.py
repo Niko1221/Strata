@@ -1,11 +1,24 @@
-"""MeZO 训练器（feat/zo-mezo 分支）：只靠前向的零阶优化，与反传训练器（sft.py）并存对比。
+"""PyTorch/HF 参考前向：在 torch 侧独立算 logp，给引擎路径当对拍基准。
 
-为什么单独开分支 —— 两条路线的分工（2026-10-29 定）：
-  sft.py       PyTorch autograd 反传：每步 1 前向 + 1 反传（+ckpt 重算），梯度精确，
-               但需要保留计算图/重算激活，T=2048 全命中时 --ckpt 不可避免。
-  sft_mezo.py  MeZO (Malladi et al., NeurIPS 2023, princeton-nlp/MeZO)：每步 2 前向、
-               0 反传。全程 no_grad —— 内存占用=推理占用，无 ckpt、无计算图、无
-               packed 字节滞留。这正是"从推理侧 logprobs 直接优化 LoRA"的严格形态。
+**它不是一条 `--method`。** 命令面是两轴（`algos.py` 的 `ALGOS × METHODS`）：
+
+    --algo   {sft,dpo,grpo}    算法 = 目标函数在量什么（`objectives.py`，只有一份）
+    --method {mezo,backward}   方法 = 怎么动参数（前向从哪来、梯度怎么估）
+
+mezo 的实现是 `mezo/mezo.py`（引擎 `SCORE` 当前向 + 有限差分），backward 的实现是
+`sft.py` / `grpo.py`（autograd）。**本文件在两轴的任何一格上都不是实现** —— `train.py`
+不会把 `--method mezo` 路由到这里，它也不在 `METHODS` 的任何一项里。
+
+那它为什么还在：它 import torch（`from sft import ...` + `nf4` 加载栈），物理上属于 torch
+层（`backward/`），职责只剩「用 HF + NF4 那条前向栈独立算出参考 logp」—— 与引擎的
+`SCORE` 逐值对比（审核文档 §5.5：HF −56.6433 vs 引擎 −56.6508）。对拍要两侧实现互相
+独立才有意义，所以这里不复用引擎的 C++ 路径，只共用 `objectives.py` 的公开数学。
+
+文件名的 `_mezo` 是历史包袱，别按它理解现在的结构：方法轴抽出来之前是「一个方法一个
+文件、每个文件里各自实现一遍算法」，旧名正是 sft 算法 × mezo 方法的连写。拆分后算法只剩
+一份数学，方法只剩"前向从哪来"这一点差异，于是它退化成对拍基准（2026-11-03 从
+`mezo/sft_mezo.py` 挪到 `backward/` 并改名，就是把这个错位摆正）。`--steps` 模式仍然能
+跑完整训练，用途是复现历史 bench（`BENCH-SFT-VS-MEZO.md`），不是一条可选训练路线。
 
 算法（对称差分 + 种子再生）：
     pj = (L(θ+εz) − L(θ−εz)) / (2ε)          一次 z 采样的方向导数估计
@@ -20,13 +33,14 @@ loss 1.61→1.10。重要实测教训（写进默认值）：
     d=32768 玩具问题上发散 ⇒ 默认 momentum=0，lr 从 1e-6 起。
   - bf16 参数吃不动 1e-6 量级更新（bf16 相对精度 ~0.4%）⇒ LoRA A/B 保存在 fp32。
 
-与引擎的关系（对接缝，本文件不实现）：优化器核心只需要一个"给定点集上的目标
-token logprob"的前向。将来引擎加一个"运行时叠加 LoRA delta（ε·z 由 seed 现算，
-只叠加命中专家/线性层）+ 返回目标 logprob"的接口，本文件的循环体原样换成
-engine forward，内存/显存/调度全部交还引擎 —— 那才是这条路线的完全体。
+与引擎的关系（这段已于 2026-10-31 落地，不再是"将来"）：优化器核心只需要一个"给定点集
+上的目标 token logprob"的前向。引擎补了 `LORA <path>`（原地换表）+ `SCORE <ids>`
+（teacher-forced 逐位置 logp）之后，本文件的循环体被 `mezo/mezo.py` 整段接走了 —— 前向
+交给引擎进程、显存交还推理基线，那才是这条路线的完全体。留在本文件的是**前向那一侧**：
+HF + NF4 的独立实现，用来问"引擎算得对不对"。
 
-用法示例：
-  python3 sft_mezo.py --gguf <shards...> --pack /root/experts_nf4.bin \
+用法示例（对拍；`--steps` 跑训练只为复现历史 bench）：
+  python3 backward/hf_ref.py --gguf <shards...> --pack /root/experts_nf4.bin \
       --tokenizer <权重目录>/tokenizer --steps 20 --lr 1e-6 \
       --targets o_proj,out_proj --out /tmp/lora_mezo.pt
 
@@ -36,15 +50,16 @@ lr·pj 不变，但收敛需要的参数位移是 LoRA 尺度的 —— lr 1e-6 
 纹丝不动（train acc 持平基座），lr 要往上加 2~3 个数量级扫。判据看日志的
 proj_grad 与 obj 的实际位移，别照抄论文默认值。
 
-目标函数可换（2026-10-29）：优化器与目标本来是正交的，这里把目标做成了插座 ——
+目标函数在**本文件内**可换（2026-10-29）：优化器与目标本来是正交的，这里把目标做成了
+插座（注意：这是本文件自己的开关，`train.py` 的那一轴叫 `--algo`）——
   --objective ce     默认，answer 段的交叉熵（SFT 口径）
   --objective grpo   组内归一化优势 × 裁剪比，需要 --rollouts <轨迹 jsonl>
   --objective dpo    偏好对 margin 的 −logσ(β·margin)，需要 --dpo-data
 零阶只要求「给定 θ，返回一个标量」，而 GRPO 的目标本来就只用 logprob 之比，
 所以**不反传也能做 RL**：ratio = exp(logp_new − logp_old)，old 取轨迹自带（engine）
 或当前 θ 重算（local）。组内 std=0 时优势全 0、这一步不动任何参数 —— 日志里打
-`adv0` 与「有效组数」就是为了把「跑完了」和「学到了」分开。默认入口是
-`train.py --algo mezo --objective grpo`。
+`adv0` 与「有效组数」就是为了把「跑完了」和「学到了」分开。命令面上对应的入口是
+`train.py --algo grpo`（默认方法 mezo），不是本文件。
 
 DPO 的零阶形态（2026-10-30）：DPO 的 loss 本来就是一个标量
     −log σ(β·[(logπ_c−logref_c) − (logπ_r−logref_r)])

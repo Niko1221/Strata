@@ -1,4 +1,4 @@
-"""训练路线对比 harness：反传 sft.py vs MeZO sft_mezo.py，外加纯推理基线。
+"""训练路线对比 harness：反传 sft.py vs MeZO hf_ref.py，外加纯推理基线。
 
 同一份模型 / 同一份数据 / 同一组 LoRA 挂载点，逐变体跑一次独立进程，外部采样
   - CPU 内存：进程树 RSS（psutil）
@@ -36,6 +36,9 @@ import time
 import psutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# torch 侧脚本在 training/backward/ 下，本文件在 training/bench/ 下 —— 目录分层之后
+# 不能再用 os.path.join(HERE, ...) 拼（重构前它们全在同一个扁平目录里）。
+BACKWARD = os.path.join(os.path.dirname(HERE), "backward")
 PY = sys.executable
 
 
@@ -181,19 +184,21 @@ def main() -> int:
                  "--seed", str(args.seed)]
 
     variants = [
-        # 顺序：基线 -> 反传(开 ckpt，长序列的默认可行档) -> MeZO -> 反传(不开 ckpt，显存上限探针，可能 OOM)
+        # 顺序：基线 -> 反传(开 ckpt，长序列的默认可行档) -> torch 零阶 -> 反传(不开 ckpt，显存上限探针，可能 OOM)
+        # 注意：`zo-torch` 是 hf_ref.py 的 `--steps` 模式，即**已退役的 PyTorch 零阶**，
+        # 不是 `--method mezo`（那个的前向在引擎里，用 tools/bench_engine_mezo.py 测）。
         ("infer", [os.path.join(HERE, "bench_infer.py")] + base
          + ["--samples", str(args.steps), "--rank", str(args.rank), "--alpha", str(args.alpha),
             "--targets", targets]),
-        ("sft+ckpt", [os.path.join(HERE, "sft.py")] + base
+        ("sft+ckpt", [os.path.join(BACKWARD, "sft.py")] + base
          + ["--steps", str(args.steps), "--accum", "1", "--lr", str(args.sft_lr), "--ckpt",
             "--rank", str(args.rank), "--alpha", str(args.alpha), "--targets", targets,
             "--out", "/root/cmp_sft_ckpt.pt"]),
-        ("mezo", [os.path.join(HERE, "sft_mezo.py")] + base
+        ("zo-torch", [os.path.join(BACKWARD, "hf_ref.py")] + base
          + ["--steps", str(args.steps), "--lr", str(args.mezo_lr), "--eps", str(args.mezo_eps),
             "--rank", str(args.rank), "--alpha", str(args.alpha), "--targets", targets,
             "--out", "/root/cmp_mezo.pt"]),
-        ("sft", [os.path.join(HERE, "sft.py")] + base
+        ("sft", [os.path.join(BACKWARD, "sft.py")] + base
          + ["--steps", str(args.steps), "--accum", "1", "--lr", str(args.sft_lr),
             "--rank", str(args.rank), "--alpha", str(args.alpha), "--targets", targets,
             "--out", "/root/cmp_sft.pt"]),

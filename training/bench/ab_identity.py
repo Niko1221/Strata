@@ -8,7 +8,7 @@
 三臂的口径：
   base     没有 LoRA
   zero     注入 LoRA，B=0（对照，必须等于 base）
-  trained  载入 --lora 的 .pt（sft.py / sft_mezo.py 的产物）
+  trained  载入 --lora 的 .pt（sft.py / hf_ref.py 的产物）
 
 生成用贪心（temperature 0），因为这里要比的是「答案变了没有」，
 采样会把两臂的差异埋进随机性里。--temperature >0 时同一条 prompt 会多采几条。

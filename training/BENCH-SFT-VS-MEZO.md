@@ -1,4 +1,4 @@
-# 训练路线对比：反传 sft.py vs MeZO sft_mezo.py
+# 训练路线对比：反传 sft.py vs MeZO hf_ref.py
 
 模型：Qwen3.8-Flash-Next 125B / IQ3_XXS（专家预打包成 NF4 pack，59.8 GiB / 24576 块 /
 2.49 MiB 每块），单卡 4090 48GB + 宿主 64GB，LoRA r=16 α=32、12 类挂载点、
@@ -233,7 +233,7 @@ QLoRA 省显存靠的是「权重只以量化形式常驻，反传时现场 dequ
    （第二轮第 4 条用「每专家独立显存块」把 grad 也接回这条路径）。
 2. **数据顺序没固定**。`sft.py` 用的是无 seed 的 `randperm`，不同 run 命中的专家数不同，
    s/step 的差异里混着大量数据噪声。现在
-   `sft.py` / `sft_mezo.py` / `bench_infer.py` / `bench_cmp.py` 统一 `--seed`，
+   `sft.py` / `hf_ref.py` / `bench_infer.py` / `bench_cmp.py` 统一 `--seed`，
    四条变体走同一批块。
 3. **显存那半 pack 被静默损坏（最重要，commit `df0b90ca`）**。这一条推翻了我上一版写在
    这里的结论「这条前向本身不可复现，loss 差 <0.1 nats 是噪声」——**那个漂移是 bug，不是
@@ -840,14 +840,14 @@ no_grad，显存 = 推理占用（实测峰值 34.2 GiB ≈ 推理基线 34.30 G
 - ce：每步 2 前向（±ε 各一次）。
 - grpo：采样半步（batch decode）+ 每步 2 次 measure 前向；组内 std=0 的步不动参数
   （`adv0`），诊断数每步打印。
-- dpo（本轮新增，`sft_mezo.py --objective dpo`）：loss 本来就是标量
+- dpo（本轮新增，`hf_ref.py --objective dpo`）：loss 本来就是标量
   −logσ(β·margin)，margin = (π_c−ref_c) − (π_r−ref_r)，ref = 训练起点（B=0）训练前
   一次预计算。每次 measure = 2 次批前向（chosen 一批、rejected 一批，右 padding 对
   scoring 安全），零阶一步共 4 前向。dpo.py 的 `dpo_margin` 是 margin 的唯一定义，
   零阶与反传两条路线共用；acc / margin 每步打印（loss 降但 acc 停 0 = 没学到）。
 
 **实验记录口径（必填项）**：除训练前后的成功结果外，必须记**训练段总时间**、
-**token 生成速度**（采样段 tok/s、评测段生成 tok/s）与峰值显存。sft_mezo.py 结束时
+**token 生成速度**（采样段 tok/s、评测段生成 tok/s）与峰值显存。hf_ref.py 结束时
 打一行汇总（总时间/均步时/生成 tok/s/peak），math_probe.py 每个 adapter 打
 train/holdout acc + 生成 tok/s + 评测墙钟。
 
@@ -861,7 +861,7 @@ train/holdout acc + 生成 tok/s + 评测墙钟。
 **背景**：上一轮对比里「MeZO-GRPO 40 步纹丝不动」被用户定性为 **lr 太低**——属实。
 论文的 1e-6 是全参数（d=数十亿）量级；这里扰动 LoRA A/B（d≈6.68M，fp32），
 proj_grad ~±5 时单元素步长只有 ~5e-6，根本没搬动。本轮把 lr 扫起来，同时把 DPO
-也搬进零阶路线（`sft_mezo.py --objective dpo`）——**换反向传播方案，不换算法**。
+也搬进零阶路线（`hf_ref.py --objective dpo`）——**换反向传播方案，不换算法**。
 
 设置：同一批 24 题（16 train + 8 holdout，mix preset，seed 7，与上一轮完全同题）；
 GRPO 6 prompt × 4 条 on-policy（max_new 24，T 1.0，40 步）；DPO 6 对离线（β 0.1，
@@ -1072,7 +1072,7 @@ GRPO 步时 = S / v_gen + 2·c(S)          ⇒ 倍数 = 1 + S/(2·v_gen·c(S)) =
 
 ### 21.1 为什么要新建一个基准
 
-历史测速散在 `sft_mezo` / `sft` / `_mb_cost_split` 三处，每份的 token 口径都不同
+历史测速散在 `hf_ref` / `sft` / `_mb_cost_split` 三处，每份的 token 口径都不同
 （answer 段 / completion 段 / fwd 段）。于是同一份日志能读出 9 tok/s 和 30 tok/s，
 DPO 被判成「慢几十倍」。`bench_fullctx.py` 把口径焊成一条：
 
@@ -1264,7 +1264,7 @@ is_oom(exc) / die_on_oom(...)      # 跑到一半真 OOM → 打印现场 + 退�
 ```
 
 * 公式复现了全部 4 个 MeZO 实测点与 2 个反传实测点，并正确预言 64K OOM；
-* `sft.py` / `sft_mezo.py` 在装载后、第一步之前调用 `require_budget`；
+* `sft.py` / `hf_ref.py` 在装载后、第一步之前调用 `require_budget`；
 * `bench_fullctx.py` 每个口径先 `_preflight`，并新增 `--on-oom {abort,skip}`，
   **默认 abort**（`skip` 只用于测绘边界矩阵）；
 * 6 个新测试（`test_train.MemGuard`）守公式与拒绝行为。
@@ -1281,7 +1281,7 @@ is_oom(exc) / die_on_oom(...)      # 跑到一半真 OOM → 打印现场 + 退�
 | 基座非专家权重（~9.2 GiB） | GGUF 原量化（Q8_0/Q6_K…）→ 装载时反量化 | **bf16** | `loader_qwen4.py:1075` `model.to(torch.bfloat16)`（硬编码） |
 | 专家（原 96 GiB） | **NF4 4-bit** pack，显存常驻 16 GiB | 解到 **bf16** 再 GEMM | `nf4_fused.py` / `view(torch.bfloat16)` |
 | 激活 / attention / QSA | — | **bf16** | 全模型 |
-| LoRA A/B（6.68 M） | 反传 **bf16**；MeZO **fp32** | 反传 bf16 GEMM；MeZO delta 走 fp32 GEMM | `lora.py:44` 继承 base dtype；`sft_mezo.zo_cast_fp32` |
+| LoRA A/B（6.68 M） | 反传 **bf16**；MeZO **fp32** | 反传 bf16 GEMM；MeZO delta 走 fp32 GEMM | `lora.py:44` 继承 base dtype；`hf_ref.zo_cast_fp32` |
 | logprob 的 logits | 分块，**fp32** | fp32 logsumexp | `ce.token_logprobs` 的 `.float()` |
 
 ### 23.2 超过 16 位的只有两处，都不是"模型精度"问题
