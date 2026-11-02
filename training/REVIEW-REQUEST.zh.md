@@ -598,27 +598,19 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 
 ```
 upstream/main c62d5e3a
-  └─ feat/train_support  7fa6caaa   早期 13 个训练提交（旧基点，见下方基线判据）
-       └─ feat/train-mezo  fd493a06  共用层 + 零阶 + 引擎（LORA / SCORE）
-            ├─ 3eb6e36d   sft_mezo 退役为 score-parity 检查（从反传层搬回零阶）
-            ├─ 6c69bc19   + lora.load_lora_state（补齐零阶层缺的符号）
-            ├─ d54d8a32   迁移 → training/
-            ├─ 827d9071   + mtp_draft（sft_mezo 的 import 不再缺）
-            └─ ae31b3f0   + math_probe / math_build_data / test_curriculum（213 项全绿）
-                 ├─ 56c7eae0   摘掉 torch 层（213 → 134 项）；方法可用性改成看文件（algos.available）
-                 └─ feat/train-backforward
-                      ├─ 6e7a88ac   + torch 反传栈
-                      ├─ 0c676f32   同一映射表迁移
-                      ├─ b7085d3c   merge feat/train-mezo
-                      ├─ b7dc511d   merge feat/train-mezo（239 项全绿）
-                      └─ adfa53a7   merge 56c7eae0（保住 torch 层 → 258 项）
-                           └─ feat/train_support
-                                ├─ 05d66edc  merge perf/pack-load-accel（净变化为零）
-                                ├─ a5a3f3af / 74118854 / f7aabccd   文档
-                                ├─ 330eba47  回退 merge 带出的重复定义
-                                ├─ 3b379c61  merge feat/train-backforward（此后只有文档提交）
-                                ├─ a8645aea  merge feat/train-mezo（= 56c7eae0）
-                                └─ c9c0016f  merge feat/train-backforward（= adfa53a7）
+  └─ feat/train-mezo            零阶线（HEAD）  共用层 + 零阶 + 引擎（LORA / SCORE）；训练路径零 torch；134 项
+       │   56c7eae0  摘掉 torch 层（213 → 134）；方法可用性改成看文件（algos.available）
+       └─ feat/train-backforward      反传线（HEAD）  以上全部 + torch 反传层（比 mezo 多 32 个 .py）；258 项
+            │   adfa53a7  摘 torch 时的合并点：反传侧保住整层
+            └─ feat/train_support     交付面（HEAD）  两条线的并集 + 这组文档（.py 与 bwd 逐字相同）
+```
+
+三条都是**当前 HEAD**（文档提交会让 sha 漂，所以只标分支名）。判据可复现：
+
+```
+git merge-base --is-ancestor feat/train-mezo feat/train-backforward   # 零阶打底
+git merge-base --is-ancestor feat/train-backforward feat/train_support # 并集
+git diff --stat feat/train-backforward feat/train_support -- '*.py'    # 空 = 代码零差异
 ```
 
 **为什么是「零阶打底 + 反传叠加」而不是三条并列**：共用层单独**不能跑** —— `train.py` 的注册表
@@ -647,7 +639,7 @@ merge 零阶层、再叠 torch（`adfa53a7`，258 项），support 是两者合�
   那份早期版覆盖的能力面与零阶层一致，不矛盾。
 
 **基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main c62d5e3a`（= `Niko1221/Strata`
-的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 ≈87**。
+的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 ≈120 个提交**（其中非 merge ≈90）。
 本仓库的 `origin` 是 fork（`xiezhipeng-git/Strata`），它的 `main` 停在 `80494788`（2026-10-15），
 **落后上游 2,755 个提交** —— 老 `support 7fa6caaa` 那句"落后 2,755"就是因为当年从 fork 的
 main 切出来的。所以比对一律用 `upstream/main...feat/train_support`，拿 `origin/main` 比会
