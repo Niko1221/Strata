@@ -478,6 +478,81 @@ class EngineApi:
         return out, (time.time() - t0) * 1000.0
 
 
+class EngineHttp:
+    """HTTP transport：驱动**已经在跑**的推理服务（`POST /v1/score` / `POST /v1/lora`），不卸载它。
+
+    与 `Engine` / `EngineApi` 同接口（score/lora/gen），所以 MeZO 循环对 transport 无感 ——
+    三者的差别只在「谁持有 GPU」：
+
+        Engine      自己拉一个训练引擎子进程（pipe；独占）
+        EngineApi   让服务端卸掉推理引擎再起训练引擎（`/v1/training/*`；离线，推理中断）
+        本类         直接用驻留的推理引擎（不卸载、不重启 ⇒ 推理不中断，即「无感在线」）
+
+    前提（服务端启动时就决定，训练侧补不了）：
+      * `--lora <初始 adapter>`：`/v1/lora` 换的是「引擎启动时带着的那套表」的内容，
+        形状必须不变 ⇒ rank 全程固定；
+      * `--no-prefill-borrow --prefill 8192`：否则 score 走借槽路径，数值已知会坏
+        （BRANCH-NOTES §4.3）。这一条会同时影响推理的 prefill 速度，是「共用引擎」的真实
+        代价，不在训练侧掩盖。
+
+    两个与生俱来的限制（不是 bug，是「共用」的定义）：
+      * 每次换表清空所有 K/V：训练期间在跑的对话，下一个请求从 token 0 重读 prompt；
+      * 服务端没有「按 ids 生成」的端点 ⇒ `gen` 不可用（`supports_gen = False`），
+        eval 的生成检查跳过，只留 logp / answer-ce 两条基线。
+
+    `score` 的长度契约必须与 pipe 逐位一致：引擎的 `SL` 只发 **n-1** 行（`t + 1 < n`，
+    src/program/generate.cpp），而 `/v1/score` 为了让 `logprobs` 与 `tokens` 对齐**补了一个
+    末位 None** ⇒ 这里去掉末位，两种 transport 的切片语义才是同一个数。
+    """
+
+    supports_gen = False
+
+    def __init__(self, base_url: str):
+        self.base = base_url.rstrip("/")
+        # 回环必须绕开代理（strata_client.py 的同款判据）
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    @staticmethod
+    def _err(body: dict) -> str:
+        e = body.get("error") if isinstance(body, dict) else None
+        return e.get("message", str(body)) if isinstance(e, dict) else str(body)
+
+    def _post(self, path: str, body: dict, timeout: float) -> tuple[int, dict]:
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with self.opener.open(req, timeout=timeout) as r:
+                return r.status, json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read().decode("utf-8"))
+            except (ValueError, OSError):
+                return e.code, {}
+
+    def score(self, ids: list[int]) -> tuple[list[float], float]:
+        t0 = time.time()
+        code, body = self._post("/v1/score", {"tokens": [int(t) for t in ids]},
+                                max(60.0, len(ids) / 300.0 + 60.0))
+        if code != 200:
+            raise RuntimeError(f"/v1/score failed (HTTP {code}): {self._err(body)}")
+        lps = [0.0 if v is None else float(v) for v in (body.get("logprobs") or [])]
+        return lps[:-1], (time.time() - t0) * 1000.0        # 末位是服务端补的对齐位，pipe 不发
+
+    def lora(self, path: str) -> None:
+        # 服务端要求「它能读到的文件名」；同一台机器上绝对路径是最不容易错的形式
+        code, body = self._post("/v1/lora", {"path": path}, 300.0)
+        if code != 200:
+            raise RuntimeError(f"/v1/lora failed (HTTP {code}): {self._err(body)}")
+
+    def gen(self, ids: list[int], max_new: int) -> tuple[list[int], float]:
+        raise RuntimeError("gen is not available over the HTTP transports: the server has no "
+                           "generate-from-ids endpoint (set supports_gen and guard the caller)")
+
+    def close(self) -> None:
+        """什么都不做：推理引擎是别人的，训练结束不能把它关掉 —— 那正是本 transport 的意义。"""
+        return None
+
+
 # -------------------------------------------------------------------------------------------------- the loop
 
 def name_logprob(eng: Engine, tok, render, q: str, word: str) -> float:
@@ -698,8 +773,10 @@ class EngineMezo:
         self.swap(self.theta, self.final_path)
         lp_now = name_logprob(eng, tok, render, args.probe, args.word)
         ce_now = self.answer_ce()
-        out_ids, _ = eng.gen(tok.encode(render(args.probe), parse_special=True), 64)
-        text = tok.decode(out_ids) if hasattr(tok, "decode") else ""
+        text = ""
+        if getattr(eng, "supports_gen", True):      # 在线 transport 没有按 ids 生成的端点
+            out_ids, _ = eng.gen(tok.encode(render(args.probe), parse_special=True), 64)
+            text = tok.decode(out_ids) if hasattr(tok, "decode") else ""
         msg = f"  eval: logp({args.word!r}|probe) {self.lp0:.3f} -> {lp_now:.3f}"
         if ce_now is not None:
             msg += f"; ce {self.ce0:.4f} -> {ce_now:.4f} nats/tok"
@@ -856,6 +933,11 @@ def main() -> int:
     ap.add_argument("--engine-api", default="",
                     help="http://127.0.0.1:8080 等常驻 API 服务的地址：训练走它的 /v1/training/*（服务端拉起"
                          "训练引擎、推理互斥、会话关掉自动恢复），不再自己 spawn 引擎；缺省仍是本进程直起")
+    ap.add_argument("--serve-url", default="",
+                    help="http://127.0.0.1:8080 等常驻 API 服务的地址，但走**在线**那条：用它的 /v1/score 与 "
+                         "/v1/lora 直接训练**驻留的推理引擎**，不卸载、不重启 ⇒ 推理不中断。要求服务端用 "
+                         "--lora <初始 adapter> --no-prefill-borrow --prefill 8192 启动；gen 不可用。"
+                         "与 --engine-api 互斥")
     ap.add_argument("--expert-profile", default=str(REPO / "data" / "expert-profile.bin"))
     ap.add_argument("--max-context", type=int, default=4096)
     ap.add_argument("--objective", choices=("ce", "dpo", "grpo"), default="ce",
@@ -896,6 +978,10 @@ def main() -> int:
                     help="成功率评测的生成预算（协议口径，基线测量与训练后必须同值）")
     args = ap.parse_args()
 
+    # 参数互斥先判：两条 transport 的差别是「推理要不要停」，选错了要白加载一次 tokenizer 与权重
+    if args.serve_url and args.engine_api:
+        raise SystemExit("--serve-url 与 --engine-api 是两条不同的 transport（在线 / 离线），只能选一个")
+
     os.makedirs(args.work, exist_ok=True)
     tok = load_tokenizer(args.pack)
     render = load_template(args.pack)
@@ -922,12 +1008,17 @@ def main() -> int:
             write_adapter(init_path, layout, theta, args.alpha)
             print(f"wrote the initial adapter (B=0): {init_path}", flush=True)
 
-    if args.engine_api:
+    if args.serve_url:                       # 在线：驱动驻留引擎，推理不中断
+        eng = EngineHttp(args.serve_url)
+        load_s = 0.0
+        print(f"online: driving the resident engine at {eng.base} (nothing is unloaded)", flush=True)
+    elif args.engine_api:
         eng = EngineApi(args.engine_api, engine_argv(args, init_path))
         load_s = 0.0
     else:
         eng, load_s = launch_engine(args, os.path.join(args.work, "engine.log"), init_path)
-    print(f"engine up in {load_s:.0f} s (log: {args.work}/engine.log)", flush=True)
+    if not args.serve_url:
+        print(f"engine up in {load_s:.0f} s (log: {args.work}/engine.log)", flush=True)
 
     try:
         trainer = TRAINER_FOR[args.objective](args, tok, render, eng, theta, layout)
