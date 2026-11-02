@@ -77,6 +77,7 @@ struct Window::Df2 {
     // the pack
     std::string path;
     mtl::Buffer xh;                             // half copy of the activation a matrix kernel reads (df2_f16)
+    bool fuse_h = true;                         // the producers write the half operand themselves (STRATA_DF2_FUSE_H=0: df2_f16 dispatches)
     int64_t floor = 0;                          // first ring position that belongs to the current request (a restarted lineage)
     int ndraft = DF2_DRAFTS;                    // DF-04: candidates the head, top-k and selector work on (the verify prefix)
     mtl::Buffer pack, wq;                       // pack: the f32 / bf16 tensors; wq: the Q8_0 matrices repacked (int8 [rows][K], then half [rows][K / 32])
@@ -385,6 +386,7 @@ bool Window::df2_bind(const std::string& vocab_file, std::string& err) {
     auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
     d.A_fn = act(N);
     if (const char* e = std::getenv("STRATA_DF2_DUMP")) { d.dump_path = e; if (const char* r = std::getenv("STRATA_DF2_DUMP_ROUND")) d.dump_round = std::atoi(r); }
+    { const char* fe = std::getenv("STRATA_DF2_FUSE_H"); d.fuse_h = !(fe && fe[0] == '0'); }
     d.bound = true;
     std::fprintf(stderr, "strata metal: DFlash2 drafter ready (%.0f MiB: pack %.0f, %lld-token draft head %s), in %.0f ms\n", d.bytes / 1048576.0,
                  (d.wq.bytes + d.pack.bytes) / 1048576.0, (long long) d.nd, d.head_q8 ? (d.use_map ? "as Q8_0" : "as Q8_0, the whole head") : "native", now_ms() - t0);
@@ -439,10 +441,11 @@ void Window::df2_mm4(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& qs, size
         c.tg[0] = 256;
         push(ds, c);
     }
+    const size_t xh_off = (reuse && d.fuse_h) ? x_off / 2 : 0;   // fused: the producer wrote all rows, a GEMM on rows 1.. starts at their half offset
     struct MmaQArgs { uint32_t K, rows, y_stride, x_stride; } a{K, rows, y_stride, K};
     mtl::Dispatch dd;
     dd.p = P(ldf2_, "df2_mma4s_2_8", {}, "df2_mma4s_2_8");
-    dd.args = {mtl::Arg::B(qs, qs_off), mtl::Arg::B(sc, sc_off), mtl::Arg::B(d.xh), mtl::Arg::B(y), mtl::Arg::V(a)};
+    dd.args = {mtl::Arg::B(qs, qs_off), mtl::Arg::B(sc, sc_off), mtl::Arg::B(d.xh, xh_off), mtl::Arg::B(y), mtl::Arg::V(a)};
     dd.grid[0] = ((rows + 7) / 8 + 1) / 2;
     dd.tg[0] = 8 * 32;
     push(ds, dd);
@@ -452,6 +455,7 @@ void Window::df2_mmn(std::vector<mtl::Dispatch>& ds, const std::string& name, co
                      uint32_t y_stride, int ncol, bool reuse) {
     Df2& d = *df2_;
     const gguf::Tensor& t = d.ten.at(name);
+    if (d.fuse_h && name != "fc.weight") reuse = true;   // the producer of x wrote its half copy (fc reads the window's taps: converted here)
     if (t.type == ref::Q4_0) {
         df2_mm4(ds, d.wq, t.offset, d.wq, d.scoff.at(name), (uint32_t) t.shape[0], (uint32_t) t.shape[1], x, x_off, y, y_stride, ncol, reuse);
         return;
@@ -463,8 +467,9 @@ void Window::df2_rms(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const
     Df2& d = *df2_;
     struct RmsArgs { uint32_t n; float eps; } a{(uint32_t) N, d.eps};
     mtl::Dispatch dd;
-    dd.p = P(ldf2_, "df2_rms", {}, "df2_rms");
+    dd.p = P(ldf2_, d.fuse_h ? "df2_rms_h" : "df2_rms", {}, d.fuse_h ? "df2_rms_h" : "df2_rms");
     dd.args = {mtl::Arg::B(x), mtl::Arg::B(d.pack, d.ten.at(wname).offset), mtl::Arg::B(y), mtl::Arg::V(a)};
+    if (d.fuse_h) dd.args.push_back(mtl::Arg::B(d.xh));
     dd.grid[0] = rows;
     dd.tg[0] = 256;
     push(ds, dd);
@@ -509,8 +514,10 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
     auto conv = [&](const mtl::Buffer& x, const mtl::Buffer& dyn, size_t dyn_off, size_t base_off, const mtl::Buffer* resid, const mtl::Buffer& out) {
         struct ConvArgs { uint32_t rows, H, group, dyn_stride, has_resid; } a{(uint32_t) B, (uint32_t) N, (uint32_t) d.group, 640, resid ? 1u : 0u};
         mtl::Dispatch dd;
-        dd.p = P(ldf2_, "df2_conv", {}, "df2_conv");
+        const bool hh = d.fuse_h && resid == nullptr;   // the convolution that feeds a GEMM also writes the half operand
+        dd.p = P(ldf2_, hh ? "df2_conv_h" : "df2_conv", {}, hh ? "df2_conv_h" : "df2_conv");
         dd.args = {mtl::Arg::B(x), mtl::Arg::B(dyn, dyn_off), mtl::Arg::B(d.pack, base_off), mtl::Arg::B(resid ? *resid : x), mtl::Arg::B(out), mtl::Arg::V(a)};
+        if (hh) dd.args.push_back(mtl::Arg::B(d.xh));
         dd.grid[0] = (B * N + 255) / 256;
         dd.tg[0] = 256;
         push(ds, dd);
@@ -548,8 +555,9 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
                        mtl::Arg::B(d.anchor, 4), mtl::Arg::B(d.part), mtl::Arg::V(aa)};
             ap.grid[0] = 8; ap.grid[1] = DF2_MAXCH; ap.tg[0] = 64;
             push(ds, ap);
-            am.p = P(ldf2_, "df2_attn_merge", {}, "df2_attn_merge");
+            am.p = P(ldf2_, d.fuse_h ? "df2_attn_merge_h" : "df2_attn_merge", {}, d.fuse_h ? "df2_attn_merge_h" : "df2_attn_merge");
             am.args = {mtl::Arg::B(d.part), mtl::Arg::B(d.anchor, 4), mtl::Arg::B(d.ao), mtl::Arg::V(aa)};
+            if (d.fuse_h) am.args.push_back(mtl::Arg::B(d.xh));
             am.grid[0] = 8 * 32; am.tg[0] = 128;
             push(ds, am);
         }
@@ -564,8 +572,9 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
         {
             struct SwArgs { uint32_t n; } sa{(uint32_t) (B * d.I)};
             mtl::Dispatch sd;
-            sd.p = P(ldf2_, "df2_swiglu", {}, "df2_swiglu");
+            sd.p = P(ldf2_, d.fuse_h ? "df2_swiglu_h" : "df2_swiglu", {}, d.fuse_h ? "df2_swiglu_h" : "df2_swiglu");
             sd.args = {mtl::Arg::B(d.gate), mtl::Arg::B(d.up), mtl::Arg::B(d.sw), mtl::Arg::V(sa)};
+            if (d.fuse_h) sd.args.push_back(mtl::Arg::B(d.xh));
             sd.grid[0] = (sa.n + 255) / 256;
             sd.tg[0] = 256;
             push(ds, sd);
@@ -576,18 +585,20 @@ void Window::df2_block_list(std::vector<mtl::Dispatch>& ds) {
     df2_rms(ds, d.h, d.fn, "norm.weight", B);
     const int ND = d.ndraft;
     if (d.head_q8) {
-        {   // rows 1..ND of fn to half, then the Q8_0 head rows on the matrix units (8 columns wide whatever ND is: the cap saves top-k and selector work)
-            const uint32_t n = (uint32_t) ND * N;
-            mtl::Dispatch c;
-            c.p = P(ldf2_, "df2_f16", {}, "df2_f16");
-            c.args = {mtl::Arg::B(d.fn, (size_t) N * 4), mtl::Arg::B(d.xh), mtl::Arg::V(n)};
-            c.grid[0] = (n + 255) / 256;
-            c.tg[0] = 256;
-            push(ds, c);
+        {   // rows 1..ND of fn to half (unless the final norm wrote them), then the Q8_0 head rows on the matrix units (8 columns wide whatever ND is: the cap saves top-k and selector work)
+            if (!d.fuse_h) {
+                const uint32_t n = (uint32_t) ND * N;
+                mtl::Dispatch c;
+                c.p = P(ldf2_, "df2_f16", {}, "df2_f16");
+                c.args = {mtl::Arg::B(d.fn, (size_t) N * 4), mtl::Arg::B(d.xh), mtl::Arg::V(n)};
+                c.grid[0] = (n + 255) / 256;
+                c.tg[0] = 256;
+                push(ds, c);
+            }
             struct MmaQArgs { uint32_t K, rows, y_stride, x_stride; } ha{(uint32_t) N, (uint32_t) d.nd, (uint32_t) d.nd, (uint32_t) N};
             mtl::Dispatch h8;
             h8.p = P(ldf2_, "df2_mma8_2_4", {}, "df2_mma8_2_4");
-            h8.args = {mtl::Arg::B(d.hq), mtl::Arg::B(d.hsc), mtl::Arg::B(d.xh), mtl::Arg::B(d.logits), mtl::Arg::V(ha)};
+            h8.args = {mtl::Arg::B(d.hq), mtl::Arg::B(d.hsc), mtl::Arg::B(d.xh, d.fuse_h ? (size_t) N * 2 : 0), mtl::Arg::B(d.logits), mtl::Arg::V(ha)};
             h8.grid[0] = (((uint32_t) d.nd + 7) / 8 + 7) / 8;
             h8.tg[0] = 4 * 32;
             push(ds, h8);
@@ -728,6 +739,10 @@ bool Window::df2_draft(int n_new, int64_t pos0, int32_t anchor, int32_t* drafts,
     d.gpu_ms += 1000.0 * g;
     if (d.rounds >= 1 && d.last_build_ms == 0) { d.run_ms += wall; d.host_ms += now_ms() - t0 - wall; ++d.steady; }
     static const bool prof = std::getenv("STRATA_DF2_PROF") != nullptr;
+    static const bool stats = std::getenv("STRATA_DF2_STATS") != nullptr;   // serve leaves through exit(): a periodic line instead of the destructor's
+    if (stats && d.steady > 0 && d.steady % 150 == 0)
+        std::fprintf(stderr, "strata metal: DFlash2 stats after %lld rounds: GPU %.2f ms/round, run_graph %.2f ms, host before the graph %.2f ms\n", (long long) d.steady,
+                     d.gpu_ms / (double) d.rounds, d.run_ms / (double) d.steady, d.host_ms / (double) d.steady);
     if (prof && d.rounds == 10) df2_prof(d.list[n_new]);
     for (int i = 0; i < DF2_DRAFTS; ++i) {
         drafts[i] = i < d.ndraft ? ot[i] : 0;                 // DF-04: past the cap token 0 with probability 0

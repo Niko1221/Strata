@@ -716,3 +716,73 @@ kernel void df2_mma8(device const uint2* qw [[buffer(0)]], device const half* sc
 }
 #define DF2MMA8(R, S) template [[host_name("df2_mma8_" #R "_" #S)]] kernel decltype(df2_mma8<R, S>) df2_mma8<R, S>;
 DF2MMA8(1, 4) DF2MMA8(1, 8) DF2MMA8(2, 4) DF2MMA8(2, 8) DF2MMA8(4, 4)
+
+// ---- the same kernels with a second output: the result also rounded to half, the matrix-unit GEMMs' activation operand (replaces the df2_f16 dispatch
+// before each GEMM; the half value is exactly what df2_f16 made from the stored float)
+kernel void df2_rms_h(device const float* x [[buffer(0)]], device const float* w [[buffer(1)]], device float* y [[buffer(2)]],
+                      constant RmsArgs& a [[buffer(3)]], device half* yh [[buffer(4)]], uint3 tg [[threadgroup_position_in_grid]],
+                      ushort tid [[thread_index_in_threadgroup]], ushort sg [[simdgroup_index_in_threadgroup]],
+                      ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float part[8];
+    device const float* xr = x + tg.x * a.n;
+    float ss = 0.0f;
+    for (uint d = tid; d < a.n; d += 256) ss = fma(xr[d], xr[d], ss);
+    ss = simd_sum(ss);
+    if (lane == 0) part[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float tot = 0.0f;
+    for (int i = 0; i < 8; ++i) tot += part[i];
+    const float rs = rsqrt(tot / float(a.n) + a.eps);
+    device float* yr = y + tg.x * a.n;
+    device half* yhr = yh + tg.x * a.n;
+    for (uint d = tid; d < a.n; d += 256) { const float v = xr[d] * rs * w[d]; yr[d] = v; yhr[d] = half(v); }
+}
+
+kernel void df2_conv_h(device const float* x [[buffer(0)]], device const float* dyn [[buffer(1)]], device const float* base [[buffer(2)]],
+                       device const float* resid [[buffer(3)]], device float* out [[buffer(4)]], constant ConvArgs& a [[buffer(5)]],
+                       device half* outh [[buffer(6)]], uint i [[thread_position_in_grid]]) {
+    if (i >= a.rows * a.H) return;
+    const uint b = i / a.H, c = i % a.H;
+    const uint groups = a.H / a.group;
+    float acc = 0.0f;
+    for (uint o = 0; o < 2; ++o) {
+        if (b < o) continue;
+        const float k = base[o * a.H + c] + dyn[b * a.dyn_stride + o * groups + c / a.group];
+        acc = fma(k, x[(b - o) * a.H + c], acc);
+    }
+    const float v = a.has_resid ? resid[i] + acc : acc;
+    out[i] = v;
+    outh[i] = half(v);
+}
+
+kernel void df2_swiglu_h(device const float* g [[buffer(0)]], device const float* u [[buffer(1)]], device float* y [[buffer(2)]],
+                         constant SwArgs& a [[buffer(3)]], device half* yh [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+    if (i >= a.n) return;
+    const float gv = g[i];
+    const float v = gv / (1.0f + exp(-gv)) * u[i];
+    y[i] = v;
+    yh[i] = half(v);
+}
+
+kernel void df2_attn_merge_h(device const float* part [[buffer(0)]], device const int* anchor_pos [[buffer(1)]], device float* out [[buffer(2)]],
+                             constant AttnArgs& a [[buffer(3)]], device half* outh [[buffer(4)]], uint3 tg [[threadgroup_position_in_grid]],
+                             ushort d [[thread_index_in_threadgroup]]) {
+    const uint kvh = tg.x >> 5, qi = tg.x & 31;
+    const int s = *anchor_pos;
+    const int lo = max(max(0, s - (int(a.window) - 1)), anchor_pos[1]);
+    const int nchunks = ((s - lo) + AROWS + AK - 1) / AK;
+    float M = -INFINITY;
+    for (int c = 0; c < nchunks; ++c) M = max(M, part[(((uint(c) * 8 + kvh) * 32) + qi) * 130]);
+    float L = 0.0f, o = 0.0f;
+    for (int c = 0; c < nchunks; ++c) {
+        device const float* p = part + (((uint(c) * 8 + kvh) * 32) + qi) * 130;
+        const float mc = p[0];
+        const float w = mc == -INFINITY ? 0.0f : exp(mc - M);
+        L += p[1] * w;
+        o = fma(p[2 + d], w, o);
+    }
+    const uint row = qi >> 2, g = qi & 3;
+    const float v = L > 0.0f ? o / L : 0.0f;
+    out[(row * 32 + kvh * 4 + g) * HD + d] = v;
+    outh[(row * 32 + kvh * 4 + g) * HD + d] = half(v);
+}
