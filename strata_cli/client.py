@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import socket
 import time
@@ -394,6 +395,24 @@ def sanitize_telemetry(raw: dict[str, Any]) -> dict[str, Any]:
                       if reported_slots is not None else None)
     placement_resolved = topology.get("resolved") is True and bool(stages) and all(
         row["device_index"] is not None for row in stages)
+    devs = _rows(raw.get("devices"), ("index", "name", "mem_used", "mem_total", "util", "temp", "power"), 16)
+    if devs and os.name == "nt":
+        for d in devs:
+            if d.get("mem_used") is None:
+                try:
+                    from strata_cli.overview import _get_windows_gpu_sample
+                    s = _get_windows_gpu_sample({})
+                    if s.get("vram_used"):
+                        d["mem_used"] = s["vram_used"] * (1024**3)
+                        d["mem_total"] = d.get("mem_total") or (32 * 1024**3)
+                    if d.get("util") is None:
+                        d["util"] = s.get("util")
+                    if d.get("temp") is None:
+                        d["temp"] = s.get("temp")
+                    if d.get("power") is None:
+                        d["power"] = s.get("power")
+                except Exception:
+                    pass
     return {
         "schema_version": 1, "source": _short(raw.get("source")), "sampled_at": _number(raw.get("sampled_at")),
         "instance": {"id": _short(instance.get("id"), 64), "boot_time": _number(instance.get("boot_time")),
@@ -426,7 +445,7 @@ def sanitize_telemetry(raw: dict[str, Any]) -> dict[str, Any]:
                      "replica_devices": replica_devices, "replica_stages": replica_stages,
                      "resolved": placement_resolved,
                      "stages": stages, "source": _short(topology.get("source"), 40)},
-        "devices": _rows(raw.get("devices"), ("index", "name", "mem_used", "mem_total", "util", "temp", "power"), 16),
+        "devices": devs,
         "ram": {"used": _number(ram.get("used")), "total": _number(ram.get("total"))},
         "recent": _rows(raw.get("recent"), ("id", "time", "duration_s", "finish", "prompt_tokens",
                                            "reused", "output_tokens", "prompt_ms", "decode_ms",
@@ -478,19 +497,55 @@ def normalize_legacy(metrics: dict[str, Any], status: dict[str, Any]) -> dict[st
     safe_devices = []
     for row in devices[:16]:
         if isinstance(row, dict):
+            mem_u = _number(row.get("mem_used"))
+            mem_tot = _number(row.get("mem_total")) or (_number(static.get("gpu_vram_total_mib")) * (1024**2) if static.get("gpu_vram_total_mib") else None)
+            gpu_u = _number(row.get("util"))
+            temp_u = _number(row.get("temp"))
+            power_u = _number(row.get("power"))
+            if (mem_u is None or temp_u is None or power_u is None) and os.name == "nt":
+                try:
+                    from strata_cli.overview import _get_windows_gpu_sample
+                    s = _get_windows_gpu_sample(engine)
+                    if mem_u is None and s.get("vram_used"):
+                        mem_u = s["vram_used"] * (1024**3)
+                    if gpu_u is None:
+                        gpu_u = s.get("util")
+                    if temp_u is None:
+                        temp_u = s.get("temp")
+                    if power_u is None:
+                        power_u = s.get("power")
+                except Exception:
+                    pass
             safe_devices.append({"index": row.get("index"), "name": _short(row.get("name")),
-                                 "mem_used": _number(row.get("mem_used")),
-                                 "mem_total": _number(row.get("mem_total")),
-                                 "util": _number(row.get("util")), "temp": _number(row.get("temp")),
-                                 "power": _number(row.get("power"))})
+                                 "mem_used": mem_u,
+                                 "mem_total": mem_tot,
+                                 "util": gpu_u, "temp": temp_u,
+                                 "power": power_u})
     # Old single-GPU servers report only aggregate GPU fields. It is one device only
     # when the static sampler says so; never duplicate an aggregate into four rows.
     if not safe_devices and static.get("gpu_count") == 1 and static.get("gpu_name"):
+        mem_tot = _number(hardware.get("gpu_mem_total")) or (_number(static.get("gpu_vram_total_mib")) * (1024**2) if static.get("gpu_vram_total_mib") else None)
+        mem_u = _number(hardware.get("gpu_mem_used"))
+        gpu_u = _number(hardware.get("gpu_util"))
+        if mem_u is None and os.name == "nt":
+            try:
+                from strata_cli.overview import _get_windows_gpu_sample
+                s = _get_windows_gpu_sample(engine)
+                if s.get("vram_used"):
+                    mem_u = s["vram_used"] * (1024**3)
+                if gpu_u is None:
+                    gpu_u = s.get("util")
+                temp_val = s.get("temp")
+                power_val = s.get("power")
+            except Exception:
+                temp_val = power_val = None
+        else:
+            temp_val = power_val = None
         safe_devices = [{"index": 0, "name": _short(static.get("gpu_name")),
-                         "mem_used": _number(hardware.get("gpu_mem_used")),
-                         "mem_total": _number(hardware.get("gpu_mem_total")),
-                         "util": _number(hardware.get("gpu_util")), "temp": _number(hardware.get("gpu_temp")),
-                         "power": _number(hardware.get("gpu_power"))}]
+                         "mem_used": mem_u,
+                         "mem_total": mem_tot,
+                         "util": gpu_u, "temp": _number(hardware.get("gpu_temp")) if hardware.get("gpu_temp") is not None else temp_val,
+                         "power": _number(hardware.get("gpu_power")) if hardware.get("gpu_power") is not None else power_val}]
     recent = []
     for row in (metrics.get("requests") if isinstance(metrics.get("requests"), list) else [])[:50]:
         if isinstance(row, dict):
