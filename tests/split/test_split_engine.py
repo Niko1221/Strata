@@ -523,6 +523,42 @@ class AmdDefault(unittest.TestCase):
             S.AUTO_SPLIT_AMD_ARCHS = old
 
 
+class HipArchSources(unittest.TestCase):
+    """The AMD architecture rules that live in the engine sources (the launcher side is AmdDefault): pinned so a refactor cannot drop the guard."""
+
+    SRC = ROOT / "src" / "split"
+
+    def text(self, rel):
+        return (self.SRC / rel).read_text(encoding="utf-8")
+
+    def test_the_self_test_runs_before_the_model_loads_on_a_card_nobody_has_run(self):
+        model = self.text("src/model.cpp")
+        i = model.index("void check_cards()")
+        j = model.index("selftest_decide(", i)
+        self.assertLess(j, model.index("float f16_to_f32", i))           # inside check_cards, which Model::Model calls first
+        self.assertIn("FNX_SELFTEST_FAIL", self.text("src/hip/selftest_policy.hpp"))
+        self.assertIn("selftest.cu", self.text("CMakeLists.txt"))
+        self.assertRegex(self.text("src/hip/selftest_policy.hpp"), r'arch_tested\([^)]*\)\s*\{\s*return gcn_arch\.rfind\("gfx1201", 0\) == 0;')
+
+    def test_the_code_objects_and_the_card_check_agree(self):
+        cmake = self.text("CMakeLists.txt")
+        for arch in ("gfx1201", "gfx1200", "gfx11-generic"):
+            self.assertIn(arch, cmake)
+        build = (ROOT / "packaging" / "build_split_hip.sh").read_text(encoding="utf-8")
+        self.assertIn("gfx1201;gfx1200;gfx11-generic", build)
+        self.assertIn("strata-split-$n-amd", build)
+        self.assertRegex(build, r"NEEDED\.\*rccl")                          # RCCL is dlopen'ed, never linked
+        model = self.text("src/model.cpp")
+        for arch in ("gfx1201", "gfx1200", "gfx1100", "gfx1101", "gfx1102", "gfx1103"):
+            self.assertIn('"%s"' % arch, model)
+
+    def test_the_issue_template_exists_and_the_engine_line_points_at_it(self):
+        tpl = ROOT / ".github" / "ISSUE_TEMPLATE" / "amd_split_report.yml"
+        self.assertTrue(tpl.is_file())
+        self.assertIn("AMD split engine report", tpl.read_text(encoding="utf-8"))
+        self.assertIn("template=amd_split_report.yml", self.text("src/hip/selftest_policy.hpp"))
+
+
 class NoPeerAccess(unittest.TestCase):
     """Pictures of the rule 'no peer access in any path' for the NVIDIA split: nothing under src/split may call the CUDA peer APIs, and the HIP peer APIs
     appear in exactly one file, src/split/src/hip/peer.h (AMD only: the owner allowed peer access on the R9700 "if faster, with fallback", 2026-11-02; it runs only
