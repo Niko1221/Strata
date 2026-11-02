@@ -3237,6 +3237,18 @@ bool mtp_load_pending(Window* w, std::string& err);
 void set_model_shard(const char* shard1) { g_shard1 = shard1 ? shard1 : ""; }
 void set_batch_slots(int n) { g_slot_cap = n > 0 ? std::min(n, 8) : 0; }
 
+// The draft vocabulary the build ships (data/draft_vocab.bin beside the build, else the compiled-in data folder): what a DFlash2-alone start without <mtp>/draft_vocab.bin
+// uses (generate.cpp), and what Window::df2_bind falls back to.  STRATA_METAL_DRAFT_VOCAB names another file, or "full" for the whole head.
+std::string draft_vocab_default() {
+    const char* e = std::getenv("STRATA_METAL_DRAFT_VOCAB");
+    if (e != nullptr && e[0] != 0 && std::string(e) != "full") return e;
+    return strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
+}
+bool draft_vocab_whole_head() {
+    const char* e = std::getenv("STRATA_METAL_DRAFT_VOCAB");
+    return e != nullptr && std::string(e) == "full";
+}
+
 // One decode window per process: the prompt path (Prefill::init) may bring it up before the Verifier does.
 namespace {
 Window* g_the_window = nullptr;

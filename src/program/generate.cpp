@@ -104,6 +104,7 @@
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
+#include "strata/spec/draft_vocab.hpp"
 #include "strata/spec/window_rule.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
@@ -151,6 +152,8 @@ void set_model_shard(const char* shard1);   // metal/src/engine/window.cpp
 void set_batch_slots(int n);   // metal/src/engine/window.cpp: how many --batch slots the window keeps state for
 // batch slot b <-> the main sequence: the running state (unless kv_only) and the first `upto` cells of K/V
 bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only, std::string& err);
+std::string draft_vocab_default();   // metal/src/engine/window.cpp: the packaged default draft subset (data/draft_vocab.bin)
+bool draft_vocab_whole_head();       // STRATA_METAL_DRAFT_VOCAB=full
 }
 #endif
 
@@ -5300,13 +5303,24 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --draft dflash2 drafts without the MTP layer (--draft-fallback mtp loads it too) and needs --draft-model PACK, --spec 2 or more and --mtp-draft-vocab FILE (or --mtp DIR, for DIR/draft_vocab.bin)\n");
             return 2;
         }
-        df2_vocab_file = o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab;
-        {   // without the vocabulary subset the DFlash2 would run its head over all of the target's rows (+0.7 ms a round measured on Metal) without a word
-            std::error_code vec;
-            if (!std::filesystem::exists(df2_vocab_file, vec)) {
-                std::fprintf(stderr, "strata generate: --draft dflash2: the draft vocabulary %s does not exist (--mtp DIR needs DIR/draft_vocab.bin, or --mtp-draft-vocab FILE); the drafter would run its head over the whole vocabulary\n", df2_vocab_file.c_str());
+        {   // without the vocabulary subset the DFlash2 would run its head over all of the target's rows (+0.7 ms a round measured on Metal) without a word.
+            // Metal alone has a packaged default subset to fall back to (the Mac's MTP folder is empty by design); everywhere else a missing file is the error.
+            std::string packaged;
+            bool whole_head_ok = false;
+#if defined(STRATA_GPU_METAL)
+            packaged = strata::metal_engine::draft_vocab_default();
+            whole_head_ok = strata::metal_engine::draft_vocab_whole_head();
+#endif
+            const strata::spec::Df2Vocab dv = strata::spec::df2_vocab_resolve(o.mtp, o.mtp_draft_vocab, packaged, whole_head_ok, [](const std::string& p) {
+                std::error_code vec;
+                return std::filesystem::exists(p, vec);
+            });
+            if (!dv.ok) {
+                std::fprintf(stderr, "strata generate: %s\n", dv.why.c_str());
                 return 2;
             }
+            if (dv.packaged) std::fprintf(stderr, "strata generate: --draft dflash2: no draft vocabulary in the MTP folder: using the packaged default subset %s\n", dv.path.c_str());
+            df2_vocab_file = dv.path;
         }
         o.mtp.clear();
         df2_solo = true;
