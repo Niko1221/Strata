@@ -126,7 +126,13 @@ def intel_gpus():
                 elif card.get("free_memory_supported") is not True:
                     why = "free VRAM query is unavailable (ext_intel_free_memory)"
                 elif card.get("command_graph_supported") is not True:
-                    why = "command graphs are unavailable (ext_oneapi_graph)"
+                    # An Alchemist does not advertise ext_oneapi_graph but does run command graphs, so the aspect is
+                    # a false negative there.  Skipping stays the default; to_sycl opts an Alchemist on Windows in.
+                    if os.environ.get("STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT") == "1":
+                        S.warn(f"{card.get('name', 'this Intel GPU')} does not advertise command graphs "
+                               "(ext_oneapi_graph); using it because STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT=1")
+                    else:
+                        why = "command graphs are unavailable (ext_oneapi_graph)"
                 (skipped if why else usable).append((card, why))
             for card, why in skipped:
                 # budiony, #3607: an integrated GPU beside the Arc fails these checks and cannot serve; it must not
@@ -523,6 +529,13 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
                     "ZES_ENABLE_SYSMAN": "1",
                     "STRATA_VERIFY_DEVICE_PLAN": "1", "STRATA_VERIFY_NO_HOST": "1" if streamed else "0",
                     "STRATA_STAGER_THREADS": "12"})
+        if alchemist:
+            # An Alchemist refuses one device allocation above 4 GiB, and the expert cache is a single allocation,
+            # so the limit is lifted here to let it use the card's VRAM (e.g. 3.15 -> 7.48 GiB on an A770 16 GB).
+            env["UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"] = "1"
+            # The same card does not advertise ext_oneapi_graph but does run command graphs: pass the engine's
+            # opt-in, which is inert on a card that advertises the aspect.
+            env["STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT"] = "1"
         env.update(cfg.get("env", {}))
     elif exe != ROOT / "build-sycl-aot" / "strata":
         env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()

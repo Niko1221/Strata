@@ -1,4 +1,4 @@
-﻿# Intel Arc on Linux
+# Intel Arc on Linux
 
 Strata runs on Intel Arc cards on Linux through its own engine ported to SYCL (Intel oneAPI). This page is for people with
 an Arc A-series (Alchemist) or B-series (Battlemage) card. It covers the released Terminal route, what you need, how to
@@ -369,12 +369,47 @@ their 19.00 GiB. `--ple-io` stays at its default (`direct`) here: the engine's p
 ("fine"; the warning bar is 15,000), and on Windows the engine does not switch to mapped reads by itself - a slow probe
 warns instead. `mmap`/`ram` are for a slow drive, not for the expert path.
 
-What has **not** been run on Windows: pictures, the Arc A-series (Windows uses Level Zero for every Arc, `i915` is a
-Linux driver), two cards, and the Docker path. WSL2 with an Arc has been used by one tester (the B580 row above), but
-setup cannot detect the card there, because it reads `/sys/class/drm`, which WSL2 does not have.
+What has **not** been run on Windows: pictures, two cards, and the Docker path. The Arc A-series **has** now been run
+(an A770 16 GB, below). WSL2 with an Arc has been used by one tester (the B580 row above), but setup cannot detect the
+card there, because it reads `/sys/class/drm`, which WSL2 does not have.
 
 Pictures are therefore off by default on Windows: setup passes `--vision none` unless `--vision yes` is given. (0.2.3
 turns them on by default on Linux, where the A750 has run them; this port has not run one yet.)
+
+### Arc A770 16 GB on Windows
+
+An Alchemist runs on Windows through Level Zero like a B-series, with two differences.
+
+- **A single device allocation above 4 GiB is refused.** `sycl::malloc_device` returns NULL at 4.0 GiB and succeeds
+  at 3.5 GiB; host allocations are not capped. The expert cache is one allocation, so it was held to 3.15 GiB while
+  5.4 GiB of the card stayed unused. `UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1` removes that check rather than
+  granting memory: the cache then takes what is free (e.g. 7.48 GiB). Setup writes it for an Alchemist on Windows.
+- **`ext_oneapi_graph` is not advertised, but command graphs work.** Setup and the engine skip the card on the aspect
+  alone. `STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT=1` opts in, and setup writes it for an Alchemist on Windows.
+
+Decode and prompt, Coder IQ1_M, 16K context, 3 runs of 256 tokens each (`relaxed alloc` is
+`UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS`):
+
+| relaxed alloc | Expert cache | Decode | Short prompt | 4.4K prompt |
+| ---: | --- | ---: | ---: | ---: |
+| 0 | 3.15 GiB | 11.6 tok/s | 20.7 tok/s | 226 tok/s |
+| 1 | 7.48 GiB | **14.2 tok/s** | **25.3 tok/s** | **235 tok/s** |
+
+Measured on an Arc A770 16 GB, driver 32.0.101.9150, oneAPI 2026.2, engine 0.1.57. The answers do not change.
+The shrink message's page-file advice does not apply to this failure: the request failed with 28.9 GiB of commit
+free, and the limit reproduces with no model loaded.
+
+Two things to expect on this card.
+
+- **The RAM arena is faster, but the server cannot use it yet.** Without `--stream-experts` the engine keeps the
+  experts in RAM and the CPU computes the ones the cache lacks, so nothing is read over PCIe: the engine's own
+  generate path measured 27.5 tok/s decode on a 4-token prompt and 20.9 on a 200-token one, with `PCIe experts 0.00`
+  per layer. On the `--serve` path it dies with `0xC0000005` on the first prompt. The arena is not the cause - the
+  pinned mirror with `STRATA_VERIFY_NO_HOST=0` crashes at the same instruction - so what fails is the host-served
+  expert compute that only `NO_HOST=0` reaches. Until that is fixed, use the mirror (`--stream-experts`, `NO_HOST=1`).
+- **The configuration depends on the free VRAM at the start.** On a 16 GB card a busy desktop can leave too little for
+  the cache, and the engine then refuses with `N experts are neither in VRAM nor mirrored` - lower `--max-context` or
+  raise `STRATA_MIRROR_MIB`.
 
 ## Reporting a problem
 

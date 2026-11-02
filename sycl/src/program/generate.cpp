@@ -2176,8 +2176,15 @@ int main(int argc, char **argv) try {
             return 2;
         }
         if (!d.has(sycl::aspect::ext_oneapi_graph)) {
-            std::fprintf(stderr, "strata generate: command graphs are unavailable (ext_oneapi_graph); check the Intel GPU driver and oneAPI runtime\n");
-            return 2;
+            // An Alchemist does not advertise ext_oneapi_graph but does run command graphs, so the aspect is a false
+            // negative there.  The refusal stays the default; setup opts an Alchemist on Windows in.
+            const char* allow = std::getenv("STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT");
+            if (!allow || std::string(allow) != "1") {
+                std::fprintf(stderr, "strata generate: command graphs are unavailable (ext_oneapi_graph); check the Intel GPU driver and oneAPI runtime\n");
+                return 2;
+            }
+            std::fprintf(stderr, "strata generate: ext_oneapi_graph is not advertised; going on because "
+                                 "STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT=1\n");
         }
     }
 #endif
@@ -5052,11 +5059,14 @@ int main(int argc, char **argv) try {
                 // cache then tries three quarters of the size, a few times, instead of stopping the engine.
                 char commit[96] = "";
 #if defined(_WIN32)
+                bool commit_low = false;
                 MEMORYSTATUSEX ms{};
                 ms.dwLength = sizeof ms;
-                if (GlobalMemoryStatusEx(&ms))
-                    std::snprintf(commit, sizeof commit, " (Windows has %.1f GiB of commit left: RAM + page file)",
-                                  (double) ms.ullAvailPageFile / 1073741824.0);
+                if (GlobalMemoryStatusEx(&ms)) {
+                    const double left = (double) ms.ullAvailPageFile / 1073741824.0;
+                    std::snprintf(commit, sizeof commit, " (Windows has %.1f GiB of commit left: RAM + page file)", left);
+                    commit_low = left < (double) cache_bytes() / 1073741824.0 + 2.0;   // the request, plus a margin
+                }
 #endif
                 if (auto_cache && failed < 8 && shrink_to(cache_bytes() / 4 * 3)) {
                     ++failed;
@@ -5066,9 +5076,15 @@ int main(int argc, char **argv) try {
                 }
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
 #if defined(_WIN32)
-                std::fprintf(stderr, "strata generate: on Windows the graphics card's memory also needs room in the page "
-                                     "file: set it to \"System managed\" (System > About > Advanced system settings > "
-                                     "Performance > Advanced > Virtual memory), or lower --expert-cache\n");
+                // On an Alchemist the commit figure above is a red herring: the cause is the adapter's 4 GiB
+                // per-allocation limit.  Name it when the request is above that, the page file only when it is short.
+                if (cache_bytes() > (int64_t) (4ull << 30))
+                    std::fprintf(stderr, "strata generate: some Arc cards refuse one allocation above 4 GiB; set "
+                                         "UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1 to lift the adapter's limit\n");
+                if (commit_low)
+                    std::fprintf(stderr, "strata generate: on Windows the graphics card's memory also needs room in the page "
+                                         "file: set it to \"System managed\" (System > About > Advanced system settings > "
+                                         "Performance > Advanced > Virtual memory), or lower --expert-cache\n");
 #endif
                 return 1;
             }
