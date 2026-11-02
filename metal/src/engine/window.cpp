@@ -193,7 +193,9 @@ public:
     // The request's sampling for the head rows of the windows that follow (sample.metal): null = greedy, the in-graph argmax.  `hist` is the penalty
     // history, Tn rows of hist_len tokens (the last penalty_last_n of a row count, -1 = unused), read when the window's rows are sampled.
     void set_sampling(const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len);
-    bool sample_rows(int Tn, int32_t* out, std::string& err);   // after run(): replaces out[0..Tn) (and tokout_) by the sampled tokens
+    bool sample_rows(int Tn, int32_t* out, std::string& err);
+    bool sample_slot_row(int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err);   // one slot's row of a batch window, its own params
+    bool sample_run(int row0, int n, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hl, std::string& err);   // after run(): replaces out[0..Tn) (and tokout_) by the sampled tokens
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return n_vocab_; }
     bool ready() const { return cx_ != nullptr; }
@@ -3090,6 +3092,21 @@ void Window::set_sampling(const strata::kernels::SamplerParams* sp, const int32_
 
 bool Window::sample_rows(int Tn, int32_t* out, std::string& err) {
     if (!samp_on_ || Tn < 1 || Tn > MAXT) return true;
+    if (!sample_run(0, Tn, samp_, samp_hist_, samp_hist_len_, err)) return false;
+    for (int t = 0; t < Tn; ++t) out[t] = tokout_.as<int32_t>()[t];
+    return true;
+}
+
+bool Window::sample_slot_row(int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err) {
+    if (row < 0 || row >= MAXT) return true;
+    if (!sample_run(row, 1, sp, nullptr, 0, err)) return false;
+    *tok = tokout_.as<int32_t>()[row];
+    return true;
+}
+
+// the chain over logits rows [row0, row0 + n) of lm_, written to tokout_[row0 ..]; row r's draw is Philox(seed, counter + r - row0)
+bool Window::sample_run(int row0, int n, const strata::kernels::SamplerParams& sp, const int32_t* hist_in, int hl, std::string& err) {
+    const int Tn = n;
     const int64_t V = n_vocab_;
     constexpr uint32_t PARTS = 64;
     if (V > (int64_t) PARTS * 4096) { err = "metal sampler: the vocabulary is wider than 64 parts of 4096"; return false; }
@@ -3097,7 +3114,6 @@ bool Window::sample_rows(int Tn, int32_t* out, std::string& err) {
         scv_ = cx_->alloc(4 * (size_t) MAXT * PARTS * 64);
         sci_ = cx_->alloc(4 * (size_t) MAXT * PARTS * 64);
     }
-    const strata::kernels::SamplerParams& sp = samp_;
     const bool greedy = sp.greedy || sp.temperature <= 0.0f;
     uint32_t flags = greedy ? 2u : 0u;
     // the logit bias: a device array of n_vocab floats (unified memory: read as it is, copied into the sampler's own buffer)
@@ -3109,12 +3125,11 @@ bool Window::sample_rows(int Tn, int32_t* out, std::string& err) {
         sbias_ = cx_->alloc(16);
     }
     uint32_t pen_n = 0;
-    const int hl = samp_hist_len_;
-    if (samp_hist_ != nullptr && hl > 0 && sp.penalty_last_n > 0) {
+    if (hist_in != nullptr && hl > 0 && sp.penalty_last_n > 0) {
         pen_n = (uint32_t) std::min(sp.penalty_last_n, hl);
         const size_t need = 4 * (size_t) MAXT * (size_t) hl;
         if (shist_cap_ < need) { if (shist_.handle) cx_->free(shist_); shist_ = cx_->alloc(need); shist_cap_ = need; }
-        std::memcpy(shist_.ptr, strata::gpu::host_view(samp_hist_), 4 * (size_t) Tn * (size_t) hl);
+        std::memcpy(shist_.ptr, strata::gpu::host_view(hist_in), 4 * (size_t) Tn * (size_t) hl);
         flags |= 4u;
     } else if (!shist_.handle) {
         shist_ = cx_->alloc(16); shist_cap_ = 16;
@@ -3141,14 +3156,14 @@ bool Window::sample_rows(int Tn, int32_t* out, std::string& err) {
     a.ctr_lo = (uint32_t) sp.counter; a.ctr_hi = (uint32_t) (sp.counter >> 32);
     mtl::Dispatch d1, d2;
     d1.p = P(lsmp_, "samp_part", {}, "samp_part");
-    d1.args = {mtl::Arg::B(lm_), mtl::Arg::B(sbias_), mtl::Arg::B(shist_), mtl::Arg::B(scv_), mtl::Arg::B(sci_), mtl::Arg::V(a)};
+    const size_t cand_off = 4 * (size_t) row0 * PARTS * 64;
+    d1.args = {mtl::Arg::B(lm_, 4 * (size_t) row0 * (size_t) V), mtl::Arg::B(sbias_), mtl::Arg::B(shist_), mtl::Arg::B(scv_, cand_off), mtl::Arg::B(sci_, cand_off), mtl::Arg::V(a)};
     d1.grid[0] = PARTS; d1.grid[1] = (uint32_t) Tn; d1.tg[0] = 256;
     d2.p = P(lsmp_, "samp_pick", {}, "samp_pick");
-    d2.args = {mtl::Arg::B(scv_), mtl::Arg::B(sci_), mtl::Arg::B(tokout_), mtl::Arg::V(a)};
+    d2.args = {mtl::Arg::B(scv_, cand_off), mtl::Arg::B(sci_, cand_off), mtl::Arg::B(tokout_, 4 * (size_t) row0), mtl::Arg::V(a)};
     d2.grid[0] = (uint32_t) Tn; d2.tg[0] = 256;
     const double t0 = now_ms();
     cx_->run_graph({d1, d2});
-    for (int t = 0; t < Tn; ++t) out[t] = tokout_.as<int32_t>()[t];
     ++samp_windows_;
     static const bool st = std::getenv("STRATA_METAL_SAMPLE_STATS") != nullptr;
     if (st && samp_windows_ % 200 == 0)
@@ -3203,6 +3218,9 @@ bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::Se
 bool window_ensure(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int64_t max_cells, std::string& err) {
     int64_t nv = 0;
     return window_init(window_create(), g, ss, MAXT, max_cells, &nv, err);
+}
+bool window_sample_slot_row(void* w, int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err) {
+    return ((Window*) w)->sample_slot_row(row, sp, tok, err);
 }
 void window_set_sampling(void* w, const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len) {
     ((Window*) w)->set_sampling(sp, hist, hist_len);

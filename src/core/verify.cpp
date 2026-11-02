@@ -98,6 +98,7 @@ bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, 
 bool window_commit(void* w, int n_keep, std::string& err);
 bool window_copy_logits(void* w, int t, float* host);
 void window_set_sampling(void* w, const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len);
+bool window_sample_slot_row(void* w, int row, const strata::kernels::SamplerParams& sp, int32_t* tok, std::string& err);
 bool window_init_slots(void* w, const std::vector<strata::core::SessionState*>& slots, std::string& err);
 bool window_run_slots(void* w, const int* rows, int S, const int32_t* tokens, const int64_t* pos, int32_t* out, std::string& err);
 }  // namespace strata::metal_engine
@@ -4555,6 +4556,15 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     if (S < 1 || S > (int) strata::kernels::kVerifyMaxT) { err = "verify: batch window size out of range"; return false; }
     (void) pool; (void) user;
     if (!strata::metal_engine::window_run_slots(metal_, rows, S, tokens, pos, out, err)) return false;
+    // a slot with its own sampling (set_slot_sampling: temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows): its row is
+    // drawn again from the window's logits with Philox(seed, position), as a solo window draws it
+    for (int t = 0; t < S; ++t) {
+        strata::kernels::SamplerParams sp = slot_sp_[(size_t) rows[t]];
+        if (sp.greedy || sp.temperature <= 0.0f) continue;
+        sp.counter = (uint64_t) pos[t];
+        sp.penalty_last_n = 0;
+        if (!strata::metal_engine::window_sample_slot_row(metal_, t, sp, &out[t], err)) return false;
+    }
     last_t_ = S;
     for (int t = 0; t < S; ++t) { last_rows_[t] = rows[t]; last_tokens_[t] = tokens[t]; last_pos_b_[t] = pos[t]; }
     last_batch_ = true;
