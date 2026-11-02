@@ -26,6 +26,11 @@ int main() {
     // =1 without the peer push: the host exchange stays, one line, no open
     d = rccl_decide("1", false, false, pass);
     CHECK(!d.use && calls == 0 && d.line == "RCCL is not used for the prompt sums: the peer push between the cards is off, so the host exchange stays.");
+    // the default alone (unset) without the peer push: the host exchange, quiet
+    calls = 0;
+    d = rccl_decide(nullptr, false, true, pass);
+    CHECK(!d.use && calls == 0 && d.line.empty());
+    calls = 0;
     // =1 with the peer push and a library that opens: used, the line says which
     d = rccl_decide("1", true, false, pass);
     CHECK(d.use && calls == 1 && d.line == "The prompt sums use RCCL (librccl.so.1).");

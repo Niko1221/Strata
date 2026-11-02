@@ -69,7 +69,7 @@ inline RcclDecision rccl_decide(const char* env, bool peer_on, bool default_on, 
     const bool wanted = env ? std::strcmp(env, "0") != 0 : default_on;
     if (!wanted) return d;
     if (!peer_on) {
-        d.line = "RCCL is not used for the prompt sums: the peer push between the cards is off, so the host exchange stays.";
+        if (env) d.line = "RCCL is not used for the prompt sums: the peer push between the cards is off, so the host exchange stays.";   // (asked for: say so; the default stays quiet)
         return d;
     }
     std::string why;
