@@ -32,7 +32,7 @@ constexpr int HD = kDf2Hd;
 #define DF2_ATTN_CHUNK_AUTO 64
 #endif
 #ifndef DF2_ATTN_AUTO
-#define DF2_ATTN_AUTO 1
+#define DF2_ATTN_AUTO 2
 #endif
 int g_gemm_variant = 0;   // bench only (df2_gemm_variant)
 int g_attn_chunk = 0;     // bench only (df2_attention_chunk)
@@ -696,7 +696,7 @@ void quant_rows_launch(sycl::queue* q, const float* x, int K, int ncols, int8_t*
 }  // namespace
 
 #ifndef DF2_Q4_AUTO
-#define DF2_Q4_AUTO(rows) 28
+#define DF2_Q4_AUTO(rows) ((rows) <= 1024 ? 40 : 41)   // SIMD16 pair kernels (bitwise the same results): 2 rows a lane for the big matrices, 1 for the 640-row ones
 #endif
 
 void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_in, int ncols, void* stream) {
