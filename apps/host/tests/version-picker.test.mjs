@@ -22,14 +22,31 @@ test('top: the recommendation and the downloaded versions; below: all the others
   assert.deepEqual(more.map(x => x.download_gb), [...more.map(x => x.download_gb)].sort((a, b) => a - b), 'the others by size');
 });
 
-test('IQ3_S downloaded and recommended: it is at the top once, as downloaded, and nowhere else', () => {
+test('IQ3_S downloaded and recommended: it is at the top once, with both tags, and nowhere else', () => {
   const pick = { family: 'qwen', model: 'IQ3_S', why: '64 GB tier' };
-  const pickId = recommendedVersions(qwen38, pick).find(r => r.r.note === PICK_NOTE)?.v.id;
-  assert.equal(pickId, 'iq3_s');
-  const { top, more } = versionGroups(qwen38, new Set(), new Set(['iq3_s']), pickId);
+  const recommended = recommendedVersions(qwen38, pick);
+  assert.equal(recommended[0].v.id, 'iq3_s', 'the pick for this PC comes first');
+  assert.equal(recommended[0].r.note, PICK_NOTE);
+  const { top, more } = versionGroups(qwen38, new Set(), new Set(['iq3_s']), recommended.map(r => r.v.id));
   assert.equal(top[0].id, 'iq3_s');
   assert.equal([...top, ...more].filter(x => x.id === 'iq3_s').length, 1);
-  assert.match(source, /recommended = v\.id === pickId && !have/, 'the Recommended tag is not shown once it is downloaded');
+  assert.match(source, /recommended = recommendedIds\.includes\(v\.id\)/, 'Recommended is written on every recommended row, downloaded or not');
+  assert.ok(!/recommended = [^;]*&& !have/.test(source), 'a downloaded recommended version keeps its Recommended tag');
+});
+
+test('the recommended versions from us come first, in order, then the downloaded ones, then the rest', () => {
+  const pick = { family: 'qwen', model: 'IQ3_S', why: '64 GB tier' };
+  const rec = recommendedVersions(qwen38, pick);
+  assert.deepEqual(rec.map(r => r.v.id), ['iq3_s', 'gyro-gyro-s', 'swift-iq2_xs', 'unsloth-ud-q4_k_xl'], 'the pick, then the fixed picks');
+  const have = new Set(['coder-iq1_m', 'iq3_s']);
+  const { top, more } = versionGroups(qwen38, new Set(), have, rec.map(r => r.v.id));
+  assert.deepEqual(ids(top), ['iq3_s', 'gyro-gyro-s', 'swift-iq2_xs', 'unsloth-ud-q4_k_xl', 'coder-iq1_m']);
+  assert.equal(top.length + more.length, qwen38.length, 'none lost');
+  assert.ok(!more.some(x => ids(top).includes(x.id)), 'none twice');
+  // A base model whose versions are not in the fixed list (DeepSeek) still shows the engine's own pick.
+  const ds = [{ id: 'ist-das-1.75bpw', sourceFamily: 'deepseek41', model: 'IST-DAS-1.75bpw', download_gb: 50 }, { id: 'ist-das-2.00bpw', sourceFamily: 'deepseek41', model: 'IST-DAS-2.00bpw', download_gb: 60 }];
+  assert.deepEqual(recommendedVersions(ds, { family: 'deepseek41', model: 'IST-DAS-2.00bpw' }).map(r => r.v.id), ['ist-das-2.00bpw']);
+  assert.deepEqual(recommendedVersions(ds, null), [], 'no pick and no fixed picks: nothing is recommended');
 });
 
 test('no downloads and no pick: everything is in the one list below, and the first-run page leaves out what it shows elsewhere', () => {
@@ -39,14 +56,33 @@ test('no downloads and no pick: everything is in the one list below, and the fir
   assert.ok(!more.some(x => x.id === 'iq3_s' || x.id === 'gyro-gyro-s'));
 });
 
-test('a row says whether the version fits this PC, from the same figures as the card', () => {
+test("the list writes Fits nowhere; only 'SSD streaming · will run slower' and 'Doesn't fit' are words", () => {
   const big = { id: 'x', download_gb: 111, memory_gb: 78 }, small = { id: 'y', download_gb: 66, memory_gb: 35 };
   assert.equal(versionFit(small, { ram_gb: 128, vram_gb: 24 }), 'fits');
   assert.equal(versionFit(big, { ram_gb: 64, vram_gb: 12 }), 'ssd', 'part of the experts read from the SSD');
-  assert.equal(versionFit({ ...small, on_this_pc: 'does not fit' }, { ram_gb: 128, vram_gb: 24 }), 'no', "the engine's own verdict wins");
   assert.equal(versionFit(small, null), 'unknown', 'no hardware figures: no claim');
-  assert.match(source, /'Fits with SSD streaming'/);
+  assert.ok(!/'Fits'|"Fits"|Fits with SSD streaming/.test(source), 'no Fits word in the picker');
+  assert.match(source, /state === 'ssd' \|\| state === 'no' \? <span className="version-row__fit"/, 'a version that fits has no fit line at all');
+  assert.match(source, /'SSD streaming · will run slower'|'SSD streaming · will run slower'/);
   assert.ok(!/nativeVersionLabel|plainLabel/.test(source), 'no Fastest, Compact, High quality words');
+});
+
+test("NVFP4 on a 12 GB card with 63 GB of RAM is SSD streaming, not Doesn't fit (the engine's catalog compares RAM only)", () => {
+  // NVFP4: ram_gb 80, arena_gb 68, so the catalog says "does not fit" below 72 GB of RAM whatever the graphics card holds.
+  const nvfp4 = { id: 'nvfp4-nvfp4', download_gb: 128, ram_needed_gb: 80, experts_gb: 68, memory_gb: 69, on_this_pc: 'does not fit' };
+  assert.equal(versionFit(nvfp4, { ram_gb: 63.1, vram_gb: 11.9 }), 'ssd');
+  assert.equal(versionFit({ ...nvfp4, on_this_pc: 'does not fit' }, { ram_gb: 32, vram_gb: 24 }), 'ssd', 'a smaller PC still runs it, slower');
+  assert.equal(versionFit({ ...nvfp4, on_this_pc: 'tight' }, { ram_gb: 128, vram_gb: 32 }), 'fits');
+});
+
+test("Doesn't fit is left for the cases that cannot run at all", () => {
+  const v = { id: 'x', download_gb: 66, memory_gb: 35 };
+  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit: it needs one or more graphics cards' }, { ram_gb: 256, vram_gb: 0 }), 'no', 'DeepSeek without a graphics card');
+  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit' }, { ram_gb: 8, vram_gb: 0 }), 'no', 'less memory than anything was run with, and the engine agrees');
+  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit: this Mac has too little memory' }, { ram_gb: 8, vram_gb: 0 }), 'no');
+  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit' }, null), 'no', 'the engine says so and nothing contradicts it');
+  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit' }, { ram_gb: 16, vram_gb: 0 }), 'ssd', 'at the floor it runs from the SSD');
+  assert.equal(versionFit({ ...v, memory_gb: 260, on_this_pc: 'does not fit: about 120 GB of its experts would be read from the SSD' }, { ram_gb: 128, vram_gb: 24 }), 'ssd', 'a big spill is slow, not a refusal');
 });
 
 test("the list is for one base model: the page passes only the chosen model's versions", async () => {

@@ -392,7 +392,7 @@ class Install(FakeRoot):
         res, err = self.call("strata_install", {})
         self.assertFalse(err)
         self.assertIn("Nothing was done yet", res["summary"])
-        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_S", 32768))
+        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_S", 131072))
         self.assertFalse((self.root / "setup-args.json").exists())
         self.assertIsNone(self.strata.install_job())
 
@@ -665,7 +665,7 @@ class Helpers(unittest.TestCase):
         r = s.recommend({"ram_gb": 64, "gpus": [], "cpu": {"avx2": True}})
         self.assertIsNone(r["model"])
         r = s.recommend({"ram_gb": 64, "gpus": [{**gpu[0], "vram_gb": 12.0}], "cpu": {"avx2": True}})
-        self.assertEqual(r["context"], 32768)
+        self.assertEqual(r["context"], 131072)      # 128K on every card, a 12 GB one too (owner, 2026-11-01)
 
     def test_a_pick_that_reads_from_the_ssd_says_so(self):
         # #3425: 36 GB RAM + 16 GB VRAM - 5 GB is the 48 GB tier; about 8 GB of IQ3_XXS would come from the SSD

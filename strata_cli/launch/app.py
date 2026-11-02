@@ -116,7 +116,8 @@ class Ctx:
         from strata_cli.launch import modelstate
         s = self.settings
         return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
-                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp, drafting=s.drafting)
+                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp,
+                                 drafting=modelstate.resolved_drafting(s.drafting, s.family))
 
     def default_folder(self) -> Path:
         """The folder the Folder step starts with: where the chosen model already is (installed, or the person's own files with their
@@ -427,7 +428,7 @@ def run_monitor(info: dict, *, keep_default: bool = True, color: str = "auto") -
     from strata_cli.launch.monitor_ext import LaunchMonitor
     local = next((u for u in info.get("urls", []) if "127.0.0.1" in u), None) or f"http://127.0.0.1:{info.get('port', S.DEFAULT_PORT)}"
     endpoint = Endpoint(local, info.get("key"), 3.0, "")
-    app = LaunchMonitor(endpoint, None, info=info, color=color)
+    app = LaunchMonitor(endpoint, None, info={**info, "daily_check": True}, color=color)     # (the quiet once-a-day check for a newer engine: this monitor only)
     app.run()
     if app.stop_requested:
         from strata_cli.launch.runner import Runner as R

@@ -7,5 +7,12 @@
  "df06": "Vorausraten: MTP (DFlash2 ist auf dieser Grafikkarte nicht verfügbar)",
  "df07": "Es besteht keine Internetverbindung, deshalb kann der DFlash2-Drafter jetzt nicht heruntergeladen werden.",
  "df08": "SSD: nicht nötig",
- "df09": "DFlash2 beantwortet eine Anfrage nach der anderen, deshalb hat Strata dieses Modell auf eine Anfrage zur Zeit gestellt."
+ "df09": "DFlash2 beantwortet eine Anfrage nach der anderen, deshalb hat Strata dieses Modell auf eine Anfrage zur Zeit gestellt.",
+ "df10": "Vorausraten: aus (noch kein Entwurfsbaustein heruntergeladen)",
+ "df11": "Vorausraten: DFlash2 (der MTP-Entwurfsbaustein ist noch nicht heruntergeladen)",
+ "df12": "Wenn Sie DFlash2 wählen, wird sein Entwurfsbaustein heruntergeladen: etwa {0} GB, einmalig.",
+ "df13": "Wenn Sie MTP wählen, wird sein Entwurfsbaustein heruntergeladen: etwa {0} GB, einmalig.",
+ "df14": "Der DFlash2-Entwurfsbaustein konnte nicht heruntergeladen werden, deshalb startet das Modell ohne Entwurfsbaustein. Das Modell wird geladen …",
+ "df15": "MTP-Entwurfsbaustein wird heruntergeladen …",
+ "df16": "Der MTP-Entwurfsbaustein konnte nicht heruntergeladen werden."
 }

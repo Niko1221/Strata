@@ -43,13 +43,13 @@ class LaunchDeepSeek(unittest.TestCase):
         r = rows[5]
         self.assertEqual((r.id, r.download_gb, r.verdict, r.images), ("deepseek-v4.1-flash-ud-q8_k_xl", 508.4, "fits", True))   # 0.2.7: pictures through the engine's own tower
         self.assertEqual(catalog(self.hw).resolve("ud-q8_k_xl"), ("deepseek41", "UD-Q8_K_XL"))
-        self.assertEqual(catalog(self.hw).max_context("deepseek41", "UD-Q8_K_XL"), 8192)
+        self.assertEqual(catalog(self.hw).max_context("deepseek41", "UD-Q8_K_XL"), 131072)
 
     def test_the_plan_places_the_model_on_the_four_cards(self):
         p = self.plan("--model", "ud-q8_k_xl", "--no-tui")
         pl = p["placement"]
         self.assertEqual(p["settings"]["family"], "deepseek41")
-        self.assertEqual(p["settings"]["context"], 8192)
+        self.assertEqual(p["settings"]["context"], 131072)
         self.assertEqual(p["settings"]["tune"], "skip")
         self.assertEqual(p["settings"]["vision"], "on")              # pictures are on by default (the engine's own tower)
         self.assertEqual(pl["verdict"], "fits")

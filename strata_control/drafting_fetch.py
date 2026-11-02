@@ -37,8 +37,8 @@ def plan(data_dir: str | Path) -> dict:
         text = "The DFlash2 drafter is already on this computer."
     else:
         text = (f"The DFlash2 drafter is {drafting.DOWNLOAD_GB:.1f} GB to download (it is packed to {drafting.PACK_GB:.2f} GB for the engine and the "
-                f"download is removed), from {drafting.REPO}, {drafting.LICENSE}. It needs about {drafting.VRAM_GB:.1f} GB of graphics memory; "
-                "if it does not fit, the model starts with the MTP instead.")
+                f"download is removed), from {drafting.REPO}, {drafting.LICENSE}. It needs about {drafting.VRAM_GB:.1f} GB of graphics memory, "
+                "less than the MTP's layer, which is not loaded beside it.")
     return {"ready": ready, "gb": gb, "pack": str(drafting.pack_path(data_dir)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
 
 
@@ -106,6 +106,7 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     report = progress or (lambda *_: None)
     out = drafting.target_path(data_dir)
     if drafting.pack_ready(data_dir):
+        drafting.provide_vocab(data_dir)
         report("The DFlash2 drafter is ready.", 1, 1)
         return drafting.pack_path(data_dir)
     acquisition.require("the DFlash2 drafter", "strata drafting fetch")
@@ -155,5 +156,6 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
         src.rmdir()
     except OSError:
         pass
+    drafting.provide_vocab(data_dir)                 # the draft vocabulary comes with the pack: an install that never had the MTP layer needs it
     report("The DFlash2 drafter is ready.", total, total)
     return out

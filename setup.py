@@ -805,7 +805,8 @@ DSV41_UD_FILES = {
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
 DSV41_ALL_FILES = {**DSV41_FILES, **DSV41_ISTA_FILES, **DSV41_ISTA6_FILES, **DSV41_LEGACY_FILES, **DSV41_UD_FILES}
 DSV41_PROFILES = ROOT / "data" / "dsv41"           # the shipped hot-expert profiles (profile-2.00.bin, profile-2.25.bin, + .sha256)
-DSV41_CONTEXT = 8192          # the context the engine was checked at (4096 and 8192; 64K is not tried yet)
+DSV41_MAC_CONTEXT = 8192        # DeepSeek on a Mac keeps the 8K it was run at (the owner's 128K decision is for cards; nothing was run on a Mac at 128K)
+DSV41_CONTEXT = 131072        # 128K like every model (owner, 2026-11-01; strata_control/default_context.py); the engine was checked at 4096 and 8192 before, INT3 checks 128K on real cards
 DSV41_MAC_VISION = False      # an Apple Silicon Mac: the Metal engine has not run DeepSeek's picture tower (0.2.7.1), so pictures stay off there
 MULTI_FILE_FAMILIES = {
     "deepseek41": {"title": "DeepSeek-V4.1-Flash", "by": "DeepSeek; the 2-bit GGUFs by ISTA-DAS, UD-Q8_K_XL by Unsloth", "arch": "deepseek41",
@@ -7601,6 +7602,13 @@ def mtp_corrupt(mtp: Path, env=None) -> bool:
     return r.returncode == 3
 
 
+def provide_dflash2_vocab(data: Path) -> None:
+    """A DFlash2-only install has no MTP folder to hold the draft vocabulary: it is kept beside the DFlash2 pack (strata_control/drafting.py provide_vocab)."""
+    from strata_control import drafting
+    if drafting.provide_vocab(data) is None:
+        warn("the draft vocabulary file (data/draft_vocab.bin) is missing from this Strata folder, so DFlash2 cannot start; update Strata")
+
+
 def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
     """The draft layer's token subset in the MTP folder: `cjk` (data/draft_vocab.bin, since 0.1.27, #137), `en`
     (data/draft_vocab_en.bin, the English/code subset before it: ~110 MiB less VRAM, English answers 1-2% faster) or
@@ -7887,7 +7895,7 @@ def engine_families(eng: Path) -> set:
 def own_path_context(fam: dict, vram_gb: float) -> int:
     """The recommended context for an own-path family: its KV cache (VRAM) beside the dense weights and the most-used
     experts - 32K up to 16 GB, 64K up to 24 GB, 128K above."""
-    return 32768 if vram_gb <= 16.5 else 65536 if vram_gb <= 24.5 else 131072
+    return 131072                                      # 128K on every card (owner, 2026-11-01)
 
 
 def own_path_size(fam: dict, ram: float) -> str:
@@ -8601,7 +8609,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     cards = dsv41_cards(gpu, all_cards, named)
     ctx = a.context or DSV41_CONTEXT
     if dsv41_context.problem(ctx):                 # 8K to 1M: the model reads 1,048,576 positions (Project Maya #442); a size it cannot address stops here, before any download
-        fail(dsv41_context.problem(ctx), "--context takes 8192 up to 1048576 (8K, 32K, 64K, 128K, 256K, 512K, 1M); the default is 8192")
+        fail(dsv41_context.problem(ctx), "--context takes 8192 up to 1048576 (8K, 32K, 64K, 128K, 256K, 512K, 1M); the default is 131072 (128K)")
     if dsv41_context.note(ctx):
         warn(f"context {dsv41_context.label(ctx)}: {dsv41_context.note(ctx)}")
     folder = dsv41_folder(a, fam, tag, model)
@@ -8668,8 +8676,8 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
              "answers), or --gguf-dir for files you already have")
     if left and free < left + dsv41_fit.DISK_HEADROOM_GB:
         warn(f"little free disk space in {folder}: {free:.1f} GB free for about {left:.1f} GB. Setup goes on and should fit")
-    if ctx > 65536:
-        warn(f"{ctx // 1024}K tokens of context: the engine was checked at 4K and 8K; longer is kept as you chose, but untested")
+    if ctx > DSV41_CONTEXT:       # 128K is the default now (owner, 2026-11-01); only a longer one the person asked for is said to be untested
+        warn(f"{ctx // 1024}K tokens of context: longer than the {DSV41_CONTEXT // 1024}K the engine is checked at; kept as you chose, but untested")
     # Pictures are on by default (owner rule): the engine reads them with its own vision tower (319 MiB, loaded with the model, no separate
     # reader process).  --vision no turns them off (--vision off for the engine); gpu / cpu name a Flash-Next reader and mean "on" here.
     if a.vision in ("gpu", "cpu"):
@@ -8694,9 +8702,8 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         get_dsv41_engine(eng, hip, getattr(a, "dsv41_package", None), getattr(a, "feed", None),
                          archs=[c.get("arch") for c in cards if c.get("arch")] if hip else None)
         exe = dsv41_exe(eng)
-    if (exe is not None and not getattr(a, "dsv41_package", None) and not getattr(a, "build", False)
-            and not (os.environ.get("STRATA_DSV41_EXE") or "").strip() and exe.parent.parent == dsv41_engine_dir(eng)):
-        exe = upgrade_dsv41_engine(eng, exe, getattr(a, "feed", None))   # an installed package older than the signed feed's: updated next to it, switched after it starts
+    # (An installed DeepSeek package older than the feed's is NOT updated here any more: setup runs from a model download in the app and from
+    # `strata launch`, often with a model loaded. The update is `strata update` / the app's Update engine, the person's choice.)
     if exe is not None and exe.parent != Path(eng):
         from strata_control import dsv41_engine
         lib_dirs = [*lib_dirs, *dsv41_engine.lib_dirs(exe)]   # its own package, and the rocm/bin an AMD package keeps the ROCm DLLs in
@@ -9094,6 +9101,10 @@ def mac_control_setup(a) -> int:
     if use_mtp and a.mtp == "off" and not (mtp / "mtp-q2_0.gguf").exists():
         ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")   # round 8, N3
         use_mtp = False
+    elif use_mtp and getattr(a, "drafter", None) == "dflash2" and not (mtp / "mtp-q2_0.gguf").exists():
+        ok("DFlash2 is the drafter: the MTP draft layer's ~5 GB are not downloaded (choosing the MTP later fetches it once)")
+        provide_dflash2_vocab(data)
+        use_mtp = False
     if use_mtp and not (mtp / "mtp-q2_0.gguf").exists():
         say("  The MTP draft layer (speculative decoding) comes from the original Qwen checkpoint: only its ~5 GB of MTP tensors are downloaded.")
         fetch_mtp(mtp, env)
@@ -9292,6 +9303,10 @@ def main() -> int:
                     help="the draft layer (MTP): off starts the model without it, which frees about 1 GB of graphics memory "
                          "for the expert cache and takes less RAM, at the price of speed; it is kept in the run config "
                          "(\"mtp\": false) and a later setup run does not undo it. on: back to the default")
+    ap.add_argument("--drafter", choices=["mtp", "dflash2"],
+                    help="which drafter this model will use. dflash2: the MTP draft layer's ~5 GB are not downloaded (the DFlash2 drafter is fetched by `strata drafting fetch`); "
+                         "the arguments keep the --mtp folder so a later switch to the MTP works. mtp (the default): the draft layer is fetched as before. Nothing is written about it "
+                         "in the run config: the choice is its \"drafting\" key")
     ap.add_argument("--parallel", type=int, metavar="N",
                     help="up to N requests decode together (batch slots, opt-in; default: one at a time, the others "
                          "wait). Each slot takes VRAM from the expert cache; setup says what it recommends")
@@ -9837,9 +9852,7 @@ def main() -> int:
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
-    rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
-    if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
-        rec_ctx = 8192 if small < 14 else 32768
+    rec_ctx = 131072                                   # 128K on every card (owner, 2026-11-01); a card it leaves little room on is warned about below, never lowered
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
     rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
     if a.context:
@@ -10031,7 +10044,7 @@ def main() -> int:
     prep_gb = MODELS[model].get("prepare_gb", 0.0) if ready and MODELS[model].get("prepare") and \
         not prepared_done(model, models_dir) else 0.0
     margin = 2 if mtp_have else 8                      # working room: a guess, not bytes that will be written
-    mtp_fetch = 5.2 if (not mtp_have and not ready and a.mtp != "off") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
+    mtp_fetch = 5.2 if (not mtp_have and not ready and a.mtp != "off" and getattr(a, "drafter", None) != "dflash2") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
     real = to_fetch + prep_gb + mtp_fetch + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
@@ -10173,6 +10186,9 @@ def main() -> int:
              "fetching them again and rebuilding the draft layer")
     if a.mtp == "off" and not (rt / "experts.bin").exists():
         ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")   # round 8, N3
+    elif getattr(a, "drafter", None) == "dflash2" and not (rt / "experts.bin").exists():
+        ok("DFlash2 is the drafter: the MTP draft layer's ~5 GB are not downloaded (choosing the MTP later fetches it once)")
+        provide_dflash2_vocab(data)
     elif corrupt or not (rt / "experts.bin").exists():
         say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
         say("  only its ~5 GB of MTP tensors are downloaded.")

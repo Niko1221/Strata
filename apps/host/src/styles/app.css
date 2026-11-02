@@ -56,13 +56,13 @@
   /* Type inside a conversation follows the reader's text size. The ratios are
      declared once here, so a rule that scales with the prose uses a token
      instead of a bespoke calc that the type audit cannot check. */
-  --st-fs-read-lg: calc(var(--st-content-fs, 14px) * 1.125);
-  /* The small ratio has a floor: at the default 14px reading size, 0.8125
-     would put code and tables at 11.4px, which is below what a table of
+  --st-fs-read-lg: calc(var(--st-content-fs, 12px) * 1.125);
+  /* The small ratio has a floor: at any reading size up to 14px, 0.8125
+     would put code and tables under 12px (9.75px at the default 12px), which is below what a table of
      numbers should ask of a reader. */
-  --st-fs-read-sm: max(12px, calc(var(--st-content-fs, 14px) * .8125));
-  --st-fs-math: calc(var(--st-content-fs, 14px) * 1.08);
-  --st-fs-math-source: calc(var(--st-content-fs, 14px) * .9);
+  --st-fs-read-sm: max(12px, calc(var(--st-content-fs, 12px) * .8125));
+  --st-fs-math: calc(var(--st-content-fs, 12px) * 1.08);
+  --st-fs-math-source: calc(var(--st-content-fs, 12px) * .9);
 }
 
 /* Two shared recipes replace the nine bespoke entrance keyframes this file used
@@ -465,11 +465,11 @@
    target is 45–75, verified by `npm run measure`). */
 .app[data-focus='true'] .slashmenu,
 .app[data-focus='true'] .chat__inner {
-  font-size: var(--st-content-fs, 14px);
+  font-size: var(--st-content-fs, 12px);
   max-width: calc(var(--st-measure) + 72px);
 }
 .app[data-focus='true'] .composer__inner {
-  font-size: var(--st-content-fs, 14px);
+  font-size: var(--st-content-fs, 12px);
   /* the same column, less the transcript's 28px padding on each side */
   max-width: calc(var(--st-measure) + 2.5em - 56px);
 }
@@ -488,8 +488,8 @@
    — the same scoping DSH uses for its 10–22px content setting. */
 .st-msg--assistant .st-bubble,
 .st-msg--user .st-bubble {
-  font-size: var(--st-content-fs, 14px);
-  line-height: calc(var(--st-content-fs, 14px) * 1.62);
+  font-size: var(--st-content-fs, 12px);
+  line-height: calc(var(--st-content-fs, 12px) * 1.62);
 }
 
 /* Density — the difference between scanning data and reading it. */
@@ -5688,8 +5688,6 @@ textarea.config-editor.st-input {
 .hardware-cards article > svg { color: var(--st-ink-muted); flex: none; margin-top: 4px; }
 .hardware-cards h3 { margin: 6px 0; overflow-wrap: anywhere; }
 .tasks-page { display: flex; flex-direction: column; gap: 20px; }
-.task-runtime { display: flex; align-items: flex-start; gap: 8px; }
-.task-runtime > svg { flex: none; margin-top: 2px; }
 .tasks-empty { min-height: 270px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px; text-align: center; }
 .tasks-empty > svg { color: var(--st-ink-muted); margin-bottom: 12px; }
 .task-templates { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px 40px; border-top: 1px solid var(--st-line); padding-top: 36px; }
@@ -7017,7 +7015,7 @@ textarea {
 .error-notice .error-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); max-height: 3.3em; overflow-y: auto; }
 .error-detail-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--st-font-mono); }
 /* What you type and the small print under each message follow the reading size too, so the whole conversation changes together. */
-.st-composer textarea { font-size: var(--st-content-fs, 14px); }
+.st-composer textarea { font-size: var(--st-content-fs, 12px); }
 .st-msg__meta, .st-msg__meta time { font-size: var(--st-fs-read-sm); }
 
 /* What an approval is about, shown without opening the card: the file or the command. */
@@ -7333,6 +7331,8 @@ textarea {
 .telepop__detail { margin-right: auto; font-size: var(--st-fs-sm); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .telepop__head > .st-btn { align-self: center; margin-left: auto; }
 .telepop__detail + .st-btn { margin-left: 0; }
+/* a popover with nothing under its title (Subagents, none recorded) is one row: no rule and no space below it */
+.telepop__head:last-child { align-items: center; padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
 
 /* the way back to the newest message: a small round arrow, shown only while scrolled up */
 .jumplatest-row { position: relative; height: 0; flex: none; z-index: 3; }
@@ -7444,6 +7444,14 @@ textarea {
 .act__chev { color: var(--st-icon); transition: transform var(--st-t-local) var(--st-ease-standard); }
 .act[data-open] .act__chev { transform: rotate(180deg); }
 .act__live { width: 6px; height: 6px; border-radius: 50%; background: var(--st-accent); animation: st-pulse 1.6s var(--st-ease-in-out) infinite; }
+/* The step that is running reads as the current one (ink, not the muted past-tense of the lines above it) and its last output sits under it on one fixed line. */
+.act[data-live] .act__line { color: var(--st-ink); }
+/* A file the model is writing right now: its size beside the name (figures do not jitter), and the last three lines in a box that is always three lines
+   high, the newest line at the bottom, so nothing under it moves while the text grows. Nothing here animates (the one dot pulse is gated already). */
+.act__meta { color: var(--st-ink-muted); font-size: var(--st-fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.act__tail { display: flex; flex-direction: column; justify-content: flex-end; gap: 0; box-sizing: border-box; max-width: 72ch; height: calc(3 * 1.45 * var(--st-fs-xs) + 16px); margin: -2px 0 8px; padding: 8px 12px; overflow: hidden; border-radius: var(--st-r-md); background: var(--st-surface-2); font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.45; color: var(--st-ink-muted); }
+.act__tail > span { display: block; flex: none; overflow: hidden; white-space: pre; text-overflow: ellipsis; }
+.act__output { margin: -4px 0 8px; padding-left: 1px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.4; color: var(--st-ink-muted); }
 .act__thumb { width: 44px; height: 30px; object-fit: cover; border-radius: 6px; border: 1px solid var(--st-line); cursor: pointer; }
 .act__files { flex-basis: 100%; list-style: none; margin: 0; padding: 0 0 0 4px; display: flex; flex-direction: column; }
 .act__skill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--st-ink-soft); }

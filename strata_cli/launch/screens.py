@@ -296,6 +296,13 @@ class StartScreen(Base):
         else:
             intro.append("No saved presets yet\n", style=f"bold {ACCENT}")
             intro.append("A preset remembers all your choices so next time you start with one key.\n", style=MUTE)
+        try:                                                      # one quiet line when the last check found a newer engine (a local file; no network)
+            from strata_control import engine_update
+            line = engine_update.notice_line()
+        except Exception:                                         # noqa: BLE001
+            line = None
+        if line:
+            intro.append(line + "\n", style=MUTE)
         self.query_one("#intro", Static).update(intro)
 
     def explain(self) -> Text:
@@ -1127,8 +1134,7 @@ class SpeedScreen(Base):
 
 class DraftingScreen(Base):
     step_id = "drafting"
-    help_text = ("Drafting is how the model guesses the next words ahead to make answers faster. MTP comes with the model. DFlash2 is another way, for "
-                 "Qwen3.8-Flash-Next only. Auto uses MTP today.")
+    help_text = "Drafting is how the model guesses the next words ahead to make answers faster. One drafter runs at a time."
 
     CHOICES = (("auto", "Auto (recommended)"), ("mtp", "MTP"), ("dflash2", "DFlash2"), ("off", "Off"))
 
@@ -1138,24 +1144,16 @@ class DraftingScreen(Base):
 
     def on_mount(self) -> None:
         s = self.ctx.settings
-        items = [Item([label, Cell("MTP today", "") if key == "auto" else Cell("", "")], key=key) for key, label in self.CHOICES]
+        from strata_cli.launch import modelstate
+        now = {"dflash2": "DFlash2", "mtp": "MTP", "off": "Off"}[modelstate.resolved_drafting(None, s.family)]
+        items = [Item([label, Cell(now, "") if key == "auto" else Cell("", "")], key=key) for key, label in self.CHOICES]
         sel = [key for key, _ in self.CHOICES].index(s.drafting) if s.drafting in dict(self.CHOICES) else 0
         self.query_one(Menu).columns = [("", 24), ("", 0)]
         self.query_one(Menu).set_items(items, sel)
         self.paint()
 
     def explain(self) -> Text:
-        from strata_control import drafting
-        key = self.menu().current.key if self.menu() and self.menu().current else "auto"
-        if key == "dflash2":
-            backend, archs = drafting.detect_hardware()
-            line = drafting.hardware_support(backend, archs).line
-            return Text(" ".join(x for x in (drafting.EXPLAIN_NUMBERS, drafting.EXPLAIN_LIMITS, line) if x), style=MUTE)
-        if key == "off":
-            return Text("No draft layer: about 1 GB less graphics memory and less RAM, and answers come a little slower.", style=MUTE)
-        if key == "mtp":
-            return Text("MTP is the draft layer that comes with the model. It guesses several words ahead and costs about 1 GB of graphics memory.", style=MUTE)
-        return Text("Strata picks how the model guesses ahead. Today that is MTP.", style=MUTE)
+        return Text("")
 
     def commit(self) -> None:
         key = self.menu().current.key

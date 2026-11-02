@@ -399,7 +399,7 @@ class ContextStep(Base):
 
     def test_choose_128k(self):
         async def case(app, pilot, ctx):
-            await press(pilot, "enter", "enter", "enter", "down", "down", "enter")
+            await press(pilot, "enter", "enter", "enter", "enter")                  # the cursor starts on 128K now (the default on every card)
             self.assertEqual(ctx.settings.context, 131072)
             self.assertIn("Should the model read pictures?", text_of(app))
         self.run_app(case)
@@ -799,13 +799,13 @@ class SaveAndRun(Base):
             t = text_of(app)
             self.assertIn("Save as preset, then launch", t)
             self.assertIn("Qwen3.8-Flash-Next IQ3_S", t)
-            self.assertIn("32K, memory int8", t)
+            self.assertIn("128K, memory int8", t)
             self.assertIn("quick (about 20 min)", t)
             self.assertIn("This computer only, port 8080", t)
             await press(pilot, "enter")                               # Save as a preset and launch
             await pilot.pause(0.8)
-            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_S 32K"])
-            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_S 32K")
+            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_S 128K"])
+            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_S 128K")
             self.assertIsNotNone(app.result)
         self.run_app(case)
 

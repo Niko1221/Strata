@@ -11,7 +11,12 @@ export type DeliverableKind = 'html' | 'markdown' | 'pdf' | 'csv' | 'image' | 'c
 export interface Deliverable { path: string; abs: string; name: string; kind: DeliverableKind; status: 'created' | 'changed'; size: number; lines: number | null; added: number; removed: number;
   /** Which write came last in this reply (set when the host's frames are merged): the newest is the run's main result. */ order?: number }
 export interface GroupFile { path: string; name: string; kind: DeliverableKind; status: string; added: number; removed: number }
-export interface ActivityGroup { id: string; closed: boolean; line: string; added: number; removed: number; files: GroupFile[] }
+/** What is happening in a run right now (the host sends it while the group is open and drops it when the group closes): `label` is the step in plain words
+ *  ("Writing pagoda.html"), `output` the last line the step printed or the progress it can name ("412 lines written"). Optional: a group without it draws as before. */
+export interface GroupLive { label?: string; output?: string;
+  /** A file being written right now (from `message.drafts`): characters so far, lines so far and the last lines of the text. */
+  bytes?: number; lines?: number; tail?: string }
+export interface ActivityGroup { id: string; closed: boolean; line: string; added: number; removed: number; files: GroupFile[]; live?: GroupLive }
 export type MessageBlock = { kind: 'text'; text: string } | ({ kind: 'group' } & ActivityGroup);
 
 const KINDS = ['html', 'markdown', 'pdf', 'csv', 'image', 'code', 'text', 'other'];
@@ -36,7 +41,10 @@ export function readGroup(raw: unknown): ActivityGroup | null {
     const d = readDeliverable(x);
     return d ? [{ path: d.path, name: d.name, kind: d.kind, status: d.status, added: d.added, removed: d.removed }] : [];
   }) : [];
-  return { id: g.id, closed: g.closed === true, line: typeof g.line === 'string' ? g.line : '', added: num(g.added), removed: num(g.removed), files };
+  const liveRaw = g.live && typeof g.live === 'object' ? g.live as Record<string, unknown> : null;
+  const last = (text: string) => text.trim().split(/\r?\n/).at(-1)!.slice(0, 200);
+  const live: GroupLive | undefined = liveRaw && g.closed !== true ? { ...(typeof liveRaw.label === 'string' && liveRaw.label ? { label: liveRaw.label.slice(0, 160) } : {}), ...(typeof liveRaw.output === 'string' && liveRaw.output.trim() ? { output: last(liveRaw.output) } : {}) } : undefined;
+  return { id: g.id, closed: g.closed === true, line: typeof g.line === 'string' ? g.line : '', added: num(g.added), removed: num(g.removed), files, ...(live && (live.label || live.output) ? { live } : {}) };
 }
 
 /** The `skills-used` frame: the skills this reply used, each with the name the person gave it and a one-line description. */
@@ -127,3 +135,4 @@ export const fileAction = {
 };
 
 export const rawUrlOf = (sessionId: string, path: string) => `/api/files/raw?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`;
+

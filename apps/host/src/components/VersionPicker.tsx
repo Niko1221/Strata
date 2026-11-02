@@ -5,7 +5,7 @@ import { FloatingMenu } from './FloatingMenu';
 import { cx } from '../lib/format';
 import { versionNote, type CatalogVersion } from '../lib/native-catalog';
 import { nvfp4Version } from '../lib/native-names';
-import { fitOn, recommendedVersions, versionFit, versionGroups, PICK_NOTE, type FitHardware, type PcPick } from '../lib/native-fit';
+import { fitOn, recommendedVersions, versionFit, versionGroups, type CacheChoice, type FitHardware, type PcPick } from '../lib/native-fit';
 
 /** The name a version goes by in the list: the quantization, with the maker only where the quantization alone would be ambiguous. */
 export function versionName(v: CatalogVersion): string {
@@ -25,13 +25,14 @@ const gb = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)} GB`;
 const whole = (n: number) => `${Math.round(n)} GB`;
 
 /**
- * Where the versions of the chosen base model are listed, each exactly once. At the top: our recommendation for this PC and the versions already
- * downloaded (a downloaded version carries "Downloaded", and "Recommended" only while it is not yet downloaded). Below, folded under "More
- * versions": all the others. A row is the name, small tags, whether it fits this PC ("Fits", "Fits with SSD streaming", "Doesn't fit": from the
- * same fit figures as the This computer card) and the size. The maker, the memory it needs and the SSD figure are behind "Show details"
- * (open from the start in Expert mode). The other base models are not in this list: they appear when picked at the top of the page.
+ * Where the versions of the chosen base model are listed, each exactly once. At the top: the versions we recommend (the pick for this PC first, tagged
+ * "Recommended") and the versions already downloaded (tagged "Downloaded"; a downloaded recommended version carries both). Below, folded under "More
+ * versions": all the others. A row is the name, small tags, a word only where one is needed ("SSD streaming · will run slower" for a version that does
+ * not fully fit in memory, "Doesn't fit" where it cannot run at all; a version that fits says nothing: see `versionFit`) and the size. The maker, the
+ * memory it needs and the SSD figure are behind "Show details" (open from the start in Expert mode). The other base models are not in this list: they
+ * appear when picked at the top of the page.
  */
-export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick, details: detailsOpen = false }: {
+export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick, cache, details: detailsOpen = false }: {
   /** The versions of the chosen base model. */
   versions: CatalogVersion[];
   selectedId: string;
@@ -46,6 +47,8 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   moreLabel?: string;
   /** The engine's own pick for this PC (catalog.recommendation). */
   pick?: PcPick | null;
+  /** The conversation context and cache format the person chose: the fit words follow them, as the This computer card does. */
+  cache?: CacheChoice | null;
   /** Start with the technical detail shown (Expert mode). */
   details?: boolean;
 }) {
@@ -57,29 +60,29 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   // Where the recommended ones are shown outside the menu, the menu holds only the others.
   const rows = recommendedVersions(versions, pick);
   const apart = new Set(showRecommended ? [] : rows.map(x => x.v.id));
-  const pickId = rows.find(x => x.r.note === PICK_NOTE)?.v.id;
-  const { top, more } = versionGroups(versions, apart, downloaded, pickId);
+  const recommendedIds = rows.map(x => x.v.id);
+  const { top, more } = versionGroups(versions, apart, downloaded, recommendedIds);
   const shown = selected && !apart.has(selected.id) ? selected : undefined;
   // The folded part opens by itself when it holds the chosen version or when there is nothing above it.
   const [moreOpen, setMoreOpen] = useState(false);
   const foldedOpen = moreOpen || !top.length || more.some(v => v.id === selectedId);
 
   const need = (v: CatalogVersion, technical: boolean) => {
-    const fit = fitOn(v, hardware);
+    const fit = fitOn(v, hardware, true, cache);
     if (technical) return v.multi_file && v.disk_gb ? tr("{0} RAM + VRAM, plus about {1} GB of disk", [gb(fit.memoryGb), Math.round(v.disk_gb)]) : tr("{0} RAM + VRAM", [gb(fit.memoryGb)]);
     return v.multi_file && v.disk_gb ? tr("Needs {0} of memory and about {1} GB of disk", [whole(fit.memoryGb), Math.round(v.disk_gb)]) : tr("Needs {0} of memory", [whole(fit.memoryGb)]);
   };
   const row = (v: CatalogVersion) => {
-    const fit = fitOn(v, hardware);
-    const on = v.id === selectedId, have = !!downloaded?.has(v.id), recommended = v.id === pickId && !have;
-    const state = versionFit(v, hardware);
+    const fit = fitOn(v, hardware, true, cache);
+    const on = v.id === selectedId, have = !!downloaded?.has(v.id), recommended = recommendedIds.includes(v.id);
+    const state = versionFit(v, hardware, cache);
     const technical = [MAKERS[v.sourceFamily], need(v, true), state === 'ssd' ? tr("Uses SSD {0} GB", [Math.round(fit.spillGb)]) : ''].filter(Boolean).join(' · ');
     const note = versionNote(v.model);
     return <button key={v.id} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>
       <span className="version-row__check">{tr(on ? <Icon name="check" size={14}/> : null)}</span>
       <span className="version-row__body">
         <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(recommended || have ? <span className="version-row__tags">{tr(recommended ? <span className="version-tag version-tag--pick">{tr("Recommended")}</span> : null)}{tr(have ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}</span> : null)}</span>
-        {tr(state !== 'unknown' ? <span className="version-row__fit" data-fit={state}>{tr(state === 'fits' ? 'Fits' : state === 'ssd' ? 'Fits with SSD streaming' : "Doesn't fit")}</span> : null)}
+        {tr(state === 'ssd' || state === 'no' ? <span className="version-row__fit" data-fit={state}>{tr(state === 'ssd' ? 'SSD streaming · will run slower' : "Doesn't fit")}</span> : null)}
         {tr(details ? <span className="version-row__tech">{technical}{tr(note ? <><br/>{note}</> : null)}</span> : null)}
       </span>
       <span className="version-row__size">{have ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>

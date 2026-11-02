@@ -349,12 +349,14 @@ body {
   }
 }
 
-/* The one action under the model-files card read as a centred footer because a
-   stretched control centres its label. It sits at the card's left edge now, as
-   a quiet text action under the thing it belongs to. */
-.other-models {
-  align-self: flex-start;
-  padding-left: 12px;
+/* "Other local models..." is part of the Model files card, beside "Storage settings"
+   (owner, 11-01), as a quiet text action. */
+.model-files__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.model-files__actions .other-models {
   font-weight: 500;
 }
 
@@ -706,6 +708,32 @@ body {
   translate: 0 -50%;
   transition: opacity var(--st-t-micro) var(--st-ease-standard);
 }
+/* A chat that has a turn running while the person is elsewhere: a small ring turns in the same gutter as the unread dot (it takes the dot's place: a
+   working chat is not "unread" yet). Info colour and a slow turn keep it calm; reduced motion holds it still. */
+.ws__session .navsession__working {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--st-info-tint);
+  border-top-color: var(--st-info);
+  border-radius: 50%;
+  translate: 0 -50%;
+  animation: st-spin 1.4s linear infinite;
+  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+}
+.navsession[data-working] .navsession__title {
+  color: var(--st-ink);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws__session .navsession__working {
+    animation: none;
+  }
+}
+html[data-motion='reduced'] .ws__session .navsession__working {
+  animation: none;
+}
 .ws__session .session-overflow {
   position: absolute;
   top: 50%;
@@ -723,6 +751,7 @@ body {
   pointer-events: auto;
 }
 .ws__session:hover .navsession__time,
+.ws__session:hover .navsession__working,
 .ws__session:hover .navsession__unread {
   opacity: 0;
 }
@@ -1176,12 +1205,15 @@ body {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 45%, transparent);
 }
 
-/* The sidebar preview arrives from the right with a short rise and fade, the
+/* The sidebar preview arrives from the right with a rise and fade, the
    chosen file's content crossfades when you switch tabs, and a closed panel
    leaves the same way (a bare shell over the column it vacated; the page itself
-   is already gone, so nothing heavy is animated). */
+   is already gone, so nothing heavy is animated). Both take the 460 ms step of
+   the motion scale (`--st-t-choreo`), slower than a menu or a drawer so the
+   panel arrives and leaves calmly, with the same easings as before; reduced
+   motion makes the step 1 ms. */
 .chatsplit .artifact-panel {
-  animation: st-panel-in var(--st-t-surface) var(--st-ease-enter) both;
+  animation: st-panel-in var(--st-t-choreo) var(--st-ease-enter) both;
 }
 .chatsplit .artifact-panel[data-leaving] {
   position: absolute;
@@ -1189,7 +1221,7 @@ body {
   width: min(48%, 640px);
   z-index: 3;
   pointer-events: none;
-  animation: st-panel-out var(--st-t-local) var(--st-ease-exit) both;
+  animation: st-panel-out var(--st-t-choreo) var(--st-ease-exit) both;
 }
 .artifact-content {
   animation: st-enter var(--st-t-control) var(--st-ease-enter) both;
@@ -1244,67 +1276,4 @@ body {
 }
 .pc-meter[data-low] .pc-meter__track i {
   background: var(--st-warn);
-}
-.pc-loaded {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--st-accent-surface-edge);
-  border-radius: var(--st-r-md);
-  background: var(--st-accent-tint);
-  animation: st-enter var(--st-t-local) var(--st-ease-enter) both;
-  --st-from-y: 4px;
-}
-.pc-loaded p {
-  margin: 0;
-}
-.pc-loaded__head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.pc-loaded__head strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.pc-loaded__head i {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--st-accent);
-}
-.pc-tag {
-  margin-left: auto;
-  padding: 0 8px;
-  border-radius: var(--st-r-pill);
-  font-size: var(--st-fs-xs);
-  font-weight: 600;
-  line-height: 20px;
-  color: var(--st-accent-text);
-  box-shadow: inset 0 0 0 1px var(--st-accent-surface-edge);
-}
-.pc-takes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 24px;
-  margin: 0;
-}
-.pc-takes div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.pc-takes dt {
-  font-size: var(--st-fs-xs);
-  color: var(--st-ink-muted);
-}
-.pc-takes dd {
-  margin: 0;
-  font-size: var(--st-fs-lg);
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  font-variant-numeric: tabular-nums;
 }

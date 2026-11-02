@@ -27,27 +27,27 @@ test('free graphics memory and free RAM come first, as real readings', () => {
   assert.doesNotMatch(card({ fit: fit(0), live: null }), /Free right now/, 'no readings: no invented numbers');
 });
 
-test('the SSD appears only when the model does not fit in memory, with how much is read from it', () => {
+test('the card does not repeat the SSD warning the version picker already gives; a version that fits says nothing either', () => {
   setTranslationLanguage('en');
   assert.doesNotMatch(card({ fit: fit(0), live }), /SSD/);
-  assert.match(card({ fit: fit(0), live }), /Fits fully in memory\./);
-  assert.match(card({ fit: fit(30), live }), /About 30 GB will be read from the SSD/);
+  assert.doesNotMatch(card({ fit: fit(0), live }), /Fits fully in memory/, 'no "Fits" words (owner, 11-01)');
+  assert.doesNotMatch(card({ fit: fit(30), live }), /read from the SSD/, 'said once, under the picker');
+  assert.match(card({ fit: fit(30), live }), /This version would take about 12 GB of graphics memory and 44 GB of RAM\./);
 });
 
-test('a loaded model changes the card: it says Loaded and what the model takes of graphics memory, RAM and SSD', () => {
+test('a loaded model leaves the free memory and nothing else: no hardware line, no name, no Loaded, no "It takes about", no numbers, no SSD line', () => {
   setTranslationLanguage('en');
   const fits = card({ fit: fit(0), live, loaded: [{ id: 'iq3_s', label: 'Qwen3.8-Flash-Next · IQ3_S', fit: fit(0) }], selectedLoaded: true });
-  assert.match(fits, /pc-loaded/);
-  assert.match(fits, /Qwen3\.8-Flash-Next · IQ3_S/);
-  assert.match(fits, /Loaded/);
-  assert.match(fits, /<dt>Graphics memory<\/dt><dd>12 GB<\/dd>/);
-  assert.match(fits, /<dt>RAM<\/dt><dd>44 GB<\/dd>/);
-  assert.doesNotMatch(fits, /<dt>SSD<\/dt>/, 'it fits: no SSD row');
-  assert.match(fits, /SSD: not needed/, 'the SSD line has its label even when nothing is read from it');
+  assert.match(fits, /This computer/);
+  assert.match(fits, /Free right now/);
+  assert.match(fits, /Graphics memory<\/span><b>10\.3 GB free<\/b>/);
+  for (const gone of [/RTX 5070/, /graphics memory · /, /Qwen3\.8-Flash-Next/, /Loaded/, /It takes about/, /<dl/, /<dt>/, /SSD/, /pc-loaded/]) assert.doesNotMatch(fits, gone, String(gone));
+  // A loaded model that really streams from the SSD keeps how fast it reads right now; nothing else comes back.
   const spills = card({ fit: fit(18), live: { ...live, diskReadGbs: 1.2 }, loaded: [{ id: 'q', label: 'Qwen3.8-Flash-Next · UD-Q4_K_XL', fit: fit(18, 12, 53) }], selectedLoaded: true });
-  assert.match(spills, /<dt>SSD<\/dt><dd>18 GB<\/dd>/);
+  assert.doesNotMatch(spills, /About 18 GB will be read/);
   assert.match(spills, /Reading from your SSD now: 1\.2 GB\/s/);
-  assert.doesNotMatch(spills, /This version would take/, 'the loaded block already says it');
+  for (const gone of [/<dl/, /<dt>/, /Loaded/, /It takes about/, /RTX 5070/]) assert.doesNotMatch(spills, gone, String(gone));
+  assert.doesNotMatch(spills, /This version would take/);
 });
 
 test('before anything is loaded the card says what the chosen version would take', () => {

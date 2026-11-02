@@ -218,7 +218,7 @@ class Install(unittest.TestCase):
         self.assertEqual(self.cfg["exe"], str(self.exe))
         self.assertEqual(self.cfg["model_name"], "deepseek-v4.1-flash")
         a = self.cfg["args"]
-        self.assertEqual(a[a.index("--max-context") + 1], "8192")
+        self.assertEqual(a[a.index("--max-context") + 1], "131072")
         self.assertEqual(a[a.index("--eos") + 1], "1")
         self.assertEqual(a[a.index("--tp") + 1], "2")
         self.assertTrue(Path(a[a.index("--pack") + 1]).match("*packs/deepseek-v4.1-flash-ud-q8_k_xl"))
@@ -277,7 +277,7 @@ class Install(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("read from the SSD", out)
         self.assertIn("installing UD-Q8_K_XL with 64 GB of RAM, as you chose", out)
-        self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "131072")
         self.assertNotIn("--tp", self.cfg["args"])
 
     def test_little_ram_with_yes_alone_stops_where_the_rule_says(self):
@@ -302,7 +302,7 @@ class Install(unittest.TestCase):
         self.assertEqual(a[a.index("--vision") + 1], "on")
         self.assertIn("Flash-Next settings", out)
         self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "131072")
-        self.assertIn("checked at 4K and 8K", out)
+        self.assertNotIn("untested", out)                                       # 128K is the default: nothing to warn about
 
 
 class Catalog(unittest.TestCase):
@@ -351,7 +351,7 @@ class Catalog(unittest.TestCase):
                                           "cpu": {"avx2": True}}
         s.disk_free = lambda p: 2000.0
         plan, a = M.Tools(s).install_plan("deepseek41", "UD-Q8_K_XL", None, None, None, None, None, None, None, None, None)
-        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 8192, "yes"))   # 0.2.7: pictures on by default
+        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 131072, "yes"))   # 0.2.7: pictures on by default
         self.assertEqual(a[:6], ["--yes", "--no-start", "--family", "deepseek41", "--model", "UD-Q8_K_XL"])
         self.assertTrue(plan["ram"].startswith("fits"))
         for flag in ("--kv", "--low-ram", "--experimental-speed-projection"):
@@ -882,7 +882,7 @@ class InstallOfficial(Install):
         self.assertNotIn("--prefill-chunk", a)                                  # the engine's own default is the layer-major prompt path
         self.assertEqual(a[a.index("--dspark-conf") + 1], "0.65")                # never a floor below 0.3             # the layer-major prompt path
         self.assertNotIn("--ssd-cache", a)                                      # the store sizes itself
-        self.assertEqual(a[a.index("--max-context") + 1], "8192")
+        self.assertEqual(a[a.index("--max-context") + 1], "131072")
         self.assertIn("checked: every file the engine needs is there", out)
         self.assertIn("test question answered sensibly", out)
         self.assertTrue(Path(a[a.index("--pack") + 1]).match("*packs/deepseek-v4.1-flash-ist-das-2.00bpw"))

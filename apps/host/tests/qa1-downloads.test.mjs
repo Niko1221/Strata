@@ -144,7 +144,7 @@ test('4d: picture reading is on unless the person turned it off (no saved choice
     assert.equal(first().visionEnabled, true);
   } finally { await f.cleanup(); }
   const screen = readSource(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
-  assert.match(screen, /setVision\(installed\.visionEnabled === false \? 'no'/);
+  assert.match(screen, /setVision\(installed\.visionEnabled === false && installed\.visionPrepared !== false \? 'no'/);
   assert.match(screen, /else\s*\{?\s*setVision\('yes'\)/, 'a version that is not downloaded starts with Read pictures on');
 });
 

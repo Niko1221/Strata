@@ -7,5 +7,12 @@
  "df06": "Anticipation : MTP (DFlash2 n’est pas disponible sur cette carte graphique)",
  "df07": "Il n’y a pas de connexion internet, le drafter DFlash2 ne peut donc pas être téléchargé pour le moment.",
  "df08": "SSD : pas nécessaire",
- "df09": "DFlash2 répond à une requête à la fois, Strata a donc réglé ce modèle sur une requête à la fois."
+ "df09": "DFlash2 répond à une requête à la fois, Strata a donc réglé ce modèle sur une requête à la fois.",
+ "df10": "Anticipation : désactivée (aucun module d’anticipation n’est encore téléchargé)",
+ "df11": "Anticipation : DFlash2 (le module d’anticipation MTP n’est pas encore téléchargé)",
+ "df12": "Choisir DFlash2 télécharge son module d’anticipation : environ {0} Go, une seule fois.",
+ "df13": "Choisir MTP télécharge son module d’anticipation : environ {0} Go, une seule fois.",
+ "df14": "Le module d’anticipation DFlash2 n’a pas pu être téléchargé, le modèle démarre donc sans module d’anticipation. Chargement du modèle…",
+ "df15": "Téléchargement du module d’anticipation MTP…",
+ "df16": "Le module d’anticipation MTP n’a pas pu être téléchargé."
 }
