@@ -153,6 +153,7 @@ restart. Defaults are off unless the table says otherwise.
 | `STRATA_SPLIT_RING=N` | Sets the prompt path's streamed ring to N slots (`0`: the pinned-share rule). A split uses 96 when at least 75% of the (layer, expert) pairs sit in some card's cache. | The startup line `lend sizing: ...` shows the result. |
 | `STRATA_SPLIT_CHUNK16K=1` | Keeps the 16384-token auto chunk on AMD gfx12 splits (default 8192). | |
 | `STRATA_SPLIT_OVERLAP=1` | Overlapped hand-off between stages on different cards. | Helps AMD; no gain on NVIDIA. See [below](#overlapped-hand-off). |
+| `STRATA_DP_PREFILL=1` | Long prompts are read by both cards at once: each card runs every layer on alternating chunks. Needs exactly two cards in a layer split, `STRATA_KV_HOST_DMA=1`, no `--batch`, `--peer-device` or stage trim, and every expert in RAM. | Opt-in. On 2x RTX 3090 prompts of 12K-123K tokens read 16-67 % faster, shorter ones up to 4 % slower (a smaller expert cache). See [below](#data-parallel-prompt-path). |
 | `--split-device D1[,D2..]` | The later stages' devices (default: the next visible ones). `--layer-split K --split-device 0` runs both stages on one card; a bit-exact hand-off check, not a speed mode. | |
 
 **The resident RAM mode works on a split.** `--resident-experts` (the low-RAM mode) leaves out of the RAM copy the experts any
@@ -170,6 +171,50 @@ the hand-off a ready flag, so the next stage's graph is launched while the earli
 its GPU. It takes one stream sync and one graph launch per window off the critical path. Batch windows keep the serial order, and
 it is off beside `--pipeline-windows`. The wait is bounded by `STRATA_SPLIT_WAIT_MS` (default 30000, `0` = no bound); on timeout
 the window fails with an error naming the setting and the server restarts the engine.
+
+### Data-parallel prompt path
+
+By default a layer split reads a prompt through the layer pipeline: each card runs its own layers, and a chunk moves from the
+first card to the second. With `STRATA_DP_PREFILL=1` both cards run every layer, each on every other chunk of a long prompt
+(the design comes from [nicejunjie/Strata-rdna3](https://github.com/nicejunjie/Strata-rdna3)):
+
+- Each card also keeps a session for the other card's layers. The streamed K/V stay in the owner's host copy, which both cards
+  append to, so this extra session pins no RAM of its own. Its VRAM comes out of the expert cache: about 0.76 GiB a card on
+  2x RTX 3090 at 512K context (308 cache slots each), so prompts too short for DP read a little slower (below).
+- A prompt segment of at least `STRATA_DP_MIN` tokens (default 8000) is cut into an even number of balanced chunks, multiples
+  of 256 tokens, of at most the prompt chunk. The cards take turns. Chunk k+1 waits at each layer for chunk k's state of that
+  layer, which the card that ran chunk k copies to the other card (peer copies where the platform allows them).
+- The last chunk runs on the drafter's card and has at least 4224 tokens. A segment the plan cannot split that way, and a
+  continuation that starts inside a K/V block, are read by the layer pipeline as before.
+- Each card streams the experts of the other card's layers that it does not cache, so every expert must be in RAM. With
+  `--mmap-experts`, `--resident-experts` or a file-backed arena (`STRATA_ARENA_MMAP=1`) the engine says so and reads every
+  prompt through the layer pipeline.
+
+The engine logs `DP prompt path on` at startup and `DP prompt path linked` when the server starts. When it cannot run, it says
+why and the layer pipeline reads every prompt.
+
+Limits: only the drafter card's chunks reach the draft layer, so after a DP read the draft layer's cells for the other card's
+chunks are not filled. The tokens are the target's either way, but drafts accept less where the answer draws on those
+chunks (below). Not with `--batch` slots yet.
+
+Measured on 2x RTX 3090 at 250 W (PCIe 4.0 x16, peer access on), Swift-1.5 Flash-Next IQ4_XS, 512K context, int8 K/V,
+`--kv-resident 32768`, `STRATA_KV_HOST_DMA=1 STRATA_PREFILL_AUTO_MAX=16384`; prompt tokens per second from the engine's
+own timing, medians of three alternating rounds:
+
+| Prompt | Layer pipeline | `STRATA_DP_PREFILL=1` |
+| --- | --- | --- |
+| 1,471 | 863 | 831 (-3.7 %, not read by DP) |
+| 3,844 | 1,948 | 1,891 (-3.0 %, not read by DP) |
+| 7,901 | 2,244 | 2,240 (-0.2 %, not read by DP) |
+| 11,996 | 2,315 | 3,248 (+40 %) |
+| 19,206 | 2,312 | 3,860 (+67 %) |
+| 43,036 | 3,422 | 4,453 (+30 %) |
+| 88,907 | 4,005 | 4,793 (+20 %) |
+| 122,507 | 4,082 | 4,724 (+16 %) |
+
+The drafter gap, on a ~48K-token prompt of C++ source and an answer that copies 30 of its lines (greedy, six requests each):
+lines from the drafter card's last chunk decoded at 197 tok/s with 98.0 % of drafts accepted on the layer pipeline and
+195 tok/s / 97.1 % after a DP read; lines from the other card's chunk at 176 tok/s / 97.0 % and 165 tok/s / 91.6 %.
 
 ## Pipeline windows
 
