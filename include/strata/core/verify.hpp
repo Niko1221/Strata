@@ -277,7 +277,7 @@ public:
     /// for its doorbell, #31); batch_poll then makes no CUDA call before every layer is served.
     int batch_serve(PoolMultiFn pool, void* user);
     void set_external_serve(bool on) { ext_serve_.store(on, std::memory_order_release); }
-    /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
+    /// A slot's sampling (temperature / top_p / top_k / min_p / seed, and its penalty settings: the history comes from set_slot_history):
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
