@@ -14,6 +14,8 @@
 #include <regex>
 #include <stdexcept>
 
+#include "tensor_convert.hpp"
+
 namespace fnx {
 
 TypeInfo type_info(uint32_t t) {
@@ -33,6 +35,11 @@ TypeInfo type_info(uint32_t t) {
         case T_Q5_K: return {256, 176};
         case T_Q6_K: return {256, 210};
         case T_IQ4_NL: return {32, 18};
+        case T_IQ3_XXS: return {256, 98};
+        case T_IQ3_S: return {256, 110};
+        case T_IQ2_S: return {256, 82};
+        case T_IQ4_XS: return {256, 136};
+        case T_Q2_0: return {64, 18};
     }
     throw std::runtime_error("gguf: unknown ggml type " + std::to_string(t));
 }
@@ -101,6 +108,27 @@ Gguf::Gguf(const std::string& first) {
     } else {
         load_shard(first, true);
     }
+    convert_small_tensors();
+}
+
+// A file with routed experts in the IQ types or Strata's 2-bit type (the ISTA IQ3_S set) also keeps its dense matrices, routers,
+// embeddings and projections in K-quants, IQ4_XS and BF16, which the engine does not read. Those are dequantized and written
+// again as Q8_0 (F32 for the small ones), once, here; the routed experts are left as they are. A file without such experts
+// (UD-Q4_K_XL, Q8_0) is not touched at all: the check below is the only difference for it.
+void Gguf::convert_small_tensors() {
+    bool mixed = false;
+    for (const auto& kv : tensors_)
+        mixed |= kv.second.type == T_IQ2_S || kv.second.type == T_IQ3_XXS || kv.second.type == T_IQ3_S || kv.second.type == T_Q2_0;
+    if (!mixed) return;
+    for (auto& kv : tensors_) {
+        Tensor& t = kv.second;
+        const uint32_t want = conv::wanted_type(t.name);
+        if (want == 0xFFFFFFFFu || want == t.type) continue;
+        owned_.emplace_back();
+        conv::convert(t, want, owned_.back());
+        ++converted_;
+    }
+    std::fprintf(stderr, "gguf: %d dense/small tensors converted to Q8_0/F32 at load (the file's routed experts keep their types)\n", converted_);
 }
 
 Gguf::~Gguf() {
@@ -281,7 +309,12 @@ Stager::Stager(const Gguf& g, std::vector<Group> groups, int consumers, int ahea
         std::vector<const Tensor*> ts;
         for (const std::string& n : gr.spec.names) {
             const Tensor& t = g.t(n);
-            if (t.shard < 0) throw std::runtime_error("stager: " + n + " is not in a file");
+            if (t.shard < 0) {
+                if (!t.data) throw std::runtime_error("stager: " + n + " is not in a file");
+                gr.t[n] = t;   // converted at load: nothing to read
+                gr.fixed.insert(n);
+                continue;
+            }
             ts.push_back(&t);
         }
         std::sort(ts.begin(), ts.end(), [](const Tensor* a, const Tensor* b) { return a->shard != b->shard ? a->shard < b->shard : a->offset < b->offset; });
@@ -406,7 +439,8 @@ void Stager::read_group(G& gr) {
     for (auto& t : th) t.join();
     for (const std::string& e : errs)
         if (!e.empty()) throw std::runtime_error(e);
-    for (auto& [name, t] : gr.t) t.data = gr.buf + (uintptr_t) t.data;
+    for (auto& [name, t] : gr.t)
+        if (!gr.fixed.count(name)) t.data = gr.buf + (uintptr_t) t.data;
     read_s_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
