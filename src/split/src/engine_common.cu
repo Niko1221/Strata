@@ -235,7 +235,11 @@ void Engine::set_images(const std::vector<Image>& images) {
 }
 
 bool Engine::precap() const {
-    static const bool on = env_int("FNX_PRECAP", 0) != 0;
+#if FNX_HIP
+    static const bool on = env_int("FNX_PRECAP", 1) != 0;   // AMD: on (measured +18% with FNX_CAPTURE_AFTER=2 at 8 users, same bits; RESULTS-HIP.md section 8)
+#else
+    static const bool on = env_int("FNX_PRECAP", 0) != 0;   // NVIDIA: off in 0.2.9 (frozen)
+#endif
     return on;
 }
 
@@ -272,7 +276,11 @@ bool Engine::batch_graph_ready(int T, const std::vector<int>& key) {
 }
 
 bool Engine::lazy_capture(const std::vector<int>& key) {
+#if FNX_HIP
+    static const long long after = env_int("FNX_CAPTURE_AFTER", 2);
+#else
     static const long long after = env_int("FNX_CAPTURE_AFTER", 0);
+#endif
     if (after < 2 || warming_) return false;
     if (seen_.size() > 8192) seen_.clear();
     return ++seen_[key] < after;
