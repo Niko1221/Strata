@@ -6362,12 +6362,19 @@ int main(int argc, char** argv) {
         { const char* mp = std::getenv("STRATA_PIPED_MTP"); bin.mtp_piped = mp != nullptr && mp[0] != '\0' && mp[0] != '0'; }
         return strata::program::batch_groups::resolve(bin);
     };
-    // DFlash2 slot drafts (opt-in, STRATA_BATCH_DF2=1; --draft dflash2): every batch slot gets its own drafter (the pack, embedding and draft head
-    // shared, its own K/V ring and buffers), and a window carries each slot's token and as many of its drafts as the window has spare rows for.
-    // It runs through the same serial windows as --batch-mtp (one group); the pipelined groups run no slot drafts.
+    // DFlash2 slot drafts (the default for --draft dflash2 with --batch; STRATA_BATCH_DF2=0 turns them off): every batch slot gets its own drafter (the pack,
+    // embedding and draft head shared, its own K/V ring and buffers).  A window carries each slot's token plus drafts only in the rows the active slots leave
+    // spare, and a round with no spare row does no drafter work (the committed rows wait on the host and are replayed when spare rows return).  Measured on 2x
+    // A6000 (RESULTS-DF2MGPU.md section 3): +25% / +9% over no drafts at 2 / 3 active slots, level at 4, within 1.5% at 8 and with users joining and leaving.
+    // They run through the serial windows (one group); a layer split whose slots would be pipelined in groups by default keeps its groups and its undrafted
+    // slots (the pipelined groups carry no drafts), and so does an explicit --batch-groups above 1.
     const bool batch_df2_wanted = [&] {
         const char* e = std::getenv("STRATA_BATCH_DF2");
-        return e != nullptr && e[0] != '\0' && e[0] != '0' && o.draft == "dflash2" && !o.draft_auto && o.batch >= 2 && o.serve && !split_same;
+        const bool off = e != nullptr && e[0] == '0';
+        const bool forced = e != nullptr && e[0] != '0' && e[0] != '\0';
+        if (off || !(o.draft == "dflash2" && !o.draft_auto && o.batch >= 2 && o.serve && !split_same)) return false;
+        if (forced) return true;
+        return batch_groups_for(false).groups <= 1;
     }();
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
     bool batch_mtp = o.batch_mtp || (batch_mtp_env != nullptr && batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0') || batch_df2_wanted;
