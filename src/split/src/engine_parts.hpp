@@ -47,6 +47,10 @@ void install_graph(CardBuf::GraphSlot& s, cudaGraph_t g, const std::vector<int>&
 // MemAvailable from /proc/meminfo, in MiB (-1 if unreadable): what a failed page-locked allocation had to work with
 long host_available_mib();
 
+#ifndef FNX_ZERO_DEV   // (HIP: hip/fnx_hip.h defines it)
+#define FNX_ZERO_DEV(p, bytes) cudaMemset((p), 0, (bytes))
+#endif
+
 // n zeroed values on the current card, released by ~Engine
 template <typename T> T* dalloc(size_t n) {
     void* p = nullptr;
@@ -60,7 +64,7 @@ template <typename T> T* dalloc(size_t n) {
         throw std::runtime_error("cudaMalloc of " + std::to_string((n * sizeof(T)) >> 20) + " MiB on card " + std::to_string(dev) + ": " +
                                  cudaGetErrorString(e) + " (" + std::to_string(free_b >> 20) + " MiB free)");
     }
-    ck(cudaMemset(p, 0, n * sizeof(T)), "cudaMemset");
+    ck(FNX_ZERO_DEV(p, n * sizeof(T)), "cudaMemset");
     own_dev(p);
     return (T*) p;
 }

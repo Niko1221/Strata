@@ -18,6 +18,10 @@
 #include "owned.hpp"
 #include "pf_ring_plan.hpp"
 
+#ifndef FNX_ZERO_DEV
+#define FNX_ZERO_DEV(p, bytes) cudaMemset((p), 0, (bytes))
+#endif
+
 namespace fnx {
 
 inline void ckc(cudaError_t e, const char* what) {
@@ -53,7 +57,7 @@ template <typename T> T* palloc(size_t n) {
                                  std::to_string(pf_card_bytes >> 20) + " MiB there already)");
     }
     pf_card_bytes += n * sizeof(T);
-    ckc(cudaMemset(p, 0, n * sizeof(T)), "cudaMemset");
+    ckc(FNX_ZERO_DEV(p, n * sizeof(T)), "cudaMemset");
     own_dev(p);
     return (T*) p;
 }
@@ -104,11 +108,56 @@ static __global__ void k_pfr_add(const __half2* __restrict__ in, const float2* _
 // FNX_HOSTRING: a finished part from this card's gather buffer to the next card's, both in host memory, copied by a kernel. A host-to-host
 // cudaMemcpyAsync blocks the calling thread until the stream has caught up, and the prompt path enqueues the cards one after the other on
 // one thread: card 0's copy waits for a flag only card 1's (not yet enqueued) work sets, so the first read stalled. A kernel does not block.
-static __global__ void k_pfr_copy(const uint4* __restrict__ src, uint4* __restrict__ dst, size_t n16) {
+static __global__ void k_pfr_copy(const uint4* __restrict__ src, uint4* __restrict__ dst, size_t n16, int sysfence = 0) {
     for (size_t e = blockIdx.x * (size_t) blockDim.x + threadIdx.x; e < n16; e += (size_t) gridDim.x * blockDim.x) dst[e] = src[e];
+#if FNX_HIP
+    if (sysfence) __threadfence_system();   // (the destination is the next card's host memory)
+#endif
+}
+// the direct gather's finishing add: f16(in + x) stored into every card's gathered rows (up to NCARD destinations, all host memory)
+struct PfGatherDst {
+    __half2* p[NCARD];
+    int sysfence;   // DMA readers (FNX_PF_DMA=1) need the stores visible system-wide at once; kernel readers never did, and the fence flushes the L2
+};
+static __global__ void k_pfr_add_gather(const __half2* __restrict__ in, const float2* __restrict__ x, int n2, PfGatherDst dst, unsigned* err) {
+    for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
+        const float2 a = __half22float2(in[e]), b = x[e];
+        const float2 v = make_float2(a.x + b.x, a.y + b.y);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);
+        const __half2 h = __floats2half2_rn(v.x, v.y);
+#pragma unroll
+        for (int d = 0; d < NCARD; ++d) dst.p[d][e] = h;
+    }
+#if FNX_HIP
+    // the stores into the other cards' host buffers must be visible system-wide before the stream's flag write tells them so (a copy engine reads
+    // that memory at once; a kernel read came late enough to hide it)
+    if (dst.sysfence) __threadfence_system();
+#endif
+}
+// FNX_PF_DMA_CHECK=1: the device copy a DMA made against the host buffer it read, compared by a kernel right after the copy; a block that finds a
+// difference prints once (the DMA saw older data than a later load: the peer's stores were not visible to the copy engine yet)
+static __global__ void k_pfr_cmp(const uint4* __restrict__ dev, const uint4* __restrict__ host, size_t n16, int card, int what, int rows0, unsigned* err) {
+    unsigned bad = 0;
+    for (size_t e = blockIdx.x * (size_t) blockDim.x + threadIdx.x; e < n16; e += (size_t) gridDim.x * blockDim.x) {
+        const uint4 a = dev[e];
+        const unsigned* h = reinterpret_cast<const unsigned*>(host + e);   // uncached loads: what the memory holds now
+        const unsigned b0 = __hip_atomic_load(h + 0, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM), b1 = __hip_atomic_load(h + 1, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM),
+                       b2 = __hip_atomic_load(h + 2, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM), b3 = __hip_atomic_load(h + 3, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+        if (a.x != b0 || a.y != b1 || a.z != b2 || a.w != b3) ++bad;
+    }
+    if (bad) atomicOr(err, what ? 128u : 64u);   // "prefill: ring error 64" (receive) / 128 (gather)
+    (void) card; (void) what; (void) rows0;
 }
 static __global__ void k_pfr_out(const __half2* __restrict__ ag, float2* __restrict__ x, int n2) {
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) x[e] = __half22float2(ag[e]);
+}
+// RCCL's fp16 sum back to x as f32, with the range check the host exchange's adds make (a sum past fp16's range, or NaN: error bit 2)
+static __global__ void k_pfr_out_chk(const __half2* __restrict__ ag, float2* __restrict__ x, int n2, unsigned* err) {
+    for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
+        const float2 v = __half22float2(ag[e]);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);
+        x[e] = v;
+    }
 }
 
 // one direction's sum of x (C rows of N) over the cards, on stream s; this card is at position g of the direction's
@@ -120,6 +169,7 @@ template <typename Ring>
 inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned seq, unsigned* err, cudaStream_t s) {
     if (r.plan.empty() || r.plan.front().part != g) throw std::runtime_error("prefill: the ring's plan is not card " + std::to_string(g) + "'s");
     const int set = (int) (seq & 1u), fin_part = (g + 1) % NCARD;   // the part this card finishes (pf_ring_plan)
+    __half* const own_ag = r.dma ? r.dag[set] : r.ag[set];             // where this card's gathered rows are (device with DMA, host without)
     auto r0 = [&](int k) { return k * C / NCARD; };
     auto rows = [&](int k) { return r0(k + 1) - r0(k); };
     CUstream cs = (CUstream) s;
@@ -130,7 +180,20 @@ inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned
         cud(cuStreamWaitValue32(cs, (CUdeviceptr) (r.flags + set * PF_RING_STEPS + step), seq, CU_STREAM_WAIT_VALUE_GEQ), "ring wait");
     };
     auto copy = [&](__half* dst, const __half* src, int nrows) {
+        if (r.send_kernel) {   // FNX_PF_SEND=kernel: the sender's device -> host copy by a kernel (its stores are done when the kernel is)
+            if (nrows > 0)
+                k_pfr_copy<<<grid_for((size_t) nrows * N / 8), 256, 0, s>>>((const uint4*) src, (uint4*) dst, (size_t) nrows * N / 8);
+            return;
+        }
         ckc(cudaMemcpyAsync(dst, src, (size_t) nrows * N * sizeof(__half), cudaMemcpyDefault, s), "ring copy");   // device -> host buffer
+    };
+    // FNX_PF_DMA_BARRIER=1 (HIP): after a host -> device copy, an event recorded and waited on in the same stream, so no later kernel of the stream starts
+    // before the copy engine is done (a copy engine's completion is not otherwise ordered against the compute queue's next kernel on every runtime)
+    auto dma_fence = [&] {
+        if (r.fence_ev) {
+            ckc(cudaEventRecord(r.fence_ev, s), "dma fence");
+            ckc(cudaStreamWaitEvent(s, r.fence_ev, 0), "dma fence");
+        }
     };
     // a part can be empty (a chunk of fewer rows than cards: a read cut at a checkpoint): its kernels are skipped, its
     // copies move nothing, its flags still step
@@ -148,33 +211,77 @@ inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned
                 break;
             case PfRingOp::ADD:
                 // the slot that arrived in host memory goes to device memory on the copy engine (asynchronous, beside the next chunk's
-                // compute), and the add reads it there: a kernel reading host memory stalls its SMs at PCIe speed
-                if (rows(o.part) > 0)
+                // compute), and the add reads it there: a kernel reading host memory stalls its SMs at PCIe speed (FNX_PF_DMA=0: it reads the host slot)
+                if (rows(o.part) > 0 && r.dma) {
                     ckc(cudaMemcpyAsync(r.din[o.hop][set], r.in[o.hop][set], (size_t) rows(o.part) * N * sizeof(__half), cudaMemcpyDefault, s),
                         "ring in");
-                add(r.din[o.hop][set], o.part, o.fin ? r.dag[set] + (size_t) r0(o.part) * N : r.send);
+                    dma_fence();
+                    if (r.dma_check)
+                        k_pfr_cmp<<<grid_for((size_t) rows(o.part) * N / 8), 256, 0, s>>>((const uint4*) r.din[o.hop][set], (const uint4*) r.in[o.hop][set],
+                                                                                          (size_t) rows(o.part) * N / 8, g, 0, rows(o.part), err);
+                }
+                add(r.dma ? r.din[o.hop][set] : r.in[o.hop][set], o.part, o.fin ? own_ag + (size_t) r0(o.part) * N : r.send);
                 break;
             case PfRingOp::SEND: copy(r.nin[o.hop][set], r.send, rows(o.part)); break;
             case PfRingOp::PASS:
                 if (rows(o.part) > 0) {
                     const size_t off = (size_t) r0(o.part) * N;
-                    if (o.part == fin_part)   // the part finished here: device -> the next card's host gather buffer, by DMA
+                    if (o.part == fin_part && r.dma)   // the part finished here: device -> the next card's host gather buffer, by DMA
                         ckc(cudaMemcpyAsync(r.nag[set] + off, r.dag[set] + off, (size_t) rows(o.part) * N * sizeof(__half), cudaMemcpyDefault, s),
                             "ring gather");
-                    else   // a part that arrived (three or more cards): host -> host by a kernel (a host-to-host memcpy would block the thread)
+                    else   // a part that arrived (three or more cards), or no DMA: host -> host by a kernel (a host-to-host memcpy would block the thread)
                         k_pfr_copy<<<grid_for((size_t) rows(o.part) * N / 8), 256, 0, s>>>((const uint4*) (r.ag[set] + off), (uint4*) (r.nag[set] + off),
                                                                                        (size_t) rows(o.part) * N / 8);
                 }
+                break;
+            case PfRingOp::GADD:
+                if (rows(o.part) > 0) {
+                    // the received slot to device memory by DMA (as ADD), the sum stored into this card's device rows and every other card's
+                    // host rows (stores to host memory are posted, they do not stall the SMs as loads do)
+                    if (r.dma) {
+                        ckc(cudaMemcpyAsync(r.din[o.hop][set], r.in[o.hop][set], (size_t) rows(o.part) * N * sizeof(__half), cudaMemcpyDefault, s),
+                            "ring in");
+                        dma_fence();
+                        if (r.dma_check)
+                            k_pfr_cmp<<<grid_for((size_t) rows(o.part) * N / 8), 256, 0, s>>>((const uint4*) r.din[o.hop][set], (const uint4*) r.in[o.hop][set],
+                                                                                              (size_t) rows(o.part) * N / 8, g, 0, rows(o.part), err);
+                    }
+                    PfGatherDst dst;
+                    dst.sysfence = r.dma ? 1 : 0;
+                    for (int d = 0; d < NCARD; ++d)
+                        dst.p[d] = (__half2*) ((d == g ? own_ag : r.pag[d][set]) + (size_t) r0(o.part) * N);
+                    k_pfr_add_gather<<<grid_for((size_t) rows(o.part) * N / 2), 256, 0, s>>>((const __half2*) (r.dma ? r.din[o.hop][set] : r.in[o.hop][set]),
+                                                                                           (const float2*) (x + (size_t) r0(o.part) * N),
+                                                                                           rows(o.part) * N / 2, dst, err);
+                }
+                break;
+            case PfRingOp::SIGNALA:
+                for (int d = 0; d < NCARD; ++d)
+                    if (d != g)
+                        cud(cuStreamWriteValue32(cs, (CUdeviceptr) (r.pflags[d] + set * PF_RING_STEPS + (NCARD - 1 + pf_gather_slot(NCARD, g, d))), seq, 0),
+                            "gather flag");
+                break;
+            case PfRingOp::WAITA:
+                for (int j = 0; j < NCARD - 1; ++j)
+                    cud(cuStreamWaitValue32(cs, (CUdeviceptr) (r.flags + set * PF_RING_STEPS + NCARD - 1 + j), seq, CU_STREAM_WAIT_VALUE_GEQ), "gather wait");
                 break;
             case PfRingOp::SIGNAL: signal(o.step); break;
             case PfRingOp::WAIT: wait(o.step); break;
             case PfRingOp::OUT:
                 // the parts that arrived (everything but the one finished here) go to device memory by DMA, then one kernel reads it all
-                for (int p = 0; p < NCARD; ++p)
-                    if (p != fin_part && rows(p) > 0)
-                        ckc(cudaMemcpyAsync(r.dag[set] + (size_t) r0(p) * N, r.ag[set] + (size_t) r0(p) * N, (size_t) rows(p) * N * sizeof(__half),
-                                            cudaMemcpyDefault, s), "ring out");
-                k_pfr_out<<<grid_for((size_t) C * N / 2), 256, 0, s>>>((const __half2*) r.dag[set], (float2*) x, C * N / 2);
+                if (r.dma)
+                    for (int p = 0; p < NCARD; ++p)
+                        if (p != fin_part && rows(p) > 0)
+                        {
+                            ckc(cudaMemcpyAsync(r.dag[set] + (size_t) r0(p) * N, r.ag[set] + (size_t) r0(p) * N, (size_t) rows(p) * N * sizeof(__half),
+                                                cudaMemcpyDefault, s), "ring out");
+                            dma_fence();
+                            if (r.dma_check)
+                                k_pfr_cmp<<<grid_for((size_t) rows(p) * N / 8), 256, 0, s>>>((const uint4*) (r.dag[set] + (size_t) r0(p) * N),
+                                                                                             (const uint4*) (r.ag[set] + (size_t) r0(p) * N),
+                                                                                             (size_t) rows(p) * N / 8, g, 1, rows(p), err);
+                        }
+                k_pfr_out<<<grid_for((size_t) C * N / 2), 256, 0, s>>>((const __half2*) own_ag, (float2*) x, C * N / 2);
                 break;
             default: throw std::runtime_error("prefill: a ring step of unknown kind " + std::to_string((int) o.k));
         }

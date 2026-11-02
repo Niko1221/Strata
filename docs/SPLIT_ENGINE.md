@@ -56,6 +56,20 @@ host memory that both cards read and write with ordinary loads and stores. No pe
 fails if one appears in `src/split`, and `packaging/build_split_cuda.sh` fails if the built engine can call one. The IOMMU and BAR1 start
 checks are removed because the path they protect no longer exists.
 
+## AMD (Radeon AI PRO R9700, gfx1201): opt-in
+
+The same sources build for HIP (`-DSTRATA_ENABLE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DSTRATA_SPLIT_CARDS=4`, `packaging/build_split_hip.sh`): gfx12 WMMA tiles, wave32,
+the HIP runtime through the tree's hip_compat shim. Four R9700 (128 GB) hold UD-Q4_K_XL's experts; two do not. It ships **opt-in**: `--split-engine on` starts it, and
+`auto` keeps the layer split on gfx1201 (`AUTO_SPLIT_AMD_ARCHS` in `strata_control/split_engine.py` is empty; adding `"gfx1201"` is the one change that makes it automatic, once 8 users decode
+at or above the layer split and a 103K prompt reads in the layer split's time). The launcher looks for `strata-split-4-gfx1201` beside the engine. Numbers and open items:
+`phaseA-tests/sfnx/RESULTS-HIP.md`.
+
+The cards exchange sums differently from NVIDIA here. By default (`FNX_PEER` unset) the engine probes every directed pair of cards at start (kernel stores into the peer, a full read-back
+compare, a flag round trip) and, if all pass, pushes the decode sums and the attention merge with kernel stores into the receiver's memory (never `hipMemcpyPeerAsync`); on any
+failure, or with `FNX_PEER=0`, it uses the host-memory exchange for the whole run and prints one plain line. Peer access is enabled in exactly one file (`src/split/src/hip/peer.h`), pinned by
+`tests/split/test_split_engine.py`. `FNX_PF_RCCL=1` (off by default, needs the peer push) sums the prompt chunks through RCCL, which is loaded with `dlopen` and never linked: without
+`librccl.so.1`, or if its self-test fails, the engine says so in one line and keeps the host exchange (`tools/rccl_policy_test.cpp`).
+
 ## Not proven
 
 No GeForce pair has been tested (there is none in the lab). Three and four cards, other architectures, Windows and macOS, a 64 GB RAM PC
@@ -64,4 +78,4 @@ with two big cards, and contexts over 128K have not been run. The copy-engine ri
 ## Build
 
 `-DSTRATA_BUILD_SPLIT=ON -DSTRATA_GGML_DIR=<llama.cpp checkout> [-DSTRATA_SPLIT_CARDS="2;3"] [-DSTRATA_SPLIT_ARCH=86]` builds
-`strata-split-N` per card count; `packaging/build_split_cuda.sh` does that with the release engine's toolchain rules and checks the result.
+`strata-split-N` per card count; `packaging/build_split_cuda.sh` does that with the release engine's toolchain rules and checks the result (`packaging/build_split_hip.sh` for AMD).

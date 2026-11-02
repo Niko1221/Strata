@@ -1,5 +1,21 @@
 #include "store.hpp"
 
+#if FNX_HIP
+// The lab's shared model memory is CUDA's virtual memory API with file descriptors; the HIP build has no holder process (the
+// launcher never uses one: the engine loads its own weights), so these refuse.
+#include <stdexcept>
+namespace fnx {
+static void no_store() { throw std::runtime_error("store: the shared model memory (holder / worker) is not built on HIP"); }
+void Store::reserve(int, size_t) { no_store(); }
+void* Store::take(int, size_t) { no_store(); return nullptr; }
+void* Store::dev(int, size_t) { no_store(); return nullptr; }
+void* Store::host(int, size_t) { no_store(); return nullptr; }
+void Store::free_dev(int, void*, size_t) {}
+size_t Store::bytes(int) const { return 0; }
+void Store::attach(const std::vector<Chunk>&) { no_store(); }
+const void* Store::move(const void* p) const { if (p) no_store(); return p; }
+}  // namespace fnx
+#else
 #include <cuda.h>
 
 #include <algorithm>
@@ -146,3 +162,4 @@ const void* Store::move(const void* p) const {
 }
 
 }  // namespace fnx
+#endif  // FNX_HIP

@@ -350,23 +350,152 @@ class Apply(unittest.TestCase):
             self.assertEqual(cfg["exe"], "/e/strata-split-2-sm120")
 
 
+class AmdOptIn(unittest.TestCase):
+    """AMD gfx1201 (4 x R9700): the split ships opt-in. auto keeps the layer split, `on` starts the split, `off` is off; one constant flips auto."""
+
+    R9700 = dict(name="AMD Radeon AI PRO R9700", vram_mib=32624, cc=0, vendor="amd", arch="gfx1201")
+    cfg = Apply.cfg
+
+    def amd(self, tmp, **kw):
+        cfg = self.cfg(tmp)
+        cfg["gpu"] = [0, 1, 2, 3]
+        for k, v in kw.items():
+            cfg[k] = v
+        return cfg
+
+    def run_amd(self, cfg, seen=None, **kw):
+        def exe_for(n, cc=None, arch=None):
+            if seen is not None:
+                seen.append((n, cc, arch))
+            return f"/e/strata-split-{n}-{arch}" if arch else None
+
+        return S.apply_to_config(cfg, exe_for_cards=exe_for, system="linux", probe=lambda i: cards(4, **self.R9700), ram=lambda: (125.0, 80.0),
+                                 scan=lambda path: udq4(routed_bytes=int(71.7 * GIB)), **kw)
+
+    def test_auto_keeps_the_layer_split_on_gfx1201_and_says_nothing(self):
+        import tempfile
+
+        self.assertEqual(S.AUTO_SPLIT_AMD_ARCHS, ())   # the one constant: ("gfx1201",) when the targets are met
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp)
+            del cfg["split_engine"]
+            before = dict(cfg)
+            d = self.run_amd(cfg)
+            self.assertFalse(d.use_split)
+            self.assertTrue(d.quiet)
+            self.assertEqual(cfg, before)                                  # the layer split's config, untouched
+            cfg["drafting"] = "mtp"                                        # not even with the MTP chosen
+            self.assertFalse(self.run_amd(cfg).use_split)
+
+    def test_explicit_on_starts_the_split_with_the_gfx1201_engine(self):
+        import tempfile
+
+        for on in (True, "on"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp, split_engine=on)
+                seen = []
+                d = self.run_amd(cfg, seen)
+                self.assertTrue(d.use_split, d.reasons)
+                self.assertEqual(d.cards, 4)
+                self.assertEqual(d.untested, [])                           # four R9700 have been run
+                self.assertEqual(seen, [(4, 0, "gfx1201")])
+                self.assertEqual(cfg["exe"], "/e/strata-split-4-gfx1201")
+                self.assertEqual(cfg["drafting"], "mtp")
+                self.assertEqual(cfg["split_fallback"]["exe"], "component:strata-engine")
+
+    def test_on_without_the_gfx1201_binary_says_so_and_off_is_off(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp, split_engine="on")
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None, arch=None: None, system="linux", probe=lambda i: cards(4, **self.R9700),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertFalse(d.use_split)
+            self.assertFalse(d.quiet)
+            self.assertIn("strata-split-4-gfx1201", d.line)
+            cfg = self.amd(tmp, split_engine="off")
+            before = dict(cfg)
+            self.assertFalse(self.run_amd(cfg).use_split)
+            self.assertEqual(cfg, before)
+
+    def test_two_r9700_cannot_hold_the_experts_and_other_amd_cards_are_refused(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp, split_engine="on")
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc=None, arch=None: "/e/x", system="linux", probe=lambda i: cards(2, **self.R9700),
+                                  ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertFalse(d.use_split)
+            d = S.apply_to_config(self.amd(tmp, split_engine="on"), exe_for_cards=lambda n, cc=None, arch=None: "/e/x", system="linux",
+                                  probe=lambda i: cards(4, **{**self.R9700, "arch": "gfx1100"}), ram=lambda: (125.0, 80.0), scan=lambda path: udq4())
+            self.assertFalse(d.use_split)
+            self.assertIn("gfx1100", d.line)
+
+    def test_flipping_the_constant_makes_auto_start_it(self):
+        import tempfile
+
+        old = S.AUTO_SPLIT_AMD_ARCHS
+        S.AUTO_SPLIT_AMD_ARCHS = ("gfx1201",)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = self.amd(tmp)
+                del cfg["split_engine"]
+                self.assertTrue(self.run_amd(cfg).use_split)
+        finally:
+            S.AUTO_SPLIT_AMD_ARCHS = old
+
+
 class NoPeerAccess(unittest.TestCase):
-    """Pictures of the rule 'no peer access in any path': nothing under src/split may call the CUDA peer APIs. (The built engine is
-    also checked with nm in packaging/build_split_cuda.sh.)"""
+    """Pictures of the rule 'no peer access in any path' for the NVIDIA split: nothing under src/split may call the CUDA peer APIs, and the HIP peer APIs
+    appear in exactly one file, src/split/src/hip/peer.h (AMD only: the owner allowed peer access on the R9700 "if faster, with fallback", 2026-11-02; it runs only
+    after a start probe of every directed pair, and FNX_PEER=0 forces the host exchange). The built NVIDIA engine is also checked with nm in
+    packaging/build_split_cuda.sh."""
 
-    FORBIDDEN = re.compile(r"\b(cudaDeviceEnablePeerAccess|cudaDeviceDisablePeerAccess|cuCtxEnablePeerAccess|cudaMemcpyPeer(?:Async)?|"
-                           r"cudaMemcpy3DPeer(?:Async)?|cuMemcpyPeer(?:Async)?|cuMemcpy3DPeer(?:Async)?)\b")
+    FORBIDDEN = re.compile(r"(cudaDeviceEnablePeerAccess|cudaDeviceDisablePeerAccess|cuCtxEnablePeerAccess|cudaMemcpyPeer(?:Async)?|"
+                           r"cudaMemcpy3DPeer(?:Async)?|cuMemcpyPeer(?:Async)?|cuMemcpy3DPeer(?:Async)?)")
+    FORBIDDEN_HIP = re.compile(r"(hipDeviceEnablePeerAccess|hipDeviceDisablePeerAccess|hipMemcpyPeer(?:Async)?|hipMemcpy3DPeer(?:Async)?|hipCtxEnablePeerAccess)")
+    HIP_PEER_FILE = "src/split/src/hip/peer.h"
 
-    def test_no_peer_call_in_the_engine_sources(self):
-        bad = []
+    def _code_lines(self):
         for p in sorted((ROOT / "src" / "split").rglob("*")):
             if p.suffix not in (".cu", ".cuh", ".cpp", ".hpp", ".h"):
                 continue
             for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                code = line.split("//", 1)[0]
-                if self.FORBIDDEN.search(code):
-                    bad.append(f"{p.relative_to(ROOT)}:{n}: {line.strip()[:100]}")
-        self.assertEqual(bad, [], "peer access in the split engine:\n" + "\n".join(bad))
+                yield p, n, line, line.split("//", 1)[0]
+
+    def test_no_cuda_peer_call_in_the_engine_sources(self):
+        bad = [f"{p.relative_to(ROOT)}:{n}: {line.strip()[:100]}" for p, n, line, code in self._code_lines() if self.FORBIDDEN.search(code)]
+        self.assertEqual(bad, [], "CUDA peer access in the split engine:\n" + "\n".join(bad))
+
+    def test_hip_peer_calls_only_in_the_one_probed_file(self):
+        bad = [f"{p.relative_to(ROOT).as_posix()}:{n}: {line.strip()[:100]}" for p, n, line, code in self._code_lines()
+               if self.FORBIDDEN_HIP.search(code) and p.relative_to(ROOT).as_posix() != self.HIP_PEER_FILE]
+        self.assertEqual(bad, [], "HIP peer access outside " + self.HIP_PEER_FILE + ":\n" + "\n".join(bad))
+
+    def test_the_hip_peer_file_enables_access_but_never_uses_the_copy_engine(self):
+        text = (ROOT / self.HIP_PEER_FILE).read_text(encoding="utf-8")
+        code = "\n".join(l.split("//", 1)[0] for l in text.splitlines())
+        self.assertIn("hipDeviceEnablePeerAccess", code)
+        self.assertNotRegex(code, r"hipMemcpy(?:3D)?Peer")   # kernel stores only (the owner's condition), no peer copies
+
+    def test_the_peer_file_is_only_compiled_into_the_hip_build_and_the_default_is_pinned(self):
+        engine = (ROOT / "src" / "split" / "src" / "engine.cu").read_text(encoding="utf-8")
+        i = engine.index('#include "hip/peer.h"')
+        self.assertEqual(engine[:i].rstrip().splitlines()[-1].strip(), "#if FNX_HIP")
+        policy = (ROOT / "src" / "split" / "src" / "hip" / "peer_policy.hpp").read_text(encoding="utf-8")
+        self.assertRegex(policy, r"constexpr bool PEER_DEFAULT_ON = (false|true);")   # flipped to true only on screens that show it wins
+
+    def test_rccl_is_loaded_at_run_time_never_linked_and_its_default_is_pinned(self):
+        # the packaging rule (coordinator, 11-02): dlopen only, no link; the split must start without librccl, falling back with one line
+        rd = (ROOT / "src" / "split" / "src" / "hip" / "rccl_dl.hpp").read_text(encoding="utf-8")
+        self.assertIn("dlopen(", rd)
+        self.assertNotIn("hip_runtime", rd)   # CPU only: tools/rccl_policy_test.cpp forces a missing library without a card
+        self.assertRegex(rd, r"constexpr bool RCCL_DEFAULT_ON = (false|true);")
+        cmake = (ROOT / "src" / "split" / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertNotRegex(cmake.replace("rccl_policy_test", ""), r"(?i)rccl")   # no find_package(rccl), no -lrccl
+        for p in (ROOT / "src" / "split" / "src").rglob("*"):
+            if p.suffix in (".cu", ".cuh", ".cpp", ".hpp", ".h") and p.name not in ("rccl.h", "rccl_dl.hpp", "prefill.cu", "engine.cu", "engine.hpp"):
+                self.assertNotIn("rccl.h>", p.read_text(encoding="utf-8", errors="ignore"), p.name)
 
     def test_the_peer_probe_and_the_27b_files_are_gone(self):
         names = {p.name for p in (ROOT / "src" / "split" / "src").iterdir()}

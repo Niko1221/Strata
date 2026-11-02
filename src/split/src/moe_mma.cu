@@ -11,7 +11,25 @@
 #include <string>
 
 #include "ggml.h"
+#if FNX_HIP
+// the tree's hip_compat/intrinsics.hpp names these as macros; ggml's HIP vendor header defines its own: it goes first, then ours return
+#undef __vsubss4
+#undef __vsub4
+#undef __vcmpne4
+#undef __shfl_sync
+#undef __shfl_up_sync
+#undef __shfl_xor_sync
+#endif
 #include "common.cuh"
+#if FNX_HIP
+#undef __shfl_sync
+#undef __shfl_up_sync
+#undef __shfl_xor_sync
+#define __shfl_xor_sync(...) (::strata::hip_compat::shfl_xor_sync(__VA_ARGS__))
+#define __shfl_up_sync(...) (::strata::hip_compat::shfl_up_sync(__VA_ARGS__))
+#define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
+#undef cudaFuncSetAttribute
+#endif
 
 namespace fnx {
 

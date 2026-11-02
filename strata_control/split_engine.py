@@ -11,9 +11,12 @@ This module is pure (no I/O besides reading GGUF directories): the launcher pass
 has actually been run:
 
   - not turned off (mode(): "auto" by default; "on" is the same rule but a refusal is reported; "off" never);
-  - Linux, NVIDIA cards, 2 to 4 of them, all the same model of card and memory size;
-  - a card architecture and card count that have been run (TESTED): sm_86 on 2 cards today. Others build but stay off unless the
-    caller says allow_untested (testers); the Decision says which part is untested in plain words;
+  - Linux, 2 to 4 cards of ONE make (NVIDIA, or AMD RDNA4 gfx1201: the R9700 and RX 9070), all the same model of card and memory size;
+  - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards, AMD gfx1201 on 4 cards. Others build
+    but stay off unless the caller says allow_untested (testers); the Decision says which part is untested in plain words;
+  - AMD is opt-in for now: mode "auto" keeps the layer split on gfx1201 (AUTO_SPLIT_AMD_ARCHS is empty) and only `--split-engine on` runs the
+    split there. Adding "gfx1201" to that one constant makes AMD automatic like NVIDIA, once it meets the bar (8 users at or above the layer
+    split, a 103K prompt in the layer split's time; phaseA-tests/sfnx/RESULTS-HIP.md);
   - the GGUF is a set the engine reads (checked from the file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers,
     512 experts): routed experts Q4_K/Q5_K/Q5_1/Q8_0/Q4_0 (UD-Q4_K_XL, Q8_0) or the i-quants IQ2_S/IQ3_XXS/IQ3_S/IQ4_XS/IQ4_NL and Strata's
     Q2_0 (UD-IQ4_XS, the IQ3_S set); token embeddings, shared expert, output head Q8_0, or, in a set with i-quant or Q2_0 experts,
@@ -33,6 +36,10 @@ import pathlib
 import re
 from typing import Any
 
+# What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86), 2x RTX PRO 6000 (srv118, sm_120).
+# AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md); two R9700 cannot hold UD-Q4_K_XL's experts.
+TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (4,)}}
+BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1201",)}   # the engine package's kernels: any other card is refused at start
 TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
 TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
                                    # pictures; no suite there)
@@ -40,6 +47,9 @@ MODES = ("auto", "on", "off")
 #: cards (compute capability) on which Auto drafting resolves to split + MTP rather than layer split + DFlash2: the split decodes faster there
 #: (phaseA-tests/sfnx/RESULTS.md section 17). Another card is not auto-split at all (TESTED_ARCHS), so it keeps Auto = layer split + DFlash2.
 AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
+#: AMD architectures on which mode "auto" starts the split engine. EMPTY on purpose: on gfx1201 the split ships opt-in (`--split-engine on`) until it
+#: meets the bar (8 users at or above the layer split, a 103K prompt at or under its time); then this becomes ("gfx1201",), the one flip.
+AUTO_SPLIT_AMD_ARCHS: tuple = ()
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -65,7 +75,13 @@ class Card:
     index: int
     name: str
     vram_mib: int
-    cc: int                         # compute capability as a number, 86 for 8.6
+    cc: int                         # NVIDIA: compute capability as a number, 86 for 8.6; AMD: 0
+    vendor: str = "nvidia"          # "nvidia" or "amd"
+    arch: str = ""                  # "sm_86", "gfx1201"; empty: derived from cc (NVIDIA)
+
+    @property
+    def arch_name(self) -> str:
+        return self.arch or (f"sm_{self.cc}" if self.vendor == "nvidia" else "?")
 
 
 @dataclasses.dataclass
@@ -161,21 +177,31 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("it needs two or more cards")
     elif n > MAX_CARDS:
         why.append(f"it handles at most {MAX_CARDS} cards, this PC offers {n}")
+    make = cards[0].vendor if cards else "nvidia"
     if cards:
+        if len({c.vendor for c in cards}) != 1:
+            why.append("the cards are of different makes")
         if len({(c.name, c.vram_mib) for c in cards}) != 1:
             why.append("the cards are not all the same model and size")
-        if not all(c.cc >= 70 for c in cards):
+        if make == "nvidia" and not all(c.cc >= 70 for c in cards):
             why.append("a card is too old for it")
-    if 2 <= n <= MAX_CARDS and n not in TESTED_CARD_COUNTS:
+        if make == "amd" and not all(c.arch_name in BUILT_ARCHS["amd"] for c in cards):
+            why.append("the AMD engine is built for RDNA4 cards (gfx1201: Radeon AI PRO R9700, RX 9070), not " + cards[0].arch_name)
+    tested = TESTED.get(make, {})
+    archs = sorted({c.arch_name for c in cards})
+    counts = sorted({k for a in archs for k in tested.get(a, ())})
+    if 2 <= n <= MAX_CARDS and make in TESTED and n not in counts and not (len(archs) == 1 and archs[0] not in tested):
         if allow_untested:
             untested.append(f"{n} cards")
         else:
-            why.append(f"it has only been run on {TESTED_CARD_COUNTS[0]} cards, not {n}")
-    if cards and not all(c.cc in TESTED_ARCHS for c in cards):
+            ran = " and ".join(str(k) for k in counts) if counts else "no number of"
+            why.append(f"it has only been run on {ran} cards, not {n}")
+    if cards and not all(c.arch_name in tested for c in cards):
         if allow_untested:
-            untested.append(f"card architecture sm_{cards[0].cc}")
+            untested.append(f"card architecture {cards[0].arch_name}")
         else:
-            why.append(f"it has only been run on sm_{TESTED_ARCHS[0]} cards, not sm_{cards[0].cc}")
+            ran = "/".join(tested) if tested else "no"
+            why.append(f"it has only been run on {ran} cards, not {cards[0].arch_name}")
     if context > TESTED_CONTEXT:
         if allow_untested:
             untested.append(f"context {context}")
@@ -191,8 +217,8 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
     if model.embd_type not in readable:
         why.append(f"the token embeddings are {model.embd_type}, it needs Q8_0" if not converts else
                    f"the token embeddings are {model.embd_type}, which it cannot convert to Q8_0")
-    if model.shexp_types and not set(model.shexp_types) <= readable:
-        why.append("the shared expert is " + "/".join(sorted(set(model.shexp_types) - readable)) + ", which it cannot read" + ("" if converts else " (it needs Q8_0)"))
+    if model.shexp_types and not set(model.shexp_types) - {"F32"} <= readable:   # the router gate vector beside the shared expert is F32
+        why.append("the shared expert is " + "/".join(sorted(set(model.shexp_types) - readable - {"F32"})) + ", which it cannot read" + ("" if converts else " (it needs Q8_0)"))
     if model.output_type is not None and model.output_type not in readable:
         why.append(f"the output head is {model.output_type}, which it cannot read" + ("" if converts else " (it needs Q8_0)"))
     if model.ple_type is not None and model.ple_type not in PLE_TYPES:
@@ -237,6 +263,46 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
 
 # ---- the launcher side: facts from this PC, then the config ----------------------------------------------------------------------------
 def probe_cards(indexes: list[int] | None = None) -> list[Card]:
+    """The cards (all, or the named ones): NVIDIA from nvidia-smi, else AMD from the kernel's KFD topology and sysfs; [] when neither says."""
+    cards = probe_nvidia_cards(indexes)
+    return cards or probe_amd_cards(indexes)
+
+
+def probe_amd_cards(indexes: list[int] | None = None, root: str = "/sys") -> list[Card]:
+    """AMD GPUs the compute stack counts, in HIP's order: the KFD topology nodes with SIMDs (gfx_target_version 120001 = gfx1201), their
+    memory from the node's VRAM bank (properties "size_in_bytes" of its memory bank 0) or the drm card's mem_info_vram_total. No ROCm
+    tools needed. [] when there is no /sys/class/kfd."""
+    import pathlib
+
+    nodes = pathlib.Path(root) / "class/kfd/kfd/topology/nodes"
+    cards: list[Card] = []
+    try:
+        dirs = sorted((d for d in nodes.iterdir() if d.name.isdigit()), key=lambda d: int(d.name))
+    except OSError:
+        return []
+    idx = 0
+    for d in dirs:
+        try:
+            props = dict(line.split(None, 1) for line in (d / "properties").read_text().splitlines() if line.strip())
+            if int(props.get("simd_count", "0")) <= 0:
+                continue                                     # the CPU node
+            gv = int(props.get("gfx_target_version", "0"))
+            arch = f"gfx{gv // 10000}{(gv // 100) % 100:x}{gv % 100:x}" if gv else "?"
+            name = props.get("marketing_name", "").strip() or "AMD GPU"
+            mem = 0
+            bank = d / "mem_banks/0/properties"
+            if bank.is_file():
+                bp = dict(line.split(None, 1) for line in bank.read_text().splitlines() if line.strip())
+                mem = int(bp.get("size_in_bytes", "0")) >> 20
+        except (OSError, ValueError):
+            continue
+        if indexes is None or idx in indexes:
+            cards.append(Card(idx, name, mem, 0, "amd", arch))
+        idx += 1
+    return cards
+
+
+def probe_nvidia_cards(indexes: list[int] | None = None) -> list[Card]:
     """The NVIDIA cards (all, or the named ones) with their name, memory and compute capability, from nvidia-smi; [] when it cannot say."""
     import subprocess
 
@@ -307,13 +373,14 @@ def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allo
     m = mode_ or mode(cfg)
     if m == "off":
         return Decision(False, ["the all-cards split engine is turned off"], quiet=True)
-    d = _apply(cfg, exe_for_cards=exe_for_cards, system=system, allow_untested=allow_untested, probe=probe, ram=ram, scan=scan, data_dir=data_dir)
+    d = _apply(cfg, exe_for_cards=exe_for_cards, system=system, allow_untested=allow_untested, probe=probe, ram=ram, scan=scan, data_dir=data_dir,
+               mode_=m)
     if m == "auto" and not d.use_split:
         d.quiet = True
     return d
 
 
-def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan, data_dir) -> Decision:
+def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan, data_dir, mode_: str = "auto") -> Decision:
     import os
     import pathlib
     import sys
@@ -350,11 +417,16 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
                allow_untested=allow_untested)
     if not d.use_split:
         return d
-    if chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
+    amd = cards[0].vendor == "amd"
+    if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):
+        # opt-in on AMD: auto keeps the layer split (quiet), `--split-engine on` runs the split
+        return Decision(False, [f"the all-cards split engine is not automatic on {cards[0].arch_name} yet; it starts only with --split-engine on"], d.cards)
+    if not amd and chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
         return Decision(False, ["on this card the layer split with DFlash2 has not been measured slower than the all-cards split engine"], d.cards)
-    exe = exe_for_cards(d.cards, cards[0].cc)
+    # NVIDIA: strata-split-N-sm<cc> or strata-split-N; AMD: strata-split-N-<arch> (gfx1201), the third argument
+    exe = exe_for_cards(d.cards, cards[0].cc, cards[0].arch_name) if amd else exe_for_cards(d.cards, cards[0].cc)
     if not exe:
-        return Decision(False, [f"this engine package has no strata-split-{d.cards}"], d.cards)
+        return Decision(False, [f"this engine package has no strata-split-{d.cards}" + (f"-{cards[0].arch_name}" if amd else "")], d.cards)
     mtp = _flag(args, "--mtp")
     if not mtp:
         return Decision(False, ["the model has no draft layer files (--mtp)"], d.cards)

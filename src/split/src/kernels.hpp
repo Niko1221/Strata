@@ -22,8 +22,13 @@ struct Job {
     int out[MAXT];      // output rows
 };
 
-// the prompt path's expert jobs: up to PF_JOB rows of one expert
-constexpr int PF_JOB = 64;
+// the prompt path's expert jobs: up to PF_JOB rows of one expert (64: four 16-token tiles per job; 128: eight, the expert's weight tile is then
+// dequantized once for twice the tokens; a build option, STRATA_SPLIT_PF_JOB)
+#ifndef FNX_PF_JOB
+#define FNX_PF_JOB 64
+#endif
+constexpr int PF_JOB = FNX_PF_JOB;
+static_assert(PF_JOB == 64 || PF_JOB == 128, "PF_JOB: 64 or 128");
 struct BigJob {
     int w;
     int n;
@@ -163,7 +168,7 @@ struct KvPages {
     int rows = 0;              // local rows per page (kvp_rows of the card)
     int q8 = 0;                // the rows are int8 (kv_q8)
 };
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 __device__ __forceinline__ size_t kvp_row(const KvPages& g, int r) {
     return (size_t) g.pt[r / g.rows] * g.page + (size_t) (r % g.rows) * NKVH * HD;
 }
@@ -185,7 +190,7 @@ struct LaneRows {
     const int* const* pos = nullptr;
     const int* const* pt = nullptr;
 };
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 __device__ __forceinline__ int row_pos(const LaneRows& lr, const int* pos0, int t) { return lr.pos ? *lr.pos[t] : *pos0 + t; }
 __device__ __forceinline__ KvPages row_pages(KvPages g, const LaneRows& lr, int t) {
     if (lr.pt) g.pt = lr.pt[t];
@@ -219,6 +224,8 @@ struct AttRing {
     int card = 0;
     void* in = nullptr;
     void* next_in = nullptr;
+    void* peer_in[NCARD] = {};   // every card's `in` (the one-hop merge pushes each owner its partials: set when the engine links the cards)
+    bool onehop = false;         // NCARD > 2: the partials go to their owners in one hop instead of NCARD - 1
     unsigned* err = nullptr;
 };
 size_t att_ring_words();
@@ -320,6 +327,13 @@ struct Ring {
     void* ag;            // this card: [2 sets][MAXT][N] u64
     void* next_in;       // card (card + 1) % NCARD's
     void* next_ag;
+    void* peer_in[NCARD] = {};   // every card's `in` (the one-hop sum reads each card's mailbox)
+    bool onehop = false;         // NCARD > 2 and fp16 words: one hop for a window's sum (k_ring_a2a), the ring's 2 (NCARD - 1) hops otherwise
+    // FNX_PEER (AMD, src/hip/peer.h): the one-hop sum pushed into the other cards' device memory instead of read from host mailboxes. pk: this card's mailbox
+    // [2 sets][NCARD sources][MAXT * N / 2] tagged words (fine-grained device memory); peer_pk[d]: card d's
+    void* pk = nullptr;
+    void* peer_pk[NCARD] = {};
+    bool peer = false;
     unsigned* err;       // bit 1: a peer's value never came; bit 2: a NaN or inf (on the fp16 ring: a value past its
                          // range); bit 4: an hc read's grid barrier timed out; bit 16: a NaN or inf among the head's
                          // logits (the window's argmax)

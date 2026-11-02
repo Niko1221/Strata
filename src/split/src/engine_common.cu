@@ -1045,6 +1045,42 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
         });
         last_capture_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc).count();
     }
+    {   // FNX_BATCH_STATS=1: windows, graph captures, and the time between one window's start and the next's by the first one's row count; one block per 200 windows
+        static const bool stats = env_flag("FNX_BATCH_STATS");
+        if (stats) {
+            static unsigned long nw = 0, ncap = 0, rows_sum = 0, cnt_t[MAXT + 1] = {};
+            static double cap_ms = 0, ms_t[MAXT + 1] = {};
+            static int prev_t = 0;
+            static std::chrono::steady_clock::time_point t_first{}, t_prev{};
+            const auto now = std::chrono::steady_clock::now();
+            if (nw == 0) t_first = now;
+            if (prev_t > 0) {
+                const double gap = std::chrono::duration<double, std::milli>(now - t_prev).count();
+                if (gap < 400.0) cnt_t[prev_t]++, ms_t[prev_t] += gap;   // a gap past 400 ms is an idle server, not a window
+            }
+            prev_t = T;
+            t_prev = now;
+            ++nw;
+            rows_sum += (unsigned long) T;
+            if (last_capture_ms > 0.0) ++ncap, cap_ms += last_capture_ms;
+            if (nw % 200 == 0) {
+                std::fprintf(stderr, "fnx: batch stats: %lu windows, %lu captured (%.1f ms each), %.1f rows a window, %.2f ms a window since the first\n", nw,
+                             ncap, ncap ? cap_ms / (double) ncap : 0.0, (double) rows_sum / (double) nw,
+                             std::chrono::duration<double, std::milli>(now - t_first).count() / (double) nw);
+                std::string tab = "fnx: batch stats by rows (rows:count:ms):";
+                for (int k = 1; k <= MAXT; ++k)
+                    if (cnt_t[k]) {
+                        char buf[48];
+                        std::snprintf(buf, sizeof buf, " %d:%lu:%.1f", k, cnt_t[k], ms_t[k] / (double) cnt_t[k]);
+                        tab += buf;
+                    }
+                std::fprintf(stderr, "%s\n", tab.c_str());
+                nw = ncap = rows_sum = 0;
+                cap_ms = 0;
+                for (int k = 0; k <= MAXT; ++k) cnt_t[k] = 0, ms_t[k] = 0;
+            }
+        }
+    }
     each([&](int, CardBuf& b, const CardW&) { ck(cudaGraphLaunch(b.batch_graphs[T].exec, b.st), "graph launch"); });
     each([&](int c, CardBuf& b, const CardW&) {
         ck(cudaMemcpyAsync(&h_.bv[c * T], b.best_v, T * 4, cudaMemcpyDeviceToHost, b.st), "best v");

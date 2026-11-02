@@ -9,7 +9,7 @@
 // activations are fetched into registers while the tensor cores run the current one. On random experts of the real
 // shapes (tools/moe_mma_bench, 4,096 tokens) this takes gate|up 3.4 ms and down 2.2 ms per layer and card, against
 // 4.8 and 4.0 ms for 8 warps of 16-row tiles at 128 columns.
-#include <mma.h>
+#include <mma.h>   // HIP: src/hip/mma.h (gfx12 WMMA)
 
 namespace {
 
@@ -244,6 +244,22 @@ struct MmX {
     }
 };
 
+#if FNX_HIP
+// gfx12 (RDNA4): v_wmma_f32_16x16x16_f16, wave32. A is 16 weight rows x 16 k (lane l: row l & 15, k 8 * (l >> 4) + 0..7), B is 16 k x
+// 16 tokens (lane l: token l & 15, the same k), the accumulator lane l holds token l & 15 and rows 8 * (l >> 4) + 0..7. f16 products,
+// fp32 accumulation, as the HMMA.884 did.
+typedef _Float16 mm_h8 __attribute__((ext_vector_type(8)));
+typedef float mm_f8 __attribute__((ext_vector_type(8)));
+__device__ __forceinline__ mm_f8 mma_wmma12(const mm_h8& a, const mm_h8& b, const mm_f8& c) {
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
+#else
+    (void) a; (void) b;
+    __builtin_trap();   // not a gfx12 device pass: the launcher never selects it
+    return c;
+#endif
+}
+#else
 // d (each quad-pair's 8 x 8) += a (8 x 4, row-major: this lane's row, 4 halves in a0 a1) b (4 x 8, col-major: this
 // lane's column), f16 products with f32 accumulation: Volta's HMMA.884
 __device__ __forceinline__ void mma_884(float (&d)[8], unsigned a0, unsigned a1, unsigned b0, unsigned b1) {
@@ -252,8 +268,9 @@ __device__ __forceinline__ void mma_884(float (&d)[8], unsigned a0, unsigned a1,
                  : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
                  : "r"(a0), "r"(a1), "r"(b0), "r"(b1));
 }
+#endif
 
-#if FNX_ARCH >= 80
+#if FNX_ARCH >= 80 && !FNX_HIP
 // d (16 x 8) += a (16 x 16, row-major) b (16 x 8, col-major): Ampere's HMMA.16816, f16 products with f32 accumulation. Lane (g = lane / 4,
 // t = lane % 4) holds a0 = (row g, k 2t..2t+1), a1 = (row g + 8, k 2t..), a2 = (row g, k 2t + 8..), a3 = (row g + 8, k 2t + 8..);
 // b0 = (k 2t..2t+1, column g), b1 = (k 2t + 8.., column g); d0 d1 = (row g, columns 2t, 2t + 1), d2 d3 = (row g + 8, same columns)
@@ -280,8 +297,12 @@ template <int TYPE, int BM>
 __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __restrict__ jobs, const int* __restrict__ njobs,
                                                         const __half* __restrict__ x, int ldx, float* __restrict__ out) {
     using namespace nvcuda;
-    constexpr int WR = BM / 32, WT = MM_THREADS / 32 / WR, TT = 4 / WT, NP = BM / MM_PASS, LO = 16 * TT;
-    static_assert(WR * WT == MM_THREADS / 32 && TT * WT == 4 && NP * MM_PASS == BM, "warp layout");
+    constexpr int MM_NT = PF_JOB / 16;   // token tiles of a job
+    constexpr int WR = BM / 32, WT = MM_THREADS / 32 / WR, TT = MM_NT / WT, NP = BM / MM_PASS, LO = 16 * TT;
+    static_assert(WR * WT == MM_THREADS / 32 && TT * WT == MM_NT && NP * MM_PASS == BM, "warp layout");
+#if FNX_ARCH < 80
+    static_assert(PF_JOB == 64, "the m8n8k4 path is laid out for 64-row jobs");
+#endif
     const int ji = blockIdx.y;
     if (ji >= *njobs) return;
     __shared__ BigJob jb;
@@ -293,7 +314,20 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
     const int rg = warp % WR, tg = warp / WR;
     const bool split = WT > 1 && nt <= TT;
     const int tb = split ? 0 : tg * TT;   // the warp's first token tile
-#if FNX_ARCH >= 80
+#if FNX_HIP
+    // the warp's 32 rows x 16 TT tokens: 2 x TT WMMA tiles of 16 x 16 (lane l loads weight row / token l & 15 of a tile, 8 k at
+    // 8 * (l >> 4))
+    const int lane = threadIdx.x & 31, ln = lane & 15, lh = lane >> 4;
+    const __half* arow = sw + (rg * 32 + ln) * MM_LD + 8 * lh;               // + 16 MM_LD for tile row 1
+    const __half* bcol = sx + (tb * 16 + ln) * MM_LD + 8 * lh;               // + 16 MM_LD per token tile
+    mm_f8 acc[2][TT];
+#pragma unroll
+    for (int a = 0; a < 2; ++a)
+#pragma unroll
+        for (int b = 0; b < TT; ++b)
+#pragma unroll
+            for (int j = 0; j < 8; ++j) acc[a][b][j] = 0.f;
+#elif FNX_ARCH >= 80
     // the warp's 32 rows x 16 TT tokens on HMMA.16816 (mma_16816): 2 row tiles of 16 x 2 TT token tiles of 8; lane (g, t4) loads the
     // 32-bit operand pairs of the fragment layout above from the weight tile (rows) and the activation tile (tokens) in shared memory
     const int lane = threadIdx.x & 31, g = lane >> 2, t4 = lane & 3;
@@ -348,7 +382,17 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
             for (int i = 0; i < MM_KC / 16; ++i) {
                 const int kt = kt0 + i * kts, kk = kt * 16;
                 if (kt >= kc / 16) break;
-#if FNX_ARCH >= 80
+#if FNX_HIP
+                mm_h8 a[2], b[TT];
+#pragma unroll
+                for (int r = 0; r < 2; ++r) a[r] = *reinterpret_cast<const mm_h8*>(arow + r * 16 * MM_LD + kk);
+#pragma unroll
+                for (int t = 0; t < TT; ++t) b[t] = *reinterpret_cast<const mm_h8*>(bcol + t * 16 * MM_LD + kk);
+#pragma unroll
+                for (int r = 0; r < 2; ++r)
+#pragma unroll
+                    for (int t = 0; t < TT; ++t) acc[r][t] = mma_wmma12(a[r], b[t], acc[r][t]);
+#elif FNX_ARCH >= 80
                 uint32_t fa[2][4], fb[2 * TT][2];
 #pragma unroll
                 for (int r = 0; r < 2; ++r) {
@@ -399,7 +443,18 @@ __global__ void __launch_bounds__(MM_THREADS) k_moe_mma(MoeW w, const BigJob* __
     float* so = reinterpret_cast<float*>(smem);
     constexpr int SLD = MM_SLD<BM>;
     static_assert(MM_LD % 8 == 0, "16-byte operand loads");
-#if FNX_ARCH >= 80
+#if FNX_HIP
+    // the accumulator lane l holds token ln and rows 8 lh + 0..7 of a tile: eight consecutive floats of the staging's row
+    float* sob = so + (split ? tg * LO * SLD : tb * 16 * SLD) + rg * 32 + 8 * lh;
+#pragma unroll
+    for (int r = 0; r < 2; ++r)
+#pragma unroll
+        for (int t = 0; t < TT; ++t) {
+            float* d = sob + (t * 16 + ln) * SLD + r * 16;
+#pragma unroll
+            for (int j = 0; j < 8; ++j) d[j] = acc[r][t][j];
+        }
+#elif FNX_ARCH >= 80
     // a lane's accumulators of a 16 x 8 tile: rows g and g + 8, columns 2 t4 and 2 t4 + 1 (mma_16816)
     float* sob = so + (split ? tg * LO * SLD : tb * 16 * SLD) + rg * 32;   // the warp's rows, its first token
 #pragma unroll

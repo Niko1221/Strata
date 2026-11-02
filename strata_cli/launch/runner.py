@@ -1592,13 +1592,14 @@ class Runner:
             return
         from strata_control import engine_component as EC
 
-        def exe_for(n: int, cc: int | None = None):
+        def exe_for(n: int, cc: int | None = None, arch: str | None = None):
             exe = cfg.get("exe")
             try:
                 real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
             except Exception:                                # noqa: BLE001 - no engine to look beside: no split
                 return None
-            for name in ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",):   # one build per architecture (FNX_ARCH is compile time)
+            # one build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch> only
+            for name in ((f"strata-split-{n}-{arch}",) if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
                 p = Path(str(real)).parent / name
                 if p.is_file():
                     return str(p)
