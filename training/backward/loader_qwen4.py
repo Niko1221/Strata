@@ -49,19 +49,6 @@ import nf4
 from nf4_fused import fused_nf4_linear
 from preadv_shim import preadv as _preadv
 
-# pack 只被读一次（读进显存/锁页/页面内存后训练零读盘），路过的 page cache 是
-# 纯单次使用的垃圾。不清掉的话：58 GiB RAM 里 36 GiB 落进 user 缓冲 + 60 GiB
-# 陆续路过 cache，内核被迫边读边回收，实测把冷读从 2.98 GiB/s 拖到 0.33 GiB/s
-# （2026-10-30 WSL A/B：28 GiB 冷读 9.4 s vs 85.8 s，差 9×；_ensure 的 ram-read
-# 272 s 主要就是这个）。每块读完立即对该区间 fadvise DONTNEED。Windows 没有这个
-# API —— 不是正确性问题，只是 Windows 冷读没有这 9×。
-_FADV_DONTNEED = getattr(os, "POSIX_FADV_DONTNEED", None)
-
-
-def _drop_page_cache(fd: int, offset: int, nbytes: int) -> None:
-    if _FADV_DONTNEED is not None and os.environ.get("STRATA_PACK_FADVISE", "1") != "0":
-        os.posix_fadvise(fd, offset, nbytes, _FADV_DONTNEED)
-
 import nf4
 
 # pack 只被读一次（读进显存/锁页/页面内存后训练零读盘），路过的 page cache 是纯单次
