@@ -22,7 +22,12 @@ struct PfRingOp {
         PASS,      // the finished part `part` from the gathered rows to the same place on the next card
         SIGNAL,    // flag `step` on the next card (after this card's copies so far)
         WAIT,      // until this card's flag `step` is set
-        OUT        // the gathered rows (every part finished) back into x
+        OUT,       // the gathered rows (every part finished) back into x
+        // the direct gather (pf_ring_plan_direct): the finishing add stores the part into EVERY card's gathered rows (this card's too), then
+        // each other card gets a flag of its own for it, so there is no forwarding hop (n - 2 hops fewer in sequence, no host-to-host copy)
+        GADD,      // ADD (fin) of `part` with the result stored in every card's gathered rows
+        SIGNALA,   // the gather flag of every other card (flag n - 1 + slot, slot = this card's place among its senders)
+        WAITA      // until the n - 1 gather flags of this card are set
     };
     Kind k;
     int part = -1, hop = -1, step = -1;
@@ -69,6 +74,34 @@ inline std::vector<PfRingOp> pf_ring_plan(int n, int g) {
     for (const PfRingOp& o : ops)
         if (o.part < -1 || o.part >= n || o.hop < -1 || o.hop >= n - 1 || o.step < -1 || o.step >= pf_ring_steps(n))
             throw std::logic_error("pf_ring_plan: card " + std::to_string(g) + " of " + std::to_string(n) + ": a step out of range");
+    return ops;
+}
+
+// the direct gather's slot: card g's flag on card d is n - 1 + pf_gather_slot(n, g, d), 0..n-2 (d's senders in order from d + 1)
+constexpr int pf_gather_slot(int n, int g, int d) { return ((g - d - 1) % n + n) % n; }
+
+// card g's steps with the direct gather: the same reduce-scatter hops, then the finished part goes to every card at once
+inline std::vector<PfRingOp> pf_ring_plan_direct(int n, int g) {
+    if (n < 2 || g < 0 || g >= n) throw std::invalid_argument("pf_ring_plan_direct: card " + std::to_string(g) + " of " + std::to_string(n));
+    using K = PfRingOp;
+    auto mod = [n](int v) { return ((v % n) + n) % n; };
+    std::vector<PfRingOp> ops;
+    ops.push_back({K::PACK, g});
+    ops.push_back({K::SEND, g, 0});
+    ops.push_back({K::SIGNAL, -1, -1, 0});
+    for (int s = 1; s < n - 1; ++s) {
+        ops.push_back({K::WAIT, -1, -1, s - 1});
+        ops.push_back({K::ADD, mod(g - s), s - 1});
+        ops.push_back({K::SEND, mod(g - s), s});
+        ops.push_back({K::SIGNAL, -1, -1, s});
+    }
+    ops.push_back({K::WAIT, -1, -1, n - 2});
+    PfRingOp add{K::GADD, mod(g + 1), n - 2};
+    add.fin = true;
+    ops.push_back(add);
+    ops.push_back({K::SIGNALA});
+    ops.push_back({K::WAITA});
+    ops.push_back({K::OUT});
     return ops;
 }
 

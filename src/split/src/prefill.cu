@@ -294,7 +294,10 @@ struct Engine::PfRing {
     __half *send, *in[NCARD - 1][2], *ag[2];
     __half *nin[NCARD - 1][2], *nag[2];
     unsigned *flags, *nflags;
+    __half* pag[NCARD][2];   // every card's gathered rows and flags (the direct gather writes to all of them)
+    unsigned* pflags[NCARD];
     int next_dev = 0;
+    bool direct = false;     // the plan is pf_ring_plan_direct
     std::vector<PfRingOp> plan;
 };
 
@@ -785,7 +788,19 @@ void Engine::prefill_alloc() {
         }
         r.nflags = n.ring_ce.flags;
         r.next_dev = n.dev;
-        r.plan = pf_ring_plan(NCARD, c);
+        for (int d = 0; d < NCARD; ++d) {
+            r.pflags[d] = pf_[d]->ring_ce.flags;
+            for (int k = 0; k < 2; ++k) r.pag[d][k] = pf_[d]->ring_ce.ag[k];
+        }
+        // the all-gather: HIP defaults to the direct gather (a ring of host-to-host forwards costs 1/3 of the prompt time on four cards),
+        // CUDA to the ring; FNX_PF_GATHER=ring|direct chooses
+        const char* gather = std::getenv("FNX_PF_GATHER");
+#if FNX_HIP
+        r.direct = !(gather && std::strcmp(gather, "ring") == 0);
+#else
+        r.direct = gather && std::strcmp(gather, "direct") == 0;
+#endif
+        r.plan = r.direct ? pf_ring_plan_direct(NCARD, c) : pf_ring_plan(NCARD, c);
     }
     // the flags as cudaMalloc left them could hold anything, and a wait passes on any flag >= its number
     const long long seq0 = env_int("FNX_PF_SEQ_START", 0);

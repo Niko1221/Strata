@@ -111,6 +111,20 @@ static __global__ void k_pfr_add(const __half2* __restrict__ in, const float2* _
 static __global__ void k_pfr_copy(const uint4* __restrict__ src, uint4* __restrict__ dst, size_t n16) {
     for (size_t e = blockIdx.x * (size_t) blockDim.x + threadIdx.x; e < n16; e += (size_t) gridDim.x * blockDim.x) dst[e] = src[e];
 }
+// the direct gather's finishing add: f16(in + x) stored into every card's gathered rows (up to NCARD destinations, all host memory)
+struct PfGatherDst {
+    __half2* p[NCARD];
+};
+static __global__ void k_pfr_add_gather(const __half2* __restrict__ in, const float2* __restrict__ x, int n2, PfGatherDst dst, unsigned* err) {
+    for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
+        const float2 a = __half22float2(in[e]), b = x[e];
+        const float2 v = make_float2(a.x + b.x, a.y + b.y);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);
+        const __half2 h = __floats2half2_rn(v.x, v.y);
+#pragma unroll
+        for (int d = 0; d < NCARD; ++d) dst.p[d][e] = h;
+    }
+}
 static __global__ void k_pfr_out(const __half2* __restrict__ ag, float2* __restrict__ x, int n2) {
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) x[e] = __half22float2(ag[e]);
 }
@@ -157,6 +171,25 @@ inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned
                     k_pfr_copy<<<grid_for((size_t) rows(o.part) * N / 8), 256, 0, s>>>((const uint4*) (r.ag[set] + (size_t) r0(o.part) * N),
                                                                                   (uint4*) (r.nag[set] + (size_t) r0(o.part) * N),
                                                                                   (size_t) rows(o.part) * N / 8);
+                break;
+            case PfRingOp::GADD:
+                if (rows(o.part) > 0) {
+                    PfGatherDst dst;
+                    for (int d = 0; d < NCARD; ++d) dst.p[d] = (__half2*) (r.pag[d][set] + (size_t) r0(o.part) * N);
+                    k_pfr_add_gather<<<grid_for((size_t) rows(o.part) * N / 2), 256, 0, s>>>((const __half2*) r.in[o.hop][set],
+                                                                                           (const float2*) (x + (size_t) r0(o.part) * N),
+                                                                                           rows(o.part) * N / 2, dst, err);
+                }
+                break;
+            case PfRingOp::SIGNALA:
+                for (int d = 0; d < NCARD; ++d)
+                    if (d != g)
+                        cud(cuStreamWriteValue32(cs, (CUdeviceptr) (r.pflags[d] + set * PF_RING_STEPS + (NCARD - 1 + pf_gather_slot(NCARD, g, d))), seq, 0),
+                            "gather flag");
+                break;
+            case PfRingOp::WAITA:
+                for (int j = 0; j < NCARD - 1; ++j)
+                    cud(cuStreamWaitValue32(cs, (CUdeviceptr) (r.flags + set * PF_RING_STEPS + NCARD - 1 + j), seq, CU_STREAM_WAIT_VALUE_GEQ), "gather wait");
                 break;
             case PfRingOp::SIGNAL: signal(o.step); break;
             case PfRingOp::WAIT: wait(o.step); break;
