@@ -8629,6 +8629,19 @@ def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, meta: Path, dspark:
             "--dspark-noise-token", "128799", "--dspark-markov-rank", "256", *(["--mmproj", str(mmproj)] if mmproj else []), "--out", str(pack)]
 
 
+# Pictures on a card with memory of its own (HIP / CUDA): the engine keeps --reserve-mib free on each card (default 600) and a picture turn takes the tower's encode buffers and
+# hipBLASLt's first start from it.  One R9700 placed 2,902 experts and left 564 MiB: the first picture died with "out of memory at hipblaslt.cpp:147" (SPLIT-HIP, 2026-11-02);
+# 2,639 experts and 570 MiB passed.  SPLIT-HIP could not repeat the crash at any value (the one crash probably came from another program on the card), but the margin at 600 is only about 10 MiB in the worst case (the tower's ~319 MiB plus hipBLASLt's ~250 MiB start), so with pictures on the reserve is 900: it costs about 36 experts (0.3 GB, 1.2% of the resident ones).
+DSV41_VISION_RESERVE_MIB = 900
+
+
+def dsv41_vision_reserve_args(ds_vision: str, mac: bool, plan: dict) -> list:
+    """`--reserve-mib N` for DeepSeek with pictures on a card that has its own memory; nothing on a Mac or a unified-memory APU (Strix Halo: one pool, plan["uma"]) or with pictures off."""
+    if ds_vision != "on" or mac or plan.get("uma"):
+        return []
+    return ["--reserve-mib", str(DSV41_VISION_RESERVE_MIB)]
+
+
 def dsv41_prefill_chunk_args(cards, ram_gb) -> list:
     """A bigger prompt chunk on a unified-memory APU (Ryzen AI Max, gfx1151), where the engine's 1,024-token rule was calibrated on
     cards that hold most of the experts.  Measured on the 128 GB Strix Halo with the 2.00 bpw set (2026-10-25, engine 0.1.51):
@@ -9191,7 +9204,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     # without it on the M5 Max), and the engine's "auto" would load it on a 128 GB Mac: its 7 GB of experts take memory the trunk's experts need.
     args = ["--pack", str(pack), "--max-context", str(ctx), "--eos", "1", "--vision", ds_vision, "--dspark", "none" if mac else "auto",
             *(["--dspark-conf", "0.65"] if md.get("recipe") in ("ista", "coder") and not mac else []), *dsv41_prefill_chunk_args(cards, ram),
-            *plan["args"]]
+            *plan["args"], *dsv41_vision_reserve_args(ds_vision, mac, plan)]
     env = dsv41_config_env(cards)
     cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": fam["name"], "arch": fam["arch"], "log": str(home() / f"strata-{tag.lower()}.log"),

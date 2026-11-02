@@ -685,7 +685,7 @@ MAC_MEASURED_PACK = {
     "UD-IQ1_S": ("M5 Max, 128 GB, Unsloth UD-IQ1_S: 15-18 tokens/s for a short answer (16-18 after a 3,000-token prompt), a 3,000-token prompt at "
                  "about 230-310 tokens/s, 14,000 at about 520; the engine kept about 68 GB of the experts resident and the process used about 79 GB"),
     "UD-IQ1_M": "Not run on a Mac yet; UD-IQ1_S was. It keeps fewer experts in memory, so expect it to be slower.",
-    CODER_MODEL: ("M5 Max (Apple, 2026-11-02, the 0.2.9 Metal engine, official files): 19-22 tokens/s (plain answer 19, code 22, tool call 22), a 6,000-token prompt at "
+    CODER_MODEL: ("M5 Max, 128 GB (Apple, 2026-11-02, the 0.2.9 Metal engine, official files): 19-22 tokens/s (plain answer 19, code 22, tool call 22), a 6,000-token prompt at "
                   "about 300 tokens/s; all 7,680 experts (66 GB) stay in memory and the process peaked at about 74 GB"),
 }
 
