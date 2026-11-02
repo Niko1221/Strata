@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
     // another conversation takes the ring; the first one is parked, then comes back
     d.begin_request(other.data(), 400, 0, &cold);
     feed(other, 0, 400);
-    check(d.ring_stats.cold_starts >= 1, "another conversation: the first lineage is parked (cold start counted)");
+    check(d.ring_stats.stash_stores >= 1, "another conversation starting at 0: the first lineage is kept in the stash as a branch");
     d.begin_request(big.data(), 3030, 3000, &cold);
     std::printf("  parked lineage back: rebuilt %lld rows (missing %lld) in %.2f ms, swapped %d, cold %d\n", (long long) d.last_rebuilt, (long long) d.last_missing, d.last_ms, (int) d.last_swapped, (int) cold);
     check(d.last_swapped && d.last_rebuilt >= 1900 && d.last_missing == 0 && !cold, "the parked lineage came back, the whole window rebuilt, none missing");
