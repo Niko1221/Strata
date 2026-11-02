@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Pack the incoai DFlash2 drafter for Qwen3.8-Flash-Next (safetensors) into the engine's runtime file.
 
-    python tools/dflash2_pack.py model.safetensors config.json out.pack [--q4_0]
+    python tools/dflash2_pack.py model.safetensors config.json out.pack [--q4_0] [--q4_0-selector]
 
 Format (little endian): "DF2P", u32 version (1), u32 index_len, a text index (padded with spaces so the data starts on a 4096 multiple), then
 the tensors, each 256-byte aligned at its offset (from the end of the index).  Index lines: "cfg <key> <value>", "t <name> <dtype> <rows>
 <cols> <offset> <bytes>" (a matrix [out][in] is rows x cols; a vector or codebook row set is the leading dims folded into rows), "end".
 dtypes: "q8_0" (ggml Q8_0 blocks, 34 bytes per 32 values, rows of the weight matrix [out][in] one after the other: what the engine's
 multi-column MMVQ reads), "f32" (norms, the two conv base kernels), "q4_0" (--q4_0: ggml Q4_0 blocks, 18 bytes per 32 values, the matrices only; the engine tiles them like Q8_0, see gemm4_kernel in
-src/kernels/cuda/dflash2.cu), "bf16" (the selector's two codebooks: only gathered rows are read).
+src/kernels/cuda/dflash2.cu), "bf16" (the selector's two codebooks: only gathered rows are read; with --q4_0-selector they are "q4_0" rows in block order, not tiled).
 The matrices' quantization matches ggml's quantize_row_q8_0 (d = amax / 127, q = round(x / d), d stored as fp16); the research harness
 (tools/dflash2/q8test.py) measured no acceptance loss from it.
 """
@@ -98,7 +98,7 @@ def quant_q4_0(w):
     return out.tobytes()
 
 
-def pack(st_path, cfg_path, out_path, say=print, q4=False):
+def pack(st_path, cfg_path, out_path, say=print, q4=False, q4_selector=False):
     """Write the engine's runtime file for the drafter in `st_path` (+ its config.json). Returns the number of bytes written."""
     with open(cfg_path, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -138,6 +138,10 @@ def pack(st_path, cfg_path, out_path, say=print, q4=False):
         vec(p + "mlp_conv.base_kernel")
     mat("candidate_selector.hidden_projection.weight")
     for n in ("predecessor_codebook", "successor_codebook"):
+        if q4_selector:   # --q4_0-selector: ggml Q4_0 rows in block order (NOT tiled): 8 blocks of 18 bytes a row of 256, the community GGUF's selector_* bytes
+            w = load_tensor(f, "candidate_selector." + n)
+            add("candidate_selector." + n, "q4_0", w.shape, quant_q4_0(w))
+            continue
         a = raw_bf16(f, "candidate_selector." + n)
         add("candidate_selector." + n, "bf16", a.shape, a.tobytes())
 
@@ -176,10 +180,11 @@ def pack(st_path, cfg_path, out_path, say=print, q4=False):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != "--q4_0"]
+    flags = ("--q4_0", "--q4_0-selector")
+    args = [a for a in sys.argv[1:] if a not in flags]
     if len(args) < 3:
         sys.exit(__doc__)
-    pack(*args[:3], q4="--q4_0" in sys.argv[1:])
+    pack(*args[:3], q4="--q4_0" in sys.argv[1:] or "--q4_0-selector" in sys.argv[1:], q4_selector="--q4_0-selector" in sys.argv[1:])
 
 
 if __name__ == "__main__":
