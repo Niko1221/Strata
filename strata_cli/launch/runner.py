@@ -1605,14 +1605,22 @@ class Runner:
                     return str(p)
             return None
 
+        # `--parallel N` is the split's lane count (split_config reads cfg["parallel"]); a refusal puts the run config back as it was
+        lanes_added = bool(self.s.parallel) and not cfg.get("parallel")
+        if lanes_added:
+            cfg["parallel"] = int(self.s.parallel)
         try:
             decision = SE.apply_to_config(cfg, exe_for_cards=exe_for, allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1")
         except Exception as e:                               # noqa: BLE001 - never stop a launch over an option
+            if lanes_added:
+                cfg.pop("parallel", None)
             if SE.mode(cfg) == "on":
                 text = f"The all-cards split engine was left out ({type(e).__name__}). Using the normal layer split."
                 self.notices.append(text)
                 self.emit("config", text, None, level="warn")
             return
+        if lanes_added and not decision.use_split:
+            cfg.pop("parallel", None)
         if decision.quiet:
             return
         line = decision.line + (" Turn it off with: strata launch --split-engine off." if decision.use_split else "")
@@ -1680,6 +1688,8 @@ class Runner:
             parallel = None
         if parallel and not self.s.parallel and self.one_request_for_dflash2(config):
             parallel = None                                  # the slots Strata fills in by itself would keep the MTP: DFlash2 answers one request at a time
+        if parallel and self.run_config_owns_slots(config):
+            parallel = None                                  # the all-cards split engine's run config carries its lanes (--batch N, from --parallel N or its default): a profile override would only collide with them
         sets = [f"host={acc.host_for(self.s.access)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
         try:
             current, _rev = profiles.load(name)
@@ -1694,6 +1704,15 @@ class Runner:
         want = {k: v for k, v in (profiles.parse_assignment(x) for x in sets)}
         if cur.get("overrides") != want:
             profiles.save(name, {**cur, "overrides": want}, expected_revision=rev)
+
+    @staticmethod
+    def run_config_owns_slots(config: Path) -> bool:
+        """The run config already names its batch slots (--batch / --slots in its args): the all-cards split engine's does, always."""
+        try:
+            args = [str(a) for a in read_config(config).get("args") or []]
+        except Exception:                                    # noqa: BLE001 - a config that cannot be read is not a reason to stop a launch
+            return False
+        return "--batch" in args or "--slots" in args
 
     def multi_file(self) -> bool:
         """The chosen model is DeepSeek-V4.1-Flash (setup.py MULTI_FILE_FAMILIES): nine shards, its own engine; its own short tuner, and several conversations at once only when --parallel N is asked for."""
