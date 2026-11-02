@@ -160,7 +160,19 @@ Four changes aimed at agents: long prompts (30K+ tokens) and sampling at a tempe
 | + hipBLASLt rows | 938 | GDN mixers 8.9 s, attention mixers 13 s (11.3 s of it the fused attention), MoE 13 s of 35 s |
 
 A register prefetch of the next K / V tile in the fused kernel was slower (11.3 -> 15 s: 32 more VGPRs beside the 128 of
-the accumulators) and is not used.
+the accumulators) and is not used. Reading the queries from the cache instead of LDS (two blocks per CU) measured the
+same 11.5 s, so the kernel's occupancy is bound by its registers, not its LDS; splitting a row's 256 output dims over two
+waves is the next thing to try there.
+
+Through the server, end to end (same PC; temperature 0.6, 300 new tokens; the morning's engine against this branch):
+
+| Request | Before | After |
+| --- | ---: | ---: |
+| ~9K-token prompt: prompt read | 18.1 s (494 tok/s) | 7.5 s (1,190 tok/s) |
+| ~9K-token prompt: decode | 36.7 tok/s | 49.0 (185 of 228 drafts kept) |
+| ~36K-token prompt: prompt read | 110 s (323 tok/s) | 41.4 s (871 tok/s) |
+| ~36K-token prompt: decode | 13.9 tok/s | 28.5 to 33.2 (180 of 240) |
+| ~36K-token prompt: whole request | 131.8 s | 52.0 s |
 
 ## Limits
 

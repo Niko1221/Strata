@@ -626,6 +626,7 @@ __global__ void __launch_bounds__(128) k_attn_fa_wmma(const __half* __restrict__
     const _Float16* kg = reinterpret_cast<const _Float16*>(k16) + (size_t) kvh * P * FA_HD;
     const _Float16* vg = reinterpret_cast<const _Float16*>(v16) + (size_t) kvh * P * FA_HD;
     const uint4 zero4 = make_uint4(0, 0, 0, 0);
+    // (the queries read from the cache instead of LDS, ~24 KB of LDS and two blocks per CU, measured the same: 11.5 s)
     for (int i = tid; i < FA_ROWS * FA_HD / 8; i += 128) {   // the block's queries, 8 halves per load
         const int r = i / (FA_HD / 8), c8 = (i % (FA_HD / 8)) * 8;
         *reinterpret_cast<uint4*>(&qs[r][c8]) =
