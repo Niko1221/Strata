@@ -7,10 +7,11 @@
 > 目录：2026-11-02 起 `examples/training/` → `training/{mezo,backward,bench,tests}`；
 > 迁移做在**每条分支自己身上**。
 
-> 树 = `feat/train_support` = `feat/train-mezo` ∪ `feat/train-backforward`：
-> 零阶线（引擎 `LORA`/`SCORE` 前向，**不 import torch**，134 项）+ 反传线在它之上多带的
-> torch 层（`backward/`、`ce.py`/`lora.py`/`update_rules.py`、`mezo/sft_mezo.py`、torch bench
-> 与 7 个测试文件）。两线共享的 `.py` 逐字一致，所以合并只有「谁的文件在不在」，没有代码分歧。
+> **树属于哪一层**（2026-11-03 定形）：`feat/train-mezo` = 零阶完整训练线（共用层 + `mezo/` +
+> 引擎侧改动，**不 import torch**，134 项）；`feat/train-backforward` = 它 + torch 层（比它多
+> 32 个 `.py`，258 项）；`feat/train_support` = 两者并集 + 审核文档。三条分支的 `.py` 只有
+> "文件在不在"的差别，`algos.available()` 按文件决定 `--method` 有哪几个（缺了就报缺哪个文件）。
+
 > 环境：RTX 4090 48 GiB（47.99 可用）/ 125B IQ3_XXS pack / 单行样本 / loss = mean。
 > 数字后的 `logs/xxx.log` 是出处；没有实测的地方写「未测」，不填估算值。
 

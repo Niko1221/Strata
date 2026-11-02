@@ -2,21 +2,21 @@
 
 ## What this branch ships
 
-`feat/train-mezo` is the **zero-order training line**: `mezo/` (engine `LORA` + `SCORE`
-forward), the engine-side changes it needs, and the data / eval tooling. Nothing here
-imports torch — the suite passes with torch unavailable (`134 passed`, verified by
-shadowing the module, not by trusting a grep).
+`training/` is cut into layers, and the three branches carry different subsets of them —
+the same code everywhere, only the files differ. Method availability is read off the disk
+(`algos.available()`), so `--list` tells you what this tree can actually run; asking for a
+method whose script is absent exits before anything is loaded and names the file it wanted.
 
-The backprop line (`feat/train-backforward`) is built **on top of this one**: it adds
-`backward/` plus the three shared torch modules (`ce.py`, `lora.py`, `update_rules.py`)
-and the PyTorch parity harness `mezo/sft_mezo.py`. `feat/train_support` is the union of
-both plus the review notes.
+| branch | adds | methods |
+|---|---|---|
+| `feat/train-mezo` | shared numpy/engine layer, `mezo/`, the engine-side changes it needs, data/eval tooling | `mezo` only — no torch anywhere |
+| `feat/train-backforward` | that, plus `backward/`, `ce.py` / `lora.py` / `update_rules.py`, `mezo/sft_mezo.py` | both |
+| `feat/train_support` | the union of the two, plus these review notes | both |
 
-Which method a tree can run is read off the disk (`algos.available()`), not off a branch
-flag: here `--list` prints `backward … 不在这条分支上（缺 backward/sft.py）`, and
-`--method backward` exits before anything is loaded. Sections below that mention
-`sft_mezo.py` or `backward/…` are measurements taken on the backprop branch — the
-numbers and the reasoning stand, the files live there.
+The zero-order line is the base: `train.py → mezo/mezo.py` closes over `objectives.py` and
+`mem_guard.py` only, so its suite passes with `torch` unavailable (134 tests, measured by
+shadowing the module rather than by trusting a grep). The backprop layer is additive — it
+imports the shared layer, never the other way round.
 
 ## Start here: `train.py`
 
