@@ -24,7 +24,7 @@ import { go, setSettingsSection, selectRemoteModel, pushToast } from '../lib/sto
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { tuneEffective } from '../lib/native-tune';
 import { tunedFields } from '../lib/tune-values';
-import { draftingChoices as draftingOptions } from '../lib/drafting';
+import { draftingChoices as draftingOptions, resolveDrafter } from '../lib/drafting';
 import { deepseekContexts, deepseekContextNote } from '../lib/deepseek-context';
 import { NativeSettings } from './NativeSettings';
 import { NativeSettingsFile } from './NativeSettingsFile';
@@ -132,6 +132,8 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     useEffect(() => { if (cardsGpus.length <= 1 && split !== 'auto') setSplit('auto'); }, [cardsGpus.length]);
     // Drafting (which drafter guesses ahead): a choice exists only for Qwen3.8-Flash-Next (the qwen and gyro families) on a computer whose engine can run DFlash2; every other model has no dropdown.
     const draftingChoices = selectedSize ? draftingOptions(selectedSize.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2) : null;
+    // The drafter this run loads (one per run): the fit and the plan use its graphics memory (DFlash2 0.89 GB, MTP 1.08 GB).
+    const nowDrafter = draftingChoices ? resolveDrafter(drafting, selectedSize?.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2) : 'mtp';
     const draftingWords: Record<string, string> = { auto: 'Auto (recommended)', mtp: 'MTP', dflash2: 'DFlash2', off: 'Off' };
     const values = useMemo(() => ({ family: selectedSize?.sourceFamily, model: selectedSize?.model, context, vision: selectedSize?.images ? vision : 'no', kv, low_ram: lowRam, resourceProfile, ...(cardsGpus.length > 1 ? { gpus: cardsGpus.join(',') } : cardsGpus.length === 1 ? { gpu: cardsGpus[0] } : {}), loadAfter: true, multiple: expert && multiple }), [selectedSize?.sourceFamily, selectedSize?.model, context, vision, kv, lowRam, resourceProfile, cardsGpus.join(','), expert, multiple]);
     const downloadValues = { ...values, ...(draftingChoices ? { drafting } : {}), vision: selectedSize?.images && vision !== 'no' ? 'yes' : 'no', loadVision: selectedSize?.images ? vision : 'no', ...(noReader ? { visionUnavailable: true } : {}), ...(contextPicked ? { contextChosen: true } : {}) };
@@ -236,7 +238,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      {tr(selectedSize ? <>
       <div className="native-choice__head"><span className="native-choice__label">{tr("Version")}</span><span className="native-choice__tools"><NativePresets values={values} onApply={v => { const f = families.find(f => f.family === v.family || f.sizes.some(s => s.sourceFamily === v.family)); if (!f)
         return; presetPending.current = true; setFamily(f.family); setSize(f.sizes.find(s => s.model === v.model && (s.sourceFamily === v.family || f.family === v.family))?.id ?? ''); setContext(v.context ?? 32768); setVision(v.vision ?? 'no'); setKv(v.kv ?? 'int8'); setLowRam(v.low_ram ?? 'auto'); }}/><Btn icon="models" size="sm" variant="ghost" onClick={() => setManage(true)}>{tr("Manage models")}</Btn></span></div>
-      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} cache={{ context, kv }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
+      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} cache={{ context, kv, drafter: nowDrafter }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
       {tr(fitState === 'ssd' ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("SSD streaming · will run slower")}</p> : fitState === 'no' ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("Doesn't fit")}</p> : null)}
       {tr(selectedSize?.multi_file && deepseekContextNote(context) ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(deepseekContextNote(context))}</p> : null)}
       <div className="native-choice__row">
@@ -254,7 +256,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      <EngineUpdateCard native={native} busy={!!active}/>
      <EngineUpdateDialog open={false} onClose={() => {}}/>
      {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
-     {tr(active && drafterGb ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr("Choosing DFlash2 also downloads its drafter: about {0} GB, once. If it does not fit in graphics memory, the model uses the MTP instead.", [drafterGb])}</p> : null)}
+     {tr(active && drafterGb ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(nowDrafter === 'mtp' ? "Choosing MTP downloads its drafter: about {0} GB, once." : "Choosing DFlash2 downloads its drafter: about {0} GB, once.", [drafterGb])}</p> : null)}
      {tr(active ? <p className="small muted native-wait-note">{tr("The buttons below wait until this finishes.")}</p> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
      {tr(plan?.plan?.disk_short ? <ErrorNotice message={plan.plan.disk_short}/> : null)}

@@ -205,7 +205,9 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
                 except ValueError:
                     pass
             kind = "file"
-        components.append(_item(arg.lstrip("-"), _location(raw, cfg, config_path), kind))
+        # The MTP layer is one of two drafters, never both: a model set up for DFlash2 has none on disk, and the run config keeps `--mtp <folder>` for a later
+        # switch to it. Its absence does not make the model unusable (the start loads the drafter that is there, strata_control/drafting.py).
+        components.append(_item(arg.lstrip("-"), _location(raw, cfg, config_path), kind, required=arg != "--mtp"))
 
     vision = cfg.get("vision")
     if isinstance(vision, dict):

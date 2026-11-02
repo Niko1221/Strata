@@ -102,6 +102,61 @@ add("DFlash2 answers one request at a time, so Strata set this model to one requ
     "DFlash2는 한 번에 하나의 요청만 처리하므로 Strata가 이 모델을 한 번에 하나의 요청으로 설정했습니다.",
     "DFlash2 répond à une requête à la fois, Strata a donc réglé ce modèle sur une requête à la fois.")
 
+add("Drafting: off (no drafter is downloaded yet)",
+    "预测草稿：关闭（尚未下载任何草稿模型）",
+    "先読み：オフ（ドラフトモデルがまだダウンロードされていません）",
+    "Vorausraten: aus (noch kein Entwurfsbaustein heruntergeladen)",
+    "Predicción: desactivada (aún no hay ningún predictor descargado)",
+    "Предсказание: выключено (черновая модель ещё не скачана)",
+    "Previsão: desativada (nenhum preditor foi baixado ainda)",
+    "초안 예측: 꺼짐(초안 모델이 아직 내려받아지지 않았습니다)",
+    "Anticipation : désactivée (aucun module d'anticipation n'est encore téléchargé)")
+add("Drafting: DFlash2 (the MTP drafter isn't downloaded yet)",
+    "预测草稿：DFlash2（MTP 草稿模型尚未下载）",
+    "先読み：DFlash2（MTP のドラフトモデルはまだダウンロードされていません）",
+    "Vorausraten: DFlash2 (der MTP-Entwurfsbaustein ist noch nicht heruntergeladen)",
+    "Predicción: DFlash2 (el predictor de MTP aún no está descargado)",
+    "Предсказание: DFlash2 (черновая модель MTP ещё не скачана)",
+    "Previsão: DFlash2 (o preditor do MTP ainda não foi baixado)",
+    "초안 예측: DFlash2(MTP 초안 모델이 아직 내려받아지지 않았습니다)",
+    "Anticipation : DFlash2 (le module d'anticipation MTP n'est pas encore téléchargé)")
+add("Choosing DFlash2 downloads its drafter: about {0} GB, once.",
+    "选择 DFlash2 会下载它的草稿模型：约 {0} GB，只下载一次。",
+    "DFlash2 を選ぶと、そのドラフトモデルを一度だけダウンロードします（約 {0} GB）。",
+    "Wenn Sie DFlash2 wählen, wird sein Entwurfsbaustein heruntergeladen: etwa {0} GB, einmalig.",
+    "Elegir DFlash2 descarga su predictor: unos {0} GB, una sola vez.",
+    "Если выбрать DFlash2, будет скачана его черновая модель: около {0} ГБ, один раз.",
+    "Escolher o DFlash2 baixa o preditor dele: cerca de {0} GB, uma vez.",
+    "DFlash2를 고르면 그 초안 모델을 한 번 내려받습니다(약 {0}GB).",
+    "Choisir DFlash2 télécharge son module d'anticipation : environ {0} Go, une seule fois.")
+add("Choosing MTP downloads its drafter: about {0} GB, once.",
+    "选择 MTP 会下载它的草稿模型：约 {0} GB，只下载一次。",
+    "MTP を選ぶと、そのドラフトモデルを一度だけダウンロードします（約 {0} GB）。",
+    "Wenn Sie MTP wählen, wird sein Entwurfsbaustein heruntergeladen: etwa {0} GB, einmalig.",
+    "Elegir MTP descarga su predictor: unos {0} GB, una sola vez.",
+    "Если выбрать MTP, будет скачана его черновая модель: около {0} ГБ, один раз.",
+    "Escolher o MTP baixa o preditor dele: cerca de {0} GB, uma vez.",
+    "MTP를 고르면 그 초안 모델을 한 번 내려받습니다(약 {0}GB).",
+    "Choisir MTP télécharge son module d'anticipation : environ {0} Go, une seule fois.")
+add("The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…",
+    "无法下载 DFlash2 草稿模型，因此模型将不使用草稿模型启动。正在加载模型…",
+    "DFlash2 のドラフトモデルをダウンロードできなかったため、ドラフトモデルなしで起動します。モデルを読み込んでいます…",
+    "Der DFlash2-Entwurfsbaustein konnte nicht heruntergeladen werden, deshalb startet das Modell ohne Entwurfsbaustein. Das Modell wird geladen …",
+    "No se pudo descargar el predictor de DFlash2, así que el modelo arranca sin predictor. Cargando el modelo…",
+    "Не удалось скачать черновую модель DFlash2, поэтому модель запускается без черновой модели. Загружается модель…",
+    "Não foi possível baixar o preditor do DFlash2, então o modelo inicia sem preditor. Carregando o modelo…",
+    "DFlash2 초안 모델을 내려받지 못해 초안 모델 없이 시작합니다. 모델을 불러오는 중…",
+    "Le module d'anticipation DFlash2 n'a pas pu être téléchargé, le modèle démarre donc sans module d'anticipation. Chargement du modèle…")
+add("Downloading the MTP drafter…",
+    "正在下载 MTP 草稿模型…",
+    "MTP のドラフトモデルをダウンロードしています…",
+    "MTP-Entwurfsbaustein wird heruntergeladen …",
+    "Descargando el predictor de MTP…",
+    "Скачивается черновая модель MTP…",
+    "Baixando o preditor do MTP…",
+    "MTP 초안 모델을 내려받는 중…",
+    "Téléchargement du module d'anticipation MTP…")
+
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 

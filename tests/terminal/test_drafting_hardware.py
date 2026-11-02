@@ -26,15 +26,15 @@ def serving_dflash2():
 
 
 class WhereTheEngineCanRunIt(unittest.TestCase):
-    """DFlash2 exists in the CUDA and HIP engines only (CMakeLists.txt STRATA_HAVE_DFLASH2): the choice is offered, and applied, only there."""
+    """DFlash2 exists in the engines of drafting.DFLASH2_BACKENDS (CUDA, HIP, Metal; CMakeLists.txt STRATA_HAVE_DFLASH2): the choice is offered, and applied, only there."""
 
     def test_the_matrix(self):
         h = drafting.hardware_support
-        for backend in ("metal", "sycl", "", None, "cpu"):
+        for backend in ("sycl", "", None, "cpu"):
             self.assertEqual(h(backend, ["sm_120"]), drafting.Support(False, "none", ""), backend)
         self.assertEqual((h("cuda", ["sm_120"]).level, h("cuda", ["sm_121"]).level, h("hip", ["gfx1151"]).level, h("hip", ["gfx1201"]).level), ("tested",) * 4)
         self.assertEqual(h("cuda", ["sm_86"]).level, "slower")
-        for backend, arch in (("cuda", "sm_75"), ("cuda", "sm_89"), ("cuda", "sm_90"), ("cuda", "sm_61"), ("hip", "gfx1100"), ("hip", "gfx1030"), ("cuda", None)):
+        for backend, arch in (("cuda", "sm_75"), ("cuda", "sm_89"), ("cuda", "sm_90"), ("cuda", "sm_61"), ("hip", "gfx1100"), ("hip", "gfx1030"), ("cuda", None), ("metal", None)):
             support = h(backend, [arch] if arch else [])
             self.assertEqual((support.can_run, support.level, support.line), (True, "untested", drafting.LINE_UNTESTED), (backend, arch))
         for backend, arch in (("cuda", "sm_120"), ("cuda", "sm_86"), ("cuda", "sm_75")):
@@ -49,12 +49,12 @@ class WhereTheEngineCanRunIt(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         with serving_dflash2():
-            for backend in ("metal", "sycl"):
+            for backend in ("sycl",):
                 d = drafting.decide("dflash2", klass="other", model_name=GYRO, data_dir=tmp.name, backend=backend, archs=[])
                 self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_THIS_CARD), backend)
                 self.assertFalse(drafting.needs_pack("dflash2", klass="other", model_name=GYRO, data_dir=tmp.name, backend=backend, archs=[]), backend)
             self.assertTrue(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=tmp.name, backend="cuda", archs=["sm_120"]))
-            self.assertEqual(drafting.decide("auto", klass="other", model_name=GYRO, data_dir=tmp.name, backend="metal", archs=[]).note, "", "Auto never nags")
+            self.assertEqual(drafting.decide("auto", klass="other", model_name=GYRO, data_dir=tmp.name, backend="sycl", archs=[]).note, "", "Auto never nags")
 
     def test_a_window_or_confidence_the_person_set_by_hand_stays(self):
         tmp = tempfile.TemporaryDirectory()
@@ -65,19 +65,23 @@ class WhereTheEngineCanRunIt(unittest.TestCase):
         base = ["--pack", "/d/packs/g", "--mtp", "/d/mtp/rt", "--spec", "5", "--draft-conf", "0.5"]
         with serving_dflash2():
             c = {"model_name": GYRO, "drafting": "dflash2", "args": list(base), "user_args": ["--spec", "5", "--draft-conf", "0.5"]}
-            drafting.apply(c, klass="blackwell", data_dir=tmp.name)
+            drafting.apply(c, klass="blackwell", data_dir=tmp.name, backend="cuda", archs=["sm_120"])
             self.assertEqual(c["args"][c["args"].index("--spec") + 1], "5")
             self.assertEqual(c["args"][c["args"].index("--draft-conf") + 1], "0.5")
             self.assertEqual((c["args"].count("--spec"), c["args"].count("--draft-conf")), (1, 1))
+            layer = Path(tmp.name) / "mtp" / "rt"                  # the MTP layer is on this computer
+            layer.mkdir(parents=True)
+            (layer / "experts.bin").write_bytes(b"e")
+            base = [*base[:base.index("--mtp") + 1], str(layer), *base[base.index("--mtp") + 2:]]
             c = {"model_name": GYRO, "drafting": "mtp", "args": [*base, "--draft", "dflash2", "--draft-model", "/p"]}
-            drafting.apply(c, klass="blackwell", data_dir=tmp.name)
+            drafting.apply(c, klass="blackwell", data_dir=tmp.name, backend="cuda", archs=["sm_120"])
             self.assertNotIn("--draft-conf", c["args"], "back to MTP: DFlash2's confidence goes with it")
             self.assertEqual(c["args"][c["args"].index("--spec") + 1], "5", "and the MTP window is untouched")
 
     def test_the_plan_reports_whether_this_computer_can_run_it(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        for hardware, serves, level in ((("cuda", ["sm_120"]), True, "tested"), (("metal", []), False, "none"), (("hip", ["gfx1201"]), True, "tested")):
+        for hardware, serves, level in ((("cuda", ["sm_120"]), True, "tested"), (("sycl", []), False, "none"), (("metal", []), True, "untested"), (("hip", ["gfx1201"]), True, "tested")):
             with mock.patch.object(drafting, "detect_hardware", return_value=hardware):
                 code, out, err = run_cli(["drafting", "plan", "--data-dir", tmp.name, "--mode", "auto", "--output", "json"])
             self.assertEqual(code, 0, err)
@@ -124,7 +128,7 @@ class ConfidenceFollowsTheSlots(unittest.TestCase):
 
     def test_the_estimate_matches_the_two_measured_starts(self):
         n = drafting.expected_slots(32768, ["--max-context", "131072", "--kv", "int8"])
-        self.assertAlmostEqual(n, 12570 - 420, delta=0.1 * 12570)        # the R9700 start, less the drafter's 420 slots
+        self.assertAlmostEqual(n, 12570 + 520, delta=0.1 * 12570)        # the R9700 start loaded the MTP layer beside DFlash2: without it about 520 more slots
         self.assertEqual(drafting.expected_slots(4096, []), 0, "a card that cannot hold the rest never goes negative")
 
     def test_the_persons_own_confidence_stays(self):
@@ -204,17 +208,20 @@ class OfflineAndReuse(unittest.TestCase):
 
 
 class OneRequestAtATime(unittest.TestCase):
-    """DFlash2 keeps the MTP when the engine runs request slots (--batch); Strata fills slots in by itself, so choosing DFlash2 means one request."""
+    """DFlash2 cannot run beside request slots (--batch); Strata fills slots in by itself, so a choice that means DFlash2 (named, or Auto) means one request."""
 
-    def test_only_a_named_choice_on_a_computer_that_can_run_it(self):
+    def test_the_choice_that_means_dflash2_on_a_computer_that_can_run_it(self):
         want = drafting.wants_one_request
         with serving_dflash2():
             self.assertTrue(want("dflash2", model_name=GYRO, backend="cuda", archs=["sm_121"]))
-            self.assertTrue(want("DFlash2", family="qwen"))
-            for mode in ("auto", "mtp", "off", None):
+            self.assertTrue(want("DFlash2", family="qwen", backend="hip"))
+            for mode in ("auto", None):
+                self.assertTrue(want(mode, model_name=GYRO, backend="cuda", archs=["sm_121"]), mode)
+            for mode in ("mtp", "off"):
                 self.assertFalse(want(mode, model_name=GYRO, backend="cuda", archs=["sm_121"]), mode)
             self.assertFalse(want("dflash2", model_name="qwen3.8-flash-next-coder-iq1_m", backend="cuda", archs=["sm_121"]))
-            self.assertFalse(want("dflash2", model_name=GYRO, backend="metal", archs=[]))
+            self.assertFalse(want("auto", model_name=GYRO, backend="sycl", archs=[]), "Intel stays on the MTP and its request slots")
+            self.assertTrue(want("auto", model_name=GYRO, backend="metal", archs=[]))
         with mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", False):
             self.assertFalse(want("dflash2", model_name=GYRO, backend="cuda", archs=["sm_121"]), "while the engine does not serve it")
 
@@ -240,7 +247,7 @@ class TheQ4Pack(unittest.TestCase):
         self.assertTrue(drafting.pack_ready(tmp.name))
         with serving_dflash2():
             self.assertFalse(drafting.needs_pack("dflash2", klass="blackwell", model_name=GYRO, data_dir=tmp.name))
-            self.assertEqual(drafting.decide("dflash2", klass="blackwell", model_name=GYRO, data_dir=tmp.name).flags[3], str(old))
+            self.assertEqual(drafting.decide("dflash2", model_name=GYRO, data_dir=tmp.name, backend="cuda").flags[3], str(old))
         with mock.patch.object(drafting_fetch.transfer, "download", side_effect=AssertionError("no download for a pack that is here")):
             self.assertEqual(drafting_fetch.ensure(tmp.name), old)
         self.assertEqual(drafting.target_path(tmp.name), folder / drafting.PACK_NAME, "a new fetch would write the Q4_0 name")
@@ -299,7 +306,7 @@ class TheTerminalStep(unittest.TestCase):
         self.assertIn("drafting", self.flow("gyro", ("hip", ["gfx1151"])))
         for family in ("deepseek41", "swift", "coder", "unsloth", "nvfp4", "qwen36", None):
             self.assertNotIn("drafting", self.flow(family, ("cuda", ["sm_120"])), family)
-        for hardware in (("metal", []), ("sycl", []), (None, [])):
+        for hardware in (("sycl", []), (None, [])):
             self.assertNotIn("drafting", self.flow("qwen", hardware), hardware)
 
     def test_the_choice_is_saved_as_the_flag_would_and_auto_writes_nothing(self):
@@ -315,12 +322,13 @@ class TheTerminalStep(unittest.TestCase):
     def test_the_words_are_the_apps_words(self):
         folder = ROOT / "apps" / "host" / "src" / "locales"
         en = json.loads((folder / "df2-en.json").read_text(encoding="utf-8"))
-        self.assertEqual(en["df01"], drafting.EXPLAIN_NUMBERS)
-        self.assertEqual(en["df02"], drafting.EXPLAIN_LIMITS)
         self.assertEqual((en["df03"], en["df04"], en["df05"]), (drafting.LINE_TESTED, drafting.LINE_SLOWER, drafting.LINE_UNTESTED))
         self.assertEqual(en["df06"], drafting.mtp_line(drafting.NOT_THIS_CARD))
         self.assertEqual(en["df07"], "There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
         self.assertEqual(en["df09"], drafting.ONE_REQUEST_NOTE)
+        self.assertEqual(en["df10"], drafting.line("off", drafting.NONE_HERE))
+        self.assertEqual(en["df11"], drafting.line("dflash2", drafting.NO_MTP))
+        self.assertEqual(en["df12"].replace("{0}", "1.2"), "Choosing DFlash2 downloads its drafter: about 1.2 GB, once.")
 
 
 if __name__ == "__main__":

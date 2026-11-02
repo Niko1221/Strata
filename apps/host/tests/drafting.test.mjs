@@ -16,7 +16,8 @@ test('Drafting is a setting of the model with four choices, saved by the app its
   assert.deepEqual(field.choices, ['auto', 'mtp', 'dflash2', 'off']);
   assert.equal(field.type, 'enum');
   assert.match(field.hint, /Auto \(recommended\)/);
-  assert.match(field.hint, /Qwen3\.8-Flash-Next only/);
+  assert.match(field.hint, /Qwen3\.8-Flash-Next/);
+  assert.match(field.hint, /one at a time/);
   assert.ok(APP_OWNED_FIELDS.includes('drafting'), 'the engine\'s own source never lists it: the app applies it');
   for (const ok of ['auto', 'mtp', 'dflash2', 'off']) assert.deepEqual(validateNativeSettings({ drafting: ok }), { drafting: ok });
   assert.deepEqual(validateNativeSettings({ drafting: null }), { drafting: null }, 'cleared = Auto');
@@ -39,7 +40,9 @@ test('the Models screen offers the choice next to context, DFlash2 only for Qwen
   assert.match(screen, /setDrafting\(installed\.drafting \?\? 'auto'\)/, 'a model shows what it was saved with');
   assert.match(screen, /const downloadValues = \{ \.\.\.values, \.\.\.\(draftingChoices \? \{ drafting \} : \{\}\)/);
   assert.match(screen, /\.\.\.\(draftingChoices \? \{ values: \{ drafting \} \} : \{\}\)/);
-  assert.match(screen, /Choosing DFlash2 also downloads its drafter: about \{0\} GB, once\. If it does not fit in graphics memory, the model uses the MTP instead\./);
+  assert.match(screen, /Choosing MTP downloads its drafter: about \{0\} GB, once\./);
+  assert.match(screen, /Choosing DFlash2 downloads its drafter: about \{0\} GB, once\./);
+  assert.match(screen, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2\)/, 'the fit uses the drafter that is chosen');
   assert.match(screen, /loadedSelected\?\.metrics\?\.engine\?\.drafting_note/, 'what the engine said is shown');
 });
 
@@ -67,13 +70,14 @@ test('a load fetches the drafter first, never stops for it, and says what ran', 
   const source = read('../server/native-control.mjs');
   const prepare = source.slice(source.indexOf('async function prepareDrafter'), source.indexOf('function rememberSetting'));
   assert.match(prepare, /rememberSetting\(configFile,'drafting',asked===null\|\|asked==='auto'\?null:asked\)/, 'the choice is kept for the next load');
-  assert.match(prepare, /cfg\.drafting==='auto'\|\|cfg\.drafting==='mtp'\|\|cfg\.drafting==='off'\)return/, 'Auto, MTP and Off never download');
+  assert.match(prepare, /drafts\?\.needed!==true\)return/, 'only what Control says is needed is downloaded: DFlash2 for Auto and DFlash2, nothing for MTP and Off');
   assert.match(prepare, /control\.draftingFetch\(/);
   assert.match(prepare, /catch\(error\)\{if\(job\.state==='running'\)\{job\.drafterNote=error\.message;/, 'a failed download leaves the MTP and the job says so');
-  assert.match(source, /await prepareDrafter\(job,args,cfg,configFile\)/);
+  assert.match(source, /await prepareDrafter\(job,args,cfg,configFile,drafts\)/);
+  assert.match(source, /drafts\?\.mtp_needed===true&&args\.values\?\.drafting!==undefined\)\{await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load');
   assert.match(source, /async function noteDrafting\(job,instance,key\)/);
   assert.match(source, /instance\.status='ready';instance\.phase='idle';await noteDrafting\(job,instance,key\)/);
-  assert.match(source, /choice!=='auto'&&typeof control\.draftingPlan==='function'/, 'the plan lists the drafter only when it is chosen and Control says it is needed');
+  assert.match(source, /typeof choice==='string'&&typeof control\.draftingPlan==='function'/, 'the plan lists the drafter Control says is needed');
   assert.match(source, /drafting:cfg\.drafting\?\?'auto'/, 'the installed model reports its saved choice');
 });
 
@@ -84,12 +88,12 @@ test('every sentence of the Drafting choice is in the catalog in all nine langua
   const sentences = ['Drafting', 'Auto (recommended)', 'MTP', 'DFlash2',
     "Drafting: MTP (DFlash2 didn't fit)", "Drafting: MTP (DFlash2 isn't available in this mode)", 'Drafting: MTP (DFlash2 is for Qwen3.8-Flash-Next only)',
     "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
-    'Choosing DFlash2 also downloads its drafter: about {0} GB, once. If it does not fit in graphics memory, the model uses the MTP instead.',
+    'Choosing DFlash2 downloads its drafter: about {0} GB, once.', 'Choosing MTP downloads its drafter: about {0} GB, once.', 'Drafting: off (no drafter is downloaded yet)', "Drafting: DFlash2 (the MTP drafter isn't downloaded yet)",
+    'The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…', 'Downloading the MTP drafter…',
     'Downloading the DFlash2 drafter…', 'Packing the DFlash2 drafter for the engine…', 'The DFlash2 drafter is ready.',
     'The DFlash2 drafter could not be downloaded, so the model starts with the MTP. Loading the model…', 'Loading the model…',
     // the DFlash2 option (df2-<lang>.json): the paragraph under the dropdown, the lines about the card, the two new notes
     "Drafting: MTP (DFlash2 isn't available on this graphics card)", "There is no internet connection, so the DFlash2 drafter can't be downloaded now.",
-    'It downloads about 1.2 GB once, works with one graphics card and one request at a time, and uses MTP otherwise.',
     'On graphics cards like yours, DFlash2 was faster than MTP on some kinds of text and slower on others in our tests.',
     'On graphics cards like yours, DFlash2 was slower than MTP in our tests.', 'DFlash2 has not been tested on your graphics card yet.', 'SSD: not needed'];
   const slots = t => (t.match(/\{\d+\}/g) ?? []).sort().join();
@@ -140,7 +144,7 @@ test('Settings > Native engine settings hides the MTP and Drafting rows for Deep
 test('the DFlash2 drafter is fetched only by the Models screen own Load: a restart, a tuning run or any other load never downloads', () => {
   const source = read('../server/native-control.mjs');
   const prepare = source.slice(source.indexOf('async function prepareDrafter'), source.indexOf('function rememberSetting'));
-  assert.match(prepare, /asked===undefined\|\|!cfg\.drafting/, 'no explicit choice in this job: return before any fetch');
+  assert.match(prepare, /asked===undefined\|\|drafts\?\.needed!==true/, 'no explicit choice in this job: return before any fetch');
   const loadScreen = read('../src/components/NativeModels.tsx');
   assert.match(loadScreen, /\.\.\.\(draftingChoices \? \{ values: \{ drafting \} \} : \{\}\)/, 'the screen passes the choice only when it showed the dropdown');
   const tune = source.slice(source.indexOf("const loaded=await loadEngine(job,{model:args.model,multiple:false"), source.indexOf("const loaded=await loadEngine(job,{model:args.model,multiple:false") + 140);
@@ -152,4 +156,35 @@ test('the paragraph under the dropdown is gone (owner, 11-01: people who care kn
   for (const part of ['7.8% faster than MTP on 19 short prompts', '1.1% faster on long thinking', 'faster on 21 of 23 prompts', 'the answers were identical']) assert.ok(!screen.includes(part), part);
   const en = JSON.parse(read('../src/locales/df2-en.json'));
   for (const text of Object.values(en)) for (const word of ['recommend', 'best ', 'better', 'should']) assert.ok(!text.toLowerCase().includes(word), `${word} in "${text.slice(0, 50)}"`);
+});
+
+test('one drafter per run: Auto is DFlash2 where the engine has it, the same word in Python and in the app', async () => {
+  const { transform } = await import('esbuild');
+  const code = (await transform(read('../src/lib/drafting.ts'), { loader: 'ts', format: 'esm' })).code;
+  const ts = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+  const host = await import('../server/native-settings.mjs');
+  for (const [choice, family, served] of [['auto', 'qwen', true], [undefined, 'gyro', true], ['auto', 'qwen', false], ['auto', 'coder', true], ['mtp', 'qwen', true], ['dflash2', 'qwen', true], ['off', 'qwen', true], ['dflash2', 'coder', true]]) {
+    assert.equal(ts.resolveDrafter(choice, family, served), host.resolveDrafter(choice, family, served), `${choice} ${family} ${served}`);
+  }
+  assert.equal(ts.resolveDrafter('auto', 'qwen', true), 'dflash2');
+  assert.equal(ts.resolveDrafter('auto', 'qwen', null), 'mtp', 'Control has not answered: the MTP');
+  assert.equal(host.resolveDrafter('auto', 'Qwen3.8-Flash-Next-iq3_s', true), 'dflash2', 'a run config model name works too');
+});
+
+test('a new install fetches only the drafter it will use; the fit and the slot estimates use the drafter chosen', async () => {
+  const source = read('../server/native-control.mjs');
+  assert.match(source, /'gguf_dir','drafter'\]/);
+  assert.match(source, /resolveDrafter\(args\.drafting,args\.family,dflash2Served\);if\(d==='dflash2'\)args=\{\.\.\.args,drafter:'dflash2'\}/, 'DFlash2: the installer leaves the MTP layer out');
+  const { chooseParallel, MTP_VRAM_GB, DFLASH2_VRAM_GB } = await import('../server/native-parallel.mjs');
+  assert.deepEqual([MTP_VRAM_GB, DFLASH2_VRAM_GB], [1.08, 0.89]);
+  const config = { args: ['--mtp', '/m', '--max-context', '32768'], model_name: 'qwen3.8-flash-next-iq3_s' };
+  const hardware = { gpus: [{ index: 0, vram_gb: 24 }] };
+  const solo = chooseParallel({ config, hardware, drafter: 'dflash2' });
+  assert.equal(solo.slots, 1);
+  assert.match(solo.note, /one request at a time/);
+  assert.notEqual(chooseParallel({ config, hardware, drafter: 'mtp' }).slots, 1, 'the MTP keeps the slots Strata fills in');
+  assert.equal(chooseParallel({ config, hardware, drafter: 'dflash2', values: { parallel: 4 } }).slots, 4, 'a number the person chose stays (the start then loads the MTP and says so)');
+  assert.notEqual(chooseParallel({ config: { ...config, gpu: [0, 1] }, hardware: { gpus: [{ index: 0, vram_gb: 24 }, { index: 1, vram_gb: 24 }] }, drafter: 'dflash2' }).slots, 1, 'a layer split cannot run DFlash2: the slots stay with the MTP');
+  const fit = read('../src/lib/native-fit.ts');
+  assert.match(fit, /DRAFTER_VRAM_GB: Record<string, number> = \{ mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, off: 0 \}/);
 });

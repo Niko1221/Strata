@@ -7,5 +7,11 @@
  "df06": "Predicción: MTP (DFlash2 no está disponible en esta tarjeta gráfica)",
  "df07": "No hay conexión a internet, así que ahora no se puede descargar el borrador de DFlash2.",
  "df08": "SSD: no hace falta",
- "df09": "DFlash2 responde una solicitud a la vez, así que Strata configuró este modelo para una solicitud a la vez."
+ "df09": "DFlash2 responde una solicitud a la vez, así que Strata configuró este modelo para una solicitud a la vez.",
+ "df10": "Predicción: desactivada (aún no hay ningún predictor descargado)",
+ "df11": "Predicción: DFlash2 (el predictor de MTP aún no está descargado)",
+ "df12": "Elegir DFlash2 descarga su predictor: unos {0} GB, una sola vez.",
+ "df13": "Elegir MTP descarga su predictor: unos {0} GB, una sola vez.",
+ "df14": "No se pudo descargar el predictor de DFlash2, así que el modelo arranca sin predictor. Cargando el modelo…",
+ "df15": "Descargando el predictor de MTP…"
 }
