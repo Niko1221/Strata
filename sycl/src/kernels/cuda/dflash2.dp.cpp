@@ -28,10 +28,14 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = kDf2Hd;
+#ifndef DF2_ATTN_CHUNK_AUTO
+#define DF2_ATTN_CHUNK_AUTO 64
+#endif
 #ifndef DF2_ATTN_AUTO
 #define DF2_ATTN_AUTO 1
 #endif
 int g_gemm_variant = 0;   // bench only (df2_gemm_variant)
+int g_attn_chunk = 0;     // bench only (df2_attention_chunk)
 int g_attn_variant = 0;   // 0: STRATA_DF2_ATTN or the default; 1: the CUDA file kernel (128 work-items); 2: 256 work-items, O[2][8]
 
 #define DF2_SG32 [[sycl::reqd_sub_group_size(32)]]
@@ -189,12 +193,15 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
     sycl::queue* qu = strata::q_of(stream);
     static const int env_v = [] { const char* e = std::getenv("STRATA_DF2_ATTN"); return e ? std::atoi(e) : 0; }();
     const int av = g_attn_variant != 0 ? g_attn_variant : env_v != 0 ? env_v : DF2_ATTN_AUTO;
+    static const int env_ck = [] { const char* e = std::getenv("STRATA_DF2_ATTN_CHUNK"); return e ? std::atoi(e) : 0; }();
+    const int CK = g_attn_chunk != 0 ? g_attn_chunk : env_ck == 128 ? 128 : DF2_ATTN_CHUNK_AUTO;   // keys per work-group: 64 (33 chunks) or 128 (17)
+    const int nch = CK == 128 ? kDf2MaxChunks : kDf2PartChunks;
     if (av == 2) {
         qu->submit([&](sycl::handler& h) {
             sycl::local_accessor<sycl::float4, 1> Qs(32 * AS4, h), Ks(32 * AS4, h), Ps(32 * PS4, h);
             sycl::local_accessor<float, 1> Sc(32 * 33, h), m_s(32, h), l_s(32, h), corr_s(32, h);
             sycl::local_accessor<unsigned char, 1> kvalid(32, h);
-            h.parallel_for(sycl::nd_range<2>({(size_t) kDf2MaxChunks, (size_t) kDf2Kv * 256}, {1, 256}), [=](nd_item<2> it) DF2_SG16 {
+            h.parallel_for(sycl::nd_range<2>({(size_t) nch, (size_t) kDf2Kv * 256}, {1, 256}), [=](nd_item<2> it) DF2_SG16 {
                 const sycl::sub_group sg = it.get_sub_group();
                 const int chunk = (int) it.get_group(0), kvh = (int) it.get_group(1), tid = (int) it.get_local_id(1);
                 float* Psf = reinterpret_cast<float*>(&Ps[0]);
@@ -202,7 +209,7 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
                 const int lo = s - (window - 1) > 0 ? s - (window - 1) : 0;
                 const int nctx = s - lo;
                 const int nkeys = nctx + kDf2Rows;
-                const int k_begin = chunk * kDf2Chunk;
+                const int k_begin = chunk * CK;
                 const int64_t ep = tag != nullptr ? ((int64_t) *epoch_ptr << 32) : 0;
                 float* const pbase = part + (((size_t) chunk * kDf2Kv + kvh) * 32) * 130;
                 if (k_begin >= nkeys) {
@@ -226,7 +233,7 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
                     for (int j = 0; j < 8; ++j) O[i][j] = 0.0f;
                 const int qg_pv = tid >> 4, dg_pv = tid & 15;   // PV: queries qg*2, qg*2+1, dims dg*8 .. +7
                 const int qg = tid >> 4, kg = tid & 15;         // S: queries qg*2 .. +1, keys kg*2 .. +1
-                const int k_end = sycl::min(k_begin + kDf2Chunk, nkeys);
+                const int k_end = sycl::min(k_begin + CK, nkeys);
                 auto load_tile = [&](int k0, const float* ring, const float* blk) {
 #pragma unroll
                     for (int u = 0; u < 4; ++u) {
@@ -331,7 +338,7 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
         sycl::local_accessor<sycl::float4, 1> Qs(32 * AS4, h), Ks(32 * AS4, h), Ps(32 * PS4, h);
         sycl::local_accessor<float, 1> Sc(32 * 33, h), m_s(32, h), l_s(32, h), corr_s(32, h);
         sycl::local_accessor<unsigned char, 1> kvalid(32, h);
-        h.parallel_for(sycl::nd_range<2>({(size_t) kDf2MaxChunks, (size_t) kDf2Kv * 128}, {1, 128}), [=](nd_item<2> it) DF2_SG16 {
+        h.parallel_for(sycl::nd_range<2>({(size_t) nch, (size_t) kDf2Kv * 128}, {1, 128}), [=](nd_item<2> it) DF2_SG16 {
             const sycl::sub_group sg = it.get_sub_group();
             const int chunk = (int) it.get_group(0), kvh = (int) it.get_group(1), tid = (int) it.get_local_id(1);
             float* Psf = reinterpret_cast<float*>(&Ps[0]);
@@ -339,7 +346,7 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
             const int lo = s - (window - 1) > 0 ? s - (window - 1) : 0;
             const int nctx = s - lo;
             const int nkeys = nctx + kDf2Rows;
-            const int k_begin = chunk * kDf2Chunk;
+            const int k_begin = chunk * CK;
             const int64_t ep = tag != nullptr ? ((int64_t) *epoch_ptr << 32) : 0;
             float* const pbase = part + (((size_t) chunk * kDf2Kv + kvh) * 32) * 130;
             if (k_begin >= nkeys) {
@@ -360,7 +367,7 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
                 #pragma unroll
                 for (int j = 0; j < 8; ++j) O[i][j] = 0.0f;
             const int qg_pv = tid >> 4, dg_pv = tid & 15;   // PV: queries qg*4 .. +3, dims dg*8 .. +7
-            const int k_end = sycl::min(k_begin + kDf2Chunk, nkeys);
+            const int k_end = sycl::min(k_begin + CK, nkeys);
             // a tile is 32 keys x 128 dims = 1024 float4: eight per work-item
             auto load_tile = [&](int k0, const float* ring, const float* blk) {
                 #pragma unroll
@@ -468,9 +475,9 @@ void df2_attention(const float* q, const float* kring, const float* vring, const
         const int a = (int) it.get_group(0);   // kvh * 32 + qi
         const int kvh = a >> 5, qi = a & 31, d = (int) it.get_local_id(0);
         float M = -INFINITY;
-        for (int c = 0; c < kDf2MaxChunks; ++c) M = sycl::fmax(M, part[(((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130]);
+        for (int c = 0; c < nch; ++c) M = sycl::fmax(M, part[(((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130]);
         float L = 0.0f, o = 0.0f;
-        for (int c = 0; c < kDf2MaxChunks; ++c) {
+        for (int c = 0; c < nch; ++c) {
             const float* p = part + (((size_t) c * kDf2Kv + kvh) * 32 + qi) * 130;
             const float mc = p[0];
             const float w = (mc == -INFINITY) ? 0.0f : sycl::exp(mc - M);
@@ -580,6 +587,103 @@ void gemm4_nc(sycl::queue* q, const Df2Segs& segs, const int8_t* xq, const float
     }
 }
 
+
+// The same GEMM on sub-groups of 16 (SIMD16: a variable takes 2 GRFs, not 4, so R rows a lane fit without spilling): the 32 lanes of the CUDA warp are two
+// sub-groups, `half` 0 for lanes 0-15 and `half` 1 for lanes 16-31 of the same row group, each lane doing the work of its virtual lane l = half * 16 + l16 exactly
+// (same steps, same fma order).  The xor-16 stage of the shuffle tree is acc[l] + acc[l + 16], an add that commutes, so half 1 hands its sums over through local
+// memory and half 0 finishes the tree (8, 4, 2, 1): bitwise the result of gemm4_launch.
+template <int R, int NC, int PAIRS, int UNR>
+void gemm4p_launch(sycl::queue* q, const Df2Segs& segs, const int8_t* xq, const float* xd, int n_in, int rows) {
+    constexpr int SUBS = 8 / R;
+    const size_t pairs = (size_t) (rows / 8) * SUBS;
+    q->submit([&](sycl::handler& hd) {
+        sycl::local_accessor<float, 1> slm((size_t) PAIRS * R * NC * 16, hd);
+        hd.parallel_for(sycl::nd_range<1>((pairs / PAIRS) * PAIRS * 32, PAIRS * 32), [=](nd_item<1> it) DF2_SG16 {
+            const sycl::sub_group sg = it.get_sub_group();
+            const int l16 = (int) sg.get_local_linear_id();
+            const int sgi = (int) (it.get_local_id(0) >> 4);
+            const int pair = sgi >> 1, half = sgi & 1;
+            const int lane = half * 16 + l16;
+            const size_t gp = it.get_group(0) * PAIRS + pair;
+            const int row_g = (int) (gp / SUBS) * 8, sub = (int) (gp % SUBS);
+            const Df2Seg sgm = df2_pick(segs, row_g);
+            const int row0 = row_g - sgm.row0;
+            const int nb = n_in / 32, steps = nb / 16;
+            const sycl::uint2* wq = reinterpret_cast<const sycl::uint2*>(sgm.q + (size_t) row0 * (n_in / 2)) + lane + sub * R * 32;
+            const sycl::half* wd = sgm.d + (size_t) row0 * nb + (lane >> 1) + sub * R * 16;
+            const sycl::int4* xv = reinterpret_cast<const sycl::int4*>(xq) + lane;
+            float acc[R][NC];
+#pragma unroll
+            for (int r = 0; r < R; ++r)
+#pragma unroll
+                for (int c = 0; c < NC; ++c) acc[r][c] = 0.0f;
+#pragma unroll UNR
+            for (int st = 0; st < steps; ++st) {
+                int w[R][4];
+                float dw[R];
+#pragma unroll
+                for (int r = 0; r < R; ++r) {
+                    const sycl::uint2 raw = wq[(size_t) st * 256 + r * 32];
+                    w[r][0] = (int) ((((raw.x() & 0x0F0F0F0Fu) | 0x80808080u) - 0x08080808u) ^ 0x80808080u);
+                    w[r][1] = (int) (((((raw.x() >> 4) & 0x0F0F0F0Fu) | 0x80808080u) - 0x08080808u) ^ 0x80808080u);
+                    w[r][2] = (int) ((((raw.y() & 0x0F0F0F0Fu) | 0x80808080u) - 0x08080808u) ^ 0x80808080u);
+                    w[r][3] = (int) (((((raw.y() >> 4) & 0x0F0F0F0Fu) | 0x80808080u) - 0x08080808u) ^ 0x80808080u);
+                    dw[r] = (float) wd[(size_t) st * 128 + r * 16];
+                }
+                float xs[NC];
+#pragma unroll
+                for (int c = 0; c < NC; ++c) xs[c] = xd[(size_t) c * nb + st * 16 + (lane >> 1)];
+#pragma unroll
+                for (int c = 0; c < NC; ++c) {
+                    const sycl::int4 x = xv[(size_t) c * (n_in / 16) + st * 32];
+#pragma unroll
+                    for (int r = 0; r < R; ++r) {
+                        int isum = STRATA_DP4A(w[r][0], x.x(), 0);
+                        isum = STRATA_DP4A(w[r][1], x.y(), isum);
+                        isum = STRATA_DP4A(w[r][2], x.z(), isum);
+                        isum = STRATA_DP4A(w[r][3], x.w(), isum);
+                        acc[r][c] = sycl::fma(dw[r] * xs[c], (float) isum, acc[r][c]);
+                    }
+                }
+            }
+            if (half == 1) {
+#pragma unroll
+                for (int r = 0; r < R; ++r)
+#pragma unroll
+                    for (int c = 0; c < NC; ++c) slm[((pair * R + r) * NC + c) * 16 + l16] = acc[r][c];
+            }
+            sycl::group_barrier(it.get_group());
+            if (half == 0) {
+#pragma unroll
+                for (int r = 0; r < R; ++r)
+#pragma unroll
+                    for (int c = 0; c < NC; ++c) {
+                        float v = acc[r][c] + slm[((pair * R + r) * NC + c) * 16 + l16];   // the xor-16 stage
+                        v += xorf(sg, v, 8);
+                        v += xorf(sg, v, 4);
+                        v += xorf(sg, v, 2);
+                        v += xorf(sg, v, 1);
+                        if (l16 == 0) sgm.y[(size_t) c * sgm.n_out + row0 + sub * R + r] = v;
+                    }
+            }
+        });
+    });
+}
+
+template <int R, int PAIRS, int UNR>
+void gemm4p_nc(sycl::queue* q, const Df2Segs& segs, const int8_t* xq, const float* xd, int n_in, int rows, int ncols) {
+    switch (ncols) {
+        case 1: gemm4p_launch<R, 1, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+        case 2: gemm4p_launch<R, 2, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+        case 3: gemm4p_launch<R, 3, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+        case 4: gemm4p_launch<R, 4, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+        case 5: gemm4p_launch<R, 5, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+        case 6: gemm4p_launch<R, 6, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+        case 7: gemm4p_launch<R, 7, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+        default: gemm4p_launch<R, 8, PAIRS, UNR>(q, segs, xq, xd, n_in, rows); break;
+    }
+}
+
 // ---- planar quantization / norm kernels
 void quant_rows_launch(sycl::queue* q, const float* x, int K, int ncols, int8_t* xq, float* xd) {
     q->parallel_for(sycl::nd_range<2>({(size_t) ncols, (size_t) ((K / 32 + 7) / 8) * 256}, {1, 256}), [=](nd_item<2> it) DF2_SG32 {
@@ -620,12 +724,17 @@ void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_
         case 28: gemm4_nc<1, 1, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;
         case 34: gemm4_nc<2, 1, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;
         case 17: gemm4_nc<2, 2, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;
+        case 40: gemm4p_nc<1, 2, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;   // sub-groups of 16, two per row group (R rows a lane, PAIRS pairs a work-group)
+        case 41: gemm4p_nc<2, 2, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;
+        case 42: gemm4p_nc<4, 2, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;
+        case 43: gemm4p_nc<8, 2, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;
         default: gemm4_nc<1, 1, 2>(q, segs, xqp, xd, n_in, rows, ncols); break;   // 28
     }
 }
 
 void df2_gemm_variant(int v) { g_gemm_variant = v; }
 void df2_attention_variant(int v) { g_attn_variant = v; }
+void df2_attention_chunk(int ck) { g_attn_chunk = ck; }
 
 void df2_quant_rows(const float* x, int K, int ncols, void* xq, float* xd, void* stream) {
     quant_rows_launch(strata::q_of(stream), x, K, ncols, static_cast<int8_t*>(xq), xd);

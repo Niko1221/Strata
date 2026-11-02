@@ -17,6 +17,7 @@ constexpr int kDf2Gqa = 4;             ///< query heads per K/V head
 constexpr int kDf2Hd = 128;            ///< head dim
 constexpr int kDf2Chunk = 128;         ///< keys per attention block
 constexpr int kDf2MaxChunks = 17;      ///< ceil((2047 context keys + 8 block keys) / kDf2Chunk)
+constexpr int kDf2PartChunks = 33;     ///< SYCL: the attention partials hold up to 33 chunks of 64 keys (part: kDf2PartChunks x 8 x 32 x 130 floats)
 constexpr int kDf2TopK = 16;
 constexpr int kDf2TopBlocks = 64;      ///< partial top-k blocks per row (a block holds at most 4096 logits)
 
@@ -58,6 +59,8 @@ void df2_rope_table_cpu(const int32_t* pos, int rows, float theta, float* table)
 void df2_gemm_variant(int v);
 /// Bench only: attention variants (bit 0 skips Q K^T, bit 1 skips P V).
 void df2_attention_variant(int v);
+/// Bench only (SYCL): keys per attention work-group, 64 or 128 (0 = the default).
+void df2_attention_chunk(int ck);
 /// q4: the weights are the Q4_0 nibble plane (n_out * n_in / 2 bytes, see gemm4_kernel in dflash2.cu) then the fp16 scale plane (df2_q4_tile); all matrices of a launch share the format.
 struct Df2Mat { const void* w; float* y; int n_out; bool q4 = false; };
 void df2_gemm(const Df2Mat* mats, int n, const void* xq, const float* xd, int n_in, int ncols, void* stream);

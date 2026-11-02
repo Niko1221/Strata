@@ -164,7 +164,7 @@ void build(Drafter& D) {
     D.qv = dev<float>((size_t) B * NH * HD); D.qn = dev<float>((size_t) B * NH * HD); D.kv = dev<float>((size_t) B * NKV * HD); D.vv = dev<float>((size_t) B * NKV * HD);
     D.kblk = dev<float>((size_t) B * NKV * HD); D.ao = dev<float>((size_t) B * NH * HD); D.o = dev<float>((size_t) B * N);
     D.gate = dev<float>((size_t) B * I); D.up = dev<float>((size_t) B * I); D.mlp = dev<float>((size_t) B * N);
-    D.part = dev<float>((size_t) kDf2MaxChunks * 8 * 32 * 130); D.fn = dev<float>((size_t) B * N);
+    D.part = dev<float>((size_t) kDf2PartChunks * 8 * 32 * 130); D.fn = dev<float>((size_t) B * N);
     D.logits = dev<float>((size_t) 7 * NDV); D.topval = dev<float>(7 * 16); D.toptok = dev<int32_t>(7 * 16); D.hsel_out = dev<float>(7 * RANK);
     D.topscratch = dev<uint32_t>((size_t) 7 * kDf2TopBlocks * kDf2TopK * 2);
     Q->memset(D.tag, 0xff, RING * 8).wait();
@@ -360,7 +360,7 @@ int run_tests() {
     std::printf("device: %s\n", Q->get_device().get_info<sycl::info::device::name>().c_str());
     struct Shape { const char* name; int n_out, n_in, nmat; };
     const Shape shapes[] = {{"fc", N, 5 * N, 1}, {"qkv(3 matrices)", NH * HD, N, 3}, {"o", N, NH * HD, 1}, {"gate+up(2)", I, N, 2}, {"down", N, I, 1}, {"akp", 640, N, 1}, {"hsel", RANK, N, 1}};
-    const int variants[] = {17, 28, 12, 11, 10, 24, 25, 34};
+    const int variants[] = {17, 28, 12, 11, 10, 24, 25, 34, 40, 41, 42, 43};
     std::printf("Q4_0 GEMM against the CPU reference (bitwise), every variant, columns 1..8; and the first n columns of the 8-column launch against the n-column launch (DF-03)\n");
     for (const Shape& s : shapes) {
         const int n_in = s.n_in;
@@ -438,15 +438,16 @@ int run_tests() {
         Drafter* Dp = new Drafter(); Drafter& D = *Dp;
         const int POS = 700, n_new = 3;
         D.kring[0] = make_f32((size_t) RING * NKV * HD, 2.f); D.vring[0] = make_f32((size_t) RING * NKV * HD, 2.f);
-        D.tag = dev<int64_t>(RING); D.part = dev<float>((size_t) kDf2MaxChunks * 8 * 32 * 130);
+        D.tag = dev<int64_t>(RING); D.part = dev<float>((size_t) kDf2PartChunks * 8 * 32 * 130);
         std::vector<int64_t> t(RING, -1); for (int p = 0; p < POS + n_new; ++p) t[p % RING] = ((int64_t) 1 << 32) | p; up(D.tag, t);
         std::vector<float> q((size_t) 8 * 32 * HD), kb((size_t) 8 * NKV * HD), vb(kb.size());
         for (auto& v : q) v = frand() * 2; for (auto& v : kb) v = frand() * 2; for (auto& v : vb) v = frand() * 2;
         float *dq = dev<float>(q.size()), *dk = dev<float>(kb.size()), *dv = dev<float>(vb.size()); up(dq, q); up(dk, kb); up(dv, vb);
         int32_t* ap = dev<int32_t>(1); int32_t sv = POS + n_new; Q->memcpy(ap, &sv, 4).wait(); int32_t* ep = dev<int32_t>(1); int32_t e1 = 1; Q->memcpy(ep, &e1, 4).wait();
         int8_t* xq = dev<int8_t>(8 * 32 * HD); float* xd = dev<float>(8 * 32 * HD / 32);
-      for (int av : {1, 2}) {
-        df2_attention_variant(av);
+      for (int avk : {1064, 2064, 1128, 2128}) {
+        const int av = avk / 1000, ck = avk % 1000;
+        df2_attention_variant(av); df2_attention_chunk(ck);
         df2_attention(dq, D.kring[0], D.vring[0], dk, dv, ap, RING, WINDOW, D.part, xq, xd, Q, D.tag, ep); Q->wait();
         auto kr = down(D.kring[0], (size_t) RING * NKV * HD); auto vr = down(D.vring[0], (size_t) RING * NKV * HD);
         auto hq = down(xq, (size_t) 8 * 32 * HD); auto hd = down(xd, (size_t) 8 * 32 * HD / 32);
@@ -469,9 +470,9 @@ int run_tests() {
                 }
             }
         std::printf("  attention: max |got - ref| = %.3e (max |ref| = %.3e; int8 quantization step ~ %.1e)\n", maxerr, maxref, maxref / 127.0);
-        { char b2[96]; std::snprintf(b2, sizeof b2, "df2_attention v%d (ring 700 + 3, tags, window) == CPU double within the int8 step", av); check(maxerr < 2.0 * maxref / 127.0, b2); }
+        { char b2[96]; std::snprintf(b2, sizeof b2, "df2_attention v%d chunk %d (ring 700 + 3, tags, window) == CPU double within the int8 step", av, ck); check(maxerr < 2.0 * maxref / 127.0, b2); }
       }
-      df2_attention_variant(0);
+      df2_attention_variant(0); df2_attention_chunk(0);
     }
     prefix_test();
     std::printf("%s\n", g_fail ? "SOME TESTS FAILED" : "ALL TESTS PASSED");
@@ -632,7 +633,7 @@ int run_gemm_bench() {
     const Shape shapes[] = {{"fc", N, 5 * N, 1}, {"qkv(3)", NH * HD, N, 3}, {"o", N, NH * HD, 1}, {"gate+up(2)", I, N, 2}, {"down", N, I, 1}, {"akp/mkp", 640, N, 1}, {"hsel", RANK, N, 1}};
     int vs[16], nv = 0;
     if (const char* e = std::getenv("DF2B_VARIANTS")) { for (const char* c = e; *c;) { vs[nv++] = std::atoi(c); while (*c && *c != ',') ++c; if (*c == ',') ++c; } }
-    else { const int d[] = {17, 28, 12, 11, 10, 24, 25, 34}; for (int v : d) vs[nv++] = v; }
+    else { const int d[] = {28, 12, 40, 41, 42, 43}; for (int v : d) vs[nv++] = v; }
     const int ncs[] = {8, 4, 1};
     std::printf("us per launch (200 back-to-back), GB/s of weights+scales; columns 8 / 4 / 1\n%-12s %8s", "shape", "MB");
     for (int i = 0; i < nv; ++i) std::printf(" | v%-2d 8col  4col  1col", vs[i]);
@@ -673,17 +674,18 @@ int run_gemm_bench() {
 int run_attn_bench() {
     std::printf("device: %s\n", Q->get_device().get_info<sycl::info::device::name>().c_str());
     float* kr = make_f32((size_t) RING * NKV * HD, 2.f); float* vr = make_f32((size_t) RING * NKV * HD, 2.f);
-    int64_t* tag = dev<int64_t>(RING); float* part = dev<float>((size_t) kDf2MaxChunks * 8 * 32 * 130);
+    int64_t* tag = dev<int64_t>(RING); float* part = dev<float>((size_t) kDf2PartChunks * 8 * 32 * 130);
     float* q = make_f32((size_t) 8 * 32 * HD, 2.f); float* kb = make_f32((size_t) 8 * NKV * HD, 2.f); float* vb = make_f32((size_t) 8 * NKV * HD, 2.f);
     int32_t* ap = dev<int32_t>(1); int32_t* ep = dev<int32_t>(1); int32_t e1 = 1; Q->memcpy(ep, &e1, 4).wait();
     int8_t* xq = dev<int8_t>(8 * 32 * HD); float* xd = dev<float>(8 * 32 * HD / 32);
-    for (int av : {1, 2}) for (int pos : {100, 600, 1200, 2100}) {
-        df2_attention_variant(av);
+    for (int avk : {1064, 2064, 1128, 2128}) for (int pos : {100, 600, 1200, 2100}) {
+        const int av = avk / 1000, ck = avk % 1000;
+        df2_attention_variant(av); df2_attention_chunk(ck);
         std::vector<int64_t> t(RING, -1); for (int p = std::max(0, pos - 2047); p < pos; ++p) t[p % RING] = ((int64_t) 1 << 32) | p;
         Q->memcpy(tag, t.data(), RING * 8).wait();
         int32_t sv = pos; Q->memcpy(ap, &sv, 4).wait();
         const double us = time_us([&] { df2_attention(q, kr, vr, kb, vb, ap, RING, WINDOW, part, xq, xd, Q, tag, ep); }, 100);
-        std::printf("attention v%d, s = %d: %.0f us per layer\n", av, pos, us);
+        std::printf("attention v%d chunk %d, s = %d: %.0f us per layer\n", av, ck, pos, us);
     }
     return 0;
 }
