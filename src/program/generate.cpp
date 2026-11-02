@@ -7082,6 +7082,7 @@ int main(int argc, char** argv) {
         strata::core::pin_reserve_take();
         arena_src.fall_back_when_ram_short = ram_fallback_ok && !ram_fallback_failed;
         arena_src.ram_keep_bytes = o.ram_keep;
+        arena_src.hard_limit_headroom_bytes = ram_fallback_headroom;
         if (o.ram_keep > 0)
             std::fprintf(stderr, "strata generate: --ram-keep-gib %.2f: the expert arena is used only if %.2f GiB of RAM stay available after it; "
                                  "otherwise the RAM copy of the hottest experts leaves %.2f GiB free (the larger of that and the %.0f GiB safety headroom, "

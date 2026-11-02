@@ -128,6 +128,30 @@ int main() {
         check(!ram_keep_plan(need, f446, 0, std::nullopt, win).arena && ram_keep_plan(need, f446, 0, std::nullopt, win).budget > 36 * GiB,
               "44.6 GiB free, W=0: the fallback with a 36.6 GiB copy");
     }
+    // A HARD memory limit just above the arena (R5070, found on l620: a 49 GiB cgroup limit, the 46.84 GiB arena chosen, the engine killed by the
+    // cgroup OOM killer at the start).  With the fallback allowed the arena needs its headroom under the limit too.
+    {
+        const uint64_t need = 46ull * GiB + 860ull * (1ull << 20) + 2660000ull;   // IQ3_S: 46.84 GiB of experts and the spare blob
+        const uint64_t head4 = 4 * GiB, head8 = 8 * GiB;
+        auto verdict = [&](uint64_t limit, uint64_t keep, uint64_t headroom, bool fallback) {
+            return arena_ram_verdict(arena_hard_limit_need(need, keep, headroom, fallback), ~uint64_t{0}, limit, fallback);
+        };
+        check(arena_hard_limit_need(need, 0, head4, true) == need + head4, "fallback allowed: the arena needs its headroom under the limit");
+        check(arena_hard_limit_need(need, 8 * GiB, head4, true) == need + 8 * GiB, "the RAM to keep counts when it is larger than the headroom");
+        check(arena_hard_limit_need(need, 0, head4, false) == need, "fallback not allowed: the comparison stays as it was");
+        check(arena_hard_limit_need(need, 8 * GiB, head4, false) == need + 8 * GiB, "fallback not allowed: the RAM to keep is still asked");
+        check(verdict(49ull * GiB, 0, head4, true) == ArenaRamVerdict::FallBack, "49 GiB limit, 4 GiB headroom: the copy, not an arena that the OOM killer ends");
+        check(verdict(49ull * GiB, 0, head8, true) == ArenaRamVerdict::FallBack, "49 GiB limit, 8 GiB headroom (Windows): the copy");
+        check(verdict(51ull * GiB, 0, head4, true) == ArenaRamVerdict::Load, "51 GiB limit, 4 GiB headroom: the arena");
+        check(verdict(need + head4, 0, head4, true) == ArenaRamVerdict::Load, "a limit of exactly arena + headroom: the arena");
+        check(verdict(need + head4 - 1, 0, head4, true) == ArenaRamVerdict::FallBack, "one byte under: the copy");
+        check(verdict(need - 1, 0, head4, true) == ArenaRamVerdict::FallBack, "a limit under the arena: the copy, as before");
+        check(verdict(49ull * GiB, 0, head4, false) == ArenaRamVerdict::Load, "fallback not allowed, 49 GiB limit: as before (no new refusal)");
+        check(verdict(45ull * GiB, 0, head4, false) == ArenaRamVerdict::Refuse, "fallback not allowed, limit under the arena: refused as before");
+        check(verdict(60ull * GiB, 8 * GiB, head4, true) == ArenaRamVerdict::Load, "60 GiB limit, 8 GiB to keep: the arena");
+        check(verdict(54ull * GiB, 8 * GiB, head4, true) == ArenaRamVerdict::FallBack, "54 GiB limit, 8 GiB to keep: the copy");
+        check(verdict(std::numeric_limits<uint64_t>::max(), 0, head4, true) == ArenaRamVerdict::Load, "no limit: the arena");
+    }
     std::printf("ple_residency_test: %d checks passed\n", checks);
     return 0;
 }

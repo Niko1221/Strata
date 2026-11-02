@@ -95,6 +95,16 @@ inline uint64_t arena_need_with_keep(uint64_t need, uint64_t keep) {
     return keep > UINT64_MAX - need ? UINT64_MAX : need + keep;
 }
 
+/// What the arena needs under a HARD memory limit (a cgroup, a container, a job object, --memory-limit-mib).  The arena is pinned: it is
+/// never given back to make room, and the engine's own memory (about 3 GiB: buffers, the draft head, the PLE and PLE row cache, the CUDA
+/// context) comes on top, so a limit just above the arena kills the engine at the start (cgroup OOM, found on l620: a 49 GiB limit and a
+/// 46.84 GiB arena).  When the fallback is allowed the arena needs its headroom under the limit as well, max(keep, the fallback headroom);
+/// when it is not allowed (a hand-set --ple-io ram, a shared arena file, STRATA_ARENA_RAM_FALLBACK=0) there is nothing to fall back to, so
+/// the comparison stays as it was (the arena and the RAM to keep).
+inline uint64_t arena_hard_limit_need(uint64_t base_need, uint64_t keep, uint64_t headroom, bool fallback_allowed) {
+    return arena_need_with_keep(base_need, fallback_allowed ? (keep > headroom ? keep : headroom) : keep);
+}
+
 /// The headroom the RAM-copy fallback leaves free.  `env_headroom`: STRATA_RESIDENT_HEADROOM_GIB when it is set (wins, even below the safety headroom).
 inline uint64_t fallback_headroom(std::optional<uint64_t> env_headroom, uint64_t keep, uint64_t safety) {
     if (env_headroom) return *env_headroom;

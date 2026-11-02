@@ -5874,15 +5874,17 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     if (detail::HostMemory hm; shared_arena_file.empty() && detail::host_available_memory(hm)) {
         // --ram-keep-gib W: the arena is chosen only if W GiB stay free after it, so its need here is the arena plus W
         const uint64_t need = arena_need_with_keep(want + (uint64_t) blob, ram_keep_bytes);
+        // under a hard limit the arena also needs the headroom (the engine's own memory comes on top of it, and the arena is never given back)
+        const uint64_t limit_need = arena_hard_limit_need(want + (uint64_t) blob, ram_keep_bytes, hard_limit_headroom_bytes, fall_back_when_ram_short);
         const double gib = 1073741824.0;
         char buf[512];
         char keep_note[96] = "";
         if (ram_keep_bytes > 0)
             std::snprintf(keep_note, sizeof keep_note, ", with the %.2f GiB --ram-keep-gib asks to leave free", (double) ram_keep_bytes / gib);
-        if (arena_ram_verdict(need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
+        if (arena_ram_verdict(limit_need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
             if (fall_back_when_ram_short) {   // #4846: the caller reads the experts from the file instead of refusing
-                std::snprintf(buf, sizeof buf, "it needs %.2f GiB%s and this process's memory limit is %.2f GiB",
-                              (double) need / gib, keep_note, (double) hm.cgroup_limit / gib);
+                std::snprintf(buf, sizeof buf, "it needs %.2f GiB (with the %.2f GiB the engine's own memory and the RAM to keep take on top of it) and this process's memory limit is %.2f GiB",
+                              (double) limit_need / gib, (double) (limit_need - (want + (uint64_t) blob)) / gib, (double) hm.cgroup_limit / gib);
                 err = buf;
                 ram_short_ = true;
                 return false;
