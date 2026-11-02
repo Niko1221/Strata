@@ -39,39 +39,39 @@ class Measured(unittest.TestCase):
 
 
 class Plan(unittest.TestCase):
-    def test_gyro_m_on_8gb_is_lowered_until_it_fits_and_says_so(self):
+    """The rule (owner, 2026-11-02): a fit never changes the context or the number of requests; it moves work off the GPU, and says so."""
+
+    def test_gyro_m_on_8gb_reads_prompts_in_smaller_chunks_and_keeps_its_context(self):
         f = V.plan("Gyro-M", 8.0, 32768, "int8", 300, "auto", "intel", title="Gyro-M")
         self.assertTrue(f.changed and f.fits)
-        self.assertEqual((f.ctx, f.reserve_mib, f.prefill), (16384, 100, "1024"))
-        self.assertTrue(f.line.startswith("Gyro-M on this 8 GB card: context set to 16K"), f.line)
-        self.assertTrue(f.line.endswith("so it fits"))
+        self.assertEqual((f.ctx, f.reserve_mib, f.prefill), (32768, 300, "512"))      # 32K stays; the chunk is the cheap knob, the reserve is not touched
+        self.assertTrue(f.line.startswith("Gyro-M on this 8 GB card: " + V.NOTE_SLOW), f.line)
         self.assertGreaterEqual(f.slack_mib, V.needed_mib())
 
-    def test_a_chosen_context_is_kept_and_the_rest_is_lowered(self):
-        f = V.plan("Gyro-M", 8.0, 32768, "int8", 300, "auto", "intel", ctx_fixed=True)
-        self.assertEqual(f.ctx, 32768)
-        self.assertFalse(f.fits)                           # 32K cannot fit even with 100 / 512: said, not refused
-        self.assertIn("still tight", f.line)
+    def test_the_context_is_never_changed_for_any_card(self):
+        for model in ("Gyro-M", "Gyro-S", "Qwen3.8-Flash-Next-IQ3_S"):
+            for vendor in ("intel", "cuda", "other"):
+                for gb in (5.0, 6.0, 8.0, 9.0, 10.0, 12.0, 16.0, 24.0, 48.0):
+                    for ctx in (8192, 32768, 131072, 262144):
+                        for slots in (0, 2, 4):
+                            f = V.plan(model, gb, ctx, "int8", 700, "auto", vendor, slots=slots, kv_resident=32768 if ctx >= 65536 else 0)
+                            self.assertEqual(f.ctx, ctx, (model, vendor, gb, ctx, slots))
+                            self.assertEqual(f.slots, slots, (model, vendor, gb, ctx, slots))
 
     def test_a_chosen_reserve_is_kept(self):
         f = V.plan("Gyro-M", 8.0, 32768, "int8", 500, "auto", "intel", reserve_fixed=True)
         self.assertEqual(f.reserve_mib, 500)
-        self.assertLess(f.ctx, 32768)
 
     def test_a_chosen_chunk_is_kept(self):
         f = V.plan("Gyro-M", 8.0, 32768, "int8", 300, "2048", "intel", prefill_fixed=True)
         self.assertIsNone(f.prefill)
 
-    def test_the_smallest_start_is_returned_when_nothing_fits_never_a_refusal(self):
+    def test_when_nothing_more_can_move_the_start_goes_as_far_as_it_can_and_says_so(self):
         f = V.plan("Gyro-M", 6.0, 32768, "int8", 300, "auto", "intel")
-        self.assertEqual(f.ctx, 8192)
+        self.assertEqual(f.ctx, 32768)
+        self.assertEqual((f.prefill, f.reserve_mib), ("256", 100))        # every knob to its end
         self.assertFalse(f.fits)
-        self.assertTrue(f.line)
-
-    def test_only_the_ladder_is_used(self):
-        for gb in (7.0, 7.5, 8.0, 8.5, 9.0, 10.0):
-            f = V.plan("Gyro-M", gb, 32768, "int8", 300, "auto", "intel")
-            self.assertIn(f.ctx, (32768, 16384, 8192))
+        self.assertIn(V.NOTE_SLOW, f.line)
 
     def test_a_config_that_fits_comes_back_unchanged(self):
         for model, gb, ctx in (("Gyro-M", 12.0, 32768), ("Gyro-M", 16.0, 65536), ("Gyro-S", 8.0, 32768), ("Gyro-S", 12.0, 131072),
@@ -85,10 +85,9 @@ class Plan(unittest.TestCase):
             f = V.plan("Gyro-M", gb, 32768, "int8", 300, "auto", "intel")
             self.assertFalse(f.changed)
 
-    def test_fit_context_is_the_ladder_step(self):
-        self.assertEqual(V.fit_context("Gyro-M", 8.0, 32768), 16384)
-        self.assertEqual(V.fit_context("Gyro-M", 12.0, 32768), 32768)
-        self.assertEqual(V.fit_context("Gyro-M", 8.0, 8192), 8192)
+    def test_fit_context_is_the_context_asked_for(self):
+        for ctx in (8192, 32768, 131072):
+            self.assertEqual(V.fit_context("Gyro-M", 8.0, ctx), ctx)
 
     def test_generic_model_is_found_short_only_when_far_short(self):
         self.assertFalse(V.plan("Qwen3.8-Flash-Next-IQ3_XXS", 8.0, 32768, "int8", 300, "auto", "intel").changed)
@@ -120,18 +119,18 @@ class SetupIntel(unittest.TestCase):
     def test_gyro_m_on_the_a750_gets_a_config_that_starts_and_one_line(self):
         m = self.mod()
         c, notes = self.run_it(m, self.cfg(m), 8.0, auto_reserve=True)
-        self.assertEqual(self.val(c, "--max-context"), "16384")
-        self.assertEqual(self.val(c, "--vram-reserve-mib"), "100")
-        self.assertEqual(self.val(c, "--prefill"), "1024")
+        self.assertEqual(self.val(c, "--max-context"), "32768")           # the context is the person's: it stays
+        self.assertEqual(self.val(c, "--vram-reserve-mib"), "300")
+        self.assertEqual(self.val(c, "--prefill"), "512")
         self.assertEqual(c["args"].count("--vram-reserve-mib"), 1)
         self.assertEqual(len(notes), 1)
-        self.assertIn("Gyro-M on this 8 GB card: context set to 16K", notes[0])
+        self.assertIn("Gyro-M on this 8 GB card: short of GPU memory", notes[0])
 
     def test_a_reserve_the_user_asked_for_is_kept(self):
         m = self.mod()
         c, notes = self.run_it(m, self.cfg(m), 8.0, auto_reserve=False)
         self.assertEqual(self.val(c, "--vram-reserve-mib"), "300")
-        self.assertIn(self.val(c, "--max-context"), ("16384", "8192"))
+        self.assertEqual(self.val(c, "--max-context"), "32768")
 
     def test_a_context_the_user_asked_for_is_kept(self):
         m = self.mod()
@@ -165,7 +164,7 @@ class SlotSessions(unittest.TestCase):
         self.assertAlmostEqual(full, 1929, delta=15)
         self.assertAlmostEqual(streamed, 748, delta=15)                  # measured 0.73 GiB on the CUDA engine (DF2-MEM): the 32K pool (573 MiB with its fixed part) plus what scales with the whole context
         self.assertEqual(V.session_mib(8192, "int8", 32768), V.session_mib(8192))     # a resident window larger than the context changes nothing
-        self.assertAlmostEqual(V.session_mib(131072, "int8", 4096), V.session_mib(131072, "int8", V.KV_RESIDENT_MIN), delta=0.01)   # the engine raises a small window to 20480
+        self.assertAlmostEqual(V.session_mib(131072, "int8", 4096), V.session_mib(131072, "int8", V.KV_RESIDENT_MIN), delta=0.01)   # the engine raises a smaller window to its minimum (4096)
 
     def test_without_slots_nothing_changes(self):
         a = V.slack_mib(FN, 8.0, 8192, "int8", 700, "auto", "intel")
@@ -177,31 +176,30 @@ class SlotSessions(unittest.TestCase):
         self.assertAlmostEqual(V.needed_mib(FN, 2, "intel"), V.SLOT_RUN_MIN * V.SLOT_SLOTTED_MIB + V.MARGIN_MIB, delta=0.01)    # one slot and the margin, not 128 slots
         self.assertGreater(V.needed_mib(FN, 0), 128 * 1.2)                                                                          # a single request keeps its old rule
 
-    def test_an_8gb_arc_with_two_requests_and_the_refused_reserve_gets_a_context_that_fits(self):
+    def test_an_8gb_arc_with_two_requests_and_the_refused_reserve_reads_prompts_in_smaller_chunks(self):
         # 8192 with a 1024 MiB reserve is the start the engine refused (the estimate says 137 MiB short; the engine 99)
         self.assertLess(V.slack_mib(FN, 8.0, 8192, "int8", 1024, "auto", "intel", 2), 0)
-        f = V.plan(FN, 8.0, 8192, "int8", 1024, "auto", "intel", title=FN, reserve_fixed=True, prefill_fixed=True, slots=2)
+        f = V.plan(FN, 8.0, 8192, "int8", 1024, "auto", "intel", title=FN, reserve_fixed=True, slots=2)
         self.assertTrue(f.changed and f.fits)
-        self.assertEqual((f.ctx, f.slots, f.reserve_mib), (2048, 2, 1024))
+        self.assertEqual((f.ctx, f.slots, f.reserve_mib, f.prefill), (8192, 2, 1024, "1024"))      # the context and the 2 requests stay
         self.assertGreaterEqual(f.slack_mib, V.needed_mib(FN, 2, "intel"))
-        self.assertIn("context set to 2K", f.line)
-        self.assertTrue(f.line.endswith("so 2 requests at once fit"), f.line)
+        self.assertIn(V.NOTE_SLOW, f.line)
 
-    def test_an_8gb_arc_whose_start_the_engine_runs_keeps_its_context(self):
-        # a 700 MiB reserve at 8192 leaves the cache about 84 slots: the engine runs it, so it is not lowered
+    def test_an_8gb_arc_whose_start_the_engine_runs_is_not_touched(self):
+        # a 700 MiB reserve at 8192 leaves the cache about 84 slots: the engine runs it
         f = V.plan(FN, 8.0, 8192, "int8", 700, "auto", "intel", title=FN, reserve_fixed=True, prefill_fixed=True, slots=2)
         self.assertFalse(f.changed)
         self.assertEqual((f.ctx, f.slots), (8192, 2))
 
-    def test_not_even_the_smallest_context_fits_then_one_request_at_a_time(self):
-        f = V.plan(FN, 8.0, 8192, "int8", 1500, "auto", "intel", title=FN, reserve_fixed=True, prefill_fixed=True, slots=2)
-        self.assertEqual(f.slots, 1)
-        self.assertTrue(f.changed)
-        self.assertIn("one request at a time", f.line)
+    def test_not_even_every_knob_fits_then_the_start_goes_as_far_as_it_can_with_the_same_requests(self):
+        f = V.plan(FN, 6.0, 8192, "int8", 1500, "auto", "intel", title=FN, reserve_fixed=True, slots=2)
+        self.assertEqual((f.ctx, f.slots), (8192, 2))
+        self.assertEqual(f.prefill, "256")
+        self.assertFalse(f.fits)
 
     def test_a_12gb_card_keeps_128k_with_streamed_kv(self):
         # setup writes --kv-resident 32768 at 128K: each of the 3 sessions keeps about 750 MiB (measured), not 1.9 GB
-        for vendor in ("intel", "other"):
+        for vendor in ("intel", "cuda"):
             f = V.plan(FN, 12.0, 131072, "int8", 700, "auto", vendor, title=FN, reserve_fixed=True, prefill_fixed=True, slots=2, kv_resident=32768)
             self.assertFalse(f.changed, vendor)
             self.assertEqual((f.ctx, f.slots), (131072, 2))
@@ -211,41 +209,39 @@ class SlotSessions(unittest.TestCase):
 
     def test_a_card_with_no_measured_figure_is_left_to_the_engine(self):
         f = V.plan(FN, 8.0, 8192, "int8", 1024, "auto", "other", title=FN, reserve_fixed=True, prefill_fixed=True, slots=2)
-        self.assertFalse(f.changed)                # CUDA / HIP: no measured base yet, so no claim; the engine sizes its cache and says what is short
+        self.assertFalse(f.changed)                # HIP: no measured base yet, so no claim; the engine sizes its cache and says what is short
         self.assertEqual(f.ctx, 8192)
 
     def test_a_24gb_cuda_card_is_unchanged(self):
-        f = V.plan(FN, 24.0, 131072, "int8", 700, "auto", "other", title=FN, reserve_fixed=True, prefill_fixed=True, slots=4, kv_resident=32768)
+        f = V.plan(FN, 24.0, 131072, "int8", 700, "auto", "cuda", title=FN, reserve_fixed=True, prefill_fixed=True, slots=4, kv_resident=32768)
         self.assertFalse(f.changed)
         self.assertEqual((f.ctx, f.slots, f.line), (131072, 4, ""))
 
-    def test_a_chosen_context_is_kept(self):
-        f = V.plan(FN, 8.0, 8192, "int8", 1024, "auto", "intel", ctx_fixed=True, reserve_fixed=True, prefill_fixed=True, slots=2)
-        self.assertEqual(f.ctx, 8192)
-        self.assertFalse(f.changed)            # the engine's plain refusal answers it
-
 
 class FitStart(unittest.TestCase):
-    """fit_start: the config's "parallel" and the engine arguments of one start (serve/server.py engine_args calls it)."""
+    """fit_start: the engine arguments of one start (serve/server.py engine_args calls it).  It never changes --max-context and never the requests at once."""
 
     ARGS = ["--native", "/m/Qwen3.8-Flash-Next-IQ3_XXS-00001-of-00002.gguf", "--expert-cache", "auto", "--prefill", "auto", "--max-context", "8192",
-            "--kv", "int8", "--vram-reserve-mib", "1024"]
+            "--kv", "int8", "--vram-reserve-mib", "1024", "--mtp", "/m/rt", "--spec", "4"]
 
     def cfg(self, **kw):
         c = {"model_name": FN, "parallel": 2}
         c.update(kw)
         return c
 
-    def test_an_8gb_arc_gets_a_smaller_context_for_this_start(self):
+    def test_an_8gb_arc_reads_prompts_in_smaller_chunks_and_keeps_context_and_requests(self):
         args, par, note = V.fit_start(self.cfg(), list(self.ARGS), 8192, "sycl")
-        self.assertEqual(args[args.index("--max-context") + 1], "2048")
+        self.assertEqual(args[args.index("--max-context") + 1], "8192")
+        self.assertEqual(args[args.index("--prefill") + 1], "1024")
         self.assertIsNone(par)                                 # still 2 requests at once
-        self.assertIn("2 requests at once fit", note)
-        self.assertEqual(self.ARGS[self.ARGS.index("--max-context") + 1], "8192")     # the input is not touched
+        self.assertIn(V.NOTE_SLOW, note)
+        self.assertEqual(self.ARGS[self.ARGS.index("--prefill") + 1], "auto")           # the input is not touched
 
-    def test_the_persons_own_context_wins(self):
-        args, par, note = V.fit_start(self.cfg(user_args=["--max-context", "8192"]), list(self.ARGS), 8192, "sycl")
-        self.assertEqual((args, par, note), (self.ARGS, None, ""))
+    def test_the_persons_own_reserve_and_chunk_are_kept(self):
+        args, par, note = V.fit_start(self.cfg(user_args=["--vram-reserve-mib", "1024"]), list(self.ARGS), 8192, "sycl")
+        self.assertEqual(args[args.index("--vram-reserve-mib") + 1], "1024")
+        args2 = [("2048" if a == "auto" else a) for a in self.ARGS]
+        self.assertEqual(V.fit_start(self.cfg(), list(args2), 8192, "sycl")[0][args2.index("--prefill") + 1], "2048")
 
     def test_a_12gb_card_at_128k_with_streamed_kv_is_unchanged(self):
         a = ["--native", "/m/Qwen3.8-Flash-Next-IQ3_S-00001-of-00002.gguf", "--max-context", "131072", "--kv", "int8", "--kv-resident", "32768",
@@ -265,76 +261,113 @@ class FitStart(unittest.TestCase):
         self.assertEqual(V.fit_start(self.cfg(layer_split="auto"), list(self.ARGS), 8192, "sycl"), (self.ARGS, None, ""))
         self.assertEqual(V.fit_start(self.cfg(arch="deepseek41"), list(self.ARGS), 8192, "sycl"), (self.ARGS, None, ""))
 
-    def test_a_start_that_cannot_fit_runs_one_at_a_time(self):
+    def test_a_start_that_cannot_fit_keeps_its_requests_and_its_context(self):
         tight = [a if a != "1024" else "1500" for a in self.ARGS]
         args, par, note = V.fit_start(self.cfg(), tight, 8192, "sycl")
-        self.assertEqual(par, 1)
-        self.assertIn("one request at a time", note)
+        self.assertIsNone(par)
+        self.assertEqual(args[args.index("--max-context") + 1], "8192")
+        self.assertIn(V.NOTE_SLOW, note)
 
-    def test_the_context_is_added_when_the_args_name_none(self):
+    def test_no_context_in_the_args_is_never_added(self):
         no_ctx = list(self.ARGS)
         i = no_ctx.index("--max-context")
         del no_ctx[i:i + 2]
-        args, par, note = V.fit_start(self.cfg(), no_ctx, 8192, "sycl")        # 131072 by default: lowered to what fits
-        self.assertNotEqual(note, "")
-        self.assertIn("--max-context", args)
+        args, par, note = V.fit_start(self.cfg(), no_ctx, 8192, "sycl")
+        self.assertNotIn("--max-context", args)
 
 
-class CudaSlotted(unittest.TestCase):
-    """The CUDA engine's measured base (DF2-MEM, RESULTS-DF2MEM.md sections 17 and 18): an 8 GB NVIDIA card with 2 or 4 requests died with "native head upload: out of
-    memory" at 128K; 12 GB and up start.  The figures are the engine's own auto sizing of the cache on the RTX PRO 5000 held to 12000 / 7800 MiB."""
+class CudaSpill(unittest.TestCase):
+    """The CUDA engine, measured on the RTX PRO 5000 held to 7942 / 8966 / 9990 / 12000 MiB by a memory hog (DF2-MEM, RESULTS-DF2MEM.md): an 8 GB NVIDIA card does not start
+    the default 128K with the KV window setup writes (32768), and starts with the engine's minimum window (20480).  The knob is the window; the context and the requests stay."""
 
     M = "qwen3.8-flash-next-iq3_s"
     A = ["--native", "/m/Qwen3.8-Flash-Next-IQ3_S-00001-of-00002.gguf", "--max-context", "131072", "--kv", "int8", "--kv-resident", "32768",
-         "--vram-reserve-mib", "700"]
+         "--vram-reserve-mib", "700", "--prefill", "auto"]
+    DF2 = ["--draft", "dflash2", "--draft-model", "/p/q4_0.pack", "--draft-fallback", "none", "--spec", "6", "--draft-conf", "0.8"]
+    MTP = ["--mtp", "/m/rt", "--spec", "4", "--spec-min-p", "0.5"]
 
-    def slack(self, free_mib, slots):
-        return V.slack_mib(self.M, (free_mib + V.GAP_OTHER_MIB) / 1024.0, 131072, "int8", 700, "auto", "cuda", slots, 32768)
+    def start(self, vram_mib, n=None, drafter=None, user=None, backend="cuda"):
+        cfg = {"model_name": self.M}
+        if n:
+            cfg["parallel"] = n
+        if user:
+            cfg["user_args"] = user
+        return V.fit_start(cfg, self.A + (drafter if drafter is not None else self.DF2), vram_mib, backend)
 
-    def start(self, vram_mib, n, backend="cuda"):
-        return V.fit_start({"model_name": self.M, "parallel": n}, list(self.A), vram_mib, backend)
+    @staticmethod
+    def flag(args, name):
+        return args[args.index(name) + 1] if name in args else None
 
     def test_the_base_reproduces_the_engines_cache_room(self):
-        self.assertAlmostEqual(self.slack(12000, 2), 3615 - 700 - 218 - 256, delta=60)     # "expert cache auto: 3.53 GiB free ... -> 961 slots"
-        self.assertAlmostEqual(self.slack(12000, 4), 2120 - 700 - 218 - 256, delta=60)     # "2.07 GiB free ... -> 371 slots"
-        self.assertAlmostEqual(self.slack(7800, 2), 850 - 835 - 598 - 700 - 218 - 256, delta=60)     # 0.83 GiB after the sessions, then the MTP layer and the head: the OOM
+        g = lambda free: (free + V.GAP_OTHER_MIB) / 1024.0
+        sl = lambda free, n: V.slack_mib(self.M, g(free), 131072, "int8", 700, "auto", "cuda", n, 32768)
+        self.assertAlmostEqual(sl(12000, 2), 3615 - 700 - 218 - 256, delta=60)     # "expert cache auto: 3.53 GiB free ... -> 961 slots"
+        self.assertAlmostEqual(sl(12000, 4), 2120 - 700 - 218 - 256, delta=60)     # "2.07 GiB free ... -> 371 slots"
+        self.assertAlmostEqual(sl(7800, 2), 850 - 835 - 598 - 700 - 218 - 256, delta=60)     # 0.83 GiB after the sessions, then the MTP layer and the head: the OOM
 
-    def test_an_8gb_card_with_2_or_4_requests_runs_one_at_a_time_at_the_context_one_request_runs(self):
+    def test_an_8gb_card_with_dflash2_alone_gets_the_small_kv_window_and_keeps_128k(self):
+        for mib, window in ((8192, "20480"), (8050, None)):
+            args, par, note = self.start(mib)
+            self.assertEqual(self.flag(args, "--max-context"), "131072", mib)
+            if window:
+                self.assertEqual(self.flag(args, "--kv-resident"), window, mib)         # measured: starts and decodes at 69-73 tok/s; 32768 does not start
+            else:
+                self.assertIn(self.flag(args, "--kv-resident"), ("20480", "8192", "4096"), mib)   # a card a little smaller walks further down
+            self.assertEqual(self.flag(args, "--prefill"), "auto")                       # the engine steps its own chunk down
+            self.assertEqual(self.flag(args, "--vram-reserve-mib"), "700")               # a lower reserve starves the DFlash2 prompt staging (measured)
+            self.assertIsNone(par)
+            self.assertIn(V.NOTE_SLOW, note)
+
+    def test_an_8gb_card_with_requests_at_once_keeps_the_requests_and_the_context(self):
         for n in (2, 4):
-            args, par, note = self.start(8192, n)
-            self.assertEqual(par, 1, n)
-            self.assertEqual(args[args.index("--max-context") + 1], "16384", n)       # measured: 16K starts and decodes on the 8 GB mimic, 32K and 128K do not
-            self.assertIn("one request at a time with the context at 16K", note)
+            args, par, note = self.start(8192, n, self.MTP)
+            self.assertEqual(self.flag(args, "--max-context"), "131072", n)
+            self.assertIsNone(par, n)                                                     # the number of requests is the person's
+            self.assertEqual(self.flag(args, "--kv-resident"), "4096", n)               # measured: 2 requests start at 4096 (277 MiB free, 46 tok/s per user) and 8192; 32768 and 20480 do not
+            self.assertIn(V.NOTE_SLOW, note)
 
-    def test_the_8gb_mimic_figures_behind_it(self):
+    def test_the_window_is_walked_down_only_as_far_as_the_card_needs(self):
+        win = lambda mib, n, drafter: self.flag(self.start(mib, n, drafter)[0], "--kv-resident")
+        self.assertEqual(win(8192, None, self.DF2), "20480")       # DFlash2 alone fits at 20480
+        self.assertEqual(win(8192, None, self.MTP), "8192")        # the MTP layer needs a smaller one
+        self.assertEqual(win(10240, 2, self.MTP), "20480")
+        self.assertEqual(win(10240, 4, self.MTP), "4096")
+        self.assertEqual(win(12288, 8, self.MTP), "8192")
+        self.assertEqual(win(12288, 4, self.MTP), "32768")         # nothing moves where it fits
+
+    def test_the_window_floor_and_steps_match_the_engine(self):
+        self.assertEqual(V.KV_RESIDENT_MIN, 4096)                  # qsa_kv_resident_min()
+        self.assertEqual(V.KV_RESIDENT_STEPS, (20480, 8192, 4096))
+        self.assertTrue(all(w >= V.KV_RESIDENT_MIN for w in V.KV_RESIDENT_STEPS))
+
+    def test_12_16_and_24gb_keep_everything_for_1_2_and_4_requests(self):
+        for mib in (12288, 12282, 16384, 24576):
+            for n, drafter in ((None, self.DF2), (None, self.MTP), (2, self.MTP), (4, self.MTP)):
+                a = self.A + drafter
+                self.assertEqual(V.fit_start({"model_name": self.M, **({"parallel": n} if n else {})}, list(a), mib, "cuda"), (a, None, ""), (mib, n))
+
+    def test_the_8gb_figures_behind_it(self):
         gb = (7942 + V.GAP_OTHER_MIB) / 1024.0
         one = V.SLOT_RUN_MIN * V.SLOT_SLOTTED_MIB + V.MARGIN_MIB
-        for c in (2048, 4096, 8192, 16384):
-            self.assertGreaterEqual(V.single_slack_mib(self.M, gb, c, "int8", 700, "auto", "cuda", 32768), one, c)     # started and decoded
-        for c in (32768, 131072):
-            self.assertLess(V.single_slack_mib(self.M, gb, c, "int8", 700, "auto", "cuda", 32768), one, c)             # did not start
-        two_at_4k = V.slack_mib(self.M, gb, 4096, "int8", 700, "auto", "cuda", 2, 32768)
-        self.assertLess(two_at_4k, V.needed_mib(self.M, 2, "cuda"))                                                     # 59 MiB free, aborted at its first request
+        sl = lambda kvr, drafter: V.slack_mib(self.M, gb, 131072, "int8", 700, "auto", "cuda", 0, kvr, drafter)
+        self.assertLess(sl(32768, "dflash2"), one)             # did not start: "the device arena (75 MiB) does not fit"
+        self.assertGreaterEqual(sl(20480, "dflash2"), one)     # started
+        self.assertLess(sl(32768, "mtp"), one)
 
-    def test_a_card_in_between_loses_requests_before_it_loses_all_of_them(self):
-        args, par, note = self.start(9216, 8)
-        self.assertEqual(par, 5)
-        self.assertIn("answers 5 at once", note)
+    def test_a_window_the_person_set_is_kept(self):
+        args, par, note = self.start(8192, user=["--kv-resident", "32768"])
+        self.assertEqual(self.flag(args, "--kv-resident"), "32768")
 
-    def test_12_16_and_24gb_keep_128k_with_2_and_4_requests(self):
-        for mib in (12288, 12282, 16384, 24576):
-            for n in (2, 3, 4):
-                self.assertEqual(self.start(mib, n), (self.A, None, ""), (mib, n))
+    def test_only_cuda_is_claimed_for_a_single_request(self):
+        for backend in ("hip", "metal"):
+            a = self.A + self.DF2
+            self.assertEqual(V.fit_start({"model_name": self.M}, list(a), 8192, backend), (a, None, ""), backend)
 
-    def test_only_the_cuda_engine_is_claimed(self):
-        self.assertEqual(self.start(8192, 2, "hip"), (self.A, None, ""))          # no measured HIP figure: the engine decides
-        self.assertEqual(self.start(8192, 2, "metal"), (self.A, None, ""))
-
-    def test_the_persons_own_context_is_never_lowered_for_requests(self):
-        f = V.plan(self.M, 8.0, 131072, "int8", 700, "auto", "cuda", slots=8, ctx_fixed=True, reserve_fixed=True, prefill_fixed=True, kv_resident=32768)
-        self.assertEqual(f.ctx, 131072)
-        self.assertEqual(f.slots, 8)                                              # the person's own context is kept and nothing is lowered under it: the engine's refusal answers
-        self.assertFalse(f.changed)
+    def test_the_drafter_is_read_from_the_arguments(self):
+        self.assertEqual(V.drafter_of(self.A + self.DF2), "dflash2")
+        self.assertEqual(V.drafter_of(self.A + ["--mtp", "/m", "--draft", "dflash2", "--draft-model", "/p"]), "dflash2+mtp")
+        self.assertEqual(V.drafter_of(self.A + self.MTP), "mtp")
+        self.assertEqual(V.drafter_of(self.A), "none")
 
 
 if __name__ == "__main__":

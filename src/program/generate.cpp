@@ -74,6 +74,7 @@
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
+#include "strata/core/spill_gate.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/gated_proposal.hpp"
@@ -264,6 +265,24 @@ bool under_wddm() {
 }
 
 // #620 #486: " (N MiB of M MiB VRAM free on this GPU)" for an allocation's failure message (clears the error first)
+// How many cache slots a prompt-path loan leaves behind (128 on a card with room; a card too short for that lends against 16, see the cache sizing).
+static int64_t g_lend_keep = 128;
+
+// May a start short of VRAM be moved off the GPU (strata/core/spill_gate.hpp)?  A discrete card only: not Metal, not an integrated GPU (Strix Halo and the other APUs share the host's RAM).
+static bool spill_discrete_gpu() {
+#if defined(STRATA_GPU_METAL)
+    return strata::spill_allowed(true, false);
+#else
+    static const bool ok = [] {
+        int d = 0;
+        cudaDeviceProp pr{};
+        if (cudaGetDevice(&d) != cudaSuccess || cudaGetDeviceProperties(&pr, d) != cudaSuccess) { (void) cudaGetLastError(); return false; }
+        return strata::spill_allowed(false, pr.integrated != 0);
+    }();
+    return ok;
+#endif
+}
+
 std::string vram_free_note() {
     (void) cudaGetLastError();
     size_t free_b = 0, total_b = 0;
@@ -5816,6 +5835,7 @@ int main(int argc, char** argv) {
         const int64_t kAutoLendPct = [] {
             const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
             return v ? (int64_t) std::atoi(v)
+                     : g_lend_keep != 128 ? (int64_t) 100   // a card too short for the usual loan (see the cache sizing) lends what it must: the cap is for cards with room
                      : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
         }();
         auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
@@ -5933,7 +5953,7 @@ int main(int argc, char** argv) {
             };
             auto fit_one = [&](int i, int64_t c, bool cap) -> bool {   // mirrors fits_one (5820-5824)
                 const int64_t k = slots_est_of(i, chunk_bytes(parts[i].lb, c));
-                if (k <= 0 || k + 128 > parts[i].cnt) return false;
+                if (k <= 0 || k + g_lend_keep > parts[i].cnt) return false;
                 return !(cap && k * 100 > kAutoLendPct * parts[i].cnt);
             };
             auto all_fit = [&](int64_t c, bool cap) -> bool {
@@ -5976,7 +5996,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < ns; ++i) {
                 const uint64_t cn = chunk_bytes(parts[i].lb, chunk);
                 const int64_t k = slots_est_of(i, cn);
-                const bool lends = k > 0 && k + 128 <= parts[i].cnt && k * 100 <= kAutoLendPct * parts[i].cnt;
+                const bool lends = k > 0 && k + g_lend_keep <= parts[i].cnt && k * 100 <= kAutoLendPct * parts[i].cnt;
                 if (lends) continue;
                 if (room_mib(i) >= (int64_t) (cn >> 20) + 1536) continue;   // affords its own buffers
                 return false;
@@ -6696,6 +6716,27 @@ int main(int argc, char** argv) {
                                  ke.blocked.c_str());
             }
             mtp.enable_cell_floor(kc.wants_cell_floor(ke, !o.mtp.empty() && o.spec >= 2));
+        }
+    }
+    // SHORT OF VRAM: THE DRAFT LAYER IS THE LAST THING TO GO.  The layer (about 0.9 GiB), the native head, the draft head and a working cache beside the
+    // prompt path's buffers must all fit after the slot sessions; on a card that cannot hold them (8 GB NVIDIA, 128K, 2 requests: 1.4 GiB free after
+    // the sessions) the start used to stop at "no VRAM is left for the expert cache" or run out of memory in the head upload.  Without the layer
+    // the model still answers (the verify window drafts from the prompt alone): slower decode, a start that works.  Not with DFlash2 (its own
+    // block decides), a split, or STRATA_MTP_KEEP=1.
+    if (!o.mtp.empty() && !use_df2 && !multi_gpu && stages.empty() && std::getenv("STRATA_MTP_KEEP") == nullptr && spill_discrete_gpu()) {
+        std::error_code fec1, fec2;
+        const uint64_t layer_b = (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "dense.bin", fec1) +
+                                 (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "experts.bin", fec2);
+        const strata::core::WeightRef* wo_mtp = wt.find("output.weight");
+        const uint64_t head_b = (!o.native_head_gguf.empty() && wo_mtp != nullptr)
+                                    ? (uint64_t) wo_mtp->ne1 * (uint64_t) (g.n_embd / 256) * 176ull : 0;   // Q5_K: 176 bytes per 256 values
+        const uint64_t free_now = (uint64_t) strata::core::device_free_bytes();
+        const uint64_t need = layer_b + head_b + (220ull << 20) + (1550ull << 20);   // + the cache the loan needs (214 slots, 543 MiB) + what is allocated after it and the drafter beyond DFlash2 (measured: DFlash2 alone ends 391 MiB free, MTP 41 at the same cache)
+        if (!fec1 && !fec2 && free_now > 0 && free_now < need) {
+            std::fprintf(stderr, "strata generate: short of GPU memory: %.2f GiB is free, and the draft layer (%.2f GiB), the head (%.2f GiB) and a working cache "
+                                 "need about %.2f GiB: this start runs without the draft layer (decode is slower; STRATA_MTP_KEEP=1 keeps it)\n",
+                         (double) free_now / 1073741824.0, (double) layer_b / 1073741824.0, (double) head_b / 1073741824.0, (double) need / 1073741824.0);
+            o.mtp.clear();
         }
     }
     if (!o.mtp.empty() || df2_solo) {   // (df2_solo: o.mtp is empty and no MTP layer is loaded; only the DFlash2 block below runs)
@@ -7508,13 +7549,13 @@ int main(int argc, char** argv) {
         const int64_t blob = (int64_t) nibble_max_slot_bytes();   // max_blob (STRATA_EXPERT_NIBBLE: or a larger 4-bit slot)
         // #496: the least a working cache needs (the verify window cannot start without one, #174): a cache too small to lend the prompt path a
         // 256-token chunk's buffers (plus the 128 slots a loan leaves; one slot without --prefill) makes it allocate its own on top
-        const int64_t min_slots = (o.prefill_chunk > 0 && pf_borrow)
-            ? ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + 128 : 1;
+        int64_t min_slots = (o.prefill_chunk > 0 && pf_borrow)
+            ? ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + g_lend_keep : 1;
         // #4474: what the load allocates after the cache that no setting prices (cuBLAS and the lazily loaded modules the prompt path and the
         // verifier warm up, ~245 MiB on every card measured) came out of the reserve, so a card ended 240 MiB under the reserve it was asked to
         // keep (459 MiB free at --vram-reserve-mib 700: under the 512 MiB line the serve check warns about, #2065).  The cache now leaves it too.
         // Not on a card that could not keep min_slots after it, and not under STRATA_DEFAULTS=026 (the v0.2.6 sizing).
-        const strata::core::AutoCacheSlots auto_slots = strata::core::auto_cache_slots(
+        strata::core::AutoCacheSlots auto_slots = strata::core::auto_cache_slots(
             (int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
         int64_t slots = auto_slots.slots;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
@@ -7556,6 +7597,26 @@ int main(int argc, char** argv) {
             }
         }
 #endif
+        // SHORT OF VRAM: A LOAN THAT LEAVES LESS.  The prompt path borrows cache slots for its buffers and the cache keeps 128 behind; a card whose cache stays smaller
+        // than that (8 GB NVIDIA, 128K: 112-212 slots) used to be squeezed by lowering the reserve to give the cache its 326 working slots, which left 100 MiB
+        // free and stopped the first long prompt ("mmq: out of memory"), or gave the prompt path its own 600 MiB of buffers on top and stopped with "do not
+        // fit".  The loan may leave 16 slots instead: the cache is smaller, prompts are read in smaller chunks and slower, the reserve stays, and the start works.
+        if (o.prefill_chunk > 0 && pf_borrow && o.prefill_auto && o.expert_cache < min_slots && !o.vram_reserve_given && !multi_gpu && stages.empty() &&
+            std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
+            constexpr int64_t kTightKeep = 16;
+            const int64_t tight_min = ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + kTightKeep;
+            if (tight_min < min_slots) {
+                std::fprintf(stderr, "strata generate: short of GPU memory: the cache (%d slots) is too small to lend the prompt path 256-token buffers and keep %lld more: "
+                                     "the loan keeps %lld, prompts are read in smaller chunks, expect them to be slower\n",
+                             o.expert_cache, (long long) min_slots, (long long) kTightKeep);
+                min_slots = tight_min;
+                g_lend_keep = kTightKeep;
+                auto_slots = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
+                int64_t s3 = auto_slots.slots;
+                if (!profile.empty()) s3 = std::min<int64_t>(s3, (int64_t) profile.size());
+                o.expert_cache = (int) std::max<int64_t>(s3, 0);
+            }
+        }
         // #496: the verify window cannot start without a cache (#174), and a cache too small to lend the prompt path
         // a 256-token chunk's buffers (plus the 128 slots a loan leaves; one slot without --prefill) makes it
         // allocate its own on top - more than the reserve.  When the default reserve leaves less than that (a 6 GB
@@ -7580,6 +7641,65 @@ int main(int argc, char** argv) {
                 o.vram_reserve_mib = r;
                 o.expert_cache = (int) s2;
                 reserve_adapted = true;
+            }
+        }
+        // SHORT OF VRAM: THE PROMPT PATH GETS ITS OWN SMALL BUFFERS, NOT A LOAN.  A cache below min_slots cannot lend the prompt path its chunk, so the
+        // path allocates its own buffers after the cache, and nothing above priced them: the cache took what was left, and the first prompt (or the
+        // verify arena, or DFlash2's staging) stopped with "do not fit" (8 GB NVIDIA, 128K, 2 requests: a 74-slot cache and 35 MiB left).  Price them
+        // here instead, at the largest chunk that still leaves a cache (1024, 512, 256 tokens), and give the cache the rest: slower (a smaller
+        // cache, smaller prompt chunks), never a refused start.  Not with a split, a cache or chunk given on the command line, or STRATA_SPILL_OFF=1.
+        if (auto_cache && pf_borrow && o.prefill_auto && !o.vram_reserve_given && o.expert_cache < min_slots && !multi_gpu && stages.empty() && !profile.empty() &&
+            std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
+            constexpr int64_t kSpillFloorMib = 100;   // the verify arena, the head check and the cuBLAS workspace beside the late allocations
+            int64_t pick_chunk = 0, pick_slots = 0, pick_own = 0, pick_late = 0;
+            for (const int64_t c : {(int64_t) 1024, (int64_t) 512, (int64_t) 256}) {
+                const int64_t own = ((int64_t) strata::prefill::Prefill::bytes_needed_owned(g, ss, c, srcp != nullptr) >> 20) + 64;
+                const int64_t late = strata::qwen_defaults_026() ? 0 : (int64_t) strata::core::kLateAllocMib;
+                const int64_t room = (int64_t) free_b - mtp_bind - pipe_first - ((own + late + kSpillFloorMib) << 20);
+                const int64_t s = room > 0 ? std::min<int64_t>(room / blob, (int64_t) profile.size()) : 0;
+                if (s >= 64 || (s >= 1 && pick_slots < 64)) { pick_chunk = c; pick_slots = s; pick_own = own; pick_late = late; }
+                if (s >= 64) break;
+            }
+            if (pick_slots >= 1) {
+                std::fprintf(stderr, "strata generate: short of GPU memory: the cache cannot lend the prompt path its buffers, so the prompt path keeps its own "
+                                     "(%lld MiB for %lld-token chunks) and the cache is %lld slots (%lld MiB): more is read from RAM and the SSD, expect it to be slower\n",
+                             (long long) pick_own, (long long) pick_chunk, (long long) pick_slots, (long long) ((pick_slots * blob) >> 20));
+                o.expert_cache = (int) pick_slots;
+                o.vram_reserve_mib = (int) (pick_own + pick_late + kSpillFloorMib);
+                o.no_prefill_borrow = true;
+                pf_borrow = false;
+                o.prefill_auto = false;
+                o.prefill_chunk = pick_chunk;
+                reserve_adapted = true;
+            }
+        }
+        // SHORT OF VRAM: THE OUTPUT HEAD ON THE HOST, LAST.  When every step above left the cache no slot (4 requests at 128K on an 8 GB card: the sessions and the weights
+        // leave 0.63 GiB after the head, and the cache needs 543 MiB beside a reserve), the head (0.41 GiB) moves to mapped pinned host memory and every logits row reads it
+        // over PCIe: decode is about 3x slower (12.7 against 36.1 tok/s per user, 2 requests on a 12 GB mimic), but the start works.  Only a card that would otherwise
+        // refuse; STRATA_HEAD_HOST_OFF=1 keeps the refusal.
+        if (o.expert_cache == 0 && native_head.loaded() && !native_head.on_host() && !o.vram_reserve_given && !multi_gpu && stages.empty() &&
+            std::getenv("STRATA_HEAD_HOST_OFF") == nullptr && std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
+            std::string herr;
+            if (native_head.to_host(herr)) {
+                free_b = strata::core::device_free_bytes();
+                strata::core::AutoCacheSlots a2 = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
+                int64_t s4 = a2.slots;
+                if (!profile.empty()) s4 = std::min<int64_t>(s4, (int64_t) profile.size());
+                if (s4 < min_slots && o.vram_reserve_mib > kSmallReserveMib) {   // the reserve lowered for the smaller cache, as above
+                    const int64_t fit_mib = ((int64_t) free_b - mtp_bind - pipe_first - min_slots * blob) / (1 << 20) - prefill_mib;
+                    if (fit_mib >= kSmallReserveMib) {
+                        const int r = (int) std::min<int64_t>(fit_mib, o.vram_reserve_mib);
+                        s4 = ((int64_t) free_b - ((((int64_t) r + prefill_mib) << 20) + mtp_bind + pipe_first)) / blob;
+                        if (!profile.empty()) s4 = std::min<int64_t>(s4, (int64_t) profile.size());
+                        o.vram_reserve_mib = r;
+                        reserve_adapted = true;
+                    }
+                }
+                o.expert_cache = (int) std::max<int64_t>(s4, 0);
+                std::fprintf(stderr, "strata generate: short of GPU memory: the cache had no room, so the output head (%llu MiB) moves to pinned host memory and is read over PCIe for "
+                                     "every logits row: decode is slower; the cache is now %d slots\n", (unsigned long long) (native_head.weight_bytes() >> 20), o.expert_cache);
+            } else {
+                std::fprintf(stderr, "strata generate: short of GPU memory: the output head stays in VRAM (%s)\n", herr.empty() ? "type or build not movable" : herr.c_str());
             }
         }
         if (o.expert_cache == 0) {
@@ -8161,6 +8281,7 @@ int main(int argc, char** argv) {
         const int64_t kPct = [] {
             const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
             return v ? (int64_t) std::atoi(v)
+                     : g_lend_keep != 128 ? (int64_t) 100   // a card too short for the usual loan (see the cache sizing) lends what it must: the cap is for cards with room
                      : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
         }();
         const int64_t c = 512;
@@ -8178,7 +8299,7 @@ int main(int argc, char** argv) {
             const uint64_t avg = slots > 0 ? xc.bytes() / (uint64_t) slots
                                            : (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
             const int64_t slots_est = (int64_t) (((cn + 255) / 256 * 256 + avg - 1) / avg);
-            const bool lends = slots > 0 && slots_est > 0 && slots_est + 128 <= slots && slots_est * 100 <= kPct * slots;
+            const bool lends = slots > 0 && slots_est > 0 && slots_est + g_lend_keep <= slots && slots_est * 100 <= kPct * slots;
             if (lends) continue;
             if ((int64_t) cn + (512ll << 20) > (int64_t) fb) {
                 probe_ok = false; probe_dev = dev; probe_need = (int64_t) cn; probe_fb = (int64_t) fb;
@@ -9143,6 +9264,7 @@ int main(int argc, char** argv) {
     const int64_t kAutoLendPct = [] {
         const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
         return v ? (int64_t) std::atoi(v)
+                 : g_lend_keep != 128 ? (int64_t) 100   // a card too short for the usual loan (see the cache sizing) lends what it must: the cap is for cards with room
                  : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
     }();
     // The largest chunk --prefill auto may pick: the operator's ceiling (--prefill auto:N) and never past the
@@ -9221,7 +9343,7 @@ int main(int argc, char** argv) {
                 if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;
                 if (o.prefill_auto_cap > 0 && c > o.prefill_auto_cap) continue;   // #1630
                 const int64_t k = slots_for(c);
-                if (k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots()) return c;
+                if (k + g_lend_keep <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots()) return c;
             }
             return 0;
         };
@@ -9243,7 +9365,7 @@ int main(int argc, char** argv) {
             constexpr int64_t kRingMin = 16;
             const int64_t small = old_rule();   // 0.1.39's chunk (and its ring for the prompts that fit it)
             const int64_t ring_max = strata::prefill::Prefill::ring_cap_for(small);
-            const int64_t budget = std::min(xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100);
+            const int64_t budget = std::min(xcache.slots() - g_lend_keep, kAutoLendPct * xcache.slots() / 100);
             // The room is a BYTE budget.  A ring slot is max_blob bytes (`carve` lays out one whole blob each),
             // while these cache slots hold their own layer's blob, which is smaller than max_blob unless the cache
             // happens to hold the pack's biggest layer - on the 4-way IQ3_S rig that is 2.15 MiB a slot against a
@@ -9266,7 +9388,7 @@ int main(int argc, char** argv) {
                     // ring_slots() now returns `room` - unless STRATA_PREFILL_RING overrides it, in which case the
                     // chunk has to fit THAT ring, which is the pre-fix rule and the A/B arm
                     const int64_t k = slots_for(t);
-                    return k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots();
+                    return k + g_lend_keep <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots();
                 });
             };
             int64_t c = scan(ring_max);
@@ -9283,7 +9405,7 @@ int main(int argc, char** argv) {
         }
         for (int64_t c = chunk; c >= 256; c /= 2) {
             const int64_t k = slots_for(c);
-            if (k + 128 <= xcache.slots()) { chunk = c; return k; }
+            if (k + g_lend_keep <= xcache.slots()) { chunk = c; return k; }
         }
         return 0;
     };
@@ -9752,7 +9874,7 @@ int main(int argc, char** argv) {
                 int64_t k = strata::program::split_lend_slots(
                     xc.slots(), xc.bytes(), xc.slot_offsets(),
                     (uint64_t) strata::kernels::cpu::expert_layout().max_blob, need);
-                k = std::min(k, xc.slots() - 128);                       // the scan's 128-slot floor
+                k = std::min(k, xc.slots() - g_lend_keep);                       // the scan's 128-slot floor
                 if (o.prefill_auto) k = std::min(k, kAutoLendPct * xc.slots() / 100);   // the auto cap
                 if (k <= 0) continue;
                 std::vector<std::pair<int32_t, int32_t>> region;
@@ -10071,7 +10193,7 @@ int main(int argc, char** argv) {
             // (no split) this reduces to plan_lend exactly, so the single-GPU loan is unchanged from main.
             auto fits_one = [&](const PfPart& p, int64_t c, bool cap) -> bool {
                 const int64_t k = part_slots(p, c);
-                if (k <= 0 || k + 128 > p.cache->slots()) return false;
+                if (k <= 0 || k + g_lend_keep > p.cache->slots()) return false;
                 return !(cap && k * 100 > kAutoLendPct * p.cache->slots());
             };
             // `only`: CUDA0's cache alone (#448: what one GPU would choose, for the log below); null: every one
@@ -10103,7 +10225,7 @@ int main(int argc, char** argv) {
                     // clamped at 0: a cache under 128 slots has a negative lend budget, and `slots - budget` is
                     // then `slots`, which is off_[slots] - the end of the prefix sum, so that cache lends 0 bytes
                     // rather than reading one entry past its offsets
-                    const int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - 128,
+                    const int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - g_lend_keep,
                                                                         kAutoLendPct * p.cache->slots() / 100));
                     const uint64_t avail = part_bytes(p, (int32_t) (p.cache->slots() - budget));
                     const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, *p.ses, c, srcp != nullptr);
@@ -10532,7 +10654,7 @@ int main(int argc, char** argv) {
             // First by arithmetic: a prompt path without a loan allocates its buffers, so the chunk must leave
             // headroom on that device (a chunk that fits to the last MiB left hipBLAS nothing: its GEMMs then
             // failed to launch on gfx1201 and the prompt hung).  `bytes_needed` is the same count `init` makes.
-            const int64_t kHeadroom = 512ll << 20;
+            const int64_t kHeadroom = (o.prefill_chunk <= 512 ? 128ll : 512ll) << 20;   // (a 512-token chunk or less is the tight-card path: its buffers are priced with a floor of their own)
             auto own_fits = [&](int64_t c, int& dev_out, int64_t& need_out, int64_t& free_out) -> bool {
                 for (size_t i = 0; i <= stages.size(); ++i) {
                     const bool loan = i == 0 ? borrow != nullptr : (i < pf_parts.size() && pf_parts[i].first >= 0);
@@ -13338,7 +13460,7 @@ int main(int argc, char** argv) {
             const int64_t live = xcache.slots();
             auto fits = [&](int64_t c) {
                 const int64_t k = part_slots(p, c);
-                return k > 0 && k + 128 <= live && !(o.prefill_auto && k * 100 > kAutoLendPct * live);
+                return k > 0 && k + g_lend_keep <= live && !(o.prefill_auto && k * 100 > kAutoLendPct * live);
             };
             int64_t c = chunk_full;
             while (c > 256 && !fits(c)) c = std::max<int64_t>(256, c / 2 / 256 * 256);
@@ -13376,7 +13498,7 @@ int main(int argc, char** argv) {
             const int64_t before = xcache.slots();
             // what stays at least: the prompt path's smallest loan (256 tokens) and the 128 slots it must leave
             const int64_t floor_slots = std::min<int64_t>(xcache.full_slots(),
-                128 + (pf_parts.empty() || pf_parts[0].first < 0 ? 0 : part_slots(pf_parts[0], 256)));
+                g_lend_keep + (pf_parts.empty() || pf_parts[0].first < 0 ? 0 : part_slots(pf_parts[0], 256)));
             std::string note;
             if ((int64_t) free_b < want_free) {
                 const int64_t floor_b = xcache.bytes_of(floor_slots);
@@ -16287,11 +16409,11 @@ int main(int argc, char** argv) {
                         // loan starts where the chunk itself needs it (the 128-slot floor aside); a chunk that cannot be
                         // lent even then is halved until it can, instead of ending the engine.
                         int64_t need_p = part_slots(p, want_p);
-                        while ((need_p <= 0 || need_p + 128 > p.cache->slots()) && want_p > 256) {
+                        while ((need_p <= 0 || need_p + g_lend_keep > p.cache->slots()) && want_p > 256) {
                             want_p = std::max<int64_t>(256, want_p / 2 / 256 * 256);
                             need_p = part_slots(p, want_p);
                         }
-                        if (need_p <= 0 || need_p + 128 > p.cache->slots()) {
+                        if (need_p <= 0 || need_p + g_lend_keep > p.cache->slots()) {
                             e = "prefill: no chunk of this request fits the slots that can be lent (#2090)";
                             return false;
                         }
@@ -19144,7 +19266,7 @@ int main(int argc, char** argv) {
                     chunk, (uint64_t) std::max<int64_t>(0, (int64_t) xcache.bytes()), xcache.slots(),
                     [&](int64_t c) {
                         const int64_t kk = lend_slots(c);
-                        return kk + 128 <= xcache.slots() && kk * 100 <= kAutoLendPct * xcache.slots();
+                        return kk + g_lend_keep <= xcache.slots() && kk * 100 <= kAutoLendPct * xcache.slots();
                     },
                     [&](int64_t c, uint64_t& bytes, int64_t& slots) {
                         slots = lend_slots(c);
@@ -19168,7 +19290,7 @@ int main(int argc, char** argv) {
             if (k > 0 && request_sized < chunk) {                     // no bigger than this prompt segment needs
                 chunk = request_sized;
                 k = lend_slots(chunk);
-                if (k + 128 > xcache.slots()) k = 0;
+                if (k + g_lend_keep > xcache.slots()) k = 0;
                 if (!o.prefill_auto) o.prefill_chunk = chunk;
             }
             if (o.prefill_auto) {
