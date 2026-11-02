@@ -13,11 +13,13 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace strata {
 namespace ucprobe {
@@ -79,16 +81,18 @@ inline void uc_probe(const char* tag) {
     {
         ucprobe::Bufs b(q);
         namespace k = strata::kernels;
-        const double head = ucprobe::time_us(q, [&] {
+        double head = 1e30, q6 = 1e30, fma = 1e30, tiny = 1e30;
+        for (int rep = 0; rep < 3; ++rep) {   // the first pass warms the GPU clock; the line shows the best of three
+        const double head_ = ucprobe::time_us(q, [&] {
             k::native_quantize_q8_1(b.x, b.xq, 2048, 7, &q);
             k::native_mmvq(8, b.w8, b.xq, b.y, 2048, 16384, 7, &q);
         }, 40);
-        const double q6 = ucprobe::time_us(q, [&] {
+        const double q6_ = ucprobe::time_us(q, [&] {
             k::native_quantize_q8_1(b.x, b.xq, 2560, 4, &q);
             k::native_mmvq(14, b.w6, b.xq, b.y, 2560, 10240, 4, &q);
         }, 80);
         float* fo = b.fo;
-        const double fma = ucprobe::time_us(q, [&] {
+        const double fma_ = ucprobe::time_us(q, [&] {
             q.parallel_for(sycl::nd_range<1>(256 * 128, 128), [=](sycl::nd_item<1> it) {
                 float a = 1.0f + 1e-3f * (float) it.get_global_id(0);
                 for (int i = 0; i < 4096; ++i) a = a * 1.0000001f + 1e-7f;
@@ -96,13 +100,52 @@ inline void uc_probe(const char* tag) {
             });
         }, 40);
         int* ti = b.ti;
-        const double tiny = ucprobe::time_us(q, [&] {
+        const double tiny_ = ucprobe::time_us(q, [&] {
             q.parallel_for(sycl::nd_range<1>(64, 64), [=](sycl::nd_item<1> it) {
                 int a = (int) it.get_global_id(0);
                 for (int i = 0; i < 400; ++i) a = a * 3 + i;
                 ti[it.get_global_id(0)] = a;
             });
         }, 200);
+        head = std::min(head, head_); q6 = std::min(q6, q6_); fma = std::min(fma, fma_); tiny = std::min(tiny, tiny_);
+        }
+        double fma_g = -1, tiny_g = -1, empty_w = -1;
+        float* fo = b.fo; int* ti = b.ti;
+        try {   // GPU stamps of the same two kernels (needs a profiling queue: STRATA_KPROF=1), and the host cost of an empty launch
+            auto gpu_us = [&](auto&& launch, int n) {
+                std::vector<sycl::event> ev; ev.reserve(n);
+                for (int i = 0; i < 5; ++i) launch();
+                q.wait();
+                for (int i = 0; i < n; ++i) ev.push_back(launch());
+                q.wait();
+                double g = 0;
+                for (auto& e : ev) g += (double) (e.get_profiling_info<sycl::info::event_profiling::command_end>() - e.get_profiling_info<sycl::info::event_profiling::command_start>());
+                return g / 1e3 / n;
+            };
+            fma_g = gpu_us([&] { return q.parallel_for(sycl::nd_range<1>(256 * 128, 128), [=](sycl::nd_item<1> it) {
+                float a = 1.0f + 1e-3f * (float) it.get_global_id(0);
+                for (int i = 0; i < 4096; ++i) a = a * 1.0000001f + 1e-7f;
+                fo[it.get_global_id(0)] = a; }); }, 40);
+            tiny_g = gpu_us([&] { return q.parallel_for(sycl::nd_range<1>(64, 64), [=](sycl::nd_item<1> it) {
+                int a = (int) it.get_global_id(0);
+                for (int i = 0; i < 400; ++i) a = a * 3 + i;
+                ti[it.get_global_id(0)] = a; }); }, 200);
+        } catch (...) {}
+        {
+            for (int i = 0; i < 5; ++i) q.single_task([] {});
+            q.wait();
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < 200; ++i) q.single_task([] {});
+            const double submit = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / 200;
+            q.wait();
+            empty_w = submit;
+        }
+        {
+            std::lock_guard<std::mutex> lk(strata::device_alloc_mutex());
+            size_t tot = 0; for (const auto& kv : strata::device_alloc_map()) tot += kv.second;
+            std::fprintf(stderr, "UCPROBE %-14s   registered device allocations: %zu (%.2f GiB)\n", tag, strata::device_alloc_map().size(), (double) tot / 1073741824.0);
+        }
+        std::fprintf(stderr, "UCPROBE %-14s   gpu-stamps: fma %7.1f us  tiny %7.1f us   host cost of an empty launch %6.1f us\n", tag, fma_g, tiny_g, empty_w);
         std::fprintf(stderr, "UCPROBE %-14s head %8.1f us  q6k %8.1f us  fma %8.1f us  tiny %7.1f us\n", tag, head, q6, fma, tiny);
     }
     if (calls++ == 0) {
