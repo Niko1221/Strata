@@ -30,6 +30,20 @@ void ck(cudaError_t e, const char* w) {
         std::exit(2);
     }
 }
+void put(const char* k, const char* v) {
+#if defined(_WIN32)
+    _putenv_s(k, v);
+#else
+    setenv(k, v, 1);
+#endif
+}
+void unset(const char* k) {
+#if defined(_WIN32)
+    _putenv_s(k, "");
+#else
+    unsetenv(k);
+#endif
+}
 uint16_t bf16(float x) {
     uint32_t u;
     std::memcpy(&u, &x, 4);
@@ -52,8 +66,8 @@ T* dev(size_t n) {
 
 int main(int argc, char** argv) {
     const bool off = argc > 1 && std::strcmp(argv[1], "--off") == 0;
-    if (off) unsetenv("STRATA_HC_PERSIST");
-    else setenv("STRATA_HC_PERSIST", "1", 1);
+    if (off) unset("STRATA_HC_PERSIST");
+    else put("STRATA_HC_PERSIST", "1");
     k::fused_gr_check();
     k::fused_gr_persist_init();
 
