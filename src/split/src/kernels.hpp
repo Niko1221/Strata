@@ -219,6 +219,8 @@ struct AttRing {
     int card = 0;
     void* in = nullptr;
     void* next_in = nullptr;
+    void* peer_in[NCARD] = {};   // every card's `in` (the one-hop merge pushes each owner its partials: set when the engine links the cards)
+    bool onehop = false;         // NCARD > 2: the partials go to their owners in one hop instead of NCARD - 1
     unsigned* err = nullptr;
 };
 size_t att_ring_words();
@@ -320,6 +322,8 @@ struct Ring {
     void* ag;            // this card: [2 sets][MAXT][N] u64
     void* next_in;       // card (card + 1) % NCARD's
     void* next_ag;
+    void* peer_in[NCARD] = {};   // every card's `in` (the one-hop sum reads each card's mailbox)
+    bool onehop = false;         // NCARD > 2 and fp16 words: one hop for a window's sum (k_ring_a2a), the ring's 2 (NCARD - 1) hops otherwise
     unsigned* err;       // bit 1: a peer's value never came; bit 2: a NaN or inf (on the fp16 ring: a value past its
                          // range); bit 4: an hc read's grid barrier timed out; bit 16: a NaN or inf among the head's
                          // logits (the window's argmax)

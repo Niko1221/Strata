@@ -216,7 +216,16 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         cb_[c]->ring.next_in = cb_[(c + 1) % NCARD]->ring.in;
         cb_[c]->ring.next_ag = cb_[(c + 1) % NCARD]->ring.ag;
         cb_[c]->att_ring.next_in = cb_[(c + 1) % NCARD]->att_ring.in;
+        for (int d = 0; d < NCARD; ++d) {
+            cb_[c]->ring.peer_in[d] = cb_[d]->ring.in;
+            cb_[c]->att_ring.peer_in[d] = cb_[d]->att_ring.in;
+        }
+        // one hop for the window sums and the attention merge on 3 or more cards (FNX_ONEHOP=0: the rings); the mailboxes live in the ring's buffers
+        const bool onehop = NCARD > 2 && env_int("FNX_ONEHOP", 1) != 0 && !cb_[c]->ring.f32;
+        cb_[c]->ring.onehop = cb_[c]->att_ring.onehop = onehop;
     }
+    if (NCARD > 2 && env_int("FNX_ONEHOP", 1) != 0 && cb_[0]->ring.f32)
+        std::fprintf(stderr, "fnx: FNX_RING_F32: the one-hop sum carries fp16 words only, the rings stay\n");
     // the prompt path's buffers now, so the arena below is sized from what is left after them
     prefill_alloc();
     // FNX_ARENA: the pool's own pages are those, or as many as every card's free VRAM holds beside the arena pool's
