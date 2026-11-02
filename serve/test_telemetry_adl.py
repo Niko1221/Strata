@@ -132,5 +132,56 @@ class AdlReaderCleanup(unittest.TestCase):
         return count.value
 
 
+@unittest.skipIf(os.name != "nt", "the Device Manager link query is a Windows PowerShell call")
+class DmLinkMap(unittest.TestCase):
+    """The PCIe link map (PR #4884 review): the PowerShell query must never show a console window on a
+    server started without one, must not block the first read() (the free-VRAM admission check), and a
+    failed query must be retried at most every 60 s, not on every 1-second sample."""
+
+    def setUp(self):
+        import serve.telemetry as t
+        for name, value in (("_DM_LINK", None), ("_DM_LINK_RETRY", 0.0), ("_DM_LINK_STARTED", False)):
+            setattr(t, name, value)
+
+    def test_query_never_shows_a_console(self):
+        import subprocess
+        from unittest import mock
+        import serve.telemetry as t
+        with mock.patch.object(t.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="")
+            t._dm_link_query()
+        self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+
+    def test_first_call_returns_empty_and_starts_the_query(self):
+        from unittest import mock
+        import serve.telemetry as t
+        with mock.patch.object(t.threading, "Thread") as thread:
+            self.assertEqual(t._dm_link_map(), {})  # the first read() is not blocked by the seconds-long query
+        thread.return_value.start.assert_called_once()
+        self.assertTrue(t._DM_LINK_STARTED)
+
+    def test_failure_retries_after_60_s_not_every_sample(self):
+        import time
+        from unittest import mock
+        import serve.telemetry as t
+        with mock.patch.object(t.subprocess, "run", side_effect=OSError("no powershell")):
+            t._dm_link_query()
+        self.assertIsNone(t._DM_LINK)
+        self.assertFalse(t._DM_LINK_STARTED)
+        self.assertGreater(t._DM_LINK_RETRY, time.monotonic())  # retried later, not on the next sample
+        with mock.patch.object(t.threading, "Thread") as thread:
+            self.assertEqual(t._dm_link_map(), {})
+        thread.return_value.start.assert_not_called()  # inside the retry window: no relaunch
+
+    def test_success_caches(self):
+        from unittest import mock
+        import serve.telemetry as t
+        with mock.patch.object(t.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="DEV_1234 4 16 4 16\nDEV_5678 5 8 5 16\njunk\n")
+            t._dm_link_query()
+        self.assertEqual(t._DM_LINK, {"1234": (4, 16, 4, 16), "5678": (5, 8, 5, 16)})
+        self.assertEqual(t._dm_link_map(), t._DM_LINK)  # cached: no second query
+
+
 if __name__ == "__main__":
     unittest.main()
