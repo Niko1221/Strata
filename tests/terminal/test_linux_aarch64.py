@@ -22,7 +22,13 @@ import package_terminal  # noqa: E402
 
 
 def host(system: str, machine: str) -> str:
-    with mock.patch.object(targets.platform, "system", return_value=system), mock.patch.object(targets.platform, "machine", return_value=machine):
+    # #4975: on Windows the name is read from `sys.platform` and the architecture from `PROCESSOR_ARCHITECTURE`
+    # (both are answered without WMI), so a Windows row stubs those as well as `platform`.
+    win = system == "Windows"
+    with mock.patch.object(targets.platform, "system", return_value=system), \
+            mock.patch.object(targets.platform, "machine", return_value=machine), \
+            mock.patch.object(sys, "platform", "win32" if win else "linux"), \
+            mock.patch.dict(targets.os.environ, {"PROCESSOR_ARCHITECTURE": machine} if win else {}):
         return targets.host_platform()
 
 
