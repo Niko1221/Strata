@@ -552,9 +552,19 @@ def mtp_ready(args: list[Any]) -> bool | None:
 VOCAB_NAME = "draft_vocab.bin"
 
 
-def shipped_vocab() -> Path:
-    """The default draft vocabulary Strata ships with (``data/draft_vocab.bin``, also in the packaged Control)."""
-    return Path(__file__).resolve().parents[1] / "data" / VOCAB_NAME
+#: The subsets a person can choose in setup (``--draft-vocab``), by name: the files Strata ships in data/ (setup.DRAFT_VOCABS names the same ones).
+VOCAB_FILES = {"cjk": VOCAB_NAME, "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin"}
+#: The sha256 of the 27-Han-token subset up to 0.1.26 (setup.OLD_DRAFT_VOCABS): a copy that is any shipped subset may be replaced by the person's later choice, a made-by-hand one never.
+OLD_VOCAB_SHA256 = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25"}
+
+
+def shipped_vocab(choice: str | None = None) -> Path:
+    """The draft vocabulary Strata ships with (``data/draft_vocab.bin``, also in the packaged Control), or the shipped subset named ``choice`` (cjk, en, cyrillic, fr)."""
+    return Path(__file__).resolve().parents[1] / "data" / VOCAB_FILES.get(choice or "cjk", VOCAB_NAME)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def vocab_target(data_dir: str | Path) -> Path:
@@ -562,11 +572,39 @@ def vocab_target(data_dir: str | Path) -> Path:
     return Path(data_dir) / FOLDER / VOCAB_NAME
 
 
-def provide_vocab(data_dir: str | Path | None) -> Path | None:
-    """Make sure the DFlash2 folder holds the draft vocabulary (a local copy of the file Strata ships; no network). Called by the drafter's fetch and by
-    setup's DFlash2 step, so a fresh install that selected only DFlash2 has everything the engine needs. None when it cannot be had."""
+def refresh_vocab(data_dir: str | Path | None, choice: str = "cjk") -> Path | None:
+    """Put the subset the person chose in setup (``--draft-vocab``) beside the DFlash2 pack, where a DFlash2 start reads it when the MTP folder has none. The copy is made when
+    it is missing and replaced when it is a shipped subset other than the chosen one (a later choice, or an install from before the choice reached DFlash2); a subset made by hand
+    stays. Same rule as setup.refresh_draft_vocab for the MTP folder. None when it cannot be had."""
     if not data_dir:
         return None
+    target = vocab_target(data_dir)
+    try:
+        new = shipped_vocab(choice)
+        if not new.is_file():
+            return provide_vocab(data_dir)
+        if target.is_file() and target.stat().st_size > 0:
+            old = _sha256(target)
+            shipped_hashes = OLD_VOCAB_SHA256 | {_sha256(shipped_vocab(c)) for c in VOCAB_FILES if shipped_vocab(c).is_file()}
+            if old == _sha256(new) or old not in shipped_hashes:
+                return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_bytes(new.read_bytes())
+        tmp.replace(target)
+        return target
+    except OSError:
+        return None
+
+
+def provide_vocab(data_dir: str | Path | None, choice: str | None = None) -> Path | None:
+    """Make sure the DFlash2 folder holds the draft vocabulary (a local copy of the file Strata ships; no network). Called by the drafter's fetch and by
+    setup's DFlash2 step, so a fresh install that selected only DFlash2 has everything the engine needs. None when it cannot be had.
+    Without ``choice`` a copy that is there is never touched (the fetch must not undo the person's setup choice); with it (setup) see refresh_vocab."""
+    if not data_dir:
+        return None
+    if choice is not None:
+        return refresh_vocab(data_dir, choice)
     target = vocab_target(data_dir)
     try:
         if target.is_file() and target.stat().st_size > 0:
