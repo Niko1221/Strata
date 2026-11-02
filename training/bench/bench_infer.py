@@ -71,7 +71,7 @@ def main() -> int:
 
     tok = AutoTokenizer.from_pretrained(args.tokenizer)
     if args.pretrain_data:
-        # 与 sft.py / sft_mezo.py 完全同一份输入：整块全 token loss（plen=1）
+        # 与 sft.py / hf_ref.py 完全同一份输入：整块全 token loss（plen=1）
         import numpy as np
         blocks = np.load(args.pretrain_data)
         assert blocks.shape[1] == args.seqlen, f"块长 {blocks.shape[1]} != --seqlen {args.seqlen}"
@@ -82,7 +82,7 @@ def main() -> int:
 
     from ce import token_logprobs
     body, head = text_model(model), model.lm_head
-    # 与 sft.py / sft_mezo.py 同一批块、同一顺序（torch.randperm + 同 seed）：
+    # 与 sft.py / hf_ref.py 同一批块、同一顺序（torch.randperm + 同 seed）：
     # 不同块命中的专家数不同，跨块比 tok/s 全是数据噪声（实测同配置 loss 0.06~1.24）
     order = torch.randperm(len(enc), generator=torch.Generator().manual_seed(args.seed)).tolist()
     ntoks = 0
@@ -96,7 +96,7 @@ def main() -> int:
             labels = ids[0, 1:]
             mask = torch.zeros_like(labels, dtype=torch.bool)
             mask[plen - 1:] = True
-            # 与 sft_mezo.sample_loss 同一条路径（含 chunked logits），否则显存不可比
+            # 与 hf_ref.sample_loss 同一条路径（含 chunked logits），否则显存不可比
             lp = token_logprobs(h, head, labels, chunk=128)
             float(-(lp[mask]).mean())
             torch.cuda.synchronize()

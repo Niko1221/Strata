@@ -82,7 +82,7 @@ def probe(with_torch: bool = True) -> dict:
 def platform_blockers(caps: dict) -> list[str]:
     """平台本身的阻断。空列表 = 这台机器的平台能跑这份代码。
 
-    与 torch 无关：模块级守卫（sft.py / sft_mezo.py / ab_identity.py 顶部）只用
+    与 torch 无关：模块级守卫（sft.py / hf_ref.py / ab_identity.py 顶部）只用
     这一层，因为那几处必须在 import torch 之前就拦住 Windows，而且上游 CI 的
     no-torch 档没有 torch 也必须能过这道门。
     """
@@ -194,7 +194,7 @@ def require(caps: dict | None = None, platform_only: bool = False) -> dict:
     """有阻断就打印原因并以退出码 2 结束；否则返回 capabilities。
 
     platform_only=True 只查平台层、且不探测 torch —— 给两处用：
-      * sft.py / sft_mezo.py / ab_identity.py 的模块级守卫（要在 import torch
+      * sft.py / hf_ref.py / ab_identity.py 的模块级守卫（要在 import torch
         之前拦 Windows，且不能因为 CI 没 GPU 就拦住 import）；
       * CI 的 no-torch 快门（那档本来就故意没有 torch）。
     真正开训前的完整检查（含 torch/CUDA）走默认 platform_only=False。

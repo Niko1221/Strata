@@ -32,7 +32,7 @@ import torch
 import grpo
 import guard
 import mem_guard
-import sft_mezo
+import hf_ref
 
 
 class _Tok:
@@ -52,7 +52,7 @@ class Grouping(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "r.jsonl"
             p.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
-            return sft_mezo.load_rollout_groups(str(p), _Tok())
+            return hf_ref.load_rollout_groups(str(p), _Tok())
 
     def test_consecutive_same_prompt_is_one_group_and_advantages_are_normalised(self):
         groups, meta = self.load([
@@ -101,13 +101,13 @@ class GRPOLoss(unittest.TestCase):
         self.new = -math.log(self.V)
         self.head = torch.nn.Identity()
 
-    def traj(self, old: float, adv: float) -> sft_mezo._Traj:
-        return sft_mezo._Traj(self.ids, 2, torch.full((2,), old), adv, 0.0)
+    def traj(self, old: float, adv: float) -> hf_ref._Traj:
+        return hf_ref._Traj(self.ids, 2, torch.full((2,), old), adv, 0.0)
 
     def loss(self, t, clip=0.2, batched=False):
         body = type("B", (), {"__call__": lambda _self, input_ids, attention_mask=None,
                               past_key_values=None, use_cache=False: _Out(self.h)})()
-        return sft_mezo.grpo_loss(body, self.head, [t], clip, batched=batched)
+        return hf_ref.grpo_loss(body, self.head, [t], clip, batched=batched)
 
     def test_old_equals_new_is_exactly_minus_advantage(self):
         # ratio = 1 ⇒ 代理目标就是 A，loss = −A。adv 取负值：loss 必须是 +2
@@ -141,13 +141,13 @@ class GRPOLoss(unittest.TestCase):
                               past_key_values=None, use_cache=False:
                               _Out(torch.zeros(input_ids.shape[0], input_ids.shape[1], V))})()
         new = -math.log(V)
-        long_t = sft_mezo._Traj(torch.tensor([[9, 9, 0, 1]]), 2,
+        long_t = hf_ref._Traj(torch.tensor([[9, 9, 0, 1]]), 2,
                                 torch.full((2,), new - math.log(2.0)), 1.0, 0.0)
-        short_t = sft_mezo._Traj(torch.tensor([[9, 9, 1]]), 2,
+        short_t = hf_ref._Traj(torch.tensor([[9, 9, 1]]), 2,
                                  torch.full((1,), new), -1.0, 0.0)
         group = [long_t, short_t]
-        b, ib = sft_mezo.grpo_loss(body, self.head, group, 0.2, batched=True)
-        s, isx = sft_mezo.grpo_loss(body, self.head, group, 0.2, batched=False)
+        b, ib = hf_ref.grpo_loss(body, self.head, group, 0.2, batched=True)
+        s, isx = hf_ref.grpo_loss(body, self.head, group, 0.2, batched=False)
         self.assertAlmostEqual(b, s, places=5)
         # obj = [min(2,1.2)·(+1), 1·(−1)] = [1.2(2 tok), −1.0(1 tok)]
         #   默认 DAPO（token 平均）：(1.2·2 + −1·1)/3 = 0.4667 ⇒ loss −0.4667
@@ -157,8 +157,8 @@ class GRPOLoss(unittest.TestCase):
         # 旧的长度归一化口径仍要能取回，且 batch/逐条两种写法必须给出同一个数
         from objectives import GrpoCfg
         cfg_seq = GrpoCfg(clip_low=0.2, clip_high=0.2, norm="seq")
-        b2, _ = sft_mezo.grpo_loss(body, self.head, group, 0.2, batched=True, cfg=cfg_seq)
-        s2, _ = sft_mezo.grpo_loss(body, self.head, group, 0.2, batched=False, cfg=cfg_seq)
+        b2, _ = hf_ref.grpo_loss(body, self.head, group, 0.2, batched=True, cfg=cfg_seq)
+        s2, _ = hf_ref.grpo_loss(body, self.head, group, 0.2, batched=False, cfg=cfg_seq)
         self.assertAlmostEqual(b2, -0.1, places=5)     # (1.2/2 + −1/1)/2 = 0.1
         self.assertAlmostEqual(b2, s2, places=5)
 
@@ -197,7 +197,7 @@ class Sampling(unittest.TestCase):
     """进程内采样（on-policy）：错的不是数学，是**对齐** —— old 少一个 token 就静默错位。"""
 
     def sample(self, head, group=4, max_new=5, temperature=1.0):
-        return sft_mezo.sample_group(
+        return hf_ref.sample_group(
             _SamplingBody(), head, _SamplingTok(), {"prompt": "hi", "kind": "words:1"},
             group=group, max_new=max_new, temperature=temperature,
             gen=torch.Generator().manual_seed(0), device=torch.device("cpu"))
@@ -313,7 +313,7 @@ class CompletionSums(unittest.TestCase):
     def _check(self, ids, att, plens):
         want = self._reference(ids, att, plens)
         for chunk in (0, 4, 128):
-            got = sft_mezo._completion_sums(self.lm.body, self.lm.head,
+            got = hf_ref._completion_sums(self.lm.body, self.lm.head,
                                             ids, att, plens, chunk=chunk)
             self.assertEqual(got.shape, want.shape)
             self.assertTrue(torch.allclose(got, want, atol=1e-5, rtol=1e-5),
@@ -353,38 +353,38 @@ class DPOMeasure(unittest.TestCase):
         self.base = [2, 4, 6, 8]          # 共享 prompt；不能用 0（_pad_pairs 把 0 当 pad）
 
     def _pair(self, comp_c, comp_r, ref_c=0.0, ref_r=0.0):
-        return sft_mezo._Pair(
+        return hf_ref._Pair(
             ids_c=torch.tensor([self.base + comp_c]),
             ids_r=torch.tensor([self.base + comp_r]),
             n_prompt=len(self.base), ref_c=ref_c, ref_r=ref_r)
 
     def _separate(self, p):
         """参考实现：chosen 一次前向、rejected 一次前向，串行。"""
-        rc = sft_mezo._completion_sums(self.lm.body, self.lm.head, p.ids_c,
+        rc = hf_ref._completion_sums(self.lm.body, self.lm.head, p.ids_c,
                                        torch.ones_like(p.ids_c), [p.n_prompt])
-        rr = sft_mezo._completion_sums(self.lm.body, self.lm.head, p.ids_r,
+        rr = hf_ref._completion_sums(self.lm.body, self.lm.head, p.ids_r,
                                        torch.ones_like(p.ids_r), [p.n_prompt])
-        return sft_mezo.dpo_margin(float(rc[0]), float(rr[0]), p.ref_c, p.ref_r)
+        return hf_ref.dpo_margin(float(rc[0]), float(rr[0]), p.ref_c, p.ref_r)
 
     def test_batched_equals_two_separate_passes(self):
         p = self._pair([10, 12, 14], [11, 13])
-        _, info = sft_mezo.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
+        _, info = hf_ref.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
         self.assertAlmostEqual(info["margin"], self._separate(p), places=5)
 
     def test_ragged_completions_are_not_padded_into_the_margin(self):
         # chosen 短、rejected 长：合批后两行长度不同，pad 位的 logprob 必须被 mask 掉
         p = self._pair([10], [11, 13, 15, 17, 19])
-        _, info = sft_mezo.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
+        _, info = hf_ref.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
         self.assertAlmostEqual(info["margin"], self._separate(p), places=5)
 
     def test_ref_terms_cancel_exactly_when_equal(self):
         # ref 与 policy 用同一个 stub ⇒ 起点 margin 恒 0（DPO 的 loss 起点 = ln2）
         p = self._pair([10, 12], [11, 13])
-        p.ref_c = float(sft_mezo._completion_sums(
+        p.ref_c = float(hf_ref._completion_sums(
             self.lm.body, self.lm.head, p.ids_c, torch.ones_like(p.ids_c), [p.n_prompt])[0])
-        p.ref_r = float(sft_mezo._completion_sums(
+        p.ref_r = float(hf_ref._completion_sums(
             self.lm.body, self.lm.head, p.ids_r, torch.ones_like(p.ids_r), [p.n_prompt])[0])
-        _, info = sft_mezo.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
+        _, info = hf_ref.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
         self.assertAlmostEqual(info["margin"], 0.0, places=5)
 
     def test_fwd_counts_both_rows_including_prompt(self):
@@ -392,7 +392,7 @@ class DPOMeasure(unittest.TestCase):
         # 只数 completion 段正是历史上把 DPO 读成 9 tok/s 的原因。
         # 两行等长 ⇒ 没有 padding，numel 就是真实前向量。
         p = self._pair([10, 12, 14], [11, 13, 15])
-        _, info = sft_mezo.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
+        _, info = hf_ref.dpo_measure(self.lm.body, self.lm.head, [p], 0.1)
         self.assertEqual(info["fwd"], sum(x.numel() for x in (p.ids_c, p.ids_r)))
 
 

@@ -2,7 +2,7 @@
 
 为什么要有这个文件
 ------------------
-历史测速散在 sft_mezo / sft / _mb_cost_split 里，每份都用不同的 token 口径
+历史测速散在 hf_ref / sft / _mb_cost_split 里，每份都用不同的 token 口径
 （answer 段 / completion 段 / fwd 段），于是同一份日志能读出 9 tok/s 和 30 tok/s，
 DPO 被误判成「慢几十倍」。这里把口径焊死成一条：
 
@@ -69,7 +69,7 @@ import loader_qwen4 as L
 import mem_guard
 from lora import LoRALinear, freeze_all, inject_lora, trainable_summary
 from sft import text_model
-from sft_mezo import _Pair, _Traj, dpo_measure, grpo_loss, perturb, zo_cast_fp32
+from hf_ref import _Pair, _Traj, dpo_measure, grpo_loss, perturb, zo_cast_fp32
 
 VOCAB = 248320
 
@@ -96,7 +96,7 @@ def blp(hidden: torch.Tensor, head, labels: torch.Tensor, chunk: int = 0) -> tor
 
 
 def ce_scalar(body, head, ids: torch.Tensor, plen: int) -> torch.Tensor:
-    """SFT 的标量目标（answer 段 mean CE）。与 sft_mezo.sample_loss 同一路径（全段 head）。"""
+    """SFT 的标量目标（answer 段 mean CE）。与 hf_ref.sample_loss 同一路径（全段 head）。"""
     h = body(input_ids=ids[:, :-1], use_cache=False).last_hidden_state
     labels = ids[:, 1:]
     lp = blp(h, head, labels)

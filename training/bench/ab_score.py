@@ -4,7 +4,7 @@ MeZO 的 f(θ) 原本由 `ce.token_logprobs` 算：HF 前向取 `last_hidden_sta
 分块 logits，`gather - logsumexp`。引擎的 `/v1/score` 是替换路径，但它必须先证明给出**同一串
 log p** —— 否则 `(f(θ+ε) − f(θ−ε))/2ε` 的差分里混进的是两条路径的差，不是 θ 的梯度。
 
-对比口径（与 bench_infer.py / sft_mezo.py 完全一致）：
+对比口径（与 bench_infer.py / hf_ref.py 完全一致）：
   hidden = body(input_ids=ids[:, :-1], use_cache=False).last_hidden_state[0]
   labels = ids[0, 1:]
   lp[t]  = log p(labels[t] | ids[:t+1])

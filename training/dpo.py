@@ -26,7 +26,7 @@ REQUIRED_KEYS = ("prompt", "chosen", "rejected")
 
 
 def dpo_margin(pol_c: float, pol_r: float, ref_c: float, ref_r: float) -> float:
-    """DPO margin 的唯一定义（反传路线 sft.py 与零阶路线 sft_mezo.py 都用这条）。
+    """DPO margin 的唯一定义（反传路线 sft.py 与零阶路线 hf_ref.py 都用这条）。
 
     margin = (logπ_c − logref_c) − (logπ_r − logref_r)
     「当前策略比参考策略更偏 chosen 的程度」。ref 在两侧都是训练起点（B=0）冻结：
