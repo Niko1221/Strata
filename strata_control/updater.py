@@ -234,6 +234,11 @@ def _gfx_names() -> list[str]:
                 found = sorted(set(re.findall(r"\bgfx[0-9a-f]{3,4}\b", done.stdout)))
             except (OSError, subprocess.SubprocessError):
                 pass
+    if not found and os.name != "nt":
+        try:
+            found = ec.hip_archs_from_pci()                  # no kfd topology and no rocminfo: the PCI ids of the AMD cards say (an AppImage, a container)
+        except Exception:                                   # noqa: BLE001 - detection is best effort
+            found = []
     if not found and os.name == "nt":
         # a normal Windows PC has no hipInfo (it ships with the HIP SDK): the display adapters' PCI ids / names say which gfx it is
         try:

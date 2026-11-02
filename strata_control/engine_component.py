@@ -836,6 +836,40 @@ def hip_archs_present(kfd_root: str | None = None) -> list[str]:
     return found
 
 
+def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> list[str]:
+    """Linux, third probe for the AMD architectures when the kernel driver's topology (hip_archs_present) and rocminfo said nothing (no
+    /sys/class/kfd access in an AppImage or a container, no ROCm tools installed): the PCI ids of the AMD display devices, in sysfs
+    (``card0/device/{vendor,device}``) and then ``lspci -nn`` (``[1002:744c]``), mapped through the same tables the Windows probe uses.
+    An integrated Radeon and an id the tables do not know give nothing. Read-only; empty when it cannot say."""
+    ids: list[int] = []
+    try:
+        for card in sorted(Path(drm_root).glob("card[0-9]*")):
+            if "-" in card.name:                                            # card0-DP-1 and the like are connectors
+                continue
+            try:
+                vendor = (card / "device" / "vendor").read_text().strip().lower()
+                device = (card / "device" / "device").read_text().strip().lower()
+            except OSError:
+                continue
+            if vendor == "0x1002" and device.startswith("0x"):
+                ids.append(int(device, 16))
+    except OSError:
+        pass
+    if not ids and lspci and os.name != "nt":
+        tool = shutil.which("lspci")
+        if tool:
+            try:
+                done = subprocess.run([tool, "-nn"], capture_output=True, text=True, errors="replace", timeout=10)
+                for line in (done.stdout or "").splitlines():
+                    if re.search(r"VGA|Display|3D", line):
+                        found = re.search(r"\[1002:([0-9a-f]{4})\]", line, re.I)
+                        if found:
+                            ids.append(int(found.group(1), 16))
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
+
+
 def _smi_query(field_name: str) -> list[str]:
     tool = shutil.which("nvidia-smi")
     if not tool:
