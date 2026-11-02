@@ -24,6 +24,22 @@ tokens the cache already held) is reported - prompt tok/s is not comparable acro
 without it. /metrics "totals" is snapshotted before and after the run, giving the
 server's own counts for this run's window (requests, output_tokens, drafts_offered,
 drafts_accepted) as an independent check on the per-request numbers.
+
+3. DECODE EXPERT CACHE HIT RATE. Strata is an MoE engine with the expert weights in a VRAM
+   cache: an expert that is not resident is read over PCIe/RAM/disk. The engine counts the
+   lookups itself - its DONE line carries `hits lookups` (serve/server.py _parse_done,
+   "decode hit rate fields") - and the server turns that into hit_rate on each request
+   record it appends to /metrics' request log (`GET /metrics?requests=all`, and
+   "expert cache <n>% hit" on the server's own completion line). The response's `timings`
+   has no hit rate, so this benchmark re-reads /metrics after every prompt and pulls the
+   record the server wrote for the request it just ran: ids are read once before the run,
+   and the record whose id is new (and whose `time` is nearest this prompt's start) is
+   this prompt's. What is reported is therefore the per-request decode expert cache hit
+   rate, and the aggregate at the bottom of the results is the mean of those rates - plus a
+   generated-token-weighted mean, since a long request's rate carries more of the run than
+   a short one. hit_rate is the share answered from VRAM; experts read over PCIe are counted
+   separately in pcie_share (#588), reported alongside it. Engines without /metrics are
+   skipped with a note; --no-expert-cache turns the queries off.
 """
 
 import argparse, json, sys, time
@@ -302,12 +318,49 @@ def build_payload(meta, p, args):
             body["reasoning_effort"] = args.effort
     return f"{meta['url']}/v1/chat/completions", body
 
+def metrics_doc(meta, args):
+    """Strata's /metrics payload, or None for an engine that does not have one.
+
+    "?requests=all": the whole request log rather than the server's default last-12 window,
+    so this run's own records are never cut off by that window (serve/server.py do_GET).
+    """
+    if meta.get("engine") != "Strata" or not meta.get("url"):
+        return None
+    return _get(meta["url"].rstrip("/") + "/metrics?requests=all", max(args.probe_timeout, 10))
+
 def metrics_totals(meta, args):
     """Strata's cumulative counters, for a before/after delta over the run's window."""
-    if meta["engine"] != "Strata":
-        return None
-    d = _get(meta["url"].rstrip("/") + "/metrics", max(args.probe_timeout, 10))
+    d = metrics_doc(meta, args)
     return d.get("totals") if _ok(d) and _ok(d.get("totals")) else None
+
+def request_log(doc):
+    """The /metrics request log: one record per finished request, each with its hit_rate."""
+    rs = doc.get("requests") if _ok(doc) else None
+    if not isinstance(rs, list):
+        return []
+    return [r for r in rs if isinstance(r, dict) and r.get("id") is not None]
+
+def decode_expert_hit(meta, args, seen_ids, started):
+    """Ask the server for the record it wrote about the request that just finished.
+
+    -> that request's /metrics record: hit_rate is hits/lookups from the engine's own decode
+    counters (serve/server.py _parse_done "decode hit rate fields"), i.e. the share of the
+    experts this request routed that the VRAM expert cache held; pcie_share the rest read
+    over PCIe. None if the server did not get round to writing it. Re-reads /metrics a few
+    times: the accounting happens in the stream's finally block, so which side of that the
+    client's own response lands on is not something the request can promise.
+    """
+    for attempt in range(max(1, args.expert_poll_attempts)):
+        new = [r for r in request_log(metrics_doc(meta, args)) if str(r["id"]) not in seen_ids]
+        seen_ids.update(str(r["id"]) for r in new)                 # every one is now accounted for
+        # a new id is this run's, unless it started before the prompt (another client's request)
+        cand = [r for r in new if not (isinstance(r.get("time"), (int, float))
+                                       and r["time"] < started - 30)]
+        if cand:
+            return min(cand, key=lambda r: abs((r.get("time") or started) - started))
+        if attempt < args.expert_poll_attempts - 1:
+            time.sleep(max(0.0, args.expert_poll_interval))
+    return None
 
 def totals_delta(before, after):
     if not before or not after:
@@ -327,8 +380,21 @@ def run(args):
     print_identity(meta)
     print("=" * 78)
     print(f"Running {len(PROMPTS)} prompts (max_tokens={args.n_predict}, temperature={args.temperature}, "
-          f"seed={args.seed}) via {meta['dialect']}\n")
-    totals_before = metrics_totals(meta, args)
+          f"seed={args.seed}) via {meta['dialect']}")
+    metrics_before = metrics_doc(meta, args)
+    totals_before = metrics_before.get("totals") if _ok(metrics_before) else None
+    expert_on = _ok(metrics_before) and not args.no_expert_cache
+    seen_ids = {str(r["id"]) for r in request_log(metrics_before)} if expert_on else set()
+    expert_note = None
+    if expert_on:
+        pass
+    elif args.no_expert_cache:
+        print("note: --no-expert-cache: no /metrics query, so no decode expert cache hit rate")
+    else:
+        expert_note = (f"decode expert cache hit rate not measured: "
+                       f"{(metrics_before or {}).get('__error__', 'engine ' + str(meta['engine']) + ' has no /metrics request log')}")
+        print("note:", expert_note)
+    print()
 
     out = {"identity": meta, "results": []}
     for p in PROMPTS:
@@ -352,12 +418,21 @@ def run(args):
             rec["prompt_per_second"] = t.get("prompt_per_second")
             # A reasoning model spends its token budget on reasoning_content, not on content.
             rec["reasoning_only"] = (msg.get("content") in (None, "")) and bool(msg.get("reasoning_content"))
+        if expert_on:
+            sr = decode_expert_hit(meta, args, seen_ids, t0)
+            if sr:
+                rec["expert_hit_rate"] = sr.get("hit_rate")
+                rec["expert_pcie_share"] = sr.get("pcie_share")
+                rec["expert_tokens"] = sr.get("engine_generated") or sr.get("output_tokens")
+                rec["server_request_id"] = str(sr["id"])
+                rec["server_finish"] = sr.get("finish")
         out["results"].append(rec)
         ar = f"{rec['accept_rate']:.3f}" if rec["accept_rate"] is not None else "n/a"
         pps = rec["predicted_per_second"] if rec.get("predicted_per_second") else 0.0
-        extra = f" cache={rec.get('cache_n')}" if meta["dialect"] != "llama-completion" else ""
+        extra = f""
+        hit = f""
         print(f"  {rec['name']:<18} pred={rec['predicted_n']:>4} draft={rec['draft_n']:>4} "
-              f"acc={rec['draft_n_accepted']:>4} rate={ar} tok/s={pps:.1f}{extra}")
+              f"acc={rec['draft_n_accepted']:>4} rate={ar} tok/s={pps:.1f}{extra}{hit}")
     td  = sum(x["draft_n"] or 0 for x in out["results"])
     ta  = sum(x["draft_n_accepted"] or 0 for x in out["results"])
     tp  = sum(x["predicted_n"] or 0 for x in out["results"])
@@ -367,6 +442,22 @@ def run(args):
                         "wall_s_total": round(tw, 2)}
     if meta["dialect"] != "llama-completion":
         out["aggregate"]["total_cache_n"] = sum(x.get("cache_n") or 0 for x in out["results"])
+    measured = [x for x in out["results"] if x.get("expert_hit_rate") is not None]
+    if measured:
+        rates = [x["expert_hit_rate"] for x in measured]
+        out["aggregate"]["decode_expert_hit_rate_mean"] = round(sum(rates) / len(rates), 4)
+        out["aggregate"]["decode_expert_hit_rate_requests"] = len(measured)
+        out["aggregate"]["decode_expert_hit_rate_min"] = min(rates)
+        out["aggregate"]["decode_expert_hit_rate_max"] = max(rates)
+        w_toks = sum(x.get("expert_tokens") or 0 for x in measured)
+        if w_toks:  # a long request's hit rate counts more of the run than a short one
+            out["aggregate"]["decode_expert_hit_rate_weighted"] = round(
+                sum(x["expert_hit_rate"] * (x.get("expert_tokens") or 0) for x in measured) / w_toks, 4)
+        pcie = [x["expert_pcie_share"] for x in measured if x.get("expert_pcie_share") is not None]
+        if pcie:
+            out["aggregate"]["expert_pcie_share_mean"] = round(sum(pcie) / len(pcie), 4)
+    elif expert_on:
+        expert_note = "decode expert cache hit rate: no request records appeared in /metrics"
     delta = totals_delta(totals_before, metrics_totals(meta, args))
     if delta:
         out["aggregate"]["server_delta"] = delta
@@ -381,6 +472,22 @@ def run(args):
           f"{'' if not meta.get('engine_version') else ' ' + str(meta['engine_version'])} | "
           f"LLM: {meta['model']} | dialect: {meta['dialect']}")
     print("Aggregate:", json.dumps(out["aggregate"], indent=2))
+    hr = out["aggregate"].get("decode_expert_hit_rate_mean")
+    if hr is not None:
+        agg = out["aggregate"]
+        hw, ps = agg.get("decode_expert_hit_rate_weighted"), agg.get("expert_pcie_share_mean")
+        st = meta.get("engine_settings") or {}
+        print(f"Aggregate decode expert cache hit rate: {hr * 100:.1f}%"
+              + (f"\n(token-weighted {hw * 100:.1f}%" if hw is not None else "")
+              + f" | per-request {agg['decode_expert_hit_rate_min'] * 100:.1f}%"
+                f"-{agg['decode_expert_hit_rate_max'] * 100:.1f}%"
+              + (f" | experts read over PCIe {ps * 100:.2f}%)" if ps is not None else ")"))
+        if st.get("expert_slots"):
+            print(f"\nExpert cache: {st['expert_slots']} expert slots / {st.get('expert_cache_mib')} MiB VRAM"
+                  f"{f' (of {st['expert_slots_primary']} primary slots / {st.get('expert_cache_primary_mib')} MiB)'
+                     if st.get('expert_slots_primary') not in (None, st.get('expert_slots')) else ''}")
+    if expert_note:
+        out["notes"] = out.get("notes", []) + [expert_note]
     for n in out.get("notes", []):
         print("note:", n)
     if args.out:
@@ -411,7 +518,8 @@ def diff(a, b):
     print_identity(identity_from_file(b), label="B")
     print("=" * 78)
     keys = ["aggregate_accept_rate", "total_predicted", "total_draft", "total_draft_accepted", "wall_s_total"]
-    for k in ("total_cache_n", "per_request_accept_rate", "server_accept_rate"):
+    for k in ("total_cache_n", "per_request_accept_rate", "server_accept_rate",
+              "decode_expert_hit_rate_mean", "decode_expert_hit_rate_weighted"):
         if k in A["aggregate"] or k in B["aggregate"]:
             keys.append(k)
     print(f"{'metric':<24} {'A':>14} {'B':>14} {'delta':>10}")
@@ -422,11 +530,23 @@ def diff(a, b):
         s = f"{d:>+10.4f}" if isinstance(d, float) else f"{d:>+10}"
         print(f"{k:<24} {va:>14} {vb:>14} {s}")
     by_a = {x["name"]: x for x in A["results"]}
-    print("\n{:<20} {:>8} {:>8} {:>8}".format("prompt", "A", "B", "delta"))
+    show_hit = any(x.get("expert_hit_rate") is not None for x in A["results"]) or \
+               any(x.get("expert_hit_rate") is not None for x in B["results"])
+    def _cell(v, w, signed=False):
+        return f"{v:>{w}.3f}" if v is not None else f"{'n/a':>{w}}"
+    print("\n{:<20} {:>8} {:>8} {:>8}".format("prompt", "A acc", "B acc", "delta"), end="")
+    if show_hit:
+        print("   {:>8} {:>8} {:>8}".format("A hit", "B hit", "delta"), end="")
+    print()
     for rb in B["results"]:
         ra = by_a.get(rb["name"]) or {}
         ar = ra.get("accept_rate") or 0; br = rb.get("accept_rate") or 0
-        print(f"{rb['name']:<20} {ar:>8.3f} {br:>8.3f} {br-ar:>+8.3f}")
+        line = f"{rb['name']:<20} {ar:>8.3f} {br:>8.3f} {br-ar:>+8.3f}"
+        if show_hit:
+            ah, bh = ra.get("expert_hit_rate"), rb.get("expert_hit_rate")
+            line += "   " + _cell(ah, 8) + " " + _cell(bh, 8) + " " + \
+                    (f"{bh - ah:>+8.3f}" if ah is not None and bh is not None else f"{'n/a':>8}")
+        print(line)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--url", default="http://127.0.0.1:8090")
@@ -443,6 +563,12 @@ ap.add_argument("--no-thinking", action="store_true", help="Strata: send enable_
 ap.add_argument("--effort", help="Strata: reasoning_effort (low, medium, high, xhigh)")
 ap.add_argument("--no-probe", action="store_true", help="skip the engine/model metadata probes")
 ap.add_argument("--probe-timeout", type=float, default=10.0, help="timeout (s) for metadata endpoint probes")
+ap.add_argument("--no-expert-cache", action="store_true",
+                help="do not query /metrics after each prompt for the decode expert cache hit rate")
+ap.add_argument("--expert-poll-attempts", type=int, default=6,
+                help="how many times to re-read /metrics looking for the request's record (default 6)")
+ap.add_argument("--expert-poll-interval", type=float, default=0.7,
+                help="seconds between those /metrics re-reads (default 0.7)")
 a = ap.parse_args()
 if a.diff: diff(*a.diff)
 else: run(a)
