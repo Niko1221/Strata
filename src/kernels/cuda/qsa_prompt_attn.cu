@@ -1,5 +1,7 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm120_series.hpp"
+#include "strata/core/defaults_026.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/gfx12_platform_defaults.hpp"
@@ -17,6 +19,8 @@
 
 #include <atomic>
 #include <cstdio>
+#include <vector>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
@@ -2241,6 +2245,34 @@ bool hip_wmma_usable(int64_t n_q, int64_t cap) {
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                  const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
+    {   // STRATA_QSA_STAT=1 (diagnostic): how much consecutive queries' selections overlap (the row-union attention's sharing factor)
+        static const bool stat_on = std::getenv("STRATA_QSA_STAT") != nullptr;
+        static int stat_calls = 0;
+        if (stat_on && n_q >= 2048 && stat_calls < 4) {
+            ++stat_calls;
+            cudaStreamSynchronize(st);
+            std::vector<int32_t> h((size_t) (n_q * cap)), hs((size_t) (n_q * kStepCount));
+            cudaMemcpy(h.data(), ids, h.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(hs.data(), steps, hs.size() * 4, cudaMemcpyDeviceToHost);
+            for (int R : {4, 8, 16, 32}) {
+                double mean_n = 0, mean_u = 0; int64_t groups = 0;
+                for (int64_t g0 = n_q / 2; g0 + R <= n_q; g0 += 4 * R) {   // the second half of the chunk (longer contexts)
+                    std::vector<int32_t> all;
+                    int64_t sum_n = 0;
+                    for (int r = 0; r < R; ++r) {
+                        const int n = hs[(size_t) (g0 + r) * kStepCount + kStepWidth];
+                        sum_n += n;
+                        all.insert(all.end(), h.begin() + (size_t) (g0 + r) * cap, h.begin() + (size_t) (g0 + r) * cap + n);
+                    }
+                    std::sort(all.begin(), all.end());
+                    const int64_t u = std::unique(all.begin(), all.end()) - all.begin();
+                    mean_n += (double) sum_n / R; mean_u += (double) u; ++groups;
+                }
+                if (groups) std::fprintf(stderr, "strata qsa stat: call %d n_q %lld cap %lld rows/group %d: mean selection %.0f, mean union %.0f (x%.2f; K/V reads per row %.2fx lower)\n",
+                                         stat_calls, (long long) n_q, (long long) cap, R, mean_n / groups, mean_u / groups, mean_u / mean_n, R * mean_n / mean_u);
+            }
+        }
+    }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
@@ -2418,12 +2450,16 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             if (pf_env == 1 || (pf_env < 0 && t75 && strata::sm75_series())) return launch<1, true>(q, pools, ids, steps, cap, s, attn, n_q, st);
             return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         }
-        // STRATA_PROMPT_ATTN_IMMA=1 (opt-in, sm_80+): both products on INT8 tensor cores (prompt_attn_i8v3_kernel)
+        // STRATA_PROMPT_ATTN_IMMA (sm_80+): both products on INT8 tensor cores (prompt_attn_i8v3_kernel).  ON by default since 0.2.7 on every
+        // card that has them (Ampere and newer, CUDA builds; not Turing, Volta or Pascal, which have no int8 m16n8k32 MMA this kernel needs):
+        // +1.6% / +1.8% prompt at 8K / 16K on the RTX PRO 5000 (sm_120) and +1.1% / +1.3% at 8K / 16K on 2x RTX A4000 (sm_86), decode unchanged,
+        // 5 pairs each; another summation order (~1e-7), so a near-tie can flip a prompt's first token.  Sm_80, 8.9, 9.0 and the datacentre
+        // Blackwells run the same kernel unmeasured.  STRATA_PROMPT_ATTN_IMMA=0 is the off switch (the v2 i8 kernel of 0.2.6), =1 as the default.
         if (g_pa_imma < 0) {
             const char* v = std::getenv("STRATA_PROMPT_ATTN_IMMA");
-            g_pa_imma = v != nullptr && v[0] == '1' ? 1 : 0;
+            g_pa_imma = v == nullptr ? 2 : (v[0] == '1' ? 1 : 0);   // 2: the default (on where the kernel can run)
         }
-        if (g_pa_imma == 1 && !turing) return launch_i8v3(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (!turing && (g_pa_imma == 1 || (g_pa_imma == 2 && strata::prompt_attn_imma_default(false, 80, strata::qwen_defaults_026())))) return launch_i8v3(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;

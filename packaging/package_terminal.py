@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the self-contained Strata Terminal distribution for Windows x64, Linux x86_64 or macOS arm64.
+"""Build the self-contained Strata Terminal distribution for Windows x64, Linux x86_64, Linux aarch64 (the DGX Spark) or macOS arm64.
 
 The requirement this exists for (checklist P04, and the owner's rule that starting or serving never fetches Python
 packages from the internet): a user installs the terminal without Desktop, and needs no development checkout, no
@@ -76,6 +76,11 @@ PYTHON_PINS = {
         "sha256": "5864001bf969db329fadc2b654c4878c6027d170c6bd77e28f88666260bcaf63",
         "python": "python/bin/python3", "archive": "tar.gz",
     },
+    "linux-aarch64": {
+        "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-aarch64-unknown-linux-gnu-install_only.tar.gz",
+        "sha256": "b342ccfb577fda349d0237c98b24848234ca767c10f034628a5ff9fc858d662f",
+        "python": "python/bin/python3", "archive": "tar.gz",
+    },
     "darwin-arm64": {
         "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz",
         "sha256": "83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8",
@@ -138,6 +143,8 @@ def host_target() -> str:
         return "windows-x86_64"
     if sys.platform.startswith("linux") and machine in ("x86_64", "amd64"):
         return "linux-x86_64"
+    if sys.platform.startswith("linux") and machine in ("aarch64", "arm64"):
+        return "linux-aarch64"
     if sys.platform == "darwin" and machine in ("arm64", "aarch64"):
         return "darwin-arm64"
     raise SystemExit(f"no terminal target for {sys.platform}/{machine}")
@@ -333,7 +340,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="directory to write the archive into")
     ap.add_argument("--target", choices=sorted(PYTHON_PINS), default=None,
-                    help="windows-x86_64, linux-x86_64 or darwin-arm64 (default: this machine's)")
+                    help="windows-x86_64, linux-x86_64, linux-aarch64 or darwin-arm64 (default: this machine's)")
     ap.add_argument("--version", default=None, help="version label (default: read from the source)")
     ap.add_argument("--skip-deps", action="store_true",
                     help="skip the locked install (layout checks only; the result is NOT distributable)")

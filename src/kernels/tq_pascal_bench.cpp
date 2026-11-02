@@ -1,4 +1,4 @@
-// src/kernels/tq_pascal_bench.cpp - the Gyro trellis decode kernels (TQ2_T 144, TQK6 145, TQK7 146) on synthetic blocks.
+// src/kernels/tq_pascal_bench.cpp - the Gyro trellis decode kernels (TQ2_T 144, TQK6 145, TQK7 146 and Gyro-L's TQP5-7 147-149) on synthetic blocks.
 //
 //     build/tq_pascal_bench            checks: the decode-once kernels against the per-column ones (bitwise), and a
 //                                      checksum of every output, so two builds can be compared byte for byte
@@ -10,6 +10,8 @@
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+
+#include "ggml-common-tq.h"   // tq_lut_f16: the codebook, as host data
 
 #include <cuda_runtime.h>
 
@@ -45,7 +47,10 @@ T* dalloc(size_t n) {
     return p;
 }
 
-const char* name_of(int t) { return t == 144 ? "TQ2_T" : t == 145 ? "TQK6" : t == 146 ? "TQK7" : t == 42 ? "Q2_0" : "?"; }
+const char* name_of(int t) {
+    return t == 144 ? "TQ2_T" : t == 145 ? "TQK6" : t == 146 ? "TQK7" : t == 147 ? "TQP5" : t == 148 ? "TQP6" : t == 149 ? "TQP7"
+         : t == 42 ? "Q2_0" : "?";
+}
 
 uint64_t fnv(const void* p, size_t n, uint64_t h = 1469598103934665603ull) {
     const uint8_t* b = (const uint8_t*) p;
@@ -206,6 +211,124 @@ void check_grouped(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::m
     if (!ok) { std::printf("  %zu of %zu floats differ%s\n", diff, a.size(), finite ? "" : ", non-finite outputs"); ++g_fail; }
 }
 
+// ---- Gyro-L pair trellis (TQP5/6/7, ggml 147-149) against a reference written from the format definition (no ggml):
+// state t of a block = the 16 stream bits that start at bit (63 - t) * K, LSB first, circular over 64 * K bits (15 bits
+// are used); the step's two weights are the first pair of the state's codebook entry, times the block's fp16 scale.
+uint32_t tqp_ref_state(const uint8_t* qs, int K, int t) {
+    const int nbits = 64 * K;
+    uint32_t s = 0;
+    for (int b = 0; b < 16; ++b) {
+        const int pos = ((63 - t) * K + b) % nbits;
+        s |= (uint32_t) ((qs[pos >> 3] >> (pos & 7)) & 1) << b;
+    }
+    return s & 0x7FFFu;
+}
+
+float half_to_f(uint16_t h) {   // normal and subnormal fp16 (no inf / nan in these tests)
+    const int e = (h >> 10) & 31, m = h & 1023;
+    const float v = e == 0 ? std::ldexp((float) m, -24) : std::ldexp((float) (1024 + m), e - 25);
+    return (h & 0x8000) ? -v : v;
+}
+
+uint16_t f_to_half_rn(float f) {   // round to nearest even, the GPU's __float2half_rn
+    uint32_t x;
+    std::memcpy(&x, &f, 4);
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const int e = (int) ((x >> 23) & 0xFF) - 127 + 15;
+    uint32_t m = x & 0x7FFFFFu;
+    if (e >= 31) return (uint16_t) (sign | 0x7C00u);
+    if (e <= 0) {
+        if (e < -10) return (uint16_t) sign;
+        m |= 0x800000u;
+        const int shift = 14 - e;
+        uint32_t half = m >> shift;
+        const uint32_t rem = m & ((1u << shift) - 1), mid = 1u << (shift - 1);
+        if (rem > mid || (rem == mid && (half & 1u))) ++half;
+        return (uint16_t) (sign | half);
+    }
+    uint32_t half = ((uint32_t) e << 10) | (m >> 13);
+    const uint32_t rem = m & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) ++half;
+    return (uint16_t) (sign | half);
+}
+
+// the weights of `rows` rows of `n` values, as floats (d * codebook, unrounded)
+std::vector<float> tqp_ref_weights(int t, const std::vector<uint8_t>& w, int64_t rows, int64_t n) {
+    const int K = t - 142;   // 147 -> 5, 148 -> 6, 149 -> 7
+    const size_t bs = k::iq_row_bytes(t, 128);
+    std::vector<float> out((size_t) (rows * n));
+    for (size_t b = 0; b < (size_t) (rows * n / 128); ++b) {
+        const uint8_t* blk = &w[b * bs];
+        uint16_t hd;
+        std::memcpy(&hd, blk, 2);
+        const float d = half_to_f(hd);
+        for (int step = 0; step < 64; ++step) {
+            const uint32_t s = tqp_ref_state(blk + 2, K, step);
+            const uint32_t x = (s & 0x7FFFu) * 0x9e3779b1u;
+            const uint32_t pt = x >> 21;
+            out[b * 128 + 2 * step + 0] = d * half_to_f(tq_lut_f16[2 * pt + 0]);
+            out[b * 128 + 2 * step + 1] = d * half_to_f(tq_lut_f16[2 * pt + 1]);
+        }
+    }
+    return out;
+}
+
+void check_tqp_reference(int t, int n_in, int n_out, cudaStream_t s, std::mt19937& rng) {
+    const auto w = random_rows(t, n_out, n_in, rng);
+    const auto ref = tqp_ref_weights(t, w, n_out, n_in);
+    uint8_t* dw = dalloc<uint8_t>(w.size());
+    ck(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice), "w");
+    // (1) the prompt path's fp16 dequantizer: bit for bit the fp16 of the reference weights
+    const int64_t nv = (int64_t) n_out * n_in;
+    uint16_t* dh = dalloc<uint16_t>((size_t) nv);
+    k::iq_dequant_f16(t, dw, nv, dh, s);
+    ck(cudaStreamSynchronize(s), "sync");
+    std::vector<uint16_t> h((size_t) nv);
+    ck(cudaMemcpy(h.data(), dh, h.size() * 2, cudaMemcpyDeviceToHost), "h");
+    size_t bad = 0;
+    for (size_t i = 0; i < h.size(); ++i) bad += h[i] != f_to_half_rn(ref[i]);
+    std::printf("tqp ref %-6s dequant_f16 %5d x %5d: %zu of %zu fp16 values differ from the definition  %s\n", name_of(t), n_out, n_in,
+                bad, h.size(), bad ? "FAIL" : "bitwise equal");
+    g_fail += bad != 0;
+    // (2) the decode kernels (int8 codebook, q8_1 activations): relative L1 error against the float weights . the
+    // dequantized q8_1 activations, in double, below the 3e-2 every expert type gets in native_expert_parity
+    const int nc = 3;
+    const auto x = random_x((size_t) nc * n_in, rng);
+    float* dx = dalloc<float>(x.size());
+    ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
+    uint8_t* dxq = dalloc<uint8_t>((size_t) nc * (n_in / 32) * 36);
+    k::quantize_q8_1_rows(dx, nc, n_in, dxq, s);
+    float* dy = dalloc<float>((size_t) nc * n_out);
+    k::iq_mmvq(t, dw, dxq, dy, n_in, n_out, nc, s);
+    ck(cudaStreamSynchronize(s), "sync");
+    std::vector<float> y((size_t) nc * n_out);
+    ck(cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost), "y");
+    std::vector<uint8_t> xq((size_t) nc * (n_in / 32) * 36);
+    ck(cudaMemcpy(xq.data(), dxq, xq.size(), cudaMemcpyDeviceToHost), "xq");
+    double l1 = 0, l1ref = 0;
+    for (int c = 0; c < nc; ++c) {
+        std::vector<double> xd((size_t) n_in);
+        for (int b = 0; b < n_in / 32; ++b) {
+            const uint8_t* blk = &xq[((size_t) c * (n_in / 32) + b) * 36];
+            uint16_t hd;
+            std::memcpy(&hd, blk, 2);
+            const double d = half_to_f(hd);
+            for (int j = 0; j < 32; ++j) xd[(size_t) b * 32 + j] = d * (double) (int8_t) blk[4 + j];
+        }
+        for (int r = 0; r < n_out; ++r) {
+            double acc = 0;
+            for (int i = 0; i < n_in; ++i) acc += (double) ref[(size_t) r * n_in + i] * xd[(size_t) i];
+            l1 += std::fabs((double) y[(size_t) c * n_out + r] - acc);
+            l1ref += std::fabs(acc);
+        }
+    }
+    const double rel = l1 / l1ref;
+    std::printf("tqp ref %-6s mmvq %5d x %5d x %d cols: relative L1 error %.2e (bound 3e-2)  %s\n", name_of(t), n_out, n_in, nc, rel,
+                rel < 3e-2 ? "ok" : "FAIL");
+    g_fail += !(rel < 3e-2);
+    cudaFree(dw); cudaFree(dh); cudaFree(dx); cudaFree(dxq); cudaFree(dy);
+}
+
 float time_ms(cudaStream_t s, int it, const auto& fn) {
     cudaEvent_t e0, e1;
     cudaEventCreate(&e0);
@@ -286,6 +409,7 @@ int main(int argc, char** argv) {
     cudaGetDeviceProperties(&prop, 0);
     std::printf("device %s cc %d.%d\n", prop.name, prop.major, prop.minor);
     std::mt19937 rng(18);
+    // Gyro-S / Gyro-M types first, on the generator they always had: their "SUM" lines are the same bits as before the pair types
     for (int t : {144, 145, 146}) {
         check_mmvq(t, 2560, 67, s, rng);
         check_mmvq(t, 1024, 5, s, rng);
@@ -299,6 +423,19 @@ int main(int argc, char** argv) {
         check_grouped(gu, 144, 2560, 512, s, rng);
         check_grouped(gu, 146, 2048, 256, s, rng);
     }
+    // Gyro-L's pair trellis (own generator): decode-once == per-column, then a reference from the format definition
+    // (fp16 dequantizer bit for bit, decode kernels to 3e-2)
+    std::mt19937 rng_p(19);
+    for (int t : {147, 148, 149}) {
+        check_mmvq(t, 2560, 67, s, rng_p);
+        check_mmvq(t, 1024, 5, s, rng_p);
+        check_tqp_reference(t, 2560, 67, s, rng_p);
+        check_tqp_reference(t, 1024, 5, s, rng_p);
+        check_grouped(t, t, 2560, 640, s, rng_p);   // the pair trellis in both roles, as its file has it (tqp6 / tqp6)
+        check_grouped(t, t, 5120, 640, s, rng_p);
+    }
+    check_grouped(148, 146, 2560, 640, s, rng_p);
+    check_grouped(145, 148, 2560, 640, s, rng_p);
     if (do_bench) bench(s, rng);
     std::printf("tq_pascal_bench: %d failures\n", g_fail);
     cudaStreamDestroy(s);

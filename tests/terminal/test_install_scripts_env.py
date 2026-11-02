@@ -26,7 +26,7 @@ class Text(unittest.TestCase):
         self.assertIn("Windows on ARM PC", self.ps1)
         self.assertIn("no engine for ARM", self.ps1)
         self.assertNotIn("has no Strata Terminal yet", self.ps1)
-        self.assertIn("ARM processor", self.sh)
+        self.assertIn("NVIDIA DGX Spark", self.sh)      # 0.2.7.1: Linux ARM64 installs the Terminal (the engine is for the Spark only)
         self.assertIn("Apple silicon", self.sh)
 
     def test_tls12_proxy_sign_in_and_the_real_error_text(self):

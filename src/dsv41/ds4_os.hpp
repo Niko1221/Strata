@@ -6,6 +6,10 @@
 // does it for GLM: no FILE_FLAG_RANDOM_ACCESS - the page cache must keep what it read.)
 #pragma once
 
+#if defined(__APPLE__)
+#include "ds4_os_apple.h"   // the Linux calls the body uses, on macOS
+#endif
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -89,7 +93,13 @@ inline fd_t open_direct(const std::string& path) {
     return h == INVALID_HANDLE_VALUE ? kBadFd : (fd_t) h;
 #else
     const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
-    return fd < 0 ? kBadFd : (fd_t) fd;
+    if (fd < 0) return kBadFd;
+#if defined(__APPLE__)
+    // (O_DIRECT is 0 here: without F_NOCACHE these reads went through the unified buffer cache at 3.4 GB/s; the disk does 10-18 GB/s
+    // unbuffered, and the experts' pages no longer push the CPU lane's hot ones out of the cache)
+    if (std::getenv("DS4_MAC_BUFFERED_READS") == nullptr) fcntl(fd, F_NOCACHE, 1);
+#endif
+    return (fd_t) fd;
 #endif
 }
 /// [off, off + n) through an unbuffered descriptor into dst, a kDirectAlign-aligned buffer of at least
@@ -112,6 +122,36 @@ inline bool pread_direct(fd_t f, void* dst, uint64_t n, uint64_t off) {
     if (ev.h == nullptr) return false;
     const uint64_t a0 = off & ~(kDirectAlign - 1), need = direct_span(off, n), want = (off - a0) + n;
     uint8_t* p = (uint8_t*) dst;
+    {   // DS4_READ_SPLIT (default 1): a read of 2 MB or more goes out as that many overlapped reads at once (a deeper queue for one
+        // expert matrix; on a file with no view the drive does 6.5 GB/s at a queue of 4 against 3.4 at 1)
+        static const int split = std::getenv("DS4_READ_SPLIT") ? std::max(1, std::min(16, std::atoi(std::getenv("DS4_READ_SPLIT")))) : 1;
+        if (split > 1 && need >= (2ull << 20) && need < (1ull << 30)) {
+            const uint64_t seg = (((need + split - 1) / split) + kDirectAlign - 1) & ~(kDirectAlign - 1);
+            struct SOv { OVERLAPPED ov; HANDLE h; uint64_t len; };
+            SOv o[16];
+            int cnt = 0;
+            bool okk = true;
+            for (uint64_t at = 0; at < need && cnt < 16; at += seg, ++cnt) {
+                o[cnt].ov = OVERLAPPED{};
+                o[cnt].len = std::min(seg, need - at);
+                o[cnt].h = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                const uint64_t fat = a0 + at;
+                o[cnt].ov.Offset = (DWORD) (fat & 0xffffffffu);
+                o[cnt].ov.OffsetHigh = (DWORD) (fat >> 32);
+                o[cnt].ov.hEvent = o[cnt].h;
+                if (!ReadFile((HANDLE) f, p + at, (DWORD) o[cnt].len, nullptr, &o[cnt].ov) && GetLastError() != ERROR_IO_PENDING) okk = false;
+            }
+            uint64_t total = 0;
+            for (int i = 0; i < cnt; ++i) {
+                DWORD r = 0;
+                if (!GetOverlappedResult((HANDLE) f, &o[i].ov, &r, TRUE) && GetLastError() != ERROR_HANDLE_EOF) okk = false;
+                total += r;
+                if (r != o[i].len && i + 1 < cnt) okk = false;   // (only the last segment may be short, at the file's end)
+                CloseHandle(o[i].h);
+            }
+            return okk && total >= want;
+        }
+    }
     uint64_t got = 0;
     while (got < need) {
         const DWORD ask = (DWORD) std::min<uint64_t>(need - got, 1ull << 30);   // (a multiple of 4096)
@@ -395,6 +435,45 @@ inline bool in_ram(const void* p, size_t n) {
     return resident_sampled(p, n, 8);
 #else
     return resident(p, n);
+#endif
+}
+
+/// Bytes free in the kernel's explicit huge-page pool (HugePages_Free x Hugepagesize); 0 elsewhere or when unreadable.
+/// (MemAvailable does not count a reserved pool, so a budget that must see it - the copy arena on DS4_COPY_HUGETLB -
+/// adds this.)
+inline uint64_t huge_free_bytes() {
+#if defined(_WIN32)
+    return 0;
+#else
+    std::FILE* f = std::fopen("/proc/meminfo", "r");
+    if (f == nullptr) return 0;
+    char line[256];
+    uint64_t pages = 0, size_kb = 0;
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+        unsigned long long v = 0;
+        if (std::sscanf(line, "HugePages_Free: %llu", &v) == 1) pages = v;
+        else if (std::sscanf(line, "Hugepagesize: %llu kB", &v) == 1) size_kb = v;
+    }
+    std::fclose(f);
+    return pages * size_kb * 1024ull;
+#endif
+}
+
+/// Anonymous memory on explicit 2 MB huge pages (MAP_HUGETLB, from the kernel's pool - reserve it first, e.g.
+/// `sysctl vm.nr_hugepages=N`): rounded up to a whole number of huge pages, `*got` its size.  nullptr: the pool is empty
+/// or the kernel cannot.  (Unlike THP, a pin of this memory keeps 2 MB pages: a DMA from it does not need 4 KB
+/// translations, which is what DS4_COPY_PIN's registered arena wanted.)
+inline void* huge_alloc(size_t bytes, size_t* got = nullptr) {
+#if defined(_WIN32) || defined(__APPLE__)   // (macOS has no MAP_HUGETLB)
+    (void) bytes, (void) got;
+    return nullptr;
+#else
+    const size_t hp = (size_t) 2 << 20;
+    const size_t hb = (bytes + hp - 1) / hp * hp;
+    void* m = ::mmap(nullptr, hb, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (m == MAP_FAILED) return nullptr;
+    if (got != nullptr) *got = hb;
+    return m;
 #endif
 }
 

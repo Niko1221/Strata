@@ -75,7 +75,9 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
 /// Free device memory for the expert cache.  On a unified memory system - one memory for the CPU and the GPU, such as
 /// the DGX Spark (GB10); CUDA reports it as cudaDevAttrIntegrated - cudaMemGetInfo counts only MemFree, not the page cache - which, with the experts read from the GGUF in place, is mostly those
 /// files' clean pages and gives way to a device allocation.  There the figure is MemAvailable less 6 GiB for the OS
-/// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.
+/// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.  On Windows with an NVIDIA
+/// card STRATA_VRAM_FREE=device (opt-in) takes the smaller of that and NVML's figure for the whole card: under WDDM
+/// cudaMemGetInfo does not count what other processes hold.  It can only make the figure smaller.
 size_t device_free_bytes();
 
 /// One piece of an expert blob that lives contiguously in a source's own memory: `n` bytes at `p`, to land `at` bytes into the blob.
@@ -217,6 +219,14 @@ public:
     /// Slots filled so far, for the startup report.
     int64_t fills() const { return fills_; }
 
+    /// STRATA_EXPERT_NIBBLE=1 (strata/core/expert_nibble.hpp): called once the startup fill has written every slot
+    /// (some of them as 4-bit codes, not GGUF blocks) and checked them.  From then on no slot may be written through
+    /// this class: the fill_slot calls stop the engine (they would write GGUF bytes, possibly into a 4-bit slot, and a
+    /// wrong expert gives a plausible token, never an error), and `admit` claims nothing.  Never called with the switch
+    /// off: an unsealed cache is the one above.
+    void seal() { sealed_ = true; }
+    bool sealed() const { return sealed_; }
+
     /// The elastic K/V (--kv-grow): the arena in a VMM range (vmm.hpp) instead of one cudaMalloc, so the K/V can take
     /// single chunks of it and give them back. Applies to the next `open`; ignored where VMM is not available.
     static void set_vmm(bool enabled);
@@ -266,6 +276,7 @@ private:
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
     std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
     int64_t admitted_ = 0;
+    bool sealed_ = false;               ///< STRATA_EXPERT_NIBBLE: `seal` was called (no slot is written after it)
 };
 
 }  // namespace strata::core

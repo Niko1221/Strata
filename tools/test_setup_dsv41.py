@@ -50,9 +50,9 @@ def run(fn, *a, **kw):
 class Entries(unittest.TestCase):
     def test_pinned_and_hashed(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
-        self.assertEqual(setup.HF_REVISIONS[REPO], "f924b94f19c1fea02c06a65c8475b0a45e2b88b1")
+        self.assertEqual(setup.HF_REVISIONS[REPO], "8a6ec9cf118e785a362ea94ee123c61c70553be6")
         self.assertRegex(fam["hf"], SHA)
-        self.assertTrue(fam["hf"].endswith(f"{REPO}/resolve/f924b94f19c1fea02c06a65c8475b0a45e2b88b1/UD-Q8_K_XL/"))
+        self.assertTrue(fam["hf"].endswith(f"{REPO}/resolve/8a6ec9cf118e785a362ea94ee123c61c70553be6/UD-Q8_K_XL/"))
         self.assertIs(setup.REPO_PINS[REPO], setup.DSV41_FILES)
         shards = fam["models"]["UD-Q8_K_XL"]["shards"]
         self.assertEqual(len(shards), 9)
@@ -77,6 +77,11 @@ class Entries(unittest.TestCase):
 
 
 class Fit(unittest.TestCase):
+    def setUp(self):                                  # the AMD rules below are the Linux ones, whatever box the test runs on
+        p = mock.patch.object(dsv41_fit, "_on_windows", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_the_numbers_of_the_model(self):
         self.assertAlmostEqual(dsv41_fit.WEIGHTS_GB, 305.6, delta=0.1)
         self.assertAlmostEqual(dsv41_fit.EXPERTS_GB, 288.8, delta=0.1)
@@ -171,7 +176,7 @@ class Install(unittest.TestCase):
             self.calls.append(("config", path.name))
 
         patches = [mock.patch.object(setup, "download", lambda url, dst, what=None: self.calls.append(("get", url, dst))),
-                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False: self.calls.append(("sha", s.name, own))),
+                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False, also=(): self.calls.append(("sha", s.name, own))),
                    mock.patch.object(setup, "free_gb", lambda p: 900.0),
                    mock.patch.object(setup, "github_reachable", lambda timeout=10.0: self.github_up),
                    mock.patch.object(setup, "pip_install", lambda *a, **k: None),
@@ -194,6 +199,7 @@ class Install(unittest.TestCase):
             self.exe.write_text("x")
         cards = cards or FOUR
         kw.setdefault("model", "UD-Q8_K_XL")
+        kw.setdefault("vision", "no")            # the older tests are about the files of the model; pictures-on has its own tests (PicturesByDefault)
         gpu = {"index": 0, "count": len(cards), "vram_gb": 32.0, "name": "R9700", "cards": cards}
         return run(setup.install_dsv41, args(models_dir=str(self.root / "models"), **kw), "deepseek41", gpu, True, [], 13, [], 8080, ram,
                    None, cards)
@@ -220,7 +226,7 @@ class Install(unittest.TestCase):
         self.assertEqual(self.cfg["engine_ready_s"], 3600)
         self.assertEqual(self.cfg["backend"], "hip")
         self.assertTrue(self.cfg["tokenizer"].endswith("tokenizer"))
-        self.assertNotIn("--vision", a)
+        self.assertEqual(a[a.index("--vision") + 1], "off")     # (this test asks for no pictures: they are on by default, see PicturesByDefault)
         self.assertNotIn("--mtp", a)
         self.assertIn("4 cards, one block of layers on each", out)
         self.assertIn("n-gram table", out)
@@ -291,29 +297,52 @@ class Install(unittest.TestCase):
     def test_pictures_and_flash_next_settings_are_said(self):
         rc, out = self.install(vision="yes", kv="int8", context=131072)
         self.assertEqual(rc, 0, out)
-        self.assertIn("cannot read pictures in this Strata version", out)
+        self.assertNotIn("cannot read pictures", out)                          # 0.2.7: the engine's own tower reads them
+        a = self.cfg["args"]
+        self.assertEqual(a[a.index("--vision") + 1], "on")
         self.assertIn("Flash-Next settings", out)
         self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "131072")
         self.assertIn("checked at 4K and 8K", out)
 
 
 class Catalog(unittest.TestCase):
+    def setUp(self):                                  # the AMD rules below are the Linux ones, whatever box the test runs on
+        p = mock.patch.object(dsv41_fit, "_on_windows", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_the_mcp_catalog_lists_the_size(self):
         import strata_mcp as M
         s = M.Strata(ROOT)
         fam = next(f for f in s.model_table({"ram_gb": 251.0, "gpus": [{**c, "usable": True} for c in FOUR], "engine_vendor": "amd"})
                    if f["family"] == "deepseek41")
-        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"])
+        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
         small_sets = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual((small_sets["IST-DAS-2.00bpw"]["download_gb"], small_sets["IST-DAS-2.25bpw"]["download_gb"]), (256.8, 273.8))
         self.assertTrue(small_sets["IST-DAS-2.00bpw"]["on_this_pc"].startswith("fits"))
         size = small_sets["UD-Q8_K_XL"]
-        self.assertEqual((size["model"], size["id"], size["download_gb"], size["images"]), ("UD-Q8_K_XL", "deepseek-v4.1-flash-ud-q8_k_xl", 508.4, False))
+        self.assertEqual((size["model"], size["id"], size["download_gb"], size["images"]), ("UD-Q8_K_XL", "deepseek-v4.1-flash-ud-q8_k_xl", 508.4, True))
         self.assertTrue(size["on_this_pc"].startswith("fits"))
         self.assertTrue(size["mem_total"] and size["multi_file"])
         self.assertEqual(size["gpu_options"]["recommended"], "all")
         small = next(f for f in s.model_table({"ram_gb": 32.0, "gpus": []}) if f["family"] == "deepseek41")
         self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for x in small["sizes"]))      # no card
+
+    def test_each_set_states_the_free_disk_it_needs_from_the_set_itself(self):
+        """The app's DeepSeek card says "Needs about N GB of free disk space": N is the set's whole download plus the pack and room to work, per set."""
+        import strata_mcp as M
+        s = M.Strata(ROOT)
+        table = s.model_table({"ram_gb": 251.0, "gpus": [{**c, "usable": True} for c in FOUR], "engine_vendor": "amd"})
+        fam = next(f for f in table if f["family"] == "deepseek41")
+        for size in fam["sizes"]:
+            self.assertEqual(size["disk_gb"], round(size["download_gb"] + dsv41_fit.DISK_HEADROOM_GB, 1), size["model"])
+        by = {x["model"]: x["disk_gb"] for x in fam["sizes"]}
+        self.assertNotEqual(by["IST-DAS-2.00bpw"], by["IST-DAS-2.25bpw"], "2.00 and 2.25 do not need the same disk")
+        self.assertGreater(by["IST-DAS-2.25bpw"], by["IST-DAS-2.00bpw"])
+        self.assertGreater(by["IST-DAS-2.00bpw"], by["IST-DAS-1.75bpw"])
+        for f in table:
+            if f["family"] != "deepseek41":
+                self.assertTrue(all(x["disk_gb"] is None for x in f["sizes"]), f["family"])
 
     def test_the_install_plan(self):
         import strata_mcp as M
@@ -322,7 +351,7 @@ class Catalog(unittest.TestCase):
                                           "cpu": {"avx2": True}}
         s.disk_free = lambda p: 2000.0
         plan, a = M.Tools(s).install_plan("deepseek41", "UD-Q8_K_XL", None, None, None, None, None, None, None, None, None)
-        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 8192, "no"))
+        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 8192, "yes"))   # 0.2.7: pictures on by default
         self.assertEqual(a[:6], ["--yes", "--no-start", "--family", "deepseek41", "--model", "UD-Q8_K_XL"])
         self.assertTrue(plan["ram"].startswith("fits"))
         for flag in ("--kv", "--low-ram", "--experimental-speed-projection"):
@@ -399,7 +428,7 @@ class OfficialSets(unittest.TestCase):
 
     def test_the_pinned_files(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
-        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"])         # the official sets first
+        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])         # the official sets first
         repo = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"
         self.assertEqual(setup.HF_REVISIONS[repo], "cb02422c900df489cea5833e8a92171224059b3c")
         self.assertIs(setup.REPO_PINS[repo], setup.DSV41_ISTA_FILES)
@@ -542,6 +571,108 @@ class LegacyFiles(unittest.TestCase):
             self.assertEqual(got, old)
 
 
+class SixShardLayout(unittest.TestCase):
+    """ISTA-DASLab's six-shard layout (2026-10-27, llama.cpp b11870+) beside the pinned four-shard one: both are accepted from files already here,
+    setup still downloads the pinned four-shard files (the owner moves the default later)."""
+
+    def models(self):
+        fam = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]
+        return {m: fam[m] for m in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw")}
+
+    def test_the_download_pin_and_the_four_shard_tables_did_not_move(self):
+        repo = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"
+        self.assertEqual(setup.HF_REVISIONS[repo], "cb02422c900df489cea5833e8a92171224059b3c")
+        self.assertEqual(len(setup.DSV41_ISTA_FILES), 13)
+        self.assertEqual(setup.DSV41_ISTA_FILES[setup.DSV41_ISTA_ENGRAM][1], "eb19f30d368d393784e1fc54fdfaffc427ebb2110bf3762fdf5a8fbb9a2d740a")
+        for m, d in self.models().items():
+            self.assertEqual(len(d["shards"]), 4, m)
+            self.assertTrue(all(n.endswith("-of-00004.gguf") for n in d["shards"]), m)
+
+    def test_the_six_shard_tables_are_five_files_a_set_with_the_hub_sizes_and_hashes(self):
+        self.assertEqual(len(setup.DSV41_ISTA6_FILES), 15)
+        for n, (size, sha) in setup.DSV41_ISTA6_FILES.items():
+            self.assertTrue(n.endswith("-of-00006.gguf"), n)
+            self.assertRegex(sha, r"^[0-9a-f]{64}$", n)
+            self.assertIn(n, setup.DSV41_ALL_FILES)
+            self.assertNotIn(n, setup.DSV41_ISTA_FILES)                         # never downloaded: not in the repository pin
+            self.assertNotIn(n, setup.REPO_PINS["ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"])
+        sums = {m: sum(setup.DSV41_ISTA6_FILES[n][0] for n in d["shards6"]) for m, d in self.models().items()}
+        self.assertEqual(sums, {"IST-DAS-2.00bpw": 138238967104, "IST-DAS-2.25bpw": 155225898368, "IST-DAS-1.75bpw": 120721194336})
+        for m, d in self.models().items():
+            self.assertEqual(len(d["shards6"]), setup.DSV41_ISTA6_SHARDS)
+            self.assertTrue(d["shards6"][0].endswith("-00001-of-00006.gguf"))
+            self.assertEqual(setup.DSV41_ISTA6_FILES[d["shards6"][0]][0], 5780704)       # the metadata shard: no tensors
+        self.assertEqual(setup.DSV41_ISTA6_FILES["DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00005-of-00006.gguf"],
+                         (2969539840, "7c8dbee99890f05dbc420eba6f44393f5228d06248fe61e1ae8ed002449c7549"))
+
+    def test_the_converted_engram_has_the_pinned_ones_name_and_size_and_another_hash_that_is_accepted_beside_it(self):
+        size, sha = setup.DSV41_ENGRAM_CONVERTED
+        pinned = setup.DSV41_ISTA_FILES[setup.DSV41_ISTA_ENGRAM]
+        self.assertEqual(size, pinned[0])
+        self.assertNotEqual(sha, pinned[1])
+        self.assertEqual(setup.DSV41_SHA_ALSO, {setup.DSV41_ISTA_ENGRAM: (sha,)})
+
+    def test_verify_accepts_the_other_engram_hash_and_marks_it(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "e.gguf"
+            f.write_bytes(b"x" * 8)
+            real = hashlib.sha256(b"x" * 8).hexdigest()
+            rc, out = run(setup.verify_sha256, f, 8, "0" * 64, own=True, also=(real,))
+            self.assertNotEqual(rc, 1, out)
+            self.assertIn("converted version", out)
+            self.assertEqual(f.with_name("e.gguf.done").read_text(), "sha256 " + real)
+            rc, out = run(setup.verify_sha256, f, 8, "0" * 64, own=True, also=(real,))             # the mark is enough the second time
+            self.assertNotEqual(rc, 1, out)
+            self.assertNotIn("checking", out)
+            f2 = Path(d) / "f.gguf"
+            f2.write_bytes(b"y" * 8)
+            with mock.patch.object(setup, "own_gguf_is_whole", return_value=False):
+                rc, out = run(setup.verify_sha256, f2, 8, "0" * 64, own=True, also=(real,))        # another file is still checked as before
+                self.assertEqual(rc, 1, out)
+
+    def test_layout_of_the_files_in_a_folder(self):
+        d = self.models()["IST-DAS-2.00bpw"]
+        four, six, legacy = list(d["shards"]), list(d["shards6"]), [setup.DSV41_LEGACY_NAMES[n] for n in d["shards"]]
+        of = lambda have: setup.dsv41_layout_of(d, set(have).__contains__)
+        self.assertEqual(of([]), "four")                                          # nothing there: the pinned files are what setup downloads
+        self.assertEqual(of(four), "four")
+        self.assertEqual(of(legacy), "four")                                      # the first release's names are four-shard files
+        self.assertEqual(of(six), "six")
+        self.assertEqual(of(six[:2]), "six")                                      # an incomplete six-shard set is still told as six: the missing ones are named
+        self.assertEqual(of(four + six), "four")                                  # both whole: the pinned set, as before
+        self.assertEqual(of(four[:2] + six), "six")                               # a stray four-shard file beside the whole six-shard set
+        self.assertEqual(of(four[:2] + six[:2]), "four")                          # neither whole
+
+    def test_parts_name_what_is_missing_in_the_layout_that_is_there(self):
+        d = self.models()["IST-DAS-2.25bpw"]
+        have = set(d["shards6"]) - {d["shards6"][2]}
+        layout, names, missing = setup.dsv41_parts(d, have.__contains__)
+        self.assertEqual((layout, names, missing), ("six", list(d["shards6"]), [d["shards6"][2]]))
+        have = set(d["shards"][:3])
+        layout, names, missing = setup.dsv41_parts(d, have.__contains__)
+        self.assertEqual((layout, len(names), missing), ("four", 4, [d["shards"][3]]))
+
+    def test_the_pack_says_which_layout_it_was_made_from(self):
+        with tempfile.TemporaryDirectory() as t:
+            pack = Path(t)
+            self.assertIsNone(setup.dsv41_pack_layout(pack))
+            (pack / "tensors.txt").write_text("file 0 x-00001-of-00006.gguf\nfile 1 y.gguf\nt a BF16 0 0 1 1\n")
+            self.assertEqual(setup.dsv41_pack_layout(pack), "six")
+            (pack / "tensors.txt").write_text("file 0 x-00001-of-00004.gguf\nt a BF16 0 0 1 1\n")
+            self.assertEqual(setup.dsv41_pack_layout(pack), "four")
+            (pack / "tensors.txt").write_text("file 0 model.gguf\nt a BF16 0 0 1 1\n")
+            self.assertIsNone(setup.dsv41_pack_layout(pack))
+
+    def test_the_folder_with_six_shard_names_is_found_from_the_parent(self):
+        with tempfile.TemporaryDirectory() as t:
+            sub = Path(t) / "2.00bpw"
+            sub.mkdir()
+            (sub / self.models()["IST-DAS-2.00bpw"]["shards6"][0]).write_bytes(b"x")
+            fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
+            self.assertEqual(setup.dsv41_folder(argparse.Namespace(gguf_dir=t, models_dir=t), fam, "t", "IST-DAS-2.00bpw"), sub)
+
+
 class Smallest(unittest.TestCase):
     """IST-DAS 1.75 bpw (IQ1_M): the smallest official set, recommended where 2.00 is tight, never forced."""
 
@@ -556,6 +687,10 @@ class Smallest(unittest.TestCase):
         self.assertEqual(setup.DSV41_ISTA_FILES[d["shards"][3]][0], 2188841824)
         self.assertEqual(sum(setup.DSV41_ISTA_FILES[n][0] for n in d["shards"]), 120_721_120_256)
         self.assertTrue(all(n not in setup.DSV41_LEGACY_NAMES.values() for n in d["shards"]))     # no first-release names for it
+        for n, (size, sha) in setup.DSV41_NEW_SHARD1.items():                                     # shard 1 after ISTA's 2026-10-26 template update
+            self.assertIn(n, setup.DSV41_ISTA_FILES)
+            self.assertNotEqual(setup.DSV41_ISTA_FILES[n][0], size)
+            self.assertNotEqual(setup.DSV41_ISTA_FILES[n][1], sha)
         cmd = setup.dsv41_pack_cmd(Path("/m"), d["shards"], Path("/s/e.gguf"), Path("/s/m.gguf"), Path("/s/d.gguf"), Path("/p"))
         self.assertIn("--dspark-noise-token", cmd)
         self.assertNotIn("--skip-tensors", cmd)
@@ -653,12 +788,97 @@ class InstallOfficial(Install):
         self.assertIn("model", pack[pack.index("--model") + 1] + "model")
         self.assertEqual(Path(pack[pack.index("--model") + 1]), sub)
 
+    def six_shard_folder(self, quant="IQ2_XXS", engram=True):
+        """A folder of the person's own with ISTA-DASLab's six-shard files of 2026-10-27 (stand-ins of 4 bytes) and the drafter beside it."""
+        own = self.root / "own6"
+        own.mkdir(parents=True)
+        names = [setup.DSV41_ISTA6_SHARD.format(quant=quant, i=i) for i in range(1, setup.DSV41_ISTA6_SHARDS + 1)]
+        for n in names:
+            (own / n).write_bytes(b"GGUF")
+        if engram:
+            (own / setup.DSV41_ISTA_ENGRAM).write_bytes(b"E")
+        (own / setup.DSV41_DSPARK).write_bytes(b"D")
+        tiny = {n: (4, "0" * 64) for n in names}
+        tiny[setup.DSV41_ISTA_ENGRAM] = (1, "0" * 64)
+        tiny[setup.DSV41_DSPARK] = (1, "0" * 64)
+        return own, names, tiny
+
+    def test_the_persons_six_shard_files_are_used_where_they_are_and_packed_with_the_engram_as_the_sixth(self):
+        own, names, tiny = self.six_shard_folder()
+        with mock.patch.dict(setup.DSV41_ALL_FILES, tiny):
+            rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("six-shard files of 2026-10-27", out)
+        self.assertEqual([c[2].name for c in self.calls if c[0] == "get"], [setup.DSV41_SHARD.format(i=1)])      # only the 5.8 MB metadata shard
+        self.assertEqual([c[1] for c in self.calls if c[0] == "sha"][:5], names)                                   # the five files are checked by name
+        pack = [c for c in self.calls if c[0] == "run"][-1][1]
+        self.assertEqual(pack[pack.index("--shards") + 1:pack.index("--engram")], names)
+        self.assertTrue(pack[pack.index("--engram") + 1].endswith(setup.DSV41_ISTA_ENGRAM))
+        self.assertEqual(Path(pack[pack.index("--model") + 1]), own)
+
+    def test_six_shard_files_without_the_engram_fetch_the_pinned_engram_and_nothing_else_big(self):
+        own, names, tiny = self.six_shard_folder(engram=False)
+        with mock.patch.dict(setup.DSV41_ALL_FILES, tiny):
+            rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 0, out)
+        get = [c for c in self.calls if c[0] == "get"]
+        self.assertEqual(sorted(c[2].name for c in get), sorted([setup.DSV41_ISTA_ENGRAM, setup.DSV41_SHARD.format(i=1)]))
+        engram = next(c for c in get if c[2].name == setup.DSV41_ISTA_ENGRAM)
+        self.assertIn("/resolve/cb02422c900df489cea5833e8a92171224059b3c/", engram[1])                              # the pin did not move
+
+    def test_a_folder_with_both_layouts_whole_is_used_as_the_pinned_four_shard_set(self):
+        own, names, tiny = self.six_shard_folder()
+        four = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards"]
+        for n in four:
+            (own / n).write_bytes(b"GGUF")
+            tiny[n] = (4, "0" * 64)
+        with mock.patch.dict(setup.DSV41_ALL_FILES, tiny):
+            rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 0, out)
+        pack = [c for c in self.calls if c[0] == "run"][-1][1]
+        self.assertEqual(pack[pack.index("--shards") + 1:pack.index("--engram")], four)
+        self.assertNotIn("six-shard files of 2026-10-27", out)
+
+    def make_pack(self, names):
+        pack = self.root / "data" / "packs" / "deepseek-v4.1-flash-ist-das-2.00bpw"
+        (pack / "tokenizer").mkdir(parents=True, exist_ok=True)
+        (pack / "tokenizer" / "vocab.json").write_text("{}")
+        (pack / "ds4.txt").write_text("vision.num_hidden_layers 32\nimage_token_id 129264\n")       # (the tower is there: only the files differ)
+        (pack / "tensors.txt").write_text("".join(f"file {i} {n}\n" for i, n in enumerate(names)) + "t embed.weight BF16 0 0 1 1\n")
+
+    def pack_runs(self):
+        return [c for c in self.calls if c[0] == "run" and any(str(x).endswith("pack_gguf.py") for x in c[1])]
+
+    def test_a_pack_made_from_the_other_layout_is_made_again_and_one_from_the_same_layout_is_kept(self):
+        own, names, tiny = self.six_shard_folder()
+        four = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards"]
+        self.make_pack(four + [setup.DSV41_ISTA_ENGRAM])                        # a pack of the four-shard files, the six-shard files now
+        with mock.patch.dict(setup.DSV41_ALL_FILES, tiny):
+            rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("made from the four-shard files of this set", out)
+        self.assertEqual(len(self.pack_runs()), 1)
+        self.make_pack(names + [setup.DSV41_ISTA_ENGRAM])                       # a pack of the six-shard files: kept
+        self.calls.clear()
+        with mock.patch.dict(setup.DSV41_ALL_FILES, tiny):
+            rc, out = self.install_ista(gguf_dir=str(own))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("building it again", out)
+        self.assertEqual(len(self.pack_runs()), 0)
+
+    def test_a_four_shard_pack_is_kept_for_the_pinned_four_shard_files(self):
+        self.make_pack(setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards"] + [setup.DSV41_ISTA_ENGRAM])
+        rc, out = self.install_ista()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("building it again", out)
+        self.assertEqual(len(self.pack_runs()), 0)
+
     def test_pack_info_profile_smoke_and_the_launch_flags(self):
         rc, out = self.install_ista()
         self.assertEqual(rc, 0, out)
         a = self.cfg["args"]
         self.assertEqual(a[a.index("--dspark") + 1], "auto")                    # never "off": that still loads the drafter and takes the VRAM
-        self.assertNotIn("off", a)
+        self.assertNotEqual(a[a.index("--dspark") + 1], "off")
         self.assertNotIn("--prefill-chunk", a)                                  # the engine's own default is the layer-major prompt path
         self.assertEqual(a[a.index("--dspark-conf") + 1], "0.65")                # never a floor below 0.3             # the layer-major prompt path
         self.assertNotIn("--ssd-cache", a)                                      # the store sizes itself
@@ -713,3 +933,52 @@ class InstallSmallest(InstallOfficial):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PicturesByDefault(Install):
+    """0.2.7: DeepSeek reads pictures with its own engine's tower, on by default: setup fetches the tower's weights (mmproj-BF16.gguf, a shared file),
+    packs them with the model and writes --vision on; --vision no leaves all three out."""
+
+    def test_default_fetches_the_tower_packs_it_and_says_on(self):
+        rc, out = self.install(vision=None)
+        self.assertEqual(rc, 0, out)
+        got = [c[2].name for c in self.calls if c[0] == "get"]
+        self.assertIn(setup.DSV41_MMPROJ, got)
+        self.assertEqual(got[-1], setup.DSV41_MMPROJ)
+        pack = [c for c in self.calls if c[0] == "run"][-1][1]
+        self.assertIn("--mmproj", pack)
+        self.assertTrue(str(pack[pack.index("--mmproj") + 1]).endswith(setup.DSV41_MMPROJ))
+        a = self.cfg["args"]
+        self.assertEqual(a[a.index("--vision") + 1], "on")
+        self.assertNotIn("cannot read pictures", out)
+
+    def test_vision_no_leaves_the_tower_out(self):
+        rc, out = self.install(vision="no")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn(setup.DSV41_MMPROJ, [c[2].name for c in self.calls if c[0] == "get"])
+        pack = [c for c in self.calls if c[0] == "run"][-1][1]
+        self.assertNotIn("--mmproj", pack)
+        a = self.cfg["args"]
+        self.assertEqual(a[a.index("--vision") + 1], "off")
+
+    def test_gpu_and_cpu_are_taken_as_yes_with_a_note(self):
+        rc, out = self.install(vision="cpu")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("own tower", out)
+        a = self.cfg["args"]
+        self.assertEqual(a[a.index("--vision") + 1], "on")
+
+    def test_a_pack_without_the_tower_is_made_again_with_it(self):
+        pack = self.root / "data" / "packs" / "deepseek-v4.1-flash-ud-q8_k_xl"
+        (pack / "tokenizer").mkdir(parents=True)
+        (pack / "tokenizer" / "vocab.json").write_text("{}")
+        (pack / "tensors.txt").write_text("x")
+        (pack / "ds4.txt").write_text("hidden_size 5120\n")
+        self.assertFalse(setup.dsv41_pack_has_tower(pack))
+        rc, out = self.install(vision=None)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("made without the picture reader", out)
+        self.assertTrue([c for c in self.calls if c[0] == "run" and "--mmproj" in c[1]])
+        pack.mkdir(parents=True, exist_ok=True)
+        (pack / "ds4.txt").write_text("vision.num_hidden_layers 32\nimage_token_id 129264\n")
+        self.assertTrue(setup.dsv41_pack_has_tower(pack))

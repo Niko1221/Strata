@@ -132,6 +132,23 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             for (int64_t c = 0; c < w; ++c) sel[c] = (int32_t) c;
             continue;
         }
+        if (std::getenv("QA_BLOCK4")) {   // the engine's selections are whole blocks of four cells (idx_block): 128 recent blocks + random older ones, then the tail cells
+            std::mt19937 r3((unsigned) (i / 4) * 2654435761u + 7);
+            const int64_t nbk = nkv / 4, take = std::min<int64_t>(nbk, w / 4);
+            std::vector<int32_t> blocks;
+            for (int64_t b = std::max<int64_t>(0, nbk - 128); b < nbk; ++b) blocks.push_back((int32_t) b);
+            std::vector<int32_t> rest;
+            for (int64_t b = 0; b < std::max<int64_t>(0, nbk - 128); ++b) rest.push_back((int32_t) b);
+            std::shuffle(rest.begin(), rest.end(), r3);
+            for (int64_t b = 0; (int64_t) blocks.size() < take && b < (int64_t) rest.size(); ++b) blocks.push_back(rest[b]);
+            std::sort(blocks.begin(), blocks.end());
+            std::vector<int32_t> v;
+            for (int32_t b : blocks) for (int r = 0; r < 4; ++r) v.push_back(b * 4 + r);
+            for (int64_t c = nbk * 4; c < nkv; ++c) v.push_back((int32_t) c);
+            steps[i * k::kStepCount + k::kStepWidth] = (int32_t) v.size();
+            std::copy(v.begin(), v.end(), sel);
+            continue;
+        }
         const int64_t recent = 512, older = w - recent;
         if ((int64_t) old_cells.size() != older) {   // the older cells: a set that drifts ~3% per query
             std::vector<int32_t> all((size_t) (nkv - recent));
@@ -298,6 +315,16 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 }
                 const double r = a / l;
                 const size_t at = (size_t) ((i * NH + h) * HD + d);
+                if (std::getenv("PARITY_DUMP2") && fmt == 1 && i == 0 && h == 0 && d == 0) {
+                    for (int c = 0; c < 4; ++c) for (int n = 0; n < 6; ++n) {
+                        const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + 0) * PS + cell % PS;
+                        double a2 = 0;
+                        for (int64_t dd = 0; dd < HD; ++dd) a2 += (double) q[(i * NH + n) * HD + dd] * ((double) kq[row * HD + dd] * h2f(ks[row * 4 + dd / 64]));
+                        std::printf("S c%d n%d ref %.5f new %.5f\n", c, n, a2 / 16.0 * 1.4426950408889634, (double) nw[c * 16 + n]);
+                    }
+                }
+                if (std::getenv("PARITY_DUMP") && i == 0 && (d == 3 || d == 70))
+                    std::printf("dump h%lld d%lld ref %.5f old %.5f new %.5f\n", (long long) h, (long long) d, r, (double) o[at], (double) nw[at]);
                 ref_scale = std::max(ref_scale, std::fabs(r));
                 err_old = std::max(err_old, std::fabs(o[at] - r));
                 err_new = std::max(err_new, std::fabs(nw[at] - r));

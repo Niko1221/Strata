@@ -16,7 +16,9 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::spec {
 
@@ -36,6 +38,20 @@ public:
     Pick choose(int t_mtp, int lookup_k, int match) const;
     /// After the round: the window it used, the drafts accepted, and the round's time (verify + commit + draft).
     void observe(bool lookup, int t, int accepted, int match, double round_ms);
+    /// Gated proposals, inside one generation: a round's committed outcome only, never its time. `t` is the
+    /// lookup window chosen before the draws, or the configured MTP window; both are fixed by the history. A
+    /// lookup window counts as a probe of its size, so a size whose cost is still guessed is tried kProbes times,
+    /// not every round. Round times include the next window's drafts and the rows past the accepted ones, whose
+    /// Philox counters the next rounds draw again, so they wait (defer_cost) or go to the live policy (observe).
+    void observe_committed(bool lookup, int t, int accepted, int match);
+    /// Gated proposals, inside one generation: a round's time, held until the committed position passes `end`,
+    /// the last Philox counter of any draw that time depends on (the window's drafts and rows, the next window's
+    /// drafts when the time includes them). Until then those counters can be drawn again by the next rounds and the
+    /// time (rejected rows' routing, the next draft's gated length) would steer a window by its own draws.
+    void defer_cost(int64_t end, int t, double round_ms);
+    /// Apply, in order, the held times whose `end` is below `committed` (the next window's first counter), exactly
+    /// as observe() prices a round, in the context bucket the round ran in.
+    void apply_costs(int64_t committed);
 
     /// --lookup-chain: how many of `k_avail` lookup tokens to append after an MTP window of `t_mtp` tokens whose
     /// drafts all hold with probability `p_mtp` (estimated from the draft layer's own probabilities): the k with the
@@ -96,6 +112,11 @@ private:
     static constexpr int kPBuckets = 8;
     std::array<double, kPBuckets> pa_ok_{}, pa_n_{};       // MTP drafts reached / accepted by probability bucket (decayed)
     std::array<std::array<double, kMaxT + 1>, kCtxBuckets> last_{};   // the round at which each size was last measured
+    // Gated proposals (observe_committed / defer_cost / apply_costs); all zero or empty on any other path.
+    std::array<std::array<double, kMaxT + 1>, kCtxBuckets> tried_{};      // lookup windows of that size run with no time yet
+    std::array<std::array<double, kMaxT + 1>, kCtxBuckets> delayed_n_{};  // of cost_n_: times applied by apply_costs (not new probes)
+    struct HeldCost { int64_t end; int bucket; int t; double ms; };
+    std::vector<HeldCost> held_;                                          // defer_cost, oldest first
 };
 
 }  // namespace strata::spec

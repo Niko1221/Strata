@@ -761,5 +761,33 @@ class PickTemplateTests(unittest.TestCase):
         self.assertTrue(dsml.v41_template_ok(dsml.FIXTURE_TEMPLATE.read_text(encoding="utf-8")))
 
 
+class ArchFromTokenizer(unittest.TestCase):
+    """#4137: a config without "arch" (serve/server.py run on its own) must not serve DeepSeek with the Qwen stop ids."""
+
+    def test_a_deepseek_tokenizer_without_an_arch_is_deepseek41(self):
+        self.assertEqual(server.arch_from_tokenizer(None, "deepseek3"), "deepseek41")
+        self.assertEqual(server.arch_from_tokenizer("", "deepseek3"), "deepseek41")
+
+    def test_an_arch_the_config_names_is_kept(self):
+        self.assertEqual(server.arch_from_tokenizer("qwen4exp", "deepseek3"), "qwen4exp")
+        self.assertEqual(server.arch_from_tokenizer("deepseek41", "qwen35"), "deepseek41")
+
+    def test_a_qwen_tokenizer_names_nothing(self):
+        self.assertIsNone(server.arch_from_tokenizer(None, "qwen35"))
+        self.assertIsNone(server.arch_from_tokenizer(None, None))
+
+    def test_without_the_family_the_pieces_of_im_end_are_not_stop_ids_and_the_end_token_is(self):
+        # what the reporter's config got (#4137, #4576): the DeepSeek tokenizer splits <|im_end|> into pieces, so "|", ">" and "im" (Nerazim)
+        # stopped a reply, and the end token (id 1) did not stop it at all
+        tok = mini_tokenizer()
+        wrong = Service(DsEngine(tok, "x"), tok, ChatTemplate(TEMPLATE))
+        self.assertIn(EOS, wrong.stop_ids)
+        self.assertFalse(wrong.stop_ids & set(tok.encode("|", parse_special=True)))
+        right = Service(DsEngine(tok, "x"), tok, ChatTemplate(TEMPLATE))
+        right.set_family("deepseek41")
+        self.addCleanup(frontend.use_family, None)
+        self.assertEqual(right.stop_ids, {EOS})
+
+
 if __name__ == "__main__":
     unittest.main()

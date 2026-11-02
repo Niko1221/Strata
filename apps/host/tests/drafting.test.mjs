@@ -1,5 +1,5 @@
 // The Drafting choice in the app (MTP / DFlash2 / Off / Auto): the Models screen row, the setting the host saves, what the host asks Control before
-// a load, the download plan line, and the words in all eight languages. The table of which card gets which drafter lives in Python
+// a load, the download plan line, and the words in all nine languages. The table of which card gets which drafter lives in Python
 // (strata_control/drafting.py, tests/terminal/test_drafting.py); the app never reads it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -77,8 +77,8 @@ test('a load fetches the drafter first, never stops for it, and says what ran', 
   assert.match(source, /drafting:cfg\.drafting\?\?'auto'/, 'the installed model reports its saved choice');
 });
 
-test('every sentence of the Drafting choice is in the catalog in all eight languages, with the same slots', () => {
-  const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
+test('every sentence of the Drafting choice is in the catalog in all nine languages, with the same slots', () => {
+  const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr'];
   const catalogs = Object.fromEntries(langs.map(l => [l, JSON.parse(read(`../src/locales/${l}.json`))]));
   const idOf = text => Object.entries(catalogs.en).find(([, v]) => v === text)?.[0];
   const sentences = ['Drafting', 'Auto (recommended)', 'MTP', 'DFlash2',

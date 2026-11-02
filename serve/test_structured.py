@@ -112,6 +112,41 @@ class Structured(unittest.TestCase):
         # Plain text callers retain normal streaming, without a JSON validation gate.
         self.assertEqual(self.chat("Prose.", response_format={"type": "text"})[0], 200)
 
+    def test_latex_escape_repair_is_opt_in_and_only_after_a_strict_failure(self):
+        # #2893: \alpha is not a JSON escape. Off by default: still a 502. On: one retry after the strict parse failed.
+        bad = r'{"answer":"the angle \alpha and \gamma_0"}'
+        self.assertEqual(self.chat(bad, response_format={"type": "json_object"})[0], 502)
+        self.assertEqual(self.chat(bad, response_format={"type": "json_object", "repair_latex_escapes": False})[0], 502)
+        code, reply = self.chat(bad, response_format={"type": "json_object", "repair_latex_escapes": True})
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(reply["choices"][0]["message"]["content"]),
+                         {"answer": "the angle \\alpha and \\gamma_0"})
+        # streaming asks for the same check before any content leaves
+        _, raw = self.chat(bad, stream=True, response_format={"type": "json_object", "repair_latex_escapes": True})
+        self.assertIn(r"\\alpha", raw)
+        # the repair does not hide what is wrong with the answer itself
+        fmt = {"type": "json_object", "repair_latex_escapes": True}
+        for script in ('[]', r'{"x":NaN}', r'{"a":"\alpha","a":2}', 'no json at all', r'{"x":"\alpha'):
+            self.assertEqual(self.chat(script, response_format=fmt)[0], 502, script)
+        self.assertEqual(self.chat(r'{"answer":"\alpha"}', response_format=fmt, max_tokens=5)[0], 502)
+
+    def test_latex_escape_repair_helper(self):
+        fix = structured.repair_latex_escapes
+        self.assertEqual(fix(r'{"a":"\alpha \gamma_0"}'), r'{"a":"\\alpha \\gamma_0"}')
+        for same in (r'{"a":"x\ny\t\"q\" \\ \/ \u00e9"}', '{"a": 1}', ''):
+            self.assertEqual(fix(same), same)
+        self.assertEqual(fix(r'{"a":"\u12"}'), r'{"a":"\\u12"}')        # \u without four hex digits
+        self.assertEqual(fix(r'{"a":"\\alpha"}'), r'{"a":"\\alpha"}')    # an escaped backslash is skipped as a pair
+        self.assertEqual(fix("\\"), "\\\\")                              # a lone trailing backslash
+        # \b is a valid escape: untouched, so it parses (as a backspace), as it does without the option
+        self.assertEqual(json.loads(fix(r'{"a":"\beta \alpha"}'))["a"], "\beta \\alpha")
+
+    def test_the_repair_option_reaches_the_responses_format(self):
+        from serve.responses import text_format
+        self.assertEqual(text_format({"text": {"format": {"type": "json_object", "repair_latex_escapes": True}}}),
+                         {"type": "json_object", "repair_latex_escapes": True})
+        self.assertEqual(text_format({"text": {"format": {"type": "json_object"}}}), {"type": "json_object"})
+
     def test_rejected_schema_does_not_load_the_engine_or_retry(self):
         with mock.patch.object(self.svc, "load") as load:
             code, _ = self.chat(response_format={"type": "json_schema"})

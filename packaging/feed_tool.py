@@ -235,7 +235,7 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     return document
 
 
-TAURI_TARGET_NAMES = tuple(feedmod.TAURI_TARGETS.values()) + ("linux-aarch64",)
+TAURI_TARGET_NAMES = tuple(feedmod.TAURI_TARGETS.values())
 
 
 def _default_app_pubkey() -> str:

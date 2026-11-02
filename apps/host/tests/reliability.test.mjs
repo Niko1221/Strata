@@ -25,7 +25,7 @@ test('Markdown renders every incomplete stream prefix without looping', { timeou
   const mod = { exports: {} };
   new Function('require', 'module', 'exports', bundle.outputFiles[0].text)(createRequire(import.meta.url), mod, mod.exports);
   const { render, setLanguage } = mod.exports;
-  for(const language of ['zh','ja','de','es','ru','pt','ko']) { setLanguage(language); const markup=render('Ready\n\n**Settings**\n\n*Download*\n\n[Cancel](https://example.com)\n\n| Name | Value |\n| --- | --- |\n| Close | Language |'); for(const word of ['Ready','Settings','Download','Cancel','Name','Value','Close','Language'])assert(markup.includes(word),language+': user text changed: '+word); }
+  for(const language of ['zh','ja','de','es','ru','pt','ko','fr']) { setLanguage(language); const markup=render('Ready\n\n**Settings**\n\n*Download*\n\n[Cancel](https://example.com)\n\n| Name | Value |\n| --- | --- |\n| Close | Language |'); for(const word of ['Ready','Settings','Download','Cancel','Name','Value','Close','Language'])assert(markup.includes(word),language+': user text changed: '+word); }
   setLanguage('en');
   for (const marker of ['- ', '* ', '+ ', '1. ', '2) ', '  - ', '  12. ']) assert.ok(render(marker).includes(marker));
   const text = '# Answer\n\n- First item\n- Second item\n\n1. First step\n2. Second step\n\n```js\nconsole.log("hello");\n```\n\n| Name | Value |\n| --- | --- |\n| One | Two |';

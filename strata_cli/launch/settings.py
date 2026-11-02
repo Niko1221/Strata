@@ -78,6 +78,8 @@ def parse_context(text: Any) -> int:
 def context_label(tokens: int | None) -> str:
     if not tokens:
         return "default"
+    if tokens >= 1048576 and tokens % 1048576 == 0:        # DeepSeek-V4.1-Flash reads 1,048,576 positions: "1M"
+        return f"{tokens // 1048576}M"
     if tokens % 1024 == 0:
         return f"{tokens // 1024}K"
     if tokens >= 1000:
@@ -226,8 +228,17 @@ def check_parallel(s: LaunchSettings, *, vram_gb: float | None, fitted: int | No
     return out
 
 
-def check_context(s: LaunchSettings, *, max_fit_tokens: int | None = None) -> list[Notice]:
+def check_context(s: LaunchSettings, *, max_fit_tokens: int | None = None, deepseek: bool = False, pack_limit: int | None = None) -> list[Notice]:
     out: list[Notice] = []
+    if deepseek:                                   # DeepSeek-V4.1-Flash: 8K to 1M, its own words (strata_control/dsv41_context.py), no rope scaling of ours
+        from strata_control import dsv41_context
+        if s.context is not None:
+            why = dsv41_context.problem(int(s.context), pack_limit)
+            if why:
+                out.append(Notice("error", why, "Choose a smaller context."))
+            elif dsv41_context.note(s.context):
+                out.append(Notice("warn", f"{context_label(s.context)}: {dsv41_context.note(s.context)}", ""))
+        return out
     if s.context is not None and s.context > 262144:
         out.append(Notice("warn", f"{context_label(s.context)} is more than the model was trained on (256K).",
                           "Setup adds rope scaling for it (experimental); answers may get less reliable."))
@@ -266,15 +277,26 @@ def settings_from_pairs(pairs: list[str]) -> dict[str, str]:
     return out
 
 
+#: Options whose value is a WORD the engine reads (on, off, auto, none): the word goes through as typed. Making "on" a bare flag
+#: started strata-dsv41 with a lone `--dspark`, which it refuses ("--dspark needs a value", #3959), and "off" removed the flag instead of
+#: switching the drafter off.
+WORD_VALUE_FLAGS = frozenset({"--dspark"})
+
+
 def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[dict[str, Any], dict[str, str | None]]:
     """Turn the Advanced table's values into `tune_knobs.apply_to_argv` changes and environment changes.
 
-    A flag without a value (or on/true/yes) is "present"; off/false/no/none removes it; anything else is a value."""
+    A flag without a value (or on/true/yes) is "present"; off/false/no/none removes it; anything else is a value.
+    A word-valued option (WORD_VALUE_FLAGS) keeps its word."""
     args: dict[str, Any] = {}
     env: dict[str, str | None] = {}
     for key, value in extra.items():
         if key.startswith("--"):
             low = value.lower()
+            if key in WORD_VALUE_FLAGS and key not in bool_flags:
+                if low:
+                    args[key] = low
+                continue                          # an empty value is no change, as for every option that takes one (#3504)
             if low == "" and key not in bool_flags:
                 continue                          # an empty value for an option that takes one is no change, never a bare flag (#3504)
             if key in bool_flags or low in ("on", "true", "yes", ""):

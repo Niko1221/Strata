@@ -71,11 +71,13 @@ test('the plan says what the picked folder means and keeps the person\'s spellin
 test('a whole drive is planned as <drive>\\Strata, shown as <drive>\\Strata\\Models', async t => {
   const f = fixture(t);
   const root = f.root.slice(0, f.root.indexOf(process.platform === 'win32' ? '\\' : '/') + 1) || '/';
+  const before = existsSync(join(root, 'Strata'));
   const plan = await f.native.planModelsFolder(root);
+  assert.equal(existsSync(join(root, 'Strata')), before, 'planning must not create or remove anything');
   assert.equal(plan.wholeDrive, true);
   assert.equal(plan.folder, join(root, 'Strata'));
   assert.equal(plan.shown, join(root, 'Strata', 'Models'));
-  rmSync(join(root, 'Strata'), { recursive: true, force: true });
+  // Planning must not touch the disk. This test never creates <drive>\Strata, so it never deletes it either (#4689).
 });
 
 test('the card is blocked while a model runs or a job runs: a running model must be stopped on purpose', async t => {
@@ -202,12 +204,12 @@ test('the Control command lines for status, resume and leave', async () => {
   assert.deepEqual(seen[2], ['models', 'move', '--leave', '--from', '/o', '--install-dir', '/i', '--output', 'json']);
 });
 
-test('the models folder strings exist in all 8 languages with the same placeholders', () => {
+test('the models folder strings exist in all 9 languages with the same placeholders', () => {
   const read = lang => JSON.parse(readFileSync(new URL(`../src/locales/${lang}.json`, import.meta.url), 'utf8'));
   const en = read('en');
   const ours = Object.keys(en).filter(k => Number(k.slice(1)) >= 8339 && Number(k.slice(1)) <= 8422);
   assert.equal(ours.length, 84);
-  for (const lang of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) {
+  for (const lang of ['de', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh']) {
     const text = read(lang);
     for (const key of ours) {
       assert.ok(text[key], `${lang} ${key}`);

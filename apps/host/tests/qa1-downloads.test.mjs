@@ -115,7 +115,7 @@ test('the three NVFP4 versions have clear names and one line that tells them apa
   assert.match(lines[2], /faster on short prompts/);
   assert.equal(lib.versionNote('IQ3_S'), '');
   assert.equal(lib.nativeShortName('nvfp4-nvfp4-nvidia'), 'NVFP4 (NVIDIA’s version)');
-  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko']) {
+  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) {
     lib.setTranslationLanguage(language);
     const local = ['NVFP4', 'NVFP4-NVIDIA', 'NVFP4-QAD'].map(m => lib.nativeVersionLabel(m));
     assert.equal(new Set(local).size, 3, `${language}: three different names`);
