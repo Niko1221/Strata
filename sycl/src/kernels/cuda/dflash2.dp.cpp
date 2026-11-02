@@ -1030,7 +1030,8 @@ void df2_topk(const float* logits, int n, const int32_t* idx_map, int rows, uint
 
 // ---- the selector's walk: one group of 256 work-items
 void df2_select(const float* hp, const float* unary, const int32_t* tok, const uint16_t* pred_cb, const uint16_t* succ_cb, int rank, int rows,
-                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream) {
+                const int32_t* anchor_tok, int32_t* out_tok, float* out_prob, void* stream, bool cb_q4) {
+    if (cb_q4) throw std::invalid_argument("df2_select: Q4_0 selector codebooks are not on SYCL (the loader keeps the bf16 pack)");
     if (rank != 256) throw std::invalid_argument("df2_select: the selector rank must be 256");
     sycl::queue* q = strata::q_of(stream);
     q->submit([&](sycl::handler& hd) {
