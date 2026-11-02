@@ -1182,6 +1182,20 @@ Mtp::Mtp(const Model& m, const std::string& dir, const std::string& vocab_file) 
 
 Mtp::~Mtp() { free_mtp_cards(cards); }
 
+// A file whose routed experts the engine has no kernel for is refused here, in one plain line, before anything is read into RAM or placed on
+// the cards (the app's rule, strata_control/split_engine.py, refuses it earlier; this is the same check for a start that skipped the rule). The
+// server then starts the normal layer split. Q2_0 is not listed: the Gguf has already repacked it to Q4_0.
+static void check_supported(const Gguf& g) {
+    const uint32_t ok[] = {T_Q4_K, T_Q5_K, T_Q5_1, T_Q8_0, T_Q4_0, T_IQ4_NL, T_IQ4_XS, T_IQ3_S, T_IQ3_XXS, T_IQ2_S};
+    for (const auto& kv : g.tensors()) {
+        const std::string& n = kv.first;
+        if (n.find("_exps.weight") == std::string::npos || n.find("shexp") != std::string::npos) continue;
+        if (std::find(std::begin(ok), std::end(ok), kv.second.type) == std::end(ok))
+            throw std::runtime_error("the all-cards split engine does not read this model's routed experts (" + n + " is ggml type " +
+                                     std::to_string(kv.second.type) + "); use the normal layer split");
+    }
+}
+
 Model::Model(const std::string& path, Load how, Store* store, const std::string* image) : g(path) {
     // the cards first: reading the embeddings into RAM below takes seconds on a cold cache
     {
@@ -1195,6 +1209,7 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
                                      " of them, or build for " + std::to_string(ndev) + " (make FNX_NCARD=" + std::to_string(ndev) + ")");
         check_cards();
     }
+    check_supported(g);
 #if FNX_27B
     const std::string p = "qwen35.";
     // block_count holds the draft (nextn) layer too
