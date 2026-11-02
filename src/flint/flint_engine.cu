@@ -1,6 +1,7 @@
 // src/flint/flint_engine.cu - strata-flint: native C++/CUDA engine for Flint 40B Preview.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#include "strata/kernels/dequant_bf16.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -111,6 +112,7 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
 
 struct Mat {
     const uint8_t* d = nullptr;
+    half* d_f16 = nullptr;
     int type = -1;
     int n_in = 0, n_out = 0;
 };
@@ -207,7 +209,7 @@ bool load(const std::string& path, Model& m, std::string& err) {
         return upload_f32(*t, gm.shard(s).tensor_data(*t));
     };
 
-    auto mat = [&](const std::string& name) -> Mat {
+    auto mat = [&](const std::string& name, bool dequant_to_f16 = true) -> Mat {
         size_t s = 0;
         const strata::TensorInfo* t = find(name, s);
         Mat w;
@@ -223,12 +225,16 @@ bool load(const std::string& path, Model& m, std::string& err) {
         CK(cudaMalloc(&d, nb));
         CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
         w.d = d;
+        if (dequant_to_f16 && (size_t) w.n_in * w.n_out <= 16 * 1024 * 1024) {
+            CK(cudaMalloc(&w.d_f16, (size_t) w.n_in * w.n_out * sizeof(half)));
+            K::dequant_f16(w.type, w.d, 0, w.n_out, w.n_in, reinterpret_cast<uint16_t*>(w.d_f16), nullptr);
+        }
         return w;
     };
 
     auto L = [](int64_t l, const char* s) { return "blk." + std::to_string(l) + "." + s; };
 
-    m.head = mat("output.weight");
+    m.head = mat("output.weight", false);
     m.out_norm = f32("output_norm.weight");
 
     size_t se = 0;
@@ -319,6 +325,9 @@ struct Engine {
     float *ewts = nullptr;
     int n_chunk = 0;
     std::vector<flintk::BlockQ80*> kc, vc; // Hardware-quantized Q8_0 KV Cache per layer
+    uint16_t* w_f16 = nullptr;
+    uint16_t* x_f16 = nullptr;
+    size_t w_f16_elems = 0;
 
     cudaGraphExec_t g1 = nullptr;
     bool use_graph = true;
@@ -361,11 +370,16 @@ struct Engine {
         // Dense FFN buffers (width 6144)
         dense_act = dalloc((size_t) tmax * 6144);
 
-        // Shared expert buffers (width 1024)
-        sh_g = dalloc((size_t) tmax * 1024);
-        sh_u = dalloc((size_t) tmax * 1024);
-        sh_act = dalloc((size_t) tmax * 1024);
+        // Shared expert & dense buffers (width up to 6144)
+        sh_g = dalloc((size_t) tmax * 6144);
+        sh_u = dalloc((size_t) tmax * 6144);
+        sh_act = dalloc((size_t) tmax * 6144);
         sh_out = dalloc((size_t) tmax * N);
+
+        // Batched GEMM temporary buffers for prefill (32 MB weights, 12 MB activations)
+        w_f16_elems = 16 * 1024 * 1024;
+        CK(cudaMalloc(&w_f16, w_f16_elems * sizeof(uint16_t)));
+        CK(cudaMalloc(&x_f16, (size_t) tmax * 6144 * sizeof(uint16_t)));
 
         logits = dalloc((size_t) tmax * m->g.n_vocab);
 
@@ -425,8 +439,26 @@ struct Engine {
     }
 
     void mm(const Mat& w, const float* xin, float* out, int T) {
-        prep(xin, w.n_in, T);
-        K::native_mmvq(w.type, w.d, q8, out, w.n_in, w.n_out, T, st);
+        if (T <= 8 || !w.d_f16) {
+            prep(xin, w.n_in, T);
+            K::native_mmvq(w.type, w.d, q8, out, w.n_in, w.n_out, T, st);
+            return;
+        }
+
+        // Hardware-accelerated Batched Tensor Core GEMM for prefill (T > 8)
+        const int64_t total_in = (int64_t) T * w.n_in;
+        flintk::k_f32_to_f16<<<(total_in + 255) / 256, 256, 0, st>>>(xin, reinterpret_cast<half*>(x_f16), total_in);
+
+        const float alpha = 1.0f, beta = 0.0f;
+        CK_BLAS(cublasGemmEx(blas,
+                             CUBLAS_OP_T, CUBLAS_OP_N,
+                             w.n_out, T, w.n_in,
+                             &alpha,
+                             w.d_f16, CUDA_R_16F, w.n_in,
+                             x_f16, CUDA_R_16F, w.n_in,
+                             &beta,
+                             out, CUDA_R_32F, w.n_out,
+                             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
     }
 
     void layer(const Layer& L, size_t li, int T, int64_t p0) {

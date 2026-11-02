@@ -97,6 +97,13 @@ __device__ inline float block_max(float v, float* sh) {
     return r;
 }
 
+__global__ void k_f32_to_f16(const float* __restrict__ src, half* __restrict__ dst, int64_t n) {
+    const int64_t idx = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = __float2half(src[idx]);
+    }
+}
+
 // ---------------------------------------------------------------- Flint RoPE & Attention Prep
 // H = 32, HKV = 4, HD = 128
 __global__ void k_flint_attn_prep(const float* __restrict__ q_in, const float* __restrict__ kx, const float* __restrict__ vx,
@@ -169,6 +176,7 @@ __global__ void k_flint_attn_part(const float* __restrict__ q, const BlockQ80* _
     const int npos = *pos0 + t + 1;
     const int p0 = c * kChunkCells;
     if (p0 >= npos) return;
+    if (sliding_window > 0 && c > 0 && p0 + kChunkCells <= npos - sliding_window) return;
     const int j = threadIdx.x;
     if (j < HD) qs[j] = q[((size_t) t * H + h) * HD + j];
     __syncthreads();
