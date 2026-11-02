@@ -17,7 +17,7 @@
 namespace fnx {
 
 constexpr int RCCL_SUCCESS = 0, RCCL_SUM = 0, RCCL_FLOAT16 = 6, RCCL_FLOAT32 = 7;
-constexpr bool RCCL_DEFAULT_ON = false;   // the prompt sums through RCCL when FNX_PF_RCCL is unset (tests/split pins it)
+constexpr bool RCCL_DEFAULT_ON = true;   // the prompt sums through RCCL when FNX_PF_RCCL is unset: 103K prompt 33.3 -> 28.8 s, 61-task suite 56/61, first-token KL vs the layer split 0.0309; any failure is one line and the host sums (tests/split pins it)
 
 struct RcclApi {
     void* handle = nullptr;

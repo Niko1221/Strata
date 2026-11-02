@@ -68,7 +68,11 @@ BatchDecoder::BatchDecoder(Engine& e, int K, int lookup_k, std::vector<int> eos,
     if (LK_ < 0 || LK_ + 1 > MAXT) throw std::runtime_error("batch decoder: lookup drafts must be 0.." + std::to_string(MAXT - 1));
     // as Session::generate reads them: whole numbers, a bad value an error here (at start) rather than read as on
     pen_drafts_ = env_int("FNX_DRAFT_PEN", 1) != 0;
-    batched_draft_ = env_int("FNX_BATCH_DRAFT", 0) != 0;   // screen: the draft-layer steps of all the lanes in one window
+#if FNX_HIP
+    batched_draft_ = env_int("FNX_BATCH_DRAFT", 1) != 0;   // AMD: the draft-layer steps of all the lanes in one window (greedy drafts bit-identical, 8 users 277 -> 345 tok/s)
+#else
+    batched_draft_ = env_int("FNX_BATCH_DRAFT", 0) != 0;   // NVIDIA: off in 0.2.9 (the split engines there are frozen)
+#endif
     samp_drafts_ = env_int("FNX_DRAFT_SAMPLE", 1) != 0;
     // FNX_BATCH_FIXED=k (sweeps): every lane gets min(k, what it has on offer) drafts, no plan and no exploring
     const long long fixed = env_int("FNX_BATCH_FIXED", -1);
