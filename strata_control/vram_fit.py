@@ -20,8 +20,12 @@ The arithmetic (MiB), measured on the Arc A750 (8 GB, i915) with the SYCL engine
   `--prefill auto` resolved to 2048 on that card.
 * slot: 1.243 MiB (0.50 GiB / 412 slots).
 * request slots ("Concurrent requests" 2 or more, the engine's --batch N): every slot holds a session of its own, the size of the main one, on every backend
-  (the engine's "--batch 2: 2 slot sessions (0.23 GiB each)" is session(8192) = 234 MiB), taken out of the expert cache's room.  Only these starts also use the
-  measured Qwen3.8-Flash-Next figures below (BASE_SLOTTED_MIB, SLOT_SLOTTED_MIB); the single-request estimate above is left as it is.
+  (the engine's "--batch 2: 2 slot sessions (0.23 GiB each)" is session(8192) = 234 MiB), taken out of the expert cache's room.  With KV streaming
+  (--kv-resident N) a session's VRAM holds max(N, 20480) cells of KV, not the whole context (qsa_state_bytes / kv_plan), so a slot costs that much, not 128K's.
+  Only these starts also use a measured Qwen3.8-Flash-Next figure (BASE_SLOTTED_MIB, per vendor): where none is measured, nothing is changed and the engine
+  decides as it always did (on CUDA / HIP it sizes the expert cache from what is free).  The threshold is the engine's own: it refuses a start only when
+  its auto sizing leaves the cache not one slot (generate.cpp: min_slots is 1 unless the prompt path borrows, and borrowing needs more slots than a start
+  that is that tight can have).
 
 Why these numbers and not the engine's own: the engine only finds out after it has loaded 30 GB of weights; setup has to choose before.
 It is an estimate; the engine still says what is short if it is off (and a user who asked for a context or a reserve keeps it).
@@ -52,12 +56,15 @@ BASE_MIB = {"gyro-m": 5945, "gyro-s": 4720}
 BASE_GENERIC_MIB = 2448
 
 # Starts with request slots.  The generic base above is deliberately small (a default that fits today is never changed), so it cannot tell whether two more
-# sessions leave the expert cache room; for Qwen3.8-Flash-Next the engine's own figures can.  Arc A750, IQ3_XXS with the MTP layer, 2 slots, 8192 tokens, the
+# sessions leave the expert cache room; for Qwen3.8-Flash-Next the engine's own figures can, where they were measured.  Arc A750, IQ3_XXS with the MTP layer, 2 slots, 8192 tokens, the
 # engine log: 7721 MiB usable (8 GB less the 471 MiB gap), 2519 MiB free after everything but the expert cache, which held the weights (1466 + 1781 MiB), the
 # MTP layer (802), the Q5_K head (417), the main session (234) and the two slot sessions (468):  base = 7721 - 2519 - 234 - 468 = 4500 MiB.  The cache's
 # largest expert blob is 2.33 MB (2.22 MiB).  Another quant or card holds somewhat different weights; MARGIN_MIB and the engine's own refusal cover the rest.
-BASE_SLOTTED_MIB = {"flash-next": 4500}
+BASE_SLOTTED_MIB = {("intel", "flash-next"): 4500}      # (vendor, model family): measured on the A750 only; no CUDA / HIP entry until one is measured
 SLOT_SLOTTED_MIB = 2.22
+SLOT_RUN_MIN = 1                                       # the engine's minimum: generate.cpp refuses a start whose auto sizing leaves the cache no slot
+KV_RESIDENT_MIN = 20480                                # qsa_kv_resident_min(): a smaller --kv-resident is raised to this
+STREAM_EXTRA_BYTES = 380                               # per cell of context a streamed session still keeps in VRAM (rope table, indexer rows, page table); derived from qsa_state_bytes
 CTX_STEPS_SLOTTED = CTX_STEPS + (4096, 2048)     # below 8K only for a start with request slots: each slot's session is one more KV cache to pay for
 SLOTS_MAX = 8                                    # the engine's batch window (serve/server.py PARALLEL_MAX)
 
@@ -70,13 +77,13 @@ def base_mib(model: str) -> int:
     return BASE_GENERIC_MIB
 
 
-def slotted_base_mib(model: str) -> int:
-    """The base for a start with request slots: the measured Flash-Next figure, else the single-request one."""
+def slotted_base_mib(model: str, vendor: str = "intel") -> int | None:
+    """The base for a start with request slots: the measured Flash-Next figure for this vendor's cards, None where none was measured."""
     low = str(model or "").lower().replace("_", "-")
-    for key, mib in BASE_SLOTTED_MIB.items():
-        if key in low:
+    for (v, key), mib in BASE_SLOTTED_MIB.items():
+        if v == str(vendor or "").lower() and key in low:
             return mib
-    return base_mib(model)
+    return None
 
 
 def known_model(model: str) -> bool:
@@ -84,7 +91,13 @@ def known_model(model: str) -> bool:
     return any(k in low for k in BASE_MIB)
 
 
-def session_mib(ctx: int, kv: str = "int8") -> float:
+def session_mib(ctx: int, kv: str = "int8", kv_resident: int = 0) -> float:
+    """A session's VRAM.  With KV streaming (kv_resident N, below the context) the KV pool holds max(N, 20480) cells; what scales with the whole
+    context beyond that (the rope table, the indexer rows) stays."""
+    if kv_resident and 0 < kv_resident < ctx:
+        cells = max(int(kv_resident), KV_RESIDENT_MIN)
+        if cells < ctx:
+            return SESSION_FIXED_MIB + cells * 13 * KV_BYTES.get(kv, 1056) * KV_MEASURED_FACTOR / 2 ** 20 + ctx * STREAM_EXTRA_BYTES / 2 ** 20
     return SESSION_FIXED_MIB + ctx * 13 * KV_BYTES.get(kv, 1056) * KV_MEASURED_FACTOR / 2 ** 20
 
 
@@ -97,7 +110,7 @@ def chunk_of(prefill) -> int:
 
 
 def slack_mib(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300, prefill="auto",
-              vendor: str = "intel", slots: int = 0) -> float:
+              vendor: str = "intel", slots: int = 0, kv_resident: int = 0) -> float:
     """MiB the estimate leaves for the expert cache (negative: the engine would stop with "no VRAM is left for the expert cache").
     `slots` >= 2: a start with that many request slots, each one a session of the main one's size."""
     gap = GAP_MIB.get(str(vendor or "").lower(), GAP_OTHER_MIB)
@@ -105,19 +118,28 @@ def slack_mib(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mi
     base = base_mib(model)
     extra = 0.0
     if slots >= 2:
-        base = slotted_base_mib(model)
-        extra = min(int(slots), SLOTS_MAX) * session_mib(ctx, kv)
-    return (vram_gb * 1024 - gap - base - session_mib(ctx, kv) - extra - HEAD_MIB - max(int(reserve_mib), 0) - prompt)
+        base = slotted_base_mib(model, vendor)
+        if base is None:                   # nothing measured for this card: no claim (slots are charged only against a measured base)
+            base = base_mib(model)
+        else:
+            extra = min(int(slots), SLOTS_MAX) * session_mib(ctx, kv, kv_resident)
+    return (vram_gb * 1024 - gap - base - session_mib(ctx, kv, kv_resident if slots >= 2 else 0) - extra - HEAD_MIB - max(int(reserve_mib), 0) - prompt)
 
 
-def needed_mib(model: str = "", slots: int = 0) -> float:
-    if slots >= 2 and slotted_base_mib(model) != base_mib(model):
-        return MIN_SLOTS * SLOT_SLOTTED_MIB + MARGIN_MIB
+def slotted(model: str, slots: int, vendor: str = "intel") -> bool:
+    """Is this a start with request slots whose cost is known (a measured base for this vendor)?"""
+    return slots >= 2 and slotted_base_mib(model, vendor) is not None
+
+
+def needed_mib(model: str = "", slots: int = 0, vendor: str = "intel") -> float:
+    if slotted(model, slots, vendor):      # the engine's own minimum: the cache keeps at least a slot (plus the estimate's margin)
+        return SLOT_RUN_MIN * SLOT_SLOTTED_MIB + MARGIN_MIB
     return MIN_SLOTS * SLOT_MIB + MARGIN_MIB
 
 
-def fits(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300, prefill="auto", vendor: str = "intel", slots: int = 0) -> bool:
-    return slack_mib(model, vram_gb, ctx, kv, reserve_mib, prefill, vendor, slots) >= needed_mib(model, slots)
+def fits(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300, prefill="auto", vendor: str = "intel", slots: int = 0,
+         kv_resident: int = 0) -> bool:
+    return slack_mib(model, vram_gb, ctx, kv, reserve_mib, prefill, vendor, slots, kv_resident) >= needed_mib(model, slots, vendor)
 
 
 def ctx_label(ctx: int) -> str:
@@ -138,7 +160,7 @@ class Fit:
 
 
 def plan(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: int = 300, prefill="auto", vendor: str = "intel",
-         title: str = "", ctx_fixed: bool = False, reserve_fixed: bool = False, prefill_fixed: bool = False, slots: int = 0) -> Fit:
+         title: str = "", ctx_fixed: bool = False, reserve_fixed: bool = False, prefill_fixed: bool = False, slots: int = 0, kv_resident: int = 0) -> Fit:
     """The start that fits, as close to the one asked for as possible; the SAME values back when that one already fits (byte-identical).
 
     Order of harm, mildest first: the context down the ladder 32K -> 16K -> 8K (the outer loop), at each step the prompt chunk (1024)
@@ -150,8 +172,10 @@ def plan(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: in
     keep = Fit(ctx, reserve_mib, None, False, True, 0.0, slots=slots)
     if not vram_gb or vram_gb < MIN_CARD_GB:
         return keep
-    need = needed_mib(model, slots)
-    keep.slack_mib = slack_mib(model, vram_gb, ctx, kv, reserve_mib, prefill, vendor, slots)
+    if slots and not slotted(model, slots, vendor):
+        return keep                      # request slots, but no measured figure for this card: unchanged, the engine decides
+    need = needed_mib(model, slots, vendor)
+    keep.slack_mib = slack_mib(model, vram_gb, ctx, kv, reserve_mib, prefill, vendor, slots, kv_resident)
     if keep.slack_mib >= need:
         return keep
     steps = CTX_STEPS_SLOTTED if slots else CTX_STEPS
@@ -162,7 +186,7 @@ def plan(model: str, vram_gb: float, ctx: int, kv: str = "int8", reserve_mib: in
     for c in ctxs:
         for p in chunks:
             for r in reserves:
-                s = slack_mib(model, vram_gb, c, kv, r, p, vendor, slots)
+                s = slack_mib(model, vram_gb, c, kv, r, p, vendor, slots, kv_resident)
                 best = (c, p, r, s)
                 if s >= need:
                     out = _result(model, vram_gb, title, ctx, reserve_mib, prefill, c, p, r, s, True)
@@ -215,6 +239,8 @@ def fit_start(cfg: dict, args: list, vram_mib: float | None, backend: str | None
     def flag(name):
         return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else None
 
+    res_s = flag("--kv-resident")
+    kv_resident = int(res_s) if res_s and str(res_s).isdigit() else 0
     ctx_s = flag("--max-context")
     ctx = int(ctx_s) if ctx_s and str(ctx_s).isdigit() else 131072
     reserve_s = flag("--vram-reserve-mib")
@@ -222,7 +248,8 @@ def fit_start(cfg: dict, args: list, vram_mib: float | None, backend: str | None
     user = [str(a) for a in (cfg.get("user_args") or [])]
     model = str(cfg.get("model_name") or flag("--native") or "")
     fr = plan(model, float(vram_mib) / 1024.0, ctx, flag("--kv") or "int8", reserve, flag("--prefill") or "auto", "intel" if backend == "sycl" else "other",
-              title=str(cfg.get("model_name") or "This model"), ctx_fixed="--max-context" in user, reserve_fixed=True, prefill_fixed=True, slots=n)
+              title=str(cfg.get("model_name") or "This model"), ctx_fixed="--max-context" in user, reserve_fixed=True, prefill_fixed=True, slots=n,
+              kv_resident=kv_resident)
     if not fr.changed:
         return args, None, ""
     out = list(args)
