@@ -175,12 +175,19 @@ SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted
 MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
 DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this (the card holds most experts)
 
-# --draft-conf by how many expert slots the card holds once the drafter's 0.8 GB is taken (RESULTS-DF2Q4.md, fork F's mimic on l620, IQ3_S, 7 classes
-# at 9,300 / 5,000 slots and 5 classes at 1,000 / 300, 3 launches per cell; the DFlash2 engine holds the drafter, so it had 420 slots fewer than MTP).
-# Speed against MTP spec 4 by confidence 0.35 / 0.6 / 0.7 / 0.8:  9,300 slots +4.3 / +5.2 / +2.1 / +0.7%;  5,000: -4.7 / -0.3 / +1.6 / -0.7%;
-# 1,000: -10.0 / -2.8 / -2.5 / +0.2%;  300: -14.0 / -10.4 / -7.6 / -7.5%.  R9700 at 12,570 slots measured +7.2% at 0.35 (RESULTS-DF2HIP.md).
+# --draft-conf by how many expert slots the card holds once the drafter is on.  THE UNIT IS THE ENGINE'S SLOT (the "expert cache N slots" line of its log, one slot
+# averaging 1.95 MiB of IQ3_S): an explicit --expert-cache N is a budget of N x the largest blob (2.54 MiB), which the engine turns into about 1.3 N slots
+# (measured N = 300 .. 12,000 -> 384 .. 15,667 slots, ratio 1.28 .. 1.31; EXPERT_CACHE_SLOTS_PER_N below).
+# Measured with DFlash2 ALONE (no MTP layer loaded: the drafter is the only one, as it is by default now) against the MTP at spec 4, equal VRAM, l620 mimic,
+# IQ3_S, 6-turn chat with a rewind + 4 cold prompts, 300 greedy tokens, prompt cache 6, 3 paired rounds (RESULTS-DF2MEM.md section 12).  Gain over MTP by
+# confidence 0.35 / 0.5 / 0.65 / 0.8 / 0.9, at the DFlash2 engine's slot count:
+#     1,383 slots:  -4.2 / +3.1 / +7.1 / +9.3 / +8.7%      3,337:  -1.8 / +4.3 / +7.1 / +7.7 / +5.8%      6,629:  -0.5 / +3.6 / +6.9 / +5.2 / +2.6%
+#     9,248 slots:  -0.5 / +5.9 / +3.9 / +2.6 / -0.1%      15,766:  +4.9 / +5.6 / +3.5 / -0.6 / -6.5%      (0.5 and 0.35 are level there: 3 of 3 pairs each)
+# The older table here (DFlash2 +0.2 .. -10% against the MTP) charged the MTP layer's VRAM to the DFlash2 engine.
 # Steps, rounded: the more experts come over PCIe, the dearer a row, the shorter the window should be.
-CONF_STEPS = ((9000, 0.35), (3000, 0.7), (0, 0.8))      # (slots at least, --draft-conf)
+CONF_STEPS = ((12000, 0.35), (7500, 0.5), (3000, 0.7), (0, 0.8))      # (engine slots at least, --draft-conf)
+EXPERT_CACHE_SLOTS_PER_N = 1.3   # an explicit --expert-cache N holds about this many engine slots per N on the IQ3_S pack (1.28 at N = 1,000 .. 1.31 at N = 12,000)
+MAX_SLOTS = 24576            # every (layer, expert) pair of Qwen3.8-Flash-Next
 SLOT_MIB = 1.95              # one expert slot of Qwen3.8-Flash-Next IQ3_S: the engine's "46.84 GiB for 24576 slots" (l620) and 23.87 GiB for 12570 (R9700)
 SLOT_BASE_MIB = 3800         # dense weights and the engine's fixed buffers beyond vram_fit's own terms, from the R9700 start (128K context, 12570 slots on 32 GiB)
 SLOT_RESERVE_MIB = 700       # the engine's default --vram-reserve-mib
@@ -277,9 +284,9 @@ def conf_for_slots(slots: int | float | None) -> float:
 
 
 def expected_slots(vram_mib: float, args: list[Any]) -> int:
-    """The expert slots a card of ``vram_mib`` MiB is expected to hold with the drafter on, the same arithmetic as strata_control/vram_fit.py (the card, the
-    runtime's gap, the dense weights, the KV session of ``--max-context`` / ``--kv``, the prompt buffers, the reserve) minus the drafter's 0.8 GB,
-    over one slot. An estimate good to about 10% (two engine starts); the steps of CONF_STEPS are wider than that."""
+    """The ENGINE slots a card of ``vram_mib`` MiB is expected to hold with the drafter on, the same arithmetic as strata_control/vram_fit.py (the card, the
+    runtime's gap, the dense weights, the KV session of ``--max-context`` / ``--kv``, the prompt buffers, the reserve; the draft layer's allowance in the base
+    is the DFlash2's own now, it is the only drafter), over one slot. An estimate good to about 10% (two engine starts); the steps of CONF_STEPS are wider."""
     from strata_control import vram_fit
     ctx = _flag_value(args, "--max-context")
     ctx = int(ctx) if ctx and ctx.isdigit() else DEFAULT_CONTEXT
@@ -288,16 +295,18 @@ def expected_slots(vram_mib: float, args: list[Any]) -> int:
     reserve = int(reserve) if reserve and reserve.isdigit() else SLOT_RESERVE_MIB
     prefill = _flag_value(args, "--prefill")
     chunk = vram_fit.chunk_of(prefill.split(":")[-1] if prefill else "auto")
+    # SLOT_BASE_MIB is the baseline that holds the draft layer (the MTP's ~1.08 GiB, measured); DFlash2 is now the ONLY drafter, so that allowance pays for its own
+    # 0.89 GiB (measured: "drafter 799 MiB" + its head's staging, 890 MiB beside the engine without one; 192 MiB less than the MTP layer): nothing more is taken off.
     free = (float(vram_mib) - vram_fit.GAP_OTHER_MIB - SLOT_BASE_MIB - vram_fit.session_mib(ctx, kv) - vram_fit.HEAD_MIB - reserve
-            - (vram_fit.PROMPT_BASE_MIB + vram_fit.PROMPT_PER_TOKEN_MIB * chunk) - VRAM_GB * 1024)
-    return max(0, int(free / SLOT_MIB))
+            - (vram_fit.PROMPT_BASE_MIB + vram_fit.PROMPT_PER_TOKEN_MIB * chunk))
+    return max(0, min(MAX_SLOTS, int(free / SLOT_MIB)))
 
 
 def slots_of(args: list[Any], vram_mib: float | None = None) -> int | None:
     """How many expert slots this start holds: the person's own ``--expert-cache N``, else the estimate for the card (``vram_mib``), else None."""
     given = _flag_value(args, "--expert-cache")
     if given is not None and given.isdigit():
-        return int(given)
+        return min(MAX_SLOTS, int(int(given) * EXPERT_CACHE_SLOTS_PER_N))   # N is a budget of largest blobs; the steps are in the engine's slots
     if vram_mib:
         return expected_slots(vram_mib, args)
     return None
