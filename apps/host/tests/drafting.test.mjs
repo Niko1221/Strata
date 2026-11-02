@@ -127,7 +127,7 @@ test('the Drafting dropdown exists only where there is something to choose: Qwen
   for (const family of ['coder', 'swift', 'nvfp4', 'qwen36', 'deepseek41', undefined]) assert.equal(draftingChoices(family, true), null, `${family}, served`);
   // the app learns it from Control, once, and false until Control answers
   const host = read('../server/native-control.mjs');
-  assert.match(host, /dflash2:dflash2Served===true,dflash2Support\}/);
+  assert.match(host, /dflash2:dflash2Served===true,dflash2Support,dflash2Selq4\}/);
   assert.match(host, /dflash2Served=p\.serves===true/);
   assert.match(host, /function probeDrafting\(\)\{if\(!packaged\|\|dflash2Served!==null/);
   const screen = read('../src/components/NativeModels.tsx');
