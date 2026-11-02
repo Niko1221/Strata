@@ -12,6 +12,8 @@ last request's; the speed is the live rate while generating, else the last reque
 
 from __future__ import annotations
 
+import collections
+import os
 import time
 from typing import Any
 
@@ -81,6 +83,182 @@ def _most(values: list) -> float | None:
     return max(present) if present else None
 
 
+_WIN_GPU_HIST = {
+    "util": collections.deque(maxlen=60),
+    "vram": collections.deque(maxlen=60),
+    "temp": collections.deque(maxlen=60),
+    "power": collections.deque(maxlen=60),
+}
+_WIN_PDH = None
+
+
+class _WinPdh:
+    def __init__(self):
+        import ctypes
+        self.adl = None
+        self.context = None
+        self.pdh = getattr(ctypes.windll, "pdh", None)
+        self.hQuery = ctypes.c_void_p()
+        self.hVram = ctypes.c_void_p()
+        self.hUtil = ctypes.c_void_p()
+        self.ok = False
+
+        if os.name == "nt":
+            try:
+                self.adl = ctypes.cdll.LoadLibrary("atiadlxx.dll")
+                MALLOC_CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_size_t)
+
+                def adl_malloc(size):
+                    return ctypes.windll.msvcrt.malloc(size)
+
+                self._cb = MALLOC_CALLBACK(adl_malloc)
+                ctx = ctypes.c_void_p()
+                if self.adl.ADL2_Main_Control_Create(self._cb, 1, ctypes.byref(ctx)) == 0:
+                    self.context = ctx
+                    self.ok = True
+            except Exception:
+                pass
+
+            self.pcie_gen = None
+            self.pcie_gen_max = None
+            self.pcie_width = None
+            try:
+                from serve.telemetry import _windows_pci_link
+                pci = _windows_pci_link()
+                if pci:
+                    self.pcie_gen = pci.get("pcie_gen")
+                    self.pcie_gen_max = pci.get("pcie_gen_max")
+                    self.pcie_width = pci.get("pcie_width")
+            except Exception:
+                pass
+
+            if self.pdh:
+                try:
+                    if self.pdh.PdhOpenQueryW(None, 0, ctypes.byref(self.hQuery)) == 0:
+                        r1 = self.pdh.PdhAddEnglishCounterW(self.hQuery, "\\GPU Local Adapter Memory(*)\\Local Usage", 0, ctypes.byref(self.hVram))
+                        r2 = self.pdh.PdhAddEnglishCounterW(self.hQuery, "\\GPU Engine(*)\\Utilization Percentage", 0, ctypes.byref(self.hUtil))
+                        if r1 == 0 or r2 == 0:
+                            self.pdh.PdhCollectQueryData(self.hQuery)
+                            self.ok = True
+                except Exception:
+                    pass
+
+    def sample(self):
+        if not self.ok:
+            return None, None, None, None, None, None, None, None
+        import ctypes
+        import struct
+        vram_gib = None
+        util = None
+        temp = None
+        power = None
+        temp_hotspot = None
+        pcie_gen = self.pcie_gen
+        pcie_width = self.pcie_width
+        pcie_gen_max = self.pcie_gen_max
+
+        if self.adl and self.context:
+            try:
+                class ADLSingleSensorData(ctypes.Structure):
+                    _fields_ = [("supported", ctypes.c_int), ("value", ctypes.c_int)]
+
+                class ADLPMLogDataOutput(ctypes.Structure):
+                    _fields_ = [("size", ctypes.c_int), ("sensors", ADLSingleSensorData * 256)]
+
+                data = ADLPMLogDataOutput()
+                data.size = ctypes.sizeof(ADLPMLogDataOutput)
+                if self.adl.ADL2_New_QueryPMLogData_Get(self.context, 0, ctypes.byref(data)) == 0:
+                    if data.sensors[19].supported and data.sensors[19].value >= 0:
+                        util = float(data.sensors[19].value)
+                    elif data.sensors[20].supported and data.sensors[20].value >= 0:
+                        util = float(data.sensors[20].value)
+                    if data.sensors[8].supported and data.sensors[8].value > 0:
+                        temp = float(data.sensors[8].value)
+                    elif data.sensors[27].supported and data.sensors[27].value > 0:
+                        temp = float(data.sensors[27].value)
+                    if data.sensors[27].supported and data.sensors[27].value > 0:
+                        temp_hotspot = float(data.sensors[27].value)
+                    if data.sensors[23].supported and data.sensors[23].value >= 0:
+                        power = float(data.sensors[23].value)
+                    if data.sensors[40].supported and data.sensors[40].value > 0:
+                        pcie_gen = data.sensors[40].value
+                        self.pcie_gen_max = max(getattr(self, "pcie_gen_max", 0) or 0, data.sensors[40].value)
+                        pcie_gen_max = self.pcie_gen_max
+                    if data.sensors[41].supported and data.sensors[41].value > 0:
+                        pcie_width = data.sensors[41].value
+            except Exception:
+                pass
+
+        if self.pdh and self.hQuery:
+            try:
+                self.pdh.PdhCollectQueryData(self.hQuery)
+                if self.hVram:
+                    bs = ctypes.c_uint32(0)
+                    cnt = ctypes.c_uint32(0)
+                    self.pdh.PdhGetFormattedCounterArrayW(self.hVram, 0x00000400, ctypes.byref(bs), ctypes.byref(cnt), None)
+                    if bs.value > 0:
+                        buf = ctypes.create_string_buffer(bs.value)
+                        if self.pdh.PdhGetFormattedCounterArrayW(self.hVram, 0x00000400, ctypes.byref(bs), ctypes.byref(cnt), buf) == 0:
+                            max_v = 0
+                            for off in range(0, cnt.value * 24, 24):
+                                _, _, v = struct.unpack_from("QQq", buf, off)
+                                if v > max_v:
+                                    max_v = v
+                            if max_v > 0:
+                                vram_gib = max_v / (1024.0 ** 3)
+                if util is None and self.hUtil:
+                    bs = ctypes.c_uint32(0)
+                    cnt = ctypes.c_uint32(0)
+                    self.pdh.PdhGetFormattedCounterArrayW(self.hUtil, 0x00000200, ctypes.byref(bs), ctypes.byref(cnt), None)
+                    if bs.value > 0:
+                        buf = ctypes.create_string_buffer(bs.value)
+                        if self.pdh.PdhGetFormattedCounterArrayW(self.hUtil, 0x00000200, ctypes.byref(bs), ctypes.byref(cnt), buf) == 0:
+                            tot = 0.0
+                            for off in range(0, cnt.value * 24, 24):
+                                nptr, _, v = struct.unpack_from("QQd", buf, off)
+                                name = ctypes.wstring_at(nptr)
+                                if ("engtype_compute" in name or "engtype_3d" in name) and v > 0.05:
+                                    tot += v
+                            util = min(100.0, round(tot, 1))
+            except Exception:
+                pass
+        return vram_gib, util, temp, power, temp_hotspot, pcie_gen, pcie_width, pcie_gen_max
+
+
+def _get_windows_gpu_sample(engine: dict):
+    global _WIN_PDH
+    if _WIN_PDH is None:
+        _WIN_PDH = _WinPdh()
+    vram_gib, util, temp, power, temp_hotspot, pcie_gen, pcie_width, pcie_gen_max = _WIN_PDH.sample()
+    if vram_gib is None:
+        slots = engine.get("expert_cache_mib") or 0
+        arena = engine.get("arena_mib") or 0
+        if slots or arena:
+            vram_gib = (slots + arena) / 1024.0
+    if vram_gib is not None:
+        _WIN_GPU_HIST["vram"].append(vram_gib)
+    if util is not None:
+        _WIN_GPU_HIST["util"].append(util)
+    if temp is not None:
+        _WIN_GPU_HIST["temp"].append(temp)
+    if power is not None:
+        _WIN_GPU_HIST["power"].append(power)
+    return {
+        "vram_used": vram_gib,
+        "vram_hist": list(_WIN_GPU_HIST["vram"]),
+        "util": util,
+        "util_hist": list(_WIN_GPU_HIST["util"]),
+        "temp": temp,
+        "temp_hotspot": temp_hotspot,
+        "temp_hist": list(_WIN_GPU_HIST["temp"]),
+        "power": power,
+        "power_hist": list(_WIN_GPU_HIST["power"]),
+        "pcie_gen": pcie_gen,
+        "pcie_gen_max": pcie_gen_max,
+        "pcie_width": pcie_width,
+    }
+
+
 def build(metrics: dict | None) -> dict | None:
     """The numbers the Overview draws, or None when the server does not serve /metrics (an old server: the caller falls back)."""
     if not isinstance(metrics, dict) or not isinstance(metrics.get("live"), dict):
@@ -140,10 +318,11 @@ def build(metrics: dict | None) -> dict | None:
                 "name": static.get("gpu_name"), "util": _num(hw.get("gpu_util")), "util_hist": _series(history, "gpu_util"),
                 "vram_used": _gib(hw.get("gpu_mem_used")), "vram_total": _gib(hw.get("gpu_mem_total")) or
                 (_num(static.get("gpu_vram_total_mib")) / 1024.0 if _num(static.get("gpu_vram_total_mib")) else None),
-                "vram_hist": _series(history, "gpu_mem_used", GIB), "temp": _num(hw.get("gpu_temp")), "temp_hist": _series(history, "gpu_temp"),
+                "vram_hist": _series(history, "gpu_mem_used", GIB), "temp": _num(hw.get("gpu_temp")), "temp_hotspot": _num(hw.get("gpu_temp_hotspot")),
+                "temp_hist": _series(history, "gpu_temp"),
                 "power": _num(hw.get("gpu_power")), "power_limit": _num(hw.get("gpu_power_limit")), "power_hist": _series(history, "gpu_power"),
                 "pcie_rx": _num(hw.get("gpu_pcie_rx_mb")), "pcie_hist": _series(history, "gpu_pcie_rx_mb"),
-                "pcie_gen": gen if gen is not None else genmax, "pcie_width": width, "count": _num(static.get("gpu_count"))},
+                "pcie_gen": gen, "pcie_gen_max": genmax, "pcie_width": width, "count": _num(static.get("gpu_count"))},
         "cpu": {"load": _num(hw.get("cpu_pct") if hw.get("cpu_pct") is not None else hw.get("cpu")), "hist": _series(history, "cpu"),
                 "cores": _num(static.get("cores")), "threads": _num(static.get("threads")), "sockets": _num(static.get("sockets")),
                 "numa": _num(static.get("numa_nodes"))},
@@ -168,6 +347,36 @@ def build(metrics: dict | None) -> dict | None:
         g["power"] = _total([c["power"] for c in cards])
         g["power_limit"] = _total([c["power_limit"] for c in cards])
         g["count"] = float(len(cards))
+    g = model["gpu"]
+    if os.name == "nt":
+        need_sample = (g["vram_used"] is None or g["util"] is None or g["temp"] is None or g["power"] is None
+                       or g.get("temp_hotspot") is None or (g["util"] == 0.0 and model.get("state") in ("Reading", "Generating")))
+        if need_sample:
+            s = _get_windows_gpu_sample(engine)
+            if g["vram_used"] is None and s.get("vram_used") is not None:
+                g["vram_used"] = s["vram_used"]
+                if not g["vram_hist"] or all(x is None for x in g["vram_hist"]):
+                    g["vram_hist"] = s["vram_hist"]
+            if (g["util"] is None or (g["util"] == 0.0 and model.get("state") in ("Reading", "Generating"))) and s.get("util") is not None:
+                g["util"] = s["util"]
+                if not g["util_hist"] or all(x in (None, 0.0) for x in g["util_hist"]):
+                    g["util_hist"] = s["util_hist"]
+            if g["temp"] is None and s.get("temp") is not None:
+                g["temp"] = s["temp"]
+                if not g["temp_hist"] or all(x is None for x in g["temp_hist"]):
+                    g["temp_hist"] = s["temp_hist"]
+            if g.get("temp_hotspot") is None and s.get("temp_hotspot") is not None:
+                g["temp_hotspot"] = s["temp_hotspot"]
+            if g["power"] is None and s.get("power") is not None:
+                g["power"] = s["power"]
+                if not g["power_hist"] or all(x is None for x in g["power_hist"]):
+                    g["power_hist"] = s["power_hist"]
+            if g.get("pcie_gen") is None and s.get("pcie_gen") is not None:
+                g["pcie_gen"] = s["pcie_gen"]
+            if g.get("pcie_gen_max") is None and s.get("pcie_gen_max") is not None:
+                g["pcie_gen_max"] = s["pcie_gen_max"]
+            if g.get("pcie_width") is None and s.get("pcie_width") is not None:
+                g["pcie_width"] = s["pcie_width"]
     return model
 
 
@@ -364,6 +573,9 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     inner = tile_w - 4
     spd, spd_note, spd_hist = model["speed"]
     util_scale = dict(lo=0, hi=100)
+    t_present = [v for v in g["temp_hist"] if v is not None]
+    t_lo = min(t_present) if t_present else 20.0
+    t_hi = max(max(t_present) if t_present else 100.0, t_lo + 15.0)
     tiles1 = [
         _tile("Speed", f"{fmt(spd, 1)} tok/s" if spd is not None else "-- tok/s", spd_note, spark(spd_hist, inner, glyphs), tile_w, accent=accent, box_style=box_style),
         _tile("GPU load", f"{fmt(g['util'])} %", f"busiest of {ncards} cards" if ncards else
@@ -373,12 +585,14 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
               (f"all {ncards} cards" if ncards else
                f"{int(model['experts']['slots']):,} experts cached" if model["experts"]["slots"] is not None else "graphics memory"),
               spark(g["vram_hist"], inner, glyphs, lo=0, hi=g["vram_total"]), tile_w, accent=accent, box_style=box_style),
-        _tile("GPU temp", f"{fmt(g['temp'])} °C" if not ascii_mode else f"{fmt(g['temp'])} C", "hottest card" if ncards else "",
-              spark(g["temp_hist"], inner, glyphs, lo=20, hi=100), tile_w, accent=plain(AMBER) if color else "default", box_style=box_style),
+        _tile("GPU temp", f"{fmt(g['temp'])} °C" if not ascii_mode else f"{fmt(g['temp'])} C",
+              ("hottest card" if ncards else f"hotspot {fmt(g.get('temp_hotspot'))} °C" if g.get("temp_hotspot") else ""),
+              spark(g["temp_hist"], inner, glyphs, lo=t_lo, hi=t_hi), tile_w, accent=plain(AMBER) if color else "default", box_style=box_style),
     ]
     c, d = model["cpu"], model["disk"]
-    gen = f"Gen{int(g['pcie_gen'])}" if g["pcie_gen"] else "PCIe"
-    link = f"{gen} x{int(g['pcie_width'])}" if g["pcie_width"] else gen
+    p_gen = g.get("pcie_gen_max") or g.get("pcie_gen")
+    gen = f"Gen{int(p_gen)}" if p_gen else "PCIe"
+    link = f"{gen} x{int(g['pcie_width'])}" if g.get("pcie_width") else gen
     cpu_sub = (f"{int(c['sockets'])} CPUs · {int(c['cores'])} cores" if c.get("sockets") and c["sockets"] > 1 and c["cores"] else
                f"{int(c['cores'])} cores · {int(c['threads'])} threads" if c["cores"] and c["threads"] else
                f"{int(c['threads'])} threads" if c["threads"] else "")

@@ -345,12 +345,249 @@ class _Metal:
         return out
 
 
+
+def _windows_pci_link():
+    """Current and max PCIe link speed and width for the display controller from Windows PnP properties."""
+    if os.name != "nt":
+        return None
+    try:
+        from ctypes import wintypes
+        cfgmgr32 = getattr(ctypes.windll, "cfgmgr32", None)
+        if not cfgmgr32:
+            return None
+
+        class DEVPROPKEY(ctypes.Structure):
+            _fields_ = [
+                ("fmtid_Data1", wintypes.DWORD),
+                ("fmtid_Data2", wintypes.WORD),
+                ("fmtid_Data3", wintypes.WORD),
+                ("fmtid_Data4", ctypes.c_byte * 8),
+                ("pid", wintypes.ULONG),
+            ]
+
+        def _key(guid_str, pid):
+            import uuid
+            u = uuid.UUID(guid_str)
+            k = DEVPROPKEY()
+            k.fmtid_Data1 = int.from_bytes(u.bytes_le[0:4], "little")
+            k.fmtid_Data2 = int.from_bytes(u.bytes_le[4:6], "little")
+            k.fmtid_Data3 = int.from_bytes(u.bytes_le[6:8], "little")
+            for i in range(8):
+                k.fmtid_Data4[i] = u.bytes_le[8 + i]
+            k.pid = pid
+            return k
+
+        k_base = _key("3ab22e31-8264-4b4e-9af5-a8d2d8e33e62", 4)
+        k_curr_speed = _key("3ab22e31-8264-4b4e-9af5-a8d2d8e33e62", 9)
+        k_curr_width = _key("3ab22e31-8264-4b4e-9af5-a8d2d8e33e62", 10)
+        k_max_speed = _key("3ab22e31-8264-4b4e-9af5-a8d2d8e33e62", 11)
+        k_max_width = _key("3ab22e31-8264-4b4e-9af5-a8d2d8e33e62", 12)
+
+        buf_len = wintypes.ULONG(0)
+        if cfgmgr32.CM_Get_Device_ID_List_SizeW(ctypes.byref(buf_len), "PCI", 0) != 0:
+            return None
+        buf = ctypes.create_unicode_buffer(buf_len.value)
+        if cfgmgr32.CM_Get_Device_ID_ListW("PCI", buf, buf_len.value, 0) != 0:
+            return None
+
+        for dev_id in buf[:].split("\0"):
+            if not dev_id:
+                continue
+            devnode = wintypes.DWORD()
+            if cfgmgr32.CM_Locate_DevNodeW(ctypes.byref(devnode), dev_id, 0) != 0:
+                continue
+
+            def _prop(dn, propkey):
+                ptype = wintypes.ULONG()
+                sz = wintypes.ULONG(0)
+                cfgmgr32.CM_Get_DevNode_PropertyW(dn, ctypes.byref(propkey), ctypes.byref(ptype), None, ctypes.byref(sz), 0)
+                if sz.value == 0:
+                    return None
+                b = ctypes.create_string_buffer(sz.value)
+                if cfgmgr32.CM_Get_DevNode_PropertyW(dn, ctypes.byref(propkey), ctypes.byref(ptype), b, ctypes.byref(sz), 0) == 0:
+                    return int.from_bytes(b.raw, "little")
+                return None
+
+            if _prop(devnode, k_base) == 3 and "VEN_1002" in dev_id.upper():
+                curr_spd = _prop(devnode, k_curr_speed)
+                max_spd = _prop(devnode, k_max_speed)
+                curr_w = _prop(devnode, k_curr_width)
+                return {
+                    "pcie_gen": curr_spd,
+                    "pcie_gen_max": max_spd or curr_spd,
+                    "pcie_width": curr_w,
+                }
+    except Exception:
+        pass
+    return None
+
+
+class _AmdWin(_Amd):
+    """AMD GPU readings on Windows using ADL (atiadlxx.dll) and Windows PDH counters."""
+
+    def __init__(self, index=0, sysfs=None):
+        super().__init__(index, sysfs)
+        self.index = index
+        self._ok = False
+        self._name = "AMD Radeon PRO W6800"
+        self.adl = None
+        self.context = None
+        self.pdh = None
+        self.hQuery = None
+        self.hVram = None
+        self.hUtil = None
+        self._vram_total = None
+        self._pcie_gen = None
+        self._pcie_gen_max = None
+        self._pcie_width = None
+
+        if os.name == "nt":
+            pci = _windows_pci_link()
+            if pci:
+                self._pcie_gen = pci.get("pcie_gen")
+                self._pcie_gen_max = pci.get("pcie_gen_max")
+                self._pcie_width = pci.get("pcie_width")
+
+            try:
+                self.adl = ctypes.cdll.LoadLibrary("atiadlxx.dll")
+                MALLOC_CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_size_t)
+
+                def adl_malloc(size):
+                    return ctypes.windll.msvcrt.malloc(size)
+
+                self._cb = MALLOC_CALLBACK(adl_malloc)
+                ctx = ctypes.c_void_p()
+                if self.adl.ADL2_Main_Control_Create(self._cb, 1, ctypes.byref(ctx)) == 0:
+                    self.context = ctx
+                    self._ok = True
+            except Exception:
+                pass
+
+            try:
+                self.pdh = getattr(ctypes.windll, "pdh", None)
+                if self.pdh:
+                    hq = ctypes.c_void_p()
+                    if self.pdh.PdhOpenQueryW(None, 0, ctypes.byref(hq)) == 0:
+                        self.hQuery = hq
+                        self.hVram = ctypes.c_void_p()
+                        self.hUtil = ctypes.c_void_p()
+                        self.pdh.PdhAddEnglishCounterW(hq, "\\GPU Local Adapter Memory(*)\\Local Usage", 0, ctypes.byref(self.hVram))
+                        self.pdh.PdhAddEnglishCounterW(hq, "\\GPU Engine(*)\\Utilization Percentage", 0, ctypes.byref(self.hUtil))
+                        self.pdh.PdhCollectQueryData(hq)
+                        self._ok = True
+            except Exception:
+                pass
+
+        try:
+            cards = windows_amd_cards()
+            if cards and 0 <= index < len(cards):
+                self._name = cards[index].get("name") or self._name
+                self._vram_total = cards[index].get("vram_bytes")
+        except Exception:
+            pass
+
+    def ok(self):
+        if self.dev:
+            return True
+        if SYSFS != "/sys":
+            return False
+        return self._ok
+
+    def name(self):
+        return super().name() if self.dev else self._name
+
+    def link(self):
+        if self.dev:
+            return super().link()
+        gen = getattr(self, "_pcie_gen", None)
+        gen_max = getattr(self, "_pcie_gen_max", gen)
+        width = getattr(self, "_pcie_width", None)
+        return {"pcie_gen": gen, "pcie_gen_max": gen_max, "pcie_width": width}
+
+    def read(self):
+        if self.dev:
+            return super().read()
+        out = {}
+        if self._vram_total:
+            out["mem_total"] = self._vram_total
+        out.update(self.link())
+        if self.adl and self.context:
+            try:
+                class ADLSingleSensorData(ctypes.Structure):
+                    _fields_ = [("supported", ctypes.c_int), ("value", ctypes.c_int)]
+
+                class ADLPMLogDataOutput(ctypes.Structure):
+                    _fields_ = [("size", ctypes.c_int), ("sensors", ADLSingleSensorData * 256)]
+
+                data = ADLPMLogDataOutput()
+                data.size = ctypes.sizeof(ADLPMLogDataOutput)
+                if self.adl.ADL2_New_QueryPMLogData_Get(self.context, ctypes.c_int(self.index), ctypes.byref(data)) == 0:
+                    if data.sensors[19].supported and data.sensors[19].value >= 0:
+                        out["util"] = float(data.sensors[19].value)
+                    elif data.sensors[20].supported and data.sensors[20].value >= 0:
+                        out["util"] = float(data.sensors[20].value)
+                    if data.sensors[8].supported and data.sensors[8].value > 0:
+                        out["temp"] = float(data.sensors[8].value)
+                    elif data.sensors[27].supported and data.sensors[27].value > 0:
+                        out["temp"] = float(data.sensors[27].value)
+                    if data.sensors[27].supported and data.sensors[27].value > 0:
+                        out["temp_hotspot"] = float(data.sensors[27].value)
+                    if data.sensors[23].supported and data.sensors[23].value >= 0:
+                        out["power"] = float(data.sensors[23].value)
+                    if data.sensors[40].supported and data.sensors[40].value > 0:
+                        out["pcie_gen"] = data.sensors[40].value
+                        self._pcie_gen = data.sensors[40].value
+                        self._pcie_gen_max = max(getattr(self, "_pcie_gen_max", 0) or 0, data.sensors[40].value)
+                        out["pcie_gen_max"] = self._pcie_gen_max
+                    if data.sensors[41].supported and data.sensors[41].value > 0:
+                        out["pcie_width"] = data.sensors[41].value
+                        self._pcie_width = data.sensors[41].value
+            except Exception:
+                pass
+
+        if self.pdh and self.hQuery:
+            try:
+                import struct
+                self.pdh.PdhCollectQueryData(self.hQuery)
+                if self.hVram:
+                    bs = ctypes.c_uint32(0)
+                    cnt = ctypes.c_uint32(0)
+                    self.pdh.PdhGetFormattedCounterArrayW(self.hVram, 0x00000400, ctypes.byref(bs), ctypes.byref(cnt), None)
+                    if bs.value > 0:
+                        buf = ctypes.create_string_buffer(bs.value)
+                        if self.pdh.PdhGetFormattedCounterArrayW(self.hVram, 0x00000400, ctypes.byref(bs), ctypes.byref(cnt), buf) == 0:
+                            max_v = 0
+                            for off in range(0, cnt.value * 24, 24):
+                                _, _, v = struct.unpack_from("QQq", buf, off)
+                                if v > max_v:
+                                    max_v = v
+                            if max_v > 0:
+                                out["mem_used"] = max_v
+                if "util" not in out and self.hUtil:
+                    bs = ctypes.c_uint32(0)
+                    cnt = ctypes.c_uint32(0)
+                    self.pdh.PdhGetFormattedCounterArrayW(self.hUtil, 0x00000200, ctypes.byref(bs), ctypes.byref(cnt), None)
+                    if bs.value > 0:
+                        buf = ctypes.create_string_buffer(bs.value)
+                        if self.pdh.PdhGetFormattedCounterArrayW(self.hUtil, 0x00000200, ctypes.byref(bs), ctypes.byref(cnt), buf) == 0:
+                            tot = 0.0
+                            for off in range(0, cnt.value * 24, 24):
+                                nptr, _, v = struct.unpack_from("QQd", buf, off)
+                                n = ctypes.wstring_at(nptr)
+                                if ("engtype_compute" in n or "engtype_3d" in n) and v > 0.05:
+                                    tot += v
+                            out["util"] = min(100.0, round(tot, 1))
+            except Exception:
+                pass
+        return out
+
+
 def gpu_reader(index=0, amd=False):
     """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or IOKit's
     IOAccelerator registry on macOS (Metal backend).  `amd` comes first: no Mac runs the HIP backend, and the
     tests' AMD trees are read on a Mac too."""
     if amd:
-        return _Amd(index)
+        return _AmdWin(index) if os.name == "nt" else _Amd(index)
     return _Metal(index) if sys.platform == "darwin" else _Nvml(index)
 
 
@@ -551,12 +788,12 @@ class Telemetry:
         self.fallback = _CpuRamFallback()
         gpu_name = " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None
         win_amd = None
-        if gpu_name is None and amd and os.name == "nt":
-            # #1587: no readings for an AMD card on Windows yet, but its name (and VRAM size) are in the registry, so the
-            # dashboard and strata_bench do not call the run "CPU only".  The class order is taken as HIP's order.
+        if amd and os.name == "nt":
+            # #1587: query Windows AMD cards from registry for static capacity and names
             cards = windows_amd_cards()
             win_amd = [cards[i] for i in idx if 0 <= i < len(cards)] or cards[:1]
-            gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
+            if gpu_name is None:
+                gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
         # the macOS reader knows the device's working set (the VRAM budget of the unified memory); None elsewhere
         vram_total = None
         if win_amd is None and isinstance(self.gpu, _Metal) and self.gpu.ok():
