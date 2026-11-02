@@ -1,7 +1,10 @@
 # 训练分支验收说明（中文 v0.3）
 
-> 树：`Strata-prtrain`（feat/train-backforward）。`mezo.py` / `objectives.py` / `mem_guard.py`
-> 与 `Strata-mezo`（feat/train-mezo）逐字一致。
+> **本文不是提交材料**：审核说明是 `REVIEW-REQUEST.zh.md`，其中实测明细已并成该文的
+> **附录 C**（原始点位全表、速度-长度、方法四条性质、未展开的两行）。
+> 本文保留作工作台账（记当时的跑法与口径），不再作为独立文档维护。
+> 分支拓扑、基线判据、来源分支审计见 `REVIEW-REQUEST.zh.md` §7。
+> `mezo.py` / `objectives.py` / `mem_guard.py` 与 `Strata-mezo`（`feat/train-mezo`）逐字一致。
 > 环境：RTX 4090 48 GiB（47.99 可用）/ 125B IQ3_XXS pack / 单行样本 / loss = mean。
 > 数字后的 `logs/xxx.log` 是出处；没有实测的地方写「未测」，不填估算值。
 
