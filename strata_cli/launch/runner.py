@@ -948,7 +948,7 @@ class Runner:
             args += ["--kv", s.kv]
         if fam in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
-        resolved = modelstate.resolved_drafting(s.drafting, fam)
+        resolved = self.resolved_drafting(fam)
         mtp_word = s.mtp if resolved != "off" else "off"
         if mtp_word in ("on", "off") and fam in modelstate.HELPER_FAMILIES:
             args += ["--mtp", mtp_word]                      # round 8, N3: "--mtp off" never reached setup, which then fetched the 5.2 GB draft layer
@@ -1080,7 +1080,7 @@ class Runner:
         if s.family and s.model and not s.model_path:
             path, desc = self.installed_state()
         return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path, data_dir=s.data_dir,
-                                 config=path, desc=desc, mtp=s.mtp, drafting=modelstate.resolved_drafting(s.drafting, s.family))
+                                 config=path, desc=desc, mtp=s.mtp, drafting=self.resolved_drafting(s.family))
 
     def download_gb(self) -> float:
         """How much would be downloaded for this launch right now: 0 when everything is on disk (the model is installed with these choices
@@ -1507,6 +1507,47 @@ class Runner:
         self.emit("model", f"These files are {fam} {model}.", None)
 
     # ---- 3. config and profile
+    def resolved_drafting(self, family: str | None) -> str:
+        """modelstate.resolved_drafting for this launch: Auto where the all-cards split engine will take the start is the MTP (it runs the model's draft layer and
+        nothing else), so the plan and the fetch include the draft layer and not DFlash2's drafter.  A drafter the person chose is kept."""
+        from strata_control import drafting
+        r = modelstate.resolved_drafting(self.s.drafting, family)
+        if r == "dflash2" and drafting.normalize(self.s.drafting) == "auto" and self.split_expected():
+            return "mtp"
+        return r
+
+    def split_expected(self, cfg: dict | None = None) -> bool:
+        """Would the all-cards split engine take this launch (strata_control/split_engine.expected: the rule apply_split_engine uses, asked before anything is on disk)."""
+        cached = getattr(self, "_split_expected", None)
+        if cached is not None:
+            return cached
+        got = False
+        try:
+            from strata_control import split_engine as SE
+            s = self.s
+            if s.family in modelstate.HELPER_FAMILIES and not self.multi_file() and not self.intel_chosen():
+                base = dict(cfg or {})
+                if s.split_engine:
+                    base["split_engine"] = s.split_engine
+                base["drafting"] = s.drafting if s.drafting is not None else base.get("drafting")
+                native = None
+                if s.model_path:
+                    p = Path(s.model_path)
+                    shards = sorted(p.glob("*-00001-of-*.gguf")) or sorted(p.glob("*.gguf")) if p.is_dir() else [p]
+                    native = str(shards[0]) if shards else None
+                else:
+                    native = next((str(a2) for a1, a2 in zip(base.get("args") or [], (base.get("args") or [])[1:]) if a1 == "--native"), None)
+                if native is None and s.family not in ("qwen", "unsloth"):
+                    got = False                              # no file to look at and no reason to assume a Flash-Next shape
+                else:
+                    cards = [int(g) for g in s.gpus] if s.gpus else None
+                    got = SE.expected(base, indexes=cards, native=native, context=int(s.context or SE.TESTED_CONTEXT),
+                                      allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1")
+        except Exception:                                    # noqa: BLE001 - a question asked early is never a reason to stop a launch
+            got = False
+        self._split_expected = got
+        return got
+
     def drafting_inputs(self, cfg: dict) -> dict:
         """What strata_control/drafting.py needs to decide for this launch: the choice, the card class, the model and the data folder."""
         from strata_control import drafting
@@ -1515,6 +1556,8 @@ class Runner:
         args = cfg.get("args") or []
         if cfg.get("mtp") is False and drafting.normalize(mode) == "auto":
             mode = "off"                                     # the Draft layer switch is off and no drafter was chosen since
+        elif drafting.normalize(mode) == "auto" and self.split_expected(cfg):
+            mode = "mtp"                                     # the all-cards split engine runs the MTP draft layer: the plan and the fetch are for that, not for DFlash2
         return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": self.s.family,
                 "data_dir": drafting.data_dir_of(args) or (Path(self.s.data_dir) if self.s.data_dir else None),
                 "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
@@ -1605,6 +1648,16 @@ class Runner:
                     return str(p)
             return None
 
+        # the split runs the model's own draft layer (--mtp) and refuses to start without it; the plan for Auto downloads DFlash2's drafter, not the draft layer, so
+        # a start whose draft-layer folder is not on disk stays on the layer split (Auto: silently, with DFlash2 as the plan said; "on": one line saying how to get it)
+        mtp_dir = next((str(cfg["args"][i + 1]) for i, a in enumerate(cfg.get("args") or []) if a == "--mtp" and i + 1 < len(cfg["args"])), None)
+        if mtp_dir and not self.draft_layer_present(mtp_dir):
+            if SE.mode(cfg) == "on":
+                text = ("The all-cards split engine needs the model's draft layer (the MTP), which is not downloaded. Add --drafting mtp to fetch it; "
+                        "using the normal layer split.")
+                self.notices.append(text)
+                self.emit("config", text, None, level="warn")
+            return
         # `--parallel N` is the split's lane count (split_config reads cfg["parallel"]); a refusal puts the run config back as it was
         lanes_added = bool(self.s.parallel) and not cfg.get("parallel")
         if lanes_added:
@@ -1704,6 +1757,14 @@ class Runner:
         want = {k: v for k, v in (profiles.parse_assignment(x) for x in sets)}
         if cur.get("overrides") != want:
             profiles.save(name, {**cur, "overrides": want}, expected_revision=rev)
+
+    @staticmethod
+    def draft_layer_present(folder: str) -> bool:
+        """The draft layer's folder (mtp/rt) exists and holds files."""
+        try:
+            return Path(folder).is_dir() and any(Path(folder).iterdir())
+        except OSError:
+            return False
 
     @staticmethod
     def run_config_owns_slots(config: Path) -> bool:
@@ -2183,7 +2244,7 @@ class Runner:
             have = {p["kind"] for p in parts}
             try:
                 data = Path(st.folder) if st.folder else (Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or self.catalog.data_dir()))
-                if modelstate.mtp_choice(s.mtp, modelstate.resolved_drafting(s.drafting, s.family)) != "off" and "mtp" not in have and not (data / "mtp" / "rt" / "experts.bin").is_file():
+                if modelstate.mtp_choice(s.mtp, self.resolved_drafting(s.family)) != "off" and "mtp" not in have and not (data / "mtp" / "rt" / "experts.bin").is_file():
                     parts.append({"kind": "mtp", "label": "the draft layer", "gb": MTP_FETCH_GB})
                 places = [data / "models", data / "Models"]
                 if s.model_path:                             # setup uses a reader that sits with the person's own files (setup.py --gguf-dir)
@@ -2400,6 +2461,9 @@ class Runner:
         try:
             base, cfg = self.installed_state()
             want = self.drafting_inputs(cfg or {})
+            if self.split_expected(cfg) and drafting.normalize(want.get("mode")) == "mtp":
+                from strata_control.discovery import MTP_FETCH_GB
+                return f"Drafting: MTP (the all-cards split engine uses the MTP draft layer, {MTP_FETCH_GB:g} GB)"
             if drafting.needs_pack(**want):                   # the launch fetches the drafter first (ensure_drafter), so that is what will run
                 return "Drafting: DFlash2 (its drafter is downloaded first)"
             return drafting.summary_line(drafting.decide(**want))
