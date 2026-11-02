@@ -26,6 +26,8 @@ ACCESS_WORDS = {"local": "This computer only", "lan": "My local network", "cloud
 TUNE_MODES = ("quick", "thorough", "skip")
 VISION_MODES = ("off", "on", "gpu", "cpu")
 MTP_MODES = ("on", "off")
+#: strata_control/split_engine.py MODES: the all-cards split engine on NVIDIA cards (auto = by itself where it is supported, the default)
+SPLIT_MODES = ("auto", "on", "off")
 #: strata_control/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 SPEED_MODES = ("faster", "full")             # DeepSeek: 5 experts per word (Faster) or all 6 (Full quality)
@@ -123,6 +125,7 @@ class LaunchSettings:
     parallel: int | None = None                # None = fit to the card
     speed: str | None = None                   # DeepSeek only: None = the default for this PC (faster up to 16 GB of graphics memory); faster | full
     drafting: str | None = None                # None = Auto (recommended): the table in strata_control/drafting.py; mtp | dflash2 | off choose one. Saved in the launch config
+    split_engine: str | None = None            # None = auto (the all-cards split engine runs by itself where it is supported); on | off. Saved in the preset and the launch config
     mtp: str | None = None                     # None = as installed (draft layer on); "off" starts without it (less graphics memory and RAM, slower); "on" overrides an installed "off"
     tune: str = "skip"                         # quick | thorough | skip
     tune_allow_small: bool = False             # the "answer-changing" tick, off by default, as in the app
@@ -345,6 +348,8 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append(f"--mtp {s.mtp}")
         if s.drafting:
             parts.append(f"--drafting {s.drafting}")
+        if s.split_engine:
+            parts.append(f"--split-engine {s.split_engine}")
         if s.speed == "full":
             parts.append("--full-quality")
         elif s.speed == "faster":

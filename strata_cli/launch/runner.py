@@ -545,6 +545,8 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
         cfg.pop("api_key", None)
     if s.drafting:                                           # strata_control/drafting.py: serve/server.py applies it at every start
         cfg["drafting"] = s.drafting
+    if s.split_engine:                                       # strata_control/split_engine.py: read by apply_split_engine; "off" survives every update
+        cfg["split_engine"] = s.split_engine
     cfg.setdefault("exe", "component:strata-engine")
     cfg["open_browser"] = False                              # strata launch never opens a browser by itself (only `--open` does, after the start)
     if isinstance(cfg.get("args"), list):
@@ -1580,32 +1582,39 @@ class Runner:
         return out
 
     def apply_split_engine(self, cfg: dict) -> None:
-        """The opt-in all-cards split engine (docs/SPLIT_ENGINE.md): only when the run config says "split_engine": true (or a tester sets
-        STRATA_SPLIT_ENGINE=1), only for a Qwen model on this PC's NVIDIA cards that passes strata_control/split_engine.py's rule. Anything
-        else leaves the config as it is, with one plain line when the person had asked for it. It never stops a launch."""
+        """The all-cards split engine (docs/SPLIT_ENGINE.md): by itself ("auto", the default) for a Qwen model on this PC's NVIDIA cards that passes
+        strata_control/split_engine.py's rule, never when the run config says "split_engine": "off" (`--split-engine off`, STRATA_SPLIT_ENGINE=0).
+        In auto a "no" is silent and the config stays as it is; with "on" it gets one plain line. It never stops a launch."""
         from strata_control import split_engine as SE
-        if cfg.get("arch") == "deepseek41" or not SE.wanted(cfg):
+        if cfg.get("arch") == "deepseek41" or SE.mode(cfg) == "off":
             return
         from strata_control import engine_component as EC
 
-        def exe_for(n: int):
+        def exe_for(n: int, cc: int | None = None):
             exe = cfg.get("exe")
             try:
                 real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
             except Exception:                                # noqa: BLE001 - no engine to look beside: no split
                 return None
-            p = Path(str(real)).parent / f"strata-split-{n}"
-            return str(p) if p.is_file() else None
+            for name in ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",):   # one build per architecture (FNX_ARCH is compile time)
+                p = Path(str(real)).parent / name
+                if p.is_file():
+                    return str(p)
+            return None
 
         try:
             decision = SE.apply_to_config(cfg, exe_for_cards=exe_for, allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1")
         except Exception as e:                               # noqa: BLE001 - never stop a launch over an option
-            text = f"The all-cards split engine was left out ({type(e).__name__}). Using the normal layer split."
-            self.notices.append(text)
-            self.emit("config", text, None, level="warn")
+            if SE.mode(cfg) == "on":
+                text = f"The all-cards split engine was left out ({type(e).__name__}). Using the normal layer split."
+                self.notices.append(text)
+                self.emit("config", text, None, level="warn")
             return
-        self.notices.append(decision.line)
-        self.emit("config", decision.line, None)
+        if decision.quiet:
+            return
+        line = decision.line + (" Turn it off with: strata launch --split-engine off." if decision.use_split else "")
+        self.notices.append(line)
+        self.emit("config", line, None)
 
     def say_remembered_cards(self, base: dict) -> None:
         """A launch that names no cards keeps the cards the person chose earlier (`--gpu 0` is remembered by the model's settings).  On a PC with more

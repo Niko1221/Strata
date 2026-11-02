@@ -1,14 +1,16 @@
-"""strata-split: when the all-cards split engine may run, and the run config for it. OFF by default, opt-in.
+"""strata-split: when the all-cards split engine may run, and the run config for it. AUTOMATIC by default (mode "auto"), with an off switch.
 
 `strata-split-N` (src/split, from sFNX, MIT, Copyright (c) 2026 John Fink) gives every card a share of EVERY layer instead of some
 layers, and the cards exchange the layer sums through page-locked host memory (no peer access anywhere). On two RTX A6000 with
-UD-Q4_K_XL it decodes 40-95% faster than the normal layer split and reads prompts 1.7-2.8x slower (phaseA-tests/sfnx/RESULTS.md,
-section 8), so it is an option, never the default, until the owner has chosen.
+UD-Q4_K_XL it decodes 40-95% faster than the normal layer split (phaseA-tests/sfnx/RESULTS.md). The owner's decision: it runs by itself whenever the
+rule below says yes ("auto", the default), and `strata launch --split-engine off` (or "split_engine": "off" in the run config, or
+STRATA_SPLIT_ENGINE=0) turns it off; "on" asks for it and says why in one line when it cannot run. In auto a "no" is silent: the normal
+layer split starts, as before.
 
 This module is pure (no I/O besides reading GGUF directories): the launcher passes it facts and gets a Decision. The rule, from what
 has actually been run:
 
-  - the person turned it on (config key "split_engine": true, or `strata launch --split-engine on`); never otherwise;
+  - not turned off (mode(): "auto" by default; "on" is the same rule but a refusal is reported; "off" never);
   - Linux, NVIDIA cards, 2 to 4 of them, all the same model of card and memory size;
   - a card architecture and card count that have been run (TESTED): sm_86 on 2 cards today. Others build but stay off unless the
     caller says allow_untested (testers); the Decision says which part is untested in plain words;
@@ -31,8 +33,13 @@ import pathlib
 import re
 from typing import Any
 
-TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000)
-TESTED_ARCHS = (86,)               # compute capability: sm_86 only
+TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
+TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
+                                   # pictures; no suite there)
+MODES = ("auto", "on", "off")
+#: cards (compute capability) on which Auto drafting resolves to split + MTP rather than layer split + DFlash2: the split decodes faster there
+#: (phaseA-tests/sfnx/RESULTS.md section 17). Another card is not auto-split at all (TESTED_ARCHS), so it keeps Auto = layer split + DFlash2.
+AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -82,6 +89,7 @@ class Decision:
     untested: list[str] = dataclasses.field(default_factory=list)   # what about this setup nobody has run
     need_vram_gib: float = 0.0
     need_ram_gib: float = 0.0
+    quiet: bool = False             # auto mode and a "no": the launch says nothing and starts the normal layer split
 
     @property
     def line(self) -> str:
@@ -218,6 +226,11 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
     cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
     cfg["split_fallback"] = {k: base[k] for k in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting", "cwd") if k in base}
+    # The split engine runs the model's own draft layer (the MTP) and nothing else. Saying so in the config ("drafting": "mtp") keeps serve/server.py's
+    # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them
+    # and every start would fall back to the layer split). The fallback keeps the person's own choice (or none: Auto), so the layer split that starts
+    # instead gets DFlash2 as usual.
+    cfg["drafting"] = "mtp"
     cfg["split_engine_note"] = decision.line
     return cfg
 
@@ -264,18 +277,43 @@ def _flag(args: list, name: str) -> str | None:
     return str(args[args.index(name) + 1]) if name in args and args.index(name) + 1 < len(args) else None
 
 
-def wanted(cfg: dict, environ: dict | None = None) -> bool:
-    """The person turned the option on: "split_engine": true in the run config, or STRATA_SPLIT_ENGINE=1 in the environment (testers)."""
+def mode(cfg: dict, environ: dict | None = None) -> str:
+    """"auto" (the default), "on" or "off". The run config's "split_engine" (true/false or the word; `strata launch --split-engine X` writes it)
+    and, over it, STRATA_SPLIT_ENGINE in the environment (testers). Anything it does not know is auto."""
     import os
 
-    return cfg.get("split_engine") is True or (environ if environ is not None else os.environ).get("STRATA_SPLIT_ENGINE") == "1"
+    env = environ if environ is not None else os.environ
+    raw = env.get("STRATA_SPLIT_ENGINE")
+    if raw is None or not str(raw).strip():
+        raw = cfg.get("split_engine")
+    if raw is True:
+        return "on"
+    if raw is False:
+        return "off"
+    return {"on": "on", "1": "on", "true": "on", "yes": "on", "off": "off", "0": "off", "false": "off", "no": "off"}.get(str(raw).strip().lower(), "auto")
+
+
+def wanted(cfg: dict, environ: dict | None = None) -> bool:
+    """The split engine may be tried for this launch (anything but off)."""
+    return mode(cfg, environ) != "off"
 
 
 def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allow_untested: bool = False, probe=None, ram=None,
-                    scan=None, data_dir: str | None = None) -> Decision:
-    """Turn a normal run config into the split engine's config IN PLACE when the rule says yes, and say what was decided.
-    exe_for_cards(n) -> the path of strata-split-n or None (the engine package has none); probe(indexes) -> [Card]; ram() -> (total,
-    available) GiB; scan(first_shard) -> ModelFacts: the facts of this PC and model, replaceable for tests."""
+                    scan=None, data_dir: str | None = None, mode_: str | None = None) -> Decision:
+    """Turn a normal run config into the split engine's config IN PLACE when the mode and the rule say yes, and say what was decided.
+    exe_for_cards(n, cc) -> the path of the strata-split-n built for compute capability cc, or None (the engine package has none);
+    probe(indexes) -> [Card]; ram() -> (total, available) GiB; scan(first_shard) -> ModelFacts: the facts of this PC and model, replaceable
+    for tests. Mode "off": nothing happens, silently. Mode "auto": a refusal is `quiet` (the normal layer split starts without a word)."""
+    m = mode_ or mode(cfg)
+    if m == "off":
+        return Decision(False, ["the all-cards split engine is turned off"], quiet=True)
+    d = _apply(cfg, exe_for_cards=exe_for_cards, system=system, allow_untested=allow_untested, probe=probe, ram=ram, scan=scan, data_dir=data_dir)
+    if m == "auto" and not d.use_split:
+        d.quiet = True
+    return d
+
+
+def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan, data_dir) -> Decision:
     import os
     import pathlib
     import sys
@@ -285,6 +323,20 @@ def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allo
     native = _flag(args, "--native")
     if not native:
         return Decision(False, ["this model is not a single GGUF file set"])
+    # choices the split engine does not honour: the normal layer split keeps them
+    # Drafting: Auto (nothing written, or "auto") on a setup the split accepts runs the split with its MTP: measured faster to decode than the layer
+    # split with DFlash2 on both tested cards (AUTO_SPLIT_BEATS_DFLASH2, numbers in docs/SPLIT_ENGINE.md). The person's own "dflash2" (or "off", which the
+    # split cannot do: it needs the draft layer) keeps the layer split; "mtp" is what the split runs.
+    chosen = str(cfg.get("drafting") or "auto").lower()
+    if chosen == "dflash2":
+        return Decision(False, ["DFlash2 drafting was chosen, which the all-cards split engine does not run"])
+    if chosen == "off":
+        return Decision(False, ["drafting is off, and the all-cards split engine needs the draft layer"])
+    if cfg.get("user_args") or cfg.get("replicas"):
+        return Decision(False, ["this run config has engine arguments of its own or replicas, which the all-cards split engine does not take"])
+    kv = _flag(args, "--kv")
+    if kv not in (None, "int8"):
+        return Decision(False, [f"the conversation memory format is {kv}, the all-cards split engine keeps int8"])
     gpus = cfg.get("gpu")
     indexes = [int(g) for g in gpus] if isinstance(gpus, list) else ([int(gpus)] if isinstance(gpus, int) else None)
     cards = (probe or probe_cards)(indexes) if system == "linux" else []
@@ -298,7 +350,9 @@ def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allo
                allow_untested=allow_untested)
     if not d.use_split:
         return d
-    exe = exe_for_cards(d.cards)
+    if chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
+        return Decision(False, ["on this card the layer split with DFlash2 has not been measured slower than the all-cards split engine"], d.cards)
+    exe = exe_for_cards(d.cards, cards[0].cc)
     if not exe:
         return Decision(False, [f"this engine package has no strata-split-{d.cards}"], d.cards)
     mtp = _flag(args, "--mtp")
