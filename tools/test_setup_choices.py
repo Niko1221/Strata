@@ -56,6 +56,47 @@ class PrebuiltVision(unittest.TestCase):
         self.assertEqual(quiet(setup.prebuilt_vision, {"archs": [75, 86]}, {"arch": 75}, "gpu")[0], "gpu")
 
 
+class VisionArchsAsAString(unittest.TestCase):
+    """#3810: the packaging recipes write BUILD.json `vision_archs` as ONE string ("75;86;89;120"); 0.2.3 iterated it character by
+    character and setup stopped with int(';') on the released Windows CUDA package.  A string and a list mean the same."""
+    RELEASED = {"version": "0.2.3", "archs": [75, 86, 89, 120], "ptx": True, "cuda": "13.0", "vision": "gpu-cuda13",
+                "vision_archs": "75;86;89;120", "portable": True}
+
+    def test_the_released_package_manifest_is_read(self):
+        for arch in (75, 86, 89, 120):
+            self.assertEqual(quiet(setup.prebuilt_vision, self.RELEASED, {"arch": arch}, "gpu")[0], "gpu")
+
+    def test_a_card_the_string_does_not_list_gets_the_cpu_reader(self):
+        meta = {**self.RELEASED, "vision_archs": "86;89;120", "ptx": False}
+        got, out = quiet(setup.prebuilt_vision, meta, {"arch": 75}, "gpu")
+        self.assertEqual(got, "cpu")
+        self.assertIn("runs on the CPU instead", out)
+        self.assertEqual(quiet(setup.prebuilt_vision, {**meta, "ptx": True}, {"arch": 120}, "gpu")[0], "gpu")
+
+    def test_a_string_and_a_list_agree(self):
+        for value in ("75;86;89;120", [75, 86, 89, 120], ["sm_75", "86-real", "89", "compute_120"], "75,86 89;120"):
+            self.assertEqual(setup.arch_numbers(value), [75, 86, 89, 120], value)
+        self.assertEqual(setup.arch_numbers(None), [])
+        self.assertEqual(setup.arch_numbers(""), [])
+        self.assertEqual(setup.arch_names("gfx1100;gfx1201"), ["gfx1100", "gfx1201"])
+        self.assertEqual(setup.arch_names(["gfx1100"]), ["gfx1100"])
+        self.assertEqual(setup.arch_names(None), [])
+
+    def test_the_other_readers_of_the_manifest_take_a_string_too(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "BUILD.json").write_text('{"archs": "60;61;70", "ptx": true}', encoding="utf-8")
+            with mock.patch.object(setup, "engine_dir", return_value=Path(d)):
+                self.assertEqual(setup.engine_archs(), ([60, 61, 70], True))
+            (Path(d) / "BUILD.json").write_text('{"backend": "hip", "archs": ["gfx1100"], "vision_archs": "gfx1100;gfx1201"}', encoding="utf-8")
+            self.assertEqual(setup.reader_archs(Path(d)), ["gfx1100", "gfx1201"])
+            (Path(d) / "BUILD.json").write_text('{"backend": "hip", "archs": ["gfx1100", "gfx1201"]}', encoding="utf-8")
+            self.assertEqual(setup.reader_archs(Path(d)), ["gfx1100", "gfx1201"])
+        self.assertEqual(setup.reader_archs(Path(__file__).parent / "no-such-folder"), [])
+
+
 class GgufDirShards(unittest.TestCase):
     """#305: --gguf-dir reads the shard count from the -of-N part of the name instead of assuming two."""
 
@@ -195,10 +236,10 @@ class VsRange(unittest.TestCase):
 
     def test_the_range_follows_the_toolkit(self):
         self.assertIsNone(self.asked(None))      # #881: without CUDA vswhere gets no version range
-        self.assertEqual(self.asked((13, 0)), "[16.0,18.0)")
-        self.assertEqual(self.asked((13, 2)), "[16.0,18.0)")
-        self.assertEqual(self.asked((13, 3)), "[16.0,19.0)")
-        self.assertEqual(self.asked((14, 0)), "[16.0,19.0)")
+        self.assertEqual(self.asked((13, 0)), "[17.0,18.0)")
+        self.assertEqual(self.asked((13, 2)), "[17.0,18.0)")
+        self.assertEqual(self.asked((13, 3)), "[17.0,19.0)")
+        self.assertEqual(self.asked((14, 0)), "[17.0,19.0)")
 
 
     def test_vcvars_by_hand(self):
@@ -660,7 +701,7 @@ class CalibrateWithModel(unittest.TestCase):
                 mock.patch.object(setup, "update_installed_engine", lambda *a, **k: None), \
                 mock.patch.object(setup, "calibrate_config", lambda c: tuned.append(c.name) or True), \
                 mock.patch.object(setup, "start", lambda *a, **k: 0), \
-                mock.patch.object(setup, "data_folder", lambda d: (Path(tmp.name), [])), \
+                mock.patch.object(setup, "data_folder", lambda d, *a, **k: (Path(tmp.name), [])), \
                 mock.patch.object(setup, "step", side_effect=SystemExit("reached the plain setup")):
             try:
                 code, out = quiet(setup.main)

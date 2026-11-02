@@ -33,6 +33,8 @@ from pathlib import Path
 
 from strata_cli.client import ClientError, Endpoint, _NoRedirect
 from strata_control.profiles import ProfileError
+from strata_control import atomic as _atomic_mod
+from strata_control import posix_owner
 
 
 SCHEMA = 1
@@ -685,7 +687,7 @@ def _progress_write(path: Path, record: dict, *, first: bool = False) -> None:
     temporary = path.with_name(".progress-" + uuid.uuid4().hex + ".tmp")
     try:
         _write_new(temporary, encoded)
-        os.replace(temporary, path)
+        _atomic_mod.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -697,9 +699,8 @@ def progress(path: Path) -> dict:
     try:
         details = target.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_size > 4096 or \
-                (os.name == "posix" and (details.st_uid != os.getuid() or
-                                         stat.S_IMODE(details.st_mode) & 0o077)):
-            raise ProfileError("benchmark progress must be an owner-only regular file under 4 KiB", 5)
+                (os.name == "posix" and (posix_owner.owner_only_wrong(target, details))):
+            raise ProfileError(posix_owner.owner_only_text("benchmark progress must be an owner-only regular file under 4 KiB", target), 5)
         record = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         if isinstance(exc, ProfileError):

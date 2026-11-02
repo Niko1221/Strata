@@ -76,6 +76,18 @@ class ModelState:
                 "an interrupted download continues where it stopped.")
 
 
+#: The families whose setup also fetches the draft layer and the picture reader after the model (setup.py steps 5 and 6). NVFP4 packs bring
+#: theirs inside the download, Qwen3.6 has its own engine path.
+HELPER_FAMILIES = ("qwen", "swift", "coder", "unsloth", "gyro")
+
+
+def mtp_choice(mtp: str | None, drafting: str | None = None) -> str | None:
+    """The draft-layer choice setup is given: off when the person said --mtp off or --drafting off (nothing then uses the layer), else as chosen."""
+    if str(drafting or "").strip().lower() == "off":
+        return "off"
+    return mtp
+
+
 def mmproj_name(catalog, family: str | None) -> str:
     try:
         _m, families, _c, _s = catalog.tables()
@@ -91,20 +103,25 @@ def mmproj_name(catalog, family: str | None) -> str:
 
 
 def assess(catalog, family: str | None, model: str | None, *, vision: str = "off", model_path: str | None = None,
-           data_dir: str | Path | None = None, config: Path | None = None, desc: dict | None = None, rows: list | None = None) -> ModelState:
+           data_dir: str | Path | None = None, config: Path | None = None, desc: dict | None = None, rows: list | None = None,
+           mtp: str | None = None, drafting: str | None = None) -> ModelState:
     """The state of `family model` for these choices. `config` / `desc` are the installed run config and its description (looked up when
     not given)."""
     st = ModelState()
+    mtp = mtp_choice(mtp, drafting)
     row = next((r for r in (rows if rows is not None else catalog.rows()) if r.family == family and r.model == model), None) if (family and model) else None
     st.total_gb = float(row.download_gb) if row else 0.0
-    wants_pictures = vision != "off" and (row is None or row.images)
+    # DeepSeek reads pictures with its own engine's tower: nothing separate to fetch or to start (the tower's file is part of its setup)
+    multi = getattr(getattr(catalog, "strata", None), "multi_family", None)
+    own_tower = bool(family) and multi is not None and bool(multi(family))
+    wants_pictures = vision != "off" and (row is None or row.images) and not own_tower
     data = Path(data_dir) if data_dir else None
     if model_path:
         st.own_files = True
         first = _first_gguf(Path(model_path))
         beside = discovery.prepared_beside(first) if first else {}
         st.folder = beside.get("data_dir")
-        if beside.get("pack") is not None and beside.get("mtp") is None:
+        if beside.get("pack") is not None and beside.get("mtp") is None and mtp != "off":
             st.parts.append(Part("mtp", "the draft layer", MTP_FETCH_GB))
         if wants_pictures and beside.get("pack") is not None and not beside.get("mmproj"):
             st.parts.append(Part("mmproj", "the picture reader", MMPROJ_GB))
@@ -128,7 +145,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
             st.parts.append(Part("weights", "the model", max(st.total_gb, 0.0)))
             return st
         for m in fp.missing():
-            if m.kind == "mtp":
+            if m.kind == "mtp" and mtp != "off":
                 st.parts.append(Part("mtp", "the draft layer", MTP_FETCH_GB))
             elif m.kind == "mmproj" and wants_pictures:
                 st.parts.append(Part("mmproj", "the picture reader", MMPROJ_GB))
@@ -142,7 +159,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
     # not installed: whatever of the weights is in the model's folder counts
     if family and model:
         base = data or Path(catalog.data_dir())
-        folder = base / "models" / catalog.tag_of(family, model)
+        folder = catalog.model_folder(base, family, model)
         got = 0
         try:
             got = sum(f.stat().st_size for f in folder.glob("*.gguf") if not f.name.lower().startswith("mmproj"))
@@ -150,7 +167,23 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
             pass
         st.on_disk_gb = got / 1e9
         st.parts.append(Part("weights", "the model", max(st.total_gb - st.on_disk_gb, 0.0)))
+        if family in HELPER_FAMILIES:
+            # setup fetches the draft layer and the picture reader after the model, so the question and the disk check count them too
+            if mtp != "off" and not (base / "mtp" / "rt" / "experts.bin").is_file():
+                st.parts.append(Part("mtp", "the draft layer", MTP_FETCH_GB))
+            if wants_pictures and not _has_reader(base):
+                st.parts.append(Part("mmproj", "the picture reader", MMPROJ_GB))
     return st
+
+
+def _has_reader(base: Path) -> bool:
+    for folder in (base / "models", base / "Models"):
+        try:
+            if any(folder.glob("mmproj*.gguf")):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def _first_gguf(path: Path) -> Path | None:

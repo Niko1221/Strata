@@ -10,6 +10,7 @@
  * The first one that runs `cloudflared --version` and is new enough is used; the answer says which one and from where.
  * Nothing here downloads or installs anything.
  */
+import { utf8Script } from './powershell-utf8.mjs';
 import { execFile } from 'node:child_process';
 import { access, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -134,7 +135,7 @@ export async function findRunningConnector({ platform = process.platform, exclud
   const skip = new Set(exclude.filter(Number.isInteger));
   let procs = [];
   if (platform === 'win32') {
-    const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"]);
+    const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', utf8Script("Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")]);
     procs = out.split(/\r?\n/).map(l => /^(\d+)\t(.*)$/.exec(l)).filter(Boolean).map(m => ({ pid: Number(m[1]), command: m[2] }));
     if (!procs.length) {   // no PowerShell answer: at least the pids
       const list = await run('tasklist', ['/FI', 'IMAGENAME eq cloudflared.exe', '/NH', '/FO', 'CSV']);

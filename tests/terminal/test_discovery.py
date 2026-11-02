@@ -65,6 +65,8 @@ class GuiLayout(unittest.TestCase):
         self.env = {"LOCALAPPDATA": str(base / "local"), "XDG_DATA_HOME": str(base / "local"), "APPDATA": str(base / "roaming"),
                     "XDG_CONFIG_HOME": str(base / "config"), "USERPROFILE": str(base / "home"), "HOME": str(base / "home"),
                     "XDG_STATE_HOME": str(base / "state"), "XDG_DOCUMENTS_DIR": ""}
+        settings = Path(self.env["APPDATA"]) / "Strata" if os.name == "nt" else Path(self.env["XDG_CONFIG_HOME"]) / "strata"
+        self.settings_path = settings / "settings.json"
         patch = mock.patch.dict(os.environ, self.env)
         patch.start()
         self.addCleanup(patch.stop)
@@ -142,7 +144,7 @@ class GuiLayout(unittest.TestCase):
         old = self.base / "T-Strata"
         old.mkdir()
         (old / "strata-qwen-iq3_xxs.json").write_text(json.dumps({"exe": "e", "tokenizer": "t", "args": []}))
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.settings_path
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({"installs": [str(old)]}))
         got = models.list_installed()
@@ -155,7 +157,7 @@ class GuiLayout(unittest.TestCase):
         (old / "strata-x.json").write_text(json.dumps({"exe": "e", "tokenizer": "t", "args": []}))
         app_settings = self.install.parent / "app-settings.json"
         with mock.patch.dict(os.environ, {"STRATA_SETTINGS_FILE": str(app_settings)}):
-            settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+            settings = self.settings_path
             settings.parent.mkdir(parents=True)
             settings.write_text(json.dumps({"installs": [str(old)]}))
             self.assertEqual([m["id"] for m in models.list_installed()["models"]], ["gyro-gyro-s"])
@@ -198,7 +200,7 @@ class GuiLayout(unittest.TestCase):
         self.assertIn("more than one model", text)
         self.assertIn("holds 2 models", text)
         self.assertIn("gyro Gyro-S", text)
-        self.assertIn("Point at the .gguf file of the one you want", text)
+        self.assertIn("type the path of its .gguf file", text)
         self.assertNotIn("multiple_model_groups", text)
         self.assertNotIn("not a model size", text)
 
@@ -229,6 +231,25 @@ class GuiLayout(unittest.TestCase):
         self.assertEqual(plan["candidate_selection"]["model"], "Gyro-S")
         self.assertEqual(payload, 124)
 
+    def test_a_fine_tune_with_the_layout_of_a_known_build_is_used_not_refused(self):        # #3651 #3777
+        folder = self.base / "finetune"
+        folder.mkdir()
+        (folder / "Qwen3.8-Flash-Next-Gyro-S-abliterated-TQ1_0.gguf").write_bytes(gyro_s_bytes())
+        fake_root = self.base / "fake-root2"
+        (fake_root / "data").mkdir(parents=True)
+        table = {"gyro/Gyro-S": {"arch": "qwen4exp", "tensors": 2, "bytes": 999_999, "expert_bytes": {"TQK6": 52, "TQK7": 60},
+                                 "files": [GYRO_S], "repo": "x"},
+                 "gyro/Gyro-M": {"arch": "qwen4exp", "tensors": 2, "bytes": 888_888, "expert_bytes": {"TQ2_T": 40},
+                                 "files": [GYRO_S], "repo": "x"}}
+        (fake_root / "data" / "gguf_fingerprints.json").write_text(json.dumps(table))
+        with mock.patch.object(models, "ROOT", fake_root):
+            plan = models.plan_import(str(folder))
+        self.assertEqual(plan["issues"], [])
+        self.assertEqual(plan["candidate_selection"]["basis"], "same_layout_other_build")
+        self.assertEqual(plan["candidate_selection"]["model"], "Gyro-S")           # the closest by expert formats
+        self.assertTrue(any("not exactly a build Strata has tested" in m for m in plan["messages"]))
+        self.assertIn("unrecognized_or_unsupported_model_variant", models.plan_import(str(folder))["issues"])   # the real table has 1224 tensors
+
     # ---- T05: where it is, what is missing
     def test_the_folder_defaults_to_where_the_model_is(self):
         cat = self.catalog()
@@ -239,7 +260,7 @@ class GuiLayout(unittest.TestCase):
     def test_an_own_setting_beats_the_apps_folder(self):
         mine = self.base / "mine"
         mine.mkdir()
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.settings_path
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"data_dir": str(mine)}))
         self.assertEqual(self.catalog().data_dir().resolve(), mine.resolve())

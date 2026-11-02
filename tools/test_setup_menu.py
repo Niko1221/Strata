@@ -6,6 +6,7 @@ install removing a stale strata_kq library.
 """
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import unittest
@@ -102,19 +103,34 @@ class RecommendedSizes(unittest.TestCase):
         for fam in ("qwen", "swift"):
             n = self.names(fam)
             self.assertIn("IQ3_S", n)
-            self.assertEqual(setup.recommended_size(fam, n, 63.7), "IQ3_S")
+            self.assertEqual(setup.recommended_size(fam, n, 67.7), "IQ3_S")
             self.assertEqual(setup.recommended_size(fam, n, 191.0), "IQ3_S")      # not the largest: IQ3_S stays the pick
             self.assertEqual([m for m in n if setup.size_tag(fam, m)], ["IQ3_S"])  # the others are choices, unmarked
 
     def test_without_the_ram_the_largest_that_fits_and_iq3_s_stays_marked(self):
         n = self.names("qwen")
         self.assertEqual(setup.recommended_size("qwen", n, 61.0), "IQ3_XXS")      # IQ3_S needs 62 GB
-        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ3_XXS")      # 48 GB tier (RAM + VRAM)
-        self.assertEqual(setup.recommended_size("qwen", n, 40.0, 8.0), "IQ3_XXS")  # 40 + 8 = 48 GB together
-        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 12.0), "IQ2_XS")  # 44 GB: the 40 GB tier
+        self.assertEqual(setup.recommended_size("qwen", n, 52.0), "IQ3_XXS")      # 48 GB tier (RAM + VRAM - 5 GB)
+        self.assertEqual(setup.recommended_size("qwen", n, 40.0, 11.0), "IQ3_XXS")  # 40 + 11 - 5 = 46 GB together
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 12.0), "IQ2_XS")  # 44 - 5 = 39 GB: the 40 GB tier
         self.assertEqual(setup.recommended_size("swift", self.names("swift"), 32.0, 12.0), "IQ2_XS")
-        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 32.0), "IQ3_S")   # 64 GB together
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 35.0), "IQ3_S")   # 67 - 5 = 62 GB together
         self.assertEqual(setup.size_tag("qwen", "IQ3_S"), " (recommended)")
+
+    def test_3425_the_tiers_leave_5_gb_for_windows(self):
+        # the reporter: RTX 5080 (16 GB) + 32 GB of RAM summed to 48 GB and got IQ3_XXS, which read ~11 GB from the SSD
+        n = self.names("qwen")
+        self.assertEqual(setup.TIER_SYSTEM_RESERVE_GB, 5.0)
+        self.assertEqual(setup.recommended_size("qwen", n, 31.9, 15.9), "IQ2_XS")
+        self.assertEqual(setup.tier_pick(31.9, 15.9), ("swift", "IQ2_XS"))
+        # boundaries: floors 38 / 46 / 62 plus the 5 GB
+        self.assertEqual(setup.tier_pick(43.0), ("swift", "IQ2_XS"))
+        self.assertIsNone(setup.tier_pick(42.9))
+        self.assertEqual(setup.tier_pick(51.0), ("qwen", "IQ3_XXS"))
+        self.assertEqual(setup.tier_pick(50.9), ("swift", "IQ2_XS"))
+        self.assertEqual(setup.tier_pick(67.0), ("qwen", "IQ3_S"))
+        self.assertEqual(setup.tier_pick(66.9), ("qwen", "IQ3_XXS"))
+        self.assertEqual(setup.tier_pick(40.0, 3.0), ("swift", "IQ2_XS"))      # VRAM counts the same as RAM
 
     def test_coder_has_nothing_marked(self):
         n = self.names("coder")
@@ -152,10 +168,15 @@ class UnslothDefaultEnv(unittest.TestCase):
 class EnginePlaceholders(unittest.TestCase):
     def test_every_engine_minimum_is_this_release(self):
         self.assertEqual(setup.NVFP4_ENGINE, (0, 1, 44))
-        self.assertEqual(setup.MIN_ENGINE, (0, 1, 45))
+        self.assertEqual(setup.MIN_ENGINE, (0, 1, 46))
         for m in ("UD-Q5_K_XL", "UD-Q6_K_XL", "NVFP4", "NVFP4-NVIDIA"):
             self.assertEqual(setup.MODELS[m]["engine"], (0, 1, 44), m)
-        self.assertIn("0.1.45", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").split("project(strata VERSION", 1)[1][:12])
+        # No minimum may name an engine newer than this tree (a placeholder for a release that does not exist yet would make setup
+        # ask for an engine nobody can download). The tree's version is read from CMakeLists.txt, so this does not go stale each release.
+        text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        tree = tuple(int(n) for n in re.search(r"project\(strata VERSION ([0-9.]+)", text).group(1).split("."))
+        for what, minimum in [("MIN_ENGINE", setup.MIN_ENGINE), ("NVFP4_ENGINE", setup.NVFP4_ENGINE)] + [(m, setup.MODELS[m]["engine"]) for m in setup.MODELS if "engine" in setup.MODELS[m]]:
+            self.assertLessEqual(tuple(minimum), tree[:len(minimum)], f"{what} {minimum} is ahead of the tree {tree}")
 
 
 class KqLibrary(unittest.TestCase):

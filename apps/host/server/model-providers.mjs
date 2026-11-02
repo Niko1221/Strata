@@ -1,5 +1,6 @@
 /** Saved API connections. Secrets never leave the host's private credentials file. */
 import { modelReadsPictures, modelSupportsReasoning } from './vision-probe.mjs';
+import { isOpenRouter, OPENROUTER_EFFORTS } from './agent/profile.mjs';
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -30,6 +31,16 @@ export const PROVIDER_CATALOG = [
 const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic'];
 const fail = message => { throw new Error(message); };
 const text = (value, max = 160) => typeof value === 'string' ? value.trim().slice(0, max) : '';
+/** The answer speed of a model API's reply: the tokens it reports over the time from its first streamed token to the end, never over the whole
+ *  wait (that would put the time to the first token, often seconds of prompt reading, into the speed). null when it reported no tokens;
+ *  with no usable first-token time (or under a quarter of a second) the whole time is the best there is. */
+export function answerSpeed(tokensOut, durationMs, firstTokenMs) {
+  if (!Number.isFinite(tokensOut) || tokensOut <= 0) return null;
+  const decodeMs = Number.isFinite(firstTokenMs) ? durationMs - firstTokenMs : NaN;
+  const ms = decodeMs >= 250 ? decodeMs : durationMs;
+  return Number((tokensOut / Math.max(0.001, ms / 1000)).toFixed(1));
+}
+
 export function normalizeBaseUrl(value) {
   let url; try { url = new URL(text(value, 2048)); } catch { fail('Enter a full http:// or https:// API address.'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) fail('Use an HTTP or HTTPS base URL without credentials, a query, or a fragment.');
@@ -39,7 +50,7 @@ export function normalizeBaseUrl(value) {
 const publicConnection = ({ apiKey, ...connection }) => ({ ...connection, apiKeySet: !!apiKey });
 const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
-export function createModelProviders({ directory, changed = () => {}, fetchImpl = fetch }) {
+export function createModelProviders({ directory, changed = () => {}, fetchImpl = fetch, knownThinks = () => null }) {
   mkdirSync(directory, { recursive: true });
   const file = join(directory, 'model-providers.json');
   let connections = [];
@@ -132,7 +143,7 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     const models = [...new Map(rows.filter(m => text(m.id, 256)).map(m => [m.id, { id: text(m.id, 256), name: text(m.display_name ?? m.name) || text(m.id, 256), contextMax: numeric(m.context_length ?? m.max_context_length ?? m.context_window), maxOutput: numeric(m.max_output_tokens ?? m.max_completion_tokens ?? m.top_provider?.max_completion_tokens), vision: modelReadsPictures(m), reasoning: modelSupportsReasoning(m) }])).values()];
     return { models: models.sort((a, b) => a.name.localeCompare(b.name)) };
   }
-  async function stream({ selection, message, history = [], systemPrompt = '', images = [], signal, onFrame }) {
+  async function stream({ selection, message, history = [], systemPrompt = '', images = [], thinking, signal, onFrame }) {
     const { connection, model } = resolve(selection);
     const started = Date.now();
     const messages = history.filter(m => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string').slice(-40).map(m => ({ role: m.role, content: m.content }));
@@ -145,6 +156,12 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
       : protocol === 'openai-responses'
         ? { model: model.id, input: messages, instructions: systemPrompt, stream: true, store: false }
         : { model: model.id, messages: [...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []), ...messages], stream: true, ...(['openai', 'deepseek', 'openrouter', 'google', 'moonshotai'].includes(connection.provider) ? { stream_options: { include_usage: true } } : {}) };
+    // Match the native composer's effort names. Unknown support and other protocols keep provider defaults.
+    const choice = typeof thinking === 'string' ? thinking.toLowerCase() : '';
+    if (protocol === 'openai-chat' && (model.reasoning ?? knownThinks(connection, model.id)) === true && ['off', 'low', 'medium', 'high', 'max'].includes(choice)) {
+      if (isOpenRouter(connection)) payload.reasoning = { effort: OPENROUTER_EFFORTS[choice] };
+      else payload.reasoning_effort = ({ off: 'none', max: 'high' })[choice] ?? choice;
+    }
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(10 * 60 * 1000)]) : AbortSignal.timeout(10 * 60 * 1000);
     const res = await request(connection, protocol === 'anthropic' ? 'messages' : protocol === 'openai-responses' ? 'responses' : 'chat/completions', { method: 'POST', body: JSON.stringify(payload), signal: requestSignal });
     if (!res.body) fail('The model API returned an empty response.');
@@ -207,7 +224,7 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
       if (!textLength) fail('The model returned no text. Choose a model that supports text chat.');
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     const durationMs = Date.now() - started;
-    const result = { tokensIn, tokensOut, usageSource: tokensIn !== null && tokensOut !== null ? 'reported' : 'unavailable', durationMs, ttftMs: firstToken, tps: tokensOut !== null ? tokensOut / Math.max(0.001, durationMs / 1000) : null };
+    const result = { tokensIn, tokensOut, usageSource: tokensIn !== null && tokensOut !== null ? 'reported' : 'unavailable', durationMs, ttftMs: firstToken, tps: answerSpeed(tokensOut, durationMs, firstToken) };
     onFrame({ type: 'done', ...result }); return result;
   }
   /** Connections WITH their keys, for the host's own agent bridge only; never serialised to a client. */

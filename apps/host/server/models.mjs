@@ -1,14 +1,11 @@
 /**
  * Model library.
  *
- * Downloads are real: weights stream from Hugging Face into the configured model folder (Documents/Strata/Models by default)
- * with progress, resume-by-restart and a size check. Loading starts a real
- * engine process through the supervisor — no model files, no process, no load.
+ * With the real engine on, the app downloads models from the Models screen of the native engine, not from this list (see install). Loading
+ * starts a real engine process through the supervisor — no model files, no process, no load.
  */
-import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { existsSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 
 import { CONTEXT_TOKENS, VARIANTS, downloadUrl, footprint, localModels, refreshLocalCatalog, variant } from './catalog.mjs';
 
@@ -140,6 +137,12 @@ function emit() {
 
 /* ---------------------------------------------------------------- download --- */
 
+/**
+ * With the real engine on, models come from the Models screen of the native engine (its installer pins every file by hash). This
+ * starter list names files by name only and has no hash, so it is never downloaded: the route refuses before any request is made.
+ */
+export const LIST_DOWNLOAD_REFUSED = "The app downloads models from the Models screen of the native engine, not from this list.";
+
 export async function install(id) {
   const v = variant(id);
   if (!v) throw new Error(`Unknown model ${id}`);
@@ -153,99 +156,7 @@ export async function install(id) {
   if (downloads.has(id)) return library();
 
   if (!REAL) return simulateInstall(v);
-
-  const dir = join(MODELS_DIR, v.id);
-  mkdirSync(dir, { recursive: true });
-  const finalPath = pathFor(v);
-  const partPath = `${finalPath}.part`;
-  const controller = new AbortController();
-  downloads.set(id, controller);
-
-  const startedAt = Date.now();
-  runtime.set(id, {
-    state: 'downloading',
-    progress: { pct: 0, mbps: 0, etaSec: 0, stage: `Fetching ${v.source.file}` },
-  });
-  emit();
-  hubRef?.send('log', { level: 'info', message: `Downloading ${v.label} from ${v.source.repo}`, at: nowIso() });
-
-  // Keep the UI fed even while the socket is quiet.
-  const ticker = setInterval(() => {
-    const entry = runtime.get(id);
-    if (!entry || entry.state !== 'downloading') return;
-    emit();
-  }, 400);
-
-  try {
-    const res = await fetch(downloadUrl(v), { signal: controller.signal, redirect: 'follow' });
-    if (!res.ok || !res.body) throw new Error(`Download failed (${res.status} ${res.statusText})`);
-
-    const total = Number(res.headers.get('content-length')) || v.source.bytes;
-    let received = 0;
-    let lastEmit = 0;
-
-    const progressStream = new ReadableStream({
-      start(controllerStream) {
-        const reader = res.body.getReader();
-        const pump = async () => {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            received += value.byteLength;
-            controllerStream.enqueue(value);
-            const now = Date.now();
-            if (now - lastEmit > 350) {
-              lastEmit = now;
-              const seconds = (now - startedAt) / 1000;
-              const mbps = received / 1024 ** 2 / Math.max(seconds, 0.001);
-              runtime.set(id, {
-                state: 'downloading',
-                progress: {
-                  pct: (received / total) * 100,
-                  mbps,
-                  etaSec: mbps > 0 ? (total - received) / 1024 ** 2 / mbps : 0,
-                  stage: received / total < 0.9 ? `Fetching ${v.source.file}` : 'Verifying and finalising',
-                },
-              });
-            }
-          }
-          controllerStream.close();
-        };
-        void pump().catch((err) => controllerStream.error(err));
-      },
-    });
-
-    await pipeline(Readable.fromWeb(progressStream), createWriteStream(partPath));
-    renameSync(partPath, finalPath);
-
-    const size = statSync(finalPath).size;
-    if (size < v.source.bytes * 0.9) {
-      throw new Error(`File is smaller than expected (${(size / 1e9).toFixed(2)} GB of ${(v.source.bytes / 1e9).toFixed(2)} GB)`);
-    }
-
-    const s = getStore();
-    update({
-      installed: { ...(s.installed ?? {}), [id]: { installedAt: nowIso(), bytes: size } },
-      current: s.current ?? id,
-    });
-    runtime.set(id, { state: 'installed' });
-    hubRef?.send('log', { level: 'info', message: `${v.label} installed (${(size / 1e9).toFixed(2)} GB)`, at: nowIso() });
-  } catch (err) {
-    const aborted = err?.name === 'AbortError';
-    try {
-      if (existsSync(partPath)) rmSync(partPath);
-    } catch {
-      /* ignore */
-    }
-    runtime.set(id, aborted ? { state: 'available' } : { state: 'error', error: err.message });
-    if (!aborted) hubRef?.send('log', { level: 'error', message: `Download failed: ${err.message}`, at: nowIso() });
-  } finally {
-    clearInterval(ticker);
-    downloads.delete(id);
-    emit();
-  }
-
-  return library();
+  throw Object.assign(new Error(LIST_DOWNLOAD_REFUSED), { status: 409 });
 }
 
 export function cancel(id) {

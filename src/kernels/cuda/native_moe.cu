@@ -21,6 +21,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cstddef>
@@ -175,14 +176,14 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
 bool native_moe_combine_hits_supported(const float* parts, const float* shared, const float* output, int64_t n_embd, int64_t k, int n_tok) {
-    return k == 10 && shared != nullptr && n_tok >= 1 && n_tok <= 8 && n_embd > 0 && (n_embd & 3) == 0 &&
+    return k == 10 && shared != nullptr && n_tok >= 1 && n_tok <= kVerifyMaxT && n_embd > 0 && (n_embd & 3) == 0 &&
            (((uintptr_t) parts | (uintptr_t) shared | (uintptr_t) output) & 15u) == 0;
 }
 void native_moe_combine_multi_hits_added(const float* parts, const float* hits, const int32_t* dst, const int32_t* count,
                                          const float* weights, const float* shared, float* output, int64_t n_embd, int64_t k,
                                          int n_tok, void* stream) {
     if (!stream || !native_moe_combine_hits_supported(parts, shared, output, n_embd, k, n_tok) || ((uintptr_t) hits & 15u) != 0)
-        throw std::invalid_argument("native MoE combine (hits added) requires k = 10, aligned spans, 1..8 tokens");
+        throw std::invalid_argument("native MoE combine (hits added) requires k = 10, aligned spans, 1..8 tokens (16 in a wide build)");
     const int64_t n4 = n_embd >> 2;
     combine_k10_vec4_hits<<<dim3(unsigned((n4 + 127) / 128), (unsigned) n_tok), 128, 0, static_cast<cudaStream_t>(stream)>>>(
         reinterpret_cast<const float4*>(parts), reinterpret_cast<const float4*>(hits), dst, count, weights,

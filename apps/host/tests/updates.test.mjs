@@ -25,3 +25,17 @@ test('release content cannot inject an external or script update link', async ()
   assert.equal(result.strata.status, 'available');
   assert.equal(result.strata.releaseUrl, undefined);
 });
+
+test('offline, "Check for updates" says there is no internet connection instead of "fetch failed"', async () => {
+  const offline = async () => { throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND api.github.com'), { code: 'ENOTFOUND' }) }); };
+  const result = await checkUpdates(installed, offline);
+  assert.equal(result.strata.status, 'error');
+  assert.equal(result.strata.message, "No internet connection. Try again when you're online.");
+  for (const reason of ['EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH']) {
+    const r = await checkUpdates(installed, async () => { throw Object.assign(new Error('connect failed'), { code: reason }); });
+    assert.equal(r.strata.message, "No internet connection. Try again when you're online.", reason);
+  }
+  // a slow or broken server is not "offline"
+  const slow = await checkUpdates(installed, async () => { throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }); });
+  assert.equal(slow.strata.message, 'The release check timed out. Try again.');
+});

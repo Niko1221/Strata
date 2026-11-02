@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
-from strata_control import tune_machine
+from strata_control import loopback, tune_machine
 
 # --------------------------------------------------------------------------- the contract
 
@@ -126,15 +126,24 @@ def parse_facts(text: str) -> dict[str, Any]:
     return facts
 
 
+_CUDA_BUSY = re.compile(r"failed to initialize cuda|no cuda-capable device|cuda-capable device\(s\) is/are busy|"
+                        r"cuda driver version is insufficient|hipinit.{0,40}(?:fail|error)|no hip-capable device", re.I)
+
+
 def failure_kind(text: str, returncode: int | None) -> tuple[str, str]:
-    """Classify an engine that ended before it was ready: (status, one plain line)."""
+    """Classify an engine that ended before it was ready: (status, one plain line). The engine's informational
+    `memory guard: limit ... available ...` line is not a failure and never decides the status (#3502)."""
     low = text.lower()
-    lines = [ln.strip() for ln in text.splitlines() if re.search(
-        r"unknown argument|unrecognized|invalid value|out of memory|memory guard|cannot|failed|error|refus|killed", ln, re.I)]
+    lines = [ln.strip() for ln in text.splitlines()
+             if re.search(r"unknown argument|unrecognized|invalid value|out of memory|cannot|failed|error|refus|killed", ln, re.I)
+             and not re.search(r"memory guard: (?:limit|the available)", ln, re.I)]
     reason = " | ".join(lines[:3])[:300]
     if re.search(r"unknown argument|unrecognized (argument|option)", low):
         return "UNSUPPORTED", reason or "the engine does not accept one of the settings"
-    if re.search(r"out of memory|memory guard|cannot allocate|std::bad_alloc|\boom\b|(?:^|\n)killed(?:\r?\n|$)", low) or returncode in (-9, 137, 3221226505):
+    if _CUDA_BUSY.search(text):
+        return "FAIL_BOOT", ("the graphics card could not be opened by the measuring engine; it is probably in use by the "
+                             "loaded model. Unload the model and tune again (" + reason + ")")[:400]
+    if re.search(r"out of memory|memory guard: (?:refus|not enough|too)|cannot allocate|std::bad_alloc|\boom\b|(?:^|\n)killed(?:\r?\n|$)", low) or returncode in (-9, 137, 3221226505):
         return "OOM", reason or "the engine ran out of memory"
     return "FAIL_BOOT", reason or f"the engine stopped while starting (exit {returncode})"
 
@@ -304,7 +313,7 @@ class WorkerEngine:
     def _model_id(self) -> None:
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/models", headers=self._h())
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with loopback.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             self.model = ((data.get("data") or [{}])[0]).get("id") or self.model
         except Exception:  # noqa: BLE001
@@ -326,7 +335,7 @@ class WorkerEngine:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions",
                                      data=json.dumps(body).encode(), headers=self._h(), method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with loopback.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read())
         except urllib.error.HTTPError as e:
             raise StartFailed("NO_TOKENS", f"the worker refused the request ({e.code}): {e.read()[:200]!r}") from None
@@ -488,7 +497,7 @@ class WorkerSession:
                     try:
                         req = urllib.request.Request(f"http://127.0.0.1:{port}/health",
                                                      headers={"authorization": f"Bearer {key}"})
-                        with urllib.request.urlopen(req, timeout=2) as r:
+                        with loopback.urlopen(req, timeout=2) as r:
                             if r.status == 200:
                                 ready = True
                                 break

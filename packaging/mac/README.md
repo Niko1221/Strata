@@ -31,6 +31,17 @@ and the notarytool profile (`strata-notary`); `SIGN_ID` and `NOTARY_PROFILE` ove
 
 A trial run that signs ad-hoc and sends nothing to Apple: add `--dry-run` (no certificate needed).
 
+## The DeepSeek engine for the Mac
+
+The Mac DeepSeek engine (`strata-dsv41` with its `metal/` sources and `engine-component.json`) comes from the update feed, not from
+the app, so it is signed here as its own input: `--engine strata-dsv41-0.1.53-macos-arm64-metal-unsigned-folder.tar.gz`, alone or
+together with `--terminal` in one run. The script signs every program in the folder with the same identity and options as the
+engine inside the app (hardened runtime, timestamp, no entitlements), writes the new SHA-256 and size into `engine-component.json`,
+runs `codesign --verify --strict`, starts the signed program once (no model), sends a zip of the folder to Apple and waits, and
+writes `signed/strata-dsv41-0.1.53-macos-arm64-metal-folder.tar.gz` (also listed in `signed/SHA256SUMS.txt`). On the PC, sign that
+folder with the feed key (this adds the release signature to the manifest) and build the feed from it; the unsigned folder must not be published.
+`--dry-run` signs ad-hoc and skips Apple, as for everything else.
+
 ## The in-app update file (release builds only)
 
 The app updates itself on a Mac from `Strata.app.tar.gz`, not from the dmg. The one `tauri build` makes holds the app before this script signs it, so it must
@@ -50,13 +61,13 @@ updater key** here: that key never goes near the Mac, and the Mac needs no node.
 ## What it does
 
 1. Copies the `.app` out of the dmg into a temporary folder (the original is never changed).
-2. Signs every Mach-O inside it, deepest first (node, python, every `.dylib`, `.so` and `.node`, the engine, `rg`, `spawn-helper`,
+2. Signs every Mach-O inside it, deepest first (node, python, every `.dylib`, `.so` and `.node`, the engine and its picture reader `strata-vision`, `rg`, `spawn-helper`,
    the app's own program): hardened runtime and a secure timestamp. Then signs the `.app`.
 3. Rewrites `engine-component.json` for the engine it just signed. Control checks every engine file against the SHA-256 in that file, and
    signing changes the engine binary, so without this step the signed app would refuse its own engine.
 4. `codesign --verify --deep --strict`, `spctl -a -vvv`.
 5. Runs the signed copy before Apple sees it: the app's own `--self-test` (private node, host, UI, Control), every native addon loaded in
-   the signed node, the bundled python (numpy, PIL, ctypes callbacks), the engine's `--version` (no model is loaded), and Control's own
+   the signed node, the bundled python (numpy, PIL, ctypes callbacks), the engine's and the picture reader's `--version` (no model is loaded), and Control's own
    check of the engine manifest. A signing mistake shows up here, not on a tester's Mac.
 6. Notarises the `.app`, staples it, rebuilds the dmg (the app, an Applications link, the volume icon, as in
    `apps/desktop/scripts/make-dmg.sh`), signs the dmg, notarises and staples it, then `spctl -a -t open --context context:primary-signature -vv`.

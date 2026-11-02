@@ -10,11 +10,13 @@
 #   MODEL         model size, e.g. IQ3_XXS, Q2_0 (empty: Strata picks one for this card and says so)
 #   FAMILY        model family when a size is offered by several (qwen, swift, coder, ...)
 #   MODEL_PATH    GGUF files you already have, a folder or one .gguf, inside the container (mount it read-only)
+#   ALLOW_DOWNLOAD  1: go on and download the model although model files of the older layout (/data/models) were left unread (default: stop)
 #   CONTEXT       32k, 64k, 128k, 256k or a number of tokens
 #   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card)
 #   VISION        off | on | gpu | cpu  (pictures; the picture reader file is downloaded with the model)
 #   KV            int8 | q4_0 | k8v4 | fp16  (conversation memory format)
 #   GPU / GPUS    card numbers, e.g. 0 or 0,1 (empty or "all": the engine's choice)
+#   GPU_ROLES     a role for each card, e.g. 1=main,0=helper (main, helper or off; cards you do not name are off; not together with GPU / GPUS)
 #   TUNE          quick | thorough | skip   (done once; RETUNE=1 tunes again)
 #   PORT          port inside the container (default 8080)
 #   API_KEY / API_KEY_FILE   the key clients must send. The server listens on every address inside the container, and Strata does
@@ -36,6 +38,17 @@ say()  { printf '%s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*" >&2; }
 die()  { printf '[X] %s\n' "$*" >&2; exit "${2:-1}"; }
 phase() { printf '%s\n' "$1" > "$PHASE_FILE" 2>/dev/null || true; }
+
+# Model files of the older layout that this image did not move (a folder you mounted at /data/models, or a move that failed) are not read here, and
+# the start would download the model again. Say so and stop instead (#3421); ALLOW_DOWNLOAD=1 goes on, with the same text as a warning.
+# $1: MODEL_PATH (when it is set the files are named and nothing is lost), $2: the older models folder.
+legacy_models_guard() {
+  [ -n "$1" ] && return 0
+  stuck=$(find "$2" -maxdepth 3 -name '*.gguf' 2>/dev/null | head -1)
+  [ -n "$stuck" ] || return 0
+  msg="There are model files in ${stuck%/*} (the older image's place). This image keeps its models in /data/Strata-data/models and does not read them there, so it would download the model again (tens of GB). To use them: mount that folder read-only and set MODEL_PATH to the folder that holds the shards (docs/DOCKER.md, \"Files you already have\"), or put them in /data/Strata-data/models/<model folder>/. To download anyway: set ALLOW_DOWNLOAD=1. Nothing was downloaded."
+  if [ "${ALLOW_DOWNLOAD:-0}" = "1" ]; then warn "$msg Going on, because ALLOW_DOWNLOAD=1."; else die "$msg" 2; fi
+}
 
 # ---- other commands: `docker run image strata ...`, `docker run image sh`
 if [ "$#" -gt 0 ] && [ "$1" != "run" ] && [ "$1" != "serve" ]; then
@@ -69,6 +82,57 @@ for legacy in HOST LOW_RAM REINSTALL RESIDENT_BUDGET_GIB KV_STREAMING LAYER_SPLI
   [ -n "$v" ] && warn "$legacy is from the older image and is ignored here. See docs/DOCKER.md (\"From the older image\")."
 done
 
+# ---- a volume from the older (0.1.x) image: its models, packs and draft layer are in /data/models, /data/packs and /data/mtp.
+# This image keeps them in /data/Strata-data. Move them over (a rename inside one volume: instant, no copy, no download).
+# A folder that is its own mount (a bind mount of yours) is never touched.
+legacy_moved=""
+for d in models packs mtp; do
+  [ -d "/data/$d" ] || continue
+  grep -q " /data/$d " /proc/self/mountinfo 2>/dev/null && continue
+  [ -n "$(ls -A "/data/$d" 2>/dev/null)" ] || continue
+  mkdir -p "/data/Strata-data/$d" 2>/dev/null || continue
+  for item in "/data/$d"/* "/data/$d"/.[!.]*; do
+    [ -e "$item" ] || continue
+    name=${item##*/}
+    [ -e "/data/Strata-data/$d/$name" ] && continue
+    if mv "$item" "/data/Strata-data/$d/$name" 2>/dev/null; then legacy_moved="$legacy_moved $d/$name"
+    else warn "Could not move $item into /data/Strata-data/$d (the model is downloaded again unless you set MODEL_PATH=/data/$d/...)."; fi
+  done
+  rmdir "/data/$d" 2>/dev/null || true
+done
+[ -n "$legacy_moved" ] && say "Found model files from the older image in the volume and moved them into /data/Strata-data (no copy, nothing is downloaded again):$legacy_moved"
+
+# ---- run settings made by an image for another card or another engine version name that image's engine folder
+# (/opt/strata/components/engine/<package>/...): in this image that folder is not there, so the server would stop at the start. Drop
+# them; the next step writes them again from the model files, which are kept.
+for c in /data/install/strata-*.json; do
+  [ -f "$c" ] || continue
+  gone=$("$PYBIN" -c '
+import json, os, sys
+def walk(v):
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, dict):
+        for x in v.values():
+            yield from walk(x)
+    elif isinstance(v, list):
+        for x in v:
+            yield from walk(x)
+try:
+    cfg = json.load(open(sys.argv[1], encoding="utf-8-sig"))
+except (OSError, ValueError):
+    sys.exit(0)
+for s in walk(cfg):
+    if s.startswith("/opt/strata/components/") and not os.path.exists(s):
+        print(s)
+        break
+' "$c" 2>/dev/null)
+  if [ -n "$gone" ]; then
+    say "The saved run settings $(basename "$c") name $gone, which this image does not have (made by an image for another card or engine version): making them again. The model files are kept."
+    rm -f "$c"
+  fi
+done
+
 # ---- is there an engine for this card?
 phase checking
 engine_json=$("$STRATA" components engine --output json 2>/dev/null || true)
@@ -86,10 +150,13 @@ MSG
 fi
 
 # the card is found through sysfs even when no device file was passed in: say so now instead of failing when the engine starts
+# (before the model is prepared; /dev/dxg is the GPU of Docker Desktop on WSL2)
 backend=$(printf '%s' "$engine_json" | sed -n 's/.*"backend": *"\([a-z0-9]*\)".*/\1/p' | head -1)
+dev="${STRATA_DEV_DIR:-/dev}"
 case "$backend" in
-  hip)  [ -e /dev/kfd ] || { echo "[X] This is an AMD card, but /dev/kfd is not in the container. Add: --device /dev/kfd --device /dev/dri --group-add video --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
-  sycl) ls /dev/dri/renderD* >/dev/null 2>&1 || { echo "[X] This is an Intel card, but /dev/dri is not in the container. Add: --device /dev/dri --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
+  cuda) ls "$dev"/nvidia[0-9]* >/dev/null 2>&1 || [ -e "$dev/dxg" ] || { echo "[X] This computer has an NVIDIA card, but the container cannot use it, so nothing would run (and the model would be prepared for nothing). Start the container with: --gpus all (needs the NVIDIA Container Toolkit on the host; docs/DOCKER.md, Troubleshooting)." >&2; exit 3; } ;;
+  hip)  [ -e "$dev/kfd" ] || { echo "[X] This is an AMD card, but /dev/kfd is not in the container. Add: --device /dev/kfd --device /dev/dri --group-add video --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
+  sycl) ls "$dev"/dri/renderD* >/dev/null 2>&1 || { echo "[X] This is an Intel card, but /dev/dri is not in the container. Add: --device /dev/dri --group-add <render group number> (docs/DOCKER.md)" >&2; exit 3; } ;;
 esac
 
 # ---- the API key
@@ -107,6 +174,19 @@ preset_exists=""
 if "$STRATA" launch --list-presets --output json 2>/dev/null | grep -q "\"name\": *\"$PRESET\""; then preset_exists=1; fi
 
 model_path="${MODEL_PATH:-${GGUF_DIR:-}}"
+if [ -n "$model_path" ]; then
+  # a folder that is not mounted (or a typo) must not end as "missing /xxx.gguf" after a minute of setup, and must never turn into a download
+  if [ ! -e "$model_path" ]; then
+    die "MODEL_PATH=$model_path is not in the container, so no model file can be found there. Mount your folder at that place, for example: -v /srv/gguf/IQ3_XXS:$model_path:ro (docs/DOCKER.md, \"Files you already have\"). Nothing was downloaded." 2
+  elif [ -d "$model_path" ] && ! ls "$model_path"/*.gguf >/dev/null 2>&1; then
+    sub=$(find "$model_path" -maxdepth 2 -name '*.gguf' 2>/dev/null | head -1)
+    if [ -n "$sub" ]; then
+      die "MODEL_PATH=$model_path has no .gguf files directly in it, but there are some in ${sub%/*}. Set MODEL_PATH=${sub%/*} (the folder that holds the shards of one model). Nothing was downloaded." 2
+    fi
+    die "MODEL_PATH=$model_path holds no .gguf files. Mount the folder with the model's shards (the -0000N-of-0000M.gguf files). Nothing was downloaded." 2
+  fi
+fi
+legacy_models_guard "$model_path" "${STRATA_LEGACY_MODELS:-/data/models}"
 [ -n "${MODEL:-}" ]       && { set -- "$@" --model "$MODEL"; have=1; }
 [ -n "${FAMILY:-}" ]      && { set -- "$@" --family "$FAMILY"; have=1; }
 [ -n "$model_path" ]      && { set -- "$@" --model-path "$model_path"; have=1; }
@@ -135,6 +215,13 @@ case "$gpus" in ""|all|ALL) ;; *)
     fi
   done ;;
 esac
+# GPU_ROLES=1=main,0=helper: a role for each card (main, helper or off; cards you do not name are off). `launch --gpu-roles` writes them into the
+# run settings at every start, so nothing saved has to be dropped.
+roles=$(printf '%s' "${GPU_ROLES:-}" | tr -d ' ')
+if [ -n "$roles" ]; then
+  case "$gpus" in ""|all|ALL) ;; *) die "Set GPU_ROLES or GPU / GPUS, not both." 2 ;; esac
+  set -- "$@" --gpu-roles "$roles"; have=1
+fi
 [ -n "${STRATA_SET:-}" ] && { for kv in $STRATA_SET; do set -- "$@" --set "$kv"; done; have=1; }
 [ -n "$key" ] && { set -- "$@" --api-key-env STRATA_LAUNCH_KEY; }
 
@@ -184,7 +271,10 @@ trap on_term TERM INT
 RESET_INT='import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])'
 
 phase preparing
-say "Starting Strata: ${MODEL:-recommended model}${model_path:+ from $model_path} (preset '$PRESET')."
+if [ -n "${MODEL:-}" ]; then what="$MODEL${model_path:+ from $model_path}"
+elif [ -n "$model_path" ]; then what="the model files in $model_path"
+else what="the recommended model"; fi
+say "Starting Strata: $what (preset '$PRESET')."
 if [ -n "$key" ]; then
   STRATA_LAUNCH_KEY="$key" "$PYBIN" -c "$RESET_INT" "$STRATA" "$@" &
 else
@@ -197,7 +287,7 @@ launch_pid=""
 [ -n "$stopping" ] && exit 0
 if [ "$rc" -ne 0 ]; then
   phase failed
-  die "strata launch stopped with code $rc (the lines above say why). The container ends; a restart continues where it stopped (downloads resume)." "$rc"
+  die "strata launch stopped with code $rc (the lines above say why). The container ends. Fix that and start it again: finished steps are not repeated, and an interrupted download continues where it stopped." "$rc"
 fi
 
 # keep the key where `docker exec ... strata monitor` and the health check can read it (private file on the volume)

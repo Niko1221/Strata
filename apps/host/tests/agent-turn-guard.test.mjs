@@ -74,8 +74,8 @@ test('a turn that ends with no words always gets a plain message: out of room, o
   assert.equal(g.silent({ ended: done, wrote: false, contextTokens: 9700, stoppedByPerson: true }), null, 'Stop is the person\'s own');
 });
 
-test('every message is a plain sentence with a next step, carries its interface key, and is in the catalog in all eight languages', () => {
-  const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
+test('every message is a plain sentence with a next step, carries its interface key, and is in the catalog in all nine languages', () => {
+  const langs = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr'];
   const catalogs = Object.fromEntries(langs.map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
   const idOf = text => Object.entries(catalogs.en).find(([, v]) => v === text)?.[0];
   for (const [reason, text] of Object.entries(GUARD_NOTES)) {
@@ -98,6 +98,8 @@ async function rig(t, options = {}) {
   const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
   const logs = [];
   const bridge = createAgentBridge({ dataDir: dir, localInstances: () => [{ id: 'i', label: 'S', baseUrl: worker.url, modelId: 'scripted-model', context: options.context ?? 32768, slots: 2 }], connections: () => [],
+    // these chats are in Manual and search without a person at the card: the Settings switch that skips the web question is on
+    tools: () => ({ off: new Set(), search: { provider: 'builtin', key: '' }, servers: {}, webWithoutAsking: true }),
     env: process.env, startTimeoutMs: 90_000, searchMock: 'limited', log: l => logs.push(l) });
   t.after(async () => { await bridge.close(); await worker.close(); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } });
   return { worker, bridge, ws, logs, base: (chatId, onFrame) => ({ chatId, workspacePath: ws, mode: 'manual', onFrame }) };

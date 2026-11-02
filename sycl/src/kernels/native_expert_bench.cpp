@@ -15,6 +15,7 @@
 
 #include "ggml.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -48,9 +49,18 @@ int main(int argc, char** argv) {
     int failures = 0;
     dpct::queue_ptr s;
     s = dpct::get_current_device().create_queue(true);
-    dpct::event_ptr e0, e1;
-    e0 = new sycl::event();
-    e1 = new sycl::event();
+    // SYCL port: the queue carries an exception handler, which would swallow a failing launch and leave the timing
+    // at "the kernel did nothing" (0.3 us for a group of experts).  Every wait goes through this, so a device-side
+    // error is printed instead of silently producing an empty measurement.
+    auto sync = [&](const char* what) {
+        try {
+            s->wait_and_throw();
+            return true;
+        } catch (std::exception const& e) {
+            std::printf("%s: %s\n", what, e.what());
+            return false;
+        }
+    };
     for (int l : layers) {
         const strata::TensorInfo* t[3] = {};
         const char* roles[3] = {"gate", "up", "down"};
@@ -86,21 +96,18 @@ int main(int argc, char** argv) {
         std::vector<unsigned long long> ptr(G);
         std::vector<int32_t> start(G + 1), dst(NE), tok(NE);
         const auto L = K::native_expert_layout(f.gu_type, f.d_type, H, FF);
-        uint8_t* dblob;
-        void *dx, *dxq, *dscr;
-        float* dout;
-        unsigned long long* dptr;
-        int32_t *dstart, *dn, *ddst, *dtok;
-        cudaMalloc((void**) &dblob, blobs.size());
-        cudaMalloc(&dx, x.size() * 4);
-        cudaMalloc(&dxq, (size_t) NTOK * H / 32 * 36);
-        cudaMalloc(&dscr, K::native_expert_scratch_bytes(NE, FF));
-        cudaMalloc((void**) &dout, (size_t) NE * H * 4);
-        cudaMalloc((void**) &dptr, (size_t) G * 8);
-        cudaMalloc((void**) &dstart, (size_t) (G + 1) * 4);
-        cudaMalloc((void**) &dn, 4);
-        cudaMalloc((void**) &ddst, (size_t) NE * 4);
-        cudaMalloc((void**) &dtok, (size_t) NE * 4);
+        // SYCL port: this bench was never a build target, so its CUDA calls were never migrated.  Device buffers are
+        // USM allocations on the bench's own in-order queue, and every copy is ordered on that queue.
+        uint8_t* dblob = (uint8_t*) sycl::malloc_device(blobs.size(), *s);
+        void *dx = sycl::malloc_device((size_t) NTOK * H * 4, *s);
+        void *dxq = sycl::malloc_device((size_t) NTOK * H / 32 * 36, *s);
+        void *dscr = sycl::malloc_device(K::native_expert_scratch_bytes(NE, FF), *s);
+        float* dout = (float*) sycl::malloc_device((size_t) NE * H * 4, *s);
+        unsigned long long* dptr = (unsigned long long*) sycl::malloc_device((size_t) G * 8, *s);
+        int32_t* dstart = (int32_t*) sycl::malloc_device((size_t) (G + 1) * 4, *s);
+        int32_t* dn = (int32_t*) sycl::malloc_device(4, *s);
+        int32_t* ddst = (int32_t*) sycl::malloc_device((size_t) NE * 4, *s);
+        int32_t* dtok = (int32_t*) sycl::malloc_device((size_t) NE * 4, *s);
         for (int g = 0; g < G; ++g) {
             ptr[g] = (unsigned long long) (dblob + (size_t) g * f.bytes);
             start[g] = g * T;
@@ -110,26 +117,45 @@ int main(int argc, char** argv) {
             }
         }
         start[G] = NE;
-        cudaMemcpy(dblob, blobs.data(), blobs.size(), cudaMemcpyHostToDevice);
-        cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dptr, ptr.data(), (size_t) G * 8, cudaMemcpyHostToDevice);
-        cudaMemcpy(dstart, start.data(), (size_t) (G + 1) * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dn, &G, 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(ddst, dst.data(), (size_t) NE * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dtok, tok.data(), (size_t) NE * 4, cudaMemcpyHostToDevice);
+        s->memcpy(dblob, blobs.data(), blobs.size()).wait();
+        s->memcpy(dx, x.data(), x.size() * 4).wait();
+        s->memcpy(dptr, ptr.data(), (size_t) G * 8).wait();
+        s->memcpy(dstart, start.data(), (size_t) (G + 1) * 4).wait();
+        s->memcpy(dn, &G, 4).wait();
+        s->memcpy(ddst, dst.data(), (size_t) NE * 4).wait();
+        s->memcpy(dtok, tok.data(), (size_t) NE * 4).wait();
         K::quantize_q8_1_rows((const float*) dx, NTOK, H, dxq, s);
         auto run = [&](int m, int phase) {
             K::native_expert_set_mode(m, phase);
             K::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, G, NE, dxq, dscr, dout, s);
         };
         std::vector<float> ref((size_t) NE * H), got((size_t) NE * H);
-        cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
+        s->memset(dout, 0xff, got.size() * 4).wait();
         run(mref, 0);
-        cudaMemcpyAsync(ref.data(), dout, ref.size() * 4, cudaMemcpyDeviceToHost, s);
-        cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
+        if (!sync("reference window")) return 1;
+
+        s->memcpy(ref.data(), dout, ref.size() * 4).wait();
+        // SYCL port: a launch that returns without enqueueing leaves the 0xff fill intact, and then the mode and the
+        // reference agree bitwise on an untouched buffer - a "0 differing" that measures nothing.  The fill is NaN as
+        // a float, so a reference window with no finite value anywhere did no work: say so instead of timing it.
+        {
+            size_t written = 0;
+            for (size_t i = 0; i < ref.size(); ++i) {
+                float v;
+                std::memcpy(&v, &ref[i], 4);
+                if (std::isfinite(v)) ++written;
+            }
+            if (written == 0) {
+                std::printf("layer %d: the expert launch wrote nothing (%zu outputs, none finite) - refusing to time it\n",
+                            (int) l, ref.size());
+                ++failures;
+                continue;
+            }
+        }
+        s->memset(dout, 0xff, got.size() * 4).wait();
         run(mode, 0);
-        cudaMemcpyAsync(got.data(), dout, got.size() * 4, cudaMemcpyDeviceToHost, s);
-        if (cudaStreamSynchronize(s) != cudaSuccess) { std::printf("layer %d: CUDA error\n", l); return 1; }
+        if (!sync("mode window")) return 1;
+        s->memcpy(got.data(), dout, got.size() * 4).wait();
         size_t ndiff = 0;
         double worst = 0;
         for (size_t i = 0; i < ref.size(); ++i)
@@ -139,13 +165,18 @@ int main(int argc, char** argv) {
             }
         auto time = [&](int m, int phase) {
             for (int i = 0; i < 10; ++i) run(m, phase);
-            cudaEventRecord(e0, s);
+            s->wait();
+            const auto t0 = std::chrono::steady_clock::now();
             for (int i = 0; i < iters; ++i) run(m, phase);
-            cudaEventRecord(e1, s);
-            cudaEventSynchronize(e1);
-            float ms = 0;
-            cudaEventElapsedTime(&ms, e0, e1);
-            return 1e3 * ms / iters;
+            sync("timing loop");
+            const double ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            // SYCL port: the printout below and the GB/s it derives both assume MICROseconds ("all %7.1f us",
+            // bytes / us / 1e3), but this returned milliseconds - so every published number was 1000x too small in
+            // time and 1000x too large in bandwidth (0.1 "us" and 148,713 GB/s for a launch that takes ~100 us and
+            // moves 19.7 MB at ~198 GB/s).  The wall clock always agreed with the real work: 200 iterations 618 ms,
+            // 2,000 iterations 3,566 ms.  Return microseconds.
+            return ms * 1e3 / iters;
         };
         const double gu_b = (double) G * 2 * f.up_off, d_b = (double) G * dsz;
         double us[2][3] = {{1e30, 1e30, 1e30}, {1e30, 1e30, 1e30}};
@@ -163,8 +194,9 @@ int main(int argc, char** argv) {
             ++failures;
         }
         K::native_expert_set_mode(-1, 0);
-        cudaFree(dblob); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
-        cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
+        for (void* p : {(void*) dblob, (void*) dx, (void*) dxq, (void*) dscr, (void*) dout, (void*) dptr,
+                        (void*) dstart, (void*) dn, (void*) ddst, (void*) dtok})
+            sycl::free(p, *s);
     }
     std::printf("native_expert_bench: %d differing\n", failures);
     return failures ? 1 : 0;

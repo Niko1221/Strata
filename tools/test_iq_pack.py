@@ -14,9 +14,25 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # runnable from the repo root too
 
 from _paths import add_gguf_py
-add_gguf_py()
-from gguf import GGUFWriter, GGMLQuantizationType as Q, quants
-import iq_pack
+import iq_pack                         # needs numpy + gguf_reader only, not gguf-py: import it unguarded
+
+try:
+    add_gguf_py()                       # llama.cpp's gguf-py: setup.py clones it; gguf_py() exits when absent
+    from gguf import GGUFWriter, GGMLQuantizationType as Q, quants
+except SystemExit:
+    GGUF_PY = None
+else:
+    GGUF_PY = "found"
+
+
+def require_gguf_py(test):
+    """setUpClass for the classes that build GGUF fixtures: skip (not fail) on a checkout without llama.cpp."""
+    @classmethod
+    def setUpClass(cls):
+        if GGUF_PY is None:
+            raise unittest.SkipTest("llama.cpp's gguf-py not found: run setup.py (it clones llama.cpp into "
+                                    "third_party/) or set STRATA_GGUF_PY")
+    return setUpClass
 
 
 def write_gguf(path, tensors, split=None, arch=True):
@@ -37,6 +53,7 @@ def write_gguf(path, tensors, split=None, arch=True):
 
 
 class CompatibilityTests(unittest.TestCase):
+    setUpClass = require_gguf_py(unittest.TestCase)
     def test_bf16_halfway_rounds_to_even(self):
         values = np.array([0x3F808000, 0x3F818000, 0xBF808000, 0xBF818000], dtype=np.uint32)
         got = np.frombuffer(iq_pack.bf16_bytes(values.view(np.uint8), "F32"), dtype=np.uint16)
@@ -253,6 +270,8 @@ class ConversionTests(unittest.TestCase):
     """CS2: FORM decides the engine's form; exact F32->BF16 by default, rounding only with --compat-bf16, the PLE
     conv F32 -> F16 by the loader (index kind 3), non-finite values refused, every conversion in conversions.json."""
 
+    setUpClass = require_gguf_py(unittest.TestCase)
+
     def test_exact_f32_to_bf16_by_default(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             x = bits(np.arange(64, dtype=np.uint32).reshape(2, 32) << 16 | 0x3F000000)   # BF16 values held as F32
@@ -362,8 +381,9 @@ def expert(seed, shape):
     return np.random.default_rng(seed).standard_normal((N_EXPERT, *shape)).astype(np.float32)
 
 
-def split_model(root, name="model", split_layer=True, dup=False, split_no=None, gate1=Q.Q8_0, seed=0):
+def split_model(root, name="model", split_layer=True, dup=False, split_no=None, gate1=None, seed=0):
     """Writes the 4 shards; returns their paths."""
+    gate1 = Q.Q8_0 if gate1 is None else gate1      # not a default arg: the module imports without gguf-py
     gu, dn = (32, 32), (32, 32)
     router = [(f"blk.{l}.ffn_gate_inp.weight", np.full((N_EXPERT, 32), 0.5, np.float32), Q.F32) for l in (0, 1)]
     l0 = [(f"blk.0.ffn_{r}_exps.weight", expert(seed + 10 + i, gu if r != "down" else dn), Q.Q8_0)
@@ -406,6 +426,7 @@ def expected_experts(model):
 
 
 class SplitArtifactTests(unittest.TestCase):
+    setUpClass = require_gguf_py(unittest.TestCase)
     def test_four_shards_and_a_layer_split_per_role(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
@@ -515,6 +536,95 @@ class SplitArtifactTests(unittest.TestCase):
             self.assertEqual(rc, 0, log)
             self.assertEqual((pack / "experts.bin").read_bytes(), expected_experts(iq_pack.Model(paths[0])))
 
+    def test_interrupted_pack_continues_at_the_next_layer(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            paths = split_model(root)
+            pack = root / "pack"
+            real = np.concatenate
+            calls = []
+
+            def dies_on_layer_1(parts, axis):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise KeyboardInterrupt("killed")
+                return real(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", dies_on_layer_1):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_pack(paths[0], pack, "--experts-bin")
+            want = expected_experts(iq_pack.Model(paths[0]))
+            lines = [ln.split() for ln in (pack / "native_experts.txt").read_text().splitlines() if ln and not ln.startswith("#")]
+            one_layer = int(lines[1][3])                                                  # where layer 1 starts
+            self.assertFalse((pack / "experts.bin").exists())
+            self.assertEqual((pack / "experts.bin.tmp").stat().st_size, one_layer)       # layer 0 is on disk
+            self.assertEqual(json.loads((pack / "experts.bin.tmp.json").read_text())["layers"], 1)
+            # a partial write after the recorded layer (the kill came mid-write) is cut off
+            with open(pack / "experts.bin.tmp", "ab") as f:
+                f.write(b"garbage")
+            written = []
+            real_layer = iq_pack.np.concatenate
+
+            def counting(parts, axis):
+                written.append(1)
+                return real_layer(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", counting):
+                rc, log = run_pack(paths[0], pack, "--experts-bin")
+            self.assertEqual(rc, 0, log)
+            self.assertIn("keeping its first 1 of 2 layers and continuing with layer 1", log)
+            self.assertEqual((pack / "experts.bin").read_bytes(), want)
+            self.assertEqual(len(written), 2)                  # one layer re-read to check the kept one, one layer written
+            self.assertFalse((pack / "experts.bin.tmp").exists())
+            self.assertFalse((pack / "experts.bin.tmp.json").exists())
+            self.assertEqual(json.loads((pack / "experts.bin.src.json").read_text())["bytes"], len(want))
+
+    def test_interrupted_pack_of_another_model_is_not_continued(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            other = split_model(root / "a", name="other", seed=100)
+            paths = split_model(root / "b")
+            pack = root / "pack"
+            real = np.concatenate
+            calls = []
+
+            def dies_on_layer_1(parts, axis):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise KeyboardInterrupt("killed")
+                return real(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", dies_on_layer_1):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_pack(other[0], pack, "--experts-bin")
+            rc, log = run_pack(paths[0], pack, "--experts-bin")          # the same geometry, other weights
+            self.assertEqual(rc, 0, log)
+            self.assertIn("cannot be continued: starting it again", log)
+            self.assertEqual((pack / "experts.bin").read_bytes(), expected_experts(iq_pack.Model(paths[0])))
+
+    def test_a_kept_layer_that_no_longer_matches_is_not_trusted(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            paths = split_model(root)
+            pack = root / "pack"
+            real = np.concatenate
+            calls = []
+
+            def dies_on_layer_1(parts, axis):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise KeyboardInterrupt("killed")
+                return real(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", dies_on_layer_1):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_pack(paths[0], pack, "--experts-bin")
+            data = bytearray((pack / "experts.bin.tmp").read_bytes())
+            data[0] ^= 0xFF                                               # the disk lost a bit
+            (pack / "experts.bin.tmp").write_bytes(bytes(data))
+            rc, log = run_pack(paths[0], pack, "--experts-bin")
+            self.assertEqual(rc, 0, log)
+            self.assertIn("cannot be continued", log)
+            self.assertEqual((pack / "experts.bin").read_bytes(), expected_experts(iq_pack.Model(paths[0])))
+
     def test_stale_same_size_experts_bin(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
@@ -600,6 +710,7 @@ class HadamardTests(unittest.TestCase):
 
 class NativeExpertsV5Tests(unittest.TestCase):
     """The v5 mark (Hadamard-folded experts) rewrites only the tables the packer writes, v3 and v4."""
+    setUpClass = require_gguf_py(unittest.TestCase)   # test_packer_refuses_before_writing builds GGUF fixtures
     ROWS = "0 145 146 0 100 1 2 3\n1 145 146 100 100 4 5 6\n"
 
     def table(self, version, tail="(n_expert 2, total 200)"):

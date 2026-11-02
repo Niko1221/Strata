@@ -6,12 +6,26 @@ CLI resolve the same saved connection without importing server or installer code
 
 from __future__ import annotations
 
+import os
 try:
     from strata_control.private_files import private_mkdir as _private_mkdir
 except ImportError:                                     # a thin bundle (monitor only) ships without strata_control
     def _private_mkdir(path, *, parents=False, exist_ok=True):
         path.mkdir(mode=0o700, parents=parents, exist_ok=exist_ok)
         return path
+try:
+    from strata_control import posix_owner
+except ImportError:                                     # the same thin bundle: the old plain check
+    import stat as _stat
+
+    class posix_owner:                                  # noqa: N801
+        owner_only_wrong = staticmethod(lambda path, details: os.name == "posix" and (details.st_uid != os.getuid() or _stat.S_IMODE(details.st_mode) & 0o077))
+        owner_only_text = staticmethod(lambda text, path: text)
+try:
+    from strata_control import atomic as _atomic_mod
+except ImportError:                                     # the same thin bundle: a plain replace
+    class _atomic_mod:                                  # noqa: N801
+        replace = staticmethod(os.replace)
 import hashlib
 import json
 import os
@@ -71,8 +85,8 @@ def connection_dir(*, create: bool = False) -> Path:
     if directory.exists() or directory.is_symlink():
         details = directory.lstat()
         if not stat.S_ISDIR(details.st_mode) or (os.name == "posix" and
-                (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-            raise ConnectionError("connection directory must be owner-only", 5)
+                (posix_owner.owner_only_wrong(directory, details))):
+            raise ConnectionError(posix_owner.owner_only_text("connection directory must be owner-only", directory), 5)
     return directory
 
 
@@ -116,9 +130,8 @@ def load(name: str) -> tuple[dict, str]:
     try:
         details = path.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_BYTES or \
-                (os.name == "posix" and (details.st_uid != os.getuid() or
-                                         stat.S_IMODE(details.st_mode) & 0o077)):
-            raise ConnectionError("connection file must be a private regular file under 4 KiB", 5)
+                (os.name == "posix" and (posix_owner.owner_only_wrong(path, details))):
+            raise ConnectionError(posix_owner.owner_only_text("connection file must be a private regular file under 4 KiB", path), 5)
         data = path.read_bytes()
         value = json.loads(data.decode("utf-8"))
     except FileNotFoundError:
@@ -158,7 +171,7 @@ def _replace(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        _atomic_mod.replace(name, path)
         if os.name == "posix":
             try:
                 parent = os.open(path.parent, os.O_RDONLY)
@@ -181,8 +194,8 @@ def _lock(name: str):
     with os.fdopen(descriptor, "r+b") as stream:
         details = os.fstat(stream.fileno())
         if not stat.S_ISREG(details.st_mode) or (os.name == "posix" and
-                (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-            raise ConnectionError("connection lock must be owner-only", 5)
+                (posix_owner.owner_only_wrong(path, details))):
+            raise ConnectionError(posix_owner.owner_only_text("connection lock must be owner-only", path), 5)
         if os.name == "nt":
             import msvcrt
             stream.seek(0)

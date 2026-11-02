@@ -38,8 +38,8 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
-#[cfg(target_os = "linux")]
 mod desktoplog;
+mod shell;
 #[cfg(target_os = "linux")]
 mod supervisor;
 
@@ -253,13 +253,24 @@ fn pick_port() -> Result<u16, String> {
 /// launch starts with empty storage, as before).
 const PREFERRED_PORT: u16 = 47831;
 
+/// Set when the port the person (or the app) wanted was busy: "busy:<wanted>:<used>". The host gets it as STRATA_PORT_NOTICE and tells the
+/// person (the chats and settings saved on the page belong to the port, so a different port starts empty) (#3402).
+static PORT_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 fn pick_stable_port() -> Result<u16, String> {
-    match TcpListener::bind(("127.0.0.1", PREFERRED_PORT)) {
+    // The person may have chosen a port in Settings (shell-prefs.json); otherwise the app's usual one.
+    let wanted = shell::wanted_port(&shell::read_prefs(), PREFERRED_PORT);
+    *PORT_NOTICE.lock().unwrap() = None;
+    match TcpListener::bind(("127.0.0.1", wanted)) {
         Ok(listener) => {
             drop(listener);
-            Ok(PREFERRED_PORT)
+            Ok(wanted)
         }
-        Err(_) => pick_port(),
+        Err(_) => {
+            let used = pick_port()?;
+            *PORT_NOTICE.lock().unwrap() = Some(shell::busy_notice(wanted, used));
+            Ok(used)
+        }
     }
 }
 
@@ -470,6 +481,9 @@ fn host_command(res: &Path, port: u16, shutdown_token: &str) -> Result<Command, 
         .stderr(Stdio::inherit());
     apply_runtime_policy(&mut cmd, res);
     hide_console(&mut cmd);
+    if let Some(notice) = PORT_NOTICE.lock().unwrap().clone() {
+        cmd.env("STRATA_PORT_NOTICE", notice);
+    }
     // A user with the Strata API worker on a different port sets this; unset means the worker's
     // documented loopback default.
     if let Ok(url) = std::env::var("STRATA_SERVER_URL") {
@@ -491,9 +505,23 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
     *app.state::<ShutdownToken>().0.lock().unwrap() = Some(token);
 
     let node = node_binary(&res)?;
-    let child = cmd
+    // The host's lines go to the run log (a packaged Windows app has no console, so they were lost before).
+    let log = desktoplog::run_log();
+    if log.is_some() {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start the App Host on {}: {e}", node.display()))?;
+    if let Some(log) = log {
+        let ring = desktoplog::Ring::default();
+        if let Some(out) = child.stdout.take() {
+            desktoplog::tee(out, "host", false, ring.clone(), log.clone());
+        }
+        if let Some(err) = child.stderr.take() {
+            desktoplog::tee(err, "host", true, ring, log);
+        }
+    }
     *app.state::<HostProcess>().0.lock().unwrap() = Some(child);
     *app.state::<HostPort>().0.lock().unwrap() = Some(port);
 
@@ -525,6 +553,19 @@ fn stop_host(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<HostProcess>() {
         if let Some(mut child) = state.0.lock().unwrap().take() {
             stop_host_child(&mut child, port, token.as_deref());
+        }
+    }
+}
+
+/// End the host at once, without the clean stop (a start that failed: there is nothing to drain).
+#[cfg(not(target_os = "linux"))]
+fn kill_host(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<HostProcess>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -803,6 +844,10 @@ fn main() {
     // at the screen — the lesson from the Electron attempt, where a packaged app that never started
     // its host hung with no output at all.
     let args: Vec<String> = std::env::args().collect();
+    // Windows and macOS: the run log and the panic hook come first, before anything that can fail. A start that goes wrong then leaves a
+    // log, a crash file and a message box instead of a process that is gone with 0xc0000409 and nothing else (Linux: supervisor.rs).
+    #[cfg(not(target_os = "linux"))]
+    desktoplog::init_startup(self_test_path(&args).is_none());
     contain_app();
     #[cfg(target_os = "linux")]
     {
@@ -845,27 +890,53 @@ fn run_embedded() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .manage(HostProcess(Mutex::new(None)))
         .manage(HostPort(Mutex::new(None)))
         .manage(ShutdownToken(Mutex::new(None)))
         .setup(|app| {
+            // A way to prove the safety net on a computer where the app starts fine (tests only): a panic at the place a setup error ends in.
+            if std::env::var_os("STRATA_DESKTOP_TEST_PANIC").is_some() {
+                panic!("STRATA_DESKTOP_TEST_PANIC is set: the app panics on purpose");
+            }
             let handle = app.handle().clone();
-            let port = start_host(&handle).map_err(|e| {
-                // A startup failure must be visible, not a blank window.
-                eprintln!("[strata] {e}");
-                Box::<dyn std::error::Error>::from(e)
-            })?;
-            let shell_token = handle.state::<ShutdownToken>().0.lock().unwrap().clone().unwrap_or_default();
-            open_window(app, port, &shell_token)?;
+            // A setup error would become a panic inside Tauri ("Failed to setup app"), and with panic = "abort" a crash with no message.
+            // A failed start is reported (log, crash file, message box) and ends the app here instead.
+            let port = match start_host(&handle) {
+                Ok(port) => port,
+                Err(e) => {
+                    kill_host(&handle);
+                    desktoplog::startup_failed(&e)
+                }
+            };
+            let shell_token = handle.state::<ShutdownToken>().0.lock().map(|t| t.clone().unwrap_or_default()).unwrap_or_default();
+            if let Err(e) = open_window(app, port, &shell_token) {
+                kill_host(&handle);
+                desktoplog::startup_failed(&format!("the Strata window could not be opened: {e}"))
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
+            // "Minimise to tray" (Settings, off by default): closing the main window hides it and keeps Strata running in the tray; Quit in the
+            // tray menu ends it (#3477). If no tray could be made the window closes as before.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let prefs = shell::read_prefs();
+                    if prefs.tray {
+                        api.prevent_close();
+                        shell::hide_to_tray(&window.app_handle().clone(), &prefs.language);
+                        if !shell::tray_exists(&window.app_handle().clone()) {
+                            let _ = window.destroy();
+                        }
+                    }
+                }
+            }
             if let tauri::WindowEvent::Destroyed = event {
                 stop_host(&window.app_handle().clone());
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building the Strata application")
+        .unwrap_or_else(|e| desktoplog::startup_failed(&format!("the Strata application could not be built: {e}")))
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 stop_host(app);

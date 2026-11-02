@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import contextlib
 import io
 import json
 import os
@@ -588,22 +589,21 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "offline mode cannot download"):
             svc.prepare(messages, [], {})
 
-    def test_non_loopback_serve_requires_inference_key(self):
-        with tempfile.TemporaryDirectory() as directory:
-            profile = Path(directory) / "model.json"
-            profile.write_text('{"host":"0.0.0.0","args":[]}', encoding="utf-8")
-            with mock.patch.dict(os.environ, {"STRATA_API_KEY": ""}), redirect_stdout(io.StringIO()):
-                self.assertEqual(main(["serve", "--profile", str(profile)]), 2)
-
-    def test_direct_server_rejects_remote_bind_before_engine_load(self):
+    def test_direct_server_remote_bind_without_key_reaches_engine_load(self):
+        # no early exit over the key any more: every way of saying "no key" gets past the key check
         import serve.server as server
-        with tempfile.TemporaryDirectory() as directory:
-            profile = Path(directory) / "model.json"
-            profile.write_text('{"args":[]}', encoding="utf-8")
-            with mock.patch.dict(os.environ, {}, clear=True), \
-                    mock.patch.object(server, "StrataEngine", side_effect=AssertionError("engine started")):
-                self.assertEqual(server.main(["--engine", "strata", "--config", str(profile),
-                                              "--host", "0.0.0.0", "--port", "0"]), 2)
+        cases = [('{"args":[]}', []), ('{"args":[],"api_key":"none"}', []), ('{"args":[]}', ["--no-api-key"]),
+                 ('{"args":[]}', ["--api-key", "none"])]
+        for body, extra in cases:
+            with tempfile.TemporaryDirectory() as directory:
+                profile = Path(directory) / "model.json"
+                profile.write_text(body, encoding="utf-8")
+                err = io.StringIO()
+                with mock.patch.dict(os.environ, {}, clear=True), contextlib.redirect_stderr(err):
+                    with self.assertRaises(SystemExit):
+                        server.main(["--engine", "strata", "--config", str(profile),
+                                     "--host", "0.0.0.0", "--port", "0", *extra])
+                self.assertIn("tokenizer is missing", err.getvalue(), (body, extra))   # past the key check, stopped later
 
     def test_code_run_uses_missing_component_exit_until_shared_harness_arrives(self):
         output = io.StringIO()

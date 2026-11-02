@@ -486,7 +486,9 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .provider-options[open] > .provider-fields { margin-top: 16px; }
 
 /* Keep each downloaded model name on one line, with a wider desktop popup. */
-.select__option-label { min-width: 0; flex: 1; }
+.select__option-label { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+/* A long name (a graphics card as the system reports it) wraps inside its own row instead of running over the next one (#3221). */
+.select__opt { height: auto; min-height: 36px; padding-top: 6px; padding-bottom: 6px; line-height: 1.35; }
 .select__pop--single-line .select__option-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .select__pop--single-line .select__tick { flex: none; }
 .settings-versions { padding: 4px 20px 0; }
@@ -744,3 +746,28 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .native-cards__opt small { display:block; margin-top:4px; font-size:12px; line-height:1.55; color:var(--st-ink-muted); }
 .native-cards__opt small[data-warn="true"] { color:var(--st-ink-soft); }
 .native-cards__note { margin:2px 0 0; }
+
+/* Settings > Storage > Models folder (0.2.2): free-space line, the three choices, notices, the result mark. */
+.models-free { display:grid; gap:6px; margin-top:10px; }
+.models-free__row { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.models-picked { display:grid; gap:4px; }
+.models-picked .storage-directory__path { margin:0; }
+.models-choices { display:grid; gap:10px; border:0; padding:0; margin:0; }
+.models-choice { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; padding:14px 16px; border:1px solid var(--st-line); border-radius:var(--st-r-md); background:var(--st-surface); cursor:pointer; }
+.models-choice:has(input:checked) { border-color:var(--st-accent); background:var(--st-accent-tint); }
+.models-choice:has(input:disabled) { opacity:.55; cursor:not-allowed; background:var(--st-surface-2); }
+.models-choice input { margin:4px 0 0; accent-color:var(--st-accent); }
+.models-choice strong { font-weight:700; }
+.models-choice__need { grid-column:2; font-size:var(--st-fs-xs); color:var(--st-ink-muted); font-variant-numeric:tabular-nums; }
+.models-choice__tag { font-size:var(--st-fs-xs); font-weight:700; color:var(--st-accent-text); margin-left:8px; }
+.models-notice { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:12px; font-size:var(--st-fs-sm); }
+.models-notice--warn { background:var(--st-warn-tint); color:var(--st-warn-text); }
+.models-notice--info { background:var(--st-info-tint); color:var(--st-info-text); }
+.models-notice .st-icon { flex:none; }
+.models-details summary { cursor:pointer; color:var(--st-accent-text); font-weight:700; font-size:var(--st-fs-sm); }
+.models-details ul { margin:8px 0 0; padding-left:18px; color:var(--st-ink-soft); font-size:var(--st-fs-sm); }
+.models-ok { display:flex; align-items:center; gap:12px; }
+.models-ok__mark { display:grid; place-items:center; flex:none; width:44px; height:44px; border-radius:50%; background:var(--st-accent-tint); color:var(--st-accent-text); }
+.models-dialog .dialog-body { display:grid; gap:14px; }
+.models-path { font-family:var(--st-font-mono); font-size:12px; font-weight:400; background:var(--st-surface-2); padding:2px 6px; border-radius:6px; overflow-wrap:anywhere; }
+.models-dialog .storage-directory__path { margin:0; }

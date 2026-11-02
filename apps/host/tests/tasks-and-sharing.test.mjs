@@ -24,10 +24,10 @@ test('tasks persist, prevent overlapping runs, pause and resume without catch-up
   const restarted=createTaskService({read:()=>saved,write:t=>{saved=structuredClone(t);},now:()=>now,run:async()=>({text:'new',demo:true})});
   restarted.put({enabled:true},task.id);assert.ok(Date.parse(saved[0].nextRunAt)>now);restarted.close();service.close();
 });
-test('sharing requires a key and never exposes host controls or files', async () => {
+test('sharing never exposes host controls or files, and a key is checked when one is set', async () => {
   let key=false;
   const share=createLocalShare({host:'127.0.0.1',port:0,hasKey:()=>key,handle:(req,res)=>{res.writeHead(req.headers.authorization==='Bearer test-only-key'?200:401);res.end('API');}});
-  await assert.rejects(share.start(),/API key/);key=true;
+  key=true;
   try {
     const {url}=await share.start();const origin=new URL(url).origin;
     assert.equal((await fetch(origin+'/api/tasks')).status,404);

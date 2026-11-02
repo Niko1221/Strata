@@ -39,6 +39,23 @@ import numpy as np
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+# #3227: llama.cpp's converter (conversion/base.py: `from transformers import AutoConfig`) and the MXFP8 / NVFP4 decoding below need
+# these; setup installs them from requirements-nvfp4-local.txt before a prepare, and a run by hand says which one is missing.
+NEEDED_PACKAGES = ("torch", "transformers", "safetensors")
+MARKS = ("ple-nvfp4.gguf.done", "dense.gguf.done", "pack.done", "draft.done")
+
+
+def require_packages() -> None:
+    import importlib.util
+    missing = [m for m in NEEDED_PACKAGES if importlib.util.find_spec(m) is None]
+    if missing:
+        req = HERE.parent / "requirements-nvfp4-local.txt"
+        sys.exit("tools/nvfp4_local_pack.py needs the Python package%s %s, which %s not installed for %s.\n"
+                 "Install %s with:  %s -m pip install -r %s" % ("s" if len(missing) > 1 else "", ", ".join(missing),
+                                                                "are" if len(missing) > 1 else "is", sys.executable,
+                                                                "them" if len(missing) > 1 else "it", sys.executable, req))
+
+
 CSF_FIXED = ".nvfp4_csf_fixed"
 CSF_EXC = ".nvfp4_csf_exceptions"
 PLE_ROW_BYTES = 90          # 80 B of E2M1 codes + 10 E4M3 block scales, per 160-value row
@@ -46,7 +63,19 @@ PLE_ROW_BYTES = 90          # 80 B of E2M1 codes + 10 E4M3 block scales, per 160
 
 # --------------------------------------------------------------------------------------------- safetensors access
 class Checkpoint:
-    """Header-indexed, memory-mapped access to a checkpoint's safetensors shards (raw bytes, any dtype)."""
+    """Header-indexed, buffered access to a checkpoint's safetensors shards (raw bytes, any dtype).
+
+    Reads go through a cached file handle into a fresh buffer instead of a process-lifetime np.memmap:
+    a memmap sweep of the ~64 GB of expert bytes charges every faulted page to the PROCESS WORKING
+    SET, which Windows (and every free-RAM observer reading GlobalMemoryStatusEx) counts as used
+    until the OS trims it - the pack step then looks like a ~64 GB RAM demand while its real
+    committed need is a few GB, and under memory pressure it is the pack run itself that pays
+    (issue: the silent exit-1 mid-pack failure).
+    A cached sequential read puts the same pages in the system file cache (standby: counted as
+    available).  The returned array is a fresh WRITABLE buffer - no consumer writes (a mutator would
+    previously have hit the read-only memmap) - and reads share one handle per shard, so raw() is
+    not thread-safe, unlike the memmap it replaces.  Each shard is read as three ascending streams
+    (exceptions, weights, CSF-fixed) walked expert-ascending."""
 
     def __init__(self, folder, partial_ok=False):
         self.dir = pathlib.Path(folder)
@@ -59,7 +88,7 @@ class Checkpoint:
         if not files:
             raise FileNotFoundError("no .safetensors files in " + str(self.dir))
         self.meta: dict[str, tuple[str, str, list[int], int, int]] = {}
-        self._mm: dict[str, np.memmap] = {}
+        self._fh: dict[str, "object"] = {}
         for fn in files:
             path = self.dir / fn
             if not path.exists() and partial_ok:
@@ -83,9 +112,14 @@ class Checkpoint:
 
     def raw(self, name) -> np.ndarray:
         fn, _, _, a, b = self.meta[name]
-        if fn not in self._mm:
-            self._mm[fn] = np.memmap(self.dir / fn, dtype=np.uint8, mode="r")
-        return self._mm[fn][a:b]
+        f = self._fh.get(fn)
+        if f is None:
+            f = self._fh[fn] = open(self.dir / fn, "rb")
+        buf = np.empty(b - a, dtype=np.uint8)
+        f.seek(a)
+        if f.readinto(buf) != b - a:
+            raise EOFError("%s: shard %s ended early at %d" % (name, fn, a))
+        return buf
 
     def array(self, name, np_dtype) -> np.ndarray:
         return self.raw(name).view(np_dtype).reshape(self.shape(name))
@@ -251,6 +285,7 @@ def install(ck: Checkpoint, stats: dict, dense_only: bool = False):
 
 
 def cmd_convert(a) -> int:
+    require_packages()
     model = pathlib.Path(a.model)
     ck = Checkpoint(model)
     stats: dict = {}
@@ -556,6 +591,8 @@ def cmd_prepare(a) -> int:
     The checkpoint is read, never changed; it can be deleted afterwards (the pack and the two GGUFs hold everything)."""
     import subprocess
     model, out = pathlib.Path(a.model), pathlib.Path(a.out)
+    if not all((out / m).is_file() for m in MARKS):
+        require_packages()                          # before the 20 minutes of the n-gram table, not after them (#3227)
     out.mkdir(parents=True, exist_ok=True)
     me = [sys.executable, str(pathlib.Path(__file__).resolve())]
     tools = pathlib.Path(__file__).resolve().parent

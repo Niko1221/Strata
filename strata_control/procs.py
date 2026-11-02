@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from strata_control import paths
+from strata_control import atomic as _atomic_mod
 
 WINDOWS = os.name == "nt"
 SCHEMA = 1
@@ -74,7 +75,31 @@ def start_token(pid: int) -> str | None:
                              timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
-    return None if not out or out.endswith("Z") else "s:" + out
+    return None if not out or out.endswith("Z") else "s:" + out.rsplit(None, 1)[0]
+
+
+def started_epoch(pid: int) -> float | None:
+    """When the process at `pid` was created, in seconds since 1970, or None when there is no such process or the time cannot be read.
+    A number recorded in an old file can belong to a later process; a creation time after the file was written proves it does."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    if psutil is not None:
+        try:
+            return float(psutil.Process(pid).create_time())
+        except (psutil.Error, OSError):
+            return None
+    if WINDOWS:
+        from strata_control import winproc
+        ticks = winproc.process_started(pid)
+        return None if ticks is None else (ticks - 116444736000000000) / 1e7     # 100 ns ticks since 1601
+    if sys.platform.startswith("linux"):
+        token = start_token(pid)
+        try:
+            boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+            return boot + int(token[2:]) / os.sysconf("SC_CLK_TCK") if token else None
+        except (OSError, ValueError, StopIteration):
+            return None
+    return None
 
 
 def command_line(pid: int) -> list[str] | None:
@@ -192,7 +217,7 @@ def write_record(pid: int, role: str, *, profile: str | None = None, cmd: list[s
         path = procs_dir() / f"{pid}.json"
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(record), encoding="utf-8")
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
         return token
     except (OSError, ValueError):
         return None
@@ -277,40 +302,51 @@ def _signal_verified(record: dict, sig: int) -> bool:
     return True
 
 
-def end_one(record: dict, *, grace: float = 8.0) -> str:
-    """End one verified leftover: a polite signal where the OS has one, then a kill after `grace` seconds.
+def end_one(record: dict, *, grace: float = 8.0, settle: float = 10.0, say=None) -> str:
+    """End one verified leftover: a polite signal where the OS has one, then a kill after `grace` seconds, then up to
+    `settle` seconds for it to be gone (#4051: an engine holding tens of GB of pinned memory can take longer than the
+    10 s that were enough for a small process; `say` is told every ~10 s while it is waited for).
     Returns 'gone' (already not running), 'ended' or 'stuck'."""
     pid = record["pid"]
     if not is_same(pid, record["token"], record["cmd"]):
         drop_record(pid)
         return "gone"
+    # once signalled, the start token alone says it still runs: an exiting process has an empty command line on Linux
+    def running():
+        return start_token(pid) == record["token"]
     if not WINDOWS:
         _signal_verified(record, signal.SIGTERM)
         deadline = time.monotonic() + grace
-        while time.monotonic() < deadline and is_same(pid, record["token"], record["cmd"]):
+        while time.monotonic() < deadline and running():
             time.sleep(0.1)
         if is_same(pid, record["token"], record["cmd"]):
             _signal_verified(record, signal.SIGKILL)
     else:
         if is_same(pid, record["token"], record["cmd"]):
             subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)      # one PID, verified just above
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and is_same(pid, record["token"], record["cmd"]):
+    started = time.monotonic()
+    deadline = started + settle
+    told = 0
+    while time.monotonic() < deadline and running():
         time.sleep(0.1)
-    if is_same(pid, record["token"], record["cmd"]):
+        waited = int((time.monotonic() - started) // 10)
+        if say is not None and waited > told:
+            told = waited
+            say(f"[strata] still waiting for process {pid} to give its memory back ({told * 10} s)")
+    if running():
         return "stuck"
     drop_record(pid)
     return "ended"
 
 
-def end_leftovers(profile: str | None = None, *, grace: float = 8.0, say=None) -> dict:
+def end_leftovers(profile: str | None = None, *, grace: float = 8.0, settle: float = 10.0, say=None) -> dict:
     """End every verified leftover (children first: a record whose parent is itself a leftover goes last)."""
     to_end, unverifiable = leftovers(profile)
     children_first = sorted(to_end, key=lambda r: r["written_at"], reverse=True)
     result = {"ended": [], "gone": [], "stuck": [], "unverifiable": [
         {"pid": r["pid"], "role": r.get("role")} for r in unverifiable]}
     for record in children_first:
-        outcome = end_one(record, grace=grace)
+        outcome = end_one(record, grace=grace, settle=settle, say=say)
         result[outcome].append({"pid": record["pid"], "role": record.get("role"), "profile": record.get("profile")})
         if say is not None and outcome != "gone":
             say(f"[strata] leftover {record.get('role', 'process')} {record['pid']} {outcome}")
@@ -329,7 +365,8 @@ def orphans_of(engine_exe: str) -> list[Ident]:
         return []
     mine = {os.getpid()}
     try:
-        mine.update(q.pid for q in psutil.Process().parents() if q.pid != 1)    # pid 1 adopts orphans: it is not a starter
+        # pid 1 and a subreaper such as `systemd --user` (an ancestor of every desktop terminal) adopt orphans: they are not starters
+        mine.update(q.pid for q in psutil.Process().parents() if q.pid != 1 and q.name().lower() not in INIT_NAMES)
     except psutil.Error:
         pass
     found = []
@@ -359,12 +396,12 @@ def orphans_of(engine_exe: str) -> list[Ident]:
     return found
 
 
-def end_orphans(engine_exe: str, *, grace: float = 8.0, say=None) -> list[dict]:
+def end_orphans(engine_exe: str, *, grace: float = 8.0, settle: float = 10.0, say=None) -> list[dict]:
     """End the orphans of `engine_exe` (see `orphans_of`), re-verified one by one."""
     ended = []
     for ident in orphans_of(engine_exe):
         record = {"pid": ident.pid, "token": ident.token, "cmd": list(ident.cmd), "role": "engine", "written_at": 0}
-        outcome = end_one(record, grace=grace)
+        outcome = end_one(record, grace=grace, settle=settle, say=say)
         ended.append({"pid": ident.pid, "outcome": outcome})
         if say is not None and outcome != "gone":
             say(f"[strata] an engine left behind by an earlier run (pid {ident.pid}) {outcome}")

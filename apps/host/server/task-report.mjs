@@ -33,3 +33,19 @@ export function taskReport({ text, cards }) {
   if (attention) out += `\n\n> ${attention}`;
   return { text: out, attention, demo: false };
 }
+
+/**
+ * One plain line for a board card: the first sentence of the answer, with the markdown taken off and the "What it did" list and the
+ * "needed a yes" note left out. '' when there is nothing to say.
+ */
+export function lastLine(text, max = 160) {
+  let body = String(text ?? '').split(/\n\n---\n\n/)[0].replace(/\n\n> [\s\S]*$/, '');
+  body = body.replace(/```[\s\S]*?```/g, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^\s*(#{1,6}|[-*+]|\d+[.)]|>)\s+/gm, '').replace(/[*_`~]/g, '');
+  body = body.replace(/\s+/g, ' ').trim();
+  if (!body) return '';
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(body)?.[0] ?? body;
+  // A very short first sentence ("Done.") says nothing: take the next one too.
+  const two = /^.*?[.!?](?=\s|$)\s*.*?[.!?](?=\s|$)/.exec(body)?.[0] ?? body;
+  const pick = sentence.length < 24 && body.length > sentence.length ? two : sentence;
+  return clip(pick, max);
+}

@@ -114,6 +114,54 @@ int main() {
               "chain: stale full size is re-probed despite a profitable shorter chain");
         check(probes > 0 && confident, "chain: stale re-probes retain the MTP confidence gate");
     }
+    {
+        // Gated proposals: within one generation the policy copy learns from committed outcomes only. A size
+        // whose cost is still guessed is probed until kProbes rounds of it have run, timed or not, not every round.
+        DraftPolicy live(6);
+        for (int i = 0; i < 50; ++i) live.observe(false, 4, 3, 0, cost(4));      // a strong MTP
+        live.observe(true, 6, 5, 8, 3.0 * cost(6));                             // size 6 timed once, dear
+        DraftPolicy frozen = live, copy = live;
+        int frozen_probes = 0, copy_probes = 0;
+        for (int i = 0; i < 20; ++i) {
+            const DraftPolicy::Pick f = frozen.choose(4, 5, 8);
+            frozen_probes += f.lookup && f.t == 6;
+            const DraftPolicy::Pick c = copy.choose(4, 5, 8);
+            copy_probes += c.lookup && c.t == 6;
+            copy.observe_committed(c.lookup, c.lookup ? c.t : 4, c.lookup ? 5 : 3, 8);
+        }
+        check(frozen_probes == 20, "gated: a frozen copy probes the guessed size every round");
+        check(copy_probes == 2, "gated: committed outcomes end the probes after kProbes rounds of the size");
+        check(copy.cost_ms(6) == live.cost_ms(6), "gated: committed outcomes leave the measured costs alone");
+    }
+    {
+        // Gated proposals: a round's time reaches the generation's copy only once the committed position has passed
+        // every counter it depends on. Cheap costs from earlier text stop steering long lookups once the dear
+        // repetitive-text times are applied; a held time is not a new probe.
+        DraftPolicy live(6);
+        for (int t = 2; t <= 6; ++t) for (int i = 0; i < 5; ++i) live.observe(false, t, 1, 0, cost(t) * 0.2);   // cheap stretch
+        DraftPolicy copy = live;
+        check(copy.choose(4, 5, 40).lookup && copy.choose(4, 5, 40).t == 6, "delayed: cheap inherited costs take the full lookup");
+        const double before = copy.cost_ms(6);
+        copy.observe_committed(true, 6, 5, 40);
+        copy.defer_cost(110, 6, 40.0 * cost(6));
+        copy.apply_costs(110);
+        check(copy.cost_ms(6) == before, "delayed: a time is held while its counters can still be drawn");
+        copy.apply_costs(111);
+        check(copy.cost_ms(6) > before, "delayed: applied once the committed position passes its last counter");
+        for (int i = 0; i < 40; ++i) {
+            copy.observe_committed(true, 6, 5, 40);
+            copy.defer_cost(120 + i, 6, 40.0 * cost(6));
+            copy.apply_costs(121 + i);
+        }
+        check(copy.choose(4, 5, 40).t < 6, "delayed: dear measured times shorten the lookup window");
+        DraftPolicy fresh(6);
+        fresh.observe_committed(true, 6, 5, 40);
+        fresh.defer_cost(5, 6, 30.0);
+        fresh.apply_costs(6);
+        fresh.observe_committed(true, 6, 5, 40);
+        check(fresh.choose(4, 5, 40).lookup && fresh.choose(4, 5, 40).t == 6,
+              "delayed: a held time does not count as another probe");
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

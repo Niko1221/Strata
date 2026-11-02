@@ -37,11 +37,14 @@ import { createHash } from 'node:crypto';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
-export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model = 'scripted-model', serial = false } = {}) {
+export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model = 'scripted-model', serial = false, window = 0, charsPerToken = 0, noCount = false } = {}) {
+  // `window` + `charsPerToken` make it behave like the engine: every request's prompt is counted (its size over charsPerToken), the usage it
+  // reports is that count, and a prompt that leaves no room to answer is refused with the engine's own 400 ("requests are never truncated").
   // `serial` stands in for an engine with one request slot: the next request waits until the one before it has finished.
   let tail = Promise.resolve();
   const turn = () => { let release; const mine = new Promise(r => { release = r; }); const wait = tail; tail = tail.then(() => mine); return wait.then(() => release); };
   const requests = [];
+  const counts = [];
   let aborted = 0;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
@@ -49,6 +52,16 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
     if (req.method === 'GET' && url.pathname === '/health') return json(200, { ok: true });
     if (req.method === 'GET' && url.pathname === '/v1/models') return json(200, { object: 'list', data: [{ id: model, object: 'model' }] });
     if (req.method === 'GET' && url.pathname === '/__requests') return json(200, { requests, aborted });
+    // The engine's own token count of a message (Anthropic style): characters over the density, plus the template's few tokens.
+    if (req.method === 'POST' && url.pathname.endsWith('/messages/count_tokens')) {
+      if (noCount) return json(404, { error: 'no count here' });   // an older engine: the message cannot be counted before it is sent
+      let text = '';
+      for await (const c of req) text += c;
+      const sent = JSON.parse(text);
+      const chars = (sent.messages ?? []).reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0);
+      counts.push(chars);
+      return json(200, { input_tokens: Math.ceil(chars / (charsPerToken || 4)) + 12 });
+    }
     if (req.method !== 'POST' || !url.pathname.endsWith('/chat/completions')) return json(404, { error: 'no route' });
     const release = serial ? await turn() : () => {};
     res.on('close', release);
@@ -72,6 +85,11 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       authSha: req.headers.authorization ? createHash('sha256').update(req.headers.authorization).digest('hex') : null,
       promptChars: raw.length, raw,
     });
+    const counted = charsPerToken > 0 ? Math.ceil(raw.length / charsPerToken) : 0;
+    if (window > 0 && counted > 0 && counted > window - 64) {
+      requests.at(-1).refused = counted;
+      return json(400, { error: { type: 'invalid_request_error', message: `request exceeds the context window: prompt (${counted} tokens) leaves no room to answer in the context (${window}); requests are never truncated` } });
+    }
     const shellName = () => (body.tools ?? []).find(t => ['bash', 'pwsh'].includes(t.function?.name))?.function?.name ?? 'bash';
     const shellCommand = (file, value) => (shellName() === 'pwsh' ? `Add-Content -Path '${file}' -Value '${value}'` : `echo ${value} >> ${file}`);
     let closed = false;
@@ -80,7 +98,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     const id = `chatcmpl-${requests.length}`;
     const send = (delta, finish = null, extra = {}) => res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 0, model: body.model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`);
-    let promptTokens = 100 + messages.length;
+    let promptTokens = counted || 100 + messages.length;
     const finish = (reason, tokens = 10) => {
       send({}, reason);
       res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 0, model: body.model, choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: tokens, total_tokens: promptTokens + tokens } })}\n\n`);
@@ -248,7 +266,7 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
   return {
     port: server.address().port,
     url: `http://127.0.0.1:${server.address().port}/v1`,
-    requests, get aborted() { return aborted; },
+    requests, counts, get aborted() { return aborted; },
     close: () => new Promise(r => { server.closeAllConnections?.(); server.close(r); }),
   };
 }

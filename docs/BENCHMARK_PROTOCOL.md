@@ -1,24 +1,54 @@
 # Strata standard benchmark protocol
 
-**Status: draft for implementation and pilot validation.** Protocol ID: `strata-qwen38-thinking-v1-draft.1`.
+**Status: draft, implemented in `strata bench run`; pilot validation pending.** Protocol ID: `strata-qwen38-thinking-v1-draft.1`.
 Result format: `strata-standard-benchmark`, schema version `1`.
 
 This document specifies a repeatable community benchmark and the data a future website can consume. The
-required suite targets **20–30 minutes after model loading**. This duration has not been measured for this
-protocol. Faster machines may finish sooner and slower machines may take longer; everyone runs the same work.
-Downloads, installation, compilation, and model loading are excluded. Report their duration separately if measured.
+required suite took **2 to 4 minutes after model loading** on the two machines it has been run on (RTX 3060 and
+2x RTX A4000, IQ3_XXS, Strata 0.2.1: 3 min 22 s and 2 min 22 s; the optional concurrency stage added 1.5 to 2 minutes).
+Slower machines take longer; everyone runs the same work. Downloads, installation, compilation, and model loading are
+excluded; so is the hashing of the model files that the runner does first (about 1 to 5 minutes for a 44 to 71 GB model).
+Report their duration separately if measured.
 
-**Today's `BENCH.bat`, `./bench.sh`, and `tools/strata_bench.py` do not implement this protocol.** Continue using
-the [community guide](COMMUNITY_BENCHMARKS.md) for current reports. Do not rename their output or add a protocol
-ID to make it appear standard. Runner implementation, frozen fixtures, validation, and a measured pilot must
-precede activation. The approved manifest described here does not yet exist.
+`strata bench run` implements this protocol from Strata 0.2.1. It sends the frozen fixtures in
+`bench/prompts/standard-v1` (corpus SHA-256 `e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407`)
+and writes the result format below. `BENCH.bat`, `./bench.sh`, and `tools/strata_bench.py` do not implement it.
+They stay the quick speed check described in the [community guide](COMMUNITY_BENCHMARKS.md). Do not rename their
+output or add a protocol ID to make it appear standard. The draft becomes final only after the measured pilot in the
+[activation checklist](#activation-checklist). The approved manifest described here does not exist yet.
 
+- [Run it](#run-it)
 - [Profile and settings](#profile-and-settings)
 - [Workload and scoring](#workload-and-scoring)
 - [Measurements](#measurements)
 - [Result contract](#result-contract)
 - [Submit and review](#submit-and-review)
 - [Activation checklist](#activation-checklist)
+
+## Run it
+
+Install Strata, set up the Flash-Next model you want to measure, and close other programs that use the GPU. Then:
+
+```sh
+strata bench run --profile NAME --track default --track-notes "0.2.1 release, setup defaults"
+strata bench run --url http://127.0.0.1:8080          # a server that is already running
+```
+
+With `--profile` the runner starts that profile's engine, waits for the model to load, runs the protocol, and stops
+the engine it started. If the profile is already serving, the runner uses that server and leaves it running; a
+server that has already answered requests is not freshly loaded, and the report says how many it had answered.
+`--no-start` forbids starting an engine. `--optional-concurrency` adds the optional stage.
+
+The runner checks every fixture against the bundle manifest before it sends anything, refuses to run if one byte
+differs, and rejects flags that would change the workload (`--concurrency`, `--repeat`, `--request-timeout`).
+`strata bench report DIR` prints a saved result again and re-validates it. Output goes to
+`bench/results/<UTC-date>-standard-<gpu>-<run-id>/` when the current folder has `bench/results`, otherwise to
+`./bench-results/`. Read the folder once before you share it: home folders, user and host names, private addresses,
+and keys are replaced, but the runner cannot know everything you consider private.
+
+Options that describe what the engine cannot tell the runner: `--track`, `--track-notes`, `--model-revision`,
+`--source-revision`, `--tokenizer-revision`, `--quantization`, `--custom-pack`, `--background` (repeatable), and
+`--build-options`. The runner never guesses these; an unset value is `null` with a reason.
 
 ## Profile and settings
 
@@ -89,10 +119,20 @@ engine dies or the user cancels. Do not retry failed requests inside a run or re
 
 ### Frozen fixtures
 
-The runner implementation must commit a fixture bundle before the pilot. It must contain exact messages, tool
-schemas, expected outputs, case IDs, and validation rules. Hash the bundle's files with a SHA-256 manifest and
-store that manifest's hash as `protocol.corpus_sha256`. Record the protocol Git commit. Changes to prompts,
-order, scoring, caps, or defaults require a new protocol ID; schema changes use a separate schema version.
+The bundle is committed in `bench/prompts/standard-v1`: one JSON file per scheduled request (the 22 required and
+the 12 optional ones) with its exact messages, tool schemas, seed, cap, expected output and frozen token count,
+plus `build.json` (how it was made) and `MANIFEST.sha256`. The SHA-256 of that manifest is
+`protocol.corpus_sha256`. `.gitattributes` marks `bench/prompts/**` as `-text`: a checkout must never convert
+their line endings, and the runner refuses a bundle whose bytes differ from the manifest. The runner records the
+protocol Git commit. Changes to prompts, order, scoring, caps, or defaults require a new protocol ID; schema
+changes use a separate schema version.
+
+`python tools/build_standard_corpus.py --tokenizer PACK/tokenizer` rebuilds the bundle byte for byte. It needs the
+tokenizer files (`vocab.json`, `merges.txt`, `token_type.json`) of a Flash-Next pack and the chat template Strata
+ships (`serve/chat_template.jinja`). The frozen counts are 211 records for `prompt-4k` (4,093 tokens) and 858
+records for `prompt-16k` (16,386 tokens). Besides each request's token count, the bundle stores the longest token
+prefix the request shares with any other request (`max_shared_prefix_tokens`); that is the cache reuse the
+protocol allows.
 
 Use synthetic data only. Do not read the checkout's current README or other changing project files into prompts.
 Build the candidate bundle as follows; these are construction instructions, not runtime adaptation:
@@ -151,12 +191,58 @@ No text answer is required in a successful tool-call case. Record malformed outp
 errors, and skipped cases individually. Only a completed, correct response passes. The denominator remains
 `12`, with category denominators `4`; skipped cases also make the suite partial.
 
+### How the runner reads the protocol
+
+Where the rules leave room, `strata bench run` takes the most literal reading. These are its choices; a different
+reading needs a new protocol ID.
+
+- **Settings.** Every request carries all sampling values, `reasoning_effort: "xhigh"`, both thinking flags, the
+  seed and the cap, plus `reasoning_budget_tokens: 0` (no budget) and `stream_options.include_usage`. The server's
+  chat-completions handler passes `enable_thinking` and `reasoning_effort` to the template; it ignores
+  `preserve_thinking`, which changes nothing for a single-turn conversation. A server that answers a request with
+  HTTP 400 or 422 makes the run `nonconforming`; the runner never retries with other settings. The runner cannot see
+  the server's repeat-stop and loop-recovery switches, so it does not claim to have disabled them.
+- **Track.** `--track` defaults to `custom`. The runner cannot tell whether a setup is untouched, so `default` is
+  only what the operator declares.
+- **Unexpected reuse.** A request's `cached_tokens` may be at most its `max_shared_prefix_tokens` (see the fixtures)
+  plus 8 tokens for merges at the boundary. Above that the user payload was read from the cache: the request is
+  left out of the speed summaries, and a performance request makes the run `nonconforming`. Running the protocol twice
+  against the same server therefore flags the second run; restart the engine between runs.
+- **Prompt length.** The measured `input_tokens` of the 4K and 16K cases must stay within 2% of 4,096 and 16,384.
+  A different tokenizer or template breaks that and makes the run `nonconforming`.
+- **Truncation.** `finish_reason: "length"` is `truncated`. It stays in the speed summaries and fails a sanity case.
+  Any other finish reason except `stop` and `tool_calls` is a failure.
+- **Reading it out.** On the first real runs (RTX 3060, 2x RTX A4000, six runs) 35 of 36 4K and 16K performance
+  requests stopped at the 512-token cap while still reasoning, and so did 5 of 18 `short` requests. Their total time is the time to the cap, and
+  they have no first-answer time. The plain summary and the README therefore carry a `Capped` column (how many of a case's
+  requests reached the cap). The `short` prompt is about 80 tokens, so its prompt rate (130 to 190 tok/s there) measures the
+  fixed cost of a request and is left out of those two readouts; `results.json` keeps it. Changing the cap or the prompts
+  would be a new protocol ID.
+- **Numbers.** JSON equality compares types: `3` is not `3.0`, and `true` is not `1`. A tool case needs exactly one
+  structured call; text next to it is ignored.
+- **After a failure.** The runner asks `/health` once. If the server does not answer, the remaining requests are
+  `skipped`. A failed warm-up skips everything after it. Ctrl-C ends the run the same way and still writes the result.
+- **Timeout.** The 1,800 seconds are counted from dispatch with a timer that closes the connection, so a stalled
+  stream and a long queue both count.
+- **Duration.** `required_duration_s` runs from the warm-up's dispatch to the end of the last sanity request. Hashing
+  the model files and probing the machine come before it.
+- **Model files.** The runner hashes the GGUF files it can find (the server's `model_path`, every shard of a split file, and
+  files named in the profile's engine arguments). Without a file there is no hash and the run is `nonconforming`.
+- **Remote servers.** A server that is not on loopback gives a `nonconforming` result, because standard latency is a loopback measurement.
+
 ## Measurements
 
 Keep the inference host's hardware separate from any client description. Standard latency uses loopback;
 remote/network measurements belong in a separate nonstandard report. Record all inference GPUs, selected device
 indices, dedicated or shared memory, CPU, RAM, storage, OS, driver/runtime versions, power limits when available,
 and other workloads. Use bytes for memory, watts for power, seconds for durations, and tokens/second for rates.
+
+On Apple silicon (Metal) the GPU and the CPU share one memory pool: record one GPU entry named after the chip,
+`memory_kind: "shared"`, `memory_bytes` equal to the installed memory, and `power_limit_w: null` with a reason.
+There is no separate GPU driver (`drivers` stays `null` with a reason); put the macOS version in `runtime` as
+`{"name": "metal", "version": "<macOS version>"}`. AMD APUs such as Strix Halo also use shared memory; the runner
+reports `shared` only for Apple silicon and the operator must correct any other unified-memory machine in the
+README.
 
 | Metric | Definition and evidence |
 | --- | --- |
@@ -166,6 +252,24 @@ and other workloads. Use bytes for memory, watts for power, seconds for duration
 | First-answer latency | Time from the same dispatch to first nonempty final-answer text or generated tool-call delta. Reasoning alone does not count. Null if no answer or tool call arrives. |
 | Total duration | Client dispatch through stream completion, error, or cancellation, including queueing and prompt processing. |
 | Concurrent aggregate tokens/sec | For one round, total accepted output tokens from completed or capped requests divided by wall time from first dispatch to last termination in that round. Keep failed-request time in that wall time; report failures alongside the rate. |
+
+### Where the numbers come from
+
+Strata's streaming chat answer ends with a chunk that carries `usage` and `timings` (llama.cpp's names). The runner
+maps them as follows. Nothing else feeds a throughput rate.
+
+| Protocol field | Source in the answer |
+| --- | --- |
+| `input_tokens` | `usage.prompt_tokens` |
+| `cached_tokens` | `usage.prompt_tokens_details.cached_tokens`, else `timings.cache_n` |
+| `read_tokens` | `timings.prompt_n`; if absent, `input_tokens - cached_tokens`, and `sources` says it was derived |
+| `prompt_s` | `timings.prompt_ms / 1000` |
+| `output_tokens` | `usage.completion_tokens` |
+| `decode_s` | `timings.predicted_ms / 1000` |
+| `decode_tokens` | `timings.predicted_n` when it agrees with `timings.predicted_per_second x predicted_s` (the engine rounds its rate to 0.1 tokens/s, so the check allows `0.05 x decode_s + 1` tokens); otherwise the count the rate implies, with a `token_accounting_note` |
+| `prompt_tps` | `read_tokens / prompt_s`, null when `read_tokens` is 0 (the whole prompt came from the cache) or a duration is 0 |
+| `decode_tps` | `decode_tokens / decode_s`, null when either is 0 |
+| `ttft_s`, `first_answer_s`, `total_s` | the client's monotonic clock from dispatch; never an engine field |
 
 Retain API `output_tokens` separately from engine `decode_tokens`. If the counts differ, explain the engine
 accounting and preserve its raw timing lines; do not assume `predicted_n` is always the count used by
@@ -218,6 +322,19 @@ explaining why, including not-applicable values. Empty arrays mean genuinely no 
 | `artifacts` | Array of `{kind, path, sha256}` for sanitized configuration, engine logs, and request/output evidence; optional additional provenance. Kind is `config`, `engine_log`, `outputs`, or `provenance`. Hash final sanitized bytes. |
 | `missing` | Map of JSON Pointers to specific reasons for null values. |
 | `extensions` | Optional object for data beyond this contract; never a substitute for required fields. |
+
+Where the software fields come from. `strata_commit` and `runner_commit` are the full commit of the install: `git rev-parse
+HEAD` in a source checkout, or the `COMMIT` file a release archive carries (written by `packaging/package_terminal.py`).
+An install with neither has no commit, and the run is `nonconforming`. `engine_version` is the engine's own version
+from `/props` (`build_info`), or `/v1/status` when `/props` has none. `build_kind` is `source` when the
+folder has a `.git`, otherwise `release`. The runner cannot read build options from a server; pass `--build-options`
+for a source build. The drivers and the CUDA version come from `nvidia-smi` (or `rocm-smi`, or the Windows display
+driver key), read on the machine that runs the engine. ROCm 7 and newer ship `amd-smi` and no `rocm-smi`: the card's
+name is that tool's `static --asic` market name, its memory is the amdgpu sysfs file of the PCI address `amd-smi list`
+reports, and the `rocm` runtime entry is the version file inside the ROCm install (`amd-smi -h` prints the same
+version). Where the kernel builds amdgpu in there is no driver version to read, and `gpu-driver` stays null with a
+reason. When the server can only name a vendor, because the amdgpu `product_name` is empty on some cards, the card the
+local probe named is kept instead.
 
 Except for typed objects, arrays, numbers and booleans identified above, identity and descriptive fields are
 strings (or null with a reason where unavailable). Empty configuration objects mean no relevant options;
@@ -323,7 +440,8 @@ with the JSON; derived summaries can always be rebuilt from request records.
 
 ## Submit and review
 
-Follow [CONTRIBUTING.md](../CONTRIBUTING.md). During the draft phase, submit pilot data clearly labelled with
+Follow [CONTRIBUTING.md](../CONTRIBUTING.md). If a log or output shows a vulnerability or a secret, report it privately as
+[SECURITY.md](../SECURITY.md) describes instead of putting it in a pull request. During the draft phase, submit pilot data clearly labelled with
 the draft protocol ID. Existing reports remain welcome under the [community guide](COMMUNITY_BENCHMARKS.md).
 
 1. Run one hardware/model/quant/configuration combination and retain every scheduled outcome. Add a separate
@@ -386,24 +504,30 @@ actual lengths/cache counts, and concurrency; there is no universal combined sco
 
 ## Activation checklist
 
-The current runner hardcodes temperature `0`, disables thinking by default, has no twelve-case sanity suite,
-uses changing repository files in its agent workload, and can fall back from token counts to stream-chunk counts.
-It also lacks the finish/first-answer accounting and versioned result contract above. `--think` alone does not
-fix those differences. These are implementation tasks for a later change, not capabilities of the current CLI.
+`tools/strata_bench.py` (behind `BENCH.bat` and `./bench.sh`) hardcodes temperature `0`, turns thinking off by default,
+has no twelve-case sanity suite, reads changing repository files into its agent workload, and can fall back from token
+counts to stream-chunk counts. `--think` alone does not fix those differences. `strata bench run` does not share
+them: it is the protocol's runner.
+
+Done in 0.2.1, with tests against a scripted mock server (`tests/terminal/test_bench_standard.py`) and the real
+API server's mock engine:
+
+- The fixtures, the profile settings, the runner, a strict result validator (`strata bench report` runs it), and the
+  evidence files. Complete runs, early EOS, cap truncation, wrong answers, malformed JSON and tool calls, duplicate JSON
+  keys, missing usage or timings, empty deltas and keep-alives, timeouts, cancellation, a stream cut before its end,
+  server death, count identities, summary reconstruction, unexpected payload reuse, a refused setting, a remote server,
+  optional concurrency, null reasons, and unknown format versions.
 
 Before removing draft status:
 
-- Implement and freeze the fixtures, profile, runner, strict result validator, and evidence generation. Verify
-  default sampling/template behavior and complete token/timing accounting against the engine.
-- Test complete runs, early EOS, cap truncation, wrong answers, malformed JSON/tool calls, duplicate JSON keys,
-  missing usage/timings, empty deltas, timeouts, cancellation, errors after a first delta, and server death.
-- Test count identities, summary reconstruction, shared-prefix versus unexpected payload reuse, insufficient
-  context, unsupported defaults, optional concurrency with queueing, and zero/invalid timing denominators.
-- Check hashes/provenance, null reasons, redaction, unknown format versions, draft/nonconforming exclusion, and
-  changed artifacts after review. Independently recompute sanity scores from saved final outputs.
+- Verify against a real engine that the shipped chat template matches the pinned upstream behavior (tool
+  formatting included), and pin the model-card and tokenizer revisions (`protocol.model_card_revision` is `null`
+  with a reason until then). The shipped `serve/chat_template.jinja` differs from the template inside the
+  NVFP4 pack the fixtures were counted with; the frozen token counts use the shipped one.
+- Test the cases the mock server cannot show: insufficient context, an error after a first delta on a real engine, and
+  optional concurrency with queueing on a server that has fewer than four slots.
+- Recompute the sanity scores independently from the saved final outputs, and check draft/nonconforming exclusion
+  and changed artifacts after review in the website that reads the results.
 - Run a measured pilot on at least two supported hardware configurations, including a slower system. Publish
   actual duration, caps reached, failures, and sanity outcomes. Adjust the candidate workload if needed, then
   freeze a new protocol ID before collecting comparable standard results. Do not promise a universal runtime.
-
-For this documentation change, validate links and anchors, issue-form YAML, JSON example syntax, request-count
-arithmetic, and agreement between these rules and contribution templates. No runtime behavior is changed.
