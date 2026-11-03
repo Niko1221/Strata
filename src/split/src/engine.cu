@@ -102,6 +102,9 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             if (!rd.line.empty()) std::fprintf(stderr, "fnx: %s\n", rd.line.c_str());
             rccl_on_ = rd.use;
         }
+        // the prompt chunk sums through the peers' device memory (needs the peer push; RCCL, when it is in use, does the sums instead): FNX_PF_PEER=0 keeps the host exchange
+        pf_peer_ = peer_on && !rccl_on_ && env_int("FNX_PF_PEER", 1) != 0;
+        if (pf_peer_) std::fprintf(stderr, "fnx: peer push: the prompt chunk sums are pushed into the peers' device memory\n");
     }
     auto pxalloc = [&](size_t bytes) -> void* {
         void* p = nullptr;

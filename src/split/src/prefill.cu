@@ -749,11 +749,23 @@ void Engine::prefill_alloc() {
             const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD * N;   // a card's share of the rows
             r.send = palloc<__half>(share);
             for (int k = 0; k < 2; ++k) {
-                for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
-                r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
+#if FNX_HIP
+                if (pf_peer_) {   // device memory on this card: the previous card's kernels store into it
+                    for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = ppalloc<__half>(share);
+                    r.ag[k] = ppalloc<__half>((size_t) pf_c_ * N);
+                } else
+#endif
+                {
+                    for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
+                    r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
+                }
                 for (int h = 0; h < NCARD - 1; ++h) r.din[h][k] = palloc<__half>(share);
                 r.dag[k] = palloc<__half>((size_t) pf_c_ * N);
             }
+#if FNX_HIP
+            if (pf_peer_) r.flags = ppalloc<unsigned>(2 * PF_RING_STEPS);
+            else
+#endif
             r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
         }
         p->dev = b.dev;

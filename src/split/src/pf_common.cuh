@@ -73,6 +73,19 @@ template <typename T> T* hpalloc(size_t n) {
     return (T*) p;
 }
 
+#if FNX_HIP
+// FNX_PF_PEER: n zeroed values of fine-grained device memory on the current card (the other cards' kernels store into it; hip/peer.h enabled the access), released by ~Engine
+template <typename T> T* ppalloc(size_t n) {
+    void* p = nullptr;
+    if (hipExtMallocWithFlags(&p, n * sizeof(T), hipDeviceMallocFinegrained) != hipSuccess)
+        throw std::runtime_error("prefill: fine-grained device allocation of " + std::to_string(n * sizeof(T) >> 10) + " KiB failed");
+    pf_card_bytes += n * sizeof(T);
+    ckc(FNX_ZERO_DEV(p, n * sizeof(T)), "peer buffer clear");
+    own_dev(p);
+    return (T*) p;
+}
+#endif
+
 // a grid of at most 4096 blocks over n values, 256 threads each
 inline unsigned grid_for(size_t n) { return (unsigned) std::min<size_t>(4096, (n + 255) / 256); }
 

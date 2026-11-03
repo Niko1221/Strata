@@ -342,6 +342,9 @@ private:
     // FNX_PF_RCCL (AMD, hip/rccl.h): the prompt's chunk sums through RCCL, loaded at run time; rccl_ holds the library and the communicators (null: the host exchange)
     std::shared_ptr<void> rccl_;
     bool rccl_on_ = false;
+    // FNX_PF_PEER (AMD, needs the peer push): the prompt chunk sums' receive slots, gather rows and flags live in the receiving card's fine-grained device memory, the
+    // sending card's kernels store into it directly (no hop through host memory); the sums are the same arithmetic as the host exchange's
+    bool pf_peer_ = false;
     // the prompt path's rows per chunk (FNX_PF_ROWS, a multiple of MAXT up to 8192, default 4096: prompts over 1k tokens
     // read ~20% faster than at 1024 for ~1.1 GiB more a card; Q4 at 262k makes room with FNX_EXPERT_RAM_GIB) and its jobs
     int pf_c_ = 4096, pf_jobs_ = 0;
