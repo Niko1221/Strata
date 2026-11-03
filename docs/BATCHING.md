@@ -595,6 +595,29 @@ without an error at a steady 435 tok/s and with no change in VRAM.
 Not done: the hand-off of a batch window between stages (`§7f` of the parallelization report, one flag a group) is not part of
 this; it can emit a wrong token from time to time and is listed for later.
 
+## DFlash2 with several requests on a layer split (opt-in)
+
+On a layer split over several cards, `"drafting": "dflash2"` (or `strata launch --drafting dflash2`) with `"parallel": 2` or more
+starts DFlash2 instead of falling back to the MTP. A request running alone drafts with DFlash2. Requests running at the same
+time use the batch slots, which draft by the engine's own rule: pipelined slot groups run without drafts, as the MTP's do
+without `--batch-mtp`. Auto, one card and `--pipeline-windows` still start the MTP when there are several requests.
+
+Measured on one machine (RTX 2080 Ti, RTX 3060, 3x Tesla P100, RTX 3060 in split order, Xeon W-2150B, CUDA 12.9.1,
+engine 0.1.56 with the P100 fix of #4274, Qwen3.8-Flash-Next IQ3_S, context 178,176). The engine ran `--batch 2` as two
+pipelined groups of one slot. MTP was started with `--spec 4`, DFlash2 with the release's `--spec 6`. Fresh engine per run:
+two runs per configuration with `"parallel": 2`, two (MTP) and three (DFlash2) with one request at a time. Decode is the
+median over seven prompts of 512 tokens at temperature 0:
+
+| | One request at a time | `"parallel": 2` | Three short requests on two slots, wall |
+|---|---:|---:|---:|
+| MTP | 56.2 tok/s | 51.0 tok/s | 12.65 s -> 10.93 s |
+| DFlash2 | 52.2 tok/s | 47.9 tok/s | 13.05 s -> 11.38 s |
+
+Two slots cost both drafters the same share of a lone request's speed (MTP -9.3%, DFlash2 -8.2%), because the slot sessions
+take 1.34 GiB of the first card's expert cache (2,016 -> 1,476 slots there). On these cards DFlash2 decodes 6 to 7% slower than
+the MTP either way; its drafter runs on an RTX 3060, where the engine already warns that the MTP was faster. Follow-up turns
+reused 99.8% of their tokens with both. Not measured: one card, more than two slots, other cards.
+
 ## Exactness
 
 A batch row's arithmetic is the single-token window's, so with greedy decoding **every conversation of a batch
