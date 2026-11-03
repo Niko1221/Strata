@@ -139,6 +139,7 @@ const char* finish_name(Finish f) {
 
 Session::Session(Engine& e, int K, int lookup_k, std::vector<int> eos, int turn, std::shared_ptr<ConvCache> cache, int lane)
     : e_(e), K_(K), LK_(lookup_k), eos_(std::move(eos)), turn_(turn), lane_(lane), cache_(std::move(cache)) {
+    speculate = env_int("FNX_SPECULATE", 1) != 0;   // 0: one row a window, no drafts (the reference a speculative run must equal; tests)
     if (K_ < 1 || K_ + 1 > MAXT) throw std::runtime_error("session: K must be 1.." + std::to_string(MAXT - 1));
     if (LK_ < 0 || LK_ + 1 > MAXT) throw std::runtime_error("session: lookup drafts must be 0.." + std::to_string(MAXT - 1));
     if (!cache_) throw std::runtime_error("session: no cache");
@@ -449,6 +450,10 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         }
         return d;
     };
+    // DFlash2 in place of the draft layer: one drafter round after each window gives up to 7 fixed drafts with the selector's probabilities; the window
+    // keeps the drafts while the product of those probabilities stays at or over FNX_DF2_CONF (as the main engine's --draft-conf), at most K
+    const bool df2 = e_.df2_on();
+    const double df2_conf = env_num("FNX_DF2_CONF", 0.35);
     Finish fin = Finish::length;
     for (;;) {
         if (stop && stop->load()) {
@@ -556,9 +561,34 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         // the draft layer reads the kept rows either way (its cells stay current for later turns)
         std::vector<int> pen_seq;   // the penalty window before the next token: the context's last pen_last_n
         if (pen_drafts) pen_seq.assign(ctx.size() > (size_t) s.pen_last_n ? ctx.end() - s.pen_last_n : ctx.begin(), ctx.end());
+        mtp_round = false;
+        if (df2) {
+            if (!speculate) {
+                drafts.clear(), qs.clear();
+                continue;
+            }
+            std::vector<Engine::Df2Req> rq(1);
+            rq[0].lane = lane_, rq[0].row0 = 0, rq[0].used = used, rq[0].pos0 = p, rq[0].anchor = x;
+            e_.df2_draft(rq);
+            st.draft_ms += e_.last_df2_ms, ++st.draft_calls;
+            const int d1 = rq[0].tokens[0];
+            drafts = lookup(ctx, d1);   // a lookup that begins with the drafter's first draft goes on from there, as it does behind the draft layer's
+            if (!drafts.empty()) {
+                ++st.lookup_rounds;
+                qs.assign(drafts.size(), Dist{});
+                continue;
+            }
+            double cum = 1.0;
+            for (int j = 0; j < std::min(K_, df2::kDrafts); ++j) {
+                cum *= (double) rq[0].probs[j];
+                if (cum < df2_conf) break;
+                drafts.push_back(rq[0].tokens[j]);
+            }
+            qs.assign(drafts.size(), Dist{});
+            continue;
+        }
         Dist q1;
         const int d1 = draft_one(used, true, 0, std::vector<int>(o.begin(), o.begin() + used), p, pen_seq, q1);
-        mtp_round = false;
         if (!speculate) {
             drafts.clear(), qs.clear();
             continue;

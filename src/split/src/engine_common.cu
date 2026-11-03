@@ -611,6 +611,7 @@ void Engine::load_state(const SeqState& s) {
     });
     history_ = s.tokens;
     pos_ = pos;
+    if (df2_) df2_forget(cur_);
     set_images(s.images);
     // pages past the state's length go back to the pool
     LaneHost& L = lanes_[(size_t) cur_];
@@ -639,6 +640,7 @@ void Engine::reset() {
     release_pages();
     history_.clear();
     pos_ = 0;
+    if (df2_) df2_forget(cur_);
     set_images({});
 }
 
@@ -1628,5 +1630,78 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
     last_draft_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return out;
 }
+
+// ---- DFlash2 ------------------------------------------------------------------------------------------------------------------------------------
+#if FNX_DF2
+void Engine::df2_forget(int lane) {
+    df2_->reset(lane);
+    df2_lane_[(size_t) lane].lo = df2_lane_[(size_t) lane].hi = 0;
+}
+
+Engine::Df2Info Engine::df2_info(int lane) const {
+    Df2Info i;
+    if (!df2_) return i;
+    i.lo = df2_lane_[(size_t) lane].lo, i.hi = df2_lane_[(size_t) lane].hi, i.ring_hi = (long) df2_->ring_hi(lane);
+    return i;
+}
+
+// the lane's drafter brought up to position pos0 (the first row of the window about to be drafted from) with what the prompt reads tapped: its ring holds
+// the positions below pos0 in the host ring [lo, hi) that it has not got yet, the last 2047 at most. A ring that is ahead of pos0 (the sequence went back) or
+// does not touch the host ring's run starts over; whatever is missing is left out (the drafts are poorer for a while, never wrong: the verify decides)
+void Engine::df2_catch_up(int lane, int pos0) {
+    Df2Lane& L = df2_lane_[(size_t) lane];
+    df2::Bridge& B = *df2_;
+    long have = (long) B.ring_hi(lane);
+    if (have == pos0) return;
+    if (have > pos0) {
+        B.reset(lane);
+        have = 0;
+    }
+    if (!L.ring || L.hi <= L.lo) return;
+    long from = std::max({L.lo, have, (long) pos0 - df2::kRing + 1});
+    const long to = std::min<long>(L.hi, pos0);
+    if (from >= to) return;
+    constexpr size_t rowf = (size_t) df2::kTaps * df2::kNEmbd;
+    std::string err;
+    while (from < to) {   // (the ring wraps at kRing positions: at most two runs)
+        const long slot = from % df2::kRing, n = std::min<long>(to - from, df2::kRing - slot);
+        if (!B.context(lane, L.ring + (size_t) slot * rowf, n, from, err)) throw std::runtime_error("dflash2: " + err);
+        from += n;
+    }
+}
+
+void Engine::df2_draft(std::vector<Df2Req>& reqs) {
+    if (!df2_) throw std::runtime_error("df2_draft: no DFlash2 attached");
+    const auto t0 = std::chrono::steady_clock::now();
+    df2::Bridge& B = *df2_;
+    ck(cudaSetDevice(cb_[0]->dev), "set");
+    constexpr size_t rowf = (size_t) df2::kTaps * df2::kNEmbd;
+    std::string err;
+    for (Df2Req& r : reqs) {
+        if (r.used < 1 || r.row0 < 0 || r.row0 + r.used > MAXT) throw std::runtime_error("df2_draft: rows outside the window");
+        if (r.lane < 0 || r.lane >= B.lanes()) throw std::runtime_error("df2_draft: no drafter for this lane");
+        df2_catch_up(r.lane, r.pos0);
+        const float* src = df2_tapw_ + (size_t) r.row0 * rowf;
+        int n = r.used;
+        long p0 = r.pos0;
+        if (n > df2::kRows) {   // a lookup window kept more rows than a round takes: the first ones only update the ring
+            if (!B.context(r.lane, src, n - df2::kRows, p0, err)) throw std::runtime_error("dflash2: " + err);
+            src += (size_t) (n - df2::kRows) * rowf;
+            p0 += n - df2::kRows;
+            n = df2::kRows;
+        }
+        ck(cudaMemcpyAsync(B.landing(r.lane), src, (size_t) n * rowf * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) B.stream(r.lane)), "df2 taps");
+        if (!B.launch(r.lane, n, p0, r.anchor, err)) throw std::runtime_error("dflash2: " + err);
+    }
+    for (Df2Req& r : reqs)
+        if (!B.finish(r.lane, r.tokens, r.probs, err)) throw std::runtime_error("dflash2: " + err);
+    last_df2_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+#else
+void Engine::df2_forget(int) {}
+Engine::Df2Info Engine::df2_info(int) const { return {}; }
+void Engine::df2_catch_up(int, int) {}
+void Engine::df2_draft(std::vector<Df2Req>&) { throw std::runtime_error("this engine was built without DFlash2"); }
+#endif
 
 }  // namespace fnx

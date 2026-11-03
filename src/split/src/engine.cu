@@ -1001,6 +1001,7 @@ void Engine::enqueue(int T, bool dumps) {
         dd("mixer_out", l, cb_[0]->bo_a, N);
         // ---- FFN half
         each([&](int, CardBuf& b, const CardW& w) { ffn_half(T, call, b, w, w.L[l], b.R, b.ctl); });
+        df2_tap_window(l, T);
         ++call;
         dd("ffn_mixed", l, cb_[0]->mixed, N);
         dd("ffn_out", l, cb_[0]->bo_f, N);
@@ -1169,6 +1170,7 @@ void Engine::enqueue_rows(const std::vector<int>& lanes, const std::vector<int>&
         });
         ++call;
         each([&](int, CardBuf& b, const CardW& w) { ffn_half(T, call, b, w, w.L[l], b.R, b.ctl); });
+        df2_tap_window(l, T);
         ++call;
     }
     each([&](int, CardBuf& b, const CardW& w) {
@@ -1181,6 +1183,35 @@ void Engine::enqueue_rows(const std::vector<int>& lanes, const std::vector<int>&
 }  // namespace fnx
 
 namespace fnx {
+
+#if FNX_DF2
+// DFlash2 (df2_bridge.hpp): the drafter's card taps the window's rows after the FFN half of the tapped layers, inside the window's graph
+void Engine::df2_tap_window(int l, int T) {
+    if (!df2_ || df2_slot_[(size_t) l] < 0) return;
+    CardBuf& b = *cb_[0];
+    ck(cudaSetDevice(b.dev), "set");
+    df2::Bridge::tap(b.R, b.bo_f, b.inj_f, T, df2_slot_[(size_t) l], df2_tapw_, (int64_t) df2::kTaps * df2::kNEmbd, b.st);
+}
+
+void Engine::df2_attach(df2::Bridge& br) {
+    if (br.device() != cb_[0]->dev) throw std::runtime_error("df2_attach: the drafter is not on the first card");
+    if (br.lanes() < (int) lanes_.size()) throw std::runtime_error("df2_attach: fewer drafters than lanes");
+    if (br.tap_layers().size() != (size_t) df2::kTaps) throw std::runtime_error("df2_attach: the pack taps " + std::to_string(br.tap_layers().size()) + " layers, the engine expects " + std::to_string(df2::kTaps));
+    df2_slot_.assign((size_t) NL, -1);
+    for (size_t i = 0; i < br.tap_layers().size(); ++i) {
+        const int l = br.tap_layers()[i];
+        if (l < 0 || l >= NL - 1) throw std::runtime_error("df2_attach: tapped layer " + std::to_string(l) + " is outside the model");
+        df2_slot_[(size_t) l] = (int) i;
+    }
+    ck(cudaSetDevice(cb_[0]->dev), "set");
+    df2_tapw_ = dalloc<float>((size_t) MAXT * df2::kTaps * df2::kNEmbd);
+    df2_lane_.assign((size_t) br.lanes(), Df2Lane{});
+    df2_ = &br;
+}
+#else
+void Engine::df2_tap_window(int, int) {}
+void Engine::df2_attach(df2::Bridge&) { throw std::runtime_error("this engine was built without DFlash2"); }
+#endif
 
 void Engine::mtp_attach(const Mtp& mtp) {
     if (mtp.cards.size() != (size_t) NCARD) throw std::runtime_error("mtp_attach: the draft layer is not on every card");

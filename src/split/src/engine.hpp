@@ -11,6 +11,7 @@
 #include <map>
 #include <vector>
 
+#include "df2_bridge.hpp"
 #include "kernels.hpp"
 #include "model.hpp"
 
@@ -111,6 +112,23 @@ public:
     std::vector<std::pair<float, int>> last_draft_cands;
     double last_draft_ms = 0.0;       // wall time of the last draft()
     double last_draft_gpu_ms = 0.0;   // its graph's GPU time (the slowest card)
+    // DFlash2 (df2_bridge.hpp), in place of the draft layer: attach the loaded Bridge after the Engine is made and before warm_graphs() (the window
+    // graphs then carry the tap kernels). Lane i's drafter is Bridge lane i. Windows (verify, verify_rows) tap their rows on the drafter's card; after
+    // the commit, df2_draft gives the drafts for the next window from the kept rows. Prompt reads (prefill) tap the last 2048 positions of each
+    // segment into a host ring per lane that the drafter takes at its first round
+    void df2_attach(df2::Bridge& br);
+    bool df2_on() const { return df2_ != nullptr; }
+    struct Df2Req {
+        int lane = 0, row0 = 0, used = 1, pos0 = 0, anchor = 0;   // rows row0 .. row0 + used - 1 of the last window were kept, the first at position pos0
+        int tokens[df2::kDrafts] = {};
+        float probs[df2::kDrafts] = {};
+    };
+    // one round for each lane in turn (launched together, finished together). Throws on a failure of the drafter
+    void df2_draft(std::vector<Df2Req>& reqs);
+    double last_df2_ms = 0.0;   // the wall time of the last df2_draft
+    // positions of lane's prompt taps now in its host ring [lo, hi), and what its drafter holds (diagnostics)
+    struct Df2Info { long lo = 0, hi = 0, ring_hi = 0; };
+    Df2Info df2_info(int lane) const;
     // lanes: sequences held on the engine at once. Lane 0 exists from the start; add_lane() makes another, its
     // recurrent states, histories and rings taken from the K/V pool (~26 pages, ~5k positions of capacity). Every
     // single-sequence call (window, verify, commit, prefill, draft, the states, reset, pos, history) acts on the
@@ -338,6 +356,20 @@ private:
     struct RowsWindow {          // verify_rows()'s window until its commit_rows()
         std::vector<int> lanes, counts, tokens;
     } rows_pending_;
+    // DFlash2 state
+    df2::Bridge* df2_ = nullptr;
+    std::vector<int> df2_slot_;      // layer -> tap slot, -1 none
+    float* df2_tapw_ = nullptr;      // the drafter's card: [MAXT][kTaps][N], the last window's taps
+    struct Df2Lane {
+        float* ring = nullptr;       // pinned host (mapped): [kRing][kTaps][N], position % kRing
+        long lo = 0, hi = 0;         // the positions the ring holds (a contiguous run)
+    };
+    std::vector<Df2Lane> df2_lane_;
+    int df2_seg_end_ = 0;            // the position one past the current prefill() call's last row
+    void df2_tap_window(int l, int T);
+    void df2_catch_up(int lane, int pos0);
+    void df2_forget(int lane);       // the lane's sequence changed: drafter ring and host ring empty
+    void df2_prompt_tap(int slot, int pos_first, int row, int n, CardBuf& b, const float* R, const float* bo, const float* inj);
     void mtp_enqueue(int T);
     void mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T);
     const Mtp* mtp_ = nullptr;

@@ -262,6 +262,7 @@ void BatchDecoder::draft_next(const std::vector<BatchLane*>& lanes, const std::v
                               const std::vector<std::vector<int>>& got) {
     if (going.empty()) return;
     const bool mtp = mode_ == BatchDrafts::mtp;
+    const bool df2 = mtp && e_.df2_on();   // the draft source of the 'mtp' mode is DFlash2 when it is attached
     std::vector<std::vector<int>> look(going.size());
     std::vector<int> chain_room(going.size());
     std::vector<RowOffer> offers(going.size());
@@ -273,6 +274,7 @@ void BatchDecoder::draft_next(const std::vector<BatchLane*>& lanes, const std::v
         // the window's rows take positions pos .. pos + drafts, inside the context (as Session::generate clamps them)
         const int pos = e_.lane_pos(L.lane), ctx_room = std::max(0, e_.max_ctx() - pos - 1);
         chain_room[g] = std::min({K_, e_.lane_pages(L.lane) * KVP_POS - pos, ctx_room});
+        if (df2) chain_room[g] = std::min({K_, df2::kDrafts, ctx_room});   // DFlash2 writes no cells of the draft layer: only the context bounds its drafts
         RowOffer& of = offers[g];
         if (!look[g].empty() || !mtp) {
             of.avail = std::min({(int) look[g].size(), MAXT - 1, ctx_room});
@@ -280,12 +282,13 @@ void BatchDecoder::draft_next(const std::vector<BatchLane*>& lanes, const std::v
         } else {
             of.avail = chain_room[g];
             of.reach = reach_of(L.tried, L.stood, of.avail);
-            of.chain = true;
+            of.chain = !df2;   // (a DFlash2 draft costs no call of its own after the lane's round)
             of.explore = (L.chains + 1) % 4 == 0;
         }
     }
     const int ng = (int) going.size();
-    const double base = cost_.round_ms + cost_.rows_ms(ng) + (mtp ? cost_.call_ms * ng : 0.0);
+    static const double df2_call_ms = env_num("FNX_DF2_CALL_MS", 2.5);   // one lane's drafter round (about 3 ms alone, overlapped between lanes)
+    const double base = cost_.round_ms + cost_.rows_ms(ng) + (mtp ? (df2 ? df2_call_ms : cost_.call_ms) * ng : 0.0);
     std::vector<int> plan;
     if (fixed_ >= 0) {
         for (const RowOffer& of : offers) plan.push_back(std::min(fixed_, of.avail));
@@ -321,6 +324,10 @@ void BatchDecoder::draft_next(const std::vector<BatchLane*>& lanes, const std::v
             }
         }
         std::fprintf(stderr, "%s\n", s.c_str());
+    }
+    if (df2) {
+        draft_df2(lanes, going, r0, got, look, plan, chain_room);
+        return;
     }
     if (mtp && batched_draft_) {
         draft_batched(lanes, going, r0, got, look, plan, chain_room);
@@ -472,6 +479,48 @@ void BatchDecoder::draft_batched(const std::vector<BatchLane*>& lanes, const std
             L.qs.push_back(std::move(q));
             prev_row[g] = (int) n;   // this lane's row in the window just run
         }
+    }
+}
+
+// the drafts of the lanes still going from DFlash2: one drafter round for each (launched together), then as draft_batched sorts them out: a lookup that
+// begins with the round's first draft stands, else the round's drafts up to the plan (and the selector's confidence)
+void BatchDecoder::draft_df2(const std::vector<BatchLane*>& lanes, const std::vector<int>& going, const std::vector<int>& r0, const std::vector<std::vector<int>>& got,
+                             const std::vector<std::vector<int>>& look, const std::vector<int>& plan, const std::vector<int>& chain_room) {
+    static const double conf = env_num("FNX_DF2_CONF", 0.35);
+    std::vector<Engine::Df2Req> rq(going.size());
+    for (size_t g = 0; g < going.size(); ++g) {
+        const int i = going[g];
+        BatchLane& L = *lanes[(size_t) i];
+        Engine::Df2Req& q = rq[g];
+        q.lane = L.lane, q.row0 = r0[(size_t) i], q.used = (int) got[(size_t) i].size(), q.pos0 = e_.lane_pos(L.lane) - q.used, q.anchor = L.ctx.back();
+    }
+    e_.df2_draft(rq);
+    ++last_calls;
+    for (size_t g = 0; g < going.size(); ++g) {
+        BatchLane& L = *lanes[(size_t) going[g]];
+        const Engine::Df2Req& q = rq[g];
+        const int d = plan[g];
+        if (d == 0) {
+            L.shadow = q.tokens[0];
+            L.shadow_q = Dist{};
+        }
+        if (!look[g].empty() && look[g][0] == q.tokens[0]) {
+            L.drafts.assign(look[g].begin(), look[g].begin() + d);
+            L.qs.assign((size_t) d, Dist{});
+            continue;
+        }
+        int k = std::min(d, chain_room[g]), cut = 0;
+        double cum = 1.0;
+        for (; cut < df2::kDrafts; ++cut) {
+            cum *= (double) q.probs[cut];
+            if (cum < conf) break;
+        }
+        k = std::min(k, cut);
+        if (k == 0) continue;
+        ++L.chains;
+        L.chain = true;
+        L.drafts.assign(q.tokens, q.tokens + k);
+        L.qs.assign((size_t) k, Dist{});
     }
 }
 

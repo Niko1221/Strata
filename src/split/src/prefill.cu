@@ -1325,6 +1325,16 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     const int h0 = (int) history_.size();
     const auto tok_at = [&](int q) -> int { return q < h0 ? history_[q] : tokens[q - h0]; };
     const size_t nt = tokens.size();
+#if FNX_DF2
+    if (df2_) {   // DFlash2: this read's last kRing positions are tapped into the lane's host ring (the drafter takes them at its first round)
+        Df2Lane& L = df2_lane_[(size_t) cur_];
+        if (!L.ring) {
+            ckc(cudaHostAlloc((void**) &L.ring, (size_t) df2::kRing * df2::kTaps * df2::kNEmbd * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "df2 tap ring");
+            own_pinned(L.ring);
+        }
+        df2_seg_end_ = h0 + (int) nt;
+    }
+#endif
     // a pass takes K chunks; with the hyper-connection split a short last chunk (not a whole pf_c_ rows) is a pass of its own, so it does not keep the whole chunks
     // before it from being split
     const bool lone_tail = pf_[0]->hcs;
@@ -1361,6 +1371,22 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
         ch = std::move(next);
     }
 }
+
+#if FNX_DF2
+// DFlash2: rows [row, row + n) of a chunk (absolute position pos_first for the first) on card b: R's streams with the pending FFN write folded in, their mean, into
+// the lane's host ring slots (position % kRing; a run that wraps is two launches)
+void Engine::df2_prompt_tap(int slot, int pos_first, int row, int n, CardBuf& b, const float* R, const float* bo, const float* inj) {
+    Df2Lane& L = df2_lane_[(size_t) cur_];
+    constexpr int64_t rowf = (int64_t) df2::kTaps * df2::kNEmbd;
+    for (int done = 0; done < n;) {
+        const int pos = pos_first + done, at = pos % df2::kRing, k = std::min(n - done, df2::kRing - at);
+        df2::Bridge::tap(R + (size_t) (row + done) * D, bo + (size_t) (row + done) * N, inj + (size_t) (row + done) * HC, k, slot, L.ring + (size_t) at * rowf, rowf, b.st);
+        done += k;
+    }
+}
+#else
+void Engine::df2_prompt_tap(int, int, int, int, CardBuf&, const float*, const float*, const float*) {}
+#endif
 
 void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, const std::function<void()>& between) {
     const auto t_pass = std::chrono::steady_clock::now();
@@ -1567,6 +1593,31 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     };
     for (int l = 0; l < NL; ++l) {
         if (staging && l + 1 < NL - 1) stage_in(l + 1);   // the last layer runs no experts
+#if FNX_DF2
+        // DFlash2: layer l - 1's completed output (its FFN half's sum folded into R as the next read would) is the tap of the rows of the last kRing positions of
+        // this read. Before this layer's reads fold the sum into R; in the split read (HCSPLIT) a card holds the sums of its own rows only and taps those
+        if (df2_ && l > 0 && df2_slot_[(size_t) (l - 1)] >= 0) {
+            const int slot = df2_slot_[(size_t) (l - 1)];
+            for (int j2 = 0; j2 < nk; ++j2) {
+                use(j2);
+                const int lo = std::max(0, df2_seg_end_ - df2::kRing - pos0[(size_t) j2]);
+                if (lo >= C) continue;
+                const bool own_rows = hs && l - 1 >= PLE_LAYER;
+                each([&](int c, CardBuf& b, const CardW&, Pf& p) {
+                    int a = lo, z = C;
+                    if (own_rows) {
+                        const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
+                        a = std::max(a, r0), z = std::min(z, r0 + nr);
+                    } else if (c != 0) {
+                        return;   // every card holds all the sums: the first taps
+                    }
+                    if (a >= z) return;
+                    if (p.overlap) ckc(cudaStreamWaitEvent(b.st, p.ev_rf[j2], 0), "ffn sum");
+                    df2_prompt_tap(slot, pos0[(size_t) j2] + a, a, z - a, b, p.R, p.bo_f, p.inj_f);
+                });
+            }
+        }
+#endif
         for (int j = 0; j < nk; ++j) {
             use(j);
             // ---- attention half: the last layer's FFN sum (pending in bo_f) first
@@ -1767,6 +1818,16 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     use(0);
     for (const PfChunk& c : chunks) history_.insert(history_.end(), c.tokens.begin(), c.tokens.end());
     pos_ += rows;
+#if FNX_DF2
+    if (df2_) {   // the positions this pass tapped: [a, pos_) with a the later of the pass's start and the read's last kRing positions
+        Df2Lane& L = df2_lane_[(size_t) cur_];
+        const long a = std::max<long>(pos_ - rows, (long) df2_seg_end_ - df2::kRing), e = pos_;
+        if (a < e) {
+            if (L.hi == a && L.hi > L.lo) L.hi = e, L.lo = std::max<long>(L.lo, e - df2::kRing);
+            else L.lo = a, L.hi = e;
+        }
+    }
+#endif
     static const bool timing = env_flag("FNX_PF_TIMING");
     if (timing) {
         std::fprintf(stderr, "prefill pass at %d: %d chunks, %d rows in %.1f ms (embed + upload %.1f ms, enqueued in %.1f ms, draft layer %.1f ms)",

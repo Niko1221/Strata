@@ -79,6 +79,8 @@ private:
     // of the lanes that go on. Greedy lanes without penalties only (draft_next falls back to draft_one otherwise); the same drafts
     void draft_batched(const std::vector<BatchLane*>& lanes, const std::vector<int>& going, const std::vector<int>& r0, const std::vector<std::vector<int>>& got,
                        const std::vector<std::vector<int>>& look, const std::vector<int>& plan, const std::vector<int>& chain_room);
+    void draft_df2(const std::vector<BatchLane*>& lanes, const std::vector<int>& going, const std::vector<int>& r0, const std::vector<std::vector<int>>& got,
+                   const std::vector<std::vector<int>>& look, const std::vector<int>& plan, const std::vector<int>& chain_room);
     bool batched_draft_ = false;
 };
 
