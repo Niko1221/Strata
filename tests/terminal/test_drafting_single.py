@@ -213,11 +213,15 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
                 elif want == {"mtp"}:
                     self.assertFalse([a for a in args if a.startswith("--draft")], where)
 
-    def test_a_layer_split_with_several_requests_is_the_mtp_alone(self):
-        for mode in ("auto", "dflash2"):
-            args = self.server_args(self.cfg(gpu=[0, 1], parallel=4, drafting=mode))
-            self.assertEqual(loaded(args), {"mtp"}, mode)
-            self.assertFalse([a for a in args if a.startswith("--draft")], mode)
+    def test_a_layer_split_with_several_requests_is_the_mtp_alone_for_auto(self):
+        args = self.server_args(self.cfg(gpu=[0, 1], parallel=4, drafting="auto"))
+        self.assertEqual(loaded(args), {"mtp"})
+        self.assertFalse([a for a in args if a.startswith("--draft")])
+
+    def test_a_layer_split_with_several_requests_runs_dflash2_alone_when_it_is_named(self):
+        args = self.server_args(self.cfg(gpu=[0, 1], parallel=4, drafting="dflash2"))
+        self.assertEqual(loaded(args), {"dflash2"})
+        self.assertIn("--batch", args)
 
     def test_the_all_cards_split_engine_still_runs_its_mtp(self):
         from tests.split import test_split_engine as TS
