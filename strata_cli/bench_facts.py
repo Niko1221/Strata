@@ -42,12 +42,14 @@ def redactor(key: str = ""):
     """text -> text with this machine's home folders, user and host names, the Strata folder, private IP addresses and the API key replaced."""
     subs: list[tuple[re.Pattern, str]] = []
 
-    def add(value, label, word=False):
-        if value and len(str(value)) >= 4:
+    def add(value, label, word=False, case_sensitive=False, min_len=4):
+        if value and len(str(value)) >= min_len:
             text = str(value)
             for form in sorted({text, text.replace("\\", "/"), text.replace("/", "\\")}, key=len, reverse=True):
                 pattern = re.escape(form)
-                subs.append((re.compile(r"(?<![\w-])" + pattern + r"(?![\w-])" if word else pattern, re.I), label))
+                flags = 0 if case_sensitive else re.I
+                regex = re.compile(r"(?<![\w-])" + pattern + r"(?![\w-])" if word else pattern, flags)
+                subs.append((regex, label))
 
     add(ROOT, "<strata>")
     add(Path.home(), "<home>")
@@ -58,7 +60,8 @@ def redactor(key: str = ""):
         pass
     add(socket.gethostname(), "<host>", True)
     add(platform.node(), "<host>", True)
-    add(key, "<key>")
+    if key and str(key).strip().lower() != "none" and len(str(key)) >= 8:
+        add(key, "<key>", word=True, case_sensitive=True)
     subs.sort(key=lambda item: -len(item[0].pattern))
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
     private_ip = re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])"

@@ -947,6 +947,7 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
                        "request_checks": {rid: v for rid, v in extras.items()},
                        "optional_stage_skipped": skipped_optional,
                        "api_key_sent": bool(target.key)}}
+    doc = facts.redact_object(doc, redact)
     if doc["run"]["optional_duration_s"] is None:
         why.add("/run/optional_duration_s", "the optional concurrency stage was not selected" if not optional_concurrency
                 else "the optional concurrency stage did not run")
