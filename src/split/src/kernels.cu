@@ -2224,13 +2224,27 @@ void moe_gate_up(const DW& A, size_t sa, const Job* jobs, const int* njobs, int 
         moe_mm(false, A, sa, jobs, njobs, njobs_max, xq, gu, st);
         return;
     }
-    if (A.type != T_Q4_K) throw std::runtime_error("moe_gate_up: the shared expert rides only in the Q4_K experts' launch");
     if (sh_ffs < 32 || sh_ffs > SH_MAXF || sh_ffs % 32) throw std::runtime_error("moe_gate_up: the shared expert's FF slice");
     ShexpDown sd;
     for (int k = 0; k < Q8S_SEGS; ++k) sd.w.q[k] = sh_down->q, sd.w.d[k] = sh_down->d, sd.w.out[k] = sh_out, sd.w.end[k] = N, sd.w.stride[k] = N;
     sd.rows = N, sd.ffs = sh_ffs, sd.gu = sh_gu;
     const MoeW w{(const char*) A.p, sa, A.row_bytes, A.n_out, A.n_in, A.ep};
-    gu_q4k_launch(njobs_max / TOPK, w, jobs, njobs, njobs_max, (const block_q8_1*) xq, gu, (cudaStream_t) st, sd);
+    const int T = njobs_max / TOPK;
+    cudaStream_t s = (cudaStream_t) st;
+    const block_q8_1* y = (const block_q8_1*) xq;
+    switch (A.type) {
+        case T_Q4_K: gu_q4k_launch(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q5_K: gu_sd_launch<GGML_TYPE_Q5_K>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q5_1: gu_sd_launch<GGML_TYPE_Q5_1>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q4_0: gu_sd_launch<GGML_TYPE_Q4_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q8_0: gu_sd_launch<GGML_TYPE_Q8_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ4_NL: gu_sd_launch<GGML_TYPE_IQ4_NL>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ4_XS: gu_sd_launch<GGML_TYPE_IQ4_XS>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ3_S: gu_sd_launch<GGML_TYPE_IQ3_S>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ3_XXS: gu_sd_launch<GGML_TYPE_IQ3_XXS>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ2_S: gu_sd_launch<GGML_TYPE_IQ2_S>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        default: throw std::runtime_error("moe_gate_up: the shared expert rides in the launch of expert type " + std::to_string(A.type) + " only for the types moe_mm handles");
+    }
     ck_launch("moe_gate_up (with the shared expert)");
 }
 namespace {
