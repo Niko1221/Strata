@@ -921,7 +921,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # not map (cublasSgemm, cublasGemmStridedBatchedEx) and its kernels assume 32-lane warps; main() guards every use with
   # STRATA_HAVE_QWEN35, so a gfx906 build links and runs the Qwen3.8 family, and `strata --families` says so
   if(NOT STRATA_HIP_GFX906)
-  add_library(strata_qwen35 STATIC src/qwen35/q36_engine.cu)
+  add_library(strata_qwen35 STATIC src/qwen35/q36_engine.cu src/kernels/lora_adapters.cpp)
   target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata_qwen35 PRIVATE strata_prefill strata_kernels strata_warnings ${_strata_gpu_runtime_target})
   if(STRATA_NATIVE_EXPERTS)
