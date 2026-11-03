@@ -1519,6 +1519,14 @@ struct Model::Impl {
         std::fprintf(stderr, "ds4: DISK_SKIP auto: on again for request %d (%.0f%% of the experts the last answer left in "
                              "RAM still are)\n", a.requests, 100.0 * f);
     }
+    // where a small window's pick of expert e of l is computed (light, ram_light: under DISK_SKIP_W's, RAM_SKIP_W's bar)
+    enum class Lane { Vram, StoreZc, Skip, Cpu };
+    Lane lane_of(const Layer& l, int e, int T, bool light, bool ram_light) const {
+        if (l.slot[(size_t) e] >= 0) return Lane::Vram;
+        if (T == 1 && !l.zc.empty() && l.zc[(size_t) e]) return Lane::StoreZc;
+        if ((light && !in_ram(l, e)) || ram_light) return Lane::Skip;
+        return Lane::Cpu;
+    }
     // a GGUF's CPU-lane experts copied into RAM (copy_experts, after VRAM took its share: --mmap-experts off - auto reads
     // them in place; DS4_COPY_GB=<n>: the hottest n GB, the rest in place - static, no moves between
     // them): RAM slots (l.ram, as the tier's) of NH parts, part X on NUMA node X with rows [X n / NH, (X + 1) n / NH) of
@@ -9484,28 +9492,28 @@ struct Model::Impl {
                         if (aon && !light) ++heavy;
                         if (l.rc_n > 0 && l.slot[(size_t) e] >= l.rc_base && l.slot[(size_t) e] < l.rc_base + l.rc_n)
                             l.rc_stamp[(size_t) (l.slot[(size_t) e] - l.rc_base)] = rc_clock.load(std::memory_order_relaxed);
-                        if (l.slot[(size_t) e] < 0) {
-                            l.cpu_hits.push_back(e);
-                            if (T == 1 && !l.zc.empty() && l.zc[(size_t) e]) {   // the device computed it from the store's slot
-                                store->touch(li, e);
-                                ++st.store_zc;
-                                continue;
-                            }
-                            if ((light && !in_ram(l, e)) || (rsk && r.w[t][i] < ram_skip_w * wsum)) {
-                                ++st.skipped;
-                                continue;
-                            }
-                            if (aon && !light) {   // (cold: not in RAM now, or not when the lookahead asked for it)
-                                ++heavy_cpu;
-                                cold += in_ram(l, e) && !(fl != nullptr && (fl[e] & 16)) ? 0 : 1;
-                            }
-                            if (!l.ram.empty() && l.ram[(size_t) e] >= 0) ++st.ram_experts;
-                            else if (fl != nullptr) {
-                                ++st.ahead_cold;
-                                st.ahead_cold_hit += (fl[e] >> 3) & 1;
-                            }
-                            picks.push_back({e, t * kPicks + i});
+                        const Lane lane = lane_of(l, e, T, light, rsk && r.w[t][i] < ram_skip_w * wsum);
+                        if (lane == Lane::Vram) continue;
+                        l.cpu_hits.push_back(e);
+                        if (lane == Lane::StoreZc) {   // the device computed it from the store's slot
+                            store->touch(li, e);
+                            ++st.store_zc;
+                            continue;
                         }
+                        if (lane == Lane::Skip) {
+                            ++st.skipped;
+                            continue;
+                        }
+                        if (aon && !light) {   // (cold: not in RAM now, or not when the lookahead asked for it)
+                            ++heavy_cpu;
+                            cold += in_ram(l, e) && !(fl != nullptr && (fl[e] & 16)) ? 0 : 1;
+                        }
+                        if (!l.ram.empty() && l.ram[(size_t) e] >= 0) ++st.ram_experts;
+                        else if (fl != nullptr) {
+                            ++st.ahead_cold;
+                            st.ahead_cold_hit += (fl[e] >> 3) & 1;
+                        }
+                        picks.push_back({e, t * kPicks + i});
                     }
                 }
                 if (aon) skip_auto_tick(li, T, heavy, cold, heavy_cpu);
