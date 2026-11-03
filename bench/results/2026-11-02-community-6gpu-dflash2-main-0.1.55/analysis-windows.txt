@@ -1,0 +1,15 @@
+== window 4
+mtp      median 53.9 tok/s; time-weighted 50.3; rows/window 3.34; tokens/window 2.68; drafts offered/window 2.34; accepted 71.8%; ms/window 53.2; fit fixed 15.3 + 11.3/row; tokens 21504; n 42; errors 0
+         code 55.4, prose 41.6, json 58.0, edit 53.8, chat 42.8, tool 56.2, thinking 51.4
+dflash2  median 51.8 tok/s; time-weighted 49.2; rows/window 3.30; tokens/window 2.65; drafts offered/window 2.30; accepted 71.7%; ms/window 53.9; fit fixed 18.5 + 10.7/row; tokens 21504; n 42; errors 0
+         code 54.8, prose 40.2, json 58.3, edit 51.3, chat 39.7, tool 58.1, thinking 49.5
+== window 6
+mtp      median 49.9 tok/s; time-weighted 46.6; rows/window 4.38; tokens/window 3.12; drafts offered/window 3.38; accepted 62.7%; ms/window 66.9; fit fixed 12.2 + 12.5/row; tokens 10752; n 21; errors 0
+         code 51.2, prose 37.4, json 55.1, edit 50.4, chat 38.6, tool 53.4, thinking 47.5
+dflash2  median 49.4 tok/s; time-weighted 46.6; rows/window 4.37; tokens/window 3.10; drafts offered/window 3.37; accepted 62.5%; ms/window 66.6; fit fixed 14.0 + 12.0/row; tokens 10752; n 21; errors 0
+         code 54.2, prose 36.8, json 56.5, edit 48.7, chat 36.7, tool 58.1, thinking 47.2
+== window 8
+mtp      median 45.8 tok/s; time-weighted 43.5; rows/window 4.96; tokens/window 3.23; drafts offered/window 3.96; accepted 56.2%; ms/window 74.2; fit fixed 15.3 + 11.9/row; tokens 10752; n 21; errors 0
+         code 47.5, prose 36.4, json 53.1, edit 47.3, chat 36.5, tool 46.3, thinking 41.8
+dflash2  median 45.2 tok/s; time-weighted 44.1; rows/window 4.96; tokens/window 3.23; drafts offered/window 3.96; accepted 56.4%; ms/window 73.3; fit fixed 15.1 + 11.7/row; tokens 10752; n 21; errors 0
+         code 49.9, prose 34.8, json 57.0, edit 45.2, chat 34.4, tool 53.5, thinking 42.8

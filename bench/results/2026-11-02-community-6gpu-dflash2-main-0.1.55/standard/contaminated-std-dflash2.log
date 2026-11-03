@@ -1,0 +1,67 @@
+starting the engine (the model load is not part of the benchmark time) ...
+waiting for the model to load (0 s) ...
+waiting for the model to load (30 s) ...
+hashing model file 1/3: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+hashing model file 2/3: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+hashing model file 3/3: expert-profile.bin
+[1/22] warmup (up to 128 tokens)
+    truncated: prompt 30.838816 tok/s, decode 41.66531 tok/s, first token 2.484504 s
+[2/22] performance-short-r1 (up to 512 tokens)
+    completed: prompt 31.43627 tok/s, decode 48.445345 tok/s, first token 2.479833 s
+[3/22] performance-prompt-4k-r1 (up to 512 tokens)
+    truncated: prompt 391.139398 tok/s, decode 43.576693 tok/s, first token 10.502056 s
+[4/22] performance-prompt-16k-r1 (up to 512 tokens)
+    truncated: prompt 791.042543 tok/s, decode 43.747971 tok/s, first token 20.764544 s
+[5/22] performance-short-r2 (up to 512 tokens)
+    completed: prompt 26.964561 tok/s, decode 48.012803 tok/s, first token 2.89043 s
+[6/22] performance-prompt-4k-r2 (up to 512 tokens)
+    truncated: prompt 368.884963 tok/s, decode 40.395115 tok/s, first token 11.138215 s
+[7/22] performance-prompt-16k-r2 (up to 512 tokens)
+    truncated: prompt 801.230179 tok/s, decode 44.659601 tok/s, first token 20.502647 s
+[8/22] performance-short-r3 (up to 512 tokens)
+    completed: prompt 31.719876 tok/s, decode 44.970296 tok/s, first token 2.460854 s
+[9/22] performance-prompt-4k-r3 (up to 512 tokens)
+    truncated: prompt 402.047071 tok/s, decode 40.124448 tok/s, first token 10.218193 s
+[10/22] performance-prompt-16k-r3 (up to 512 tokens)
+    truncated: prompt 801.724096 tok/s, decode 44.370878 tok/s, first token 20.49732 s
+[11/22] sanity-I1 (up to 2048 tokens)
+    completed: prompt 31.462226 tok/s, decode 52.677154 tok/s, first token 2.63928 s
+[12/22] sanity-I2 (up to 2048 tokens)
+    completed: prompt 35.421914 tok/s, decode 52.277819 tok/s, first token 2.571027 s
+[13/22] sanity-I3 (up to 2048 tokens)
+    completed: prompt 35.712785 tok/s, decode 54.188726 tok/s, first token 2.409784 s
+[14/22] sanity-I4 (up to 2048 tokens)
+    completed: prompt 29.853257 tok/s, decode 58.97772 tok/s, first token 2.408331 s
+[15/22] sanity-R1 (up to 2048 tokens)
+    completed: prompt 396.75147 tok/s, decode 44.806517 tok/s, first token 10.341235 s
+[16/22] sanity-R2 (up to 2048 tokens)
+    completed: prompt 401.954231 tok/s, decode 51.763467 tok/s, first token 10.208379 s
+[17/22] sanity-R3 (up to 2048 tokens)
+    completed: prompt 799.761761 tok/s, decode 47.90617 tok/s, first token 20.532911 s
+[18/22] sanity-R4 (up to 2048 tokens)
+    completed: prompt 735.452489 tok/s, decode 44.486908 tok/s, first token 22.333144 s
+[19/22] sanity-T1 (up to 2048 tokens)
+    completed: prompt 75.498873 tok/s, decode 44.901777 tok/s, first token 4.338923 s
+[20/22] sanity-T2 (up to 2048 tokens)
+    completed: prompt 74.95581 tok/s, decode 41.473638 tok/s, first token 4.508019 s
+[21/22] sanity-T3 (up to 2048 tokens)
+    completed: prompt 83.823494 tok/s, decode 46.890158 tok/s, first token 4.232401 s
+[22/22] sanity-T4 (up to 2048 tokens)
+    completed: prompt 79.350218 tok/s, decode 48.312096 tok/s, first token 4.309069 s
+Strata standard benchmark (strata-qwen38-thinking-v1-draft.1)
+Status: complete. 21 of 21 required requests finished, 0 failed, 0 skipped. Time after the model loaded: 5 min 11 s.
+Machine: NVIDIA GeForce RTX 2080 Ti, NVIDIA GeForce RTX 3060, Tesla P100-PCIE-16GB, Tesla P100-PCIE-16GB, Tesla P100-PCIE-16GB, NVIDIA GeForce RTX 3060; Intel(R) Xeon(R) W-2150B CPU @ 3.00GHz; 188 GB RAM; Ubuntu 24.04.5 LTS 6.8.0-147-generic.
+Model: qwen3.8-flash-next-iq3_s, IQ3_S, context 178176; engine 0.1.55; track custom.
+
+Speed (median, min-max, n; the engine's own prompt and decode timings, the client's first-token time):
+  Case        Prompt tok/s             Decode tok/s          TTFT s                   Total s               Capped
+  short       n/a                      48.0 (45.0-48.4) n=3  2.48 (2.46-2.89) n=3     10.4 (8.5-12.2) n=3   0/3
+  prompt-4k   391.1 (368.9-402.0) n=3  40.4 (40.1-43.6) n=3  10.50 (10.22-11.14) n=3  22.9 (22.2-23.8) n=3  3/3
+  prompt-16k  801.2 (791.0-801.7) n=3  44.4 (43.7-44.7) n=3  20.50 (20.50-20.76) n=3  32.0 (31.9-32.4) n=3  3/3
+  short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not shown; read prompt speed from prompt-4k and prompt-16k.
+  Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the time to the cap, not to an answer, and it has no first-answer time when it was still reasoning.
+
+Sanity checks: 12 of 12 passed (instruction 4/4, retrieval 4/4, tool calls 4/4).
+
+Report: /out/std-dflash2/bench-results/2026-11-02-standard-rtx-2080-ti-plus-rtx-3060-plus-tesla-p100-pcie-16gb-plus-tes-5541d3da/README.md
+Result: /out/std-dflash2/bench-results/2026-11-02-standard-rtx-2080-ti-plus-rtx-3060-plus-tesla-p100-pcie-16gb-plus-tes-5541d3da/results.json

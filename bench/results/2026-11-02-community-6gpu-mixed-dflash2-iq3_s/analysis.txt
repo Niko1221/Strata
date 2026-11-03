@@ -1,0 +1,218 @@
+# accounting
+r1-swift-mtp: calls 67 output 16241 engine_gen 14482 prompt_read 587318 errors [] drafting mtp note '' slots 19148 cache_mib 37634 nonfinite 0 cuda_err 0
+r1-swift-dflash2: calls 67 output 16231 engine_gen 14490 prompt_read 587318 errors [] drafting dflash2 note '' slots 19231 cache_mib 37812 nonfinite 0 cuda_err 0
+r1-orig-mtp: calls 67 output 15719 engine_gen 14096 prompt_read 587309 errors [] drafting mtp note '' slots 19148 cache_mib 37634 nonfinite 0 cuda_err 0
+r1-orig-dflash2: calls 67 output 15824 engine_gen 14204 prompt_read 587473 errors [] drafting dflash2 note '' slots 19231 cache_mib 37812 nonfinite 0 cuda_err 0
+r2-orig-dflash2: calls 67 output 15834 engine_gen 14211 prompt_read 587472 errors [] drafting dflash2 note '' slots 19231 cache_mib 37812 nonfinite 0 cuda_err 0
+r2-orig-mtp: calls 67 output 15719 engine_gen 14096 prompt_read 587500 errors [] drafting mtp note '' slots 19148 cache_mib 37634 nonfinite 0 cuda_err 0
+r2-swift-dflash2: calls 67 output 16505 engine_gen 14799 prompt_read 587670 errors [] drafting dflash2 note '' slots 19231 cache_mib 37812 nonfinite 0 cuda_err 0
+r2-swift-mtp: calls 67 output 16186 engine_gen 14510 prompt_read 587284 errors [] drafting mtp note '' slots 19148 cache_mib 37634 nonfinite 0 cuda_err 0
+
+# prefill tok/s (engine timings; fresh prompt; 3 reps in each of 2 runs) median (min-max) n
+config | 4k | 32k | 128k | ttft 128k s
+swift/mtp | 370 (368-423) | 1081 (1078-1082) | 1499 (1497-1502) | 85.8 (85.7-86.0)
+swift/dflash2 | 357 (351-398) | 1051 (1050-1052) | 1481 (1480-1482) | 86.9 (86.8-86.9)
+orig/mtp | 369 (368-422) | 1079 (1078-1081) | 1495 (1494-1498) | 86.0 (85.9-86.1)
+orig/dflash2 | 352 (315-397) | 1051 (1049-1051) | 1478 (1477-1483) | 87.1 (86.8-87.1)
+
+prefill per run, order effect (median of 3):
+r1-swift-mtp ['370', '1082', '1500']
+r1-swift-dflash2 ['357', '1051', '1481']
+r1-orig-mtp ['369', '1078', '1495']
+r1-orig-dflash2 ['348', '1051', '1478']
+r2-orig-dflash2 ['356', '1050', '1478']
+r2-orig-mtp ['369', '1080', '1495']
+r2-swift-dflash2 ['357', '1051', '1480']
+r2-swift-mtp ['371', '1081', '1498']
+
+# decode: engine tok/s per prompt class; 3 reps in each of 2 runs; median (min-max) n, tokens
+class | swift/mtp | swift/dflash2 | orig/mtp | orig/dflash2
+code | 55.9 (53.8-56.4) [3072] | 55.7 (54.1-56.6) [3072] | 55.2 (54.4-56.8) [3072] | 54.3 (53.5-54.5) [3072]
+prose | 42.5 (41.5-43.4) [3072] | 42.2 (40.0-42.6) [3072] | 43.4 (41.2-44.0) [3072] | 42.0 (40.9-42.4) [3072]
+json | 57.8 (57.1-59.7) [3072] | 58.1 (57.4-58.8) [3072] | 59.0 (58.8-60.6) [3072] | 57.9 (57.5-58.6) [3072]
+edit | 52.6 (52.4-54.4) [3072] | 51.0 (50.2-52.0) [3072] | 52.8 (51.8-52.8) [3072] | 51.3 (50.8-51.7) [3072]
+chat | 42.1 (41.2-43.8) [3072] | 39.4 (37.5-42.3) [3072] | 40.9 (40.0-45.3) [3072] | 39.3 (39.0-41.0) [3072]
+tool | 56.9 (56.0-57.8) [3072] | 58.7 (57.1-59.4) [3072] | 57.0 (55.8-57.9) [3072] | 58.5 (55.9-59.2) [3072]
+thinking | 52.8 (48.4-53.4) [3072] | 49.0 (46.1-56.4) [3072] | 49.2 (46.7-50.7) [3072] | 51.5 (45.8-52.9) [3072]
+all | 53.1 (41.2-59.7) | 51.5 (37.5-59.4) | 52.8 (40.0-60.6) | 51.8 (39.0-59.2)
+
+# paired: drafter effect within model and run round, per class (DFlash2 vs MTP, median of 3 reps each)
+swift r1 code -1.1%, prose -1.9%, json +0.2%, edit -3.2%, chat -6.9%, tool +3.9%, thinking -5.1%
+swift r2 code +0.4%, prose +1.2%, json +1.0%, edit -3.2%, chat -6.2%, tool +2.4%, thinking -3.1%
+orig r1 code -1.8%, prose -1.9%, json -1.4%, edit -1.2%, chat -3.2%, tool +1.9%, thinking +7.5%
+orig r2 code -1.6%, prose -4.8%, json -2.4%, edit -2.3%, chat -4.8%, tool +2.6%, thinking -4.2%
+
+# paired: weights effect within drafter and round (original vs Swift)
+mtp r1 code -0.7%, prose +0.7%, json +1.6%, edit -1.7%, chat -3.5%, tool +1.8%, thinking -8.7%
+mtp r2 code -1.6%, prose +4.5%, json +2.6%, edit +0.6%, chat -1.7%, tool -1.0%, thinking +3.7%
+dflash2 r1 code -1.5%, prose +0.7%, json +0.0%, edit +0.4%, chat +0.3%, tool -0.2%, thinking +3.4%
+dflash2 r2 code -3.6%, prose -1.7%, json -0.9%, edit +1.6%, chat -0.3%, tool -0.9%, thinking +2.6%
+
+# drafts accepted, decode section, by class: accepted/offered = %
+class | swift/mtp | swift/dflash2 | orig/mtp | orig/dflash2
+code | 2089/2589 = 80.7% | 2119/2588 = 81.9% | 2092/2619 = 79.9% | 2098/2677 = 78.4%
+prose | 1554/2962 = 52.5% | 1578/2959 = 53.3% | 1546/2862 = 54.0% | 1557/2873 = 54.2%
+json | 2180/2499 = 87.2% | 2173/2451 = 88.7% | 2203/2475 = 89.0% | 2172/2469 = 88.0%
+edit | 2057/2603 = 79.0% | 2017/2623 = 76.9% | 2054/2606 = 78.8% | 2044/2636 = 77.5%
+chat | 1566/2703 = 57.9% | 1502/2847 = 52.8% | 1581/2770 = 57.1% | 1537/2842 = 54.1%
+tool | 2157/2615 = 82.5% | 2174/2517 = 86.4% | 2154/2601 = 82.8% | 2171/2517 = 86.3%
+thinking | 1924/2664 = 72.2% | 1875/2633 = 71.2% | 1825/2585 = 70.6% | 1914/2650 = 72.2%
+ALL | 13527/18635 = 72.6% | 13438/18618 = 72.2% | 13455/18518 = 72.7% | 13493/18664 = 72.3%
+
+# session: reused tokens and seconds, one request at a time
+turn0 | 0/18726 20.89s; 0/18726 20.875s | 0/18726 21.864s; 0/18726 21.878s | 0/18726 20.897s; 0/18726 20.892s | 0/18726 21.863s; 0/18726 21.903s
+turn1 | 18769/18804 0.495s; 18769/18804 0.502s | 18768/18804 0.522s; 18768/18804 0.523s | 18760/18795 0.508s; 18760/18795 0.501s | 18759/18795 0.527s; 18759/18795 0.527s
+turn2 | 18967/19002 0.51s; 18967/19002 0.512s | 18966/19002 0.532s; 18966/19002 0.536s | 18995/19032 0.541s; 18788/19032 2.488s | 18788/19032 3.092s; 18995/19032 0.543s
+turn3 | 19187/19222 0.525s; 19187/19222 0.522s | 19186/19222 0.545s; 19187/19224 0.551s | 19214/19251 0.546s; 19171/19208 0.563s | 19202/19239 0.562s; 19025/19269 3.178s
+turn4 | 19407/19442 0.524s; 19406/19442 0.546s | 19406/19442 0.552s; 19410/19446 0.545s | 19334/19371 0.536s; 19306/19343 0.546s | 19375/19412 0.543s; 19387/19424 0.557s
+turn5 | 19627/19662 0.53s; 19626/19662 0.55s | 19626/19662 0.556s; 19632/19668 0.545s | 19389/19426 0.537s; 19408/19445 0.54s | 19504/19541 0.535s; 19482/19519 0.534s
+side-request | 0/18 0.5s; 0/18 0.49s | 0/18 0.532s; 0/18 0.499s | 0/18 0.474s; 0/18 0.492s | 0/18 0.48s; 0/18 0.481s
+turn-after-side | 19847/19882 0.657s; 19845/19882 0.684s | 19846/19882 0.677s; 19854/19890 0.677s | 19430/19467 0.646s; 19453/19490 0.645s | 19559/19596 0.655s; 19527/19564 0.658s
+other-fresh | 0/16527 20.893s; 0/16527 20.871s | 0/16527 21.805s; 0/16527 21.78s | 0/16527 20.879s; 0/16527 20.929s | 0/16527 21.759s; 0/16527 21.77s
+first-again | 20067/20086 0.47s; 20065/20086 0.507s | 20066/20086 0.524s; 20076/20096 0.527s | 19469/19490 0.487s; 19494/19515 0.49s | 19600/19621 0.516s; 19568/19589 0.515s
+other-again | 16556/16576 0.493s; 16556/16576 0.499s | 16555/16576 0.562s; 16555/16576 0.537s | 16556/16576 0.49s; 16520/16572 0.936s | 16555/16576 0.527s; 16555/16576 0.53s
+after-parallel0 | 20444/20505 1.067s; 20419/20465 0.836s | 20435/20496 1.102s; 20429/20490 1.092s | 19789/19821 0.662s; 19829/19861 0.657s | 19920/19952 0.661s; 19906/19938 0.666s
+after-parallel1 | 17092/17109 0.46s; 17083/17101 0.46s | 17091/17109 0.494s; 17283/17303 0.532s | 17196/17215 0.489s; 17167/17186 0.492s | 17183/17202 0.506s; 17196/17215 0.512s
+cancel | None/None 0.562s; None/None 0.554s | None/None 0.593s; None/None 0.602s | None/None 0.583s; None/None 0.583s | None/None 0.604s; None/None 0.605s
+after-cancel | 20518/20525 0.527s; 20478/20485 0.527s | 20509/20516 0.589s; 20503/20510 0.598s | 19834/19841 0.533s; 19874/19881 0.537s | 19965/19972 0.596s; 19951/19958 0.596s
+
+reuse totals (session section, follow-ups): reused of prompt; median ttft of follow-ups
+swift/mtp: 379886/380532 = 99.83%, ttft 0.52 (0.46-1.07)
+swift/dflash2: 380105/380780 = 99.82%, ttft 0.55 (0.49-1.10)
+orig/mtp: 376028/376891 = 99.77%, ttft 0.54 (0.49-2.49)
+orig/dflash2: 376845/377887 = 99.72%, ttft 0.54 (0.51-3.18)
+
+# parallel: wall seconds per round; output tokens; rate
+swift/mtp: 2 long wall 5.51 (4.35-8.05) tokens 1130 = 31.9 tok/s aggregate; 3 short (2 slots) wall 11.07 (10.67-11.46) tokens 3600 = 54.1 tok/s aggregate
+swift/dflash2: 2 long wall 8.55 (5.19-9.73) tokens 1288 = 27.6 tok/s aggregate; 3 short (2 slots) wall 11.21 (10.79-11.32) tokens 3600 = 54.0 tok/s aggregate
+orig/mtp: 2 long wall 5.88 (4.37-8.31) tokens 1264 = 33.7 tok/s aggregate; 3 short (2 slots) wall 11.40 (11.06-11.79) tokens 3600 = 52.5 tok/s aggregate
+orig/dflash2: 2 long wall 5.66 (4.62-9.54) tokens 1276 = 32.0 tok/s aggregate; 3 short (2 slots) wall 11.24 (10.94-11.74) tokens 3600 = 53.1 tok/s aggregate
+
+# output identity: same tag across runs (sha), temperature 0 classes; distinct hashes among the 2 x 3 reps cannot match because tags differ; between runs of one config:
+swift/mtp: 17/33 identical between the two runs
+swift/dflash2: 18/33 identical between the two runs
+orig/mtp: 18/33 identical between the two runs
+orig/dflash2: 17/33 identical between the two runs
+between drafters, same model, same round:
+swift r1: 11/27 identical
+swift r2: 10/27 identical
+orig r1: 14/27 identical
+orig r2: 9/27 identical
+
+# VRAM after load MiB per card
+r1-swift-mtp ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11149 MiB']
+r1-swift-dflash2 ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11151 MiB']
+r1-orig-mtp ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11149 MiB']
+r1-orig-dflash2 ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11151 MiB']
+r2-orig-dflash2 ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11151 MiB']
+r2-orig-mtp ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11149 MiB']
+r2-swift-dflash2 ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11151 MiB']
+r2-swift-mtp ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11149 MiB']
+c1-orig-dflash2-noring ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11151 MiB']
+c1-swift-dflash2-noring ['10099 MiB', '10863 MiB', '13631 MiB', '14031 MiB', '13857 MiB', '11151 MiB']
+
+# GPU throttle and temperature (max temp per card; throttle reasons other than idle/none)
+r1-swift-mtp {'0': 63, '1': 60, '2': 55, '3': 67, '4': 56, '5': 44} {}
+r1-swift-dflash2 {'0': 65, '1': 60, '2': 55, '3': 68, '4': 55, '5': 46} {}
+r1-orig-mtp {'0': 63, '1': 59, '2': 55, '3': 68, '4': 55, '5': 47} {}
+r1-orig-dflash2 {'0': 65, '1': 59, '2': 55, '3': 67, '4': 55, '5': 47} {}
+r2-orig-dflash2 {'0': 65, '1': 58, '2': 55, '3': 68, '4': 55, '5': 45} {}
+r2-orig-mtp {'0': 64, '1': 59, '2': 55, '3': 68, '4': 55, '5': 47} {}
+r2-swift-dflash2 {'0': 65, '1': 60, '2': 55, '3': 68, '4': 55, '5': 44} {}
+r2-swift-mtp {'0': 66, '1': 60, '2': 55, '3': 68, '4': 55, '5': 46} {}
+c1-orig-dflash2-noring {'0': 55, '1': 57, '2': 42, '3': 53, '4': 49, '5': 44} {}
+c1-swift-dflash2-noring {'0': 57, '1': 55, '2': 49, '3': 61, '4': 47, '5': 42} {}
+
+# control lines from the engine (no saved rings vs saved rings)
+r1-swift-dflash2 {'the ring': 6, 'a saved copy': 15}
+r1-orig-dflash2 {'the ring': 8, 'a saved copy': 15}
+r2-orig-dflash2 {'the ring': 7, 'a saved copy': 16}
+r2-swift-dflash2 {'the ring': 7, 'a saved copy': 15}
+c1-orig-dflash2-noring {'the ring': 9, 'none found': 14}
+c1-swift-dflash2-noring {'the ring': 6, 'none found': 15}
+
+# ring: accepted/offered by state, in order
+r1-swift-mtp | fresh: 211/253 54.9 tok/s read 17608 sha e7857f | in-place: 209/255 55.2 tok/s read 7 sha 23b61a | saved-copy: 209/259 56.7 tok/s read 7 sha d28248 | saved-copy-2: 213/242 59.2 tok/s read 7 sha 30324f
+   kept: []
+r1-swift-dflash2 | fresh: 211/242 57.0 tok/s read 17608 sha ddc952 | in-place: 213/240 58.8 tok/s read 7 sha 30324f | saved-copy: 214/240 60.0 tok/s read 7 sha 30324f | saved-copy-2: 212/244 58.7 tok/s read 7 sha 30324f
+   kept: ['1757 of the 2041 context rows below token 17601 kept (the ring)', '1757 of the 2041 context rows below token 17601 kept (a saved copy)', '1756 of the 2041 context rows below token 17601 kept (a saved copy)']
+r1-orig-mtp | fresh: 215/244 56.0 tok/s read 17608 sha 8356c1 | in-place: 214/247 59.5 tok/s read 7 sha fd6f25 | saved-copy: 216/246 61.9 tok/s read 7 sha fd6f25 | saved-copy-2: 215/246 60.4 tok/s read 7 sha 36fb15
+   kept: []
+r1-orig-dflash2 | fresh: 217/243 58.7 tok/s read 17608 sha fd6f25 | in-place: 214/242 60.1 tok/s read 7 sha 704c67 | saved-copy: 217/240 62.4 tok/s read 7 sha fd6f25 | saved-copy-2: 213/243 59.4 tok/s read 7 sha 704c67
+   kept: ['1758 of the 2041 context rows below token 17601 kept (the ring)', '1758 of the 2041 context rows below token 17601 kept (a saved copy)', '1758 of the 2041 context rows below token 17601 kept (a saved copy)']
+r2-orig-dflash2 | fresh: 216/244 57.6 tok/s read 17608 sha fd6f25 | in-place: 217/243 61.5 tok/s read 7 sha fd6f25 | saved-copy: 215/245 61.0 tok/s read 7 sha 36fb15 | saved-copy-2: 214/249 58.7 tok/s read 7 sha 8356c1
+   kept: ['1758 of the 2041 context rows below token 17601 kept (the ring)', '1758 of the 2041 context rows below token 17601 kept (a saved copy)', '1757 of the 2041 context rows below token 17601 kept (a saved copy)']
+r2-orig-mtp | fresh: 215/245 58.2 tok/s read 17608 sha fd6f25 | in-place: 216/248 60.3 tok/s read 7 sha fd6f25 | saved-copy: 215/248 60.8 tok/s read 7 sha fd6f25 | saved-copy-2: 214/247 60.0 tok/s read 7 sha fd6f25
+   kept: []
+r2-swift-dflash2 | fresh: 211/243 57.1 tok/s read 17608 sha ddc952 | in-place: 215/247 58.9 tok/s read 7 sha e7857f | saved-copy: 216/236 61.4 tok/s read 7 sha 696df1 | saved-copy-2: 215/245 59.2 tok/s read 7 sha e7857f
+   kept: ['1757 of the 2041 context rows below token 17601 kept (the ring)', '1757 of the 2041 context rows below token 17601 kept (a saved copy)', '1757 of the 2041 context rows below token 17601 kept (a saved copy)']
+r2-swift-mtp | fresh: 210/252 56.0 tok/s read 17608 sha e7857f | in-place: 210/252 57.0 tok/s read 7 sha e7857f | saved-copy: 212/239 60.1 tok/s read 7 sha 29f9b1 | saved-copy-2: 213/246 58.5 tok/s read 7 sha 29f9b1
+   kept: []
+c1-swift-dflash2-noring | fresh: 212/242 58.3 tok/s read 17608 sha 29f9b1 | in-place: 212/242 59.4 tok/s read 7 sha 29f9b1 | saved-copy: 214/255 58.6 tok/s read 7 sha e7857f | saved-copy-2: 211/253 56.6 tok/s read 7 sha 9a419f
+   kept: ['1757 of the 2041 context rows below token 17601 kept (the ring)', '0 of the 2041 context rows below token 17601 kept (none found)', '0 of the 2041 context rows below token 17601 kept (none found)']
+c1-orig-dflash2-noring | fresh: 217/240 58.6 tok/s read 17608 sha fd6f25 | in-place: 213/243 59.8 tok/s read 7 sha 704c67 | saved-copy: 214/245 60.5 tok/s read 7 sha fd6f25 | saved-copy-2: 215/250 58.5 tok/s read 7 sha 8356c1
+   kept: ['1758 of the 2041 context rows below token 17601 kept (the ring)', '0 of the 2041 context rows below token 17601 kept (none found)', '0 of the 2041 context rows below token 17601 kept (none found)']
+
+totals
+('orig', 'mtp', 'ring-fresh') 430/489 = 87.9% tok/s [56.0, 58.2]
+('orig', 'mtp', 'ring-in-place') 430/495 = 86.9% tok/s [59.5, 60.3]
+('orig', 'mtp', 'ring-saved-copy') 431/494 = 87.2% tok/s [61.9, 60.8]
+('orig', 'mtp', 'ring-saved-copy-2') 429/493 = 87.0% tok/s [60.4, 60.0]
+('orig', 'noring', 'ring-fresh') 217/240 = 90.4% tok/s [58.6]
+('orig', 'noring', 'ring-in-place') 213/243 = 87.7% tok/s [59.8]
+('orig', 'noring', 'ring-saved-copy') 214/245 = 87.3% tok/s [60.5]
+('orig', 'noring', 'ring-saved-copy-2') 215/250 = 86.0% tok/s [58.5]
+('orig', 'saved', 'ring-fresh') 433/487 = 88.9% tok/s [58.7, 57.6]
+('orig', 'saved', 'ring-in-place') 431/485 = 88.9% tok/s [60.1, 61.5]
+('orig', 'saved', 'ring-saved-copy') 432/485 = 89.1% tok/s [62.4, 61.0]
+('orig', 'saved', 'ring-saved-copy-2') 427/492 = 86.8% tok/s [59.4, 58.7]
+('swift', 'mtp', 'ring-fresh') 421/505 = 83.4% tok/s [54.9, 56.0]
+('swift', 'mtp', 'ring-in-place') 419/507 = 82.6% tok/s [55.2, 57.0]
+('swift', 'mtp', 'ring-saved-copy') 421/498 = 84.5% tok/s [56.7, 60.1]
+('swift', 'mtp', 'ring-saved-copy-2') 426/488 = 87.3% tok/s [59.2, 58.5]
+('swift', 'noring', 'ring-fresh') 212/242 = 87.6% tok/s [58.3]
+('swift', 'noring', 'ring-in-place') 212/242 = 87.6% tok/s [59.4]
+('swift', 'noring', 'ring-saved-copy') 214/255 = 83.9% tok/s [58.6]
+('swift', 'noring', 'ring-saved-copy-2') 211/253 = 83.4% tok/s [56.6]
+('swift', 'saved', 'ring-fresh') 422/485 = 87.0% tok/s [57.0, 57.1]
+('swift', 'saved', 'ring-in-place') 428/487 = 87.9% tok/s [58.8, 58.9]
+('swift', 'saved', 'ring-saved-copy') 430/476 = 90.3% tok/s [60.0, 61.4]
+('swift', 'saved', 'ring-saved-copy-2') 427/489 = 87.3% tok/s [58.7, 59.2]
+
+# session follow-ups: accepted/offered, tok/s; saved rings against none, DFlash2 only, plus MTP for scale (replies >= 20 tokens, one request at a time)
+r1-swift-mtp: all 973/1076 = 90.4% 58.1 tok/s over 1333 tok | after a switch 312/359 = 86.9% 54.7 tok/s over 435 tok
+r1-swift-dflash2: all 970/1059 = 91.6% 58.5 tok/s over 1333 tok | after a switch 308/354 = 87.0% 54.7 tok/s over 435 tok
+r1-orig-mtp: all 545/634 = 86.0% 55.2 tok/s over 765 tok | after a switch 184/237 = 77.6% 48.9 tok/s over 274 tok
+r1-orig-dflash2: all 634/692 = 91.6% 58.9 tok/s over 882 tok | after a switch 179/211 = 84.8% 52.8 tok/s over 262 tok
+r2-orig-dflash2: all 632/700 = 90.3% 57.3 tok/s over 881 tok | after a switch 200/241 = 83.0% 51.8 tok/s over 294 tok
+r2-orig-mtp: all 563/639 = 88.1% 56.4 tok/s over 793 tok | after a switch 189/235 = 80.4% 50.0 tok/s over 279 tok
+r2-swift-dflash2: all 1080/1185 = 91.1% 58.9 tok/s over 1478 tok | after a switch 409/475 = 86.1% 55.7 tok/s over 572 tok
+r2-swift-mtp: all 966/1046 = 92.4% 59.1 tok/s over 1326 tok | after a switch 303/346 = 87.6% 55.1 tok/s over 428 tok
+c1-swift-dflash2-noring: all 1021/1166 = 87.6% 57.1 tok/s over 1417 tok | after a switch 319/375 = 85.1% 54.4 tok/s over 451 tok
+c1-orig-dflash2-noring: all 715/801 = 89.3% 58.4 tok/s over 999 tok | after a switch 235/289 = 81.3% 53.2 tok/s over 344 tok
+
+# parallel, per round
+r1-swift-mtp | round0 wall 5.506: reused 20143/20167 gen 150 ttft 0.5, reused 16730/16748 gen 150 ttft 1.208 | round1 wall 8.047: reused 20168/20336 gen 89 ttft 4.671, reused 16748/16917 gen 103 ttft 2.15 | round2 wall 4.678: reused 20336/20443 gen 44 ttft 1.97, reused 17019/17038 gen 53 ttft 2.677
+r1-swift-dflash2 | round0 wall 5.45: reused 16730/16748 gen 150 ttft 0.296, reused 20143/20167 gen 150 ttft 1.073 | round1 wall 9.13: reused 20167/20336 gen 80 ttft 5.856, reused 16749/16917 gen 103 ttft 2.697 | round2 wall 5.189: reused 20336/20434 gen 44 ttft 2.493, reused 17019/17038 gen 53 ttft 3.279
+r1-orig-mtp | round0 wall 6.232: reused 19483/19552 gen 150 ttft 1.129, reused 16711/16731 gen 150 ttft 1.89 | round1 wall 8.287: reused 19553/19720 gen 50 ttft 4.67, reused 16731/16899 gen 150 ttft 2.192 | round2 wall 4.802: reused 19720/19788 gen 15 ttft 1.223, reused 17049/17068 gen 129 ttft 2.006
+r1-orig-dflash2 | round0 wall 5.667: reused 19658/19682 gen 150 ttft 0.527, reused 16711/16731 gen 150 ttft 1.292 | round1 wall 9.478: reused 19683/19851 gen 50 ttft 2.864, reused 16731/16899 gen 150 ttft 5.998 | round2 wall 4.619: reused 19852/19919 gen 15 ttft 1.156, reused 17048/17067 gen 117 ttft 2.007
+r2-orig-dflash2 | round0 wall 5.66: reused 19646/19669 gen 150 ttft 0.515, reused 16711/16731 gen 150 ttft 1.283 | round1 wall 9.536: reused 19670/19837 gen 50 ttft 5.961, reused 16731/16899 gen 150 ttft 2.825 | round2 wall 4.859: reused 19837/19905 gen 15 ttft 1.214, reused 17049/17068 gen 129 ttft 2.055
+r2-orig-mtp | round0 wall 5.527: reused 19571/19593 gen 150 ttft 0.474, reused 16707/16727 gen 150 ttft 1.219 | round1 wall 8.311: reused 19594/19760 gen 50 ttft 4.658, reused 16727/16895 gen 150 ttft 2.193 | round2 wall 4.371: reused 19760/19828 gen 15 ttft 1.205, reused 17044/17063 gen 105 ttft 2.002
+r2-swift-dflash2 | round0 wall 8.072: reused 20153/20177 gen 150 ttft 0.538, reused 16569/16796 gen 150 ttft 3.781 | round1 wall 9.735: reused 20178/20346 gen 64 ttft 2.859, reused 16796/16965 gen 150 ttft 6.069 | round2 wall 9.038: reused 20347/20428 gen 44 ttft 2.384, reused 16958/17134 gen 150 ttft 5.584
+r2-swift-mtp | round0 wall 5.505: reused 20143/20167 gen 150 ttft 0.504, reused 16730/16748 gen 150 ttft 1.216 | round1 wall 7.33: reused 20168/20336 gen 64 ttft 2.308, reused 16748/16917 gen 88 ttft 4.692 | round2 wall 4.351: reused 20337/20418 gen 29 ttft 1.764, reused 17004/17023 gen 60 ttft 2.472
+c1-swift-dflash2-noring | round0 wall 5.619: reused 20153/20177 gen 150 ttft 0.501, reused 16729/16748 gen 150 ttft 1.328 | round1 wall 9.322: reused 20178/20346 gen 94 ttft 2.886, reused 16748/16917 gen 103 ttft 6.03 | round2 wall 5.526: reused 17019/17038 gen 53 ttft 3.294, reused 20347/20458 gen 62 ttft 2.532
+c1-orig-dflash2-noring | round0 wall 8.117: reused 19714/19737 gen 150 ttft 0.488, reused 16565/16792 gen 150 ttft 3.81 | round1 wall 9.709: reused 19738/19906 gen 55 ttft 2.849, reused 16792/16959 gen 150 ttft 6.066 | round2 wall 7.481: reused 19907/19979 gen 15 ttft 2.271, reused 16952/17128 gen 81 ttft 5.426
+
+prefill delta MTP vs DFlash2 in seconds (median of the read time)
+swift 4k mtp 10.94s dflash2 11.34s delta +0.40s (+3.7%)
+swift 32k mtp 29.72s dflash2 30.57s delta +0.85s (+2.9%)
+swift 128k mtp 85.67s dflash2 86.75s delta +1.08s (+1.3%)
+swift 18.7k mtp 20.84s dflash2 21.83s delta +0.99s (+4.7%)
+orig 4k mtp 10.98s dflash2 11.51s delta +0.53s (+4.8%)
+orig 32k mtp 29.79s dflash2 30.59s delta +0.79s (+2.7%)
+orig 128k mtp 85.91s dflash2 86.93s delta +1.02s (+1.2%)
+orig 18.7k mtp 20.85s dflash2 21.84s delta +0.98s (+4.7%)
+
+exact pairs for the answer identity: of all temperature-0 calls of one (model, tag), how many distinct outputs per drafter, and how many hashes both drafters produced
+swift prompts 28, a same answer reached by both drafters on 13; ring prompt outputs: mtp ['23b61a8af01c', '29f9b192bca3', '30324faeb1d1', 'd282481d45e9', 'e7857ffa3059'] dflash2 ['30324faeb1d1', '696df1424df4', 'ddc952ae0985', 'e7857ffa3059']
+orig prompts 28, a same answer reached by both drafters on 15; ring prompt outputs: mtp ['36fb15f43b8e', '8356c15f3c06', 'fd6f25fc6d81'] dflash2 ['36fb15f43b8e', '704c67b2f2f8', '8356c15f3c06', 'fd6f25fc6d81']

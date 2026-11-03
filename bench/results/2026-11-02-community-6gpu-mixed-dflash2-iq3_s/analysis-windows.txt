@@ -1,0 +1,20 @@
+== window 4
+mtp      median 53.1 tok/s; time-weighted 50.5; rows/window 3.34; tokens/window 2.70; drafts offered/window 2.34; accepted 72.6%; ms/window 53.3; fit fixed 15.9 + 11.2/row; tokens 21504; n 42; errors 0
+         code 55.9, prose 42.5, json 57.8, edit 52.6, chat 42.1, tool 56.9, thinking 52.8
+dflash2  median 51.5 tok/s; time-weighted 49.5; rows/window 3.31; tokens/window 2.67; drafts offered/window 2.31; accepted 72.2%; ms/window 53.8; fit fixed 19.5 + 10.4/row; tokens 21504; n 42; errors 0
+         code 55.7, prose 42.2, json 58.1, edit 51.0, chat 39.4, tool 58.7, thinking 49.0
+== window 6
+mtp      median 49.7 tok/s; time-weighted 46.9; rows/window 4.34; tokens/window 3.13; drafts offered/window 3.34; accepted 63.7%; ms/window 66.7; fit fixed 15.1 + 11.9/row; tokens 10752; n 21; errors 0
+         code 49.7, prose 38.1, json 56.1, edit 51.5, chat 38.6, tool 53.0, thinking 47.4
+dflash2  median 50.1 tok/s; time-weighted 46.7; rows/window 4.35; tokens/window 3.12; drafts offered/window 3.35; accepted 63.3%; ms/window 66.8; fit fixed 15.1 + 11.9/row; tokens 10752; n 21; errors 0
+         code 53.9, prose 36.6, json 54.8, edit 49.5, chat 37.8, tool 56.3, thinking 46.1
+== window 8
+mtp      median 46.4 tok/s; time-weighted 43.9; rows/window 5.02; tokens/window 3.33; drafts offered/window 4.02; accepted 58.0%; ms/window 75.9; fit fixed 14.9 + 12.1/row; tokens 10752; n 21; errors 0
+         code 44.7, prose 35.7, json 53.6, edit 48.7, chat 35.8, tool 49.1, thinking 44.3
+dflash2  median 45.5 tok/s; time-weighted 44.8; rows/window 5.10; tokens/window 3.35; drafts offered/window 4.10; accepted 57.2%; ms/window 74.7; fit fixed 11.9 + 12.3/row; tokens 10752; n 21; errors 0
+         code 50.2, prose 36.8, json 57.0, edit 45.3, chat 35.1, tool 52.5, thinking 44.0
+== window 8, min-p 0.3
+mtp      median 40.0 tok/s; time-weighted 36.5; rows/window 6.53; tokens/window 3.36; drafts offered/window 5.53; accepted 42.8%; ms/window 92.1; fit fixed 15.5 + 11.7/row; tokens 10752; n 21; errors 0
+         code 40.4, prose 27.3, json 50.6, edit 40.7, chat 27.3, tool 49.1, thinking 35.7
+dflash2  median 38.6 tok/s; time-weighted 35.4; rows/window 7.05; tokens/window 3.38; drafts offered/window 6.05; accepted 39.4%; ms/window 95.5; fit fixed 6.3 + 12.6/row; tokens 10752; n 21; errors 0
+         code 46.0, prose 23.8, json 51.5, edit 37.1, chat 24.0, tool 51.0, thinking 37.2
