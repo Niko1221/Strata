@@ -386,6 +386,21 @@ class AmdDefault(unittest.TestCase):
             self.assertEqual(seen, [(4, 0, "gfx1201")])
             self.assertEqual(cfg["exe"], "/e/strata-split-4-gfx1201")
 
+    def test_amd_default_lanes_are_eight_and_a_number_the_person_chose_stays(self):
+        import tempfile
+
+        self.assertEqual((S.AMD_DEFAULT_LANES, S.DEFAULT_LANES), (8, 6))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp)
+            del cfg["split_engine"]
+            self.assertTrue(self.run_amd(cfg).use_split)
+            self.assertEqual(cfg["args"][cfg["args"].index("--batch") + 1], "8")
+            cfg = self.amd(tmp)
+            del cfg["split_engine"]
+            cfg["parallel"] = 3
+            self.assertTrue(self.run_amd(cfg).use_split)
+            self.assertEqual(cfg["args"][cfg["args"].index("--batch") + 1], "3")
+
     def test_auto_on_amd_is_the_ud_q4_family_only_and_on_runs_the_iquant_sets(self):
         import tempfile
 
