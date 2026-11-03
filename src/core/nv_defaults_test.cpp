@@ -66,6 +66,22 @@ int main() {
         CHECK(!p.empty() && p == q);
         CHECK(!find(a, "STRATA_PF_FUSED") && !find(p, "STRATA_PF_FUSED"));
     }
+    // round 0212 candidate: STRATA_MMQ_KQ=1 for compute capability 8.0+, behind STRATA_NV_KQ_DEFAULT=1 until kNvKqDefaultOn flips
+    unset("STRATA_NV_KQ_DEFAULT");
+    CHECK(kNvKqDefaultOn || nv_kq_default_env(12, 0, false).empty());
+    put("STRATA_NV_KQ_DEFAULT", "1");
+    for (int major : {8, 9, 10, 12}) {
+        const auto k = nv_kq_default_env(major, 0, false);
+        CHECK(k.size() == 1 && find(k, "STRATA_MMQ_KQ") && *find(k, "STRATA_MMQ_KQ") == "1");
+    }
+    CHECK(nv_kq_default_env(7, 5, false).empty());     // Turing / Volta / Pascal keep the FP16 prompt path
+    CHECK(nv_kq_default_env(6, 0, false).empty());
+    CHECK(nv_kq_default_env(12, 0, true).empty());     // STRATA_DEFAULTS=026
+    put("STRATA_NV_KQ_DEFAULT", "0");
+    CHECK(nv_kq_default_env(12, 0, false).empty());    // its own off switch
+    unset("STRATA_NV_KQ_DEFAULT");
+    // the other tables are unchanged by it
+    CHECK(nv_default_env(12, 0, false).empty());
     // the one-argument form reads STRATA_DEFAULTS
     put("STRATA_DEFAULTS", "026");
     CHECK(nv_default_env(12, 1).empty());
