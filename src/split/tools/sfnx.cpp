@@ -812,6 +812,7 @@ struct Server {
         fnx::GenStats st;
         try {
             reading = slot;
+            e.set_pass_rows(any_decoding() ? 8192 : 0);   // other requests decode: they run between passes, so a pass stays at most 8192 rows (what 2 chunks of 4096 were)
             s.read(r.ids, st, progress(-1, r.seq), r.hints);
             reading = -1;
         } catch (const Interrupted& it) {
@@ -898,6 +899,7 @@ struct Server {
         fnx::GenStats st;
         try {
             reading = i;
+            e.set_pass_rows(any_decoding() ? 8192 : 0);
             s.read(r.ids, st, progress(i, r.seq), r.hints);
             reading = -1;
         } catch (const Interrupted& it) {

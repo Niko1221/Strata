@@ -26,7 +26,7 @@ def add_parser(sp) -> None:
         one.add_argument("--family", metavar="NAME", help="the model family when there is no run config yet (qwen, gyro, coder, ...)")
         one.add_argument("--mode", choices=drafting.MODES, help="the choice to decide for (default: the run config's own)")
         one.add_argument("--no-split", action="store_true",
-                         help="decide without the all-cards split engine (the app: in 0.2.10 only the Terminal starts it, so the app's Auto is DFlash2, not the split's MTP)")
+                         help="decide without the all-cards split engine, as if it will not take the start (a person's choice; the app asks this only after the draft layer for the split could not be downloaded, so the plan is DFlash2's again)")
         if name == "fetch":
             one.add_argument("--if-needed", action="store_true", help="download only when the choice would use the drafter and it is not here")
         one.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
@@ -46,7 +46,7 @@ def _split_expected(cfg: dict, args: list) -> bool:
         cards = [int(g) for g in gpus] if isinstance(gpus, list) else ([int(gpus)] if isinstance(gpus, int) and not isinstance(gpus, bool) else None)
         return SE.expected({"split_engine": cfg.get("split_engine"), "drafting": cfg.get("drafting"), "user_args": cfg.get("user_args"),
                             "replicas": cfg.get("replicas")}, indexes=cards, native=flag("--native"),
-                           context=int(flag("--max-context") or SE.TESTED_CONTEXT))
+                           context=int(flag("--max-context") or SE.TESTED_CONTEXT), kv=flag("--kv"))
     except Exception:                                        # noqa: BLE001 - an early question is never a reason to stop
         return False
 
@@ -70,8 +70,8 @@ def _inputs(a) -> dict:
     mode = a.mode if a.mode else cfg.get("drafting")
     if cfg.get("mtp") is False and drafting.normalize(mode) == "auto":
         mode = "off"                                         # the Draft layer switch is off and no drafter was chosen since
-    elif drafting.normalize(mode) == "auto" and not getattr(a, "no_split", False) and _split_expected(cfg, args):
-        a._split = True                                      # the plan says so (the app's Models screen and its load read it)
+    elif drafting.normalize(mode) in ("auto", "mtp") and not getattr(a, "no_split", False) and _split_expected({**cfg, "drafting": mode}, args):
+        a._split = True                                      # the plan says so (the app's Models screen and its load read it); asked with the choice in hand, as the Terminal does
         mode = "mtp"                                         # the all-cards split engine runs the MTP draft layer: the app fetches that, not DFlash2's drafter
     return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
             "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
@@ -93,6 +93,9 @@ def run(a) -> int:
                   "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
                   "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
                   "split": bool(getattr(a, "_split", False)), "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
+        if result["split"]:                                # the Terminal's words for the same plan (runner.drafting_plan_line)
+            from strata_control import split_engine as SE
+            result["line"] = SE.split_plan_line(result["mtp_gb"] or None)
         if (a.config or a.mode) and not needed:           # asked about a model: nothing to download unless the choice uses the drafter
             result["gb"] = 0.0
         if machine:

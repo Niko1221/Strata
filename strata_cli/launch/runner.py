@@ -1543,6 +1543,7 @@ class Runner:
                 else:
                     cards = [int(g) for g in s.gpus] if s.gpus else None
                     got = SE.expected(base, indexes=cards, native=native, context=int(s.context or SE.TESTED_CONTEXT),
+                                      kv=next((str(a2) for a1, a2 in zip(base.get("args") or [], (base.get("args") or [])[1:]) if a1 == "--kv"), None),
                                       allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1")
         except Exception:                                    # noqa: BLE001 - a question asked early is never a reason to stop a launch
             got = False
@@ -1634,20 +1635,7 @@ class Runner:
         from strata_control import split_engine as SE
         if cfg.get("arch") == "deepseek41" or SE.mode(cfg) == "off":
             return
-        from strata_control import engine_component as EC
-
-        def exe_for(n: int, cc: int | None = None, arch: str | None = None):
-            exe = cfg.get("exe")
-            try:
-                real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
-            except Exception:                                # noqa: BLE001 - no engine to look beside: no split
-                return None
-            # one build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch>, then strata-split-N-amd (one binary with a code object for each RDNA architecture)
-            for name in ((f"strata-split-{n}-{arch}", f"strata-split-{n}-amd") if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
-                p = Path(str(real)).parent / name
-                if p.is_file():
-                    return str(p)
-            return None
+        exe_for = SE.exe_finder(cfg)                         # strata-split-N beside the run config's engine (shared with the app's start)
 
         # the split runs the model's own draft layer (--mtp) and refuses to start without it; the plan for Auto downloads DFlash2's drafter, not the draft layer, so
         # a start whose draft-layer folder is not on disk stays on the layer split (Auto: silently, with DFlash2 as the plan said; "on": one line saying how to get it)
@@ -2482,7 +2470,8 @@ class Runner:
             want = self.drafting_inputs(cfg or {})
             if self.split_expected(cfg) and drafting.normalize(want.get("mode")) == "mtp":
                 from strata_control.discovery import MTP_FETCH_GB
-                return f"Drafting: MTP (the all-cards split engine uses the MTP draft layer, {MTP_FETCH_GB:g} GB)"
+                from strata_control import split_engine as SE
+                return SE.split_plan_line(MTP_FETCH_GB)
             if drafting.needs_pack(**want):                   # the launch fetches the drafter first (ensure_drafter), so that is what will run
                 return "Drafting: DFlash2 (its drafter is downloaded first)"
             return drafting.summary_line(drafting.decide(**want))

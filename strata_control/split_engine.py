@@ -399,7 +399,7 @@ ASSUMED_MODEL = ModelFacts(routed_types={"Q4_K": 1}, routed_bytes=0, embd_type="
 
 
 def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None = None, context: int = TESTED_CONTEXT, system: str | None = None,
-             allow_untested: bool = False, probe=None, ram=None, scan=None, exe_for_cards=None) -> bool:
+             allow_untested: bool = False, probe=None, ram=None, scan=None, exe_for_cards=None, kv: str | None = None) -> bool:
     """Would the launch start the all-cards split engine? The answer of the rule apply_to_config uses, asked BEFORE the model's files, the engine package or the
     draft layer are on the computer (the plan and the fetch: the split runs the model's draft layer, the MTP, so a start that will use it has to fetch that and not
     DFlash2's drafter). Facts that are not there yet are assumed in the split's favour: the model (ASSUMED_MODEL, unless `native` is a readable file), the engine
@@ -414,6 +414,8 @@ def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None 
             return False
         chosen = str(cfg.get("drafting") or "auto").lower()
         if chosen in ("dflash2", "off") or cfg.get("user_args") or cfg.get("replicas"):
+            return False
+        if kv not in (None, "int8"):                         # the split keeps int8 (apply_to_config says the same)
             return False
         system = system or ("linux" if sys.platform.startswith("linux") else sys.platform)
         cards = (probe or probe_cards)(indexes) if system == "linux" else []
@@ -514,3 +516,68 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     cfg.clear()
     cfg.update(new)
     return d
+
+
+# ---- the engine package and the draft layer (the Terminal's launcher and the app's start share these) ---------------------------------------
+def exe_finder(cfg: dict):
+    """exe_for_cards(n, cc=None, arch=None) for a run config: the strata-split-N build that sits beside the run config's engine, or None.
+    One build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch>, then strata-split-N-amd
+    (one binary with a code object for each RDNA architecture)."""
+    import pathlib
+
+    def exe_for(n: int, cc: int | None = None, arch: str | None = None):
+        from strata_control import engine_component as EC
+        exe = cfg.get("exe")
+        try:
+            real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
+        except Exception:                                    # noqa: BLE001 - no engine to look beside: no split
+            return None
+        for name in ((f"strata-split-{n}-{arch}", f"strata-split-{n}-amd") if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
+            p = pathlib.Path(str(real)).parent / name
+            if p.is_file():
+                return str(p)
+        return None
+
+    return exe_for
+
+
+def split_plan_line(gb: float | None = None) -> str:
+    """The drafting line of a plan that says split (the Terminal's --plan and the app's drafting plan): the MTP draft layer is what drafts, with its download size when it is still to come."""
+    return "Drafting: MTP (the all-cards split engine uses the MTP draft layer" + (f", {gb:g} GB)" if gb else ")")
+
+
+def draft_layer_present(folder: str) -> bool:
+    """The draft layer's folder (mtp/rt) exists and holds files."""
+    import pathlib
+
+    try:
+        return pathlib.Path(folder).is_dir() and any(pathlib.Path(folder).iterdir())
+    except OSError:
+        return False
+
+
+def apply_run_config(cfg: dict, *, allow_untested: bool = False, exe_for_cards=None, **facts) -> tuple[Decision, str, bool]:
+    """The app's side of the start (the Terminal's is strata_cli/launch/runner.py apply_split_engine, the same steps): turn a normal run config into the split engine's
+    config IN PLACE when the mode and the rule say yes. Returns (decision, the one plain line to show or "", whether that line is a warning).
+    Auto and a "no" (also a missing draft layer or engine package): nothing changes and no line. "on" and a "no": one line. Never raises. `facts` are the
+    hooks of apply_to_config (system, probe, ram, scan, data_dir), replaceable for tests."""
+    m = mode(cfg)
+    if cfg.get("arch") == "deepseek41" or m == "off":
+        return Decision(False, ["the all-cards split engine is turned off"], quiet=True), "", False
+    args = [str(a) for a in cfg.get("args") or []]
+    mtp_dir = _flag(args, "--mtp")
+    # the split runs the model's own draft layer (--mtp) and refuses to start without it: a start whose draft-layer folder is not on disk stays on the layer split
+    if mtp_dir and not draft_layer_present(mtp_dir):
+        line = "The all-cards split engine needs the model's draft layer (the MTP), which is not downloaded; using the normal layer split."
+        return Decision(False, [line], quiet=m != "on"), (line if m == "on" else ""), True
+    before = dict(cfg)
+    try:
+        d = apply_to_config(cfg, exe_for_cards=exe_for_cards or exe_finder(cfg), allow_untested=allow_untested, **facts)
+    except Exception as e:                                   # noqa: BLE001 - never stop a start over an option
+        cfg.clear()
+        cfg.update(before)
+        line = f"The all-cards split engine was left out ({type(e).__name__}). Using the normal layer split."
+        return Decision(False, [line], quiet=m != "on"), (line if m == "on" else ""), True
+    if d.quiet:
+        return d, "", False
+    return d, d.line, not d.use_split

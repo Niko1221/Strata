@@ -59,6 +59,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             std::fprintf(stderr, "fnx: note: context %d is within the trained %d: the scaling changes every position's rotary "
                          "and no length needs it\n", max_ctx, m_.ctx_train);
     }
+    gdn_tc_set_default(!m_.g.iq_experts());   // the tensor-core GDN scan: off for the IQ3_S-type files (NVIDIA builds only compile it in)
+#if !FNX_HIP
+    pf_c_ = 8192;   // NVIDIA default (owner 11-03): the expert kernels cost ~30 percent less per token at 8192 rows (FNX_PF_ROWS=4096 for the old chunk)
+#endif
     const long long pf_rows = env_int("FNX_PF_ROWS", pf_c_);
     if (pf_rows < MAXT || pf_rows > 8192 || pf_rows % MAXT)
         throw std::runtime_error("FNX_PF_ROWS: a multiple of " + std::to_string(MAXT) + " from " + std::to_string(MAXT) + " to 8192, got " +
@@ -267,7 +271,8 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             cb_[c]->att_ring.peer_in[d] = cb_[d]->att_ring.in;
         }
         // one hop for the window sums and the attention merge on 3 or more cards (FNX_ONEHOP=0: the rings); the mailboxes live in the ring's buffers
-        const bool onehop = (NCARD > 2 || peer_on) && env_int("FNX_ONEHOP", 1) != 0 && !cb_[c]->ring.f32;
+        // FNX_ONEHOP=2 (screen): the one-hop sum on two cards too (each card adds the two fp16-rounded addends in fp32: one host round trip instead of two; the sums differ in the last bits)
+        const bool onehop = (NCARD > 2 || peer_on || env_int("FNX_ONEHOP", 1) == 2) && env_int("FNX_ONEHOP", 1) != 0 && !cb_[c]->ring.f32;
         cb_[c]->ring.onehop = cb_[c]->att_ring.onehop = onehop;
         for (int d = 0; d < NCARD; ++d) cb_[c]->ring.peer_pk[d] = cb_[d]->ring.pk;
         cb_[c]->ring.peer = onehop && cb_[c]->ring.pk != nullptr;
