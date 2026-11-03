@@ -200,6 +200,74 @@ Nach einer Änderung: "Reload" im Dev-Panel (Websuche und Rechte gelten ab dem n
 - `/dev-debug` in Claude Code holt den Bericht von `GET /api/dev/debug` (letzter Fehler, Hooks, fehlgeschlagene Requests,
   Logzeilen). Die Vorlage liegt in `dev/claude-commands/dev-debug.md`; einmal nach `.claude/commands/` kopieren.
 
+## Skills und Modelle (Phase 3)
+
+Auch das gibt es nur mit `STRATA_DEV=1`; Live liest weder `dev/skills` noch `dev/models` und kopiert Skills weiter nur als Text.
+
+### Skills (`dev/skills/<name>/`)
+
+Format wie bei Claude-Skills (`skill-struktur.md`): ein Ordner mit `SKILL.md` (Frontmatter `name`, `description`, optional `compatibility`
+und beliebige weitere Felder) und beliebigen Unterordnern (`scripts/`, `references/`, `assets/`, `templates/` …).
+
+- **Quellen**: eingebaute Skills, `<data>/skills` (in der App geschrieben), `<workspace>/skills` (hinzugefügt) und neu `dev/skills`
+  (IDs `dev-<name>`). Ordner, die mit `_` beginnen, werden übersprungen.
+- **Für den Agenten** wird jeder Skill-Ordner ganz nach `<data>/agent/skills-live/<name>/` kopiert. Die Harness nennt beim Laden das
+  "Base directory", daher funktionieren `references/aws.md` oder `scripts/x.py`. Die SKILL.md dort behält alle Frontmatter-Felder;
+  nur `name`, `description` und bei ausgeschalteten Skills `disable-model-invocation` werden gesetzt. Kopiert wird nur bei einer Änderung.
+- **Validator** beim Laden (Skills-Seite, Spalte "Check"): Frontmatter vorhanden, `name` in kebab-case, `description` nicht leer
+  (Fehler); über 500 Zeilen, `name` ungleich Ordnername, kein Text (Warnungen).
+- **Auswahl im direkten Chat**: wie bisher die Trigger-Phrasen, dazu Skills, deren `description` mindestens zwei wichtige Wörter mit
+  der Nachricht teilt.
+- **Pro Chat**: Der Skill-Knopf in der Chat-Toolbar wählt die Skills dieses Chats (nichts gewählt: alle). Der direkte Chat nutzt nur
+  diese; bei einem Agent-Turn nennt die Nachricht sie, weil die Harness eine Skill-Liste für alle Chats hat.
+- **Versionen**: Jeder geänderte Stand (Ordnerinhalt bis 5 MB und die Änderung aus der App) wird gespeichert
+  (`<data>/dev/skill-versions`, höchstens 30 je Skill). Skills-Seite → Versionen → "Restore".
+- **Bearbeiten** eines Dev-Skills in der App schreibt in seine eigene SKILL.md (Frontmatter bleibt), nicht daneben.
+- **Tools**: `tools.json` im Skill-Ordner (`{ "tools": [{ "name", "description", "command", "shell"?, "timeoutSec"? }] }`) wird als
+  Befehls-Tool über den vorhandenen Weg (Settings → Tools, `custom-tools-mcp.mjs`) angeboten, ausgeführt im Skill-Ordner.
+- **Skripte** laufen nie über einen eigenen Weg: entweder über die Shell des Agenten oder als Befehls-Tool, beides unter
+  Manual/Plan/Bypass (Manual fragt, Plan führt nicht aus).
+- **Import/Export**: Skills-Seite → Pfad eines Ordners oder einer `.zip` → "Import" (nach `dev/skills`, "replace" überschreibt);
+  "Export .zip" pro Skill.
+- **Beispiele**: `meeting-notes` (nur SKILL.md), `csv-stats` (SKILL.md + `scripts/` + `tools.json`), `cloud-deploy`
+  (SKILL.md + `references/` mit den Varianten aws/gcp/azure).
+
+### Modelle (`dev/models/*.json`)
+
+Ein Overlay legt sich beim Start auf eine Run-Config `strata-<model>.json`, ohne die Datei zu ändern. Strata Control wendet es in
+`presets.overlay` an (`strata_control/dev_models.py`), also bei jedem Start (App, Terminal, Neustart); ein getuntes Preset kommt danach
+obendrauf. Beispiel: `dev/models/_example-qwen.json` (ohne `_` kopieren, damit es wirkt).
+
+| Schlüssel | Wirkung |
+| --- | --- |
+| `model` | für welche Run-Configs: ihr `model_name` als Glob, z. B. `qwen3.8-flash-next-*` (Pflicht) |
+| `label`, `source`, `quant` | Anzeige; `source` ist `{ "hf": "org/repo", "file"? }`, `{ "gguf": "Pfad" }` oder `{ "server": "URL" }` |
+| `context` | `--max-context` |
+| `vision` | `vision` der Run-Config |
+| `args` | Engine-Optionen: `{ "--kv": "q8_0", "--mtp": null }` (null entfernt, true = Schalter) |
+| `env` | Umgebung (null entfernt) |
+| `thinking` | `reasoning_effort` für Anfragen ohne eigene Angabe |
+| `sampling` | wird in `sampling` gemischt |
+| `chat_template` | Pfad zu einer `.jinja` (relativ zur JSON): eine Kopie des Tokenizer-Ordners im Dev-Datenordner nutzt sie |
+| `profiles`, `profile` | eigene Profile und das Standardprofil |
+
+**Profile**: "Schnell" (`schnell`), "Coder" (`coder`), "Max Qualität" (`max-qualitaet`) gibt es immer; ein gleichnamiges Profil in der
+Datei ersetzt sie. Umschalten im Model-Menü (Bereich "Strata Dev · models"); die Wahl steht in `<STRATA_HOME>/dev-model-profiles.json`
+und gilt ab dem nächsten Start des Modells.
+
+**Model-Menü**: "Add model" nimmt eine lokale `.gguf` (wird geprüft: Größe, ob die Strata-Engine sie kennt), ein Hugging-Face-Repo
+oder einen laufenden OpenAI-kompatiblen Server bzw. Anbieter (wird als API-Verbindung gespeichert und steht sofort im Modell-Picker
+des Chats). Overlays lassen sich bearbeiten, duplizieren und löschen. Eine RAM/VRAM-Warnung aus der erkannten Hardware blockiert nie.
+Eine `.gguf`, die die Strata-Engine nicht kennt, ist als "would run via llama.cpp" markiert: Dieser Weg ist ein Vorschlag
+(`PHASE3_BERICHT.md`), noch nicht aktiv.
+
+### DeepSeek in Dev
+
+- Die Engine schreibt ihr Expertenprofil (`--expert-profile …/data/expert-profile.bin`) während des Laufs. Dev bekommt eine eigene
+  Kopie in `<STRATA_HOME>/expert-profiles/`, damit das geteilte Pack in `Documents\Strata` unverändert bleibt; geht die Kopie nicht,
+  liest die Engine nur (`--profile-readonly`).
+- Nach "Use a local GGUF" lädt Dev die volle Modell-ID (`deepseek-v4.1-flash-<größe>`) statt `deepseek41-<größe>`.
+
 ## Zurücksetzen
 
 ```bat

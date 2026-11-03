@@ -1,0 +1,10 @@
+{
+  "tools": [
+    {
+      "name": "csv-stats",
+      "description": "Statistics of a CSV file: rows, columns, empty cells, min/max/mean of number columns. Input: the path of the .csv file.",
+      "command": "python scripts/csv_stats.py",
+      "timeoutSec": 60
+    }
+  ]
+}

@@ -31,6 +31,7 @@ import { NativePresets } from './NativePresets';
 import { NativeTune } from './NativeTune';
 import { NativeTuneBadge } from './NativeTuneBadge';
 import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
+import { DevModels } from '../dev/DevModels';
 export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine }: {
     onOtherModels: () => void;
     onImport?: () => void;
@@ -228,6 +229,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
    <div className="native-manage-foot"><Btn variant="ghost" icon="folder" onClick={() => { setManage(false); (onImport ?? onOtherModels)(); }}>{tr("Use a local GGUF…")}</Btn></div>
   </div></Dialog>
  {selectedSize ? <NativeTune open={tuneOpen} onClose={() => setTuneOpen(false)} model={selectedSize.id} resourceProfile={resourceProfile} vision={selectedSize.images ? vision : 'no'}/> : null}
+ <DevModels/>
  </Screen>;
 }
 /** setup's "5/7: downloading …" as a sentence a person can read. */

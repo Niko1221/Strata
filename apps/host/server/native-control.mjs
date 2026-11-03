@@ -26,6 +26,8 @@ import { markEngine, engineRefusal } from './engine-version.mjs';
 import { friendlyModelName } from './model-names.mjs';
 import { parseSaved as parseRoles, mirror as mirrorRoles } from './gpu-roles.mjs';
 import { configContextLimit } from './dsv41-context.mjs';
+import { isDevMode } from './dev-mode.mjs';
+import { devExpertProfileArgs, devLoadAfterModel } from './dev-native.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const safeId=value=>typeof value==='string'&&/^[a-z0-9](?:[a-z0-9_-]|\.(?!\.)){0,79}$/i.test(value);   /* a dot inside the name: deepseek-v4.1-flash-ist-das-2.00bpw */
@@ -196,7 +198,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
      const note=engineStep?.summaryNote();
      const finalResult=engineStep?job.result:result;
      if(note)return {...finalResult,summary:note};
-     if(args.loadAfter){const model=(result.install.family??args.family??'qwen')==='qwen'?String(args.model).toLowerCase():`${args.family}-${String(args.model).toLowerCase()}`;return loadEngine(job,{model,multiple:!!args.multiple,resourceProfile:args.resourceProfile,vision:args.loadVision,...(typeof args.drafting==='string'?{values:{drafting:args.drafting}}:{})});}
+     if(args.loadAfter){let model=(result.install.family??args.family??'qwen')==='qwen'?String(args.model).toLowerCase():`${args.family}-${String(args.model).toLowerCase()}`;if(isDevMode())model=devLoadAfterModel(result.install.family??args.family,args.model,snapshot.installed?.models??[]);return loadEngine(job,{model,multiple:!!args.multiple,resourceProfile:args.resourceProfile,vision:args.loadVision,...(typeof args.drafting==='string'?{values:{drafting:args.drafting}}:{})});}
      return finalResult;
     }
    }
@@ -301,6 +303,8 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(ownEngine(config)){const list=[];const old=Array.isArray(cfg.args)?cfg.args:[];for(let i=0;i<old.length;i++){if(old[i]==='--experts'){i++;continue;}list.push(old[i]);}if(dsExpertsSupported(config)&&(cfg.ds_experts==='5'||cfg.ds_experts==='6'))list.push('--experts',cfg.ds_experts);else if(!dsExpertsSupported(config)&&old.includes('--experts'))list.splice(0,list.length,...old);cfg.args=list;delete cfg.ds_experts;
    /* Only the options strata-dsv41 takes go to it (#4504): --vram-reserve-mib is its --reserve-mib, and --pool-workers and the other Qwen-engine names are left out, in the arguments and in the person's saved options. */
    const built=dsEngineArgs(cfg.args);cfg.args=built.args;dsNote=dsArgsNote(built);
+   /* Strata Dev: the shared pack's expert profile is never written (a Dev copy, or read only; dev-native.mjs). */
+   if(isDevMode()){const own=devExpertProfileArgs(cfg.args,{devHome:process.env.STRATA_HOME});cfg.args=own.args;if(own.note)dsNote=[dsNote,own.note].filter(Boolean).join(' ');}
    if(Array.isArray(cfg[USER_KEY])){const kept=dsUserArgs(cfg[USER_KEY]);if(kept.length)cfg[USER_KEY]=kept;else delete cfg[USER_KEY];}}
   else delete cfg.ds_experts;
   return {cfg,resources,visionPreferences,parallelChoice,parallelNote,dsNote};

@@ -1,0 +1,12 @@
+{
+  "$comment": "Example overlay (files starting with _ are not used). Copy to qwen-dev.json to use it. Keys: docs/DEV_BUILD.md, strata_control/dev_models.py.",
+  "model": "qwen3.8-flash-next-*",
+  "label": "Qwen3.8 (Dev-Overlay)",
+  "context": 65536,
+  "thinking": "medium",
+  "sampling": { "temperature": 0.8 },
+  "profile": "coder",
+  "profiles": {
+    "schnell": { "label": "Schnell", "thinking": "low", "context": 32768 }
+  }
+}

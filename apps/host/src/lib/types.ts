@@ -447,7 +447,7 @@ export interface Session {
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;
-  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
+  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null; /** Strata Dev only: the skills this chat may use (absent or null: all). */ skills?: string[] | null };
   /** A branch does not have retained per-turn input usage. */
   statsAvailable?: boolean;
   id: string;
@@ -474,7 +474,12 @@ export interface Skill {
   id: string;
   name: string;
   description: string;
-  source: 'bundled' | 'workspace' | 'user';
+  source: 'bundled' | 'workspace' | 'user' | 'created' | 'dev';
+  /** Strata Dev only (STRATA_DEV=1): a skill folder's path, its files, the validator's findings and the tools it brings. */
+  dir?: string;
+  files?: string[];
+  validation?: { errors: string[]; warnings: string[]; lines: number } | null;
+  tools?: { name: string }[];
   enabled: boolean;
   triggers: string[];
   /** The instruction text itself — what the model is actually told. Deciding

@@ -180,3 +180,11 @@ export function devToolsSettings(tools, settings = active) {
     ...(typeof web.withoutAsking === 'boolean' ? { webWithoutAsking: web.withoutAsking } : {}),
   };
 }
+
+/** dev/skills and dev/models (Phase 3): STRATA_DEV_SKILLS / STRATA_DEV_MODELS name them; else beside dev.config.json (as Control's dev_models.py). */
+export function devSkillsDir(env = process.env) {
+  return env.STRATA_DEV_SKILLS ? resolve(env.STRATA_DEV_SKILLS) : join(dirname(devConfigFile(env)), 'dev', 'skills');
+}
+export function devModelsDir(env = process.env) {
+  return env.STRATA_DEV_MODELS ? resolve(env.STRATA_DEV_MODELS) : join(dirname(devConfigFile(env)), 'dev', 'models');
+}

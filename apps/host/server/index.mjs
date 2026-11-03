@@ -56,7 +56,8 @@ import { createUploads } from './chat-uploads.mjs';
 import { createNativeDrops } from './native-drop.mjs';
 import { createVisionProbe, effectiveVision, readsPicturesByDefault } from './vision-probe.mjs';
 import { RequestQueue } from './request-queue.mjs';
-import { selectSkills, skillInstructions } from './skill-selection.mjs';
+import { selectSkills, selectSkillsDev, skillInstructions } from './skill-selection.mjs';
+import { createSkillVersions, exportSkillZip, importSkill, materializeSkillFolders, readSkillRoot, skillToolCommands, writeSkillEdit } from './dev-skills.mjs';
 import { createModelProviders } from './model-providers.mjs';
 import { createForkTimeskip } from './timeskip-fork.mjs';
 import { prepareOversized } from './oversize.mjs';
@@ -80,9 +81,10 @@ import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
 import { findFreePort, listenProblem, reservedPortMessage, windowsReservedRange } from './ports.mjs';
-import { defaultHostPort, devChatMode, devExtensionsDir, devSettings, devSummary, isDevMode, loadDevConfig, setActiveDevSettings } from './dev-mode.mjs';
+import { defaultHostPort, devChatMode, devExtensionsDir, devModelsDir, devSkillsDir, devSettings, devSummary, isDevMode, loadDevConfig, setActiveDevSettings } from './dev-mode.mjs';
 import { createDevHooks } from './dev-hooks.mjs';
 import { devApi } from './dev-api.mjs';
+import { devModelsApi, devSkillsApi } from './dev-catalog.mjs';
 import { captureConsole, devLogVerbose, enableDevLog, push as devLog, setVerbose as setDevVerbose } from './dev-log.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
@@ -107,6 +109,8 @@ let DEV = isDevMode() ? loadDevConfig() : null;
 /* Strata Dev's settings (dev-mode.mjs devSettings) and backend hooks (dev-hooks.mjs, created below once Python is known). Both null outside Dev. */
 let DEV_SETTINGS = null;
 let devHooks = null;
+/* Strata Dev skills (dev-skills.mjs): dev/skills as a source, whole folders for the agent, versions. Null outside Dev. */
+let DEV_SKILLS = null;
 if (DEV) {
   DEV_SETTINGS = devSettings(DEV.config);
   // The Dev panel's Logs tab: this process's console output is kept too (it still prints as before).
@@ -183,7 +187,7 @@ const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwar
    state and the chat falls back to the direct path with a notice, never silently to another model. */
 // What the person chose in Settings -> Tools (tool groups, web search service and key, the browser, their own tools).
 const llmProxy = createLlmProxy({ targetOf: key => agent.llmTarget(key), samplingNow: () => samplingFromExpert(store.get().expert) });
-const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }) });
+const agentTools = createAgentTools({ read: () => store.get().agentTools, write: value => store.update({ agentTools: value }), dataDir: store.DATA_DIR, browser: () => ({ ...findBrowser(), cli: findPlaywrightMcp(agent.harnessDir()) }), extraCommands: DEV ? () => { try { return skillToolCommands(skillState); } catch { return {}; } } : null });
 agentTools.ensureFile();
 const visionProbe = createVisionProbe();
 /** The model APIs as the chat picker sees them: each model says whether it reads pictures (what the person ticked, else what the server answered). Unanswered models are asked in the background. */
@@ -321,6 +325,7 @@ function setupState() {
 const CREATED_SKILLS = join(store.DATA_DIR, 'skills');
 /** What the agent scans: the whole current list, written out by syncAgentSkills (the Harness watches it, so no restart). */
 const AGENT_SKILLS = join(store.DATA_DIR, 'agent', 'skills-live');
+if (DEV) DEV_SKILLS = { dir: devSkillsDir(), versions: createSkillVersions(join(store.DATA_DIR, 'dev', 'skill-versions')) };
 
 function skills() {
   const bundled = [
@@ -419,7 +424,9 @@ for the choice being made.`,
       });
     }
   }
-  return [...bundled, ...extra].map(s => ({ ...s, ...store.get().skillEdits?.[s.id] }));
+  // Strata Dev: the same two folders read as whole skill folders (validator, files, tools), and dev/skills as a third source.
+  const folders = DEV_SKILLS ? [...readSkillRoot(CREATED_SKILLS, { source: 'created', prefix: 'my-' }), ...readSkillRoot(join(WORKSPACE, 'skills'), { source: 'workspace', prefix: 'ws-' }), ...readSkillRoot(DEV_SKILLS.dir, { source: 'dev', prefix: 'dev-' })] : extra;
+  return [...bundled, ...folders].map(s => ({ ...s, ...store.get().skillEdits?.[s.id] }));
 }
 
 let skillState = skills().map((s) => ({
@@ -438,9 +445,25 @@ let skillState = skills().map((s) => ({
  * switched off is written as hidden. Called after every change to the list.
  */
 function syncAgentSkills() {
+  if (DEV_SKILLS) {
+    // Strata Dev: whole folders for the agent, the tools skills bring, and a version of every skill that changed.
+    try { materializeSkillFolders(AGENT_SKILLS, skillState.filter(s => !s.onlyIn)); agentTools.ensureFile(); } catch (e) { console.warn('skills · could not write the agent skills folder:', e.message); }
+    for (const s of skillState) { try { DEV_SKILLS.versions.record(s, { edit: store.get().skillEdits?.[s.id] ?? null }); } catch (e) { console.warn(`skills · no version of ${s.id}: ${e.message}`); } }
+    return;
+  }
   try { materializeSkills(AGENT_SKILLS, skillState.filter(s => !s.onlyIn)); } catch (e) { console.warn('skills · could not write the agent skills folder:', e.message); }
 }
 syncAgentSkills();
+
+/** Strata Dev: the skill list read again from disk (after an import, a restore or an edit written into a skill folder); switches kept. */
+function rescanSkills() {
+  const known = new Map(skillState.map(s => [s.id, s]));
+  skillState = skills().map(s => {
+    const before = known.get(s.id);
+    return before ? { ...s, enabled: before.enabled, onlyIn: before.onlyIn ?? null, useCount: before.useCount, lastUsedAt: before.lastUsedAt }
+      : { ...s, enabled: store.get().skillPreferences?.[s.id]?.enabled ?? s.enabled, onlyIn: store.get().skillPreferences?.[s.id]?.onlyIn ?? null, useCount: 0, lastUsedAt: null };
+  });
+}
 
 /** Whether a skill applies, given where the reader is. */
 /**
@@ -589,7 +612,18 @@ function clientName(req) {
   return 'Local client';
 }
 
-async function runRemoteTurn({ selection, message, history, images = [], thinking, onFrame, signal, workspaceId }) {
+/** Strata Dev: the agent turn's message with the chat's skill choice named after it (the names the agent's skill list uses). */
+function devSkillNote(message, skillIds) {
+  const names = skillState.filter(s => skillIds.includes(s.id)).map(s => skillSlug(s.id.replace(/^(?:ws|my|dev)-/, '') || s.name));
+  return message + '\n\n[Strata Dev: in this chat load only these skills: ' + (names.join(', ') || 'none') + ']';
+}
+
+/** The skills a direct-chat message uses. Strata Dev adds the description match and the chat's own choice (skillIds); Live: the triggers. */
+function pickSkills(message, workspaceId, skillIds = null) {
+  return DEV_SKILLS ? selectSkillsDev(skillState, message, workspaceId, { allowed: Array.isArray(skillIds) ? skillIds.map(String) : null }) : selectSkills(skillState, message, workspaceId);
+}
+
+async function runRemoteTurn({ selection, message, history, images = [], thinking, onFrame, signal, workspaceId, skillIds = null }) {
   const controller = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let entry;
@@ -597,7 +631,7 @@ async function runRemoteTurn({ selection, message, history, images = [], thinkin
   try {
     const { connection, model } = modelProviders.resolve(selection);
     if (connection.protocol === 'openai-chat' && model.reasoning == null) await visionProbe.check(connection, model.id);
-    const appliedSkills = selectSkills(skillState, message, workspaceId);
+    const appliedSkills = pickSkills(message, workspaceId, skillIds);
     entry = serving.open({ client: 'Strata chat', endpoint: connection.protocol === 'anthropic' ? '/messages' : connection.protocol === 'openai-responses' ? '/responses' : '/chat/completions', model: `${connection.name} · ${model.name}`, cancel: () => controller.abort(new DOMException('Cancelled by the user', 'AbortError')) });
     serving.mark(entry.id, { state: 'generating' });
     const result = await modelProviders.stream({ selection, message, history, images, thinking, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
@@ -643,6 +677,8 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   try {
     // "/goal ..." is the Harness's goal command (set, show, pause, resume, clear); everything else is a message.
     const attached = chatAttachments.take(chatId);
+    // Strata Dev: a chat's own choice of skills. The agent's skill list is one for all chats, so the turn says which ones it may load.
+    if (DEV_SKILLS && Array.isArray(body.skillIds) && !message.trim().startsWith('/')) message = devSkillNote(message, body.skillIds);
     if (attached.length && !/^\//.test(message.trim())) message = withAttachments(message, attached);
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
@@ -664,12 +700,12 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   }
 }
 
-async function runTurn({ message, history = [], onFrame, signal, client, workspaceId = null, sessionId = null, remoteModel = null, runtimeModelId = undefined, nativeModelId, images=[], useTools=false, thinking='medium', thinkingBudget=0 }) {
-  if (remoteModel) return runRemoteTurn({ selection: remoteModel, message, history, images, thinking, onFrame, signal, workspaceId });
+async function runTurn({ message, history = [], onFrame, signal, client, workspaceId = null, sessionId = null, remoteModel = null, runtimeModelId = undefined, nativeModelId, images=[], useTools=false, thinking='medium', thinkingBudget=0, skillIds=null }) {
+  if (remoteModel) return runRemoteTurn({ selection: remoteModel, message, history, images, thinking, onFrame, signal, workspaceId, skillIds });
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){const message=plainNoModel(e.message);onFrame({type:'error',message});return {error:message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
-    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:[SYSTEM_PROMPT,skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
+    try{serving.mark(entry.id,{state:'generating'});const applied=pickSkills(message,workspaceId,skillIds);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:[SYSTEM_PROMPT,skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
   }
   runtimeState();
   let instance;
@@ -698,7 +734,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
       runtimeModels.update(instance.id,{phase:'reading'});
       // Scope is resolved again at dispatch: a disabled skill never stays active
       // merely because the request waited in the queue.
-      const appliedSkills = selectSkills(skillState, message, workspaceId);
+      const appliedSkills = pickSkills(message, workspaceId, skillIds);
       const systemPrompt = [SYSTEM_PROMPT, skillInstructions(appliedSkills)].filter(Boolean).join('\n\n');
       serving.mark(entry.id, { state: 'generating' });
       const contextMax = instance.memory.context;
@@ -1025,6 +1061,17 @@ const server = http.createServer(async (req, res) => {
         if (await devHooks.route(req, res, path, method, url, readBody)) return undefined;
         return error(res, 404, `No Dev route for ${method} ${path}`);
       }
+      if (path.startsWith('/api/dev/skills')) return await devSkillsApi(req, res, path, method, url, {
+        json, error, readBody, skills: () => skillState, versions: DEV_SKILLS.versions, devDir: DEV_SKILLS.dir, rescan: rescanSkills,
+        sync: () => { syncAgentSkills(); hub.send('skills', skillState); },
+        edits: { set: (id, edit) => store.update({ skillEdits: { ...store.get().skillEdits, [id]: edit ?? {} } }) },
+      });
+      if (path.startsWith('/api/dev/models')) return await devModelsApi(req, res, path, method, url, {
+        json, error, readBody, dir: devModelsDir(), choicesFile: join(store.HOME, 'dev-model-profiles.json'),
+        installed: () => (native.state().installed?.models ?? []).map(m => ({ model: m.model, name: m.model_name, ready: m.ready })),
+        inspectLocal: async p => ({ selection: (await native.localPreview(p))?.candidate_selection ?? null }),
+        hardware: () => { const h = native.state().hardware; return h ? { ramGb: h.ram_gb ?? 0, vramGb: (h.gpus ?? []).filter(g => g.usable !== false).reduce((s, g) => s + (g.vram_gb ?? 0), 0) } : null; },
+      });
       if (path.startsWith('/api/dev/')) return await devRoutes(req, res, path, method, url);
     }
     if (path.startsWith('/api/')) {
@@ -1736,7 +1783,14 @@ async function api(req, res, path, method, url) {
           }
         : s,
     );
-    store.update({ skillPreferences: Object.fromEntries(skillState.map(s => [s.id, { enabled: s.enabled, onlyIn: s.onlyIn }])), skillEdits: { ...store.get().skillEdits, [skillId]: { ...store.get().skillEdits?.[skillId], ...edit } } });
+    // Strata Dev: a skill from dev/skills is its folder, so an edit of its name, description or instructions is written into its SKILL.md
+    // (frontmatter kept, a version recorded) instead of being kept beside it. Triggers stay an app setting.
+    const devTarget = DEV_SKILLS ? skillState.find(s => s.id === skillId && s.source === 'dev' && s.dir) : null;
+    const { triggers: keptTriggers, ...fileEdit } = edit;
+    if (devTarget && Object.keys(fileEdit).length) { try { writeSkillEdit(devTarget, fileEdit); } catch (e) { return error(res, 500, `SKILL.md could not be written: ${e.message}`); } }
+    const savedEdit = devTarget ? (keptTriggers ? { triggers: keptTriggers } : {}) : edit;
+    store.update({ skillPreferences: Object.fromEntries(skillState.map(s => [s.id, { enabled: s.enabled, onlyIn: s.onlyIn }])), skillEdits: { ...store.get().skillEdits, [skillId]: { ...store.get().skillEdits?.[skillId], ...savedEdit } } });
+    if (devTarget) rescanSkills();
     syncAgentSkills();
     hub.send('skills', skillState);
     return json(res, 200, skillState);
@@ -2095,6 +2149,7 @@ async function api(req, res, path, method, url) {
       remoteModel: body.remoteModel ?? null,
       nativeModelId:body.nativeModelId,
       images,useTools:body.useTools===true,thinking:body.thinking??'high',thinkingBudget:Number.isInteger(body.thinkingBudget)&&body.thinkingBudget>0?Math.min(body.thinkingBudget,262144):0,
+      skillIds: Array.isArray(body.skillIds) ? body.skillIds : null,
     });
     res.end();
     return undefined;

@@ -92,7 +92,8 @@ const idFor = (name, existing) => {
 /**
  * @param {{read: () => object|undefined, write: (value: object) => void, dataDir: string, browser?: () => {found: boolean, name: string|null, path?: string|null, cli?: string|null}}} deps
  */
-export function createAgentTools({ read, write, dataDir, browser = () => ({ found: false, name: null }) }) {
+/** `extraCommands` (Strata Dev only, server/dev-skills.mjs): command tools that skills bring, `{ key: { description, command, cwd, shell, timeoutSec } }`. */
+export function createAgentTools({ read, write, dataDir, browser = () => ({ found: false, name: null }), extraCommands = null }) {
   const state = () => normalize(read());
   const filePath = join(dataDir, 'agent', 'custom-tools.json');
 
@@ -104,6 +105,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
       if (t.kind === 'instructions') instructions[key] = { description: t.about, text: t.instructions };
       else if (t.kind === 'command') commands[key] = { description: t.about, command: t.command, cwd: t.cwd, shell: t.shell, timeoutSec: t.timeoutSec };
     }
+    if (extraCommands) for (const [key, t] of Object.entries(extraCommands() ?? {})) if (!commands[key]) commands[key] = t;
     mkdirSync(join(dataDir, 'agent'), { recursive: true });
     const tmp = `${filePath}.tmp`;
     writeFileSync(tmp, JSON.stringify({ instructions, commands }, null, 1));
@@ -152,7 +154,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
         browserCli: browser().cli ?? null,
         servers,
         hasInstructionTools: custom.some(t => t.kind === 'instructions'),
-        hasCommandTools: custom.some(t => t.kind === 'command'),
+        hasCommandTools: custom.some(t => t.kind === 'command') || (!!extraCommands && Object.keys(extraCommands() ?? {}).length > 0),
         toolFile: filePath,
       };
     },

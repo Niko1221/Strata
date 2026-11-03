@@ -28,6 +28,7 @@ import { useNative, nativeSettled, subscribeNative } from '../lib/native';
 import { NativeModels } from '../components/NativeModels';
 import { NativeLocalModel } from '../components/NativeLocalModel';
 import { parseLocation } from '../lib/router';
+import { DevModels } from '../dev/DevModels';
 type Issue = {
     level: 'error' | 'warn';
     message: string;
@@ -45,7 +46,7 @@ export function ModelRunScreen() {
         return <NativeLocalModel onBack={() => { setOther(false); setImportFirst(false); }}/>;
     if (native && !other)
         return <NativeModels onOtherModels={() => setOther(true)} onImport={() => { setImportFirst(true); setOther(true); }}/>;
-    return <><LegacyModelRunScreen importFirst={importFirst} initialVariant={location.query.get('variant') ?? undefined}/>{tr(other ? <button className="st-btn native-return" onClick={() => setOther(false)}>{tr("Back")}</button> : null)}</>;
+    return <><LegacyModelRunScreen importFirst={importFirst} initialVariant={location.query.get('variant') ?? undefined}/><DevModels/>{tr(other ? <button className="st-btn native-return" onClick={() => setOther(false)}>{tr("Back")}</button> : null)}</>;
 }
 function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
     importFirst?: boolean;

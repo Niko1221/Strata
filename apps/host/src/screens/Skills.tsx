@@ -7,6 +7,7 @@ import { api } from '../lib/client';
 import { pageIsOnThisComputer, postWithFolderFallback } from '../lib/folder-pick';
 import { editSkill, loadSkills, toggleSkill, useStore } from '../lib/store';
 import type { Skill } from '../lib/types';
+import { DevSkillTools } from '../dev/DevSkills';
 export function SkillsScreen() {
     const skills = useStore(s => s.skills);
     const workspaces = useStore(s => s.workspaces);
@@ -67,7 +68,7 @@ export function SkillsScreen() {
         setEditing(null);
     }
     return <Screen title={tr("Skills")} titleDetail={tr("Manage your skills library")} actions={<><Btn icon="plus" variant="primary" disabled={!!pending} onClick={openNew}>{tr("New skill")}</Btn><Btn icon="folder-plus" disabled={!!pending} onClick={() => void action('add', add)}>{tr("Add skill")}</Btn><input className="st-input skills-header-search" type="search" aria-label={tr("Search skills")} placeholder={tr("Search skills…")} value={query} onChange={e => setQuery(e.target.value)}/><IconBtn name="refresh" title={tr("Refresh skills")} disabled={!!pending} onClick={() => void action('refresh', loadSkills)}/></>}>
-    <div className="skills-page">{tr(error && !editing ? <ErrorNotice message={error} action={tr("Retry")} onRetry={() => void action('refresh', loadSkills)}/> : null)}
+    <div className="skills-page"><DevSkillTools/>{tr(error && !editing ? <ErrorNotice message={error} action={tr("Retry")} onRetry={() => void action('refresh', loadSkills)}/> : null)}
       {tr((['bundled', 'added'] as const).map(group => { const rows = visible.filter(s => group === 'bundled' ? s.source === 'bundled' : s.source !== 'bundled'); return rows.length ? <section className="skill-group" aria-label={tr(group === 'bundled' ? 'Built-in skills' : 'Added skills')} key={group}>{tr(group === 'added' ? <h3 className="h4">{tr("Added skills")}</h3> : null)}<div>{tr(rows.map(s => <article className="skill-row" key={s.id}><span className="skill-symbol"><Icon name="skills" size={26}/></span><div className="skill-copy"><h3 className="h4">{s.source === 'bundled' ? tr(s.name) : s.name}</h3><p className="small muted">{s.source === 'bundled' ? tr(s.description) : s.description}</p>{tr(s.onlyIn ? <span className="xs muted">{tr(s.onlyIn === workspace ? 'This workspace' : `Only in ${workspaces.find(w => w.id === s.onlyIn)?.name ?? 'another workspace'}`)}</span> : null)}</div><div className="skill-row-actions"><IconBtn name="pencil" title={tr("Edit {0}", [s.name])} disabled={!!pending} onClick={() => openEditor(s)}/><button className="st-toggle" role="switch" aria-checked={s.enabled} aria-label={tr("Enable {0}", [s.name])} disabled={!!pending} onClick={() => void action(s.id, () => toggleSkill(s.id, !s.enabled))}/></div></article>))}</div></section> : null; }))}
       {tr(!visible.length ? <Empty icon="skills" title={tr(skills.length ? 'No matching skills' : 'No skills yet')} body={skills.length ? 'Try another search.' : 'Add a folder containing SKILL.md.'} action={tr(<Btn onClick={() => skills.length ? setQuery('') : void action('add', add)}>{tr(skills.length ? 'Clear search' : 'Add skill')}</Btn>)}/> : null)}
       

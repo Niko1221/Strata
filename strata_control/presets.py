@@ -449,6 +449,12 @@ def overlay(cfg: dict[str, Any], *, now: dict[str, Any] | None = None, use: str 
     that is only outside the range the tuner tries is kept and listed in ``info["warnings"]``. Never raises:
     a store that cannot be read means "no preset", and the engine starts with the configuration as it is."""
     info: dict[str, Any] = {"applied": False}
+    # Strata Dev only (STRATA_DEV=1): dev/models overlays and their profile go first, the saved tuning on top (dev_models.py).
+    if os.environ.get("STRATA_DEV") == "1":
+        from strata_control import dev_models
+        cfg, dev = dev_models.apply(cfg)
+        if dev.get("applied") or dev.get("warnings") or dev.get("error"):
+            info["dev"] = dev
     try:
         if not preset_dir().is_dir():
             return cfg, info

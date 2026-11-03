@@ -3,7 +3,7 @@ import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
-import { devLoopEnabled, devModeOverride } from '../dev/overrides';
+import { devLoopEnabled, devModeOverride, devSkillsOverride } from '../dev/overrides';
 import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { approvalNeeded, workFinished } from './attention';
@@ -1813,7 +1813,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'Medium',
         thinkingBudget:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinkingBudget??0,
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
-        mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual', ...devModeOverride(state.sessions.find(s=>s.id===sessionId)?.preferences?.mode),
+        mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual', ...devModeOverride(state.sessions.find(s=>s.id===sessionId)?.preferences?.mode), ...devSkillsOverride(state.sessions.find(s=>s.id===sessionId)?.preferences?.skills),
         // So a skill narrowed to another workspace does not fire here.
         workspaceId: workspaceIdForSession(state.workspaces, state.sessions.find(s => s.id === sessionId)) ?? state.activeWorkspace,
       },

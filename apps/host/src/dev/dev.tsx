@@ -11,26 +11,18 @@ import { api } from '../lib/client';
 import { Btn, Icon, IconBtn } from '../components/ui';
 import { pushToast } from '../lib/store';
 import './dev.css';
-import { setDevOverrides } from './overrides';
-import { arrange, createRegistry, resolveElement, type Arranged, type Builtin, type ElementOverride, type SlotName } from './registry';
+import { markDevActive, setDevOverrides } from './overrides';
+import { arrange, resolveElement, type Arranged, type Builtin, type ElementOverride, type SlotName } from './registry';
+import { devSummaryNow, registry, setDevSummary, useDev, type SlotRender } from './dev-state';
 
-export type SlotRender = (props: Record<string, unknown>) => ReactNode;
-export const registry = createRegistry<SlotRender, ComponentType<Record<string, unknown>>>();
-
-let summary: DevSummary | null = null;
 let started = false;
 const DISABLED_KEY = 'strata-dev-disabled-extensions';
 
-/** The Dev summary once the host confirmed Dev, else null. Re-renders on every registry change. */
-export function useDev(): DevSummary | null {
-    useSyncExternalStore(registry.subscribe, registry.version, registry.version);
-    return summary;
-}
-export const devSummaryNow = () => summary;
+export { registry, useDev, devSummaryNow, type SlotRender };
 
 /** Reports an error the page saw to the host's Logs tab (source "ui"). Nothing is sent outside Dev. */
 export function reportDevError(error: unknown, extra: { extension?: string; componentStack?: string; level?: 'error' | 'warn' } = {}) {
-    if (!summary) return;
+    if (!devSummaryNow()) return;
     const e = error instanceof Error ? error : new Error(String(error));
     void api.post('/api/dev/client-error', { message: e.message, stack: e.stack, ...extra }).catch(() => undefined);
 }
@@ -45,9 +37,10 @@ export function startDev() {
 }
 
 function activate(dev: DevSummary) {
-    summary = dev;
+    setDevSummary(dev);
     applyTokens(dev.tokens ?? {});
     setDevOverrides(dev.overrides);
+    markDevActive();
     // A folder mode switched off in dev.config.json also hides the folder chip (unless ui.elements says otherwise).
     registry.setConfig({ ...(dev.overrides?.folder?.enabled === false ? { 'chat.composer.folder': { hidden: true } } : {}), ...(dev.ui?.elements ?? {}) });
     window.addEventListener('error', e => reportDevError(e.error ?? e.message));
@@ -73,7 +66,7 @@ export const extensionNames = () => Object.keys(extensionModules).sort();
 async function loadExtensions() {
     const off = new Set(locallyDisabled());
     for (const name of extensionNames()) {
-        const enabled = summary?.ui?.extensions?.[name]?.enabled !== false && !off.has(name);
+        const enabled = devSummaryNow()?.ui?.extensions?.[name]?.enabled !== false && !off.has(name);
         registry.declare(name, enabled);
         if (enabled) await loadExtension(name);
     }
@@ -138,7 +131,7 @@ function extensionApi(name: string): ExtensionApi {
         toast: (title, body) => pushToast('info', title, body),
         api: { get: path => api.get(path), post: (path, body) => api.post(path, body) },
         log: (...args) => console.log(`[extension ${name}]`, ...args),
-        dev: summary!,
+        dev: devSummaryNow()!,
     };
 }
 
@@ -199,7 +192,7 @@ export function useDevList<T>(slot: SlotName, builtins: Builtin<T>[]): Arranged<
 /** Renders one row of useDevList: a builtin through `draw`, a contribution in its boundary. */
 export function DevListRow<T>({ row, draw, props }: { row: Arranged<T, SlotRender>; draw: (item: T, label: string | undefined) => ReactNode; props?: Record<string, unknown> }) {
     if (row.kind === 'contribution') return <span className="dev-mark" data-dev-id={row.id}><ExtensionBoundary extension={row.contribution.extension} where={row.id}>{row.contribution.render({ ...(props ?? {}), label: row.label })}</ExtensionBoundary></span>;
-    if (!summary) return <Fragment>{draw(row.item, row.label)}</Fragment>;
+    if (!devSummaryNow()) return <Fragment>{draw(row.item, row.label)}</Fragment>;
     const replacement = row.replace ? registry.replacement(row.replace) : null;
     if (replacement) { const Replacement = replacement.component; return <span className="dev-mark" data-dev-id={row.id}><ExtensionBoundary extension={replacement.extension} where={row.id}><Replacement label={row.label}>{draw(row.item, row.label)}</Replacement></ExtensionBoundary></span>; }
     return <span className="dev-mark" data-dev-id={row.id}>{draw(row.item, row.label)}</span>;
