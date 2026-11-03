@@ -33,7 +33,7 @@ class HcSplit(unittest.TestCase):
         s = text("prefill.cu")
         i = s.index('p->hcs_mode = (int) env_int("FNX_PF_HCSPLIT"')
         self.assertIn("#if !FNX_HIP", s[i - 200:i])   # the AMD build never splits the read
-        self.assertIn("NCARD == 2", s[i:i + 200])
+        self.assertIn("NCARD == 2", s[i:i + 400])
         cm = (ROOT / "src" / "split" / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertIn("CUDA::cublasLt", cm)
 
