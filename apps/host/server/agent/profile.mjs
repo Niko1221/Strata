@@ -151,8 +151,11 @@ export function localOutputBudget(context) {
  * which on a local window of 32K to 128K leaves no room at all (it then reports a configuration error once and never compacts). An eighth
  * of what the window has left after the reply's room works from 16K up to the largest windows. Compaction then starts at about 60 percent.
  */
-export function compactionHeadroom(context, outputBudget) {
-  const room = Math.max(0, (Number.isFinite(context) && context > 0 ? context : 32768) - outputBudget);
+export function compactionHeadroom(context, outputBudget, midTaskAt = null) {
+  const window = Number.isFinite(context) && context > 0 ? context : 32768;
+  const room = Math.max(0, window - outputBudget);
+  // Strata Dev (dev.config.json contextGuard.midTaskAt): compaction starts at that share of the window, i.e. window - reply - headroom = share * window.
+  if (midTaskAt > 0) return Math.max(512, Math.min(65536, Math.floor(room - window * midTaskAt)));
   return Math.max(512, Math.min(65536, Math.floor(room * 0.125)));
 }
 
@@ -204,20 +207,21 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   // Strata Dev: dev.config.json may override web search and the default mode (null outside Dev, and then nothing changes).
   const dev = activeDevSettings();
   if (dev) tools = devToolsSettings(tools, dev);
+  const midTaskAt = dev?.contextGuard?.midTaskAt ?? null;   // contextGuard (dev.config.json): where compaction starts on a local window; null = as Live
   // Helper agents: at least as many as the engine has request slots (a local model); API models take the Harness's own limit.
   let slots = 0;
   /** Per-model compaction timing (see compactionHeadroom). */
   const compaction = [];
   /** Routes the person's Response settings can reach: a copy of the provider whose address is this host's forwarding endpoint (see llm-shape.mjs). */
   const shapeTargets = {};
-  function addShaped(route, def, realBase) {
+  function addShaped(route, def, realBase, midTaskAt = null) {
     if (!proxyBase) return null;
     const keys = {};
     for (const budget of [0, ...BUDGETS]) {
       const key = `${route}~s${budget}`;
       providers[key] = { ...def, displayName: `${def.displayName} (with your response settings)`, baseURL: `${proxyBase}/${key}/v1`, ...(budget ? { headers: { ...(def.headers ?? {}), 'x-strata-budget': String(budget) } } : {}) };
       shapeTargets[key] = realBase;
-      for (const m of def.models) { const w = m.contextWindow, out = m.maxTokens; compaction.push({ provider: key, model: m.id, headroomTokens: compactionHeadroom(w, out) }); }
+      for (const m of def.models) { const w = m.contextWindow, out = m.maxTokens; compaction.push({ provider: key, model: m.id, headroomTokens: compactionHeadroom(w, out, midTaskAt) }); }
       keys[budget] = key;
     }
     return keys;
@@ -247,9 +251,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
         reasoning: true, reasoningEfforts: LOCAL_EFFORTS,
       }],
     };
-    compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context)) });
+    compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context), midTaskAt) });
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
-    const shaped = addShaped(route, providers[route], inst.baseUrl);
+    const shaped = addShaped(route, providers[route], inst.baseUrl, midTaskAt);
     routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', connectionName: 'this computer', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });
   });
 

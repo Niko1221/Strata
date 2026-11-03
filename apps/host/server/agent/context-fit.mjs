@@ -40,6 +40,22 @@ export function decideFit({ window, pressure = 0, base: given = BASE_TOKENS, mes
 }
 
 /**
+ * Strata Dev "contextGuard", before sending: a short message is never counted, but a chat that is already full must be summarised first.
+ * True when the chat holds `beforeSendAt` of the window or more, or when its fill plus the message plus the reply room is past the
+ * Harness's threshold; and only when there are older messages worth summarising (as decideFit's worthIt).
+ */
+export function guardSummarize({ window, pressure, messageTokens = 0, threshold = 0, beforeSendAt }) {
+  if (!(window > 0) || !(pressure > 0) || !(beforeSendAt > 0)) return false;
+  if (!(pressure > Math.min(BASE_TOKENS, Math.floor(window * 0.6)) + window * 0.1)) return false;
+  return pressure >= window * beforeSendAt || (threshold > 0 && pressure + messageTokens + replyRoom(window) > threshold);
+}
+
+/** Strata Dev "contextGuard", after a turn: the chat holds `afterTurnAt` of the window or more, so summarise it now while it is quiet. */
+export function guardCompactAfterTurn({ window, tokens, afterTurnAt }) {
+  return window > 0 && tokens > 0 && afterTurnAt > 0 && tokens >= window * afterTurnAt;
+}
+
+/**
  * The model server's count of a text (its tokenizer and chat template), through its Anthropic-style count endpoint.
  * Returns the number, or null when it cannot be had (an old engine, a server that is busy, a timeout): then nothing is blocked.
  */

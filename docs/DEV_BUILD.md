@@ -422,6 +422,22 @@ Einstellung in `dev.config.json` (Standard: an):
 4. Dev-Panel → Rescue → bei einer `overflow-*.json` auf "Laden" klicken: Der Chat ist wieder da.
 5. Danach `maxTotalChars` wieder entfernen.
 
+## Chat früh zusammenfassen: `contextGuard`
+
+Ein lokaler Chat mit 64K-Fenster lief bis 96 bis 98 % voll, und das Zusammenfassen kam dann nicht mehr durch. Der Schalter fasst früher zusammen, an drei Stellen:
+
+```json
+"contextGuard": { "enabled": true, "midTaskAt": 0.55, "compactAfterTurnAt": 0.55, "compactBeforeSendAt": 0.60 }
+```
+
+| Wert | Wirkung |
+| --- | --- |
+| `midTaskAt` | Der Harness fasst zwischen zwei Schritten ab diesem Anteil des Fensters zusammen (Live: etwa 61 %). Über die Headroom in `profile.mjs`. |
+| `compactAfterTurnAt` | Endet ein Turn mit mindestens diesem Anteil, fasst der Host sofort zusammen, solange der Chat ruhig ist (`finishTurn`). |
+| `compactBeforeSendAt` | Vor dem Senden wird auch eine kurze Nachricht geprüft. Bei diesem Anteil oder wenn Füllung, Nachricht und Antwortplatz über der Harness-Schwelle liegen, wird erst zusammengefasst (`fitCheck`). |
+
+Jeder Wert liegt zwischen 0.3 und 0.9. Fehlt einer oder ist er falsch, ist der ganze Schalter aus, und die Warnung steht im Log und in der Seite. Ohne den Schalter oder mit `"enabled": false` verhält sich der Host wie Live. Es gilt nur für lokale Modelle. `/compact` im Chat geht weiterhin von Hand.
+
 ## Zurücksetzen
 
 ```bat

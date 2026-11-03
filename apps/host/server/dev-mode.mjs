@@ -63,6 +63,7 @@ export function loadDevConfig({ file = devConfigFile(), read = readFileSync } = 
     return {};
   };
   const badge = section('badge');
+  warnings.push(...contextGuardOf(raw.contextGuard).warnings);
   const label = typeof badge.label === 'string' && badge.label.trim() ? badge.label.trim().slice(0, 24) : EMPTY.badge.label;
   return { file, config: { ...raw, badge: { ...badge, label }, features: section('features'), overrides: section('overrides') }, warnings };
 }
@@ -118,6 +119,7 @@ export function devSettings(config = {}) {
   return {
     verbose: logging.verbose === true,
     chatOverflow: chatOverflowSettings(config.chatOverflowGuard),
+    contextGuard: contextGuardOf(config.contextGuard).settings,
     tokens,
     ui: { elements, extensions },
     hooks: {
@@ -155,6 +157,24 @@ function chatOverflowSettings(raw) {
   const entry = isObject(raw) ? raw : { enabled: raw };
   const max = entry.maxTotalChars;
   return { enabled: entry.enabled !== false, ...(Number.isInteger(max) && max >= 10_000 && max <= 3_500_000 ? { maxTotalChars: max } : {}) };
+}
+
+/**
+ * "contextGuard" (agent/agent-bridge.mjs, agent/profile.mjs, agent/context-fit.mjs): summarise a local chat early so it never fills up.
+ * { enabled: true, midTaskAt, compactAfterTurnAt, compactBeforeSendAt }, each a share of the window from 0.3 to 0.9. Off unless enabled is
+ * true; a missing or wrong value switches the whole guard off and gives a warning (never a throw). Returns { settings: null | {...}, warnings }.
+ */
+export function contextGuardOf(raw) {
+  if (raw === undefined || raw === null || raw === false) return { settings: null, warnings: [] };
+  if (!isObject(raw)) return { settings: null, warnings: ['dev.config.json: "contextGuard" must be an object; the context guard is off.'] };
+  if (raw.enabled !== true) return { settings: null, warnings: raw.enabled === false || raw.enabled === undefined ? [] : ['dev.config.json: "contextGuard.enabled" must be true or false; the context guard is off.'] };
+  const settings = {}, bad = [];
+  for (const key of ['midTaskAt', 'compactAfterTurnAt', 'compactBeforeSendAt']) {
+    const v = raw[key];
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0.3 && v <= 0.9) settings[key] = v; else bad.push(key);
+  }
+  if (bad.length) return { settings: null, warnings: [`dev.config.json: "contextGuard.${bad.join('", "contextGuard.')}" must be a number from 0.3 to 0.9; the context guard is off.`] };
+  return { settings: { enabled: true, ...settings }, warnings: [] };
 }
 
 /** The Dev settings the host runs with now, or null outside Dev. index.mjs sets it at start and on Reload; the agent profile reads it. */

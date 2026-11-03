@@ -10,6 +10,12 @@
   "chatOverflowGuard": {
     "enabled": true
   },
+  "contextGuard": {
+    "enabled": true,
+    "midTaskAt": 0.55,
+    "compactAfterTurnAt": 0.55,
+    "compactBeforeSendAt": 0.60
+  },
   "features": {},
   "overrides": {}
 }

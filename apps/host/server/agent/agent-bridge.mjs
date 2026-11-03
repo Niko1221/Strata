@@ -30,7 +30,8 @@ import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
-import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped } from './context-fit.mjs';
+import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped, guardCompactAfterTurn, guardSummarize } from './context-fit.mjs';
+import { activeDevSettings } from '../dev-mode.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
@@ -504,6 +505,17 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       notifyIdle();
       // A turn that filled the context, or that the guard stopped, leaves a long history behind: summarise the older part now so the next message has room.
       if (noteReason === 'context' || noteReason === 'searches' || noteReason === 'searches-failed' || noteReason === 'rewrites' || /context window|too long|exceeds/i.test(String(projector.ended?.error?.message ?? ''))) void compactSession(runtime, sessionId);
+      else {
+        // Strata Dev contextGuard: whatever way the turn ended, a chat at compactAfterTurnAt or more is summarised now, while it is quiet.
+        const cg = route.kind === 'local' ? activeDevSettings()?.contextGuard : null;
+        if (cg) void (async () => {
+          try {
+            const now = await contextOf(runtime, sessionId);
+            if (!now || chats.get(chatId)?.turn || chats.get(chatId)?.starting) return;   // a new turn has begun: not idle any more
+            if (guardCompactAfterTurn({ window: now.window || route.contextWindow, tokens: now.tokens, afterTurnAt: cg.compactAfterTurnAt })) await compactSession(runtime, sessionId);
+          } catch { /* best effort: the next message is checked again */ }
+        })();
+      }
     }
 
     emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], ...(planTask ? { planning: true } : {}) });
@@ -1207,7 +1219,19 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const inst = localInstances().find(i => i.id === route.instanceId);
     if (!inst || !(route.contextWindow > 0)) return null;
     const carried = fresh && history.length ? withEarlierConversation(history, message) : message;
-    if (carried.length < COUNT_ABOVE_CHARS) return null;
+    // Strata Dev contextGuard (null outside Dev or when off: then this function is exactly as before).
+    const cg = activeDevSettings()?.contextGuard ?? null;
+    if (carried.length < COUNT_ABOVE_CHARS) {
+      if (!cg || fresh) return null;
+      const now = await contextOf(runtime, sessionId);
+      if (!now) return null;
+      const window = now.window || route.contextWindow;
+      const reply = localOutputBudget(window);
+      const threshold = Math.floor(Math.min(window * 0.8, window - reply - compactionHeadroom(window, reply, cg.midTaskAt)));
+      const tokens = Math.ceil(carried.length / 2);   // a short message: a generous estimate is enough, nothing is counted
+      if (!guardSummarize({ window, pressure: now.tokens, messageTokens: tokens, threshold, beforeSendAt: cg.compactBeforeSendAt })) return null;
+      return { action: 'summarize', room: window - now.tokens, needs: now.tokens + tokens, why: 'guard', tokens, window, pressure: now.tokens };
+    }
     const count = text => countTokens({ baseUrl: inst.baseUrl, key: inst.key, model: inst.modelId, text });
     let tokens = await count(carried);
     if (tokens == null) return null;
@@ -1216,7 +1240,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const pressure = now?.tokens ?? 0;
     // Where the Harness starts summarising by itself on this window (profile.mjs: the reply keeps its room, then the headroom).
     const reply = localOutputBudget(window);
-    const threshold = Math.floor(Math.min(window * 0.8, window - reply - compactionHeadroom(window, reply)));
+    const threshold = Math.floor(Math.min(window * 0.8, window - reply - compactionHeadroom(window, reply, cg?.midTaskAt ?? null)));
     let verdict = decideFit({ window, pressure, messageTokens: tokens, threshold });
     // The earlier conversation carried into a fresh session is what pushed it over: send the message alone instead.
     if (verdict.action === 'too-large' && carried !== message) {
