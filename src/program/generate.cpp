@@ -14891,6 +14891,9 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                 };
                 strata::core::progress_at(save ? "saving a session" : "restoring a session");
+                // without a drafter the file holds no draft layer, as a parked conversation (the park context passes
+                // no draft state either): the drafter's empty state has no cells to save or restore
+                const strata::core::QsaState* sdraft = use_mtp ? &mtp.kv_state() : nullptr;
                 // the background copy of the last turn checkpoint (STRATA_CKPT_ASYNC) lands before anything below copies, frees
                 // or writes the checkpoints (a join inside the session file writer would match only the copy of a checkpoint)
                 strata::core::conversation_checkpoint_join(nullptr);
@@ -14941,7 +14944,7 @@ int main(int argc, char** argv) {
                             sl.state_bytes = state;
                             sl.tokens = live.size();
                             sl.images = live_imgs.size();
-                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
+                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + (sdraft ? 1 : 0);
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         if (o.session_save_reclaim) {
@@ -14979,7 +14982,7 @@ int main(int argc, char** argv) {
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
-                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, mtp.kv_state(),
+                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, sdraft,
                                                                          err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -15025,7 +15028,7 @@ int main(int argc, char** argv) {
                             return false;
                         };
                         if (!strata::core::conversation_session_read_limits(
-                                limits, ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                limits, ss, g, sdraft, (uint64_t) o.max_context,
                                 (uint64_t) std::max(o.prompt_cache, 1), err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -15042,7 +15045,7 @@ int main(int argc, char** argv) {
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
+                    if (!strata::core::conversation_snapshot_validate(image, ss, g, sdraft, err)) {
                         refuse(err);
                         continue;
                     }
@@ -15055,7 +15058,7 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
+                    if (strata::core::conversation_snapshot_restore(image, ss, g, sdraft, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again

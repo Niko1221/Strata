@@ -191,6 +191,18 @@ void full_session(int fmt, int mode, int experts) {
               x.checkpoints.size()==y.checkpoints.size() && equal(x.kv[0],y.kv[0]) && equal(x.kv.back(),y.kv.back()),
               "streamed file equals captured file");
         check(slurp(p1)==slurp(p2),"streamed file is byte-identical to the captured file");
+        // without a drafter (no draft state): one source per QSA layer and no draft layer; the file reads back with
+        // that many layers and validates against no draft state, as a parked conversation without one
+        std::vector<SessionKvSource> nodraft;
+        check(conversation_snapshot_sources(meta,nodraft,view,ss,g,nullptr,err) && nodraft.size()+1==sources.size(),
+              "no-drafter sources: no draft layer");
+        const std::string p3=(dir/"nodraft.bin").string();
+        size_t n3=0;
+        SavedConversation z;
+        check(session_file_write(p3,meta,nodraft,id,n3,err) && session_file_read(p3,id,z,n3,err) &&
+              z.kv.size()==nodraft.size() && equal(z.kv[0],y.kv[0]),"no-drafter file reads back without the draft layer");
+        check(conversation_snapshot_validate(z,ss,g,nullptr,err),"no-drafter file validates without a draft state");
+        check(!conversation_snapshot_validate(z,ss,g,draft.state,err),"no-drafter file refused by an engine with a drafter");
         std::error_code ec;
         fs::remove_all(dir,ec);
         auto empty_ids=std::vector<int32_t>{};
