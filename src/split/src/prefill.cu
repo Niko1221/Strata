@@ -17,6 +17,9 @@
 #endif
 
 #include <cublas_v2.h>
+#if !FNX_HIP
+#include <cublasLt.h>
+#endif
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -27,7 +30,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <set>
+#include <vector>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -391,6 +396,23 @@ struct Engine::Pf {
     // `mixed` (mixedk): the reads of the pass's chunks come before their heavy halves. hg_in: the landing place of the other card's rows (two
     // sets by the swap's number), hg_flags[set][piece] set by the other card's stream (the swap's number); rg_*: the same for the residual
     // streams R at the end of the pass (the draft layer reads every row of R).
+#if !FNX_HIP
+    // the hyper-connection down GEMM (320 x 10240, K = 10240) through cublasLt with ONE algorithm whose rows do not depend on the number of rows
+    // (found at start by pf_lt_calibrate: equal to cublasGemmEx's choice at 4096 rows, and the same rows at 2048); FNX_PF_HCSPLIT only. cublasGemmEx
+    // picks split-K 5 at 4096 rows and a k16 kernel at 2048, which rounds differently
+    struct LtShape {
+        int n = 0;
+        cublasLtMatmulDesc_t desc = nullptr;
+        cublasLtMatrixLayout_t a = nullptr, b = nullptr, c = nullptr;
+        bool ok = false;
+    };
+    cublasLtHandle_t lt = nullptr;
+    cublasLtMatmulAlgo_t down_algo;
+    bool down_lt = false;
+    void* lt_ws = nullptr;
+    size_t lt_ws_bytes = 0;
+    std::vector<LtShape> lt_shapes;
+#endif
     bool hcs = false;
     int hg_pieces = 4;
     float* mixedk[Engine::PF_PASS] = {};
@@ -468,12 +490,134 @@ void pf_sgemm(Engine::Pf& p, const float* W, int rows, int cols, const float* x,
     const float one = 1.0f, zero = 0.0f;
     ckb(cublasSgemm(p.blas, CUBLAS_OP_T, CUBLAS_OP_N, rows, C, cols, &one, W, cols, x, cols, &zero, out, ldo), "sgemm");
 }
+#if !FNX_HIP
+// the Lt problem for n rows of the down GEMM (cached): out[t][r] = W[r] . X[t], W f16 [LR][D], X f16 [n][D], out f32 [n][LR]
+Engine::Pf::LtShape& pf_lt_shape(Engine::Pf& p, int n) {
+    for (Engine::Pf::LtShape& s : p.lt_shapes)
+        if (s.n == n) return s;
+    p.lt_shapes.emplace_back();
+    Engine::Pf::LtShape& s = p.lt_shapes.back();
+    s.n = n;
+    cublasLtMatmulDescCreate(&s.desc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+    const cublasOperation_t t = CUBLAS_OP_T, nn = CUBLAS_OP_N;
+    cublasLtMatmulDescSetAttribute(s.desc, CUBLASLT_MATMUL_DESC_TRANSA, &t, sizeof t);
+    cublasLtMatmulDescSetAttribute(s.desc, CUBLASLT_MATMUL_DESC_TRANSB, &nn, sizeof nn);
+    cublasLtMatrixLayoutCreate(&s.a, CUDA_R_16F, D, LR, D);
+    cublasLtMatrixLayoutCreate(&s.b, CUDA_R_16F, D, n, D);
+    cublasLtMatrixLayoutCreate(&s.c, CUDA_R_32F, LR, n, LR);
+    cublasLtMatmulHeuristicResult_t chk;
+    s.ok = cublasLtMatmulAlgoCheck(p.lt, s.desc, s.a, s.b, s.c, s.c, &p.down_algo, &chk) == CUBLAS_STATUS_SUCCESS && chk.workspaceSize <= p.lt_ws_bytes;
+    return s;
+}
+// the down GEMM with the chosen algorithm (the caller checked p.down_lt); false: this shape does not take it (the plain call is made instead)
+bool pf_down_lt(Engine::Pf& p, const __half* W, const __half* X, int n, float* out, cudaStream_t s) {
+    Engine::Pf::LtShape& sh = pf_lt_shape(p, n);
+    if (!sh.ok) return false;
+    const float one = 1.0f, zero = 0.0f;
+    ckb(cublasLtMatmul(p.lt, sh.desc, &one, W, sh.a, X, sh.b, &zero, out, sh.c, out, sh.c, &p.down_algo, p.lt_ws, p.lt_ws_bytes, s), "lt gemm");
+    return true;
+}
+// at start: the algorithm for the down GEMM. Candidates come from cublasLt's heuristic at 4096 rows; one is taken when its rows equal cublasGemmEx's at 4096
+// rows bit for bit, and its first and second half of the rows at 2048 equal its own at 4096. None: down_lt stays false (the split's results then differ in
+// the last bits from the unsplit path's)
+void pf_lt_calibrate(Engine::Pf& p, cudaStream_t s) {
+    const int rows = LR, cols = D, C0 = 4096;
+    p.lt_ws_bytes = 4 << 20;
+    ckc(cudaMalloc(&p.lt_ws, p.lt_ws_bytes), "lt workspace");
+    own_dev(p.lt_ws);
+    ckb(cublasLtCreate(&p.lt), "lt create");
+    {
+        cublasLtHandle_t h = p.lt;
+        const int d = current_card();
+        own([d, h] { cudaSetDevice(d); cublasLtDestroy(h); });
+    }
+    std::vector<__half> hw((size_t) rows * cols), hx((size_t) C0 * cols);
+    uint32_t st = 12345u;
+    auto rnd = [&] { st = st * 1664525u + 1013904223u; return (float) ((st >> 9) & 0xFFFF) / 65536.f - 0.5f; };
+    for (__half& v : hw) v = __float2half(rnd() * 0.2f);
+    for (__half& v : hx) v = __float2half(rnd() * 6.f);
+    __half *dw = nullptr, *dx = nullptr;
+    float* dy = nullptr;
+    ckc(cudaMalloc(&dw, hw.size() * 2), "calibrate");
+    ckc(cudaMalloc(&dx, hx.size() * 2), "calibrate");
+    ckc(cudaMalloc(&dy, (size_t) C0 * rows * 4), "calibrate");
+    ckc(cudaMemcpy(dw, hw.data(), hw.size() * 2, cudaMemcpyHostToDevice), "calibrate");
+    ckc(cudaMemcpy(dx, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice), "calibrate");
+    auto fetch = [&](size_t n) {
+        std::vector<float> v(n);
+        ckc(cudaMemcpy(v.data(), dy, n * 4, cudaMemcpyDeviceToHost), "calibrate");
+        return v;
+    };
+    const float one = 1.0f, zero = 0.0f;
+    ckc(cudaMemset(dy, 0xFF, (size_t) C0 * rows * 4), "calibrate");
+    ckb(cublasGemmEx(p.blas, CUBLAS_OP_T, CUBLAS_OP_N, rows, C0, cols, &one, dw, CUDA_R_16F, cols, dx, CUDA_R_16F, cols, &zero, dy, CUDA_R_32F, rows,
+                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "calibrate gemm");
+    ckc(cudaStreamSynchronize(s), "calibrate");
+    const std::vector<float> ref = fetch((size_t) C0 * rows);
+    Engine::Pf::LtShape sh4, sh2;
+    auto mk = [&](Engine::Pf::LtShape& sh, int n) {
+        sh.n = n;
+        cublasLtMatmulDescCreate(&sh.desc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+        const cublasOperation_t t = CUBLAS_OP_T, nn = CUBLAS_OP_N;
+        cublasLtMatmulDescSetAttribute(sh.desc, CUBLASLT_MATMUL_DESC_TRANSA, &t, sizeof t);
+        cublasLtMatmulDescSetAttribute(sh.desc, CUBLASLT_MATMUL_DESC_TRANSB, &nn, sizeof nn);
+        cublasLtMatrixLayoutCreate(&sh.a, CUDA_R_16F, cols, rows, cols);
+        cublasLtMatrixLayoutCreate(&sh.b, CUDA_R_16F, cols, n, cols);
+        cublasLtMatrixLayoutCreate(&sh.c, CUDA_R_32F, rows, n, rows);
+    };
+    mk(sh4, C0), mk(sh2, C0 / 2);
+    cublasLtMatmulPreference_t pref = nullptr;
+    cublasLtMatmulPreferenceCreate(&pref);
+    cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &p.lt_ws_bytes, sizeof p.lt_ws_bytes);
+    std::vector<cublasLtMatmulHeuristicResult_t> cand(32);
+    int nc = 0;
+    if (cublasLtMatmulAlgoGetHeuristic(p.lt, sh4.desc, sh4.a, sh4.b, sh4.c, sh4.c, pref, 32, cand.data(), &nc) != CUBLAS_STATUS_SUCCESS) nc = 0;
+    for (int i = 0; i < nc && !p.down_lt; ++i) {
+        cublasLtMatmulAlgo_t al = cand[(size_t) i].algo;
+        cublasLtMatmulHeuristicResult_t chk;
+        if (cand[(size_t) i].workspaceSize > p.lt_ws_bytes) continue;
+        if (cublasLtMatmulAlgoCheck(p.lt, sh2.desc, sh2.a, sh2.b, sh2.c, sh2.c, &al, &chk) != CUBLAS_STATUS_SUCCESS || chk.workspaceSize > p.lt_ws_bytes) continue;
+        ckc(cudaMemset(dy, 0xFF, (size_t) C0 * rows * 4), "calibrate");
+        if (cublasLtMatmul(p.lt, sh4.desc, &one, dw, sh4.a, dx, sh4.b, &zero, dy, sh4.c, dy, sh4.c, &al, p.lt_ws, p.lt_ws_bytes, s) != CUBLAS_STATUS_SUCCESS) continue;
+        ckc(cudaStreamSynchronize(s), "calibrate");
+        const std::vector<float> o4 = fetch((size_t) C0 * rows);
+        if (std::memcmp(o4.data(), ref.data(), o4.size() * 4) != 0) continue;
+        bool halves = true;
+        for (int h = 0; h < 2 && halves; ++h) {
+            ckc(cudaMemset(dy, 0xFF, (size_t) C0 * rows * 4), "calibrate");
+            if (cublasLtMatmul(p.lt, sh2.desc, &one, dw, sh2.a, dx + (size_t) h * (C0 / 2) * cols, sh2.b, &zero, dy + (size_t) h * (C0 / 2) * rows, sh2.c,
+                               dy + (size_t) h * (C0 / 2) * rows, sh2.c, &al, p.lt_ws, p.lt_ws_bytes, s) != CUBLAS_STATUS_SUCCESS) {
+                halves = false;
+                break;
+            }
+            ckc(cudaStreamSynchronize(s), "calibrate");
+            const std::vector<float> o2 = fetch((size_t) C0 * rows);
+            if (std::memcmp(o2.data() + (size_t) h * (C0 / 2) * rows, o4.data() + (size_t) h * (C0 / 2) * rows, (size_t) (C0 / 2) * rows * 4) != 0) halves = false;
+        }
+        if (!halves) continue;
+        p.down_algo = al;
+        p.down_lt = true;
+    }
+    cublasLtMatmulPreferenceDestroy(pref);
+    for (Engine::Pf::LtShape* sh : {&sh4, &sh2}) {
+        cublasLtMatmulDescDestroy(sh->desc), cublasLtMatrixLayoutDestroy(sh->a), cublasLtMatrixLayoutDestroy(sh->b), cublasLtMatrixLayoutDestroy(sh->c);
+    }
+    cudaFree(dw), cudaFree(dx), cudaFree(dy);
+    std::fprintf(stderr, "fnx: prompt path card %d: hyper-connection down GEMM %s\n", p.dev,
+                 p.down_lt ? "through cublasLt with an algorithm that gives the same rows at 2048 and 4096 rows (and cublasGemmEx's at 4096)"
+                           : "has no row-count-independent algorithm: the split's results differ in the last bits from the unsplit path's");
+}
+#endif
+
 // the hyper-connection read for C rows (see hc.cuh for what it computes)
 void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev, const float* w_norm, const Q8S& w_down, const Q8S& w_up,
                 const uint16_t* w_inj, float eps, float* mixed, float* inject, int C, cudaStream_t s, __half* mixh = nullptr) {
     k_hcb_prep<<<C, HCB_THREADS, 0, s>>>(R, bo, inj_prev, w_norm, p.rs, p.xh, eps, w_inj, inject);   // the inject rows here
     k_q8s_f16<<<grid_for((size_t) LR * D), 256, 0, s>>>(w_down.q, w_down.d, (size_t) LR * D, p.wh);
-    pf_gemm(p, p.wh, LR, D, p.xh, C, p.lo32, LR, s);
+#if !FNX_HIP
+    if (!(p.down_lt && !p.f16acc && pf_down_lt(p, p.wh, p.xh, C, p.lo32, s)))
+#endif
+        pf_gemm(p, p.wh, LR, D, p.xh, C, p.lo32, LR, s);
     k_hcb_lo<<<grid_for((size_t) C * LR), 256, 0, s>>>(p.lo32, C * LR, p.lo16);
     k_q8s_f16<<<grid_for((size_t) D * LR), 256, 0, s>>>(w_up.q, w_up.d, (size_t) D * LR, p.wh);
     if (p.f16acc) {
@@ -898,6 +1042,9 @@ void Engine::prefill_alloc() {
                 if (np < 1 || np > 8) throw std::runtime_error("FNX_PF_HCSPLIT_PIECES: 1 to 8, got " + std::to_string(np));
                 p->hg_pieces = (int) np;
                 p->hf16 = env_int("FNX_PF_HCSPLIT_F16", 0) != 0;
+#if !FNX_HIP
+                if (env_int("FNX_PF_HCSPLIT_LT", 1) != 0) pf_lt_calibrate(*p, b.st);
+#endif
                 ckc(cudaStreamCreateWithFlags(&p->ag_st, cudaStreamNonBlocking), "swap stream");
                 own_stream(p->ag_st);
                 if (p->hf16)
