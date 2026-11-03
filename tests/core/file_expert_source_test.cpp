@@ -369,6 +369,38 @@ void test_resident_exchange() {
     require(offsets == before, "exchanging back did not restore the plan");
 }
 
+// #4051: the wait for the RAM an arena needs (an engine still exiting gives it back a few seconds late)
+void test_wait_for_ram() {
+    using namespace strata::core::detail;
+    constexpr uint64_t GiB = 1ull << 30;
+    double waited = -1.0;
+    uint64_t avail = 0;
+    int slept = 0, noted = 0;
+    const auto sleeper = [&](double) { ++slept; };
+    const auto note = [&](double, uint64_t) { ++noted; };
+    // enough at once: no wait, no sleep, no note
+    require(wait_for_ram(40 * GiB, 20.0, 0.25, 5.0, [](uint64_t& a) { a = 50 * GiB; return true; }, sleeper, note, waited, avail) &&
+                waited == 0.0 && slept == 0 && noted == 0 && avail == 50 * GiB, "RAM that was there was waited for");
+    // 10 GiB free for a 40 GiB arena, the exiting engine gives its 50 GiB back after 3 s (12 steps of 0.25 s)
+    int reads = 0;
+    slept = noted = 0;
+    require(wait_for_ram(40 * GiB, 20.0, 0.25, 5.0, [&](uint64_t& a) { a = ++reads > 12 ? 60 * GiB : 10 * GiB; return true; },
+                         sleeper, note, waited, avail) && waited == 3.0 && slept == 12 && noted == 1 && avail == 60 * GiB,
+            "RAM that came back after 3 s was not waited for");
+    // it never comes: the wait ends at the limit and says so (the load then goes on and warns)
+    slept = noted = 0;
+    require(!wait_for_ram(40 * GiB, 20.0, 0.25, 5.0, [](uint64_t& a) { a = 10 * GiB; return true; }, sleeper, note, waited, avail) &&
+                waited == 20.0 && slept == 80 && noted == 4 && avail == 10 * GiB, "the wait did not end at its limit");
+    // no wait asked for: one reading
+    slept = 0;
+    require(!wait_for_ram(40 * GiB, 0.0, 0.25, 5.0, [](uint64_t& a) { a = 10 * GiB; return true; }, sleeper, note, waited, avail) &&
+                waited == 0.0 && slept == 0, "a zero wait slept");
+    // the RAM cannot be read: the wait ends at once
+    slept = 0;
+    require(!wait_for_ram(40 * GiB, 20.0, 0.25, 5.0, [](uint64_t&) { return false; }, sleeper, note, waited, avail) && slept == 0,
+            "an unreadable RAM was waited for");
+}
+
 // #1250: when the page-locked complement is registered in steps, and what a meminfo reading says
 void test_pin_pacing() {
     using namespace strata::core::detail;
@@ -1014,6 +1046,7 @@ int main(int argc, char** argv) {
         test_resident_exchange();
         test_resident_memory_budget();
         test_pin_pacing();
+        test_wait_for_ram();
         test_numa_slice_ranges();
         test_cgroup_memory_budget();
         test_host_memory();

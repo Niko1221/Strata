@@ -73,6 +73,10 @@ class BundleImports(unittest.TestCase):
 
     def test_setup_py_and_each_of_its_tools_import_with_tools_limited_to_the_bundle(self):
         modules = sorted(set(pt.setup_tool_imports(self.root)) | set(pt.INSTALLER_TOOLS))
+        probe = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(self.root / 'tools')!r}); import _paths; _paths.gguf_py()"],
+                               capture_output=True, text=True, timeout=60, env={**os.environ, "STRATA_CONTROL_INSTALL": "1"})
+        if probe.returncode != 0:      # a tool reads llama.cpp's gguf-py when it is imported: a test box without any llama.cpp checkout cannot import it
+            self.skipTest("no llama.cpp gguf-py on this box (set STRATA_GGUF_PY to run this check)")
         code = ("import sys, os, importlib\n"
                 f"sys.path[:0] = [{str(self.root)!r}, {str(self.root / 'tools')!r}]\n"
                 "import setup\n"

@@ -56,6 +56,7 @@
 #endif
 #if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
 #include "rocblas_tuning.hpp"
+#include "strata/core/amd_community.hpp"
 #include <hip/hip_runtime_api.h>
 #include <rocblas/rocblas.h>
 #include <filesystem>
@@ -496,6 +497,12 @@ std::unique_ptr<RocBlasState> create_rocblas_state(void* stream) {
         while (!tag.empty() && tag.back() == '.') tag.pop_back();
         file /= arch + "-rocblas-" + tag + ".txt";
     }
+    // The community-made tables (strata/core/amd_community.hpp) load only with STRATA_AMD_COMMUNITY_TUNING on (the default).
+    if (!strata::amd_community::rocblas_table_allowed(arch, version)) {
+        std::fprintf(stderr, "prefill gemm: the rocBLAS table for %s / %s is community-made and STRATA_AMD_COMMUNITY_TUNING=0; "
+                             "rocBLAS's default kernels run\n", arch.c_str(), version);
+        return nullptr;
+    }
     std::string error;
     if (!state->table.load(file.string(), arch, version, error)) {
         std::fprintf(stderr, "prefill gemm: %s (%s); rocBLAS's default kernels run\n", error.c_str(),
@@ -637,6 +644,7 @@ bool gemm_dequant_side() {
 }
 
 Gemm::~Gemm() {
+    for (W16Entry& e : w16_) if (e.d) (void) cudaFree(e.d);
     for (void* e : side_ready_)
         if (e) (void) cudaEventDestroy((cudaEvent_t) e);
     for (void* e : side_free_)
@@ -1391,6 +1399,57 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     }
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
+#endif
+#ifndef STRATA_USE_HIP
+    // The FP16 weight kept on the device after its first dequant.  NOT bit-exact against the uncached sliced form on every
+    // card (see the default below): off unless STRATA_PF_W16_CACHE_MIB is set.  When on it is sized by the card, never by the user.  It takes only VRAM nobody else holds: a weight is
+    // cached while the card keeps kW16AutoReserve free afterwards (the MTP prompt capture, the batch windows and a long
+    // prompt's buffers are allocated later, out of that room; a replica with 309 MiB free ran out of memory at 14K tokens),
+    // so a card whose expert cache fills it caches nothing and a card with room (all experts resident) caches what the
+    // prompt path uses (~6 GB for Qwen3.8).  STRATA_PF_W16_CACHE_MIB=N is an explicit budget (2 GiB kept free, as before),
+    // =0 turns it off.
+    if (w16_budget_ < 0) {
+        const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
+        if (v != nullptr) {
+            w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
+            w16_reserve_ = 2ll << 30;
+        } else {
+            // OFF by default (INT3, 11-01; owner's rule: a default that changes values needs 5%+, KL and a yes).  cda6463e8 had turned it on for
+            // Linux CUDA as 'bit-exact', but gemm_dequant_side_parity fails with it on sm_86 (z440, boston), sm_120 (l620) and sm_121 (Spark): a
+            // cached weight runs one full-N GEMM where the uncached form runs the sliced ones, and the roundings differ.  v0.2.9 had it off.
+            // STRATA_PF_W16_CACHE_MIB=N (above) turns it on by hand; the automatic sizing (kW16AutoReserve) is kept for when it is shown exact.
+            w16_budget_ = 0;
+            w16_reserve_ = kW16AutoReserve;
+        }
+    }
+    if (w16_budget_ > 0 && !side_scratch_) {
+        const int64_t bytes = N * K * 2;
+        uint16_t* cw = nullptr;
+        for (const W16Entry& e : w16_)
+            if (e.p == W_blocks && e.type == ggml_type && e.n == N && e.k == K) { cw = e.d; break; }
+        if (cw == nullptr && w16_used_ + bytes <= w16_budget_) {
+            size_t fb = 0, tb = 0;
+            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (size_t) w16_reserve_ &&
+                cudaMalloc((void**) &cw, (size_t) bytes) == cudaSuccess) {
+                strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, cw, stream_);
+                w16_.push_back({W_blocks, ggml_type, N, K, cw});
+                w16_used_ += bytes;
+            } else {
+                (void) cudaGetLastError();
+                cw = nullptr;
+                if (w16_budget_ > 0 && !w16_logged_) {
+                    w16_logged_ = true;
+                    std::fprintf(stderr, "strata prefill: FP16 weight cache %lld MiB (the card keeps %lld MiB free; STRATA_PF_W16_CACHE_MIB=0 turns it off)\n",
+                                 (long long) (w16_used_ >> 20), (long long) (w16_reserve_ >> 20));
+                }
+                w16_budget_ = w16_used_ > 0 ? w16_used_ : 0;   // out of room: stop trying
+            }
+        }
+        if (cw != nullptr) {
+            f16(X, cw, Y, T, N, K, ldy, beta);
+            return;
+        }
+    }
 #endif
     if (N * K > scratch_elems_) {
         // Too large for the scratch at once: in row slices.

@@ -45,3 +45,44 @@ test('counter lines are read, and the load and VRAM in use reach the card by its
   assert.equal(reader.read('luid_0x00000000_0x00099999'), null);
   assert.equal(procs.length, 1, 'one process for every read');
 });
+
+// ---- 0.2.8: the card's temperature from the display driver (D3DKMT), #3727 ----
+import { d3dkmtTemperatureC, GPU_TEMP_CSHARP } from '../server/windows-gpu.mjs';
+
+test('temperature comes in tenths of a degree; no answer, zero and nonsense are not a reading', () => {
+  assert.equal(d3dkmtTemperatureC(300), 30);
+  assert.equal(d3dkmtTemperatureC(437), 44);
+  assert.equal(d3dkmtTemperatureC(-1), null);
+  assert.equal(d3dkmtTemperatureC(0), null);
+  assert.equal(d3dkmtTemperatureC(4294967295), null);
+  assert.equal(d3dkmtTemperatureC(undefined), null);
+  assert.equal(d3dkmtTemperatureC('abc'), null);
+});
+
+test('a counter line carries the temperature; the older three-field line and a failed query still parse', () => {
+  assert.equal(parseGpuCounterLine('G luid_0x00000000_0x00016102 37 4294967296 430').temperatureC, 43);
+  assert.equal(parseGpuCounterLine('G luid_0x00000000_0x00016102 37 4294967296 -1').temperatureC, null);
+  const old = parseGpuCounterLine('G luid_0x00000000_0x00016102 37 4294967296');
+  assert.equal(old.temperatureC, null); assert.equal(old.utilizationPct, 37);
+});
+
+test('the temperature reaches the reader by LUID next to load and memory', () => {
+  const procs = [];
+  const reader = createWindowsGpuReader({ spawnFn: () => { const p = new EventEmitter(); p.stdout = new EventEmitter(); p.kill = () => {}; procs.push(p); return p; }, now: () => 5 });
+  reader.read('luid_0x00000000_0x00016102');
+  procs[0].stdout.emit('data', 'G luid_0x00000000_0x00016102 90 17000000000 465\n');
+  const r = reader.read('luid_0x00000000_0x00016102');
+  assert.equal(r.temperatureC, 47); assert.equal(r.utilizationPct, 90);
+});
+
+test('the PowerShell script that asks D3DKMT is single-quote safe and uses adapter performance data type 62 with the temperature at byte 56', () => {
+  assert.ok(!GPU_TEMP_CSHARP.includes("'"), 'it sits inside a single-quoted PowerShell string');
+  assert.match(GPU_TEMP_CSHARP, /i\.T=62/);
+  assert.match(GPU_TEMP_CSHARP, /ReadInt32\(buf,56\)/);
+  assert.match(GPU_TEMP_CSHARP, /AllocHGlobal\(64\)/);
+  let script = '';
+  createWindowsGpuReader({ spawnFn: (_cmd, args) => { script = args.at(-1); const p = new EventEmitter(); p.stdout = new EventEmitter(); p.kill = () => {}; return p; } }).read('x');
+  assert.ok(script.includes('Add-Type -TypeDefinition'), 'compiled once, before the loop');
+  assert.ok(script.indexOf('Add-Type') < script.indexOf('while($true)'));
+  assert.match(script, /try\{Add-Type[^]*\}catch\{\}/, 'a failed compile must not stop load and memory');
+});

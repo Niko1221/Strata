@@ -57,6 +57,7 @@ struct Context::Impl {
 #endif
     id<MTLDevice> dev;
     id<MTLCommandQueue> q;
+    id<MTLCommandQueue> q2 = nil;   // run_graph_async's queue
     std::vector<id<MTLLibrary>> libs;
     id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
     uint64_t ev_v = 0;
@@ -65,11 +66,7 @@ struct Context::Impl {
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
 // the MTLBuffer and offset that bind byte `off` of b (a chunked buffer: the chunk the offset selects)
 static inline id<MTLBuffer> BO(const Buffer& b, size_t off, size_t& o) {
-#if defined(STRATA_DS4_RUNTIME)
-    if (!b.chunks) { o = off + b.bias; return B(b); }
-#else
-    if (!b.chunks) { o = off; return B(b); }
-#endif
+    if (!b.chunks) { o = off + b.bias; return B(b); }   // (bias: a view onto part of a bigger allocation; 0 otherwise)
     const size_t k = std::min(off / b.stride, b.chunks->size() - 1);
     o = off - k * b.stride;
     return (__bridge id<MTLBuffer>)(*b.chunks)[k];
@@ -333,6 +330,19 @@ uint64_t Context::recommended_working_set() const { return [impl_->dev recommend
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
+    std::string why;
+    const int id = compile_try(files, prelude, fast_math, &why);
+    if (id < 0) {
+        std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
+                     [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
+                     files.empty() ? "?" : files.back().c_str(), why.c_str());
+        std::exit(3);
+    }
+    return id;
+}
+
+// The same, and a failure is returned (-1, the compiler's message in *why) instead of ending the process: for a library that has a fallback.
+int Context::compile_try(const std::vector<std::string>& files, const std::string& prelude, bool fast_math, std::string* why) {
     std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
     if (!ggml_common_path.empty() && prelude.find("NO_GGML_COMMON") == std::string::npos) {
         src += "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n";
@@ -356,10 +366,8 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
     NSError* err = nil;
     id<MTLLibrary> lib = [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:&err];
     if (!lib) {
-        std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
-                     [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
-                     files.empty() ? "?" : files.back().c_str(), [[err localizedDescription] UTF8String]);
-        std::exit(3);
+        if (why) *why = err ? [[err localizedDescription] UTF8String] : "unknown";
+        return -1;
     }
     impl_->libs.push_back(lib);
     return (int)impl_->libs.size() - 1;
@@ -549,6 +557,26 @@ void require_fit(const Pipeline& p, uint32_t threads, const char* where) {
 }
 
 Buffer Context::alloc(size_t bytes) {
+#if defined(STRATA_DS4_RUNTIME)
+    // Metal returns the new buffer with one more reference parked in the calling thread's autorelease pool.  The engine's host
+    // threads have no pool (only Context::run opens one), so that reference was never given back: every buffer made here lived for
+    // the rest of the process, free() or not (a 16 KB job array per expert matvec, ~90K a request: +1.3 GB and a slower queue every
+    // call, 16 -> 3 tok/s after a few requests on a big Mac).
+    Buffer r;
+    @autoreleasepool {
+        id<MTLBuffer> b = [impl_->dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+        if (!b) {
+            std::fprintf(stderr, "mtl: alloc %zu failed\n", bytes);
+            std::exit(4);
+        }
+        std::memset([b contents], 0, bytes);
+        r.handle = (__bridge_retained void*)b;
+        r.ptr = [b contents];
+    }
+    allocated_ += bytes;
+    r.bytes = bytes;
+    return r;
+#else
     id<MTLBuffer> b = [impl_->dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
     if (!b) {
         std::fprintf(stderr, "mtl: alloc %zu failed\n", bytes);
@@ -561,6 +589,7 @@ Buffer Context::alloc(size_t bytes) {
     r.ptr = [b contents];
     r.bytes = bytes;
     return r;
+#endif
 }
 
 Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
@@ -621,6 +650,21 @@ Buffer Context::wrap(void* p, size_t bytes) {
     if (std::getenv("DS4_WRAP_LOG"))   // debugging: a wrap that is not inside one runtime allocation gets a second GPU mapping of the pages
         std::fprintf(stderr, "mtl: wrap FALLBACK p=%p bytes=%zu alloc_remaining=%zu\n", p, bytes, ds4_gpu_alloc_remaining ? ds4_gpu_alloc_remaining(p) : (size_t) 0);
 #endif
+#if defined(STRATA_DS4_RUNTIME)
+    Buffer r;
+    @autoreleasepool {   // (see alloc: the engine's host threads have no pool of their own)
+        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
+        if (!b) {
+            std::fprintf(stderr, "mtl: wrap %zu failed\n", bytes);
+            std::exit(4);
+        }
+        r.handle = (__bridge_retained void*)b;
+    }
+    allocated_ += bytes;
+    r.ptr = p;
+    r.bytes = bytes;
+    return r;
+#else
     id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
     if (!b) {
         std::fprintf(stderr, "mtl: wrap %zu failed\n", bytes);
@@ -632,6 +676,7 @@ Buffer Context::wrap(void* p, size_t bytes) {
     r.ptr = p;
     r.bytes = bytes;
     return r;
+#endif
 }
 
 void Context::free(Buffer& b) {
@@ -803,6 +848,11 @@ void* Context::mark() {
     return (__bridge_retained void*) impl_->inflight;
 }
 
+void Context::drop_mark(void* token) {
+    // The token holds a +1 on a committed command buffer; one nobody waits for is never freed.
+    if (token) { id<MTLCommandBuffer> cb = (__bridge_transfer id<MTLCommandBuffer>) token; cb = nil; }
+}
+
 void Context::wait_mark(void* token) {
     id<MTLCommandBuffer> cb = (__bridge_transfer id<MTLCommandBuffer>) token;
     const auto tw0 = std::chrono::steady_clock::now();
@@ -943,6 +993,9 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
 }
 
 double Context::run_graph(const std::vector<Dispatch>& ds) {
+    // The wait spins on the buffer's status for up to 20 ms before it blocks: waitUntilCompleted's thread wake costs ~0.5 ms
+    // a window (M5 Max, Q2_0 decode: +5% tok/s, same tokens).  STRATA_METAL_SPIN=0: the blocking wait.
+    static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
@@ -952,7 +1005,40 @@ double Context::run_graph(const std::vector<Dispatch>& ds) {
         }
         [enc endEncoding];
         [cb commit];
-        [cb waitUntilCompleted];
+        if (spin) {
+            const auto t0 = std::chrono::steady_clock::now();
+            while (cb.status < MTLCommandBufferStatusCompleted &&
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 20e-3) {}
+        }
+        if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
+void* Context::run_graph_async(const std::vector<Dispatch>& ds) {
+    @autoreleasepool {
+        if (impl_->q2 == nil) impl_->q2 = [impl_->dev newCommandQueue];
+        id<MTLCommandBuffer> cb = [impl_->q2 commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        for (size_t i = 0; i < ds.size(); ++i) {
+            if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            encode(enc, ds[i]);
+        }
+        [enc endEncoding];
+        [cb commit];
+        return (__bridge_retained void*) cb;
+    }
+}
+
+double Context::wait_async(void* token) {
+    if (token == nullptr) return 0.0;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = (__bridge_transfer id<MTLCommandBuffer>) token;
+        if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
             std::exit(5);

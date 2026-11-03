@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+import collections
 import threading
 import time
 import unittest
@@ -25,6 +26,7 @@ def engine_without_process(n=2):
     e.slot_claims, e.slot_releasing, e._orphan_seen = set(), set(), {}
     e.slot_cv = threading.Condition()
     e.waiting, e.admitting, e.wait_lens, e.ctl_epoch = 0, 0, [], 0
+    e.arrivals = collections.deque(maxlen=64)
     e.ctl = threading.Lock()
     e.gen = 1
     e.up = True

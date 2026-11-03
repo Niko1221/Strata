@@ -88,10 +88,26 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'] } = {}) {
+function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [], cliStartWait = 'old' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
+  /* The Control this app found, as it is on disk. The app reads the start-wait ceiling out of these files instead of trusting
+     the version, because a start wait is checked three times before the engine is reached and a released Control has those
+     three ceilings disagreeing:
+       'old'        no runtime ceiling at all, both gates 600 (Control before #3949)
+       'split'      the runtime takes 1800, the CLI and the record still stop at 600 (every Control 0.1.50 to 0.1.52)
+       'cli-only'   the CLI follows the runtime, the record still stops at 600 (`direct runtime intent has an invalid timeout`)
+       'runtime'    all three hand the wait to the runtime's own ceiling */
+  const controlSource = join(root, 'control', 'strata_control');
+  mkdirSync(controlSource, { recursive: true });
+  writeFileSync(join(controlSource, 'runtime.py'), cliStartWait === 'old' ? '' : 'MAX_START_WAIT = 1800\n');
+  writeFileSync(join(controlSource, 'management.py'), ['cli-only', 'runtime'].includes(cliStartWait)
+    ? '        wait = _seconds(wait, 0, runtime.MAX_START_WAIT, "start wait")\n'
+    : '        wait = _seconds(wait, 0, 600, "start wait")\n');
+  writeFileSync(join(controlSource, 'journal.py'), cliStartWait === 'runtime'
+    ? '        ranges = {"wait_s": (0, start_wait_max) if kind == "runtime.start" else\n'
+    : '        ranges = {"wait_s": (0, 600) if kind == "runtime.start" else\n');
   const earlierInstallEnv = process.env.STRATA_INSTALL_DIR;
   process.env.STRATA_INSTALL_DIR = install;      // the app's own install folder (the host always tells Control which one; it never falls back to an older CLI folder)
   const configs = ids.map(id => {
@@ -105,7 +121,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
   const rpc = [];
   let startFailure = null, startFailureLeft = Infinity;
   const control = {
-    control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: '0.1.45',
+    control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: controlVersion,
     async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda' })) }; },
     async engine() {
       calls.push(['engine']);
@@ -126,7 +142,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
   // answers like it: the catalog, the hardware with the GPUs, and an install plan or job.
   const catalog = { families: [{ family: 'qwen', title: 'Qwen3.8-Flash-Next', about: 'x', images: true, experimental: false, sizes: [
     { id: 'q2_0', model: 'Q2_0', download_gb: 66.4, ram_needed_gb: 48, about: 'fast', on_this_pc: 'fits', installed: false, images: true, experimental: false },
-    { id: 'iq3_xxs', model: 'IQ3_XXS', download_gb: 75.8, ram_needed_gb: 60, about: 'balanced', on_this_pc: 'fits', installed: false, images: true, experimental: false }] }],
+    { id: 'iq3_xxs', model: 'IQ3_XXS', download_gb: 75.8, ram_needed_gb: 60, about: 'balanced', on_this_pc: 'fits', installed: false, images: true, experimental: false }, ...extraSizes] }],
     contexts: [8192, 32768], recommendation: { family: 'qwen', model: 'IQ3_XXS', context: 32768 }, context_note: '' };
   const hardware = { ram_gb: 63, cpu: { name: 'cpu', cores: 12 }, gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 5070', vram_gb: 11.9, usable: true }] };
   let installJob = null;
@@ -604,5 +620,45 @@ test("onboarding 'use your own GGUF' (#3507, #3424): the models folder the perso
     assert.notEqual(sent.data_dir, own, 'the folder of GGUF files is not the data folder: the packs would be downloaded into it');
     // a folder of GGUF files named like a data folder's models/<tag> hands its Strata folder to the installer
     assert.ok(sent.data_dir === undefined || sent.data_dir === join(f.root, 'Strata-data'), `data_dir was ${sent.data_dir}`);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+/* The start wait follows the model's size, as `strata launch` does since #3949, and never asks an older Control for more than it takes.
+   Reported on the app side by #3459 and #4191: a big model on a slow disk was stopped at 300 s while the engine went on reading. */
+test('packaged: a big model is waited for by its size, inside the ceiling of the Control this app has (#3459 #4191)', async () => {
+  const run = async (cliStartWait, downloadGb) => {
+    const f = packagedFixture({ ids: ['big'], cliStartWait, extraSizes: [{ id: 'big', model: 'BIG', download_gb: downloadGb, ram_needed_gb: 60, about: 'x', on_this_pc: 'fits', installed: false, images: false, experimental: false }] });
+    try {
+      await f.native.refresh(true);
+      const job = await finish(f.native, f.native.operation('load', { model: 'big' }).id);
+      assert.equal(job.state, 'done', job.error);
+      const start = f.calls.find(c => c[0] === 'start');
+      const saved = f.saved[0];
+      await f.native.close();
+      return { wait: start[2], ready: saved.engine_ready_s };
+    } finally { f.cleanup(); }
+  };
+  assert.equal((await run('old', 180)).wait, 600, 'a Control with no long-wait ceiling at all is asked for 600 s, as today');
+  assert.equal((await run('split', 180)).wait, 600, 'a Control whose runtime takes 1800 s but whose CLI still stops at 600 is asked for 600 s: the CLI would refuse the start outright (#3949)');
+  assert.equal((await run('cli-only', 180)).wait, 600, 'a Control whose CLI takes it but whose operation record still stops at 600 is asked for 600 s too: the record is written before the start runs');
+  const long = await run('runtime', 180);
+  assert.equal(long.wait, 1720, '600 s + 8 s per GB above 40 GB, as in strata launch, once the CLI really takes it');
+  assert.equal(long.ready, 1780, 'the server readies after the start gave up, never before it');
+  const small = await run('runtime', 20);
+  assert.equal(small.wait, 300, 'a model under 40 GB keeps the 300 s it always had');
+  assert.equal(small.ready, undefined, 'nothing is added to a small model’s run config');
+  const huge = await run('runtime', 400);
+  assert.equal(huge.wait, 1800, 'and never more than this Control accepts');
+});
+
+test('packaged: a run config that names a longer engine wait is honoured, and never shortened by the app', async () => {
+  const f = packagedFixture({ ids: ['deepseek-v4.1-flash-ist-das-2.00bpw'], cliStartWait: 'runtime' });
+  try {
+    writeFileSync(join(f.install, 'strata-deepseek-v4.1-flash-ist-das-2.00bpw.json'), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack')], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('load', { model: 'deepseek-v4.1-flash-ist-das-2.00bpw' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.calls.find(c => c[0] === 'start')[2], 1800, 'the wait of the newest Control, which is what the ceiling allows');
+    assert.equal(f.saved[0].engine_ready_s, 3600, 'setup’s own longer wait stays as it is');
   } finally { await f.native.close(); f.cleanup(); }
 });

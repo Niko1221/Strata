@@ -71,11 +71,13 @@ test('the plan says what the picked folder means and keeps the person\'s spellin
 test('a whole drive is planned as <drive>\\Strata, shown as <drive>\\Strata\\Models', async t => {
   const f = fixture(t);
   const root = f.root.slice(0, f.root.indexOf(process.platform === 'win32' ? '\\' : '/') + 1) || '/';
+  const before = existsSync(join(root, 'Strata'));
   const plan = await f.native.planModelsFolder(root);
+  assert.equal(existsSync(join(root, 'Strata')), before, 'planning must not create or remove anything');
   assert.equal(plan.wholeDrive, true);
   assert.equal(plan.folder, join(root, 'Strata'));
   assert.equal(plan.shown, join(root, 'Strata', 'Models'));
-  rmSync(join(root, 'Strata'), { recursive: true, force: true });
+  // Planning must not touch the disk. This test never creates <drive>\Strata, so it never deletes it either (#4689).
 });
 
 test('the card is blocked while a model runs or a job runs: a running model must be stopped on purpose', async t => {

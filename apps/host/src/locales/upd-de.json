@@ -1,0 +1,19 @@
+{
+ "upd01": "Um die Engine zu aktualisieren, muss Strata das geladene Modell anhalten: {0}.",
+ "upd02": "Zuerst wird die neue Engine heruntergeladen, während das Modell weiter antwortet. Danach hält das Modell an (laufende Antworten werden zuerst beendet), die Engine wird aktualisiert, und Sie können das Modell mit denselben Einstellungen wieder starten. Ihre Modelle und Einstellungen bleiben erhalten.",
+ "upd03": "Anhalten und aktualisieren",
+ "upd04": "Die neue Engine wird vorbereitet. {0} arbeitet weiter, bis sie bereit ist.",
+ "upd05": "{0} wird angehalten. Laufende Antworten werden zuerst beendet.",
+ "upd06": "{0} ist angehalten. Die Engine wird aktualisiert…",
+ "upd07": "Engine wird aktualisiert",
+ "upd08": "Die Engine ist aktualisiert",
+ "upd09": "Die Engine wurde nicht aktualisiert",
+ "upd10": "Die Engine ist aktualisiert. {0} mit denselben Einstellungen wieder starten?",
+ "upd11": "Die Aktualisierung wurde nicht abgeschlossen. Ihre alte Engine ist unverändert und funktioniert weiter. {0} damit wieder starten?",
+ "upd12": "Jetzt nicht",
+ "upd13": "{0} wird gestartet. Das Laden kann einige Minuten dauern.",
+ "upd14": "{0} wird wieder gestartet",
+ "upd15": "Das Modell wurde nicht wieder gestartet",
+ "upd16": "Sie können es unter „Modelle“ erneut laden.",
+ "upd17": "Ein Modell, das nicht aus dieser App gestartet wurde, läuft noch, daher wurde nichts geändert. Halten Sie es an und aktualisieren Sie die Engine dann erneut."
+}

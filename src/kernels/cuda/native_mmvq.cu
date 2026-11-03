@@ -30,6 +30,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
+#include "strata/core/dispatch_stats.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "s26_tsum.cuh"
 #if !defined(__HIPCC__)
@@ -888,7 +889,11 @@ __global__ void native_small_mmvq_kernel(const Weight* __restrict__ w,
 // row) value is accumulated over kbx in the same order, summed across warps in the same order and reduced with
 // the same warp tree as the ncols = 1 kernel, so every column is BITWISE equal to a single-column call on that
 // column (checked by bench/micro/native_mmvq_multi.cpp). The ncols = 1 kernels are untouched.
-constexpr int MAX_NCOLS = 8;
+// Columns one launch takes: 8, the 0.2.7 limit, or 16 where windows are wide (window_limits.hpp: the cases 9..16 are
+// compiled only then, so an engine built with STRATA_WINDOW_MAX_T=8 has exactly the kernels it had).  A window has one
+// column per row.  The wide launches read every weight once for all their columns; running 16 columns as two 8-column
+// passes (native_mmvq below does it for more than MAX_NCOLS) reads the dense weights twice and measured slower than 8 rows.
+constexpr int MAX_NCOLS = STRATA_VERIFY_MAX_T > 8 ? STRATA_VERIFY_MAX_T : 8;
 
 // Each format splits its dot product into `load` (everything that depends only on the weight block: codes,
 // unpacked scales, block scale) and `apply` (the activation loads and the original *_impl expression). `load` runs
@@ -1583,7 +1588,19 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
         case 6: launch_multi_n<F, 6>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 7: launch_multi_n<F, 7>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 8: launch_multi_n<F, 8>(weights, x_q8_1, y, n_in, n_out, s); break;
-        default: throw std::invalid_argument("native MMVQ multi-column launch requires 2 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: launch_multi_n<F, 9>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 10: launch_multi_n<F, 10>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 11: launch_multi_n<F, 11>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 12: launch_multi_n<F, 12>(weights, x_q8_1, y, n_in, n_out, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: launch_multi_n<F, 13>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 14: launch_multi_n<F, 14>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 15: launch_multi_n<F, 15>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 16: launch_multi_n<F, 16>(weights, x_q8_1, y, n_in, n_out, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ multi-column launch requires 2 <= ncols <= MAX_NCOLS");
     }
 }
 
@@ -2137,7 +2154,9 @@ __global__ void native_mmvq_il_pf_kernel(const typename I::F::Block* __restrict_
     }
 }
 
-template <typename I, int NC, int R>
+// NOUT < NC (BW-NEXT, STRATA_IL_PAD): the kernel of NC columns computes a column that is not wanted and stores only the first NOUT; each column's value is
+// its own sum, so the stored ones are bitwise those of the NOUT-column kernel.  5 columns of IQ4_XS run as 6 (the 5-column instantiation is 15-40% slower).
+template <typename I, int NC, int R, int NOUT = NC>
 __launch_bounds__(4 * WARP)
 __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w, const int* __restrict__ xq,
                                       const float* __restrict__ xd, float* __restrict__ y, int n_in, int n_out) {
@@ -2185,7 +2204,7 @@ __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w
                 s += acc[2][i][c];
                 s += acc[3][i][c];
                 s = warp_sum(s);
-                if (lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
+                if (c < NOUT && lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
             }
     }
 }
@@ -2208,10 +2227,10 @@ int il_pf_for(int type, int ncols, int n_out, int* rows) {
     return t >> 4;
 }
 // one (type, columns, rows) launch: today's kernel, or the variant il_pf_for names for a type that has them
-template <typename I, int NC, int R>
+template <typename I, int NC, int R, int NOUT = NC>
 void launch_il_one(unsigned blocks, const typename I::F::Block* w, const int* xq, const float* xd, float* y, int n_in, int n_out,
                    cudaStream_t s, int pf) {
-    if constexpr (I::HAS_PF) {
+    if constexpr (I::HAS_PF && NOUT == NC) {
         switch (pf) {
         case 6: native_mmvq_il_pf_kernel<I, NC, R, 0, 4, false><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
         case 2: native_mmvq_il_pf_kernel<I, NC, R, 2, 4, true><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
@@ -2221,7 +2240,13 @@ void launch_il_one(unsigned blocks, const typename I::F::Block* w, const int* xq
         default: break;
         }
     }
-    native_mmvq_il_kernel<I, NC, R><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out);
+    native_mmvq_il_kernel<I, NC, R, NOUT><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out);
+}
+
+// STRATA_IL_PAD (bit 0: IQ4_XS 5 columns as 6; default on, 0 off): bitwise, see native_mmvq_il_kernel
+int il_pad() {
+    static const int v = [] { const char* e = std::getenv("STRATA_IL_PAD"); return e != nullptr ? std::atoi(e) : 1; }();
+    return v;
 }
 
 template <typename I, int R>
@@ -2241,8 +2266,16 @@ void launch_il(const void* weights, const void* x_il, float* y, int n_in, int n_
 #undef STRATA_IL_CASE
         // 147-verify: 5..8 columns (the cp = 8 copy) at 1 or 2 rows a warp; launch_il_rows maps 4 rows to 2 there
 #define STRATA_IL_CASE(N) case N: if constexpr (R <= 2) launch_il_one<I, N, R>(blocks, w, xq, xd, y, n_in, n_out, s, pf); break;
-        STRATA_IL_CASE(5) STRATA_IL_CASE(6) STRATA_IL_CASE(7) STRATA_IL_CASE(8)
+        STRATA_IL_CASE(6) STRATA_IL_CASE(7) STRATA_IL_CASE(8)
 #undef STRATA_IL_CASE
+    case 5:
+        if constexpr (R <= 2) {
+            if constexpr (std::is_same_v<I, IlIQ4XS>) {
+                if ((il_pad() & 1) != 0) { launch_il_one<I, 6, R, 5>(blocks, w, xq, xd, y, n_in, n_out, s, 0); break; }
+            }
+            launch_il_one<I, 5, R>(blocks, w, xq, xd, y, n_in, n_out, s, pf);
+        }
+        break;
         default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 8");
     }
 }
@@ -2307,7 +2340,7 @@ void validate_shape(int n_in, int ncols, int block_elems = Q8K) {
     if (n_in <= 0 || n_in % block_elems != 0) {
         throw std::invalid_argument("native MMVQ requires n_in > 0 and divisible by its block element count");
     }
-    if (ncols < 1 || ncols > MAX_NCOLS) throw std::invalid_argument("native MMVQ requires 1 <= ncols <= 8");
+    if (ncols < 1 || ncols > MAX_NCOLS) throw std::invalid_argument("native MMVQ requires 1 <= ncols <= MAX_NCOLS");
 }
 void validate_pointer(const void* p) {
     if (!p || reinterpret_cast<std::uintptr_t>(p) % 4 != 0) {
@@ -2386,7 +2419,19 @@ void wave_launch(const void* weights, const void* x_q8_1, float* y, int n_in, in
         case 6: wave_launch_n<F, 6>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 7: wave_launch_n<F, 7>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 8: wave_launch_n<F, 8>(weights, x_q8_1, y, n_in, n_out, s); break;
-        default: throw std::invalid_argument("native MMVQ (wave) requires 1 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: wave_launch_n<F, 9>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 10: wave_launch_n<F, 10>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 11: wave_launch_n<F, 11>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 12: wave_launch_n<F, 12>(weights, x_q8_1, y, n_in, n_out, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: wave_launch_n<F, 13>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 14: wave_launch_n<F, 14>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 15: wave_launch_n<F, 15>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 16: wave_launch_n<F, 16>(weights, x_q8_1, y, n_in, n_out, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ (wave) requires 1 <= ncols <= MAX_NCOLS");
     }
 }
 #define STRATA_WAVE_MMVQ(...) \
@@ -2569,8 +2614,16 @@ bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in,
             validate_pointer(x_q8_1);
             validate_pointer(y);
             validate_stream(stream);
-            if (q8sm60::launch(found->second.qs, found->second.d, static_cast<const Q81Block*>(x_q8_1), y, n_in,
-                               n_out, ncols, static_cast<cudaStream_t>(stream))) {
+            // (the kernel takes at most q8sm60::MAX_COLS columns; a 9..16-row window is run in passes, each column bitwise
+            // the one-column result, as native_mmvq does for more than MAX_NCOLS)
+            bool all = true;
+            for (int j = 0; all && j < ncols; j += q8sm60::MAX_COLS) {
+                const int nj = ncols - j < q8sm60::MAX_COLS ? ncols - j : q8sm60::MAX_COLS;
+                all = q8sm60::launch(found->second.qs, found->second.d,
+                                     static_cast<const Q81Block*>(x_q8_1) + std::size_t(j) * std::size_t(n_in / Q8K),
+                                     y + std::size_t(j) * std::size_t(n_out), n_in, n_out, nj, static_cast<cudaStream_t>(stream));
+            }
+            if (all) {
                 launch_check();
                 return true;
             }
@@ -2597,7 +2650,19 @@ bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in,
         case 6: q8_packed_launch<6>(found->second, x, y, s); break;
         case 7: q8_packed_launch<7>(found->second, x, y, s); break;
         case 8: q8_packed_launch<8>(found->second, x, y, s); break;
-        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: q8_packed_launch<9>(found->second, x, y, s); break;
+        case 10: q8_packed_launch<10>(found->second, x, y, s); break;
+        case 11: q8_packed_launch<11>(found->second, x, y, s); break;
+        case 12: q8_packed_launch<12>(found->second, x, y, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: q8_packed_launch<13>(found->second, x, y, s); break;
+        case 14: q8_packed_launch<14>(found->second, x, y, s); break;
+        case 15: q8_packed_launch<15>(found->second, x, y, s); break;
+        case 16: q8_packed_launch<16>(found->second, x, y, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= MAX_NCOLS");
     }
     launch_check();
     return true;
@@ -2732,7 +2797,19 @@ bool q6_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in,
         case 6: q6_packed_launch<6>(found->second, x, y, s); break;
         case 7: q6_packed_launch<7>(found->second, x, y, s); break;
         case 8: q6_packed_launch<8>(found->second, x, y, s); break;
-        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: q6_packed_launch<9>(found->second, x, y, s); break;
+        case 10: q6_packed_launch<10>(found->second, x, y, s); break;
+        case 11: q6_packed_launch<11>(found->second, x, y, s); break;
+        case 12: q6_packed_launch<12>(found->second, x, y, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: q6_packed_launch<13>(found->second, x, y, s); break;
+        case 14: q6_packed_launch<14>(found->second, x, y, s); break;
+        case 15: q6_packed_launch<15>(found->second, x, y, s); break;
+        case 16: q6_packed_launch<16>(found->second, x, y, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= MAX_NCOLS");
     }
     launch_check();
     return true;
@@ -2844,7 +2921,7 @@ bool native_q8_0_sm60_pack_in_place(void* weights, int n_in, int n_out, const ch
     if (q8_packed_registry().count(weights)) return true;
     // The GGUF blocks are gone afterwards, so only where q8_packed_mmvq can never fall back to the GGUF-layout kernels
     // (every column count fits the kernel's shared-memory planes) and its 16-byte weight loads stay aligned
-    if (q8sm60::smem_bytes(MAX_NCOLS, n_in) > q8sm60::MAX_SMEM || reinterpret_cast<std::uintptr_t>(weights) % 16 != 0)
+    if (q8sm60::smem_bytes(q8sm60::MAX_COLS, n_in) > q8sm60::MAX_SMEM || reinterpret_cast<std::uintptr_t>(weights) % 16 != 0)
         return native_q8_0_sm60_pack(weights, n_in, n_out, what);
     const std::size_t bytes = std::size_t(n_in / 32) * std::size_t(n_out) * 34;   // both layouts: 34 bytes per 32
     std::vector<uint8_t> blocks(bytes), planes(bytes);
@@ -3476,6 +3553,20 @@ std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out) {
 
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream) {
+    // more columns than one launch takes: ceil(ncols / MAX_NCOLS) passes over the same weights.  Every column of a
+    // multi-column pass is bitwise the single-column result (bench/micro/native_mmvq_multi.cpp), so the split changes no
+    // arithmetic.  Column j starts at activation block j * (n_in / Q8K) and writes y + j * n_out.  (Never reached by a
+    // window of up to 16 rows in a wide build, nor of up to 8 in a narrow one: a guard for a caller that asks for more.)
+    if (ncols > MAX_NCOLS) {
+        const std::size_t col_blocks = std::size_t(n_in / Q8K);
+        for (int j = 0; j < ncols; j += MAX_NCOLS) {
+            const int nj = (ncols - j < MAX_NCOLS) ? (ncols - j) : MAX_NCOLS;
+            native_mmvq(ggml_type, weights, static_cast<const Q81Block*>(x_q8_1) + std::size_t(j) * col_blocks,
+                        y + std::size_t(j) * std::size_t(n_out), n_in, n_out, nj, stream);
+        }
+        return;
+    }
+    strata::dispatch::kernel(strata::dispatch::kDense, 0, ggml_type, n_in, n_out, ncols);   // BW-MEASURE: the multi-column MMVQ kernels
     switch (ggml_type) {
     case 2: native_q4_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 6: native_q5_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
@@ -3875,6 +3966,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
         return;
     }
     const int r = g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out);
+    strata::dispatch::kernel(strata::dispatch::kDense, 10 + r, ggml_type, n_in, n_out, ncols);   // BW-MEASURE: the interleaved MMVQ, r rows a warp
     validate_shape(n_in, ncols, QK);
     validate_pointer(weights);
     if (ncols == 1) x_il = x_q8_1;   // one column: the plain blocks, no interleaved copy

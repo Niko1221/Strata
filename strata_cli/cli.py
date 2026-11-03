@@ -770,7 +770,8 @@ def _effective(cfg: dict, saved: dict | None, cli: argparse.Namespace | None = N
     if values["queue_timeout"] is not None and values["max_queue"] is None:
         raise ProfileError("queue_timeout requires max_queue to bound pending calls")
     if values["parallel"] is not None and any(flag in cfg["args"] for flag in ("--batch", "--slots")):
-        if origins["parallel"] != "run_config":
+        # (the all-cards split engine's run config, split_config's "split_engine_note", always carries --batch; the server turns "parallel" into its lane count)
+        if origins["parallel"] != "run_config" and not cfg.get("split_engine_note"):
             raise ProfileError("parallel override conflicts with --batch/--slots in run config args")
     if values["batch_groups"] is not None and "--batch-groups" in cfg["args"]:
         raise ProfileError("batch_groups override conflicts with --batch-groups in run config args")
@@ -1575,7 +1576,7 @@ def _timeskip(a: argparse.Namespace) -> int:
         env = {**os.environ, "STRATA_TIMESKIP_PROMPT": prompt,
                "STRATA_TIMESKIP_ATTEMPT": str(attempt)}
         proc = subprocess.run(a.revise_command, shell=True, cwd=str(candidate), env=env,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, errors="replace")
         if proc.returncode != 0:
             raise time_skip.TimeSkipError(
                 f"the revision command failed (exit {proc.returncode}): "
@@ -2132,7 +2133,7 @@ def _run(a: argparse.Namespace) -> int:
             return _components_backends(a)
         if a.command == "components" and a.components_command == "engine":
             return _components_engine(a)
-        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback", "install-file")):
+        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback", "install-file", "engines", "use", "remove")):
             from strata_cli import update_cmd
             return update_cmd.run(a)
         if a.command in ("doctor", "components"):
@@ -2214,6 +2215,21 @@ class _QuietCapture:
         return self.text
 
 
+def _install_argv(argv: list[str]) -> list[str]:
+    """`strata install` hands everything after it to setup.py (`strata install --family qwen --model IQ3_XXS --yes`). argparse cannot do that
+    by itself: an option it does not know ahead of the first plain word (--source, --family) was refused as "unrecognized arguments", or
+    split from its value (#4188). So the options of setup.py go behind a `--`, and only `--update` and --help stay strata's own."""
+    if not argv or argv[0] != "install":
+        return argv
+    rest = list(argv[1:])
+    if rest and rest[0] in ("-h", "--help"):
+        return argv
+    update = "--update" in rest
+    if update:
+        rest.remove("--update")
+    return ["install", *(["--update"] if update else []), "--", *rest]
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         from strata_control import private_files
@@ -2221,8 +2237,9 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:                          # a thin bundle ships without strata_control
         pass
     ap = parser()
-    a, extras = ap.parse_known_args(argv)
-    a.raw_argv = list(sys.argv[1:] if argv is None else argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    a, extras = ap.parse_known_args(_install_argv(raw))
+    a.raw_argv = raw
     if extras:
         if getattr(a, "command", None) in ("launch", "connect"):
             from strata_cli.launch import cmd as launch_cmd

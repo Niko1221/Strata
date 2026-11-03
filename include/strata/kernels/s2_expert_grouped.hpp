@@ -23,6 +23,8 @@
 // can keep one captured graph per layer with the maximum grid and a device-side count.
 #pragma once
 
+#include "strata/kernels/window_limits.hpp"
+
 #include <cstdint>
 
 namespace strata::kernels {
@@ -100,6 +102,29 @@ void moe_hit_add(float* parts, const float* hit_out, const int32_t* dst, const i
 void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
                     const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
                     const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream);
+#if STRATA_VERIFY_MAX_T > 8
+/// The same for a window of 9..16 rows (CUDA / HIP engines built with a wide window, window_limits.hpp): `max_group` is the
+/// most entries one group can hold = the window's rows (a token routes to an expert once).  Up to 8 it is
+/// `moe_grouped_s2` (one pass of each kernel); 9..16 adds a second pass over the entries from the 9th on.
+void moe_grouped_s2_wide(const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                         const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
+                         const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream,
+                         int max_group);
+#endif
+/// What a verify window calls: `max_group` is the window's rows.  A build with narrow windows (the default, and every SYCL / Metal
+/// build, whose kernel libraries have only `moe_grouped_s2`) runs `moe_grouped_s2`: its windows hold at most 8 rows.
+inline void moe_grouped_s2_window(const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+                                  const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
+                                  const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream,
+                                  int max_group) {
+#if STRATA_VERIFY_MAX_T > 8
+    moe_grouped_s2_wide(grp_ptr, grp_start, n_groups, ent_dst, ent_tok, cap_groups, cap_entries, x_q8_0, x_scales, scratch, out,
+                        stream, max_group);
+#else
+    (void) max_group;
+    moe_grouped_s2(grp_ptr, grp_start, n_groups, ent_dst, ent_tok, cap_groups, cap_entries, x_q8_0, x_scales, scratch, out, stream);
+#endif
+}
 /// Plan v0.3 P6: the groups for `moe_grouped_s2` when every expert id is resident at base + id * blob (the MTP
 /// layer's 512 experts): counts[0] groups, counts[1] entries; entry dst = routing index, tok = index / k_per_tok.
 void moe_group_resident(const int32_t* ids, int n, int k_per_tok, const uint8_t* base, int64_t blob,
