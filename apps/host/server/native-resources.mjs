@@ -1,4 +1,5 @@
 import {USER_KEY,flagValue} from './native-user-args.mjs';
+import {parseEngineVersion} from './engine-version.mjs';
 
 /** The engine's own default reserve, and the one setup writes for pictures read on the GPU: neither is a choice of the person. */
 const ENGINE_DEFAULT_RESERVE_MIB=700;
@@ -75,22 +76,49 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
  /* A reserve the person set is theirs, 0 included: no floor and no share of the card (#3215 #3270). Without one the card gets the safety default (defaultReserves). */
  const reserve=asked!==null?asked:defaults[profile];
  remove('--vram-reserve-mib');args.push('--vram-reserve-mib',String(reserve));
- // RAM: "leave 20% for my work" keeps the model's RAM within 80% of the PC. A model whose experts do not fit there (the
- // setup rule: experts plus 10 GB) keeps only that many GiB of them in RAM and reads the rest from the model files
- // (--resident-budget-gib, which implies --mmap-experts). Full performance takes the budget out again.
+ // RAM: "leave 20% for my work". An engine that knows the setting (RAM_KEEP_MIN_ENGINE and newer) is asked to keep W GiB of the RAM free, W = ramKeepGib(RAM), as the env STRATA_RAM_KEEP_GIB: it decides from
+ // the RAM that is free at its start, not from the PC's total, using the full RAM copy of the experts (the arena) only if W GiB stay free after it and otherwise keeping the hottest experts in a RAM copy
+ // that leaves max(W, its own safety headroom) free. An env variable and not the flag --ram-keep-gib, so that an engine without the setting never meets an argument it does not know. The engine in use
+ // is the one the Engine tab selected (its version, model.engineVersion, or the folder named in the run config's exe); an older engine, or one whose version cannot be read, gets the rule of 0.2.9
+ // unchanged, which every engine understands: a RAM budget of 80% of the PC (--resident-budget-gib, which implies --mmap-experts) when the model's experts do not fit there (the setup rule: experts plus
+ // 10 GB), and a STRATA_RESIDENT_HEADROOM_GIB of 20% of the RAM. Full performance (and `strata serve`) pass nothing: the whole system, the arena whenever it fits; either rule is taken out again.
  if(baseline.ramBudget)remove('--resident-budget-gib');
- let env=null;   // the engine's own "leave RAM free" setting travels in the run config's env
- if(baseline.ramHeadroom&&config.env){env={...config.env};delete env.STRATA_RESIDENT_HEADROOM_GIB;}
- const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;let ramBudget=false;
- if(profile==='work'&&ram>0&&arena>0&&!['--resident-experts','--mmap-experts','--resident-budget-gib'].some(f=>args.includes(f))&&ram*.8<arena+10){
-  args.push('--resident-budget-gib',String(Math.max(8,Math.min(Math.floor(ram*.8)-10,Math.floor(arena/1.073741824)))));ramBudget=true;
+ let env=null;
+ const dropEnv=name=>{if(config.env&&name in config.env){env={...(env??config.env)};delete env[name];}};
+ if(baseline.ramHeadroom)dropEnv('STRATA_RESIDENT_HEADROOM_GIB');
+ if(baseline.ramKeep)dropEnv('STRATA_RAM_KEEP_GIB');
+ const ram=Number(hardware?.ram_gb)||0,arena=Number(model?.arenaGb)||0;let ramKeep=false,ramBudget=false,ramHeadroom=false;
+ // The person's own RAM choice wins: a RAM mode or --ram-keep-gib in their args, and STRATA_RAM_KEEP_GIB or STRATA_RESIDENT_HEADROOM_GIB of theirs in the env (the engine reads those first).
+ const mineEnv=Boolean((env??config.env)?.STRATA_RAM_KEEP_GIB);
+ const modes=['--resident-experts','--mmap-experts','--resident-budget-gib','--ram-keep-gib'];
+ if(profile==='work'&&ram>0&&arena>0&&!modes.some(f=>args.includes(f))){
+  if(engineKnowsRamKeep(engineVersionOfExe(config?.exe)??model?.engineVersion)){
+   if(!mineEnv){env={...(env??config.env??{}),STRATA_RAM_KEEP_GIB:String(ramKeepGib(ram))};ramKeep=true;}
+  }else if(ram*.8<arena+10){
+   args.push('--resident-budget-gib',String(Math.max(8,Math.min(Math.floor(ram*.8)-10,Math.floor(arena/1.073741824)))));ramBudget=true;
+   if(!(env??config.env)?.STRATA_RESIDENT_HEADROOM_GIB){env={...(env??config.env??{}),STRATA_RESIDENT_HEADROOM_GIB:String(Math.ceil(ram*.2))};ramHeadroom=true;}
+  }
  }
- // The budget caps what the engine keeps in RAM. "Leave 20%" is also asked of the engine itself: at its start it leaves 20% of the RAM
- // available for other programs (it keeps fewer experts if the PC is busy), and it said nothing about this before.
- let ramHeadroom=false;
- if(ramBudget&&!(config.env?.STRATA_RESIDENT_HEADROOM_GIB)){env={...(env??config.env??{}),STRATA_RESIDENT_HEADROOM_GIB:String(Math.ceil(ram*.2))};ramHeadroom=true;}
- return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom}};
+ return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom,ramKeep}};
 }
+
+/** The RAM, in GiB, "Leave 20% for my work" asks the engine to keep free: a fifth of the PC's RAM rounded up, never under 5 or over 8
+ *  (5 at 24 GB, 7 at 32 GB, 8 at 64 GB and above). The engine adds it to the arena's need and, when the arena does not fit, leaves it free beside the RAM copy. It is sent as the env variable STRATA_RAM_KEEP_GIB. */
+export const ramKeepGib=ram=>Math.min(8,Math.max(5,Math.ceil((Number(ram)||0)*.2)));
+
+/** The first engine version that reads STRATA_RAM_KEEP_GIB / --ram-keep-gib (the setting was added in 0.1.56, the engine of the 0.2.9 update; the released 0.2.9 engine is 0.1.55). An engine older than this, or one whose version cannot be read, gets the
+ *  rule of 0.2.9 instead. Lower it (or raise the engine's version) only together with the release that carries the setting. */
+export const RAM_KEEP_MIN_ENGINE='0.1.56';
+/** True when the engine with this version string knows the setting. Unknown or unreadable: false (the 0.2.9 rule works on every engine, an ignored env variable would keep no room). */
+export function engineKnowsRamKeep(version){
+ const have=parseEngineVersion(version),need=parseEngineVersion(RAM_KEEP_MIN_ENGINE);
+ if(!have||!need)return false;
+ for(let i=0;i<4;i++){const a=have[i]??0,b=need[i]??0;if(a!==b)return a>b;}
+ return true;
+}
+/** The version in the folder a run config's exe names (.../engine/0.1.55-windows-x86_64-cuda-cuda13/strata.exe), or null (the exe "component:strata-engine" means the active engine, whose version the caller gives). */
+export const engineVersionOfExe=exe=>{const m=/engine[\\/](\d+(?:\.\d+)+)-/.exec(String(exe??''));return m?m[1]:null;};
+
 
 /* One automatic second try after a start that died. Returns null when there is nothing safer to try (the caller then reports the first
    failure as it was) or {config, words, detail}: the same run config with ONE safer memory setting, a sentence for the user and the

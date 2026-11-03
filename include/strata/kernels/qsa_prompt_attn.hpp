@@ -29,6 +29,14 @@ namespace strata::kernels {
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream);
 
+/// HIP only (false in every other build and for every pool/device the matrix-core kernel does not take): the same attention
+/// with the layer's output gate applied in the epilogue - o16[t * ld16 + h * 256 + d] = half(attn * sigmoid(gate)) with
+/// gate = qf[t, h, 256 + d] (qf is [n_q, 24, 512], q | gate per head): the bits `qsa_prompt_attn_batch` followed by the
+/// prefill's gate_attn gives (STRATA_QSA_FUSE_GATE).  Nothing is launched on false; the caller runs the two-step path.
+bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& s, const float* qf, uint16_t* o16, int64_t ld16, int64_t n_q,
+                                 void* stream);
+
 /// HIP only (false in every other build): the prompt attention runs on the RDNA4 matrix cores on the current device -
 /// the default on gfx12 (STRATA_HIP_WMMA=0 turns it off), STRATA_HIP_WMMA=1 on gfx11 as well.  The prompt path sizes its
 /// expert ring for it (prefill.cpp).

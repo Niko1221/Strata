@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 
 const { code } = await transform(await readFile(new URL('../src/lib/agents.ts', import.meta.url),'utf8'), {loader:'ts',format:'esm'});
-const { updateAgent, runningAgents } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { updateAgent, runningAgents, settleAgents } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
 test('partial agent updates retain identity and keep elapsed time moving',()=>{
   let agents=updateAgent([],{id:'a',name:'Review',status:'working',tokens:20,durationMs:1000},5000);
@@ -30,4 +30,14 @@ test('late and malformed frames cannot overwrite newer agent readings',()=>{
   assert.equal(next[0].durationMs,5000);
   assert.equal(next[0].tokens,42);
   assert.equal(next[0].status,'completed');
+});
+
+test('a saved helper row that says working is stopped after a reload, and a live frame brings it back (#4218)',()=>{
+  const saved=[{id:'a',name:'x',description:'',status:'working',durationMs:5,tokens:1,updatedAt:1000},{id:'b',name:'y',description:'',status:'completed',durationMs:5,tokens:1,updatedAt:1000}];
+  const settled=settleAgents(saved);
+  assert.deepEqual(settled.map(a=>a.status),['cancelled','completed']);
+  assert.equal(runningAgents(settled),0);
+  assert.equal(saved[0].status,'working','the saved list is not changed');
+  assert.equal(settleAgents(undefined),undefined);
+  assert.equal(updateAgent(settled,{id:'a',status:'working',updatedAt:2000})[0].status,'working');
 });

@@ -57,11 +57,12 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 In the **desktop app** and the **Terminal**. What does not fit in memory is read from your SSD, so it needs a lot of free
 disk space.
 
-| Set (IST-DAS) | Download | Free disk needed |
+| Set (ISTA-DAS) | Download | Free disk needed |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | about 245 GB |
 | 2.00 bpw | 257 GB | about 265 GB |
 | 2.25 bpw | 274 GB | about 280 GB |
+| ISTA-DAS Coder (half of the experts removed) | 191 GB | about 197 GB |
 
 Runs on NVIDIA RTX 30, 40 and 50 series (Windows and Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo
 (Windows), and Apple Silicon Macs with 64 GB or more, text only ([Mac](docs/DEEPSEEK_MAC.md)). Setup downloads the files and the DeepSeek engine, then starts the model.
