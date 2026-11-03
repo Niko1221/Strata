@@ -14,3 +14,22 @@ export function planProgress(plan: Plan | null | undefined): PlanProgressValue |
     const done = plan.steps.filter(s => s.state === 'done' || s.state === 'skipped').length;
     return { done, total, percent: Math.round((100 * done) / total), current: plan.steps.find(s => s.state === 'running')?.text ?? '' };
 }
+
+/** Elapsed time for the bar: "42 s", "3:07", "1:02:09". */
+export function formatElapsed(ms: number): string {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
+    const two = (n: number) => String(n).padStart(2, '0');
+    if (h > 0) return `${h}:${two(m)}:${two(sec)}`;
+    return m > 0 ? `${m}:${two(sec)}` : `${sec} s`;
+}
+
+/** Time a plan has been going ahead: from when it was first seen under way, without the time it was paused. */
+export interface Clock { start: number; pausedMs: number; pausedAt: number | null }
+export function tickClock(clock: Clock | undefined, paused: boolean, now: number): Clock {
+    const c = clock ?? { start: now, pausedMs: 0, pausedAt: null };
+    if (paused && c.pausedAt === null) return { ...c, pausedAt: now };
+    if (!paused && c.pausedAt !== null) return { ...c, pausedMs: c.pausedMs + (now - c.pausedAt), pausedAt: null };
+    return c;
+}
+export const elapsedOf = (c: Clock, now: number) => now - c.start - c.pausedMs - (c.pausedAt === null ? 0 : now - c.pausedAt);
