@@ -112,10 +112,10 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
   // A number someone chose (including 1) is the person's decision, and so is an explicit --batch in the engine arguments.
   if (facts.explicitBatch || (chosen !== null && Number.isFinite(chosen))) {
     const slots = facts.explicitBatch ? null : Math.max(1, Math.min(1024, Math.trunc(chosen)));
-    // DFlash2 chosen by name with a number of requests (owner, 2026-11-03: the person's own choice wins): the engine runs DFlash2 with that many requests, a drafter per request
-    // (strata_control/drafting.py blocked_by `named`), so the MTP's --batch-mtp is not added beside it. Auto that resolved to DFlash2 is not named: it keeps the MTP for several requests.
-    const named = (values.drafting ?? config.drafting) === 'dflash2' && (drafter ?? 'dflash2') === 'dflash2';
-    const wantMtp = !named && (values.batchMtp ?? config.batchMtp) === true && !facts.batchMtp && facts.mtp && facts.gpus.length === 1 && (slots ?? 0) > 1;
+    // DFlash2 chosen by name with a number of requests (owner, 2026-11-03: the person's own choice wins) runs DFlash2 with that many requests, a drafter per request
+    // (strata_control/drafting.py blocked_by `named`). Expert mode's batch-mtp wish is still added here as in 0.2.10: the server knows the backend and the engine, takes
+    // --batch-mtp out when DFlash2 runs, and keeps it when the MTP runs instead (Metal, which has no per-request drafters).
+    const wantMtp = (values.batchMtp ?? config.batchMtp) === true && !facts.batchMtp && facts.mtp && facts.gpus.length === 1 && (slots ?? 0) > 1;
     return { slots: slots ?? 0, batchMtp: wantMtp, explicit: true, requested, note: null, slotGb: slot };
   }
   // DFlash2 (named, or Auto where the engine has it) and nobody chose a number of requests: one at a time, the app does not fill in slots beside it. (A number the person chose is kept

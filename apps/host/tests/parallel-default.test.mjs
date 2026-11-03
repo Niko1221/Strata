@@ -197,21 +197,21 @@ test('DFlash2 named with a number of requests the person chose: that many, no no
   const big = hw(72);
   for (const n of [2, 4, 8]) {
     const viaValues = chooseParallel({ config: cfg(32768), values: { drafting: 'dflash2', parallel: n }, hardware: big });
-    assert.deepEqual([viaValues.slots, viaValues.explicit, viaValues.note, viaValues.batchMtp], [n, true, null, false], `values ${n}`);
+    assert.deepEqual([viaValues.slots, viaValues.explicit, viaValues.note], [n, true, null], `values ${n}`);
     const viaConfig = chooseParallel({ config: cfg(32768, { drafting: 'dflash2', parallel: n }), hardware: big });
     assert.deepEqual([viaConfig.slots, viaConfig.explicit, viaConfig.note], [n, true, null], `saved ${n}`);
     const applied = applyParallel(cfg(32768, { drafting: 'dflash2', parallel: n }), viaConfig);
     assert.equal(applied.cfg.parallel, n, 'the number stays');
     assert.equal(applied.note, null);
-    assert.ok(!applied.cfg.args.includes('--batch-mtp'), 'the MTP slot switch is not added beside DFlash2');
+    assert.ok(!applied.cfg.args.includes('--batch-mtp'), 'no wish, no --batch-mtp');
   }
   // the same through the resolved drafter the load passes, and a --batch in the engine arguments
   assert.equal(chooseParallel({ config: cfg(32768, { drafting: 'dflash2', parallel: 4 }), drafter: 'dflash2', hardware: big }).slots, 4);
   const withBatch = chooseParallel({ config: { ...cfg(32768, { drafting: 'dflash2' }), args: ['--max-context', '32768', '--mtp', '/m', '--batch', '3'] }, drafter: 'dflash2', hardware: big });
   assert.deepEqual([withBatch.explicit, withBatch.note], [true, null]);
-  // Expert mode's batch-mtp wish is the MTP's: DFlash2 named does not take it, the MTP and Auto do as before
+  // Expert mode's batch-mtp wish is passed on exactly as in 0.2.10 for every drafter: the server drops --batch-mtp when DFlash2 runs and keeps it when the MTP runs (Metal)
   const wish = (extra, drafter) => chooseParallel({ config: cfg(32768), values: { parallel: 4, batchMtp: true, ...extra }, drafter, hardware: big }).batchMtp;
-  assert.equal(wish({ drafting: 'dflash2' }, 'dflash2'), false);
+  assert.equal(wish({ drafting: 'dflash2' }, 'dflash2'), true);
   assert.equal(wish({ drafting: 'mtp' }, 'mtp'), true);
   assert.equal(wish({}, 'dflash2'), true, 'Auto that resolved to DFlash2 is not named: the MTP serves the several requests');
   assert.equal(wish({ drafting: 'dflash2' }, 'mtp'), true, 'named, but the drafter is not here yet: the MTP runs and keeps its slot switch');

@@ -241,6 +241,19 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
         self.assertIn("--layer-split", args)
         self.assertNotIn("--mtp", args)
 
+    def test_metal_named_dflash2_with_requests_starts_the_mtp_exactly_as_0_2_10_did(self):
+        """Metal has no per-request drafters, so a DFlash2 chosen by name with several requests is the MTP there, with the MTP's own --batch-mtp (the saved one, or Expert mode's
+        wish, which the app adds to the arguments) kept: the same arguments the MTP chosen by name gets, which is what 0.2.10 started for this case."""
+        for parallel in (2, 4, 8):
+            named = self.server_args(self.cfg(drafting="dflash2", parallel=parallel), "metal", ())
+            self.assertEqual(named, self.server_args(self.cfg(drafting="mtp", parallel=parallel), "metal", ()), parallel)
+            self.assertEqual(named, self.server_args(self.cfg(parallel=parallel), "metal", ()), "and the same as Auto")
+            self.assertIn("--batch-mtp", named)
+            self.assertEqual((flag(named, "--batch"), flag(named, "--mtp"), "--draft" in named), (str(parallel), str(self.data / "mtp" / "rt"), False))
+        # the same saved arguments on CUDA: DFlash2 with the requests, the MTP's slot switch is taken out
+        cuda = self.server_args(self.cfg(drafting="dflash2", parallel=4))
+        self.assertEqual((loaded(cuda), "--batch-mtp" in cuda, flag(cuda, "--batch")), ({"dflash2"}, False, "4"))
+
     def test_the_all_cards_split_engine_still_runs_its_mtp(self):
         from tests.split import test_split_engine as TS
         (Path(self.tmp.name) / "data").mkdir(exist_ok=True)
