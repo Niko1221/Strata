@@ -66,9 +66,10 @@ int main() {
         CHECK(!p.empty() && p == q);
         CHECK(!find(a, "STRATA_PF_FUSED") && !find(p, "STRATA_PF_FUSED"));
     }
-    // round 0212 candidate: STRATA_MMQ_KQ=1 for compute capability 8.0+, behind STRATA_NV_KQ_DEFAULT=1 until kNvKqDefaultOn flips
+    // round 0212: STRATA_MMQ_KQ=1 is a default for compute capability 8.0+ (owner yes 11-03), with its own off switches
     unset("STRATA_NV_KQ_DEFAULT");
-    CHECK(kNvKqDefaultOn || nv_kq_default_env(12, 0, false).empty());
+    CHECK(kNvKqDefaultOn);
+    for (int major : {8, 9, 10, 12}) CHECK(nv_kq_default_env(major, 0, false).size() == 1);   // on without any switch
     put("STRATA_NV_KQ_DEFAULT", "1");
     for (int major : {8, 9, 10, 12}) {
         const auto k = nv_kq_default_env(major, 0, false);

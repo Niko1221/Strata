@@ -36,12 +36,13 @@ std::vector<std::string> apply_nv_defaults(int major, int minor);
 
 namespace strata::core {
 
-/// NVIDIA candidate default that changes the answers (round 0212, NVSINGLE; NOT on until the owner says yes): STRATA_MMQ_KQ=1, the K-quant MMQ prompt
+/// NVIDIA default that changes the answers (round 0212, NVSINGLE; the owner said yes 11-03): STRATA_MMQ_KQ=1, the K-quant MMQ prompt
 /// kernels for the experts of Unsloth's UD-Q4/Q5/Q6_K_XL files (Q4_K / Q5_K / Q5_1 / Q6_K), which otherwise are dequantized to FP16 and multiplied by
 /// cuBLAS.  A pack without K-quant experts never reads the variable.  Cards of compute capability 8.0 and up only (measured on sm_86 and sm_120).
-/// Today the rule is behind STRATA_NV_KQ_DEFAULT=1; flipping kNvKqDefaultOn makes it a default with STRATA_MMQ_KQ=0, STRATA_NV_KQ_DEFAULT=0 and
-/// STRATA_DEFAULTS=026 as the off switches.  min_major / min_minor are the lowest compute capability among the visible cards.
-constexpr bool kNvKqDefaultOn = false;
+/// On by default; STRATA_MMQ_KQ=0, STRATA_NV_KQ_DEFAULT=0 and STRATA_DEFAULTS=026 are the off switches (kNvKqDefaultOn=false would leave it behind
+/// STRATA_NV_KQ_DEFAULT=1).  Measured: RTX PRO 6000 prompt +26..38%, A6000 +2..11%, first-token KL 0.024 / 0.035, 61-task suite 54 vs 53.
+/// min_major / min_minor are the lowest compute capability among the visible cards.
+constexpr bool kNvKqDefaultOn = true;
 std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor, bool defaults026);
 std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor);
 /// Sets what nv_kq_default_env returns where the user has not set the variable; prints one line to stderr when it set anything.
