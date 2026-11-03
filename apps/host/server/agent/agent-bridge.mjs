@@ -346,6 +346,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     let send = onFrame; let attached = true;
     // A research run gathers first; what the assistant writes while gathering is notes, not the answer, so it is not shown.
     let hideDeltas = !!researchTopic;
+    // Strata Dev (planGuidance): the closing words of a plan step that is not the last are not shown; the step's done line carries what it did.
+    let hideStep = false;
     signal?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
     // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
     const written = { all: '', step: '' };
@@ -359,7 +361,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const groups = new ActivityGroups({ emit: raw });
     const skills = new SkillsUsed({ emit: raw, info: skillInfoFrom(skillsDir()) });
     const emit = frame => {
-      if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (guard) trip(guard.text(frame.text)); if (hideDeltas) return; }
+      if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (guard) trip(guard.text(frame.text)); if (hideDeltas || hideStep) return; }
       if (frame.own) { const { own, ...rest } = frame; frame = rest; }
       if (frame.type === 'delta' && frame.text) groups.text();
       if (frame.type === 'agent-tool' && frame.tool) {
@@ -691,6 +693,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         p.state = 'paused';
       });
       const updated = plans.get(chatId);
+      // Strata Dev: a step that stopped before it was done shows what it said after all (it may be a question or a problem).
+      if (hideStep && written.step.trim()) { hideStep = false; out.push({ type: 'delta', text: `\n\n${written.step.trim()}\n` }); }
       if (at >= 0) out.push(stepFrame(updated, at));
       out.push(publishPlan(updated.state === 'done' ? 'done' : 'paused', updated));
       return out;
@@ -702,6 +706,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       const now = plans.get(chatId);
       await runtime.gw.rpc('goals/create', { agentId: sessionId, request: { objective: stepObjective(now, index) } });
       written.step = ''; written.stepAt = Date.now();
+      hideStep = !!activeDevSettings()?.planGuidance && index + 1 < now.steps.length;
       emit(stepFrame(now, index));
       emit(publishPlan('step', now));
       const st = now.steps[index];
@@ -720,7 +725,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       plans.update(chatId, p => { p.steps[at].state = 'done'; p.steps[at].summary = summary; });
       let now = plans.get(chatId);
       emit(stepFrame(now, at));
-      emit({ type: 'delta', own: true, text: `\n\n${stepLine(at, now.steps.length, now.steps[at].text, 'done')}\n` });
+      emit({ type: 'delta', own: true, text: `\n\n${stepLine(at, now.steps.length, now.steps[at].text, 'done')}${hideStep && summary ? ' · ' + summary : ''}\n` });
       const next = currentStep(now);
       emit(publishPlan(next < 0 ? 'done' : 'step', next < 0 ? (plans.update(chatId, p => { p.state = 'done'; }), plans.get(chatId)) : now));
       await deliverQueued(at + 1);
@@ -830,6 +835,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           if (at < 0) throw new AgentUnavailable('Every step of this plan is already done.', 'plan-done');
           if (goal.action === 'resume' && plan.goalStarted) {
             // Strata Dev: the step's goal may be over already (the model closed it just before a pause or a stop): that step is done, go on with the next. No goal at all: the step gets a new one.
+            hideStep = !!activeDevSettings()?.planGuidance && at + 1 < plan.steps.length;
             const left = activeDevSettings() ? await goalGet() : undefined;
             if (activeDevSettings() && left?.phase === 'complete') {
               turn.advancing = true;

@@ -42,3 +42,25 @@ test('resume after the step goal was closed: that step is done and the plan goes
   assert.ok(['running', 'done'].includes(after.steps[2].state), 'the next step has run or is running');
   assert.ok(after.state !== 'running' || after.steps[2].state === 'running', 'never running with nothing behind it');
 });
+
+test('Dev planGuidance: a step before the last shows one done line instead of its closing words; the last step keeps its words; off: as before', { skip }, async (t) => {
+  for (const dev of [true, false]) {
+    setActiveDevSettings(dev ? devSettings({ planGuidance: { enabled: true } }) : null);
+    const worker = await startScriptedWorker({});
+    const dir = mkdtempSync(join(tmpdir(), 'strata-stepwords-'));
+    const ws = join(dir, 'ws'); mkdirSync(ws, { recursive: true });
+    const local = [{ id: 'inst-1', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768, slots: 2 }];
+    const bridge = createAgentBridge({ dataDir: dir, localInstances: () => local, connections: () => [], env: process.env, startTimeoutMs: 90_000 });
+    try {
+      const base = (onFrame = () => {}) => ({ chatId: 'w', workspacePath: ws, mode: 'bypass', onFrame });
+      await bridge.planCommand({ ...base(), line: 'SCRIPT:planreply' });
+      const out = [];
+      await bridge.planGoal({ ...base(f => out.push(f)), planId: bridge.planState('w').id });
+      const said = out.filter(f => f.type === 'delta').map(f => f.text).join('');
+      const closings = said.match(/Step finished\. The result is checked\./g)?.length ?? 0;
+      assert.equal(closings, dev ? 1 : 3, dev ? 'only the last step keeps its closing words' : 'Live: every step');
+      assert.equal(out.filter(f => f.type === 'plan-step' && f.state === 'done').length, 3);
+      assert.equal(bridge.planState('w').state, 'done');
+    } finally { await bridge.close(); await worker.close(); setActiveDevSettings(null); try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ } }
+  }
+});
