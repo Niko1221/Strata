@@ -398,7 +398,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     if (c.route !== wanted || c.routeGeneration !== runtime.generation) {
       const select = effort => runtime.gw.rpc('session/selectModel', { request: { sessionId, provider, model: route.modelId, ...(effort ? { reasoningEffort: effort } : {}) } });
       try {
-        try { await select(level); } catch (e) { if (!level || e.code === 'session/not-found') throw e; await select(null); }
+        try { await select(level); c.effortApplied = level; } catch (e) { if (!level || e.code === 'session/not-found') throw e; await select(null); c.effortApplied = null; }
       } catch (e) {
         if (e.code === 'session/not-found') { delete sessionMap[c.id]; persist(); }
         throw new AgentUnavailable(`The coding assistant could not use ${route.name}. Pick the model again and retry.`, 'model-unavailable', e.message);
@@ -408,6 +408,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
 
     // The chat's permission mode is read once, here, for this whole turn. A change the user makes while the
     // turn runs applies to the next one, so a running turn never sees its permissions move under it.
+    // Strata Dev: what the plan turn really thinks at. A level the model does not have is dropped without an error (see above), so say it.
+    if (planTask && activeDevSettings()?.planGuidance) console.log(`[strata] plan turn thinking: wanted ${level ?? 'the model default'}, ${!level ? 'nothing to apply' : c.effortApplied === level ? 'taken by the model' : c.effortApplied === null ? 'NOT taken: the model keeps its own default' : 'not confirmed'}, thinking budget ${budget || 'no limit'}`);
     const appliedMode = planTask ? 'plan' : modeOf(mode);
     await applyMode(runtime, sessionId, appliedMode);
 

@@ -28,7 +28,7 @@ async function planRequest(t, guidance) {
 test('planGuidance on: the planning turn carries the rules and thinks at the configured level', { skip }, async (t) => {
   const on = await planRequest(t, { enabled: true, thinking: 'Max' });
   assert.match(on.raw, /How to build a good plan/);
-  assert.match(on.raw, /Write the tests of a stage in the same step as its code/);
+  assert.match(on.raw, /Write the code and its tests together/);
   assert.notEqual(JSON.stringify(on.params), JSON.stringify((await planRequest(t, null)).params), 'the thinking level differs from the chat\'s own Low');
 });
 
