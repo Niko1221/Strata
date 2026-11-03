@@ -242,8 +242,8 @@ SLOT_RESERVE_MIB = 700       # the engine's default --vram-reserve-mib
 DEFAULT_CONTEXT = 131072     # --max-context when the arguments name none (the 128K default)
 
 #: model families (strata launch --family) the drafter was trained for and measured on: Qwen3.8-Flash-Next, its Gyro build and Unsloth's quantizations of the same weights
-#: (UD-IQ4_XS, UD-Q4_K_XL...; DFlash2 numbers measured on UD-Q4_K_XL on Strix, R9700 and M5 Max). Not Swift (UkisAI's fine-tune), Coder (ISTA-DASLab's coding version) or NVFP4:
-#: no DFlash2 acceptance numbers for them, they start the MTP.
+#: (UD-IQ4_XS, UD-Q4_K_XL...; DFlash2 numbers measured on UD-Q4_K_XL on Strix, R9700 and M5 Max). Not Swift (UkisAI's fine-tune: DFlash2 only when it is named,
+#: CHOSEN_ONLY_FAMILIES), Coder (ISTA-DASLab's coding version) or NVFP4: no DFlash2 acceptance numbers for them, they start the MTP.
 SUPPORTED_FAMILIES = ("qwen", "gyro", "unsloth")
 #: The model_name setup.py (and metal/setup_mac.py) write: f"{family name}-{model.lower()}": qwen3.8-flash-next-iq3_s, qwen3.8-flash-next-gyro-gyro-s,
 #: qwen3.8-flash-next-unsloth-ud-q4_k_xl. (Coder is qwen3.8-flash-next-coder-iq1_m, NVFP4 qwen3.8-flash-next-nvfp4-nvfp4: neither matches.) Mirrored in
@@ -256,6 +256,19 @@ def supported_model(model_name: str | None = None, family: str | None = None) ->
     if family is not None:
         return family.lower() in SUPPORTED_FAMILIES
     return bool(model_name and _SUPPORTED_NAME.match(str(model_name)))
+
+
+#: Swift 1.5 (UkisAI's fine-tune of the same weights, the same layers and tokenizer) runs DFlash2 when the person names it, and Auto stays with the MTP there:
+#: the drafter was trained on the original weights. The model_name setup.py writes for it starts with "swift-" (swift-1.5-iq3_s).
+CHOSEN_ONLY_FAMILIES = ("swift",)
+_CHOSEN_ONLY_NAME = re.compile(r"^swift-[a-z0-9._-]+$", re.IGNORECASE)
+
+
+def chosen_only_model(model_name: str | None = None, family: str | None = None) -> bool:
+    """A model that runs DFlash2 only when it is named (CHOSEN_ONLY_FAMILIES): by family when it is known, else by the run config's model name."""
+    if family is not None:
+        return family.lower() in CHOSEN_ONLY_FAMILIES
+    return bool(model_name and _CHOSEN_ONLY_NAME.match(str(model_name)))
 
 
 def _here(path: Path) -> bool:
@@ -645,20 +658,23 @@ def vocab_path(args: list[Any], data_dir: str | Path | None = None) -> Path | No
     return shipped if shipped.is_file() else None
 
 
-def can_run_dflash2(model_name: str | None, family: str | None, backend: str | None, archs: Any = None) -> bool:
-    """Is this model one the drafter was made for, and does this computer's engine have the DFlash2 code? (The disk and the mode of the start are not looked at.)"""
-    return bool(supported_model(model_name, family) and ENGINE_SERVES_DFLASH2 and backend is not None and hardware_support(backend, archs).can_run)
+def can_run_dflash2(model_name: str | None, family: str | None, backend: str | None, archs: Any = None, *, named: bool = False) -> bool:
+    """Is this model one the drafter was made for (or, ``named`` by the person, one that runs it only then: CHOSEN_ONLY_FAMILIES), and does this computer's engine
+    have the DFlash2 code? (The disk and the mode of the start are not looked at.)"""
+    model_ok = supported_model(model_name, family) or (named and chosen_only_model(model_name, family))
+    return bool(model_ok and ENGINE_SERVES_DFLASH2 and backend is not None and hardware_support(backend, archs).can_run)
 
 
 def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None) -> str:
     """The drafter the choice means for this model on this computer, before anything is looked up on disk: ``dflash2``, ``mtp`` or ``off``. Auto is DFlash2 wherever
-    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else; DFlash2 asked for by name where it cannot run is MTP."""
+    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else; DFlash2 asked for by name where it cannot run is MTP.
+    Swift (CHOSEN_ONLY_FAMILIES) runs DFlash2 only when it is named."""
     asked = normalize(mode)
     if asked == "off":
         return "off"
     if asked == "mtp":
         return "mtp"
-    return "dflash2" if can_run_dflash2(model_name, family, backend, archs) else "mtp"
+    return "dflash2" if can_run_dflash2(model_name, family, backend, archs, named=asked == "dflash2") else "mtp"
 
 
 def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
@@ -683,7 +699,8 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
     if have_mtp:
         why = ""
         if asked == "dflash2":                      # named, and it cannot run on this model or this computer
-            why = NOT_SUPPORTED if not supported_model(model_name, family) else NOT_SERVED if not ENGINE_SERVES_DFLASH2 else NOT_THIS_CARD
+            known = supported_model(model_name, family) or chosen_only_model(model_name, family)
+            why = NOT_SUPPORTED if not known else NOT_SERVED if not ENGINE_SERVES_DFLASH2 else NOT_THIS_CARD
         return Decision(asked, "mtp", why)
     # the layer is not on this computer: DFlash2 instead when it can run and its pack is here (said), else none (said)
     if runnable and not blocked and vocab_here and pack_ready(data_dir):
@@ -793,8 +810,9 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     `engine` is the engine program that will start (None: not known, the usual flags): an engine that only takes `--mtp DIR` for the vocabulary gets that
     (still without the MTP layer), and an engine without `--draft-fallback` gets no DFlash2 flag at all (the MTP, said in one line)."""
     args = [str(a) for a in cfg.get("args") or []]
-    if not supported_model(cfg.get("model_name"), family):    # another model: its drafting is not this choice's business (DeepSeek, Swift, Coder, NVFP4, Qwen3.6...)
-        asked = normalize(cfg.get("drafting"))
+    asked = normalize(cfg.get("drafting"))
+    named_here = asked == "dflash2" and chosen_only_model(cfg.get("model_name"), family)    # Swift with DFlash2 named: the same path as Qwen3.8-Flash-Next
+    if not supported_model(cfg.get("model_name"), family) and not named_here:    # another model: its drafting is not this choice's business (DeepSeek, Coder, NVFP4, Qwen3.6...)
         if asked == "dflash2":
             cfg["args"] = strip_draft_flags(args)
             return Decision(asked, "mtp", NOT_SUPPORTED)

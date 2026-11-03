@@ -365,7 +365,8 @@ class TheTerminalStep(unittest.TestCase):
         self.assertEqual(flow.index("drafting"), flow.index("pictures") + 1)
         self.assertIn("drafting", self.flow("gyro", ("hip", ["gfx1151"])))
         self.assertIn("drafting", self.flow("unsloth", ("cuda", ["sm_120"])))
-        for family in ("deepseek41", "swift", "coder", "nvfp4", "qwen36", None):
+        self.assertIn("drafting", self.flow("swift", ("cuda", ["sm_120"])), "Swift: DFlash2 when it is named")
+        for family in ("deepseek41", "coder", "nvfp4", "qwen36", None):
             self.assertNotIn("drafting", self.flow(family, ("cuda", ["sm_120"])), family)
         self.assertIn("drafting", self.flow("qwen", ("sycl", [])))
         for hardware in (("cpu", []), (None, [])):

@@ -53,10 +53,11 @@ def speed_choice_available(ctx) -> bool:
 
 
 def drafting_choice_available(ctx) -> bool:
-    """The Drafting step exists only where there is something to choose: Qwen3.8-Flash-Next (qwen, gyro) on a computer whose engine can run DFlash2
-    (CUDA or HIP, strata_control/drafting.py). Every other model has no step: DeepSeek has no MTP, the rest have only the MTP."""
+    """The Drafting step exists only where there is something to choose: Qwen3.8-Flash-Next (qwen, gyro) and Swift (DFlash2 only when it is named) on a
+    computer whose engine can run DFlash2 (CUDA or HIP, strata_control/drafting.py). Every other model has no step: DeepSeek has no MTP, the rest have only the MTP."""
     from strata_control import drafting
-    if getattr(getattr(ctx, "settings", None), "family", None) not in drafting.SUPPORTED_FAMILIES or not drafting.ENGINE_SERVES_DFLASH2:
+    family = getattr(getattr(ctx, "settings", None), "family", None)
+    if family not in drafting.SUPPORTED_FAMILIES + drafting.CHOSEN_ONLY_FAMILIES or not drafting.ENGINE_SERVES_DFLASH2:
         return False
     backend, archs = drafting.detect_hardware()
     return drafting.hardware_support(backend, archs).can_run

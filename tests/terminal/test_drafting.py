@@ -435,9 +435,9 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
                         self.assertNotIn(flag, args, (backend, name, flag))
                     self.assertEqual(args[args.index("--spec") + 1], "6")
 
-    def test_swift_coder_and_nvfp4_stay_on_the_mtp(self):
+    def test_coder_and_nvfp4_stay_on_the_mtp(self):
         for backend, archs in self.HARDWARE:
-            for name in ("qwen3.8-flash-next-coder-iq1_m", "qwen3.8-flash-next-nvfp4-nvfp4", "swift-1.5-iq2_xs"):
+            for name in ("qwen3.8-flash-next-coder-iq1_m", "qwen3.8-flash-next-nvfp4-nvfp4"):
                 for mode in (None, "auto", "dflash2"):
                     with tempfile.TemporaryDirectory() as tmp:
                         cfg, data, mtp = self.run_config(name, tmp, mode)
@@ -448,6 +448,24 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
                         self.assertNotIn("--draft", cfg["args"])
                         if mode == "dflash2":
                             self.assertEqual(decision.note, drafting.NOT_SUPPORTED)
+
+    def test_swift_runs_dflash2_only_when_it_is_named(self):
+        for backend, archs in self.HARDWARE:
+            for mode in (None, "auto", "mtp", "dflash2"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cfg, data, mtp = self.run_config("swift-1.5-iq3_s", tmp, mode)
+                    original = list(cfg["args"])
+                    decision = drafting.apply(cfg, data_dir=data, backend=backend, archs=archs)
+                    if mode == "dflash2" and drafting.can_run_dflash2("swift-1.5-iq3_s", None, backend, archs, named=True):
+                        self.assertEqual(decision.drafter, "dflash2", (backend, mode))
+                        self.assertEqual(cfg["args"][cfg["args"].index("--draft") + 1], "dflash2")
+                    else:
+                        self.assertEqual(decision.drafter, "mtp", (backend, mode))
+                        self.assertEqual(cfg["args"], original, "Auto and the MTP: its own arguments, untouched")
+        self.assertEqual(drafting.choice_of("auto", family="swift", backend="cuda", archs=["sm_86"]), "mtp", "Auto stays with the MTP on Swift")
+        self.assertFalse(drafting.supported_model(family="swift"), "not one the drafter was made for")
+        self.assertTrue(drafting.chosen_only_model("swift-1.5-iq3_s") and drafting.chosen_only_model("Swift-IQ3-S"))
+        self.assertFalse(drafting.chosen_only_model("qwen3.8-flash-next-swift-iq2_xs") or drafting.chosen_only_model("qwen3.8-flash-next-coder-iq1_m"))
 
     def test_by_family_the_terminal_and_the_app_agree(self):
         for backend, _ in self.HARDWARE:
@@ -919,7 +937,7 @@ class TheAppAsksControl(unittest.TestCase):
 
     def test_a_model_that_is_not_installed_yet_is_asked_about_by_its_family(self):
         with serving_dflash2():
-            for family, needed in (("gyro", True), ("qwen", True), ("coder", False), ("swift", False)):
+            for family, needed in (("gyro", True), ("qwen", True), ("coder", False), ("swift", True)):
                 code, out, err = run_cli(["drafting", "plan", "--family", family, "--mode", "dflash2", "--data-dir", str(self.data), "--output", "json"])
                 self.assertEqual(code, 0, err)
                 self.assertEqual(json.loads(out)["needed"], needed, family)
