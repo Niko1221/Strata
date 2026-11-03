@@ -35,6 +35,7 @@
 #define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
 #undef cudaFuncSetAttribute   // ggml's maps it to hipFuncSetAttribute(const void*, ...); the tree's template takes the kernel
 #endif
+#include "iqdot_hip.cuh"   // HIP: the i-quant dots with a cheaper sign expansion (same integers as ggml's)
 
 // compiled in parts (Makefile: build/kernels_pN.o with -DFNX_KPART=N), each with its share of the launchers below and
 // so only the template kernels they instantiate: one file's ~700 kernels took ~7 minutes on one core
@@ -140,9 +141,21 @@ template <ggml_type type> __device__ __forceinline__ float vdot(const void* v, c
     else if constexpr (type == GGML_TYPE_Q6_K) return vec_dot_q6_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_IQ4_NL) return vec_dot_iq4_nl_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_IQ4_XS) return vec_dot_iq4_xs_q8_1(v, y, kbx, iqs);
+#if FNX_HIP
+    else if constexpr (type == GGML_TYPE_IQ3_S) return fnx_vec_dot_iq3_s_q8_1(v, y, kbx, iqs);
+#else
     else if constexpr (type == GGML_TYPE_IQ3_S) return vec_dot_iq3_s_q8_1(v, y, kbx, iqs);
+#endif
+#if FNX_HIP
+    else if constexpr (type == GGML_TYPE_IQ3_XXS) return fnx_vec_dot_iq3_xxs_q8_1(v, y, kbx, iqs);
+#else
     else if constexpr (type == GGML_TYPE_IQ3_XXS) return vec_dot_iq3_xxs_q8_1(v, y, kbx, iqs);
+#endif
+#if FNX_HIP
+    else if constexpr (type == GGML_TYPE_IQ2_S) return fnx_vec_dot_iq2_s_q8_1(v, y, kbx, iqs);
+#else
     else if constexpr (type == GGML_TYPE_IQ2_S) return vec_dot_iq2_s_q8_1(v, y, kbx, iqs);
+#endif
     else return 0.0f;
 }
 template <ggml_type type> constexpr int vdr_of() {
