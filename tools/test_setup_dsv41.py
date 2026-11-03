@@ -12,6 +12,8 @@ import os
 import io
 import json
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -218,7 +220,7 @@ class Install(unittest.TestCase):
         self.assertEqual(self.cfg["exe"], str(self.exe))
         self.assertEqual(self.cfg["model_name"], "deepseek-v4.1-flash")
         a = self.cfg["args"]
-        self.assertEqual(a[a.index("--max-context") + 1], "8192")
+        self.assertEqual(a[a.index("--max-context") + 1], "131072")
         self.assertEqual(a[a.index("--eos") + 1], "1")
         self.assertEqual(a[a.index("--tp") + 1], "2")
         self.assertTrue(Path(a[a.index("--pack") + 1]).match("*packs/deepseek-v4.1-flash-ud-q8_k_xl"))
@@ -277,7 +279,7 @@ class Install(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("read from the SSD", out)
         self.assertIn("installing UD-Q8_K_XL with 64 GB of RAM, as you chose", out)
-        self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "131072")
         self.assertNotIn("--tp", self.cfg["args"])
 
     def test_little_ram_with_yes_alone_stops_where_the_rule_says(self):
@@ -302,7 +304,7 @@ class Install(unittest.TestCase):
         self.assertEqual(a[a.index("--vision") + 1], "on")
         self.assertIn("Flash-Next settings", out)
         self.assertEqual(self.cfg["args"][self.cfg["args"].index("--max-context") + 1], "131072")
-        self.assertIn("checked at 4K and 8K", out)
+        self.assertNotIn("untested", out)                                       # 128K is the default: nothing to warn about
 
 
 class Catalog(unittest.TestCase):
@@ -316,7 +318,7 @@ class Catalog(unittest.TestCase):
         s = M.Strata(ROOT)
         fam = next(f for f in s.model_table({"ram_gb": 251.0, "gpus": [{**c, "usable": True} for c in FOUR], "engine_vendor": "amd"})
                    if f["family"] == "deepseek41")
-        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
+        self.assertEqual([x["model"] for x in fam["sizes"]], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
         small_sets = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual((small_sets["IST-DAS-2.00bpw"]["download_gb"], small_sets["IST-DAS-2.25bpw"]["download_gb"]), (256.8, 273.8))
         self.assertTrue(small_sets["IST-DAS-2.00bpw"]["on_this_pc"].startswith("fits"))
@@ -351,7 +353,7 @@ class Catalog(unittest.TestCase):
                                           "cpu": {"avx2": True}}
         s.disk_free = lambda p: 2000.0
         plan, a = M.Tools(s).install_plan("deepseek41", "UD-Q8_K_XL", None, None, None, None, None, None, None, None, None)
-        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 8192, "yes"))   # 0.2.7: pictures on by default
+        self.assertEqual((plan["title"], plan["download_gb"], plan["context"], plan["images"]), ("DeepSeek-V4.1-Flash UD-Q8_K_XL", 508.4, 131072, "yes"))   # 0.2.7: pictures on by default
         self.assertEqual(a[:6], ["--yes", "--no-start", "--family", "deepseek41", "--model", "UD-Q8_K_XL"])
         self.assertTrue(plan["ram"].startswith("fits"))
         for flag in ("--kv", "--low-ram", "--experimental-speed-projection"):
@@ -424,11 +426,11 @@ class GithubCheck(unittest.TestCase):
 
 
 class OfficialSets(unittest.TestCase):
-    """The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF): the catalog, the pins, the pack recipe, the fit words."""
+    """The two official ISTA-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF): the catalog, the pins, the pack recipe, the fit words."""
 
     def test_the_pinned_files(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
-        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])         # the official sets first
+        self.assertEqual(list(fam["models"]), ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])         # the official sets first
         repo = "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF"
         self.assertEqual(setup.HF_REVISIONS[repo], "cb02422c900df489cea5833e8a92171224059b3c")
         self.assertIs(setup.REPO_PINS[repo], setup.DSV41_ISTA_FILES)
@@ -640,7 +642,7 @@ class SixShardLayout(unittest.TestCase):
         self.assertEqual(of(legacy), "four")                                      # the first release's names are four-shard files
         self.assertEqual(of(six), "six")
         self.assertEqual(of(six[:2]), "six")                                      # an incomplete six-shard set is still told as six: the missing ones are named
-        self.assertEqual(of(four + six), "four")                                  # both whole: the pinned set, as before
+        self.assertEqual(of(four + six), "six")                                   # both whole (ISTA's converter leaves the old files): the new files
         self.assertEqual(of(four[:2] + six), "six")                               # a stray four-shard file beside the whole six-shard set
         self.assertEqual(of(four[:2] + six[:2]), "four")                          # neither whole
 
@@ -674,7 +676,7 @@ class SixShardLayout(unittest.TestCase):
 
 
 class Smallest(unittest.TestCase):
-    """IST-DAS 1.75 bpw (IQ1_M): the smallest official set, recommended where 2.00 is tight, never forced."""
+    """ISTA-DAS 1.75 bpw (IQ1_M): the smallest official set, recommended where 2.00 is tight, never forced."""
 
     def test_the_files_the_pins_and_the_recipe(self):
         fam = setup.MULTI_FILE_FAMILIES["deepseek41"]
@@ -696,7 +698,7 @@ class Smallest(unittest.TestCase):
         self.assertNotIn("--skip-tensors", cmd)
 
     def test_it_is_the_smallest_and_warns_never_refuses(self):
-        sizes = {m: dsv41_fit.ista_download_bytes(m) / 1e9 for m in dsv41_fit.ISTA_SETS}
+        sizes = {m: dsv41_fit.ista_download_bytes(m) / 1e9 for m in dsv41_fit.ISTA_SETS if m.startswith("IST-DAS-")}      # (the ISTA-DAS Coder has half the experts: tools/test_setup_coder.py)
         self.assertEqual(min(sizes, key=sizes.get), "IST-DAS-1.75bpw")
         self.assertAlmostEqual(sizes["IST-DAS-1.75bpw"], 239.3, delta=0.1)
         for ram in (24.0, 36.0, 64.0):
@@ -826,7 +828,9 @@ class InstallOfficial(Install):
         engram = next(c for c in get if c[2].name == setup.DSV41_ISTA_ENGRAM)
         self.assertIn("/resolve/cb02422c900df489cea5833e8a92171224059b3c/", engram[1])                              # the pin did not move
 
-    def test_a_folder_with_both_layouts_whole_is_used_as_the_pinned_four_shard_set(self):
+    def test_a_folder_with_both_layouts_whole_is_used_by_its_six_shard_files(self):
+        # ISTA's converter (convert_ds41_upstream.py) writes the six-shard files next to the old ones and leaves the old ones (0.2.9: the old
+        # four-shard set was used, with the old chat template, and the pack was made from it)
         own, names, tiny = self.six_shard_folder()
         four = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]["shards"]
         for n in four:
@@ -836,8 +840,8 @@ class InstallOfficial(Install):
             rc, out = self.install_ista(gguf_dir=str(own))
         self.assertEqual(rc, 0, out)
         pack = [c for c in self.calls if c[0] == "run"][-1][1]
-        self.assertEqual(pack[pack.index("--shards") + 1:pack.index("--engram")], four)
-        self.assertNotIn("six-shard files of 2026-10-27", out)
+        self.assertEqual(pack[pack.index("--shards") + 1:pack.index("--engram")], names)
+        self.assertIn("holds both the older four-shard files and the six-shard files", out)
 
     def make_pack(self, names):
         pack = self.root / "data" / "packs" / "deepseek-v4.1-flash-ist-das-2.00bpw"
@@ -882,7 +886,7 @@ class InstallOfficial(Install):
         self.assertNotIn("--prefill-chunk", a)                                  # the engine's own default is the layer-major prompt path
         self.assertEqual(a[a.index("--dspark-conf") + 1], "0.65")                # never a floor below 0.3             # the layer-major prompt path
         self.assertNotIn("--ssd-cache", a)                                      # the store sizes itself
-        self.assertEqual(a[a.index("--max-context") + 1], "8192")
+        self.assertEqual(a[a.index("--max-context") + 1], "131072")
         self.assertIn("checked: every file the engine needs is there", out)
         self.assertIn("test question answered sensibly", out)
         self.assertTrue(Path(a[a.index("--pack") + 1]).match("*packs/deepseek-v4.1-flash-ist-das-2.00bpw"))
@@ -982,3 +986,303 @@ class PicturesByDefault(Install):
         pack.mkdir(parents=True, exist_ok=True)
         (pack / "ds4.txt").write_text("vision.num_hidden_layers 32\nimage_token_id 129264\n")
         self.assertTrue(setup.dsv41_pack_has_tower(pack))
+
+
+class PackCheck(Install):
+    """0.2.9 (Hugging Face discussion 30): a user with the six-shard files ISTA's converter wrote, a pack deleted twice, and "the model's pack is
+    not complete ()" every time.  The engine's own file check is run for real here by a stand-in that behaves like src/dsv41/ds4_packinfo.cpp, or
+    dies without a word; the pack tool is a stand-in that writes the pack description it would write."""
+
+    ENGINE_SILENT = "silent"            # the engine prints nothing and dies with a signal
+    ENGINE_OK = "ok"                    # the engine reports like ds4_packinfo.cpp
+
+    def setUp(self):
+        super().setUp()
+        self.engine = self.ENGINE_OK
+        self.pack_need = 4              # bytes the stand-in pack wants from each file (the stand-in model files are 4 bytes long)
+        self.smoke_ok = True
+        self.infos = 0
+        real_run = subprocess.run
+
+        def fake_run(cmd, *a, **k):
+            if isinstance(cmd, (list, tuple)) and len(cmd) > 1 and cmd[1] == "--pack-info":
+                self.infos += 1
+                if self.engine == self.ENGINE_SILENT:
+                    return subprocess.CompletedProcess(cmd, -11, "", "")
+                problems = setup.dsv41_pack_problems(Path(cmd[3]))
+                if problems is None:
+                    return subprocess.CompletedProcess(cmd, 1, f"pack-info: {cmd[3]}/ds4.txt: not found\n", "")
+                lines = [f"  MISSING {p} ({w / 1e9:.2f} GB wanted)" if kind == "missing" else f"  SHORT {p}: {h / 1e9:.2f} GB there, {w / 1e9:.2f} GB wanted"
+                         for p, kind, h, w in problems]
+                if problems:
+                    return subprocess.CompletedProcess(cmd, 2, "\n".join(lines) + f"\n  {len(problems)} of 7 files missing or short: this pack cannot load\n", "")
+                return subprocess.CompletedProcess(cmd, 0, "pack-info x\n  files: 7, all present and long enough\n", "")
+            return real_run(cmd, *a, **k)
+
+        def fake_build(cmd, **k):
+            self.calls.append(("run", cmd))
+            if any(str(x).endswith("pack_gguf.py") for x in cmd):
+                folder = Path(cmd[cmd.index("--model") + 1])
+                out = Path(cmd[cmd.index("--out") + 1])
+                files = [*cmd[cmd.index("--shards") + 1:cmd.index("--engram")], os.path.relpath(cmd[cmd.index("--engram") + 1], folder)]
+                (out / "tokenizer").mkdir(parents=True, exist_ok=True)
+                (out / "tokenizer" / "vocab.json").write_text("{}")
+                (out / "ds4.txt").write_text(f"vision.num_hidden_layers 32\nimage_token_id 129264\nformat gguf\nmodel_dir {folder}\n")
+                (out / "tensors.txt").write_text("".join(f"file {i} {n}\n" for i, n in enumerate(files))
+                                                 + "".join(f"t w{i} BF16 {i} 0 {self.pack_need} 1\n" for i in range(len(files))))
+
+        for p in (mock.patch.object(setup.subprocess, "run", fake_run), mock.patch.object(setup, "run", fake_build),
+                  mock.patch.object(setup, "dsv41_smoke", lambda *a, **k: (self.smoke_ok, "Paris") if self.smoke_ok else (False, "!!\ntest question failed"))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def six_files(self, with_old_four=True):
+        """The folder of the user: ISTA's six-shard files and the converted Engram, the old four-shard files beside them (stand-ins)."""
+        own = self.root / "own"
+        own.mkdir(parents=True)
+        d = setup.MULTI_FILE_FAMILIES["deepseek41"]["models"]["IST-DAS-2.00bpw"]
+        names = list(d["shards6"])
+        old = list(d["shards"]) if with_old_four else []
+        for n in names + old:
+            (own / n).write_bytes(b"GGUF")
+        (own / setup.DSV41_ISTA_ENGRAM).write_bytes(b"EEEE")
+        (own / setup.DSV41_DSPARK).write_bytes(b"D")
+        tiny = {n: (4, "0" * 64) for n in names + old}
+        tiny[setup.DSV41_ISTA_ENGRAM] = (4, "0" * 64)
+        tiny[setup.DSV41_DSPARK] = (1, "0" * 64)
+        return own, names, old, tiny
+
+    def go(self, own, tiny):
+        with mock.patch.dict(setup.DSV41_ALL_FILES, tiny):
+            return self.install(ram=64.0, cards=[RTX5070], model=ISTA, gguf_dir=str(own), vision="no")
+
+    def pack_dir(self):
+        return self.root / "data" / "packs" / "deepseek-v4.1-flash-ist-das-2.00bpw"
+
+    def pack_runs(self):
+        return [c for c in self.calls if c[0] == "run" and any(str(x).endswith("pack_gguf.py") for x in c[1])]
+
+    # ---- the reason is never empty
+
+    def test_an_engine_that_dies_without_a_word_is_named_by_how_it_ended(self):
+        with mock.patch.object(setup.subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, -11, "", "")):
+            good, why = setup.dsv41_pack_info(Path("/e/strata-dsv41"), Path("/p"), [])
+        self.assertFalse(good)
+        self.assertTrue(why.strip())
+        self.assertIn("printed nothing", why)
+        self.assertIn("signal 11", why)
+        with mock.patch.object(setup.subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 3, "", "")):
+            self.assertIn("exit code 3", setup.dsv41_pack_info(Path("/e/x"), Path("/p"), [])[1])
+        with mock.patch.object(setup.subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 139, "", "libx.so: cannot open")):
+            self.assertIn("cannot open", setup.dsv41_pack_info(Path("/e/x"), Path("/p"), [])[1])
+
+    def test_the_users_case_the_engine_dies_silently_but_the_files_are_all_there(self):
+        # six-shard files from the converter beside the old ones, no --pack-info answer at all: setup checks the pack's files itself and goes on
+        own, names, old, tiny = self.six_files()
+        self.engine = self.ENGINE_SILENT
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("is not complete ()", out)
+        self.assertIn("no usable answer", out)
+        self.assertIn("signal 11", out)
+        self.assertIn("all of them are there and long enough", out)
+        self.assertEqual(len(self.pack_runs()), 1)
+
+    def test_silent_engine_and_a_file_missing_gives_the_real_reason_on_one_line(self):
+        own, names, old, tiny = self.six_files(with_old_four=False)
+        self.pack_need = 4
+        self.engine = self.ENGINE_SILENT
+        orig = setup.dsv41_write_pack_source
+
+        def vanish(pack):                # a file goes between the pack being made and the check
+            (own / names[2]).unlink()
+            orig(pack)
+        with mock.patch.object(setup, "dsv41_write_pack_source", vanish):
+            rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 1, out)
+        line = next(l for l in out.splitlines() if "[X]" in l)
+        self.assertIn("the model's pack is not complete (", line)
+        self.assertIn(names[2], line)                        # the file, on the SAME line (the app shows setup's [X] line only)
+        self.assertIn("missing or too short", line)
+        self.assertNotIn("()", line)
+
+    # ---- files replaced in place
+
+    def test_a_pack_that_wants_more_than_the_replaced_files_hold_is_made_again_with_one_line(self):
+        own, names, old, tiny = self.six_files()
+        self.pack_need = 1000                                # the old pack describes bigger files than the converter's new ones
+        d = self.pack_dir()
+        (d / "tokenizer").mkdir(parents=True)
+        (d / "tokenizer" / "vocab.json").write_text("{}")
+        (d / "ds4.txt").write_text(f"model_dir {own}\nvision.num_hidden_layers 32\nimage_token_id 1\n")
+        (d / "tensors.txt").write_text("".join(f"file {i} {n}\n" for i, n in enumerate(names)) + "t a BF16 0 0 39000000000 1\n")
+        self.pack_need = 4                                    # what the new pack asks of the new files
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        lines = [l for l in out.splitlines() if "does not fit the model files" in l]
+        self.assertEqual(len(lines), 1, out)
+        self.assertIn("building it again", lines[0])
+        self.assertIn("GB there", lines[0])
+        self.assertEqual(len(self.pack_runs()), 1)
+        self.assertEqual(setup.dsv41_pack_layout(d), "six")
+        self.assertEqual(out.count("building it again"), 1, out)                          # said once
+
+    def test_files_replaced_by_files_of_the_same_size_make_the_pack_again(self):
+        own, names, old, tiny = self.six_files(with_old_four=False)
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.pack_runs()), 1)
+        self.assertTrue(setup.dsv41_pack_source_file(self.pack_dir()).is_file())
+        self.calls.clear()
+        rc, out = self.go(own, tiny)                          # nothing changed: the pack is kept
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.pack_runs()), 0)
+        st = (own / names[1]).stat()
+        os.utime(own / names[1], ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))      # the file was written again (a download over it, a conversion)
+        self.calls.clear()
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.pack_runs()), 1)
+        self.assertIn(f"{names[1]} is not the file it was made from", out)
+
+    def test_a_pack_made_by_an_earlier_strata_has_no_record_and_is_not_made_again(self):
+        own, names, old, tiny = self.six_files(with_old_four=False)
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        setup.dsv41_pack_source_file(self.pack_dir()).unlink()
+        self.calls.clear()
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.pack_runs()), 0)
+
+    def test_a_pack_whose_folder_was_deleted_is_made_again_without_any_marker_getting_in_the_way(self):
+        own, names, old, tiny = self.six_files(with_old_four=False)
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        shutil.rmtree(self.pack_dir())
+        self.calls.clear()
+        rc, out = self.go(own, tiny)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.pack_runs()), 1)
+
+    # ---- multi-line reasons are cut by the app
+
+    def test_the_failure_line_is_one_line_even_for_many_files(self):
+        problems = [(f"/m/f{i}.gguf", "missing", 0, 4_000_000_000) for i in range(5)]
+        line = setup.dsv41_problems_line(problems)
+        self.assertNotIn("\n", line)
+        self.assertIn("5 of the files it points at are missing", line)
+        self.assertIn("and 2 more", line)
+        short = setup.dsv41_problems_line([("/m/a.gguf", "short", 11_200_000_000, 39_100_000_000)])
+        self.assertIn("a.gguf (11.2 GB there, 39.1 GB wanted)", short)
+
+    def test_the_pack_check_done_here_agrees_with_the_engines(self):
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            (t / "m").mkdir()
+            (t / "m" / "a.gguf").write_bytes(b"x" * 10)
+            pack = t / "p"
+            pack.mkdir()
+            (pack / "ds4.txt").write_text(f"model_dir {t / 'm'}\n")
+            (pack / "tensors.txt").write_text("file 0 a.gguf\nfile 1 b.gguf\nt x BF16 0 2 8 1\nt y BF16 0 5 5 1\nt z BF16 1 0 1 1\n")
+            self.assertEqual([(Path(p).name, k) for p, k, _h, _w in setup.dsv41_pack_problems(pack)], [("b.gguf", "missing")])
+            (t / "m" / "a.gguf").write_bytes(b"x" * 9)                       # largest tensor end is 10
+            kinds = {Path(p).name: (k, h, w) for p, k, h, w in setup.dsv41_pack_problems(pack)}
+            self.assertEqual(kinds["a.gguf"], ("short", 9, 10))
+            (pack / "tensors.txt").unlink()
+            self.assertIsNone(setup.dsv41_pack_problems(pack))
+
+
+class CardsAndLayout(unittest.TestCase):
+    """The 7900 XTX side of the same report: the Linux DeepSeek package of 0.2.9 holds code for gfx1200 and gfx1201 only."""
+
+    def test_the_pci_ids_name_the_card_when_kfd_and_rocminfo_say_nothing(self):
+        from strata_control import engine_component as ec
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            for name, vendor, device in (("card0", "0x1002", "0x744c"), ("card1", "0x10de", "0x2684"), ("card0-DP-1", "0x1002", "0x7550"),
+                                         ("card2", "0x1002", "0x1234")):
+                (t / name / "device").mkdir(parents=True)
+                (t / name / "device" / "vendor").write_text(vendor + "\n")
+                (t / name / "device" / "device").write_text(device + "\n")
+            self.assertEqual(ec.hip_archs_from_pci(str(t), lspci=False), ["gfx1100"])      # the NVIDIA card, the connector and the unknown id give nothing
+        with tempfile.TemporaryDirectory() as t:
+            line = ("03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XTX] [1002:744c] (rev c8)\n"
+                    "0e:00.0 Display controller [0380]: Advanced Micro Devices, Inc. [AMD/ATI] Raphael [1002:164e] (rev c1)\n")
+            with mock.patch("shutil.which", lambda n: "/usr/bin/lspci"), \
+                 mock.patch.object(ec.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0, line, "")):
+                self.assertEqual(ec.hip_archs_from_pci(t), ["gfx1100"])                      # the integrated Raphael is no card
+
+    @unittest.skipIf(os.name == "nt", "reads the Linux sysfs paths")
+    def test_the_hardware_probe_falls_back_to_the_pci_ids(self):
+        from strata_control import engine_component as ec, updater
+        with mock.patch("shutil.which", lambda n: None), mock.patch.object(Path, "is_dir", lambda self: False), \
+             mock.patch.object(ec, "hip_archs_from_pci", lambda *a, **k: ["gfx1100"]):
+            self.assertEqual(updater._gfx_names(), ["gfx1100"])
+
+    def test_the_words_for_the_cards_a_package_holds(self):
+        from strata_control import dsv41_engine
+        self.assertEqual(dsv41_engine.cards_words(("gfx1200", "gfx1201")), "RX 9060, RX 9070 and R9700 (gfx1200/1201)")
+        self.assertIn("RX 9070 and R9700", dsv41_engine.card_unknown_line(("gfx1200", "gfx1201")))
+        self.assertIn("wasn't recognised", dsv41_engine.card_unknown_line(("gfx1200", "gfx1201")))
+        line = dsv41_engine.card_problem(("gfx1200", "gfx1201"), ["gfx1100"])
+        self.assertIn("RX 7000", line)
+        self.assertIn("gfx1100", line)
+        self.assertIsNone(dsv41_engine.card_problem(("gfx1200", "gfx1201"), ["gfx1201"]))
+        self.assertIsNone(dsv41_engine.card_problem(("gfx1200", "gfx1201"), []))             # unknown card: the caller says so, nothing is refused here
+        self.assertIsNone(dsv41_engine.card_problem((), ["gfx1100"]))                         # a package that names no cards (a build of your own)
+
+    def test_a_hand_made_package_names_its_cards_in_build_json(self):
+        from strata_control import dsv41_engine
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            self.assertEqual(dsv41_engine.package_archs(t / "strata-dsv41"), ())
+            (t / "BUILD.json").write_text(json.dumps({"version": "0.1.55", "archs": ["gfx1200", "gfx1201"]}))
+            self.assertEqual(dsv41_engine.package_archs(t / "strata-dsv41"), ("gfx1200", "gfx1201"))
+            (t / "BUILD.json").write_text("not json")
+            self.assertEqual(dsv41_engine.package_archs(t / "strata-dsv41"), ())
+
+
+class CardGate(Install):
+    """setup says, never refuses, when the engine it found (the person's own build or a hand-installed package) holds no code for the card."""
+
+    def test_a_7900_xtx_with_the_rx9070_package_is_told_and_not_refused(self):
+        (self.root / "engine").mkdir(parents=True)
+        (self.root / "engine" / "BUILD.json").write_text(json.dumps({"archs": ["gfx1200", "gfx1201"]}))
+        card = {**R9700, "name": "AMD Radeon RX 7900 XTX", "index": 0, "arch": "gfx1100"}
+        rc, out = self.install(cards=[card], model="UD-Q8_K_XL")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("DeepSeek will not start on this card", out)
+        self.assertIn("gfx1200, gfx1201", out)
+
+    def test_a_card_setup_could_not_name_gets_the_one_plain_line(self):
+        (self.root / "engine").mkdir(parents=True)
+        (self.root / "engine" / "BUILD.json").write_text(json.dumps({"archs": ["gfx1200", "gfx1201"]}))
+        card = {**R9700, "index": 0, "arch": ""}
+        rc, out = self.install(cards=[card], model="UD-Q8_K_XL")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("your graphics card wasn't recognised", out)
+
+    def test_an_rx_7000_card_with_its_package_hears_only_that_it_is_untested(self):
+        (self.root / "engine").mkdir(parents=True)
+        (self.root / "engine" / "BUILD.json").write_text(json.dumps({"archs": ["gfx1100", "gfx1101", "gfx1102"]}))
+        for arch in ("gfx1100", "gfx1101", "gfx1102"):
+            card = {**R9700, "name": "AMD Radeon RX 7900 XTX", "index": 0, "arch": arch}
+            rc, out = self.install(cards=[card], model="UD-Q8_K_XL")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(out.count("DeepSeek has not been tested on RX 7000 cards yet; please report how it runs."), 1, arch)
+            self.assertNotIn("will not start on this card", out)
+
+    def test_a_covered_card_hears_nothing(self):
+        (self.root / "engine").mkdir(parents=True)
+        (self.root / "engine" / "BUILD.json").write_text(json.dumps({"archs": ["gfx1200", "gfx1201"]}))
+        card = {**R9700, "index": 0, "arch": "gfx1201"}
+        rc, out = self.install(cards=[card], model="UD-Q8_K_XL")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("will not start on this card", out)
+        self.assertNotIn("wasn't recognised", out)
+
+
+for _cls in (PackCheck, CardGate):          # (they reuse Install's set-up, not its tests)
+    for _name in [n for n in dir(Install) if n.startswith("test_")]:
+        setattr(_cls, _name, None)

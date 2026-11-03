@@ -56,7 +56,7 @@ Wir empfehlen **zuerst ISTA-DASLab**, danach **Unsloth** und andere Anbieter, so
 
 In der **Desktop-App** und im **Terminal**. Was nicht in den Arbeitsspeicher passt, wird von deiner SSD gelesen. Darum brauchst du viel freien Speicherplatz.
 
-| Set (IST-DAS) | Download | Freier Speicherplatz nötig |
+| Set (ISTA-DAS) | Download | Freier Speicherplatz nötig |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | etwa 245 GB |
 | 2.00 bpw | 257 GB | etwa 265 GB |

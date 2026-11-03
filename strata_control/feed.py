@@ -373,7 +373,7 @@ def feed_name(platform: str | None = None) -> str:
     return AARCH64_FEED_NAME if platform == "linux-aarch64" else FEED_NAME
 
 
-def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
+def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, **guards) -> Feed:
     """Read the feed and its signature from `source` (an https URL, a loopback http URL, a file URL or a folder/file path)."""
     if not trusted:
         raise FeedError("this build trusts no update key (update_keys.json is empty and STRATA_UPDATE_TRUSTED_KEYS is not set), "
@@ -388,8 +388,8 @@ def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
     elif transfer.kind_of(source) in ("http", "https") and not source.rsplit("/", 1)[-1].endswith(".json"):
         location = source.rstrip("/") + "/" + feed_name()
     try:
-        payload = transfer.read_small(location)
-        signature = transfer.read_small(location + SIGNATURE_SUFFIX)
+        payload = transfer.read_small(location, timeout=timeout)
+        signature = transfer.read_small(location + SIGNATURE_SUFFIX, timeout=timeout)
     except transfer.TransferError as exc:
         raise FeedError(f"the update feed could not be read: {exc}", 6) from None
     guards.setdefault("server_now", transfer.server_date())
