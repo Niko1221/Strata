@@ -147,6 +147,16 @@ class Decisions(unittest.TestCase):
         self.assertFalse(drafting.blocked_by(["--layer-split", "auto"]))
         self.assertFalse(drafting.blocked_by(["--spec", "4"], slots=1))
 
+    def test_dflash2_named_on_a_layer_split_runs_beside_several_requests(self):
+        self.assertFalse(drafting.blocked_by([], split=True, slots=2, chosen=True))
+        self.assertFalse(drafting.blocked_by(["--layer-split", "auto", "--batch", "2"], chosen=True))
+        self.assertTrue(drafting.blocked_by([], split=True, slots=2), "Auto keeps the MTP with several requests")
+        self.assertTrue(drafting.blocked_by([], slots=2, chosen=True), "one card: still the MTP")
+        self.assertTrue(drafting.blocked_by(["--pipeline-windows", "2"], split=True, slots=2, chosen=True))
+        self.ready()
+        d = self.decide("dflash2", mtp_here=True, blocked=drafting.blocked_by([], split=True, slots=2, chosen=True))
+        self.assertEqual(d.drafter, "dflash2")
+
     def test_dflash2_is_for_qwen38_flash_next_only(self):
         self.ready()
         for name in ("qwen3.6-35b-a3b-q4", "qwen3.8-flash-next-coder-iq3_xxs", "qwen3.8-flash-next-swift-iq2_xs", None):
@@ -343,6 +353,10 @@ class EngineArguments(unittest.TestCase):
             self.assertEqual(args, self.args)
             self.assertEqual(engine_args(self.cfg(drafting="dflash2", parallel=4))[:len(self.args)], self.args, "several requests: the MTP alone")
             self.assertEqual(drafting.take_note(), drafting.NOT_HERE, "the engine that starts next is told why")
+            args = engine_args(self.cfg(drafting="dflash2", parallel=2, gpu=[0, 1]))
+            self.assertEqual(args[args.index("--draft") + 1], "dflash2", "named, on a layer split: DFlash2 beside the requests")
+            self.assertIn("--batch", args)
+            self.assertNotIn("--draft", engine_args(self.cfg(parallel=2, gpu=[0, 1])), "Auto keeps the MTP there")
         # a 16 GB card holds about 3,700 slots with the drafter on: the server passes its memory and the confidence follows (drafting.CONF_STEPS)
         with mock.patch("serve.server.drafting_vram_mib", return_value=16384.0), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
             args = engine_args(self.cfg(drafting="dflash2"))

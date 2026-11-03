@@ -1562,7 +1562,8 @@ class Runner:
         return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": self.s.family,
                 "data_dir": drafting.data_dir_of(args) or (Path(self.s.data_dir) if self.s.data_dir else None),
                 "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
-                "blocked": drafting.blocked_by(args, split=bool(self.s.gpus and len(self.s.gpus) > 1), slots=int(self.s.parallel or 0))}
+                "blocked": drafting.blocked_by(args, split=bool(self.s.gpus and len(self.s.gpus) > 1), slots=int(self.s.parallel or 0),
+                                               chosen=drafting.normalize(mode) == "dflash2")}
 
     def one_request_for_dflash2(self, config: Path) -> bool:
         """DFlash2 chosen on purpose and the person gave no number of requests: one at a time, said once (drafting.wants_one_request)."""
