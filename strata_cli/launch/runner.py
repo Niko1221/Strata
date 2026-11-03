@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+from strata_control import vram_fit
 from strata_control import atomic as _atomic_mod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2685,6 +2686,8 @@ CAUSE_LINE = re.compile(r"error|exception|failed|cannot|can't|could not|no devic
 HSA_START = re.compile(r"hsa_exception|HSA_STATUS_ERROR", re.I)
 HSA_START_NEXT = ("The graphics card was not ready yet; wait a few seconds and run it again. If it keeps happening, restart the PC "
                   "and report the log.")
+VRAM_STOP_NEXT = ("A graphics card is too full for this start, even after Strata moved what it could to the processor and the RAM. Close other programs that use the "
+                  "cards, or start on fewer cards (--gpu), or turn pictures off (--vision off); the context and the number of requests were not changed.")
 KNOWN_CAUSES = (
     (re.compile(r"cannot run the expert kernel|needs AVX-?512", re.I),
      "This model folder holds the pack for CPUs with AVX-512, and this PC's CPU does not have it. Run `strata setup` again: on a CPU "
@@ -2756,7 +2759,10 @@ def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = 
         if own:
             lines, log = own, str(server_log)
     lines = lines or [x.strip() for x in str(result.get("log_tail") or "").split(" | ") if x.strip()]
-    cause = next((x for x in reversed(lines) if CAUSE_LINE.search(x) and not x.lstrip().startswith(("strata generate: ", "strata serve: expert"))), None)
+    # a card that ran out of memory: the engine's own line is the cause (the picture reader's "ggml_cuda_init: ... no CUDA-capable device", which it prints when the
+    # cards are full and it runs on the processor, matched "failed" and used to be the last line shown)
+    vram_cause = vram_fit.engine_stop_reason(lines)
+    cause = vram_cause or next((x for x in reversed(lines) if CAUSE_LINE.search(x) and not x.lstrip().startswith(("strata generate: ", "strata serve: expert"))), None)
     cause = (cause or (lines[-1] if lines else "")).strip()
     cause = re.sub(r"^(\[strata\]\s*)?(\d{4}-\d\d-\d\d[ T][\d:.]+\s*)?", "", cause)[:240]
     state, why = result.get("state"), result.get("error") or result.get("message")
@@ -2779,7 +2785,7 @@ def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = 
     text = stage + (f": {cause}" if cause else ".")
     if not text.endswith((".", "!")):
         text += "."
-    step = HSA_START_NEXT if hsa else next((words for pattern, words in KNOWN_CAUSES if pattern.search(" ".join([cause, str(why or "")]))), "Run it again; if it repeats, report the log.")
+    step = HSA_START_NEXT if hsa else (VRAM_STOP_NEXT if vram_cause else next((words for pattern, words in KNOWN_CAUSES if pattern.search(" ".join([cause, str(why or "")]))), "Run it again; if it repeats, report the log."))
     if shared_memory and not hsa and not any(p.search(" ".join([cause, str(why or "")])) for p, _ in KNOWN_CAUSES[:2]):
         # a Strix Halo: the settings fix the expert cache beside a RAM budget, and the engine ended with no error text of its own (STRIX-2Q, 11-01)
         try:

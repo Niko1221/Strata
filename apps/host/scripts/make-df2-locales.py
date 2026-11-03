@@ -193,6 +193,15 @@ add("The all-cards split engine could not start, so the normal layer split runs.
     "O motor de divisão entre todas as placas não conseguiu iniciar, então a divisão normal por camadas está em uso.",
     "모든 카드를 쓰는 분할 엔진을 시작하지 못해 일반 레이어 분할로 실행합니다.",
     "Le moteur réparti sur toutes les cartes n'a pas pu démarrer, la répartition normale par couches est donc utilisée.")
+add("Drafting: off (the cards were short of memory)",
+    "预测草稿：关闭（显卡内存不足）",
+    "先読み：オフ（グラフィックスカードのメモリが不足していました）",
+    "Vorausraten: aus (den Karten fehlte Speicher)",
+    "Predicción: desactivada (a las tarjetas les faltaba memoria)",
+    "Предсказание: выключено (на картах не хватило памяти)",
+    "Previsão: desligada (faltou memória nas placas)",
+    "초안 예측: 꺼짐(카드 메모리가 부족했습니다)",
+    "Anticipation : désactivée (les cartes manquaient de mémoire)")
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 
