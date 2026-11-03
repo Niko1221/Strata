@@ -46,8 +46,8 @@ async function startHost(t, { home, ws, harness = HARNESS } = {}) {
   }
   const post = async (path, body) => { const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: res.status, body: await res.json().catch(() => null) }; };
   /** Stream one chat turn; `onFrame` may react while it runs. Resolves with every frame. */
-  const chat = async (body, onFrame = () => {}) => {
-    const res = await fetch(`${base}/api/chat/stream`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const chat = async (body, onFrame = () => {}, signal) => {
+    const res = await fetch(`${base}/api/chat/stream`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
     assert.equal(res.status, 200, `chat/stream: ${res.status}`);
     const frames = []; let buffer = '';
     const decoder = new TextDecoder();
@@ -91,6 +91,60 @@ test('status names the component and the routes, and carries no secret', { skip 
   assert.equal(status.harness.version, '0.2.1-alpha.3');
   assert.ok(status.routes.some(r => r.kind === 'api' && r.modelId === 'cloud-model'));
   assert.ok(!JSON.stringify(status).includes('sk-host-test'));
+});
+
+test('chat heartbeat reaches the client while an API model is silent, and disconnect still cancels it', { timeout: 30_000 }, async t => {
+  const s = await setup(t, { harness: null });
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 22_000);
+  let heartbeat = false;
+  const body = { sessionId: 'chat-h-quiet', message: 'SCRIPT:hang', remoteModel: s.remoteModel, history: [], agent: false };
+  try {
+    await assert.rejects(s.host.chat(body, frame => {
+      if (frame.type === 'beat') {
+        heartbeat = true;
+        controller.abort();
+      }
+    }, controller.signal), { name: 'AbortError' });
+    assert.ok(heartbeat, 'a quiet model must not leave the desktop connection idle');
+    for (let i = 0; i < 40 && s.worker.aborted === 0; i++) await sleep(50);
+    assert.ok(s.worker.aborted >= 1, 'disconnect must still cancel the direct model request');
+    const next = await s.host.chat({ ...body, message: 'SCRIPT:echo still works' });
+    assert.equal(text(next), 'still works');
+    assert.equal(next.at(-1).type, 'done');
+  } finally {
+    clearTimeout(deadline);
+    controller.abort();
+  }
+});
+
+test('chat heartbeat keeps an approval wait alive without approving or ending the turn', { skip, timeout: 90_000 }, async t => {
+  const s = await setup(t);
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 60_000);
+  const held = Promise.withResolvers();
+  let callId;
+  const frames = s.host.chat({ sessionId: 'chat-h-approval-beat', message: 'SCRIPT:tool unapproved.txt x', remoteModel: s.remoteModel, history: [], mode: 'manual' }, frame => {
+    if (frame.type === 'agent-tool' && frame.tool.state === 'proposed') callId = frame.tool.id;
+    if (frame.type === 'beat' && callId) held.resolve();
+  }, controller.signal);
+  try {
+    await Promise.race([held.promise, frames.then(() => { throw new Error('the turn ended before a heartbeat reached the pending approval'); })]);
+    assert.equal(existsSync(join(s.ws, 'unapproved.txt')), false);
+    const pending = await (await fetch(`${s.host.base}/api/agent/pending?chatId=chat-h-approval-beat`)).json();
+    assert.equal(pending.pending.length, 1);
+    assert.equal(pending.pending[0].callId, callId);
+    const denied = await s.host.post('/api/chat/approval', { sessionId: 'chat-h-approval-beat', toolId: callId, decision: 'deny' });
+    assert.equal(denied.status, 200);
+    const done = await frames;
+    assert.equal(toolStates(done, callId).at(-1), 'denied');
+    assert.equal(done.at(-1).type, 'done');
+    assert.equal(existsSync(join(s.ws, 'unapproved.txt')), false);
+    assert.equal((await s.host.status()).activeTurns, 0);
+  } finally {
+    clearTimeout(deadline);
+    controller.abort();
+  }
 });
 
 test('A03 over HTTP: the card waits for Approve, the answer reaches the Harness, the tool runs once', { skip }, async t => {
