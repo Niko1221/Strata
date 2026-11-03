@@ -865,10 +865,9 @@ __global__ void __launch_bounds__(WARPS * 32) gemm8_kernel(Df2Segs segs, const i
             w[r] = wq[(size_t) st * 256 + r * 32];
             dw[r] = __half2float(wd[(size_t) st * 128 + r * 16]);
         }
-        if (!COMPUTE) {   // bench only: the same loads, almost no arithmetic
+        if constexpr (!COMPUTE) {   // bench only: the same loads, almost no arithmetic
             for (int r = 0; r < R; ++r) acc[r][0] += (float) (w[r].x ^ w[r].y ^ w[r].z ^ w[r].w) * dw[r];
-            continue;
-        }
+        } else {
         float xs[8];
 #pragma unroll
         for (int c = 0; c < 8; ++c) xs[c] = xd[(size_t) c * nb + st * 16 + (lane >> 1)];
@@ -883,6 +882,7 @@ __global__ void __launch_bounds__(WARPS * 32) gemm8_kernel(Df2Segs segs, const i
                 isum = STRATA_DP4A(w[r].w, x.w, isum);
                 acc[r][c] = fmaf(dw[r] * xs[c], (float) isum, acc[r][c]);
             }
+        }
         }
     }
     df2_reduce_store_cols<R>(acc, lane, ncols, sg, row0);
