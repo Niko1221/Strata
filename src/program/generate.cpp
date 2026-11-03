@@ -8379,6 +8379,14 @@ int main(int argc, char** argv) {
         // to hold back is the windows - and `free_b` has already lost the drafter.
         int64_t room = stage_room(st.dev, true, false);
         const strata::core::OnDevice on(st.dev);
+#if defined(STRATA_HAVE_DFLASH2)
+        // DFlash2's own draft head and logits (and, in serve, the prompt staging) are bound on its card AFTER the caches, as the single card prices them (mtp_bind above): without
+        // this term the last stage ended its load with 130-400 MiB less than the plan kept (the serve check's LOW at 8 and 12 GB).  Not under STRATA_DEFAULTS=026.
+        if (use_df2 && &st == last_st && !df2_first && !strata::qwen_defaults_026()) {
+            const int64_t df2_after = df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);
+            room = std::max<int64_t>(room - df2_after, 0);
+        }
+#endif
         // THE LAYER SPLIT'S SPILL WALK, STEP 5: THE OUTPUT HEAD ON THE HOST, LAST.  The card that holds the head (the last stage) has no room for a working cache beside it: the head
         // (0.41 GiB) moves to mapped pinned host memory and every logits row reads it over PCIe (decode is slower, the start works).  Only a card that would otherwise refuse.
         if (&st == last_st && st.head.loaded() && !st.head.on_host() && !o.vram_reserve_given && std::getenv("STRATA_HEAD_HOST_OFF") == nullptr &&
