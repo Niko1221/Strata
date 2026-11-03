@@ -3981,6 +3981,12 @@ def is_uma_apu(g) -> bool:
             or (GFX1103_OPT_IN and gfx_arch_is(arch, "gfx1103")))
 
 
+def apu_hides_chunk_tip(g, line: str) -> bool:
+    """The bench tip for --prefill auto:32768 is not said on an APU: its prompt buffers share the pool with the expert cache, a 32768 chunk can take the last of it
+    (Strix Halo with UD-Q4_K_XL: the engine ends at the start, round0212), and the tip was measured on discrete cards."""
+    return is_uma_apu(g) and line.startswith("tip") and "auto:32768" in line
+
+
 def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dict:
     """Strix Halo is an APU with unified memory.  Its "dedicated VRAM" is a BIOS carve-out (512 MB to 96 GB; 2 GB on the
     maintainers' box) and the GPU also reaches shared system memory (Linux: the GTT pool, `mem_info_gtt_total`, half the
@@ -10969,6 +10975,8 @@ def main() -> int:
         for line in two_socket_note(cpu_sockets()):    # bench tips: text only, the config is not touched
             say("  " + line)
     for line in bench_tips(cfg["args"], cfg.get("env"), ram, MODELS[model]["ram_gb"], gpu.get("vram_gb", 0.0), vision, WIN):
+        if apu_hides_chunk_tip(gpu, line):
+            continue
         say("  " + line)
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a),
                        after_carry=(lambda c: uma_cache_guard(c, model, gpu)) if gpu.get("uma") else None)

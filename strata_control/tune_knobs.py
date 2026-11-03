@@ -84,7 +84,7 @@ ARMS: tuple[Arm, ...] = (
         classes=("A", "B", "C"), backends=("cuda", "hip"), needs=("ctx_ge_128k",)),
     # --- prompt speed: the chunk size is exact (10/10) and costs no decode speed on a card with VRAM to spare ------------------
     Arm("prefill_32k", "Larger prompt chunks (faster very long prompts)", "exact", {"--prefill": "auto:32768"},
-        classes=("B",), goals=("coding", "chat"), ram_delta_mib=4096, needs=("vram_ge_24g", "long_prompts"), metric="prompt"),
+        classes=("B",), goals=("coding", "chat"), ram_delta_mib=4096, needs=("vram_ge_24g", "long_prompts", "discrete_gpu"), metric="prompt"),
     # --- class A: RAM-bound resident mode (RTX 3060 / 46 GB): the one measured gain is adapt-async, behind its own switch ------
     Arm("adapt_async", "Learn which experts to keep while you chat, in the background", "nonrepeatable",
         {"--adapt-async": 1}, backends=("cuda",), classes=("A",), needs=("resident_ram", "one_gpu")),
@@ -220,6 +220,7 @@ def condition_holds(name: str, ctx: Context) -> bool:
         "hybrid_cpu": ctx.hybrid_cpu,
         "hybrid_experts": bool(f.get("hybrid_experts")),
         "vram_ge_24g": ctx.vram_mib >= 24000,
+        "discrete_gpu": not (ctx.arch and ctx.arch.split(":")[0] in ("gfx1151", "gfx1150", "gfx1103")),   # an APU's pool is shared with the expert cache
         "vram_le_8g": 0 < ctx.vram_mib <= 8400,
         "gfx12": bool(ctx.arch and ctx.arch.startswith("gfx12")),
         "windows_amd_kv_stream": ctx.backend == "hip" and sys.platform == "win32" and "--kv-resident" in ctx.base_args,
