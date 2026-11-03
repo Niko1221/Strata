@@ -65,3 +65,19 @@ test('a broken value in dev.config.json: the guard is off, a warning, no throw',
   assert.equal(devSettings(loaded.config).contextGuard, null);
   assert.deepEqual(contextGuardOf(ON).settings, ON);
 });
+
+test('Settings page: saving writes only contextGuard, checks every value first, keeps the rest of the file', async () => {
+  const { saveContextGuard, contextGuardView } = await import('../server/dev-mode.mjs');
+  const files = { f: JSON.stringify({ version: 1, badge: { label: 'X' }, hooks: { timeoutMs: 100 } }) };
+  const io = { read: f => { if (!(f in files)) throw Object.assign(new Error('no'), { code: 'ENOENT' }); return files[f]; }, write: (f, t) => { files[f] = t; }, rename: (a, b) => { files[b] = files[a]; delete files[a]; } };
+  const saved = saveContextGuard('f', { ...ON, midTaskAt: 0.5 }, io);
+  assert.deepEqual(saved, { ...ON, midTaskAt: 0.5 });
+  const after = JSON.parse(files.f);
+  assert.deepEqual(after.contextGuard, saved); assert.equal(after.badge.label, 'X'); assert.equal(after.hooks.timeoutMs, 100);
+  const before = files.f;
+  for (const bad of [{ ...ON, midTaskAt: 0.95 }, { ...ON, compactAfterTurnAt: 'x' }, { midTaskAt: 0.5 }, { ...ON, enabled: 'yes' }, null]) assert.throws(() => saveContextGuard('f', bad, io));
+  assert.equal(files.f, before, 'a refused value changes nothing');
+  assert.throws(() => saveContextGuard('f', ON, { ...io, read: () => '{ broken' }), /fix it by hand/);
+  assert.deepEqual(contextGuardView({ enabled: false, midTaskAt: 0.5 }), { enabled: false, midTaskAt: 0.5, compactAfterTurnAt: 0.55, compactBeforeSendAt: 0.6 });
+  assert.equal(contextGuardView(undefined).enabled, false);
+});

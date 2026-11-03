@@ -6,7 +6,7 @@
  * the one at the root of the checkout. A missing file is the empty config; a broken one is a warning (in the log and in the page), never a
  * stop: the host starts with the empty config.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -71,7 +71,7 @@ export function loadDevConfig({ file = devConfigFile(), read = readFileSync } = 
 /** What the page learns about Dev (GET /api/app/mode carries it as `dev` in Dev only). */
 export function devSummary(loaded) {
   const settings = devSettings(loaded.config);
-  return { label: loaded.config.badge.label, configFile: loaded.file, warnings: loaded.warnings, verbose: settings.verbose, chatOverflow: settings.chatOverflow, tokens: settings.tokens, ui: settings.ui, overrides: { loop: settings.overrides.loop, folder: settings.overrides.folder, permissions: settings.overrides.permissions } };
+  return { label: loaded.config.badge.label, configFile: loaded.file, warnings: loaded.warnings, verbose: settings.verbose, chatOverflow: settings.chatOverflow, contextGuard: contextGuardView(loaded.config.contextGuard), tokens: settings.tokens, ui: settings.ui, overrides: { loop: settings.overrides.loop, folder: settings.overrides.folder, permissions: settings.overrides.permissions } };
 }
 
 /* ---------------------------------------------------------------- Phase 2: what dev.config.json may set --- */
@@ -175,6 +175,39 @@ export function contextGuardOf(raw) {
   }
   if (bad.length) return { settings: null, warnings: [`dev.config.json: "contextGuard.${bad.join('", "contextGuard.')}" must be a number from 0.3 to 0.9; the context guard is off.`] };
   return { settings: { enabled: true, ...settings }, warnings: [] };
+}
+
+export const CONTEXT_GUARD_DEFAULTS = Object.freeze({ midTaskAt: 0.55, compactAfterTurnAt: 0.55, compactBeforeSendAt: 0.6 });
+
+/** What the Settings page shows for "contextGuard": the switch and the three values (a wrong or missing one shows its default). */
+export function contextGuardView(raw) {
+  const entry = isObject(raw) ? raw : {};
+  const value = key => (typeof entry[key] === 'number' && entry[key] >= 0.3 && entry[key] <= 0.9 ? entry[key] : CONTEXT_GUARD_DEFAULTS[key]);
+  return { enabled: contextGuardOf(raw).settings !== null, midTaskAt: value('midTaskAt'), compactAfterTurnAt: value('compactAfterTurnAt'), compactBeforeSendAt: value('compactBeforeSendAt') };
+}
+
+/**
+ * The Settings page saves "contextGuard" into dev.config.json: { enabled, midTaskAt, compactAfterTurnAt, compactBeforeSendAt }.
+ * Every value is checked (0.3 to 0.9) before anything is written; the rest of the file stays as it is. Throws an Error with a plain
+ * message for a wrong value or an unreadable file; the file is replaced in one step, so a failed write leaves the old one.
+ */
+export function saveContextGuard(file, body, { read = readFileSync, write = writeFileSync, rename = renameSync } = {}) {
+  if (!isObject(body) || typeof body.enabled !== 'boolean') throw new Error('enabled must be true or false');
+  const next = { enabled: body.enabled };
+  for (const key of Object.keys(CONTEXT_GUARD_DEFAULTS)) {
+    const v = body[key];
+    if (!(typeof v === 'number' && Number.isFinite(v) && v >= 0.3 && v <= 0.9)) throw new Error(`${key} must be a number from 0.3 to 0.9`);
+    next[key] = Math.round(v * 100) / 100;
+  }
+  let raw = {};
+  try { raw = JSON.parse(String(read(file, 'utf8')).replace(/^﻿/, '')); } catch (error) { if (error?.code !== 'ENOENT') throw new Error('dev.config.json cannot be read or is not valid JSON; fix it by hand first'); }
+  if (!isObject(raw)) throw new Error('dev.config.json must hold one JSON object; fix it by hand first');
+  raw.contextGuard = next;
+  const temp = `${file}.tmp`;
+  write(temp, `${JSON.stringify(raw, null, 2)}
+`, 'utf8');
+  rename(temp, file);
+  return next;
 }
 
 /** The Dev settings the host runs with now, or null outside Dev. index.mjs sets it at start and on Reload; the agent profile reads it. */

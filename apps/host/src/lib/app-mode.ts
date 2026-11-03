@@ -11,6 +11,8 @@ export interface AppMode {
   dev?: DevSummary;
 }
 
+export interface ContextGuardValues { enabled: boolean; midTaskAt: number; compactAfterTurnAt: number; compactBeforeSendAt: number }
+
 /** What a Strata Dev host says about itself (server/dev-mode.mjs devSummary). The fields after `warnings` come from Phase 2 hosts. */
 export interface DevSummary {
   label: string;
@@ -19,6 +21,8 @@ export interface DevSummary {
   verbose?: boolean;
   /** dev.config.json "chatOverflowGuard" (src/lib/chat-overflow.ts). */
   chatOverflow?: { enabled: boolean; maxTotalChars?: number };
+  /** dev.config.json "contextGuard": the switch and the three shares of the window (Settings -> General). */
+  contextGuard?: ContextGuardValues;
   tokens?: Record<string, string>;
   ui?: { elements: Record<string, { hidden?: boolean; label?: string; order?: number; replace?: string }>; extensions: Record<string, { enabled: boolean }> };
   overrides?: { loop?: { enabled?: boolean; maxRuns?: number }; folder?: { enabled?: boolean; defaultPath?: string }; permissions?: { defaultMode?: 'manual' | 'plan' | 'bypass'; allowedModes?: ('manual' | 'plan' | 'bypass')[] } };
