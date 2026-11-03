@@ -53,11 +53,15 @@ export function planPrompt(task, rules = null, steps = null) {
 
 /** The rules Strata Dev gives the model when it plans (dev.config.json "planGuidance.rules" replaces them). */
 export const DEFAULT_PLAN_RULES = Object.freeze([
-  'Split a big job into stages of a few steps each (for code: the core pieces first, then what is built on them) instead of one step that does everything at once.',
-  'Put checks early: after each stage, write or run a test for it, not only at the end.',
-  'If the job needs it, plan error handling and all-or-nothing behaviour of a failing operation as a step of its own.',
-  'Make every step something one working turn can finish and check, and start it with a verb.',
-  'Make the last step a full check against the requirements, then a short reply that says what was made and how it was verified.',
+  "Split a big job into stages of a few steps each (for code: the core pieces first, then what is built on them) instead of one step that does everything at once.",
+  "Name what each step covers: the concrete rules, cases or files from the request, not only a heading like 'Add error handling'. Go through every numbered rule and requirement of the request and make sure some step covers it.",
+  "Build requirements that touch all the code (error types, line numbers, text encoding, tie-breaking, the order of rules) into the step that first writes that code. Do not leave them for a late 'hardening' step.",
+  "Put checks early: after each stage, write or run a test for it. Test every rule on its own, with edge cases you invent (empty, boundary, invalid input), not only the cases that appear in the given data.",
+  "Before any step that changes or deletes files, plan a check of the targets (nothing is overwritten, nothing is half done) and a record of the starting state, such as a copy or hashes, to compare with at the end.",
+  "Do not add requirements the request does not state. Where the request is unclear or contradicts itself, pick the simplest reading, write the choice down in a step, and say it in the final reply.",
+  "If a step can fail for reasons outside your control (no network, no permission, a missing tool), say in the plan what you do then, and report the gap honestly instead of claiming success.",
+  "Make every step something one working turn can finish and check, and start it with a verb.",
+  "Make the last step a full check against the request, rule by rule, including where files may be written and the exact format of the final reply, then a short reply that says what was made and how it was verified.",
 ]);
 
 /**
