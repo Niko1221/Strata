@@ -43,6 +43,11 @@ A model download is big; it carries on where it stopped if it is interrupted.
 Closing the window stops Strata and the engine. (In browser mode closing the tab does not: see BROWSER MODE below.)
 To stop a running Strata from a terminal:   ./@APPIMAGE@ --quit
 
+To have the model you were using load itself when Strata opens, start it from a terminal with:   ./@APPIMAGE@ --resume
+Strata remembers the model you last loaded and the settings it had, and starts it again before you open a page; the Models page
+shows the usual progress. It downloads nothing: if the model's files are no longer on this computer, the terminal says so and
+Strata opens as it does without the option. A second --resume while Strata is running asks that Strata to load it.
+
 
 @INCLUDE:common-troubleshoot.txt@
 
