@@ -62,11 +62,11 @@ class PerFileSwitches(unittest.TestCase):
         self.assertRegex(text("kernels.cu"), r'env_int\("FNX_PFX_ATTN_I8", 1\)')
 
     def test_gdn_scan_is_decided_by_the_files_expert_types(self):
-        k, g, m = text("kernels.cu"), text("gguf.cpp"), text("model.cpp")
+        k, g, m = text("kernels.cu"), text("gguf.cpp"), text("engine.cu")
         # the rule: IQ-type routed experts (the set convert_small_tensors converts) -> off; the variable overrides
         self.assertRegex(g, r"mixed \|= kv\.second\.type == T_IQ2_S \|\| kv\.second\.type == T_IQ3_XXS \|\| kv\.second\.type == T_IQ3_S \|\| kv\.second\.type == T_Q2_0;")
         self.assertIn("iq_experts_ = mixed;", g)
-        self.assertIn("gdn_tc_set_default(!g.iq_experts());", m)
+        self.assertIn("gdn_tc_set_default(!m_.g.iq_experts());", m)
         self.assertRegex(k, r'gdn_tc_env = \(int\) fnx::env_int\("FNX_PFX_GDN_TC", -1\)')
         self.assertRegex(k, r"gdn_tc_env >= 0 \? gdn_tc_env != 0 : g_gdn_tc_default\.load\(\)")
         self.assertIn("g_gdn_tc_default{true}", k)

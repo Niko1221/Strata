@@ -59,6 +59,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             std::fprintf(stderr, "fnx: note: context %d is within the trained %d: the scaling changes every position's rotary "
                          "and no length needs it\n", max_ctx, m_.ctx_train);
     }
+    gdn_tc_set_default(!m_.g.iq_experts());   // the tensor-core GDN scan: off for the IQ3_S-type files (NVIDIA builds only compile it in)
 #if !FNX_HIP
     pf_c_ = 8192;   // NVIDIA default (owner 11-03): the expert kernels cost ~30 percent less per token at 8192 rows (FNX_PF_ROWS=4096 for the old chunk)
 #endif

@@ -1251,7 +1251,6 @@ static void check_supported(const Gguf& g) {
 }
 
 Model::Model(const std::string& path, Load how, Store* store, const std::string* image) : g(path) {
-    gdn_tc_set_default(!g.iq_experts());
     // the cards first: reading the embeddings into RAM below takes seconds on a cold cache
     {
         int ndev = 0;
