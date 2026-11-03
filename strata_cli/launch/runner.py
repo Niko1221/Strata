@@ -1564,7 +1564,7 @@ class Runner:
         return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": self.s.family,
                 "data_dir": drafting.data_dir_of(args) or (Path(self.s.data_dir) if self.s.data_dir else None),
                 "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
-                "blocked": drafting.blocked_by(args, split=bool(self.s.gpus and len(self.s.gpus) > 1), slots=int(self.s.parallel or 0))}
+                "blocked": drafting.blocked_by(args, split=bool(self.s.gpus and len(self.s.gpus) > 1), slots=int(self.s.parallel or 0), named=drafting.normalize(mode) == "dflash2", backend=backend)}
 
     def one_request_for_dflash2(self, config: Path) -> bool:
         """DFlash2 chosen on purpose and the person gave no number of requests: one at a time, said once (drafting.wants_one_request)."""
@@ -1641,7 +1641,8 @@ class Runner:
         # the split runs the model's own draft layer (--mtp) and refuses to start without it; the plan for Auto downloads DFlash2's drafter, not the draft layer, so
         # a start whose draft-layer folder is not on disk stays on the layer split (Auto: silently, with DFlash2 as the plan said; "on": one line saying how to get it)
         mtp_dir = next((str(cfg["args"][i + 1]) for i, a in enumerate(cfg.get("args") or []) if a == "--mtp" and i + 1 < len(cfg["args"])), None)
-        if mtp_dir and not self.draft_layer_present(mtp_dir):
+        df2_split = str(cfg.get("drafting") or "").lower() == "dflash2" and SE.mode(cfg) == "on"     # DFlash2 chosen by name and the split engine asked for: its drafter is DFlash2's pack, the layer is not loaded
+        if mtp_dir and not df2_split and not self.draft_layer_present(mtp_dir):
             if SE.mode(cfg) == "on":
                 text = ("The all-cards split engine needs the model's draft layer (the MTP), which is not downloaded. Add --drafting mtp to fetch it; "
                         "using the normal layer split.")

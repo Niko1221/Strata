@@ -143,6 +143,11 @@ class Decisions(unittest.TestCase):
         self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE), "Auto says it too: nothing changes silently")
         self.assertTrue(drafting.blocked_by([], slots=4))
         self.assertTrue(drafting.blocked_by(["--batch", "4"]) and drafting.blocked_by(["--pipeline-windows", "2"]))
+        # DFlash2 chosen by name (owner 2026-11-03: the person's own choice wins): several requests are their word too, only --pipeline-windows still blocks
+        for args, kw in (([], {"slots": 4}), (["--batch", "4"], {}), (["--slots", "2"], {}), (["--parallel", "3"], {}), (["--batch", "4"], {"slots": 4, "split": True})):
+            self.assertFalse(drafting.blocked_by(args, named=True, **kw), (args, kw))
+            self.assertTrue(drafting.blocked_by(args, **kw), (args, kw, "Auto and the MTP keep their rule"))
+        self.assertTrue(drafting.blocked_by(["--pipeline-windows", "2"], named=True), "the MTP's speculative next window has no DFlash2 counterpart")
         self.assertFalse(drafting.blocked_by([], split=True), "a layer split over several cards runs DFlash2 (owner 2026-11-02; the 0.1.56 engine does)")
         self.assertFalse(drafting.blocked_by(["--layer-split", "auto"]))
         self.assertFalse(drafting.blocked_by(["--spec", "4"], slots=1))
@@ -268,14 +273,47 @@ class EngineArguments(unittest.TestCase):
         self.apply(c)
         self.assertEqual((c["args"][c["args"].index("--spec") + 1], c["args"].count("--spec"), c["args"][c["args"].index("--draft-conf") + 1]), ("5", 1, "0.2"))
 
-    def test_parallel_loads_only_the_mtp_and_says_so(self):
+    def test_parallel_with_auto_loads_only_the_mtp_and_says_so(self):
         self.pack()
         self.layer()
         for kw in ({"slots": 4},):
-            c = self.cfg(drafting="dflash2")
+            c = self.cfg()                                   # Auto: unchanged, the MTP for several requests
             d = self.apply(c, **kw)
             self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE), kw)
             self.assertEqual(c["args"], self.args, kw)
+            c = self.cfg(drafting="mtp")                     # the MTP chosen: unchanged
+            d = self.apply(c, **kw)
+            self.assertEqual((d.drafter, d.note), ("mtp", ""), kw)
+            self.assertEqual(c["args"], self.args, kw)
+
+    def test_dflash2_chosen_by_name_keeps_dflash2_for_the_requests_the_person_chose(self):
+        """Owner 2026-11-03: DFlash2 chosen + a number of requests chosen = DFlash2 with that many (the engine runs a drafter per request)."""
+        self.pack()
+        self.layer()
+        for kw in ({"slots": 2}, {"slots": 4}, {"slots": 8}):
+            c = self.cfg(drafting="dflash2")
+            d = self.apply(c, **kw)
+            self.assertEqual((d.drafter, d.note), ("dflash2", ""), kw)
+            a = c["args"]
+            self.assertEqual((a[a.index("--draft") + 1], a[a.index("--draft-fallback") + 1]), ("dflash2", "none"), kw)
+            self.assertNotIn("--mtp", a)
+            self.assertNotIn("--batch-mtp", a, "the MTP's slot switch is the MTP's; the slot drafts are the engine's default for --draft dflash2 --batch")
+        # the number in the arguments themselves (Expert mode / the saved --batch) is the same word
+        c = self.cfg(drafting="dflash2", args=[*self.args, "--batch", "4", "--batch-mtp"])
+        d = self.apply(c)
+        self.assertEqual((d.drafter, d.note), ("dflash2", ""))
+        self.assertEqual(c["args"][c["args"].index("--batch") + 1], "4")
+        self.assertNotIn("--batch-mtp", c["args"])
+        # on a layer split too
+        c = self.cfg(drafting="dflash2")
+        self.assertEqual(self.apply(c, split=True, slots=4).drafter, "dflash2")
+        # one request (1, or none given) was always DFlash2
+        for kw in ({"slots": 0}, {"slots": 1}):
+            self.assertEqual(self.apply(self.cfg(drafting="dflash2"), **kw).drafter, "dflash2", kw)
+        # --pipeline-windows is the one thing that still keeps it out
+        c = self.cfg(drafting="dflash2", args=[*self.args, "--pipeline-windows", "2"])
+        d = self.apply(c, slots=4)
+        self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE))
 
     def test_no_pack_no_internet_runs_the_mtp_when_it_is_here_else_none(self):
         self.layer()
@@ -341,8 +379,18 @@ class EngineArguments(unittest.TestCase):
                 self.assertEqual(args[args.index("--draft-fallback") + 1], "none")
             args = engine_args(self.cfg(drafting="mtp"))
             self.assertEqual(args, self.args)
-            self.assertEqual(engine_args(self.cfg(drafting="dflash2", parallel=4))[:len(self.args)], self.args, "several requests: the MTP alone")
+            self.assertEqual(engine_args(self.cfg(parallel=4))[:len(self.args)], self.args, "Auto with several requests: the MTP alone")
             self.assertEqual(drafting.take_note(), drafting.NOT_HERE, "the engine that starts next is told why")
+            self.assertEqual(engine_args(self.cfg(drafting="mtp", parallel=4))[:len(self.args)], self.args, "the MTP chosen: unchanged")
+            self.assertEqual(drafting.take_note(), "")
+            # DFlash2 chosen by name with a number of requests the person chose: DFlash2 with that many, no note
+            named = engine_args(self.cfg(drafting="dflash2", parallel=4))
+            self.assertNotIn("--mtp", named)
+            self.assertEqual((named[named.index("--draft") + 1], named[named.index("--draft-fallback") + 1], named[named.index("--batch") + 1]), ("dflash2", "none", "4"))
+            self.assertEqual(drafting.take_note(), "")
+            one = engine_args(self.cfg(drafting="dflash2", parallel=1))
+            self.assertNotIn("--batch", one)
+            self.assertEqual(one[one.index("--draft") + 1], "dflash2")
         # a 16 GB card holds about 3,700 slots with the drafter on: the server passes its memory and the confidence follows (drafting.CONF_STEPS)
         with mock.patch("serve.server.drafting_vram_mib", return_value=16384.0), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
             args = engine_args(self.cfg(drafting="dflash2"))

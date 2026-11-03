@@ -238,6 +238,24 @@ class AutoFetchesTheDraftLayer(Base):
                 self.assertEqual(r.resolved_drafting("qwen"), "dflash2")
                 self.assertNotIn("mtp", [p["kind"] for p in r.download_plan()["parts"]])
 
+    def test_dflash2_by_name_with_the_split_engine_on_fetches_the_dflash2_drafter_not_the_layer(self):
+        """Owner 2026-11-03: both choices are the person's own (--drafting dflash2 --split-engine on): the split engine runs, with DFlash2's drafter."""
+        r = self.runner(cards(2), gpus=[0, 1], drafting="dflash2", split_engine="on")
+        self.assertTrue(r.split_expected())
+        self.assertEqual(r.resolved_drafting("qwen"), "dflash2")
+        kinds = [p["kind"] for p in r.download_plan()["parts"]]
+        self.assertIn("dflash2", kinds)
+        self.assertNotIn("mtp", kinds)
+        want = r.drafting_inputs({"model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl", "args": []})
+        self.assertEqual(want["mode"], "dflash2")
+        self.assertNotIn("MTP", r.drafting_plan_line())
+        # the same name with the split engine on Auto stays the layer split (and a number of requests changes nothing about which drafter)
+        r = self.runner(cards(2), gpus=[0, 1], drafting="dflash2")
+        self.assertFalse(r.split_expected())
+        r = self.runner(cards(2), gpus=[0, 1], drafting="dflash2", split_engine="on", parallel=4)
+        want = r.drafting_inputs({"model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl", "args": []})
+        self.assertEqual((want["mode"], want["blocked"]), ("dflash2", False), "the person's own number of requests no longer blocks a DFlash2 they named")
+
     def test_amd_four_gfx1201_is_the_mtp_two_are_not(self):
         self.hw = HW_4XR9700
         r = self.runner(cards(4, vendor="amd", arch="gfx1201"), gpus=[0, 1, 2, 3])
@@ -249,6 +267,7 @@ class AutoFetchesTheDraftLayer(Base):
         self.assertTrue(SE.expected({}, indexes=[0, 1], probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
         self.assertFalse(SE.expected({"split_engine": "off"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
         self.assertFalse(SE.expected({"drafting": "dflash2"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
+        self.assertTrue(SE.expected({"drafting": "dflash2", "split_engine": "on"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"), "named and asked for: both are the person's own")
         self.assertFalse(SE.expected({}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="darwin"))
         self.assertFalse(SE.expected({}, probe=lambda i: cards(2), ram=lambda: (500.0, 4.0), system="linux"), "not enough RAM for the locked tables")
 
