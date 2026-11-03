@@ -62,3 +62,16 @@
 .devmodels__llama[data-status='error'] { border-color: var(--st-danger); }
 .devmodels__lines { width: 100%; margin: 4px 0 0; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); white-space: pre-wrap; max-height: 160px; overflow: auto; }
 .devmodels__badge { display: inline-block; margin-top: 2px; padding: 0 6px; border-radius: var(--st-r-pill); border: 1px solid var(--st-warn); color: var(--st-warn-text); font-size: 11px; }
+
+/* Plan progress (src/dev/PlanProgress.tsx): "3 of 5 steps" above the message box and on running board cards. */
+.dev-progress { margin: 0 14px 8px; display: flex; flex-direction: column; gap: 4px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); }
+.dev-progress__text { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.dev-progress__text > span:first-child { flex: none; font-weight: var(--st-fw-medium); color: var(--st-ink); }
+.dev-progress__now { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--st-ink-muted); }
+.dev-progress output { flex: none; margin-left: auto; color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
+.dev-progress__track { height: 4px; border-radius: var(--st-r-pill); background: var(--st-line-soft); overflow: hidden; }
+.dev-progress__track i { display: block; height: 100%; background: var(--st-accent); border-radius: inherit; transition: width .3s ease; }
+.dev-progress[data-paused] .dev-progress__track i { background: var(--st-ink-muted); }
+@media (prefers-reduced-motion: reduce) { .dev-progress__track i { transition: none; } }
+html[data-motion='reduced'] .dev-progress__track i { transition: none; }
+.bcard .dev-progress { margin: 4px 0 0; }

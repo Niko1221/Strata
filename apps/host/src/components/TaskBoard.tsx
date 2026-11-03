@@ -11,6 +11,8 @@ import { type BoardAction, type BoardCard, type BoardColumn, type BoardReason } 
 import { useBoard, refreshBoard } from '../lib/use-board';
 import { Btn, Icon, IconBtn, type IconName } from './ui';
 import { FloatingMenu } from './FloatingMenu';
+import { CardProgress } from '../dev/PlanProgress';
+import { useDev } from '../dev/dev-state';
 
 /**
  * The task board: what is running, what waits for a yes, what found a problem and what finished, in four columns. The cards come from
@@ -97,6 +99,7 @@ function ReasonText({ reason }: { reason: BoardReason }) {
 /* ------------------------------------------------------------------- card */
 
 function Card({ card, now, busy, canRun, run, openMenu }: { card: BoardCard; now: number; busy: boolean; canRun: boolean; run: (card: BoardCard, action: BoardAction) => void; openMenu: (card: BoardCard, anchor: HTMLElement) => void }) {
+  const dev = useDev();   // Strata Dev: a running chat or loop card shows its plan's progress. Live: the moving bar, as before.
   const titleId = `bcard-${card.key.replace(/[^a-z0-9]+/gi, '-')}`;
   const source = card.source === 'task' ? <><Icon name="clock" size={14}/>{tr('Scheduled task')}</> : card.source === 'chat' ? <><Icon name="chat" size={14}/>{tr('Chat')}</> : <><Icon name="refresh" size={14}/>{tr('Loop · {0}', [everyShort(card.everyMs ?? 0)])}</>;
   const where = card.folder || card.meta ? <div className="bcard__where">{card.folder ? <><Icon name="folder" size={14}/>{card.folder}</> : null}{card.folder && card.meta ? ' · ' : ''}{card.meta ? tr(card.meta.text, card.meta.params) : null}</div> : null;
@@ -127,7 +130,7 @@ function Card({ card, now, busy, canRun, run, openMenu }: { card: BoardCard; now
     {where}
     {card.line ? <p className="bcard__line">{card.line}</p> : null}
     {card.reason ? <div className={`bcard__why bcard__why--${card.reason.tone}`}><Icon name={card.reason.tone === 'bad' ? 'error' : card.reason.tone === 'warn' ? 'warning' : 'shield'} size={16}/><ReasonText reason={card.reason}/></div> : null}
-    {card.busy ? <div className="bcard__bar bcard__bar--busy" aria-hidden="true"><i/></div> : null}
+    {card.busy ? (dev && card.source !== 'task' ? <CardProgress chatId={card.id}/> : <div className="bcard__bar bcard__bar--busy" aria-hidden="true"><i/></div>) : null}
     <div className="bcard__actions">{actions}</div>
   </article>;
 }
