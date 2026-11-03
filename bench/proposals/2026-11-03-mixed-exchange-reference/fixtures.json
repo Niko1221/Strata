@@ -1,0 +1,64 @@
+{
+  "5cb33a25e10b99f85191f8f6586bfa730471dba8bfbf514a1eceb95317f735e1": {
+    "model": "qwen3.8-flash-next-iq2_xs",
+    "messages": [
+      {
+        "role": "user",
+        "content": "连续输出一个大型Python标准库项目的源代码，从配置解析、HTTP客户端、缓存、重试、并发执行器到单元测试，写至少200个函数，每个函数包含文档字符串和错误处理。直接从代码开始，持续写到输出上限，不要总结，不要省略。"
+      }
+    ],
+    "temperature": 0,
+    "top_p": 0.95,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "max_tokens": 512,
+    "seed": 20261013,
+    "reasoning_effort": "none"
+  },
+  "9bb7d4ba9b845a4903110137d3aab9a38abf9478b18766c759767e63cf2f3d8e": {
+    "model": "qwen3.8-flash-next-iq2_xs",
+    "messages": [
+      {
+        "role": "user",
+        "content": "请实现 Python 3 函数 retry_delays(attempts, base, cap)，只输出一个python代码块。attempts是非负整数；base和cap是非负数。返回长度attempts的列表，第i项=min(cap,base*2**i)，i从0开始。如果attempts是bool或非整数，抛TypeError；attempts<0或base<0或cap<0，抛ValueError。必须能处理attempts=10000，base=0.5，cap=4，不发生浮点溢出。无需sleep，不得导入第三方库。"
+      },
+      {
+        "role": "assistant",
+        "content": "```python\ndef retry_delays(attempts, base, cap):\n    if isinstance(attempts, bool) or not isinstance(attempts, int):\n        raise TypeError(\"attempts must be a non-negative integer\")\n    if attempts < 0:\n        raise ValueError(\"attempts must be non-negative\")\n    if base < 0:\n        raise ValueError(\"base must be non-negative\")\n    if cap < 0:\n        raise ValueError(\"cap must be non-negative\")\n    \n    result = []\n    for i in range(attempts):\n        value = min(cap, base * (2 ** i))\n        result.append(value)\n    return result\n```"
+      },
+      {
+        "role": "user",
+        "content": "以下是你的代码实际运行的失败结果，请修复，保持原函数签名与题目规则，只输出Python代码块：\n[{\"name\": \"large\", \"passed\": false, \"error\": \"OverflowError('int too large to convert to float')\"}]"
+      }
+    ],
+    "temperature": 0,
+    "top_p": 0.95,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "max_tokens": 2048,
+    "seed": 20261013,
+    "reasoning_effort": "none"
+  },
+  "e1b65b29c7846cda791e44b94b8bb0d834c140f8d7a00d22661ea0da3b858fd2": {
+    "model": "qwen3.8-flash-next-iq2_xs",
+    "messages": [
+      {
+        "role": "user",
+        "content": "写一份非常详细的中文数据库故障排查手册，覆盖锁等待、事务隔离、索引、慢查询、复制、备份、磁盘、网络与容量规划。每节含命令、案例和分析，需要至少一万字。直接开始正文，持续写到输出上限，不要总结。"
+      }
+    ],
+    "temperature": 0,
+    "top_p": 0.95,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "max_tokens": 512,
+    "seed": 20261013,
+    "reasoning_effort": "none"
+  }
+}

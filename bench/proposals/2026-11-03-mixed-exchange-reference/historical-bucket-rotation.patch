@@ -1,0 +1,286 @@
+--- a/include/strata/core/exchange_storage.hpp
++++ b/include/strata/core/exchange_storage.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <algorithm>
+ #include <cstddef>
+ #include <memory>
+ #include <utility>
+@@ -13,12 +14,14 @@
+ 
+ // Non-owning views: the complement and exchange allocations retain their original
+ // owners until FileExpertSource::close(). Ownership changes via slot IDs; the
+-// physical buffer addresses, bytes and CUDA aliases stay in place. This first path requires uniform, fully mapped/pinned expert slots.
++// physical buffer addresses, capacities and CUDA aliases stay in place.
++// Mixed-size buckets require a fully mapped/pinned complement.
+ class ExchangeStorage {
+ public:
+     struct View {
+         uint8_t* host = nullptr;
+         const uint8_t* device = nullptr;
++        size_t bytes = 0;
+     };
+ 
+     bool initialize(const std::vector<uint64_t>& offsets, uint8_t* resident_host,
+@@ -40,7 +43,7 @@
+         std::vector<size_t> spares(count);
+         std::vector<View> buffers(resident_slots + count);
+         for (size_t slot = 0; slot < resident_slots; ++slot)
+-            buffers[slot] = {resident_host + slot * blob_bytes, resident_device + slot * blob_bytes};
++            buffers[slot] = {resident_host + slot * blob_bytes, resident_device + slot * blob_bytes, blob_bytes};
+         std::vector<bool> used(resident_slots, false);
+         for (size_t i = 0; i < offsets.size(); ++i) {
+             const uint64_t at = offsets[i];
+@@ -57,7 +60,7 @@
+         }
+         for (size_t q = 0; q < count; ++q) {
+             spares[q] = resident_slots + q;
+-            buffers[spares[q]] = {exchange_host + q * blob_bytes, exchange_device + q * blob_bytes};
++            buffers[spares[q]] = {exchange_host + q * blob_bytes, exchange_device + q * blob_bytes, blob_bytes};
+         }
+         experts_ = std::move(experts);
+         expert_count_ = offsets.size();
+@@ -65,6 +68,63 @@
+         buffers_.swap(buffers);
+         blob_bytes_ = blob_bytes;
+         return true;
++    }
++
++    // Each immutable physical view has its own capacity. A same-size bucket
++    // retains `count` spares even when ownership rotates into the compact arena.
++    bool initialize_mixed(const std::vector<uint64_t>& offsets, const std::vector<size_t>& sizes,
++                          uint8_t* rh, const uint8_t* rd, uint64_t resident_bytes,
++                          uint8_t* sh, const uint8_t* sd, size_t count, std::string& error) {
++        error.clear();
++        if(active() || offsets.size()!=sizes.size() || !rh || !rd || !sh || !sd || !count || !resident_bytes) {
++            error="invalid mixed mapped exchange geometry";return false;
++        }
++        std::vector<size_t> types=sizes;
++        std::sort(types.begin(),types.end());types.erase(std::unique(types.begin(),types.end()),types.end());
++        if(types.empty() || types[0]==0 || types.size()>std::numeric_limits<size_t>::max()/count) {
++            error="invalid bucket count or size";return false;
++        }
++        size_t pool_bytes=0;
++        for(size_t b:types) {
++            if(b>std::numeric_limits<size_t>::max()/count || pool_bytes>std::numeric_limits<size_t>::max()-b*count) {
++                error="bucket allocation overflow";return false;
++            }
++            pool_bytes+=b*count;
++        }
++        auto experts=std::make_unique<std::atomic<size_t>[]>(offsets.size());
++        std::vector<View> buffers;std::vector<size_t> spares;
++        std::vector<std::pair<uint64_t,uint64_t>> spans;
++        for(size_t i=0;i<offsets.size();++i) {
++            experts[i].store(kAbsent,std::memory_order_relaxed);
++            if(offsets[i]==~uint64_t{0})continue;
++            if(offsets[i]>resident_bytes || sizes[i]>resident_bytes-offsets[i]) {
++                error="resident view out of bounds";return false;
++            }
++            spans.push_back({offsets[i],offsets[i]+sizes[i]});
++            experts[i].store(buffers.size(),std::memory_order_relaxed);
++            buffers.push_back({rh+offsets[i],rd+offsets[i],sizes[i]});
++        }
++        std::sort(spans.begin(),spans.end());
++        for(size_t i=1;i<spans.size();++i)if(spans[i].first<spans[i-1].second) {
++            error="overlapping resident views";return false;
++        }
++        size_t at=0;
++        for(size_t b:types)for(size_t q=0;q<count;++q) {
++            spares.push_back(buffers.size());buffers.push_back({sh+at,sd+at,b});at+=b;
++        }
++        experts_=std::move(experts);expert_count_=offsets.size();buffers_.swap(buffers);spares_.swap(spares);
++        blob_bytes_=types.back();return true;
++    }
++    size_t spare_index_for(size_t bytes,size_t q) const {
++        for(size_t i=0;i<spares_.size();++i)
++            if(buffers_[spares_[i]].bytes==bytes && q--==0)return i;
++        return kAbsent;
++    }
++    View spare_for(size_t bytes,size_t q) const {
++        const size_t i=spare_index_for(bytes,q);return i==kAbsent?View{}:spare(i);
++    }
++    bool commit_for(size_t in,size_t out,size_t q,const uint8_t* staged,size_t bytes) {
++        const size_t i=spare_index_for(bytes,q);return i!=kAbsent&&commit(in,out,i,staged,bytes);
+     }
+ 
+     bool active() const { return blob_bytes_ != 0; }
+@@ -79,9 +139,10 @@
+     // has landed in spare(q). No allocation, memcpy, or CUDA operation here.
+     bool commit(size_t in, size_t out, size_t q, const uint8_t* staged, size_t bytes) {
+         if (in >= expert_count_ || out >= expert_count_ || q >= spares_.size() ||
+-            !staged || bytes != blob_bytes_) return false;
++            !staged || !bytes) return false;
+         const size_t incoming_slot = experts_[in].load(std::memory_order_acquire);
+-        if (incoming_slot == kAbsent || experts_[out].load(std::memory_order_acquire) != kAbsent ||
++        if (incoming_slot == kAbsent || buffers_[incoming_slot].bytes != bytes ||
++            buffers_[spares_[q]].bytes != bytes || experts_[out].load(std::memory_order_acquire) != kAbsent ||
+             buffers_[spares_[q]].host != staged) return false;
+         // A background router lookahead can query residency to skip redundant
+         // file prefetches. Publish one atomic slot ID; the pointer/alias pair is
+@@ -111,4 +172,5 @@
+     uint64_t exchanges_ = 0, avoided_bytes_ = 0;
+ };
+ 
++static_assert(sizeof(ExchangeStorage)==88,"preserve FileExpertSource ABI on this x86_64 experiment");
+ } // namespace strata::core::detail
+--- a/include/strata/core/expert_source.hpp
++++ b/include/strata/core/expert_source.hpp
+@@ -606,6 +606,8 @@
+     /// The exchange buffers are page-locked (cudaHostAlloc): copies to and from them are asynchronous.
+     bool exchange_pinned() const { return xstage_pinned_; }
+     uint8_t* exchange_buffer(int64_t q) const;
++    /// Size-aware spare selection for mixed expert blocks.
++    uint8_t* exchange_buffer(int64_t layer, int64_t q) const;
+     /// Requires `has_resident(layer, in)`, `!has_resident(layer, out)` and `exchange_buffer(q)` holding out's blob.
+     bool stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q);
+     /// --pipeline-windows: size the exchange table now, so a `stage_exchange` on the adaptive tier's thread never
+--- a/src/core/expert_source.cpp
++++ b/src/core/expert_source.cpp
+@@ -3248,11 +3248,24 @@
+     const bool requested = rotate_env && std::strcmp(rotate_env, "1") == 0;
+     const bool uniform = std::all_of(layer_blob_bytes_.begin(), layer_blob_bytes_.end(),
+                                     [blob](uint64_t b) { return b == blob; });
+-    const bool eligible = requested && uniform && complement_pinned_ && !complement_partial_ &&
+-                          complement_host_ && complement_device_ && complement_bytes_ > 0;
+-    const size_t total = (size_t) n * (size_t) blob;
++    const char* bucket_env=std::getenv("STRATA_EXCHANGE_BUCKETS");
++    const bool buckets=bucket_env && std::strcmp(bucket_env,"1")==0;
++    const bool mapped_pool=complement_pinned_ && !complement_partial_ && complement_host_ && complement_device_ && complement_bytes_>0;
++    const bool eligible=(buckets || (requested && uniform)) && mapped_pool;
++    std::vector<size_t> types(layer_blob_bytes_.begin(),layer_blob_bytes_.end());
++    std::sort(types.begin(),types.end());types.erase(std::unique(types.begin(),types.end()),types.end());
++    size_t per_round=0;
++    for(size_t b:types) {
++        if(!b || per_round>std::numeric_limits<size_t>::max()-b){err="bucket pool size overflow";return false;}
++        per_round+=b;
++    }
++    if(per_round>std::numeric_limits<size_t>::max()/(size_t)n){err="bucket pool allocation overflow";return false;}
++
++    // Both A/B arms reserve exactly the same physical budget and mapping flags.
++    const size_t total = (size_t) n * per_round;
++    std::fprintf(stderr,"FileExpertSource: bucket spare budget: %zu sizes x %lld logical slots, %zu bytes; rotation %d\n",types.size(),(long long)n,total,buckets?1:0);
+     void* p = nullptr;
+-    if (cudaHostAlloc(&p, total, eligible ? cudaHostAllocMapped : cudaHostAllocDefault) == cudaSuccess && p != nullptr) {
++    if (cudaHostAlloc(&p, total, mapped_pool ? cudaHostAllocMapped : cudaHostAllocDefault) == cudaSuccess && p != nullptr) {
+         xstage_pinned_ = true;
+     } else {
+         (void) cudaGetLastError();
+@@ -3263,7 +3276,23 @@
+     xstage_ = (uint8_t*) p;
+     xstage_cap_ = n;
+     xstage_blob_ = blob;
+-    if (requested) {
++    // Query the alias in both arms so the startup mapping path matches.
++    void* pool_device=nullptr;
++    const bool pool_mapped=xstage_pinned_ && cudaHostGetDevicePointer(&pool_device,p,0)==cudaSuccess && pool_device;
++    if(buckets) {
++        std::string reason="requires fully mapped/pinned RAM complement";
++        if(eligible && pool_mapped) {
++            std::vector<size_t> sizes(complement_offsets_.size());
++            for(size_t i=0;i<sizes.size();++i)sizes[i]=(size_t)layer_blob_bytes_[i/(size_t)n_expert_];
++            try {
++                if(exchange_storage_.initialize_mixed(complement_offsets_,sizes,(uint8_t*)complement_host_,complement_device_,
++                     complement_bytes_,xstage_,(const uint8_t*)pool_device,(size_t)n,reason))
++                    std::fprintf(stderr,"FileExpertSource: bucket exchange rotation enabled: %zu sizes, no host commit memcpy\n",types.size());
++            } catch(const std::bad_alloc&) {reason="bucket metadata allocation failed";}
++        }
++        if(!exchange_storage_.active()) {err="bucket rotation unavailable: "+reason;return false;}
++    }
++    else if (requested) {
+         std::string reason = "requires equal-size expert blocks and a fully mapped/pinned RAM complement";
+         void* device = nullptr;
+         if (eligible && xstage_pinned_ && cudaHostGetDevicePointer(&device, p, 0) == cudaSuccess && device) {
+@@ -3290,16 +3319,22 @@
+     return xstage_ + (size_t) q * (size_t) xstage_blob_;
+ }
+ 
++uint8_t* FileExpertSource::exchange_buffer(int64_t layer,int64_t q) const {
++    if(layer<0 || layer>=n_layers_ || q<0 || q>=xstage_cap_)return nullptr;
++    if(exchange_storage_.active())return exchange_storage_.spare_for((size_t)layer_blob_bytes_[(size_t)layer],(size_t)q).host;
++    return exchange_buffer(q);
++}
++
+ bool FileExpertSource::stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q) {
+     if (out < 0 || out >= n_expert_ || !has_resident(layer, in) || has_resident(layer, out) ||
+-        exchange_buffer(q) == nullptr) return false;
++        exchange_buffer(layer,q) == nullptr) return false;
+     const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
+     const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
+     if (override_.empty()) override_.assign((size_t) blobs_, nullptr);
+     if (override_[i_out] != nullptr) return false;
+     for (const Exchange& x : staged_)
+         if (x.in == i_in || x.q == q) return false;
+-    override_[i_out] = exchange_buffer(q);
++    override_[i_out] = exchange_buffer(layer,q);
+     staged_.push_back({i_in, i_out, q, layer_blob_bytes_[(size_t) layer]});
+     return true;
+ }
+@@ -3327,7 +3362,7 @@
+         const uint8_t* src = override_[x.out];
+         if (exchange_storage_.active()) {
+             exchange_perf::Scope perf_meta(exchange_perf::Metadata);
+-            if (!exchange_storage_.commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
++            if (!exchange_storage_.commit_for(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
+                 // Admitting the GPU swap after a failed RAM ownership update would lose an expert.
+                 std::fprintf(stderr, "FileExpertSource: invalid exchange rotation commit; refusing corrupt residency\n");
+                 std::abort();
+@@ -3366,7 +3401,7 @@
+     for (const Exchange& x : staged_) {
+         const uint8_t* src = override_[x.out];
+         if (exchange_storage_.active()) {   // STRATA_EXCHANGE_ROTATE: the same ownership transfer as commit_exchanges
+-            if (!exchange_storage_.commit(x.in, x.out, (size_t) x.q, src, (size_t) x.bytes)) {
++            if (!exchange_storage_.commit_for(x.in, x.out, (size_t) x.q, src, (size_t) x.bytes)) {
+                 std::fprintf(stderr, "FileExpertSource: invalid exchange rotation commit; refusing corrupt residency\n");
+                 std::abort();
+             }
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -292,7 +292,7 @@
+         if (slot < 0) continue;
+         const SwapHome home = locate(s.layer);
+         const strata::core::OnDevice on(home.dev);
+-        if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(q), home.cache->device_slot(slot),
++        if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(s.layer,q), home.cache->device_slot(slot),
+                             (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer), cudaMemcpyDeviceToHost,
+                             home.stream); e != cudaSuccess) {
+             std::fprintf(stderr, "strata: copy back of layer %d slot %d (device %d) failed: %s\n", (int) s.layer,
+@@ -8613,7 +8613,7 @@
+                 const strata::core::OnDevice on(h.dev);
+                 for (const ASwap& w : aswaps) {
+                     if (w.home != hi || !w.exchange) continue;
+-                    if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(w.j), h.cache->device_slot(w.slot),
++                    if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(w.layer,w.j), h.cache->device_slot(w.slot),
+                                                               (size_t) strata::kernels::cpu::expert_layout().blob_bytes(w.layer),
+                                                               cudaMemcpyDeviceToHost, h.stream); e != cudaSuccess) {
+                         std::fprintf(stderr, "strata serve: adaptive tier: copy back of layer %d slot %d (CUDA%d) failed: %s\n",
+@@ -8629,7 +8629,7 @@
+             if (src.pinned(w.layer, w.in))
+                 if (const uint8_t* b = src.resident_blob(w.layer, w.in)) return b;
+             // pageable, or not in the RAM copy: through a bounce buffer (an async copy)
+-            uint8_t* bb = src.exchange_buffer(a_cap + w.j);
++            uint8_t* bb = src.exchange_buffer(w.layer,a_cap + w.j);
+             if (bb == nullptr || !src.copy_blob(w.layer, w.in, bb)) {
+                 std::fprintf(stderr, "strata serve: adaptive tier: layer %d expert %d could not be read\n", (int) w.layer,
+                              (int) w.in);
+@@ -11142,6 +11142,8 @@
+             for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
+             const char* finish = "length";
+             const auto exchange_stats0=exchange_perf::snapshot();
++            const auto perf_rotate0=src.rotated_exchanges(),perf_avoided0=src.avoided_exchange_copy_bytes();
++            const auto perf_exchanges0=src.exchanges();
+             const Clock::time_point d0 = Clock::now();
+             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
+             static const bool dec_timing = std::getenv("STRATA_DECODE_TIMING") != nullptr;
+@@ -12043,6 +12045,10 @@
+             {
+                 const DecSnap perf_end=dec_snap();
+                 exchange_perf::record(exchange_stats0,produced_n);
++                if(const char* path=std::getenv("STRATA_ROTATION_PATH_FILE")) {
++                    static int seq=0;std::FILE* f=std::fopen(path,"a");if(!f)std::abort();
++                    std::fprintf(f,"{\"sequence\":%d,\"output_tokens\":%lld,\"active\":%s,\"rotations\":%llu,\"avoided_bytes\":%llu,\"exchanges\":%lld}\n",++seq,(long long)produced_n,src.exchange_rotation()?"true":"false",(unsigned long long)(src.rotated_exchanges()-perf_rotate0),(unsigned long long)(src.avoided_exchange_copy_bytes()-perf_avoided0),(long long)(src.exchanges()-perf_exchanges0));std::fclose(f);
++                }
+                 strata_perf::record(n,produced_n,dec_windows,dec_T,ds0.entries-perf_request_cpu0,
+                                    perf_end.entries-ds0.entries,perf_end.misses-ds0.misses,perf_end.pcie-ds0.pcie);
+             }

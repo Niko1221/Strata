@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "kind": "historical experimental overlay; not applicable to upstream main",
+  "upstream_review_base": "ffa80d73133ea5c548aefe57889a16e8085a938f",
+  "issue": "https://github.com/Niko1221/Strata/issues/5050",
+  "files": {
+    "include/strata/core/exchange_storage.hpp": {
+      "before_sha256": "30e4c42ac268fc30af4501ee2036d040173a5fbb67de3429caddd8285f2eeaed",
+      "after_sha256": "033ac970ee5bab44d91df463c8d19aff573f425f4cc3cdecce770f8a4887d549"
+    },
+    "include/strata/core/expert_source.hpp": {
+      "before_sha256": "05574c05979da63c8156b402b4c4066807110624f9cfefbea224da30904966db",
+      "after_sha256": "a460394549e5da84c0ee92d3cbcf294bf734939488561d10aa1b21acfea23b41"
+    },
+    "src/core/expert_source.cpp": {
+      "before_sha256": "f7ae5bef767ca10d2285b97566834f32bd7974ad2c027c6980f6c3abe5b9adfe",
+      "after_sha256": "b6026a86ac58a639eb11165887e00b3aaaab3b474c3b4fa97ddd4b4e7d2cf8b8"
+    },
+    "src/program/generate.cpp": {
+      "before_sha256": "af50e614268268caa8e1541e495445a608a4ec049e11306a2b5e87d7b69efa38",
+      "after_sha256": "75053ef801351cce970fb37c6ad8e44b41fcf847a931c4f4d3d2aa4a623f419d"
+    }
+  }
+}

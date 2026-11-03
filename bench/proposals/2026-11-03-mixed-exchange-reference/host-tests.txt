@@ -1,0 +1,16 @@
+patching file 'include/strata/core/exchange_storage.hpp'
+mixed sizes 33,97 rounds 4096 swaps 16384 avoided 1068544 PASS
+mixed sizes 1510400,1305600 rounds 16 swaps 64 avoided 90726400 PASS
+bucket ownership/bytes/CUDA-alias/guards/concurrent lookahead: PASS
+PASS exchange_bucket_test.cpp
+three size buckets, 96 simultaneous exchanges each, forward/reverse, cross-size rejection and clear: PASS
+PASS exchange_capacity96_test.cpp
+exchange_storage_test: PASS (byte/alias/ownership checks, 12304 exchanges)
+PASS exchange_storage_legacy_test.cpp
+mixed sizes 33,97,0 rounds 4096 swaps 16384 avoided 1061376 PASS
+mixed sizes 1510400,1305600,0 rounds 16 swaps 64 avoided 89497600 PASS
+mixed sizes 33,97,65 rounds 4096 swaps 15838 avoided 1013310 PASS
+mixed sizes 1510400,1305600,1177600 rounds 16 swaps 63 avoided 83072000 PASS
+bucket ownership/bytes/CUDA-alias/guards/concurrent lookahead: PASS
+PASS exchange_three_bucket_test.cpp
+PASS: header provenance, patch round trip, four host tests
