@@ -9044,6 +9044,21 @@ int main(int argc, char** argv) {
         aa.adapt_overlap = adapt_overlap();
         o.adapt_async_self = strata::core::adapt_async_self_decides(aa);
     }
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+    // Experimental serial split-arena refill: enqueue CUDA calls only at a global window gap.
+    // The normal arena guard is retained unless this exact opt-in path is eligible.
+    const char* split_async_env = std::getenv("STRATA_SPLIT_ARENA_ASYNC");
+    const bool split_arena_async = o.adapt_async && split_async_env && split_async_env[0] == '1' &&
+        o.serve && multi_gpu && srcp == &arena_src && o.batch > 0 && o.batch_groups == 1 &&
+        o.pipeline_windows < 2 && !peer.valid() && !remote_opt && !adapt_overlap() &&
+        !adapt_nowait() && adapt_lag() == 1;
+    if (split_async_env && split_async_env[0] == '1' && !split_arena_async)
+        std::fprintf(stderr, "strata experiment: gate off: async=%d serve=%d multi=%d arena=%d batch=%d groups=%d pipeline=%d peer=%d remote=%d overlap=%d nowait=%d lag=%d\n",
+                     o.adapt_async, (int) o.serve, (int) multi_gpu, (int) (srcp == &arena_src), o.batch, o.batch_groups,
+                     o.pipeline_windows, (int) peer.valid(), (int) (remote_opt != nullptr), (int) adapt_overlap(),
+                     (int) adapt_nowait(), adapt_lag());
+#endif
     if (o.adapt_async) {
         static const bool pl_async = [] {
             const char* v = std::getenv("STRATA_PIPELINE_ADAPT_ASYNC");
@@ -9052,7 +9067,12 @@ int main(int argc, char** argv) {
         const char* why = !o.serve ? "it needs --serve"
                         : o.adapt_every <= 0 || o.adapt_swaps <= 0 ? "the adaptive tier is off"
                         : !o.resident_cpu_experts && srcp != &arena_src ? "it needs the resident RAM mode, --resident-experts, or the expert arena"
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+                        : multi_gpu && srcp == &arena_src && !split_arena_async ? "not with a layer split in the arena mode"
+#else
                         : multi_gpu && srcp == &arena_src ? "not with a layer split in the arena mode"
+#endif
                         : o.pipeline_windows >= 2 && srcp == &arena_src ? "not with --pipeline-windows 2 in the arena mode"
                         : o.batch > 0 && o.batch_groups > 1 ? "not with --batch-groups (the pipelined slot groups)"
                         : peer.valid() ? "not with --peer-device"
@@ -11692,8 +11712,14 @@ int main(int argc, char** argv) {
         };
         // arena only (the other modes keep their steps as they were): the choice on this thread (STRATA_ADAPT_PICK_INLINE),
         // the wait for the copies (STRATA_ADAPT_ASYNC_WAIT), the copies in flight per tick (STRATA_ADAPT_ASYNC_BATCH, 0 = all)
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+        const bool a_inline = split_arena_async || (a_arena && a_env("STRATA_ADAPT_PICK_INLINE", 1) != 0);
+        const bool a_wait = split_arena_async || (a_arena && a_env("STRATA_ADAPT_ASYNC_WAIT", 1) != 0);
+#else
         const bool a_inline = a_arena && a_env("STRATA_ADAPT_PICK_INLINE", 1) != 0;
         const bool a_wait = a_arena && a_env("STRATA_ADAPT_ASYNC_WAIT", 1) != 0;
+#endif
         const size_t a_batch = a_arena ? (size_t) std::max(0, a_env("STRATA_ADAPT_ASYNC_BATCH", 0)) : 0;
         // o.adapt_async_self (arena, one GPU, nothing explicit): the homes are set up, the job thread is created only when the
         // session's measurement turns the asynchronous tier on (asw_*, in the decode loop)
@@ -11704,6 +11730,11 @@ int main(int argc, char** argv) {
             for (auto& st : stages) ahomes.push_back({&st->cache, st->adapt_stream, st->adapt_ev, st->dev, false});
             if (o.adapt_async) {
                 ajob = std::make_unique<JobThread>();
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+                if (split_arena_async)
+                    std::fprintf(stderr, "strata experiment: split arena async: inline pick + main-thread refill submission at window gaps; wait after one window\n");
+#endif
                 std::fprintf(stderr, "strata serve: adaptive tier asynchronous (--adapt-async 1): up to %lld swaps per round, "
                                      "a round every %d windows%s\n", (long long) a_cap, o.adapt_every,
                              a_arena ? " (arena: copy-in only)" : "");
@@ -11726,6 +11757,13 @@ int main(int argc, char** argv) {
         auto a_mark = [&](AHome& h) {   // an event after the copies just queued on h's stream, submitted now (WDDM)
             const strata::core::OnDevice on(h.dev);
             if (cudaEventRecord(h.ev, h.stream) != cudaSuccess) a_err = true;
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+            if (split_arena_async) {
+                const cudaError_t q = cudaStreamQuery(h.stream);
+                if (q != cudaSuccess && q != cudaErrorNotReady) a_err = true;
+            } else
+#endif
             (void) cudaStreamQuery(h.stream);
             h.used = true;
         };
@@ -11840,6 +11878,13 @@ int main(int argc, char** argv) {
             a_lo = a_bi;
             a_hi = a_batch > 0 ? std::min(aswaps.size(), a_bi + a_batch) : aswaps.size();
             a_bi = a_hi;
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+            // No helper CUDA calls while the next graph waits for its host doorbells (#31).
+            // Evictions have reached every card before this point; no verifier is in flight.
+            if (split_arena_async) a_copy_in();
+            else
+#endif
             ajob->post(a_copy_in);
         };
         auto a_stage_in = [&]() {   // step 2's host part on the job thread (the pipelined loop: a_in queues the copies)
@@ -11961,6 +12006,12 @@ int main(int argc, char** argv) {
                         for (const ASwap& w : aswaps) a_in_due[(size_t) w.home] = 1;
                         ajob->post(a_stage_in);
                     } else {
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+                        if (split_arena_async) {
+                            if (res_upload() != cudaSuccess) { a_err = true; return false; }
+                        } else
+#endif
                         res_upload();
                         a_lo = a_hi = a_bi = 0;
                         a_post_batch();
@@ -11979,6 +12030,12 @@ int main(int argc, char** argv) {
                         srcp->release(w.layer, w.in);
                     }
                     if (pl) a_res_dirty = true;
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+                    else if (split_arena_async) {
+                        if (res_upload() != cudaSuccess) { a_err = true; return false; }
+                    }
+#endif
                     else res_upload();
                     a_swapped += pl ? (int64_t) aswaps.size() : (int64_t) (a_hi - a_lo);
                     if (!pl && a_bi < aswaps.size()) {   // the arena's cap: the next batch goes now
@@ -12029,6 +12086,15 @@ int main(int argc, char** argv) {
             if (!adapt_tick(true)) {   // a failed round still has copies in flight: they land before any slot moves
                 a_err = true;
                 if (ajob) ajob->wait();
+#if defined(STRATA_SPLIT_ARENA_ASYNC_EXPERIMENT) && !defined(STRATA_USE_HIP) && \
+    !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+                if (split_arena_async) {
+                    for (AHome& h : ahomes) {
+                        const strata::core::OnDevice on(h.dev);
+                        cudaDeviceSynchronize();
+                    }
+                } else
+#endif
                 cudaDeviceSynchronize();
             }
         };
