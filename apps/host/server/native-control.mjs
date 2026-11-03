@@ -27,6 +27,8 @@ import { parseSaved as parseRoles, mirror as mirrorRoles } from './gpu-roles.mjs
 import { configContextLimit } from './dsv41-context.mjs';
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+/* What the load says when the server had to start the normal layer split because the all-cards split engine would not come up (the engine's own reason stays in its log). */
+const SPLIT_FELL_BACK='The all-cards split engine could not start, so the normal layer split runs.';
 const safeId=value=>typeof value==='string'&&/^[a-z0-9](?:[a-z0-9_-]|\.(?!\.)){0,79}$/i.test(value);   /* a dot inside the name: deepseek-v4.1-flash-ist-das-2.00bpw */
 const busy=requests=>requests.some(r=>['queued','generating'].includes(r.state));
 function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));}catch{return fallback;}}
@@ -317,22 +319,26 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   return {cfg,resources,visionPreferences,parallelChoice,parallelNote,dsNote};
  }
  /* One drafter per run. Control (strata_control/drafting.py) says which one this load runs and whether its file is on this computer: the plan of the saved model file with the choice the Load carries. */
- async function draftPlan(args,configFile){
+ async function draftPlan(args,configFile,{noSplit=false}={}){
   if(!packaged||typeof control.draftingPlan!=='function')return null;
   const asked=args.values?.drafting;
-  try{return await control.draftingPlan({configPath:configFile,...(asked===undefined?{}:{mode:asked===null?'auto':asked})});}catch{return null;}
+  /* The plan is for the cards this Load uses: the screen's own card choice goes over the ones the saved settings name (the all-cards split engine needs two or more). */
+  let planFile=configFile,temporary=null;
+  if(Array.isArray(args.gpus)&&args.gpus.length&&args.gpus.every(Number.isInteger)){try{const work=join(directory,'native-instances');mkdirSync(work,{recursive:true});temporary=join(work,'drafting-plan-'+randomUUID()+'.json');writeFileSync(temporary,JSON.stringify({...readJson(configFile),gpu:args.gpus.length===1?args.gpus[0]:args.gpus}),{mode:0o600});planFile=temporary;}catch{temporary=null;planFile=configFile;}}
+  try{return await control.draftingPlan({configPath:planFile,...(asked===undefined?{}:{mode:asked===null?'auto':asked}),...(noSplit?{noSplit:true}:{})});}catch{return null;}
+  finally{if(temporary){try{rmSync(temporary,{force:true});}catch{/* best effort */}}}
  }
  /* The choice changed to the MTP and its layer is not here yet: it is fetched once, by the installer (finished steps are skipped), in this Load. Only the Models screen's own Load carries the choice; a restart or a tuning run never fetches. */
  async function installMtpLayer(job,args,config){
   const fam=snapshot.catalog?.families?.find(f=>f.sizes.some(s=>s.id===args.model)),size=fam?.sizes.find(s=>s.id===args.model);
   if(!fam||!size)return;
   job.summary='Downloading the MTP drafter…';emit();
-  /* the model's own files folder (the run config's --native): without it the installer, asked for this model by name, would fetch the whole model again next to the layer (an app install adopted from the person's own GGUF folder has its files elsewhere) */const native=(()=>{const a=(config.args??[]).map(String),i=a.indexOf('--native');return i>=0?(a[i+1]??''):'';})();try{await install(job,{family:fam.family,model:size.model,drafter:'mtp',vision:args.vision??(config.vision?'yes':'no'),...(native?{gguf_dir:dirname(native)}:{})});}
-  catch{if(job.state==='running'){job.drafterNote='The MTP drafter could not be downloaded.';emit();}}/* one short line, not the installer's own text; Drafting below says what runs instead */
+  /* the model's own files folder (the run config's --native): without it the installer, asked for this model by name, would fetch the whole model again next to the layer (an app install adopted from the person's own GGUF folder has its files elsewhere) */const native=(()=>{const a=(config.args??[]).map(String),i=a.indexOf('--native');return i>=0?(a[i+1]??''):'';})();try{await install(job,{family:fam.family,model:size.model,drafter:'mtp',vision:args.vision??(config.vision?'yes':'no'),...(native?{gguf_dir:dirname(native)}:{})});return true;}
+  catch{if(job.state==='running'){job.drafterNote='The MTP drafter could not be downloaded.';emit();}return false;}/* one short line, not the installer's own text; Drafting below says what runs instead */
  }
  /* The DFlash2 drafter, before a load that uses it: Control says whether the choice needs it (and the file is not here), downloads it pinned and checked, and packs it, with plain progress in the job.
     Never stops the load: a drafter that cannot be had leaves the MTP running if its layer is here, else no drafter, and the job says so. The choice itself is remembered in the model's settings file. */
- async function prepareDrafter(job,args,cfg,configFile,drafts){
+ async function prepareDrafter(job,args,cfg,configFile,drafts,{noSplit=false}={}){
   const asked=args.values?.drafting;
   if(asked!==undefined)rememberSetting(configFile,'drafting',asked===null||asked==='auto'?null:asked);
   /* Only the Models screen's own Load passes the choice (its dialog has listed the download): a restart, a tuning run or any other load leaves `asked` undefined and never fetches; the model then starts with the drafter that is on this computer and says why. */
@@ -341,7 +347,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   try{
    writeFileSync(probe,JSON.stringify(cfg),{mode:0o600});
    job.engineAbort??=new AbortController();
-   await control.draftingFetch({configPath:probe,mode:cfg.drafting??'auto',signal:job.engineAbort.signal,onEvent:event=>{if(event.event==='progress'&&job.state==='running'){job.summary=event.step;job.details=event.total>1&&event.done<event.total?`${(event.done/1e9).toFixed(2)} of ${(event.total/1e9).toFixed(2)} GB`:undefined;emit();}}});
+   await control.draftingFetch({configPath:probe,mode:cfg.drafting??'auto',...(noSplit?{noSplit:true}:{}),signal:job.engineAbort.signal,onEvent:event=>{if(event.event==='progress'&&job.state==='running'){job.summary=event.step;job.details=event.total>1&&event.done<event.total?`${(event.done/1e9).toFixed(2)} of ${(event.total/1e9).toFixed(2)} GB`:undefined;emit();}}});
    if(job.state==='running'){job.summary='Loading the model…';job.details=undefined;emit();}
   }catch(error){if(job.state==='running'){job.drafterNote=error.message;job.summary=drafts.mtp_here===false?'The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…':'The DFlash2 drafter could not be downloaded, so the model starts with the MTP. Loading the model…';emit();}}
   finally{try{rmSync(probe,{force:true});}catch{/* best effort */}}
@@ -349,7 +355,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  /* One key of a model's settings file, set or removed (the Drafting choice): written like the Settings screen writes it, to be there for the next load. */
  function rememberSetting(configFile,key,value){try{const current=readJson(configFile);if(value===null?!(key in current):current[key]===value)return;const next={...current};if(value===null)delete next[key];else next[key]=value;const temp=configFile+'.ui-tmp';writeFileSync(temp,JSON.stringify(next,null,2)+'\n',{mode:0o600});renameSync(temp,configFile);}catch{/* the load goes on with the choice for this start */}}
  /* Which drafter runs, when it is not the one that was asked for (the engine's own words, "Drafting: MTP (DFlash2 didn't fit)"): under Details of the load. */
- async function noteDrafting(job,instance,key){let note='';try{const r=await fetcher(`http://127.0.0.1:${instance.port}/metrics`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(r.ok)note=String((await r.json())?.engine?.drafting_note??'');}catch{/* a convenience */}const lines=[job.drafterNote,note].filter(Boolean);if(lines.length)job.details=[job.details,...lines].filter(Boolean).join('\n');}
+ async function noteDrafting(job,instance,key){let note='',fellBack=false;try{const r=await fetcher(`http://127.0.0.1:${instance.port}/metrics`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(r.ok){const engine=(await r.json())?.engine;note=String(engine?.drafting_note??'');fellBack=engine?.split_fallback===true;}}catch{/* a convenience */}/* the all-cards split engine: the line of what runs (the server starts the normal layer split by itself when the split engine would not come up) */const lines=[job.drafterNote,fellBack?SPLIT_FELL_BACK:instance.splitNote,note].filter(Boolean);if(lines.length)job.details=[job.details,...lines].filter(Boolean).join('\n');}
  /* ---- The picture files of an installed model that has none (strata_control/pictures.py, run by Control) ----
     Only the Load or the "Download picture-reading files" button the person pressed reaches the network, and only for the picture file (about 0.9 GB, one copy
     shared by the models of a data folder). The model's own files, its pack, its draft layer, the data folder and the settings' data_dir are not touched; the one change
@@ -420,11 +426,13 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   /* Read pictures is on and the picture files are not here: the Load fetches those files (about 0.9 GB, once) and nothing else of the model, then goes on. No internet: the model loads without pictures and the page says so. */
   let picturesNote=null;{const got=await ensurePictures(job,args,configFile,config,{missing:entry.picturesMissing===true});if(job.state!=='running')return;config=got.config;args=got.args;picturesNote=got.note;}
   /* One drafter per run (strata_control/drafting.py): switching to the MTP on a model set up for DFlash2 fetches the layer once, here; DFlash2 is fetched below. */
-  let drafts=await draftPlan(args,configFile);
-  if(drafts?.mtp_needed===true&&(args.values?.drafting!==undefined||drafts.split===true&&(config.drafting==null||String(config.drafting).toLowerCase()==='auto'))){/* the Models screen's own Load carries the choice; a plain Auto load fetches the layer too when Control says the all-cards split engine will take the start (it runs the MTP and nothing else): the same as the Terminal */await installMtpLayer(job,args,config);if(job.state!=='running')return;await refresh(true);config=checkedSettingsConfig(readFileSync(recordFile(args.model).path,'utf8'));drafts=await draftPlan(args,configFile);}
+  let drafts=await draftPlan(args,configFile),noSplit=false;
+  if(drafts?.mtp_needed===true&&(args.values?.drafting!==undefined||drafts.split===true&&(config.drafting==null||String(config.drafting).toLowerCase()==='auto'))){/* the Models screen's own Load carries the choice; a plain Auto load fetches the layer too when Control says the all-cards split engine will take the start (it runs the MTP and nothing else): the same as the Terminal */await installMtpLayer(job,args,config);if(job.state!=='running')return;await refresh(true);config=checkedSettingsConfig(readFileSync(recordFile(args.model).path,'utf8'));drafts=await draftPlan(args,configFile);
+   /* The draft layer for the split could not be had (no internet, disk): the load goes on as the 0.2.10 app did, the normal layer split with the plan DFlash2's again (the Models screen's own Load fetches that drafter below). One plain line says so. */
+   if(drafts?.split===true&&drafts.mtp_needed===true){noSplit=true;job.drafterNote=job.drafterNote??'The MTP drafter could not be downloaded.';job.summary='Loading the model…';emit();drafts=await draftPlan(args,configFile,{noSplit:true});}}
   const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote,dsNote}=buildConfig(args,config,drafts?.choice==='dflash2'&&drafts.needed===true&&args.values?.drafting===undefined?'mtp':drafts?.choice??null);/* (a drafter that is not here and will not be fetched by this load: the MTP runs, and the request slots stay) */
   let parallelNote=chosenNote;
-  await prepareDrafter(job,args,cfg,configFile,drafts);if(job.state!=='running')return;
+  await prepareDrafter(job,args,cfg,configFile,drafts,{noSplit});if(job.state!=='running')return;
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
   const placement=Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu];const matching=[...instances.values()].find(i=>i.model===args.model&&JSON.stringify(i.gpus)===JSON.stringify(placement));
   if(matching?.status==='ready'&&matching.fingerprint===fingerprint&&(args.multiple||instances.size===1))return {summary:`${matching.label} is already ready.`,instanceId:matching.id};
@@ -450,12 +458,27 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
       server gets a wait above the start's. It is only ever raised, never lowered, so a config that already names a longer one
       (setup's 3600 for DeepSeek V4.1-Flash) is left alone. */
    startWait=startWaitFor(config,entry,args.model);
+   /* The split engine reads every expert into the cards before it answers, and a start that falls back to the layer split begins again: the 10 minutes the Terminal gives a launch (never above the ceiling). */
+   if(!noSplit&&drafts?.split===true)startWait=Math.min(startWaitCeiling(),Math.max(startWait,600));
    if(startWait+60>Math.max(900,Number(cfg.engine_ready_s)||0))cfg.engine_ready_s=startWait+60;
    /* The engine starts under Control's owner runtime, not as our child: a saved profile per slot, then `runtime start`. */
    const used=new Set([...instances.values()].map(i=>i.profile));let slot=1;while(used.has('app-'+slot))slot++;instance.profile='app-'+slot;
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
    if(dsNote)append(id,dsNote);
-   const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:startWait}));};
+   /* The all-cards split engine: where the plan says it takes this start, Control turns the run config into the split engine's (the step `strata launch` does itself: the rule, the engine package and the draft layer are checked on this computer) and says so in one line. Any "no" leaves the layer split config as it is. The second try after a failed start is never split. */
+   const splitStart=async value=>{
+    if(noSplit||drafts?.split!==true||typeof control.splitEngine!=='function')return value;
+    const input=join(work,id+'.layer.json'),output=join(work,id+'.split.json');
+    try{
+     writeFileSync(input,JSON.stringify(value,null,2),{mode:0o600});rmSync(output,{force:true});
+     const answer=await control.splitEngine({configPath:input,outPath:output});
+     if(answer.line){instance.splitNote=answer.line;append(id,answer.line);}
+     if(answer.split===true&&answer.written)return JSON.parse(readFileSync(output,'utf8'));
+    }catch{/* the layer split config stands */}
+    finally{for(const f of [input,output]){try{rmSync(f,{force:true});}catch{/* best effort */}}}
+    return value;
+   };
+   const startWith=async(value,split=true)=>{const run=split?await splitStart(value):value;writeFileSync(configPath,JSON.stringify(run,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:startWait}));};
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(firstError){let error=firstError;
@@ -476,7 +499,8 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     const words=safer?safer.words:FALLBACK_NOTE,detail=[safer?.detail,dropParallel?'one request at a time':null].filter(Boolean).join('; ');
     retried={words,detail};if(dropParallel){instance.parallel=1;if(!safer)parallelNote=FALLBACK_NOTE;}
     append(id,`The first start stopped (${said}). Starting once more: ${detail}`);job.summary=words;job.details=[said,`Second try: ${detail}`];instance.notice=words;emit();
-    try{await startWith(retryConfig);append(id,'Strata Control reports the engine is ready (second try).');}
+    delete instance.splitNote;
+    try{await startWith(retryConfig,false);append(id,'Strata Control reports the engine is ready (second try).');}
     catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}
   } else {
   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:sourceServerEnvironment()});

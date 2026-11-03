@@ -135,8 +135,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     useEffect(() => { if (cardsGpus.length <= 1 && split !== 'auto') setSplit('auto'); }, [cardsGpus.length]);
     // Drafting (which drafter guesses ahead): a choice exists only for Qwen3.8-Flash-Next (the qwen and gyro families) on a computer whose engine can run DFlash2; every other model has no dropdown.
     const draftingChoices = selectedSize ? draftingOptions(selectedSize.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2) : null;
+    // Control's plan says the all-cards split engine takes an Auto start on this computer (it runs the MTP draft layer); it needs two or more cards, so one card chosen in the roles is not it.
+    const splitCards = native?.capabilities?.dflash2Split === true && cardsGpus.length !== 1;
     // The drafter this run loads (one per run): the fit and the plan use its graphics memory (DFlash2 0.89 GB, MTP 1.08 GB).
-    const nowDrafter = draftingChoices ? resolveDrafter(drafting, selectedSize?.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2, native?.capabilities?.dflash2Split) : 'mtp';
+    const nowDrafter = draftingChoices ? resolveDrafter(drafting, selectedSize?.sourceFamily ?? selectedFamily?.family, native?.capabilities?.dflash2, splitCards) : 'mtp';
     // DFlash2 with the converted pack (the selector as Q4_0 rows) takes 175 MiB less graphics memory: the fit says the true number (Control's `selq4`, strata_control/drafting.py vram_gb).
     const fitDrafter = nowDrafter === 'dflash2' && native?.capabilities?.dflash2Selq4 === true ? 'dflash2_selq4' : nowDrafter;
     const draftingWords: Record<string, string> = { auto: 'Auto (recommended)', mtp: 'MTP', dflash2: 'DFlash2', off: 'Off' };
@@ -266,7 +268,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      <EngineUpdateCard native={native} busy={!!active}/>
      <EngineUpdateDialog open={false} onClose={() => {}}/>
      {tr(active ? <NativeProgress job={active} label={jobLabel(active)}/> : null)}
-     {tr(active && drafterGb ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(nowDrafter === 'mtp' ? "Choosing MTP downloads its drafter: about {0} GB, once." : "Choosing DFlash2 downloads its drafter: about {0} GB, once.", [drafterGb])}</p> : null)}
+     {tr(active && drafterGb ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(nowDrafter === 'mtp' ? (splitCards && drafting === 'auto' ? "Auto uses the all-cards split engine with the MTP draft layer: about {0} GB to download, once." : "Choosing MTP downloads its drafter: about {0} GB, once.") : "Choosing DFlash2 downloads its drafter: about {0} GB, once.", [drafterGb])}</p> : null)}
      {tr(job?.state === 'error' ? <ErrorNotice message={job.error ?? job.summary} action={tr("Retry")} onRetry={() => void load()}/> : null)}
      {tr(plan?.plan?.disk_short ? <ErrorNotice message={plan.plan.disk_short}/> : null)}
      {tr(error ? <ErrorNotice message={error}/> : null)}
