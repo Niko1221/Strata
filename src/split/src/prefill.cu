@@ -404,6 +404,9 @@ struct Engine::Pf {
     unsigned* nrg_flags = nullptr;
     unsigned hg_seq = 0, rg_seq = 0;
     cudaEvent_t ev_hc[Engine::PF_PASS] = {}, ev_ag[Engine::PF_PASS] = {}, ev_rg[Engine::PF_PASS] = {};
+    cudaStream_t ag_st = nullptr;        // the swaps' stream (not ring_st: a swap must not queue behind a sum that waits for the other card)
+    bool hf16 = false;                   // FNX_PF_HCSPLIT_F16=1: the rows go as f16 (half the bytes); both cards then use f16-rounded `mixed` for every row
+    __half* mixhk[Engine::PF_PASS] = {};
     // with an ExpertCache: a pass's expert tables (device, [NL][NEXP]; pinned copies to build them in) and the copies
     // into stage[l & 1] (on cs) of layer l's experts not in a slot, as many as fit; the rest are read in place
     char* stage[2] = {};
@@ -467,7 +470,7 @@ void pf_sgemm(Engine::Pf& p, const float* W, int rows, int cols, const float* x,
 }
 // the hyper-connection read for C rows (see hc.cuh for what it computes)
 void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev, const float* w_norm, const Q8S& w_down, const Q8S& w_up,
-                const uint16_t* w_inj, float eps, float* mixed, float* inject, int C, cudaStream_t s) {
+                const uint16_t* w_inj, float eps, float* mixed, float* inject, int C, cudaStream_t s, __half* mixh = nullptr) {
     k_hcb_prep<<<C, HCB_THREADS, 0, s>>>(R, bo, inj_prev, w_norm, p.rs, p.xh, eps, w_inj, inject);   // the inject rows here
     k_q8s_f16<<<grid_for((size_t) LR * D), 256, 0, s>>>(w_down.q, w_down.d, (size_t) LR * D, p.wh);
     pf_gemm(p, p.wh, LR, D, p.xh, C, p.lo32, LR, s);
@@ -484,7 +487,7 @@ void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev,
         ckb(cublasGemmEx(p.blas, CUBLAS_OP_T, CUBLAS_OP_N, D, C, LR, &one, p.wh, CUDA_R_16F, LR, p.lo16, CUDA_R_16F, LR, &zero, p.up32,
                          CUDA_R_32F, D, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "gemm (hc up)");
     }
-    k_hcb_mixinj<<<C, HCM_THREADS, 0, s>>>(R, w_norm, p.rs, p.up32, mixed, p.xh, nullptr, nullptr);   // prep made the inject rows
+    k_hcb_mixinj<<<C, HCM_THREADS, 0, s>>>(R, w_norm, p.rs, p.up32, mixed, mixh ? mixh : p.xh, nullptr, nullptr);   // prep made the inject rows
     // FNX_PF_HC_CHECK=1 (debugging): the inject rows the way k_hcb_mixinj made them, against prep's
     static const bool check = std::getenv("FNX_PF_HC_CHECK") != nullptr;
     if (check && w_inj) {
@@ -507,24 +510,27 @@ void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev,
 
 // FNX_PF_HCSPLIT: pf_hc_read on rows [r0, r0 + nr) of a chunk: every per-row pointer moved to the rows, the scratch (xh, rs, lo, up) used from its start
 void pf_hc_read_rows(Engine::Pf& p, float* R, const float* bo, const float* inj_prev, const float* w_norm, const Q8S& w_down, const Q8S& w_up,
-                     const uint16_t* w_inj, float eps, float* mixed, float* inject, int r0, int nr, cudaStream_t s) {
+                     const uint16_t* w_inj, float eps, float* mixed, float* inject, int r0, int nr, cudaStream_t s, __half* mixh = nullptr) {
     pf_hc_read(p, R + (size_t) r0 * D, bo ? bo + (size_t) r0 * N : nullptr, inj_prev ? inj_prev + (size_t) r0 * HC : nullptr, w_norm, w_down, w_up, w_inj,
-               eps, mixed + (size_t) r0 * N, inject ? inject + (size_t) r0 * HC : nullptr, nr, s);
+               eps, mixed + (size_t) r0 * N, inject ? inject + (size_t) r0 * HC : nullptr, nr, s, mixh ? mixh + (size_t) r0 * N : nullptr);
 }
 
 // FNX_PF_HCSPLIT: the cards swap the rows they own of M (C rows of row_elems f32; the part card g finishes, (g + 1) % NCARD, is its own) through host
 // memory, in `pieces` pieces on stream s: this card's piece i to the other card's landing place `nin` (flag nflags[i] = seq after it), then the other card's
 // piece i from `in` into M once flags[i] reaches seq. Two cards only. A piece's copy is queued behind the stream's earlier work, so s must have waited for
 // the event that says M's own rows are final.
-void pf_swap_rows(float* M, size_t row_elems, int C, int g, int pieces, const float* in, const unsigned* flags, float* nin, unsigned* nflags, unsigned seq,
+void pf_swap_rows(void* Mv, size_t row_bytes, int C, int g, int pieces, const void* inv, const unsigned* flags, void* ninv, unsigned* nflags, unsigned seq,
                   cudaStream_t s) {
+    char* M = (char*) Mv;
+    const char* in = (const char*) inv;
+    char* nin = (char*) ninv;
     const int own = (g + 1) % NCARD, peer = (g + NCARD - 1) % NCARD, peer_part = (peer + 1) % NCARD;
     auto b0 = [&](int part) { return part * C / NCARD; };
     const int ob = b0(own), oe = b0(own + 1), pb = b0(peer_part), pe = b0(peer_part + 1);
     for (int i = 0; i < pieces; ++i) {
         const int a = ob + (int) ((long) (oe - ob) * i / pieces), e = ob + (int) ((long) (oe - ob) * (i + 1) / pieces);
         if (e > a)
-            ckc(cudaMemcpyAsync(nin + (size_t) (a - ob) * row_elems, M + (size_t) a * row_elems, (size_t) (e - a) * row_elems * sizeof(float), cudaMemcpyDefault, s),
+            ckc(cudaMemcpyAsync(nin + (size_t) (a - ob) * row_bytes, M + (size_t) a * row_bytes, (size_t) (e - a) * row_bytes, cudaMemcpyDefault, s),
                 "swap send");
         cud(cuStreamWriteValue32((CUstream) s, (CUdeviceptr) (nflags + i), seq, 0), "swap flag");
     }
@@ -532,7 +538,7 @@ void pf_swap_rows(float* M, size_t row_elems, int C, int g, int pieces, const fl
         const int a = pb + (int) ((long) (pe - pb) * i / pieces), e = pb + (int) ((long) (pe - pb) * (i + 1) / pieces);
         cud(cuStreamWaitValue32((CUstream) s, (CUdeviceptr) (flags + i), seq, CU_STREAM_WAIT_VALUE_GEQ), "swap wait");
         if (e > a)
-            ckc(cudaMemcpyAsync(M + (size_t) a * row_elems, in + (size_t) (a - pb) * row_elems, (size_t) (e - a) * row_elems * sizeof(float), cudaMemcpyDefault, s),
+            ckc(cudaMemcpyAsync(M + (size_t) a * row_bytes, in + (size_t) (a - pb) * row_bytes, (size_t) (e - a) * row_bytes, cudaMemcpyDefault, s),
                 "swap recv");
     }
 }
@@ -891,6 +897,11 @@ void Engine::prefill_alloc() {
                 const long long np = env_int("FNX_PF_HCSPLIT_PIECES", 4);
                 if (np < 1 || np > 8) throw std::runtime_error("FNX_PF_HCSPLIT_PIECES: 1 to 8, got " + std::to_string(np));
                 p->hg_pieces = (int) np;
+                p->hf16 = env_int("FNX_PF_HCSPLIT_F16", 0) != 0;
+                ckc(cudaStreamCreateWithFlags(&p->ag_st, cudaStreamNonBlocking), "swap stream");
+                own_stream(p->ag_st);
+                if (p->hf16)
+                    for (int k = 0; k < p->pass; ++k) p->mixhk[k] = palloc<__half>((size_t) pf_c_ * N);
                 const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD;
                 p->mixedk[0] = p->mixed;
                 for (int k = 1; k < p->pass; ++k) p->mixedk[k] = palloc<float>((size_t) pf_c_ * N);
@@ -1268,19 +1279,21 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             const LayerW& L = w.L[l];
             cudaStream_t s = b.st;
             const int own = (c + 1) % NCARD, r0 = own * C / NCARD, nr = (own + 1) * C / NCARD - r0;
+            __half* mh = p.hf16 ? p.mixhk[j] : nullptr;
             if (half == 0) {
                 ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
-                pf_hc_read_rows(p, p.R, p.bo_f, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed, p.inj_a, r0, nr, s);
+                pf_hc_read_rows(p, p.R, p.bo_f, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed, p.inj_a, r0, nr, s, mh);
             } else {
                 ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
-                pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s);
+                pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s, mh);
             }
             ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
-            ckc(cudaStreamWaitEvent(p.ring_st, p.ev_hc[j], 0), "hc wait");
+            ckc(cudaStreamWaitEvent(p.ag_st, p.ev_hc[j], 0), "hc wait");
             const unsigned sq = ++p.hg_seq;
             const int hset = (int) (sq & 1u);
-            pf_swap_rows(p.mixed, N, C, c, p.hg_pieces, p.hg_in[hset], p.hg_flags[hset], p.nhg_in[hset], p.nhg_flags[hset], sq, p.ring_st);
-            ckc(cudaEventRecord(p.ev_ag[j], p.ring_st), "swap done");
+            if (p.hf16) pf_swap_rows(p.mixhk[j], N * sizeof(__half), C, c, p.hg_pieces, p.hg_in[hset], p.hg_flags[hset], p.nhg_in[hset], p.nhg_flags[hset], sq, p.ag_st);
+            else pf_swap_rows(p.mixed, N * sizeof(float), C, c, p.hg_pieces, p.hg_in[hset], p.hg_flags[hset], p.nhg_in[hset], p.nhg_flags[hset], sq, p.ag_st);
+            ckc(cudaEventRecord(p.ev_ag[j], p.ag_st), "swap done");
         });
     };
     // the heavy part's start after a split read: the swapped rows are here, and xh = f16 of mixed as the read leaves it (k_f32_f16 rounds as the read's
@@ -1294,16 +1307,19 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
             pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s);
             ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
-            ckc(cudaStreamWaitEvent(p.ring_st, p.ev_hc[j], 0), "hc wait");
+            ckc(cudaStreamWaitEvent(p.ag_st, p.ev_hc[j], 0), "hc wait");
             const unsigned sq = ++p.rg_seq;
             const int rset = (int) (sq & 1u);
-            pf_swap_rows(p.R, D, C, c, p.hg_pieces, p.rg_in[rset], p.rg_flags + rset * 8, p.nrg_in[rset], p.nrg_flags + rset * 8, sq, p.ring_st);
-            ckc(cudaEventRecord(p.ev_rg[j], p.ring_st), "swap done");
+            pf_swap_rows(p.R, D * sizeof(float), C, c, p.hg_pieces, p.rg_in[rset], p.rg_flags + rset * 8, p.nrg_in[rset], p.nrg_flags + rset * 8, sq, p.ag_st);
+            ckc(cudaEventRecord(p.ev_rg[j], p.ag_st), "swap done");
         });
     };
     auto swap_join = [&](CardBuf& b, Pf& p, int j) {
         ckc(cudaStreamWaitEvent(b.st, p.ev_ag[j], 0), "swap join");
-        k_f32_f16<<<grid_for((size_t) C * N), 256, 0, b.st>>>(p.mixed, (size_t) C * N, p.xh);
+        if (p.hf16) {   // every row from the f16 values (own rows too: both cards must hold the same numbers)
+            k_f16_f32<<<grid_for((size_t) C * N), 256, 0, b.st>>>(p.mixhk[j], C, N, p.mixed, N);
+            ckc(cudaMemcpyAsync(p.xh, p.mixhk[j], (size_t) C * N * sizeof(__half), cudaMemcpyDeviceToDevice, b.st), "mixh");
+        } else k_f32_f16<<<grid_for((size_t) C * N), 256, 0, b.st>>>(p.mixed, (size_t) C * N, p.xh);
     };
     for (int l = 0; l < NL; ++l) {
         if (staging && l + 1 < NL - 1) stage_in(l + 1);   // the last layer runs no experts
