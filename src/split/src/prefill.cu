@@ -1107,11 +1107,9 @@ void Engine::prefill_alloc() {
         }
         for (int c = 0; c < NCARD; ++c) pf_[c]->hcs = all;
         if (asked && !all)
-            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read stays on both cards (no cublasLt algorithm that gives the same rows at 2048 and 4096 rows on this card)
-");
+            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read stays on both cards (no cublasLt algorithm that gives the same rows at 2048 and 4096 rows on this card)\n");
         else if (all)
-            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read is split between the cards (%s)
-", pf_[0]->hcs_mode == 1 ? "same results as the unsplit read" : "results differ in the last bits");
+            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read is split between the cards (%s)\n", pf_[0]->hcs_mode == 1 ? "same results as the unsplit read" : "results differ in the last bits");
     }
     for (int c = 0; c < NCARD; ++c)
         for (int k = 0; k < NCARD; ++k) {
