@@ -294,6 +294,91 @@ entpacke ihn in einen eigenen Ordner und trage den Pfad ein:
   liest die Engine nur (`--profile-readonly`).
 - Nach "Use a local GGUF" lädt Dev die volle Modell-ID (`deepseek-v4.1-flash-<größe>`) statt `deepseek41-<größe>`.
 
+## Von Dev nach Live: bauen, prüfen, ansehen, übernehmen, zurückrollen (Phase 4)
+
+Alles läuft lokal und unter Windows; jedes Skript hat einen `.bat`-Wrapper zum Doppelklicken. In PowerShell gehört `.\` davor
+(`.\dev-check.bat`), sonst meldet PowerShell "nicht erkannt"; in `cmd` und per Doppelklick geht es ohne. Nichts davon pusht, taggt oder baut ein
+Release, und die installierte Live-App wird nie angefasst. Live ändert sich erst, wenn du selbst pushst, den Pull Request mergst und ein
+Release installierst.
+
+### 1. Bauen
+
+```bat
+.\dev-build.bat              :: UI (Dev-Variante) + Dev-App + NSIS-Installer bauen und die Dev-App starten
+.\dev-build.bat -NoStart     :: nur bauen
+.\dev-build.bat -Install     :: zusätzlich still nach %LOCALAPPDATA%\Programs\Strata Dev installieren
+```
+
+Am Ende stehen Installer- und App-Pfad, die Ports (47832 / 8792 / 8081), der Datenordner und wie man startet.
+
+### 2. Prüfen: `.\dev-check.bat`
+
+**Vorher die Live-App ganz schließen (auch im Tray) und nur einen Lauf zur Zeit.** Ein Teil der Python-Tests startet und beendet
+Strata-Prozesse. Läuft Live (Port 47831 oder ein Prozess aus `Programs\Strata`) oder schon ein dev-check, bricht das Skript mit
+einem Hinweis ab. `-AllowLive` lässt es trotzdem laufen, dann ohne pytest.
+
+| Schritt | Was |
+| --- | --- |
+| Validator | `apps/host/scripts/dev-validate.mjs`: `dev.config.json`, UI-Extensions (Einstiegsdatei, Default-Export), Backend-Hooks (laden, Events, Routen), Skills (Validator, `tools.json`), Modell-Overlays |
+| Typecheck, npm test | in `apps/host` |
+| pytest | `tests/terminal`; die bekannten Fehler dieses PCs (Liste in `dev-check.ps1`) zählen nicht, jeder andere als neu. pytest bekommt immer dieselbe Umgebung (Git-Bash, `TERM`, ohne `NO_COLOR`), egal aus welchem Fenster du startest |
+| Smoketest | Dev-Host antwortet auf 47832 als Strata Dev, UI lädt, `/v1/models` des Hosts, `/api/dev/state`; `/v1/models` auf 8081 nur, wenn dort schon ein Modell läuft (kein Lasttest); auf 47831/8791/8080 lauscht kein Dev-Prozess |
+
+Optionen: `-SkipPytest` (spart ~35 min), `-SkipSmoke`, `-Python <exe>`. Fehlen dem Python die Pakete (rich, textual, jinja2 …), legt
+`.\dev-check.bat -SetupVenv` einmal eine eigene venv unter `%LOCALAPPDATA%\StrataDev\test-venv` an (lädt Pakete aus PyPI; das System-Python
+bleibt unberührt; danach wird geprüft, dass sich alle Pakete laden lassen). Läuft die Dev-App nicht, startet der Smoketest die gebaute kurz und beendet sie danach. Bericht, Logs und ein
+Fortschritts-Log (`<Zeit>-progress.log`, Zeile für Zeile, während der Lauf läuft): `Documents\Strata-Dev-Logs\dev-check\` in deinen Dokumenten. Dort
+und nicht unter AppData, weil Windows AppData-Schreibzugriffe aus Store-Apps (etwa der Claude-App) in deren Paketordner umleitet;
+Dokumente wird nicht umgeleitet.
+
+### 3. Ansehen
+
+Die Dev-App starten (siehe oben) oder `dev-build.bat -HostOnly` (Hot Reload). DEV-Badge → Dev-Panel; Skills-Seite und Model-Menü haben
+je einen Bereich "Strata Dev".
+
+### 4. Übernehmen: `dev-promote.bat`
+
+```bat
+.\dev-promote.bat                                              :: nur ansehen
+.\dev-promote.bat -Name mtp-fix -Commits e26737c8 -DryRun      :: Probelauf: was übernommen würde, Warnungen
+.\dev-promote.bat -Name mtp-fix -Commits e26737c8 -Yes         :: übernehmen (deine Freigabe)
+.\dev-promote.bat -Name x -Files tools\mtp_fetch.py -Yes       :: einzelne Dateien statt Commits
+```
+
+- Der Überblick zeigt die Commits von `dev-sandbox`, die `main` nicht hat, und alle geänderten Dateien, getrennt nach
+  **Kern-Änderungen** (würden Live ändern) und **Dev-only** (DEV-Badge, Dev-Ports und -Identifier, Tauri-Dev-Config, `dev/`, Dev-Module,
+  Skripte, Berichte). Kern-Dateien mit **Dev-Haken** enthalten nur Code, der mit `STRATA_DEV=1` läuft, und brauchen die Dev-only-Module.
+- Dev-only-Dateien werden nie übernommen, außer mit `-IncludeDevOnly`. Der Probelauf warnt, wenn eine übernommene Datei auf eine Datei
+  verweist, die auf `main` fehlt (dann würde der Build brechen).
+- `-Yes` legt zuerst den lokalen Backup-Branch `backup/live-<Datum>` vom aktuellen `main` an (kein Tag), dann `promote/<Name>` von `main`
+  in einem temporären Worktree (dein Checkout bleibt, wie er ist), und übernimmt die Auswahl per `cherry-pick -x` bzw. als Dateien.
+  Konflikte nur in Dev-only-Dateien löst das Skript selbst; einer in einer Kern-Datei bricht ab, nennt die früheren Commits, auf denen
+  sie aufbaut, und lässt nichts zurück.
+- Basis ist der lokale `main`, sonst `origin/main` (`-Base` wählt eine andere).
+- Am Ende stehen die Befehle für Push und Pull Request (Titel mit Bereich nach CONTRIBUTING.md, z. B. `[GUI] …`) und eine Vorlage für
+  den PR-Text in `%LOCALAPPDATA%\StrataDev\promote\<Name>-pr.md`. Ausführen tust du sie selbst.
+
+### 5. Zurückrollen: `dev-rollback.bat`
+
+```bat
+.\dev-rollback.bat                                        :: Backups und promote-Branches ansehen
+.\dev-rollback.bat -DeletePromote mtp-fix -Yes            :: promote/mtp-fix löschen
+.\dev-rollback.bat -Backup backup/live-20261102 -Yes      :: lokalen main auf das Backup setzen (main darf nicht ausgecheckt sein)
+.\dev-rollback.bat -DeleteBackup backup/live-20261102 -Yes
+```
+
+Ohne `-Yes` zeigt jedes Kommando nur, was es täte. Was schon auf GitHub ist, nimmst du selbst zurück; das Skript gibt die Befehle aus.
+
+### Slash-Commands für Claude Code
+
+`/dev-debug`, `/dev-check`, `/dev-promote`, `/dev-rollback` liegen als Vorlagen in `dev/claude-commands/`. Einmal nach
+`.claude/commands/` kopieren (Claude Code durfte den Ordner selbst nicht anlegen):
+
+```bat
+mkdir .claude\commands
+copy dev\claude-commands\*.md .claude\commands\
+```
+
 ## Zurücksetzen
 
 ```bat

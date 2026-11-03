@@ -1,6 +1,7 @@
 /**
  * Strata Dev (docs/DEV_BUILD.md): the Dev panel. Opened by the DEV badge or Ctrl+Shift+D; loaded only in Dev (dev.tsx, lazy import).
- * Tabs: Extensions (UI extensions and backend hooks, on/off, errors, Reload), Inspector (element ids on hover), Logs, Requests.
+ * Tabs: Extensions (UI extensions and backend hooks, on/off, errors, Reload), Inspector (element ids on hover), Logs, Requests,
+ * Rescue (chats rebuilt by dev/tools/rescue-chats.mjs, added to Strata Dev's own chat list to look at; Live is never touched).
  * Dev tooling, so its words are not translated.
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
@@ -8,7 +9,7 @@ import { api } from '../lib/client';
 import { registry, setExtensionEnabled, useDev } from './dev';
 import { SLOTS } from './registry';
 
-type Tab = 'extensions' | 'inspector' | 'logs' | 'requests';
+type Tab = 'extensions' | 'inspector' | 'logs' | 'requests' | 'rescue';
 interface Hook { file: string; name: string; kind: 'js' | 'py'; events: string[]; routes: string[]; enabled: boolean; error: string | null; stats: Record<string, { calls: number; totalMs: number; maxMs: number }> }
 interface LogEntry { seq: number; at: string; source: string; level: string; line: string }
 interface RequestRow { id: string; at: string; client: string; endpoint: string; model: string | null; state: string; durationMs: number | null; tokensIn: number | null; tokensOut: number | null; tps: number | null; error: string | null; hooks: { file: string; event: string; calls: number; ms: number; error?: string }[]; hookMs: number }
@@ -23,12 +24,12 @@ export default function DevPanel({ onClose }: { onClose: () => void }) {
         <header className="devpanel__head">
             <strong>Strata Dev</strong>
             <nav className="devpanel__tabs" role="tablist">
-                {(['extensions', 'inspector', 'logs', 'requests'] as const).map(t => <button key={t} role="tab" aria-selected={tab === t} className="devpanel__tab" onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>)}
+                {(['extensions', 'inspector', 'logs', 'requests', 'rescue'] as const).map(t => <button key={t} role="tab" aria-selected={tab === t} className="devpanel__tab" onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>)}
             </nav>
             <button className="devpanel__x" aria-label="Close Dev panel" onClick={onClose}>×</button>
         </header>
         <div className="devpanel__body">
-            {tab === 'extensions' ? <Extensions /> : tab === 'inspector' ? <Inspector /> : tab === 'logs' ? <Logs /> : <Requests />}
+            {tab === 'extensions' ? <Extensions /> : tab === 'inspector' ? <Inspector /> : tab === 'logs' ? <Logs /> : tab === 'rescue' ? <Rescue /> : <Requests />}
         </div>
         <footer className="devpanel__foot" title={dev?.configFile}>{dev?.configFile}{dev?.warnings.length ? ` · ${dev.warnings.length} warning(s)` : ''}</footer>
     </section>;
@@ -164,4 +165,48 @@ function Requests() {
             </td></tr> : null}
         </Fragment>)}
     </tbody></table>;
+}
+
+interface RescueFile { name: string; bytes: number; chats: number | null; workspaces: Record<string, number> }
+const SESSION_KEY = 'strata.sessions.v1';
+
+/**
+ * Rescued chats: adds the chats of one import file to THIS window's chat list (Strata Dev's own storage, never Live's), with their
+ * workspaces added to Strata Dev's host, then reloads the page. Chats already in the list (same id) are left as they are.
+ */
+function Rescue() {
+    const [dir, setDir] = useState('');
+    const [files, setFiles] = useState<RescueFile[]>([]);
+    const [busy, setBusy] = useState(false), [note, setNote] = useState(''), [error, setError] = useState('');
+    useEffect(() => { void api.get<{ dir: string; files: RescueFile[] }>('/api/dev/rescue').then(r => { setDir(r.dir); setFiles(r.files); }).catch(e => setError(String(e?.message ?? e))); }, []);
+    async function load(file: RescueFile) {
+        setBusy(true); setError(''); setNote('');
+        try {
+            const chats = await api.get<{ id: string; workspace: string }[]>(`/api/dev/rescue/${encodeURIComponent(file.name)}`);
+            let current: { id: string }[] = [];
+            try { current = JSON.parse(localStorage.getItem(SESSION_KEY) ?? '[]'); } catch { current = []; }
+            const have = new Set(current.map(s => s.id));
+            const added = chats.filter(c => !have.has(c.id));
+            // The workspaces, so the sidebar shows each chat under its folder (only folders that exist; Strata Dev's own list).
+            const known = new Set((await api.get<{ workspaces: { path: string }[] }>('/api/workspaces')).workspaces.map(w => w.path.toLowerCase()));
+            let wsAdded = 0, wsMissing = 0;
+            for (const path of [...new Set(added.map(c => c.workspace))]) {
+                if (known.has(path.toLowerCase())) continue;
+                try { await api.post('/api/workspaces', { path }); wsAdded++; } catch { wsMissing++; }
+            }
+            localStorage.setItem(SESSION_KEY, JSON.stringify([...current, ...added]));
+            setNote(`${added.length} Chat(s) hinzugefügt, ${chats.length - added.length} waren schon da; ${wsAdded} Workspace(s) angelegt${wsMissing ? `, ${wsMissing} Ordner gibt es nicht (Chats nur unter "View all chats")` : ''}. Seite lädt neu …`);
+            setTimeout(() => location.reload(), 1500);
+        } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
+    }
+    return <div className="devpanel__stack">
+        <p className="devpanel__muted">Chats, die <code>dev/tools/rescue-chats.mjs</code> aus den Agent-Verläufen rekonstruiert hat. "Laden" fügt sie nur dieser Strata-Dev-App hinzu (ihr eigener Speicher); Live bleibt unberührt.</p>
+        <p className="devpanel__muted">Ordner: {dir}</p>
+        {error ? <p className="devpanel__err">{error}</p> : null}
+        {note ? <p>{note}</p> : null}
+        {files.length ? <ul className="devpanel__list">{files.map(f => <li key={f.name}>
+            <div className="devpanel__row"><strong>{f.name}</strong><span className="devpanel__muted">{f.chats ?? '?'} Chats · {(f.bytes / 1e6).toFixed(1)} MB</span><span className="devpanel__spacer" /><button className="devpanel__btn" disabled={busy || !f.chats} onClick={() => void load(f)}>Laden</button></div>
+            <div className="devpanel__muted">{Object.entries(f.workspaces).map(([w, n]) => `${w}: ${n}`).join(' · ')}</div>
+        </li>)}</ul> : <p className="devpanel__muted">Keine Datei rescued-chats-import-*.json im Ordner.</p>}
+    </div>;
 }

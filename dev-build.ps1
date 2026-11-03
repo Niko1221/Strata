@@ -161,8 +161,26 @@ if ($Install) {
     $exe = Join-Path $DevInstall 'strata-dev.exe'
 }
 
-if ($NoStart) { exit 0 }
+# Am Ende: wo alles liegt und wie es weitergeht.
+function Show-Summary([bool]$Started) {
+    Write-Host ''
+    Write-Host '--- Strata Dev ----------------------------------------------------------------------'
+    if ($installer) { Write-Host "Installer : $($installer.FullName)" }
+    if ($exe) { Write-Host "App       : $exe" }
+    Write-Host "Ports     : Fenster/Host $($Ports.Window), Host im Entwicklermodus $($Ports.Host), Engine $($Ports.Engine) (Live: 47831/8791/8080)"
+    Write-Host "Daten     : $DevRoot"
+    Write-Host 'Starten   :'
+    if ($exe) { Write-Host "  - Doppelklick auf $exe (oder dev-build.bat ohne -NoStart)" }
+    if ($installer) { Write-Host "  - oder installieren: dev-build.bat -Install (nach $DevInstall, Startmenue 'Strata Dev')" }
+    Write-Host "  - im Browser: http://127.0.0.1:$($Ports.Window)/  sobald die App laeuft; DEV-Badge anklicken = Dev-Panel"
+    Write-Host 'Weiter    : dev-check.bat (alles pruefen) | dev-promote.bat (Uebernahme in Live ansehen) | docs\DEV_BUILD.md'
+    if ($Started) { Write-Host 'Die Dev-App startet jetzt. Live laeuft unabhaengig daneben weiter.' }
+    Write-Host '-------------------------------------------------------------------------------------'
+}
+
+if ($NoStart) { Show-Summary $false; exit 0 }
 if (-not $exe -or -not (Test-Path $exe)) { Fail 'Die gebaute Dev-App wurde nicht gefunden.' }
 if (-not (Test-PortFree $Ports.Window)) { Say "Port $($Ports.Window) ist belegt (laeuft Strata Dev schon?). Die App nimmt dann einen freien Port." }
 Say "Starte $exe  (Fenster/Host :$($Ports.Window), Engine :$($Ports.Engine), Daten $DevRoot)"
 Start-Process -FilePath $exe
+Show-Summary $true

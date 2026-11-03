@@ -86,6 +86,7 @@ import { createDevHooks } from './dev-hooks.mjs';
 import { devApi } from './dev-api.mjs';
 import { devModelsApi, devSkillsApi } from './dev-catalog.mjs';
 import { createLlamaRunner, devLlamaApi, llamaSettings } from './dev-llama.mjs';
+import { devRescueApi } from './dev-rescue.mjs';
 import { captureConsole, devLogVerbose, enableDevLog, push as devLog, setVerbose as setDevVerbose } from './dev-log.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
@@ -1067,6 +1068,7 @@ const server = http.createServer(async (req, res) => {
         if (await devHooks.route(req, res, path, method, url, readBody)) return undefined;
         return error(res, 404, `No Dev route for ${method} ${path}`);
       }
+      if (path.startsWith('/api/dev/rescue')) return await devRescueApi(req, res, path, method, url, { json, error });
       if (path.startsWith('/api/dev/llama')) return await devLlamaApi(req, res, path, method, url, { json, error, readBody, runner: devLlama });
       if (path.startsWith('/api/dev/skills')) return await devSkillsApi(req, res, path, method, url, {
         json, error, readBody, skills: () => skillState, versions: DEV_SKILLS.versions, devDir: DEV_SKILLS.dir, rescan: rescanSkills,
