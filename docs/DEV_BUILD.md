@@ -258,8 +258,34 @@ und gilt ab dem nächsten Start des Modells.
 **Model-Menü**: "Add model" nimmt eine lokale `.gguf` (wird geprüft: Größe, ob die Strata-Engine sie kennt), ein Hugging-Face-Repo
 oder einen laufenden OpenAI-kompatiblen Server bzw. Anbieter (wird als API-Verbindung gespeichert und steht sofort im Modell-Picker
 des Chats). Overlays lassen sich bearbeiten, duplizieren und löschen. Eine RAM/VRAM-Warnung aus der erkannten Hardware blockiert nie.
-Eine `.gguf`, die die Strata-Engine nicht kennt, ist als "would run via llama.cpp" markiert: Dieser Weg ist ein Vorschlag
-(`PHASE3_BERICHT.md`), noch nicht aktiv.
+Eine `.gguf`, die die Strata-Engine nicht kennt, ist mit "läuft über llama.cpp" markiert und startet über den llama.cpp-Runner.
+
+### llama.cpp-Runner
+
+Für Modelle, auf die die Strata-Engine nicht abgestimmt ist (`SUPPORTED_SELECTIONS` bleibt unverändert), startet Dev den
+`llama-server` von llama.cpp. Strata lädt ihn nicht herunter: Hol ihn dir von den offiziellen Releases
+(https://github.com/ggml-org/llama.cpp/releases, für NVIDIA das Windows-Paket mit `cuda` im Namen, sonst `vulkan` oder `cpu`),
+entpacke ihn in einen eigenen Ordner und trage den Pfad ein:
+
+```json
+"llamacpp": {
+  "server": "C:\\llama.cpp\\llama-server.exe",
+  "port": 8095,
+  "args": ["-ngl", "99"],
+  "context": 8192
+}
+```
+
+- `port`: Standard 8095. Die Ports von Strata (8080, 8081, 8090, 8791–8794, 47831, 47832) werden abgelehnt.
+- `args`: zusätzliche llama-server-Optionen (z. B. `-ngl 99` für alle Schichten auf der Grafikkarte). `-m`, `--host`, `--port`, `-c`
+  und `--alias` setzt der Runner selbst.
+- Bedienung: Model-Menü → "Add model" → lokale `.gguf` → "Check" → "Add". In der Liste steht sie mit "läuft über llama.cpp"; "Start"
+  startet `llama-server` mit dieser Datei (ein Modell zur Zeit), "Stop" beendet ihn. Sobald `/health` antwortet, ist er als
+  API-Verbindung "llama.cpp (Strata Dev)" eingetragen und im Modell-Picker des Chats wählbar (Chat, Agent, Skills und Hooks wie bei jeder
+  API-Verbindung).
+- Fehler (kein oder falscher Pfad, belegter Port, Absturz, keine Antwort in der Zeit) stehen im Model-Menü und im Dev-Panel unter Logs
+  (Quelle `llama`); App und Host laufen weiter. Beim Beenden der App wird `llama-server` mit beendet.
+- Für solche Modelle gelten Tuning, Presets, MTP/DSpark und die Speicherplanung der Strata-Engine nicht.
 
 ### DeepSeek in Dev
 

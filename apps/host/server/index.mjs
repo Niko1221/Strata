@@ -85,6 +85,7 @@ import { defaultHostPort, devChatMode, devExtensionsDir, devModelsDir, devSkills
 import { createDevHooks } from './dev-hooks.mjs';
 import { devApi } from './dev-api.mjs';
 import { devModelsApi, devSkillsApi } from './dev-catalog.mjs';
+import { createLlamaRunner, devLlamaApi, llamaSettings } from './dev-llama.mjs';
 import { captureConsole, devLogVerbose, enableDevLog, push as devLog, setVerbose as setDevVerbose } from './dev-log.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
@@ -111,6 +112,8 @@ let DEV_SETTINGS = null;
 let devHooks = null;
 /* Strata Dev skills (dev-skills.mjs): dev/skills as a source, whole folders for the agent, versions. Null outside Dev. */
 let DEV_SKILLS = null;
+/* Strata Dev's llama.cpp runner (dev-llama.mjs): a .gguf the Strata engine is not tuned for, on the person's llama-server. Null outside Dev. */
+let devLlama = null;
 if (DEV) {
   DEV_SETTINGS = devSettings(DEV.config);
   // The Dev panel's Logs tab: this process's console output is kept too (it still prints as before).
@@ -1020,6 +1023,9 @@ if (DEV) {
   devHooks = createDevHooks({ dir: join(devExtensionsDir(), 'backend'), settings: DEV_SETTINGS.hooks, python: { command: PYTHON.command, args: PYTHON.args ?? [] } });
   setActiveDevSettings({ ...DEV_SETTINGS, backendDir: devHooks.dir, python: { command: PYTHON.command, args: PYTHON.args ?? [] } });
   await devHooks.load();
+  devLlama = createLlamaRunner({ getSettings: () => llamaSettings(DEV.config.llamacpp), providers: modelProviders });
+  // The runner's llama-server never outlives the host, however the host ends.
+  process.on('exit', () => devLlama?.killNow());
 }
 const devRoutes = (req, res, path, method, url) => devApi(req, res, path, method, url, {
   json, error, readBody, hooks: devHooks, serving,
@@ -1061,6 +1067,7 @@ const server = http.createServer(async (req, res) => {
         if (await devHooks.route(req, res, path, method, url, readBody)) return undefined;
         return error(res, 404, `No Dev route for ${method} ${path}`);
       }
+      if (path.startsWith('/api/dev/llama')) return await devLlamaApi(req, res, path, method, url, { json, error, readBody, runner: devLlama });
       if (path.startsWith('/api/dev/skills')) return await devSkillsApi(req, res, path, method, url, {
         json, error, readBody, skills: () => skillState, versions: DEV_SKILLS.versions, devDir: DEV_SKILLS.dir, rescan: rescanSkills,
         sync: () => { syncAgentSkills(); hub.send('skills', skillState); },
@@ -2389,7 +2396,7 @@ const shutdown = async () => {
   clearInterval(taskTimer);tasks.close();
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
   server.close();server.closeAllConnections?.();
-  await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
+  await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close(),...(devLlama?[devLlama.stop()]:[])]);
   process.exit(0);
 };
 // Every ordinary way of being told to stop takes the clean path: Ctrl+C, kill, the terminal closing (SIGHUP), Ctrl+Break.

@@ -13,7 +13,7 @@ interface Hook { file: string; name: string; kind: 'js' | 'py'; events: string[]
 interface LogEntry { seq: number; at: string; source: string; level: string; line: string }
 interface RequestRow { id: string; at: string; client: string; endpoint: string; model: string | null; state: string; durationMs: number | null; tokensIn: number | null; tokensOut: number | null; tps: number | null; error: string | null; hooks: { file: string; event: string; calls: number; ms: number; error?: string }[]; hookMs: number }
 
-const SOURCES = ['host', 'engine', 'harness', 'hooks', 'ui'];
+const SOURCES = ['host', 'engine', 'harness', 'hooks', 'ui', 'llama'];
 const ms = (n: number | null | undefined) => (n == null ? '–' : n >= 1000 ? `${(n / 1000).toFixed(2)} s` : `${Math.round(n * 10) / 10} ms`);
 
 export default function DevPanel({ onClose }: { onClose: () => void }) {

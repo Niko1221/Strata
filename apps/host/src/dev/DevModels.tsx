@@ -5,7 +5,8 @@
  *  - Adding a model: a Hugging Face repo, a local .gguf (checked: size, and whether the Strata engine knows it), or a running
  *    OpenAI-compatible server (saved as an API connection, server/model-providers.mjs, so it is in the chat's model picker at once).
  *  - A RAM/VRAM warning from the detected hardware: a warning, never a refusal.
- * A .gguf the Strata engine does not know is marked "would run via llama.cpp": that way is a proposal (PHASE3_BERICHT.md), not active.
+ * A .gguf the Strata engine does not know "läuft über llama.cpp": the Dev runner (server/dev-llama.mjs) starts the person's llama-server
+ * for it and saves it as an API connection; its state, Start and Stop are here.
  * Dev tooling: its words are not translated.
  */
 import { useEffect, useState } from 'react';
@@ -17,6 +18,8 @@ interface Overlay { id: string; data: Record<string, unknown> | null; problems: 
 interface State { dir: string; overlays: Overlay[]; profiles: { id: string; label: string }[]; choices: Record<string, string>; installed: { model: string; name: string; ready: boolean }[]; hardware: { ramGb: number; vramGb: number } | null }
 interface Inspect { path: string; files: string[]; sizeGb: number; engine: 'strata' | 'llama.cpp' | 'unknown'; selection: { family: string; model: string } | null; warning: { level: string; text: string } | null }
 type Source = 'hf' | 'gguf' | 'server';
+interface Llama { status: 'stopped' | 'starting' | 'running' | 'stopping' | 'error'; model: string | null; gguf: string | null; port: number; error: string | null; available: boolean; problem: string | null; lastLines: string[] }
+const isLlama = (data: Record<string, unknown> | null) => typeof data?.runner === 'string' && data.runner.startsWith('llama.cpp');
 
 /** The same rule as the host's memoryWarning (dev-catalog.mjs): fits the graphics memory, needs RAM beside it, or reads from the disk. */
 export function memoryWarning(sizeGb: number, hw: State['hardware']) {
@@ -32,8 +35,11 @@ export function DevModels() {
     const [error, setError] = useState('');
     const [editing, setEditing] = useState<{ id: string; text: string; create: boolean } | null>(null);
     const [adding, setAdding] = useState(false);
-    const refresh = () => api.get<State>('/api/dev/models').then(setState).catch(e => setError(String(e?.message ?? e)));
+    const [llama, setLlama] = useState<Llama | null>(null);
+    const refresh = () => Promise.all([api.get<State>('/api/dev/models').then(setState), api.get<Llama>('/api/dev/llama').then(setLlama)]).catch(e => setError(String(e?.message ?? e)));
     useEffect(() => { if (dev) void refresh(); }, [dev]);
+    // While llama-server starts (loading a model can take a while) its state is asked again every two seconds.
+    useEffect(() => { if (llama?.status !== 'starting' && llama?.status !== 'stopping') return; const t = setInterval(() => void api.get<Llama>('/api/dev/llama').then(setLlama).catch(() => undefined), 2000); return () => clearInterval(t); }, [llama?.status]);
     if (!dev) return null;
     async function run(fn: () => Promise<State | unknown>) {
         setError('');
@@ -46,17 +52,26 @@ export function DevModels() {
         try { data = JSON.parse(editing.text); } catch (e) { setError(`Not valid JSON: ${(e as Error).message}`); return; }
         if (await run(() => api.post<State>('/api/dev/models', { id: editing.id, data, create: editing.create }))) setEditing(null);
     }
+    async function startLlama(o: Overlay) {
+        const src = (o.data?.source ?? {}) as { gguf?: string };
+        setError('');
+        setLlama(l => l ? { ...l, status: 'starting', error: null } : l);
+        try { setLlama(await api.post<Llama>('/api/dev/llama/start', { gguf: src.gguf, label: String(o.data?.label ?? o.id), context: typeof o.data?.context === 'number' ? o.data.context : undefined })); }
+        catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    }
     const profileOptions = (o: Overlay) => [{ value: '', label: `File default${typeof o.data?.profile === 'string' ? ` (${o.data.profile})` : ''}` }, ...(state?.profiles ?? []).map(p => ({ value: p.id, label: p.label })), ...Object.keys((o.data?.profiles as Record<string, unknown>) ?? {}).filter(k => !(state?.profiles ?? []).some(p => p.id === k)).map(k => ({ value: k, label: k }))];
     return <section className="st-card devmodels" aria-label="Strata Dev models">
         <div className="devskills__head"><strong>Strata Dev · models</strong><span className="small muted">dev/models: {state?.dir}</span><span className="spacer" /><Btn size="sm" icon="plus" onClick={() => setAdding(true)}>Add model</Btn><Btn size="sm" onClick={() => setEditing({ id: 'new-overlay', text: JSON.stringify({ model: 'qwen3.8-flash-next-*', label: 'My overlay', context: 65536, thinking: 'medium', sampling: { temperature: 0.8 } }, null, 2), create: true })}>New overlay</Btn></div>
         {error ? <ErrorNotice message={error} /> : null}
+        {llama ? <div className="devmodels__llama" data-status={llama.status}><strong>llama.cpp runner</strong> <span className="small">{llama.status === 'running' ? `serves ${llama.model} on port ${llama.port} (API connection "llama.cpp (Strata Dev)" in the chat's model picker)` : llama.status === 'starting' ? `starting ${llama.model ?? ''} on port ${llama.port}…` : llama.status === 'error' ? llama.error : llama.available ? `ready (port ${llama.port})` : llama.problem}</span>{llama.status === 'running' || llama.status === 'starting' ? <Btn size="sm" onClick={() => void api.post<Llama>('/api/dev/llama/stop').then(setLlama).catch(e => setError(String(e?.message ?? e)))}>Stop</Btn> : null}{llama.status === 'error' && llama.lastLines.length ? <pre className="devmodels__lines">{llama.lastLines.join('\n')}</pre> : null}</div> : null}
         {state?.overlays.length ? <table className="devskills__table"><thead><tr><th>Overlay</th><th>Applies to</th><th>Profile</th><th>Source</th><th /></tr></thead><tbody>
             {state.overlays.map(o => <tr key={o.id}>
                 <td><strong>{String(o.data?.label ?? o.id)}</strong><div className="xs muted">{o.id}.json</div>{o.problems.length ? <div className="devskills__bad xs">{o.problems.join('; ')}</div> : null}</td>
                 <td>{String(o.data?.model ?? '–')}<div className="xs muted">{state.installed.filter(m => globMatch(String(o.data?.model ?? ''), m.name) || globMatch(String(o.data?.model ?? ''), m.model)).map(m => m.model).join(', ') || 'no installed model matches'}</div></td>
                 <td><Select ariaLabel={`Profile of ${o.id}`} value={state.choices[o.id] ?? ''} options={profileOptions(o)} onChange={v => void run(() => api.post<State>(`/api/dev/models/${o.id}/profile`, { profile: v || null }))} /></td>
-                <td className="xs">{sourceText(o.data?.source)}</td>
+                <td className="xs">{sourceText(o.data?.source)}{isLlama(o.data) ? <div><span className="devmodels__badge">läuft über llama.cpp</span></div> : null}</td>
                 <td className="devmodels__actions">
+                    {isLlama(o.data) ? <Btn size="sm" variant="primary" disabled={!llama?.available || llama.status === 'starting'} title={llama?.available ? 'Start llama-server with this .gguf' : llama?.problem ?? ''} onClick={() => void startLlama(o)}>{llama?.status === 'running' && llama.gguf === (o.data?.source as { gguf?: string })?.gguf ? 'Restart' : 'Start'}</Btn> : null}
                     <Btn size="sm" onClick={() => setEditing({ id: o.id, text: JSON.stringify(o.data ?? {}, null, 2), create: false })}>Edit</Btn>
                     <Btn size="sm" onClick={() => setEditing({ id: `${o.id}-copy`, text: JSON.stringify(o.data ?? {}, null, 2), create: true })}>Duplicate</Btn>
                     <Btn size="sm" variant="danger" onClick={() => void run(() => api.del<State>(`/api/dev/models/${o.id}`))}>Delete</Btn>
@@ -110,7 +125,7 @@ function AddModel({ hardware, onClose, onSaved }: { hardware: State['hardware'];
                     label: label || name,
                     source: source === 'hf' ? { hf: repo.trim(), ...(file.trim() ? { file: file.trim() } : {}) } : { gguf: path.trim() },
                     ...(Number(context) ? { context: Number(context) } : {}),
-                    runner: source === 'gguf' && checked?.engine === 'llama.cpp' ? 'llama.cpp (proposal, not active)' : 'strata',
+                    runner: source === 'gguf' && checked?.engine !== 'strata' ? 'llama.cpp' : 'strata',
                     ...(source === 'hf' && Number(sizeGb) ? { sizeGb: Number(sizeGb) } : checked ? { sizeGb: Math.round(checked.sizeGb * 10) / 10 } : {}),
                 };
                 await api.post('/api/dev/models', { id: name, data, create: true });
@@ -126,7 +141,7 @@ function AddModel({ hardware, onClose, onSaved }: { hardware: State['hardware'];
             <label className="input-field"><span>Display name</span><input className="st-input" value={label} onChange={e => setLabel(e.target.value)} /></label>
             {source === 'gguf' ? <>
                 <div className="row"><input className="st-input" placeholder="C:\models\model.gguf (or its folder)" value={path} onChange={e => { setPath(e.target.value); setChecked(null); }} /><Btn size="sm" disabled={!path.trim() || busy} onClick={() => void inspect()}>Check</Btn></div>
-                {checked ? <p className="small">{checked.files.length} file(s), {checked.sizeGb.toFixed(1)} GB · {checked.engine === 'strata' ? `the Strata engine knows it (${checked.selection?.family} ${checked.selection?.model}): load it with "Use a local GGUF"` : checked.engine === 'llama.cpp' ? 'not a model the Strata engine is tuned for: it would run via llama.cpp (proposal, not active yet)' : 'Strata Control could not check it'}</p> : null}
+                {checked ? <p className="small">{checked.files.length} file(s), {checked.sizeGb.toFixed(1)} GB · {checked.engine === 'strata' ? `the Strata engine knows it (${checked.selection?.family} ${checked.selection?.model}): load it with "Use a local GGUF"` : checked.engine === 'llama.cpp' ? 'not a model the Strata engine is tuned for: läuft über llama.cpp (Start in the list after adding)' : 'Strata Control could not check it: it is added to run via llama.cpp'}</p> : null}
             </> : null}
             {source === 'hf' ? <>
                 <label className="input-field"><span>Repository</span><input className="st-input" placeholder="org/name-GGUF" value={repo} onChange={e => setRepo(e.target.value)} /></label>

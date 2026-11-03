@@ -57,3 +57,8 @@
 .devskills__count { margin-left: 2px; font-size: 11px; font-weight: var(--st-fw-bold); }
 .devmodels__actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .devmodels__json { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); }
+.devmodels__llama { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: var(--st-r-sm); background: var(--st-bg); border: 1px solid var(--st-line); }
+.devmodels__llama[data-status='running'] { border-color: var(--st-accent); }
+.devmodels__llama[data-status='error'] { border-color: var(--st-danger); }
+.devmodels__lines { width: 100%; margin: 4px 0 0; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); white-space: pre-wrap; max-height: 160px; overflow: auto; }
+.devmodels__badge { display: inline-block; margin-top: 2px; padding: 0 6px; border-radius: var(--st-r-pill); border: 1px solid var(--st-warn); color: var(--st-warn-text); font-size: 11px; }

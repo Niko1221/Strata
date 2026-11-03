@@ -127,7 +127,8 @@ Hardware-Angabe in den ersten Sekunden noch leer, daher keine Speicherwarnung in
 
 ## Offene Punkte
 
-- **llama.cpp-Runner**: Vorschlag oben; nichts davon gebaut, `SUPPORTED_SELECTIONS` unverändert. Bitte entscheiden.
+- **llama.cpp-Runner**: umgesetzt nach deiner Freigabe (Abschnitt unten). Mit einem echten `llama-server` noch nicht gelaufen, weil auf
+  diesem PC keiner liegt.
 - **Skill-Wahl pro Chat im Agenten**: Die Harness hat eine Skill-Liste für alle Chats; Dev nennt die erlaubten Skills in der Nachricht
   (das Modell hält sich daran, erzwungen ist es nicht). Erzwingen ginge mit einem eigenen Skill-Ordner pro Chat (Harness-Konfiguration pro
   Sitzung), das wäre ein größerer Umbau.
@@ -138,3 +139,47 @@ Hardware-Angabe in den ersten Sekunden noch leer, daher keine Speicherwarnung in
   (Kopie oder `--profile-readonly`). Die Korrektur der vollen Modell-ID bei `loadAfter` ist ein Live-Fehler, der nur in Dev behoben ist;
   Kandidat für die Übernahme in Phase 4.
 - Der Skills-Import nimmt einen getippten Pfad (Ordner oder `.zip`); einen Dateiauswahl-Dialog für `.zip` gibt es noch nicht.
+
+## Nachtrag: llama.cpp-Runner (nach Freigabe des Vorschlags)
+
+Basis `34161535`, eigener Commit. Nur mit `STRATA_DEV=1`; `SUPPORTED_SELECTIONS`, `src`, `serve` und die GPU-Backends unverändert.
+Nichts heruntergeladen oder installiert.
+
+**Konfiguration** (`dev.config.json`):
+
+```json
+"llamacpp": { "server": "C:\llama.cpp\llama-server.exe", "port": 8095, "args": ["-ngl", "99"], "context": 8192 }
+```
+
+`port` Standard 8095; die Ports von Strata (8080, 8081, 8090, 8791–8794, 47831, 47832) werden abgelehnt. `args` sind zusätzliche
+llama-server-Optionen; `-m`, `--host 127.0.0.1`, `--port`, `-c` und `--alias` setzt der Runner. Optional `healthTimeoutMs`
+(Standard 180 s, so lange darf das Laden dauern).
+
+**Woher `llama-server`**: offizielle Releases von llama.cpp, https://github.com/ggml-org/llama.cpp/releases. Für die RTX 5070 das
+Windows-Paket mit `cuda` im Namen (dazu das passende `cudart`-Paket aus demselben Release), sonst `vulkan` oder `cpu`. In einen eigenen
+Ordner entpacken (nicht in einen Strata-Ordner) und den Pfad zu `llama-server.exe` eintragen. Danach im Dev-Panel "Reload".
+
+**Bedienung**: Model-Menü → "Add model" → "A local .gguf file" → Pfad → "Check" → "Add". Eine Datei, die die Strata-Engine nicht kennt,
+wird als Overlay mit `"runner": "llama.cpp"` gespeichert und steht in der Liste mit dem Hinweis "läuft über llama.cpp" und einem Knopf
+"Start". Der Runner-Kasten darüber zeigt den Zustand (bereit / startet / läuft auf Port … / Fehler mit den letzten Zeilen des Servers) und
+"Stop". Läuft der Server (`/health` = 200), ist er als API-Verbindung "llama.cpp (Strata Dev)" mit dem Modell "<Name> · läuft über llama.cpp"
+eingetragen und im Modell-Picker des Chats wählbar; Chat, Agent, Skills und Hooks nutzen ihn wie jede API-Verbindung.
+
+**Fehler und Beenden**: fehlender/falscher Pfad, Ordner statt Programm, Strata-Port, belegter Port, fehlende `.gguf`, Absturz beim Laden
+oder später, keine Antwort in der Zeit: jeweils ein Zustand `error` mit Klartext im Model-Menü und im Dev-Panel (Logs, Quelle `llama`);
+der Host läuft weiter. Ein Modell zur Zeit; ein neuer Start beendet den alten Server. Beim Beenden des Hosts (`shutdown`) wird der Server
+gestoppt, bei jedem anderen Ende des Host-Prozesses sofort beendet (`process.on('exit')`).
+
+**Dateien**: neu `apps/host/server/dev-llama.mjs`, `apps/host/tests/dev-llama.test.mjs`, `apps/host/tests/fixtures/mock-llama-server.mjs`;
+geändert `apps/host/server/index.mjs` (Runner, Route `/api/dev/llama`, Stopp beim Beenden), `apps/host/server/dev-api.mjs` und
+`apps/host/src/dev/DevPanel.tsx` (Log-Quelle `llama`), `apps/host/src/dev/DevModels.tsx` (Runner-Kasten, Start/Stop, Kennzeichnung),
+`apps/host/src/dev/dev.css`, `docs/DEV_BUILD.md` (Abschnitt "llama.cpp-Runner"), dieser Bericht.
+
+**Geprüft** (ohne echten llama-server): 6 Tests gegen einen Mock-Server, der wie `llama-server` aufgerufen wird und echt auf einem Port
+lauscht (`/health` erst 503, dann 200, `/v1/models`): Start bis "running" mit genau einer API-Verbindung (Basis-URL, Modell-ID = Alias,
+Name mit "läuft über llama.cpp"), zweiter Start ersetzt das Modell und behält die Verbindung, Stop beendet den Prozess; Absturz beim Laden
+→ Fehler mit der letzten Serverzeile, keine Verbindung; keine Antwort in der Zeit → Prozess beendet, Fehler; belegter Port, fehlende
+`.gguf`, kein `llama-server` → Klartext-Fehler; Routen. Dazu ein Host-Smoke-Test mit falschem Pfad: `/api/dev/llama` meldet
+"llama-server is not at …", Start liefert den Fehler, die Zeile steht in den Dev-Logs, der Host läuft weiter.
+`npm test` (apps/host): **1298 Tests, 1195 bestanden, 0 fehlgeschlagen, 103 übersprungen** (6 neu); `npm run typecheck` sauber.
+Die Python-Suite ist von diesem Nachtrag nicht betroffen (kein Python-Code geändert) und wurde nicht erneut ausgeführt.

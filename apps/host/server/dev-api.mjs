@@ -13,7 +13,7 @@
 import * as devLog from './dev-log.mjs';
 
 const ENGINE = 'engine';
-const SOURCES = ['host', ENGINE, 'harness', 'hooks', 'ui'];
+const SOURCES = ['host', ENGINE, 'harness', 'hooks', 'ui', 'llama'];
 
 /** Engine lines from supervisor.mjs (one engine) and native-control (Control's engines), as log entries. */
 export function engineEntries({ supervisorLogs = [], nativeLogs = [] }) {
