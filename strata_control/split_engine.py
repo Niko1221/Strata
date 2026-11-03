@@ -55,10 +55,9 @@ AUTO_SPLIT_AMD_ARCHS: tuple = ("gfx1201",)
 #: card counts on which mode "auto" starts it on those architectures. Four: on 2 and 3 R9700 with the IQ3_S set the split is slower than the layer split today (RESULTS-HIP.md
 #: section 7), and Auto must not pick a slower path. `--split-engine on` is not limited by this.
 AUTO_SPLIT_AMD_CARD_COUNTS: tuple = (4,)
-#: routed-expert types for which mode "auto" starts it on AMD: the UD-Q4_K_XL family. On 4 x R9700 with the IQ3_S set (i-quant and Q2_0 experts) the split is much slower than the
-#: layer split (8 users 143.8 against 326.8 tok/s, a 32K prompt 10.3 against 5.6 s, RESULTS-HIP.md section 7), because its i-quant tiles are a first, untuned version.
-#: `--split-engine on` still runs those sets.
-AUTO_SPLIT_AMD_EXPERT_TYPES: frozenset = frozenset({"Q4_K", "Q5_K", "Q5_1", "Q8_0"})
+#: routed-expert types for which mode "auto" starts it on AMD: the UD-Q4_K_XL family and the IQ3_S set (i-quant and Q2_0 experts). With the shared expert fused into the routed launches
+#: (round 0212) the split beats the layer split on 4 x R9700 with the IQ3_S set: 1 user 187 against 104 tok/s, 8 users 365 against 321 (phaseA-tests/round0212/RESULTS-AMDSPLIT.md).
+AUTO_SPLIT_AMD_EXPERT_TYPES: frozenset = frozenset({"Q4_K", "Q5_K", "Q5_1", "Q8_0", "Q2_0", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL"})
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
