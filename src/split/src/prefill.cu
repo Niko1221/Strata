@@ -414,6 +414,7 @@ struct Engine::Pf {
     std::vector<LtShape> lt_shapes;
 #endif
     bool hcs = false;
+    int hcs_mode = 0;                    // FNX_PF_HCSPLIT=1: only passes of whole 4096-row chunks are split (bit-identical to the unsplit path when the calibration found an algorithm); 2: any chunk of 512 rows or more (the last bits differ)
     int hg_pieces = 4;
     float* mixedk[Engine::PF_PASS] = {};
     float* hg_in[2] = {};
@@ -511,6 +512,7 @@ Engine::Pf::LtShape& pf_lt_shape(Engine::Pf& p, int n) {
 }
 // the down GEMM with the chosen algorithm (the caller checked p.down_lt); false: this shape does not take it (the plain call is made instead)
 bool pf_down_lt(Engine::Pf& p, const __half* W, const __half* X, int n, float* out, cudaStream_t s) {
+    if (n != 4096 && n != 2048) return false;   // the sizes the algorithm was calibrated at (the plain call picks its own for any other)
     Engine::Pf::LtShape& sh = pf_lt_shape(p, n);
     if (!sh.ok) return false;
     const float one = 1.0f, zero = 0.0f;
@@ -1035,7 +1037,8 @@ void Engine::prefill_alloc() {
             }
             // FNX_PF_HCSPLIT (NVIDIA, two cards, the copy-engine ring): see Pf
 #if !FNX_HIP
-            p->hcs = NCARD == 2 && p->overlap && !p->ring_sm && env_int("FNX_PF_HCSPLIT", 0) != 0;
+            p->hcs_mode = (int) env_int("FNX_PF_HCSPLIT", 0);
+            p->hcs = NCARD == 2 && p->overlap && !p->ring_sm && p->hcs_mode != 0;
 #endif
             if (p->hcs) {
                 const long long np = env_int("FNX_PF_HCSPLIT_PIECES", 4);
@@ -1326,7 +1329,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     static const int hs_full = (int) env_int("FNX_PF_HCSPLIT_FULL", 0);   // 1: every card reads all rows in one call; 2: all rows in two halves (the split's GEMM shapes)
       // debugging: every card reads all the rows (the swap still runs): the answers must equal the unsplit path's
     for (const PfChunk& ck : chunks)
-        if ((int) ck.tokens.size() < 512) hs = false;
+        if ((int) ck.tokens.size() < 512 || (pf_[0]->hcs_mode == 1 && (!pf_[0]->down_lt || (int) ck.tokens.size() != 4096))) hs = false;
     auto use = [&](int j) {
         C = (int) chunks[(size_t) j].tokens.size(), ng = (C + MAXT - 1) / MAXT, set = chunks[(size_t) j].set;
         for (Pf* p : pf_) {
