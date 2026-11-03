@@ -408,7 +408,7 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
-    // 0.2.5 (AVX-512 CPUs where a gather is cheap: Intel Sapphire Rapids and later): ONE token of an IQ3_XXS / IQ3_S expert on the
+    // 0.2.5 (AVX-512 CPUs where a gather is cheap: Intel Sapphire Rapids and later, AMD Zen 5 and later): ONE token of an IQ3_XXS / IQ3_S expert on the
     // 512-bit exact rows, ggml-cpu's single-token AVX2 dot bit for bit with the grid words gathered: 1.3x ggml's dot on a Xeon 8468
     // (x512_bench), the same output.  Where the multi-token rule (#152) already sends one token to the multi-token kernel
     // (STRATA_IQ_MT_MIN=1) that stays; STRATA_NO_IQ512X1=1 turns this off; the first use checks the bits against this ggml.

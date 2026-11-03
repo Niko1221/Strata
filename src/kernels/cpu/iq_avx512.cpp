@@ -38,6 +38,7 @@ inline uint64_t u64(const uint8_t* p) { uint64_t v; std::memcpy(&v, p, 8); retur
 // E-2: the IQ3 grids by one AVX-512 gather (the same words, the same results) - measured 3-5% SLOWER than the scalar
 // lookups on a Ryzen 5 7600 (Zen 4 gathers are microcoded), so opt-in: STRATA_IQ_GATHER=1
 // 0.2.5: DEFAULT on where gathers are fast (Intel server and HEDT cores with AVX-512: cpu_gather_fast), off on Zen 4 (microcoded);
+// 2026-11-02: AMD Zen 5 (family >= 0x1A, native 512-bit + VNNI) admitted by cpu_gather_fast; Zen 4 (0x19) stays off.
 // STRATA_IQ_GATHER=1 / 0 force it either way.  The same words are loaded, so the results are bit for bit the scalar decode's.
 const bool gather = [] {
     const char* v = std::getenv("STRATA_IQ_GATHER");
@@ -205,7 +206,9 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
             for (int t = 0; t < NT; ++t) {
                 const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
                 const __m512i ys = _mm512_mask_sub_epi8(yv, m, zero, yv);
-                acci[t] = _mm512_add_epi32(acci[t], _mm512_madd_epi16(_mm512_maddubs_epi16(g, ys), sc));
+                // vpdpwssd is the madd and the add in one (the form this file uses everywhere else; cpu_avx512_ok
+                // already requires the VNNI bit to reach this kernel), exact integer sums so the bits are unchanged.
+                acci[t] = _mm512_dpwssd_epi32(acci[t], _mm512_maddubs_epi16(g, ys), sc);
             }
         }
         if constexpr (Singleton) {

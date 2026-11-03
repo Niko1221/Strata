@@ -260,6 +260,22 @@ bool cpu_gather_fast() {
         unsigned r[4];
         cpuid_regs(0, 0, r);
         const unsigned max_leaf = r[0];
+        // AMD swaps the last two vendor registers: the string assembles as EBX+EDX+ECX ("Auth"+"enti"+"cAMD"),
+        // unlike Intel's EBX+ECX+EDX.  Match that layout; EBX "htuA" plus both remaining halves is unambiguous.
+        if (r[1] == 0x68747541u && ((r[2] == 0x69746e65u && r[3] == 0x444d4163u) ||
+                                    (r[2] == 0x444d4163u && r[3] == 0x69746e65u))) {   // "AuthenticAMD"
+            // Zen 5 (family 0x1A: Granite Ridge, Strix, Turin) executes AVX-512 natively at full width and carries
+            // the VNNI / VBMI / IFMA set; its gathers are NOT the microcoded Zen 4 gathers measured 3-5% slower
+            // (the note in iq_avx512.cpp). Admit exactly the CPUs the AVX-512 kernels already require
+            // (cpu_avx512_ok: F/BW/VL/VNNI/VBMI + XCR0) at family >= 0x1A; Zen 4 (0x19) keeps the scalar decode.
+            // STRATA_IQ_GATHER=0 and STRATA_FORCE_ISA stay the off switches; iq512_gather_parity is the proof.
+            if (!cpu_avx512_ok()) return false;
+            cpuid_regs(0x80000000, 0, r);                       // max EXTENDED leaf (leaf 0 EAX only covers the basic range)
+            if (r[0] < 0x80000001u) return false;
+            cpuid_regs(0x80000001, 0, r);
+            const unsigned fam = ((r[0] >> 8) & 0xf) + ((r[0] >> 20) & 0xff);   // base + extended (Zen's base is 0xF)
+            return fam >= 0x1A;
+        }
         if (!(r[1] == 0x756e6547u && r[3] == 0x49656e69u && r[2] == 0x6c65746eu)) return false;   // "GenuineIntel"
         if (max_leaf < 7) return false;
         cpuid_regs(7, 0, r);
