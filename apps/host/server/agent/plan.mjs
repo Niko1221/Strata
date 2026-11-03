@@ -14,10 +14,14 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { activeDevSettings } from '../dev-mode.mjs';
 
 export const MAX_STEPS = 12;
 const MAX_TEXT = 140;
 const MAX_DETAIL = 220;
+// Strata Dev (dev.config.json "plan"): longer step texts, so a plan step is not cut off with an ellipsis. Outside Dev (null) the limits above.
+const textMax = () => activeDevSettings()?.plan?.stepTextMax ?? MAX_TEXT;
+const detailMax = () => activeDevSettings()?.plan?.stepDetailMax ?? MAX_DETAIL;
 
 const clean = s => String(s ?? '').replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
@@ -28,7 +32,7 @@ function splitStep(raw) {
   const at = s.search(/\s[—–]\s|\s-\s|:\s/);
   const head = at > 8 ? s.slice(0, at) : s;
   const rest = at > 8 ? s.slice(at).replace(/^\s*[—–:\-]\s*/, '') : '';
-  return { text: clip(head.replace(/[.;:]+$/, ''), MAX_TEXT), detail: clip(rest, MAX_DETAIL) };
+  return { text: clip(head.replace(/[.;:]+$/, ''), textMax()), detail: clip(rest, detailMax()) };
 }
 
 /** The instruction a plan turn gets in front of the person's request. */
@@ -69,7 +73,7 @@ export function parsePlan(text, request = '') {
   if (!best) return null;
   const steps = best.items.slice(0, MAX_STEPS).map((it, k) => {
     const { text: t, detail } = splitStep(it.raw);
-    const extra = clip(it.extra.join(' '), MAX_DETAIL);
+    const extra = clip(it.extra.join(' '), detailMax());
     return { id: `s${k + 1}`, text: t, detail: detail || extra, state: 'pending', summary: null };
   }).filter(s => s.text);
   if (steps.length < 2) return null;
@@ -164,8 +168,8 @@ export function planAsPrompt(plan) {
 export function editedSteps(input, previous = []) {
   if (!Array.isArray(input)) throw Object.assign(new Error('A plan needs a list of steps.'), { code: 'plan-steps' });
   const steps = input.map((x, k) => {
-    const text = clip(clean(typeof x === 'string' ? x : x?.text), MAX_TEXT);
-    const detail = clip(clean(typeof x === 'string' ? '' : x?.detail), MAX_DETAIL);
+    const text = clip(clean(typeof x === 'string' ? x : x?.text), textMax());
+    const detail = clip(clean(typeof x === 'string' ? '' : x?.detail), detailMax());
     const kept = previous.find(p => p.id === x?.id);
     return text ? { id: kept?.id ?? `s${k + 1}`, text, detail, state: 'pending', summary: null } : null;
   }).filter(Boolean).slice(0, MAX_STEPS);

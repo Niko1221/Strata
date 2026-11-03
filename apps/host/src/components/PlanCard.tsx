@@ -4,13 +4,17 @@ import { cancelQueued, planEdit, planReject, queuedWhen, stepsDone, usePlan, use
 import { approvePlan, pushToast, startPlanGoal, useStore } from '../lib/store';
 import { plainFailureText } from '../lib/plain-errors';
 import { Btn, Icon, IconBtn } from './ui';
+import { useDev } from '../dev/dev-state';
 
 const STEP_WORDS = { done: 'done', running: 'working on it', failed: 'failed', skipped: 'skipped', pending: 'waiting' } as const;
 
 /** The steps with their state: a number, a check once done, a soft glow on the one being worked on. Used in the chat and in the sidebar. */
 export function PlanSteps({ plan }: { plan: Plan }) {
+  // Strata Dev: a long step is shown in two lines, whole on a click (the host keeps the whole step; Edit and the model have it all).
+  const dev = useDev();
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   return <ol className="plan__steps">
-    {plan.steps.map((s, i) => <li key={s.id} className="plan__step" data-state={s.state}>
+    {plan.steps.map((s, i) => <li key={s.id} className="plan__step" data-state={s.state} {...(dev && (s.text.length > 110 || (s.detail?.length ?? 0) > 110) ? { 'data-clamp': open[s.id] ? 'open' : 'closed', title: open[s.id] ? undefined : s.text, onClick: () => setOpen(o => ({ ...o, [s.id]: !o[s.id] })) } : {})}>
       <span className="plan__no" aria-hidden="true">{s.state === 'done' ? <Icon name="check" size={12}/> : s.state === 'failed' ? <Icon name="x" size={12}/> : i + 1}</span>
       <span className="plan__text">{s.text}{s.state === 'done' && s.summary ? <small>{s.summary}</small> : s.detail ? <small>{s.detail}</small> : null}<span className="sr-only"> ({tr(STEP_WORDS[s.state])})</span></span>
     </li>)}
@@ -31,6 +35,7 @@ function planCount(plan: Plan): string {
 export function PlanCard({ chatId, planId }: { chatId: string | null | undefined; planId: string }) {
   const plan = usePlan(chatId);
   const streaming = useStore(s => s.streaming);
+  const dev = useDev();   // Strata Dev: the edit field shows a whole step
   const [editing, setEditing] = useState(false), [draft, setDraft] = useState<string[]>([]), [busy, setBusy] = useState(false);
   useEffect(() => { setEditing(false); }, [chatId, plan?.id]);
   if (!chatId || !plan || plan.id !== planId) return null;
@@ -46,7 +51,10 @@ export function PlanCard({ chatId, planId }: { chatId: string | null | undefined
     <div className="plan__edit">
       {draft.map((text, i) => <div className="plan__row" key={i}>
         <span className="plan__no" aria-hidden="true">{i + 1}</span>
-        <input className="st-input" value={text} aria-label={tr("Step {0}", [i + 1])} onChange={e => setDraft(d => d.map((t, j) => j === i ? e.target.value : t))}/>
+        {dev
+          // Strata Dev: the whole step is visible (a long step wraps) instead of running out of a one-line field.
+          ? <textarea className="st-input" rows={Math.max(1, Math.min(8, Math.ceil(text.length / 60)))} style={{ resize: 'none', overflow: 'hidden' }} value={text} aria-label={tr("Step {0}", [i + 1])} onChange={e => setDraft(d => d.map((t, j) => j === i ? e.target.value : t))}/>
+          : <input className="st-input" value={text} aria-label={tr("Step {0}", [i + 1])} onChange={e => setDraft(d => d.map((t, j) => j === i ? e.target.value : t))}/>}
         <IconBtn name="x" size={15} title={tr("Remove this step")} disabled={draft.length < 2} onClick={() => setDraft(d => d.filter((_, j) => j !== i))}/>
       </div>)}
       <Btn size="sm" icon="plus" onClick={() => setDraft(d => [...d, ''])}>{tr("Add a step")}</Btn>

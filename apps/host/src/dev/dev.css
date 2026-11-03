@@ -76,5 +76,9 @@
 html[data-motion='reduced'] .dev-progress__track i { transition: none; }
 .bcard .dev-progress { margin: 4px 0 0; }
 /* Inside the goal bar: a second row under the goal's own line. */
+/* A long plan step: two lines, the whole step on a click (src/components/PlanCard.tsx). */
+.plan__step[data-clamp] { cursor: pointer; }
+.plan__step[data-clamp='closed'] .plan__text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.plan__step[data-clamp='closed'] .plan__text small { display: none; }
 .goalbar { flex-wrap: wrap; }
 .goalbar > .dev-progress { flex: 1 0 100%; margin: 0; padding: 2px 6px 0 0; }

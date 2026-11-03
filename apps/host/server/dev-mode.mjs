@@ -119,6 +119,7 @@ export function devSettings(config = {}) {
   return {
     verbose: logging.verbose === true,
     chatOverflow: chatOverflowSettings(config.chatOverflowGuard),
+    plan: planSettings(config.plan),
     contextGuard: contextGuardOf(config.contextGuard).settings,
     tokens,
     ui: { elements, extensions },
@@ -208,6 +209,17 @@ export function saveContextGuard(file, body, { read = readFileSync, write = writ
 `, 'utf8');
   rename(temp, file);
   return next;
+}
+
+/**
+ * "plan" { stepTextMax, stepDetailMax }: how long a plan step's text and its detail may be before they are cut with an ellipsis. Live keeps 140
+ * and 220; Dev keeps a step whole (4000 and 8000 characters), for Edit and for the model; only the card shortens what it shows. A wrong value is
+ * left out (the default stays).
+ */
+function planSettings(raw) {
+  const entry = objectOr(raw);
+  const whole = (value, min, max, fallback) => (Number.isInteger(value) && value >= min && value <= max ? value : fallback);
+  return { stepTextMax: whole(entry.stepTextMax, 140, 20_000, 4000), stepDetailMax: whole(entry.stepDetailMax, 220, 40_000, 8000) };
 }
 
 /** The Dev settings the host runs with now, or null outside Dev. index.mjs sets it at start and on Reload; the agent profile reads it. */
