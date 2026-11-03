@@ -38,6 +38,10 @@ class MtpDrafter {
 public:
     MtpDrafter() = default;
     ~MtpDrafter();
+    // Give back the device buffers while the device is still there.  The destructor calls this, and a run that has
+    // finished drafting calls it too, before process teardown: the drafter is the last object in main to go, and by
+    // then the runtime can be part-way torn down, which is where freeing the draft layer's gigabytes faults.
+    void release();
     MtpDrafter(const MtpDrafter&) = delete;
     MtpDrafter& operator=(const MtpDrafter&) = delete;
 
