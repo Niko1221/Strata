@@ -59,18 +59,9 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             std::fprintf(stderr, "fnx: note: context %d is within the trained %d: the scaling changes every position's rotary "
                          "and no length needs it\n", max_ctx, m_.ctx_train);
     }
+    attn_i8_set_default(m_.g.iq_experts());   // the int8 prompt attention: on for the IQ3_S-type files, off for the others
     gdn_tc_set_default(!m_.g.iq_experts());   // the tensor-core GDN scan: off for the IQ3_S-type files (NVIDIA builds only compile it in)
-#if !FNX_HIP
-    pf_c_ = 8192;   // NVIDIA default (owner 11-03): the expert kernels cost ~30 percent less per token at 8192 rows (FNX_PF_ROWS=4096 for the old chunk)
-#endif
-    const long long pf_rows = env_int("FNX_PF_ROWS", pf_c_);
-    if (pf_rows < MAXT || pf_rows > 8192 || pf_rows % MAXT)
-        throw std::runtime_error("FNX_PF_ROWS: a multiple of " + std::to_string(MAXT) + " from " + std::to_string(MAXT) + " to 8192, got " +
-                                 std::to_string(pf_rows));
-    pf_c_ = (int) pf_rows;
     hc1_rows();   // FNX_HC1 checked now, not at the first hc read (inside a graph capture)
-    pf_jobs_ = pf_c_ * TOPK / PF_JOB + NEXP;   // jobs of up to PF_JOB pairs per expert, at most
-    set_prompt_rows(pf_c_);
     const int extra_pages = (std::max(lanes, 1) - 1) * lane_block_pages();
     // the paged K/V pool: pages for the whole context (one more for the block a position past the last one needs)
     // and the extra lanes' blocks. Int8 rows: the context's pages as many as fit in their f16 bytes (the smallest ratio
@@ -82,6 +73,48 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         ctx_pages = (int) (ctx_pages * ratio);
     }
     int n_pages = ctx_pages + extra_pages;
+    // prompt-path memory per card in MiB, measured (FNX_PF_TIMING "prefill buffers on card", the same for both models on 2 cards), and what must stay free beside the K/V pool: the decode buffers,
+    // graphs and cuBLAS workspaces (UD-Q4_K_XL on 2 x 48 GB: 6.5 GB are free after the weights; 8192 x 2 fits but leaves 0.8 GB, 4096 x 4 leaves 2.3 GB)
+    constexpr size_t PF_MARGIN_MIB = 2000;
+    // the prompt path's chunk and pass. NVIDIA default 8192 rows and 4 chunks a pass (owner 11-03); a card whose free VRAM after the weights cannot hold that beside the K/V pool and
+    // the rest (UD-Q4_K_XL on 2 x 48 GB keeps ~12 GB) gets the largest of 8192 x 4, 8192 x 2, 4096 x 4, 4096 x 2 that fits. FNX_PF_ROWS / FNX_PF_PASS set by hand are used as given.
+    {
+        long long rows = 4096;
+        pf_pass_pick_ = 0;
+#if !FNX_HIP
+        rows = 8192;
+        if (!std::getenv("FNX_PF_ROWS") && !std::getenv("FNX_PF_PASS")) {
+            size_t free_min = SIZE_MAX, kv_max = 0;
+            for (int c = 0; c < NCARD; ++c) {
+                ck(cudaSetDevice(m.cards[c].dev), "cudaSetDevice");
+                size_t fr = 0, tot = 0;
+                ck(cudaMemGetInfo(&fr, &tot), "cudaMemGetInfo");
+                free_min = std::min(free_min, fr);
+                kv_max = std::max(kv_max, (size_t) n_pages * kvp_page(c) * sizeof(uint16_t));
+            }
+            const size_t margin = kv_max + (PF_MARGIN_MIB << 20);
+            struct Cfg { int rows, pass; size_t mib; };
+            const Cfg cfgs[] = {{8192, 4, 4148}, {8192, 2, 3028}, {4096, 4, 1673}, {4096, 2, 1112}};
+            Cfg pick = cfgs[3];
+            for (const Cfg& cf : cfgs)
+                if ((cf.mib << 20) + margin <= free_min) {
+                    pick = cf;
+                    break;
+                }
+            rows = pick.rows;
+            pf_pass_pick_ = pick.pass;
+            if (pick.rows != 8192 || pick.pass != 4)
+                std::fprintf(stderr, "fnx: prompt path: %d rows, %d chunks a pass (the cards hold %zu MiB free after the weights, the K/V pool %zu MiB)\n", pick.rows, pick.pass,
+                             free_min >> 20, kv_max >> 20);
+        }
+#endif
+        const long long pf_rows = env_int("FNX_PF_ROWS", rows);
+        if (pf_rows < MAXT || pf_rows > 8192 || pf_rows % MAXT)
+            throw std::runtime_error("FNX_PF_ROWS: a multiple of " + std::to_string(MAXT) + " from " + std::to_string(MAXT) + " to 8192, got " + std::to_string(pf_rows));
+        pf_c_ = (int) pf_rows;
+    }
+    pf_jobs_ = pf_c_ * TOPK / PF_JOB + NEXP;   // jobs of up to PF_JOB pairs per expert, at most
+    set_prompt_rows(pf_c_);
     // FNX_PEER (AMD only; hip/peer_policy.hpp has the rules: 0 host exchange, 1 try the peer push, unset the build's default): every directed pair is probed at start
     // (kernel stores into the peer, a full read-back compare on both sides, a flag round trip); any failure leaves the host exchange for the whole run with one line.
     // FNX_PEER_PARTS: 1 the window sums, 2 the attention merge, 3 both (the default)
