@@ -1306,8 +1306,13 @@ On 12.0 cards (sm_120) these also apply:
   is kept in RAM (`--ple-io ram`), so a new prompt does not wait for its rows from the SSD. With RAM short, ram mode costs
   prompt time and start-up time, which is why smaller PCs keep the SSD reads.
 
-A prompt chunk above 8192 (`--prefill auto:16384` or `auto:32768`) is not bit-exact on CUDA, so the default stays 8192 on
-NVIDIA. It is exact on gfx12, where 16384 is the default. `STRATA_ROUTE_PRIOR` raises KL and is an opt-in again in 0.2.8 (0.2.7 set 1.5 by itself on a discrete NVIDIA card of 13 GiB or less, and the owner took that back on 2026-10-29 because of repetition loops and weaker results in long agent sessions, #4402). `STRATA_ROUTE_PRIOR=1.5` on an RTX 3060 12 GB: story +15%, code +37%, 80 tasks with no copy or code errors, but 4.5 of 10 agent tasks against 5.6 with it off.
+A prompt chunk above 8192 (`--prefill auto:16384` or `auto:32768`) changes the rounding slightly on CUDA (first-token KL against 8192:
+about 1e-4 on plain prompts, UD-Q4_K_XL on an A6000). A bare `--prefill auto` takes a 32768-token ceiling on one NVIDIA card of compute
+capability 8.0 or up (an A6000 that streams half of UD-Q4_K_XL's experts: 20K prompt +43%, 32K +22%, 64K +21%; a card that holds every
+expert: flat). The expert cache still lends the prompt only what it can spare (the chunk shrinks on a small card), the RAM guard steps the
+ceiling 32768 -> 16384 -> 8192 when the RAM available does not cover the extra loan, and a layer split keeps 8192. `STRATA_NV_CHUNK=0`
+or `STRATA_DEFAULTS=026` keep 8192 (`STRATA_NV_CHUNK=16` keeps 16384); `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are
+never changed. `STRATA_ROUTE_PRIOR` raises KL and is an opt-in again in 0.2.8 (0.2.7 set 1.5 by itself on a discrete NVIDIA card of 13 GiB or less, and the owner took that back on 2026-10-29 because of repetition loops and weaker results in long agent sessions, #4402). `STRATA_ROUTE_PRIOR=1.5` on an RTX 3060 12 GB: story +15%, code +37%, 80 tasks with no copy or code errors, but 4.5 of 10 agent tasks against 5.6 with it off.
 
 ---
 
