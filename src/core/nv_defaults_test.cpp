@@ -1,5 +1,6 @@
 // src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) table, its
 // two off switches, and that no other card's table changed.
+#include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
 
 #include <cstdio>
@@ -83,6 +84,15 @@ int main() {
     unset("STRATA_NV_KQ_DEFAULT");
     // the other tables are unchanged by it
     CHECK(nv_default_env(12, 0, false).empty());
+    // round 0212: the NVIDIA prompt-chunk ceiling of a bare `--prefill auto` (nv_chunk.hpp)
+    CHECK(nv_chunk_ceiling(nullptr, false) == 32768);
+    CHECK(nv_chunk_ceiling("1", false) == 32768);
+    CHECK(nv_chunk_ceiling("16", false) == 16384);
+    CHECK(nv_chunk_ceiling("0", false) == 0);          // STRATA_NV_CHUNK=0 keeps 8192
+    CHECK(nv_chunk_ceiling(nullptr, true) == 0);       // STRATA_DEFAULTS=026 keeps 8192
+    CHECK(nv_chunk_ceiling("16", true) == 0);
+    CHECK(!nv_chunk_card_ok(7) && !nv_chunk_card_ok(6) && nv_chunk_card_ok(8) && nv_chunk_card_ok(12));   // Volta / Turing / Pascal keep 8192
+    CHECK(nv_chunk_step_down(32768) == 16384 && nv_chunk_step_down(16384) == 8192 && nv_chunk_step_down(8192) == 8192);
     // the one-argument form reads STRATA_DEFAULTS
     put("STRATA_DEFAULTS", "026");
     CHECK(nv_default_env(12, 1).empty());
