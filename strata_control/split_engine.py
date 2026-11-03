@@ -14,16 +14,19 @@ has actually been run:
   - Linux, 2 to 4 cards of ONE make (NVIDIA, or AMD RDNA4 gfx1201: the R9700 and RX 9070), all the same model of card and memory size;
   - a card architecture and card count that have been run (TESTED, per make): NVIDIA sm_86 on 2 cards, AMD gfx1201 on 4 cards. Others build
     but stay off unless the caller says allow_untested (testers); the Decision says which part is untested in plain words;
+  - NVIDIA sm_70 (V100) is an explicit-on path: `--split-engine on` accepts it (the architecture and a longer
+    context are marked untested) and, when the experts do not fit in the cards, keeps the arena and moves the
+    overflow to host RAM (FNX_EXPERT_RAM_GIB).  Auto keeps the layer split on sm_70;
   - AMD gfx1201 is automatic like NVIDIA (the owner's decision: default on for two or more cards, off with `--split-engine off`); AUTO_SPLIT_AMD_ARCHS is the
     one constant that says which AMD architectures start it by themselves, every other AMD architecture keeps the layer split silently;
   - the GGUF is a set the engine reads (checked from the file's tensor types, not its name), the Qwen3.8-Flash-Next shapes (48 layers,
     512 experts): routed experts Q4_K/Q5_K/Q5_1/Q8_0/Q4_0 (UD-Q4_K_XL, Q8_0) or the i-quants IQ2_S/IQ3_XXS/IQ3_S/IQ4_XS/IQ4_NL and Strata's
     Q2_0 (UD-IQ4_XS, the IQ3_S set); token embeddings, shared expert, output head Q8_0, or, in a set with i-quant or Q2_0 experts,
     any type the loader converts to Q8_0/F32 when it reads the file (src/split/src/tensor_convert.hpp);
-  - ALL routed experts fit in the cards' memory (the expert cache is off: with it the engine keeps a 74 GiB pinned copy of the
-    experts in RAM) and the RAM that stays (the 27.5 GiB locked embedding table, a few GiB of buffers and the conversation cache)
-    is available with room to spare;
-  - context at most TESTED_CONTEXT (128K).
+  - ALL routed experts fit in the cards' memory for the automatic path (the expert cache is off: with it the engine keeps a
+    74 GiB pinned copy of the experts in RAM).  An explicit sm_70 opt-in may keep the overflow in the arena's host cache
+    instead; the RAM check then includes it;
+  - context at most TESTED_CONTEXT (128K), unless an explicit opt-in marks a longer one untested (sm_70 was run at 393216).
 Anything else: use_split False and one plain line saying why. The server also falls back to the normal layer split if the split
 engine refuses or fails to start (serve/server.py, "split_fallback").
 """
@@ -41,7 +44,7 @@ from typing import Any
 TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (2, 3, 4)}}
 # the engine package's kernels (one binary per card count with a code object for each AMD architecture): any other card is refused. AMD beyond gfx1201 is EXPERIMENTAL: only an explicit
 # `--split-engine on` starts it there (never auto), and the engine runs its kernel self-test on the card before it loads the model (src/split/src/hip/selftest_policy.hpp)
-BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
+BUILT_ARCHS = {"nvidia": ("sm_70", "sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
 TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
 TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
                                    # pictures; no suite there)
@@ -129,6 +132,7 @@ class Decision:
     untested: list[str] = dataclasses.field(default_factory=list)   # what about this setup nobody has run
     need_vram_gib: float = 0.0
     need_ram_gib: float = 0.0
+    host_cache_gib: float = 0.0     # experts the cards cannot hold: FNX_EXPERT_RAM_GIB (0: all in VRAM)
     quiet: bool = False             # auto mode and a "no": the launch says nothing and starts the normal layer split
     arch: str = ""                  # the cards' architecture ("sm_86", "gfx1201"); empty when no card was probed (the run manifest records it)
     routed_types: tuple = ()        # the model's routed-expert types, sorted (the run manifest records them)
@@ -252,16 +256,22 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
     if (model.layers, model.experts) != (LAYERS, EXPERTS):
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
     need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB
-    need_ram = model.embd_ram_bytes / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024
-    if cards and n >= 2 and min(c.room_mib for c in cards) / 1024 < need_vram:
-        has = f"{min(c.room_mib for c in cards) / 1024:.0f} GiB" + (" free" if any(c.free_mib is not None for c in cards) else "")   # free memory when it was read, else the size
-        why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has {has})")
+    per_card = min(c.room_mib for c in cards) / 1024 if cards else 0.0
+    host_cache = 0.0
+    sm70 = bool(cards) and cards[0].vendor == "nvidia" and all(c.cc == 70 for c in cards)
+    if cards and n >= 2 and per_card < need_vram:
+        if allow_untested and sm70:              # explicit --split-engine on for V100: the arena keeps the overflow in RAM
+            host_cache = (need_vram - per_card) * n
+        else:
+            has = f"{per_card:.0f} GiB" + (" free" if any(c.free_mib is not None for c in cards) else "")   # free memory when it was read, else the size
+            why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has {has})")
+    need_ram = model.embd_ram_bytes / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024 + host_cache
     if ram_available_gib < need_ram + RAM_SPARE_GIB:
         why.append(f"there is not enough free RAM (about {need_ram + RAM_SPARE_GIB:.0f} GiB needed, {ram_available_gib:.0f} GiB free)")
     facts = dict(arch="/".join(archs), routed_types=tuple(sorted(model.routed_types)))
     if why:
-        return Decision(False, why, n, untested, need_vram, need_ram, **facts)
-    return Decision(True, [], n, untested, need_vram, need_ram, **facts)
+        return Decision(False, why, n, untested, need_vram, need_ram, host_cache_gib=host_cache, **facts)
+    return Decision(True, [], n, untested, need_vram, need_ram, host_cache_gib=host_cache, **facts)
 
 
 def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_dir: str | None, draft_vocab: str, context: int,
@@ -277,10 +287,22 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     drafter = ["--draft", "dflash2", "--draft-model", dflash2_pack] if dflash2_pack else ["--mtp", mtp_dir]
     cfg["args"] = ["--native", native, *drafter, "--draft-vocab", draft_vocab, "--max-context", str(context),
                    "--spec", "6", "--lookup", "15", "--conversation-cache-mib", str(cache_mib), "--batch", str(min(MAX_LANES, max(lanes, 1)))]
+    rope = _flag([str(x) for x in base.get("args") or []], "--rope-scale")
+    if rope:
+        cfg["args"] += ["--rope-scale", rope]
     if vision:
         cfg["args"].append("--vision")
-    # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
-    cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
+    if decision.host_cache_gib > 0:
+        # The cards cannot hold every expert: the arena keeps the overflow in page-locked RAM (FNX_EXPERT_RAM_GIB).
+        # v0.2.11's new prompt path (the hyper-connection split, 8192-row passes) needs pass buffers that push more
+        # experts out of VRAM: on 2x V100 it cost about 26% of a 247K-token prompt.  The unsplit 4096-row path is the
+        # behaviour the sm_70 split was measured with and is the one to keep on this host-cache path.
+        cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "1",
+                      "FNX_EXPERT_RAM_GIB": str(int(decision.host_cache_gib + 0.999)),
+                      "FNX_PF_HCSPLIT": "0", "FNX_PF_ROWS": "4096"}
+    else:
+        # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
+        cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
     cfg["split_fallback"] = {k: base[k] for k in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting", "cwd") if k in base}
     # The split engine runs the model's own draft layer (the MTP) and nothing else. Saying so in the config ("drafting": "mtp") keeps serve/server.py's
     # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them
@@ -427,7 +449,7 @@ def _auto_gates(d: Decision, cards: list[Card], model: ModelFacts, chosen: str, 
     if amd and mode_ != "on" and not all(c.arch_name in AUTO_SPLIT_AMD_ARCHS for c in cards):
         # opt-in on AMD: auto keeps the layer split (quiet), `--split-engine on` runs the split
         return Decision(False, [f"the all-cards split engine is not automatic on {cards[0].arch_name} yet; it starts only with --split-engine on"], d.cards)
-    if not amd and chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
+    if not amd and mode_ != "on" and chosen == "auto" and not all(c.cc in AUTO_SPLIT_BEATS_DFLASH2 for c in cards):
         return Decision(False, ["on this card the layer split with DFlash2 has not been measured slower than the all-cards split engine"], d.cards)
     return None
 
@@ -462,7 +484,8 @@ def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None 
         model = ASSUMED_MODEL
         if native and os.path.isfile(native):
             model = (scan or scan_model)(native)
-        experimental_ok = m == "on" and bool(cards) and cards[0].vendor == "amd"
+        experimental_ok = m == "on" and bool(cards) and (cards[0].vendor == "amd" or
+                                                          (cards[0].vendor == "nvidia" and all(c.cc == 70 for c in cards)))
         d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
                    allow_untested=allow_untested or experimental_ok)
         if not d.use_split or _auto_gates(d, cards, model, chosen, m) is not None:
@@ -563,7 +586,8 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
         return Decision(False, [f"the model file could not be read ({type(e).__name__})"])
     context = int(_flag(args, "--max-context") or 8192)
     # an AMD architecture nobody has run (gfx1100..1103, gfx1200) starts only on the person's explicit "on", with the engine's own self-test as the guard
-    experimental_ok = mode_ == "on" and bool(cards) and cards[0].vendor == "amd"
+    nvidia_sm70 = bool(cards) and cards[0].vendor == "nvidia" and all(c.cc == 70 for c in cards)
+    experimental_ok = mode_ == "on" and bool(cards) and (cards[0].vendor == "amd" or nvidia_sm70)
     d = decide(enabled=True, system=system, cards=cards, ram_total_gib=total, ram_available_gib=avail, model=model, context=context,
                allow_untested=allow_untested or experimental_ok)
     if not d.use_split:
