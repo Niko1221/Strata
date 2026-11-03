@@ -1271,11 +1271,12 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     // a pass takes K chunks; with the hyper-connection split a short last chunk (not a whole pf_c_ rows) is a pass of its own, so it does not keep the whole chunks
     // before it from being split
     const bool lone_tail = pf_[0]->hcs;
+    const int lone_min = (int) env_int("FNX_PF_HCSPLIT_MIN", 3);   // fewer whole chunks than this: the tail stays with them (one pass, the chunks hide each other's sums)
     auto chunks_of = [&](size_t i0, int half) {
         std::vector<PfChunk> ch;
         for (size_t i = i0; i < nt && (int) ch.size() < K; i += pf_c_) {
             const size_t e = std::min(nt, i + pf_c_);
-            if (lone_tail && !ch.empty() && e - i != (size_t) pf_c_) break;
+            if (lone_tail && (int) ch.size() >= lone_min && e - i != (size_t) pf_c_) break;
             ch.push_back({std::vector<int>(tokens.begin() + i, tokens.begin() + e), e < nt ? tokens[e] : after, half * K + (int) ch.size()});
         }
         return ch;
