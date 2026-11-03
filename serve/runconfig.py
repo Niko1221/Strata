@@ -41,6 +41,16 @@ EDITABLE = [
     ("open_browser", "bool", "Open the chat page in the browser when the model is ready"),
     ("vram_reserve_mib", ("arg", "--vram-reserve-mib"),
      "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
+    ("cost_input_per_million", "num>=0",
+     "US dollars a million input tokens would cost at your price, for the Monitor's cost (0: show no cost)"),
+    ("cost_output_per_million", "num>=0",
+     "US dollars a million output tokens would cost at your price, for the Monitor's cost (0: show no cost)"),
+    ("cost_cache_write_per_million", "num>=0",
+     "US dollars a million input tokens the cache had to be written for would cost - an API's cache write "
+     "(empty: plain input price; 0: free)"),
+    ("cost_cache_hit_per_million", "num>=0",
+     "US dollars a million input tokens the cache already held would cost - an API's cache read "
+     "(empty: plain input price; 0: free)"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 
