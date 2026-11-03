@@ -464,6 +464,10 @@ int check_tables() {
         ++bad;
         std::printf("FAIL table: an unknown type or ncols must be 0\n");
     }
+    if (native_mmvq_il_rows_for(75, 23, 5, 10240) != 2 || native_mmvq_il_rows_for(75, 14, 5, 512) != 0) {
+        ++bad;
+        std::printf("FAIL table: sm_75's 5-8 column rows (kIlRows58_75)\n");
+    }
     return bad;
 }
 }  // namespace

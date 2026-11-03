@@ -3765,8 +3765,20 @@ constexpr IlRows58 kIlRows58_80[] = {   // CMP 170HX, as kIlRows_80
     {14, {{0, 0, 4, 2, 4}, {0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 0, 4, 2, 4}}},   // Q6_K
     {11, {{0, 0, 4, 2, 4}, {0, 0, 4, 1, 4}, {0, 0, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // Q3_K
 };
+// Turing (sm_75; it takes the interleaved path only with STRATA_SM75_IL=1 or STRATA_SM75_PERF=1): a CMP 50HX (56 SMs),
+// mmvq_il_parity --bench --emit-table 3 times with MMVQ_IL_TMIN=5, the position-major copy in planes; the three agreed
+// except Q4_K at 5 columns below 2048 rows (2, 0, 2), which is 0 here.  Without it 5-8 columns kept native_mmvq's
+// kernels on Turing (e.g. IQ4_XS 2560x10240 at 5 columns: 113 us plain, 49 us here at 2 rows).
+constexpr IlRows58 kIlRows58_75[] = {
+    {23, {{2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // IQ4_XS
+    {12, {{0, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q6_K
+    {11, {{2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q3_K
+};
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
+    {75, kIlRows58_75, sizeof(kIlRows58_75) / sizeof(IlRows58)},
     {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
