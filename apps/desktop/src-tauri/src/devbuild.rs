@@ -66,7 +66,12 @@ pub fn variables(root: &Path, config: &Path) -> Vec<(&'static str, String)> {
 /// The repository's `dev.config.json`, found from where this build was made (a Dev build is always made from a checkout).
 fn config_file() -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("..").join("dev.config.json");
-    path.canonicalize().unwrap_or(path)
+    // Windows' canonical form is a verbatim path (\\?\C:\...); the host and the page show the plain one
+    let path = path.canonicalize().unwrap_or(path);
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(plain) if !plain.starts_with("UNC\\") => PathBuf::from(plain),
+        _ => path,
+    }
 }
 
 /// Set the Dev variables in this process (called first in `main`, while the process has one thread). Kept when already set.

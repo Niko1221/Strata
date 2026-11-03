@@ -7538,4 +7538,7 @@ textarea {
   line-height: 18px;
   cursor: default;
 }
+/* The rail is one icon wide: the badge goes above the collapse control, smaller. */
+.app[data-rail='true'] .nav__top:has(.dev-badge) { flex-direction: column; justify-content: center; gap: 2px; }
+.app[data-rail='true'] .dev-badge { padding: 0 4px; font-size: 10px; line-height: 14px; letter-spacing: 0; }
 .dev-badge[data-warn] { background: var(--st-danger-tint); color: var(--st-danger-text); border-color: var(--st-danger); }
