@@ -24,7 +24,7 @@ import { StatusLine } from '../components/StatusLine';
 import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
-import { DevElement, DevSlot } from '../dev/dev';
+import { DevElement, DevSlot, useDev } from '../dev/dev';
 import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
 import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
@@ -471,6 +471,7 @@ export function ChatScreen() {
       </div>
     </>);
 }
+const COMPACT_HINT = 'Summarise the older messages of this chat now to free up room (send it when no answer is running)';
 interface SlashCommand {
     id: string;
     label: string;
@@ -480,6 +481,7 @@ interface SlashCommand {
 }
 function useSlashCommands(clear: () => void, setDraft: (value: string) => void): SlashCommand[] {
     const demo = useStore(s => s.library?.mode === 'simulated');
+    const dev = useDev();   // Strata Dev only: /compact in the menu (it works typed in Live too). Dev text is English only, like the Dev panel.
     return [
         { id: 'time-skip', label: '/time-skip', hint: 'Try a change on a copy, check it, and keep it only if it is better', icon: 'branch', run: () => setDraft('/time-skip ') },
         { id: 'goal', label: '/goal', hint: 'Set a goal and let the assistant keep working until it is done', icon: 'bolt', run: () => setDraft('/goal ') },
@@ -488,6 +490,7 @@ function useSlashCommands(clear: () => void, setDraft: (value: string) => void):
         { id: 'loop', label: '/loop', hint: 'Repeat a message every few minutes while this chat is open', icon: 'refresh', run: () => setDraft('/loop 10m ') },
         { id: 'website', label: '/website', hint: 'Open a website in the preview sidebar', icon: 'link', run: () => { clear(); window.dispatchEvent(new Event('strata:open-website')); } },
         { id: 'preview', label: '/preview', hint: 'Open a local file in the preview sidebar', icon: 'file', run: () => { clear(); window.dispatchEvent(new Event('strata:open-preview')); } },
+        ...(dev ? [{ id: 'compact', label: '/compact', hint: COMPACT_HINT, icon: 'refresh' as const, run: () => setDraft('/compact') }] : []),
         ...(demo ? [{ id: 'subagents', label: '/subagents', hint: 'Preview subagent statistics', icon: 'experts' as const, run: () => { clear(); createSubagentExample(); } }] : []),
         ...getSlashCommands().map(command => ({ ...command, run: () => { clear(); command.run(); } }))
     ];
