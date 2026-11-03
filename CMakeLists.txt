@@ -38,6 +38,18 @@ option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime"
 # binary behind their CPU checks; the router lookahead gets an AVX1 kernel.  Empty (the default) changes nothing.
 set(STRATA_ISA_FLOOR "" CACHE STRING "experimental older-CPU build: empty (default, AVX2 floor), avx, or none (SSE4.2)")
 set_property(CACHE STRATA_ISA_FLOOR PROPERTY STRINGS "" avx none)
+# x86 ggml-cpu build target above the native default: zen5 = the full AVX-512 set (F/BW/VL + VBMI + VNNI + BF16,
+# AVX-VNNI, BMI2).  WHY: MSVC's native detection (ggml FindSIMD) can only probe /arch:AVX|AVX2|AVX512, so a native
+# MSVC build compiles ggml-cpu with F/BW/VL alone - ggml's __AVX512VNNI__ IQ2/IQ3/Q4K/Q6K dots and its __AVX512VBMI__
+# repacked dots stay compiled OUT on the one CPU family (Zen 5) that executes all of it natively at full width.
+# ggml's MSVC branch then defines the macros and adds /arch:AVX512 itself (ggml-cpu/CMakeLists 254-305).  The
+# resulting binary REQUIRES AVX-512 hardware (AMD Zen 4+ / Intel Sapphire Rapids and newer); default OFF keeps
+# every shipped build unchanged.
+set(STRATA_X86_ISA "" CACHE STRING "x86 ggml-cpu target above the native default: empty (native) or zen5 (full AVX-512; needs Zen 4+/SPR+ hardware)")
+set_property(CACHE STRATA_X86_ISA PROPERTY STRINGS "" zen5)
+if(NOT STRATA_X86_ISA STREQUAL "" AND NOT STRATA_X86_ISA STREQUAL "zen5")
+  message(FATAL_ERROR "STRATA_X86_ISA must be empty (native) or zen5 (got '${STRATA_X86_ISA}')")
+endif()
 if(NOT STRATA_ISA_FLOOR STREQUAL "" AND NOT STRATA_ISA_FLOOR STREQUAL "avx" AND NOT STRATA_ISA_FLOOR STREQUAL "none")
   message(FATAL_ERROR "STRATA_ISA_FLOOR must be empty, avx or none (got '${STRATA_ISA_FLOOR}')")
 endif()
@@ -2098,6 +2110,22 @@ if(STRATA_NATIVE_EXPERTS)
                GGML_AVX512_BF16 GGML_AMX_TILE GGML_AMX_INT8 GGML_AMX_BF16)
       set(${_f} OFF CACHE BOOL "" FORCE)
     endforeach()
+  elseif(STRATA_X86_ISA STREQUAL "zen5")
+    # ggml-cpu for the Zen 5 ISA: MSVC's native probe cannot see VBMI/VNNI/BF16/AVX-VNNI (FindSIMD tests
+    # /arch:AVX, /arch:AVX2, /arch:AVX512 only), so the extensions are named here and ggml's MSVC branch turns
+    # them into the macros the kernels are #ifdef'd on (__AVX512VBMI__, __AVX512VNNI__, __AVX512BF16__,
+    # __AVXVNNI__, __BMI2__) plus /arch:AVX512.  Native on: ggml-cpu's codegen targets this host; the binary
+    # needs AVX-512 hardware (Zen 4+ / SPR+).  ggml_openmp stays off (the pool owns the threads).
+    set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+    set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
+    foreach(_f GGML_SSE42 GGML_F16C GGML_FMA GGML_BMI2 GGML_AVX GGML_AVX2 GGML_AVX_VNNI
+               GGML_AVX512 GGML_AVX512_VBMI GGML_AVX512_VNNI GGML_AVX512_BF16)
+      set(${_f} ON CACHE BOOL "" FORCE)
+    endforeach()
+    foreach(_f GGML_AMX_TILE GGML_AMX_INT8 GGML_AMX_BF16)
+      set(${_f} OFF CACHE BOOL "" FORCE)
+    endforeach()
+    message(STATUS "strata: ggml-cpu built for the zen5 target (AVX-512 F/BW/VL/VBMI/VNNI/BF16 + AVX-VNNI + BMI2); requires AVX-512 hardware")
   else()
     set(GGML_NATIVE ON CACHE BOOL "" FORCE)
   endif()
@@ -2215,6 +2243,12 @@ if(STRATA_NATIVE_EXPERTS)
   # rounding, with the grid lookups as scalar loads and as gathers (SKIP without AVX-512)
   add_executable(iq512_gather_parity src/kernels/cpu/iq512_gather_parity.cpp)
   target_link_libraries(iq512_gather_parity PRIVATE strata_kernels_cpu)
+  # ggml-cpu's q8_0/K-quant row dots, one thread, cache-resident: the -DSTRATA_X86_ISA=zen5 measurement tool
+  # (the __AVX512VNNI__ fusion of mul_sum_us8_pairs_float: +34% on the q8_0 dot, a Ryzen 9950X3D, 2026-11-02)
+  if(STRATA_CPU_X86)
+    add_executable(qk_dot_bench src/kernels/cpu/qk_dot_bench.cpp)
+    target_link_libraries(qk_dot_bench PRIVATE strata_kernels_cpu)
+  endif()
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq512_gather_parity_scalar COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_GATHER=0 $<TARGET_FILE:iq512_gather_parity>)
     add_test(NAME iq512_gather_parity_gather COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_GATHER=1 $<TARGET_FILE:iq512_gather_parity>)
