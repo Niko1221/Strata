@@ -4,7 +4,7 @@
 #   .\dev-build.ps1 -Install             # zusaetzlich still nach %LOCALAPPDATA%\Programs\Strata Dev installieren und von dort starten
 #   .\dev-build.ps1 -HostOnly            # nur Host + UI im Entwicklermodus (Host :8792, Vite :5200), ohne Rust-Build
 #   .\dev-build.ps1 -NoStart             # nur bauen
-#   .\dev-build.ps1 -ResourcesFromLive   # fehlende Bundle-Teile (node, control, harness) aus der installierten Live-App KOPIEREN (nur lesen)
+#   .\dev-build.ps1 -ResourcesFromLive   # fehlende Bundle-Teile node und harness aus der installierten Live-App KOPIEREN (nur lesen); control nie
 #
 # Das Skript installiert nichts systemweit. Fehlende Werkzeuge werden aufgelistet, dann bricht es ab.
 # Live (Strata, %LOCALAPPDATA%\Strata, %APPDATA%\Strata, ~\.strata, Ports 47831/8791/8080) wird nie veraendert.
@@ -105,6 +105,8 @@ $absent = @($parts.Keys | Where-Object { -not (& $parts[$_]) })
 if ($absent.Count -and $ResourcesFromLive) {
     if (-not (Test-Path (Join-Path $LiveInstall 'strata-desktop.exe'))) { Fail "Keine Live-App in $LiveInstall gefunden." }
     foreach ($name in $absent) {
+        # Control nie aus Live: es muss zum Repo passen (STRATA_STATE_DIR usw.), sonst schreibt Dev in die Live-Ordner (procs\)
+        if ($name -eq 'control') { continue }
         $from = Join-Path $LiveInstall $name
         if (-not (Test-Path $from)) { continue }
         Say "Kopiere $name aus der Live-App (nur lesen): $from"
@@ -119,7 +121,7 @@ if ($absent.Count -and $ResourcesFromLive) {
 if ($absent.Count) {
     $how = @{
         node    = 'powershell -NoProfile -ExecutionPolicy Bypass -File apps\desktop\scripts\fetch-node.ps1'
-        control = 'python apps\desktop\scripts\stage-control.py'
+        control = 'python apps\desktop\scripts\stage-control.py   (immer aus dem Repo; bei SSL-Fehlern SSL_CERT_FILE auf ein certifi-Bundle setzen)'
         harness = 'node apps\desktop\scripts\stage-harness.mjs --src <gebauter Harness-Checkout>   (oder dev-build.ps1 -HarnessSrc <Pfad>)'
     }
     Fail ("Diese Bundle-Teile fehlen in apps\desktop\src-tauri\resources:`n" + (($absent | ForEach-Object { "  - ${_}:  $($how[$_])" }) -join "`n") + "`nOder: dev-build.ps1 -ResourcesFromLive (kopiert sie aus der installierten Live-App, die dabei nur gelesen wird).")

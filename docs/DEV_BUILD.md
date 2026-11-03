@@ -74,8 +74,12 @@ dev-build.bat                      :: UI und Dev-App bauen, Dev-App aus target\r
 dev-build.bat -Install             :: zusätzlich still nach %LOCALAPPDATA%\Programs\Strata Dev installieren und von dort starten
 dev-build.bat -NoStart             :: nur bauen
 dev-build.bat -HostOnly            :: nur Host + UI im Entwicklermodus (Host :8792, UI http://127.0.0.1:5200), ohne Rust-Build
-dev-build.bat -ResourcesFromLive   :: fehlende Bundle-Teile aus dem installierten Strata kopieren (es wird nur gelesen)
+dev-build.bat -ResourcesFromLive   :: fehlende Bundle-Teile node und harness aus dem installierten Strata kopieren (es wird nur gelesen)
 ```
+
+Control (`resources\control`) kommt immer aus dem Repo: `python apps\desktop\scripts\stage-control.py`. Ein aus Live kopiertes
+Control kann älter sein und kennt die Dev-Schalter nicht; dann landen die Prozesseinträge der Dev-Engine in `%LOCALAPPDATA%\Strata\procs`
+(so beim ersten Test am 01.11.2026 mit Live 0.2.7). Bricht der Download mit einem SSL-Fehler ab, hilft `SSL_CERT_FILE` mit dem Zertifikats-Bundle von certifi.
 
 Der Installer liegt danach in `apps\desktop\src-tauri\target\release\bundle\nsis\Strata Dev_<Version>_x64-setup.exe`.
 
