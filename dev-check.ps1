@@ -155,7 +155,7 @@ else {
         $known = $failed.Count - $new.Count
         $line = ($p.Text -split "`r?`n" | Where-Object { $_ -match '(passed|failed).* in [\d.]+s' } | Select-Object -Last 1)
         if ($p.Text -match 'errors? during collection') { Add-Result 'pytest' 'FAIL' "Sammelfehler (fehlende Pakete?) - siehe $($p.Log)" }
-        elseif ($new.Count -eq 0) { Add-Result 'pytest' 'OK' "$line; $known bekannte, hardwarebedingte Fehler" }
+        elseif ($new.Count -eq 0) { Add-Result 'pytest' 'OK' "$line; $known bekannte Fehler (Hardware dieses PCs oder wackelige Zeitmessung)" }
         else { Add-Result 'pytest' 'FAIL' "$line; NEU fehlgeschlagen: $($new -join ', ')" }
     }
 }
