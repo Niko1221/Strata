@@ -1916,10 +1916,10 @@ void attn_prep_append(float* qg, float* k, const float* v, const float* q_norm, 
 #endif
 
 #if FNX_KPART == 4
-static std::atomic<bool> g_gdn_tc_default{true};
-void gdn_tc_set_default(bool on) { g_gdn_tc_default = on; }
 
 namespace fnx {
+static std::atomic<bool> g_gdn_tc_default{true};
+void gdn_tc_set_default(bool on) { g_gdn_tc_default = on; }
 size_t gdn_scratch_floats(int nv) { return (size_t) MAXT * nv * HS + (size_t) nv * MAXT * GDN_Q + (size_t) MAXT * nv; }
 
 void gdn_core(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
