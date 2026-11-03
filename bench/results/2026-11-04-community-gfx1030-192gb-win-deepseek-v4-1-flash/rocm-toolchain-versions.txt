@@ -1,0 +1,12 @@
+rocm==10.2.0a20260930
+rocm-sdk-core==10.2.0a20260930
+rocm-sdk-devel==10.2.0a20260930
+rocm-sdk-device-gfx1030==10.2.0a20260930
+rocm-sdk-device-gfx1031==10.2.0a20260930
+rocm-sdk-device-gfx1100==10.2.0a20260930
+rocm-sdk-device-gfx1101==10.2.0a20260930
+rocm-sdk-device-gfx1102==10.2.0a20260930
+rocm-sdk-device-gfx1151==10.2.0a20260930
+rocm-sdk-device-gfx1200==10.2.0a20260930
+rocm-sdk-device-gfx1201==10.2.0a20260930
+rocm-sdk-libraries==10.2.0a20260930
