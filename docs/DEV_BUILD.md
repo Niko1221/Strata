@@ -440,6 +440,19 @@ Einstellbar ist das in Strata Dev unter Einstellungen → Allgemein → „Summa
 
 Jeder Wert liegt zwischen 0.3 und 0.9. Fehlt einer oder ist er falsch, ist der ganze Schalter aus, und die Warnung steht im Log und in der Seite. Ohne den Schalter oder mit `"enabled": false` verhält sich der Host wie Live. Es gilt nur für lokale Modelle. `/compact` im Chat geht weiterhin von Hand.
 
+## Vier Chat-Modi
+
+Das Modus-Menü im Eingabefeld hat in Strata Dev vier Einträge (Live behält seine drei):
+
+| Modus | Ablauf |
+| --- | --- |
+| Manual | Fragt vor jeder Änderung. |
+| Plan + Manual | Schreibt zuerst einen Plan (nur lesend). Du gibst ihn frei, danach läuft er im Modus Manual und fragt bei Änderungen. |
+| Plan + Auto | Schreibt zuerst einen Plan, gibt ihn selbst frei und führt ihn mit allen Rechten aus, ohne zu fragen. |
+| Auto | Alles erlaubt, kein Plan (der Modus Bypass des Hosts). |
+
+Der Host kennt weiter nur `manual`, `plan` und `bypass`. Die Seite (`src/dev/chat-modes.ts`, `store.ts`) schickt in den beiden Plan-Modi eine normale Nachricht als `/plan …` und wählt den Host-Modus für die Ausführung. Befehle mit `/` und Loops bleiben unverändert. Ein gespeicherter Modus `plan` zählt in Dev als Plan + Manual. Plan + Auto gibt den Plan erst frei, wenn der Turn des Plans zu Ende ist, und nur, solange der Chat noch offen ist; sonst bleibt die Plankarte mit „Approve“ stehen. Der Fortschrittsbalken (`src/dev/PlanProgress.tsx`) zeigt, wie viele Schritte fertig sind.
+
 ## Zurücksetzen
 
 ```bat

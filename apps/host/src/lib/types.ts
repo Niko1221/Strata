@@ -415,7 +415,7 @@ export interface SessionAgent {
   updatedAt?: number;
 }
 
-export type ChatMode = 'auto' | 'manual' | 'accept-edits' | 'plan' | 'bypass';
+export type ChatMode = 'auto' | 'manual' | 'accept-edits' | 'plan' | 'bypass' | 'plan-manual' | 'plan-auto';   // the last two: Strata Dev only (src/dev/chat-modes.ts)
 
 /**
  * What the board needs to know about a /loop after the window closes: loops live in memory, so the chat keeps a small record of the

@@ -1,4 +1,6 @@
 import { devDefaultMode } from '../dev/overrides';
+import { DEV_MODES, devModeOf } from '../dev/chat-modes';
+import { useDev } from '../dev/dev-state';
 import { tr } from '../lib/i18n';
 import { modelFamilyIcon } from '../lib/model-icons';
 import { useEffect, useRef, useState } from 'react';
@@ -56,7 +58,10 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     const apiOnlyDefault = !!apiModel && apiModel.thinks !== true;
     const pictures = pictureStatus(native, remoteModel, providers);
     // Strata Dev: a chat with no mode of its own shows dev.config.json's default mode (outside Dev the lookup is the same as before).
-    const mode = modes.find(m => m.value === (session?.preferences?.mode ?? devDefaultMode(undefined))) ?? modes[0];
+    // Strata Dev: four modes (src/dev/chat-modes.ts); Live keeps the three above.
+    const dev = useDev();
+    const modeList: typeof modes = dev ? DEV_MODES : modes;
+    const mode = dev ? modeList.find(m => m.value === devModeOf(session?.preferences?.mode ?? devDefaultMode(undefined))) ?? modeList[0] : modes.find(m => m.value === (session?.preferences?.mode ?? devDefaultMode(undefined))) ?? modes[0];
     const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'Medium';
     const budget = session?.preferences?.thinkingBudget ?? 0;
     const shortcut = MOD === '⌘' ? '⌘⇧A' : 'Ctrl+Shift+A';
@@ -154,9 +159,9 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
             return;
         const key = (e: KeyboardEvent) => {
             const i = Number(e.key) - 1;
-            if (i >= 0 && i < modes.length && !e.metaKey && !e.ctrlKey && !e.altKey) {
+            if (i >= 0 && i < modeList.length && !e.metaKey && !e.ctrlKey && !e.altKey) {
                 e.preventDefault();
-                setChatPreferences(session?.id, { mode: modes[i].value });
+                setChatPreferences(session?.id, { mode: modeList[i].value });
                 setPreferences(null);
             }
         };
@@ -180,7 +185,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
       <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); onSlash(); }}><span className="slash-command-icon" aria-hidden="true">/</span>{tr("Slash commands")}</button>
     </FloatingMenu> : null)}
     {tr(preferences ? <FloatingMenu anchor={preferences === 'mode' ? modeTrigger.current : thinkingTrigger.current} title={tr(preferences === 'mode' ? 'Mode' : 'Reasoning effort')} width={preferences === 'mode' ? 330 : 280} onClose={() => setPreferences(null)}>
-      {tr(preferences === 'mode' ? <>{tr(modes.map((option, index) => <button key={option.value} role="menuitemradio" aria-checked={mode.value === option.value} className="menu__item composer-mode-option" onClick={() => { setChatPreferences(session?.id, { mode: option.value }); setPreferences(null); }}><span><strong>{tr(option.label)}</strong><small>{tr(option.hint)}</small></span>{tr(mode.value === option.value ? <Icon name="check" size={16}/> : null)}<kbd className="menu-shortcut">{tr(index + 1)}</kbd></button>))}</> : <><div className="reasoning-menu-model"><Icon name={apiModel ? 'link' : modelFamilyIcon(loaded?.family ?? nativeModel?.label)} size={18}/><strong>{tr(apiModel?.name ?? (nativeModel && nativeModel.status === 'ready' ? nativeModel.label : null) ?? loaded?.family ?? 'No model loaded')}</strong></div><p className="composer-menu-heading">{tr("Reasoning effort")}</p>{tr(efforts.map(option => <button key={option} role="menuitemradio" aria-checked={effort === option} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinking: option }); setPreferences(null); }}>{tr(option)}<span className="spacer"/>{tr(effort === option ? <Icon name="check" size={16}/> : null)}</button>))}{tr(apiModel ? null : <><p className="composer-menu-heading">{tr("Thinking budget")}</p>{tr(THINKING_BUDGETS.map(([value, label]) => <button key={value} role="menuitemradio" aria-checked={budget === value} disabled={effort === 'Off'} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinkingBudget: value }); setPreferences(null); }}>{tr(label)}<span className="spacer"/>{tr(budget === value ? <Icon name="check" size={16}/> : null)}</button>))}</>)}</>)}
+      {tr(preferences === 'mode' ? <>{tr(modeList.map((option, index) => <button key={option.value} role="menuitemradio" aria-checked={mode.value === option.value} className="menu__item composer-mode-option" onClick={() => { setChatPreferences(session?.id, { mode: option.value }); setPreferences(null); }}><span><strong>{tr(option.label)}</strong><small>{tr(option.hint)}</small></span>{tr(mode.value === option.value ? <Icon name="check" size={16}/> : null)}<kbd className="menu-shortcut">{tr(index + 1)}</kbd></button>))}</> : <><div className="reasoning-menu-model"><Icon name={apiModel ? 'link' : modelFamilyIcon(loaded?.family ?? nativeModel?.label)} size={18}/><strong>{tr(apiModel?.name ?? (nativeModel && nativeModel.status === 'ready' ? nativeModel.label : null) ?? loaded?.family ?? 'No model loaded')}</strong></div><p className="composer-menu-heading">{tr("Reasoning effort")}</p>{tr(efforts.map(option => <button key={option} role="menuitemradio" aria-checked={effort === option} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinking: option }); setPreferences(null); }}>{tr(option)}<span className="spacer"/>{tr(effort === option ? <Icon name="check" size={16}/> : null)}</button>))}{tr(apiModel ? null : <><p className="composer-menu-heading">{tr("Thinking budget")}</p>{tr(THINKING_BUDGETS.map(([value, label]) => <button key={value} role="menuitemradio" aria-checked={budget === value} disabled={effort === 'Off'} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinkingBudget: value }); setPreferences(null); }}>{tr(label)}<span className="spacer"/>{tr(budget === value ? <Icon name="check" size={16}/> : null)}</button>))}</>)}</>)}
     </FloatingMenu> : null)}
 
     <Dialog open={urlOpen} title={tr("Open a website")} onClose={() => setUrlOpen(false)} actions={<><Btn onClick={() => setUrlOpen(false)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!url.trim()} onClick={() => {

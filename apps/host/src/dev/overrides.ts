@@ -18,5 +18,6 @@ export const devModeOverride = (own: string | undefined): { mode?: 'manual' | 'p
 /** Dev is on (dev.tsx calls setDevOverrides once the host said so). */
 let devOn = false;
 export const markDevActive = () => { devOn = true; };
+export const devActive = () => devOn;
 /** For the chat request: `{ skillIds }` when the chat chose its skills in Dev, else nothing (always nothing outside Dev). */
 export const devSkillsOverride = (skills: string[] | null | undefined): { skillIds?: string[] } => (devOn && Array.isArray(skills) ? { skillIds: skills } : {});

@@ -3,7 +3,8 @@ import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
-import { devLoopEnabled, devModeOverride, devSkillsOverride } from '../dev/overrides';
+import { devActive, devLoopEnabled, devModeOverride, devSkillsOverride } from '../dev/overrides';
+import { hostModeOf, plansFirst, planFirstText } from '../dev/chat-modes';
 import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { approvalNeeded, workFinished } from './attention';
@@ -1147,7 +1148,7 @@ export function setChatPreferences(id: string | undefined, preferences: NonNulla
   const sessionId = id ?? newSession().id;
   patchSession(sessionId, s => ({ ...s, preferences: { ...s.preferences, ...preferences } }));
   // A mode change applies to the very next tool call of a turn that is already running (a goal and its helpers included).
-  if (preferences.mode && liveTurns.get(sessionId)?.agent) void api.post('/api/chat/mode', { sessionId, mode: preferences.mode }).catch(() => undefined);
+  if (preferences.mode && liveTurns.get(sessionId)?.agent) void api.post('/api/chat/mode', { sessionId, mode: devActive() ? hostModeOf(preferences.mode) : preferences.mode }).catch(() => undefined);
 }
 export function setPreviewTabClosed(sessionId:string|undefined, artifactId:string, closed:boolean, selected:string|null) {
   if(!sessionId)return;
@@ -1749,6 +1750,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   if (!sessionId) sessionId = newSession().id;
 
   const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}),...(options.markdown?{markdown:true}:{}) };
+  // Strata Dev: Plan + Manual and Plan + Auto send a plain message as "/plan ..." first (src/dev/chat-modes.ts).
+  const chatMode = state.sessions.find(s => s.id === sessionId)?.preferences?.mode ?? (devActive() ? devModeOverride(undefined).mode : undefined);
+  const planFirst = devActive() && !resume && !planStart && !options.fromLoop && plansFirst(chatMode) && !!body;
   let assistantId = uid('m');
   const assistantMsg: ChatMessage = {
     id: assistantId,
@@ -1823,7 +1827,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
       {
         sessionId,
         ...(planStart ? { planId: planStart } : {}),
-        ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
+        ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: planFirst ? planFirstText(body) : body }),
         history:await Promise.all(prior.map(async(m,index)=>{const included=pictureCheck.ok?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
         model: state.library?.loaded ?? state.library?.current ?? null,
         remoteModel: state.remoteModel,
@@ -1835,7 +1839,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         thinking:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinking??'Medium',
         thinkingBudget:state.sessions.find(s=>s.id===sessionId)?.preferences?.thinkingBudget??0,
         // The Mode menu's choice for this chat, read when the turn starts; the host applies it to the agent.
-        mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual', ...devModeOverride(state.sessions.find(s=>s.id===sessionId)?.preferences?.mode), ...devSkillsOverride(state.sessions.find(s=>s.id===sessionId)?.preferences?.skills),
+        mode:state.sessions.find(s=>s.id===sessionId)?.preferences?.mode??'manual', ...devModeOverride(state.sessions.find(s=>s.id===sessionId)?.preferences?.mode), ...devSkillsOverride(state.sessions.find(s=>s.id===sessionId)?.preferences?.skills), ...(devActive()?{mode:hostModeOf(chatMode)}:{}),
         // So a skill narrowed to another workspace does not fire here.
         workspaceId: workspaceIdForSession(state.workspaces, state.sessions.find(s => s.id === sessionId)) ?? state.activeWorkspace,
       },
@@ -1864,7 +1868,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           applyPlanFrame(sessionId, frame.plan);
           // A proposed plan is shown as the plan card in place of this turn's closing text (that text is the plan in prose).
           const planned = frame.plan as { id?: unknown } | null;
-          if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
+          if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); if (devActive() && chatMode === 'plan-auto') autoApprove.set(sessionId, pid); }
         } else if (type === 'queued-message') {
           applyQueueFrame(sessionId, frame.queue);
           const sent = frame.message as { text?: unknown } | undefined;
@@ -1975,13 +1979,20 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
-    const next = releasedMessages.get(sessionId)?.shift();
-    if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
+    // Strata Dev, Plan + Auto: the plan this turn proposed is approved now that the turn is over (only while the chat is still the open one).
+    const approve = autoApprove.get(sessionId); autoApprove.delete(sessionId);
+    if (approve && state.activeSession === sessionId) setTimeout(() => void approvePlan(sessionId, approve).catch(e => pushToast('error', 'The plan was not started', plainFailureText(e instanceof Error ? e.message : String(e)).message)), 0);
+    else {
+      const next = releasedMessages.get(sessionId)?.shift();
+      if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
+    }
   }
 }
 
 /** Messages the host handed back when a goal ended with some still waiting; sent one after another. */
 const releasedMessages = new Map<string, string[]>();
+/** Strata Dev, Plan + Auto: chat id to the id of the plan its last turn proposed. */
+const autoApprove = new Map<string, string>();
 
 /* -------------------------------------------------------------- tool grants */
 
