@@ -95,6 +95,16 @@ class RulesTest(unittest.TestCase):
         short.base_args = ["--max-context", "32768"]
         self.assertNotIn("kv_resident_64k", [p.arm.id for p in tune_knobs.plan_arms(short, mode="quick")[0]])
 
+    def test_the_larger_chunk_is_not_tried_on_an_apu(self):
+        # round0212: on a Strix Halo the prompt buffers share the pool with the expert cache; a 32768 chunk on UD-Q4_K_XL ends the engine at the start
+        ctx = make_ctx()
+        ctx.vram_mib = 90000                            # an APU's pool reads large
+        ctx.facts = {"workers": 31}
+        ctx.arch = "gfx1151"
+        self.assertNotIn("prefill_32k", [p.arm.id for p in tune_knobs.plan_arms(ctx, mode="quick")[0]])
+        ctx.arch = "gfx1201"
+        self.assertIn("prefill_32k", [p.arm.id for p in tune_knobs.plan_arms(ctx, mode="quick")[0]])
+
     def test_a_prompt_knob_is_judged_on_prompt_speed_and_may_not_cost_decode(self):
         ctx = make_ctx()
         ctx.vram_mib = 32624

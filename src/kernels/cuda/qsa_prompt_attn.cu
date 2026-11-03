@@ -2440,6 +2440,16 @@ bool qsa_prompt_attn_matrix_cores_requested() {
 #endif
 }
 
+bool qsa_prompt_attn_matrix_cores_gfx12() {
+#if defined(__HIPCC__)
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    return qsa_prompt_attn_matrix_cores_requested() && hip_wmma_arch(dev) == 2;
+#else
+    return false;
+#endif
+}
+
 bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
 
 bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,

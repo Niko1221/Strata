@@ -412,7 +412,12 @@ inline int ring_slots(size_t T) {
         // base; UD-Q4 ring 192: 4K +6.9%, 8K +9.5%, 20K +4.0%), while at 16K chunks the extra loan only costs (32K prompt: 256 -0.4%,
         // 192 -1.3%).  The ring is staging depth only; capped at ~800 MiB of blobs (UD-Q4's 3.99 MB blobs: 200 slots).
         // STRATA_PREFILL_RING=96 restores the old value; so does STRATA_GFX12_RING=0.
-        static const bool deeper = [] { const char* e = std::getenv("STRATA_GFX12_RING"); return !(e != nullptr && e[0] == '0'); }();
+        // gfx12 only: the ring was measured on an R9700.  The Strix Halo (gfx1151) also runs the matrix-core attention by default on Windows and keeps 96, as in 0.2.10
+        // (STRATA_HIP_WMMA=1 on it made the branch above true, and this depth with it).
+        static const bool deeper = [] {
+            const char* e = std::getenv("STRATA_GFX12_RING");
+            return !(e != nullptr && e[0] == '0') && strata::kernels::qsa_prompt_attn_matrix_cores_gfx12();
+        }();
         if (!deeper || (int64_t) T >= 12288) return 96;
         const int64_t per = MAXBLOB();
         const int cap = per > 0 ? (int) std::max<int64_t>(96, (int64_t) (800u << 20) / per) : 96;
