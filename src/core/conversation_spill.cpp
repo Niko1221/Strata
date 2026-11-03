@@ -40,6 +40,7 @@ constexpr char kMetaMagic[4] = {'S', 'C', 'S', 'M'};   // Strata conversation-sp
 constexpr uint32_t kMetaVersion = 2;                   // v1 (read for compatibility) has no last_used field
 constexpr uint32_t kMetaVersionMin = 1;
 constexpr size_t kMaxSidecarEntries = 256;
+constexpr size_t kMaxNameAttempts = 1048576;           // a store that refuses every name must not spin forever
 
 // The last-use stamp: wall-clock milliseconds, so the order survives a restart (a steady clock would start over).
 uint64_t now_ms() {
@@ -958,18 +959,20 @@ bool ConversationSpillCache::load(const std::string& path, SavedConversation& im
     return session_file_read(file.path(), identity_, image, bytes, error, accepted, status);
 }
 
-std::string ConversationSpillCache::next_stem(bool prefix) {
-    for (;;) {
+std::string ConversationSpillCache::next_stem(bool prefix, std::string& error) {
+    for (size_t attempt = 0; attempt < kMaxNameAttempts; ++attempt) {
         const std::string stem = (prefix ? "strata-conv-prefix-" : "strata-conv-") + std::to_string(++serial_);
         bool taken = false;
         for (const char* extension : {".sess", ".meta", ".dlog", ".dchain"}) {
             uint64_t bytes = 0;
-            std::string error;
+            std::string stat_error;
             // a name is taken by anything at all: stat() answering false WITH a reason means something is there
-            if (store_->stat(stem + extension, bytes, error) || !error.empty()) { taken = true; break; }
+            if (store_->stat(stem + extension, bytes, stat_error) || !stat_error.empty()) { taken = true; break; }
         }
         if (!taken) return stem;
     }
+    error = "cannot allocate a conversation spill name: the store keeps refusing every candidate";
+    return {};
 }
 
 // The file at <stem>.sess is written: check it against the disk limit, write its sidecar and index it.
@@ -1016,7 +1019,8 @@ bool ConversationSpillCache::index_written(const std::string& stem, uint64_t fil
 bool ConversationSpillCache::spill(const SavedConversation& image, std::string& error) {
     if (!enabled_) return false;
     if (image.live.ids.empty() || !image.stage_images.empty()) { error = "spill needs a single-GPU conversation"; return false; }
-    const std::string stem = next_stem();
+    const std::string stem = next_stem(false, error);
+    if (stem.empty()) return false;
     const std::string name = stem + ".sess";
     std::string session;
     if (!store_->stage(name, session, error)) return false;
@@ -1039,7 +1043,8 @@ bool ConversationSpillCache::reserve_streamed(const SavedConversation& meta, Con
     if (meta.live.ids.empty() || !meta.stage_images.empty() || !meta.kv.empty()) {
         error = "a streamed spill needs a single-GPU conversation without a host K/V image"; return false;
     }
-    const std::string stem = next_stem(prefix);
+    const std::string stem = next_stem(prefix, error);
+    if (stem.empty()) return false;
     std::string local;
     if (!store_->stage(stem + ".sess", local, error)) return false;
     // The background task writes target.session_path() itself, so the reservation carries the local path the store

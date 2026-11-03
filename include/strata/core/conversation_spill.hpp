@@ -296,7 +296,8 @@ private:
     // a false result retains an incomplete, ineligible entry with exact remaining ownership charges for retry.
     bool remove_group(Entry& entry, uint64_t& removed, std::vector<std::string>& left);
     // The next free entry name ("strata-conv-<serial>" or "strata-conv-prefix-<serial>", without an extension).
-    std::string next_stem(bool prefix = false);
+    // A bounded search: an empty result with 'error' set means the store would not take any candidate.
+    std::string next_stem(bool prefix, std::string& error);
     // The gate's identity-level approval: a passed batch for exactly this source identity -> this cache's identity
     // and the configured engine build.  False when the gate is off or the ledger approved nothing.
     bool gate_identity_approved(const SessionFileIdentity& source) const;
