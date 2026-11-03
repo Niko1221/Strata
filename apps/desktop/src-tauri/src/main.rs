@@ -42,6 +42,8 @@ mod desktoplog;
 mod shell;
 #[cfg(target_os = "linux")]
 mod supervisor;
+#[cfg(target_os = "linux")]
+mod fontguard;
 
 /// The kill-on-close Job Object that holds everything this app starts (Windows). Its only handle is this process's,
 /// which the system closes however the process ends; closing the last handle ends every process in the job.
@@ -1142,6 +1144,11 @@ fn run_window_process() -> ! {
     if std::env::var_os("STRATA_WINDOW_TEST_CRASH").is_some() {
         eprintln!("[strata] STRATA_WINDOW_TEST_CRASH is set: the window process aborts on purpose.");
         std::process::abort();
+    }
+    // WebKitGTK aborts while drawing a COLRv1 colour emoji font (see fontguard.rs), which leaves the window grey with nothing in it.
+    // Only this process: the host, the engine and the agent keep the fonts the person chose.
+    if let Some(conf) = fontguard::config_for(&|k| std::env::var(k).ok(), &desktoplog::data_dir().join("fonts")) {
+        std::env::set_var("FONTCONFIG_FILE", conf);
     }
     // The shell is this process's parent: when it is gone (killed, crashed, logged off) the window goes too.
     let parent = std::os::unix::process::parent_id();
