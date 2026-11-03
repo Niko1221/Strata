@@ -1019,7 +1019,7 @@ void Engine::prefill_alloc() {
 #if !FNX_HIP
             hcs_wanted = NCARD == 2 && !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0 && env_int("FNX_PF_HCSPLIT", 1) != 0;
 #endif
-            const long long pass = env_int("FNX_PF_PASS", w.ec.n_slots || hcs_wanted ? 4 : 2);   // with an ExpertCache, staging amortizes over more
+            const long long pass = env_int("FNX_PF_PASS", pf_pass_pick_ > 0 ? pf_pass_pick_ : (w.ec.n_slots || hcs_wanted ? 4 : 2));   // with an ExpertCache, staging amortizes over more
             if (pass < 1 || pass > PF_PASS) throw std::runtime_error("FNX_PF_PASS: 1 to " + std::to_string(PF_PASS) + ", got " + std::to_string(pass));
             p->pass = (int) pass;
             for (int k = 1; k < p->pass; ++k) {

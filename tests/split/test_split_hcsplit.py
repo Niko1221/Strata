@@ -40,11 +40,14 @@ class HcSplit(unittest.TestCase):
         self.assertIn("NCARD == 2", s[i:i + 400])
         self.assertIn("CUDA::cublasLt", (ROOT / "src" / "split" / "CMakeLists.txt").read_text(encoding="utf-8"))
 
-    def test_chunk_of_8192_rows_on_nvidia_only(self):
+    def test_chunk_of_8192_rows_on_nvidia_only_and_sized_to_the_free_memory(self):
         e = text("engine.cu")
-        i = e.index("pf_c_ = 8192;")
-        self.assertIn("#if !FNX_HIP", e[i - 60:i])
-        self.assertIn('env_int("FNX_PF_ROWS", pf_c_)', e)
+        i = e.index("        rows = 8192;")
+        self.assertIn("#if !FNX_HIP", e[i - 80:i])                       # the AMD build keeps 4096
+        self.assertIn('env_int("FNX_PF_ROWS", rows)', e)                  # set by hand: used as given
+        # the sizes tried, largest first, with the bytes they take per card (measured): UD-Q4_K_XL on 2 x 48 GB keeps only 6.5 GB and must not take 8192 x 4
+        self.assertIn("{{8192, 4, 4148}, {8192, 2, 3028}, {4096, 4, 1673}, {4096, 2, 1112}}", e)
+        self.assertIn("pf_pass_pick_ > 0 ? pf_pass_pick_", text("prefill.cu"))
 
     def test_the_sum_before_a_split_read_is_a_reduce_scatter_only(self):
         s = text("pf_common.cuh")
