@@ -49,6 +49,7 @@ void BatchLane::start(int lane_, const Sampling& s_, const std::mt19937_64& rng_
     chains = 0;
     shadow = -1;
     shadow_q = Dist{};
+    idle = 0;
     tried.assign(MAXT, 1.0);
     stood.assign(MAXT, CHAIN_PRIOR);
     lk_tried.assign(MAXT, 1.0);
@@ -288,7 +289,8 @@ void BatchDecoder::draft_next(const std::vector<BatchLane*>& lanes, const std::v
     }
     const int ng = (int) going.size();
     static const double df2_call_ms = env_num("FNX_DF2_CALL_MS", 2.5);   // one lane's drafter round (about 3 ms alone, overlapped between lanes)
-    const double base = cost_.round_ms + cost_.rows_ms(ng) + (mtp ? (df2 ? df2_call_ms : cost_.call_ms) * ng : 0.0);
+    for (RowOffer& of : offers) of.first_ms = df2 ? df2_call_ms : 0.0;   // (a lane that drafts nothing banks its taps and pays no round)
+    const double base = cost_.round_ms + cost_.rows_ms(ng) + (mtp && !df2 ? cost_.call_ms * ng : 0.0);
     std::vector<int> plan;
     if (fixed_ >= 0) {
         for (const RowOffer& of : offers) plan.push_back(std::min(fixed_, of.avail));
@@ -487,18 +489,30 @@ void BatchDecoder::draft_batched(const std::vector<BatchLane*>& lanes, const std
 void BatchDecoder::draft_df2(const std::vector<BatchLane*>& lanes, const std::vector<int>& going, const std::vector<int>& r0, const std::vector<std::vector<int>>& got,
                              const std::vector<std::vector<int>>& look, const std::vector<int>& plan, const std::vector<int>& chain_room) {
     static const double conf = env_num("FNX_DF2_CONF", 0.35);
-    std::vector<Engine::Df2Req> rq(going.size());
+    static const int refresh = (int) env_int("FNX_DF2_REFRESH", 8);   // a lane with no drafts planned runs its drafter every this many windows, so its first draft stays scored
+    static const bool defer = env_int("FNX_DF2_DEFER", 1) != 0;
+    std::vector<Engine::Df2Req> rq;
+    std::vector<size_t> who;   // index into going of each request
     for (size_t g = 0; g < going.size(); ++g) {
         const int i = going[g];
         BatchLane& L = *lanes[(size_t) i];
-        Engine::Df2Req& q = rq[g];
+        Engine::Df2Req q;
         q.lane = L.lane, q.row0 = r0[(size_t) i], q.used = (int) got[(size_t) i].size(), q.pos0 = e_.lane_pos(L.lane) - q.used, q.anchor = L.ctx.back();
+        if (defer && plan[g] == 0 && ++L.idle < refresh) {
+            e_.df2_defer(q);   // the rows' taps are kept for the drafter's next round
+            continue;
+        }
+        L.idle = 0;
+        rq.push_back(q);
+        who.push_back(g);
     }
+    if (rq.empty()) return;
     e_.df2_draft(rq);
     ++last_calls;
-    for (size_t g = 0; g < going.size(); ++g) {
+    for (size_t n = 0; n < who.size(); ++n) {
+        const size_t g = who[n];
         BatchLane& L = *lanes[(size_t) going[g]];
-        const Engine::Df2Req& q = rq[g];
+        const Engine::Df2Req& q = rq[n];
         const int d = plan[g];
         if (d == 0) {
             L.shadow = q.tokens[0];

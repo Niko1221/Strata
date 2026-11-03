@@ -125,6 +125,8 @@ public:
     };
     // one round for each lane in turn (launched together, finished together). Throws on a failure of the drafter
     void df2_draft(std::vector<Df2Req>& reqs);
+    // the kept rows' taps (as df2_draft takes them) put by without a drafter round: they wait in the lane's host ring and the next round replays them
+    void df2_defer(const Df2Req& r);
     double last_df2_ms = 0.0;   // the wall time of the last df2_draft
     // positions of lane's prompt taps now in its host ring [lo, hi), and what its drafter holds (diagnostics)
     struct Df2Info { long lo = 0, hi = 0, ring_hi = 0; };

@@ -416,12 +416,12 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
     const bool adapt = env_int("FNX_DRAFT_ADAPT", 1) != 0;
     constexpr double ROUND_MS = 11.2, DRAFT_ROW_MS = 1.3, DRAFT_CALL_MS = 0.65, DECAY = 0.97;
     std::vector<double> tried(MAXT, 1.0), stood(MAXT, 0.7);   // a prior of 70% at every position
-    auto chain_len = [&]() {
+    auto chain_len = [&](double call_ms) {
         int best = K_;
         double best_rate = -1.0, expect = 1.0, reach = 1.0;
         for (int k = 1; k <= K_; ++k) {   // at least d1: its acceptance stays measured (it pays above ~8% anyway)
             reach *= stood[(size_t) k - 1] / tried[(size_t) k - 1], expect += reach;
-            const double rate = expect / (ROUND_MS + k * DRAFT_ROW_MS + std::max(0, k - 1) * DRAFT_CALL_MS);
+            const double rate = expect / (ROUND_MS + k * DRAFT_ROW_MS + std::max(0, k - 1) * call_ms);
             if (rate > best_rate) best_rate = rate, best = k;
         }
         return best;
@@ -578,12 +578,17 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
                 qs.assign(drafts.size(), Dist{});
                 continue;
             }
+            int kmax = 0;
             double cum = 1.0;
-            for (int j = 0; j < std::min(K_, df2::kDrafts); ++j) {
-                cum *= (double) rq[0].probs[j];
+            for (; kmax < std::min(K_, df2::kDrafts); ++kmax) {
+                cum *= (double) rq[0].probs[kmax];
                 if (cum < df2_conf) break;
-                drafts.push_back(rq[0].tokens[j]);
             }
+            // as the draft layer's chain: the length follows how often each position stood (a draft after the first costs a verify row, no call),
+            // every 4th round one draft longer so the position past the chosen length stays measured
+            const int k = !adapt ? kmax : std::min(kmax, chain_len(0.0) + (++mtp_chains % 4 ? 0 : 1));
+            mtp_round = k > 0;
+            drafts.assign(rq[0].tokens, rq[0].tokens + k);
             qs.assign(drafts.size(), Dist{});
             continue;
         }
@@ -603,7 +608,7 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         // the MTP chain: each draft from the draft layer's own row for the one before
         // every 4th chain one draft longer, so the position past the chosen length stays measured (the full K every 4th
         // chain cost prose ~0.9 ms a round)
-        const int k = !adapt ? K_ : std::min(K_, chain_len() + (++mtp_chains % 4 ? 0 : 1));   // every 16th: code stuck at ~3
+        const int k = !adapt ? K_ : std::min(K_, chain_len(DRAFT_CALL_MS) + (++mtp_chains % 4 ? 0 : 1));   // every 16th: code stuck at ~3
         mtp_round = true;
         drafts = {d1}, qs = {std::move(q1)};
         for (int j = 1; j < k; ++j) {
