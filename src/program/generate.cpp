@@ -6685,7 +6685,7 @@ int main(int argc, char** argv) {
     // spare, and a round with no spare row does no drafter work (the committed rows wait on the host and are replayed when spare rows return).  Measured on 2x
     // A6000 (RESULTS-DF2MGPU.md section 3): +25% / +9% over no drafts at 2 / 3 active slots, level at 4, within 1.5% at 8 and with users joining and leaving.
     // They run through the serial windows (one group); a layer split whose slots would be pipelined in groups by default keeps its groups and its undrafted
-    // slots (the pipelined groups carry no drafts), and so does an explicit --batch-groups above 1.  One card: opt-in only (STRATA_BATCH_DF2=1).
+    // slots (the pipelined groups carry no drafts), and so does an explicit --batch-groups above 1.  One card: on with the explicit pair (STRATA_BATCH_DF2=1 forces them on).
     const bool batch_df2_wanted = [&] {
         const char* e = std::getenv("STRATA_BATCH_DF2");
         const bool off = e != nullptr && e[0] == '0';
@@ -6695,8 +6695,9 @@ int main(int argc, char** argv) {
 #endif
         if (off || !(o.draft == "dflash2" && !o.draft_auto && o.batch >= 2 && o.serve && !split_same)) return false;
         if (forced) return true;
-        // the default is what was measured: a layer split (2x A6000) whose slots would run as one group; one card is opt-in (STRATA_BATCH_DF2=1) until it is measured
-        return !stages.empty() && batch_groups_for(false).groups <= 1;
+        // an explicit --draft dflash2 with --batch N turns the slots' drafts on (the launcher sends that pair only when the user picks DFlash2; --draft auto and the MTP
+        // draft layer are unchanged).  On one card that is all; on a layer split only where the slots would run as one group (the pipelined groups carry no drafts)
+        return stages.empty() || batch_groups_for(false).groups <= 1;
     }();
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
     bool batch_mtp = o.batch_mtp || (batch_mtp_env != nullptr && batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0') || batch_df2_wanted;
