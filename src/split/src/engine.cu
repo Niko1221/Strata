@@ -59,6 +59,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             std::fprintf(stderr, "fnx: note: context %d is within the trained %d: the scaling changes every position's rotary "
                          "and no length needs it\n", max_ctx, m_.ctx_train);
     }
+    attn_i8_set_default(m_.g.iq_experts());   // the int8 prompt attention: on for the IQ3_S-type files, off for the others
     gdn_tc_set_default(!m_.g.iq_experts());   // the tensor-core GDN scan: off for the IQ3_S-type files (NVIDIA builds only compile it in)
     hc1_rows();   // FNX_HC1 checked now, not at the first hc read (inside a graph capture)
     const int extra_pages = (std::max(lanes, 1) - 1) * lane_block_pages();

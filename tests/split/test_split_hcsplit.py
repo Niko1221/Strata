@@ -61,8 +61,12 @@ class HcSplit(unittest.TestCase):
 
 
 class PerFileSwitches(unittest.TestCase):
-    def test_attention_int8_defaults_on(self):
-        self.assertRegex(text("kernels.cu"), r'env_int\("FNX_PFX_ATTN_I8", 1\)')
+    def test_attention_int8_is_decided_by_the_files_expert_types(self):
+        k, e = text("kernels.cu"), text("engine.cu")
+        # IQ3_S-type files: on (the suite shows no loss); the others (UD-Q4_K_XL lost agent-A8 and A10 with it): off; the variable overrides
+        self.assertRegex(k, r'i8_env = \(int\) env_int\("FNX_PFX_ATTN_I8", -1\)')
+        self.assertRegex(k, r"i8_env >= 0 \? i8_env != 0 : attn_i8_default\(\)")
+        self.assertIn("attn_i8_set_default(m_.g.iq_experts());", e)
 
     def test_gdn_scan_is_decided_by_the_files_expert_types(self):
         k, g, m = text("kernels.cu"), text("gguf.cpp"), text("engine.cu")
