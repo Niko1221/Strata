@@ -1,0 +1,18 @@
+== 5 x 6000-token segments, reference fp16
+reference: ab/win-6k-fp16.tsv
+run                                      segment         pos    top1       KL   KL p99     PPL PPL ref
+win-6k-nowin.tsv                         all           29995  91.63%  0.05261   0.5590   3.604   3.589
+win-6k-t64.tsv                           all           29995  93.62%  0.03342   0.3672   3.618   3.589
+win-6k-t256.tsv                          all           29995  94.24%  0.02559   0.2839   3.611   3.589
+win-6k-t1024.tsv                         all           29995  95.27%  0.01851   0.2082   3.603   3.589
+win-6k-konly.tsv                         all           29995  92.42%  0.04207   0.4423   3.611   3.589
+
+== earlier run (one segment set), reference fp16
+reference: ab/win-fp16.tsv
+run                                      segment         pos    top1       KL   KL p99     PPL PPL ref
+win-k8v4.tsv                             all            4995  93.31%  0.03961   0.5509   3.954   3.930
+win-oct3-win.tsv                         all            4995  93.01%  0.05149   0.8550   4.022   3.930
+win-oct3-nowin.tsv                       all            4995  89.75%  0.08623   1.1549   3.953   3.930
+win-t32.tsv                              all            4995  92.19%  0.05506   0.7791   3.982   3.930
+win-t128.tsv                             all            4995  93.59%  0.04454   0.6511   3.964   3.930
+win-t256.tsv                             all            4995  94.03%  0.03704   0.4981   3.927   3.930

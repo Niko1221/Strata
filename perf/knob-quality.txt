@@ -1,0 +1,21 @@
+# The fork's upstream switches on the v0.2.8 engine: prompt-path quality
+
+`tools/quant_quality.py prompt` (20 prompts: 5 segments x 256/512/768/1000 tokens, the batched prompt path, fp16 K/V,
+`--gpu-experts`, 1,500 GPU experts), engine 0.1.54 from this repo's `build-hip-oct3`, production config. Reference is
+the same engine with the switches off.
+
+| arm | prompts | top-1 | KL mean | median | max |
+|---|---|---|---|---|---|
+| half A: `QFUSE PA_FAST HC_UPMIX HEAD_MIX_MULTI VERIFY_QDEDUP` | 20 | 100.00% | 0.01048 | 0.00064 | 0.06970 |
+| half B: `KV_HOST_DMA PF_FUSED PF_GEMM PF_PAD PF_HCDOWN` | 20 | 95.00% | 0.01208 | 0.00108 | 0.09628 |
+| all ten | 20 | 100.00% | 0.01382 | 0.00026 | 0.13414 |
+
+The same set on the stdin `run` path (one token per call, CPU experts, fp16 K/V, 4,995 positions) is **bitwise
+identical**: top-1 100.00%, KL 0.00000 - the switches do not engage on that path.
+
+One run of the all-ten arm answered nothing on the first 256-token prompt and had to be killed; two halves and a
+retry of the full set completed. Not reproduced, no error line in the engine's stderr; treat it as a cold-start flake
+until it recurs.
+
+For scale, the KV formats on the same yardstick (`perf/kl-tables.txt`): oct3 with its window 0.0185, k8v4 0.0396
+against fp16.
