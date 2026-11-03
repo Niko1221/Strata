@@ -10,6 +10,7 @@
 //   4. a ring (the MTP drafter's layout) restored from the host copy reads the same values as the resident pool.
 // INT8, FP16, Q4_0 (PR #21) and hybrid K8V4 pools; K8V4's appends are the engine's folded calls (layer.cpp), its host
 // copy written through kv_hybrid_k_half / kv_hybrid_v_half.
+#include "strata/kernels/kv_octave.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_stream.hpp"
@@ -50,7 +51,9 @@ template <typename T> T* halloc(size_t n) {   // pinned, mapped; returns the dev
 
 struct Pools {   // one K/V pool set of `pages` pages
     k::KvHostPools p;   // reused as a plain pointer bundle
+    int kind = k::kKvF16;   // alloc() records it: attn() needs the oct3 flag (the pointers cannot say)
     void alloc(int64_t pages, const k::QsaShapes& s, int fmt, bool host) {
+        kind = fmt;
         const size_t rows = (size_t) pages * s.n_head_kv * s.page_size;
         if (fmt == k::kKvHybrid) {
             const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim);
@@ -59,6 +62,10 @@ struct Pools {   // one K/V pool set of `pages` pages
             p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
         } else if (fmt == k::kKvQ4) {
             const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim);
+            p.k_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
+            p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
+        } else if (fmt == k::kKvOct3) {   // 14-byte blocks, the same two byte arrays as Q4_0
+            const size_t b = rows * k::kv_oct_bytes_per_head((int) s.head_dim);
             p.k_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
             p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
         } else if (fmt == k::kKvInt8) {
@@ -75,6 +82,7 @@ struct Pools {   // one K/V pool set of `pages` pages
         k::QsaAttnPools a;
         a.k_pool = p.k_pool; a.v_pool = p.v_pool; a.k_q = p.k_q; a.v_q = p.v_q; a.k_scale = p.k_scale;
         a.v_scale = p.v_scale; a.k_q4 = p.k_q4; a.v_q4 = p.v_q4; a.page_table = table;
+        a.oct3 = kind == k::kKvOct3;
         return a;
     }
 };
@@ -87,7 +95,9 @@ void append(const Pools& pl, const int32_t* table, const int32_t* step, const fl
         k::kv_append_q8_step(pl.p.k_q, pl.p.k_q, pl.p.k_scale, pl.p.k_scale, table, step, kc, kc, s, nullptr,
                              host ? &hk : nullptr);
         k::kv_append_q4_step(pl.p.v_q4, pl.p.v_q4, table, step, vc, vc, s, nullptr, host ? &hv : nullptr);
-    } else if (fmt == k::kKvQ4) k::kv_append_q4_step(pl.p.k_q4, pl.p.v_q4, table, step, kc, vc, s, nullptr, host);
+    } else if (fmt == k::kKvOct3)
+        k::kv_append_oct_step(pl.p.k_q4, pl.p.v_q4, table, step, kc, vc, s, nullptr, host);
+    else if (fmt == k::kKvQ4) k::kv_append_q4_step(pl.p.k_q4, pl.p.v_q4, table, step, kc, vc, s, nullptr, host);
     else if (fmt == k::kKvInt8) k::kv_append_q8_step(pl.p.k_q, pl.p.v_q, pl.p.k_scale, pl.p.v_scale, table, step, kc, vc, s, nullptr, host);
     else k::kv_append_step(pl.p.k_pool, pl.p.v_pool, table, step, kc, vc, s, nullptr, host);
 }
@@ -115,7 +125,8 @@ std::vector<int32_t> selection(int64_t n_kv, int64_t width, std::mt19937& rng) {
 }
 
 bool run(int fmt) {
-    const char* name = fmt == k::kKvHybrid ? "k8v4" : fmt == k::kKvQ4 ? "q4_0" : fmt == k::kKvInt8 ? "int8" : "fp16";
+    const char* name = fmt == k::kKvHybrid ? "k8v4" : fmt == k::kKvOct3 ? "oct3" : fmt == k::kKvQ4 ? "q4_0"
+                       : fmt == k::kKvInt8 ? "int8" : "fp16";
     k::QsaShapes s = k::qsa_real_shapes();
     const int64_t N = 40000, n_blocks = (N + 3) / 4, n_slots = 8 * 516 + 700;   // must evict: slots < blocks
     const int64_t cap = k::qsa_selection_width(k::kTopkMaxCells, s), NQ = 8;
@@ -239,8 +250,8 @@ bool run(int fmt) {
 
 int main() {
     std::printf("kv_stream_parity: streamed vs resident KV, bitwise\n");
-    const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4), d = run(k::kKvHybrid);
-    if (!a || !b || !c || !d) ++g_fail;
+    const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4), d = run(k::kKvHybrid), e = run(k::kKvOct3);
+    if (!a || !b || !c || !d || !e) ++g_fail;
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

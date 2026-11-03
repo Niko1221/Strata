@@ -5,6 +5,7 @@
 #include "strata/core/geometry.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_octave.hpp"
 #if defined(STRATA_HIP_GFX906)
 #include "strata/kernels/gfx_arch.hpp"
 #endif
@@ -76,8 +77,41 @@ __device__ __forceinline__ void load8_q4(const QsaAttnPools& p, bool value, long
         for (int k = 0; k < 8; ++k) out[k] = (float) ((int)(bytes[k] >> 4) - 8) * d;
     }
 }
+__device__ __forceinline__ void load8_oct(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
+    constexpr int bytes_per_head = (HD / QK_OCT) * sizeof(block_oct3);
+    const int b = d0 / QK_OCT;
+    const int rem = d0 % QK_OCT;
+    const block_oct3* blk = reinterpret_cast<const block_oct3*>((value ? p.v_q4 : p.k_q4) + row * bytes_per_head) + b;
+    const float d = __half2float(__ushort_as_half(blk->d));
+    const uint8_t* qs = blk->qs;
+#pragma unroll
+    for (int k = 0; k < 8; ++k) {
+        const int j = rem + k, by = j >> 3, bi = j & 7;
+        const int code = ((qs[by] >> bi) & 1) | (((qs[4 + by] >> bi) & 1) << 1) | (((qs[8 + by] >> bi) & 1) << 2);
+        out[k] = (float) kOctLevel[code] * (1.0f / 32.0f) * d;
+    }
+}
+/// The exact window's row (kv_exact_window.hpp): the same 8 values as fp16, straight out of the fp16 copy the append
+/// path keeps for the sinks and the newest `tail` cells.
+__device__ __forceinline__ void load8_win(const KvExactWindow& w, bool value, int wrow, int kvh, int d0, float* out) {
+    const uint16_t* base = (value ? w.v : w.k) + (size_t) wrow * (size_t) (w.n_head_kv * w.head_dim) +
+                           (size_t) kvh * w.head_dim + d0;
+    const uint4 raw = *reinterpret_cast<const uint4*>(base);
+    const __half2* h2 = reinterpret_cast<const __half2*>(&raw);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const float2 f = __half22float2(h2[j]);
+        out[2 * j] = f.x;
+        out[2 * j + 1] = f.y;
+    }
+}
 template <int KV_MODE>
-__device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
+__device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long long row, int d0, float* out,
+                                      int wrow = -1, int kvh = 0) {
+    if (wrow >= 0) {   // the exact window still holds this cell (only ever set when it is present)
+        load8_win(p.win, value, wrow, kvh, d0, out);
+        return;
+    }
     if constexpr (KV_MODE == 0) load8_f16(p, value, row, d0, out);
     else if constexpr (KV_MODE == 1) load8_q8(p, value, row, d0, out);
     else if constexpr (KV_MODE == 3) {
@@ -85,7 +119,8 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
         // reads the Q4_0 pool instead of dereferencing the null v_q (no call site does today; PR review)
         if (value) load8_q4(p, value, row, d0, out);
         else load8_q8(p, value, row, d0, out);
-    } else load8_q4(p, value, row, d0, out);
+    } else if constexpr (KV_MODE == 4) load8_oct(p, value, row, d0, out);   // 3-bit Lloyd-Max blocks
+    else load8_q4(p, value, row, d0, out);
 }
 
 // Exact-intent score reduce-scatter: the same butterfly pairs as twelve warp_sum calls,
@@ -138,6 +173,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
     __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads
     __shared__ float sp[G][CHUNK];                // scores, then probabilities
     __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
+    __shared__ int wrow[CHUNK];                   // exact window's row of each cell, -1: read the codes
     const int n_ids = __ldg(step + kStepWidth);
     const int chunk = blockIdx.x, kvh = blockIdx.y;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
@@ -159,14 +195,22 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
     }
     if (t < CHUNK) {
         long long r = -1;
+        int w = -1;
         if (t < n_here) {
             const int cell = ids[c0 + t];
+            // the exact window: a cell the sinks or the newest `tail` still hold in fp16 is read from there.  The
+            // tag is what makes this safe - a row reused by a newer position does not match and stays a miss.
+            if (p.win.present()) {
+                const int wr = kv_window_row(p.win, cell);
+                if (wr >= 0 && __ldg(p.win.tag + wr) == cell) w = wr;
+            }
             const long long page = (long long) p.page_table[cell / page_size];
             // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
             // (score -FLT_MAX, weight 0) instead of being read from before the pool.
             if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
         srow[t] = r;
+        wrow[t] = w;
     }
     __syncthreads();
     if constexpr (LANE_CELL) {
@@ -184,7 +228,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
 #pragma unroll
             for (int l = 0; l < 32; ++l) {
                 float k8[8];
-                load8<KV_MODE>(p, false, srow[c], l * 8, k8);
+                load8<KV_MODE>(p, false, srow[c], l * 8, k8, wrow[c], kvh);
 #pragma unroll
                 for (int j = 0; j < HPT; ++j) {
                     const float4 qa = *reinterpret_cast<const float4*>(&sq[h0 + j][l * 8]);
@@ -212,7 +256,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
         }
         if constexpr (REDUCE12) {
         float k8[8];
-        load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        load8<KV_MODE>(p, false, srow[c], lane * 8, k8, wrow[c], kvh);
         float part[16];
 #pragma unroll
         for (int h = 0; h < G; ++h) {
@@ -230,7 +274,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
         if ((lane & 1) == 0 && head < G) sp[head][c] = score * scale;
         } else {
         float k8[8];
-        load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        load8<KV_MODE>(p, false, srow[c], lane * 8, k8, wrow[c], kvh);
 #pragma unroll
         for (int h = 0; h < G; ++h) {
             const int qflip = QUERY_SWIZZLE ? (lane & 4) : 0;
@@ -263,11 +307,24 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
     for (int c = 0; c < n_here; ++c) {
         if (srow[c] < 0) continue;   // masked above, weight 0
         float v;
-        if constexpr (KV_MODE == 0) {
+        if (wrow[c] >= 0) {   // the exact window still holds this cell's value
+            v = __half2float(__ushort_as_half(
+                p.win.v[(size_t) wrow[c] * (size_t) (p.win.n_head_kv * HD) + (size_t) kvh * HD + t]));
+        } else if constexpr (KV_MODE == 0) {
             v = __half2float(__ushort_as_half(p.v_pool[srow[c] * HD + t]));
         } else if constexpr (KV_MODE == 1) {
             const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
             v = (float) p.v_q[srow[c] * HD + t] * sc;
+        } else if constexpr (KV_MODE == 4) {   // oct3: 3-bit Lloyd-Max codes (kv_octave.hpp)
+            constexpr int bytes_per_head = (HD / QK_OCT) * sizeof(block_oct3);
+            const int b = t / QK_OCT;
+            const int rem = t % QK_OCT;
+            const block_oct3* blk = reinterpret_cast<const block_oct3*>(p.v_q4 + srow[c] * bytes_per_head) + b;
+            const float dv = __half2float(__ushort_as_half(blk->d));
+            const uint8_t* qs = blk->qs;
+            const int by = rem >> 3, bi = rem & 7;
+            const int code = ((qs[by] >> bi) & 1) | (((qs[4 + by] >> bi) & 1) << 1) | (((qs[8 + by] >> bi) & 1) << 2);
+            v = (float) kOctLevel[code] * (1.0f / 32.0f) * dv;
         } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
             constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
             const int b = t / QK4_0;
@@ -528,6 +585,16 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     } else if constexpr (KV_MODE == 1) {
         const float sc = __half2float(__ushort_as_half(p.v_scale[row * (HD / KV_Q8_GROUP) + d / KV_Q8_GROUP]));
         return (float) p.v_q[row * HD + d] * sc;
+    } else if constexpr (KV_MODE == 4) {   // oct3: 3-bit Lloyd-Max codes (kv_octave.hpp)
+        constexpr int bytes_per_head = (HD / QK_OCT) * sizeof(block_oct3);
+        const int b = d / QK_OCT;
+        const int rem = d % QK_OCT;
+        const block_oct3* blk = reinterpret_cast<const block_oct3*>(p.v_q4 + row * bytes_per_head) + b;
+        const float dd = __half2float(__ushort_as_half(blk->d));
+        const uint8_t* qs = blk->qs;
+        const int by = rem >> 3, bi = rem & 7;
+        const int code = ((qs[by] >> bi) & 1) | (((qs[4 + by] >> bi) & 1) << 1) | (((qs[8 + by] >> bi) & 1) << 2);
+        return (float) kOctLevel[code] * (1.0f / 32.0f) * dd;
     } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
         constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
         const int b = d / QK4_0;
@@ -919,6 +986,7 @@ bool lane_cell_attn() {
 
 // 0 fp16, 1 int8, 2 q4_0, 3 int8 K with q4_0 V
 int attn_kv_mode(const QsaAttnPools& p) {
+    if (p.oct3) return 4;   // k_q4/v_q4 carry 14-byte oct3 blocks, which mode 2 would misread
     return p.k_q4 != nullptr ? 2 : (p.k_q != nullptr && p.v_q4 != nullptr ? 3 : (p.k_q != nullptr ? 1 : 0));
 }
 
@@ -947,8 +1015,7 @@ void launch_merge(int v2, const float* part_acc, const float* part_m, const floa
 // kernel where it is built (the parity harness: never the environment).
 void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                          int64_t cap, const QsaShapes& s, float* scratch, int64_t n_q, cudaStream_t st, int kernel) {
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
+    const int kv_mode = attn_kv_mode(pools);
     const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
     // per query: [acc: n_chunks*n_head*HD][m: n_chunks*n_head][l: n_chunks*n_head], all offsets from one stride
     const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
@@ -1020,7 +1087,14 @@ void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_
                                                           scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
     else
 #endif
-    if (kv_mode == 3)
+    if (kv_mode == 4) {
+        if (pre) {
+            std::fprintf(stderr, "oct3 KV: the pre-sm_75 attention kernel has no oct3 mode\n");
+            std::exit(1);
+        }
+        attn_chunk_kernel<4><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
+                                                       scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
+    } else if (kv_mode == 3)
         STRATA_ATTN_CHUNK_SEL(3, pre)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv,
                                                                 (int) s.page_size, scale, part_acc, part_m, part_l,
                                                                 n_chunks, (int) cap, stride);
@@ -1106,6 +1180,10 @@ bool qsa_decode_attn_slots(const float* q, const QsaAttnSlotPools& pools, const 
     cudaStream_t st = (cudaStream_t) stream;
 #define STRATA_ATTN_SLOTS(M, LC) attn_chunk_slots_kernel<M, LC><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (lane_cell) {
+        if (kv_mode == 4) {
+            std::fprintf(stderr, "oct3 KV: the slot-batched attention has no oct3 mode (single session only)\n");
+            std::exit(1);
+        }
         if (kv_mode == 3) STRATA_ATTN_SLOTS(3, true);
         else if (kv_mode == 2) STRATA_ATTN_SLOTS(2, true);
         else if (kv_mode == 1) STRATA_ATTN_SLOTS(1, true);
@@ -1136,8 +1214,7 @@ void qsa_decode_attn_batch_rows(const float* q, const QsaAttnPoolsRows& rows, co
         std::fprintf(stderr, "qsa_decode_attn_batch_rows: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
+    const int kv_mode = attn_kv_mode(pools);
     const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
     const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
     float* part_acc = scratch;
@@ -1165,6 +1242,10 @@ void qsa_decode_attn_batch_rows(const float* q, const QsaAttnPoolsRows& rows, co
     }
 #define STRATA_ATTN_ROWS(M) attn_chunk_rows_kernel<M><<<grid, THREADS, 0, st>>>(q, rows, ids, steps, (int) s.n_head_kv, \
         (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
+    if (kv_mode == 4) {
+        std::fprintf(stderr, "oct3 KV: the row-batched attention has no oct3 mode (drop STRATA_BATCH_ATTN_ROWS)\n");
+        std::exit(1);
+    }
     if (kv_mode == 3) STRATA_ATTN_ROWS(3);
     else if (kv_mode == 2) STRATA_ATTN_ROWS(2);
     else if (kv_mode == 1) STRATA_ATTN_ROWS(1);
@@ -1191,8 +1272,7 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
+    const int kv_mode = attn_kv_mode(pools);
     if (kv_mode == 3 ? (!pools.k_scale || !pools.v_q4)
                      : (kv_mode == 2 ? (!pools.v_q4) : (kv_mode == 1 ? (!pools.v_q || !pools.k_scale || !pools.v_scale)
                                                                      : (!pools.k_pool || !pools.v_pool)))) {

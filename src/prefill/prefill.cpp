@@ -37,6 +37,7 @@
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_octave.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
@@ -1243,11 +1244,50 @@ namespace {
 // STRATA_KV_STAGE_OWN (A/B only): the staging pool gets its own allocation instead of borrowed expert slots, so a
 // streamed run lends the prompt path exactly the slots a resident one does (a lent expert runs on the CPU, which
 // rounds differently: without this an A/B compares two expert placements as well as two KV placements)
+// STRATA_KV_DBG=1: staging debug prints (oct3 hang hunt). Each blocking step is followed by a sync, so the last
+// printed line names the step that hung (host-side prints keep coming while the GPU spins otherwise).
+inline char kv_dbg_mode() {
+    static const char v = [] { const char* e = std::getenv("STRATA_KV_DBG"); return e != nullptr ? e[0] : 0; }();
+    return v;
+}
+inline bool kv_dbg() { return kv_dbg_mode() == '1' || kv_dbg_mode() == '2'; }
+
+// A monotonic stamp on every debug line: the gaps between them locate a slow step without changing its timing.
+inline const char* kv_dbg_t() {
+    static const auto t0 = std::chrono::steady_clock::now();
+    static thread_local char b[24];
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    std::snprintf(b, sizeof b, "+%lldms ", (long long) ms);
+    return b;
+}
+#define KVDBG(...) (std::fprintf(stderr, "dbg %s ", kv_dbg_t()), std::fprintf(stderr, __VA_ARGS__))
+
+// Flight recorder: the step the prompt path is in, read by the stall report. Plain relaxed stores, no sync.
+std::atomic<int> g_kv_phase{0};          // 0 idle, 1 chunk, 2 stage (host->device), 3 append, 4 attention
+std::atomic<long long> g_kv_p0{0}, g_kv_t0{0};
+std::atomic<int> g_kv_T{0}, g_kv_layer{0}, g_kv_qsa{0};
+inline void kv_phase_set(int ph, int64_t p0, int64_t T, int l, int qsa, int64_t t0) {
+    g_kv_phase.store(ph, std::memory_order_relaxed);
+    g_kv_p0.store((long long) p0, std::memory_order_relaxed);
+    g_kv_T.store((int) T, std::memory_order_relaxed);
+    g_kv_layer.store(l, std::memory_order_relaxed);
+    g_kv_qsa.store(qsa, std::memory_order_relaxed);
+    if (t0 >= 0) g_kv_t0.store((long long) t0, std::memory_order_relaxed);
+}
+
+inline void kv_dbg_sync(void* st) {
+    if (kv_dbg_mode() == '2' && st != nullptr) cudaStreamSynchronize((cudaStream_t) st);
+}
 bool stage_own() { static const bool v = std::getenv("STRATA_KV_STAGE_OWN") != nullptr; return v; }
 void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::kernels::QsaShapes& s,
                 strata::kernels::KvHostPools& st, bool& ok) {
     const core::QsaState& q0 = ss.qsa_states[ss.qsa_primary()];
     if (q0.kv_mode != 1) return;
+    if (kv_dbg())
+        KVDBG("take_stage: pages=%lld rows=%lld oct=%d q4=%d hybrid=%d ps=%lld hd=%lld nh=%lld\n",
+                     (long long) q0.n_pages, (long long) ((int64_t) q0.n_pages * s.n_head_kv * s.page_size),
+                     (int) q0.kv_oct, (int) q0.kv_q4, (int) q0.kv_hybrid,
+                     (long long) s.page_size, (long long) s.head_dim, (long long) s.n_head_kv);
     if (stage_own() && o_borrowed.count_only) return;
     Alloc own;
     own.owned = o_borrowed.owned;
@@ -1257,6 +1297,9 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.k_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+    } else if (q0.kv_oct) {   // 14-byte oct3 blocks, the same two arrays as Q4_0
+        st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_oct_bytes_per_head((int) s.head_dim), ok);
+        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_oct_bytes_per_head((int) s.head_dim), ok);
     } else if (q0.kv_q4) {
         st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
@@ -1270,14 +1313,27 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
         st.v_pool = o.take<uint16_t>(rows * s.head_dim, ok);
     }
 }
-strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, const int32_t* table) {
+strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, const int32_t* table, bool oct3 = false) {
     strata::kernels::QsaAttnPools p;
+    p.oct3 = oct3;
     p.k_pool = h.k_pool; p.v_pool = h.v_pool; p.k_q = h.k_q; p.v_q = h.v_q; p.k_scale = h.k_scale; p.v_scale = h.v_scale;
     p.k_q4 = h.k_q4; p.v_q4 = h.v_q4;
     p.page_table = table;
     return p;
 }
 }  // namespace
+
+const char* kv_phase_text() {
+    static thread_local char buf[192];
+    static const char* const names[] = {"idle", "chunk", "stage", "append", "attn"};
+    const int ph = g_kv_phase.load(std::memory_order_relaxed);
+    std::snprintf(buf, sizeof buf, "%s p0=%lld T=%d layer=%d qsa=%d attn_t0=%lld",
+                  ph >= 0 && ph <= 4 ? names[ph] : "?",
+                  (long long) g_kv_p0.load(std::memory_order_relaxed), g_kv_T.load(std::memory_order_relaxed),
+                  g_kv_layer.load(std::memory_order_relaxed), g_kv_qsa.load(std::memory_order_relaxed),
+                  (long long) g_kv_t0.load(std::memory_order_relaxed));
+    return buf;
+}
 
 Prefill::Prefill() : impl_(new Impl) {}
 Prefill::~Prefill() {
@@ -3549,7 +3605,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     err = "prefill: releasing KV staging pool";
                     return false;
                 }
-                strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), state.host,
+                strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table, state.kv_oct), state.host,
                     core::qsa_kv_format(state), (p0 + s.page_size - 1) / s.page_size, s, m.kv_copy);
                 if (cudaPeekAtLastError() != cudaSuccess ||
                     cudaEventRecord(m.kv_ready, m.kv_copy) != cudaSuccess) {
@@ -4163,6 +4219,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     }
                     // KV streaming: this layer's cells [0, p0) come in from the host copy to the staging pool, and the
                     // chunk's cells go to the host copy, the staging pool, and the VRAM slots of resident blocks
+                    kv_phase_set(1, p0, T, l, qsa_index, -1);
+                    if (kv_dbg())
+                        KVDBG("chunk: p0=%lld T=%lld mode=%d oct=%d qsa=%d layer=%d\n",
+                                     (long long) p0, (long long) T, st.kv_mode, (int) st.kv_oct, qsa_index, l);
                     const bool staged = st.kv_mode == 1;
                     if (staged) {
                         pt.mark(kPfKvStage, cs);
@@ -4172,9 +4232,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 return false;
                             }
                             kv_pending = -1;
-                        } else strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), st.host,
-                                                            core::qsa_kv_format(st),
-                                                            (p0 + s.page_size - 1) / s.page_size, s, m.cs);
+                        } else {
+                            kv_phase_set(2, p0, T, l, qsa_index, -1);
+                            if (kv_dbg())
+                                KVDBG("stage: p0=%lld blocks=%lld ps=%lld oct=%d\n", (long long) p0,
+                                             (long long) ((p0 + s.page_size - 1) / s.page_size), (long long) s.page_size,
+                                             (int) st.kv_oct);
+                            strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table, st.kv_oct), st.host,
+                                                        core::qsa_kv_format(st),
+                                                        (p0 + s.page_size - 1) / s.page_size, s, m.cs);
+                            kv_dbg_sync(m.cs);
+                            if (kv_dbg()) KVDBG("stage ok: p0=%lld\n", (long long) p0);
+                        }
                         pt.mark(kPfQsa, cs);
                         pf_step("reading the prompt (batched, step sync): the K/V staged from RAM at layer", l);
                     }
@@ -4208,7 +4277,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
                             strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
                         }
-                        if (st.kv_q4)
+                        if (st.kv_oct) {
+                            kv_phase_set(3, p0, T, l, qsa_index, -1);
+                            if (kv_dbg())
+                                KVDBG("append: p0=%lld T=%lld staged=%d ps=%lld\n", (long long) p0,
+                                             (long long) T, (int) staged, (long long) s.page_size);
+                            strata::kernels::kv_append_oct(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
+                                                           host_w, staged ? &m.stage : nullptr);
+                            // the exact window: the same rotated K/V in fp16 for the sinks and the newest `tail`
+                            // cells of the finished prompt (kv_exact_window.hpp).  Older cells can never be in it.
+                            strata::kernels::kv_exact_window_append_range(st.win, 0, p0, pos0 + n, m.Kc, m.Vc, T, m.cs);
+                            kv_dbg_sync(m.cs);
+                            if (kv_dbg()) KVDBG("append ok: p0=%lld\n", (long long) p0);
+                        } else if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
                                                           host_w, staged ? &m.stage : nullptr);
                         else
@@ -4216,7 +4297,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
                                       host_w, staged ? &m.stage : nullptr);
                         if (host_by_dma)
-                            strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table), st.host,
+                            strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table, st.kv_oct), st.host,
                                                                 core::qsa_kv_format(st), p0 / s.page_size,
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
@@ -4377,7 +4458,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                         }
                     }
-                    const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table)
+                    const strata::kernels::QsaAttnPools pools = staged ? pools_of(m.stage, m.ident_table, st.kv_oct)
                                                                        : core::qsa_attn_pools(st);
                     pt.mark(kPfQsaAttn, cs);
                     // perf-review D-1: the whole chunk on tensor cores, one block per (query, KV head), FP32-level
@@ -4397,6 +4478,49 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                          qsa_fuse_nr() ? "on" : "off", gated ? "on" : "off");
                         }
                     }
+
+                    // STRATA_PA_OCT_CHECK=N (debug): the matrix-core kernel and the FP32 chunk kernel on the same
+                    // N queries of this chunk, compared elementwise.  Prints on the first two QSA layers; off in
+                    // production.
+                    if (!old_attn) {
+                        static const int oct_chk = [] { const char* e = std::getenv("STRATA_PA_OCT_CHECK"); return e ? std::atoi(e) : 0; }();
+                        if (oct_chk > 0 && qsa_index < 2) {
+                            const int64_t nq = std::min<int64_t>(oct_chk, T);
+                            const int64_t zw = s.n_head * s.head_dim;
+                            float *ca = nullptr, *cb = nullptr, *csc = nullptr;
+                            cudaMalloc(&ca, (size_t) (nq * zw) * 4);
+                            cudaMalloc(&cb, (size_t) (nq * zw) * 4);
+                            cudaMalloc(&csc, (size_t) 32 * strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s) * 4);
+                            const bool ok_a = strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev,
+                                                                                    m.cap, s, ca, nq, m.cs);
+                            for (int64_t t0 = 0; t0 < nq; t0 += 32)
+                                strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
+                                                                       m.steps_dev + t0 * strata::kernels::kStepCount,
+                                                                       m.cap, s, csc, cb + t0 * ZV,
+                                                                       std::min<int64_t>(32, nq - t0), m.cs);
+                            cudaStreamSynchronize(m.cs);
+                            std::vector<float> ha((size_t) (nq * zw)), hb(ha.size());
+                            cudaMemcpy(ha.data(), ca, ha.size() * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(hb.data(), cb, hb.size() * 4, cudaMemcpyDeviceToHost);
+                            double mx = 0, scale = 0;
+                            int64_t worst = -1;
+                            for (int64_t i = 0; i < nq; ++i) {
+                                double qmx = 0;
+                                for (int64_t j = 0; j < zw; ++j) {
+                                    const double va = ha[(size_t) (i * zw + j)], vb = hb[(size_t) (i * zw + j)];
+                                    qmx = std::max(qmx, std::fabs(va - vb));
+                                    scale = std::max(scale, std::fabs(vb));
+                                }
+                                if (qmx > mx) { mx = qmx; worst = i; }
+                            }
+                            std::fprintf(stderr, "strata PA check (%s): layer %lld p0=%lld, %lld queries: matrix cores %s, "
+                                                 "max |new-old| %.3g of scale %.3g (%.2g), worst query %lld\n",
+                                         pools.oct3 ? "oct3" : "int8", (long long) qsa_index, (long long) p0,
+                                         (long long) nq, ok_a ? "used" : "refused",
+                                         mx, scale, scale > 0 ? mx / scale : 0.0, (long long) worst);
+                            cudaFree(ca); cudaFree(cb); cudaFree(csc);
+                        }
+                    }
                     // STRATA_PATTN_SM60=1 (qsa_pattn.hpp, sm_6x, int8 K/V): the decode kernels' output bit for bit from a
                     // score kernel and a value kernel that merges as it folds (no partials, no merge kernel), ~100
                     // queries a batch in the same scratch; any refusal or launch failure runs the loop below
@@ -4411,9 +4535,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 #endif
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
+                            kv_phase_set(4, p0, T, l, qsa_index, t0);
+                            if (kv_dbg())
+                                KVDBG("attn: p0=%lld t0=%lld nb=%lld\n", (long long) p0,
+                                             (long long) t0, (long long) nb);
                             strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
                                                                    m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
                                                                    s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
+                            kv_dbg_sync(m.cs);
+                            if (kv_dbg()) KVDBG("attn ok: p0=%lld t0=%lld\n", (long long) p0,
+                                                       (long long) t0);
                         }
                     if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, m.cs);
                     pt.mark(kPfQsa, cs);

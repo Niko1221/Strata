@@ -144,6 +144,73 @@ int main() {
         }
     }
 
+    // STRATA_VERIFY_HYBRID_PLAN: a partial plan leaves the entries whose expert is not in VRAM out of the plan - they
+    // are the CPU's rows - and every other word still matches the host replay of the resident entries alone
+    {
+        std::vector<int32_t> res2(NE);
+        for (int e = 0; e < NE; ++e) res2[e] = (e % 3 == 0) ? -1 : (e * 37 + 11) % 1000;
+        ck(cudaMemcpy(d_res, res2.data(), NE * 4, cudaMemcpyHostToDevice), "res2");
+        for (int n = 10; n <= 80; n += 10) {
+            for (int variant = 0; variant < 2; ++variant) {
+                const int pool = variant != 0 ? 12 : 40;
+                std::vector<int32_t> ids(n);
+                for (int i = 0; i < n; ++i) ids[i] = (int32_t) (rng() % pool);   // (mix of resident and not: e % 3)
+                const bool use_off = variant == 0;
+                ck(cudaMemcpy(d_ids, ids.data(), n * 4, cudaMemcpyHostToDevice), "ids");
+                ck(cudaMemset(d_plan, 0xAB, plan_words * 4), "fill");
+                ck(cudaMemset(d_skip, 0, 4), "skip0");
+                k::resident_plan(d_ids, n, K, d_res, NE, cache_base, use_off ? d_off : nullptr, blob, d_plan, capx, d_skip,
+                                 7u, nullptr, d_err, 1);
+                ck(cudaDeviceSynchronize(), "sync");
+
+                // host replay: distinct resident experts in routing order, their resident entries ascending
+                std::vector<int32_t> first_seen;
+                std::vector<int32_t> dst, tok;
+                std::vector<unsigned long long> ptr;
+                for (int i = 0; i < n; ++i) {
+                    if (res2[ids[i]] < 0) continue;
+                    bool seen = false;
+                    for (int32_t s : first_seen) seen = seen || s == ids[i];
+                    if (!seen) first_seen.push_back(ids[i]);
+                }
+                const int groups = (int) first_seen.size();
+                std::vector<int32_t> start(groups + 1, 0);
+                int pos = 0;
+                for (int g = 0; g < groups; ++g) {
+                    start[g] = pos;
+                    ptr.push_back((unsigned long long) (uintptr_t) cache_base +
+                                  (use_off ? off[res2[first_seen[g]]] : (unsigned long long) res2[first_seen[g]] * (unsigned long long) blob));
+                    for (int i = 0; i < n; ++i)
+                        if (ids[i] == first_seen[g]) { dst.push_back(i); tok.push_back(i / K); ++pos; }
+                }
+                start[groups] = pos;
+                std::vector<int32_t> counts = {groups, pos, 0};
+
+                std::vector<int32_t> plan(plan_words);
+                ck(cudaMemcpy(plan.data(), d_plan, plan_words * 4, cudaMemcpyDeviceToHost), "plan");
+                uint32_t skip = 0;
+                ck(cudaMemcpy(&skip, d_skip, 4, cudaMemcpyDeviceToHost), "skipr");
+                bool ok = skip == 7u;
+                ok = ok && std::memcmp(plan.data(), counts.data(), 3 * 4) == 0;
+                ok = ok && std::memcmp(plan.data() + 4, start.data(), (size_t) (groups + 1) * 4) == 0;
+                const int32_t* pdst = plan.data() + 4 + capx + 1;
+                ok = ok && std::memcmp(pdst, dst.data(), (size_t) pos * 4) == 0;
+                ok = ok && std::memcmp(pdst + capx, tok.data(), (size_t) pos * 4) == 0;
+                ok = ok && std::memcmp(plan.data() + ptr_off, ptr.data(), (size_t) groups * 8) == 0;
+                ok = ok && plan[(size_t) (ptr_off + 4 * capx)] == n;   // (the PCIe plan's sentinel: no PCIe group here)
+                for (int i = pos; i < n && ok; ++i)   // left out: the plan does not hold it
+                    ok = (uint32_t) pdst[i] == 0xABABABABu && (uint32_t) pdst[capx + i] == 0xABABABABu;
+                ++cases;
+                if (!ok) {
+                    std::printf("    *** partial n=%d pool=%d %s: the plan differs from the host replay ***\n", n, pool,
+                                use_off ? "slot_off" : "blob");
+                    ++bad;
+                }
+            }
+        }
+        ck(cudaMemcpy(d_res, res.data(), NE * 4, cudaMemcpyHostToDevice), "res-back");
+    }
+
     std::printf("resident_plan: %d cases, %d failures\n", cases, bad);
     if (bad) return 1;
     std::printf("resident_plan_parity OK\n");

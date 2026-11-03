@@ -15,6 +15,7 @@
 #pragma once
 
 #include "strata/kernels/qsa.hpp"
+#include "strata/kernels/kv_exact_window.hpp"
 
 #include <cstdint>
 
@@ -29,7 +30,14 @@ struct QsaAttnPools {
     const uint16_t* v_scale = nullptr;
     const uint8_t* k_q4 = nullptr;      ///< q4_0 block_q4_0 [page][kv_head][page_size][head_dim / 32 * 18]
     const uint8_t* v_q4 = nullptr;
+    /// k_q4/v_q4 hold 14-byte oct3 blocks (kv_octave.hpp) instead of 18-byte q4_0 ones - the pointers cannot say
+    /// which, so the format travels explicitly.
+    bool oct3 = false;
     const int32_t* page_table = nullptr;
+    /// The exact fp16 window over this layer (kv_exact_window.hpp): a selected cell the window still holds is read
+    /// from it instead of from the codes above.  Empty (`!present()`) for every other format and when the window is
+    /// off - the kernels then run exactly the code they ran before.
+    KvExactWindow win;
 };
 
 /// Batch windows: every query's own K/V pools - query z reads p[z] (z < n).  n = 0: the call's one `pools`.

@@ -1406,7 +1406,7 @@ static_assert(kVerifyMaxT * 10 <= kResidentPlanMax, "resident_plan: one thread p
 // the parallel scan keeps one partial sum per warp in s_wsum[NT / 32] and packs (entries << 16 | groups) in an int
 static_assert(kResidentPlanMax <= 256 && kResidentPlanMax % 32 == 0, "resident_plan: at most 8 warps");
 static_assert(kResidentPlanMax < 32768, "resident_plan: the packed entry count must stay below 2^15");
-template <int NT>
+template <int NT, bool PARTIAL = false>
 __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
                                      int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off,
                                      long long blob, int32_t* __restrict__ pl, long long capx, uint32_t* skip,
@@ -1425,8 +1425,11 @@ __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __rest
     if (tid < n) {
         eid = ids[tid];
         s_ids[tid] = eid;
-        slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
-        if (slot < 0) atomicOr(&s_bad, 1);
+        if (eid < 0 || eid >= n_expert) atomicOr(&s_bad, 1);   // (no table entry to read)
+        else slot = res[eid];
+        // PARTIAL (the hybrid device plan): an expert that is not in VRAM is left out of the plan - its entries are the
+        // CPU's, which the combine masks by this hit list.  Otherwise one such entry fails the whole group's plan.
+        if (slot < 0 && !PARTIAL) atomicOr(&s_bad, 1);
     }
     __syncthreads();
     if (s_bad) {
@@ -1486,7 +1489,7 @@ __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __rest
         ptr[grp_idx] = (unsigned long long) (cache_base + (slot_off ? (size_t) slot_off[slot] : (size_t) slot * (size_t) blob));
         start[grp_idx] = ent_start;
     }
-    if (tid < n) {
+    if (tid < n && slot >= 0) {   // (PARTIAL: a non-resident entry has no place in the plan; its row is the CPU's)
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
@@ -1498,18 +1501,19 @@ __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __rest
         tok[out_idx] = tid / k;
     }
     if (tid == 0) {
-        int groups;
-        if constexpr (NW == 4) groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;   // (the 128-thread kernel as it was)
+        int tot_all;
+        if constexpr (NW == 4) tot_all = s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3];   // (the 128-thread kernel as it was)
         else {
-            groups = 0;
+            tot_all = 0;
 #pragma unroll
-            for (int w = 0; w < NW; ++w) groups += s_wsum[w];
-            groups &= 0xffff;
+            for (int w = 0; w < NW; ++w) tot_all += s_wsum[w];
         }
-        start[groups] = n;
+        const int groups = tot_all & 0xffff;
+        const int entries = (tot_all >> 16) & 0xffff;
+        start[groups] = entries;
         start2[0] = n;
         counts[0] = groups;
-        counts[1] = n;
+        counts[1] = entries;   // the entries this plan holds (all n, unless PARTIAL left the CPU's out)
         counts[2] = 0;
         if (skip != nullptr) {
             __threadfence();
@@ -1602,16 +1606,25 @@ __global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile flo
 
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
-                   long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
+                   long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err, int partial) {
     if (n_entries > kResidentPlanNarrow) {   // a 9..16-row window (kResidentPlanMax == 256 only in a wide build)
-        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
+        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax) {
+            if (partial)
+                resident_plan_kernel<kResidentPlanMax, true><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+                                                              blob, plan, capx, skip, ring, plan_err);
+            else
             resident_plan_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
                                                               blob, plan, capx, skip, ring, plan_err);
+        }
         else {
             std::fprintf(stderr, "resident_plan: %d entries, at most %d\n", n_entries, kResidentPlanMax);
             std::exit(1);
         }
     } else {
+        if (partial)
+            resident_plan_kernel<kResidentPlanNarrow, true><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+                                                              blob, plan, capx, skip, ring, plan_err);
+        else
         resident_plan_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
                                                               blob, plan, capx, skip, ring, plan_err);
     }

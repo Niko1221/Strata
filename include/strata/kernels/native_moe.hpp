@@ -25,6 +25,13 @@ void native_moe_combine_multi_hits_added(const float* parts, const float* hits, 
                                          int n_tok, void* stream);
 void native_moe_combine_multi(const float* parts, const float* weights, const float* shared, float* output,
                               int64_t n_embd, int64_t k, int n_tok, void* stream);
+/// STRATA_COMBINE_CPU (k = 10): the verify window's combine with the CPU rows read straight from the mapped `cpu`
+/// buffer and the GPU's hit rows (entry index = token * k + expert, hit_rows[0, *count)) from `hit` - bitwise the
+/// copy_rows_from_mapped (+0.0 for a hit) and moe_hit_add launches it replaces.  `wait_flag` is nullptr or the CPU
+/// share's host flag, waited for inside every block (STRATA_WAIT_FUSE) instead of by a launch before.
+void native_moe_combine_multi_cpu(const float* cpu, const float* hit, const int32_t* hit_rows, const int32_t* count,
+                                  const float* weights, const float* shared, float* output, int64_t n_embd, int n_tok,
+                                  void* stream, const uint32_t* wait_flag, uint32_t wait_value);
 /// STRATA_VERIFY_RESIDENT: the same, reading every part as `0.0f + hit[i]` - bitwise what a zeroed part row plus
 /// moe_hit_add (parts += hit) gave, without the zero fill and the add launch.
 void native_moe_combine_multi_hits(const float* hits, const float* weights, const float* shared, float* output,

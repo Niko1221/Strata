@@ -1,4 +1,5 @@
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/kernels/kv_octave.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
@@ -45,8 +46,9 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
-    const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
-                              : (size_t) g.head_dim * (int8_keys ? 1 : 2);
+    const size_t per = st.kv_oct ? (size_t) strata::kernels::kv_oct_bytes_per_head((int) g.head_dim)
+                     : st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
+                                : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
     const int64_t pooled = index && upto > 0 ? upto / s.idx_block + 1 : 0;
@@ -82,6 +84,8 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
     if (st.kv_hybrid)
         return {host ? st.host.k_q : st.k_q, host ? st.host.v_q4 : st.v_q4, host ? st.host.k_scale : st.k_scale,
                 nullptr, st.idx_pooled};
+    if (st.kv_oct)
+        return {host ? st.host.k_q4 : st.k_q4, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
     if (st.kv_q4)
         return {host ? st.host.k_q4 : st.k_q4, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
     if (st.kv_int8)
@@ -107,8 +111,9 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
         }
     }
     if (st.kv_mode == 2 && (!st.page_table ||
-        (st.kv_q4 ? !st.k_q4 || !st.v_q4 : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
-                                                    : !st.k_pool || !st.v_pool))) {
+        (st.kv_oct || st.kv_q4 ? !st.k_q4 || !st.v_q4
+                               : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
+                                            : !st.k_pool || !st.v_pool))) {
         error = "conversation snapshot: invalid draft ring";
         return false;
     }
@@ -263,6 +268,18 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     if (e == cudaSuccess) return true;
     error = std::string("conversation snapshot copy: ") + cudaGetErrorString(e);
     return false;
+}
+/// The exact window (`--kv oct3`) is a CACHE of the K/V, not part of the image: after a restore (or a copy into
+/// another state) its tags must not answer for positions this state's K/V did not write.  One synchronous 4-byte-
+/// per-row memset - the window is ~1.6 MiB in the worst case - and the rows refill as the sequence appends.
+bool invalidate_window(const QsaState& st, std::string& error) {
+    if (!st.win.present()) return true;
+    const cudaError_t e = cudaMemset(st.win.tag, 0xff, (size_t) st.win.layers * (size_t) st.win.rows() * sizeof(int32_t));
+    if (e != cudaSuccess) {
+        error = std::string("conversation snapshot: exact-window invalidate: ") + cudaGetErrorString(e);
+        return false;
+    }
+    return true;
 }
 } // namespace
 
@@ -449,6 +466,7 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
         const cudaError_t e = conversation_detail::order_after_queued();
         if (e != cudaSuccess) { error = std::string("conversation snapshot direct copy: ") + cudaGetErrorString(e); return false; }
     }
+    if (!invalidate_window(to, error)) return false;
     return refresh_residency(to, g, upto, error);
 }
 
@@ -472,6 +490,7 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
+    if (!invalidate_window(st, error)) return false;
     return refresh_residency(st, g, upto, error);
 }
 
@@ -503,6 +522,7 @@ bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState&
         if (!src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
+    if (!invalidate_window(st, error)) return false;
     return refresh_residency(st, g, upto, error);
 }
 

@@ -26,6 +26,7 @@ const Shape SHAPES[] = {
     {"QSA q 2560->12288", 2560, 12288},    {"QSA k/v 2560->512", 2560, 512},    {"HC down 10240->320", 10240, 320},
     {"HC up 320->10240", 320, 10240},      {"shared gate/up 2560->640", 2560, 640}, {"shared down 640->2560", 640, 2560},
     {"head 2560->248320", 2560, 248320},
+    {"mtp fc_emb 2560->2560", 2560, 2560}, {"mtp o_proj 4096->2560", 4096, 2560},
 };
 void ck(cudaError_t e, const char* w) {
     if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", w, cudaGetErrorString(e)); std::exit(1); }
@@ -47,11 +48,13 @@ int main(int argc, char** argv) {
     std::vector<int> cols = {1, 2, 3, 4, 6};
     int iters = 50;
     double bw = 0;
+    int max_mb = 512;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--cols" && i + 1 < argc) cols = ints(argv[++i]);
         else if (a == "--iters" && i + 1 < argc) iters = std::atoi(argv[++i]);
         else if (a == "--bw" && i + 1 < argc) bw = std::atof(argv[++i]);
+        else if (a == "--max-mb" && i + 1 < argc) max_mb = std::atoi(argv[++i]);
     }
     cudaDeviceProp prop;
     ck(cudaGetDeviceProperties(&prop, 0), "props");
@@ -59,7 +62,12 @@ int main(int argc, char** argv) {
     std::mt19937 rng(7);
     for (const Shape& s : SHAPES) {
         const size_t bytes = (size_t) s.n_out * (s.n_in / 32) * 34;
-        const int copies = (int) std::max<size_t>(1, std::min<size_t>(16, ((size_t) 512 << 20) / bytes));
+        const size_t budget = (size_t) max_mb << 20;
+        if (bytes > budget) {   // the engine holds the card; a single matrix over the budget is skipped, not fatal
+            std::printf("\n%s: %.2f MB skipped (one copy exceeds --max-mb %d)\n", s.what, bytes / 1e6, max_mb);
+            continue;
+        }
+        const int copies = (int) std::max<size_t>(1, std::min<size_t>(16, budget / bytes));
         std::vector<uint8_t> host(bytes);
         for (size_t b = 0; b < bytes; b += 34) {   // fp16 scale 0.01 (0x211f), then random int8 weights
             host[b] = 0x1f;
@@ -96,8 +104,15 @@ int main(int argc, char** argv) {
             float ms = 0;
             cudaEventElapsedTime(&ms, e0, e1);
             const double us = 1000.0 * ms / iters, gbs = bytes / (us * 1e3);
-            std::printf("  %d col%s: %8.1f us  %7.1f GB/s%s\n", c, c == 1 ? " " : "s", us, gbs,
-                        bw > 0 ? (" = " + std::to_string((int) (100 * gbs / bw + 0.5)) + "% of bw").c_str() : "");
+            // correctness: the output's checksum, so two dispatch paths can be compared numerically
+            std::vector<float> yh((size_t) s.n_out * c);
+            ck(cudaMemcpy(yh.data(), y, yh.size() * 4, cudaMemcpyDeviceToHost), "y back");
+            double sum = 0;
+            float mx = 0;
+            for (float v : yh) { sum += v; mx = std::max(mx, std::fabs(v)); }
+            std::printf("  %d col%s: %8.1f us  %7.1f GB/s%s   [sum %.6f max %.6f]\n", c, c == 1 ? " " : "s", us, gbs,
+                        bw > 0 ? (" = " + std::to_string((int) (100 * gbs / bw + 0.5)) + "% of bw").c_str() : "",
+                        sum, mx);
         }
         for (auto p : w) cudaFree(p);
         cudaFree(x);

@@ -401,6 +401,9 @@ public:
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    /// --pcie-frac 0 and no balance model: the pool never plans a PCIe share, so the window skips the second grouped
+    /// launch instead of issuing it empty (11 us a layer on gfx1100).  Before the first run.
+    void set_pcie_share(bool on) { sink_.pcie_share = on; }
     /// Called before every window this verifier launches (run, the batch and pipelined launches): the device's
     /// residency table catches up with the host's (the adaptive tier's evictions while its copies are in flight).
     /// It gets this verifier's stream; false (with the message in `err`) fails the launch.
@@ -566,6 +569,7 @@ private:
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
+    bool hybrid_plan_ = false;            ///< STRATA_VERIFY_HYBRID_PLAN: that plan holds the resident experts only
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned* qcnt_ = nullptr;             ///< S26 STRATA_QFUSE: the HC read's q8_1 group counters (n_embd / 32)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
