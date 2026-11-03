@@ -1916,6 +1916,9 @@ void attn_prep_append(float* qg, float* k, const float* v, const float* q_norm, 
 #endif
 
 #if FNX_KPART == 4
+static std::atomic<bool> g_gdn_tc_default{true};
+void gdn_tc_set_default(bool on) { g_gdn_tc_default = on; }
+
 namespace fnx {
 size_t gdn_scratch_floats(int nv) { return (size_t) MAXT * nv * HS + (size_t) nv * MAXT * GDN_Q + (size_t) MAXT * nv; }
 
@@ -2069,9 +2072,6 @@ static void gdn_prompt_impl(const float* qkvz, const float* ab, float* hist, con
 }
 // FNX_GDN_TIME=1 (measuring): CUDA events around every prompt GDN call of a card (conv, history, scan, norm), their GPU time summed per
 // card and printed to stderr each time 36 x 32768 rows (a 32K prompt through the 36 recurrent layers) have gone through it (the events are read a call late, nothing waits on the GPU)
-static std::atomic<bool> g_gdn_tc_default{true};
-void gdn_tc_set_default(bool on) { g_gdn_tc_default = on; }
-
 void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
                 float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc, float* sq, float* y32,
                 float* chw, void* st) {
