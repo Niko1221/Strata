@@ -4,7 +4,7 @@ import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
 import { devActive, devLoopEnabled, devModeOverride, devSkillsOverride } from '../dev/overrides';
-import { hostModeOf, planFirstText, wantsPlanFirst } from '../dev/chat-modes';
+import { hostModeOf, planFirstText, plansFirst, wantsPlanFirst } from '../dev/chat-modes';
 import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { approvalNeeded, workFinished } from './attention';
@@ -1701,6 +1701,9 @@ export async function resumeGoal() { await sendMessage('', { goalAction: 'resume
 
 /** Approve a proposed plan and carry it out: the host answers with the message that does the work, which goes out as an ordinary turn. */
 export async function approvePlan(sessionId: string, planId: string) {
+  // Strata Dev, Plan + Manual and Plan + Auto: the plan runs through the host's plan runner (the same as "Start as goal"): it goes step by step,
+  // marks each step as it is done (so the progress bar moves) and goes on until the plan is finished. An ordinary turn ends after one answer.
+  if (devActive() && plansFirst(state.sessions.find(s => s.id === sessionId)?.preferences?.mode)) { await startPlanGoal(planId); return; }
   const { prompt } = await planApprove(sessionId, planId);
   // A chat in Plan mode only reads; carrying the plan out needs a mode that may act.
   if (state.sessions.find(s => s.id === sessionId)?.preferences?.mode === 'plan') setChatPreferences(sessionId, { mode: 'manual' });
