@@ -2247,6 +2247,207 @@ int main() {
         fs::remove_all(gdir);
     }
 
+    // ---- the store seam (conversation_store.hpp): the same cache logic over a backend that is not a local
+    // directory.  Nothing about the files changes - their names, the sidecar format, the accounting - only where they
+    // live; the local directory stays the default and writes exactly the bytes it always wrote.
+    {
+        auto memory = make_memory_conversation_store();
+        check(memory->describe() == "memory", "store: describe names the backend");
+        ConversationSpillCache mem;
+        check(mem.open(memory, id, 1ull << 30, error), "store: open a memory-backed cache");
+        check(mem.enabled(), "store: a memory-backed cache is enabled");
+        const SavedConversation c = sample(1200);
+        check(mem.spill(c, error), "store: spill into the memory store");
+        check(mem.size() == 1 && mem.bytes() > 0, "store: the entry is indexed and accounted");
+
+        std::vector<ConversationStoreFile> files;
+        check(memory->list(files, error) && files.size() == 2, "store: the base and its sidecar are stored");
+        check(files[0].name == "strata-conv-1.meta" && files[1].name == "strata-conv-1.sess",
+              "store: the same names the local store writes");
+        check(files[1].bytes == mem.bytes(), "store: the base file carries the accounted bytes");
+
+        // the same conversation through the local store: the same names, the same bytes, the same accounting
+        const fs::path sdir = fs::temp_directory_path() / "strata_spill_store_test";
+        fs::remove_all(sdir);
+        ConversationSpillCache local_cache;
+        check(local_cache.open(sdir, id, 1ull << 30, error), "store: open the local store");
+        check(local_cache.spill(c, error), "store: spill the same conversation locally");
+        check(fs::file_size(sdir / "strata-conv-1.sess") == files[1].bytes, "store: byte-identical base files");
+        check(local_cache.bytes() == mem.bytes(), "store: identical accounting");
+
+        // best() over both backends resumes at the same point; only the identity differs in kind (a local path for
+        // the local store, the store's name for any other)
+        std::vector<int32_t> continuing(c.live.ids.begin(), c.live.ids.end());
+        continuing.push_back(int32_t(7777));
+        const auto mem_best = mem.best(continuing, c.live.imgs, c.cvec, 0.0, 0);
+        const auto local_best = local_cache.best(continuing, c.live.imgs, c.cvec, 0.0, 0);
+        check(bool(mem_best) && bool(local_best), "store: both backends match the prompt");
+        check(mem_best.tokens == local_best.tokens && mem_best.live == local_best.live &&
+              mem_best.file_bytes == local_best.file_bytes, "store: both backends offer the same resume point");
+        check(mem_best.path == "strata-conv-1.sess" && local_best.path == (sdir / "strata-conv-1.sess").string(),
+              "store: an entry is named by its store, or pathed for a local one");
+
+        // read it back whole and compare the tokens and the K/V bytes
+        SavedConversation back;
+        check(mem.load(mem_best.path, back, {}, error), "store: load from the memory store");
+        check(back.live.ids == c.live.ids, "store: token ids round-trip");
+        check(back.checkpoints.size() == c.checkpoints.size(), "store: checkpoint count round-trip");
+        check(back.kv.size() == c.kv.size(), "store: kv layer count round-trip");
+        bool kv_same = back.kv.size() == c.kv.size();
+        for (size_t i = 0; i < back.kv.size() && kv_same; ++i)
+            kv_same = buffers_equal(back.kv[i].k, c.kv[i].k) && buffers_equal(back.kv[i].v, c.kv[i].v) &&
+                      buffers_equal(back.kv[i].k_scale, c.kv[i].k_scale) && buffers_equal(back.kv[i].pooled, c.kv[i].pooled);
+        check(kv_same, "store: K/V bytes round-trip");
+
+        // a new cache over the same store indexes the entry from the sidecar alone, with no directory to scan
+        ConversationSpillCache reopened;
+        check(reopened.open(memory, id, 1ull << 30, error), "store: reopen over the same memory store");
+        const auto again = reopened.best(continuing, c.live.imgs, c.cvec, 0.0, 0);
+        check(bool(again) && again.tokens == mem_best.tokens && again.path == mem_best.path,
+              "store: the entry is reindexed from the store");
+        check(reopened.size() == 1 && reopened.bytes() == mem.bytes(), "store: the reopened accounting matches");
+
+        // erase removes every artifact from the store and the entry stops being found or offered
+        check(reopened.erase(again.path, error), "store: erase the entry");
+        check(reopened.size() == 0 && reopened.bytes() == 0, "store: no entry and no bytes left");
+        check(!bool(reopened.best(continuing, c.live.imgs, c.cvec, 0.0, 0)), "store: an erased entry is no hit");
+        std::vector<ConversationStoreFile> left;
+        check(memory->list(left, error) && left.empty(), "store: no artifact left in the store");
+        fs::remove_all(sdir);
+    }
+
+    // the recompute gate's ledger is a file in the spill directory: a store without one approves nothing and says so
+    // (the same fail-closed refusal a missing ledger gets, with its own reason)
+    {
+        auto memory = make_memory_conversation_store();
+        ConversationSpillGateOptions gate;
+        gate.enabled = true;
+        gate.engine_build = "0.1.50.1";
+        ConversationSpillCache gm;
+        check(gm.open(memory, id, 1ull << 30, error, false, gate), "store gate: open a memory-backed cache");
+        check(gm.gate_batch_count() == 0 && gm.gate_approved_count() == 0, "store gate: nothing is approved");
+        check(gm.gate_error() == "the recompute gate needs a local cache directory",
+              "store gate: the ledger needs a local directory");
+    }
+
+    // the delta chain over a memory store: the base is published into the store, the appended record is published
+    // through the same seam, and the manifest's committed length and the sidecar's tokens are the appended state.
+    {
+        auto sources_of = [](const SavedConversation& img, size_t first = 0) {
+            std::vector<SessionKvSource> sources;
+            for (const auto& k : img.kv) {
+                SessionKvSource src;
+                src.format = k.format; src.cells = k.cells; src.heads = k.heads; src.head_dim = k.head_dim;
+                src.page_size = k.page_size; src.pooled_rows = k.pooled_rows; src.idx_dim = k.idx_dim;
+                const std::array<const ConversationBuffer*, 5> parts = {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled};
+                for (size_t i = 0; i < 5; ++i) {
+                    src.sizes[i] = parts[i]->size();
+                    src.first_bytes[i] = parts[i]->size() > first ? first : 0;
+                }
+                src.read = [parts](size_t part, size_t offset, void* dst, size_t n) { return parts[part]->read(dst, offset, n); };
+                sources.push_back(std::move(src));
+            }
+            return sources;
+        };
+        auto meta_of = [](SavedConversation img) { img.kv.clear(); return img; };
+        auto memory = make_memory_conversation_store();
+        ConversationSpillCache dm;
+        check(dm.open(memory, id, 1ull << 30, error, true), "store delta: open with chains");
+        const SavedConversation base = sample(1500);
+        SavedConversation grown = base;
+        for (int i = 0; i < 300; ++i) grown.live.ids.push_back(int32_t(2500 + i));
+        grown.checkpoints.push_back(checkpoint(1800, 8));
+        size_t base_written = 0;
+        check(dm.spill_streamed(meta_of(base), sources_of(base, 0), base_written, error), "store delta: base");
+        const size_t index = dm.find(dm.newest_path());
+        check(index == 0, "store delta: the base is found by its store name");
+        size_t record = 0;
+        check(dm.spill_delta(index, meta_of(grown), sources_of(grown, 1024), (int64_t) grown.live.ids.size(), record, error),
+              "store delta: append");
+        int64_t tokens = 0, deepest = 0;
+        uint64_t info_base = 0, info_delta = 0;
+        bool is_prefix = true;
+        std::string entry_path;
+        check(dm.entry_info(index, tokens, deepest, info_base, info_delta, is_prefix, entry_path) &&
+              info_delta == record && info_base == base_written && tokens == (int64_t) grown.live.ids.size() &&
+              !is_prefix, "store delta: the committed length and the tokens");
+        // the appended record is in the store's log, and the chain manifest is a manifest like any other
+        const std::string dlog_name = std::filesystem::path(entry_path).replace_extension(".dlog").string();
+        const std::string dchain_name = std::filesystem::path(entry_path).replace_extension(".dchain").string();
+        uint64_t dlog_bytes = 0, dchain_bytes = 0;
+        check(memory->stat(dlog_name, dlog_bytes, error) && dlog_bytes == record, "store delta: the log holds the record");
+        check(memory->stat(dchain_name, dchain_bytes, error) && dchain_bytes == 40, "store delta: the manifest is published");
+        // the base still reads back out of the store with the tokens it was written with
+        std::string local_base;
+        check(memory->materialize(std::filesystem::path(entry_path).replace_extension(".sess").string(), local_base, error),
+              "store delta: materialize the base");
+        SavedConversation base_meta;
+        size_t base_bytes = 0;
+        check(session_file_read_streamed(local_base, id, base_meta, base_bytes, error), "store delta: the base reads back");
+        check(base_meta.live.ids == base.live.ids && base_bytes == base_written, "store delta: the base's tokens and size");
+        memory->release(local_base);
+        // the chain is offered for the grown conversation, and its committed length travels with the match
+        std::vector<int32_t> cont(grown.live.ids.begin(), grown.live.ids.end());
+        cont.push_back(int32_t(7));
+        const auto hit = dm.best(cont, {}, grown.cvec, 0.0, 0);
+        check(bool(hit) && hit.delta_committed == record && hit.tokens == (int64_t) grown.live.ids.size() &&
+              hit.path == entry_path, "store delta: best() offers the chain");
+        // erase takes the whole chain out of the store
+        check(dm.erase(hit.path, error) && dm.size() == 0, "store delta: erase removes the chain");
+        std::vector<ConversationStoreFile> left;
+        check(memory->list(left, error) && left.empty(), "store delta: no chain file left in the store");
+    }
+
+    // the budget evicts out of a memory store exactly as it does out of a directory: the evicted entry's artifacts
+    // leave the store and the entry stops being found or offered
+    {
+        auto memory = make_memory_conversation_store();
+        ConversationSpillCache open_store;
+        check(open_store.open(memory, id, 1ull << 30, error), "store evict: open");
+        const SavedConversation older = sample(1000);
+        check(open_store.spill(older, error), "store evict: first conversation");
+        const uint64_t first_bytes = open_store.bytes();
+        SavedConversation newer = sample(1600);
+        for (auto& v : newer.live.ids) v += 20000;
+        for (auto& ck : newer.checkpoints) for (auto& v : ck.ids) v += 20000;
+        check(open_store.spill(newer, error), "store evict: second conversation");
+        const uint64_t second_bytes = open_store.bytes() - first_bytes;
+        ConversationSpillCache tight;
+        check(tight.open(memory, id, second_bytes, error), "store evict: reopen with a budget for one");
+        check(tight.size() == 1 && tight.disk_evictions() == 1, "store evict: the older entry is evicted");
+        check(tight.find("strata-conv-1.sess") == tight.size(), "store evict: the evicted entry is not found");
+        uint64_t gone_bytes = 0;
+        check(!memory->stat("strata-conv-1.sess", gone_bytes, error) && error.empty(),
+              "store evict: the evicted base is gone from the store");
+        std::vector<ConversationStoreFile> remaining;
+        check(memory->list(remaining, error) && remaining.size() == 2 && remaining[0].name == "strata-conv-2.meta" &&
+              remaining[1].name == "strata-conv-2.sess",
+              "store evict: only the newest entry's artifacts are left");
+        const auto newer_hit = tight.best(newer.live.ids, {}, newer.cvec, 0.0, 0);
+        check(bool(newer_hit) && newer_hit.path == "strata-conv-2.sess", "store evict: the newest entry still resumes");
+    }
+
+    // a local store still scans a directory that was filled before it was opened: an entry spilled by one cache is
+    // indexed by the next one, with its files' own names and bytes (the default path is unchanged)
+    {
+        const fs::path pdir = fs::temp_directory_path() / "strata_spill_store_scan_test";
+        fs::remove_all(pdir);
+        {
+            ConversationSpillCache writer;
+            check(writer.open(pdir, id, 1ull << 30, error), "store scan: open the writer");
+            check(writer.spill(sample(900), error), "store scan: spill a conversation");
+            check(fs::exists(pdir / "strata-conv-1.sess") && fs::exists(pdir / "strata-conv-1.meta"),
+                  "store scan: the local names are unchanged");
+        }
+        ConversationSpillCache reader;
+        check(reader.open(pdir, id, 1ull << 30, error), "store scan: reopen the directory");
+        check(reader.size() == 1 && reader.newest_path() == (pdir / "strata-conv-1.sess").string(),
+              "store scan: the pre-populated directory is indexed");
+        check(reader.bytes() == fs::file_size(pdir / "strata-conv-1.sess"),
+              "store scan: the accounting is the base file's bytes");
+        fs::remove_all(pdir);
+    }
+
     std::printf("conversation_spill_test: %d checks passed\n", checks);
     return 0;
 }

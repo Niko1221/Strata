@@ -8,6 +8,7 @@
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/conversation_store.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +20,7 @@
 namespace strata::core {
 
 struct ConversationSpillMatch {
-    std::string path;        // the session file to read back
+    std::string path;        // the session file to read back: the store's name for it, or its local path
     uint64_t file_bytes = 0;
     int64_t tokens = 0;
     bool live = false;
@@ -130,6 +131,13 @@ public:
     // hold this cache's bytes after a file of the other configuration - such a conversation is written as a new file.
     bool open(const std::filesystem::path& directory, SessionFileIdentity identity, uint64_t budget_bytes,
               std::string& error, bool delta_chains = false, const ConversationSpillGateOptions& gate = {});
+    // The same cache over a backend other than the local directory (conversation_store.hpp): the files, their names,
+    // the sidecar and chain formats, the identity rules and the budget are unchanged, only where they live differs.
+    // The path overload above is this one over make_local_conversation_store(directory) (an empty directory switching
+    // the cache off, as before).  The recompute gate's ledger and the wipe of a crashed writer's temporaries need a
+    // real directory: a store without one (memory) does neither, and gate_error() then says the ledger needs one.
+    bool open(std::shared_ptr<ConversationStore> store, SessionFileIdentity identity, uint64_t budget_bytes,
+              std::string& error, bool delta_chains = false, const ConversationSpillGateOptions& gate = {});
     bool enabled() const { return enabled_; }
     size_t size() const { return entries_.size(); }
     uint64_t bytes() const { return bytes_; }
@@ -159,7 +167,7 @@ public:
                     entry.checkpoint_lengths, prompt, images, cvec, entry.cvec, similarity, n_min);
             if (match.tokens > best_tokens)
                 best_tokens = match.tokens,
-                best_match = {entry.session_path(), entry.file_bytes, match.tokens, match.live, entry.delta_bytes,
+                best_match = {path_of(entry), entry.file_bytes, match.tokens, match.live, entry.delta_bytes,
                               (int64_t) entry.live_meta.ids.size()};
         }
         return best_match;
@@ -246,11 +254,12 @@ public:
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
                            const std::string& keep = {});
     // The session path of the newest file (the one the last spill wrote), or empty.
-    std::string newest_path() const { return entries_.empty() ? std::string() : entries_.back().session_path(); }
+    std::string newest_path() const { return entries_.empty() ? std::string() : path_of(entries_.back()); }
 
 private:
     struct Entry {
-        std::filesystem::path stem;          // "<dir>/strata-conv-<serial>" (entry artifacts share it)
+        std::string stem;                    // "strata-conv-<serial>": the entry's name in the store (its artifacts
+                                             // share it: "<stem>.sess", ".meta", ".dlog", ".dchain")
         uint64_t file_bytes = 0;             // accounted bytes of the regular .sess base
         uint64_t delta_bytes = 0;            // committed length of "<stem>.dlog" (restore/append boundary)
         uint64_t delta_accounted_bytes = 0;   // bytes of the log actually charged to this entry
@@ -264,19 +273,30 @@ private:
         bool prefix = false;                 // a persistent root entry (named strata-conv-prefix-N)
         bool has_chain = false;              // a log/manifest exists or this entry has published a chain
         bool complete = true;                // false while owned files are partial/unusable; retained for accounting
-        std::string session_path() const { return (stem.string() + ".sess"); }
-        std::string meta_path() const { return (stem.string() + ".meta"); }
-        std::string delta_path() const { return (stem.string() + ".dlog"); }
-        std::string chain_path() const { return (stem.string() + ".dchain"); }
+        std::string session_name() const { return stem + ".sess"; }
+        std::string meta_name() const { return stem + ".meta"; }
+        std::string delta_name() const { return stem + ".dlog"; }
+        std::string chain_name() const { return stem + ".dchain"; }
         uint64_t total_bytes() const { return file_bytes + delta_accounted_bytes + meta_bytes + chain_file_bytes; }
     };
+    // The identity this cache hands a caller for an entry: the store's name for it, or - for a local store - the
+    // file's own path (<directory>/<name>), which is what every path-based caller and the session-file reader has
+    // always received.  name_of() is its reverse (a local path this cache handed out, or a store name).
+    std::string entry_path(const std::string& name) const {
+        return directory_.empty() ? name : (directory_ / name).string();
+    }
+    std::string path_of(const Entry& entry) const { return entry_path(entry.session_name()); }
+    std::string name_of(const std::string& path) const {
+        return directory_.empty() ? path : std::filesystem::path(path).filename().string();
+    }
     bool entry_files_valid(const Entry& entry) const;
     void enforce_budget();
     void adjust_bytes(uint64_t before, uint64_t after);
     // Removes only this entry's owned artifacts. `removed` is the bytes debited from this entry's existing ledger;
     // a false result retains an incomplete, ineligible entry with exact remaining ownership charges for retry.
     bool remove_group(Entry& entry, uint64_t& removed, std::vector<std::string>& left);
-    std::filesystem::path next_stem(bool prefix = false);
+    // The next free entry name ("strata-conv-<serial>" or "strata-conv-prefix-<serial>", without an extension).
+    std::string next_stem(bool prefix = false);
     // The gate's identity-level approval: a passed batch for exactly this source identity -> this cache's identity
     // and the configured engine build.  False when the gate is off or the ledger approved nothing.
     bool gate_identity_approved(const SessionFileIdentity& source) const;
@@ -284,25 +304,27 @@ private:
     // the row's size and token count match the file and sidecar (which stay authoritative).
     bool gate_entry_approved(const std::string& stem, const SessionFileIdentity& source, uint64_t file_bytes,
                              int64_t tokens) const;
-    bool index_written(const std::filesystem::path& stem, uint64_t file_bytes, const SavedConversation& meta,
+    bool index_written(const std::string& stem, uint64_t file_bytes, const SavedConversation& meta,
                        std::string& error, bool prefix = false);
-    bool read_sidecar(const std::filesystem::path& meta, Entry& entry, bool& other_identity,
+    bool read_sidecar(const std::string& meta, Entry& entry, bool& other_identity,
                       bool& stamped /* out: the v2 sidecar carries a persisted last-use stamp */, std::string& error) const;
     // with_last_used (--conversation-cache-disk-delta) writes the v2 sidecar carrying Entry::last_used; without it
     // the baseline v1 bytes are written, so a directory a pre-delta build reads is never migrated by a delta-off run
-    bool write_sidecar(const std::filesystem::path& meta, const Entry& entry, std::string& error,
+    bool write_sidecar(const std::string& meta, const Entry& entry, std::string& error,
                        bool with_last_used) const;
     // The chain manifest beside <stem>.dlog: base size (must match the session file) and the committed length.
-    bool read_chain(const std::filesystem::path& chain, uint64_t base_size, const std::filesystem::path& dlog,
+    bool read_chain(const std::string& chain, uint64_t base_size, const std::string& dlog,
                     uint64_t& committed, std::string& error) const;
-    bool write_chain(const std::filesystem::path& chain, uint64_t base_size, uint64_t committed,
+    bool write_chain(const std::string& chain, uint64_t base_size, uint64_t committed,
                      std::string& error) const;
 
+    std::shared_ptr<ConversationStore> store_;   // where the entry files live (a local directory by default)
     bool enabled_ = false;
     SessionFileIdentity identity_{};
     uint64_t budget_ = 0, bytes_ = 0, serial_ = 0;
     size_t stale_files_wiped_ = 0, disk_evictions_ = 0;
-    std::filesystem::path directory_;
+    std::filesystem::path directory_;   // the local store's directory (empty for a store without one): the gate
+                                        // ledger, the folder's creation and the temporaries' wipe live here
     std::vector<Entry> entries_;   // index order only; the budget evicts by Entry::last_used (least recent first)
                                    // when delta_chains is on, else first-spilled first (the baseline policy)
     bool delta_ = false;           // --conversation-cache-disk-delta: v2 sidecars, LRU eviction, chain appends
