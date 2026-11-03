@@ -1,3 +1,4 @@
+import { devLoopMaxRuns } from '../dev/overrides';
 import { tr } from './i18n';
 import type { LoopRecord } from './types';
 import { LOOP_MAX_FAILURES, LOOP_MAX_RUNS, judgeAnswer, loopEndNote, loopEvery, loopLimitNote, withStopRule, type LoopLimits, type LoopStop } from './loop';
@@ -134,7 +135,7 @@ export class LoopScheduler {
     // The time is up, or the count is reached: never fire again, even if the last answer was not judged (a busy chat).
     if (loop.maxMs !== undefined && this.host.now() - loop.startedAt >= loop.maxMs) { this.finish(sessionId, loop, 'time'); return; }
     if (loop.maxRuns !== undefined && loop.answers >= loop.maxRuns) { this.finish(sessionId, loop, 'count'); return; }
-    if (loop.answers >= LOOP_MAX_RUNS) { this.finish(sessionId, loop, 'cap'); return; }
+    if (loop.answers >= devLoopMaxRuns(LOOP_MAX_RUNS)) { this.finish(sessionId, loop, 'cap'); return; }
     // Wait for a quiet moment: this chat is open and nothing is being answered.
     if (!this.host.ready(sessionId)) { this.schedule(sessionId, this.busyRetryMs); return; }
     await this.run(sessionId);

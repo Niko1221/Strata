@@ -19,6 +19,7 @@ import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
 import { Btn, Dialog, Icon, IconBtn, type IconName } from '../components/ui';
 import { Brand } from '../components/Brand';
 import { DevBadge } from '../components/DevBadge';
+import { DevElement, DevListRow, useDevList } from '../dev/dev';
 import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
 export function Sidebar({ containerRef }: {
     containerRef: RefObject<HTMLElement | null>;
@@ -71,14 +72,20 @@ export function Sidebar({ containerRef }: {
     const matching = sessions.filter(s => (!s.archived || q || includeArchived) && (!q || `${sessionTitle(s)} ${s.messages.map(m => m.content).join(' ')}`.toLowerCase().includes(q))).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
     function openMenu(id: string, trigger: HTMLElement) { menuTrigger.current = trigger; setMenuId(id); }
     function closeMenu() { setMenuId(null); menuTrigger.current?.focus(); }
+    // Strata Dev: the sidebar's links are a list with fixed ids (sidebar.skills, sidebar.monitor, sidebar.models) and the "sidebar" slot. Live: the three links as before.
+    const navLinks = useDevList<{ route: Route; icon: IconName; current: string }>('sidebar', [
+        { id: 'sidebar.skills', label: 'Skills', item: { route: 'skills', icon: 'skills', current: location.route } },
+        { id: 'sidebar.monitor', label: 'Monitor', item: { route: 'monitor', icon: 'activity', current: location.route } },
+        { id: 'sidebar.models', label: 'Models', item: { route: 'models', icon: 'models', current: location.route === 'tuning' ? 'models' : location.route } },
+    ]);
     return <>
     <aside className="nav" ref={containerRef} aria-label={tr("Main navigation")} aria-modal={navOpen && compact ? true : undefined} role={navOpen && compact ? 'dialog' : undefined} tabIndex={-1}>
       <div className="nav__top">{tr(!collapsed ? <a className="nav__brand" href={href('chat')} aria-label={tr("Strata — open chat")}><Brand variant="lockup" height={28} decorative className="nav__brand-lockup"/></a> : null)}<DevBadge/><button type="button" className="nav__collapse" aria-label={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} title={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} onClick={() => compact ? setNavOpen(!navOpen) : toggleRail()}><Icon name="panel" size={20}/></button></div>
       <div className="nav__scroll">
-        <button className="st-btn st-btn--primary nav-new" aria-label={tr("New chat")} title={tr("New chat")} onClick={() => runCommand('new')}><Icon name="new-chat" size={18}/><span className="nav__rail-hide">{tr("New chat")}</span></button>
-        <TaskTree collapsed={collapsed}/>
+        <DevElement id="sidebar.new-chat"><button className="st-btn st-btn--primary nav-new" aria-label={tr("New chat")} title={tr("New chat")} onClick={() => runCommand('new')}><Icon name="new-chat" size={18}/><span className="nav__rail-hide">{tr("New chat")}</span></button></DevElement>
+        <DevElement id="sidebar.tasks"><TaskTree collapsed={collapsed}/></DevElement>
         {tr(collapsed ? <div className="nav-recent" aria-label={tr("Recent chats")}>{tr(recentChats(sessions, activeSession).map((session, index) => <RecentChatLink key={session.id} session={session} slot={index + 1} active={activeSession === session.id && location.route === 'chat'}/>))}</div> : null)}
-        {!collapsed ? <div className="ws">
+        <DevElement id="sidebar.workspaces">{!collapsed ? <div className="ws">
           <div className="ws__head">{tr(searchOpen ? <div className="nav-search"><Icon name="search" size={16}/><input ref={searchInput} className="st-input st-input--bare" type="search" placeholder={tr("Search chats…")} aria-label={tr("Search chats")} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => {
                     if (e.key === 'Escape') {
                         e.preventDefault();
@@ -100,14 +107,12 @@ export function Sidebar({ containerRef }: {
               </div> : null)}
             </div>;
             })}
-        </div> : null}
+        </div> : null}</DevElement>
       </div>
       <div className="nav__foot">
-        <button className="enginechip" data-state={status === 'Ready' ? 'ready' : ['Reading prompt', 'Thinking', 'Generating', 'Loading'].includes(status) ? 'busy' : 'off'} onClick={() => go('models')} title={tr("{0} \u00B7 {1} \u00B7 {2}", [modelName, modelQuant, tr(status)])} aria-label={tr("{0} \u00B7 {1}", [modelName, modelQuant])}><span className="enginechip__family"><Icon name={modelFamilyIcon(current?.family)} size={20}/><span className="enginechip__dot"/></span><span className="enginechip__text nav__rail-hide"><span className="enginechip__title">{modelName}</span><span className="enginechip__sub">{modelQuant}</span></span></button>
-        <NavLink route="skills" label={tr("Skills")} icon="skills" current={location.route}/>
-        <NavLink route="monitor" label={tr("Monitor")} icon="activity" current={location.route}/>
-        <NavLink route="models" label={tr("Models")} icon="models" current={location.route === 'tuning' ? 'models' : location.route}/>
-        <div className="nav__bottom"><MoreMenu current={location.route}/><button className="st-btn st-btn--icon theme-switch" aria-label={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} title={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} onClick={() => setTheme(dark ? 'light' : 'dark')}><span key={String(dark)} className="theme-switch__icon"><Icon name={dark ? 'sun' : 'moon'} size={19}/></span></button></div>
+        <DevElement id="sidebar.engine"><button className="enginechip" data-state={status === 'Ready' ? 'ready' : ['Reading prompt', 'Thinking', 'Generating', 'Loading'].includes(status) ? 'busy' : 'off'} onClick={() => go('models')} title={tr("{0} \u00B7 {1} \u00B7 {2}", [modelName, modelQuant, tr(status)])} aria-label={tr("{0} \u00B7 {1}", [modelName, modelQuant])}><span className="enginechip__family"><Icon name={modelFamilyIcon(current?.family)} size={20}/><span className="enginechip__dot"/></span><span className="enginechip__text nav__rail-hide"><span className="enginechip__title">{modelName}</span><span className="enginechip__sub">{modelQuant}</span></span></button></DevElement>
+        {navLinks.map(row => <DevListRow key={row.id} row={row} draw={(link, label) => <NavLink route={link.route} label={tr(label ?? '')} icon={link.icon} current={link.current}/>}/>)}
+        <div className="nav__bottom"><DevElement id="sidebar.more"><MoreMenu current={location.route}/></DevElement><DevElement id="sidebar.theme"><button className="st-btn st-btn--icon theme-switch" aria-label={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} title={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} onClick={() => setTheme(dark ? 'light' : 'dark')}><span key={String(dark)} className="theme-switch__icon"><Icon name={dark ? 'sun' : 'moon'} size={19}/></span></button></DevElement></div>
       </div>
     </aside>
     {tr(menuId && menuSession ? <FloatingMenu anchor={menuTrigger.current} title={tr("Actions for {0}", [sessionTitle(menuSession)])} onClose={closeMenu}>
@@ -191,5 +196,5 @@ function MoreMenu({ current }: {
     const [quitOpen, setQuitOpen] = useState(false);
     const appMode = useAppMode();
     const ref = useRef<HTMLButtonElement>(null);
-    return <><button ref={ref} className="navitem nav__more" aria-label={tr("More — Serving and Settings")} aria-haspopup="menu" aria-expanded={open} data-active={['serving', 'settings'].includes(current) || undefined} onClick={() => setOpen(v => !v)}><Icon name="ellipsis"/><span className="navitem__text">{tr("More")}</span></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("More")} onClose={() => { setOpen(false); ref.current?.focus(); }}>{tr(([{ route: 'serving', label: 'Serving', icon: 'link' }, { route: 'settings', label: 'Settings', icon: 'settings' }] as const).map(d => <a key={d.route} role="menuitem" className="menu__item" href={href(d.route)} onClick={() => setOpen(false)}><Icon name={d.icon}/>{tr(d.label)}</a>))}{appMode.canQuit ? <button type="button" role="menuitem" className="menu__item" onClick={() => { setOpen(false); setNavOpen(false); setQuitOpen(true); }}><Icon name="x"/>{tr("Quit Strata")}</button> : null}</FloatingMenu> : null)}<QuitStrataDialog open={quitOpen} onClose={() => setQuitOpen(false)}/></>;
+    return <><button ref={ref} className="navitem nav__more" aria-label={tr("More — Serving and Settings")} aria-haspopup="menu" aria-expanded={open} data-active={['serving', 'settings'].includes(current) || undefined} onClick={() => setOpen(v => !v)}><Icon name="ellipsis"/><span className="navitem__text">{tr("More")}</span></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("More")} onClose={() => { setOpen(false); ref.current?.focus(); }}>{tr(([{ route: 'serving', label: 'Serving', icon: 'link' }, { route: 'settings', label: 'Settings', icon: 'settings' }] as const).map(d => <DevElement key={d.route} id={`sidebar.more.${d.route}`}><a role="menuitem" className="menu__item" href={href(d.route)} onClick={() => setOpen(false)}><Icon name={d.icon}/>{tr(d.label)}</a></DevElement>))}{appMode.canQuit ? <button type="button" role="menuitem" className="menu__item" onClick={() => { setOpen(false); setNavOpen(false); setQuitOpen(true); }}><Icon name="x"/>{tr("Quit Strata")}</button> : null}</FloatingMenu> : null)}<QuitStrataDialog open={quitOpen} onClose={() => setQuitOpen(false)}/></>;
 }

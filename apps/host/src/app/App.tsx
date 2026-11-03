@@ -1,7 +1,8 @@
 import { tr } from '../lib/i18n';
 /** App shell: routes, setup takeover, palette, toasts. */
 import { useNative } from '../lib/native';
-import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { DevElement, DevRoot, reportDevError } from '../dev/dev';
 import { useSurfaceFocus } from '../lib/focus';
 import { closeSettings, useLocation } from '../lib/router';
 import { bootOnce, bootstrap, setNavOpen, setFocus, useStore, } from '../lib/store';
@@ -75,6 +76,7 @@ function AppShell() {
           </div>
         </div>) : null)}
       <Toasts />
+      <DevRoot />
     </div>);
 }
 /**
@@ -152,7 +154,14 @@ function FocusBar() {
       <IconBtn name="x" title={tr("Leave focus mode")} onClick={() => setFocus(false)}/>
     </div>);
 }
+/* Strata Dev: every screen has a fixed id (screen.chat, screen.models, ...) that dev.config.json or an extension can replace. Live: the screen as is. */
 function RouteView({ route }: {
+    route: string;
+}) {
+    const id = ['models', 'tuning', 'serving', 'monitor', 'tasks', 'skills'].includes(route) ? route === 'tuning' ? 'models' : route : 'chat';
+    return <DevElement id={`screen.${id}`} props={{ route }}><RouteScreen route={route}/></DevElement>;
+}
+function RouteScreen({ route }: {
     route: string;
 }) {
     switch (route) {
@@ -195,6 +204,8 @@ class AppBoundary extends Component<{
 }> {
     state = { failed: false };
     static getDerivedStateFromError() { return { failed: true }; }
+    // Strata Dev only: the error with its component stack goes to the Dev panel's Logs (does nothing outside Dev).
+    componentDidCatch(error: Error, info: ErrorInfo) { reportDevError(error, { componentStack: info.componentStack ?? undefined }); }
     render() {
         if (!this.state.failed)
             return this.props.children;

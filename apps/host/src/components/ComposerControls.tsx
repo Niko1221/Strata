@@ -1,3 +1,4 @@
+import { devDefaultMode } from '../dev/overrides';
 import { tr } from '../lib/i18n';
 import { modelFamilyIcon } from '../lib/model-icons';
 import { useEffect, useRef, useState } from 'react';
@@ -54,7 +55,8 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     // A model on an API takes a reasoning effort when its provider says it can think (OpenRouter's model list); otherwise the provider decides.
     const apiOnlyDefault = !!apiModel && apiModel.thinks !== true;
     const pictures = pictureStatus(native, remoteModel, providers);
-    const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
+    // Strata Dev: a chat with no mode of its own shows dev.config.json's default mode (outside Dev the lookup is the same as before).
+    const mode = modes.find(m => m.value === (session?.preferences?.mode ?? devDefaultMode(undefined))) ?? modes[0];
     const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'Medium';
     const budget = session?.preferences?.thinkingBudget ?? 0;
     const shortcut = MOD === '⌘' ? '⌘⇧A' : 'Ctrl+Shift+A';

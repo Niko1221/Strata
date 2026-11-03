@@ -1,3 +1,4 @@
+import { DevSlot } from '../dev/dev';
 import { tr } from '../lib/i18n';
 import { PreviewControls } from './PreviewControls';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -73,6 +74,7 @@ export function ArtifactPanel({ items, selected, onSelect, onClose, onCloseTab, 
       {tr(current.kind === 'website' ? <><iframe key={`${current.id}-${revision}`} title={current.title} src={current.content ? undefined : url ?? undefined} srcDoc={current.content} sandbox="allow-scripts" referrerPolicy="no-referrer"/></> : current.kind === 'pdf' ? url ? <Suspense fallback={<p className="muted preview-placeholder">{tr("Opening PDF viewer\u2026")}</p>}><PdfPreview key={`${current.id}-${revision}`} url={url}/></Suspense> : <p>{tr("No PDF to display.")}</p> : current.kind === 'image' ? <div className="image-preview" data-size={imageSize === '1' ? 'actual' : 'fit'}>{tr(url ? <img key={`${current.id}-${revision}`} src={url} alt={current.title} onError={() => setError('Couldn’t load this image.')}/> : null)}{tr(error ? <p role="alert">{tr(error)}</p> : null)}</div> : loading ? <p className="muted preview-placeholder">{tr("Loading document\u2026")}</p> : error ? <p role="alert" className="inline-error preview-placeholder">{tr(error)}</p> : current.kind === 'code' ? <SyntaxCode text={text} filename={artifactFilename(current)} lineNumbers/> : current.kind === 'table' ? <TablePreview key={current.id} text={text}/> : mode === 'source' ? <SyntaxCode text={text} language="markdown" lineNumbers/> : <article className="document-markdown"><Markdown text={text}/></article>)}
     </div>
     {tr(viewControls ? <div className="artifact-view-controls">{tr(viewControls)}</div> : null)}
+    <DevSlot name="preview.panel" props={{ item: current }}/>
   </aside>;
     return inline ? <>{tr(toolbarHost ? createPortal(actions, toolbarHost) : null)}{tr(content)}{tr(actionMenu)}</> : <Dialog open title={tr("Preview")} onClose={onClose} headerActions={actions} sheet hideTitle>{tr(content)}{tr(actionMenu)}</Dialog>;
 }

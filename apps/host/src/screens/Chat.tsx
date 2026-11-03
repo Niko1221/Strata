@@ -24,6 +24,7 @@ import { StatusLine } from '../components/StatusLine';
 import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
+import { DevElement, DevSlot } from '../dev/dev';
 import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
 import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
@@ -555,7 +556,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
       <div className="composer">
         <div className="composer__inner">
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
-          <FolderChip chatId={session?.id} disabled={streaming}/>
+          <DevElement id="chat.composer.folder"><FolderChip chatId={session?.id} disabled={streaming}/></DevElement>
           <GoalBar chatId={session?.id}/>
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
@@ -601,8 +602,8 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
             }
         }}/>
           <div className="st-composer__bar">
-            <ComposerControls draft={draft} onDraft={setDraft} session={session} onPreview={onPreview} streaming={streaming} onSlash={() => { setSlashDismissed(false); setSlashOpen(true); requestAnimationFrame(() => textareaRef.current?.focus()); }} onError={setFileError} onAttach={(name, text) => { setDraft(`${draft}${draft ? '\n\n' : ''}Attached ${name}\n\n${text}`); requestAnimationFrame(() => textareaRef.current?.focus()); }}/>
-            {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
+            <DevElement id="chat.composer.controls"><ComposerControls draft={draft} onDraft={setDraft} session={session} onPreview={onPreview} streaming={streaming} onSlash={() => { setSlashDismissed(false); setSlashOpen(true); requestAnimationFrame(() => textareaRef.current?.focus()); }} onError={setFileError} onAttach={(name, text) => { setDraft(`${draft}${draft ? '\n\n' : ''}Attached ${name}\n\n${text}`); requestAnimationFrame(() => textareaRef.current?.focus()); }}/></DevElement>
+            <DevElement id="chat.composer.send">{tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}</DevElement>
           </div>
         </div>
         <ChatTelemetry session={session}/>
@@ -649,13 +650,14 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
-            <IconBtn name="copy" title={tr("Copy message")} onClick={() => void copyText(m.content, 'Message', { toast: pushToast })}/>
-            <IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
+            <DevElement id="chat.message.copy"><IconBtn name="copy" title={tr("Copy message")} onClick={() => void copyText(m.content, 'Message', { toast: pushToast })}/></DevElement>
+            <DevElement id="chat.message.rewind"><IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
                 const prompt = rewindTo(m.id);
                 if (prompt !== null)
                     onEditPrompt(prompt);
-            }}/>
-            <MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu>
+            }}/></DevElement>
+            <DevSlot name="chat.message.actions" props={{ message: m, role: 'user' }}/>
+            <DevElement id="chat.message.more"><MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu></DevElement>
           </span>
         </div>
       </div>);
@@ -688,15 +690,16 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
       {tr(!m.streaming && !m.timeSkipId && (m.content || m.error) ? (<div className="st-msg__meta">
           <span className="st-msg__actions">
             {tr(isLast ? <>
-              <IconBtn name="copy" title={tr("Copy response")} onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}/>
-              <IconBtn name="refresh" title={tr("Ask again")} onClick={() => void retryLast(m.id)}/>
+              <DevElement id="chat.message.copy"><IconBtn name="copy" title={tr("Copy response")} onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}/></DevElement>
+              <DevElement id="chat.message.retry"><IconBtn name="refresh" title={tr("Ask again")} onClick={() => void retryLast(m.id)}/></DevElement>
             </> : null)}
-            <MessageMenu label={tr("More response actions")}>
+            <DevSlot name="chat.message.actions" props={{ message: m, role: 'assistant' }}/>
+            <DevElement id="chat.message.more"><MessageMenu label={tr("More response actions")}>
               {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
               <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button>
               {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}
-            </MessageMenu>
+            </MessageMenu></DevElement>
           </span>
         </div>) : null)}
     </div>);

@@ -1,5 +1,36 @@
 /** Ports the host listens on: a free one for the helpers, and a plain sentence when the main one cannot be taken. */
 import net from 'node:net';
+import { spawnSync } from 'node:child_process';
+
+/** The ranges in `netsh int ipv4 show excludedportrange protocol=tcp` output: every line with a start and an end port. */
+export function parseExcludedPortRanges(text) {
+  const ranges = [];
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const m = /^\s*(\d{1,5})\s+(\d{1,5})(\s+\*)?\s*$/.exec(line);
+    if (m && Number(m[1]) <= Number(m[2])) ranges.push({ start: Number(m[1]), end: Number(m[2]), admin: !!m[3] });
+  }
+  return ranges;
+}
+
+/**
+ * Strata Dev only (index.mjs asks when STRATA_DEV=1): the range Windows keeps that holds `port`, or null (no such range, not
+ * Windows, or netsh did not answer). Hyper-V, WSL and Docker reserve these; a port inside one cannot be listened on.
+ */
+export function windowsReservedRange(port, { platform = process.platform, run = spawnSync } = {}) {
+  if (platform !== 'win32') return null;
+  try {
+    const r = run('netsh', ['int', 'ipv4', 'show', 'excludedportrange', 'protocol=tcp'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    if (r.status !== 0) return null;
+    return parseExcludedPortRanges(r.stdout).find(range => port >= range.start && port <= range.end) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The Dev message for a port inside a reserved range: which range, and what to do. */
+export function reservedPortMessage(port, range) {
+  return `Port ${port} ist von Windows reserviert (Bereich ${range.start}-${range.end}, gehalten von Hyper-V, WSL oder Docker). Starte Strata Dev mit einem anderen Port (STRATA_PORT) oder gib den Bereich frei ("netsh int ipv4 show excludedportrange protocol=tcp" zeigt alle Bereiche).`;
+}
 
 /** Why a listen failed, in words a person can act on (Windows keeps whole ranges for Hyper-V, WSL and Docker). */
 export function listenProblem(error, port, host = '127.0.0.1') {

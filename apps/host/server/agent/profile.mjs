@@ -23,6 +23,7 @@ import { standardPreset } from './preset.mjs';
 import { validMcpName } from '../mcp-names.mjs';
 import { BUDGETS, isPrivateHost } from './llm-shape.mjs';
 import { DDG_PROVIDER_ID } from '../web-search-ddg.mjs';
+import { activeDevSettings, devToolsSettings } from '../dev-mode.mjs';
 
 const PROTOCOL = { 'openai-chat': 'openai-completions', 'openai-responses': 'openai-responses', anthropic: 'anthropic-messages' };
 
@@ -60,6 +61,8 @@ export const GATE_PLUGIN = fileURLToPath(new URL('./plugins/strata-gate.mjs', im
 export const CONTEXT_PLUGIN = fileURLToPath(new URL('./plugins/strata-context.mjs', import.meta.url));
 export const MODELS_PLUGIN = fileURLToPath(new URL('./plugins/strata-models.mjs', import.meta.url));
 export const SEARCH_PLUGIN = fileURLToPath(new URL('./plugins/strata-search.mjs', import.meta.url));
+/** Strata Dev only (STRATA_DEV=1): the on_tool_call hooks of dev/extensions/backend (plugins/strata-dev-hooks.mjs). */
+export const DEV_HOOKS_PLUGIN = fileURLToPath(new URL('./plugins/strata-dev-hooks.mjs', import.meta.url));
 /** The app's own tool server for the tools a person writes (instructions, commands). */
 export const CUSTOM_TOOLS_SCRIPT = fileURLToPath(new URL('./custom-tools-mcp.mjs', import.meta.url));
 
@@ -198,6 +201,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   const env = {};
   const routes = [];
   const mcpEnv = {};
+  // Strata Dev: dev.config.json may override web search and the default mode (null outside Dev, and then nothing changes).
+  const dev = activeDevSettings();
+  if (dev) tools = devToolsSettings(tools, dev);
   // Helper agents: at least as many as the engine has request slots (a local model); API models take the Harness's own limit.
   let slots = 0;
   /** Per-model compaction timing (see compactionHeadroom). */
@@ -315,11 +321,13 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     ...(defaultRoute ? [{ id: 'agent-default-model', name: '@deepseek-ai/dsh-agent-default-model', config: { provider: defaultRoute.route, model: defaultRoute.modelId } }] : []),
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers } },
     // The chat modes. Replacing the table also drops the Harness's own three presets: a chat is always in one of ours.
-    { id: 'permission', config: { presets: Object.fromEntries(Object.values(MODE_PRESETS).map(({ key, sandbox, approval, name, description }) => [key, { sandbox, approval, name, description }])), defaultPreset: MODE_PRESETS[DEFAULT_MODE].key } },
+    { id: 'permission', config: { presets: Object.fromEntries(Object.values(MODE_PRESETS).map(({ key, sandbox, approval, name, description }) => [key, { sandbox, approval, name, description }])), defaultPreset: MODE_PRESETS[dev?.overrides.permissions.defaultMode ?? DEFAULT_MODE].key } },
     { id: 'subagent', config: { maxActiveSubagents: slots > 0 ? Math.max(slots, MIN_LOCAL_HELPERS) : DEFAULT_API_HELPERS } },
     // Manual asks before a change runs, so the person sees one Approve/Deny card and nothing has happened yet.
     // Its web question names the search service the person chose (a keyed one only when its key is saved), and the person's switch skips the question.
     ...(gate ? [{ insert: [{ id: 'strata-gate', name: GATE_PLUGIN, config: { web: { provider: SEARCH_NAMES[keyed ?? 'builtin'], skipAsk: tools.webWithoutAsking === true } } }] }] : []),
+    // Strata Dev: the on_tool_call hooks, after the gate (so a refused call never shows a card).
+    ...(dev?.backendDir ? [{ insert: [{ id: 'strata-dev-hooks', name: DEV_HOOKS_PLUGIN, config: { dir: dev.backendDir, timeoutMs: dev.hooks.timeoutMs, disabled: dev.hooks.disabled, ...(dev.python ? { python: dev.python } : {}) } }] }] : []),
     // Compaction decides from what the model server measured, and its summary requests always fit the window (plugins/strata-context.mjs).
     { insert: [{ id: 'strata-context', name: CONTEXT_PLUGIN, config: {} }] },
     // Helper agents on a model the person names: every model the app can reach is allowed, and the plugin makes the choice forgiving (plugins/strata-models.mjs).

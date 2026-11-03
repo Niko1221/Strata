@@ -1,0 +1,40 @@
+/* Strata Dev (docs/DEV_BUILD.md): the Dev panel, the inspector and the element markers. Only Dev ever draws these classes.
+   Everything uses the design tokens (src/styles/kit/tokens.css), so dev.config.json "tokens" restyles it too. */
+.dev-mark { display: contents; }
+.dev-ext-error { display: inline-flex; align-items: center; gap: 4px; max-width: 280px; padding: 2px 8px; border-radius: var(--st-r-sm); border: 1px solid var(--st-danger); background: var(--st-danger-tint); color: var(--st-danger-text); font-size: var(--st-fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dev-badge[role='button'] { cursor: pointer; }
+
+.devpanel { position: fixed; right: 16px; bottom: 16px; z-index: 2147483000; width: min(760px, calc(100vw - 32px)); height: min(520px, calc(100vh - 32px)); display: flex; flex-direction: column; background: var(--st-surface); color: var(--st-ink); border: 1px solid var(--st-line); border-radius: var(--st-r-md); box-shadow: 0 16px 48px rgba(0, 0, 0, .25); font-family: var(--st-font); font-size: var(--st-fs-sm); resize: both; overflow: hidden; }
+.devpanel__head { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--st-line); }
+.devpanel__tabs { display: flex; gap: 4px; flex: 1; }
+.devpanel__tab { border: 0; background: none; color: var(--st-ink-muted); padding: 4px 10px; border-radius: var(--st-r-pill); cursor: pointer; font: inherit; }
+.devpanel__tab[aria-selected='true'] { background: var(--st-accent-tint); color: var(--st-accent-text); font-weight: var(--st-fw-medium); }
+.devpanel__x { border: 0; background: none; font-size: 20px; line-height: 1; cursor: pointer; color: var(--st-ink-muted); }
+.devpanel__body { flex: 1; overflow: auto; padding: 12px; min-height: 0; display: flex; flex-direction: column; }
+.devpanel__foot { padding: 4px 12px; border-top: 1px solid var(--st-line); color: var(--st-ink-muted); font-family: var(--st-font-mono); font-size: var(--st-fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.devpanel__stack { display: flex; flex-direction: column; gap: 8px; }
+.devpanel__stack--fill { flex: 1; min-height: 0; }
+.devpanel__stack h3 { margin: 4px 0 0; font-size: var(--st-fs-sm); }
+.devpanel__row { display: flex; align-items: center; gap: 8px; }
+.devpanel__wrap { flex-wrap: wrap; }
+.devpanel__spacer { flex: 1; }
+.devpanel__muted { color: var(--st-ink-muted); font-size: var(--st-fs-xs); }
+.devpanel__btn { border: 1px solid var(--st-line); background: var(--st-surface); color: var(--st-ink); border-radius: var(--st-r-sm); padding: 3px 10px; cursor: pointer; font: inherit; }
+.devpanel__btn:hover { border-color: var(--st-accent); }
+.devpanel__input { flex: 1; min-width: 140px; border: 1px solid var(--st-line); border-radius: var(--st-r-sm); padding: 3px 8px; background: var(--st-bg); color: var(--st-ink); font: inherit; }
+.devpanel__chip { display: inline-flex; align-items: center; gap: 4px; font-size: var(--st-fs-xs); }
+.devpanel__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.devpanel__list > li { padding: 6px 8px; border: 1px solid var(--st-line); border-radius: var(--st-r-sm); }
+.devpanel__err { margin: 4px 0 0; padding: 6px 8px; border-radius: var(--st-r-sm); background: var(--st-danger-tint); color: var(--st-danger-text); font-family: var(--st-font-mono); font-size: var(--st-fs-xs); white-space: pre-wrap; max-height: 180px; overflow: auto; }
+.devpanel__log { flex: 1; min-height: 0; overflow: auto; background: var(--st-bg); border: 1px solid var(--st-line); border-radius: var(--st-r-sm); padding: 6px 8px; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); }
+.devpanel__line { white-space: pre-wrap; word-break: break-word; }
+.devpanel__line[data-level='error'] { color: var(--st-danger-text); }
+.devpanel__line[data-level='warn'] { color: var(--st-warn-text); }
+.devpanel__src { display: inline-block; min-width: 56px; color: var(--st-accent-text); }
+.devpanel__ids { columns: 2; margin: 0; padding-left: 16px; font-size: var(--st-fs-xs); }
+.devpanel__table { width: 100%; border-collapse: collapse; font-size: var(--st-fs-xs); }
+.devpanel__table th, .devpanel__table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--st-line); vertical-align: top; }
+.devpanel__table tr[data-error] td { color: var(--st-danger-text); }
+.devpanel__table tbody tr { cursor: pointer; }
+.devinspect { position: fixed; z-index: 2147482999; pointer-events: none; outline: 2px solid var(--st-accent); background: color-mix(in srgb, var(--st-accent) 10%, transparent); border-radius: 4px; }
+.devinspect__label { position: absolute; left: 0; top: -22px; padding: 1px 6px; border-radius: 4px; background: var(--st-accent); color: var(--st-accent-ink); font-family: var(--st-font-mono); font-size: 11px; white-space: nowrap; }

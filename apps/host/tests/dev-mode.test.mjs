@@ -44,7 +44,10 @@ test('dev.config.json: missing is the empty config, broken is a warning and neve
     assert.deepEqual(odd.config.features, {});
     assert.equal(odd.config.custom, 3, 'keys the host does not know yet are kept for later phases');
     assert.match(odd.warnings[0], /"features" must be an object/);
-    assert.deepEqual(devSummary(odd), { label: 'TEST', configFile: file, warnings: odd.warnings });
+    const summary = devSummary(odd);
+    assert.deepEqual({ label: summary.label, configFile: summary.configFile, warnings: summary.warnings }, { label: 'TEST', configFile: file, warnings: odd.warnings });
+    assert.equal(summary.verbose, false);
+    assert.deepEqual(summary.tokens, {});
 
     const unreadable = loadDevConfig({ file, read: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } });
     assert.match(unreadable.warnings[0], /could not be read/);

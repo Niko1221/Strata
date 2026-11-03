@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join, resolve } from 'node:path';
 import { externalEnvironment } from '../external-env.mjs';
 import { utf8Script } from '../powershell-utf8.mjs';
+import { devLogEnabled, push as devLog } from '../dev-log.mjs';
 
 const URL_PATTERN = /http:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_-]+)/;
 
@@ -84,7 +85,8 @@ export class HarnessProcess {
     this.#child = child;
     let text = '';
     const log = [];
-    const keep = chunk => { log.push(chunk.toString()); if (log.length > 200) log.shift(); };
+    // Strata Dev's Logs tab sees the agent's lines too (a no-op outside Dev, server/dev-log.mjs).
+    const keep = chunk => { log.push(chunk.toString()); if (log.length > 200) log.shift(); if (devLogEnabled()) devLog('harness', redact(chunk.toString(), Object.values(this.extraEnv))); };
     child.on('exit', (code, signal) => {
       this.exited = { code, signal };
       if (this.logFile) { try { writeFileSync(this.logFile, redact(log.join(''), Object.values(this.extraEnv))); } catch { /* best effort */ } }

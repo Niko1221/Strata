@@ -79,8 +79,11 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
-import { findFreePort, listenProblem } from './ports.mjs';
-import { defaultHostPort, devSummary, isDevMode, loadDevConfig } from './dev-mode.mjs';
+import { findFreePort, listenProblem, reservedPortMessage, windowsReservedRange } from './ports.mjs';
+import { defaultHostPort, devChatMode, devExtensionsDir, devSettings, devSummary, isDevMode, loadDevConfig, setActiveDevSettings } from './dev-mode.mjs';
+import { createDevHooks } from './dev-hooks.mjs';
+import { devApi } from './dev-api.mjs';
+import { captureConsole, devLogVerbose, enableDevLog, push as devLog, setVerbose as setDevVerbose } from './dev-log.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
@@ -100,7 +103,16 @@ const DIST = process.env.STRATA_DIST
     : join(ROOT, 'dist');
 const PORT = Number(process.env.STRATA_PORT ?? defaultHostPort());
 /* Strata Dev (docs/DEV_BUILD.md): dev.config.json is read once at start; a broken file is a warning, never a stop. Null unless STRATA_DEV=1. */
-const DEV = isDevMode() ? loadDevConfig() : null;
+let DEV = isDevMode() ? loadDevConfig() : null;
+/* Strata Dev's settings (dev-mode.mjs devSettings) and backend hooks (dev-hooks.mjs, created below once Python is known). Both null outside Dev. */
+let DEV_SETTINGS = null;
+let devHooks = null;
+if (DEV) {
+  DEV_SETTINGS = devSettings(DEV.config);
+  // The Dev panel's Logs tab: this process's console output is kept too (it still prints as before).
+  enableDevLog({ verbose: DEV_SETTINGS.verbose });
+  captureConsole();
+}
 for (const warning of DEV?.warnings ?? []) console.warn(`[strata] ${warning}`);
 const HOST = process.env.STRATA_BIND ?? '127.0.0.1';
 /* The folder chats work in when nothing else is chosen. It is never the app's own folder (the host is started inside its install
@@ -165,7 +177,7 @@ if (control) {
     return answer && !answer.usable && bundledWrongMake ? { ...answer, notice: bundledWrongMake, wrongMake: true } : answer;
   };
 }
-const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
+const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>{hub.send('native',value);devHooks?.observeModels(value);}});
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
@@ -608,7 +620,9 @@ async function runRemoteTurn({ selection, message, history, images = [], thinkin
 /** One agent turn for a chat, streamed to the caller as the NDJSON frames the chat already renders. */
 async function runAgentTurn({ res, controller, chatId, body, message, workspaceId, images = [] }) {
   const write = frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
-  const cwd = chatFolders.get(chatId) ?? (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
+  // Strata Dev's folder override: a switched-off folder mode ignores the chat's folder; a default path replaces WORKSPACE.
+  const devFolder = DEV_SETTINGS?.overrides.folder;
+  const cwd = (devFolder?.enabled === false ? null : chatFolders.get(chatId)) ?? (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? devFolder?.defaultPath ?? WORKSPACE;
   let choice, instance = null;
   if (body.remoteModel) {
     choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
@@ -635,7 +649,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
     // "/compact" summarises the older messages of this chat now (it used to go to the model as text, which answered it as a question).
     const compactLine = /^\/compact\s*$/i.test(message.trim());
-    const turnOptions = { chatId, message, workspacePath: cwd, choice, images, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    const turnOptions = { chatId, message, workspacePath: cwd, choice, images, mode: devChatMode(typeof body.mode === 'string' ? body.mode : null), thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
     const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
       : compactLine ? await agent.compactCommand(turnOptions)
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
@@ -954,6 +968,31 @@ const connector = createConnectorInstaller({ directory: join(store.HOME, 'engine
 const cloudflare = createCloudflare({ origin: tunnelOrigin, originUrl: `http://127.0.0.1:${tunnelPort}`, hasKey: () => !!store.get().serving?.apiKey, changed: serving.setTunnel, locate: connector.locate, prepareConnector: connector.ensure, connectorInfo: connector.connector, findRunning: findRunningConnector });
 await cloudflare.inspect();
 
+/* ------------------------------------------------- Strata Dev (STRATA_DEV=1) --- */
+
+/* Backend hooks (dev/extensions/backend), their /dev/... routes and the Dev panel's /api/dev/... routes. Nothing here exists outside Dev. */
+async function devReload() {
+  DEV = loadDevConfig();
+  for (const warning of DEV.warnings) console.warn(`[strata] ${warning}`);
+  DEV_SETTINGS = devSettings(DEV.config);
+  setDevVerbose(DEV_SETTINGS.verbose);
+  setActiveDevSettings({ ...DEV_SETTINGS, backendDir: join(devExtensionsDir(), 'backend'), python: { command: PYTHON.command, args: PYTHON.args ?? [] } });
+  devHooks.configure(DEV_SETTINGS.hooks);
+  await devHooks.load();
+}
+if (DEV) {
+  devHooks = createDevHooks({ dir: join(devExtensionsDir(), 'backend'), settings: DEV_SETTINGS.hooks, python: { command: PYTHON.command, args: PYTHON.args ?? [] } });
+  setActiveDevSettings({ ...DEV_SETTINGS, backendDir: devHooks.dir, python: { command: PYTHON.command, args: PYTHON.args ?? [] } });
+  await devHooks.load();
+}
+const devRoutes = (req, res, path, method, url) => devApi(req, res, path, method, url, {
+  json, error, readBody, hooks: devHooks, serving,
+  summary: () => devSummary(DEV),
+  reload: devReload,
+  supervisorLogs: () => supervisor.logs(400),
+  nativeLogs: () => native.logs(),
+});
+
 /* --------------------------------------------------------------- routing --- */
 
 const server = http.createServer(async (req, res) => {
@@ -974,6 +1013,19 @@ const server = http.createServer(async (req, res) => {
     if (path.startsWith('/api/') && req.headers.origin) {
       const origin = new URL(req.headers.origin);
       if (!['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)) return error(res, 403, 'Open the local Strata app to use host controls.');
+    }
+    if (devHooks) {
+      // Strata Dev: "ausführliches Logging" names every host request with its status and time.
+      if (devLogVerbose() && (path.startsWith('/api/') || path.startsWith('/dev/')) && path !== '/api/events' && path !== '/api/dev/logs') {
+        const started = Date.now();
+        res.on('finish', () => devLog('host', `${method} ${path} ${res.statusCode} ${Date.now() - started} ms`, res.statusCode >= 500 ? 'error' : 'debug'));
+      }
+      if (path.startsWith('/dev/')) {
+        if (req.headers.origin && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(req.headers.origin).hostname)) return error(res, 403, 'Open the local Strata app to use host controls.');
+        if (await devHooks.route(req, res, path, method, url, readBody)) return undefined;
+        return error(res, 404, `No Dev route for ${method} ${path}`);
+      }
+      if (path.startsWith('/api/dev/')) return await devRoutes(req, res, path, method, url);
     }
     if (path.startsWith('/api/')) {
       const modelOperation = !['GET', 'OPTIONS'].includes(method) && /^\/api\/(models|local-models|runtime|image-models|engine|native)(\/|$)/.test(path) && !['/api/runtime/plan', '/api/engine/validate', '/api/local-models/inspect'].includes(path);
@@ -1743,6 +1795,7 @@ async function api(req, res, path, method, url) {
     const body = await readBody(req);
     const id = String(body.sessionId ?? '');
     if (!id) return error(res, 400, 'sessionId is required');
+    if (DEV_SETTINGS?.overrides.folder.enabled === false) return error(res, 409, 'Folder mode is switched off in dev.config.json (overrides.folder.enabled).');
     if (agent.isRunning(id)) return error(res, 409, 'This chat is still working. Stop it or wait for it to finish, then choose the folder.');
     if (body.path === null || body.path === '') { chatFolders.clear(id); return json(res, 200, { folder: null }); }
     try { return json(res, 200, { folder: chatFolders.set(id, body.path) }); } catch (e) { return error(res, 400, e.message); }
@@ -1985,6 +2038,8 @@ async function api(req, res, path, method, url) {
   if ((path === '/api/chat/stream' || path === '/api/plan/start-goal') && method === 'POST') {
     const body = await readBody(req,12*1024*1024);
     if (path === '/api/plan/start-goal') { body.message = '/plan start'; if (typeof body.planId !== 'string') return error(res, 400, 'planId is required'); }
+    // Strata Dev: before_request may change the body; the answer is watched for on_token and after_response (dev-hooks.mjs).
+    if (devHooks) await devHooks.chatStream(req, res, body);
     let images;try{const named=Array.isArray(body.imageIds)&&body.imageIds.length?uploads.dataUrls(typeof body.sessionId==='string'?body.sessionId:'',body.imageIds):[];images=validateChatImages([...(Array.isArray(body.images)?body.images:[]),...named]);}catch(e){return error(res,400,e.message);}
     if(images.length&&body.remoteModel){const own=modelProviders.withSecrets().find(c=>c.id===body.remoteModel.connectionId);const row=own?.models.find(m=>m.id===body.remoteModel.modelId);const refused=await pictureRefusal(own,row);if(refused)return error(res,409,refused);}
     else if(images.length){let selected;try{selected=native.resolveInstance(body.nativeModelId??native.state().defaultId);}catch(e){return error(res,409,e.message);}if(!selected.vision)return error(res,409,'This model was started without picture reading. Open Models, turn on Read pictures and load it again, or choose a model that reads pictures.');}
@@ -2261,7 +2316,9 @@ async function staticFile(req, res, path) {
 server.on('error', error => {
   if (server.listening) { console.error(`[strata] ${error.message}`); return; }
   // a taken or Windows-reserved port: one plain sentence instead of a stack trace
-  console.error(`[strata] ${listenProblem(error, PORT, HOST)}`);
+  // Strata Dev names the reserved range when netsh shows one (Live keeps its sentence).
+  const reserved = DEV && ['EACCES', 'EADDRINUSE'].includes(error?.code) ? windowsReservedRange(PORT) : null;
+  console.error(`[strata] ${reserved ? reservedPortMessage(PORT, reserved) : listenProblem(error, PORT, HOST)}`);
   process.exit(1);
 });
 server.listen(PORT, HOST, () => {

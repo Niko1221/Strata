@@ -13,13 +13,18 @@ import { FontChoice } from '../components/FontChoice';
 import { ElectricityPrice } from '../components/ElectricityPrice';
 import { ApprovalNotifySetting, DoneSoundSetting, PortSetting, TraySetting, useShellState } from '../components/ShellSettings';
 import { LANGUAGES } from '../lib/i18n';
+import { DevElement, ExtensionBoundary, useDev, useDevList } from '../dev/dev';
 import { setLanguage } from '../lib/store';
 import { CONTENT_FONT_RANGE, setContentFontSize, setDensity, setFocus, setMotion, setShortcuts, setTheme, setTransparency, setUiScale, UI_SCALES, useStore, setSettingsSection } from '../lib/store';
 const PANELS = [{ name: 'Appearance', icon: 'sun', sections: ['General', 'Reading & focus'] }, { name: 'Models', icon: 'models', sections: [] }, { name: 'Tools', icon: 'tool', sections: [] }, { name: 'Storage', icon: 'disk', sections: ['Storage'] }, { name: 'Engine', icon: 'engine', sections: [] }, { name: 'About', icon: 'info', sections: ['About', 'Update', 'Privacy'] }] as const;
 export function SettingsScreen() {
     const prefs = useStore(s => s);
     const [shell, saveShell] = useShellState();
-    const active = prefs.settingsSection;
+    // Strata Dev: the tabs have fixed ids (settings.tabs.appearance, ...) and the "settings.tabs" slot adds tabs. Live: PANELS as they are.
+    const dev = useDev();
+    const rows = useDevList('settings.tabs', PANELS.map(p => ({ id: `settings.tabs.${p.name.toLowerCase()}`, label: p.name, item: p })));
+    const tabs = rows.map(row => row.kind === 'builtin' ? { key: row.item.name as string, label: row.label ?? row.item.name, icon: row.item.icon as IconName, row } : { key: row.id, label: row.label ?? row.contribution.id, icon: 'tool' as IconName, row });
+    const active = dev && !tabs.some(t => t.key === prefs.settingsSection) ? tabs[0]?.key ?? prefs.settingsSection : prefs.settingsSection;
     const scrollRef = useRef<HTMLDivElement>(null);
     const fields: {
         section: string;
@@ -44,8 +49,8 @@ export function SettingsScreen() {
         { section: 'Reading & focus', label: 'Transparency', hint: 'Translucent controls or solid surfaces. Text stays opaque.', aliases: 'blur glass liquid opaque translucent', control: <Select value={prefs.transparency} ariaLabel={tr("Transparency")} options={[{ value: 'translucent', label: 'Translucent' }, { value: 'opaque', label: 'Opaque' }]} onChange={setTransparency}/> },
         { section: 'Reading & focus', label: 'Focus reading', hint: 'Hides navigation in chat. Settings stays open above the conversation.', aliases: 'distraction quiet', control: <button className="st-toggle" role="switch" aria-checked={prefs.focus} aria-label={tr("Focus reading")} onClick={() => setFocus(!prefs.focus)}/> },
     ];
-    function activate(name: typeof PANELS[number]['name']) {
-        setSettingsSection(name);
+    function activate(name: string) {
+        setSettingsSection(name as typeof PANELS[number]['name']);
         scrollRef.current?.scrollTo({ top: 0 });
     }
     return <div className="settings-layout">
@@ -53,15 +58,16 @@ export function SettingsScreen() {
             if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key))
                 return;
             e.preventDefault();
-            const index = PANELS.findIndex(p => p.name === active);
-            const next = e.key === 'Home' ? 0 : e.key === 'End' ? PANELS.length - 1 : (index + (['ArrowDown', 'ArrowRight'].includes(e.key) ? 1 : -1) + PANELS.length) % PANELS.length;
-            activate(PANELS[next].name);
-            document.getElementById(`settings-tab-${PANELS[next].name}`)?.focus();
+            const index = tabs.findIndex(p => p.key === active);
+            const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (index + (['ArrowDown', 'ArrowRight'].includes(e.key) ? 1 : -1) + tabs.length) % tabs.length;
+            activate(tabs[next].key);
+            document.getElementById(`settings-tab-${tabs[next].key}`)?.focus();
         }}>
-      {tr(PANELS.map(panel => <button key={panel.name} role="tab" id={`settings-tab-${panel.name}`} aria-controls={`settings-panel-${panel.name}`} aria-selected={active === panel.name} tabIndex={active === panel.name ? 0 : -1} className="settingsindex__item" onClick={() => activate(panel.name)}><Icon name={panel.icon as IconName} size={17}/>{tr(panel.name)}</button>))}
+      {tr(tabs.map(tab => <DevElement key={tab.key} id={tab.row.id}><button role="tab" id={`settings-tab-${tab.key}`} aria-controls={`settings-panel-${tab.key}`} aria-selected={active === tab.key} tabIndex={active === tab.key ? 0 : -1} className="settingsindex__item" onClick={() => activate(tab.key)}><Icon name={tab.icon} size={17}/>{tr(tab.label)}</button></DevElement>))}
     </nav>
     <div className="settings-pane" ref={scrollRef}>
-      {tr(PANELS.map(panel => <div key={panel.name} role="tabpanel" tabIndex={0} id={`settings-panel-${panel.name}`} aria-labelledby={`settings-tab-${panel.name}`} hidden={active !== panel.name}>
+      {tr(tabs.filter(tab => tab.row.kind === 'contribution').map(tab => <div key={tab.key} role="tabpanel" tabIndex={0} id={`settings-panel-${tab.key}`} aria-labelledby={`settings-tab-${tab.key}`} hidden={active !== tab.key}>{tr(active === tab.key && tab.row.kind === 'contribution' ? <div className="stack stack--lg settings-body"><ExtensionBoundary extension={tab.row.contribution.extension} where={tab.row.id}>{tab.row.contribution.render({ label: tab.label })}</ExtensionBoundary></div> : null)}</div>))}
+      {tr(tabs.flatMap(tab => tab.row.kind === 'builtin' ? [tab.row.item] : []).map(panel => <div key={panel.name} role="tabpanel" tabIndex={0} id={`settings-panel-${panel.name}`} aria-labelledby={`settings-tab-${panel.name}`} hidden={active !== panel.name}>
         {tr(panel.name === 'Models' ? <SettingsModels /> : panel.name === 'Tools' ? (active === panel.name ? <SettingsTools /> : null) : panel.name === 'Engine' && active === panel.name ? <NativeOperations /> : active === panel.name ? <div className="stack stack--lg settings-body">
           {tr(panel.sections.map(section => <section className="settings-section" key={section}>
             <h2 className="h3" style={{ marginBottom: 14 }}>{tr(section)}</h2>

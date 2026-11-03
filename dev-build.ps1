@@ -130,8 +130,12 @@ if ($absent.Count) {
 # --- UI ----------------------------------------------------------------------------------------------------------
 if (-not $SkipUi) {
     if (-not (Test-Path (Join-Path $HostDir 'node_modules'))) { Say 'npm ci in apps/host ...'; & npm --prefix $HostDir ci --no-audit --no-fund; if ($LASTEXITCODE) { Fail 'npm ci in apps/host ist fehlgeschlagen.' } }
-    Say 'UI bauen (vite build) ...'
-    & npm --prefix $HostDir run build
+    # Mit STRATA_DEV=1 baut Vite die Dev-UI: die Extensions aus dev\extensions\ui eingebaut, React in der Entwicklungsversion
+    # (Fehler mit Komponenten-Stack), unminifiziert mit Source Maps (apps/host/vite.config.ts). Nur fuer diesen Schritt gesetzt.
+    Say 'UI bauen (vite build, Dev-Variante) ...'
+    $hadDev = [Environment]::GetEnvironmentVariable('STRATA_DEV', 'Process')
+    $env:STRATA_DEV = '1'
+    try { & npm --prefix $HostDir run build } finally { [Environment]::SetEnvironmentVariable('STRATA_DEV', $hadDev, 'Process') }
     if ($LASTEXITCODE) { Fail 'Der UI-Build ist fehlgeschlagen.' }
 }
 

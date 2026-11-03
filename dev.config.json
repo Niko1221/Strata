@@ -4,6 +4,9 @@
   "badge": {
     "label": "DEV"
   },
+  "logging": {
+    "verbose": false
+  },
   "features": {},
   "overrides": {}
 }
