@@ -584,7 +584,7 @@ mod tests {
         let path = write_startup_failure(&dir, "the app stopped unexpectedly: boom (at main.rs:1, thread main)", Some(Path::new("/x/desktop-1.log"))).unwrap();
         assert!(path.file_name().unwrap().to_string_lossy().starts_with("desktop-crash-"));
         let text = std::fs::read_to_string(&path).unwrap();
-        for needle in ["boom", "main.rs:1", "/x/desktop-1.log", "0.2.0", "System:", "Meaning:"] {
+        for needle in ["boom", "main.rs:1", "/x/desktop-1.log", env!("CARGO_PKG_VERSION"), "System:", "Meaning:"] {
             assert!(text.contains(needle), "{needle}");
         }
         let _ = std::fs::remove_dir_all(&dir);
