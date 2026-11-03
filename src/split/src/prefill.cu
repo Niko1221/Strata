@@ -396,6 +396,7 @@ struct Engine::Pf {
     // `mixed` (mixedk): the reads of the pass's chunks come before their heavy halves. hg_in: the landing place of the other card's rows (two
     // sets by the swap's number), hg_flags[set][piece] set by the other card's stream (the swap's number); rg_*: the same for the residual
     // streams R at the end of the pass (the draft layer reads every row of R).
+    bool down_lt = false;                // the cublasLt algorithm was found (NVIDIA only; HIP never sets it, but the hyper-connection checks read it)
 #if !FNX_HIP
     // the hyper-connection down GEMM (320 x 10240, K = 10240) through cublasLt with ONE algorithm whose rows do not depend on the number of rows
     // (found at start by pf_lt_calibrate: equal to cublasGemmEx's choice at 4096 rows, and the same rows at 2048); FNX_PF_HCSPLIT only. cublasGemmEx
@@ -408,7 +409,6 @@ struct Engine::Pf {
     };
     cublasLtHandle_t lt = nullptr;
     cublasLtMatmulAlgo_t down_algo;
-    bool down_lt = false;
     void* lt_ws = nullptr;
     size_t lt_ws_bytes = 0;
     std::vector<LtShape> lt_shapes;
