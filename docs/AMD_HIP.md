@@ -422,12 +422,25 @@ written once at load and only read by the GPU after that.
 "env": {"HSA_USERPTR_FOR_PAGED_MEM": "0", "STRATA_HIP_ARENA_NONCOHERENT": "1"}
 ```
 
-The GTT limit must hold the complement, the KV copies and ROCr's own buffers. It is half the RAM by default (31 GiB on a
-64 GB host): raise it with the kernel parameter `ttm.pages_limit=<4 KiB pages>` (11534336 = 44 GiB) and check
-`/sys/class/drm/card*/device/mem_info_gtt_total` after the reboot. If the limit is too small, the allocation is
-refused and the complement falls back to registered pageable memory ("page-locking refused" in the log): a registration is a userptr whatever `HSA_USERPTR_FOR_PAGED_MEM` says, so the evictions come back. GTT pages are as unswappable as
-locked ones, so the same RAM caution applies. `STRATA_HIP_MLOCK` is not needed with GTT; it stays the choice where the
-GTT limit cannot be raised.
+The GTT limit must hold the complement and everything else the engine and ROCr allocate for the GPU on the host: about
+5.7 GiB beyond the complement at 256K context with int8 KV, so keep it above the resident budget + 6 GiB or so. It is
+half the RAM by default (31 GiB on a 64 GB host), and amdgpu reads it once when it loads: raise it with the kernel
+parameter `ttm.pages_limit=<4 KiB pages>` (11534336 = 44 GiB; a write to `/sys/module/ttm/parameters/pages_limit` after
+boot does not change it) and check `/sys/class/drm/card*/device/mem_info_gtt_total` after the reboot. GTT pages are as
+unswappable as locked ones, so the same RAM caution applies. `STRATA_HIP_MLOCK` is not needed with GTT; it stays the
+choice where the GTT limit cannot be raised.
+
+The start log says which path the complement took:
+
+| Start log | What happened |
+| --- | --- |
+| `page-locked and mapped` | The complement is in GTT |
+| `page-locking refused (...); trying pageable memory` | The complement alone is over the GTT limit |
+| `page-locked after taking the pages in steps` | Free RAM at start was below the complement plus a reserve. This paced path registers the memory in steps, and a registration is a userptr whatever `HSA_USERPTR_FOR_PAGED_MEM` says: the evictions come back (measured below). Start with more free RAM, or a smaller budget |
+
+If the complement fits but the rest does not, the start log says "--adapt-async 1 is off (the exchange buffers could
+not be page-locked)", and on the host below the engine then crashed during start-up (budget 40 GiB under a 44 GiB
+limit). Lower the budget or raise the limit.
 
 Same host as above, budget 32 GiB, `ttm.pages_limit` at 44 GiB, 1 GB of RAM or less free, five fresh 30K-token prompts
 and 6 GB taken by another process with the engine idle:
@@ -437,6 +450,14 @@ and 6 GB taken by another process with the engine idle:
 | userptr + `STRATA_HIP_MLOCK=1` | 2,330-2,370 tok/s | 64-71 tok/s | 229, 56, 10 ms (3 of 5) | 595 ms |
 | GTT + `STRATA_HIP_ARENA_NONCOHERENT=1` (2 runs) | 2,290-2,350 tok/s | 60-72 tok/s | 0 (10 of 10) | 0 ms |
 | GTT, coherent complement (budget 22) | about 2.4x slower | | 0 | 0 ms |
+
+The start-up paths on the same host (budget 32 GiB, two fresh 24K-token prompts, then 14 GiB taken by another
+process with the engine idle and again during a prompt):
+
+| Start-up path | GTT used | Queue eviction after load / at the end | 24K prompt read (idle / under pressure) |
+| --- | --- | --- | --- |
+| `page-locked and mapped` | 38.2 GiB | 0 / 0 ms | 2,513 / 895 tok/s |
+| paced (forced with `STRATA_PIN_GUARD=2`) | 5.5 GiB | 19,807 / 131,117 ms | 775-1,238 / 349 tok/s |
 
 ## RDNA4 (gfx1201)
 
