@@ -33,15 +33,24 @@ Auto starts it on:
 Every other case keeps the layer split without a message. On AMD that includes 2 and 3 R9700 cards, other AMD architectures, and the IQ3_S set
 (its i-quant tiles are a first, untuned version and the layer split is faster today).
 
+**V100 / sm_70, opt-in:** `--split-engine on` also starts it on two V100-PCIE-32GB. Auto keeps the layer split there (sm_70 has not been run on
+the release gate). When the routed experts do not fit in the two cards, the launcher keeps the arena and sets `FNX_EXPERT_RAM_GIB` for the
+overflow, so the coldest experts stay in page-locked RAM. The sm_70 config also sets `FNX_PF_HCSPLIT=0` and
+`FNX_PF_ROWS=4096`: v0.2.11's new hyper-connection split and 8192-row passes need more pass buffers, and on 2x V100 they
+cost about 26% of a 247K-token prompt. Measured at 393216 context on 2x V100: see [SPLIT_ENGINE_V100.md](SPLIT_ENGINE_V100.md).
+The host needs a memlock limit that holds the 29.5 GB embedding table (`LimitMEMLOCK=infinity`, or a privileged container).
+
 Both sides need all of this: Linux; the Qwen3.8-Flash-Next shapes (48 layers, 512 experts) in a file the engine reads (checked from the tensor
 types, not the name); **all routed experts fit in the cards' memory** (the memory that is free when the launch is made, minus the engine's 700 MiB reserve: cards that other programs hold get the layer split with DFlash2 and no draft-layer fetch); enough free RAM for what stays in RAM (the 27.5 GiB embedding table, about
 3 GiB of buffers, the 4 GiB conversation cache and 8 GiB spare, about 43 GiB; measured 31 GB at start and 35 GB after long prompts); a context of
-131072 or less. The split uses the MTP drafter, so Strata fetches the MTP draft layer (about 5.2 GB) when it is not on the disk; if that layer is
-missing, the launch is a quiet layer split.
+131072 or less. The opt-in V100 path relaxes the last two: the arena's host cache holds the overflow and a longer context is recorded as untested.
+The split uses the MTP drafter, so Strata fetches the MTP draft layer (about 5.2 GB) when it is not on the disk; if that layer is missing, the
+launch is a quiet layer split.
 
 **Turn it off:** `strata launch --split-engine off`, or `"split_engine": "off"` in the run config, or `STRATA_SPLIT_ENGINE=0` in the environment.
 **Ask for it:** `--split-engine on` (or `"on"` in the config) uses the same rule, but says why in one line when it cannot run. It also runs the
-cases Auto leaves out (2 or 3 R9700 cards, the IQ3_S set on AMD, other AMD cards, 3 or 4 NVIDIA cards); the line says which part has not been run.
+cases Auto leaves out (2 or 3 R9700 cards, the IQ3_S set on AMD, other AMD cards, 3 or 4 NVIDIA cards, and a V100 pair); the line says which part
+has not been run.
 
 If the engine refuses or fails to start, the server says so in one line and starts the normal layer split (`serve/server.py`,
 `start_engine_or_fallback`). A crash after it was running restarts the same engine (the fallback is for starting only).
@@ -87,9 +96,10 @@ failure, or with `FNX_PEER=0`, it uses the host-memory exchange for the whole ru
 ## Not proven
 
 No GeForce pair has been tested (there is none in the lab). Three and four NVIDIA cards, Windows and macOS, a 64 GB RAM PC
-with two big cards, and contexts over 128K have not been run. The copy-engine ring now used for prompts differs in its last bits from sFNX's GPU-thread ring (`FNX_PF_RING_SM=1`, kept): 39 of 61 suite answers are identical between the two. Answers differ from the normal layer split's in the same way (29 of 61 identical), because the arithmetic differs.
+with two big cards, and contexts over 128K have not been run on the tested cards; a 2x V100-PCIE-32GB pair was run at 393216 with
+the host cache (speed only, quality not re-run), and no V100 3/4-card or memlock-less run was done. The copy-engine ring now used for prompts differs in its last bits from sFNX's GPU-thread ring (`FNX_PF_RING_SM=1`, kept): 39 of 61 suite answers are identical between the two. Answers differ from the normal layer split's in the same way (29 of 61 identical), because the arithmetic differs.
 
 ## Build
 
-`-DSTRATA_BUILD_SPLIT=ON -DSTRATA_GGML_DIR=<llama.cpp checkout> [-DSTRATA_SPLIT_CARDS="2;3"] [-DSTRATA_SPLIT_ARCH=86]` builds
+`-DSTRATA_BUILD_SPLIT=ON -DSTRATA_GGML_DIR=<llama.cpp checkout> [-DSTRATA_SPLIT_CARDS="2;3"] [-DSTRATA_SPLIT_ARCH=86]` (70 for V100) builds
 `strata-split-N` per card count; `packaging/build_split_cuda.sh` does that with the release engine's toolchain rules and checks the result (`packaging/build_split_hip.sh` for AMD).
