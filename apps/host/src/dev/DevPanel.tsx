@@ -111,17 +111,19 @@ function Logs() {
     const [q, setQ] = useState('');
     const [paused, setPaused] = useState(false);
     const [error, setError] = useState('');
-    const end = useRef<HTMLDivElement>(null);
+    const box = useRef<HTMLDivElement>(null);
+    // The list follows new lines only while you are at the bottom; scroll up to read and it stays where you put it.
+    const follow = useRef(true);
     useEffect(() => {
         if (paused) return;
         let live = true;
-        const poll = () => api.get<{ entries: LogEntry[] }>(`/api/dev/logs?sources=${sources.join(',')}&limit=1500`).then(r => { if (live) { setEntries(r.entries); setError(''); } }).catch(e => { if (live) setError(String(e?.message ?? e)); });
+        const poll = () => api.get<{ entries: LogEntry[] }>(`/api/dev/logs?sources=${sources.join(',')}&limit=1500`).then(r => { if (live) { setEntries(prev => (sameLog(prev, r.entries) ? prev : r.entries)); setError(''); } }).catch(e => { if (live) setError(String(e?.message ?? e)); });
         void poll();
         const timer = setInterval(() => void poll(), 2000);
         return () => { live = false; clearInterval(timer); };
     }, [sources, paused]);
     const shown = useMemo(() => { const n = q.trim().toLowerCase(); return n ? entries.filter(e => e.line.toLowerCase().includes(n) || e.level === n || e.source === n) : entries; }, [entries, q]);
-    useEffect(() => { if (!paused) end.current?.scrollIntoView({ block: 'end' }); }, [shown, paused]);
+    useEffect(() => { const el = box.current; if (!paused && follow.current && el) el.scrollTop = el.scrollHeight; }, [shown, paused]);
     const text = () => shown.map(e => `${e.at} [${e.source}/${e.level}] ${e.line}`).join('\n');
     const save = () => {
         const url = URL.createObjectURL(new Blob([`${text()}\n`], { type: 'text/plain' }));
@@ -138,8 +140,14 @@ function Logs() {
             <button className="devpanel__btn" onClick={save}>Save as file</button>
         </div>
         {error ? <p className="devpanel__err">{error}</p> : null}
-        <div className="devpanel__log" role="log">{shown.map((e, i) => <div key={`${e.seq}-${i}`} className="devpanel__line" data-level={e.level}><span className="devpanel__muted">{e.at.slice(11, 23)}</span> <span className="devpanel__src">{e.source}</span> {e.line}</div>)}<div ref={end} /></div>
+        <div className="devpanel__log" role="log" ref={box} onScroll={e => { const el = e.currentTarget; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>{shown.map((e, i) => <div key={`${e.seq}-${i}`} className="devpanel__line" data-level={e.level}><span className="devpanel__muted">{e.at.slice(11, 23)}</span> <span className="devpanel__src">{e.source}</span> {e.line}</div>)}</div>
     </div>;
+}
+
+/** The same lines as before: nothing to redraw, so the list is not rebuilt and does not move. */
+function sameLog(a: LogEntry[], b: LogEntry[]) {
+    const x = a.at(-1), y = b.at(-1);
+    return a.length === b.length && x?.at === y?.at && x?.line === y?.line && a[0]?.at === b[0]?.at;
 }
 
 function Requests() {
