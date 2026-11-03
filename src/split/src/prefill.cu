@@ -1176,7 +1176,8 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     int C = 0, ng = 0, set = 0;
     // FNX_PF_HCSPLIT: this pass's hyper-connection reads are split between the cards (every chunk of the pass long enough to be worth it)
     bool hs = pf_[0]->hcs;
-    static const bool hs_full = env_flag("FNX_PF_HCSPLIT_FULL");   // debugging: every card reads all the rows (the swap still runs): the answers must equal the unsplit path's
+    static const int hs_full = (int) env_int("FNX_PF_HCSPLIT_FULL", 0);   // 1: every card reads all rows in one call; 2: all rows in two halves (the split's GEMM shapes)
+      // debugging: every card reads all the rows (the swap still runs): the answers must equal the unsplit path's
     for (const PfChunk& ck : chunks)
         if ((int) ck.tokens.size() < 512) hs = false;
     auto use = [&](int j) {
@@ -1280,13 +1281,16 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             const LayerW& L = w.L[l];
             cudaStream_t s = b.st;
             const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
+            const int nq = hs_full == 2 ? 2 : 1;
+            auto Q0 = [&](int q) { return hs_full == 2 ? q * (C / 2) : r0; };
+            auto QN = [&](int q) { return hs_full == 2 ? (q == 0 ? C / 2 : C - C / 2) : nr; };
             __half* mh = p.hf16 ? p.mixhk[j] : nullptr;
             if (half == 0) {
                 ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
-                pf_hc_read_rows(p, p.R, p.bo_f, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed, p.inj_a, r0, nr, s, mh);
+                for (int q = 0; q < nq; ++q) pf_hc_read_rows(p, p.R, p.bo_f, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed, p.inj_a, Q0(q), QN(q), s, mh);
             } else {
                 ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
-                pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s, mh);
+                for (int q = 0; q < nq; ++q) pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, Q0(q), QN(q), s, mh);
             }
             ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
             ckc(cudaStreamWaitEvent(p.ag_st, p.ev_hc[j], 0), "hc wait");
@@ -1305,8 +1309,11 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             const LayerW& L = w.L[l];
             cudaStream_t s = b.st;
             const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
+            const int nq = hs_full == 2 ? 2 : 1;
+            auto Q0 = [&](int q) { return hs_full == 2 ? q * (C / 2) : r0; };
+            auto QN = [&](int q) { return hs_full == 2 ? (q == 0 ? C / 2 : C - C / 2) : nr; };
             ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
-            pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s);
+            for (int q = 0; q < nq; ++q) pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, Q0(q), QN(q), s);
             ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
             ckc(cudaStreamWaitEvent(p.ag_st, p.ev_hc[j], 0), "hc wait");
             const unsigned sq = ++p.rg_seq;
