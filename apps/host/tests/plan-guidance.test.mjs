@@ -63,3 +63,25 @@ test('Settings page: saving writes planGuidance, checks every value first and ke
   assert.equal(files.f, before, 'a refused value changes nothing');
   assert.deepEqual(planGuidanceView(undefined), { enabled: false, thinking: null, maxSteps: 20 });
 });
+
+test('plan hints: a cut plan is named, and so is a point of the request that no step mentions', async () => {
+  const { planHints, requestPoints, parsePlan } = await import('../server/agent/plan.mjs');
+  const request = ['Build a tool.', '1. The tool must keep a `retry_after` value per key.', '2. Rejected requests change no state at all.', '3. Reset works for one key or for all keys.'].join('\n');
+  assert.equal(requestPoints(request).length, 3);
+  assert.equal(requestPoints('Just one line, nothing numbered here at all.').length, 0, 'too few points: no check');
+  const steps = [{ text: 'Write the retry_after helper', detail: '' }, { text: 'Test that rejected requests leave state alone', detail: '' }];
+  const hints = planHints(request, { steps, cut: 0 });
+  assert.equal(hints.length, 1);
+  assert.match(hints[0], /No step seems to name/); assert.match(hints[0], /Reset works/); assert.doesNotMatch(hints[0], /retry_after/);
+  assert.deepEqual(planHints(request, { steps: [...steps, { text: 'Reset one key or all keys', detail: '' }], cut: 0 }), []);
+  const cutHint = planHints('x', { steps: Array.from({ length: 20 }, (_, i) => ({ text: `s${i}`, detail: '' })), cut: 7 }, 20);
+  assert.match(cutHint[0], /wrote 27 steps; the plan keeps the first 20/);
+  // parsePlan reports the cut only in Dev
+  const reply = ['## Big', ...Array.from({ length: 25 }, (_, i) => `${i + 1}. Step ${i + 1}`)].join('\n');
+  try {
+    setActiveDevSettings(null);
+    assert.equal('cut' in parsePlan(reply, 'x'), false, 'Live: no extra field');
+    setActiveDevSettings(devSettings({ planGuidance: { enabled: true, maxSteps: 16 } }));
+    assert.equal(parsePlan(reply, 'x').cut, 9);
+  } finally { setActiveDevSettings(null); }
+});

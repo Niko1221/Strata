@@ -32,7 +32,7 @@ import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
 import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped, guardCompactAfterTurn, guardSummarize } from './context-fit.mjs';
 import { activeDevSettings } from '../dev-mode.mjs';
-import { DEFAULT_PLAN_RULES, PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
+import { DEFAULT_PLAN_RULES, planHints, PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -670,7 +670,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         if (failure || (turn.stopping && !turn.guard)) return [];
         const parsed = parsePlan(written.all, planTask);
         if (!parsed) return [];
-        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: planTask, ...(turn.guard ? { caution: GUARD_NOTES[turn.guard] } : {}) });
+        const plan = plans.create(chatId, { title: parsed.title, steps: parsed.steps, request: planTask, ...(turn.guard ? { caution: GUARD_NOTES[turn.guard] } : {}), ...(activeDevSettings()?.planGuidance ? { hints: planHints(planTask, parsed) } : {}) });
         return [publishPlan('proposed', plan)];
       }
       const run = turn.plan;

@@ -24,6 +24,15 @@ export function formatElapsed(ms: number): string {
     return m > 0 ? `${m}:${two(sec)}` : `${sec} s`;
 }
 
+/**
+ * A guess for the time left: the average time per finished step times the steps still open. Only from the second finished step on (one step
+ * says too little), and null when nothing is left. The step being worked on is counted as open, so the guess is a little high, never a promise.
+ */
+export function remainingOf(elapsedMs: number, done: number, total: number): number | null {
+    if (done < 2 || done >= total || elapsedMs <= 0) return null;
+    return Math.round((elapsedMs / done) * (total - done));
+}
+
 /** Time a plan has been going ahead: from when it was first seen under way, without the time it was paused. */
 export interface Clock { start: number; pausedMs: number; pausedAt: number | null }
 export function tickClock(clock: Clock | undefined, paused: boolean, now: number): Clock {

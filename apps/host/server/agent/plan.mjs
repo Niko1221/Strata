@@ -54,7 +54,7 @@ export function planPrompt(task, rules = null, steps = null) {
 /** The rules Strata Dev gives the model when it plans (dev.config.json "planGuidance.rules" replaces them). */
 export const DEFAULT_PLAN_RULES = Object.freeze([
   "Split a big job into stages of a few steps each (for code: the core pieces first, then what is built on them) instead of one step that does everything at once.",
-  "Name what each step covers: the concrete rules, cases or files from the request, not only a heading like 'Add error handling'. Go through every numbered rule and requirement of the request and make sure some step covers it.",
+  "Name what each step covers: the concrete rules, cases or files from the request, not only a heading like 'Add error handling'. Before you send the list, check it once: for every numbered rule and requirement of the request find the step that covers it, and add what is missing.",
   "Build requirements that touch all the code (error types, line numbers, text encoding, tie-breaking, the order of rules) into the step that first writes that code. Do not leave them for a late 'hardening' step.",
   "Put checks early: after each stage, write or run a test for it. Test every rule on its own, with edge cases you invent (empty, boundary, invalid input), not only the cases that appear in the given data.",
   "Before any step that changes or deletes files, plan a check of the targets (nothing is overwritten, nothing is half done) and a record of the starting state, such as a copy or hashes, to compare with at the end.",
@@ -99,7 +99,47 @@ export function parsePlan(text, request = '') {
     const h = /^\s*#{1,6}\s+(.+?)\s*$/.exec(lines[i]);
     if (h) { title = clean(h[1]); break; }
   }
-  return { title: clip(title || clean(request) || 'Plan', 80), steps };
+  // Strata Dev: how many numbered lines the cap left out, so the card can say so (Live: the result keeps its shape).
+  const cut = activeDevSettings()?.planGuidance ? best.items.length - steps.length : 0;
+  return { title: clip(title || clean(request) || 'Plan', 80), steps, ...(cut > 0 ? { cut } : {}) };
+}
+
+const STOP = new Set('about above after again against along already always another because before being between could doing during either every first following from further given having however include including instead itself later never other others should since still their there these those through under until using where which while within without would write'.split(' '));
+const words = t => String(t ?? '').toLowerCase().match(/[a-z][a-z0-9_]{3,}/g) ?? [];
+
+/**
+ * The points of a request: its numbered lines, else its bullet lines (at least three), each with the words that name it: `code`, 'quoted'
+ * and "quoted" pieces, then plain words of five letters or more. A point with no such word cannot be matched and is left out.
+ */
+export function requestPoints(request) {
+  const lines = String(request ?? '').replace(/\r/g, '').split('\n');
+  const grab = re => lines.map(l => re.exec(l)).filter(Boolean).map(m => clean(m[1])).filter(t => t.length > 12);
+  const numbered = grab(/^\s{0,3}\d{1,2}[.)]\s+(\S.*)$/);
+  const items = numbered.length >= 3 ? numbered : grab(/^\s{0,3}[-*•]\s+(\S.*)$/);
+  if (items.length < 3) return [];
+  return items.slice(0, 40).map(text => {
+    const named = [...text.matchAll(/`([^`]{2,40})`|'([^']{3,40})'|"([^"]{3,40})"/g)].flatMap(m => words(m[1] ?? m[2] ?? m[3]));
+    const plain = words(text).filter(w => w.length >= 5 && !STOP.has(w));
+    return { text, keys: [...new Set([...named, ...plain])].slice(0, 8) };
+  }).filter(p => p.keys.length);
+}
+
+/** The points of the request whose words no step uses (see requestPoints): a guess, used for the hints and the plan benchmark. */
+export function uncoveredPoints(request, steps) {
+  const hay = new Set((steps ?? []).flatMap(st => words(`${st.text} ${st.detail ?? ''}`)).map(w => w.slice(0, 5)));
+  return requestPoints(request).filter(p => !p.keys.some(k => hay.has(k.slice(0, 5))));
+}
+
+/**
+ * Strata Dev: short English notes under a proposed plan. Which points of the request no step names (a guess by shared words, so a hint,
+ * never a verdict), and that the plan was cut to its step limit. [] when there is nothing to say.
+ */
+export function planHints(request, parsed, limit = maxSteps()) {
+  const out = [];
+  if (parsed?.cut > 0) out.push(`The assistant wrote ${parsed.steps.length + parsed.cut} steps; the plan keeps the first ${parsed.steps.length} (the limit is ${limit}, Settings > Tools > Better plans).`);
+  const missing = uncoveredPoints(request, parsed?.steps);
+  if (missing.length) out.push(`No step seems to name: ${missing.slice(0, 4).map(m => `"${clip(m.text, 60)}"`).join('; ')}${missing.length > 4 ? ` and ${missing.length - 4} more` : ''}. Check the plan against the request.`);
+  return out;
 }
 
 /** Numbered points inside a goal's own words ("1. a 2. b" on lines or in one line); at least two, counting up from 1. */
@@ -214,9 +254,9 @@ export class PlanStore {
     } catch { /* the plan still lives in memory */ }
   }
   get(chatId) { return this.plans.get(chatId) ?? null; }
-  create(chatId, { title, steps, request = '', source = 'plan', state = 'proposed', caution = null }) {
+  create(chatId, { title, steps, request = '', source = 'plan', state = 'proposed', caution = null, hints = null }) {
     const now = new Date().toISOString();
-    const plan = { id: randomUUID(), chatId, title, request, source, state, steps, createdAt: now, updatedAt: now, goalStarted: false, ...(caution ? { caution } : {}) };
+    const plan = { id: randomUUID(), chatId, title, request, source, state, steps, createdAt: now, updatedAt: now, goalStarted: false, ...(caution ? { caution } : {}), ...(hints?.length ? { hints } : {}) };
     this.plans.set(chatId, plan); this.#save();
     return plan;
   }

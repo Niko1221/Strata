@@ -68,6 +68,7 @@ export function PlanCard({ chatId, planId }: { chatId: string | null | undefined
     <div className="plan__head"><b>{tr("Plan")}</b><span>{planCount(plan)}</span></div>
     <PlanSteps plan={plan}/>
     {plan.caution ? <p className="plan__note" role="status">{tr(plan.caution)}</p> : null}
+    {dev && proposed ? plan.hints?.map((h, i) => <p className="plan__note" role="status" key={i}>{h}</p>) : null}
     {proposed ? <p className="plan__note">{tr("Nothing runs until you approve.")}</p> : null}
     {proposed ? <div className="plan__acts">
       <Btn size="sm" variant="primary" icon="check" disabled={busy || streaming} onClick={() => void run(() => approvePlan(chatId, plan.id))}>{tr("Approve")}</Btn>

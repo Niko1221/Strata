@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { useGoal } from '../lib/goal';
 import { usePlan } from '../lib/plan';
 import { useDev } from './dev-state';
-import { elapsedOf, formatElapsed, planProgress, tickClock, type Clock } from './plan-progress';
+import { elapsedOf, formatElapsed, planProgress, remainingOf, tickClock, type Clock } from './plan-progress';
 
 /** When each plan was first seen under way (this page only: a reload starts the count again). */
 const clocks = new Map<string, Clock>();
@@ -34,7 +34,7 @@ function Bar({ chatId, onPlain }: { chatId: string; onPlain: 'nothing' | 'moving
     const elapsed = useElapsed(plan?.id, !!p, paused);
     if (!p) return onPlain === 'moving' ? <div className="bcard__bar bcard__bar--busy" aria-hidden="true"><i/></div> : null;
     return <div className="dev-progress" data-paused={paused || undefined}>
-        <div className="dev-progress__text"><span>{paused ? 'Plan paused' : 'Plan'} · {p.done} of {p.total} steps</span>{p.current ? <span className="dev-progress__now" title={p.current}>{p.current}</span> : null}<output>{elapsed !== null ? `${formatElapsed(elapsed)} · ` : ''}{p.percent} %</output></div>
+        <div className="dev-progress__text"><span>{paused ? 'Plan paused' : 'Plan'} · {p.done} of {p.total} steps</span>{p.current ? <span className="dev-progress__now" title={p.current}>{p.current}</span> : null}<output>{elapsed !== null ? `${formatElapsed(elapsed)} · ` : ''}{elapsed !== null && remainingOf(elapsed, p.done, p.total) !== null ? `about ${formatElapsed(remainingOf(elapsed, p.done, p.total) as number)} left · ` : ''}{p.percent} %</output></div>
         <div className="dev-progress__track" role="progressbar" aria-label="Plan progress" aria-valuemin={0} aria-valuemax={p.total} aria-valuenow={p.done} aria-valuetext={`${p.done} of ${p.total} steps`}><i style={{ width: `${p.percent}%` }}/></div>
     </div>;
 }

@@ -472,6 +472,13 @@ Einstellbar sind Schalter, Denkstufe und Höchstzahl in Strata Dev unter Einstel
 
 Ob die Pläne dadurch besser werden, hängt vom Modell ab: Es folgt Regeln meist, aber nicht immer. Zum Vergleich denselben Auftrag mit `enabled` an und aus planen lassen.
 
+### Hinweise unter dem Plan, Restzeit und Messung
+
+- **Hinweise:** Ist `planGuidance` an, steht unter einem vorgeschlagenen Plan, wenn das Modell mehr Schritte geschrieben hat als `maxSteps` („the plan keeps the first 20“), und welche Punkte der Anfrage kein Schritt zu nennen scheint (`planHints`, `uncoveredPoints` in `server/agent/plan.mjs`). Das zweite ist eine Schätzung nach gemeinsamen Wörtern und nur bei Anfragen mit mindestens drei nummerierten Zeilen oder Spiegelstrichen. Es ist ein Hinweis, kein Urteil.
+- **Restzeit:** Die Fortschrittsleiste zeigt „about 12:30 left“, ab dem zweiten fertigen Schritt: die Zeit pro fertigem Schritt mal die offenen Schritte. Eine Schätzung, meist etwas zu hoch.
+- **Selbstprüfung:** Die eingebauten Regeln sagen dem Modell, die Liste vor dem Senden einmal gegen jede Regel der Anfrage zu prüfen. Es gibt keinen zweiten Modellaufruf.
+- **Messung:** `STRATA_URL=http://127.0.0.1:47832 node apps/host/scripts/plan-bench.mjs --prompts "<Ordner mit *.txt>"` lässt jede Anfrage mit „Better plans“ aus und an planen (`--variants off,on`, `--only 1,5`) und vergleicht Schrittzahl, Details, abgedeckte Punkte und den Schlusscheck. Es braucht die laufende Dev-App mit einem echten Modell (nicht `-HostOnly`). Die Pläne werden nur vorgeschlagen, nie ausgeführt; die gespeicherte Einstellung wird am Ende zurückgesetzt. Die Pläne und Werte landen in einer JSON-Datei zum Vergleichen vor und nach einer Regeländerung.
+
 ## Zurücksetzen
 
 ```bat

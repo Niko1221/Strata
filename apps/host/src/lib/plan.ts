@@ -10,7 +10,7 @@ import { api, ApiError } from './client';
 export type PlanState = 'proposed' | 'approved' | 'rejected' | 'running' | 'paused' | 'done' | 'stopped';
 export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 export interface PlanStep { id: string; text: string; detail?: string; summary?: string; state: StepState }
-export interface Plan { id: string; title: string; source: 'plan' | 'goal'; state: PlanState; steps: PlanStep[]; /** A plain sentence (an interface string) when the app stopped the planning turn early. */ caution?: string }
+export interface Plan { id: string; title: string; source: 'plan' | 'goal'; state: PlanState; steps: PlanStep[]; /** A plain sentence (an interface string) when the app stopped the planning turn early. */ caution?: string; /** Strata Dev only: short English notes under a proposed plan (a cut plan, points of the request no step names). */ hints?: string[] }
 export interface QueuedMessage { id: string; text: string; deliverAt: 'step' | 'end' }
 
 const PLAN_STATES = ['proposed', 'approved', 'rejected', 'running', 'paused', 'done', 'stopped'];
@@ -33,7 +33,7 @@ export function readPlan(raw: unknown): Plan | null {
     });
   });
   if (!steps.length) return null;
-  return { id: p.id, title: typeof p.title === 'string' ? p.title : '', source: p.source === 'goal' ? 'goal' : 'plan', state: p.state as PlanState, steps };
+  return { id: p.id, title: typeof p.title === 'string' ? p.title : '', source: p.source === 'goal' ? 'goal' : 'plan', state: p.state as PlanState, steps, ...(Array.isArray(p.hints) && p.hints.some(h => typeof h === 'string') ? { hints: p.hints.filter((h): h is string => typeof h === 'string') } : {}) };
 }
 
 export function readQueue(raw: unknown): QueuedMessage[] {

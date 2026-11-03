@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 
 const built = await build({ stdin: { contents: "export * from './src/dev/plan-progress';", resolveDir: process.cwd() }, bundle: true, write: false, format: 'esm', platform: 'node' });
-const { planProgress, formatElapsed, tickClock, elapsedOf } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
+const { planProgress, formatElapsed, tickClock, elapsedOf, remainingOf } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`);
 const plan = (state, ...steps) => ({ id: 'p', title: '', source: 'plan', state, steps: steps.map((s, i) => ({ id: `s${i}`, text: `step ${i}`, state: s })) });
 
 test('a running plan: finished steps over all steps, and the step being worked on', () => {
@@ -30,4 +30,12 @@ test('elapsed time: short, minutes and hours; a pause is not counted', () => {
   assert.equal(elapsedOf(c, 100_000), 60_000, 'frozen while paused');
   c = tickClock(c, false, 100_000);
   assert.equal(elapsedOf(c, 130_000), 90_000, 'the 39 seconds of the pause are left out');
+});
+
+test('time left: only from the second finished step, the average per step times the steps open', () => {
+  assert.equal(remainingOf(600_000, 0, 5), null);
+  assert.equal(remainingOf(600_000, 1, 5), null, 'one step says too little');
+  assert.equal(remainingOf(600_000, 2, 5), 900_000);
+  assert.equal(remainingOf(600_000, 5, 5), null, 'nothing left');
+  assert.equal(remainingOf(0, 3, 5), null);
 });
