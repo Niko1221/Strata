@@ -1353,6 +1353,9 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     bool hs = pf_[0]->hcs;
     static const int hs_full = (int) env_int("FNX_PF_HCSPLIT_FULL", 0);   // 1: every card reads all rows in one call; 2: all rows in two halves (the split's GEMM shapes)
       // debugging: every card reads all the rows (the swap still runs): the answers must equal the unsplit path's
+    // fewer than hcs_min chunks in the pass (default 3): the swap and the sum have nothing to hide behind, and the split read is slower than the plain one (6.4K prompt: 1.8 -> 2.3 s)
+    static const int hcs_min = (int) env_int("FNX_PF_HCSPLIT_MIN", 3);
+    if ((int) chunks.size() < hcs_min) hs = false;
     for (const PfChunk& ck : chunks)
         if ((int) ck.tokens.size() < 512 || (pf_[0]->hcs_mode == 1 && (!pf_[0]->down_lt || (int) ck.tokens.size() != 4096))) hs = false;
     auto use = [&](int j) {
