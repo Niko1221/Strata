@@ -3745,7 +3745,24 @@ void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
 void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes) {
     Verifier* v = (Verifier*) ctx;
     const uint32_t want = v->cur_layer_ + 1;
-    if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
+    if (n <= 0) {
+        // A split window may serve the next group's empty plan while an earlier
+        // group's DMA is still in flight. Keep flag B ordered with those copies.
+        if (!v->copy_used_) { raise_flag(v->h_flagB_, want); return; }
+        FlagSet& fs = v->flag_sets_[v->cur_layer_ % (sizeof v->flag_sets_ / sizeof v->flag_sets_[0])];
+        fs.flag = v->h_flagB_;
+        fs.value = want;
+        const cudaError_t e = cudaLaunchHostFunc(v->copy_, [](void* p) {
+            FlagSet* s = (FlagSet*) p; raise_flag(s->flag, s->value);
+        }, &fs);
+        if (e != cudaSuccess) {
+            std::fprintf(stderr, "strata DMA: empty-group completion failed: %s\n", cudaGetErrorString(e));
+            std::fflush(stderr);
+            v->release_gpu_waits(5000);
+            std::abort();
+        }
+        return;
+    }
     v->copy_used_ = true;
     uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
     // STRATA_DMA_BATCH (midhatn's #807, F12): the group's independent uploads as one cudaMemcpyBatchAsync.  Mode 0 is
