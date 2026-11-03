@@ -30,7 +30,7 @@ import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
-import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped, guardCompactAfterTurn, guardSummarize } from './context-fit.mjs';
+import { BASE_TOKENS, DEV_COMPACT_GOAL, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped, guardCompactAfterTurn, guardSummarize } from './context-fit.mjs';
 import { activeDevSettings } from '../dev-mode.mjs';
 import { DEFAULT_PLAN_RULES, planHints, PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
@@ -433,7 +433,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       }
     }
 
-    const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval, window: route.contextWindow });
+    const projector = new TurnProjector({ policy: MODE_PRESETS[appliedMode].approval, window: route.contextWindow, showAfter: route.kind === 'local' && !!activeDevSettings()?.contextGuard });
     if (!goal) guard = new TurnGuard({ plan: !!planTask, contextMax: route.kind === 'local' ? route.contextWindow : 0 });   // a saved connection's window is often only assumed: never judged by a guess
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
@@ -506,7 +506,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
       notifyIdle();
       // A turn that filled the context, or that the guard stopped, leaves a long history behind: summarise the older part now so the next message has room.
-      if (noteReason === 'context' || noteReason === 'searches' || noteReason === 'searches-failed' || noteReason === 'rewrites' || /context window|too long|exceeds/i.test(String(projector.ended?.error?.message ?? ''))) void compactSession(runtime, sessionId);
+      if (noteReason === 'context' || noteReason === 'searches' || noteReason === 'searches-failed' || noteReason === 'rewrites' || /context window|too long|exceeds/i.test(String(projector.ended?.error?.message ?? ''))) void compactSession(runtime, sessionId, chatId);
       else {
         // Strata Dev contextGuard: whatever way the turn ended, a chat at compactAfterTurnAt or more is summarised now, while it is quiet.
         const cg = route.kind === 'local' ? activeDevSettings()?.contextGuard : null;
@@ -514,13 +514,15 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           try {
             const now = await contextOf(runtime, sessionId);
             if (!now || chats.get(chatId)?.turn || chats.get(chatId)?.starting) return;   // a new turn has begun: not idle any more
-            if (guardCompactAfterTurn({ window: now.window || route.contextWindow, tokens: now.tokens, afterTurnAt: cg.compactAfterTurnAt })) await compactSession(runtime, sessionId);
+            if (guardCompactAfterTurn({ window: now.window || route.contextWindow, tokens: now.tokens, afterTurnAt: cg.compactAfterTurnAt })) await compactSession(runtime, sessionId, chatId);
           } catch { /* best effort: the next message is checked again */ }
         })();
       }
     }
 
     emit({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], ...(planTask ? { planning: true } : {}) });
+    // Strata Dev (contextGuard): the summary made after the last turn is told here, at the start of this one.
+    if (c.pendingNote) { emit(c.pendingNote); c.pendingNote = null; }
 
     turn.follow = runtime.gw.openStream('session/follow', { request: { address: { kind: 'session', sessionId }, assistantStream: true } }, {
       onItem: item => {
@@ -827,14 +829,35 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           const at = currentStep(plan);
           if (at < 0) throw new AgentUnavailable('Every step of this plan is already done.', 'plan-done');
           if (goal.action === 'resume' && plan.goalStarted) {
-            plans.update(chatId, p => { p.state = 'running'; p.steps[at].state = 'running'; });
-            await startGoal(runtime, sessionId, goal);
-            emit(publishPlan('step', plans.get(chatId)));
+            // Strata Dev: the step's goal may be over already (the model closed it just before a pause or a stop): that step is done, go on with the next. No goal at all: the step gets a new one.
+            const left = activeDevSettings() ? await goalGet() : undefined;
+            if (activeDevSettings() && left?.phase === 'complete') {
+              turn.advancing = true;
+              let more = false;
+              try { more = await advancePlan(); } finally { turn.advancing = false; }
+              if (!more) { finishTurn(null); return { sessionId, reason: { kind: 'completed' } }; }
+            } else if (activeDevSettings() && !left) await startStep(plan, at);
+            else {
+              plans.update(chatId, p => { p.state = 'running'; p.steps[at].state = 'running'; });
+              await startGoal(runtime, sessionId, goal);
+              emit(publishPlan('step', plans.get(chatId)));
+            }
           } else await startStep(plan, at);
         } else {
           await startGoal(runtime, sessionId, goal);
         }
-      } catch (e) { finishTurn(e instanceof AgentUnavailable ? e.message : plainGoalError(e)); return { error: true }; }
+      } catch (e) {
+        // Strata Dev: a plan that could not be resumed waits for the next try instead of staying 'running' with nothing behind it.
+        if (planRun && activeDevSettings()) {
+          const p = plans.get(chatId);
+          if (p && p.id === planRun.planId && p.state === 'running') {
+            const i = currentStep(p);
+            plans.update(chatId, q => { q.state = 'paused'; if (i >= 0) q.steps[i].state = 'pending'; });
+            emit(publishPlan('paused', plans.get(chatId)));
+          }
+        }
+        finishTurn(e instanceof AgentUnavailable ? e.message : plainGoalError(e)); return { error: true };
+      }
       reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' });
       void announceGoal();
     } else {
@@ -1293,6 +1316,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     if (c.turn || c.starting) return say(FIT_TEXT.compactBusy);
     const known = sessionMap[chatId]?.sessionId;
     if (!known) return say(FIT_TEXT.noChatYet);
+    if (activeDevSettings() && (await goalState(chatId).catch(() => null))?.phase === 'active') return say(DEV_COMPACT_GOAL);
     let runtime;
     try { ({ rt: runtime } = await ensureRuntime(choice, signal)); } catch { return say(FIT_TEXT.compactFailed); }
     const done = await compactChat(runtime, known);
@@ -1310,7 +1334,14 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   }
 
   /** Summarise the older part of a session with the Harness's own /compact. Best effort: the next message compacts again by itself when it must. */
-  async function compactSession(runtime, sessionId) {
+  async function compactSession(runtime, sessionId, chatId = null) {
+    // Strata Dev (contextGuard): the same summary, but the chat is told: the line waits for the next message of this chat (a turn has ended, nobody is listening).
+    if (chatId && activeDevSettings()?.contextGuard) {
+      const done = await compactChat(runtime, sessionId);
+      log(`agent · compact after a turn: ${done.ok ? 'done' : done.reason}`);
+      if (done.ok) { const c = chats.get(chatId); if (c) c.pendingNote = summarizedNote(done.before, done.after, 0); }
+      return;
+    }
     try {
       const r = await runtime.gw.rpc('commands/execute', { agentId: sessionId, line: '/compact', submittedAttachments: [] });
       log(`agent · compact after a stopped turn: ${r?.result?.kind ?? 'done'} ${String(r?.result?.text ?? '').slice(0, 120)}`);

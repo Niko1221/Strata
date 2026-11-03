@@ -438,6 +438,8 @@ Ein lokaler Chat mit 64K-Fenster lief bis 96 bis 98 % voll, und das Zusammenfass
 
 Einstellbar ist das in Strata Dev unter Einstellungen → Tools → „Strata Dev“ → „Summarise long chats early“: ein Schalter und drei Regler (30 bis 90 %). Die Seite schreibt den Abschnitt über `POST /api/dev/context-guard` in `dev.config.json` und lädt ihn neu. „Before sending“ und „After an answer“ gelten ab der nächsten Nachricht, „While a task runs“ ab dem nächsten Start des Agenten. Live zeigt das Feld nicht.
 
+Der Chat meldet jede Zusammenfassung mit „The chat was X % full and is now Y % full.“. Live meldet nach einer Zusammenfassung mitten im Task nur den alten Stand und gar nichts nach der Zusammenfassung nach dem Turn. In Dev wartet die Meldung mitten im Task auf die nächste Messung (`TurnProjector`, `showAfter`), und die Zusammenfassung nach dem Turn steht gleich unter dem Start der nächsten Nachricht (`pendingNote` in `agent-bridge.mjs`).
+
 Jeder Wert liegt zwischen 0.3 und 0.9. Fehlt einer oder ist er falsch, ist der ganze Schalter aus, und die Warnung steht im Log und in der Seite. Ohne den Schalter oder mit `"enabled": false` verhält sich der Host wie Live. Es gilt nur für lokale Modelle. `/compact` im Chat geht weiterhin von Hand.
 
 ## Vier Chat-Modi

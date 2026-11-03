@@ -202,8 +202,11 @@ export class TurnProjector {
    * no question ever reaches the person: the card goes straight from running to denied, without a moment where it
    * offers Approve and Deny buttons that would do nothing.
    */
-  constructor({ startedAt = Date.now(), policy = 'ask', window = 0 } = {}) {
+  constructor({ startedAt = Date.now(), policy = 'ask', window = 0, showAfter = false } = {}) {
     this.startedAt = startedAt;
+    // Strata Dev (contextGuard): the line about a summary waits for the next measurement and then says how full the chat is now. Off: as Live.
+    this.showAfter = showAfter === true;
+    this.pendingAfter = null;
     this.window = Number(window) || 0;   // the model's window, for the figures in the line that says the chat was summarised
     this.summarizing = false;
     this.policy = policy;
@@ -312,6 +315,12 @@ export class TurnProjector {
           this.tokensOut += Number(c.usage.outputTokens) || 0;
           this.contextTokens = prompt + (Number(c.usage.outputTokens) || 0);
           out.push({ type: 'context', contextTokens: this.contextTokens, contextMax: this.window || undefined });
+          // Strata Dev: the first measurement after a summary is the chat as it is now.
+          if (this.pendingAfter !== null && this.window > 0) {
+            const values = [this.pendingAfter, Math.min(100, Math.round(100 * this.contextTokens / this.window))];
+            this.pendingAfter = null;
+            out.push({ type: 'delta', own: true, text: '\n\n' + fill(FIT_TEXT.summarized, values), key: FIT_TEXT.summarized, values, noteReason: 'compacted' });
+          }
         }
       }
       return out;
@@ -391,6 +400,7 @@ export class TurnProjector {
         this.#afterTool();
         if (!d.error) {
           const before = this.window > 0 && this.contextTokens ? Math.min(100, Math.round(100 * this.contextTokens / this.window)) : null;
+          if (this.showAfter && before !== null) { this.pendingAfter = before; break; }   // Strata Dev: said with the next measurement (usage), or when the turn ends
           const text = before === null ? FIT_TEXT.summarizedShort : FIT_TEXT.summarizedWas;
           const values = before === null ? [] : [before];
           out.push({ type: 'delta', own: true, text: '\n\n' + fill(text, values), key: text, values, noteReason: 'compacted' });
@@ -403,6 +413,12 @@ export class TurnProjector {
         break;
       case 'turn/end':
         this.ended = d.reason ?? { kind: 'completed' };
+        // Strata Dev: no measurement came after the summary: say what is known.
+        if (this.pendingAfter !== null) {
+          const values = [this.pendingAfter];
+          this.pendingAfter = null;
+          out.push({ type: 'delta', own: true, text: '\n\n' + fill(FIT_TEXT.summarizedWas, values), key: FIT_TEXT.summarizedWas, values, noteReason: 'compacted' });
+        }
         break;
       default:
         break;

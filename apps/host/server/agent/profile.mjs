@@ -160,6 +160,13 @@ export function compactionHeadroom(context, outputBudget, midTaskAt = null) {
 }
 
 /**
+ * Strata Dev (contextGuard): how much of the newest history stays word for word when the Harness summarises in the middle of a task. Its own
+ * 16 percent of the window kept a tail that left only about 8K tokens freed on a 64K window; a task's newest steps are in the summary anyway.
+ */
+export const GUARD_RETAIN_RATIO = 0.05;
+const guardRetain = midTaskAt => (midTaskAt > 0 ? { retainRatio: GUARD_RETAIN_RATIO } : {});
+
+/**
  * The thinking levels the chat's Reasoning menu offers, as wire values for a local Strata model. `off` sends
  * chat_template_kwargs.enable_thinking false; the rest send it true plus reasoning_effort (the server maps high and max to its top level).
  */
@@ -221,7 +228,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       const key = `${route}~s${budget}`;
       providers[key] = { ...def, displayName: `${def.displayName} (with your response settings)`, baseURL: `${proxyBase}/${key}/v1`, ...(budget ? { headers: { ...(def.headers ?? {}), 'x-strata-budget': String(budget) } } : {}) };
       shapeTargets[key] = realBase;
-      for (const m of def.models) { const w = m.contextWindow, out = m.maxTokens; compaction.push({ provider: key, model: m.id, headroomTokens: compactionHeadroom(w, out, midTaskAt) }); }
+      for (const m of def.models) { const w = m.contextWindow, out = m.maxTokens; compaction.push({ provider: key, model: m.id, headroomTokens: compactionHeadroom(w, out, midTaskAt), ...guardRetain(midTaskAt) }); }
       keys[budget] = key;
     }
     return keys;
@@ -251,7 +258,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
         reasoning: true, reasoningEfforts: LOCAL_EFFORTS,
       }],
     };
-    compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context), midTaskAt) });
+    compaction.push({ provider: route, model: inst.modelId, headroomTokens: compactionHeadroom(context, localOutputBudget(context), midTaskAt), ...guardRetain(midTaskAt) });
     slots = Math.max(slots, Number.isFinite(inst.slots) && inst.slots >= 1 ? Math.floor(inst.slots) : 1);
     const shaped = addShaped(route, providers[route], inst.baseUrl, midTaskAt);
     routes.push({ route, fp: fingerprint(providers[route], env[keyEnv]), kind: 'local', connectionName: 'this computer', instanceId: inst.id, modelId: inst.modelId, name: inst.label || inst.modelId, contextWindow: context, ...(shaped ? { shaped } : {}) });

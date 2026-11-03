@@ -81,3 +81,34 @@ test('Settings page: saving writes only contextGuard, checks every value first, 
   assert.deepEqual(contextGuardView({ enabled: false, midTaskAt: 0.5 }), { enabled: false, midTaskAt: 0.5, compactAfterTurnAt: 0.55, compactBeforeSendAt: 0.6 });
   assert.equal(contextGuardView(undefined).enabled, false);
 });
+
+test('Dev: the line about a summary made in the middle of a task says how full the chat is now, with the next measurement', async () => {
+  const { TurnProjector } = await import('../server/agent/events.mjs');
+  const { FIT_TEXT } = await import('../server/agent/context-fit.mjs');
+  const usage = n => ({ type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'a', chunk: { type: 'usage', usage: { inputTokens: n, outputTokens: 0 } } } });
+  const ev = (type, data = {}) => ({ type: 'event', event: { type, data } });
+  const p = new TurnProjector({ window: 65536, showAfter: true });
+  p.consume(usage(58000)); p.consume(ev('compaction/start', { compactionId: 'c' }));
+  assert.deepEqual(p.consume(ev('compaction/end', { compactionId: 'c' })), [], 'nothing yet: the size after the summary is not known');
+  const note = p.consume(usage(20000)).find(f => f.key === FIT_TEXT.summarized);
+  assert.deepEqual(note.values, [89, 31]);
+  assert.equal(p.consume(usage(21000)).find(f => f.key === FIT_TEXT.summarized), undefined, 'said once');
+  // No measurement before the turn ends: the line says what is known.
+  const q = new TurnProjector({ window: 65536, showAfter: true });
+  q.consume(usage(58000)); q.consume(ev('compaction/start')); q.consume(ev('compaction/end'));
+  const flushed = q.consume(ev('turn/end', { reason: { kind: 'completed' } })).find(f => f.noteReason === 'compacted');
+  assert.equal(flushed.key, FIT_TEXT.summarizedWas); assert.deepEqual(flushed.values, [89]);
+  // Off (Live): the line comes at once, as before.
+  const live = new TurnProjector({ window: 65536 });
+  live.consume(usage(58000)); live.consume(ev('compaction/start'));
+  assert.equal(live.consume(ev('compaction/end'))[0].key, FIT_TEXT.summarizedWas);
+});
+
+test('switch on: the Harness keeps only 5 percent of the window word for word when it summarises mid-task; off: its own 16 percent', () => {
+  try {
+    setActiveDevSettings(null);
+    assert.doesNotMatch(buildProfile({ local, connections: [] }).patch, /retainRatio/, 'Live: nothing set');
+    setActiveDevSettings(devSettings({ contextGuard: ON }));
+    assert.match(buildProfile({ local, connections: [] }).patch, /"retainRatio": 0\.05/);
+  } finally { setActiveDevSettings(null); }
+});

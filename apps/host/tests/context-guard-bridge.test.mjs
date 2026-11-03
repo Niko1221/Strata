@@ -78,3 +78,17 @@ test('the same two turns with the guard off: no summary afterwards', { skip }, a
   await wait(3000);
   assert.equal(summaries(worker), 0, 'Live behaviour: nothing summarised after the turn');
 });
+
+test('after a turn the chat is told about the summary at the start of its next message: was X percent, is now Y percent', { skip }, async (t) => {
+  const { worker, send } = await rig(t, AFTER_TURN);
+  for (let i = 0; i < 2; i++) assert.equal((await send(big(i))).at(-1).type, 'done');
+  const until = Date.now() + 30_000;
+  while (summaries(worker) === 0 && Date.now() < until) await wait(250);
+  assert.ok(summaries(worker) >= 1, 'the host summarised the chat after the turn');
+  await wait(1500);   // the summary is finished and measured before the chat is idle again
+  const frames = await send('SCRIPT:echo hi');
+  const note = noteOf(frames);
+  assert.ok(note, 'the next message starts with the line about the summary');
+  assert.equal(note.values.length, 2);
+  assert.ok(note.values[0] > note.values[1], `the chat was fuller (${note.values[0]}%) than it is now (${note.values[1]}%)`);
+});

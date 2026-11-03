@@ -75,6 +75,9 @@ export async function countTokens({ baseUrl, key = '', model = '', text, fetchIm
 }
 
 /** The plain sentences (also in the interface catalog in all nine languages). `{0}` slots are filled by the page. */
+// Strata Dev only, English only (not in the catalogs): a goal runs its rounds in the Harness, which is not idle then, so a hand-made summary fails.
+export const DEV_COMPACT_GOAL = 'A goal is running. It summarizes older messages by itself when it needs room. To do it now, pause the goal in the goal bar first, then send /compact.';
+
 export const FIT_TEXT = Object.freeze({
   tooLarge: 'This message is about {0} tokens long, and this model can read about {1} at a time. It is too large to send as it is.',
   tooLargeNext: 'Attach it as a file for the assistant to read in parts, or send a shortened preview.',
