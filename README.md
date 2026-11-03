@@ -32,21 +32,24 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 <details open>
 <summary>⚡ &nbsp;<b>Flint 40B Preview (256 MoE Experts) — Native C++/CUDA Engine</b></summary>
 
-**High-performance native C++/CUDA inference engine for Flint 40B Preview (`flint-UD-Q3_K_XL.gguf`), compiled for NVIDIA Blackwell (`sm_120`) and CUDA 12.8.**
+**High-performance native C++/CUDA inference engine for Flint 40B Preview (`flint-UD-Q3_K_XL.gguf`), compiled for NVIDIA Blackwell (`sm_120`), Ada (`sm_89`), Ampere (`sm_86`), Turing (`sm_75`) and CUDA 12.8.**
 
-* **Total Architecture**: 49 layers (2 dense + 47 MoE), 256 fine-grained MoE routed experts (`top-k = 6`) + 2 shared experts, Split-K FlashAttention (`sliding_window = 513`).
-* **VRAM Residency**: Up to 142–167 experts per layer reside directly in GPU VRAM (~8.5–10 GB VRAM), using residency-biased routing (`--margin 1.0`) for zero-DMA PCIe latency.
-* **Decode Speed**: **85.3 – 92.4 tok/s** decode on consumer 16GB GPUs (NVIDIA RTX 5060 Ti).
-* **Prefill Speed**: **~360 – 385 tok/s** sustained prefill with automated chunking up to 2048+ tokens.
-* **Server Protocol**: Native `strata --serve` line-protocol implementation (`READY`, `GEN`, `PP`, `T`, `DONE`, `QUIT`), compatible with `serve/server.py` OpenAI API (`/v1/chat/completions`) and Web Chat UI.
+* **Total Architecture**: 49 layers (2 dense + 47 MoE), 256 fine-grained MoE routed experts (`top-k = 6`) + 2 shared experts.
+* **Prefill Acceleration**: **Batched Tensor Core GEMM Attention** (`cublasGemmStridedBatchedEx` + `k_flint_kv_unpack_f16` + `k_flint_attn_softmax16`) with sliding window (513) and permanent sinks ($0..3$), delivering **up to 1,238 tok/s** (+188% speedup).
+* **3-Tier Sliding Window KV Cache**: Enables massive **256K (262,144 tokens) context** on 16GB GPUs without VRAM OOM by maintaining an active 32,768-token Hot Ring in VRAM (1.63 GiB Q8_0) and persisting full context in pinned Host RAM (13.02 GiB).
+* **CUDA Graph Replay for Decode**: Single-token decode captured into hardware execution graphs (`cudaGraphLaunch`), eliminating Windows CPU driver dispatch latency and sustaining **88.6 – 90.4 tok/s**.
+* **Dynamic Adaptive MoE Expert Swapping**: On-device atomic tracking of true router picks (`k_count_usage`) with safe miss zeroing (`k_clear_miss`), dynamically hot-swapping active experts over PCIe Gen4 (56 µs per expert) without recompiling CUDA graphs.
+* **Server Protocol & Multi-Turn**: Native `strata --serve` line-protocol implementation (`READY`, `GEN`, `PP`, `T`, `DONE`, `RESET`, `QUIT`), compatible with `serve/server.py` OpenAI API (`/v1/chat/completions`) and Web Chat UI. Fully tested on continuous multi-turn conversations up to 10,000+ context length.
 
-#### Benchmarks (RTX 5060 Ti 16GB + Ryzen 5 9600X) — Hardware-Accelerated Q8_0 KV Cache
+#### Benchmarks (RTX 5060 Ti 16GB + Ryzen 5 9600X) — Tensor Core Prefill & 3-Tier KV Cache
 | Model | Context Limit | KV Cache Footprint | VRAM Resident Experts | Decode Speed | Prefill Speed | Total VRAM |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Flint 40B Preview UD-Q3_K_XL** | 8,192 | **0.41 GiB** (Q8_0) | **158 / 256 (61.8%)** | **88.6 – 92.3 tok/s** | **~365 tok/s** | ~11.2 GB |
-| **Flint 40B Preview UD-Q3_K_XL** | 32,768 | **1.63 GiB** (Q8_0) | **113 / 256 (44.3%)** | **89.5 tok/s** | **~385 tok/s** | ~12.5 GB |
+| **Flint 40B Preview UD-Q3_K_XL** | 8,192 | **0.41 GiB** (Q8_0) | **158 / 256 (61.8%)** | **90.4 tok/s** | **~1,238 tok/s** | ~11.2 GB |
+| **Flint 40B Preview UD-Q3_K_XL** | 32,768 | **1.63 GiB** (Q8_0) | **113 / 256 (44.3%)** | **89.5 – 90.4 tok/s** | **~1,225 tok/s** | ~12.5 GB |
+| **Flint 40B Preview UD-Q3_K_XL** | 65,536 *(Multi-turn 10K+)* | **1.63 GiB Ring** + Host RAM | **113 / 256 (Adaptive)** | **88.6 – 90.4 tok/s** | **~1,194 tok/s** *(5K)*<br>**~920 tok/s** *(10K)* | ~13.5 GB |
+| **Flint 40B Preview UD-Q3_K_XL** | 262,144 *(256K Context)* | **1.63 GiB Ring** + 13.0 GiB RAM | **113 / 256 (Adaptive)** | **88.6 tok/s** | **1,068.5 tok/s** | **~13.5 GB** *(0 OOM)* |
 
-* **Hardware-Accelerated Q8_0 KV Cache**: 4x compression over FP32 (1.63 GiB vs 6.57 GiB at 32K context). Coupled with Flint's per-head QK-RMSNorm, 8-bit quantization preserves full precision ($\Delta\text{PPL} < 0.001$) while freeing ~4.94 GiB VRAM for resident MoE experts.
+* **Hardware-Accelerated Q8_0 KV Cache & 3-Tier Ring**: 4x compression over FP32 (1.63 GiB vs 6.57 GiB at 32K context). Coupled with Flint's per-head QK-RMSNorm, 8-bit quantization preserves full precision ($\Delta\text{PPL} < 0.001$) while Host RAM holds full 256K context history without filling GPU VRAM.
 
 #### Quick Start
 ```cmd
@@ -54,7 +57,7 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 .\start-flint.bat
 
 # Or run the native C++/CUDA CLI binary directly:
-.\build\Release\strata-flint.exe --model E:\AI-models\models\flint\flint-UD-Q3_K_XL.gguf --max-context 8192 --chunk 1024 -n 32
+.\build\Release\strata-flint.exe --model E:\AI-models\models\flint\flint-UD-Q3_K_XL.gguf --max-context 65536 --kv-resident 32768 --chunk 1024 --adapt-every 16 --adapt-swaps 8 -n 128
 ```
 
 #### Build from Source (CMake + MSVC + CUDA 12.8)
