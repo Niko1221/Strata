@@ -192,7 +192,9 @@ def hardware_support(backend: str | None, archs: Any = None) -> Support:
 REPO = "incoai/Qwen3.8-Flash-Next-DFlash2"
 REVISION = "a22a1744e85c17364dcc54a6a420af7135d4c7f6"
 LICENSE = "Apache-2.0"
-BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"
+# HF_ENDPOINT (a mirror, e.g. https://hf-mirror.com) serves the same revision
+HF_ENDPOINT = (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or "https://huggingface.co"
+BASE_URL = f"{HF_ENDPOINT}/{REPO}/resolve/{REVISION}/"
 FILES = (
     ("config.json", 1236, "2409575986f9ea24d455343eb469c0e6940def5edab1d1be503bb8eb4cc3b1b9"),
     ("model.safetensors", 1206140008, "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"),
