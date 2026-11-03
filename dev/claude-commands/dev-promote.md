@@ -1,5 +1,5 @@
 ---
-description: Strata Dev - Uebernahme in Live vorbereiten (Kern vs. Dev-only zeigen, nach Freigabe auf promote/<name> uebernehmen)
+description: Strata Dev - Uebernahme in Live vorbereiten (Kern vs. Dev-only zeigen, nach Freigabe auf promote/NAME uebernehmen)
 allowed-tools: Bash(powershell:*), Bash(git log:*), Bash(git diff:*), Bash(git show:*), Read
 ---
 
