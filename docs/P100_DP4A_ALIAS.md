@@ -37,5 +37,7 @@ instructions; the SM61 probe retains four native IDP instructions.
 
 This is a focused arithmetic regression, not a whole-engine generation or
 throughput benchmark. No deployment or performance default was changed.
-The CUDA-only SM60 branch is the only modified code path; HIP/SYCL builds and
-a complete engine build have not been run for this patch.
+The CUDA-only SM60 branch is the only modified code path; HIP/SYCL builds have
+not been run for this patch. A complete sm_60 engine build with this patch ran
+on three P100s in a six-card layer split, on c62d5e3a (engine 0.1.55); see the
+pull request. No such run without the patch has been made for comparison.
