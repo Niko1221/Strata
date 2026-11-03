@@ -1176,6 +1176,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     int C = 0, ng = 0, set = 0;
     // FNX_PF_HCSPLIT: this pass's hyper-connection reads are split between the cards (every chunk of the pass long enough to be worth it)
     bool hs = pf_[0]->hcs;
+    static const bool hs_full = env_flag("FNX_PF_HCSPLIT_FULL");   // debugging: every card reads all the rows (the swap still runs): the answers must equal the unsplit path's
     for (const PfChunk& ck : chunks)
         if ((int) ck.tokens.size() < 512) hs = false;
     auto use = [&](int j) {
@@ -1278,7 +1279,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
             const LayerW& L = w.L[l];
             cudaStream_t s = b.st;
-            const int own = (c + 1) % NCARD, r0 = own * C / NCARD, nr = (own + 1) * C / NCARD - r0;
+            const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
             __half* mh = p.hf16 ? p.mixhk[j] : nullptr;
             if (half == 0) {
                 ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
@@ -1303,7 +1304,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
             const LayerW& L = w.L[l];
             cudaStream_t s = b.st;
-            const int own = (c + 1) % NCARD, r0 = own * C / NCARD, nr = (own + 1) * C / NCARD - r0;
+            const int own = (c + 1) % NCARD, r0 = hs_full ? 0 : own * C / NCARD, nr = hs_full ? C : (own + 1) * C / NCARD - r0;
             ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
             pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s);
             ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
