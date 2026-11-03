@@ -80,6 +80,7 @@ import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
 import { findFreePort, listenProblem } from './ports.mjs';
+import { defaultHostPort, devSummary, isDevMode, loadDevConfig } from './dev-mode.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
@@ -97,7 +98,10 @@ const DIST = process.env.STRATA_DIST
   : distFlag >= 0
     ? resolve(argv[distFlag + 1] ?? join(ROOT, 'dist'))
     : join(ROOT, 'dist');
-const PORT = Number(process.env.STRATA_PORT ?? 8791);
+const PORT = Number(process.env.STRATA_PORT ?? defaultHostPort());
+/* Strata Dev (docs/DEV_BUILD.md): dev.config.json is read once at start; a broken file is a warning, never a stop. Null unless STRATA_DEV=1. */
+const DEV = isDevMode() ? loadDevConfig() : null;
+for (const warning of DEV?.warnings ?? []) console.warn(`[strata] ${warning}`);
 const HOST = process.env.STRATA_BIND ?? '127.0.0.1';
 /* The folder chats work in when nothing else is chosen. It is never the app's own folder (the host is started inside its install
    directory, so `process.cwd()` was "host" in the sidebar and the agent could read and write the app): the person's own
@@ -1309,7 +1313,8 @@ async function api(req, res, path, method, url) {
     return token.length >= 32 && given.length === token.length && timingSafeEqual(Buffer.from(given), Buffer.from(token));
   };
   // Which window the person is using: the page shows "Quit Strata" in browser mode only.
-  if (path === '/api/app/mode' && method === 'GET') return json(res, 200, appUi.state());
+  // Strata Dev adds its badge and never offers an app update (the feed is Live's).
+  if (path === '/api/app/mode' && method === 'GET') return json(res, 200, DEV ? { ...appUi.state(), appUpdate: 'unavailable', dev: devSummary(DEV) } : appUi.state());
   if (path === '/api/app/quit' && method === 'POST') {
     // A web page cannot send this header without the browser asking the host first, and the host refuses pages that are not local (above).
     if (!req.headers['x-strata-client']) return error(res, 403, 'Not allowed.');
@@ -2261,6 +2266,7 @@ server.on('error', error => {
 });
 server.listen(PORT, HOST, () => {
   if (process.send) process.send({ type: 'strata-ready', port: PORT });
+  if (DEV) console.log(`[strata] Strata Dev on http://${HOST}:${PORT}/ (config: ${DEV.file})`);
   // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.
   if (control && process.env.STRATA_PACKAGED === '1') control.cleanup().catch(() => {});
 });

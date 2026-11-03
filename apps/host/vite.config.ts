@@ -23,7 +23,8 @@ export default defineConfig({
     },
   ],
   server: {
-    port: 5199,
+    // Strata Dev (STRATA_DEV=1, docs/DEV_BUILD.md) takes 5200, so it runs beside the usual dev server.
+    port: process.env.STRATA_DEV === '1' ? 5200 : 5199,
     strictPort: true,
     proxy: {
       '/api': {

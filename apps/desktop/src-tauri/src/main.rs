@@ -39,6 +39,8 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
 mod desktoplog;
+#[cfg(feature = "dev-build")]
+mod devbuild;
 mod shell;
 #[cfg(target_os = "linux")]
 mod supervisor;
@@ -251,7 +253,17 @@ fn pick_port() -> Result<u16, String> {
 /// theme, text size, language and the chat list belongs to that origin, so a port that changed on every launch lost all
 /// of it. The preferred port is fixed; only when something else holds it does the app fall back to a free one (and that
 /// launch starts with empty storage, as before).
+#[cfg(not(feature = "dev-build"))]
 const PREFERRED_PORT: u16 = 47831;
+/// Strata Dev has its own port, so Dev and Live run side by side and keep their own browser storage (devbuild.rs).
+#[cfg(feature = "dev-build")]
+const PREFERRED_PORT: u16 = devbuild::PREFERRED_PORT;
+
+/// The window title: "Strata", or "Strata Dev" for the developer build.
+#[cfg(not(feature = "dev-build"))]
+const WINDOW_TITLE: &str = "Strata";
+#[cfg(feature = "dev-build")]
+const WINDOW_TITLE: &str = devbuild::TITLE;
 
 /// Set when the port the person (or the app) wanted was busy: "busy:<wanted>:<used>". The host gets it as STRATA_PORT_NOTICE and tells the
 /// person (the chats and settings saved on the page belong to the port, so a different port starts empty) (#3402).
@@ -844,6 +856,9 @@ fn main() {
     // at the screen — the lesson from the Electron attempt, where a packaged app that never started
     // its host hung with no output at all.
     let args: Vec<String> = std::env::args().collect();
+    // Strata Dev: its own data folders and ports, set before the log, the host or anything else reads them (devbuild.rs).
+    #[cfg(feature = "dev-build")]
+    devbuild::apply_env();
     // Windows and macOS: the run log and the panic hook come first, before anything that can fail. A start that goes wrong then leaves a
     // log, a crash file and a message box instead of a process that is gone with 0xc0000409 and nothing else (Linux: supervisor.rs).
     #[cfg(not(target_os = "linux"))]
@@ -949,7 +964,7 @@ fn run_embedded() {
 fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box<dyn std::error::Error>> {
     let origin = format!("http://127.0.0.1:{port}");
     let url = origin.parse().expect("a valid loopback URL");
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title("Strata").inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0);
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url)).title(WINDOW_TITLE).inner_size(1440.0, 920.0).min_inner_size(900.0, 600.0);
     // Dropping pictures on the chat (QA report 1, item 4). Windows: the shell's own file-drop handler is off, because with it on the system hands
     // the dropped file to the shell and the page never sees it; with it off the page gets ordinary drag and drop events (apps/host DropZone), as
     // in a browser. Linux and macOS: the page gets the drag events but WebKit gives it no files, so the handler stays on and the shell passes the

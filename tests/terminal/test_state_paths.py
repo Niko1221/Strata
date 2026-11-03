@@ -25,6 +25,11 @@ class StatePaths(unittest.TestCase):
         self.assertEqual(paths.state_base({}, windows=False, home=Path("/home/me")),
                          Path("/home/me") / ".local" / "state" / "strata")
 
+    def test_strata_state_dir_replaces_the_base_on_every_system(self):
+        env = {"STRATA_STATE_DIR": "D:\\StrataDev\\state", "LOCALAPPDATA": "C:\\ignored", "XDG_STATE_HOME": "/ignored"}
+        self.assertEqual(paths.state_base(env, windows=True), Path("D:\\StrataDev\\state"))
+        self.assertEqual(paths.state_base(env, windows=False), Path("D:\\StrataDev\\state"))
+
     def test_runtime_dir_default_lives_under_the_state_base(self):
         with tempfile.TemporaryDirectory() as d:
             env = {"LOCALAPPDATA": d, "XDG_STATE_HOME": d}

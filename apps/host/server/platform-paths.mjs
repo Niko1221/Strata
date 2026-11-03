@@ -13,8 +13,9 @@ import { posix } from 'node:path';
 
 const winPath = (...parts) => parts.join('\\');
 
-/** The folder under which Strata keeps per-user state (tuning jobs, Time-skip runs). */
+/** The folder under which Strata keeps per-user state (tuning jobs, Time-skip runs). STRATA_STATE_DIR replaces it (Strata Dev sets it). */
 export function stateRoot(env = process.env, platform = process.platform, home = homedir()) {
+  if (env.STRATA_STATE_DIR) return env.STRATA_STATE_DIR;
   if (platform === 'win32') {
     const local = env.LOCALAPPDATA || winPath(env.USERPROFILE || home, 'AppData', 'Local');
     return winPath(local, 'Strata');

@@ -58,6 +58,12 @@ ${StrLoc}
 !define ARCH "{{arch}}"
 !define ADDITIONALPLUGINSPATH "{{additional_plugins_path}}"
 !define ALLOWDOWNGRADES "{{allow_downgrades}}"
+
+; Strata Dev (tauri.dev-build.conf.json, docs/DEV_BUILD.md) keeps all its data in %LOCALAPPDATA%\StrataDev. Its uninstaller removes that folder
+; and nothing of Strata's. Decided when the installer is compiled: the Live installer is the same as without these lines.
+!if "${BUNDLEID}" == "ai.strata.desktop.dev"
+  !define STRATA_DEV_BUILD
+!endif
 !define DISPLAYLANGUAGESELECTOR "{{display_language_selector}}"
 !define INSTALLWEBVIEW2MODE "{{install_webview2_mode}}"
 !define WEBVIEW2INSTALLERARGS "{{webview2_installer_args}}"
@@ -498,7 +504,11 @@ Function un.DataPage
   ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
   ${NSD_CreateCheckBox} 0 0 100% 12u "Also remove my Strata data (models, chats, settings)"
   Pop $DeleteAppDataCheckbox
+  !ifdef STRATA_DEV_BUILD
+  ${NSD_CreateLabel} 12u 18u -12u 96u "If you tick it, this folder is deleted, and nothing else:$\r$\n$\r$\n$LOCALAPPDATA\StrataDev   (Dev chats, settings, profiles, logs)$\r$\n$\r$\nStrata itself, its models and its engine are never deleted."
+  !else
   ${NSD_CreateLabel} 12u 18u -12u 96u "If you tick it, these folders are deleted, and nothing else:$\r$\n$\r$\n$LOCALAPPDATA\Strata   (engine, installed copy, tunings)$\r$\n$APPDATA\Strata   (settings)$\r$\n$PROFILE\.strata   (your chats, app settings)$\r$\n$DOCUMENTS\Strata\Models   (models Strata downloaded into its own folder)$\r$\n$\r$\nA model folder you chose yourself is never deleted."
+  !endif
   Pop $0
   ${NSD_SetFocus} $DeleteAppDataCheckbox
   nsDialogs::Show
@@ -983,6 +993,11 @@ Section Uninstall
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
 
     ; Strata's own data, for a fresh start: the folders listed on the page, nothing else. Each path is checked first.
+    !ifdef STRATA_DEV_BUILD
+    ${If} "$LOCALAPPDATA" != ""
+      RmDir /r "$LOCALAPPDATA\StrataDev"
+    ${EndIf}
+    !else
     ${If} "$LOCALAPPDATA" != ""
       RmDir /r "$LOCALAPPDATA\Strata"
     ${EndIf}
@@ -996,6 +1011,7 @@ Section Uninstall
       RmDir /r "$DOCUMENTS\Strata\Models"
       RmDir "$DOCUMENTS\Strata"          ; only if it is empty now
     ${EndIf}
+    !endif
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

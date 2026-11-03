@@ -16,6 +16,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { MODELS_DIR } from './store.mjs';
 import { which } from './util.mjs';
+import { enginePort } from './ports.mjs';
 
 const LOG_LIMIT = 400;
 
@@ -24,7 +25,7 @@ const state = {
   binary: null,
   binarySource: null,
   pid: null,
-  port: 8080,
+  port: enginePort(),
   modelId: null,
   modelPath: null,
   args: [],
@@ -209,7 +210,7 @@ async function waitForHealth(port, timeoutMs = 90_000) {
   throw new Error('Engine did not become healthy in time');
 }
 
-export async function start({ modelId, modelPath, port = 8080, config, hardware, timeoutMs = 120_000 }) {
+export async function start({ modelId, modelPath, port = enginePort(), config, hardware, timeoutMs = 120_000 }) {
   if (state.status === 'running' && state.modelId === modelId && state.port === port) {
     return status();
   }

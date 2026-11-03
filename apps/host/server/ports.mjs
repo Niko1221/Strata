@@ -18,6 +18,12 @@ function tryListen(port, host) {
   });
 }
 
+/** The engine's usual port (`fallback`), or STRATA_ENGINE_PORT when it names a usable one: Strata Dev sets 8081 (docs/DEV_BUILD.md). */
+export function enginePort(env = process.env, fallback = 8080) {
+  const port = Number(env.STRATA_ENGINE_PORT);
+  return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : fallback;
+}
+
 /** `preferred` when it can be taken, else the next free port above it (up to `tries` of them), else any free port. Never throws. */
 export async function findFreePort(preferred, host = '127.0.0.1', { skip = [], tries = 20 } = {}) {
   for (let offset = 0; offset < tries; offset++) {

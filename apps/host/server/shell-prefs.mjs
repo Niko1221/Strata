@@ -10,14 +10,18 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { componentsDirectory } from './control-runtime.mjs';
+import { DEV_PORTS, isDevMode } from './dev-mode.mjs';
 
-export const DEFAULT_PORT = 47831;
+/** The port the shell asks for: 47831, or 47832 for Strata Dev (docs/DEV_BUILD.md). */
+export const DEFAULT_PORT = isDevMode() ? DEV_PORTS.window : 47831;
 export const LANGUAGES = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
 export const DEFAULTS = Object.freeze({ port: 0, tray: false, language: 'en' });
 
 export const validPort = value => Number.isInteger(value) && value >= 1024 && value <= 65535;
 
 export function shellPrefsFile({ env = process.env } = {}) {
+  // The shell reads the file from its data folder (desktoplog.rs: STRATA_DESKTOP_DATA_DIR when set, as in Strata Dev); otherwise that is the folder beside the components.
+  if (env.STRATA_DESKTOP_DATA_DIR) return join(env.STRATA_DESKTOP_DATA_DIR, 'shell-prefs.json');
   return join(dirname(componentsDirectory({ env })), 'shell-prefs.json');
 }
 

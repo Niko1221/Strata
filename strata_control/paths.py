@@ -11,8 +11,10 @@ from pathlib import Path
 
 
 def state_base(environ=None, *, windows: bool | None = None, home: Path | None = None) -> Path:
-    """The folder that holds Strata's per-user state: runtime/, tuning/, time-skip/."""
+    """The folder that holds Strata's per-user state: runtime/, tuning/, time-skip/. STRATA_STATE_DIR replaces it (Strata Dev sets it)."""
     environ = os.environ if environ is None else environ
+    if environ.get("STRATA_STATE_DIR"):
+        return Path(environ["STRATA_STATE_DIR"])
     windows = os.name == "nt" if windows is None else windows
     home = Path.home() if home is None else home
     if windows:

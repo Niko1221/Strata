@@ -7,6 +7,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpa
 import { join, resolve, dirname, basename, sep, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
+import { enginePort } from './ports.mjs';
 import { NATIVE_FIELDS, APP_OWNED_FIELDS, withoutDraftLayer, validateNativeSettings, validateMcpServers, publicMcpServers, publicNativeEnv, restoreNativeEnv, speedSwitchRows } from './native-settings.mjs';
 import { resourceSettings, saferStart, reserveChoice } from './native-resources.mjs';
 import { USER_KEY, capture as captureUserArgs, merge as mergeUserArgs, setFlag as setUserFlag, stamped as stampedUserArgs } from './native-user-args.mjs';
@@ -397,7 +398,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(job.state!=='running'){await unload(id);return;}
   if(instance.profile)await control.stop(instance.profile).catch(()=>{});else await stopProcess(proc);instance.status='error';instance.error='Loading took more than five minutes. Check the engine log and free memory.';throw new Error(instance.error);
  }
- async function freePort(requested){for(let port=Number(requested??18500);port<=Number(requested??18500)+20;port++){if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('Choose a port from 1024 to 65535.');if([...instances.values()].some(i=>i.port===port)){if(requested)throw new Error('This private engine port is already in use.');continue;}const available=await new Promise(resolve=>{const probe=createServer();probe.once('error',()=>resolve(false));probe.listen(port,'127.0.0.1',()=>probe.close(()=>resolve(true)));});if(available)return port;if(requested)throw new Error('This private engine port is already in use.');}throw new Error('No free private engine port was found.');}
+ async function freePort(requested){const first=Number(requested??enginePort(process.env,18500));for(let port=first;port<=first+20;port++){if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('Choose a port from 1024 to 65535.');if([...instances.values()].some(i=>i.port===port)){if(requested)throw new Error('This private engine port is already in use.');continue;}const available=await new Promise(resolve=>{const probe=createServer();probe.once('error',()=>resolve(false));probe.listen(port,'127.0.0.1',()=>probe.close(()=>resolve(true)));});if(available)return port;if(requested)throw new Error('This private engine port is already in use.');}throw new Error('No free private engine port was found.');}
  let pollCount=0;
  /* The engine's metrics carry every finished request with `?requests=all`: a long session makes that a large JSON that the host parses and
     pushes to the window every 2 s. The last dozen is what the app shows live; the full list is refreshed every tenth poll. */

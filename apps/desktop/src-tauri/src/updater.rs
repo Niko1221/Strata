@@ -227,6 +227,11 @@ fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mu
 /// Open the bridge on a free loopback port. Returns None if the listener cannot be bound (the app then simply has no
 /// in-app update; the Terminal's `strata update --app` still works).
 pub fn start(app: &AppHandle, token: String) -> Option<Bridge> {
+    // Strata Dev never updates itself: the feed is Live's, and an update would replace the Dev app with Live (devbuild.rs).
+    // With no bridge the host has no app updater, as in a browser.
+    if cfg!(feature = "dev-build") {
+        return None;
+    }
     let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
     let port = listener.local_addr().ok()?.port();
     let progress = Arc::new(Mutex::new(Progress::default()));

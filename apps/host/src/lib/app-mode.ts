@@ -7,6 +7,8 @@ export interface AppMode {
   reason: string | null;
   canQuit: boolean;
   appUpdate: 'available' | 'unavailable';
+  /** Only from a host that runs as Strata Dev (STRATA_DEV=1): the badge text, the dev.config.json in use and its warnings. */
+  dev?: { label: string; configFile: string; warnings: string[] };
 }
 
 const NONE: AppMode = { mode: null, reason: null, canQuit: false, appUpdate: 'unavailable' };

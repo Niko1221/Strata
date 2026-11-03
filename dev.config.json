@@ -1,0 +1,9 @@
+{
+  "$comment": "Strata Dev settings (docs/DEV_BUILD.md). Read by the host at start when STRATA_DEV=1; a broken file is a warning, never a stop. Live ignores this file.",
+  "version": 1,
+  "badge": {
+    "label": "DEV"
+  },
+  "features": {},
+  "overrides": {}
+}

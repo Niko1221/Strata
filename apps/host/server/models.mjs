@@ -22,6 +22,7 @@ import { MODELS_DIR, diskFreeGb, get as getStore, update } from './store.mjs';
 import * as supervisor from './supervisor.mjs';
 import { EventHub, nowIso, round, uid } from './util.mjs';
 import { locateModelFile } from './model-files.mjs';
+import { enginePort } from './ports.mjs';
 
 /** In-memory runtime state that never needs persisting. */
 const runtime = new Map(); // id -> { state, progress, error }
@@ -210,7 +211,7 @@ export async function load(id, hooks = {}) {
   if (!isOnDisk(id)) throw new Error(`${v.label} is not downloaded yet`);
 
   const s = getStore();
-  const port = Number(s.expert?.['server.port'] ?? 8080);
+  const port = Number(s.expert?.['server.port'] ?? enginePort());
   const hardware = hooks.hardware;
   const config = hooks.config;
 

@@ -4,6 +4,7 @@ import { cachedHardware, detect } from './hardware.mjs';
 import { get as getStore, update } from './store.mjs';
 import * as supervisor from './supervisor.mjs';
 import { nowIso } from './util.mjs';
+import { enginePort } from './ports.mjs';
 
 const engineState = {
   running: false,
@@ -79,7 +80,7 @@ export async function config() {
   const previewArgs = v ? supervisor.buildArgs({
     modelPath: sup.running ? pathFor(v) : `<models>/${v.id}/${v.source.file}`,
     config: { beginner: s.beginner, expert: params(), serving: s.serving, layerCount: v.layerCount },
-    hardware: hw, port: Number(s.expert?.['server.port'] ?? 8080),
+    hardware: hw, port: Number(s.expert?.['server.port'] ?? enginePort()),
   }) : [];
 
   return {
@@ -212,7 +213,7 @@ export async function restart() {
     await supervisor.restart({
       modelId: v.id,
       modelPath: pathFor(v),
-      port: Number(s.expert?.['server.port'] ?? 8080),
+      port: Number(s.expert?.['server.port'] ?? enginePort()),
       config: { beginner: s.beginner, expert: params(), serving: s.serving, layerCount: v.layerCount },
       hardware: hw,
     });

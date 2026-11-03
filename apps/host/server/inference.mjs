@@ -15,12 +15,13 @@
 import * as supervisor from './supervisor.mjs';
 import { get as getStore } from './store.mjs';
 import { which } from './util.mjs';
+import { enginePort } from './ports.mjs';
 
 /** Where Strata's own API worker listens by default (`serve/server.py`, `--port 8095`). */
 const STRATA_DEFAULT_URL = 'http://127.0.0.1:8095/v1';
 
 const CANDIDATES = [
-  { name: 'llama.cpp', url: 'http://127.0.0.1:8080/v1' },
+  { name: 'llama.cpp', url: `http://127.0.0.1:${enginePort()}/v1` },
   { name: 'Ollama', url: 'http://127.0.0.1:11434/v1' },
   { name: 'LM Studio', url: 'http://127.0.0.1:1234/v1' },
 ];

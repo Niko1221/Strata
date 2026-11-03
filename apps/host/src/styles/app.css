@@ -7522,3 +7522,20 @@ textarea {
 
 /* A message the person typed keeps its line breaks (#3720). */
 .st-bubble__text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Strata Dev (docs/DEV_BUILD.md): the badge beside the brand. Only rendered when the host runs as Dev. */
+.dev-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--st-r-pill);
+  background: var(--st-warn-tint);
+  color: var(--st-warn-text);
+  border: 1px solid var(--st-warn);
+  font-family: var(--st-font-mono);
+  font-size: var(--st-fs-xs);
+  font-weight: 700;
+  letter-spacing: .06em;
+  line-height: 18px;
+  cursor: default;
+}
+.dev-badge[data-warn] { background: var(--st-danger-tint); color: var(--st-danger-text); border-color: var(--st-danger); }

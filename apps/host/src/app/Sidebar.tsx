@@ -18,6 +18,7 @@ import { MOD, runCommand } from '../lib/commands';
 import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
 import { Btn, Dialog, Icon, IconBtn, type IconName } from '../components/ui';
 import { Brand } from '../components/Brand';
+import { DevBadge } from '../components/DevBadge';
 import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
 export function Sidebar({ containerRef }: {
     containerRef: RefObject<HTMLElement | null>;
@@ -72,7 +73,7 @@ export function Sidebar({ containerRef }: {
     function closeMenu() { setMenuId(null); menuTrigger.current?.focus(); }
     return <>
     <aside className="nav" ref={containerRef} aria-label={tr("Main navigation")} aria-modal={navOpen && compact ? true : undefined} role={navOpen && compact ? 'dialog' : undefined} tabIndex={-1}>
-      <div className="nav__top">{tr(!collapsed ? <a className="nav__brand" href={href('chat')} aria-label={tr("Strata — open chat")}><Brand variant="lockup" height={28} decorative className="nav__brand-lockup"/></a> : null)}<button type="button" className="nav__collapse" aria-label={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} title={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} onClick={() => compact ? setNavOpen(!navOpen) : toggleRail()}><Icon name="panel" size={20}/></button></div>
+      <div className="nav__top">{tr(!collapsed ? <a className="nav__brand" href={href('chat')} aria-label={tr("Strata — open chat")}><Brand variant="lockup" height={28} decorative className="nav__brand-lockup"/></a> : null)}<DevBadge/><button type="button" className="nav__collapse" aria-label={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} title={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} onClick={() => compact ? setNavOpen(!navOpen) : toggleRail()}><Icon name="panel" size={20}/></button></div>
       <div className="nav__scroll">
         <button className="st-btn st-btn--primary nav-new" aria-label={tr("New chat")} title={tr("New chat")} onClick={() => runCommand('new')}><Icon name="new-chat" size={18}/><span className="nav__rail-hide">{tr("New chat")}</span></button>
         <TaskTree collapsed={collapsed}/>

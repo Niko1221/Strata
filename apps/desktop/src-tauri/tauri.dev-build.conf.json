@@ -1,0 +1,10 @@
+{
+  "productName": "Strata Dev",
+  "mainBinaryName": "strata-dev",
+  "identifier": "ai.strata.desktop.dev",
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "shortDescription": "Strata Dev: the developer build of Strata.",
+    "longDescription": "Strata Dev is the developer build of Strata. It runs beside Strata with its own ports and data folders and never updates itself."
+  }
+}

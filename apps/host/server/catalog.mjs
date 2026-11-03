@@ -10,6 +10,7 @@
 import { REAL_VARIANTS } from './real-model-catalog.mjs';
 import { DATA_DIR } from './store.mjs';
 import { createLocalModels } from './local-models.mjs';
+import { enginePort } from './ports.mjs';
 // Design model versions are isolated from real downloadable artifacts.
 const DESIGN_VERSIONS = [
  ['Q2_K','Smallest',2.9], ['Q3_K_M','Compact',3.9], ['Q4_K_M','Balanced',4.9],
@@ -99,7 +100,7 @@ export function expertParams(cores = null) {
 
     // Server
     { id: 'server.host', group: 'Server', label: 'Server access', effect: 'Preserved setting; host access is configured separately', type: 'select', options: ['Local only', 'Local + key', 'Network', 'Network + key'], value: 'Local only', recommended: 'Local only' },
-    { id: 'server.port', group: 'Server', label: 'Internal engine port', effect: 'Public app API uses the host address shown in Serving', type: 'number', value: 8080, recommended: 8080 },
+    { id: 'server.port', group: 'Server', label: 'Internal engine port', effect: 'Public app API uses the host address shown in Serving', type: 'number', value: enginePort(), recommended: enginePort() },
     { id: 'server.parallel', group: 'Server', label: 'Engine request slots', effect: 'This UI host dispatches one request at a time', type: 'number', value: 1, recommended: 1 },
     { id: 'server.queue', group: 'Server', label: 'Queue depth', effect: 'Requests allowed to wait', type: 'number', value: 8, recommended: 8 },
     { id: 'server.timeout', group: 'Server', label: 'Request timeout', effect: 'Seconds before a call is dropped', type: 'number', value: 600, recommended: 600 },
