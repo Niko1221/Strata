@@ -34,6 +34,14 @@ export const hostModeOf = (mode: string | null | undefined): 'manual' | 'bypass'
 
 export const plansFirst = (mode: string | null | undefined) => devModeOf(mode) === 'plan-manual' || devModeOf(mode) === 'plan-auto';
 
+/**
+ * Is this message to be written up as a plan first? Not when it carries out an approved plan (that is the work itself), not a command, and not
+ * while a plan is under way (approved, running or paused): then "continue" or a follow-up belongs to that plan.
+ */
+export function wantsPlanFirst({ mode, body, carryOut = false, planState = null }: { mode: string | null | undefined; body: string; carryOut?: boolean; planState?: string | null }): boolean {
+    return plansFirst(mode) && !carryOut && !!body.trim() && !body.trim().startsWith('/') && !['approved', 'running', 'paused'].includes(planState ?? '');
+}
+
 /** What goes to the host for a message typed in the box: a plain message becomes "/plan ...", a command or an empty message stays. */
 export function planFirstText(text: string): string {
     const line = text.trim();

@@ -4,14 +4,14 @@ import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
 import { devActive, devLoopEnabled, devModeOverride, devSkillsOverride } from '../dev/overrides';
-import { hostModeOf, plansFirst, planFirstText } from '../dev/chat-modes';
+import { hostModeOf, planFirstText, wantsPlanFirst } from '../dev/chat-modes';
 import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
 import { approvalNeeded, workFinished } from './attention';
 import { applyGoalFrame } from './goal';
 import { tidyAnswer } from './answer-text';
 import { appendText, mergeDeliverable, readDeliverable, readGroup, readSkills, upsertGroup } from './deliverables';
-import { applyPlanFrame, applyQueueFrame, planApprove, queueMessage } from './plan';
+import { applyPlanFrame, applyQueueFrame, planApprove, planOf, queueMessage } from './plan';
 import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabId, withTimeSkipResult, type TimeSkipFile, type TimeSkipJob, type TimeSkipRun, type TimeSkipVersion } from './time-skip';
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
@@ -1704,13 +1704,13 @@ export async function approvePlan(sessionId: string, planId: string) {
   const { prompt } = await planApprove(sessionId, planId);
   // A chat in Plan mode only reads; carrying the plan out needs a mode that may act.
   if (state.sessions.find(s => s.id === sessionId)?.preferences?.mode === 'plan') setChatPreferences(sessionId, { mode: 'manual' });
-  if (prompt) await sendMessage(prompt, { shown: tr('Approved the plan.') });
+  if (prompt) await sendMessage(prompt, { shown: tr('Approved the plan.'), carryOut: true });
 }
 
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
 export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean } = {}) {
+export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean; /** Strata Dev: this message carries out an approved plan, so it is never turned into a new /plan. */ carryOut?: boolean } = {}) {
   if (state.streaming) {
     // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
     const waiting = state.activeSession, line = text.trim();
@@ -1752,7 +1752,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}),...(options.markdown?{markdown:true}:{}) };
   // Strata Dev: Plan + Manual and Plan + Auto send a plain message as "/plan ..." first (src/dev/chat-modes.ts).
   const chatMode = state.sessions.find(s => s.id === sessionId)?.preferences?.mode ?? (devActive() ? devModeOverride(undefined).mode : undefined);
-  const planFirst = devActive() && !resume && !planStart && !options.fromLoop && plansFirst(chatMode) && !!body;
+  const planFirst = devActive() && !resume && !planStart && !options.fromLoop && wantsPlanFirst({ mode: chatMode, body, carryOut: options.carryOut, planState: planOf(sessionId)?.state });
   let assistantId = uid('m');
   const assistantMsg: ChatMessage = {
     id: assistantId,
