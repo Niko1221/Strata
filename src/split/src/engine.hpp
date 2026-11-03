@@ -395,6 +395,7 @@ private:
     // `between` runs on the host while the cards work
     static constexpr int PF_PASS = 8, PF_SETS = 2 * PF_PASS;
     int pass_rows_ = 0;
+    int pf_pass_pick_ = 0;   // chunks a pass the constructor picked from the free VRAM (0: the rule in prefill_alloc)
     struct PfChunk {
         std::vector<int> tokens;
         int after, set;

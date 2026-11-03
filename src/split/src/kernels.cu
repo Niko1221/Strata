@@ -1446,8 +1446,9 @@ void attn_prompt(const float* qg, const uint16_t* kc, const uint16_t* vc, const 
                  const int* n_cells, int card, int C, int r0, int T, float* part, void* st) {
     if (T == 0) return;   // an empty half of a one-row chunk
 #if !FNX_HIP && FNX_ARCH >= 80
-    // FNX_PFX_ATTN_I8: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, on by default on NVIDIA sm_80+ again (owner 11-03: "do all 5"; FNX_PFX_ATTN_I8=0 turns it off; HIP keeps the f16 kernel)
-    static const bool i8 = env_int("FNX_PFX_ATTN_I8", 1) != 0;
+    // FNX_PFX_ATTN_I8: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, on by default on NVIDIA sm_80+ for the IQ3_S-type files and off for the others (UD-Q4_K_XL lost agent-A8 and A10 with it); FNX_PFX_ATTN_I8=0/1 overrides; HIP keeps the f16 kernel
+    static const int i8_env = (int) env_int("FNX_PFX_ATTN_I8", -1);
+    const bool i8 = i8_env >= 0 ? i8_env != 0 : attn_i8_default();
     if (i8 && g.q8) {
         static bool attr[64] = {};
         int dev = 0;
@@ -1933,6 +1934,9 @@ void attn_prep_append(float* qg, float* k, const float* v, const float* q_norm, 
 namespace fnx {
 static std::atomic<bool> g_gdn_tc_default{true};
 void gdn_tc_set_default(bool on) { g_gdn_tc_default = on; }
+static std::atomic<bool> g_attn_i8_default{false};
+void attn_i8_set_default(bool on) { g_attn_i8_default = on; }
+bool attn_i8_default() { return g_attn_i8_default.load(); }
 size_t gdn_scratch_floats(int nv) { return (size_t) MAXT * nv * HS + (size_t) nv * MAXT * GDN_Q + (size_t) MAXT * nv; }
 
 void gdn_core(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,

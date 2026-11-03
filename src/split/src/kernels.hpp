@@ -120,6 +120,9 @@ void gdn_core_segs(const float* qkvz, const float* ab, const float* convw, const
 // the file's routed-expert quantization decides the prompt GDN scan: the tensor-core scan is OFF for the IQ3_S-type sets (their suite lost 3 agent tasks with it, UD-Q4 did not) and ON
 // for the others; FNX_PFX_GDN_TC=0/1 overrides. Set once by Model::Model.
 void gdn_tc_set_default(bool on);
+// the same for the int8 prompt attention (FNX_PFX_ATTN_I8): ON for the IQ3_S-type files (their suite shows no loss), OFF for the others (UD-Q4_K_XL lost agent-A8 and A10 with it, 11-03); the variable overrides. Defined in kernels part 4, read by the attention part.
+void attn_i8_set_default(bool on);
+bool attn_i8_default();
 void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a,
                 const float* nw, float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc,
                 float* sq, float* y32, float* chw, void* st);

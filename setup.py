@@ -4091,12 +4091,16 @@ def installed_size(family: str, names: list, have: list) -> str | None:
     return None
 
 
-def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool) -> dict:
+def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool, arch: str = "") -> dict:
     """0.1.44 (owner, review-quants.md section 5): the run-config "env" setup writes for Unsloth's files.
     STRATA_MMQ_KQ=1 (the K-quant MMQ prompt kernels) for UD-Q5_K_XL and UD-Q6_K_XL, where its prompt-path KL is equal
-    or better than the FP16 path's; UD-Q4_K_XL keeps it opt-in.  STRATA_HC_Q8=1 on CUDA for the UD-* files (the
-    GGUF's own Q8_0 hyper-connection projections, closer to the file and faster; the GSQ-RCO packs are untouched).
-    STRATA_ROUTE_TAIL_SKIP=0 where every expert is in RAM (the skip costs KL there); the RAM-budget mode keeps it."""
+    or better than the FP16 path's; UD-Q4_K_XL keeps it opt-in here (the Linux gfx12 engine takes it by itself since 0.2.10.1).
+    STRATA_HC_Q8=1 on CUDA for the UD-* files (the GGUF's own Q8_0 hyper-connection projections, closer to the file
+    and faster; the GSQ-RCO packs are untouched).
+    STRATA_ROUTE_TAIL_SKIP=0 where every expert is in RAM (the skip costs KL there); the RAM-budget mode keeps it.
+    0.2.10.1 (owner 11-03, "3 Yes"): NOT on Linux gfx12 (``arch`` "gfx1200"/"gfx1201", the R9700 and RX 9000): there the engine's own default
+    (rank 7, STRATA_ROUTE_TAIL_SKIP=0 still turns it off) stays, which decodes UD-Q4_K_XL 6-16% faster at an unchanged 61-task suite
+    (phaseA-tests/round0212/RESULTS-TAILSKIP.md).  Windows and every other card keep the 0."""
     env = {}
     if family != "unsloth":
         return env
@@ -4104,7 +4108,8 @@ def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool) -> 
         env["STRATA_MMQ_KQ"] = "1"
     if not hip and model.startswith("UD-"):
         env["STRATA_HC_Q8"] = "1"
-    if not in_budget:
+    gfx12_linux = hip and not WIN and str(arch or "").lower().startswith(("gfx1200", "gfx1201"))
+    if not in_budget and not gfx12_linux:
         env["STRATA_ROUTE_TAIL_SKIP"] = "0"
     return env
 
@@ -10815,7 +10820,7 @@ def main() -> int:
            "lib_dirs": lib_dirs, "port": port}
     if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
         cfg["cuda"] = 12
-    if (uenv := unsloth_default_env(family, model, hip, in_budget)):
+    if (uenv := unsloth_default_env(family, model, hip, in_budget, str(gpu.get("arch") or ""))):
         cfg["env"] = uenv
     if hip:
         cfg["backend"] = "hip"

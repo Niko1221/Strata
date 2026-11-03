@@ -388,6 +388,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(stage_reserve_test PRIVATE include)
   add_test(NAME stage_reserve_test COMMAND stage_reserve_test)
 
+  # the layer split's spill walk (header-only arithmetic: who is short, which step comes next)
+  add_executable(split_walk_test tests/program/split_walk_test.cpp)
+  target_include_directories(split_walk_test PRIVATE include)
+  add_test(NAME split_walk_test COMMAND split_walk_test)
+
   # the prompt planner's host-memory model (#2824): header-only, no GPU
   add_executable(prefill_plan_test tests/program/prefill_plan_test.cpp)
   target_include_directories(prefill_plan_test PRIVATE include)
@@ -1404,6 +1409,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(gemm_dequant_side_parity PRIVATE strata_prefill )
     add_test(NAME gemm_dequant_side_parity COMMAND gemm_dequant_side_parity)
     set_tests_properties(gemm_dequant_side_parity PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(gemm_w16_parity src/prefill/gemm_w16_parity.cu)
+    target_link_libraries(gemm_w16_parity PRIVATE strata_prefill )
+    add_test(NAME gemm_w16_parity COMMAND gemm_w16_parity)
+    set_tests_properties(gemm_w16_parity PROPERTIES SKIP_RETURN_CODE 77)
     # Pascal, opt-in STRATA_DENSE_F32=1: the dense projections' FP16 GEMMs as cublasSgemm on FP32 copies, bitwise vs
     # the cuBLAS FP16 call over a sweep of chunk sizes (GPU, synthetic, no model; --full sweeps every size, --bench
     # adds timings).  Not a ctest: whether the two agree is a property of the cuBLAS build, which this checks.

@@ -613,6 +613,27 @@ class TheInstalledEngineDecidesTheFlags(unittest.TestCase):
             mtp_retry_args({**base, "drafting": "auto"}, old)
         self.assertEqual(drafting.take_note(), "")
 
+    def test_the_no_drafter_retry_exists_for_an_auto_start_with_a_drafter_and_never_swaps_in_the_mtp(self):
+        """A start that ended for lack of graphics memory is repeated with no drafter (multi-card walk): DFlash2 -> MTP would take MORE memory from a card that is short."""
+        from serve.server import nodraft_retry_args
+        old = str(self.exe("old.exe", self.OLD))
+        base = {"model_name": GYRO, "args": list(self.args)}
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            alt = nodraft_retry_args({**base, "drafting": "auto"}, old, ["--effort", "x"])
+            self.assertIsNotNone(alt)
+            for flag in ("--draft", "--draft-model", "--draft-fallback", "--mtp", "--mtp-draft-vocab"):
+                self.assertNotIn(flag, alt, flag)
+            self.assertEqual(alt[-2:], ["--effort", "x"], "what the start adds goes along")
+            self.assertIn("--native", alt, "everything else is the same start")
+            self.assertIsNotNone(nodraft_retry_args(dict(base), old), "no choice saved means Auto")
+            self.assertIsNone(nodraft_retry_args({**base, "drafting": "dflash2"}, old), "named by the person: it fails with its reason")
+            self.assertIsNone(nodraft_retry_args({**base, "drafting": "mtp"}, old), "named by the person: it fails with its reason")
+            self.assertIsNone(nodraft_retry_args({**base, "drafting": "off"}, old), "no drafter to drop")
+        drafting.take_note()
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            nodraft_retry_args({**base, "drafting": "auto"}, old)
+        self.assertEqual(drafting.take_note(), "", "working the retry out leaves the note of the real start alone")
+
     def test_the_engine_sources_carry_the_words_the_program_is_read_for(self):
         src = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8")
         self.assertIn(drafting._MARK_FILE.decode(), src, "rc1's start message is what marks an engine that takes the vocabulary file alone")
@@ -657,9 +678,9 @@ class WordsMatchTheApp(unittest.TestCase):
         catalogs = {l: {**json.loads((folder / f"{l}.json").read_text(encoding="utf-8")), **json.loads((folder / f"df2-{l}.json").read_text(encoding="utf-8"))}
                     for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
         ids = {v: k for k, v in catalogs["en"].items()}
-        self.assertEqual(len(drafting.REASONS), 8)
+        self.assertEqual(len(drafting.REASONS), 9)
         lines = [drafting.mtp_line(r) for r in (drafting.DIDNT_FIT, drafting.NOT_HERE, drafting.NOT_SUPPORTED, drafting.NOT_DOWNLOADED, drafting.NOT_THIS_CARD, drafting.DIDNT_START)]
-        lines += [drafting.line("dflash2", drafting.NO_MTP), drafting.line("off", drafting.NONE_HERE)]
+        lines += [drafting.line("dflash2", drafting.NO_MTP), drafting.line("off", drafting.NONE_HERE), drafting.line("off", drafting.SHORT_OF_VRAM)]
         for line in lines:
             self.assertIn(line, ids, line)
             for lang, catalog in catalogs.items():

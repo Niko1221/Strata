@@ -422,7 +422,8 @@ NO_MTP = "the MTP drafter isn't downloaded yet"
 NONE_HERE = "no drafter is downloaded yet"
 DIDNT_START = "DFlash2 didn't start"          # Auto picked DFlash2, the engine ended before it was ready, and the start was repeated once with the MTP (serve/server.py)
 NOT_SERVED = NOT_HERE
-REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE, DIDNT_START)
+SHORT_OF_VRAM = "the cards were short of memory"   # the engine ended before it was ready for lack of graphics memory: the start was repeated once with no drafter (serve/server.py), never with the MTP
+REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE, DIDNT_START, SHORT_OF_VRAM)
 
 
 def line(drafter: str, reason: str = "") -> str:

@@ -1087,8 +1087,10 @@ class StrataEngine:
 
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
                  env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0,
-                 retry_args: list[str] | None = None):
+                 retry_args: list[str] | None = None, retry_vram_args: list[str] | None = None):
         # retry_args: the arguments to start again with, once, when this start ends before the engine is ready (an Auto start that picked DFlash2: mtp_retry_args)
+        # retry_vram_args: the same start with no drafter (nodraft_retry_args), used instead when the engine ended because a card ran out of memory: swapping DFlash2 for
+        # the MTP takes MORE memory from a card that is already short, so that direction is never taken then
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
         # the all-cards split engine (sFNX, strata-split-N[-arch]): its GEN parser accepts fewer keys than Strata's engine (tests/split/test_split_gen_keys.py pins them)
         self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
@@ -1214,9 +1216,22 @@ class StrataEngine:
                           f"ready yet: starting it again in {wait_s:.0f} s (try {_attempt + 2} of {START_RETRIES + 1})",
                           flush=True)
                 time.sleep(wait_s)
-                StrataEngine.__init__(self, exe, args, cwd, log, env, lazy, cpus, _attempt + 1, retry_args)
+                StrataEngine.__init__(self, exe, args, cwd, log, env, lazy, cpus, _attempt + 1, retry_args, retry_vram_args)
                 return
-            if not timed_out and retry_args and retry_args != list(args):
+            short_reason = None if timed_out else vram_fit.engine_stop_reason(start_log_text(log, log_start).splitlines())
+            if short_reason and retry_vram_args and retry_vram_args != list(args):
+                # a card ran out of memory (the engine's own reason is in its log): one more start with no drafter, in one quiet line
+                print(f"[strata] {drafting.line('off', drafting.SHORT_OF_VRAM)}: starting again without a drafter ({short_reason})", flush=True)
+                try:
+                    with open(log, "a", encoding="utf-8") as handle:
+                        handle.write(f"[strata] {time.strftime('%Y-%m-%d %H:%M:%S')} the engine ended before it was ready because a card was short of memory "
+                                     f"(exit code {self.proc.returncode}); starting it again without a drafter\n")
+                except (OSError, TypeError):
+                    pass
+                drafting.remember_note(drafting.SHORT_OF_VRAM)
+                StrataEngine.__init__(self, exe, retry_vram_args, cwd, log, env, lazy, cpus, 0, None, None)
+                return
+            if not timed_out and not short_reason and retry_args and retry_args != list(args):
                 # Auto picked DFlash2 and the engine ended before it was ready (an engine that does not take one of its flags, a drafter file it cannot read...):
                 # one more start with the MTP, said in one quiet line. The person named DFlash2 themselves: no retry, the start fails with its reason below.
                 print(f"[strata] {drafting.line('mtp', drafting.DIDNT_START)}: starting again with the MTP", flush=True)
@@ -1227,7 +1242,7 @@ class StrataEngine:
                 except (OSError, TypeError):
                     pass
                 drafting.remember_note(drafting.DIDNT_START)
-                StrataEngine.__init__(self, exe, retry_args, cwd, log, env, lazy, cpus, 0, None)
+                StrataEngine.__init__(self, exe, retry_args, cwd, log, env, lazy, cpus, 0, None, None)
                 return
             why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
                    "the engine exited before it was ready")
@@ -3484,6 +3499,22 @@ def mtp_retry_args(cfg: dict, exe: str | None, extra: list[str] | None = None) -
         if "--draft" not in first or first[first.index("--draft") + 1:first.index("--draft") + 2] != ["dflash2"]:
             return None
         alt = engine_args({**cfg, "drafting": "mtp"}, exe, announce=False) + list(extra or [])
+    except Exception:                                  # noqa: BLE001 - a retry that cannot be worked out is no retry
+        return None
+    return alt if alt != first + list(extra or []) else None
+
+
+def nodraft_retry_args(cfg: dict, exe: str | None, extra: list[str] | None = None) -> list[str] | None:
+    """The arguments to start again with when an Auto start ends before the engine is ready because a card ran out of memory: the same start with no drafter
+    (the draft layer and DFlash2's buffers are the biggest optional part on a card that is short), never the MTP in place of DFlash2.  None when the drafting
+    was not Auto (the person named a drafter: that start fails with the engine's reason), when the first start has no drafter anyway, or when nothing differs."""
+    if drafting.normalize(cfg.get("drafting")) != "auto" or "args" not in cfg:
+        return None
+    try:
+        first = engine_args(cfg, exe, announce=False)
+        if "--draft" not in first and "--mtp" not in first:
+            return None
+        alt = engine_args({**cfg, "drafting": "off"}, exe, announce=False) + list(extra or [])
     except Exception:                                  # noqa: BLE001 - a retry that cannot be worked out is no retry
         return None
     return alt if alt != first + list(extra or []) else None
@@ -9112,7 +9143,7 @@ def start_engine_or_fallback(cfg: dict, exe: str, effort_end: list[str] | None, 
     fb = cfg.get("split_fallback")
     try:
         return StrataEngine(exe, engine_args(cfg, exe) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy,
-                            retry_args=mtp_retry_args(cfg, exe, effort_end))
+                            retry_args=mtp_retry_args(cfg, exe, effort_end), retry_vram_args=nodraft_retry_args(cfg, exe, effort_end))
     except Exception as e:
         if not isinstance(fb, dict) or not fb.get("exe"):
             raise
@@ -9140,7 +9171,7 @@ def start_engine_or_fallback(cfg: dict, exe: str, effort_end: list[str] | None, 
     configure_batch_telemetry_env(env2, cfg2, batch_telemetry)
     effort2 = effort_end_args(cfg2, exe2, tok)
     engine = StrataEngine(exe2, engine_args(cfg2, exe2) + (effort2 or []), cwd=cfg2.get("cwd"), log=cfg2.get("log"), env=env2, lazy=lazy,
-                          retry_args=mtp_retry_args(cfg2, exe2, effort2))
+                          retry_args=mtp_retry_args(cfg2, exe2, effort2), retry_vram_args=nodraft_retry_args(cfg2, exe2, effort2))
     engine.info["split_fallback"] = True
     return engine
 
@@ -9168,7 +9199,7 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
         try:
             engines[i] = StrataEngine(exe, engine_args(rc, exe) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
                                       env=child_env(rc, offline=offline), lazy=lazy, cpus=cpus[i] if cpus else None,
-                                      retry_args=mtp_retry_args(rc, exe, effort_end))
+                                      retry_args=mtp_retry_args(rc, exe, effort_end), retry_vram_args=nodraft_retry_args(rc, exe, effort_end))
         except BaseException as e:        # noqa: BLE001
             errors.append((i, e))
     rc0 = rp.replica_cfg(cfg, 0, groups[0])
@@ -9235,7 +9266,7 @@ def start_split(cfg: dict, spec: dict, exe: str, effort_end: list[str], lazy: bo
             if role == "prefill":
                 warn_budget_over_ram(engine_args(rc, announce=False) if "args" in rc else [])
             engines[role] = StrataEngine(exe, engine_args(rc, exe) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
-                                         env=child_env(rc, offline=offline), lazy=lazy, retry_args=mtp_retry_args(rc, exe, effort_end))
+                                         env=child_env(rc, offline=offline), lazy=lazy, retry_args=mtp_retry_args(rc, exe, effort_end), retry_vram_args=nodraft_retry_args(rc, exe, effort_end))
     except BaseException:
         for e in engines.values():
             try:
