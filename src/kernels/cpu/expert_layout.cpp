@@ -71,10 +71,14 @@ std::string cpu_name() {
 #endif  // __APPLE__
 }
 #else
+bool cpu_isa_free() {                                    // STRATA_FORCE_AVX2 and the ISA cap, shared by the probes
+    if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
+    return cpu_isa_cap() >= 3;
+}
+
 bool cpu_avx512_ok() {
     static const bool ok = [] {
-        if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
-        if (cpu_isa_cap() < 3) return false;
+        if (!cpu_isa_free()) return false;
         unsigned r[4] = {0, 0, 0, 0};
         auto cpuid = [&](unsigned leaf, unsigned sub) {
 #if defined(_MSC_VER)
@@ -136,6 +140,55 @@ bool cpu_avx512bw_ok() {
         cpuid(7, 0);
         const unsigned ebx = r[1];
         return ((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u);
+    }();
+    return ok;
+}
+
+static void isa_probe(unsigned& ebx, unsigned& ecx) {
+    unsigned r[4] = {0, 0, 0, 0};
+    auto cpuid = [&](unsigned leaf, unsigned sub) {
+#if defined(_MSC_VER)
+        int x[4];
+        __cpuidex(x, (int) leaf, (int) sub);
+        for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+        __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+    };
+    cpuid(0, 0);
+    if (r[0] < 7) return;
+    cpuid(1, 0);
+    if (!((r[2] >> 27) & 1u)) return;                     // OSXSAVE
+#if defined(_MSC_VER)
+    const unsigned long long xcr0 = _xgetbv(0);
+#else
+    unsigned lo = 0, hi = 0;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
+#endif
+    if ((xcr0 & 0xE6) != 0xE6) return;                    // the OS saves the AVX-512 state
+    cpuid(7, 0);
+    ebx = (unsigned) r[1];
+    ecx = (unsigned) r[2];
+}
+
+bool cpu_vbmi_ok() {                                     // the byte-permute shuffles (VPERMB, VPMULTISHIFTQB)
+    static const bool ok = cpu_isa_free() && [] {
+        unsigned ebx = 0, ecx = 0;
+        isa_probe(ebx, ecx);
+        // AVX-512F + VL + VBMI (ECX bit 1).  Cascade Lake has F/BW/VL/VNNI but NOT VBMI: that is the
+        // whole reason for the substitute unpack in expert.cpp, so this bit must not be confused with F.
+        return bool(((ebx >> 16) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 1) & 1u));
+    }();
+    return ok;
+}
+
+bool cpu_vnni_ok() {                                     // VNNI's dpbusd at all, the integer dot at half the lanes
+    static const bool ok = cpu_isa_free() && [] {
+        unsigned ebx = 0, ecx = 0;
+        isa_probe(ebx, ecx);
+        // AVX-512F + BW + VL + VNNI (ECX bit 11), VBMI not required: the Cascade Lake Xeon tier.
+        return bool(((ebx >> 16) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 11) & 1u));
     }();
     return ok;
 }
@@ -401,7 +454,9 @@ void cpu_require_expert_support() {
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
-    if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    // VNNI-512 without VBMI: expert.cpp's zmm row dot has a substitute for the VBMI-only 2-bit unpack there
+    // (q2_rows_512_ok also leaves the STRATA_CPU_YMM=1 choice to the AVX-2 kernel, on this CPU on the rung below).
+    if (q2_rows_512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else q2_0_gguf_rows_multi_avx1(w, row_bytes, nblocks, a, nt, out, r0, r1);   // issue #1699: the third rung
 }
@@ -414,7 +469,8 @@ void q2_rows_any_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const A
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
-    if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
+    // the q8 quantizer is VBMI-free: a VNNI-but-no-VBMI CPU (Cascade Lake Xeon) keeps its 512-bit form
+    if (cpu_vnni_ok()) act_quant_q8_1(x, n, a);
     else if (cpu_avx2_ok()) act_quant_q8_1_avx2(x, n, a);
     else act_quant_q8_1_avx1(x, n, a);   // issue #1699
 }
