@@ -178,3 +178,17 @@ test('the draft layer (MTP) is part of what the card is sized for; switched off,
   assert.equal(slots(26.5, {}, ['--max-context', '32768', '--spec', '4']), 4, 'no draft layer in the arguments');
   assert.equal(slots(12, { mtp: false }), 1, 'a 12 GB card still gets one request at a time');
 });
+
+test('DFlash2 chosen on purpose means one request at a time unless the person picked a number (the engine keeps the MTP with request slots)', () => {
+  const big = hw(72);
+  const auto = chooseParallel({ config: cfg(32768), hardware: big });
+  assert.ok(auto.slots > 1, 'a card with room gets slots by default');
+  const chosen = chooseParallel({ config: cfg(32768), values: { drafting: 'dflash2' }, hardware: big });
+  assert.equal(chosen.slots, 1);
+  assert.equal(chosen.explicit, false);
+  assert.match(chosen.note, /DFlash2 answers one request at a time/);
+  assert.equal(chooseParallel({ config: cfg(32768, { drafting: 'dflash2' }), hardware: big }).slots, 1, 'a saved choice counts');
+  assert.equal(chooseParallel({ config: cfg(32768), values: { drafting: 'mtp' }, hardware: big }).slots, auto.slots, 'MTP and Auto keep the slots');
+  assert.equal(chooseParallel({ config: cfg(32768), values: { drafting: 'dflash2', parallel: 3 }, hardware: big }).slots, 3, 'a number the person chose is theirs');
+  assert.equal(applyParallel(cfg(32768, { parallel: 4 }), chosen).cfg.parallel, undefined, 'and the saved config carries no slots');
+});

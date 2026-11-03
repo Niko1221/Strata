@@ -85,6 +85,23 @@ environment and the package's `rocm/bin` folder on the library path.
   about 9% faster, near-tie tokens can differ); `STRATA_HC_Q8=0` keeps the old read.
 - The hipBLASLt table for `gfx1151` ships in the package and is chosen without a setting (`prefill gemm: hipBLASLt tuning enabled (32 rows,
   gfx1151, version 100500)` in the log). A hand-built engine has to be pointed at it: [AMD_HIP.md](AMD_HIP.md).
+- **The matrix-core prompt set is on by default on `gfx1151` on Windows** (engine 0.1.52 and the build after it): `STRATA_HIP_WMMA`,
+  `STRATA_PF_GEMM`, `STRATA_PA_FAST`, `STRATA_HC_UPMIX` and `STRATA_PF_FUSED`. It is the set that has been on the Radeon 780M since
+  021-minipc, and the start line lists it (`integrated GPU (gfx1151): the matrix-core prompt set is on ...`). Prompts on Qwen IQ3_S:
+  4K 688.8 -> 1,192.8 tok/s, 8K 787.0 -> 1,283.5, 12K 750.4 -> 1,256.5, 32K 775.4 -> 1,245.1, 64K 748.5 -> 1,188.9 (x1.59 to x1.72;
+  interleaved pairs, one engine at a time). The answers differ in the last bits: the first-token KL against the 0.2.7 default is
+  0.0014 mean over four prompts of 4K to 24K, top-1 the same everywhere, and the measured noise floor is 0.00000 - against the
+  accepted `HC_Q8` bar of 0.0228 mean. `STRATA_IGPU_PROMPT_SET=0` turns it off, `STRATA_SELECT_WMMA=1` adds the block scorer back
+  (it measured x1.003), a single switch can be turned off on its own (`STRATA_HC_UPMIX=0`).
+- **The prompt keeps its own buffers instead of lending expert-cache slots** (`--no-prefill-borrow`, engine 0.1.52 and after, on
+  `gfx1151` Windows only). A lent slot's expert has to be read back from the host arena during every prompt chunk, and on this PC
+  that copy runs at about 0.5 GB/s (the arena is not registered with the driver in UMA mode): 823 slots took 2.75 s of a 3.3 s 4K
+  prompt inside the copy thread. With its own buffers every expert stays in the cache (`experts streamed 0 ... resident 24576` in the
+  log) and prompts are 8.5% (4K) to 8.9% (8K) faster. `STRATA_PREFILL_BORROW=1` brings lending back. `--prefill auto` keeps a
+  16,384-token chunk on this PC instead of falling back to 2,048: the prompt reads every expert once per chunk, so a bigger chunk reads
+  them fewer times (32K 1,250.6-1,260.0 -> 1,286.3-1,307.9 tok/s, 64K 1,188.4-1,191.0 -> 1,234.3-1,238.2; at 4K and 8K the chunk is
+  the prompt itself and nothing changes). `STRATA_GFX1151_CHUNK=0` keeps 6,144, and `--prefill auto:32768` is another ~2% at 64K for
+  about 12.8 GiB of prompt buffers.
 - `--mmap-experts` is not needed. The first Windows guide found that without it the pinned expert arena used up the graphics memory
   budget and decode fell to 28 tok/s on engine 0.1.41; the engine on this page sizes the cache from the shared pool and reaches every slot.
 - DeepSeek runs in "Faster" mode here: 5 of 6 experts per word. The app and `strata launch` say so; the quality change is small.
@@ -134,3 +151,5 @@ python tools/strata_bench.py --url http://127.0.0.1:8080 --runs 3 --long
 
 `--long` adds the 32K prompt. For DeepSeek add `--context 64k` to `strata launch` first; the default 8K context skips the 16K prompt and
 the agent session.
+
+

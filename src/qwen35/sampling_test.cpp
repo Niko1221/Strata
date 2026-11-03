@@ -107,6 +107,34 @@ int main() {
         check(row.empty(), "empty row");
     }
 
+    // #4590: the history a request's penalties start from.  Default: the last prompt token only (the reply's tokens join it);
+    // STRATA_PENALTY_PROMPT=1 (counts_prompt): the whole prompt, as before.
+    {
+        using strata::qwen35::penalty_history_start;
+        const std::vector<int32_t> prompt = {5, 12, 12, 7777, 7778, 50, 51};
+        check(!strata::kernels::penalty_counts_prompt(nullptr) && !strata::kernels::penalty_counts_prompt("0") &&
+                  strata::kernels::penalty_counts_prompt("1"), "the switch: unset and 0 reply only, 1 the old window");
+        const std::vector<int32_t> h = penalty_history_start(prompt, false);
+        check(h.size() == 1 && h[0] == 51, "default: the history starts at the last prompt token");
+        check(penalty_history_start(prompt, true) == prompt, "opt-out: the whole prompt");
+        check(penalty_history_start({}, false).empty(), "empty prompt");
+        // a penalty on the first pick: the task's token 12 is untouched by default, penalised with the old window
+        Sampling t;
+        t.present = 1.5f; t.last_n = 64;
+        std::vector<float> a(8000, 0.f), b(8000, 0.f);
+        apply_penalties(a, t, h);
+        apply_penalties(b, t, penalty_history_start(prompt, true));
+        check(a[12] == 0.f && a[7777] == 0.f && a[51] == -1.5f, "default: only the fed-back token is penalised");
+        check(b[12] == -1.5f && b[7777] == -1.5f && b[51] == -1.5f, "opt-out: the prompt's tokens are penalised");
+        // a reply that repeats itself is still penalised: tokens written join the history
+        std::vector<int32_t> hr = h;
+        hr.push_back(900); hr.push_back(900);
+        std::vector<float> c(8000, 0.f);
+        t.freq = 0.5f;
+        apply_penalties(c, t, hr);
+        check(c[900] == -(1.5f + 2 * 0.5f) && c[12] == 0.f, "default: the reply's own repeats are still penalised");
+    }
+
     std::printf("qwen35_sampling_test: %d checks passed\n", checks);
     return 0;
 }

@@ -70,8 +70,10 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
                   void* stream);
 // verify rows: the model's logits (n_tokens, n_vocab), the draft draft[t] drawn from q[t] (same p.seed / p.counter as
 // its sample_draft) -> out[t], distributed as sample_tokens' draw.  A draft q[t] does not hold gets the plain draw.
+// With penalties (p.penalty_last_n > 0) `history` holds each row's tokens as in sample_tokens: p is then the
+// penalized distribution, and the rule keeps every token distributed as sample_tokens' penalized draw.
 void sample_verify(const float* logits, int n_tokens, int n_vocab, const SamplerParams& p, const SpecList* q,
-                   const int* draft, int* out, void* stream);
+                   const int* draft, int* out, void* stream, const int* history = nullptr, int history_len = 0);
 
 // The penalty-history rows of a verify window, on the host: row t of `out` (T rows of `h` slots) is the last `h`
 // tokens of `tail[0..n_tail)` followed by `window[0..t]`, most recent LAST, -1 in the unused front slots.

@@ -1,0 +1,18 @@
+{
+ "pic01": "Downloading the picture files (0.9 GB, once)…",
+ "pic02": "Checking the picture files…",
+ "pic03": "No internet connection: the model is loaded without picture reading. Load it again when you are online.",
+ "pic04": "There is not enough free disk space for the picture files, so the model is loaded without picture reading.",
+ "pic05": "The picture files could not be downloaded, so the model is loaded without picture reading. Try again later.",
+ "pic06": "The picture files are missing, so the model is loaded without picture reading.",
+ "pic07": "Downloading the picture files",
+ "pic08": "The picture files are ready.",
+ "pic09": "There is no internet connection, so the picture files can't be downloaded now.",
+ "pic10": "There is not enough free disk space for the picture files (about 1 GB).",
+ "pic11": "The picture files could not be downloaded. Try again; it continues where it stopped.",
+ "pic12": "The downloaded picture files did not pass the safety check, so they were deleted. Try again.",
+ "pic13": "The picture files could not be downloaded. Try again.",
+ "pic14": "Picture files ready",
+ "pic15": "Load the model again to read pictures.",
+ "pic16": "Picture reading is ready."
+}

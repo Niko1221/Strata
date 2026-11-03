@@ -70,6 +70,10 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
             // src/prefill/gr_upmix_parity.cu covers it upstream).  The HC read is ~13% of a decode round here, which is
             // why a fusion on it moves the number at all.
             {"STRATA_HC_UPMIX", "1"},
+            // Run the mixer's input-only QSA/GDN work on graph branches.  With the grouped experts' mode 8 selected,
+            // fixed-work IQ3_S decode measured +6.68% paired median and +6.67% geometric mean over 8 balanced pairs
+            // (AB +11.60%, BA +6.68%, identical 512-token output and verifier work).  The branch changes no arithmetic.
+            {"STRATA_SIDE_MIXER", "2"},
             // the cost-aware MTP window: pick the verify window from what a draft costs against what it has been paying.
             // Measured on IQ3_S: decode 1.047x [1.019, 1.079], prompt unchanged, 24 of 24 greedy answers byte-identical.
             // It only changes which drafts are attempted, and every draft is verified, so the answers cannot drift.

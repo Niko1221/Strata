@@ -158,6 +158,7 @@ struct SetArgs {
     // their shared-memory tile anyway, so the same values come out; this only saves the F32 read of the same rows by
     // every column block of an expert (18-36 reads of 1.8-3.7 MB on a prompt) - MarLin's "small operand cheap".
     const uint16_t* x16 = nullptr;
+    int skip_ge = 0;    // (ds4's low-bit GGUF experts) > 0: experts of at least this many rows are the caller's (FP16 GEMMs)
 #if defined(STRATA_METAL)   // (only on Metal: keeps the CUDA / HIP struct as it was)
     const int* hbounds = nullptr;   // the same bounds on the host: [n_exp + 1], absolute rows
     int total_rows = 0;             // the set's rows in all
