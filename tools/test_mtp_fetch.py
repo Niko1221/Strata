@@ -246,8 +246,11 @@ class Ranges(FetchCase):
         self.assertEqual(M.verify(str(self.out)), [])
         stamps = json.loads((self.out / "tensors" / "verified.json").read_text())
         self.assertEqual(sorted(stamps), ["mtp.a", "mtp.b"])
+        stamp_file = self.out / "tensors" / "verified.json"
+        written = stamp_file.stat().st_mtime_ns
         with mock.patch.object(M, "sha256_of", side_effect=AssertionError("hashed an unchanged file")):
             self.assertEqual(M.verify(str(self.out)), [])
+        self.assertEqual(stamp_file.stat().st_mtime_ns, written, "an unchanged verdict does not rewrite verified.json")
         with mock.patch.object(M, "REPO", "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/main/"):
             (self.out / "tensors" / "mtp.a.bin").write_bytes(b"x")
             self.assertEqual(M.verify(str(self.out)), [])          # STRATA_MTP_REVISION: other hashes

@@ -442,7 +442,8 @@ def fetch(out, only):
 def verify(out):
     """#327: the fetched tensors against SHA256 -> the names that are missing or wrong.  [] when they are right, or
     when there is nothing to check (no tensors/, or STRATA_MTP_REVISION names another revision).  A tensor's verdict
-    is kept in tensors/verified.json by size and mtime, so a later run hashes only what changed."""
+    is kept in tensors/verified.json by size and mtime, so a later run hashes only what changed. The file is written only
+    when a verdict changed: a check of tensors that are right leaves the data folder as it was (it may be another app's)."""
     tdir = os.path.join(out, "tensors")
     if not pinned() or not os.path.isdir(tdir):
         return []
@@ -464,6 +465,8 @@ def verify(out):
             bad.append(name)
             continue
         good[name] = key
+    if good == stamps:
+        return bad
     try:
         with open(stamp_path, "w", encoding="utf-8") as f:
             json.dump(good, f, indent=1)
