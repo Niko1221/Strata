@@ -81,7 +81,7 @@ import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
 import { findFreePort, listenProblem, reservedPortMessage, windowsReservedRange } from './ports.mjs';
-import { defaultHostPort, devChatMode, devExtensionsDir, devModelsDir, devSkillsDir, devSettings, devSummary, isDevMode, loadDevConfig, saveContextGuard, setActiveDevSettings } from './dev-mode.mjs';
+import { defaultHostPort, devChatMode, devExtensionsDir, devModelsDir, devSkillsDir, devSettings, devSummary, isDevMode, loadDevConfig, saveContextGuard, savePlanGuidance, setActiveDevSettings } from './dev-mode.mjs';
 import { createDevHooks } from './dev-hooks.mjs';
 import { devApi } from './dev-api.mjs';
 import { devModelsApi, devSkillsApi } from './dev-catalog.mjs';
@@ -1034,6 +1034,7 @@ const devRoutes = (req, res, path, method, url) => devApi(req, res, path, method
   summary: () => devSummary(DEV),
   reload: devReload,
   saveContextGuard: body => saveContextGuard(DEV.file, body),
+  savePlanGuidance: body => savePlanGuidance(DEV.file, body),
   supervisorLogs: () => supervisor.logs(400),
   nativeLogs: () => native.logs(),
 });

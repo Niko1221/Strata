@@ -436,7 +436,7 @@ Ein lokaler Chat mit 64K-Fenster lief bis 96 bis 98 % voll, und das Zusammenfass
 | `compactAfterTurnAt` | Endet ein Turn mit mindestens diesem Anteil, fasst der Host sofort zusammen, solange der Chat ruhig ist (`finishTurn`). |
 | `compactBeforeSendAt` | Vor dem Senden wird auch eine kurze Nachricht geprüft. Bei diesem Anteil oder wenn Füllung, Nachricht und Antwortplatz über der Harness-Schwelle liegen, wird erst zusammengefasst (`fitCheck`). |
 
-Einstellbar ist das in Strata Dev unter Einstellungen → Allgemein → „Summarise long chats early“: ein Schalter und drei Regler (30 bis 90 %). Die Seite schreibt den Abschnitt über `POST /api/dev/context-guard` in `dev.config.json` und lädt ihn neu. „Before sending“ und „After an answer“ gelten ab der nächsten Nachricht, „While a task runs“ ab dem nächsten Start des Agenten. Live zeigt das Feld nicht.
+Einstellbar ist das in Strata Dev unter Einstellungen → Tools → „Strata Dev“ → „Summarise long chats early“: ein Schalter und drei Regler (30 bis 90 %). Die Seite schreibt den Abschnitt über `POST /api/dev/context-guard` in `dev.config.json` und lädt ihn neu. „Before sending“ und „After an answer“ gelten ab der nächsten Nachricht, „While a task runs“ ab dem nächsten Start des Agenten. Live zeigt das Feld nicht.
 
 Jeder Wert liegt zwischen 0.3 und 0.9. Fehlt einer oder ist er falsch, ist der ganze Schalter aus, und die Warnung steht im Log und in der Seite. Ohne den Schalter oder mit `"enabled": false` verhält sich der Host wie Live. Es gilt nur für lokale Modelle. `/compact` im Chat geht weiterhin von Hand.
 
@@ -452,6 +452,25 @@ Das Modus-Menü im Eingabefeld hat in Strata Dev vier Einträge (Live behält se
 | Auto | Alles erlaubt, kein Plan (der Modus Bypass des Hosts). |
 
 Der Host kennt weiter nur `manual`, `plan` und `bypass`. Die Seite (`src/dev/chat-modes.ts`, `store.ts`) schickt in den beiden Plan-Modi eine normale Nachricht als `/plan …` und wählt den Host-Modus für die Ausführung. Befehle mit `/` und Loops bleiben unverändert. Ein gespeicherter Modus `plan` zählt in Dev als Plan + Manual. Nach der Freigabe läuft der Plan über den Plan-Läufer des Hosts (wie „Start as goal“), also Schritt für Schritt; dafür muss die Gruppe „goals“ unter Einstellungen → Tools an sein. Der Fortschrittsbalken (`src/dev/PlanProgress.tsx`) zeigt, wie viele Schritte fertig sind und wie lange der Plan läuft; mit Goal steht er als zweite Zeile in der Zielleiste.
+
+## Bessere Pläne: `planGuidance`
+
+Den Plan schreibt das Chat-Modell. Ohne Hinweis bekommt es nur: Plan als nummerierte Liste, 3 bis 8 Schritte. Mit dem Schalter bekommt es zusätzlich Regeln für einen guten Plan und denkt für diesen einen Turn stärker:
+
+```json
+"planGuidance": { "enabled": true, "thinking": "High", "maxSteps": 20 }
+```
+
+| Wert | Wirkung |
+| --- | --- |
+| `enabled` | An nur bei `true`. Aus: der Planungs-Prompt ist genau wie in Live. |
+| `thinking` | Denkstufe nur für den Planungs-Turn: `Off`, `Low`, `Medium`, `High` oder `Max`. Fehlt sie oder ist sie falsch, gilt die Stufe des Chats. Der Turn, der den Plan ausführt, nutzt wieder die Stufe des Chats. |
+| `maxSteps` | Wie viele Schritte ein Plan behält (8 bis 40, Standard 20; Live: 12). Der Prompt nennt die Zahl („Use 3 to 20 steps“), damit das Modell seinen Platz kennt. Was darüber liegt, schneidet der Host weiter still ab. |
+| `rules` | Eigene Regeln (bis zu 12 Zeilen mit je 300 Zeichen). Ohne sie gelten die eingebauten (`DEFAULT_PLAN_RULES` in `server/agent/plan.mjs`): in Etappen bauen, Tests früh, Fehler und Alles-oder-nichts eigens planen, Schritte, die ein Turn schafft, ein letzter Gesamtcheck. Die Regeln stehen auf Englisch. |
+
+Einstellbar sind Schalter, Denkstufe und Höchstzahl in Strata Dev unter Einstellungen → Tools → „Strata Dev“ → „Better plans“ (der Host schreibt `dev.config.json` und lädt sie neu; die Eigenen Regeln bleiben erhalten). Die Änderung gilt für den nächsten Plan.
+
+Ob die Pläne dadurch besser werden, hängt vom Modell ab: Es folgt Regeln meist, aber nicht immer. Zum Vergleich denselben Auftrag mit `enabled` an und aus planen lassen.
 
 ## Zurücksetzen
 

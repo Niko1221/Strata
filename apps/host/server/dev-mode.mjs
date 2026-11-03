@@ -71,7 +71,7 @@ export function loadDevConfig({ file = devConfigFile(), read = readFileSync } = 
 /** What the page learns about Dev (GET /api/app/mode carries it as `dev` in Dev only). */
 export function devSummary(loaded) {
   const settings = devSettings(loaded.config);
-  return { label: loaded.config.badge.label, configFile: loaded.file, warnings: loaded.warnings, verbose: settings.verbose, chatOverflow: settings.chatOverflow, contextGuard: contextGuardView(loaded.config.contextGuard), tokens: settings.tokens, ui: settings.ui, overrides: { loop: settings.overrides.loop, folder: settings.overrides.folder, permissions: settings.overrides.permissions } };
+  return { label: loaded.config.badge.label, configFile: loaded.file, warnings: loaded.warnings, verbose: settings.verbose, chatOverflow: settings.chatOverflow, contextGuard: contextGuardView(loaded.config.contextGuard), planGuidance: planGuidanceView(loaded.config.planGuidance), tokens: settings.tokens, ui: settings.ui, overrides: { loop: settings.overrides.loop, folder: settings.overrides.folder, permissions: settings.overrides.permissions } };
 }
 
 /* ---------------------------------------------------------------- Phase 2: what dev.config.json may set --- */
@@ -120,6 +120,7 @@ export function devSettings(config = {}) {
     verbose: logging.verbose === true,
     chatOverflow: chatOverflowSettings(config.chatOverflowGuard),
     plan: planSettings(config.plan),
+    planGuidance: planGuidanceSettings(config.planGuidance),
     contextGuard: contextGuardOf(config.contextGuard).settings,
     tokens,
     ui: { elements, extensions },
@@ -220,6 +221,48 @@ function planSettings(raw) {
   const entry = objectOr(raw);
   const whole = (value, min, max, fallback) => (Number.isInteger(value) && value >= min && value <= max ? value : fallback);
   return { stepTextMax: whole(entry.stepTextMax, 140, 20_000, 4000), stepDetailMax: whole(entry.stepDetailMax, 220, 40_000, 8000) };
+}
+
+/**
+ * "planGuidance" { enabled, thinking, maxSteps, rules }: when the assistant writes a plan it is told how to build a good one (agent/plan.mjs
+ * DEFAULT_PLAN_RULES, or `rules` here: up to 12 lines of 300 characters), is told how many steps it may use and thinks harder for that one turn
+ * (`thinking`: Off, Low, Medium, High or Max; absent or wrong: the chat's own level). `maxSteps` (8 to 40, default 20) is how many steps a plan
+ * keeps; Live keeps 12. Off unless enabled is true. Returns null when off.
+ */
+const THINKING = ['Off', 'Low', 'Medium', 'High', 'Max'];
+const PLAN_STEPS = { min: 8, max: 40, fallback: 20 };
+function planGuidanceSettings(raw) {
+  if (!isObject(raw) || raw.enabled !== true) return null;
+  const rules = Array.isArray(raw.rules) ? raw.rules.filter(r => typeof r === 'string' && r.trim()).map(r => r.trim().slice(0, 300)).slice(0, 12) : [];
+  const steps = Number.isInteger(raw.maxSteps) && raw.maxSteps >= PLAN_STEPS.min && raw.maxSteps <= PLAN_STEPS.max ? raw.maxSteps : PLAN_STEPS.fallback;
+  return { enabled: true, thinking: THINKING.includes(raw.thinking) ? raw.thinking : null, maxSteps: steps, rules: rules.length ? rules : null };
+}
+
+/** What the Settings page shows for "planGuidance": the switch, the plan's thinking level (null: the chat's own) and the most steps. */
+export function planGuidanceView(raw) {
+  const entry = isObject(raw) ? raw : {};
+  const steps = Number.isInteger(entry.maxSteps) && entry.maxSteps >= PLAN_STEPS.min && entry.maxSteps <= PLAN_STEPS.max ? entry.maxSteps : PLAN_STEPS.fallback;
+  return { enabled: entry.enabled === true, thinking: THINKING.includes(entry.thinking) ? entry.thinking : null, maxSteps: steps };
+}
+
+/**
+ * The Settings page saves "planGuidance" into dev.config.json: { enabled, thinking (a level, or null for the chat's own), maxSteps }. Every value is
+ * checked before anything is written; `rules` and the rest of the file stay as they are. Throws an Error with a plain message.
+ */
+export function savePlanGuidance(file, body, { read = readFileSync, write = writeFileSync, rename = renameSync } = {}) {
+  if (!isObject(body) || typeof body.enabled !== 'boolean') throw new Error('enabled must be true or false');
+  if (body.thinking !== null && !THINKING.includes(body.thinking)) throw new Error('thinking must be Off, Low, Medium, High, Max or empty');
+  if (!(Number.isInteger(body.maxSteps) && body.maxSteps >= PLAN_STEPS.min && body.maxSteps <= PLAN_STEPS.max)) throw new Error(`maxSteps must be a whole number from ${PLAN_STEPS.min} to ${PLAN_STEPS.max}`);
+  let raw = {};
+  try { raw = JSON.parse(String(read(file, 'utf8')).replace(/^﻿/, '')); } catch (error) { if (error?.code !== 'ENOENT') throw new Error('dev.config.json cannot be read or is not valid JSON; fix it by hand first'); }
+  if (!isObject(raw)) throw new Error('dev.config.json must hold one JSON object; fix it by hand first');
+  const { thinking, ...rest } = isObject(raw.planGuidance) ? raw.planGuidance : {};
+  raw.planGuidance = { ...rest, enabled: body.enabled, ...(body.thinking ? { thinking: body.thinking } : {}), maxSteps: body.maxSteps };
+  const temp = `${file}.tmp`;
+  write(temp, `${JSON.stringify(raw, null, 2)}
+`, 'utf8');
+  rename(temp, file);
+  return planGuidanceView(raw.planGuidance);
 }
 
 /** The Dev settings the host runs with now, or null outside Dev. index.mjs sets it at start and on Reload; the agent profile reads it. */

@@ -13,7 +13,6 @@ import { FontChoice } from '../components/FontChoice';
 import { ElectricityPrice } from '../components/ElectricityPrice';
 import { ApprovalNotifySetting, DoneSoundSetting, PortSetting, TraySetting, useShellState } from '../components/ShellSettings';
 import { LANGUAGES } from '../lib/i18n';
-import { CONTEXT_GUARD_HINT, CONTEXT_GUARD_LABEL, ContextGuardSetting } from '../dev/ContextGuardSetting';
 import { DevElement, ExtensionBoundary, useDev, useDevList } from '../dev/dev';
 import { setLanguage } from '../lib/store';
 import { CONTENT_FONT_RANGE, setContentFontSize, setDensity, setFocus, setMotion, setShortcuts, setTheme, setTransparency, setUiScale, UI_SCALES, useStore, setSettingsSection } from '../lib/store';
@@ -39,7 +38,6 @@ export function SettingsScreen() {
         { section: 'General', label: 'Notify me when Strata needs an answer', hint: 'In Manual mode, shows a desktop notification when the assistant waits for your approval and Strata is in the background.', aliases: 'approval permission alert notification manual', control: <ApprovalNotifySetting /> },
         ...(shell?.tray ? [{ section: 'General', label: 'Minimise to tray', hint: 'Closing the window keeps Strata running in the tray, next to the clock. Choose Quit in the tray menu to stop it. Applies the next time Strata starts.', aliases: 'tray background close notification area', control: <TraySetting shell={shell} save={saveShell} /> }] : []),
         ...(shell?.desktop ? [{ section: 'General', label: 'App port', hint: 'The port Strata’s window and local address use. Leave it empty to let Strata choose (47831 when it is free). Applies the next time Strata starts.', aliases: 'network address 47831 localhost api', control: <PortSetting shell={shell} save={saveShell} /> }] : []),
-        ...(dev ? [{ section: 'General', label: CONTEXT_GUARD_LABEL, hint: CONTEXT_GUARD_HINT, aliases: 'context compact summary guard window full dev', control: <ContextGuardSetting /> }] : []),
         { section: 'General', label: 'Electricity price', hint: 'Price of one kilowatt-hour. The Monitor then shows what your graphics card has cost since Strata started. Leave it empty to hide the cost.', aliases: 'cost power energy kwh currency money', control: <ElectricityPrice /> },
         { section: 'Reading & focus', label: 'Font', hint: 'Choose an installed font for the interface and conversations.', control: <FontChoice /> },
         { section: 'General', label: 'Keyboard shortcuts', hint: 'Set the key combinations that feel natural to you.', aliases: 'command keys hotkeys', control: <Btn size="sm" onClick={() => setShortcuts(true)}>{tr("Edit shortcuts")}</Btn> },

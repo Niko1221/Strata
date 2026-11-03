@@ -8,6 +8,7 @@
  *   GET  /api/dev/debug          one text report for /dev-debug: last error, failing requests, hooks, the last log lines
  *   POST /api/dev/reload         dev.config.json and the backend hooks again (no host restart)
  *   POST /api/dev/context-guard  { enabled, midTaskAt, compactAfterTurnAt, compactBeforeSendAt } saved into dev.config.json, then reloaded
+ *   POST /api/dev/plan-guidance  { enabled, thinking, maxSteps } saved into dev.config.json, then reloaded
  *   POST /api/dev/hooks          { file, enabled } a hook's switch
  *   POST /api/dev/client-error   { message, stack, componentStack, extension } an error the page saw (Logs tab, source "ui")
  */
@@ -110,6 +111,12 @@ export async function devApi(req, res, path, method, url, deps) {
   if (path === '/api/dev/context-guard' && method === 'POST') {
     const b = await readBody(req);
     try { deps.saveContextGuard(b); } catch (e) { return error(res, 400, String(e.message ?? e)); }
+    await deps.reload();
+    return json(res, 200, { dev: deps.summary() });
+  }
+  if (path === '/api/dev/plan-guidance' && method === 'POST') {
+    const b = await readBody(req);
+    try { deps.savePlanGuidance(b); } catch (e) { return error(res, 400, String(e.message ?? e)); }
     await deps.reload();
     return json(res, 200, { dev: deps.summary() });
   }

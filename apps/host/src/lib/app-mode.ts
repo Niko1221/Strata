@@ -11,6 +11,7 @@ export interface AppMode {
   dev?: DevSummary;
 }
 
+export interface PlanGuidanceValues { enabled: boolean; thinking: 'Off' | 'Low' | 'Medium' | 'High' | 'Max' | null; maxSteps: number }
 export interface ContextGuardValues { enabled: boolean; midTaskAt: number; compactAfterTurnAt: number; compactBeforeSendAt: number }
 
 /** What a Strata Dev host says about itself (server/dev-mode.mjs devSummary). The fields after `warnings` come from Phase 2 hosts. */
@@ -23,6 +24,8 @@ export interface DevSummary {
   chatOverflow?: { enabled: boolean; maxTotalChars?: number };
   /** dev.config.json "contextGuard": the switch and the three shares of the window (Settings -> General). */
   contextGuard?: ContextGuardValues;
+  /** dev.config.json "planGuidance": rules for the plan, the thinking level of the planning turn, the most steps (Settings -> General). */
+  planGuidance?: PlanGuidanceValues;
   tokens?: Record<string, string>;
   ui?: { elements: Record<string, { hidden?: boolean; label?: string; order?: number; replace?: string }>; extensions: Record<string, { enabled: boolean }> };
   overrides?: { loop?: { enabled?: boolean; maxRuns?: number }; folder?: { enabled?: boolean; defaultPath?: string }; permissions?: { defaultMode?: 'manual' | 'plan' | 'bypass'; allowedModes?: ('manual' | 'plan' | 'bypass')[] } };

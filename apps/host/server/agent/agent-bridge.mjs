@@ -32,7 +32,7 @@ import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
 import { BASE_TOKENS, COUNT_ABOVE_CHARS, FIT_TEXT, countTokens, decideFit, fill, grouped, guardCompactAfterTurn, guardSummarize } from './context-fit.mjs';
 import { activeDevSettings } from '../dev-mode.mjs';
-import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
+import { DEFAULT_PLAN_RULES, PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
 /**
  * A failure the person can read. `message` is a plain sentence with the next step; `details` keeps the technical
@@ -1027,7 +1027,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
         ? 'A plan is waiting for you above. Approve it, edit it or reject it, or type /plan followed by something else to make a new one.'
         : 'Type /plan followed by what you want done, for example: /plan build a small pagoda page. I will look around and write a plan; nothing changes until you approve it.');
     }
-    return runTurn({ ...options, message: planPrompt(task), planTask: task, mode: 'plan' });
+    // Strata Dev planGuidance (null outside Dev or when off: the plan turn is exactly as before).
+    const guide = activeDevSettings()?.planGuidance ?? null;
+    return runTurn({ ...options, message: planPrompt(task, guide ? (guide.rules ?? DEFAULT_PLAN_RULES) : null, guide ? guide.maxSteps : null), planTask: task, mode: 'plan', ...(guide?.thinking ? { thinking: guide.thinking } : {}) });
   }
 
   /**

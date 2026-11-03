@@ -9,6 +9,12 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/client';
 import { pushToast } from '../lib/store';
 import { Btn, Dialog, ErrorNotice, Field, Icon, Select } from './ui';
+import { useDev } from '../dev/dev-state';
+import { CONTEXT_GUARD_HINT, CONTEXT_GUARD_LABEL, ContextGuardSetting } from '../dev/ContextGuardSetting';
+import { PLAN_GUIDANCE_HINT, PLAN_GUIDANCE_LABEL, PlanGuidanceSetting } from '../dev/PlanGuidanceSetting';
+
+// Strata Dev only, English only (like the Dev panel): a constant, so the language files need no key.
+const DEV_TITLE = 'Strata Dev';
 
 export interface ToolGroup {
   id: string;
@@ -114,6 +120,7 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
     finally { setBusy(false); }
   }
 
+  const dev = useDev();
   if (!state) return <div className="stack stack--lg settings-models">{error ? <ErrorNotice message={tr(error)} onRetry={() => void load()} /> : <p className="small muted">{tr('Loading the tool list…')}</p>}</div>;
   const keyed = state.search.provider !== 'builtin';
 
@@ -155,6 +162,14 @@ export function SettingsTools({ preview }: { preview?: ToolsState }) {
         </Field>
       </div>
     </section>
+
+    {dev ? <section className="settings-section">
+      <h2 className="h4" style={{ marginBottom: 10 }}>{DEV_TITLE}</h2>
+      <div className="st-card st-card--flush">
+        <Field label={CONTEXT_GUARD_LABEL} hint={CONTEXT_GUARD_HINT}><ContextGuardSetting /></Field>
+        <Field label={PLAN_GUIDANCE_LABEL} hint={PLAN_GUIDANCE_HINT}><PlanGuidanceSetting /></Field>
+      </div>
+    </section> : null}
 
     <section className="settings-section">
       <h2 className="h4" style={{ marginBottom: 10 }}>{tr('Your own tools')}</h2>

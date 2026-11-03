@@ -22,6 +22,8 @@ const MAX_DETAIL = 220;
 // Strata Dev (dev.config.json "plan"): longer step texts, so a plan step is not cut off with an ellipsis. Outside Dev (null) the limits above.
 const textMax = () => activeDevSettings()?.plan?.stepTextMax ?? MAX_TEXT;
 const detailMax = () => activeDevSettings()?.plan?.stepDetailMax ?? MAX_DETAIL;
+/** How many steps a plan keeps: 12, or in Dev the "planGuidance.maxSteps" (the prompt names it, so the model knows its room). */
+const maxSteps = () => activeDevSettings()?.planGuidance?.maxSteps ?? MAX_STEPS;
 
 const clean = s => String(s ?? '').replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
@@ -36,16 +38,27 @@ function splitStep(raw) {
 }
 
 /** The instruction a plan turn gets in front of the person's request. */
-export function planPrompt(task) {
+export function planPrompt(task, rules = null, steps = null) {
   return [
     'Make a plan for the request below. Do not change anything: you may only look (read files, list folders, search).',
     'When you have looked enough, end your reply with the plan as a numbered list: one short line per step, in the order they should be done.',
     'Put a short heading line right before the list, like "## Pagoda page" (two to five words that name the plan).',
-    'You may add the reason after a dash. Use 3 to 8 steps. Write nothing after the list.',
+    `You may add the reason after a dash. Use 3 to ${steps ?? 8} steps. Write nothing after the list.`,
+    // Strata Dev (dev.config.json "planGuidance"): how a good plan is built. Without rules (Live) the prompt is exactly as it was.
+    ...(rules?.length ? ['', 'How to build a good plan:', ...rules.map(r => `- ${r}`)] : []),
     '',
     `Request: ${task}`,
   ].join('\n');
 }
+
+/** The rules Strata Dev gives the model when it plans (dev.config.json "planGuidance.rules" replaces them). */
+export const DEFAULT_PLAN_RULES = Object.freeze([
+  'Split a big job into stages of a few steps each (for code: the core pieces first, then what is built on them) instead of one step that does everything at once.',
+  'Put checks early: after each stage, write or run a test for it, not only at the end.',
+  'If the job needs it, plan error handling and all-or-nothing behaviour of a failing operation as a step of its own.',
+  'Make every step something one working turn can finish and check, and start it with a verb.',
+  'Make the last step a full check against the requirements, then a short reply that says what was made and how it was verified.',
+]);
 
 /**
  * The plan in a reply: its last run of numbered lines (at least two). Lines that follow a step and are indented or bulleted are that
@@ -71,7 +84,7 @@ export function parsePlan(text, request = '') {
   });
   const best = runs.filter(r => r.items.length >= 2).at(-1);
   if (!best) return null;
-  const steps = best.items.slice(0, MAX_STEPS).map((it, k) => {
+  const steps = best.items.slice(0, maxSteps()).map((it, k) => {
     const { text: t, detail } = splitStep(it.raw);
     const extra = clip(it.extra.join(' '), detailMax());
     return { id: `s${k + 1}`, text: t, detail: detail || extra, state: 'pending', summary: null };
@@ -101,7 +114,7 @@ export function parsePoints(objective) {
   if (seq.length < 2) return null;
   seq.forEach((k, i) => found.push(clean(text.slice(k.after, i + 1 < seq.length ? seq[i + 1].at : undefined))));
   const aim = clean(text.slice(0, seq[0].at)).replace(/[:\-–—]+$/, '').trim();
-  const steps = found.slice(0, MAX_STEPS).map((t, k) => {
+  const steps = found.slice(0, maxSteps()).map((t, k) => {
     const { text: s, detail } = splitStep(t);
     return { id: `s${k + 1}`, text: s, detail, state: 'pending', summary: null };
   }).filter(s => s.text);
@@ -172,7 +185,7 @@ export function editedSteps(input, previous = []) {
     const detail = clip(clean(typeof x === 'string' ? '' : x?.detail), detailMax());
     const kept = previous.find(p => p.id === x?.id);
     return text ? { id: kept?.id ?? `s${k + 1}`, text, detail, state: 'pending', summary: null } : null;
-  }).filter(Boolean).slice(0, MAX_STEPS);
+  }).filter(Boolean).slice(0, maxSteps());
   if (!steps.length) throw Object.assign(new Error('A plan needs at least one step.'), { code: 'plan-steps' });
   // ids must be unique and in order of the list
   steps.forEach((s, i) => { s.id = `s${i + 1}`; });
