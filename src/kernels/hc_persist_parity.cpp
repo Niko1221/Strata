@@ -20,6 +20,11 @@
 #include <random>
 #include <vector>
 
+#if defined(_WIN32)   // MSVC has no setenv / unsetenv
+#define setenv(k, v, o) _putenv_s((k), (v))
+#define unsetenv(k) _putenv_s((k), "")
+#endif
+
 namespace k = strata::kernels;
 
 namespace {

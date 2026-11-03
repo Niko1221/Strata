@@ -11,7 +11,12 @@ export type DeliverableKind = 'html' | 'markdown' | 'pdf' | 'csv' | 'image' | 'c
 export interface Deliverable { path: string; abs: string; name: string; kind: DeliverableKind; status: 'created' | 'changed'; size: number; lines: number | null; added: number; removed: number;
   /** Which write came last in this reply (set when the host's frames are merged): the newest is the run's main result. */ order?: number }
 export interface GroupFile { path: string; name: string; kind: DeliverableKind; status: string; added: number; removed: number }
-export interface ActivityGroup { id: string; closed: boolean; line: string; added: number; removed: number; files: GroupFile[] }
+/** What is happening in a run right now (the host sends it while the group is open and drops it when the group closes): `label` is the step in plain words
+ *  ("Writing pagoda.html"), `output` the last line the step printed or the progress it can name ("412 lines written"). Optional: a group without it draws as before. */
+export interface GroupLive { label?: string; output?: string;
+  /** A file being written right now (from `message.drafts`): characters so far, lines so far and the last lines of the text. */
+  bytes?: number; lines?: number; tail?: string }
+export interface ActivityGroup { id: string; closed: boolean; line: string; added: number; removed: number; files: GroupFile[]; live?: GroupLive }
 export type MessageBlock = { kind: 'text'; text: string } | ({ kind: 'group' } & ActivityGroup);
 
 const KINDS = ['html', 'markdown', 'pdf', 'csv', 'image', 'code', 'text', 'other'];
@@ -36,7 +41,10 @@ export function readGroup(raw: unknown): ActivityGroup | null {
     const d = readDeliverable(x);
     return d ? [{ path: d.path, name: d.name, kind: d.kind, status: d.status, added: d.added, removed: d.removed }] : [];
   }) : [];
-  return { id: g.id, closed: g.closed === true, line: typeof g.line === 'string' ? g.line : '', added: num(g.added), removed: num(g.removed), files };
+  const liveRaw = g.live && typeof g.live === 'object' ? g.live as Record<string, unknown> : null;
+  const last = (text: string) => text.trim().split(/\r?\n/).at(-1)!.slice(0, 200);
+  const live: GroupLive | undefined = liveRaw && g.closed !== true ? { ...(typeof liveRaw.label === 'string' && liveRaw.label ? { label: liveRaw.label.slice(0, 160) } : {}), ...(typeof liveRaw.output === 'string' && liveRaw.output.trim() ? { output: last(liveRaw.output) } : {}) } : undefined;
+  return { id: g.id, closed: g.closed === true, line: typeof g.line === 'string' ? g.line : '', added: num(g.added), removed: num(g.removed), files, ...(live && (live.label || live.output) ? { live } : {}) };
 }
 
 /** The `skills-used` frame: the skills this reply used, each with the name the person gave it and a one-line description. */
@@ -92,6 +100,38 @@ export function mainResult(files: Deliverable[] | undefined, answer: string): De
   return shown.reduce((best, f) => ((f.order ?? 0) >= (best.order ?? 0) ? f : best));
 }
 
+/** Past this many files a run's results are one compact summary (the two folders and a count that opens the list) instead of one card per file. */
+export const COMPACT_FILES_FROM = 6;
+
+/** The folder part of a path inside the chat's folder, with forward slashes ('' for a file that sits directly in it). */
+export const dirOf = (path: string): string => { const parts = path.replace(/\\/g, '/').split('/').filter(Boolean); parts.pop(); return parts.join('/'); };
+
+/**
+ * The folder a run delivered to, relative to the chat's folder ('' means the chat's folder itself): the folder of the run's main result (the file the
+ * answer names, else the one written last); with no previewable result, the top-level folder that holds the most files. A tie goes to the folder written to last.
+ */
+export function deliveryFolder(files: Deliverable[] | undefined, answer: string): string {
+  const list = files ?? [];
+  const main = mainResult(list, answer);
+  if (main) return dirOf(main.path);
+  const counts = new Map<string, { n: number; last: number }>();
+  for (const f of list) {
+    const top = dirOf(f.path).split('/')[0] ?? '';
+    const c = counts.get(top) ?? { n: 0, last: 0 };
+    counts.set(top, { n: c.n + 1, last: Math.max(c.last, f.order ?? 0) });
+  }
+  let best = '', at: { n: number; last: number } | null = null;
+  for (const [dir, c] of counts) if (!at || c.n > at.n || (c.n === at.n && c.last > at.last)) { best = dir; at = c; }
+  return best;
+}
+
+/** The chat's folder on disk, worked out from a file's absolute and relative paths (for a host that does not say it). */
+export function rootOf(file: { abs: string; path: string } | undefined): string {
+  if (!file) return '';
+  const abs = file.abs.replace(/\\/g, '/'), rel = file.path.replace(/\\/g, '/').replace(/^\.?\//, '');
+  return abs.endsWith('/' + rel) ? abs.slice(0, abs.length - rel.length - 1) : '';
+}
+
 export const fileTypeLabel = (d: { kind: DeliverableKind; name: string }) => {
   const ext = d.name.includes('.') ? d.name.split('.').at(-1)!.toUpperCase() : '';
   return d.kind === 'markdown' ? 'MD' : d.kind === 'html' ? 'HTML' : d.kind === 'csv' ? 'CSV' : d.kind === 'pdf' ? 'PDF' : ext && ext.length <= 10 ? ext : d.kind.toUpperCase();
@@ -127,3 +167,4 @@ export const fileAction = {
 };
 
 export const rawUrlOf = (sessionId: string, path: string) => `/api/files/raw?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`;
+

@@ -409,7 +409,7 @@ int main(int argc, char** argv) {
             dq(td_, Wshd);
             gemm(mixh, Wr, logits, T, NEXP, N, "router");
             const uint32_t nt = T;
-            D(P(lib, "route_topk"), {mtl::Arg::B(logits), mtl::Arg::B(ids), mtl::Arg::B(wts), mtl::Arg::V(nt)}, (T + 7) / 8, 1,
+            D(P(lib, "route_topk"), {mtl::Arg::B(logits), mtl::Arg::B(ids), mtl::Arg::B(wts), mtl::Arg::V(nt), mtl::Arg::V((uint32_t)NEXP)}, (T + 7) / 8, 1,
               256, "router");
             const int nent = T * TOPK, nblk = (nent + 1023) / 1024;
             MmPlanArgs pa{(uint32_t)nent, TOPK, NEXP, (uint32_t)TM, (uint32_t)nblk};
