@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Flint 40B MoE (Strata Native C++/CUDA Engine)
+title Flint 40B Preview MoE @ 256K (Strata Native Engine)
 
 set "PORT=8081"
 set "ROOT=%~dp0"
@@ -9,33 +9,62 @@ if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
 echo.
 echo ============================================================
-echo   Flint 40B MoE (256 experts) - Native Strata Engine
+echo   Flint 40B Preview MoE @ 256K (Strata Native Engine)
 echo ============================================================
-echo   Модель:        flint-UD-Q3_K_XL.gguf
-echo   Архитектура:   NVIDIA Blackwell sm_120 (CUDA 12.8)
-echo   Движок:        strata-flint.exe (Нативный C++/CUDA)
-echo   Скорость:      ~85-92 т/с decode, ~360-385 т/с prefill
-echo   OpenAI API:    http://127.0.0.1:%PORT%/v1
-echo   Web Chat:      http://127.0.0.1:%PORT%/
+echo   Модель:       flint-UD-Q3_K_XL.gguf (18.5 GB)
+echo   Архитектура:  MoE 40B (256 экспертов, top-6 + 2 shared, 49 слоев)
+echo   Память:       3-Tier Ring (32K VRAM Ring + Host RAM + NVMe)
+echo   Контекст:     До 256,000 токенов (256K)
+echo   Видеокарта:   NVIDIA RTX 5060 Ti 16 GB VRAM
+echo   Префилд:      Batched Tensor Core GEMM (~1,200+ tok/s)
+echo   Декод:        CUDA Graph Replay (~89-90 tok/s)
+echo   Порт API:     %PORT%
+echo ------------------------------------------------------------
+echo   [1] Chat-режим 32K Turbo (Pure VRAM, префилл ~1,238 t/s, декод ~90.4 t/s)
+echo   [2] Multi-turn 65K (32K VRAM Ring + RAM, баланс для длинных диалогов)
+echo   [3] 256K Context (Full 3-Tier Ring, 262,144 токенов, анализ гигантских документов)
+echo   [4] Agentic 256K + Adaptive MoE (КОМБО: 256K Context + авто-своп экспертов) [По умолчанию]
 echo ============================================================
 echo.
 
-set "EXE=%ROOT%\build\Release\strata-flint.exe"
-if not exist "%EXE%" set "EXE=%ROOT%\bin\strata-flint.exe"
+set "MODE=%~1"
+if "%MODE%"=="" set /p MODE="  Выберите вариант [1-4, Enter=4]: "
+if "%MODE%"=="" set "MODE=4"
 
-if not exist "%EXE%" (
-    echo [ERROR] strata-flint.exe не найден!
-    echo Скомпилируйте его: cmake --build build --config Release --target strata-flint
-    echo Или скачайте готовый бинарник из GitHub Releases.
-    pause
-    exit /b 1
+set "CFG=strata-flint.json"
+set "DESC=Agentic 256K + Adaptive MoE (КОМБО: 256K Context + динамический своп экспертов)"
+
+if "%MODE%"=="1" (
+    echo   ^>^> Режим: Chat-режим 32K Turbo (Pure VRAM, 32,768 токенов)
+    set "CFG=strata-flint-32k.json"
+    set "DESC=Chat-режим 32K Turbo (Pure VRAM, 32,768 токенов)"
+)
+if "%MODE%"=="2" (
+    echo   ^>^> Режим: Multi-turn 65K (Sliding Ring + RAM, 65,536 токенов)
+    set "CFG=strata-flint-65k.json"
+    set "DESC=Multi-turn 65K (Sliding Ring + RAM, 65,536 токенов)"
+)
+if "%MODE%"=="3" (
+    echo   ^>^> Режим: 256K Context (Full 3-Tier Ring, 262,144 токена)
+    set "CFG=strata-flint-256k.json"
+    set "DESC=256K Context (Full 3-Tier Ring, 262,144 токена)"
+)
+if "%MODE%"=="4" (
+    echo   ^>^> Режим: Agentic 256K + Adaptive MoE (КОМБО)
+    set "CFG=strata-flint.json"
+    set "DESC=Agentic 256K + Adaptive MoE (КОМБО: 256K Context + динамический своп экспертов)"
 )
 
-set "MODEL=E:\AI-models\models\flint\flint-UD-Q3_K_XL.gguf"
-if not "%~1"=="" set "MODEL=%~1"
+echo.
+echo   ^>^> Запуск Strata Engine: %DESC%
+echo   ^>^> Конфиг: %CFG%
+echo   ^>^> OpenAI API: http://127.0.0.1:%PORT%/v1
+echo   ^>^> Web Chat:   http://127.0.0.1:%PORT%/
+echo   ^>^> Нажмите Ctrl+C для остановки.
+echo.
 
-echo   >> Запуск Strata Server...
+cd /d "%ROOT%"
 set "PYTHONPATH=%ROOT%;%ROOT%\tools"
-python "serve\server.py" --engine strata --config "strata-flint.json" --port %PORT% --open
+python "serve\server.py" --engine strata --config "%CFG%" --port %PORT% --open
 
 if errorlevel 1 pause
