@@ -1267,11 +1267,15 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     // halves of the sets
     const int h0 = (int) history_.size();
     const auto tok_at = [&](int q) -> int { return q < h0 ? history_[q] : tokens[q - h0]; };
-    const size_t nt = tokens.size(), per = (size_t) K * pf_c_;
+    const size_t nt = tokens.size();
+    // a pass takes K chunks; with the hyper-connection split a short last chunk (not a whole pf_c_ rows) is a pass of its own, so it does not keep the whole chunks
+    // before it from being split
+    const bool lone_tail = pf_[0]->hcs;
     auto chunks_of = [&](size_t i0, int half) {
         std::vector<PfChunk> ch;
-        for (size_t i = i0; i < std::min(nt, i0 + per); i += pf_c_) {
+        for (size_t i = i0; i < nt && (int) ch.size() < K; i += pf_c_) {
             const size_t e = std::min(nt, i + pf_c_);
+            if (lone_tail && !ch.empty() && e - i != (size_t) pf_c_) break;
             ch.push_back({std::vector<int>(tokens.begin() + i, tokens.begin() + e), e < nt ? tokens[e] : after, half * K + (int) ch.size()});
         }
         return ch;
@@ -1285,14 +1289,17 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     };
     std::vector<PfChunk> ch = chunks_of(0, 0);
     embed(0, ch);
-    for (size_t i = 0, k = 0; i < nt; i += per, ++k) {
-        std::vector<PfChunk> next = chunks_of(i + per, (int) ((k + 1) & 1));
-        prefill_pass(ch, staging, [&] { embed(i + per, next); });
+    for (size_t i = 0, k = 0; i < nt; ++k) {
+        size_t cov = 0;
+        for (const PfChunk& c : ch) cov += c.tokens.size();
+        std::vector<PfChunk> next = chunks_of(i + cov, (int) ((k + 1) & 1));
+        prefill_pass(ch, staging, [&] { embed(i + cov, next); });
         size_t e = i;
         for (const PfChunk& c : ch) {
             e += c.tokens.size();
             if (on_prefill_chunk) on_prefill_chunk((int) e);
         }
+        i += cov;
         ch = std::move(next);
     }
 }
