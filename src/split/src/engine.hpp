@@ -68,9 +68,9 @@ public:
     // attached it reads the rows too, each paired with the token after it (`after`: the one after the last row)
     void prefill(const std::vector<int>& tokens, int after = -1);
     std::function<void(int)> on_prefill_chunk;   // after each chunk of prefill(): the rows read so far
-    // at most n chunks to a pass (0: the engine's own, FNX_PF_PASS). The server asks for 2 while other requests decode: they run a window between two passes, so
-    // a pass is how long they wait
-    void set_pass_cap(int n) { pass_cap_ = n; }
+    // at most `rows` prompt rows to a pass (0: the engine's own, FNX_PF_PASS chunks). The server asks for 8192 while other requests decode: they run a window between
+    // two passes, so a pass is how long they wait
+    void set_pass_rows(int rows) { pass_rows_ = rows; }   // 0: no limit
     // images. Token ids at or above IMAGE_TOK are image cells: the caller gives each picture's cells ids made from its
     // hash, so a prefix match tells pictures apart. The PLE n-grams read them as the model's image token
     static constexpr int IMAGE_TOK = 1 << 30;
@@ -357,7 +357,7 @@ private:
     // experts not in a slot are copied into VRAM once per pass); a chunk's rows are embedded in its pinned set already.
     // `between` runs on the host while the cards work
     static constexpr int PF_PASS = 8, PF_SETS = 2 * PF_PASS;
-    int pass_cap_ = 0;
+    int pass_rows_ = 0;
     struct PfChunk {
         std::vector<int> tokens;
         int after, set;

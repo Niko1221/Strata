@@ -59,6 +59,9 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             std::fprintf(stderr, "fnx: note: context %d is within the trained %d: the scaling changes every position's rotary "
                          "and no length needs it\n", max_ctx, m_.ctx_train);
     }
+#if !FNX_HIP
+    pf_c_ = 8192;   // NVIDIA default (owner 11-03): the expert kernels cost ~30 percent less per token at 8192 rows (FNX_PF_ROWS=4096 for the old chunk)
+#endif
     const long long pf_rows = env_int("FNX_PF_ROWS", pf_c_);
     if (pf_rows < MAXT || pf_rows > 8192 || pf_rows % MAXT)
         throw std::runtime_error("FNX_PF_ROWS: a multiple of " + std::to_string(MAXT) + " from " + std::to_string(MAXT) + " to 8192, got " +
