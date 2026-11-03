@@ -312,7 +312,8 @@ with `packaging/package_engine.py` and use `docker/build.sh`.
 ## Publishing the images (for maintainers)
 
 The images are built from the **engine packages of a release**, never from a build on the runner, so an image holds exactly the
-files the signed update feed names. Nothing publishes by itself: a maintainer starts the workflow, after the owner's OK.
+files the signed update feed names. Publishing a (non-draft) release starts the workflow with **push** on, and **latest** on unless
+it is a pre-release; the steps below run it by hand, for a dry run or to rebuild an older release.
 
 1. Make the release first (its `strata-feed.json`, `strata-feed.json.sig` and the engine archives must be on the GitHub release).
 2. GitHub, **Actions, Docker images, Run workflow** ([.github/workflows/docker-images.yml](../.github/workflows/docker-images.yml); the file has to be on

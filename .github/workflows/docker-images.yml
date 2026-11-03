@@ -1,7 +1,8 @@
 name: Docker images
 
 # Builds the Strata container images of one release from its engine packages and pushes them to ghcr.io.
-# Run by hand only (Actions tab -> Docker images -> Run workflow). Nothing starts it on its own.
+# Runs when a release is published (push on; latest-<flavor> moves unless it is a pre-release), or by hand
+# (Actions tab -> Docker images -> Run workflow).
 #
 # For each flavor the job downloads the engine package from the release and checks it against the signed update feed
 # (docker/fetch-engines.py: the feed's Ed25519 signature, the archive's SHA-256, the manifest hash, the package signature,
@@ -10,6 +11,8 @@ name: Docker images
 # The first run with "push" off builds everything without publishing it (a dry run).
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -51,12 +54,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || inputs.release_tag }}
+          ref: ${{ inputs.source_ref || inputs.release_tag || github.event.release.tag_name }}
       - name: Which flavors does the release have a package for
         id: list
         env:
           WANT: ${{ inputs.flavors }}
-          TAG: ${{ inputs.release_tag }}
+          TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
         run: |
           set -eu
           args="--release-tag $TAG --list --skip-missing"
@@ -82,24 +85,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || inputs.release_tag }}
+          ref: ${{ inputs.source_ref || inputs.release_tag || github.event.release.tag_name }}
       - name: Free disk space (the runner has about 14 GB; a package plus its image needs about 10 GB)
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
           docker system prune -af >/dev/null 2>&1 || true
           df -h /
       - name: Log in to ghcr.io
-        if: ${{ inputs.push }}
+        if: ${{ inputs.push || github.event_name == 'release' }}
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_USER: ${{ github.actor }}
         run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
       - name: Fetch, verify, build (and push when push is on)
         env:
-          TAG: ${{ inputs.release_tag }}
+          TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
           FLAVOR: ${{ matrix.flavor }}
-          PUSH: ${{ inputs.push && '--push' || '' }}
-          LATEST: ${{ !inputs.latest && '--no-latest' || '' }}
+          PUSH: ${{ (inputs.push || github.event_name == 'release') && '--push' || '' }}
+          LATEST: ${{ (github.event_name == 'release' && github.event.release.prerelease || github.event_name != 'release' && !inputs.latest) && '--no-latest' || '' }}
         run: |
           docker/publish.sh --release-tag "$TAG" --flavors "$FLAVOR" --image "$IMAGE" $PUSH $LATEST
       - name: Summary
@@ -107,8 +110,8 @@ jobs:
         run: |
           {
             echo "### ${{ matrix.flavor }}"
-            echo "- release: ${{ inputs.release_tag }}, pushed: ${{ inputs.push }}"
+            echo "- release: ${INPUT_TAG}, pushed: ${{ inputs.push || github.event_name == 'release' }}"
             echo "- image: \`$IMAGE:${INPUT_TAG#v}-${{ matrix.flavor }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
         env:
-          INPUT_TAG: ${{ inputs.release_tag }}
+          INPUT_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
