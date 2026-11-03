@@ -447,11 +447,11 @@ Das Modus-Menü im Eingabefeld hat in Strata Dev vier Einträge (Live behält se
 | Modus | Ablauf |
 | --- | --- |
 | Manual | Fragt vor jeder Änderung. |
-| Plan + Manual | Schreibt zuerst einen Plan (nur lesend). Du gibst ihn frei, danach läuft er im Modus Manual und fragt bei Änderungen. |
-| Plan + Auto | Schreibt zuerst einen Plan, gibt ihn selbst frei und führt ihn mit allen Rechten aus, ohne zu fragen. |
+| Plan + Manual | Schreibt zuerst einen Plan (nur lesend). Du gibst ihn frei, danach läuft er Schritt für Schritt im Modus Manual und fragt bei Änderungen. |
+| Plan + Auto | Schreibt zuerst einen Plan. Du gibst ihn frei, danach läuft er Schritt für Schritt mit allen Rechten, ohne bei einzelnen Aktionen zu fragen. |
 | Auto | Alles erlaubt, kein Plan (der Modus Bypass des Hosts). |
 
-Der Host kennt weiter nur `manual`, `plan` und `bypass`. Die Seite (`src/dev/chat-modes.ts`, `store.ts`) schickt in den beiden Plan-Modi eine normale Nachricht als `/plan …` und wählt den Host-Modus für die Ausführung. Befehle mit `/` und Loops bleiben unverändert. Ein gespeicherter Modus `plan` zählt in Dev als Plan + Manual. Plan + Auto gibt den Plan erst frei, wenn der Turn des Plans zu Ende ist, und nur, solange der Chat noch offen ist; sonst bleibt die Plankarte mit „Approve“ stehen. Der Fortschrittsbalken (`src/dev/PlanProgress.tsx`) zeigt, wie viele Schritte fertig sind.
+Der Host kennt weiter nur `manual`, `plan` und `bypass`. Die Seite (`src/dev/chat-modes.ts`, `store.ts`) schickt in den beiden Plan-Modi eine normale Nachricht als `/plan …` und wählt den Host-Modus für die Ausführung. Befehle mit `/` und Loops bleiben unverändert. Ein gespeicherter Modus `plan` zählt in Dev als Plan + Manual. Nach der Freigabe läuft der Plan über den Plan-Läufer des Hosts (wie „Start as goal“), also Schritt für Schritt; dafür muss die Gruppe „goals“ unter Einstellungen → Tools an sein. Der Fortschrittsbalken (`src/dev/PlanProgress.tsx`) zeigt, wie viele Schritte fertig sind und wie lange der Plan läuft; mit Goal steht er als zweite Zeile in der Zielleiste.
 
 ## Zurücksetzen
 

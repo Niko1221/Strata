@@ -1871,7 +1871,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           applyPlanFrame(sessionId, frame.plan);
           // A proposed plan is shown as the plan card in place of this turn's closing text (that text is the plan in prose).
           const planned = frame.plan as { id?: unknown } | null;
-          if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); if (devActive() && chatMode === 'plan-auto') autoApprove.set(sessionId, pid); }
+          if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
         } else if (type === 'queued-message') {
           applyQueueFrame(sessionId, frame.queue);
           const sent = frame.message as { text?: unknown } | undefined;
@@ -1982,20 +1982,13 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
-    // Strata Dev, Plan + Auto: the plan this turn proposed is approved now that the turn is over (only while the chat is still the open one).
-    const approve = autoApprove.get(sessionId); autoApprove.delete(sessionId);
-    if (approve && state.activeSession === sessionId) setTimeout(() => void approvePlan(sessionId, approve).catch(e => pushToast('error', 'The plan was not started', plainFailureText(e instanceof Error ? e.message : String(e)).message)), 0);
-    else {
-      const next = releasedMessages.get(sessionId)?.shift();
-      if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
-    }
+    const next = releasedMessages.get(sessionId)?.shift();
+    if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
   }
 }
 
 /** Messages the host handed back when a goal ended with some still waiting; sent one after another. */
 const releasedMessages = new Map<string, string[]>();
-/** Strata Dev, Plan + Auto: chat id to the id of the plan its last turn proposed. */
-const autoApprove = new Map<string, string>();
 
 /* -------------------------------------------------------------- tool grants */
 
