@@ -12,9 +12,9 @@
   },
   "contextGuard": {
     "enabled": true,
-    "midTaskAt": 0.55,
+    "midTaskAt": 0.65,
     "compactAfterTurnAt": 0.55,
-    "compactBeforeSendAt": 0.60
+    "compactBeforeSendAt": 0.7
   },
   "features": {},
   "overrides": {}
