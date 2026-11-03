@@ -1410,7 +1410,13 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     // =0 turns it off.
     if (w16_budget_ < 0) {
         const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
-        if (v != nullptr) {
+        if (v != nullptr && std::strcmp(v, "auto") == 0) {
+            // STRATA_PF_W16_CACHE_MIB=auto (tester switch, round0212 item 7): the automatic sizing - weights are cached while the card
+            // keeps kW16AutoReserve free afterwards, so a card whose expert cache fills it caches nothing.  Not bit-exact (see below),
+            // so it is not the default until the owner says yes.
+            w16_budget_ = 16ll << 30;
+            w16_reserve_ = kW16AutoReserve;
+        } else if (v != nullptr) {
             w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
             w16_reserve_ = 2ll << 30;
         } else {
