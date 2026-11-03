@@ -75,3 +75,6 @@
 @media (prefers-reduced-motion: reduce) { .dev-progress__track i { transition: none; } }
 html[data-motion='reduced'] .dev-progress__track i { transition: none; }
 .bcard .dev-progress { margin: 4px 0 0; }
+/* Inside the goal bar: a second row under the goal's own line. */
+.goalbar { flex-wrap: wrap; }
+.goalbar > .dev-progress { flex: 1 0 100%; margin: 0; padding: 2px 6px 0 0; }

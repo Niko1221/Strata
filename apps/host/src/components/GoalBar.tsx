@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { tr } from '../lib/i18n';
 import { goalAction, useGoal, type Goal } from '../lib/goal';
 import { pushToast, resumeGoal, useStore } from '../lib/store';
@@ -19,7 +19,7 @@ export function goalStatusText(goal: Goal): string {
  * The goal of this chat, as a slim bar attached above the message box: part of the chat, but separate. Icon-only Pause or Resume, Edit and
  * Remove. The host owns the goal; every button asks it and draws the answer.
  */
-export function GoalBar({ chatId }: { chatId: string | null | undefined }) {
+export function GoalBar({ chatId, children }: { chatId: string | null | undefined; /** Strata Dev: a second row inside the bar (the plan's progress). Nothing outside Dev. */ children?: ReactNode }) {
   const goal = useGoal(chatId);
   const streaming = useStore(s => s.streaming);
   const [editing, setEditing] = useState(false), [removing, setRemoving] = useState(false), [text, setText] = useState(''), [busy, setBusy] = useState(false);
@@ -41,6 +41,7 @@ export function GoalBar({ chatId }: { chatId: string | null | undefined }) {
         : <IconBtn name="pause" title={tr("Pause the goal")} size={16} disabled={busy} onClick={() => void run(() => goalAction(chatId, 'pause'))}/>) : null}
       {goal.phase !== 'complete' ? <IconBtn name="pencil" title={tr("Edit the goal")} size={16} disabled={busy} onClick={() => { setText(goal.objective); setEditing(true); }}/> : null}
       <IconBtn name="x" title={tr("Remove the goal")} size={16} disabled={busy} onClick={() => setRemoving(true)}/>
+      {children}
     </div>
     <Dialog open={editing} compact title={tr("Edit the goal")} onClose={() => setEditing(false)} actions={<><Btn onClick={() => setEditing(false)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={busy || !text.trim()} onClick={() => void run(async () => { await goalAction(chatId, 'edit', text.trim()); setEditing(false); })}>{tr("Save goal")}</Btn></>}>
       <label className="input-field"><span>{tr("What should the assistant keep working towards?")}</span><textarea className="st-input" rows={3} maxLength={4000} value={text} onChange={e => setText(e.target.value)} autoFocus/></label>

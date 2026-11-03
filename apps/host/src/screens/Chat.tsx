@@ -561,8 +561,8 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         <div className="composer__inner">
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
           <DevElement id="chat.composer.folder"><FolderChip chatId={session?.id} disabled={streaming}/></DevElement>
-          <GoalBar chatId={session?.id}/>
-          <PlanProgress chatId={session?.id}/>
+          <GoalBar chatId={session?.id}><PlanProgress chatId={session?.id} where="inGoalBar"/></GoalBar>
+          <PlanProgress chatId={session?.id} where="alone"/>
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
           <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {

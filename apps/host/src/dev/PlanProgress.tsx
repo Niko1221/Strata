@@ -4,6 +4,7 @@
  * Outside Dev nothing is drawn and nothing is asked of the host.
  */
 import { useEffect, useState } from 'react';
+import { useGoal } from '../lib/goal';
 import { usePlan } from '../lib/plan';
 import { useDev } from './dev-state';
 import { elapsedOf, formatElapsed, planProgress, tickClock, type Clock } from './plan-progress';
@@ -38,10 +39,15 @@ function Bar({ chatId, onPlain }: { chatId: string; onPlain: 'nothing' | 'moving
     </div>;
 }
 
-/** Above the message box in the chat. */
-export function PlanProgress({ chatId }: { chatId: string | null | undefined }) {
+/**
+ * In the chat. With a goal (the plan runner) the progress is the second row of the goal bar, so there is one bar, not two:
+ * `inGoalBar` is the one GoalBar draws, `alone` the one above the message box, which steps aside while a goal bar is there.
+ */
+export function PlanProgress({ chatId, where }: { chatId: string | null | undefined; where: 'alone' | 'inGoalBar' }) {
     const dev = useDev();
-    return dev && chatId ? <Bar chatId={chatId} onPlain="nothing"/> : null;
+    const goal = useGoal(dev ? chatId : null);
+    if (!dev || !chatId || (where === 'alone' && goal)) return null;
+    return <Bar chatId={chatId} onPlain="nothing"/>;
 }
 
 /** On a running chat or loop card of the task board: the plan's bar, else the moving bar the card always had. */
