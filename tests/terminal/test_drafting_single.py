@@ -99,12 +99,18 @@ class EveryChoiceOnEveryBackend(Base):
                 self.assertEqual((d.drafter, loaded(args)), ("mtp", {"mtp"}), (backend, mode))
 
     def test_other_families_never_get_dflash2_whatever_is_saved(self):
-        for family in ("coder", "nvfp4", "swift"):
+        for family in ("coder", "nvfp4"):
             for mode in (None, "auto", "mtp", "dflash2"):
                 cfg = self.cfg(family, **({} if mode is None else {"drafting": mode}))
                 d, args = self.apply(cfg, family, "cuda", ("sm_120",))
                 self.assertNotIn("--draft", args, (family, mode))
                 self.assertEqual(loaded(args), {"mtp"}, (family, mode))
+
+    def test_swift_gets_dflash2_only_when_it_is_saved_by_name(self):
+        for mode in (None, "auto", "mtp", "dflash2"):
+            cfg = self.cfg("swift", **({} if mode is None else {"drafting": mode}))
+            d, args = self.apply(cfg, "swift", "cuda", ("sm_120",))
+            self.assertEqual(loaded(args), {"dflash2"} if mode == "dflash2" else {"mtp"}, mode)
 
     def test_several_requests_load_the_mtp_alone_for_auto_and_dflash2(self):
         for mode in ("auto", "dflash2"):
