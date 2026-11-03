@@ -17,6 +17,8 @@ export interface DevSummary {
   configFile: string;
   warnings: string[];
   verbose?: boolean;
+  /** dev.config.json "chatOverflowGuard" (src/lib/chat-overflow.ts). */
+  chatOverflow?: { enabled: boolean; maxTotalChars?: number };
   tokens?: Record<string, string>;
   ui?: { elements: Record<string, { hidden?: boolean; label?: string; order?: number; replace?: string }>; extensions: Record<string, { enabled: boolean }> };
   overrides?: { loop?: { enabled?: boolean; maxRuns?: number }; folder?: { enabled?: boolean; defaultPath?: string }; permissions?: { defaultMode?: 'manual' | 'plan' | 'bypass'; allowedModes?: ('manual' | 'plan' | 'bypass')[] } };

@@ -81,5 +81,8 @@
  "fx80": "Il faut environ {0} Go d’espace disque libre. Ce qui ne tient pas en mémoire est lu depuis votre SSD.",
  "fx81": "{0} de RAM + VRAM, plus environ {1} Go de disque",
  "fx82": "Réponses plus rapides sur les cartes NVIDIA de 12 Go",
- "fx83": "Privilégie les parties du modèle déjà présentes sur la carte graphique, ce qui accélère les réponses sur les cartes de 12 Go. Désactivé par défaut : dans de longues sessions d’agent, le modèle peut se répéter et donner de moins bons résultats. Activez-le si vous discutez surtout et voulez la vitesse."
+ "fx83": "Privilégie les parties du modèle déjà présentes sur la carte graphique, ce qui accélère les réponses sur les cartes de 12 Go. Désactivé par défaut : dans de longues sessions d’agent, le modèle peut se répéter et donner de moins bons résultats. Activez-le si vous discutez surtout et voulez la vitesse.",
+ "fx84": "{0} anciennes conversations ont été retirées de la liste et enregistrées en entier",
+ "fx85": "La liste des conversations a une taille limite. Elles sont enregistrées dans {0} et peuvent être récupérées à partir de là.",
+ "fx86": "Une conversation n’a pas pu être sauvegardée ; elle reste donc dans la liste"
 }

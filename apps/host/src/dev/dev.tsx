@@ -10,6 +10,7 @@ import { loadAppMode, type DevSummary } from '../lib/app-mode';
 import { api } from '../lib/client';
 import { Btn, Icon, IconBtn } from '../components/ui';
 import { pushToast } from '../lib/store';
+import { configureChatOverflow } from '../lib/chat-overflow';
 import './dev.css';
 import { markDevActive, setDevOverrides } from './overrides';
 import { arrange, resolveElement, type Arranged, type Builtin, type ElementOverride, type SlotName } from './registry';
@@ -41,6 +42,8 @@ function activate(dev: DevSummary) {
     applyTokens(dev.tokens ?? {});
     setDevOverrides(dev.overrides);
     markDevActive();
+    // dev.config.json "chatOverflowGuard" (on unless switched off): an old chat leaves the saved chat list only once it is backed up whole.
+    configureChatOverflow(dev.chatOverflow);
     // A folder mode switched off in dev.config.json also hides the folder chip (unless ui.elements says otherwise).
     registry.setConfig({ ...(dev.overrides?.folder?.enabled === false ? { 'chat.composer.folder': { hidden: true } } : {}), ...(dev.ui?.elements ?? {}) });
     window.addEventListener('error', e => reportDevError(e.error ?? e.message));

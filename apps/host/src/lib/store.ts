@@ -23,6 +23,7 @@ import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandov
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
 import { createSessionWriter } from './session-persist';
+import { chatOverflowGuard, setChatOverflowHandlers } from './chat-overflow';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
@@ -127,6 +128,8 @@ export interface AppState {
    *  A toast disappears after five seconds; a failure the reader has not dealt
    *  with should not. */
   actionError: { message: string; label: string; retry: () => void } | null;
+  /** Chats the chat-overflow guard (chat-overflow.ts) moved out of the saved list, and where they are saved; kept until dismissed. */
+  chatOverflowNotice: { count: number; dir: string } | null;
   busy: Record<string, boolean>;
 }
 
@@ -294,6 +297,7 @@ let state: AppState = {
     }
   })(),
   actionError: null,
+  chatOverflowNotice: null,
   busy: {},
 };
 
@@ -977,6 +981,10 @@ export function dismissActionError() {
   set({ actionError: null });
 }
 
+export function dismissChatOverflowNotice() {
+  set({ chatOverflowNotice: null });
+}
+
 export async function resetEngine() {
   set({ engine: await api.post<EngineConfig>('/api/engine/reset') });
   pushToast('info', 'Back to recommended', 'Every value returned to the safe default.');
@@ -1081,6 +1089,13 @@ const sessionWriter = createSessionWriter({
       /* quota — sessions are a cache, not the source of truth */
     }
   },
+  overflow: chatOverflowGuard,
+});
+
+setChatOverflowHandlers({
+  saved: (count, dir) => set((s) => ({ chatOverflowNotice: { count: (s.chatOverflowNotice?.count ?? 0) + count, dir } })),
+  failed: (message) => pushToast('warn', tr('A chat could not be backed up, so it stays in the chat list'), message),
+  rewrite: () => persistSessions(state.sessions),
 });
 
 /**

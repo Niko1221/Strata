@@ -57,6 +57,19 @@ export interface SessionWriterOptions {
   maxTotalChars?: number;
   /** Counts a serialisation of one chat; for tests. */
   onSerialize?: (session: Session) => void;
+  /** The chat-overflow guard (chat-overflow.ts), asked at every write. Null or absent: the writer works as it always did. */
+  overflow?: () => OverflowGuard | null;
+}
+
+/**
+ * Keeps a chat in the saved copy until it is backed up whole. A chat the cap would leave out and that is not backed up yet stays in
+ * (the saved copy may grow past the cap meanwhile) and is handed to `backUp`; once that is done the guard writes the list again.
+ */
+export interface OverflowGuard {
+  /** A smaller cap, only to try the guard (dev.config.json chatOverflowGuard.maxTotalChars). */
+  maxTotalChars?: number;
+  isBackedUp: (session: Session) => boolean;
+  backUp: (sessions: Session[]) => void;
 }
 
 export function createSessionWriter(options: SessionWriterOptions) {
@@ -83,19 +96,28 @@ export function createSessionWriter(options: SessionWriterOptions) {
     pending = null;
     if (!sessions) return;
     const parts = sessions.map(s => ({ s, text: textOf(s) }));
+    const guard = options.overflow?.() ?? null;
+    const limit = guard?.maxTotalChars ?? maxTotal;
     let total = parts.reduce((n, p) => n + p.text.length + 1, 2);
-    if (total > maxTotal) {
+    if (total > limit) {
       // Leave the oldest unpinned chats out of the saved copy until the rest fits. The newest chat is always kept.
       const order = parts
         .map((p, i) => ({ i, p }))
         .sort((a, b) => Number(!!a.p.s.pinned) - Number(!!b.p.s.pinned) || (a.p.s.updatedAt < b.p.s.updatedAt ? -1 : 1));
       const drop = new Set<number>();
+      const unsaved: Session[] = [];
+      // `fits` counts every chat that has to go, `total` only those that go now: with the guard, a chat leaves the saved copy only once
+      // it is backed up; until then it stays (the copy is over the cap meanwhile) and is sent for backup.
+      let fits = total;
       for (const { i, p } of order) {
-        if (total <= maxTotal || drop.size >= parts.length - 1) break;
+        if (fits <= limit || drop.size + unsaved.length >= parts.length - 1) break;
+        fits -= p.text.length + 1;
+        if (guard && !guard.isBackedUp(p.s)) { unsaved.push(p.s); continue; }
         drop.add(i);
         total -= p.text.length + 1;
       }
       options.write(`[${parts.filter((_, i) => !drop.has(i)).map(p => p.text).join(',')}]`);
+      if (unsaved.length) guard?.backUp(unsaved);
       return;
     }
     options.write(`[${parts.map(p => p.text).join(',')}]`);

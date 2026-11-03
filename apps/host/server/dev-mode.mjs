@@ -70,7 +70,7 @@ export function loadDevConfig({ file = devConfigFile(), read = readFileSync } = 
 /** What the page learns about Dev (GET /api/app/mode carries it as `dev` in Dev only). */
 export function devSummary(loaded) {
   const settings = devSettings(loaded.config);
-  return { label: loaded.config.badge.label, configFile: loaded.file, warnings: loaded.warnings, verbose: settings.verbose, tokens: settings.tokens, ui: settings.ui, overrides: { loop: settings.overrides.loop, folder: settings.overrides.folder, permissions: settings.overrides.permissions } };
+  return { label: loaded.config.badge.label, configFile: loaded.file, warnings: loaded.warnings, verbose: settings.verbose, chatOverflow: settings.chatOverflow, tokens: settings.tokens, ui: settings.ui, overrides: { loop: settings.overrides.loop, folder: settings.overrides.folder, permissions: settings.overrides.permissions } };
 }
 
 /* ---------------------------------------------------------------- Phase 2: what dev.config.json may set --- */
@@ -117,6 +117,7 @@ export function devSettings(config = {}) {
   const allowedModes = Array.isArray(permissions.allowedModes) ? MODES.filter(m => permissions.allowedModes.includes(m)) : null;
   return {
     verbose: logging.verbose === true,
+    chatOverflow: chatOverflowSettings(config.chatOverflowGuard),
     tokens,
     ui: { elements, extensions },
     hooks: {
@@ -144,6 +145,16 @@ export function devSettings(config = {}) {
       },
     },
   };
+}
+
+/**
+ * "chatOverflowGuard" (server/chat-overflow.mjs): true/false, or { enabled, maxTotalChars }. On unless switched off. maxTotalChars
+ * (10,000 to 3,500,000) makes the saved chat list smaller, only to try the guard with a few chats.
+ */
+function chatOverflowSettings(raw) {
+  const entry = isObject(raw) ? raw : { enabled: raw };
+  const max = entry.maxTotalChars;
+  return { enabled: entry.enabled !== false, ...(Number.isInteger(max) && max >= 10_000 && max <= 3_500_000 ? { maxTotalChars: max } : {}) };
 }
 
 /** The Dev settings the host runs with now, or null outside Dev. index.mjs sets it at start and on Reload; the agent profile reads it. */

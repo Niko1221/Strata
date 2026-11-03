@@ -182,6 +182,7 @@ sein Schalter im Dev-Panel schaltet ihn wieder ein. Eine synchrone Endlosschleif
 ```
 
 - `logging.verbose`: "ausführliches Logging", jede Host-Anfrage mit Status und Dauer im Log.
+- `chatOverflowGuard`: Chat-Schutz für die volle Chatliste, Standard an (siehe "Chat-Liste: nichts mehr still verlieren").
 - `tokens`: überschreibt Design-Tokens aus `apps/host/src/styles/kit/tokens.css` (nur `--name` mit einfachem Wert), in beiden Themes.
 - `ui.elements`: vorhandene Elemente ausblenden, umbenennen, umsortieren oder durch eine Extension-Komponente ersetzen (`"replace": "<id>"`).
   `dev.config.json` gewinnt gegen eine Extension.
@@ -378,6 +379,47 @@ Ohne `-Yes` zeigt jedes Kommando nur, was es täte. Was schon auf GitHub ist, ni
 mkdir .claude\commands
 copy dev\claude-commands\*.md .claude\commands\
 ```
+
+## Chat-Liste: nichts mehr still verlieren (Phase 5)
+
+Die App speichert die Chatliste im localStorage des Fensters (`strata.sessions.v1`) und begrenzt sie auf 3,5 Mio. Zeichen
+(`MAX_TOTAL_CHARS` in `apps/host/src/lib/session-persist.ts`). Wird sie größer, lässt sie beim Speichern die ältesten, nicht
+angehefteten Chats weg. In Live passiert das still. In Strata Dev passt der **Chat-Schutz** auf:
+
+1. Bevor ein Chat aus der gespeicherten Liste fällt, schickt das Fenster ihn **vollständig** an den Host. Der schreibt ihn nach
+   `<STRATA_HOME>\chat-overflow\overflow-<letzte Änderung>-<Chat-ID>.json` (in Dev `%LOCALAPPDATA%\StrataDev\home\chat-overflow`;
+   kein Titel im Dateinamen, der steht nur in der Datei; erst eine Temp-Datei, dann umbenannt; dieselbe Chat-Version nur einmal).
+2. Erst wenn die Datei geschrieben ist, darf der Chat aus der gespeicherten Liste. Bis dahin bleibt er drin; die Liste ist dann kurz
+   größer als die Grenze.
+3. Schlägt die Sicherung fehl, bleibt der Chat in der Liste und eine Warnung erscheint. Neuer Versuch frühestens nach 5 Minuten.
+4. Ein Hinweis bleibt stehen, bis du ihn schließt: "3 ältere Chats wurden aus der Chatliste ausgelagert und vollständig gesichert",
+   mit dem Ordner.
+5. Zurückholen: Dev-Panel → **Rescue**. Die `overflow-*.json` stehen dort neben den geretteten Chats; "Laden" holt einen Chat als
+   neuesten zurück. Dafür wird bei voller Liste der dann älteste ausgelagert, wieder mit Sicherung.
+
+Solange die Liste unter der Grenze bleibt, ändert sich am Speichern nichts. Ohne Dev-Schalter gibt es den Schutz nicht (Route und
+Wächter sind aus), Live verhält sich wie bisher.
+
+Einstellung in `dev.config.json` (Standard: an):
+
+```json
+{ "chatOverflowGuard": { "enabled": true, "maxTotalChars": 200000 } }
+```
+
+- `enabled: false` (oder `"chatOverflowGuard": false`) schaltet den Schutz aus; dann verhält sich Dev wie Live.
+- `maxTotalChars` (10.000 bis 3.500.000) setzt die Grenze nur zum Ausprobieren herunter. Ohne den Wert gilt die normale Grenze.
+- Wirkt nach "Reload" im Dev-Panel **und** neu geladener Seite (Strg+R) bzw. Neustart der Dev-App.
+
+**Gefahrlos ausprobieren** (nur Strata Dev, Live bleibt zu oder unberührt):
+
+1. Einmal `.\dev-build.bat -Install` (die installierte Dev-App bekommt den Schutz erst mit einem neuen Build). In `dev.config.json`
+   `"chatOverflowGuard": { "enabled": true, "maxTotalChars": 30000 }` setzen, Dev-App neu starten.
+2. In Strata Dev drei, vier Test-Chats anlegen und jeweils eine große Textdatei anhängen oder einen langen Text einfügen
+   (zusammen deutlich mehr als 30.000 Zeichen).
+3. Nach der nächsten Antwort erscheint der Hinweis. Die Dateien liegen in `%LOCALAPPDATA%\StrataDev\home\chat-overflow`.
+   Die ausgelagerten Chats fehlen nach Strg+R in der Seitenleiste.
+4. Dev-Panel → Rescue → bei einer `overflow-*.json` auf "Laden" klicken: Der Chat ist wieder da.
+5. Danach `maxTotalChars` wieder entfernen.
 
 ## Zurücksetzen
 

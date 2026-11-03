@@ -31,7 +31,7 @@ const loaded = loadDevConfig({ file: env.STRATA_DEV_CONFIG });
 if (!existsSync(env.STRATA_DEV_CONFIG)) add('config', 'dev.config.json', 'warn', `not found at ${env.STRATA_DEV_CONFIG}; Dev starts with the empty config`);
 for (const w of loaded.warnings) add('config', 'dev.config.json', 'error', w);
 const settings = devSettings(loaded.config);
-const KNOWN = new Set(['$comment', 'version', 'badge', 'logging', 'features', 'overrides', 'tokens', 'ui', 'hooks', 'llamacpp']);
+const KNOWN = new Set(['$comment', 'version', 'badge', 'logging', 'features', 'overrides', 'tokens', 'ui', 'hooks', 'llamacpp', 'chatOverflowGuard']);
 for (const key of Object.keys(loaded.config)) if (!KNOWN.has(key)) add('config', 'dev.config.json', 'warn', `"${key}" is not a key Strata Dev reads`);
 if (loaded.config.llamacpp) {
   const problem = settingsProblem(llamaSettings(loaded.config.llamacpp));

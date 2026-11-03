@@ -7,6 +7,9 @@
   "logging": {
     "verbose": false
   },
+  "chatOverflowGuard": {
+    "enabled": true
+  },
   "features": {},
   "overrides": {}
 }

@@ -186,7 +186,9 @@ function Rescue() {
             let current: { id: string }[] = [];
             try { current = JSON.parse(localStorage.getItem(SESSION_KEY) ?? '[]'); } catch { current = []; }
             const have = new Set(current.map(s => s.id));
-            const added = chats.filter(c => !have.has(c.id));
+            // A chat the chat-overflow guard moved out comes back as the newest one; as the oldest it would leave the full list again at once.
+            const back = file.name.startsWith('overflow-') ? new Date().toISOString() : null;
+            const added = chats.filter(c => !have.has(c.id)).map(c => (back ? { ...c, updatedAt: back } : c));
             // The workspaces, so the sidebar shows each chat under its folder (only folders that exist; Strata Dev's own list).
             const known = new Set((await api.get<{ workspaces: { path: string }[] }>('/api/workspaces')).workspaces.map(w => w.path.toLowerCase()));
             let wsAdded = 0, wsMissing = 0;
@@ -200,13 +202,13 @@ function Rescue() {
         } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
     }
     return <div className="devpanel__stack">
-        <p className="devpanel__muted">Chats, die <code>dev/tools/rescue-chats.mjs</code> aus den Agent-Verläufen rekonstruiert hat. "Laden" fügt sie nur dieser Strata-Dev-App hinzu (ihr eigener Speicher); Live bleibt unberührt.</p>
+        <p className="devpanel__muted">Chats, die <code>dev/tools/rescue-chats.mjs</code> aus den Agent-Verläufen rekonstruiert hat, und Chats, die der Chat-Schutz aus der vollen Chatliste ausgelagert hat (<code>overflow-*.json</code>; sie kommen als neuester Chat zurück, dafür wird der dann älteste ausgelagert). "Laden" fügt sie nur dieser Strata-Dev-App hinzu (ihr eigener Speicher); Live bleibt unberührt.</p>
         <p className="devpanel__muted">Ordner: {dir}</p>
         {error ? <p className="devpanel__err">{error}</p> : null}
         {note ? <p>{note}</p> : null}
         {files.length ? <ul className="devpanel__list">{files.map(f => <li key={f.name}>
             <div className="devpanel__row"><strong>{f.name}</strong><span className="devpanel__muted">{f.chats ?? '?'} Chats · {(f.bytes / 1e6).toFixed(1)} MB</span><span className="devpanel__spacer" /><button className="devpanel__btn" disabled={busy || !f.chats} onClick={() => void load(f)}>Laden</button></div>
             <div className="devpanel__muted">{Object.entries(f.workspaces).map(([w, n]) => `${w}: ${n}`).join(' · ')}</div>
-        </li>)}</ul> : <p className="devpanel__muted">Keine Datei rescued-chats-import-*.json im Ordner.</p>}
+        </li>)}</ul> : <p className="devpanel__muted">Keine Datei rescued-chats-import-*.json oder overflow-*.json in den Ordnern.</p>}
     </div>;
 }

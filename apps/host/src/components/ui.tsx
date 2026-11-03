@@ -11,7 +11,7 @@ import { createContext, useContext, useCallback, useEffect, useId, useRef, useSt
 import { createPortal } from 'react-dom';
 import { cx, userError } from '../lib/format';
 import { plainFailure } from '../lib/plain-errors';
-import { dismissActionError, dismissToast, holdToast, releaseToast, useStore } from '../lib/store';
+import { dismissActionError, dismissChatOverflowNotice, dismissToast, holdToast, releaseToast, useStore } from '../lib/store';
 import { isTopSurface, useSurfaceFocus } from '../lib/focus';
 /* -------------------------------------------------------------------- icon */
 export type IconName = 'pause' | 'play' | 'activity' | 'plus' | 'shield' | 'computer'
@@ -458,10 +458,24 @@ export function ActionError() {
 /* ------------------------------------------------------------------ toasts */
 export function Toasts() {
     const toasts = useStore((s) => s.toasts);
-    if (!toasts.length)
+    // The chat-overflow notice (chat-overflow.ts) stays until it is dismissed: a toast that left after five seconds could be missed.
+    const overflow = useStore((s) => s.chatOverflowNotice);
+    if (!toasts.length && !overflow)
         return null;
     const iconFor = { success: 'check', info: 'info', warn: 'warning', error: 'error' } as const;
     return (<div className="st-toasts" aria-live="polite">
+      {overflow ? <div className="st-toast st-toast--toned" data-tone="info">
+          <span className="st-toast__icon">
+            <Icon name="info" size={20}/>
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="st-toast__title">{tr('{0} older chats were moved out of the chat list and saved in full', [overflow.count])}</div>
+            <div className="st-toast__body">{tr('The chat list has a size limit. They are saved under {0} and can be brought back from there.', [overflow.dir])}</div>
+          </div>
+          <button type="button" className="st-btn st-btn--icon st-btn--sm" onClick={() => dismissChatOverflowNotice()} aria-label={tr("Dismiss")}>
+            <Icon name="chevron" size={15} style={{ transform: 'rotate(90deg)' }}/>
+          </button>
+        </div> : null}
       {tr(toasts.map((t) => (<div key={t.id} className="st-toast st-toast--toned" data-tone={t.tone} data-leaving={t.leaving || undefined} onMouseEnter={() => holdToast(t.id)} onMouseLeave={() => releaseToast(t.id)} onFocusCapture={() => holdToast(t.id)} onBlurCapture={() => releaseToast(t.id)}>
           <span className="st-toast__icon">
             <Icon name={iconFor[t.tone]} size={20}/>
