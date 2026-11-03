@@ -1404,6 +1404,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(gemm_dequant_side_parity PRIVATE strata_prefill )
     add_test(NAME gemm_dequant_side_parity COMMAND gemm_dequant_side_parity)
     set_tests_properties(gemm_dequant_side_parity PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(gemm_w16_parity src/prefill/gemm_w16_parity.cu)
+    target_link_libraries(gemm_w16_parity PRIVATE strata_prefill )
+    add_test(NAME gemm_w16_parity COMMAND gemm_w16_parity)
+    set_tests_properties(gemm_w16_parity PROPERTIES SKIP_RETURN_CODE 77)
     # Pascal, opt-in STRATA_DENSE_F32=1: the dense projections' FP16 GEMMs as cublasSgemm on FP32 copies, bitwise vs
     # the cuBLAS FP16 call over a sweep of chunk sizes (GPU, synthetic, no model; --full sweeps every size, --bench
     # adds timings).  Not a ctest: whether the two agree is a property of the cuBLAS build, which this checks.
