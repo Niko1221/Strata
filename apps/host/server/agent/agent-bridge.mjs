@@ -1029,6 +1029,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     }
     // Strata Dev planGuidance (null outside Dev or when off: the plan turn is exactly as before).
     const guide = activeDevSettings()?.planGuidance ?? null;
+    // Strata Dev: what this plan turn uses, in the host log (Dev panel, Logs), so a plan that is too long can be traced to a setting.
+    if (guide) console.log(`[strata] plan turn: at most ${guide.maxSteps} steps, thinking ${guide.thinking ?? 'as the chat'}, ${guide.rules ? guide.rules.length + ' own rules' : 'built-in rules'}`);
     return runTurn({ ...options, message: planPrompt(task, guide ? (guide.rules ?? DEFAULT_PLAN_RULES) : null, guide ? guide.maxSteps : null), planTask: task, mode: 'plan', ...(guide?.thinking ? { thinking: guide.thinking } : {}) });
   }
 

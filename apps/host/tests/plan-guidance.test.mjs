@@ -101,3 +101,10 @@ test('a plan step asks for a short closing report in Dev, and nothing more than 
     assert.equal(stepObjective(plan, 0), live);
   } finally { setActiveDevSettings(null); }
 });
+
+test('the built-in plan rules fit what the settings page accepts: at most 12, each at most 300 characters', () => {
+  assert.ok(DEFAULT_PLAN_RULES.length <= 12);
+  for (const rule of DEFAULT_PLAN_RULES) assert.ok(rule.length <= 300 && rule.trim() === rule, rule.slice(0, 40));
+  const own = devSettings({ planGuidance: { enabled: true, rules: [...DEFAULT_PLAN_RULES] } }).planGuidance.rules;
+  assert.deepEqual(own, [...DEFAULT_PLAN_RULES], 'saved as own rules, nothing is cut');
+});
