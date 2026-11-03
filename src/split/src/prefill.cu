@@ -1014,7 +1014,12 @@ void Engine::prefill_alloc() {
         p->Rk[0] = p->R, p->bofk[0] = p->bo_f, p->injfk[0] = p->inj_f, p->ctlk[0] = p->ctl, p->boak[0] = p->bo_a,
         p->injak[0] = p->inj_a;
         {
-            const long long pass = env_int("FNX_PF_PASS", w.ec.n_slots ? 4 : 2);   // with an ExpertCache, staging amortizes over more
+            // the hyper-connection split (below) wants 4 chunks to a pass: a chunk's swap and sum then hide behind the other chunks' work (2: no gain)
+            bool hcs_wanted = false;
+#if !FNX_HIP
+            hcs_wanted = NCARD == 2 && !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0 && env_int("FNX_PF_HCSPLIT", 1) != 0;
+#endif
+            const long long pass = env_int("FNX_PF_PASS", w.ec.n_slots || hcs_wanted ? 4 : 2);   // with an ExpertCache, staging amortizes over more
             if (pass < 1 || pass > PF_PASS) throw std::runtime_error("FNX_PF_PASS: 1 to " + std::to_string(PF_PASS) + ", got " + std::to_string(pass));
             p->pass = (int) pass;
             for (int k = 1; k < p->pass; ++k) {
@@ -1037,7 +1042,7 @@ void Engine::prefill_alloc() {
             }
             // FNX_PF_HCSPLIT (NVIDIA, two cards, the copy-engine ring): see Pf
 #if !FNX_HIP
-            p->hcs_mode = (int) env_int("FNX_PF_HCSPLIT", 0);
+            p->hcs_mode = (int) env_int("FNX_PF_HCSPLIT", 1);   // on by default: mode 1 is bit-identical to the unsplit path, and is used only if the calibration finds the algorithm
             p->hcs = NCARD == 2 && p->overlap && !p->ring_sm && p->hcs_mode != 0;
 #endif
             if (p->hcs) {
@@ -1093,6 +1098,20 @@ void Engine::prefill_alloc() {
         pf_[c] = p;
         if (env_flag("FNX_PF_TIMING"))
             std::fprintf(stderr, "prefill buffers on card %d: %zu MiB (%zu MiB free before)\n", c, pf_card_bytes >> 20, free0 >> 20);
+    }
+    {   // the hyper-connection split runs on every card or on none; mode 1 needs the calibrated algorithm on every card
+        bool all = true, asked = false;
+        for (int c = 0; c < NCARD; ++c) {
+            asked = asked || pf_[c]->hcs;
+            all = all && pf_[c]->hcs && (pf_[c]->hcs_mode != 1 || pf_[c]->down_lt);
+        }
+        for (int c = 0; c < NCARD; ++c) pf_[c]->hcs = all;
+        if (asked && !all)
+            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read stays on both cards (no cublasLt algorithm that gives the same rows at 2048 and 4096 rows on this card)
+");
+        else if (all)
+            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read is split between the cards (%s)
+", pf_[0]->hcs_mode == 1 ? "same results as the unsplit read" : "results differ in the last bits");
     }
     for (int c = 0; c < NCARD; ++c)
         for (int k = 0; k < NCARD; ++k) {
@@ -1234,6 +1253,7 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     const bool staging = pf_[0]->stage[0] && (int) tokens.size() >= pf_[0]->stage_rows;
     int K = PF_PASS;
     for (const Pf* p : pf_) K = std::min(K, p->pass);
+    if (pass_cap_ > 0) K = std::min(K, pass_cap_);
     for (int k = 0; k < 2 * K; ++k)
         if (!pf_emb_[k]) {
             ckc(cudaMallocHost(&pf_emb_[k], (size_t) pf_c_ * N * sizeof(float)), "pinned emb");
