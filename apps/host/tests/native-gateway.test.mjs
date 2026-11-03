@@ -46,3 +46,19 @@ test('a client that hangs up right after data: [DONE] has its answer: the reques
    const last=records[before];assert.equal(last.state,'done',`delay ${delay} ms: ${last.error}`);assert.equal(last.tokensIn,12);assert.equal(last.tokensOut,3);}
  }finally{await close(gateway);await close(engine);}
 });
+
+test('an Anthropic stream: the prompt count (message_start) and the output count (message_delta) both reach the request log (#4678)',{timeout:10000},async()=>{
+ const records=[];
+ const engine=http.createServer(async(req,res)=>{for await(const _ of req);res.writeHead(200,{'content-type':'text/event-stream'});
+  res.write('event: message_start\ndata: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":29757,"output_tokens":0}}}\n\n');
+  res.write('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":561}}\n\n');res.end();});
+ const enginePort=await listen(engine);
+ const serving={open:value=>{const record={id:records.length,state:'queued',tokensIn:null,tokensOut:null,...value};records.push(record);return record;},mark:(id,value)=>Object.assign(records[id],value),finish:(id,{tokensOut})=>Object.assign(records[id],{state:'done',tokensOut:tokensOut??records[id].tokensOut})};
+ const control={resolveInstance:()=>({id:'x',apiModelId:'x',port:enginePort,key:'k',gpus:[0]})};
+ const gateway=http.createServer(async(req,res)=>{let text='';for await(const chunk of req)text+=chunk;await nativeGateway({req,res,path:req.url,body:JSON.parse(text),control,serving});});
+ const gatewayPort=await listen(gateway);
+ try{
+  const r=await fetch(`http://127.0.0.1:${gatewayPort}/v1/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'x',stream:true,max_tokens:50,messages:[]})});await r.text();
+  assert.equal(records[0].tokensIn,29757);assert.equal(records[0].tokensOut,561);assert.equal(records[0].usageSource,'reported');
+ }finally{await close(gateway);await close(engine);}
+});

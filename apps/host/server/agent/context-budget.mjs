@@ -160,3 +160,15 @@ export function isContextOverflow(error) {
   const text = [error.message, error.cause?.message, error.failure?.message, error.failure?.code].filter(Boolean).join(' ');
   return /request exceeds the context window|leaves no room to answer|context[_ ]length|context window|too many tokens|maximum context/i.test(text);
 }
+
+/** The Harness asks for "concise English engineering prose", so a Chinese or Russian chat came back summarised in English (#4750). One sentence is added to the
+ *  summary request's last message: write it in the language the person used. Paths, commands and identifiers stay exact. Messages are not changed in place. */
+export const SUMMARY_LANGUAGE_RULE = 'Write the summary in the language the person used in this conversation (English only when they wrote English). The instruction above is in English; that does not change the language of the summary. Keep file paths, commands, error strings, identifiers and numbers exactly as they appear.';
+export function withSummaryLanguage(messages) {
+  if (!Array.isArray(messages) || !messages.length) return messages;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'user') return messages;
+  const content = typeof last.content === 'string' ? last.content + ' ' + SUMMARY_LANGUAGE_RULE
+    : Array.isArray(last.content) ? [...last.content, { type: 'text', text: SUMMARY_LANGUAGE_RULE }] : null;
+  return content === null ? messages : [...messages.slice(0, -1), { ...last, content }];
+}

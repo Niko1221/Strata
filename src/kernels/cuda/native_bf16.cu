@@ -1,3 +1,4 @@
+#include "strata/core/bw_dense_defaults.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/window_limits.hpp"
 #include "s26_tsum.cuh"
@@ -5,6 +6,7 @@
 #include "strata/kernels/pdl.hpp"
 
 #include <cuda_runtime.h>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
@@ -44,9 +46,21 @@ __device__ __forceinline__ float mmvf_warp_sum(float value) {
     return value;
 }
 
+// STRATA_MMVF_CHECK=1 (diagnostic): the constant-trip fast path also runs the plain loop with volatile loads (so the loads happen again, later) and
+// compares each thread's accumulator bit for bit: g_mmvf_chk[0] checks, [1] differing accumulators, [2..4] block / thread / n_in of the first one.
+// A difference means the activations or weights changed between the early and the late loads (no arithmetic differs between the two loops).
+__device__ unsigned long long g_mmvf_chk[8];
+__device__ __forceinline__ void mmvf_chk_note(float a, float b, int blk, int t, int n_in) {
+    atomicAdd(&g_mmvf_chk[0], 1ull);
+    if (__float_as_uint(a) != __float_as_uint(b)) {
+        if (atomicAdd(&g_mmvf_chk[1], 1ull) == 0ull) { g_mmvf_chk[2] = (unsigned long long) blk; g_mmvf_chk[3] = (unsigned long long) t; g_mmvf_chk[4] = (unsigned long long) n_in;
+                                                       g_mmvf_chk[5] = __float_as_uint(a); g_mmvf_chk[6] = __float_as_uint(b); }
+    }
+}
+
 template <int BLOCK_SIZE>
 __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t* __restrict__ w,
-                                    float* __restrict__ y, int n_in) {
+                                    float* __restrict__ y, int n_in, int fast) {
     const int t = threadIdx.x;
     const uint16_t* row = w + (size_t) blockIdx.x * n_in;
     const uint32_t* weights2 = reinterpret_cast<const uint32_t*>(row);
@@ -55,6 +69,30 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
     if (t < 32) partials[t] = 0.0f;
     __syncthreads();
     float acc = 0.0f;
+    if (BLOCK_SIZE == 256 && fast != 0 && n_in == 2560) {
+        // STRATA_SMALL_UNR bit 0: the router-shaped single-column read, five passes of one weight pair each (all in range), constant
+        // trip count so the weight and activation loads of the five passes are in flight together.  The same FMAs in the same order.
+        uint32_t wv[5];
+        float2 xv[5];
+#pragma unroll
+        for (int qq = 0; qq < 5; ++qq) { wv[qq] = weights2[t + qq * BLOCK_SIZE]; xv[qq] = inputs2[t + qq * BLOCK_SIZE]; }
+#pragma unroll
+        for (int qq = 0; qq < 5; ++qq) {
+            acc = __fmaf_rn(f32_from_bf16((uint16_t) wv[qq]), xv[qq].x, acc);
+            acc = __fmaf_rn(f32_from_bf16((uint16_t) (wv[qq] >> 16)), xv[qq].y, acc);
+        }
+        if (fast == 2) {
+            float acc2 = 0.0f;
+            for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
+                const uint32_t weight = *(const volatile uint32_t*) (weights2 + pair);
+                const volatile float* ip = reinterpret_cast<const volatile float*>(inputs2 + pair);
+                const float2 input = make_float2(ip[0], ip[1]);
+                acc2 = __fmaf_rn(f32_from_bf16((uint16_t) weight), input.x, acc2);
+                acc2 = __fmaf_rn(f32_from_bf16((uint16_t) (weight >> 16)), input.y, acc2);
+            }
+            mmvf_chk_note(acc, acc2, (int) blockIdx.x, t, n_in);
+        }
+    } else
     for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
         const uint32_t weight = weights2[pair];
         const float2 input = inputs2[pair];
@@ -77,7 +115,7 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
 // and block reductions), so each output is bit-identical to a bf16_f32_mmvf_kernel launch of its own.
 template <int BLOCK_SIZE, int NT, bool EXACT_T = true>
 __global__ void bf16_f32_mmvf_multi_kernel(const float* x_, int64_t ldx, const uint16_t* __restrict__ w,
-                                          float* y_, int64_t ldy, int n_in, int n_tok) {
+                                          float* y_, int64_t ldy, int n_in, int n_tok, int fast) {
     const float* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
     float* STRATA_PDL_RESTRICT y = y_;
     const int t = threadIdx.x;
@@ -101,6 +139,47 @@ __global__ void bf16_f32_mmvf_multi_kernel(const float* x_, int64_t ldx, const u
         wpre[q] = pair < n_in / 2 ? __ldg(weights2 + pair) : 0u;
     }
     pdl_wait();
+    if (BLOCK_SIZE == 256 && fast != 0 && n_in == 2560) {
+        // BW-DENSE (STRATA_SMALL_UNR bit 0): the router-shaped read (2560 inputs, 256 threads: five passes of one weight pair each, all
+        // in range) with constant trip counts, so the activation loads of every pass are in flight together instead of one memory
+        // latency a pass.  The same FMAs in the same order (pass ascending, w0 then w1): bitwise the loop below.
+        float2 xin[NT][5];
+#pragma unroll
+        for (int qq = 0; qq < 5; ++qq)
+#pragma unroll
+            for (int k = 0; k < NT; ++k)
+                if (EXACT_T || k < n_tok) xin[k][qq] = __ldg(reinterpret_cast<const float2*>(x + (size_t) k * ldx) + (t + qq * BLOCK_SIZE));
+#pragma unroll
+        for (int qq = 0; qq < 5; ++qq) {
+            uint32_t weight;
+            if constexpr (PRE >= 5) weight = wpre[qq];
+            else weight = __ldg(weights2 + t + qq * BLOCK_SIZE);
+            const float w0 = f32_from_bf16((uint16_t) weight), w1 = f32_from_bf16((uint16_t) (weight >> 16));
+#pragma unroll
+            for (int k = 0; k < NT; ++k) {
+                if (EXACT_T || k < n_tok) {
+                    acc[k] = __fmaf_rn(w0, xin[k][qq].x, acc[k]);
+                    acc[k] = __fmaf_rn(w1, xin[k][qq].y, acc[k]);
+                }
+            }
+        }
+        if (fast == 2) {
+#pragma unroll
+            for (int k = 0; k < NT; ++k) {
+                if (EXACT_T || k < n_tok) {
+                    float acc2 = 0.0f;
+                    for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE) {
+                        const uint32_t weight = *(const volatile uint32_t*) (weights2 + pair);
+                        const volatile float* ip = reinterpret_cast<const volatile float*>(reinterpret_cast<const float2*>(x + (size_t) k * ldx) + pair);
+                        const float2 input = make_float2(ip[0], ip[1]);
+                        acc2 = __fmaf_rn(f32_from_bf16((uint16_t) weight), input.x, acc2);
+                        acc2 = __fmaf_rn(f32_from_bf16((uint16_t) (weight >> 16)), input.y, acc2);
+                    }
+                    mmvf_chk_note(acc[k], acc2, (int) blockIdx.x, t, n_in);
+                }
+            }
+        }
+    } else {
     int q = 0;
     for (int pair = t; pair < n_in / 2; pair += BLOCK_SIZE, ++q) {
         const uint32_t weight = q < PRE ? wpre[q] : __ldg(weights2 + pair);
@@ -113,6 +192,7 @@ __global__ void bf16_f32_mmvf_multi_kernel(const float* x_, int64_t ldx, const u
                 acc[k] = __fmaf_rn(w1, input.y, acc[k]);
             }
         }
+    }
     }
 #pragma unroll
     for (int k = 0; k < NT; ++k)
@@ -252,6 +332,43 @@ void launch_rows(const float* x, int64_t ldx, const uint16_t* w, float* y, int64
     else bf16_f32_mmvf_rows_kernel<B, 8, RPB><<<nb, B, 0, st>>>(x, ldx, w, y, ldy, n_in, n_out, n_tok);
 }
 
+void mmvf_chk_report() {
+    unsigned long long h[8] = {};
+    if (cudaMemcpyFromSymbol(h, g_mmvf_chk, sizeof(h)) != cudaSuccess) return;
+    std::fprintf(stderr, "strata mmvf check: %llu accumulators compared, %llu differ; first: block %llu thread %llu n_in %llu fast %08llx plain %08llx\n", h[0], h[1], h[2], h[3], h[4], h[5], h[6]);
+}
+// BW-DENSE STRATA_SMALL_UNR bit 0: see bf16_f32_mmvf_multi_kernel (bw_dense_defaults.hpp: on for a 12.0 card, else off; the variable wins)
+int mmvf_fast_bit() {
+    static int per_dev[64];   // 0 unknown, else bit + 1
+    const char* e = std::getenv("STRATA_SMALL_UNR");
+    if (e != nullptr) return std::atoi(e) & 1;
+#if defined(__HIPCC__)
+    return 0;
+#else
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    if (!per_dev[dev]) {
+        int ma = 0, mi = 0;
+        const bool ok = cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = 1 + (ok ? (strata::small_unr_default(ma, mi) & 1) : 0);
+    }
+    return per_dev[dev] - 1;
+#endif
+}
+// AMD-Q STRATA_MMVF_CHECK=1 (with the switch on): the kernel also computes the plain read and counts the accumulators that differ (2 = check mode)
+int mmvf_fast() {
+    const int b = mmvf_fast_bit();
+    if (b == 0) return 0;
+    static const bool chk = [] {
+        const char* c = std::getenv("STRATA_MMVF_CHECK");
+        const bool on = c != nullptr && c[0] == '1';
+        if (on) std::atexit(mmvf_chk_report);
+        return on;
+    }();
+    return chk ? 2 : b;
+}
 int mmvf_block_size(int64_t n_in) {
     int best = 32;
     int64_t best_iterations = (n_in + 63) / 64;
@@ -321,23 +438,28 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
     // 9..16 rows (wide builds only): one exact instantiation per row count, each row's dot independent of the others.  7 and 8
     // rows stay with the default case below, the instantiation they always had.
 #if STRATA_VERIFY_MAX_T > 8
-#define STRATA_MMVF_W(N, T) case T: launch_pdl(bf16_f32_mmvf_multi_kernel<N, T, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break;
+#define STRATA_MMVF_W(N, T) case T: launch_pdl(bf16_f32_mmvf_multi_kernel<N, T, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break;
+#if STRATA_VERIFY_MAX_T > 12
+#define STRATA_MMVF_W13(N) STRATA_MMVF_W(N, 13) STRATA_MMVF_W(N, 14) STRATA_MMVF_W(N, 15) STRATA_MMVF_W(N, 16)
+#else
+#define STRATA_MMVF_W13(N)
+#endif
 #define STRATA_MMVF_WIDE(N) \
         STRATA_MMVF_W(N, 9) STRATA_MMVF_W(N, 10) STRATA_MMVF_W(N, 11) STRATA_MMVF_W(N, 12) \
-        STRATA_MMVF_W(N, 13) STRATA_MMVF_W(N, 14) STRATA_MMVF_W(N, 15) STRATA_MMVF_W(N, 16)
+        STRATA_MMVF_W13(N)
 #else
 #define STRATA_MMVF_WIDE(N)
 #endif
 #define STRATA_MMVF_M(N) case N: \
     switch (n_tok) { \
         STRATA_MMVF_WIDE(N) \
-        case 1: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 1, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break; \
-        case 2: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 2, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break; \
-        case 3: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 3, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break; \
-        case 4: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 4, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break; \
-        case 5: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 5, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break; \
-        case 6: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 6, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break; \
-        default: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 8, false>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok); break; \
+        case 1: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 1, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break; \
+        case 2: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 2, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break; \
+        case 3: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 3, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break; \
+        case 4: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 4, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break; \
+        case 5: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 5, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break; \
+        case 6: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 6, true>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break; \
+        default: launch_pdl(bf16_f32_mmvf_multi_kernel<N, 8, false>, dim3((unsigned) n_out), dim3(N), 0, st, x, ldx, w, y, ldy, (int) n_in, n_tok, mmvf_fast()); break; \
     } break
     switch (mmvf_block_size(n_in)) {
         STRATA_MMVF_M(32); STRATA_MMVF_M(64); STRATA_MMVF_M(96); STRATA_MMVF_M(128);
@@ -365,7 +487,7 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         throw std::invalid_argument("bf16_gemv_fp32_mmvf: null or misaligned pointer");
     const cudaStream_t st = (cudaStream_t) stream;
 #define STRATA_MMVF_CASE(N) case N: \
-    bf16_f32_mmvf_kernel<N><<<(unsigned) n_out, N, 0, st>>>(x, w, y, (int) n_in); break
+    bf16_f32_mmvf_kernel<N><<<(unsigned) n_out, N, 0, st>>>(x, w, y, (int) n_in, mmvf_fast()); break
     switch (mmvf_block_size(n_in)) {
         STRATA_MMVF_CASE(32);
         STRATA_MMVF_CASE(64);
