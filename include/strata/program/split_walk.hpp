@@ -24,7 +24,7 @@ namespace strata::program::split_walk {
 constexpr int64_t kContextMib = 1550;          ///< CUDA context, streams, scratch and tables of a card that holds the whole dense set (8 GB hog, IQ3_S: 1559 MiB measured)
 constexpr int64_t kWorkingCacheSlots = 263;    ///< a cache the engine calls working (generate.cpp #496)
 constexpr int64_t kPromptHeadroomMib = 1100;   ///< a 512-token chunk's own buffers (570 MiB) + the serve check's 512 MiB headroom
-constexpr int64_t kMinCardMib = 4608;          ///< under this a card cannot hold even a trimmed share beside the context, a working cache and the prompt buffers
+constexpr int64_t kMinCardMib = 3072;          ///< under this (free, after its context) a card cannot hold even a trimmed half share of the dense set (1.75 GiB) beside a session and a cache; above it the other steps (drafter, loan, head) still have to make it fit
 constexpr int64_t kStageLateAllocMib = 256;    ///< what a stage allocates after its cache that nothing prices (the single card's kLateAllocMib, #4474)
 
 /// What one card needs, from the model and the start (all MiB).
@@ -75,15 +75,25 @@ inline int64_t next_kv_window(int64_t current, int64_t ctx, int64_t min_cells) {
     return 0;
 }
 
-/// The layer share of each of `n` cards, proportional to what each has free beyond `fixed_mib`; at least 2 layers a card, summing to `layers`.  Used when the split is
-/// chosen before any card has loaded (trimmed on both), so the weights of CUDA0 can be trimmed too.
-inline void proportional_layers(const int64_t* free_mib, int n, int64_t layers, int64_t fixed_mib, int64_t* out) {
+/// Can `n` cards hold the model with every card trimmed?  `room_mib[i]` is a card's free memory less its fixed costs (context, reserve, late allocations; NOT the head and the
+/// drafter), `per_layer_mib` what a layer costs on a card (its dense weights and its session), `relief_mib` what the later steps can still give back (the drafter and the head
+/// moved off).  False means even the whole walk does not fit: the split should run on fewer cards.
+inline bool split_feasible(const int64_t* room_mib, int n, int64_t layers, int64_t per_layer_mib, int64_t relief_mib) {
+    int64_t total = relief_mib;
+    for (int i = 0; i < n; ++i) total += room_mib[i];
+    return total >= per_layer_mib * layers;
+}
+
+/// The layer share of each of `n` cards, proportional to the room each has for experts and sessions once its fixed costs are paid (`room_mib[i]` = its free memory less the
+/// context, the reserve and, for the card that carries them, the head and the drafter): that gives every layer the same cache bytes on every card.  At least 2 layers a card,
+/// summing to `layers`.  Used when the walk chooses the split before any card has loaded anything, so CUDA0's weights can be trimmed too.
+inline void proportional_layers(const int64_t* room_mib, int n, int64_t layers, int64_t* out) {
     int64_t total = 0;
-    for (int i = 0; i < n; ++i) total += std::max<int64_t>(free_mib[i] - fixed_mib, 1);
+    for (int i = 0; i < n; ++i) total += std::max<int64_t>(room_mib[i], 1);
     int64_t given = 0;
-    for (int i = 0; i < n; ++i) {
-        const int64_t w = std::max<int64_t>(free_mib[i] - fixed_mib, 1);
-        out[i] = i + 1 < n ? std::max<int64_t>(2, (layers * w + total / 2) / total) : 0;
+    for (int i = 0; i + 1 < n; ++i) {
+        const int64_t w = std::max<int64_t>(room_mib[i], 1);
+        out[i] = std::max<int64_t>(2, (layers * w + total / 2) / total);
         given += out[i];
     }
     out[n - 1] = layers - given;

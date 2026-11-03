@@ -49,6 +49,7 @@ int main() {
     check(!trim_needed(7635, small, false), "a small dense set fits an 8 GB card untrimmed");
     // 2. fewer cards
     check(!card_usable(2048), "a card with 2 GB free leaves the split");
+    check(card_usable(4250), "a 6 GB card (4.15 GiB free) stays: the other steps make it fit");
     check(card_usable(7635), "an 8 GB card stays");
     check(card_usable(kMinCardMib) && !card_usable(kMinCardMib - 1), "the edge");
     // 3. the draft layer: the single card's arithmetic, unchanged
@@ -68,18 +69,32 @@ int main() {
     check(next_kv_window(0, 4096, 4096) == 0, "a context at the minimum has none");
     check(next_kv_window(8192, 131072, 8192) == 0, "a larger engine minimum stops the walk");
     // 5. the shares of the layers
-    int64_t fm[2] = {7635, 7635}, out[2] = {0, 0};
-    proportional_layers(fm, 2, 48, 1550, out);
-    check(out[0] == 24 && out[1] == 24, "two equal cards share 48 layers 24/24");
-    int64_t fm2[2] = {11000, 7000};
-    proportional_layers(fm2, 2, 48, 1550, out);
-    check(out[0] + out[1] == 48 && out[0] > out[1], "the bigger card takes more layers");
-    int64_t fm3[3] = {8000, 8000, 8000}, out3[3];
-    proportional_layers(fm3, 3, 48, 1550, out3);
-    check(out3[0] == 16 && out3[1] == 16 && out3[2] == 16, "three equal cards 16/16/16");
-    int64_t fm4[2] = {100000, 1700}, out4[2];
-    proportional_layers(fm4, 2, 48, 1550, out4);
-    check(out4[0] + out4[1] == 48 && out4[1] >= 0, "a tiny card leaves the sum right");
+    int64_t fm[2] = {5000, 5000}, out[2] = {0, 0};
+    proportional_layers(fm, 2, 48, out);
+    check(out[0] == 24 && out[1] == 24, "two equal rooms share 48 layers 24/24");
+    int64_t fm1[2] = {5285, 3875};
+    proportional_layers(fm1, 2, 48, out);
+    check(out[0] + out[1] == 48 && out[0] == 28 && out[1] == 20, "the card that carries the head and the drafter takes fewer layers (28/20)");
+    int64_t fm2[2] = {9000, 5000};
+    proportional_layers(fm2, 2, 48, out);
+    check(out[0] + out[1] == 48 && out[0] > out[1], "the bigger room takes more layers");
+    int64_t fm3[3] = {5000, 5000, 5000}, out3[3];
+    proportional_layers(fm3, 3, 48, out3);
+    check(out3[0] == 16 && out3[1] == 16 && out3[2] == 16, "three equal rooms 16/16/16");
+    int64_t fm4[2] = {90000, 100}, out4[2];
+    proportional_layers(fm4, 2, 48, out4);
+    check(out4[0] + out4[1] == 48 && out4[0] >= 2 && out4[1] >= 0, "a tiny room leaves the sum right");
+    int64_t fm5[2] = {0, 0}, out5[2];
+    proportional_layers(fm5, 2, 48, out5);
+    check(out5[0] + out5[1] == 48, "rooms of 0 still sum to the layers");
+    // 6. fewer cards: feasible when the rooms plus the relief pay for every layer
+    int64_t r8[2] = {5200, 5200};
+    check(split_feasible(r8, 2, 48, 90, 1410), "two 8 GB cards (5.2 GiB of room each) hold the model");
+    int64_t r6[2] = {1744, 1552};
+    check(split_feasible(r6, 2, 48, 87, 1410), "two 6 GB cards hold it only with the drafter and the head moved off");
+    check(!split_feasible(r6, 2, 48, 87, 0), "...and not without that relief");
+    int64_t r3[2] = {2000, 100};
+    check(!split_feasible(r3, 2, 48, 90, 1410), "two cards with 2 GB and 0.1 GB of room do not: fewer cards");
     if (g_fail == 0) std::printf("split_walk_test: ok\n");
     return g_fail == 0 ? 0 : 1;
 }
