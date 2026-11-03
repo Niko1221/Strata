@@ -1432,8 +1432,8 @@ void attn_prompt(const float* qg, const uint16_t* kc, const uint16_t* vc, const 
                  const int* n_cells, int card, int C, int r0, int T, float* part, void* st) {
     if (T == 0) return;   // an empty half of a one-row chunk
 #if !FNX_HIP && FNX_ARCH >= 80
-    // FNX_PFX_ATTN_I8: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, on by default on NVIDIA sm_80+ (FNX_PFX_ATTN_I8=0 turns it off; HIP keeps the f16 kernel)
-    static const bool i8 = env_int("FNX_PFX_ATTN_I8", 1) != 0;
+    // FNX_PFX_ATTN_I8: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, OFF by default (coordinator 11-03: agent-A10 failed 3 of 3 suite runs with it on; FNX_PFX_ATTN_I8=1 turns it on; HIP keeps the f16 kernel)
+    static const bool i8 = env_int("FNX_PFX_ATTN_I8", 0) != 0;
     if (i8 && g.q8) {
         static bool attr[64] = {};
         int dev = 0;

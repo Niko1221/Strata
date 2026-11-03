@@ -169,8 +169,12 @@ static __global__ void k_pfr_out_chk(const __half2* __restrict__ ag, float2* __r
 // copy into the next card is followed by a flag there; the step after waits on this card's flag (stream memory
 // operations: no SM time, no host). Both files' ring shapes run it: Flash-Next's PfRing and the 27B's Pf, which holds
 // the same buffers and takes its sequence number and copy-engine stream from itself rather than from the caller.
+//
+// own_out (FNX_PF_HCSPLIT): the sum's consumer works on this card's own part of the rows alone (the part it finishes, (g + 1) % n), so the
+// gather half of the ring is skipped: no PASS, no gather flags, and OUT converts only the finished part into x. The part's values are the
+// ones the full OUT would give.
 template <typename Ring>
-inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned seq, unsigned* err, cudaStream_t s) {
+inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned seq, unsigned* err, cudaStream_t s, bool own_out = false) {
     if (r.plan.empty() || r.plan.front().part != g) throw std::runtime_error("prefill: the ring's plan is not card " + std::to_string(g) + "'s");
     const int set = (int) (seq & 1u), fin_part = (g + 1) % NCARD;   // the part this card finishes (pf_ring_plan)
     __half* const own_ag = r.dma ? r.dag[set] : r.ag[set];             // where this card's gathered rows are (device with DMA, host without)
@@ -207,6 +211,26 @@ inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned
                                                                        rows(part) * N / 2, (__half2*) out, err);
     };
     for (const PfRingOp& o : r.plan) {
+        if (own_out) {   // only the reduce-scatter half and this card's finished part
+            if (o.k == PfRingOp::PASS || o.k == PfRingOp::SIGNALA || o.k == PfRingOp::WAITA) continue;
+            if ((o.k == PfRingOp::SIGNAL || o.k == PfRingOp::WAIT) && o.step >= NCARD - 1) continue;
+            if (o.k == PfRingOp::GADD) {   // the finishing add into this card's rows alone
+                if (rows(o.part) > 0) {
+                    if (r.dma) {
+                        ckc(cudaMemcpyAsync(r.din[o.hop][set], r.in[o.hop][set], (size_t) rows(o.part) * N * sizeof(__half), cudaMemcpyDefault, s), "ring in");
+                        dma_fence();
+                    }
+                    add(r.dma ? r.din[o.hop][set] : r.in[o.hop][set], o.part, own_ag + (size_t) r0(o.part) * N);
+                }
+                continue;
+            }
+            if (o.k == PfRingOp::OUT) {
+                if (rows(fin_part) > 0)
+                    k_pfr_out<<<grid_for((size_t) rows(fin_part) * N / 2), 256, 0, s>>>((const __half2*) (own_ag + (size_t) r0(fin_part) * N),
+                                                                                     (float2*) (x + (size_t) r0(fin_part) * N), rows(fin_part) * N / 2);
+                continue;
+            }
+        }
         switch (o.k) {
             case PfRingOp::PACK:
                 if (rows(o.part) > 0)

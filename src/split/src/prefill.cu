@@ -386,6 +386,24 @@ struct Engine::Pf {
     bool overlap = false;
     cudaStream_t ring_st = nullptr;
     cudaEvent_t ev_go[Engine::PF_PASS], ev_ra[Engine::PF_PASS], ev_rf[Engine::PF_PASS];
+    // FNX_PF_HCSPLIT: the hyper-connection read of a chunk is done on one card's part of the rows each (the part its ring sum finishes),
+    // and the cards swap the resulting `mixed` rows (f32) through host memory on the copy engines, in hg_pieces pieces. A chunk keeps its own
+    // `mixed` (mixedk): the reads of the pass's chunks come before their heavy halves. hg_in: the landing place of the other card's rows (two
+    // sets by the swap's number), hg_flags[set][piece] set by the other card's stream (the swap's number); rg_*: the same for the residual
+    // streams R at the end of the pass (the draft layer reads every row of R).
+    bool hcs = false;
+    int hg_pieces = 4;
+    float* mixedk[Engine::PF_PASS] = {};
+    float* hg_in[2] = {};
+    unsigned* hg_flags[2] = {};
+    float* nhg_in[2] = {};
+    unsigned* nhg_flags[2] = {};
+    float* rg_in[2] = {};
+    unsigned* rg_flags = nullptr;   // [set][8]
+    float* nrg_in[2] = {};
+    unsigned* nrg_flags = nullptr;
+    unsigned hg_seq = 0, rg_seq = 0;
+    cudaEvent_t ev_hc[Engine::PF_PASS] = {}, ev_ag[Engine::PF_PASS] = {}, ev_rg[Engine::PF_PASS] = {};
     // with an ExpertCache: a pass's expert tables (device, [NL][NEXP]; pinned copies to build them in) and the copies
     // into stage[l & 1] (on cs) of layer l's experts not in a slot, as many as fit; the rest are read in place
     char* stage[2] = {};
@@ -487,6 +505,38 @@ void pf_hc_read(Engine::Pf& p, float* R, const float* bo, const float* inj_prev,
     ckc(cudaGetLastError(), "hc read");
 }
 
+// FNX_PF_HCSPLIT: pf_hc_read on rows [r0, r0 + nr) of a chunk: every per-row pointer moved to the rows, the scratch (xh, rs, lo, up) used from its start
+void pf_hc_read_rows(Engine::Pf& p, float* R, const float* bo, const float* inj_prev, const float* w_norm, const Q8S& w_down, const Q8S& w_up,
+                     const uint16_t* w_inj, float eps, float* mixed, float* inject, int r0, int nr, cudaStream_t s) {
+    pf_hc_read(p, R + (size_t) r0 * D, bo ? bo + (size_t) r0 * N : nullptr, inj_prev ? inj_prev + (size_t) r0 * HC : nullptr, w_norm, w_down, w_up, w_inj,
+               eps, mixed + (size_t) r0 * N, inject ? inject + (size_t) r0 * HC : nullptr, nr, s);
+}
+
+// FNX_PF_HCSPLIT: the cards swap the rows they own of M (C rows of row_elems f32; the part card g finishes, (g + 1) % NCARD, is its own) through host
+// memory, in `pieces` pieces on stream s: this card's piece i to the other card's landing place `nin` (flag nflags[i] = seq after it), then the other card's
+// piece i from `in` into M once flags[i] reaches seq. Two cards only. A piece's copy is queued behind the stream's earlier work, so s must have waited for
+// the event that says M's own rows are final.
+void pf_swap_rows(float* M, size_t row_elems, int C, int g, int pieces, const float* in, const unsigned* flags, float* nin, unsigned* nflags, unsigned seq,
+                  cudaStream_t s) {
+    const int own = (g + 1) % NCARD, peer = (g + NCARD - 1) % NCARD, peer_part = (peer + 1) % NCARD;
+    auto b0 = [&](int part) { return part * C / NCARD; };
+    const int ob = b0(own), oe = b0(own + 1), pb = b0(peer_part), pe = b0(peer_part + 1);
+    for (int i = 0; i < pieces; ++i) {
+        const int a = ob + (int) ((long) (oe - ob) * i / pieces), e = ob + (int) ((long) (oe - ob) * (i + 1) / pieces);
+        if (e > a)
+            ckc(cudaMemcpyAsync(nin + (size_t) (a - ob) * row_elems, M + (size_t) a * row_elems, (size_t) (e - a) * row_elems * sizeof(float), cudaMemcpyDefault, s),
+                "swap send");
+        cud(cuStreamWriteValue32((CUstream) s, (CUdeviceptr) (nflags + i), seq, 0), "swap flag");
+    }
+    for (int i = 0; i < pieces; ++i) {
+        const int a = pb + (int) ((long) (pe - pb) * i / pieces), e = pb + (int) ((long) (pe - pb) * (i + 1) / pieces);
+        cud(cuStreamWaitValue32((CUstream) s, (CUdeviceptr) (flags + i), seq, CU_STREAM_WAIT_VALUE_GEQ), "swap wait");
+        if (e > a)
+            ckc(cudaMemcpyAsync(M + (size_t) a * row_elems, in + (size_t) (a - pb) * row_elems, (size_t) (e - a) * row_elems * sizeof(float), cudaMemcpyDefault, s),
+                "swap recv");
+    }
+}
+
 // R = the embedding row in every stream
 __global__ void k_pf_streams(const float* __restrict__ emb, float* __restrict__ R, int C) {
     for (size_t e = blockIdx.x * (size_t) blockDim.x + threadIdx.x; e < (size_t) C * D; e += (size_t) gridDim.x * blockDim.x)
@@ -509,7 +559,7 @@ __global__ void k_pfr_addend(float* __restrict__ x, const float* __restrict__ pa
 
 // the sum of x (C rows of N) over the cards on card g, one way round (each card's link is busy both ways already: it
 // sends to g + 1 while it takes from g - 1; measured, the other direction at once halves both)
-void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* err, cudaStream_t s) {
+void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* err, cudaStream_t s, bool own_out = false) {
     const unsigned seq = ++p.seq;
     if (m) k_pfr_addend<<<grid_for((size_t) C * N), 256, 0, s>>>(x, m->part, m->topw, m->logits, C);
 #if FNX_HIP
@@ -530,7 +580,7 @@ void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* 
         return;
     }
 #endif
-    pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s);
+    pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s, own_out);
     ckc(cudaGetLastError(), "ring");
 }
 
@@ -617,6 +667,11 @@ void Engine::pf_seq_reset(unsigned start) {
         ckc(cudaSetDevice(p.dev), "set");
         ckc(cudaMemset(p.ring_ce.flags, 0, 2 * PF_RING_STEPS * sizeof(unsigned)), "prompt ring flags");
         for (unsigned* f : p.aflags) ckc(cudaMemset(f, 0, ATT_FLAG_ROWS * ATT_PIECES_MAX * sizeof(unsigned)), "attention exchange flags");
+        if (p.hcs) {
+            for (unsigned* f : p.hg_flags) std::memset(f, 0, 8 * sizeof(unsigned));
+            std::memset(p.rg_flags, 0, 16 * sizeof(unsigned));
+            p.hg_seq = p.rg_seq = 0;
+        }
         p.seq = p.att_seq[0] = p.att_seq[1] = start;
     }
     for (CardBuf* b : cb_) { ckc(cudaSetDevice(b->dev), "set"); ckc(cudaDeviceSynchronize(), "prompt sequence reset sync"); }
@@ -828,6 +883,29 @@ void Engine::prefill_alloc() {
                         own_event(*e);
                     }
             }
+            // FNX_PF_HCSPLIT (NVIDIA, two cards, the copy-engine ring): see Pf
+#if !FNX_HIP
+            p->hcs = NCARD == 2 && p->overlap && !p->ring_sm && env_int("FNX_PF_HCSPLIT", 0) != 0;
+#endif
+            if (p->hcs) {
+                const long long np = env_int("FNX_PF_HCSPLIT_PIECES", 4);
+                if (np < 1 || np > 8) throw std::runtime_error("FNX_PF_HCSPLIT_PIECES: 1 to 8, got " + std::to_string(np));
+                p->hg_pieces = (int) np;
+                const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD;
+                p->mixedk[0] = p->mixed;
+                for (int k = 1; k < p->pass; ++k) p->mixedk[k] = palloc<float>((size_t) pf_c_ * N);
+                for (int k = 0; k < 2; ++k) {
+                    p->hg_in[k] = hpalloc<float>(share * N);
+                    p->hg_flags[k] = hpalloc<unsigned>(8);
+                }
+                for (int k = 0; k < 2; ++k) p->rg_in[k] = hpalloc<float>(share * D);
+                p->rg_flags = hpalloc<unsigned>(16);
+                for (int k = 0; k < PF_PASS; ++k)
+                    for (cudaEvent_t* e : {&p->ev_hc[k], &p->ev_ag[k], &p->ev_rg[k]}) {
+                        ckc(cudaEventCreateWithFlags(e, cudaEventDisableTiming), "event");
+                        own_event(*e);
+                    }
+            }
         }
         if (w.ec.n_slots) {   // the stages themselves: prefill_stages, once the experts' places are final
             const long long stage_rows = env_int("FNX_PF_STAGE_ROWS", 2048);
@@ -876,6 +954,11 @@ void Engine::prefill_alloc() {
         }
         r.nflags = n.ring_ce.flags;
         r.next_dev = n.dev;
+        if (p.hcs) {
+            for (int k = 0; k < 2; ++k) p.nhg_in[k] = n.hg_in[k], p.nhg_flags[k] = n.hg_flags[k];
+            for (int k = 0; k < 2; ++k) p.nrg_in[k] = n.rg_in[k];
+            p.nrg_flags = n.rg_flags;
+        }
         for (int d = 0; d < NCARD; ++d) {
             r.pflags[d] = pf_[d]->ring_ce.flags;
             for (int k = 0; k < 2; ++k) r.pag[d][k] = pf_[d]->ring_ce.ag[k];
@@ -1080,10 +1163,16 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     };
     // the chunk that runs: its rows, groups and buffers
     int C = 0, ng = 0, set = 0;
+    // FNX_PF_HCSPLIT: this pass's hyper-connection reads are split between the cards (every chunk of the pass long enough to be worth it)
+    bool hs = pf_[0]->hcs;
+    for (const PfChunk& ck : chunks)
+        if ((int) ck.tokens.size() < 512) hs = false;
     auto use = [&](int j) {
         C = (int) chunks[(size_t) j].tokens.size(), ng = (C + MAXT - 1) / MAXT, set = chunks[(size_t) j].set;
-        for (Pf* p : pf_) p->R = p->Rk[j], p->bo_f = p->bofk[j], p->inj_f = p->injfk[j], p->ctl = p->ctlk[j], p->bo_a = p->boak[j],
-                          p->inj_a = p->injak[j];
+        for (Pf* p : pf_) {
+            p->R = p->Rk[j], p->bo_f = p->bofk[j], p->inj_f = p->injfk[j], p->ctl = p->ctlk[j], p->bo_a = p->boak[j], p->inj_a = p->injak[j];
+            if (p->hcs) p->mixed = p->mixedk[hs ? j : 0];
+        }
     };
     // with an ExpertCache: the pass's expert tables, each layer's experts not in a slot at stage[l & 1] (as many as
     // fit, in expert order; the rest in place), the others in their slots
@@ -1152,11 +1241,11 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     // made here: the next chunk's experts reuse their buffers), while the pass's next chunk computes; `done` marks it
     // finished, and the chunk's next half waits for that alone. A layer runs every chunk's attention half, then every
     // chunk's FFN half, so there is a next chunk to compute meanwhile
-    auto ring_async = [&](int c, CardBuf& b, Pf& p, float* x, const RingMoe* m, int j, cudaEvent_t done, int rows) {
+    auto ring_async = [&](int c, CardBuf& b, Pf& p, float* x, const RingMoe* m, int j, cudaEvent_t done, int rows, bool own = false) {
         if (m) k_pfr_addend<<<grid_for((size_t) rows * N), 256, 0, b.st>>>(x, m->part, m->topw, m->logits, rows);
         ckc(cudaEventRecord(p.ev_go[j], b.st), "ring go");
         ckc(cudaStreamWaitEvent(p.ring_st, p.ev_go[j], 0), "ring go");
-        pf_ring(p, c, x, rows, nullptr, b.ring.err, p.ring_st);
+        pf_ring(p, c, x, rows, nullptr, b.ring.err, p.ring_st, own);
         if (p.rccl) p.post.push_back([&p, done] { ckc(cudaEventRecord(done, p.ring_st), "ring done"); });   // after the sum's conversion, once the group is closed
         else ckc(cudaEventRecord(done, p.ring_st), "ring done");
     };
@@ -1168,7 +1257,53 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         p.att_pend = -1;
         pf_attn_finish(p, c, rows, j & 1, b.st);
         pf_dense(p, w.L[l].wo.s, N, w.nq * HD, p.att, rows, p.boak[j], N, b.st);
-        if (l < NL - 1 || mtp_) ring_async(c, b, p, p.boak[j], nullptr, j, p.ev_ra[j], rows);   // the last layer's sum: unused
+        if (l < NL - 1 || mtp_) ring_async(c, b, p, p.boak[j], nullptr, j, p.ev_ra[j], rows, hs && l >= PLE_LAYER);   // the last layer's sum: unused
+    };
+    // FNX_PF_HCSPLIT: layer l's attention half (half 0) or FFN half (1) reads its hyper-connection on this card's rows of chunk j (use(j) done) and starts the
+    // swap of the resulting `mixed` rows; the half's heavy part waits for the swap (ev_ag). The sum that feeds a split read is a reduce-scatter only (ring_async's
+    // `own`): the attention half's output from layer PLE_LAYER on, the FFN half's from layer PLE_LAYER on (it feeds the next layer's read, which is split from
+    // PLE_LAYER + 1 on: the PLE layer's own attention half writes every row of R first)
+    auto hc_phase = [&](int l, int half, int j) {
+        each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
+            const LayerW& L = w.L[l];
+            cudaStream_t s = b.st;
+            const int own = (c + 1) % NCARD, r0 = own * C / NCARD, nr = (own + 1) * C / NCARD - r0;
+            if (half == 0) {
+                ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
+                pf_hc_read_rows(p, p.R, p.bo_f, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed, p.inj_a, r0, nr, s);
+            } else {
+                ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
+                pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s);
+            }
+            ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
+            ckc(cudaStreamWaitEvent(p.ring_st, p.ev_hc[j], 0), "hc wait");
+            const unsigned sq = ++p.hg_seq;
+            const int hset = (int) (sq & 1u);
+            pf_swap_rows(p.mixed, N, C, c, p.hg_pieces, p.hg_in[hset], p.hg_flags[hset], p.nhg_in[hset], p.nhg_flags[hset], sq, p.ring_st);
+            ckc(cudaEventRecord(p.ev_ag[j], p.ring_st), "swap done");
+        });
+    };
+    // the heavy part's start after a split read: the swapped rows are here, and xh = f16 of mixed as the read leaves it (k_f32_f16 rounds as the read's
+    // k_hcb_mixinj does)
+    // the pass's last read, the draft layer's source: the attention sum folded into R on this card's rows, then the rows of R swapped (the draft layer reads all)
+    auto draft_r_phase = [&](int l, int j) {
+        each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
+            const LayerW& L = w.L[l];
+            cudaStream_t s = b.st;
+            const int own = (c + 1) % NCARD, r0 = own * C / NCARD, nr = (own + 1) * C / NCARD - r0;
+            ckc(cudaStreamWaitEvent(s, p.ev_ra[j], 0), "attention sum");
+            pf_hc_read_rows(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, r0, nr, s);
+            ckc(cudaEventRecord(p.ev_hc[j], s), "hc event");
+            ckc(cudaStreamWaitEvent(p.ring_st, p.ev_hc[j], 0), "hc wait");
+            const unsigned sq = ++p.rg_seq;
+            const int rset = (int) (sq & 1u);
+            pf_swap_rows(p.R, D, C, c, p.hg_pieces, p.rg_in[rset], p.rg_flags + rset * 8, p.nrg_in[rset], p.nrg_flags + rset * 8, sq, p.ring_st);
+            ckc(cudaEventRecord(p.ev_rg[j], p.ring_st), "swap done");
+        });
+    };
+    auto swap_join = [&](CardBuf& b, Pf& p, int j) {
+        ckc(cudaStreamWaitEvent(b.st, p.ev_ag[j], 0), "swap join");
+        k_f32_f16<<<grid_for((size_t) C * N), 256, 0, b.st>>>(p.mixed, (size_t) C * N, p.xh);
     };
     for (int l = 0; l < NL; ++l) {
         if (staging && l + 1 < NL - 1) stage_in(l + 1);   // the last layer runs no experts
@@ -1176,12 +1311,17 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             use(j);
             // ---- attention half: the last layer's FFN sum (pending in bo_f) first
             const bool pending = l > 0;
+            const bool sa = hs && l > PLE_LAYER;   // this half's read is split (the PLE layer's own attention half is not: it writes every row of R)
+            if (sa && j == 0)
+                for (int j2 = 0; j2 < nk; ++j2) use(j2), hc_phase(l, 0, j2);
+            if (sa) use(j);
             each([&](int c, CardBuf& b, const CardW& w, Pf& p) {
                 const LayerW& L = w.L[l];
                 cudaStream_t s = b.st;
-                if (pending && p.overlap) ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
+                if (sa) swap_join(b, p, j);
+                else if (pending && p.overlap) ckc(cudaStreamWaitEvent(s, p.ev_rf[j], 0), "ffn sum");
                 bool apply = pending;
-                if (l == PLE_LAYER) {
+                if (!sa && l == PLE_LAYER) {
                     ckc(cudaMemcpyAsync(p.ple_emb, pf_ple_[set], (size_t) C * N * 4, cudaMemcpyHostToDevice, s), "ple");
                     hc_write(p.R, p.bo_f, p.inj_f, C, s);
                     apply = false;
@@ -1194,8 +1334,9 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                                  w.ple_norm_query, w.ple_norm_conv, w.ple_conv, b.ple_hist, b.ple_hsnap, Tg, eps, s, p.ple_tmp);
                     }
                 }
-                pf_hc_read(p, p.R, apply ? p.bo_f : nullptr, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed,
-                           p.inj_a, C, s);
+                if (!sa)
+                    pf_hc_read(p, p.R, apply ? p.bo_f : nullptr, p.inj_f, L.hc_norm[0], L.hc_down[0], L.hc_up[0], L.hc_inj[0], eps, p.mixed,
+                               p.inj_a, C, s);
                 if (!is_attn(l)) {
                     const int nv = w.nv(), ch = w.conv_ch(), rs_qkvz = ch + nv * HS;
                     pf_dense_xh(p, L.qkvz.s, rs_qkvz, N, C, p.qkvz, rs_qkvz, s);   // xh: the hc read's f16 of mixed
@@ -1242,7 +1383,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             each([&](int c, CardBuf& b, const CardW&, Pf& p) {
                 if (p.ring_sm) ring_sum(p.ring, p.bo_a, C, (const unsigned*) (p.ctl + 1), 2 * l, b.st);
                 else if (p.overlap) {
-                    if (!is_attn(l) || p.attn_dec) ring_async(c, b, p, p.bo_a, nullptr, j, p.ev_ra[j], C);   // else finish_att's
+                    if (!is_attn(l) || p.attn_dec) ring_async(c, b, p, p.bo_a, nullptr, j, p.ev_ra[j], C, hs && l >= PLE_LAYER);   // else finish_att's
                 } else pf_ring(p, c, p.bo_a, C, nullptr, b.ring.err, b.st);
             });
         }
@@ -1253,6 +1394,16 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             each([&](int, CardBuf& b, const CardW&, Pf& p) {
                 if (p.overlap) ckc(cudaStreamWaitEvent(b.st, p.ev_ra[j], 0), "attention sum");
             });
+            const bool sf = hs && l >= PLE_LAYER;   // this half's read is split
+            if (sf && j == 0) {
+                for (int j2 = 0; j2 < nk; ++j2) {
+                    use(j2);
+                    if (l == NL - 1) draft_r_phase(l, j2);
+                    else hc_phase(l, 1, j2);
+                }
+                use(j);
+            }
+            if (l == NL - 1 && sf) continue;   // read and swap issued above
             if (l == NL - 1) {
                 // the draft layer's source: R with the last attention write folded in, as a window's FFN-half read leaves it
                 each([&](int, CardBuf& b, const CardW& w, Pf& p) {
@@ -1271,7 +1422,8 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                     gu_e.ep = p.ep_gu + (size_t) l * NEXP, down_e.ep = p.ep_dn + (size_t) l * NEXP;
                     if (j == 0) ckc(cudaStreamWaitEvent(s, p.ev_ready[l & 1], 0), "stage in");
                 }
-                pf_hc_read(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, C, s);
+                if (sf) swap_join(b, p, j);
+                else pf_hc_read(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, C, s);
                 if (p.moe_q8) quantize_q8_1(p.mixed, p.xq, N, C, s);   // else xh holds the hc read's f16 of mixed
                 pf_sgemm(p, L.router, NEXP + 1, N, p.mixed, C, p.logits, NEXP + 1);
                 k_pf_top10<<<(C + 7) / 8, 256, 0, s>>>(p.logits, C, p.topi, p.topw);
@@ -1302,7 +1454,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                 m.topw = p.topw;
                 m.logits = p.logits;
                 if (p.ring_sm) ring_sum(p.ring, p.bo_f, C, (const unsigned*) (p.ctl + 1), 2 * l + 1, b.st, m);
-                else if (p.overlap) ring_async(c, b, p, p.bo_f, &m, j, p.ev_rf[j], C);
+                else if (p.overlap) ring_async(c, b, p, p.bo_f, &m, j, p.ev_rf[j], C, hs && l >= PLE_LAYER);
                 else pf_ring(p, c, p.bo_f, C, &m, b.ring.err, b.st);
             });
         }
@@ -1312,8 +1464,13 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         for (int j = 0; j < nk; ++j) {
             use(j);
             embed_token(chunks[(size_t) j].after, pos0[(size_t) j] + C, pf_after_[set]);
+            if (hs)
+                each([&](int, CardBuf& b, const CardW&, Pf& p) { ckc(cudaStreamWaitEvent(b.st, p.ev_rg[j], 0), "R swap"); });
             prefill_draft(C, set);
         }
+    if (hs && mtp_ && draft8)
+        for (int j = 0; j < nk; ++j)
+            each([&](int, CardBuf& b, const CardW&, Pf& p) { ckc(cudaStreamWaitEvent(b.st, p.ev_rg[j], 0), "R swap"); });
     const auto t_enq = std::chrono::steady_clock::now();
     between();
     unsigned err = 0;
