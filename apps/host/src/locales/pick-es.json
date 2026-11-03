@@ -1,0 +1,19 @@
+{
+ "vp01": "Descarga de {0}",
+ "vp02": "Necesita {0} de memoria",
+ "vp03": "Necesita {0} de memoria y unos {1} GB de disco",
+ "vp04": "Cabe",
+ "vp05": "Cabe con streaming desde el SSD",
+ "vp06": "No cabe",
+ "vp07": "Mostrar detalles",
+ "vp08": "Ocultar detalles",
+ "vp09": "{0} de RAM + VRAM",
+ "vp10": "Cerrar vista previa",
+ "vp11": "Libre ahora",
+ "vp12": "{0} libres",
+ "vp13": "{0}: {1} libres de {2}",
+ "vp14": "Ocupa aproximadamente",
+ "vp15": "Nada. Cabe en la memoria.",
+ "vp16": "Leyendo del SSD ahora: {0}",
+ "vp17": "Esta versión ocuparía aproximadamente {0} de memoria gráfica y {1} de RAM."
+}

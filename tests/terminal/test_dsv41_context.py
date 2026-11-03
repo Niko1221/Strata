@@ -117,16 +117,17 @@ class Terminal(unittest.TestCase):
 
 
 class SetupAndApp(unittest.TestCase):
-    def test_nobody_gets_a_bigger_context_than_before_unless_they_choose_it(self):
-        """The default stays 8K everywhere: setup writes it, the Terminal recommends it, the app starts a new DeepSeek version at it and shows an installed one at
-        the context it was prepared with (so a 0.2.5 / 0.2.6 user's load is the saved file's, as it was)."""
+    def test_the_default_is_128k_everywhere_unless_the_person_chooses(self):
+        """Owner, 2026-11-01: 128K on every card and for DeepSeek too. setup writes it, the Terminal recommends it, the app starts a new DeepSeek version at it
+        and shows an installed one at the context it was prepared with when someone chose it (a saved 8K without the app's marker is the old default)."""
         import setup
-        self.assertEqual(setup.DSV41_CONTEXT, 8192)
+        self.assertEqual(setup.DSV41_CONTEXT, 131072)
+        self.assertEqual(setup.DSV41_MAC_CONTEXT, 8192)               # nothing was run on a Mac at 128K: a Mac keeps its 8K
         with Home(), mock.patch.object(Catalog, "hardware", lambda self, fresh=False: dict(HW_4X32)):
-            self.assertEqual(catalog(HW_4X32).max_context("deepseek41", "UD-Q8_K_XL"), 8192)
+            self.assertEqual(catalog(HW_4X32).max_context("deepseek41", "UD-Q8_K_XL"), 131072)
         screen = (ROOT / "apps" / "host" / "src" / "components" / "NativeModels.tsx").read_text(encoding="utf-8")
-        self.assertRegex(screen, r"if \(selectedSize\.multi_file\)\s+setContext\(8192\)")
-        self.assertRegex(screen, r"if \(installed\.context\)\s+setContext\(installed\.context\)")
+        self.assertRegex(screen, r"setContext\(defaultContext\(contextList\)\)")
+        self.assertRegex(screen, r"openingContext\(installed\.context, contextList, installed\.contextChosen === true, selectedSize\.multi_file \? \[OLD_DEEPSEEK_CONTEXT\] : undefined\)")
 
     def test_setup_stops_before_any_download_and_checks_the_pack_again(self):
         source = (ROOT / "setup.py").read_text(encoding="utf-8")

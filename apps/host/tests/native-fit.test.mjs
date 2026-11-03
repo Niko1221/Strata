@@ -24,8 +24,8 @@ test('a PC with room reads nothing from the SSD', () => {
 });
 
 test('a PC without room reads the rest from the SSD, and the amount is real', () => {
-  const f = fitOn(q4, { ram_gb: 64, vram_gb: 12 });          // 77 GB of experts: 6 on the card (the draft layer takes 1 GB), 54 in RAM, 17 from the SSD
-  assert.equal(f.spillGb, 17);
+  const f = fitOn(q4, { ram_gb: 64, vram_gb: 12 });          // 77 GB of experts: 6 on the card (the draft layer takes 1.08 GB), 54 in RAM, 17.1 from the SSD
+  assert.equal(f.spillGb, 17.1);
   assert.equal(fitOn(q4, { ram_gb: 64, vram_gb: 12 }, false).spillGb, 16, 'with the draft layer off the card holds 1 GB more');
   assert.equal(fitOn(q4, { ram_gb: 192, vram_gb: 24 }).spillGb, 0);
   assert.ok(fitOn(gyroS, { ram_gb: 16, vram_gb: 8 }).spillGb > 10, 'a small PC spills a lot');
@@ -54,10 +54,10 @@ test('the group of the running version can be collapsed (Gyro-M running, the Gyr
 });
 
 test('the draft layer (MTP) counts about 1 GB of the card', () => {
-  assert.equal(MTP_VRAM_GB, 1);
+  assert.equal(MTP_VRAM_GB, 1.08);   // the engine's measured 1,082 MiB (strata_control/drafting.py DRAFTER_MIB)
   const on = fitOn(swift, { ram_gb: 40, vram_gb: 12 }), off = fitOn(swift, { ram_gb: 40, vram_gb: 12 }, false);
   assert.equal(Math.round((on.vramUseGb - off.vramUseGb) * 10) / 10, 0, 'the card is full either way here; the experts it cannot hold move to RAM');
-  assert.equal(Math.round((on.ramUseGb - off.ramUseGb) * 10) / 10, 1);
+  assert.equal(Math.round((on.ramUseGb - off.ramUseGb) * 10) / 10, 1.1);
   assert.equal(fitOn(swift, { ram_gb: 40, vram_gb: 0 }).vramUseGb, 0, 'no card, no draft layer on it');
 });
 

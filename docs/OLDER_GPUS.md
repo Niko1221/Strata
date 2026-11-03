@@ -99,6 +99,11 @@ A model that shares a V100 with an RTX 30 / 40 card runs both on the CUDA 12 eng
 50 card (sm_120) in a CUDA 12 engine is a warning, not a stop: engines built with 12.8 crashed on long prompts there (#220,
 #224). Keep the RTX 50 card on its own model (`--gpu N`), where it runs the CUDA 13 engine.
 
+An engine you build yourself with CUDA 12.8 for an RTX 50 / RTX PRO Blackwell card (compute capability 12.0) now starts with the batched PLE post-ops of the
+prompt path **off** and says so once (`STRATA_PLE_BATCH=1` turns them on anyway; CMake warns at configure time as before). That is the one place the
+default differs by toolkit: the same source built with CUDA 13.0 or newer (the released cuda13 engine) keeps them on, which is about 23% faster prompts, and no
+other card or toolkit changes. Use CUDA 13.0 or newer for an RTX 50 card.
+
 ### Building it yourself
 
 ```sh
