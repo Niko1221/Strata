@@ -249,6 +249,9 @@ class MonitorApp(App):
                         "Read only  |  q detaches without stopping Strata")
         if self.classic and self.classic.get("tip"):             # the classic Windows console: one line about the full look
             idle_message = ("Read only  |  q detaches  |  " if size.width >= 100 else "") + self.classic["tip"]
+        note = getattr(self, "quiet_note", None)             # one quiet line (an engine update is available), only where the screen has room for it
+        if note and self.connection_state in ("connected", "stale", "telemetry_unavailable") and not self.frozen:
+            idle_message = note if size.width < 100 else f"{note}  |  q detaches without stopping Strata"
         msg = self.error or self.selection_notice or ("Connecting to Strata" if self.connection_state == "connecting" else
                              "Telemetry unavailable; status only" if self.connection_state == "telemetry_unavailable" else
                              "Frozen display; collection continues" if self.frozen else

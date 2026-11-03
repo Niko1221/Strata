@@ -17,6 +17,7 @@
 #include <limits>
 #if !defined(_WIN32)
 #include <sys/mman.h>
+#include <sys/resource.h>
 #endif
 #include <algorithm>
 #include <atomic>
@@ -455,11 +456,32 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
             for (unsigned t = 0; t < threads; ++t) pool.emplace_back(touch);
             for (auto& t : pool) t.join();
         }
+        // #4671: a systemd service without LimitMEMLOCK may lock 8 MiB (soft and hard), a login shell far more.  Raise the soft limit
+        // to what the hard limit allows first (no privilege needed); if the table still does not fit, say what to set.
+        struct rlimit rl {};
+        if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && (uint64_t) rl.rlim_cur < a1 - a0 &&
+            rl.rlim_max > rl.rlim_cur) {
+            const rlim_t room = (rlim_t) (a1 - a0) + ((rlim_t) 1 << 30);
+            const rlim_t want = rl.rlim_max == RLIM_INFINITY ? room : std::min<rlim_t>(rl.rlim_max, room);
+            struct rlimit up = rl;
+            up.rlim_cur = want;
+            if (setrlimit(RLIMIT_MEMLOCK, &up) == 0)
+                std::fprintf(stderr, "strata: the memory this program may lock was %llu MiB; raised to %llu MiB for the PLE table\n",
+                             (unsigned long long) (rl.rlim_cur >> 20), (unsigned long long) (want >> 20));
+        }
         if (mlock((const void*) a0, a1 - a0) == 0) {
             impl_->locked = true;
         } else {
-            std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): its pages stay faulted in "
-                                 "but may be reclaimed\n", std::strerror(errno));
+            const int why = errno;
+            struct rlimit now {};
+            if (getrlimit(RLIMIT_MEMLOCK, &now) == 0 && now.rlim_cur != RLIM_INFINITY && (uint64_t) now.rlim_cur < a1 - a0)
+                std::fprintf(stderr, "strata: the PLE table (%.1f GiB) was not locked in RAM: this program may lock only %.1f GiB "
+                                     "(RLIMIT_MEMLOCK). It still works, with the table's pages faulted in but reclaimable; the lock was measured "
+                                     "up to 6%% faster in decode (#4671). In a systemd service set LimitMEMLOCK=infinity, elsewhere run `ulimit -l unlimited`\n",
+                             (double) (a1 - a0) / (1ull << 30), (double) now.rlim_cur / (1ull << 30));
+            else
+                std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): its pages stay faulted in "
+                                     "but may be reclaimed\n", std::strerror(why));
         }
 #endif
     }

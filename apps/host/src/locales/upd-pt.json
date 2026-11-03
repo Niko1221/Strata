@@ -1,0 +1,19 @@
+{
+ "upd01": "Para atualizar o motor, o Strata precisa parar o modelo carregado: {0}.",
+ "upd02": "Primeiro o novo motor é baixado enquanto o modelo continua a responder. Depois o modelo para (as respostas em curso terminam antes), o motor é atualizado e pode iniciar o modelo de novo com as mesmas definições. Os seus modelos e definições são mantidos.",
+ "upd03": "Parar e atualizar",
+ "upd04": "A preparar o novo motor. {0} continua a funcionar até estar pronto.",
+ "upd05": "A parar {0}. As respostas em curso terminam antes.",
+ "upd06": "{0} está parado. A atualizar o motor…",
+ "upd07": "A atualizar o motor",
+ "upd08": "O motor está atualizado",
+ "upd09": "O motor não foi atualizado",
+ "upd10": "O motor está atualizado. Iniciar {0} de novo com as mesmas definições?",
+ "upd11": "A atualização não terminou. O seu motor anterior não foi alterado e continua a funcionar. Iniciar {0} de novo com ele?",
+ "upd12": "Agora não",
+ "upd13": "A iniciar {0}. O carregamento pode demorar alguns minutos.",
+ "upd14": "A iniciar {0} de novo",
+ "upd15": "O modelo não voltou a iniciar",
+ "upd16": "Pode carregá-lo de novo em Modelos.",
+ "upd17": "Está em execução um modelo que não foi iniciado a partir desta aplicação, por isso nada foi alterado. Pare-o e atualize o motor de novo."
+}

@@ -10,6 +10,7 @@ import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
+import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { PreviewResizeHandle } from '../components/PreviewResizeHandle';
 import { DEFAULT_PREVIEW_FRACTION, PREVIEW_SPLIT_KEY, previewWidth } from '../lib/preview-layout';
@@ -17,7 +18,7 @@ import { ComposerControls } from '../components/ComposerControls';
 import { ChatPhotos } from '../components/ChatPhotos';
 import { useChatPhotos, removeChatPhoto } from '../lib/chat-photos';
 import { useNative } from '../lib/native';
-import { mainResult, previewOf } from '../lib/deliverables';
+import { COMPACT_FILES_FROM, mainResult, previewOf } from '../lib/deliverables';
 import { noModelNotice } from '../lib/no-model';
 import { ReasoningBlock } from '../components/ReasoningBlock';
 import { StatusLine } from '../components/StatusLine';
@@ -25,21 +26,24 @@ import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
 import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
-import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
+import { ActivityLine, DraftLines, EditedFiles, FileCard, FilesSummary, SkillsUsed } from '../components/Deliverables';
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
 import { useLiveStatus } from '../lib/live-status';
-import { askQuestion, askSub, askIcon } from '../lib/ask';
+import { ApprovalDock, SCOPE } from '../components/ApprovalCard';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
+import { openExternal } from '../lib/open-external';
+import { busyPlan } from '../lib/while-busy';
+import { composeQuoted, parseQuoted, type Quote } from '../lib/quotes';
 /** Chat — talk to the one loaded model. */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
-import { copyText } from '../lib/clipboard';
+import { addQuote, clearQuotes, removeQuote, createSubagentExample, parkMessage, takeParked, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { CopyBtn, CopyMenuItem, MenuCloseContext } from '../components/CopyBtn';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
@@ -51,6 +55,7 @@ export function ChatScreen() {
     const activeId = useStore((s) => s.activeSession);
     const library = useStore((s) => s.library);
     const streaming = useStore((s) => s.streaming);
+    const whileBusy = useStore(s => s.whileBusy);
     const setup = useStore(s => s.setup);
     const setupFlag = useStore(s => s.setupOpen);
     const setupVisible = location.route === 'setup' || setupFlag || !!setup && !setup.complete && !setup.dismissed;
@@ -67,6 +72,34 @@ export function ChatScreen() {
             markRead(session.id);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [session?.id, messageCount, streaming]);
+    const parked = useStore(s => (session ? s.parked[session.id] : undefined));
+    const quotes = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
+    // Selecting words in a message offers to quote just them (#4785).
+    const [selection, setSelection] = useState<{ text: string; messageId: string; role: 'user' | 'assistant'; x: number; y: number } | null>(null);
+    useEffect(() => {
+        const read = () => {
+            const sel = window.getSelection();
+            const el = scroller.current;
+            if (!sel || sel.isCollapsed || !sel.rangeCount || !el) { setSelection(null); return; }
+            const range = sel.getRangeAt(0);
+            const node = range.commonAncestorContainer;
+            const host = (node instanceof Element ? node : node.parentElement)?.closest('.st-msg');
+            const text = sel.toString().trim();
+            if (!host || !el.contains(host) || text.length < 2) { setSelection(null); return; }
+            const rect = range.getBoundingClientRect();
+            setSelection({ text, messageId: host.getAttribute('data-message-id') ?? '', role: host.classList.contains('st-msg--user') ? 'user' : 'assistant', x: Math.min(window.innerWidth - 96, Math.max(8, rect.left)), y: Math.max(8, rect.top - 40) });
+        };
+        document.addEventListener('selectionchange', read);
+        return () => document.removeEventListener('selectionchange', read);
+    }, [session?.id]);
+    // Messages parked while an answer was written (Send after, Interrupt) go one by one, each when the chat is quiet again.
+    useEffect(() => {
+        if (!session || streaming || !parked?.length)
+            return;
+        const next = takeParked(session.id);
+        if (next !== undefined)
+            void sendMessage(next);
+    }, [streaming, parked?.length, session?.id]);
     const [draft, setDraft] = useState('');
     const draftKey = `strata.chat-draft.${session?.id ?? 'new'}`;
     useEffect(() => {
@@ -164,10 +197,12 @@ export function ChatScreen() {
         replyWasStreaming.current.set(lastReply.id, !!lastReply.streaming);
         if (before !== true || lastReply.streaming || lastReply.error) return;
         const main = mainResult(lastReply.deliverables, lastReply.content);
-        if (!main) return;
+        // No file to open: one whole HTML page in the answer goes to the sidebar too (a snippet keeps its preview button).
+        if (!main) { const page = lastReply.blocks?.some(b => b.kind === 'group') ? null : mainCodePreview(lastReply.id, lastReply.content); if (page) openPreview(page); return; }
         const sessionId = session.id;
         void previewOf(sessionId, main).then(item => { if (session.id === sessionId) openPreview(item); }, () => { });
     }, [lastReply?.id, lastReply?.streaming]);
+    useEffect(() => { setSelectedPreviewId(setupVisible ? null : selectedPreview); return () => setSelectedPreviewId(null); }, [selectedPreview, setupVisible]);
     function closeTab(id: string) {
         const next = closePreviewTab([...previews.map(p => ({ id: p.id })), ...extraTabs], selectedPreview, id);
         setPreviews(previews.filter(p => p.id !== id));
@@ -185,16 +220,23 @@ export function ChatScreen() {
     function openTimeSkip(id: string) { selectPreview(timeSkipTabId(id)); }
     function openLink(url: string) {
         const item = artifactFromUrl(url);
-        if (item)
-            openPreview(item);
+        if (!item)
+            return;
+        // A web address opens in the person's own browser; only a file (a PDF, picture, table, code or Markdown) is shown in the side panel (#4721).
+        if (item.kind === 'website') {
+            void openExternal(url);
+            return;
+        }
+        openPreview(item);
     }
     /* The message list is memoised (#4640 family: Out of Memory in a long chat): a streamed token changes one message, so the others must not
        re-render. These handlers keep one identity for the life of the screen and always call the newest functions above. */
-    const latestHandlers = useRef({ editPrompt, openPreview, openTimeSkip, openLink });
-    latestHandlers.current = { editPrompt, openPreview, openTimeSkip, openLink };
+    const latestHandlers = useRef({ editPrompt, openPreview, closeTab, openTimeSkip, openLink });
+    latestHandlers.current = { editPrompt, openPreview, closeTab, openTimeSkip, openLink };
     const messageHandlers = useMemo(() => ({
         onEditPrompt: (text: string) => latestHandlers.current.editPrompt(text),
         onPreview: (a: PreviewArtifact) => latestHandlers.current.openPreview(a),
+        onClosePreview: (id: string) => latestHandlers.current.closeTab(id),
         onOpenTimeSkip: (id: string) => latestHandlers.current.openTimeSkip(id),
         onOpenLink: (url: string) => latestHandlers.current.openLink(url),
     }), []);
@@ -260,10 +302,17 @@ export function ChatScreen() {
         if (!el || !inner)
             return undefined;
         const ro = new ResizeObserver(() => {
+            if (pinned.current && readerHasSelection(el)) {
+                // Words are selected: the view stays where they are (#3818); the way back to the newest message is offered.
+                pinned.current = false;
+                setAwayFromBottom(distanceFromBottom(el) > PILL_DISTANCE);
+            }
             if (pinned.current)
                 el.scrollTop = el.scrollHeight;
         });
         ro.observe(inner);
+        // The scroller itself shrinks when a question appears above the message box (the approval dock): keep the end in view then too.
+        ro.observe(el);
         return () => ro.disconnect();
     }, [session?.id, session?.messages.length === 0]);
     const textarea = useRef<HTMLTextAreaElement>(null);
@@ -286,6 +335,10 @@ export function ChatScreen() {
         const sent = count > seenMessages.current && session?.messages.at(-1)?.role === 'user';
         seenMessages.current = count;
         // Sending a message always brings the reader to it, as it did before; only the answer's growth waits for the reader.
+        if (pinned.current && !sent && readerHasSelection(el)) {
+            pinned.current = false;
+            setAwayFromBottom(distanceFromBottom(el) > PILL_DISTANCE);
+        }
         if (pinned.current || sent)
             scrollToLatest();
     }, [session?.messages.length, session?.messages.at(-1)?.content, scrollToLatest]);
@@ -387,8 +440,18 @@ export function ChatScreen() {
             // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
             if (!text || !session)
                 return;
+            const plan = busyPlan(whileBusy);
+            const out = quotedMessage(quotes, text);
+            // Interrupt: the answer stops where it is (what is written stays) and the message goes as soon as it has stopped (the effect below sends it).
+            if (plan === 'interrupt') {
+                updateDraft('');
+                clearQuotes(session.id);
+                parkMessage(session.id, out);
+                stopStreaming();
+                return;
+            }
             updateDraft('');
-            void queueMessage(session.id, text).then(ok => { if (!ok) { updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            void queueMessage(session.id, out).then(ok => { if (ok) { clearQuotes(session.id); return; } if (!ok) { if (plan === 'goal') { clearQuotes(session.id); parkMessage(session.id, out); return; } updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
             return;
         }
         const timeSkip = timeSkipPrompt(text);
@@ -402,7 +465,8 @@ export function ChatScreen() {
             if (why) { pushToast('info', tr(why.title), tr(why.message)); return; }
         }
         updateDraft('');
-        void sendMessage(text);
+        if (session) clearQuotes(session.id);
+        void sendMessage(session ? quotedMessage(quotes, text) : text);
     }
     function onComposerKey(_e: React.KeyboardEvent) { }
     if (!session) {
@@ -425,6 +489,7 @@ export function ChatScreen() {
       </>);
     }
     return (<>
+      {tr(selection && session ? <button type="button" className="quote-selection" style={{ left: selection.x, top: selection.y }} onMouseDown={e => e.preventDefault()} onClick={() => { addQuote(session.id, selection.text, selection.messageId, selection.role); window.getSelection()?.removeAllRanges(); setSelection(null); }}>{tr("Quote")}</button> : null)}
       <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
 
       {/* The composer belongs to the conversation column, not the window: with
@@ -455,7 +520,7 @@ export function ChatScreen() {
 
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={messageHandlers.onEditPrompt} onPreview={messageHandlers.onPreview} onOpenTimeSkip={messageHandlers.onOpenTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={messageHandlers.onOpenLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={messageHandlers.onEditPrompt} onPreview={messageHandlers.onPreview} onClosePreview={messageHandlers.onClosePreview} onOpenTimeSkip={messageHandlers.onOpenTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={messageHandlers.onOpenLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
           </div>
@@ -513,6 +578,17 @@ function SlashMenu({ query, commands, cursor, onPick, onHover, }: {
         </button>)))}
     </div>);
 }
+const NO_PARKED: string[] = [];
+/** Whether the reader has words selected inside the transcript: a view that moves under the pointer loses the selection (#3818). */
+function readerHasSelection(scroller: HTMLElement): boolean {
+    const sel = window.getSelection();
+    return !!sel && !sel.isCollapsed && !!sel.anchorNode && scroller.contains(sel.anchorNode) && sel.toString().trim().length > 0;
+}
+const NO_QUOTES: Quote[] = [];
+/** The message that goes out: the quoted passages in their fixed form, then the person's words. A command such as /plan goes out as typed. */
+function quotedMessage(quotes: readonly Quote[], text: string): string {
+    return quotes.length && !text.startsWith('/') ? composeQuoted(quotes.map(q => q.text), text) : text;
+}
 function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session, onPreview, textareaRef, }: {
     draft: string;
     setDraft: (v: string) => void;
@@ -527,6 +603,8 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const clearDraft = useCallback(() => setDraft(''), [setDraft]);
     const photos = useChatPhotos(session?.id), native = useNative();
     const canChat = loaded || native?.instances.some(i => i.status === 'ready');
+    const whileBusy = useStore(s => s.whileBusy), parkedList = useStore(s => (session ? s.parked[session.id] : undefined)) ?? NO_PARKED;
+    const quoteList = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
     const commands = useSlashCommands(clearDraft, setDraft);
     const [cursor, setCursor] = useState(0);
     const [fileError, setFileError] = useState('');
@@ -554,9 +632,12 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     return (<div className="composerwrap">
       <div className="composer">
         <div className="composer__inner">
+          <ApprovalDock sessionId={session?.id}/>
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
           <FolderChip chatId={session?.id} disabled={streaming}/>
           <GoalBar chatId={session?.id}/>
+          {tr(quoteList.length ? <div className="quotes">{tr(quoteList.map(q => <div className="quote" key={q.id}><button type="button" className="quote__body" title={tr("Go to the quoted message")} onClick={() => document.querySelector(`[data-message-id="${CSS.escape(q.messageId)}"]`)?.scrollIntoView({ block: 'center', behavior: scrollBehavior() })}><span className="xs muted">{tr(q.role === 'user' ? "Quoting you" : "Quoting the assistant")}</span><span className="quote__text">{q.text}</span></button><IconBtn name="x" size={14} title={tr("Remove this quote")} onClick={() => removeQuote(session!.id, q.id)}/></div>))}</div> : null)}
+          {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
           <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
@@ -605,6 +686,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
             {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
           </div>
         </div>
+        {tr(streaming && draft.trim() && whileBusy !== 'wait' ? <p className="xs muted composer__busy-hint" role="status">{tr(whileBusy === 'queue' ? "Enter sends it when the answer is done." : "Enter stops the answer here and sends it now.")}</p> : null)}
         <ChatTelemetry session={session}/>
         </div>
       </div>
@@ -622,11 +704,12 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     </div>);
 }
 const Message = memo(MessageView);
-function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
+function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
     message: ChatMessage;
     isLast: boolean;
     onEditPrompt: (text: string) => void;
     onPreview: (a: PreviewArtifact) => void;
+    onClosePreview: (id: string) => void;
     onOpenLink: (url: string) => void;
     onOpenTimeSkip: (id: string) => void;
     timeSkipDone: boolean;
@@ -643,42 +726,48 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
     // A reply with activity lines is drawn piece by piece in the order it came; one without is the plain text it always was.
     const grouped = !!m.blocks?.some(b => b.kind === 'group');
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
+    const sentQuote = m.role === 'user' ? parseQuoted(m.content) : null;
     if (m.role === 'user') {
-        return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
-        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink} imageSession={activeSession}/> : <span className="st-bubble__text">{m.content}</span>}</div>
+        return (<div className="st-msg st-msg--user" data-message-id={m.id} onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
+        <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{sentQuote ? <><SentQuotes quotes={sentQuote.quotes}/><span className="st-bubble__text">{sentQuote.reply}</span></> : m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink} imageSession={activeSession}/> : <span className="st-bubble__text">{m.content}</span>}</div>
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
-            <IconBtn name="copy" title={tr("Copy message")} onClick={() => void copyText(m.content, 'Message', { toast: pushToast })}/>
+            <CopyBtn text={m.content} label="Message" title="Copy message"/>
             <IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
                 const prompt = rewindTo(m.id);
                 if (prompt !== null)
                     onEditPrompt(prompt);
             }}/>
-            <MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu>
+            <MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => activeSession && addQuote(activeSession, m.content, m.id, 'user')}>{tr("Quote")}</button><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu>
           </span>
         </div>
       </div>);
     }
-    return (<div className="st-msg st-msg--assistant" data-error={m.error ? 'true' : undefined}>
+    return (<div className="st-msg st-msg--assistant" data-message-id={m.id} data-error={m.error ? 'true' : undefined}>
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
-      {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
+      {/* In a reply with activity lines the line is the one live cue for a running or finished tool (and the status line below says what it is doing now); the
+          card stays only for what needs the person: a question waiting, a denied or failed call. A card that came and went above the text moved the whole reply. */}
+      {tr((m.tools ?? []).filter(t => !grouped || t.state === 'proposed' || t.state === 'denied' || t.state === 'error').map((t) => (<ToolCard key={t.id} tool={t}/>)))}
 
-      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
+      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus || !!m.drafts?.length) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
-        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
-        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
+        {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} previewId={`${m.id}-b${i}`} onPreview={onPreview} onClosePreview={onClosePreview}/>) : null)}
+        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} previewId={m.id} onPreview={onPreview} onClosePreview={onClosePreview}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
             <i />
             <i />
             <i />
           </span>) : null)}
-        {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
+        {/* a file or command the model is writing right now: its name, growing size and the last lines of it (live data from the host, see ToolDraft) */}
+        {tr(m.streaming && m.drafts?.length && !planCard ? <DraftLines drafts={m.drafts} sessionId={activeSession ?? ''} onPreview={onPreview}/> : null)}
+        {/* the caret follows the text being written; after an activity line it hung on a row of its own and the reply jumped when the text went on */}
+        {tr(m.streaming && m.content && !m.drafts?.length && (!grouped || m.blocks!.at(-1)?.kind === 'text') ? <span className="caret" aria-hidden="true"/> : null)}
       </div> : null)}
       {tr(m.skills?.length && !m.streaming ? <SkillsUsed skills={m.skills}/> : null)}
-      {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></div> : null)}
+      {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.length >= COMPACT_FILES_FROM ? <FilesSummary files={m.deliverables} answer={m.content} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <>{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></>}</div> : null)}
       {tr(m.streaming && isLast && !m.timeSkipId ? <StatusLine sessionId={activeSession} startedAt={Date.parse(m.at) || Date.now()} tokens={m.tokens}/> : null)}
 
       {tr(m.timeSkipId && timeSkipReal && !timeSkipDone && timeSkipRun ? <TimeSkipWorking run={timeSkipRun} sessionId={activeSession ?? ''}/> : m.timeSkipId && (!timeSkipReal || (timeSkipRun?.job?.files?.length ?? 0) > 0) ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
@@ -688,12 +777,13 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
       {tr(!m.streaming && !m.timeSkipId && (m.content || m.error) ? (<div className="st-msg__meta">
           <span className="st-msg__actions">
             {tr(isLast ? <>
-              <IconBtn name="copy" title={tr("Copy response")} onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}/>
+              <CopyBtn text={m.content} label="Response" title="Copy response"/>
               <IconBtn name="refresh" title={tr("Ask again")} onClick={() => void retryLast(m.id)}/>
             </> : null)}
             <MessageMenu label={tr("More response actions")}>
-              {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void copyText(m.content, 'Response', { toast: pushToast })}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
+              {tr(!isLast ? <><CopyMenuItem text={m.content} label="Response">Copy response</CopyMenuItem><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
+              <button role="menuitem" className="menu__item" onClick={() => activeSession && addQuote(activeSession, m.content, m.id, 'assistant')}>{tr("Quote")}</button>
               <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button>
               {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}
             </MessageMenu>
@@ -701,49 +791,39 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, 
         </div>) : null)}
     </div>);
 }
+/** The passages a sent message quoted, one or two lines each; a click shows the rest. */
+function SentQuotes({ quotes }: { quotes: string[] }) {
+    const [open, setOpen] = useState(false);
+    return <div className="sent-quotes" data-open={open || undefined}>{quotes.map((q, i) => <button type="button" key={i} className="sent-quote" aria-expanded={open} title={tr("Show or hide the rest of the quote")} onClick={() => setOpen(v => !v)}><span className="xs muted">{tr("Quoted")}</span><span className="sent-quote__text">{q}</span></button>)}</div>;
+}
 function MessageMenu({ label, children }: {
     label: string;
     children: React.ReactNode;
 }) {
     const [open, setOpen] = useState(false);
     const trigger = useRef<HTMLButtonElement>(null);
-    return <><button ref={trigger} className="st-btn st-btn--icon" aria-label={tr(label)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name="ellipsis" size={16}/></button>{tr(open ? <FloatingMenu anchor={trigger.current} title={tr(label)} onClose={() => setOpen(false)}><div onClick={() => setOpen(false)}>{tr(children)}</div></FloatingMenu> : null)}</>;
+    return <><button ref={trigger} className="st-btn st-btn--icon" aria-label={tr(label)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name="ellipsis" size={16}/></button>{tr(open ? <FloatingMenu anchor={trigger.current} title={tr(label)} onClose={() => setOpen(false)}><MenuCloseContext.Provider value={() => setOpen(false)}><div onClick={() => setOpen(false)}>{tr(children)}</div></MenuCloseContext.Provider></FloatingMenu> : null)}</>;
 }
-const SCOPE: Record<ToolCall['scope'], {
-    label: string;
-    tone: 'plain' | 'info' | 'warn';
-}> = {
-    read: { label: 'Reads', tone: 'plain' },
-    write: { label: 'Writes', tone: 'warn' },
-    shell: { label: 'Runs a command', tone: 'warn' },
-    connected: { label: 'Connected tool', tone: 'info' },
-};
 /**
  * A tool call, with the grant it needs. Approvals are per action and per turn —
  * the model never gets standing permission.
  */
-function ToolCard({ messageId, tool: t }: {
-    messageId: string;
+function ToolCard({ tool: t }: {
     tool: ToolCall;
 }) {
     const scope = SCOPE[t.scope];
     const pending = t.state === 'proposed';
     if (!pending && t.state !== 'running')
         return <details className="disclosure tool-summary"><summary><Icon name="chevron" size={14}/>{tr(t.verb ?? t.name)}{t.target ? <><span>·</span><span className="tool-summary__target" title={t.target}>{t.target}</span></> : null}<span>·</span><Icon name={t.state === 'denied' || t.state === 'error' ? 'x' : 'check'} size={14}/>{tr(t.state === 'denied' ? 'Denied' : t.state === 'error' ? 'Failed' : t.live && t.state === 'done' && t.approved ? 'Approved' : 'Done')}</summary><div><code>{t.preview}</code><p className="small muted">{tr(t.result ?? t.effect)}</p></div></details>;
-    if (pending && t.ask)
-        return <section className="askcard" data-state={t.state} aria-label={tr(askQuestion(t.ask))}>
-      <div className="askcard__top"><span className="askcard__icon"><Icon name={askIcon(t.ask)} size={18}/></span>
-        <div className="askcard__text"><p className="askcard__q">{askQuestion(t.ask)}</p>{askSub(t.ask) ? <p className="askcard__why" title={askSub(t.ask)}>{askSub(t.ask)}</p> : null}</div>
-        <div className="askcard__acts"><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div></div>
-      <details className="askcard__details"><summary><Icon name="chevron" size={11}/>{tr("Details")}</summary><pre>{t.preview}</pre></details>
-    </section>;
+    /* The question and its two buttons are in the dock above the message box (ApprovalDock), so a long reply cannot push them out of view (#4725). */
+    if (pending)
+        return <p className="approval-wait small muted" role="status"><Icon name="clock" size={14}/>{tr("Waiting for your answer below")}</p>;
     return <section className="toolcard toolcard--compact" data-state={t.state} aria-label={t.name}>
     <details className="toolcard__disclosure">
       <summary><Icon name={t.scope === 'shell' ? 'bolt' : 'tool'} size={17}/><span className="toolcard__title">{tr(t.verb ?? t.name)}</span><span className="toolcard__scope xs muted">{tr(scope.label)}</span><Icon name="chevron" className="toolcard__chevron" size={15}/></summary>
       <div className="toolcard__body"><code className="toolcard__preview">{t.preview}</code><p className="small muted">{tr(t.effect)}</p>{tr(t.result ? <p className="small">{t.result}</p> : null)}</div>
     </details>
-    {tr(pending && t.target ? <code className="toolcard__what" title={t.target}>{t.target}</code> : null)}
-    {tr(pending ? <div className="toolcard__quick-actions"><span className="xs muted">{tr("Needs your approval")}</span><Btn size="sm" onClick={() => resolveTool(messageId, t.id, false)}>{tr("Deny")}</Btn><Btn variant="primary" size="sm" icon="check" onClick={() => resolveTool(messageId, t.id, true)}>{tr("Approve")}</Btn></div> : <span className="xs muted toolcard__running" role="status">{tr("Running\u2026")}</span>)}
+    <span className="xs muted toolcard__running" role="status">{tr("Running\u2026")}</span>
   </section>;
 }
 export { cx };

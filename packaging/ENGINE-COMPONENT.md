@@ -99,6 +99,7 @@ the manifest file (which holds every file's hash), used as the package's digest 
 Variants in the release: Windows `cuda13`, `cuda12`, `rx9070`, `rdna3`, `rdna2`; Linux `cuda13`, `cuda12`, `rx9070`, `rx7900`, `halo`, `rx6000`, plus
 the SYCL and Metal packages, and (0.2.7.1) Linux ARM64 `cuda13` for the NVIDIA DGX Spark. The packages that also carry `strata-dsv41` (DeepSeek V4.1-Flash, engine 0.1.50) are Windows `cuda13`, Linux `cuda13`
 and Linux `rx9070`. Build `strata-dsv41` with `packaging/build_dsv41_cuda.sh` or `packaging/build_dsv41_windows.bat` and copy it beside `strata` before packaging.
+The separate DeepSeek package (feed member `dsv41`) for Linux AMD is made by `packaging/build_dsv41_hip_linux.sh` (`VARIANT=rx9070`: gfx1200 gfx1201; `VARIANT=rx7900`: gfx1100 gfx1101 gfx1102, built and not run on a real RX 7000 card: the app and setup say so). The Qwen `rx7900` package carries no `strata-dsv41`.
 
 | Package | Built on | Contents | Notes |
 |---|---|---|---|
