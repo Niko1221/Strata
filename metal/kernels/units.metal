@@ -127,6 +127,7 @@ kernel void xprep(device const float* x [[buffer(0)]], device float* xp [[buffer
         raw[plane + j] = v[j] * q2s[j & 7];
         raw[2 * plane + j] = v[j] * p4s[j & 3];
         raw[3 * plane + j] = (j & 1) ? v[j] * 0.00390625f : v[j];
+        if (xh16) put_x16(xp, plane, t * n + 16 * i + j, j, v[j]);
     }
     xp[4 * plane + t * per + i] = s0 + s1;
 }
@@ -319,3 +320,228 @@ static inline float unit_combine(thread const float* q, float4 sc, thread const 
     }
     return sc.x * (s0 + s1) + sc.y * (s2 + s3) - (sc.z * xsum[0] + sc.w * xsum[1]);
 }
+
+#ifdef STRATA_METAL_F16   // window.cpp compiles it in only under STRATA_METAL_F16=1
+// ---- the fp16 window path (opt-in, STRATA_METAL_F16): the same decode into half, the window's x as a half plane, the
+// products of a half unit (16 weights, 8 for Q2_0) summed in half, the scales and the sum across units in float.
+// Unguarded: a product or a half unit's sum past 65504 is inf (IQ4_XS from |x| ~516, Q6_K ~1040, Q5_K ~2113, Q2_0
+// ~21835; up to 8x lower for same-sign runs), and |x| below ~2^-6 (2^-8 kinds) or ~2^-8 (Q2_0's 4^-3) is subnormal.
+static inline void bytes2h(ushort w, thread half* q) {
+    q[0] = half(w & 0xFF);
+    q[1] = half(w & 0xFF00);
+}
+template <int F> struct Dec16;
+template <> struct Dec16<T_Q3_K> {
+    static inline void run(device const uchar* row, int u, thread half* q, thread float4& sc, threadgroup const uint*) {
+        device const uchar* b = row + (u >> 3) * 110;
+        const int n = (u >> 2) & 1, j = u & 3;
+        device const packed_ushort4* qv = (device const packed_ushort4*)(b + 32 + 32 * n);
+        device const packed_ushort4* hv = (device const packed_ushort4*)b;
+        ushort qq[16], hm[16];
+        for (int v = 0; v < 4; ++v) {
+            const ushort4 a4 = ushort4(qv[v]), h4 = ushort4(hv[v]);
+            qq[4 * v] = a4.x; qq[4 * v + 1] = a4.y; qq[4 * v + 2] = a4.z; qq[4 * v + 3] = a4.w;
+            hm[4 * v] = h4.x; hm[4 * v + 1] = h4.y; hm[4 * v + 2] = h4.z; hm[4 * v + 3] = h4.w;
+        }
+        device const uchar* s = b + 96;
+        const int i1 = 8 * n + 2 * j, i2 = i1 + 1;
+        const int l1 = (i1 < 8 ? s[i1] & 0xF : s[i1 - 8] >> 4) | (((s[8 + (i1 & 3)] >> (2 * (i1 >> 2))) & 3) << 4);
+        const int l2 = (i2 < 8 ? s[i2] & 0xF : s[i2 - 8] >> 4) | (((s[8 + (i2 & 3)] >> (2 * (i2 >> 2))) & 3) << 4);
+        const float d = rdh(b + 108);
+        const int hs = 4 * n + j;
+        for (int w = 0; w < 8; ++w) {
+            bytes2h(((qq[w] >> (2 * j)) & 0x0303) | (((hm[w] >> hs) & 0x0101) << 2), q + 2 * w);
+            bytes2h(((qq[w + 8] >> (2 * j)) & 0x0303) | (((hm[w + 8] >> hs) & 0x0101) << 2), q + 16 + 2 * w);
+        }
+        const float d1 = d * float(l1 - 32), d2 = d * float(l2 - 32);
+        sc = float4(d1, d2, 4.0f * d1, 4.0f * d2);
+    }
+};
+// Q3_K's prepared x (32 contiguous of the 2^-8 plane, sums per 16 in float) from the half plane
+template <int F> struct X16;
+template <> struct X16<T_Q3_K> {
+    static inline void load(device const half* xp, device const float* s16, int u, thread half* xs, thread float* xsum) {
+        device const half4* v = (device const half4*)(xp + 32 * u);
+        for (int k = 0; k < 8; ++k) {
+            const half4 a = v[k];
+            xs[4 * k] = a.x; xs[4 * k + 1] = a.y; xs[4 * k + 2] = a.z; xs[4 * k + 3] = a.w;
+        }
+        xsum[0] = s16[2 * u];
+        xsum[1] = s16[2 * u + 1];
+    }
+};
+template <int UNIT>
+static inline float unit_combine16(thread const half* q, float4 sc, thread const half* xs, thread const float* xsum) {
+    constexpr int H = UNIT / 2;
+    half s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+    for (int j = 0; j < H; j += 2) {
+        s0 = fma(q[j], xs[j], s0);
+        s1 = fma(q[j + 1], xs[j + 1], s1);
+        s2 = fma(q[H + j], xs[H + j], s2);
+        s3 = fma(q[H + j + 1], xs[H + j + 1], s3);
+    }
+    return sc.x * float(s0 + s1) + sc.y * float(s2 + s3) - (sc.z * xsum[0] + sc.w * xsum[1]);
+}
+// a 32-bit word of nibble bytes (the K-quants' mask trick) split into two 16-bit halves: the bytes come out with the
+// factors 1, 2^8, 1, 2^8 - the 2^-8 plane, which half holds (values <= 31 * 256)
+static inline void bytes4h(uint w, thread half* q) {
+    bytes2h(ushort(w & 0xFFFFu), q);
+    bytes2h(ushort(w >> 16), q + 2);
+}
+template <> struct Dec16<T_Q4_K> {
+    static inline void run(device const uchar* row, int u, thread half* q, thread float4& sc, threadgroup const uint*) {
+        device const uchar* b = row + (u >> 3) * 144;
+        const int c = (u >> 1) & 3, m = u & 1;
+        const float d = rdh(b), dm = rdh(b + 2);
+        float s1, m1, s2, m2;
+        scale_min_k4(2 * c, b + 4, s1, m1);
+        scale_min_k4(2 * c + 1, b + 4, s2, m2);
+        device const uint* qp = (device const uint*)(b + 16 + 32 * c + 16 * m);
+        for (int w = 0; w < 4; ++w) {
+            const uint v = qp[w];
+            bytes4h(v & 0x0F0F0F0Fu, q + 4 * w);
+            bytes4h((v >> 4) & 0x0F0F0F0Fu, q + 16 + 4 * w);
+        }
+        sc = float4(d * s1, d * s2, dm * m1, dm * m2);
+    }
+};
+template <> struct Dec16<T_Q5_K> {
+    static inline void run(device const uchar* row, int u, thread half* q, thread float4& sc, threadgroup const uint*) {
+        device const uchar* b = row + (u >> 3) * 176;
+        const int c = (u >> 1) & 3, m = u & 1;
+        const float d = rdh(b), dm = rdh(b + 2);
+        float s1, m1, s2, m2;
+        scale_min_k4(2 * c, b + 4, s1, m1);
+        scale_min_k4(2 * c + 1, b + 4, s2, m2);
+        device const uint* qp = (device const uint*)(b + 48 + 32 * c + 16 * m);
+        device const uint* hp = (device const uint*)(b + 16 + 16 * m);
+        for (int w = 0; w < 4; ++w) {
+            const uint v = qp[w], h = hp[w];
+            bytes4h((v & 0x0F0F0F0Fu) | (((h >> (2 * c)) & 0x01010101u) << 4), q + 4 * w);
+            bytes4h(((v >> 4) & 0x0F0F0F0Fu) | (((h >> (2 * c + 1)) & 0x01010101u) << 4), q + 16 + 4 * w);
+        }
+        sc = float4(d * s1, d * s2, dm * m1, dm * m2);
+    }
+};
+template <> struct Dec16<T_Q6_K> {
+    static inline void run(device const uchar* row, int u, thread half* q, thread float4& sc, threadgroup const uint*) {
+        device const uchar* b = row + (u >> 3) * 210;
+        const int n = (u >> 2) & 1, m = (u >> 1) & 1, p = u & 1;
+        device const ushort* ql = (device const ushort*)(b + 64 * n + 32 * p + 16 * m);
+        device const ushort* qh = (device const ushort*)(b + 128 + 32 * n + 16 * m);
+        device const char* scs = (device const char*)(b + 192);
+        const float d = rdh(b + 208);
+        for (int w = 0; w < 8; ++w) {
+            const ushort l = ql[w], h = qh[w];
+            bytes2h((l & 0x0F0F) | (((h >> (2 * p)) & 0x0303) << 4), q + 2 * w);
+            bytes2h(((l >> 4) & 0x0F0F) | (((h >> (2 * p + 4)) & 0x0303) << 4), q + 16 + 2 * w);
+        }
+        const float d1 = d * float(scs[8 * n + m + 2 * p]), d2 = d * float(scs[8 * n + m + 2 * p + 4]);
+        sc = float4(d1, d2, 32.0f * d1, 32.0f * d2);
+    }
+};
+// IQ4_XS: the grid's values are half already (load_tab), no conversion
+template <> struct Dec16<T_IQ4_XS> {
+    static inline void run(device const uchar* row, int u, thread half* q, thread float4& sc, threadgroup const uint* tab) {
+        device const uchar* b = row + (u >> 3) * 136;
+        const int ui = u & 7;
+        device const ushort* p = (device const ushort*)(b + 8 + 16 * ui);
+        for (int j = 0; j < 8; ++j) {
+            const ushort v = p[j];
+            const half2 w0 = as_type<half2>(tab[v & 255]), w1 = as_type<half2>(tab[v >> 8]);
+            q[2 * j] = w0.x;
+            q[2 * j + 16] = w0.y;
+            q[2 * j + 1] = w1.x;
+            q[2 * j + 17] = w1.y;
+        }
+        const uint sh = *(device const ushort*)(b + 2);
+        const int ls = int((b[4 + (ui >> 1)] >> (4 * (ui & 1))) & 15) | int(((sh >> (2 * ui)) & 3) << 4);
+        const float s = rdh(b) * float(ls - 32);
+        sc = float4(s, s, 0.0f, 0.0f);
+    }
+};
+// Q2_0 (units of 16): each 16-bit word split into bytes, the code masked in place within its byte - factors 4^(i % 4),
+// so the half plane is x * 4^-(i % 4) (no smaller than 1/64)
+template <> struct Dec16<T_Q2_0> {
+    static inline void run(device const uchar* row, int u, thread half* q, thread float4& sc, threadgroup const uint*) {
+        device const uchar* b = row + (u >> 2) * 18;
+        device const ushort* p = (device const ushort*)(b + 2 + 4 * (u & 3));
+        const ushort a = p[0], c = p[1];
+        const ushort a1 = a >> 8, c1 = c >> 8;
+        for (int j = 0; j < 4; ++j) {
+            const ushort mk = ushort(3u << (2 * j));
+            q[j] = half(a & mk);
+            q[4 + j] = half(a1 & mk);
+            q[8 + j] = half(c & mk);
+            q[12 + j] = half(c1 & mk);
+        }
+        const float d = rdh(b);
+        sc = float4(d, d, d, 0.0f);
+    }
+};
+static inline void load16h(device const half* p, thread half* xs) {
+    device const half4* v = (device const half4*)p;
+    for (int k = 0; k < 4; ++k) {
+        const half4 a = v[k];
+        xs[4 * k] = a.x; xs[4 * k + 1] = a.y; xs[4 * k + 2] = a.z; xs[4 * k + 3] = a.w;
+    }
+}
+template <> struct X16<T_Q4_K> {
+    static inline void load(device const half* xp, device const float* s16, int u, thread half* xs, thread float* xsum) {
+        const int p0 = 256 * (u >> 3) + 64 * ((u >> 1) & 3) + 16 * (u & 1);
+        load16h(xp + p0, xs);
+        load16h(xp + p0 + 32, xs + 16);
+        xsum[0] = s16[p0 >> 4];
+        xsum[1] = s16[(p0 >> 4) + 2];
+    }
+};
+template <> struct X16<T_Q5_K> {
+    static inline void load(device const half* xp, device const float* s16, int u, thread half* xs, thread float* xsum) {
+        X16<T_Q4_K>::load(xp, s16, u, xs, xsum);
+    }
+};
+template <> struct X16<T_Q6_K> {
+    static inline void load(device const half* xp, device const float* s16, int u, thread half* xs, thread float* xsum) {
+        const int p0 = 256 * (u >> 3) + 128 * ((u >> 2) & 1) + 32 * (u & 1) + 16 * ((u >> 1) & 1);
+        load16h(xp + p0, xs);
+        load16h(xp + p0 + 64, xs + 16);
+        xsum[0] = s16[p0 >> 4];
+        xsum[1] = s16[(p0 >> 4) + 4];
+    }
+};
+template <> struct X16<T_IQ4_XS> {
+    static inline void load(device const half* xp, device const float*, int u, thread half* xs, thread float* xsum) {
+        load16h(xp + 32 * u, xs);
+        load16h(xp + 32 * u + 16, xs + 16);
+        xsum[0] = xsum[1] = 0.0f;
+    }
+};
+template <> struct X16<T_Q2_0> {
+    static inline void load(device const half* xp, device const float* s16, int u, thread half* xs, thread float* xsum) {
+        load16h(xp + 16 * u, xs);
+        xsum[0] = s16[u];
+        xsum[1] = 0.0f;
+    }
+};
+
+// Q2_0 with raw x (the routed down over h): q = code - 1 in half
+template <> struct Dec16<T_Q2_0R> {
+    static inline void run(device const uchar* row, int u, thread half* q, thread float4& sc, threadgroup const uint*) {
+        device const uchar* b = row + (u >> 2) * 18;
+        device const ushort* p = (device const ushort*)(b + 2 + 4 * (u & 3));
+        const ushort a = p[0], c = p[1];
+        for (int j = 0; j < 8; ++j) {
+            q[j] = half((a >> (2 * j)) & 3) - 1.0h;
+            q[8 + j] = half((c >> (2 * j)) & 3) - 1.0h;
+        }
+        const float d = rdh(b);
+        sc = float4(d, d, 0.0f, 0.0f);
+    }
+};
+template <> struct X16<T_Q2_0R> {
+    static inline void load(device const half* xp, device const float*, int u, thread half* xs, thread float* xsum) {
+        load16h(xp + 16 * u, xs);
+        xsum[0] = xsum[1] = 0.0f;
+    }
+};
+#endif   // STRATA_METAL_F16
