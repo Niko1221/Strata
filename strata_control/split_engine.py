@@ -249,15 +249,18 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
     return Decision(True, [], n, untested, need_vram, need_ram)
 
 
-def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_dir: str, draft_vocab: str, context: int,
-                 lanes: int = DEFAULT_LANES, vision: bool = False, cache_mib: int = CONVERSATION_CACHE_MIB) -> dict:
+def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_dir: str | None, draft_vocab: str, context: int,
+                 lanes: int = DEFAULT_LANES, vision: bool = False, cache_mib: int = CONVERSATION_CACHE_MIB, dflash2_pack: str | None = None) -> dict:
     """The run config for strata-split: `base` is the normal run config (its tokenizer, port, log, model name, GPUs and everything else
     stay), and it is kept whole under "split_fallback" so the server can start the normal layer split if this engine refuses."""
     if not decision.use_split:
         raise ValueError("split_config: the decision is not to use the split engine")
     cfg = {k: v for k, v in base.items() if k not in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting")}
     cfg["exe"] = exe
-    cfg["args"] = ["--native", native, "--mtp", mtp_dir, "--draft-vocab", draft_vocab, "--max-context", str(context),
+    # the drafter: the model's draft layer (--mtp), or, when the person chose DFlash2 by name, DFlash2's pack (--draft dflash2 --draft-model PACK; one drafter a lane on the
+    # first card, the MTP layer is not loaded)
+    drafter = ["--draft", "dflash2", "--draft-model", dflash2_pack] if dflash2_pack else ["--mtp", mtp_dir]
+    cfg["args"] = ["--native", native, *drafter, "--draft-vocab", draft_vocab, "--max-context", str(context),
                    "--spec", "6", "--lookup", "15", "--conversation-cache-mib", str(cache_mib), "--batch", str(min(MAX_LANES, max(lanes, 1)))]
     if vision:
         cfg["args"].append("--vision")
@@ -268,7 +271,7 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them
     # and every start would fall back to the layer split). The fallback keeps the person's own choice (or none: Auto), so the layer split that starts
     # instead gets DFlash2 as usual.
-    cfg["drafting"] = "mtp"
+    cfg["drafting"] = "dflash2" if dflash2_pack else "mtp"   # (drafting.apply leaves a split run config with --draft dflash2 as it is)
     cfg["split_engine_note"] = decision.line
     return cfg
 
@@ -412,7 +415,7 @@ def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None 
         if m == "off":
             return False
         chosen = str(cfg.get("drafting") or "auto").lower()
-        if chosen in ("dflash2", "off") or cfg.get("user_args") or cfg.get("replicas"):
+        if chosen == "off" or (chosen == "dflash2" and m != "on") or cfg.get("user_args") or cfg.get("replicas"):
             return False
         if kv not in (None, "int8"):                         # the split keeps int8 (apply_to_config says the same)
             return False
@@ -467,7 +470,9 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     # split with DFlash2 on both tested cards (AUTO_SPLIT_BEATS_DFLASH2, numbers in docs/SPLIT_ENGINE.md). The person's own "dflash2" (or "off", which the
     # split cannot do: it needs the draft layer) keeps the layer split; "mtp" is what the split runs.
     chosen = str(cfg.get("drafting") or "auto").lower()
-    if chosen == "dflash2":
+    # DFlash2 chosen by name runs on the split engine only when the person asked for the split engine too (--split-engine on): Auto keeps the layer split with DFlash2
+    # (the split engine with DFlash2 was not faster than with the MTP draft layer at 4 users or on sampled text, RESULTS-SPLITDF2.md, so nothing picks it by itself)
+    if chosen == "dflash2" and mode_ != "on":
         return Decision(False, ["DFlash2 drafting was chosen, which the all-cards split engine does not run"])
     if chosen == "off":
         return Decision(False, ["drafting is off, and the all-cards split engine needs the draft layer"])
@@ -499,8 +504,17 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     exe = exe_for_cards(d.cards, cards[0].cc, cards[0].arch_name) if amd else exe_for_cards(d.cards, cards[0].cc)
     if not exe:
         return Decision(False, [f"this engine package has no strata-split-{d.cards}" + (f"-{cards[0].arch_name}" if amd else "")], d.cards)
+    df2_pack = None
     mtp = _flag(args, "--mtp")
-    if not mtp:
+    if chosen == "dflash2":                                  # (mode "on"): the drafter is DFlash2's pack, the MTP layer is not loaded and not needed
+        if not exe_takes_dflash2(exe):
+            return Decision(False, ["DFlash2 drafting was chosen, which the all-cards split engine does not run"], d.cards)
+        from strata_control import drafting
+        folder = data_dir or drafting.data_dir_of(args)
+        if not folder or not drafting.pack_ready(folder):
+            return Decision(False, [NO_DF2_PACK], d.cards)
+        df2_pack = str(drafting.pack_path(folder))
+    elif not mtp:
         return Decision(False, ["the model has no draft layer files (--mtp)"], d.cards)
     vocab = None
     for folder in (pathlib.Path(exe).parent, pathlib.Path(data_dir) if data_dir else None, pathlib.Path(cfg.get("cwd") or ".") / "data"):
@@ -511,10 +525,35 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
         return Decision(False, ["draft_vocab_en.bin is missing"], d.cards)
     lanes = int(cfg.get("parallel") or _flag(args, "--batch") or (AMD_DEFAULT_LANES if amd else DEFAULT_LANES))
     new = split_config(cfg, d, exe=exe, native=native, mtp_dir=mtp, draft_vocab=vocab, context=context, lanes=lanes,
-                       vision=bool(cfg.get("vision")) or "--vision" in args)
+                       vision=bool(cfg.get("vision")) or "--vision" in args, dflash2_pack=df2_pack)
     cfg.clear()
     cfg.update(new)
     return d
+
+
+#: Why the split engine is not started when DFlash2 was chosen by name with --split-engine on and its drafter file is not on this computer.
+NO_DF2_PACK = "the DFlash2 drafter isn't downloaded yet"       # (the same words as drafting.NOT_DOWNLOADED, already in the catalog)
+#: Text the split engine program carries when it takes `--draft dflash2` (src/split/tools/sfnx.cpp); an older strata-split-N has none and would stop at start on the flag.
+_MARK_SPLIT_DF2 = b"--draft dflash2 needs --native, --draft-model PACK"
+_split_df2: dict[tuple[str, int, int], bool] = {}
+
+
+def exe_takes_dflash2(exe) -> bool:
+    """Does the strata-split-N program at `exe` take `--draft dflash2 --draft-model PACK`? Read from the file's text (it is never started for this), once per path, size and time."""
+    import mmap
+
+    if not exe:
+        return False
+    try:
+        path = pathlib.Path(exe)
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+        if key not in _split_df2:
+            with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                _split_df2[key] = data.find(_MARK_SPLIT_DF2) >= 0
+        return _split_df2[key]
+    except (OSError, ValueError):
+        return False
 
 
 # ---- the engine package and the draft layer (the Terminal's launcher and the app's start share these) ---------------------------------------
@@ -566,7 +605,8 @@ def apply_run_config(cfg: dict, *, allow_untested: bool = False, exe_for_cards=N
     args = [str(a) for a in cfg.get("args") or []]
     mtp_dir = _flag(args, "--mtp")
     # the split runs the model's own draft layer (--mtp) and refuses to start without it: a start whose draft-layer folder is not on disk stays on the layer split
-    if mtp_dir and not draft_layer_present(mtp_dir):
+    # (not for DFlash2 chosen by name with --split-engine on: that drafter is DFlash2's pack, the layer is not loaded)
+    if mtp_dir and not draft_layer_present(mtp_dir) and not (str(cfg.get("drafting") or "").lower() == "dflash2" and m == "on"):
         line = "The all-cards split engine needs the model's draft layer (the MTP), which is not downloaded; using the normal layer split."
         return Decision(False, [line], quiet=m != "on"), (line if m == "on" else ""), True
     before = dict(cfg)

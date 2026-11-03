@@ -75,7 +75,7 @@ def _inputs(a) -> dict:
         mode = "mtp"                                         # the all-cards split engine runs the MTP draft layer: the app fetches that, not DFlash2's drafter
     return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": a.family, "data_dir": data,
             "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
-            "blocked": drafting.blocked_by(args, slots=cfg.get("parallel") if isinstance(cfg.get("parallel"), int) else 0)}
+            "blocked": drafting.blocked_by(args, slots=cfg.get("parallel") if isinstance(cfg.get("parallel"), int) else 0, named=drafting.normalize(mode) == "dflash2", backend=backend)}
 
 
 def run(a) -> int:
