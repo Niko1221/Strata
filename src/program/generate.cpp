@@ -155,6 +155,8 @@ void set_batch_slots(int n);   // metal/src/engine/window.cpp: how many --batch 
 bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only, std::string& err);
 std::string draft_vocab_default();   // metal/src/engine/window.cpp: the packaged default draft subset (data/draft_vocab.bin)
 bool draft_vocab_whole_head();       // STRATA_METAL_DRAFT_VOCAB=full
+// session files: the MTP GGUF the window loads (a model input of the fingerprint), empty without --mtp
+const std::string& mtp_gguf_path();   // metal/src/engine/window.cpp
 }
 #endif
 
@@ -11457,7 +11459,13 @@ int main(int argc, char** argv) {
                 in.embedding = o.embd_gguf;
                 in.ple = o.ple_gguf;
                 in.pack = o.pack;
+#if defined(STRATA_GPU_METAL)
+                // the Mac's drafter is the MTP GGUF beside the rt directory (window.cpp mtp_load): its rt directory
+                // holds draft_vocab.bin only, none of the pack's dense.bin / dense.txt / experts.bin
+                in.mtp = o.mtp.empty() ? std::string() : strata::metal_engine::mtp_gguf_path();
+#else
                 in.mtp = o.mtp.empty() ? std::string() : o.mtp + "/dense.bin";
+#endif
                 if (srcp != nullptr) in.experts = srcp->model_inputs();
                 std::vector<strata::core::SessionModelFile> files = strata::core::session_model_inputs(in);
                 // the pack's other files the loader reads (weights.cpp, expert_layout.cpp)
@@ -11468,7 +11476,9 @@ int main(int argc, char** argv) {
                     if (srcp == nullptr) files.push_back({"pack experts.bin", o.pack + "/experts.bin", true});
                 }
                 if (!o.mtp.empty()) {
+#if !defined(STRATA_GPU_METAL)   // (Metal: the drafter is the one GGUF above)
                     for (const char* n : {"dense.txt", "experts.bin"}) files.push_back({std::string("mtp ") + n, o.mtp + "/" + n});
+#endif
                     files.push_back({"mtp draft_vocab.bin", o.mtp + "/draft_vocab.bin", true});
                 }
                 uint64_t fp = 0;
