@@ -2629,6 +2629,29 @@ strata::kernels::cpu::PoolAffinity measure_pool_affinity(strata::core::ExpertSou
 std::thread g_warm_thr;
 struct WarmJoin { ~WarmJoin() { if (g_warm_thr.joinable()) g_warm_thr.join(); } } g_warm_join;
 
+/// The ceiling of the CPU/PCIe miss share the auto rules use (PcieAuto, its start value and the later stages of a layer split).  0.60 is the
+/// ceiling the rule shipped with; STRATA_PCIE_SHARE_MAX=<0.10..1.0> moves it (a tester switch, HYBRID round 0211): with a weak CPU pool the rule
+/// link / (link + 1.85 R) wants more than 0.60 and the clamp then leaves the CPU pool the bottleneck of every window.
+static double pcie_share_max() {
+    static const double v = [] {
+        const char* e = std::getenv("STRATA_PCIE_SHARE_MAX");
+        const double x = e != nullptr && e[0] != 0 ? std::atof(e) : 0.60;
+        return std::min(1.0, std::max(0.10, x));
+    }();
+    return v;
+}
+
+/// The pool factor k of the share rule link / (link + k R).  1.85 (the shipped value) fits a strong pool, whose reads of the experts compete with the
+/// uploads for RAM bandwidth.  A weak pool is compute-bound and wants a smaller k: 4 pool workers (R about 12 GB/s of expert bytes, RTX PRO 6000, 12 GB
+/// free) ran best at a share of 0.85, the rule gave 0.70 (k = 0.8 would give 0.85).  STRATA_PCIE_K_RULE=1 (a tester switch, HYBRID round 0211, default off)
+/// lets k fall from 1.85 at R >= 30 GB/s of expert bytes to 0.8 at R <= 12, linearly between; a pool at or above 30 GB/s gets exactly the shipped k.
+static double pcie_pool_k(double r) {
+    static const bool on = [] { const char* e = std::getenv("STRATA_PCIE_K_RULE"); return e != nullptr && e[0] == '1'; }();
+    if (!on || r >= 30.0) return 1.85;
+    if (r <= 12.0) return 0.8;
+    return 0.8 + (r - 12.0) / 18.0 * (1.85 - 0.8);
+}
+
 // 0.1.42, CUDA single-GPU serve, no --pcie-frac: the share refined from what the CPU pool measures in the first decode
 // windows.  The balance share of the missed experts is link / (link + CPU rate).  The link is the start-up probe; the CPU
 // rate is the expert bytes over the pool's wall time per missed expert (ExpertDispatch::ms_run / multi_misses), which the
@@ -2665,7 +2688,7 @@ struct PcieAuto {
         if (++updates >= 3) on = false;
         if (!(tc > 1.0) || !(blob_bytes > 0.0) || !(link_gbps > 0.0)) return -1.0;
         const double r = blob_bytes / (tc * 1e-6) / 1e9;
-        const double f = std::min(0.60, std::max(0.10, std::round(link_gbps / (link_gbps + kPoolFactor * r) * 20.0) / 20.0));
+        const double f = std::min(pcie_share_max(), std::max(0.10, std::round(link_gbps / (link_gbps + pcie_pool_k(r) * r) * 20.0) / 20.0));
         *tc_us = tc;
         *rate = r;
         return std::fabs(f - cur) < 0.025 ? -1.0 : f;
@@ -12156,7 +12179,7 @@ int main(int argc, char** argv) {
 #endif
             if (new_start) {
                 const double r = std::min(65.0, 4.0 * (double) pool.workers());
-                const double f0 = std::min(0.60, std::max(0.10, std::round(o.pcie_probe_gbps / (o.pcie_probe_gbps + PcieAuto::kPoolFactor * r) * 20.0) / 20.0));
+                const double f0 = std::min(pcie_share_max(), std::max(0.10, std::round(o.pcie_probe_gbps / (o.pcie_probe_gbps + pcie_pool_k(r) * r) * 20.0) / 20.0));
                 std::fprintf(stderr, "strata serve: PCIe share: start %.2f from %d pool workers (assumed %.0f GB/s of expert bytes) and the %.1f GB/s link (was %.2f)\n",
                              f0, pool.workers(), r, o.pcie_probe_gbps, o.pcie_frac);
                 o.pcie_frac = f0;
@@ -12247,8 +12270,8 @@ int main(int argc, char** argv) {
             for (int st = 1; st < n_stages; ++st) {
                 GpuStage& gs = *stages[(size_t) st - 1];
                 if (!(gs.link_gbps > 0.0)) continue;
-                gs.pcie_frac = std::min(0.60, std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
-                                   PcieAuto::kPoolFactor * rate) * 20.0) / 20.0));
+                gs.pcie_frac = std::min(pcie_share_max(), std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
+                                   pcie_pool_k(rate) * rate) * 20.0) / 20.0));
                 split_drive.pcie_num[st] = num_of(gs.pcie_frac);
                 split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
                 std::fprintf(stderr, "strata serve: PCIe share: stage %d (link %.1f GB/s) -> pcie_frac %.2f\n", st + 1,
