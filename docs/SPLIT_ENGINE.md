@@ -47,6 +47,16 @@ cases Auto leaves out (2 or 3 R9700 cards, the IQ3_S set on AMD, other AMD cards
 If the engine refuses or fails to start, the server says so in one line and starts the normal layer split (`serve/server.py`,
 `start_engine_or_fallback`). A crash after it was running restarts the same engine (the fallback is for starting only).
 
+## In the desktop app
+
+The app follows the same rule as the Terminal (Linux only, so the Windows and macOS apps never see it). On a computer where the rule says yes, Auto in the Models screen is the all-cards
+split engine with the MTP draft layer: the plan (`strata drafting plan`, no `--no-split`) says `split` and, when the draft layer is not on the disk, `mtp_needed` (about 5.2 GB); the Load
+fetches that layer once through the same installer step the MTP choice uses (it names the model's own files folder, so the model is not downloaded again), and the start asks Control
+(`strata split-engine apply`) to turn the run config the app built into the split engine's, with the app's request slots (default 4) as the lanes (1 to 8). A choice the person made keeps
+its meaning: DFlash2 or Off stay on the layer split, and the app asks the rule with the choice in hand, so Auto on the screen over a saved DFlash2 is Auto. If the draft layer cannot be
+downloaded, the Load says so in one line and goes on with the layer split and the plan DFlash2's again (`--no-split` is still there for that call and for a person to use). If the split engine will not come
+up, the server starts the layer split itself (as above) and the load says so in one line. The second try after a failed start is the layer split with one request at a time.
+
 ## No card writes into another card's memory (NVIDIA, and AMD when the check fails)
 
 sFNX as published needs the cards to write into each other (CUDA peer access): GeForce drivers refuse that, and its start checks need the
