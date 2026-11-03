@@ -345,6 +345,15 @@ struct Engine::Pf {
     std::vector<std::function<void()>> post;
     int dev = 0;
     unsigned seq = 0;
+#if FNX_HIP
+    // FNX_PF_PEER small-chunk sum (pf_common.cuh k_pfa_*): this card's mailbox [2 sets][NCARD senders][a2a_rows * N] f32 and flags [NCARD], the peers' pointers, the push kernel's counter
+    int a2a_rows = 0;
+    float4* a2a_box = nullptr;
+    unsigned* a2a_flag = nullptr;
+    unsigned* a2a_cnt = nullptr;
+    float4** a2a_peer_box_d = nullptr;     // device arrays of the peers' pointers (kernel arguments)
+    unsigned** a2a_peer_flag_d = nullptr;
+#endif
     // attention partials (attn_prompt's blocks per owner card) and those received from the other cards; each card's
     // receive slots and flags (slot k: from card + k + 1). FNX_PF_ATTN_DEC=1: the decode attention
     bool attn_dec = false;
@@ -530,6 +539,16 @@ void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* 
         return;
     }
 #endif
+#if FNX_HIP
+    if (p.a2a_rows > 0 && C <= p.a2a_rows) {   // a small chunk: all-to-all and a local sum, one cross-card latency (bit-identical to the ring)
+        const size_t slot4 = (size_t) p.a2a_rows * N / 4, set_off4 = (size_t) (seq & 1u) * NCARD * slot4;
+        const int n4 = C * N / 4;
+        k_pfa_push<<<grid_for((size_t) n4), 256, 0, s>>>((const float4*) x, n4, p.a2a_peer_box_d, p.a2a_peer_flag_d, p.a2a_cnt, g, seq, set_off4, slot4);
+        k_pfa_sum<<<grid_for((size_t) n4), 256, 0, s>>>(x, C, p.a2a_box, p.a2a_flag, g, seq, set_off4, slot4, err);
+        ckc(cudaGetLastError(), "ring (small chunk)");
+        return;
+    }
+#endif
     pf_ring_run(p.ring_ce, p.dev, g, x, C, seq, err, s);
     ckc(cudaGetLastError(), "ring");
 }
@@ -616,6 +635,9 @@ void Engine::pf_seq_reset(unsigned start) {
         if (p.att_pend >= 0) throw std::runtime_error("prefill: sequence numbers restarted with an attention merge pending");
         ckc(cudaSetDevice(p.dev), "set");
         ckc(cudaMemset(p.ring_ce.flags, 0, 2 * PF_RING_STEPS * sizeof(unsigned)), "prompt ring flags");
+#if FNX_HIP
+        if (p.a2a_flag) ckc(cudaMemset(p.a2a_flag, 0, NCARD * sizeof(unsigned)), "small-chunk sum flags");
+#endif
         for (unsigned* f : p.aflags) ckc(cudaMemset(f, 0, ATT_FLAG_ROWS * ATT_PIECES_MAX * sizeof(unsigned)), "attention exchange flags");
         p.seq = p.att_seq[0] = p.att_seq[1] = start;
     }
@@ -749,12 +771,37 @@ void Engine::prefill_alloc() {
             const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD * N;   // a card's share of the rows
             r.send = palloc<__half>(share);
             for (int k = 0; k < 2; ++k) {
-                for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
-                r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
+#if FNX_HIP
+                if (pf_peer_) {   // device memory on this card: the previous card's kernels store into it
+                    for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = ppalloc<__half>(share);
+                    r.ag[k] = ppalloc<__half>((size_t) pf_c_ * N);
+                } else
+#endif
+                {
+                    for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
+                    r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
+                }
                 for (int h = 0; h < NCARD - 1; ++h) r.din[h][k] = palloc<__half>(share);
                 r.dag[k] = palloc<__half>((size_t) pf_c_ * N);
             }
+#if FNX_HIP
+            if (pf_peer_) r.flags = ppalloc<unsigned>(2 * PF_RING_STEPS);
+            else
+#endif
             r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
+#if FNX_HIP
+            if (pf_peer_) {   // the small-chunk sum: FNX_PF_A2A_ROWS rows at most (0: always the ring)
+                const long long ar = env_int("FNX_PF_A2A_ROWS", 256);
+                p->a2a_rows = (int) std::min<long long>(std::max<long long>(ar, 0), pf_c_);
+                if (p->a2a_rows > 0) {
+                    p->a2a_box = ppalloc<float4>((size_t) 2 * NCARD * p->a2a_rows * N / 4);
+                    p->a2a_flag = ppalloc<unsigned>(NCARD);
+                    p->a2a_cnt = palloc<unsigned>(1);
+                    p->a2a_peer_box_d = palloc<float4*>(NCARD);
+                    p->a2a_peer_flag_d = palloc<unsigned*>(NCARD);
+                }
+            }
+#endif
         }
         p->dev = b.dev;
 #if FNX_HIP
@@ -876,6 +923,16 @@ void Engine::prefill_alloc() {
         }
         r.nflags = n.ring_ce.flags;
         r.next_dev = n.dev;
+#if FNX_HIP
+        if (p.a2a_rows > 0) {
+            ckc(cudaSetDevice(p.dev), "set");
+            float4* boxes[NCARD];
+            unsigned* flags[NCARD];
+            for (int d = 0; d < NCARD; ++d) boxes[d] = pf_[d]->a2a_box, flags[d] = pf_[d]->a2a_flag;
+            ckc(cudaMemcpy(p.a2a_peer_box_d, boxes, sizeof boxes, cudaMemcpyHostToDevice), "a2a boxes");
+            ckc(cudaMemcpy(p.a2a_peer_flag_d, flags, sizeof flags, cudaMemcpyHostToDevice), "a2a flags");
+        }
+#endif
         for (int d = 0; d < NCARD; ++d) {
             r.pflags[d] = pf_[d]->ring_ce.flags;
             for (int k = 0; k < 2; ++k) r.pag[d][k] = pf_[d]->ring_ce.ag[k];

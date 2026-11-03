@@ -77,6 +77,9 @@ RAM_SPARE_GIB = 8.0                # left over beside the engine's own RAM
 RAM_PINNED_BUFFERS_GIB = 3.0       # the exchange buffers and heap (smaps: 1.7 GiB pinned + 0.9 heap)
 CONVERSATION_CACHE_MIB = 4096      # parked conversations (host RAM); the engine's own default is 32-128 GiB
 DEFAULT_LANES = 6
+# AMD (4 x R9700, 32 GB): the K/V pool and buffers of 8 lanes at 128K context leave 7.2 GiB free on each card (phaseA-tests/round0211/RESULTS-R9700SPLIT.md), and 8 users
+# at once run in one wave: 350 tok/s against 255 with 6 lanes (two waves). Same arithmetic, only the scheduling differs
+AMD_DEFAULT_LANES = 8
 MAX_LANES = 8                       # the engine: "--batch must be 1..8" (lanes above it, e.g. the AMD four-card default of 32, are cut to it)
 
 
@@ -505,7 +508,7 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
             break
     if not vocab:
         return Decision(False, ["draft_vocab_en.bin is missing"], d.cards)
-    lanes = int(cfg.get("parallel") or _flag(args, "--batch") or DEFAULT_LANES)
+    lanes = int(cfg.get("parallel") or _flag(args, "--batch") or (AMD_DEFAULT_LANES if amd else DEFAULT_LANES))
     new = split_config(cfg, d, exe=exe, native=native, mtp_dir=mtp, draft_vocab=vocab, context=context, lanes=lanes,
                        vision=bool(cfg.get("vision")) or "--vision" in args)
     cfg.clear()
