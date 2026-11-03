@@ -84,5 +84,6 @@
  "fx83": "Prefers the parts of the model already on the graphics card, which makes answers faster on 12 GB cards. Off by default: in long agent sessions it can repeat itself and give weaker results. Turn on if you mostly chat and want the speed.",
  "fx84": "{0} older chats were moved out of the chat list and saved in full",
  "fx85": "The chat list has a size limit. They are saved under {0} and can be brought back from there.",
- "fx86": "A chat could not be backed up, so it stays in the chat list"
+ "fx86": "A chat could not be backed up, so it stays in the chat list",
+ "fx87": "An older chat was moved out of the chat list and saved in full"
 }

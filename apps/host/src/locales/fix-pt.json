@@ -84,5 +84,6 @@
  "fx83": "Prefere as partes do modelo que já estão na placa de vídeo, o que deixa as respostas mais rápidas em placas de 12 GB. Desativado por padrão: em sessões longas de agente ele pode se repetir e dar resultados mais fracos. Ative se você usa principalmente o chat e quer a velocidade.",
  "fx84": "{0} conversas antigas foram retiradas da lista de conversas e guardadas por completo",
  "fx85": "A lista de conversas tem um limite de tamanho. Estão guardadas em {0} e podem ser recuperadas a partir daí.",
- "fx86": "Não foi possível fazer uma cópia de uma conversa, por isso ela continua na lista"
+ "fx86": "Não foi possível fazer uma cópia de uma conversa, por isso ela continua na lista",
+ "fx87": "Uma conversa antiga foi retirada da lista de conversas e guardada por completo"
 }

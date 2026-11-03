@@ -22,8 +22,8 @@ Anleitung zum Ausprobieren: `docs/DEV_BUILD.md`, Abschnitt "Chat-Liste: nichts m
    dieselbe Version nur einmal; bis 64 MB pro Chat.
 4. Erfolg: Hinweis "n ältere Chats wurden … ausgelagert und vollständig gesichert" mit Ordner (bleibt, bis man ihn schließt), und die
    Liste wird neu geschrieben, jetzt ohne die gesicherten Chats.
-5. Fehler: Warnung, der Chat bleibt in der Liste, neuer Versuch frühestens nach 5 Minuten. Es wird nie ein Chat ohne Sicherung
-   weggelassen.
+5. Fehler: Warnung (bleibt stehen, bis man sie schließt), der Chat bleibt in der Liste, neuer Versuch frühestens nach 5 Minuten. Es
+   wird nie ein Chat ohne Sicherung weggelassen.
 6. Zurückholen: Dev-Panel → Rescue listet auch die `overflow-*.json`; "Laden" holt einen Chat als neuesten zurück.
 
 Unter der Grenze ändert sich nichts.
@@ -48,7 +48,7 @@ Unter der Grenze ändert sich nichts.
 | `apps/host/src/lib/chat-overflow.ts` (neu) | Wächter: gesicherte Versionen, Sicherung über den Host, Fehler und Wiederholung |
 | `apps/host/src/lib/store.ts` | Wächter am Writer, Hinweis-Zustand `chatOverflowNotice`, Warnung, Neuschreiben nach Sicherung |
 | `apps/host/src/components/ui.tsx` | Hinweis bei den Toasts, bleibt bis "Schließen" |
-| `apps/host/src/locales/fix-*.json` | drei Texte in allen neun Sprachen |
+| `apps/host/src/locales/fix-*.json` | vier Texte in allen neun Sprachen |
 | `apps/host/server/chat-overflow.mjs` (neu) | `GET`/`POST /api/chat-overflow`, Datei schreiben und auflisten |
 | `apps/host/server/index.mjs` | Route im Dev-Block, nur wenn `chatOverflowGuard` an ist; Rescue liest auch den Overflow-Ordner |
 | `apps/host/server/dev-mode.mjs`, `scripts/dev-validate.mjs`, `dev.config.json` | Schalter `chatOverflowGuard` |
@@ -72,7 +72,27 @@ Unter der Grenze ändert sich nichts.
   Ein erster Lauf fand einen Fehler in meinem französischen Text (gerades Apostroph, Leerzeichen vor ";"); behoben.
 - Validator: 0 Fehler, 0 Warnungen.
 - **Nicht gelaufen**: `dev-check`, pytest (der Python-Teil ist nicht betroffen; den vollständigen Lauf startest du selbst mit
-  geschlossener Live-App). Nicht von Hand im Fenster durchgespielt, weil dafür ein neuer Build nötig ist (siehe unten).
+  geschlossener Live-App).
+
+### Test im Fenster (03.11.2026)
+
+Isolierter Dev-Host aus dem Repo, Port 8795, Daten und Test-Config unter `Documents\Strata-Dev-Logs\chat-guard-test\`, Bedienung per
+Chrome, nur erfundene Test-Chats, Grenze 30.000. **22 von 22 Prüfungen bestanden**:
+- Hinweis auf Englisch und Deutsch; er bleibt stehen und lässt sich schließen.
+- Die Sicherungsdatei liegt im Ordner und hat keinen Titel im Namen.
+- Nach dem Neuladen fehlt der Chat.
+- Rescue listet die Datei; "Laden" holt den Chat zurück und lagert dafür den dann ältesten aus.
+- Bei fehlgeschlagener Sicherung bleibt der Chat und eine Warnung erscheint.
+- Ohne Dev-Schalter gibt es keine Route, keinen Hinweis und keine Datei.
+
+Screenshots und `ERGEBNIS.md` liegen dort.
+
+Dabei gefunden und behoben (zweiter Commit):
+- Die Fehler-Warnung verschwand nach 5 s; jetzt bleibt sie stehen.
+- "1 older chats" hat jetzt einen eigenen Satz in 9 Sprachen.
+- Rescue zeigte "0.0 MB" für kleine Dateien; jetzt KB.
+
+Danach: typecheck ohne Fehler, `npm test` 1200 bestanden, 0 fehlgeschlagen.
 
 ## Ausprobieren
 

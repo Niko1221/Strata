@@ -84,5 +84,6 @@
  "fx83": "Prefiere las partes del modelo que ya están en la tarjeta gráfica, lo que hace las respuestas más rápidas en tarjetas de 12 GB. Desactivado por defecto: en sesiones largas de agente puede repetirse y dar resultados más débiles. Actívalo si sobre todo chateas y quieres la velocidad.",
  "fx84": "{0} chats antiguos se han sacado de la lista de chats y se han guardado completos",
  "fx85": "La lista de chats tiene un límite de tamaño. Están guardados en {0} y se pueden recuperar desde allí.",
- "fx86": "No se pudo hacer una copia de un chat, así que sigue en la lista de chats"
+ "fx86": "No se pudo hacer una copia de un chat, así que sigue en la lista de chats",
+ "fx87": "Un chat antiguo se ha sacado de la lista de chats y se ha guardado completo"
 }

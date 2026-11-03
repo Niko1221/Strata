@@ -130,6 +130,8 @@ export interface AppState {
   actionError: { message: string; label: string; retry: () => void } | null;
   /** Chats the chat-overflow guard (chat-overflow.ts) moved out of the saved list, and where they are saved; kept until dismissed. */
   chatOverflowNotice: { count: number; dir: string } | null;
+  /** The last failed chat backup (the chat stayed in the list); kept until dismissed, so it cannot be missed. */
+  chatOverflowFailure: string | null;
   busy: Record<string, boolean>;
 }
 
@@ -298,6 +300,7 @@ let state: AppState = {
   })(),
   actionError: null,
   chatOverflowNotice: null,
+  chatOverflowFailure: null,
   busy: {},
 };
 
@@ -985,6 +988,10 @@ export function dismissChatOverflowNotice() {
   set({ chatOverflowNotice: null });
 }
 
+export function dismissChatOverflowFailure() {
+  set({ chatOverflowFailure: null });
+}
+
 export async function resetEngine() {
   set({ engine: await api.post<EngineConfig>('/api/engine/reset') });
   pushToast('info', 'Back to recommended', 'Every value returned to the safe default.');
@@ -1094,7 +1101,7 @@ const sessionWriter = createSessionWriter({
 
 setChatOverflowHandlers({
   saved: (count, dir) => set((s) => ({ chatOverflowNotice: { count: (s.chatOverflowNotice?.count ?? 0) + count, dir } })),
-  failed: (message) => pushToast('warn', tr('A chat could not be backed up, so it stays in the chat list'), message),
+  failed: (message) => set({ chatOverflowFailure: message }),
   rewrite: () => persistSessions(state.sessions),
 });
 

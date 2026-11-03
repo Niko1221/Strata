@@ -207,7 +207,7 @@ function Rescue() {
         {error ? <p className="devpanel__err">{error}</p> : null}
         {note ? <p>{note}</p> : null}
         {files.length ? <ul className="devpanel__list">{files.map(f => <li key={f.name}>
-            <div className="devpanel__row"><strong>{f.name}</strong><span className="devpanel__muted">{f.chats ?? '?'} Chats · {(f.bytes / 1e6).toFixed(1)} MB</span><span className="devpanel__spacer" /><button className="devpanel__btn" disabled={busy || !f.chats} onClick={() => void load(f)}>Laden</button></div>
+            <div className="devpanel__row"><strong>{f.name}</strong><span className="devpanel__muted">{f.chats ?? '?'} Chats · {f.bytes < 1e6 ? `${Math.max(1, Math.round(f.bytes / 1e3))} KB` : `${(f.bytes / 1e6).toFixed(1)} MB`}</span><span className="devpanel__spacer" /><button className="devpanel__btn" disabled={busy || !f.chats} onClick={() => void load(f)}>Laden</button></div>
             <div className="devpanel__muted">{Object.entries(f.workspaces).map(([w, n]) => `${w}: ${n}`).join(' · ')}</div>
         </li>)}</ul> : <p className="devpanel__muted">Keine Datei rescued-chats-import-*.json oder overflow-*.json in den Ordnern.</p>}
     </div>;

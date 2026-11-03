@@ -391,7 +391,8 @@ angehefteten Chats weg. In Live passiert das still. In Strata Dev passt der **Ch
    kein Titel im Dateinamen, der steht nur in der Datei; erst eine Temp-Datei, dann umbenannt; dieselbe Chat-Version nur einmal).
 2. Erst wenn die Datei geschrieben ist, darf der Chat aus der gespeicherten Liste. Bis dahin bleibt er drin; die Liste ist dann kurz
    größer als die Grenze.
-3. Schlägt die Sicherung fehl, bleibt der Chat in der Liste und eine Warnung erscheint. Neuer Versuch frühestens nach 5 Minuten.
+3. Schlägt die Sicherung fehl, bleibt der Chat in der Liste und eine Warnung erscheint (bleibt stehen, bis du sie schließt). Neuer
+   Versuch frühestens nach 5 Minuten.
 4. Ein Hinweis bleibt stehen, bis du ihn schließt: "3 ältere Chats wurden aus der Chatliste ausgelagert und vollständig gesichert",
    mit dem Ordner.
 5. Zurückholen: Dev-Panel → **Rescue**. Die `overflow-*.json` stehen dort neben den geretteten Chats; "Laden" holt einen Chat als
