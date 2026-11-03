@@ -180,6 +180,8 @@ export function stepObjective(plan, index) {
     plan.briefing ? String(plan.briefing) : '',
     isViewStep(s.text) ? 'This step is about seeing the result. To show a local image, SVG, HTML page or PDF, use the present tool (a browser cannot open file:// addresses). Never wait for a program to close. If a person is at this computer and you start a browser, start it so the command returns at once (Windows: Start-Process; macOS: open; Linux: xdg-open) and say only that you started it, not that the page rendered. If there is no screen, check the page without a visible window: use the headless browser tool if you have one, otherwise read the file and its script for mistakes, and say in one plain sentence what you could and could not check. Then finish the step.' : '',
     'Do only this step, check that it worked, and then finish the goal.',
+    // Strata Dev (planGuidance): a long closing report of every step fills the chat and with it the context window.
+    activeDevSettings()?.planGuidance ? 'When you are done, close with at most two short sentences: what you changed and whether the check passed. Do not list files or lines, do not repeat what the check did, do not describe the next step.' : '',
     index + 1 < n ? 'The next steps are handled separately: do not start them.' : '',
   ].filter(Boolean).join(' ');
 }

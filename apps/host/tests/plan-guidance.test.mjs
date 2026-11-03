@@ -85,3 +85,19 @@ test('plan hints: a cut plan is named, and so is a point of the request that no 
     assert.equal(parsePlan(reply, 'x').cut, 9);
   } finally { setActiveDevSettings(null); }
 });
+
+test('a plan step asks for a short closing report in Dev, and nothing more than before outside it', async () => {
+  const { stepObjective } = await import('../server/agent/plan.mjs');
+  const plan = { title: 'T', steps: [{ text: 'Write the file', detail: 'one file' }, { text: 'Test it', detail: '' }] };
+  try {
+    setActiveDevSettings(null);
+    const live = stepObjective(plan, 0);
+    assert.doesNotMatch(live, /at most two short sentences/);
+    setActiveDevSettings(devSettings({ planGuidance: { enabled: true } }));
+    const dev = stepObjective(plan, 0);
+    assert.match(dev, /close with at most two short sentences/);
+    assert.equal(dev.replace(/ When you are done, close with[^.]*\.[^.]*\./, ''), live, 'only that sentence is added');
+    setActiveDevSettings(devSettings({ planGuidance: { enabled: false } }));
+    assert.equal(stepObjective(plan, 0), live);
+  } finally { setActiveDevSettings(null); }
+});

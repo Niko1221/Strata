@@ -6,7 +6,11 @@ import { plainFailureText } from '../lib/plain-errors';
 import { Btn, Icon, IconBtn } from './ui';
 import { useDev } from '../dev/dev-state';
 
-const STEP_WORDS = { done: 'done', running: 'working on it', failed: 'failed', skipped: 'skipped', pending: 'waiting' } as const;
+// Strata Dev: English only, like the Dev panel (constants, so the language files need no key).
+const DETAIL_LABEL = 'Details of step';
+const DETAIL_HINT = 'What is in this step (the assistant reads it too)';
+
+const STEP_WORDS ={ done: 'done', running: 'working on it', failed: 'failed', skipped: 'skipped', pending: 'waiting' } as const;
 
 /** The steps with their state: a number, a check once done, a soft glow on the one being worked on. Used in the chat and in the sidebar. */
 export function PlanSteps({ plan }: { plan: Plan }) {
@@ -36,7 +40,7 @@ export function PlanCard({ chatId, planId }: { chatId: string | null | undefined
   const plan = usePlan(chatId);
   const streaming = useStore(s => s.streaming);
   const dev = useDev();   // Strata Dev: the edit field shows a whole step
-  const [editing, setEditing] = useState(false), [draft, setDraft] = useState<string[]>([]), [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false), [draft, setDraft] = useState<string[]>([]), [details, setDetails] = useState<string[]>([]), [busy, setBusy] = useState(false);
   useEffect(() => { setEditing(false); }, [chatId, plan?.id]);
   if (!chatId || !plan || plan.id !== planId) return null;
   const run = async (fn: () => Promise<unknown>) => {
@@ -55,12 +59,13 @@ export function PlanCard({ chatId, planId }: { chatId: string | null | undefined
           // Strata Dev: the whole step is visible (a long step wraps) instead of running out of a one-line field.
           ? <textarea className="st-input" rows={Math.max(1, Math.min(8, Math.ceil(text.length / 60)))} style={{ resize: 'none', overflow: 'hidden' }} value={text} aria-label={tr("Step {0}", [i + 1])} onChange={e => setDraft(d => d.map((t, j) => j === i ? e.target.value : t))}/>
           : <input className="st-input" value={text} aria-label={tr("Step {0}", [i + 1])} onChange={e => setDraft(d => d.map((t, j) => j === i ? e.target.value : t))}/>}
-        <IconBtn name="x" size={15} title={tr("Remove this step")} disabled={draft.length < 2} onClick={() => setDraft(d => d.filter((_, j) => j !== i))}/>
+        <IconBtn name="x" size={15} title={tr("Remove this step")} disabled={draft.length < 2} onClick={() => { setDraft(d => d.filter((_, j) => j !== i)); setDetails(d => d.filter((_, j) => j !== i)); }}/>
+        {dev ? <textarea className="st-input" rows={Math.max(1, Math.min(10, Math.ceil((details[i] ?? '').length / 60)))} style={{ gridColumn: 2, resize: 'none', overflow: 'hidden' }} value={details[i] ?? ''} placeholder={DETAIL_HINT} aria-label={`${DETAIL_LABEL} ${i + 1}`} onChange={e => setDetails(d => draft.map((_, j) => j === i ? e.target.value : d[j] ?? ''))}/> : null}
       </div>)}
-      <Btn size="sm" icon="plus" onClick={() => setDraft(d => [...d, ''])}>{tr("Add a step")}</Btn>
+      <Btn size="sm" icon="plus" onClick={() => { setDraft(d => [...d, '']); setDetails(d => [...draft.map((_, j) => d[j] ?? ''), '']); }}>{tr("Add a step")}</Btn>
     </div>
     <div className="plan__acts">
-      <Btn size="sm" variant="primary" disabled={busy || !draft.some(t => t.trim())} onClick={() => void run(async () => { await planEdit(chatId, plan, draft.map(t => t.trim()).filter(Boolean)); setEditing(false); })}>{tr("Save plan")}</Btn>
+      <Btn size="sm" variant="primary" disabled={busy || !draft.some(t => t.trim())} onClick={() => void run(async () => { await planEdit(chatId, plan, dev ? draft.map((t, i) => ({ text: t.trim(), detail: (details[i] ?? '').trim() })).filter(s => s.text) : draft.map(t => t.trim()).filter(Boolean)); setEditing(false); })}>{tr("Save plan")}</Btn>
       <Btn size="sm" onClick={() => setEditing(false)}>{tr("Cancel")}</Btn>
     </div>
   </section>;
@@ -72,7 +77,7 @@ export function PlanCard({ chatId, planId }: { chatId: string | null | undefined
     {proposed ? <p className="plan__note">{tr("Nothing runs until you approve.")}</p> : null}
     {proposed ? <div className="plan__acts">
       <Btn size="sm" variant="primary" icon="check" disabled={busy || streaming} onClick={() => void run(() => approvePlan(chatId, plan.id))}>{tr("Approve")}</Btn>
-      <Btn size="sm" icon="pencil" disabled={busy} onClick={() => { setDraft(plan.steps.map(s => s.text)); setEditing(true); }}>{tr("Edit")}</Btn>
+      <Btn size="sm" icon="pencil" disabled={busy} onClick={() => { setDraft(plan.steps.map(s => s.text)); setDetails(plan.steps.map(s => s.detail ?? '')); setEditing(true); }}>{tr("Edit")}</Btn>
       <Btn size="sm" disabled={busy} onClick={() => void run(() => planReject(chatId, plan.id))}>{tr("Reject")}</Btn>
       <span className="plan__sp"/>
       <Btn size="sm" icon="bolt" disabled={busy || streaming} onClick={() => void run(() => startPlanGoal(plan.id))}>{tr("Start as goal")}</Btn>

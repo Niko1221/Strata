@@ -95,8 +95,9 @@ export async function loadQueue(chatId: string) {
 }
 
 /** Save the edited steps. Each step keeps its grey detail line when its words did not change. */
-export async function planEdit(chatId: string, plan: Plan, texts: string[]) {
-  const steps = texts.map((text, i) => { const was = plan.steps[i]; return was && was.text === text && was.detail ? { text, detail: was.detail } : text; });
+export async function planEdit(chatId: string, plan: Plan, texts: (string | { text: string; detail: string })[]) {
+  // A step given as { text, detail } (Strata Dev's editor) is sent as it is; a plain text keeps the detail of the step it came from.
+  const steps = texts.map((text, i) => { if (typeof text !== 'string') return text; const was = plan.steps[i]; return was && was.text === text && was.detail ? { text, detail: was.detail } : text; });
   const result = await api.post<{ plan: unknown }>('/api/plan/edit', { sessionId: chatId, planId: plan.id, steps });
   applyPlanFrame(chatId, result.plan);
 }

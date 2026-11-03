@@ -81,4 +81,7 @@ html[data-motion='reduced'] .dev-progress__track i { transition: none; }
 .plan__step[data-clamp='closed'] .plan__text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .plan__step[data-clamp='closed'] .plan__text small { display: none; }
 .goalbar { flex-wrap: wrap; }
-.goalbar > .dev-progress { flex: 1 0 100%; margin: 0; padding: 2px 6px 0 0; }
+.goalbar > .dev-progress { flex: 1 0 100%; margin: 0; padding: 2px 6px 0 0; min-width: 0; max-width: 100%; box-sizing: border-box; }
+/* A long step text must never push the bar wider than its box: the text row clips, the time and percent stay in view. */
+.dev-progress { min-width: 0; }
+.dev-progress__text { overflow: hidden; }
