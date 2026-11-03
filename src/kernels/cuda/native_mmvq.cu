@@ -2293,6 +2293,14 @@ void launch_il_rows(int r, const void* weights, const void* x_il, float* y, int 
     }
 }
 
+// Where column c's int of the position-major copy's entry p * nb + b goes (native_mmvq.hpp): CP-wide entries, or with
+// kQ81IlPmPlanes (sm_75 code) and CP 8 two planes of 4-wide entries, columns 4-7 nb * 32 ints after columns 0-3
+__device__ __forceinline__ std::size_t il_pm_at(int p, int b, int c, int cp, int nb) {
+    const std::size_t e = std::size_t(p) * nb + b;
+    if (!kQ81IlPmPlanes || cp < 8) return e * cp + c;
+    return std::size_t(c >> 2) * (std::size_t(nb) * 32) + e * 4 + (c & 3);
+}
+
 // The interleaved copy (native_mmvq.hpp) of columns already quantized into plain q8_1 blocks, whoever wrote them (the
 // quantizer, a fused norm): the same bytes, one int of a block a thread.
 __global__ void native_q8_1_interleave_kernel(const Q81Block* __restrict__ y, int* __restrict__ bm, int* __restrict__ pm,
@@ -2303,7 +2311,7 @@ __global__ void native_q8_1_interleave_kernel(const Q81Block* __restrict__ y, in
     const Q81Block& blk = y[std::size_t(c) * nb + b];
     const int q = reinterpret_cast<const int*>(blk.qs)[p];
     bm[(std::size_t(b) * 8 + p) * cp + c] = q;
-    pm[(std::size_t(p) * nb + b) * cp + c] = q;
+    pm[il_pm_at(p, b, c, cp, nb)] = q;
     if (p == 0) dl[std::size_t(b) * cp + c] = __low2float(blk.ds);
 }
 
@@ -2329,7 +2337,7 @@ __global__ void native_quantize_q8_1_il_kernel(const float* __restrict__ x, Q81B
     const int nb = n_in / Q8K, c = i / n_in, b = (i - c * n_in) / Q8K, pp = lane >> 2;
     if ((lane & 3) == 0) {
         bm[(std::size_t(b) * 8 + pp) * cp + c] = int(v);
-        pm[(std::size_t(pp) * nb + b) * cp + c] = int(v);
+        pm[il_pm_at(pp, b, c, cp, nb)] = int(v);
     }
     if (lane == 0) dl[std::size_t(b) * cp + c] = __low2float(ds);
 }
