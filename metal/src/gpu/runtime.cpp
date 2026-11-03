@@ -175,8 +175,22 @@ const Alloc* find(const void* p, size_t* off) {
     return nullptr;
 }
 
+#if defined(STRATA_DS4_RUNTIME)
+// The engine's host threads (the prompt path, the loader, the expert cache) have no autorelease pool, and metal-cpp's
+// commandBuffer() / computeCommandEncoder() / blitCommandEncoder() hand back autoreleased objects: with no pool that last reference was
+// never given back, so every command buffer and encoder stayed alive with the buffers it had named (~800 command buffers a
+// long prompt).  A pool around each creation (and, for the blits, around the whole encode) gives it back.
+struct ScopedPool {
+    NS::AutoreleasePool* p;
+    ScopedPool() : p(NS::AutoreleasePool::alloc()->init()) {}
+    ~ScopedPool() { p->release(); }
+};
+#endif
 MTL::CommandBuffer* open_cb(StreamImpl* s) {
     if (!s->cb) {
+#if defined(STRATA_DS4_RUNTIME)
+        ScopedPool pool;
+#endif
         s->cb = s->q->commandBufferWithUnretainedReferences();
         s->cb->retain();
         ++rt().stats.command_buffers;
@@ -192,7 +206,7 @@ static std::recursive_mutex g_stream_mu;   // encode_copy/flush nest
 void end_encoder(StreamImpl* s) {
 #if defined(STRATA_DS4_RUNTIME)
     if (s->enc) { if (std::getenv("STRATA_GPU_TRACE")) std::fprintf(stderr, "[gpu] close compute enc %p\n", (void*) s->enc);
-        s->enc->endEncoding(); s->enc = nullptr; }
+        s->enc->endEncoding(); s->enc->release(); s->enc = nullptr; }
 #else
     if (s->enc) { s->enc->endEncoding(); s->enc = nullptr; }
 #endif
@@ -200,7 +214,9 @@ void end_encoder(StreamImpl* s) {
 MTL::ComputeCommandEncoder* encoder(StreamImpl* s) {
 #if defined(STRATA_DS4_RUNTIME)
         std::lock_guard<std::recursive_mutex> lk(g_stream_mu);
-    if (!s->enc) { s->enc = open_cb(s)->computeCommandEncoder();
+    if (!s->enc) {
+        MTL::CommandBuffer* cb = open_cb(s);
+        { ScopedPool pool; s->enc = cb->computeCommandEncoder(); s->enc->retain(); }   // (released in end_encoder)
         if (std::getenv("STRATA_GPU_TRACE")) std::fprintf(stderr, "[gpu] open compute enc %p (cb %p)\n", (void*) s->enc, (void*) s->cb); }   // serial dispatch: each dispatch sees the last
 #else
     if (!s->enc) s->enc = open_cb(s)->computeCommandEncoder();   // serial dispatch: each dispatch sees the last
@@ -229,6 +245,7 @@ extern "C" bool ds4_ctx_copy(void* dst, const void* src, size_t n) __attribute__
 extern "C" bool ds4_ctx_fill(void* dst, int value, size_t n) __attribute__((weak_import));
 extern "C" void* ds4_ctx_mark() __attribute__((weak_import));
 extern "C" void ds4_ctx_wait(void* token) __attribute__((weak_import));
+extern "C" void ds4_ctx_drop(void* token) __attribute__((weak_import));
 static bool ctx_queue_ops() {   // DS4_STREAM_COPIES=1: the old way (a copy on a stream's own queue, a full barrier each)
     static const bool on = ds4_ctx_copy != nullptr && std::getenv("DS4_STREAM_COPIES") == nullptr;
     return on;
@@ -262,6 +279,9 @@ Error encode_copy(StreamImpl* s, void* dst, const void* src, size_t n) {
     check_purged(as, "copy");
     if (ad && as) {   // buffer to buffer: a blit, in stream order
         end_encoder(s);
+#if defined(STRATA_DS4_RUNTIME)
+        ScopedPool pool;
+#endif
         MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
 #if defined(STRATA_DS4_RUNTIME)
         if (std::getenv("STRATA_GPU_TRACE")) std::fprintf(stderr, "[gpu] blit copy %zu\n", n);
@@ -290,6 +310,9 @@ Error encode_fill(StreamImpl* s, void* p, int value, size_t n) {
     if (!a) return fail(kErrorInvalidValue);
     check_purged(a, "fill");
     end_encoder(s);
+#if defined(STRATA_DS4_RUNTIME)
+    ScopedPool pool;
+#endif
     MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
     b->fillBuffer(a->buf, NS::Range::Make(off, n), (uint8_t) value);
     b->endEncoding();
@@ -659,10 +682,17 @@ Error launch_host_func(Stream st, HostFn fn, void* arg) {
 }
 
 Error event_create(Event* e, unsigned) { *e = new EventImpl; return kSuccess; }
-Error event_destroy(Event e) { delete e; return kSuccess; }
+Error event_destroy(Event e) {
+#if defined(STRATA_DS4_RUNTIME)
+    if (e && e->token && ds4_ctx_drop) { ds4_ctx_drop(e->token); e->token = nullptr; }   // (a mark nobody waited for holds its command buffer)
+#endif
+    delete e;
+    return kSuccess;
+}
 Error event_record(Event e, Stream st) {
 #if defined(STRATA_DS4_RUNTIME)
     if (ctx_queue_ops() && !S(st)->rec) {   // the work the event follows is in the context's command buffer: end it, wait later
+        if (e->token && ds4_ctx_drop) ds4_ctx_drop(e->token);   // (recorded again before it was waited for: the earlier mark would leak its command buffer)
         e->token = ds4_ctx_mark();
         e->ev = nullptr;
         e->value = 0;

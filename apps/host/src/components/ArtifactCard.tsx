@@ -17,7 +17,8 @@ export function ArtifactCard({ artifact: a, onPreview }: {
         setMenu(false);
         setError('');
         if (!canReveal && url && action === 'open') {
-            window.open(url, '_blank', 'noopener,noreferrer');
+            // The app window has no handler for a new window, so window.open does nothing there: the host opens the address in the default browser (#4721).
+            api.post('/api/artifacts/open', { action: 'open', url }).catch(() => { window.open(url, '_blank', 'noopener,noreferrer'); });
             return;
         }
         setBusy(true);

@@ -27,6 +27,15 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool defaults026, bool windows);
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
 
+/// AMD-Q (owner decision 10-31): the CPU prefill share (prefill.cpp, STRATA_PREFILL_CPU_SHARE) is armed by default for single-card serve on gfx12
+/// (R9700 / RX 9070 / RX 9060, gfx1200 / gfx1201), with the CUDA change's limit (share_rules::default_share_limit: staged chunks up to 3,072 tokens).
+/// Measured on an R9700 (p620, IQ3_S, 13,325 of 24,576 experts resident, 30 pool workers): prompt 500 +18.3%, 1K +30.6%, 2K -0.19%, 4K and 8K unchanged;
+/// first-token KL 0.022 at 1K, top-1 29 of 29.  Pure architecture rule: false for gfx11 (Strix Halo gfx1151, 780M gfx1103, RX 7000), every other
+/// family and a CUDA build; STRATA_GFX12_DEFAULTS=0 and STRATA_DEFAULTS=026 (`defaults026`) turn it off, and STRATA_PREFILL_CPU_SHARE=0 / auto /
+/// a number still decide before it.  The caller adds the single-card, no-batch-slot and "experts are missing" conditions.
+bool gfx12_prefill_share_default(const char* gcn_arch, bool defaults026);
+bool gfx12_prefill_share_default(const char* gcn_arch);
+
 /// The integrated Radeons (Phoenix / Hawk Point 780M gfx1103, Strix Point 890M / 880M gfx1150, Strix Halo gfx1151) whose
 /// matrix-core prompt set is offered (opt-in; 021-minipc).  Pure architecture-name test; the caller adds the UMA test.
 bool igpu_prompt_defaults_arch(const char* gcn_arch);
@@ -53,10 +62,24 @@ bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows,
 /// bits (KL-gated, notes-153-igpu.md); every switch keeps =0 as its off switch and STRATA_IGPU_DEFAULTS=0 turns the set off.
 std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated);
 
+/// 0.2.10 (STRIX-2Q): the exact parallel-request stack (checkpoint pool, device slot copies, one-launch slot windows) for a Windows
+/// Strix Halo (gfx1151) that runs batch slots (`--batch` / `--slots` of 2 or more).  Interleaved on the strix box (serve/server.py,
+/// 4 clients, 3 rounds, IQ3_S): 51.7 / 50.7 tok/s without, 55.1 / 54.9 with, TTFT p50 2.55 -> 2.45 s, max chunk gap p95 1.36 -> 1.27 s,
+/// no errors.  Every switch is bit-exact against the plain slots (QUAL-PAR on the Linux CUDA stack).  Not STRATA_BATCH_CONCURRENT_READ.
+/// Empty for every other architecture / platform, below 2 slots, and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
+std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots);
+
+/// 0.2.10 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
+/// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
+/// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread
+/// removed it (see STRIX-2Q-RESULTS.md).  The value is STRATA_VERIFY_ASYNC_LAUNCH=1 (same switch as the CUDA instrumented-launch path).
+/// Empty for every other architecture / platform and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
+std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows);
+
 /// Sets `arch_default_env(gcn_arch)` and, when `integrated`, `igpu_default_env(gcn_arch, true)` in this process's
 /// environment where the user has not set the variable, prints one line to stderr per table when it set anything, and
 /// returns the names it set.  `integrated` is true when every visible GPU is an integrated one.  Call once, before any
 /// engine code reads its switches (they are read lazily, at first use).
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false);
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false, int batch_slots = 0);
 
 }  // namespace strata::core

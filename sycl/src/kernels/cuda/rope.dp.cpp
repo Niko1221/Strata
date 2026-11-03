@@ -27,6 +27,7 @@
 // order, so `rope_parity` can hold every variant to a bit-exact float64 transcription of the same spec.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/rope.hpp"
@@ -137,7 +138,7 @@ void rope_neox_apply(const float* x, float* out, int64_t rows, int head_dim, int
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto mrope_table_ct8 = mrope_table();
 

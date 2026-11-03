@@ -3,10 +3,12 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/kprof.hpp"
 #include "strata/copy_queue.hpp"
 #include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/esimd_moe.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/kernels/dflash2.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 #include "../../../src/prefill/mmq_resident_sort.hpp"
 #include "../../../src/prefill/wmma_gemm.h"
@@ -41,6 +43,13 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/prefill/kernels.hpp"
+#include <oneapi/mkl.hpp>   // SYCL port: the QSA block scores as GEMM tiles
+namespace strata::kernels {   // SYCL port, kept out of the shared headers: qsa_select.dp.cpp, qsa_decode_attn.dp.cpp
+void qsa_block_scores_reduce(const float* S, int64_t ld, int64_t b0, int64_t nb, const float* dead, const float* q_idx,
+                             const int32_t* steps, int64_t nq, int64_t max_blocks, float* scores, void* stream);
+void qsa_prompt_attn_percell(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                             int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+}
 
 #include <algorithm>
 #include <set>
@@ -697,6 +706,22 @@ struct PeerPrefill {
     }
 };
 
+// SYCL port: how many queries the prompt path hands the FP32 attention kernel at once (STRATA_ATTN_BATCH, default 32; the
+// tensor-core kernel is opt-in and slower here).  Its scratch is batch x chunks x n_head x 258 floats, about 0.41 GB at 32 and
+// 1.65 GB at 128 on Flash-Next, independent of the prompt chunk, so the size that init allocates (attn_batch_for) and the size
+// the budget counts (bytes_needed_impl, which sizes the expert cache and the prompt path's loan) must be the same number.
+// 128 reads a prompt 1.1-1.3% faster on two Arc Pro B65s with the lane-cell score phase, but its extra 1.2 GB comes out of
+// the expert cache on every card (an 8 GB A750 most), so the default stays 32.
+static int64_t attn_batch_setting() {
+    const char* v = std::getenv("STRATA_ATTN_BATCH");
+    const long long n = v ? std::atoll(v) : 32;
+    return (n >= 1 && n <= 1024) ? (int64_t) n : 32LL;
+}
+// A chunk of T tokens never runs more than T queries at once: the scratch of the rest would sit unused.
+static int64_t attn_batch_for(size_t T) {
+    return std::max<int64_t>(1, std::min<int64_t>(attn_batch_setting(), (int64_t) T));
+}
+
 struct Prefill::Impl {
     const core::WeightTable* wt = nullptr;
     const core::ModelGeometry* g = nullptr;
@@ -734,7 +759,7 @@ struct Prefill::Impl {
     float* sel_scores = nullptr;          // [sel_batch, max_blocks]
     int64_t sel_batch = 256, max_blocks = 0;
     float* attn_scratch = nullptr;
-    int64_t attn_batch = 32, cap = 0;
+    int64_t attn_batch = 32, cap = 0;       // attn_batch: set by carve from the chunk (attn_batch_for)
     // MoE
     float *logits = nullptr, *w = nullptr, *GU = nullptr, *Dm = nullptr, *sgate = nullptr, *sup = nullptr,
           *shared = nullptr, *sg = nullptr;
@@ -1030,7 +1055,32 @@ I8Cross i8_calibrate(M& m, const strata::kernels::cpu::NativeFmt& f) {
 }
 }  // namespace
 Prefill::Prefill() : impl_(new Impl) {}
-Prefill::~Prefill() { release(); }
+Prefill::~Prefill() {
+    clear_taps();
+    release();
+}
+
+// DFlash2 prompt taps (single stage): staging for the completed output of each tapped layer for the last prompt rows; see include/strata/prefill/prefill.hpp
+bool Prefill::reserve_taps(const std::vector<int>& layers, int64_t cap_rows, int64_t n_embd, std::string& err) {
+    tap_layers_ = layers;
+    tap_cap_ = cap_rows;
+    if (tap_dev_ != nullptr) return true;
+    tap_dev_ = sycl::malloc_device<float>((size_t) cap_rows * layers.size() * (size_t) n_embd, dpct::get_in_order_queue());
+    if (tap_dev_ == nullptr) {
+        err = "the prompt staging of the DFlash2 taps does not fit in VRAM";
+        return false;
+    }
+    return true;
+}
+
+void Prefill::clear_taps() {
+    if (tap_dev_ != nullptr) {
+        try { sycl::free(tap_dev_, dpct::get_in_order_queue()); } catch (...) {}
+        tap_dev_ = nullptr;
+    }
+    tap_layers_.clear();
+    on_taps = nullptr;
+}
 
 void Prefill::reset() {
     release();
@@ -1289,8 +1339,13 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(m.g->n_expert); m.off.resize(m.g->n_expert + 1);
     {
         const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2));
+        // SYCL port: the *copy* arm is the default.  On the mapped arm the GPU reads these tables straight out of
+        // mapped host memory, per layer; copying them first is measurably faster on a PCIe-attached pair and
+        // token-identical - 4,106 tokens 1,303 -> 1,335 tok/s, 16,380 tokens 1,622 -> 1,665, the 10,938-token chat
+        // prompt 1,576 -> 1,617, decode unchanged (round 46).  STRATA_GROUP_COPY=0 restores the mapped arm.
         const char* gc = std::getenv("STRATA_GROUP_COPY");
-        if (m.grp_n < need && !(gc && gc[0] == '1')) {
+        const bool group_copy = gc == nullptr || gc[0] != '0';
+        if (m.grp_n < need && !group_copy) {
             if (m.grp_host) sycl::free(m.grp_host, dpct::get_in_order_queue());
             m.grp_host = m.grp_dev = nullptr;
             m.grp_n = m.grp_tk = 0;
@@ -1436,6 +1491,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
+    m.attn_batch = attn_batch_for(T);
     m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
@@ -2157,7 +2213,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
-    o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
+    o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, attn_batch_for(T), s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, src))}), ok);
     for (int i = 0; i < dq_slots(); ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
@@ -2365,6 +2421,7 @@ struct PeTimer {
 bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                        std::string &err) try {
     err.clear();
+    strata::kprof::phase("prompt");
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;
@@ -2478,10 +2535,23 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
 
+    std::vector<int> tap_slot;
+    if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
+        if (tap_dev_ == nullptr) {
+            tap_dev_ = sycl::malloc_device<float>((size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd, dpct::get_in_order_queue());
+            if (tap_dev_ == nullptr) { err = "prefill: the DFlash2 tap staging does not fit in VRAM"; return false; }
+        }
+        tap_slot.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+    }
     for (int64_t c0 = 0; c0 < n; c0 += chunk_len(c0)) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = chunk_len(c0), p0 = pos0 + c0;
+        // DFlash2 prompt taps: the rows of this chunk at positions >= tap_first_ (the drafter looks back one window)
+        const int64_t tap_t0 = tap_dev_ != nullptr ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
+        const int64_t tap_rows = T - tap_t0;
+        if (tap_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the chunk's tapped rows"; return false; }
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
@@ -3285,9 +3355,46 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                                 strata::kernels::kStepNBid)] + 1;
                         // the scores on tensor cores (3xTF32: FP32-level, not bitwise); STRATA_SELECT_OLD=1: the warp kernel
                         static const bool old_sel = std::getenv("STRATA_SELECT_OLD") != nullptr;
-                        if (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512,
+                        // SYCL port: the scores as oneMKL FP32 GEMM tiles (pooled keys x the batch's indexer queries)
+                        // and a relu-sum (qsa_block_scores_reduce), FP32-level like the CUDA build's 3xTF32 path. The
+                        // tile lives in the attention scratch, which is free until this layer's attention (same
+                        // queue). It pays from ~8K cells on a B70 (launch cost below: -2% at 2K, even at 8K, select
+                        // 3x faster at 40K), so by default only for a batch reaching 2,048 blocks.
+                        // STRATA_SELECT_GEMM=0: the warp kernel always, =1: the GEMM always (on every card).
+                        // Unset: the default from 2,048 blocks is for a Battlemage card only. It changes the answers (first-token
+                        // KL ~1e-9 on an Arc A750 up to 128K, 1e-5 to 1e-3 on 2x B65), and on the A750 it gained +0.2% to
+                        // +0.6% (16K to 128K: its prompts are bound by expert streaming over PCIe), under the 5% bar.
+                        static const int sel_gemm_mode = [] { const char* v = std::getenv("STRATA_SELECT_GEMM"); return v ? std::atoi(v) : -1; }();
+                        static const int64_t sel_gemm_min = [] { const char* v = std::getenv("STRATA_SELECT_GEMM_MIN"); return v ? (int64_t) std::atoll(v) : (int64_t) 2048; }();   // blocks (4 cells each)
+                        const bool sel_gemm = sel_gemm_mode > 0 || (sel_gemm_mode < 0 && active >= sel_gemm_min &&
+                                                                    strata::intel_gpu_gen(m.cs->get_device()) == strata::IntelGpuGen::Battlemage);
+                        const int64_t sel_tile = std::min<int64_t>(8192, (int64_t) ((uint64_t) m.attn_batch *
+                            strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s) / (uint64_t) (nb * 4)));
+                        bool sel_done = false;
+                        if (sel_gemm && !old_sel && m.attn_scratch != nullptr && s.idx_dim == 128 && s.idx_n_head == 4 &&
+                            sel_tile >= 256) {
+                            try {
+                                for (int64_t b0 = 0; b0 < active; b0 += sel_tile) {
+                                    const int64_t nbk = std::min<int64_t>(sel_tile, active - b0);
+                                    oneapi::mkl::blas::column_major::gemm(*m.cs, oneapi::mkl::transpose::trans,
+                                                                          oneapi::mkl::transpose::nontrans, nbk, nb * 4, 128,
+                                                                          1.0f, st.idx_pooled + b0 * 128, 128,
+                                                                          m.q_idx + t0 * 512, 128, 0.0f, m.attn_scratch,
+                                                                          sel_tile);
+                                    strata::kernels::qsa_block_scores_reduce(m.attn_scratch, sel_tile, b0, nbk, st.idx_dead,
+                                                                             m.q_idx + t0 * 512, steps0, nb, m.max_blocks,
+                                                                             m.sel_scores, m.cs);
+                                }
+                                sel_done = true;
+                            } catch (const std::exception& ex) {
+                                static bool said = false;
+                                if (!said) std::fprintf(stderr, "prefill: the GEMM block scores failed (%s); the warp kernel instead\n", ex.what());
+                                said = true;
+                            }
+                        }
+                        if (!sel_done && (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512,
                                                                              steps0, nb, m.max_blocks, s, m.sel_scores,
-                                                                             m.cs, active))
+                                                                             m.cs, active)))
                             strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
                                                               m.max_blocks, s, m.sel_scores, m.cs, active);
                         strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
@@ -3447,6 +3554,15 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                             m.attn, T, m.cs))
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
+                            // SYCL port: the scores one work-item per cell (qsa_prompt_attn_percell, 128-cell chunks;
+                            // FP32, not bitwise with the warp kernel). STRATA_ATTN_PERCELL=0: the warp kernel.
+                            static const bool percell = [] { const char* v = std::getenv("STRATA_ATTN_PERCELL"); return !v || v[0] != '0'; }();
+                            if (percell) {
+                                strata::kernels::qsa_prompt_attn_percell(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
+                                                                         m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
+                                                                         s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
+                                continue;
+                            }
                             strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
                                                                    m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
                                                                    s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
@@ -4781,6 +4897,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 }
                 if (steered && !cv_fused)   // --control-vector-scaled
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+                if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0)   // DFlash2: this layer's completed output, mean of the streams
+                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_layers_.size() * N, N,
+                                                  (int) HC, (int) tap_rows, m.cs);
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
@@ -4871,6 +4990,10 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 }
                 std::fclose(f);
             }
+        }
+        if (tap_rows > 0 && on_taps) {
+            m.cs->wait();
+            if (!on_taps(tap_dev_, tap_rows, p0 + tap_t0, err)) return false;
         }
         if (on_chunk || on_stage_chunk) {
             const auto toc = Clock::now();
@@ -4983,6 +5106,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                      (long long) kv_prefetches);
     }
     stats_.ms_total += ms_since(t_start);
+    strata::kprof::window_end("prompt");   // STRATA_KPROF=1: the per-kernel table of this prompt
     if (pt.on) {
         pt.fold();
         double total = 0.0;
