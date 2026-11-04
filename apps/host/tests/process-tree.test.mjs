@@ -1,12 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { endTree, endTreeThenKill, groupAlive, ownGroup } from '../server/process-tree.mjs';
 import { runCommand } from '../server/agent/custom-command-run.mjs';
 
 const isWin = process.platform === 'win32';
-const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
-const gone = async (pid, ms = 6000) => { for (let waited = 0; waited < ms && alive(pid); waited += 100) await new Promise(r => setTimeout(r, 100)); return !alive(pid); };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Whether the process is there. A process that has ended but whose parent has not collected it yet (a zombie: Node reaps its own children when the event
+// loop gets to it, init reaps the orphans when it gets to them) answers signal 0 and is not running: on a loaded machine that gap is long.
+function alive(pid) {
+  try { process.kill(pid, 0); } catch (error) { return error.code === 'EPERM'; }
+  if (process.platform === 'linux') {
+    try { return readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /, '')[0] !== 'Z'; } catch { return false; }
+  }
+  return true;
+}
+// Every wait is on the real condition, with a long limit: it returns the moment the condition holds, so the limit costs nothing when the machine is fine.
+async function until(condition, ms = 30_000) { for (let waited = 0; waited < ms; waited += 50) { if (condition()) return true; await sleep(50); } return condition(); }
+const gone = (pid, ms) => until(() => !alive(pid), ms);
 
 // A program that starts a program of its own and reports its pid, the way Stop meets a job and its revision command (#4529 #4570).
 const parentScript = `const { spawn } = require('node:child_process'); const k = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 120000)'], { stdio: 'ignore' }); console.log(k.pid); setTimeout(()=>{}, 120000);`;
@@ -30,14 +45,18 @@ test('endTree ends the program and the program it started, and nothing else (#45
 });
 
 test('endTreeThenKill follows a TERM that is ignored with a KILL of the group', { skip: isWin && 'POSIX signals' }, async () => {
-  const stubborn = `const { spawn } = require('node:child_process'); process.on('SIGTERM', () => {}); const k = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});setTimeout(()=>{},120000)"], { stdio: 'ignore' }); console.log(k.pid); setTimeout(()=>{}, 120000);`;
+  // Both programs ignore SIGTERM, and the test goes on only when both have said that the handler is in place (no fixed delay for a slow start).
+  const stubborn = `const { spawn } = require('node:child_process'); process.on('SIGTERM', () => {});
+    const k = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{});console.log('up');setTimeout(()=>{},120000)"], { stdio: ['ignore', 'pipe', 'ignore'] });
+    k.stdout.once('data', () => { console.log(k.pid); }); setTimeout(()=>{}, 120000);`;
   const child = spawn(process.execPath, ['-e', stubborn], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
   const kid = await new Promise(resolve => child.stdout.once('data', b => resolve(Number(String(b).trim()))));
   try {
-    await new Promise(r => setTimeout(r, 300));
+    assert.ok(alive(kid));
     endTreeThenKill(child, 500);
-    assert.ok(await gone(kid, 8000), 'the group survived SIGTERM and was not killed');
-    assert.equal(groupAlive(child), false);
+    assert.ok(await gone(kid, 60_000), 'the group survived SIGTERM and was not killed');
+    assert.ok(await gone(child.pid, 60_000));
+    assert.ok(await until(() => !groupAlive(child), 60_000), 'a member of the group is still there');
   } finally { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }
 });
 
@@ -48,10 +67,12 @@ test('a child that leads no group of its own is still ended, alone, as before', 
 });
 
 test('a custom command that runs out of time takes the programs it started with it', { skip: isWin && 'POSIX shell' }, async () => {
-  const marker = `/tmp/strata-cc-${process.pid}.pid`;
-  const result = await runCommand({ command: `sleep 120 & echo $! > ${marker}; wait`, timeoutSec: 1 });
+  const marker = join(tmpdir(), `strata-cc-${process.pid}.pid`);
+  rmSync(marker, { force: true });
+  // The limit is far above what the shell needs to start and write its marker, so a slow machine cannot end the command before it did.
+  const result = await runCommand({ command: `sleep 120 & echo $! > ${marker}; wait`, timeoutSec: 8 });
   assert.equal(result.ok, false);
-  const { readFileSync, rmSync } = await import('node:fs');
+  assert.ok(await until(() => existsSync(marker) && /^\d+/.test(readFileSync(marker, 'utf8'))), 'the command never wrote its marker');
   const pid = Number(readFileSync(marker, 'utf8').trim());
   rmSync(marker, { force: true });
   assert.ok(await gone(pid), 'the command\'s own child outlived the time limit');
