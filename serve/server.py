@@ -868,6 +868,7 @@ class ConvCacheLog:
 
     def __init__(self):
         self.key, self.pos = None, 0
+        self.lock = threading.Lock()                    # polls come from several request / monitor threads at once
         self.reset()
 
     def reset(self):
@@ -875,7 +876,12 @@ class ConvCacheLog:
                       "last_tokens": None, "last_at": None}
 
     def poll(self, path, start) -> dict:
-        """The state after the log's new lines; `start` is where the engine's current run began in it."""
+        """The state after the log's new lines; `start` is where the engine's current run began in it.  One poll at a
+        time: a second one moved `pos` between the size check and the seek and raised ValueError (negative seek)."""
+        with self.lock:
+            return self._poll(path, start)
+
+    def _poll(self, path, start) -> dict:
         if not path or start is None:
             return dict(self.state)
         if self.key != (path, start):                   # another start of the engine: its cache starts empty
