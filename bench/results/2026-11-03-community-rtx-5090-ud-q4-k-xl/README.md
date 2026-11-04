@@ -1,6 +1,6 @@
 # Community benchmark on RTX 5090 (UD-Q4_K_XL, 262k, k8s, 128 GB RAM)
 
-Measured on 2026-11-03 (two runs) by em3rik. Standard protocol `strata-qwen38-thinking-v1-draft.1`
+Measured on 2026-11-03 and 2026-11-04 (two runs) by em3rik. Standard protocol `strata-qwen38-thinking-v1-draft.1`
 (draft) on an RTX 5090 box serving the Unsloth UD-Q4_K_XL quant (~111 GB, 4 shards) of
 Qwen3.8-Flash-Next inside a Kubernetes pod on a 128 GB DDR4 desktop.
 
@@ -8,8 +8,8 @@ Two runs on one configuration, both published (no cherry-picking):
 
 | Run | When | Server state | Status |
 | --- | --- | --- | --- |
-| quiet | 02:15 CET, crew idle | already serving (see limitations) | see below |
-| under-load | 17:41 CET, same day | already serving, 689 prior requests, operator interactive-agent traffic interleaving | complete, sanity 12/12, TTFT inflated by queueing |
+| quiet | 2026-11-04 02:16 CET, crew idle | already serving, 925 prior requests, no interleaved traffic (see limitations) | complete, sanity 12/12 |
+| under-load | 2026-11-03 17:41 CET | already serving, 689 prior requests, operator interactive-agent traffic interleaving | complete, sanity 12/12, TTFT inflated by queueing |
 
 The quiet run is the primary evidence (root of this folder). The under-load run is the same suite
 on the same server under real shared-box traffic, kept in `run-under-load/` because it is honest
@@ -73,9 +73,20 @@ server). Full method text in each run's `RUNNER.md`.
 
 ## Results
 
-### Quiet run (primary) - `results.json`, run id see file
+### Quiet run (primary) - `results.json`, run id `20261104T011658Z-129ef329`
 
-(Numbers inserted after the 2026-11-04 02:15 CET run.)
+Status: **complete**. 21 of 21 required requests finished, 0 failed, 0 skipped. Sanity **12 of 12**
+(instruction 4/4, retrieval 4/4, tool calls 4/4). Time after the model loaded: 2 min 7 s.
+Server state: already serving (925 prior requests), crew idle, no interactive traffic interleaving.
+
+| Case        | Prompt tok/s                | Decode tok/s               | TTFT s                    | Total s                    | Capped |
+| ----------- | --------------------------- | -------------------------- | ------------------------- | -------------------------- | ------ |
+| short       | n/a                         | 61.4 (56.2-63.7) n=3       | 0.55 (0.52-0.66) n=3      | 6.6 (6.4-7.1) n=3          | 0/3    |
+| prompt-4k   | 1815.0 (1811.4-1817.0) n=3  | 66.4 (63.7-67.6) n=3       | 2.28 (2.28-2.28) n=3      | 9.8 (9.8-10.3) n=3         | 2/3    |
+| prompt-16k  | 3116.2 (3110.8-3152.0) n=3  | 65.0 (61.3-72.4) n=3       | 5.29 (5.23-5.30) n=3      | 13.2 (12.3-13.6) n=3       | 3/3    |
+
+Cells are median (min-max) n=samples. `short` prompt rate is not shown (fixed request cost).
+This run recorded `--track custom` (see Model and configuration above).
 
 ### Under-load run - `run-under-load/results.json`, run `20261103T164101Z-cb4460b8`
 
@@ -89,8 +100,9 @@ time, not the per-request engine rates).
 | prompt-16k | 3093.8 (3092.2-3121.6) | 56.3 (53.7-58.9) | 58.98 (46.47-60.13) | 68.1 (55.1-69.6) | 3/3 |
 
 Sanity checks: **12 of 12 passed** in this run. TTFT is queue time behind interleaved interactive
-traffic on a 1-slot server; the 16k prompt rate (3094 tok/s vs the quiet run's value) is the
-clearest victim of interleaving - see the quiet run for the uncontended rate.
+traffic on a 1-slot server (19-60 s vs 0.5-5.3 s in the quiet run); engine-side decode drops from
+the quiet run's 61-66 tok/s to 50-57 tok/s, while the engine-measured prompt rate is barely moved
+(16k: 3094 vs 3116 tok/s) because it excludes queueing. See the quiet run for uncontended numbers.
 
 ## Correctness and limitations
 
