@@ -104,6 +104,67 @@ class FailedStart(unittest.TestCase):
                 engine.__init__("strata", [], retry_args=None)
 
 
+class ControlNotify(unittest.TestCase):
+    """#4738 (the PR's approach, written in our tree): a request that waits for the control lines must not miss a
+    notification sent between its check of the turn and its wait, and a waiter that leaves tells the others."""
+
+    class Cond(threading.Condition):
+        def __init__(self):
+            super().__init__()
+            self.exits, self.after_check, self.waits, self.notifications = 0, None, [], 0
+
+        def __exit__(self, *args):
+            result = super().__exit__(*args)
+            self.exits += 1
+            if self.exits == 2 and self.after_check is not None:     # registered (1), turn read (2): now the producer
+                hook, self.after_check = self.after_check, None
+                hook()
+            return result
+
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            return True                                              # (never blocks: the test is the schedule)
+
+        def notify_all(self):
+            self.notifications += 1
+            return super().notify_all()
+
+    def engine(self):
+        e = StrataEngine.__new__(StrataEngine)
+        e.slot_cv, e.waiting, e.admitting = self.Cond(), 1, 0        # one other request is waiting
+        e.wait_lens, e.arrivals, e.ctl_epoch, e.ctl = [], __import__("collections").deque(maxlen=64), 0, threading.Lock()
+        e.proc, e.ended, e.starting = mock.Mock(**{"poll.return_value": None}), False, False
+        return e
+
+    def test_a_notification_between_the_check_and_the_wait_is_not_lost(self):
+        e = self.engine()
+
+        def producer():                                              # another request took the lines and gave them back
+            with e.slot_cv:
+                e.ctl_epoch += 1
+                e.slot_cv.notify_all()
+        e.slot_cv.after_check = producer
+        gen = e._take_control(threading.Event(), 10, after_epoch=0)
+        with self.assertRaises(StopIteration) as done:
+            for _ in range(5):
+                next(gen)
+        self.assertTrue(done.exception.value)
+        self.assertEqual(e.slot_cv.waits, [], "it waited although its turn had come in the meantime")
+
+    def test_a_waiter_that_leaves_notifies_the_others(self):
+        e = self.engine()
+        e.ctl.acquire()                                              # the lines are taken: this one cannot have them
+        cancel = threading.Event()
+        cancel.set()
+        gen = e._take_control(cancel, 10)
+        with self.assertRaises(StopIteration) as done:
+            for _ in range(3):
+                next(gen)
+        self.assertFalse(done.exception.value)
+        self.assertGreaterEqual(e.slot_cv.notifications, 1)
+        self.assertEqual(e.waiting, 1)
+
+
 class EngineOutputDecoding(FakeEngines, unittest.TestCase):
     """#5044: a byte that is not UTF-8 on the engine's stdout (Windows can print one) must not end the reader."""
 
