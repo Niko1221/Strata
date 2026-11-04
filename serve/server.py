@@ -9680,6 +9680,17 @@ def tool_call_recovery_setting(cfg: dict) -> bool:
 
 
 def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
+    """The server.  Its console output goes through a bounded queue (serve/nonblocking_out.py, #4479 / #2481): a console
+    that stops taking output must not hold a request's turn, a cancel or an admission.  STRATA_BLOCKING_CONSOLE=1 turns
+    it off (testers)."""
+    if os.environ.get("STRATA_BLOCKING_CONSOLE") == "1":
+        return _main(argv, lifecycle_event=lifecycle_event, interrupt_exit_code=interrupt_exit_code)
+    from serve.nonblocking_out import decoupled_console
+    with decoupled_console():
+        return _main(argv, lifecycle_event=lifecycle_event, interrupt_exit_code=interrupt_exit_code)
+
+
+def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
         _pf.adopt_user_defaults()
