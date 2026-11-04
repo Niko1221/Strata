@@ -252,8 +252,8 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
     need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB
     need_ram = model.embd_ram_bytes / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024
     if cards and n >= 2 and min(c.room_mib for c in cards) / 1024 < need_vram:
-        why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has "
-                   f"{min(c.room_mib for c in cards) / 1024:.0f} GiB)")
+        has = f"{min(c.room_mib for c in cards) / 1024:.0f} GiB" + (" free" if any(c.free_mib is not None for c in cards) else "")   # free memory when it was read, else the size
+        why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has {has})")
     if ram_available_gib < need_ram + RAM_SPARE_GIB:
         why.append(f"there is not enough free RAM (about {need_ram + RAM_SPARE_GIB:.0f} GiB needed, {ram_available_gib:.0f} GiB free)")
     if why:

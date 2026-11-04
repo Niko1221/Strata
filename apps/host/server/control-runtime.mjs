@@ -292,14 +292,14 @@ export function createControl({ control = findControl(), env = process.env, run 
      * (the table of strata_control/drafting.py and the all-cards split engine's rule, strata_control/split_engine.py: the same answer as the Terminal's); the app never reads
      * it. Nothing is downloaded. `noSplit` asks as if the split engine will not take the start (only after the draft layer for the split could not be downloaded).
      */
-    async draftingPlan({ configPath = null, mode = null, family = null, dataDir = null, noSplit = false } = {}) {
-      const result = await call(['drafting', 'plan', ...(configPath ? ['--config', configPath] : []), ...(mode ? ['--mode', mode] : []), ...(family ? ['--family', family] : []), ...(dataDir ? ['--data-dir', dataDir] : []), ...(noSplit ? ['--no-split'] : []), '--output', 'json'], { timeoutMs: 30_000 });
+    async draftingPlan({ configPath = null, mode = null, family = null, dataDir = null, noSplit = false, unloading = false } = {}) {
+      const result = await call(['drafting', 'plan', ...(configPath ? ['--config', configPath] : []), ...(mode ? ['--mode', mode] : []), ...(family ? ['--family', family] : []), ...(dataDir ? ['--data-dir', dataDir] : []), ...(noSplit ? ['--no-split'] : []), ...(unloading ? ['--engines-unloading'] : []), '--output', 'json'], { timeoutMs: 30_000 });
       if (result.json?.ok) return result.json;
       throw failure(result, 'The drafter could not be checked.');
     },
     /** Fetch and pack the drafter when the choice would use it and it is not here (`strata drafting fetch --if-needed`); `onEvent` gets {step, done, total}. */
-    async draftingFetch({ configPath, mode = null, noSplit = false, onEvent = null, signal = null } = {}) {
-      const args = ['drafting', 'fetch', '--config', configPath, ...(mode ? ['--mode', mode] : []), ...(noSplit ? ['--no-split'] : []), '--if-needed', '--output', 'jsonl'];
+    async draftingFetch({ configPath, mode = null, noSplit = false, unloading = false, onEvent = null, signal = null } = {}) {
+      const args = ['drafting', 'fetch', '--config', configPath, ...(mode ? ['--mode', mode] : []), ...(noSplit ? ['--no-split'] : []), ...(unloading ? ['--engines-unloading'] : []), '--if-needed', '--output', 'jsonl'];
       const result = await call(args, { timeoutMs: 3 * 3600_000, acquire: true, onLine: onEvent ?? (() => {}), signal });
       if (result.json?.ok) return result.json;
       throw Object.assign(new ControlError(result.json?.error?.message ?? (result.stderr.split(/\r?\n/).filter(Boolean).pop() || 'The DFlash2 drafter could not be downloaded.'), { exitCode: result.code, output: result.json }), { code: 'drafting_failed' });

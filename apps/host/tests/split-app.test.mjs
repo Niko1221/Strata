@@ -116,6 +116,52 @@ test('no drafting call of the host carries --no-split by itself, and the flag is
   assert.deepEqual(calls[5], ['split-engine', 'apply', '--config', 'C:/w/layer.json', '--out', 'C:/w/split.json', '--output', 'json']);
 });
 
+test('--engines-unloading is on the plan and the fetch only when the host asks for it', async () => {
+  const calls = [];
+  const control = createControl({ control: { dir: 'C:/c', python: 'py', cli: 'strata.py' }, run: async args => { calls.push(args); return { code: 0, json: { ok: true, event: 'result', serves: true, split: false }, text: '', stderr: '' }; } });
+  await control.draftingPlan({ configPath: 'C:/w/cfg.json', mode: 'auto' });
+  await control.draftingPlan({ configPath: 'C:/w/cfg.json', mode: 'auto', unloading: true });
+  await control.draftingFetch({ configPath: 'C:/w/cfg.json', mode: 'auto', unloading: true });
+  assert.ok(!calls[0].includes('--engines-unloading'));
+  assert.ok(calls[1].includes('--engines-unloading') && calls[2].includes('--engines-unloading'), calls.map(c => c.join(' ')).join(' | '));
+});
+
+/** Control as it answers on two cards that the app's own running engine holds: DFlash2 (and its fetch) unless the host says that engine is about to be unloaded. */
+const busyWhileRunning = (get) => (options) => get().native.state().instances.length > 0 && options.unloading !== true ? DFLASH2_PLAN : { ...SPLIT_PLAN, mtp_needed: false, mtp_gb: 0 };
+
+test('a model switch on two cards: the plan and the fetch say the running engine is about to be unloaded, so its memory is not busy and the split stays', async () => {
+  let f;
+  f = fixture({ plan: busyWhileRunning(() => f), split: splitAnswer });
+  try {
+    await f.native.refresh(true);
+    const first = await finish(f.native, load(f).id);
+    assert.equal(first.state, 'done', first.error);
+    assert.equal(f.state.planCalls.length > 0 && f.state.planCalls.every(c => c.unloading !== true), true, 'nothing is running at the first load: nothing to unload');
+    const before = f.state.planCalls.length;
+    const second = await finish(f.native, load(f, { values: { drafting: 'mtp' } }).id);   // a different choice: a different engine, the first one is unloaded
+    assert.equal(second.state, 'done', second.error);
+    const calls = f.state.planCalls.slice(before);
+    assert.ok(calls.length >= 1 && calls.every(c => c.unloading === true), JSON.stringify(calls));
+    assert.equal(f.state.fetchCalls.length, 0, 'no DFlash2 drafter is fetched because of the old engine memory');
+    assert.equal(f.state.splitCalls.length, 2, 'the split engine was asked at both loads');
+    assert.equal(f.native.state().instances.length, 1);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('a model added beside the running one keeps the memory of the running one busy: the plan is not told to ignore it', async () => {
+  let f;
+  f = fixture({ plan: busyWhileRunning(() => f), split: splitAnswer });
+  try {
+    await f.native.refresh(true);
+    const first = await finish(f.native, load(f).id);
+    assert.equal(first.state, 'done', first.error);
+    const before = f.state.planCalls.length;
+    await finish(f.native, load(f, { multiple: true, gpus: [0], values: { drafting: 'mtp' } }).id);
+    const calls = f.state.planCalls.slice(before);
+    assert.ok(calls.length >= 1 && calls.every(c => c.unloading !== true), JSON.stringify(calls));
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
 test('Auto on two cards: the MTP draft layer is fetched through the installer with the model\'s own folder, then the split engine\'s run config is what starts', async () => {
   const f = fixture({ plan: splitPlan, split: splitAnswer });
   try {

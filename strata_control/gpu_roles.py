@@ -418,12 +418,12 @@ def engine_order(roles: dict[int, str], speeds: dict[int, float] | None = None) 
 
 def describe(roles: dict[int, str], cards: list[dict], *, card_numbers: bool = False) -> str:
     """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` (the line setup prints; the screens count from 1: GPU 1 is card 0).
-    `card_numbers`: the numbers `--gpu` takes (card 0 is "GPU 0"), as `strata launch --plan` prints them."""
+    `card_numbers`: each card also names the number `--gpu` takes, as `strata launch --plan` prints them: `GPU 2 (--gpu 1) RTX 4070 Ti`."""
     cs = {_idx(c): c for c in cards}
-    shift = 0 if card_numbers else 1
     parts = []
     for role, word in (("main", "Main"), ("helper", "Helper"), ("off", "Off")):
-        names = [f"GPU {i + shift} {short_name(cs[i])}" if i in cs else f"GPU {i + shift}" for i in sorted(roles) if roles[i] == role]
+        label = (lambda i: f"GPU {i + 1} (--gpu {i})") if card_numbers else (lambda i: f"GPU {i + 1}")
+        names = [f"{label(i)} {short_name(cs[i])}" if i in cs else label(i) for i in sorted(roles) if roles[i] == role]
         if names:
             parts.append(f"{word}: {', '.join(names)}.")
     return " ".join(parts)

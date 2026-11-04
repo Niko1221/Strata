@@ -473,8 +473,9 @@ def parallel_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
 
 
 def roles_line(s: S.LaunchSettings, catalog) -> str | None:
-    """`Main: GPU 1 RTX 4070 Ti. Helper: GPU 0 RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None. The numbers are the
-    ones --gpu takes (card 0 is GPU 0), and a card that CUDA_VISIBLE_DEVICES (AMD: ROCR_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES) hides is not listed unless it is named."""
+    """`Main: GPU 2 (--gpu 1) RTX 4070 Ti. Helper: GPU 1 (--gpu 0) RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None. "GPU n"
+    counts from 1 like the screens; the bracket is the number --gpu takes (the server sets the engine's CUDA_VISIBLE_DEVICES from it, so it is the nvidia-smi number whatever the
+    environment says), and a card that CUDA_VISIBLE_DEVICES (AMD: ROCR_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES) hides is not listed unless it is named."""
     if not (s.gpu_roles or s.gpus) or catalog is None:
         return None
     try:

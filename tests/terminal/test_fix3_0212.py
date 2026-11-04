@@ -4,12 +4,14 @@
    folder the plan asked for the 5.2 GB layer although <data-dir>/mtp/rt was there (a second download).
 2. The all-cards split engine's fit counted each card's size. Cards other programs hold (8 GB free of 96) still got "split + MTP" and the 5.2 GB fetch; the fit
    counts free memory minus the reserve now.
-3. The plan's card line counted from 1 (GPU 2 for card 1) and listed cards CUDA_VISIBLE_DEVICES hides; --gpu is 0-based.
+3. The plan's card line gave no way to tell the --gpu number (GPU 2 is card 1) and listed cards CUDA_VISIBLE_DEVICES hides. It counts from 1 like the screens and now adds the number --gpu takes:
+   "GPU 2 (--gpu 1)".
 All of it with fake cards and fake sysfs; nothing is started, probed or downloaded.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -224,7 +226,9 @@ class SplitFitCountsFreeMemory(unittest.TestCase):
         d = decide([card(0, free=8192), card(1, free=8192)])
         self.assertFalse(d.use_split)
         self.assertTrue(any("do not fit in the cards' memory" in r for r in d.reasons), d.reasons)
-        self.assertIn("has 7 GiB", " ".join(d.reasons), "free memory minus the 700 MiB reserve")
+        self.assertIn("has 7 GiB free)", " ".join(d.reasons), "free memory minus the 700 MiB reserve, and it says free")
+        old = decide([card(0, total=4096), card(1, total=4096)])
+        self.assertIn("has 4 GiB)", " ".join(old.reasons), "free memory not read: the old sentence, the size")
 
     def test_one_busy_card_is_enough(self):
         self.assertFalse(decide([card(0), card(1, free=8192)]).use_split)
@@ -356,6 +360,26 @@ class PlanOnBusyCards(Base):
             self.assertIsNone(r.card_probe())
 
 
+class AppPlanWhileItsEngineRuns(Base):
+    """The desktop app asks `drafting plan` before it unloads the running model: `--engines-unloading` says that engine's memory is given back, as Runner.card_probe does."""
+    one_card_pc = False
+
+    def plan(self, *extra):
+        data = self.base / "d"
+        data.mkdir(exist_ok=True)
+        busy = [card(0, free=8192), card(1, free=8192)]
+        with mock.patch.object(SE, "probe_cards", lambda idx=None: busy), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),                 mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])):
+            code, out, err = run_cli(["drafting", "plan", "--family", "qwen", "--data-dir", str(data), "--mode", "auto", "--output", "json", *extra])
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_busy_cards_say_dflash2_unless_the_running_engine_is_about_to_be_unloaded(self):
+        p = self.plan()
+        self.assertEqual((p["split"], p["choice"]), (False, "dflash2"))
+        p = self.plan("--engines-unloading")
+        self.assertEqual((p["split"], p["choice"]), (True, "mtp"))
+
+
 # ----------------------------------------------------------------------------------------------------------------------- 3. the card numbers
 
 def four(vendor="nvidia"):
@@ -371,39 +395,39 @@ class CardNumbers(Base):
         with mock.patch.dict(os.environ, env or {}):
             return launch_cmd.roles_line(s, c)
 
-    def test_describe_keeps_the_screens_count_and_the_plan_uses_the_gpu_flag_numbers(self):
+    def test_describe_keeps_the_screens_count_and_the_plan_adds_the_gpu_flag_number(self):
         cs = [{"index": 0, "name": "RTX 3060", "vram_gb": 12}, {"index": 1, "name": "RTX 4070 Ti", "vram_gb": 12}]
         self.assertEqual(gpu_roles.describe({0: "helper", 1: "main"}, cs), "Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.")
-        self.assertEqual(gpu_roles.describe({0: "helper", 1: "main"}, cs, card_numbers=True), "Main: GPU 1 RTX 4070 Ti. Helper: GPU 0 RTX 3060.")
+        self.assertEqual(gpu_roles.describe({0: "helper", 1: "main"}, cs, card_numbers=True), "Main: GPU 2 (--gpu 1) RTX 4070 Ti. Helper: GPU 1 (--gpu 0) RTX 3060.")
 
     def test_gpu_0_1_on_four_cards_with_cuda_visible_devices_0_1(self):
         got = self.line({"CUDA_VISIBLE_DEVICES": "0,1"}, gpus=[0, 1])
-        self.assertEqual(got, "Main: GPU 1 RTX A6000. Helper: GPU 0 RTX A6000.", "no GPU 2 / GPU 3 / Off cards the environment hides")
+        self.assertEqual(got, "Main: GPU 2 (--gpu 1) RTX A6000. Helper: GPU 1 (--gpu 0) RTX A6000.", "no Off cards for the ones the environment hides")
 
     def test_without_the_variable_the_other_cards_are_off_with_their_own_numbers(self):
         got = self.line({}, gpus=[0, 1])
-        self.assertEqual(got, "Main: GPU 1 RTX A6000. Helper: GPU 0 RTX A6000. Off: GPU 2 RTX A6000, GPU 3 RTX A6000.")
+        self.assertEqual(got, "Main: GPU 2 (--gpu 1) RTX A6000. Helper: GPU 1 (--gpu 0) RTX A6000. Off: GPU 3 (--gpu 2) RTX A6000, GPU 4 (--gpu 3) RTX A6000.")
 
     def test_one_visible_card_named_by_number(self):
-        self.assertEqual(self.line({"CUDA_VISIBLE_DEVICES": "1"}, gpus=[1]), "Main: GPU 1 RTX A6000.")
+        self.assertEqual(self.line({"CUDA_VISIBLE_DEVICES": "1"}, gpus=[1]), "Main: GPU 2 (--gpu 1) RTX A6000.")
 
     def test_a_named_card_the_environment_hides_stays_because_the_server_sets_visibility_from_it(self):
-        self.assertEqual(self.line({"CUDA_VISIBLE_DEVICES": "1"}, gpus=[0]), "Main: GPU 0 RTX A6000. Off: GPU 1 RTX A6000.")
+        self.assertEqual(self.line({"CUDA_VISIBLE_DEVICES": "1"}, gpus=[0]), "Main: GPU 1 (--gpu 0) RTX A6000. Off: GPU 2 (--gpu 1) RTX A6000.")
 
     def test_roles_by_number(self):
         got = self.line({"CUDA_VISIBLE_DEVICES": "2,3"}, gpu_roles={"2": "helper", "3": "main"})
-        self.assertEqual(got, "Main: GPU 3 RTX A6000. Helper: GPU 2 RTX A6000.")
+        self.assertEqual(got, "Main: GPU 4 (--gpu 3) RTX A6000. Helper: GPU 3 (--gpu 2) RTX A6000.")
 
     def test_amd_honours_hip_and_rocr(self):
         amd = four(vendor="amd")
-        self.assertEqual(self.line({"HIP_VISIBLE_DEVICES": "0,1"}, vendor="amd", cards=amd, gpus=[0, 1]), "Main: GPU 1 RTX A6000. Helper: GPU 0 RTX A6000.")
+        self.assertEqual(self.line({"HIP_VISIBLE_DEVICES": "0,1"}, vendor="amd", cards=amd, gpus=[0, 1]), "Main: GPU 2 (--gpu 1) RTX A6000. Helper: GPU 1 (--gpu 0) RTX A6000.")
         # ROCR first (cards 1 and 3 of the box), then HIP numbers those: HIP 0 is box card 1
-        self.assertEqual(self.line({"ROCR_VISIBLE_DEVICES": "1,3", "HIP_VISIBLE_DEVICES": "0"}, vendor="amd", cards=amd, gpus=[1]), "Main: GPU 1 RTX A6000.")
-        self.assertEqual(self.line({"ROCR_VISIBLE_DEVICES": "1,3"}, vendor="amd", cards=amd, gpus=[1, 3]), "Main: GPU 3 RTX A6000. Helper: GPU 1 RTX A6000.")
+        self.assertEqual(self.line({"ROCR_VISIBLE_DEVICES": "1,3", "HIP_VISIBLE_DEVICES": "0"}, vendor="amd", cards=amd, gpus=[1]), "Main: GPU 2 (--gpu 1) RTX A6000.")
+        self.assertEqual(self.line({"ROCR_VISIBLE_DEVICES": "1,3"}, vendor="amd", cards=amd, gpus=[1, 3]), "Main: GPU 4 (--gpu 3) RTX A6000. Helper: GPU 2 (--gpu 1) RTX A6000.")
 
     def test_cuda_visible_devices_does_not_hide_amd_cards(self):
         self.assertEqual(self.line({"CUDA_VISIBLE_DEVICES": "0"}, vendor="amd", cards=four(vendor="amd"), gpus=[0, 1]),
-                         "Main: GPU 1 RTX A6000. Helper: GPU 0 RTX A6000. Off: GPU 2 RTX A6000, GPU 3 RTX A6000.")
+                         "Main: GPU 2 (--gpu 1) RTX A6000. Helper: GPU 1 (--gpu 0) RTX A6000. Off: GPU 3 (--gpu 2) RTX A6000, GPU 4 (--gpu 3) RTX A6000.")
 
 
 class EnvVisible(unittest.TestCase):
