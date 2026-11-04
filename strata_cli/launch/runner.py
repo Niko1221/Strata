@@ -230,6 +230,9 @@ def tune_words(result: dict | None, code: int | None = None) -> tuple[str, str]:
         gain = result.get("gain_pct")
         return "faster", (f"Done: answers are about {gain:.0f}% faster with the tuned settings." if isinstance(gain, (int, float))
                           else "Done: the tuned settings are faster.")
+    if out == "default_confirmed" and result.get("not_tried"):
+        n = int(result["not_tried"])          # some candidates were never measured: "already fastest" would be untrue (#5122)
+        return "some not tried", f"{n} setting{'s' if n != 1 else ''} could not be tried: not enough free memory"
     if out == "default_confirmed":
         return "already fastest", "Your computer already runs at its best with the standard settings. Nothing needed changing."
     if out == "inconclusive":

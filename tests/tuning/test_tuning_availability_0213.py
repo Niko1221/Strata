@@ -144,16 +144,19 @@ class EngineAbort(unittest.TestCase):
 class RamGuard(unittest.TestCase):
     """#5122: the restart candidate needs what the base run had, not the base's peak RSS plus the floor."""
 
-    def tuner(self, free_before, free_after, rss=23429.0, wait_ram_s=30):
+    def tuner(self, free_before, free_after, rss=23429.0, wait_ram_s=30, big_card=False, gain=1.10):
         clock = FakeClock()
-        session = StubSession(model=speed_with({("--kv-resident", "65536"): 1.10}), clock=clock, avail=free_before, rss=lambda a, e: rss)
+        session = StubSession(model=speed_with({("--kv-resident", "65536"): gain}), clock=clock, avail=free_before, rss=lambda a, e: rss)
         real = session.system
 
         def system():
             out = real()
             out["memory"]["available_mib"] = free_before if not session.runs else free_after
             return out
-        t = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(wait_ram_s=wait_ram_s, per_request=False), clock=clock, sleep=clock.sleep,
+        ctx = make_ctx()
+        if big_card:                     # a 24 GB card also plans the 32K prompt chunk, which asks for 4 GiB more RAM than the base
+            ctx.vram_mib = 24000
+        t = autotune.Tuner(session, BASE, {}, ctx, autotune.Options(wait_ram_s=wait_ram_s, per_request=False), clock=clock, sleep=clock.sleep,
                            system=system, total_ram_mib=32000, quiet=lambda: None)
         return t, session
 
@@ -176,6 +179,33 @@ class RamGuard(unittest.TestCase):
         t.system = lambda: {"memory": {"available_mib": 24680, "total_mib": 32000}}
         self.assertIsNone(t._ram_guard(0, "x", wait_s=0))
         self.assertIn("not enough free memory", t._ram_guard(4096, "x", wait_s=0) or "")     # 23.1 + 4 GiB needed, 24.1 free
+
+    def test_skipped_for_memory_is_said_instead_of_already_the_fastest(self):
+        """Owner 11-04: 'N settings could not be tried: not enough free memory', only when some were skipped for memory, in place of 'already the fastest'."""
+        t, session = self.tuner(free_before=23654, free_after=24680, big_card=True, gain=1.0)
+        r = t.run()
+        self.assertEqual([(a["id"], a["status"]) for a in r.arms if a["status"] == "skipped"], [("prefill_32k", "skipped")], r.arms)
+        self.assertEqual(r.outcome, "default_confirmed")
+        self.assertEqual(r.not_tried, 1)
+        self.assertEqual(r.message, "1 setting could not be tried: not enough free memory")
+        self.assertNotIn("fastest", r.message)
+        self.assertEqual(r.values["not_tried"], 1)
+        from strata_cli.launch.runner import tune_words
+        word, sentence = tune_words(r.to_dict())
+        self.assertEqual(sentence, "1 setting could not be tried: not enough free memory")
+        self.assertNotEqual(word, "already fastest")
+
+    def test_the_plural(self):
+        from strata_cli.launch.runner import tune_words
+        self.assertEqual(tune_words({"outcome": "default_confirmed", "not_tried": 2})[1], "2 settings could not be tried: not enough free memory")
+
+    def test_nothing_skipped_keeps_the_old_sentences(self):
+        t, session = self.tuner(free_before=23654, free_after=24680, gain=1.0)
+        r = t.run()
+        self.assertEqual(r.not_tried, 0)
+        self.assertEqual(r.message, "Your current settings are already the fastest we found. Nothing was changed.")
+        from strata_cli.launch.runner import tune_words
+        self.assertEqual(tune_words(r.to_dict())[0], "already fastest")
 
     def test_the_old_rule_still_holds_when_the_base_had_plenty(self):
         t, session = self.tuner(free_before=40000, free_after=9000)
