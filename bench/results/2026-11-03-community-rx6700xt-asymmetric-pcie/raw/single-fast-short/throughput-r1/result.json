@@ -1,0 +1,33 @@
+{
+  "started_unix": 1793736597.2309034,
+  "ttft_any_s": 0.80578495899681,
+  "ttft_content_s": 0.80578495899681,
+  "content": "B-tree insertion begins by locating the appropriate leaf node through a top-down search. If the target leaf has available space, the new key is simply inserted in sorted order. However, if the leaf is full (containing $m$ keys), it must be split to maintain balance.\n\nConsider a B-tree of order 3, where each node holds at most 2 keys. Suppose we insert `5` into a full leaf containing `[3, 4]`. The node splits into two children: `[3]` and `[4, 5]`. The median key (`4`) moves up to the parent node. If the parent was already full, it also splits, propagating the split upward until an ancestor with space is found or the root is reached.\n\nThe **root-split case** occurs when the root itself is full during insertion. For example, if the root contains `[10, 20]` and we insert `15`, the root splits into two children: `[10]` and `[20]`. The median (`15`) becomes a new single-key root, with the former halves as its children. This increases the tree’s height by one, ensuring all leaves remain at the same depth.\n\nThis process guarantees that every node remains balanced, preserving the B-tree’s structural integrity. Each split creates two new nodes and moves one key upward, maintaining the invariant that internal nodes have between $\\lceil m/2 \\rceil$ and $m$ children.\n\n**Time Complexity:** Insertion takes $O(\\log_m n)$ time, where $n$ is the number of keys and $m$ is the order. This is because the height of the tree is logarithmic in $n$, and each level requires constant-time operations for key comparison and potential splitting. Space complexity remains $O(n)$ for storing all nodes.",
+  "reasoning": "",
+  "usage": {
+    "prompt_tokens": 46,
+    "completion_tokens": 383,
+    "total_tokens": 429,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 46,
+    "prompt_ms": 769.7,
+    "prompt_per_token_ms": 16.733,
+    "prompt_per_second": 59.8,
+    "predicted_n": 383,
+    "predicted_ms": 9514.4,
+    "predicted_per_token_ms": 24.842,
+    "predicted_per_second": 40.3,
+    "draft_n": 222,
+    "draft_n_accepted": 160
+  },
+  "events": 380,
+  "status": "complete",
+  "finish_reason": "stop",
+  "done_marker": true,
+  "elapsed_s": 10.285959760076366
+}

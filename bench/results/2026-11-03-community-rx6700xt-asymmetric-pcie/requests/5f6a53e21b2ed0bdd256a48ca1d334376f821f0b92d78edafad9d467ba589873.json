@@ -1,0 +1,19 @@
+{
+  "model": "Qwen3.8-Flash-Next-IQ2_XS-original",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Explain B-tree insertion, splitting a full node, and the root-split case in about 300 words. Use concrete examples and finish with the time complexity."
+    }
+  ],
+  "temperature": 0,
+  "seed": 7301,
+  "max_tokens": 512,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}

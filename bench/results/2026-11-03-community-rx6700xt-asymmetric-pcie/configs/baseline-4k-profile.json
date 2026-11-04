@@ -1,0 +1,42 @@
+{
+  "exe": "engine-0.1.56-rx6000/strata",
+  "cwd": ".",
+  "backend": "hip",
+  "lib_dirs": [
+    "engine-0.1.56-rx6000"
+  ],
+  "tokenizer": "packs/iq2_xs/tokenizer",
+  "model_name": "Qwen3.8-Flash-Next-IQ2_XS-original",
+  "host": "<IP>",
+  "port": 8081,
+  "fit_max_tokens": false,
+  "args": [
+    "--pack",
+    "packs/iq2_xs",
+    "--native",
+    "models/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "--ple-gguf",
+    "models/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+    "--gpu",
+    "0,1",
+    "--layer-split",
+    "auto",
+    "--kv",
+    "int8",
+    "--max-context",
+    "4096",
+    "--expert-cache",
+    "auto",
+    "--pool-workers",
+    "16",
+    "--prefill",
+    "512",
+    "--prompt-cache",
+    "0",
+    "--conversation-cache-mib",
+    "0",
+    "--serve",
+    "--expert-profile",
+    "control-0.1.56/data/expert-profile.bin"
+  ]
+}

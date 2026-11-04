@@ -1,0 +1,19 @@
+{
+  "model": "Qwen3.8-Flash-Next-IQ2_XS-original",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Write a Python function merge_intervals(intervals) that merges overlapping closed intervals, without mutating its input. Include three assert examples. Return code only."
+    }
+  ],
+  "temperature": 0,
+  "seed": 7301,
+  "max_tokens": 512,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}

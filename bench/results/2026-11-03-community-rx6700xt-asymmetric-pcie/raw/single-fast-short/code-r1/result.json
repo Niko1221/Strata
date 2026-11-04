@@ -1,0 +1,33 @@
+{
+  "started_unix": 1793736573.13529,
+  "ttft_any_s": 0.6868662240449339,
+  "ttft_content_s": 0.6868662240449339,
+  "content": "```python\ndef merge_intervals(intervals):\n    if not intervals:\n        return []\n    \n    # Sort by start, then end\n    sorted_intervals = sorted(intervals, key=lambda x: (x[0], x[1]))\n    \n    merged = []\n    current_start, current_end = sorted_intervals[0]\n    \n    for start, end in sorted_intervals[1:]:\n        if start <= current_end:\n            # Overlapping or touching intervals\n            current_end = max(current_end, end)\n        else:\n            merged.append((current_start, current_end))\n            current_start, current_end = start, end\n    \n    merged.append((current_start, current_end))\n    \n    return merged\n\n\n# Assert examples\nassert merge_intervals([(1, 3), (2, 6), (8, 10), (9, 18)]) == [(1, 6), (8, 18)]\nassert merge_intervals([(1, 4), (4, 5)]) == [(1, 5)]\nassert merge_intervals([(1, 3), (5, 7), (9, 11)]) == [(1, 3), (5, 7), (9, 11)]\n```",
+  "reasoning": "",
+  "usage": {
+    "prompt_tokens": 41,
+    "completion_tokens": 270,
+    "total_tokens": 311,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 41,
+    "prompt_ms": 653.6,
+    "prompt_per_token_ms": 15.941,
+    "prompt_per_second": 62.7,
+    "predicted_n": 270,
+    "predicted_ms": 6193.1,
+    "predicted_per_token_ms": 22.937,
+    "predicted_per_second": 43.6,
+    "draft_n": 141,
+    "draft_n_accepted": 128
+  },
+  "events": 251,
+  "status": "complete",
+  "finish_reason": "stop",
+  "done_marker": true,
+  "elapsed_s": 6.848085866076872
+}

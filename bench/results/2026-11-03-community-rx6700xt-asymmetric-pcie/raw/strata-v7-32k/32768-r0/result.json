@@ -1,0 +1,33 @@
+{
+  "started_unix": 1793712303.5545564,
+  "ttft_any_s": 107.0548990679672,
+  "ttft_content_s": 107.0548990679672,
+  "content": "{\n  \"start\": \"AF9D6A69B140\",\n  \"middle\": \"DF55F44495EE\",\n  \"end\": \"A7CE0AF9EF3E\",\n  \"available\": 137\n}",
+  "reasoning": "",
+  "usage": {
+    "prompt_tokens": 32271,
+    "completion_tokens": 64,
+    "total_tokens": 32335,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 32271,
+    "prompt_ms": 106882.7,
+    "prompt_per_token_ms": 3.312,
+    "prompt_per_second": 301.9,
+    "predicted_n": 64,
+    "predicted_ms": 3587.0,
+    "predicted_per_token_ms": 56.047,
+    "predicted_per_second": 17.8,
+    "draft_n": 36,
+    "draft_n_accepted": 33
+  },
+  "events": 60,
+  "status": "complete",
+  "finish_reason": "stop",
+  "done_marker": true,
+  "elapsed_s": 110.49197867698967
+}

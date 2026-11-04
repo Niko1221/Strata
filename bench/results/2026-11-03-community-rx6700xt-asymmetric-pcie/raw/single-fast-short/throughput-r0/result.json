@@ -1,0 +1,33 @@
+{
+  "started_unix": 1793736586.7922542,
+  "ttft_any_s": 0.8607130299787968,
+  "ttft_content_s": 0.8607130299787968,
+  "content": "B-tree insertion begins by locating the appropriate leaf node through a top-down search. If the target leaf has available space, the new key is simply inserted in sorted order. However, if the leaf is full (containing $m$ keys), it must be split to maintain balance.\n\nConsider a B-tree of order 3, where each node holds at most 2 keys. Suppose we insert `15` into a full leaf containing `[10, 14]`. The node splits into two children: `[10]` and `[14, 15]`. The median key, `14`, moves up to the parent node. If the parent was already full, this insertion triggers a recursive split upward, propagating until an ancestor with space is found or the root is reached.\n\nThe **root-split case** occurs when the root itself is full and must be split. Imagine inserting `20` into a full root `[15, 18]`. The root splits into two children: `[15]` and `[18, 20]`. A new key, `18`, moves up to become the sole key of a **new root**. This increases the tree’s height by one. Crucially, this ensures all leaves remain at the same depth, preserving the B-tree’s balanced structure.\n\nThis process guarantees that every insertion affects only nodes along the search path. Since the tree height is $O(\\log_m n)$, where $n$ is the number of keys and $m$ is the order, each split or insertion takes constant time per level. Therefore, the total time complexity for insertion is **$O(\\log_m n)$**, making B-trees highly efficient for disk-based storage systems like databases and file systems.",
+  "reasoning": "",
+  "usage": {
+    "prompt_tokens": 46,
+    "completion_tokens": 367,
+    "total_tokens": 413,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 46,
+    "prompt_ms": 824.5,
+    "prompt_per_token_ms": 17.924,
+    "prompt_per_second": 55.8,
+    "predicted_n": 367,
+    "predicted_ms": 9611.4,
+    "predicted_per_token_ms": 26.189,
+    "predicted_per_second": 38.2,
+    "draft_n": 214,
+    "draft_n_accepted": 152
+  },
+  "events": 365,
+  "status": "complete",
+  "finish_reason": "stop",
+  "done_marker": true,
+  "elapsed_s": 10.437720590038225
+}
