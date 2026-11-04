@@ -1628,6 +1628,32 @@ class Runner:
             self.notices.append(text)
             self.emit("model", text, None, level="warn")
 
+    def check_saved_state_readable(self) -> None:
+        """Before anything is written: a profile or run config of THIS launch that exists but cannot be read (permissions, a damaged profile) stops the
+        launch here. Writing the run config first replaced it with a new one holding a NEW API key (the apps set up with the old key broke without a word) and
+        only then failed on the profile (`profile 'x' already exists`). Wording approved by the owner 11-04."""
+        from strata_control import profiles
+        try:
+            profiles.load(self.profile)
+        except profiles.ProfileError as exc:
+            path = profiles._path(self.profile)
+            if path.exists() or path.is_symlink():
+                try:
+                    path.read_bytes()
+                    reason = str(exc)                              # readable, but not a profile: the load says why
+                except OSError as os_error:
+                    reason = os_error.strerror or type(os_error).__name__
+                raise profiles.ProfileError(f"The profile of this launch ({path}) cannot be read ({reason}). "
+                                            "Fix its permissions or move it away, then run the launch again.")
+        existing = launch_dir() / f"{self.name}.json"
+        try:
+            existing.read_bytes()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise LaunchError(f"The saved settings of this launch ({existing}) cannot be read ({exc.strerror or type(exc).__name__}).",
+                              "Fix its permissions or move it away, then run the launch again: writing a new one would drop its API key and your changes.")
+
     def build_config(self, base_path: Path) -> Path:
         from strata_control import tune_knobs
         base = read_config(base_path)
@@ -2668,6 +2694,7 @@ class Runner:
             self.check_cancel()
             self.ensure_drafter(base)
             self.check_cancel()
+            self.check_saved_state_readable()
             self.emit("config", "Writing this launch's settings…")
             cfg = self.build_config(base)
             self.ensure_profile(cfg)
