@@ -286,8 +286,8 @@ class Tuner:
             reason = (f"not enough free memory to start it safely ({avail / 1024:.1f} GiB free, "
                       f"{need / 1024:.1f} GiB needed)")
             prior = self._ram_gave_up
-            if prior is not None and need >= prior[0] and avail <= prior[1] + STAGNANT_MIB:
-                return reason                     # an earlier wait found nothing freed and this needs no less
+            if prior is not None and avail <= prior[1] + STAGNANT_MIB:
+                return reason                     # an earlier wait found nothing freed: waiting again for a candidate that needs less, but still more than is free, repeats it (#4895)
             if first_avail is None:
                 first_avail = avail
             stagnant = waited >= STAGNANT_WAIT_S and avail <= first_avail + STAGNANT_MIB
