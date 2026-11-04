@@ -35,7 +35,7 @@ Every other case keeps the layer split without a message. On AMD that includes 2
 (its i-quant tiles are a first, untuned version and the layer split is faster today).
 
 Both sides need all of this: Linux; the Qwen3.8-Flash-Next shapes (48 layers, 512 experts) in a file the engine reads (checked from the tensor
-types, not the name); **all routed experts fit in the cards' memory**; enough free RAM for what stays in RAM (the 27.5 GiB embedding table, about
+types, not the name); **all routed experts fit in the cards' memory** (the memory that is free when the launch is made, minus the engine's 700 MiB reserve: cards that other programs hold get the layer split with DFlash2 and no draft-layer fetch); enough free RAM for what stays in RAM (the 27.5 GiB embedding table, about
 3 GiB of buffers, the 4 GiB conversation cache and 8 GiB spare, about 43 GiB; measured 31 GB at start and 35 GB after long prompts); a context of
 131072 or less. The split uses the MTP drafter, so Strata fetches the MTP draft layer (about 5.2 GB) when it is not on the disk; if that layer is
 missing, the launch is a quiet layer split.

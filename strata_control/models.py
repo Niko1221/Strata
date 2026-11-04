@@ -330,7 +330,7 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
         return None
     first = shards[0]
     cfg = discovery.run_config_for(first, discovery.places(here=ROOT))
-    beside = discovery.prepared_beside(first)
+    beside = discovery.prepared_beside(first, discovery.remembered_data_dirs())     # the data folder in use too: a model folder outside it must not hide the draft layer setup wrote there
     if cfg is None and not any(beside.get(k) for k in ("pack", "mtp", "mmproj")):
         return {"config": None, "data_dir": str(beside["data_dir"]) if beside.get("data_dir") else None, "pack": None, "mtp": None, "mmproj": None}
     return {"config": str(cfg) if cfg else None, **{k: (str(v) if v else None) for k, v in beside.items()}}

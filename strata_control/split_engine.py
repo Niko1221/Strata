@@ -72,6 +72,10 @@ PLE_TYPES = {"IQ4_NL", "Q8_0"}     # per_layer_token_embd.weight as the host's r
 # measured on 2x RTX A6000 48 GB at 128K context, 6 lanes (phaseA-tests/sfnx/RESULTS.md section 8): a card held half the experts plus
 # 8.4 GiB of dense weights, buffers and the K/V pool, with 3.6 GiB left free. 9 GiB per card is that plus a little.
 CARD_OVERHEAD_GIB = 9.0
+# What a card must have FREE, not just own: other programs on a shared box or a desktop hold part of it (srv118, 2 x RTX PRO 6000 held to 8 GB free: the plan still
+# said "all-cards split" and would have fetched the 5.2 GB draft layer). The fit counts free memory minus the engine's own default reserve (--vram-reserve-mib 700,
+# strata_control.drafting.SLOT_RESERVE_MIB); a card whose free memory is not known is counted by its size, as before.
+FREE_RESERVE_MIB = 700
 RAM_SPARE_GIB = 8.0                # left over beside the engine's own RAM
 RAM_PINNED_BUFFERS_GIB = 3.0       # the exchange buffers and heap (smaps: 1.7 GiB pinned + 0.9 heap)
 CONVERSATION_CACHE_MIB = 4096      # parked conversations (host RAM); the engine's own default is 32-128 GiB
@@ -90,6 +94,14 @@ class Card:
     cc: int                         # NVIDIA: compute capability as a number, 86 for 8.6; AMD: 0
     vendor: str = "nvidia"          # "nvidia" or "amd"
     arch: str = ""                  # "sm_86", "gfx1201"; empty: derived from cc (NVIDIA)
+    free_mib: int | None = None     # memory nobody holds right now (nvidia-smi memory.free, the kernel's vram_used); None: not known, the card's size counts
+
+    @property
+    def room_mib(self) -> int:
+        """What the fit may count on this card: its free memory minus the reserve (never more than its size); the whole size when the free memory is not known."""
+        if self.free_mib is None:
+            return self.vram_mib
+        return max(0, min(self.vram_mib, self.free_mib) - FREE_RESERVE_MIB)
 
     @property
     def arch_name(self) -> str:
@@ -239,9 +251,9 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
     need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB
     need_ram = model.embd_ram_bytes / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024
-    if cards and n >= 2 and min(c.vram_mib for c in cards) / 1024 < need_vram:
+    if cards and n >= 2 and min(c.room_mib for c in cards) / 1024 < need_vram:
         why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has "
-                   f"{min(c.vram_mib for c in cards) / 1024:.0f} GiB)")
+                   f"{min(c.room_mib for c in cards) / 1024:.0f} GiB)")
     if ram_available_gib < need_ram + RAM_SPARE_GIB:
         why.append(f"there is not enough free RAM (about {need_ram + RAM_SPARE_GIB:.0f} GiB needed, {ram_available_gib:.0f} GiB free)")
     if why:
@@ -311,10 +323,17 @@ def probe_amd_cards(indexes: list[int] | None = None, root: str = "/sys") -> lis
                 mem = int(bp.get("size_in_bytes", "0")) >> 20
         except (OSError, ValueError):
             continue
-        if indexes is None or idx in indexes:
-            cards.append(Card(idx, name, mem, 0, "amd", arch))
+        free = None
+        try:                                                 # what is in use: the card's render node, found by the topology node's drm_render_minor
+            minor = int(props.get("drm_render_minor", "0"))
+            if minor > 0 and mem:
+                used = int((pathlib.Path(root) / f"class/drm/renderD{minor}/device/mem_info_vram_used").read_text()) >> 20
+                free = max(0, mem - used)
+        except (OSError, ValueError):
+            free = None
+        cards.append(Card(idx, name, mem, 0, "amd", arch, free_mib=free))
         idx += 1
-    return cards
+    return _named_or_visible(cards, indexes)
 
 
 def probe_nvidia_cards(indexes: list[int] | None = None) -> list[Card]:
@@ -322,23 +341,38 @@ def probe_nvidia_cards(indexes: list[int] | None = None) -> list[Card]:
     import subprocess
 
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,memory.free", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     cards = []
     for line in out.splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 4:
+        if len(parts) not in (4, 5):
             continue
         try:
             idx, mem = int(parts[0]), int(float(parts[2]))
             cc = int(round(float(parts[3]) * 10))
         except ValueError:
             continue
-        if indexes is None or idx in indexes:
-            cards.append(Card(idx, parts[1], mem, cc))
-    return cards
+        try:
+            free = int(float(parts[4])) if len(parts) == 5 else None
+        except ValueError:
+            free = None                                      # "[N/A]", or an answer without the column: the size counts
+        cards.append(Card(idx, parts[1], mem, cc, free_mib=free))
+    return _named_or_visible(cards, indexes)
+
+
+def _named_or_visible(cards: list[Card], indexes: list[int] | None) -> list[Card]:
+    """The cards the launch named; with none named, the ones the environment leaves visible (CUDA_VISIBLE_DEVICES, AMD: ROCR_VISIBLE_DEVICES then HIP_VISIBLE_DEVICES): a
+    card the engine will not see is not one the split can use. Named cards are the server's own visibility list (it sets it from them), so they are kept as named."""
+    if indexes is not None:
+        return [c for c in cards if c.index in indexes]
+    if not cards:
+        return cards
+    from strata_control import gpu_roles
+    vis = gpu_roles.env_visible([c.index for c in cards], cards[0].vendor, alike=len({(c.name, c.vram_mib) for c in cards}) == 1)
+    return cards if vis is None else [c for c in cards if c.index in vis]
 
 
 def ram_gib() -> tuple[float, float]:

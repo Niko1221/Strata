@@ -473,19 +473,21 @@ def parallel_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
 
 
 def roles_line(s: S.LaunchSettings, catalog) -> str | None:
-    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None."""
+    """`Main: GPU 1 RTX 4070 Ti. Helper: GPU 0 RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None. The numbers are the
+    ones --gpu takes (card 0 is GPU 0), and a card that CUDA_VISIBLE_DEVICES (AMD: ROCR_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES) hides is not listed unless it is named."""
     if not (s.gpu_roles or s.gpus) or catalog is None:
         return None
     try:
         from strata_control import gpu_roles
         comp = catalog.computer()
-        cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+        keep = {int(g) for g in (s.gpus or [])} | {int(k) for k in (s.gpu_roles or {})}
+        cards = gpu_roles.visible_cards(gpu_roles.rows(comp.gpus, comp.engine_vendor), comp.engine_vendor, keep=keep)
         if s.gpu_roles:
             named = {int(k): v for k, v in s.gpu_roles.items()}
             roles = gpu_roles.normalize({int(c.get("index", 0)): named.get(int(c.get("index", 0)), "off") for c in cards}, cards)
         else:
             roles = gpu_roles.from_legacy(list(s.gpus), cards)
-        return gpu_roles.describe(roles, cards)
+        return gpu_roles.describe(roles, cards, card_numbers=True)
     except Exception:                                        # noqa: BLE001 - a summary line must never stop a launch
         return None
 

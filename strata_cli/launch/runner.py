@@ -1518,6 +1518,19 @@ class Runner:
             return "mtp"
         return r
 
+    def card_probe(self):
+        """The cards' facts for the split engine's rule: None (the engine's own probe, which counts each card's FREE memory), or, when a server of this launch's profile or on
+        its port is running, the same probe with the free memory left out: that server is stopped before the start and gives its memory back, so it is not "busy" memory."""
+        try:
+            mine = any(r["profile"] == self.profile or r["port"] == int(self.s.port) for r in self.serving_launches())
+        except Exception:                                    # noqa: BLE001 - a question asked early is never a reason to stop a launch
+            mine = False
+        if not mine:
+            return None
+        import dataclasses
+        from strata_control import split_engine as SE
+        return lambda indexes: [dataclasses.replace(c, free_mib=None) for c in SE.probe_cards(indexes)]
+
     def split_expected(self, cfg: dict | None = None) -> bool:
         """Would the all-cards split engine take this launch (strata_control/split_engine.expected: the rule apply_split_engine uses, asked before anything is on disk)."""
         cached = getattr(self, "_split_expected", None)
@@ -1545,7 +1558,7 @@ class Runner:
                     cards = [int(g) for g in s.gpus] if s.gpus else None
                     got = SE.expected(base, indexes=cards, native=native, context=int(s.context or SE.TESTED_CONTEXT),
                                       kv=next((str(a2) for a1, a2 in zip(base.get("args") or [], (base.get("args") or [])[1:]) if a1 == "--kv"), None),
-                                      allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1")
+                                      allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1", probe=self.card_probe())
         except Exception:                                    # noqa: BLE001 - a question asked early is never a reason to stop a launch
             got = False
         self._split_expected = got
@@ -1654,7 +1667,7 @@ class Runner:
         if lanes_added:
             cfg["parallel"] = int(self.s.parallel)
         try:
-            decision = SE.apply_to_config(cfg, exe_for_cards=exe_for, allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1")
+            decision = SE.apply_to_config(cfg, exe_for_cards=exe_for, allow_untested=os.environ.get("STRATA_SPLIT_ALLOW_UNTESTED") == "1", probe=self.card_probe())
         except Exception as e:                               # noqa: BLE001 - never stop a launch over an option
             if lanes_added:
                 cfg.pop("parallel", None)
@@ -2240,6 +2253,7 @@ class Runner:
         """What this launch would download, in numbers and words (nothing is changed): the model's missing files, and for a model that is
         not on this computer yet also the draft layer and the picture reader that setup fetches after it. 0 when everything is here."""
         from strata_control import engine_component
+        from strata_control import discovery
         from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
         s = self.s
         st = self.model_state()
@@ -2253,9 +2267,11 @@ class Runner:
             have = {p["kind"] for p in parts}
             try:
                 data = Path(st.folder) if st.folder else (Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or self.catalog.data_dir()))
-                if modelstate.mtp_choice(s.mtp, self.resolved_drafting(s.family)) != "off" and "mtp" not in have and not (data / "mtp" / "rt" / "experts.bin").is_file():
+                # the data folder the model sits in, then --data-dir and the remembered folder: setup writes the draft layer to <data-dir>/mtp/rt even when the model folder is elsewhere
+                homes = [data, *[d for d in modelstate.data_places(self.catalog, Path(s.data_dir) if s.data_dir else None) if d != data]]
+                if modelstate.mtp_choice(s.mtp, self.resolved_drafting(s.family)) != "off" and "mtp" not in have and discovery.mtp_layer_in(*homes) is None:
                     parts.append({"kind": "mtp", "label": "the draft layer", "gb": MTP_FETCH_GB})
-                places = [data / "models", data / "Models"]
+                places = [d / sub for d in homes for sub in ("models", "Models")]
                 if s.model_path:                             # setup uses a reader that sits with the person's own files (setup.py --gguf-dir)
                     own = Path(s.model_path)
                     places += [own if own.is_dir() else own.parent, (own if own.is_dir() else own.parent).parent]
