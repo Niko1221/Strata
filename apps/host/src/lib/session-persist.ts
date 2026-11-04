@@ -185,6 +185,7 @@ export function createSessionWriter(options: SessionWriterOptions) {
   let running: Promise<SaveResult> | null = null;
   let rerun = false;
   let lastResult: SaveResult = { ok: true, failed: [], written: 0, deleted: 0 };
+  let failures = 0;
   // Chat object -> its JSON. WeakMap: a replaced chat is forgotten with its object.
   const cache = new WeakMap<Session, string>();
   // The JSON of each chat as the host last confirmed it (or as it was read from the host).
@@ -234,8 +235,11 @@ export function createSessionWriter(options: SessionWriterOptions) {
     lastResult = { ok: failedIds.size === 0 && failed.length === 0, failed, written, deleted };
     if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
     if (!lastResult.ok) {
-      retryTimer = setTimeout(() => { retryTimer = null; if (pending === null) pending = lastSessions; void flush(); }, retryMs);
-    }
+      // Tried again, a little later each time (up to a minute); the timer never keeps a closing page or process alive.
+      failures = Math.min(failures + 1, 6);
+      retryTimer = setTimeout(() => { retryTimer = null; if (pending === null) pending = lastSessions; void flush(); }, Math.min(retryMs * 2 ** (failures - 1), 60_000));
+      (retryTimer as unknown as { unref?: () => void }).unref?.();
+    } else failures = 0;
     options.onResult?.(lastResult);
     return lastResult;
   }

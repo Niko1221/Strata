@@ -369,10 +369,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     let hideDeltas = !!researchTopic;
     signal?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
     // What the assistant itself wrote in this run (not our own step lines): a plan turn reads its plan from it, a step reads its summary.
-    const written = { all: '', step: '' };
+    const written = { all: '', step: '', reasoning: '' };
+    // The frame that closed the turn, kept with the turn's text for a page that comes back after it ended (attach).
+    let terminal = null;
     // The turn guard (turn-guard.mjs): counts failing searches, searches, plan rewrites and a nearly full context. Set up once the route is known.
     let guard = null;
-    const raw = frame => { try { send(frame); } catch { send = () => {}; attached = false; } };
+    const raw = frame => { if (frame.type === 'done' || frame.type === 'error') terminal = frame; try { send(frame); } catch { send = () => {}; attached = false; } };
     // What the turn made (files) and compact activity lines (notes-split-agent8.md): derived from the cards the turn already sends.
     const tracker = new DeliverableTracker(workspacePath, { ...trackerFolders(), claims: folderClaims, owner: chatId });
     let toolsRan = false;   // a turn that ran no tool wrote nothing, so there is nothing to look for at its end
@@ -380,6 +382,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const groups = new ActivityGroups({ emit: raw });
     const skills = new SkillsUsed({ emit: raw, info: skillInfoFrom(skillsDir()) });
     const emit = frame => {
+      if (frame.type === 'reasoning' && frame.text && written.reasoning.length < 2_000_000) written.reasoning += frame.text;
       if (frame.type === 'delta' && !frame.own) { written.all += frame.text; written.step += frame.text; if (guard) trip(guard.text(frame.text)); if (hideDeltas) return; }
       if (frame.own) { const { own, ...rest } = frame; frame = rest; }
       if (frame.type === 'delta' && frame.text) groups.text();
@@ -467,6 +470,19 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     c.turn = turn;
     if (workspacePath) folderClaims.begin(workspacePath, chatId);
     /**
+     * A page that comes back (a reload, a new window) takes the running turn over again. Everything that was said while no page was there is
+     * sent as one catch-up: the start, the text and thinking so far (a `resync`), every tool card as it is now (the ones waiting for a yes
+     * included) and the questions waiting for an answer. After that the turn's frames flow to the new page as they did to the old one.
+     */
+    turn.reattach = ({ onFrame, signal: again }) => {
+      send = onFrame; attached = true;
+      again?.addEventListener('abort', () => { send = () => {}; attached = false; }, { once: true });
+      raw({ type: 'start', model: route.name, contextMax: route.contextWindow, demo: false, remoteModel: route.kind === 'api', agent: true, mode: appliedMode, sessionId, requestId, skills: [], resumed: true, ...(planTask ? { planning: true } : {}) });
+      raw({ type: 'resync', content: hideDeltas ? '' : written.all, reasoning: written.reasoning });
+      for (const t of projector.tools.values()) if (t.card) raw({ type: 'agent-tool', tool: t.card });
+      for (const q of questions.values()) if (q.sessionId === sessionId) raw({ type: 'agent-question', callId: q.callId, questions: q.items });
+    };
+    /**
      * A turn must always end. If the Harness sends nothing at all for a while (a tool that never returns, a model server that went
      * quiet, a lost event) the turn is stopped and ended with a plain message instead of showing "thinking" forever. A running tool gets
      * a longer allowance than a quiet model (a build can be silent for minutes). Whatever the assistant finished is kept.
@@ -533,6 +549,8 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
       }
       for (const f of frames.slice(-1)) emit(f);
       c.turn = null;
+      // What a page that was away needs to show the end of this turn (attach, below).
+      c.last = { requestId, sessionId, mode: appliedMode, model: route.name, contextMax: route.contextWindow, remoteModel: route.kind === 'api', content: hideDeltas ? '' : written.all.slice(0, 4_000_000), reasoning: written.reasoning, cards: [...projector.tools.values()].filter(t => t.card).map(t => t.card), terminal };
       turn.ended.resolve({ reason: projector.ended, failure: failure ?? null });
       notifyIdle();
       // A turn that filled the context, or that the guard stopped, leaves a long history behind: summarise the older part now so the next message has room.
@@ -1406,6 +1424,34 @@ ${note.text}
     return { stopped: true, ended: result.reason?.kind ?? 'unknown', ms: Date.now() - t0 };
   }
 
+  /** The turn running for a chat now, for a page that has just loaded; null when none. */
+  function turnOf(chatId) {
+    const t = chats.get(chatId)?.turn;
+    if (!t || t.finished) return null;
+    return { chatId, sessionId: t.sessionId, requestId: t.requestId, mode: t.mode, stopping: !!t.stopping, pending: pendingFor(chatId) };
+  }
+  /** Every chat with a turn running. */
+  function runningTurns() { return [...chats.keys()].map(turnOf).filter(Boolean); }
+  /**
+   * Take a turn over from a new page. A running turn: the catch-up, then the live frames until it ends or the page leaves again. A turn that
+   * ended while no page was there (`requestId` names it): its text, tool cards and closing frame once. null when there is nothing to take over.
+   */
+  function attach({ chatId, requestId = null, onFrame, signal }) {
+    const c = chats.get(chatId);
+    const turn = c?.turn;
+    if (turn && !turn.finished && typeof turn.reattach === 'function') {
+      if (requestId && turn.requestId !== requestId) return null;
+      turn.reattach({ onFrame, signal });
+      return { ended: turn.ended.promise.then(() => undefined), live: true };
+    }
+    const last = c?.last;
+    if (!last || !requestId || last.requestId !== requestId) return null;
+    onFrame({ type: 'start', model: last.model, contextMax: last.contextMax, demo: false, remoteModel: last.remoteModel, agent: true, mode: last.mode, sessionId: last.sessionId, requestId: last.requestId, skills: [], resumed: true });
+    onFrame({ type: 'resync', content: last.content, reasoning: last.reasoning });
+    for (const card of last.cards) onFrame({ type: 'agent-tool', tool: card });
+    if (last.terminal) onFrame(last.terminal);
+    return { ended: Promise.resolve(), live: false };
+  }
   function pendingFor(chatId) {
     const sessionId = sessionMap[chatId]?.sessionId;
     const helpers = chats.get(chatId)?.turn?.children;
@@ -1427,7 +1473,7 @@ ${note.text}
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

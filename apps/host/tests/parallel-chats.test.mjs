@@ -181,5 +181,25 @@ test('two live chats in one workspace keep their messages, tool cards and saved 
   assert.ok(!/MARK-B|B-unique|ends B/.test(bodyOf(a.id)), 'chat A holds nothing of chat B');
   assert.ok(bodyOf(b.id).includes('MARK-B') && bodyOf(b.id).includes('B-unique-1') && bodyOf(b.id).includes('ends B'));
   assert.ok(!/MARK-A|A-unique|ends A/.test(bodyOf(b.id)), 'chat B holds nothing of chat A');
+
+  // A second window saves a chat of its own, and then one of this window's chats; this window takes the first over and keeps its own.
+  const other = { id: 's_from_other_window', title: 'from window 2', createdAt: '2026-12-01T00:00:00.000Z', updatedAt: '2026-12-01T00:00:01.000Z', messages: [{ id: 'o1', role: 'user', content: 'MARK-OTHER-WINDOW' }] };
+  const saved2 = await chatStore.save(other.id, JSON.stringify(other));
+  await store.applyChatChange(other.id, saved2.rev, false);
+  assert.ok(store.useStore((s) => s.sessions).some((s) => s.id === other.id && s.messages[0].content === 'MARK-OTHER-WINDOW'), 'the chat saved by the other window appears here');
+  // while a turn is running in chat A here, the other window's save of chat A does not replace it
+  store.selectSession(a.id);
+  const liveSend = store.sendMessage('second question MARK-A2');
+  await wait(3);
+  const [, , sa2] = globalThis.__streams;
+  await chatStore.save(a.id, JSON.stringify({ ...JSON.parse(JSON.stringify(store.useStore((s) => s.sessions).find((s) => s.id === a.id))), title: 'renamed in window 2' }));
+  await store.applyChatChange(a.id, 99, false);
+  assert.notEqual(store.useStore((s) => s.sessions).find((s) => s.id === a.id).title, 'renamed in window 2', 'a chat with a turn running here is not replaced');
+  sa2.onFrame({ type: 'done', tokensIn: 1, tokensOut: 1, durationMs: 1, usageSource: 'reported' });
+  sa2.release(); await liveSend;
+  // the other window deletes its chat
+  await chatStore.remove(other.id);
+  await store.applyChatChange(other.id, null, true);
+  assert.ok(!store.useStore((s) => s.sessions).some((s) => s.id === other.id), 'a chat the other window deleted goes here too');
   } finally { fakeHost.restore(); rmSync(hostDir, { recursive: true, force: true }); }
 });

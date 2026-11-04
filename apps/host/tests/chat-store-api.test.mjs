@@ -97,3 +97,15 @@ test('a save in one window is announced to the others on the event stream, with 
     assert.deepEqual(JSON.parse(frame[1]), { id: 's_ev', rev: 1, from: 'window-A' });
   } finally { await h.stop(); await rm(home, { recursive: true, force: true }).catch(() => {}); }
 });
+
+test('a page that comes back asks which chats have a turn running; with none, the answer is an empty list and "nothing to take over"', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'strata-chats-active-'));
+  const h = await startHost(home);
+  try {
+    assert.deepEqual(await (await fetch(`${h.base}/api/chat/active`)).json(), { turns: [] });
+    const none = await fetch(`${h.base}/api/chat/attach`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: 's_nothing', requestId: 'req-1' }) });
+    assert.equal(none.status, 404);
+    assert.equal((await none.json()).code, 'no-turn');
+    assert.equal((await fetch(`${h.base}/api/chat/attach`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 400);
+  } finally { await h.stop(); await rm(home, { recursive: true, force: true }).catch(() => {}); }
+});

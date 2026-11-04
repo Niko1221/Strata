@@ -2035,6 +2035,28 @@ async function api(req, res, path, method, url) {
     if (typeof b.sessionId !== 'string' || !['manual', 'plan', 'bypass'].includes(b.mode)) return error(res, 400, 'sessionId and mode (manual, plan or bypass) are required');
     try { return json(res, 200, await agent.setMode(b.sessionId, b.mode)); } catch (e) { return error(res, e.code === 'mode-unavailable' ? 409 : 502, e.message); }
   }
+  /* A page that has just loaded asks which chats have a turn running (a reload does not stop a turn), and takes one over again: the catch-up
+     of what was said while no page was there, then the live frames, as on /api/chat/stream. A turn that ended while the page was away
+     (the page names it by requestId) is sent once, whole. 404 when there is nothing to take over. */
+  if (path === '/api/chat/active' && method === 'GET') return json(res, 200, { turns: agent.runningTurns() });
+  if (path === '/api/chat/attach' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string' || !b.sessionId) return error(res, 400, 'sessionId is required');
+    const controller = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+    let started = false;
+    const write = frame => {
+      if (res.writableEnded || res.destroyed) return;
+      if (!started) { started = true; res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive' }); keepStreamAlive(res); }
+      res.write(`${JSON.stringify(frame)}
+`);
+    };
+    const attached = agent.attach({ chatId: b.sessionId, requestId: typeof b.requestId === 'string' ? b.requestId : null, onFrame: write, signal: controller.signal });
+    if (!attached) return error(res, 404, 'There is no turn to take over.', { code: 'no-turn' });
+    await Promise.race([attached.ended, new Promise(r => controller.signal.addEventListener('abort', r, { once: true }))]);
+    if (!res.writableEnded) res.end();
+    return undefined;
+  }
   /* Stop one chat's turn. Resolves once the turn has really ended, not when the cancel was admitted. */
   if (path === '/api/chat/stop' && method === 'POST') {
     const b = await readBody(req);
