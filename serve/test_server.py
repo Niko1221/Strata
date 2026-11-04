@@ -5139,6 +5139,7 @@ class AmdTelemetry(unittest.TestCase):
                     self.assertEqual([c["index"] for c in cards], [0, 1])
                     self.assertEqual([c["util"] for c in cards], [[37], [99]])
                     self.assertEqual([c["power"] for c in cards], [[85.0], [120.0]])
+                    self.assertEqual([c["temp"] for c in cards], [[51.0], [64.0]])
                     self.assertEqual([c["pcie_rx_mb"] for c in cards], [[None], [None]])
                     t.close()
                     t1 = telemetry.Telemetry(gpu_index=0, amd=True)  # one card: no per-card series, the shared ones are enough

@@ -24,7 +24,7 @@ import time
 
 HISTORY = 60
 # the per-card series the Monitor draws as one chart or line per card (its tiles name each card)
-GPU_HISTORY = ("util", "power", "pcie_rx_mb")
+GPU_HISTORY = ("util", "power", "pcie_rx_mb", "temp")
 
 
 # ------------------------------------------------------------------------------------------------ NVML
