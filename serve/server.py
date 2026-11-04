@@ -234,6 +234,7 @@ LOOP_COVERAGE = 0.25             # the share of the last 2,000 words inside 12-w
 LOOP_HISTORY_WORDS = 30000       # how far back the passages are counted (bounds the cost of a look)
 LOOP_TAIL_CHARS = 2048           # chars at the end of the reasoning also checked for a short period (#1753)
 LOOP_TAIL_PERIOD = 64            # a period at most this long in that tail reads as a fully repeated window
+HYPHEN_CHAIN_CHARS = 200         # local: an aperiodic run-on of hyphen-joined words is the same failure (Qwen3.8-Flash-Next)
 
 
 def reasoning_repeat_coverage(text):
@@ -261,6 +262,44 @@ def reasoning_repeat_coverage(text):
         if counts[grams[i]] >= 3:
             covered.update(range(i, i + width))
     return len(covered) / (len(words) - start)
+
+
+def longest_hyphen_chain(text, limit=6000):
+    """Local: length of the longest run of hyphen-joined words near the end of the reasoning.
+
+    The failure this catches is aperiodic: every word is new, nothing repeats, so neither the
+    token run (#606), the 12-word passages (#728) nor the periodic tail (#1753) sees it.  What it
+    does produce is a single run-on of `a-b-c-d-...` thousands of characters long.
+    """
+    tail = text[-limit:]
+    best = 0
+    for m in re.finditer(r"[A-Za-z]+(?:-[A-Za-z]+)+", tail):
+        if len(m.group(0)) > best:
+            best = len(m.group(0))
+    return best
+
+
+SENTENCE_END = re.compile(r"[\u3002\uff01\uff1f!?\.\n]+")
+DEGENERACY_PUNCT_PER_1K = 6.0    # local: fewer sentence ends than this per 1000 chars is a run-on
+DEGENERACY_MIN_CHARS = 1000      # local: below this the density is too noisy to judge
+
+
+def reasoning_degeneracy(text, hyphen_chars=HYPHEN_CHAIN_CHARS, punct_per_1k=DEGENERACY_PUNCT_PER_1K):
+    """Local: (name, detail) when the reasoning looks degenerate, else None.
+
+    Two independent signals, either is enough:
+      * a hyphen run-on (English morphology; `hyphen_chars`)
+      * punctuation density: a run-on has no sentence ends.  Works for Chinese too, which has
+        no spaces, so the whitespace-word metric cannot be used there.
+    """
+    chain = longest_hyphen_chain(text)
+    if chain and hyphen_chars and chain >= hyphen_chars:
+        return ("hyphen run-on", "longest chain %d chars" % chain)
+    if len(text) >= DEGENERACY_MIN_CHARS and punct_per_1k:
+        density = len(SENTENCE_END.findall(text)) / len(text) * 1000.0
+        if density < punct_per_1k:
+            return ("run-on", "%.2f sentence ends per 1000 chars" % density)
+    return None
 
 
 def focused_recovery_prompt(tok, ids, generated):
@@ -4587,6 +4626,9 @@ class Service:
         self.vision_no_shrink_said = False
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
         self.reasoning_loop_recovery = False
+        self.hyphen_chain_chars = HYPHEN_CHAIN_CHARS     # local: a reasoning run-on this long is a loop (0: off)
+        self.reasoning_degeneracy = "wrap"               # local: off | report (log only) | wrap (close the thinking)
+        self.degeneracy_punct_per_1k = DEGENERACY_PUNCT_PER_1K   # local: run-on if fewer sentence ends than this
         self.reasoning_budget_configured = False         # the config named reasoning_budget_tokens (0 included): no family default
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
@@ -5950,7 +5992,7 @@ class Service:
         nf_retried = False                              # #879: the request was sent again after non-finite logits
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
-        looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
+        looped, next_loop_check, deg_logged = False, LOOP_CHECK_EVERY, False   # #728 / local run-on report
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
@@ -6126,12 +6168,24 @@ class Service:
                                 if stops is not None and stops.hit is not None:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
-                                if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
+                                if ((self.reasoning_loop_recovery or self.reasoning_degeneracy != "off")
+                                        and not recovery_count and parser.state == "reasoning"
                                         and n >= next_loop_check and not parser.buf and not parser.pending
                                         and not detok.pending()):
                                     next_loop_check = n + LOOP_CHECK_EVERY
                                     repeat_coverage = reasoning_repeat_coverage(reasoning_text)
-                                    if repeat_coverage >= LOOP_COVERAGE:
+                                    sig = reasoning_degeneracy(reasoning_text, self.hyphen_chain_chars,
+                                                               self.degeneracy_punct_per_1k)
+                                    if sig:
+                                        if not deg_logged:
+                                            deg_logged = True
+                                            print("[strata] reasoning looks degenerate (%s: %s) at %d output tokens; "
+                                                  "reasoning_degeneracy=%s" % (sig[0], sig[1], n,
+                                                                                self.reasoning_degeneracy), flush=True)
+                                        if self.reasoning_degeneracy == "wrap":
+                                            wrap = True
+                                            break
+                                    if self.reasoning_loop_recovery and repeat_coverage >= LOOP_COVERAGE:
                                         if self.reasoning_loop_recovery == "stop":
                                             looped = True        # #728: end the reply here, as for a repeated token
                                             break
@@ -9976,6 +10030,19 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         raise SystemExit("[strata] config \"reasoning_loop_recovery\" must be false, \"stop\" or \"recover\", "
                          f"not {recovery!r}")
     svc.reasoning_loop_recovery = recovery
+    hc = cfg.get("hyphen_chain_chars", HYPHEN_CHAIN_CHARS)   # local: the run-on detector's threshold (0: off)
+    if isinstance(hc, bool) or not isinstance(hc, int) or hc < 0:
+        raise SystemExit('[strata] config "hyphen_chain_chars" must be a whole number of characters (0 turns it off), '
+                         "got %r" % (hc,))
+    svc.hyphen_chain_chars = hc
+    deg = cfg.get("reasoning_degeneracy", "wrap")            # local: off | report (log only) | wrap
+    if deg not in ("off", "report", "wrap"):
+        raise SystemExit('[strata] config "reasoning_degeneracy" must be "off", "report" or "wrap", got %r' % (deg,))
+    svc.reasoning_degeneracy = deg
+    dp = cfg.get("degeneracy_punct_per_1k", DEGENERACY_PUNCT_PER_1K)   # local: the language-agnostic signal
+    if isinstance(dp, bool) or not isinstance(dp, (int, float)) or dp < 0:
+        raise SystemExit('[strata] config "degeneracy_punct_per_1k" must be a number >= 0 (0 turns it off), got %r' % (dp,))
+    svc.degeneracy_punct_per_1k = float(dp)
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     if a.engine == "strata" and groups:                 # replicas: every card of every group
