@@ -25,3 +25,8 @@ export function updateAgent(agents: SessionAgent[], frame: unknown, now = Date.n
 }
 
 export const runningAgents = (agents: SessionAgent[]) => agents.filter(a => a.status === 'working').length;
+
+/** A page that was closed or reloaded holds no live helper: a saved row still "working" is shown as stopped until a newer frame says otherwise
+ *  (updateAgent takes any frame newer than the row's own time, so a helper that really runs comes back by itself). #4218. */
+export const settleAgents = (agents: SessionAgent[] | undefined): SessionAgent[] | undefined =>
+  agents?.some(a => a.status === 'working') ? agents.map(a => a.status === 'working' ? { ...a, status: 'cancelled' as const } : a) : agents;

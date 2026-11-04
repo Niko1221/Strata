@@ -56,7 +56,7 @@ Recomendamos **primeiro a ISTA-DASLab**, depois a **Unsloth** e outros provedore
 
 No **aplicativo de desktop** e no **Terminal**. O que não cabe na memória é lido do seu SSD, por isso é preciso muito espaço livre em disco.
 
-| Conjunto (IST-DAS) | Download | Espaço livre necessário |
+| Conjunto (ISTA-DAS) | Download | Espaço livre necessário |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | cerca de 245 GB |
 | 2.00 bpw | 257 GB | cerca de 265 GB |
@@ -95,7 +95,7 @@ Não sabe o que cabe? [Escolha um modelo para o seu computador](docs/MODELS.md#p
 
 Instale o aplicativo, escolha um modelo e comece a conversar. Há um instalador por sistema. Na primeira vez que abre, o aplicativo baixa o motor da sua placa de vídeo. [Ajuda com o instalador](docs/INSTALL.md#the-app).
 
-<sub>Arquivos: `Strata-0.2.8-windows-x64-setup.exe` · `Strata-0.2.8-linux-x86_64.AppImage` · `Strata-0.2.8-macos-arm64.dmg`</sub>
+<sub>Arquivos: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Aplicativo de desktop do Strata com um chat e uma prévia do código ao vivo lado a lado">

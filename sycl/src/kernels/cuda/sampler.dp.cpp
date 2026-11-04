@@ -21,6 +21,7 @@
 // The two new ones share `sampled_tail_warp` (top_p / min_p / temperature / draw on one warp).
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_math.hpp"
@@ -1506,7 +1507,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
                 ->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(shmem), cgh);
@@ -1542,7 +1543,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
             sycl::ext::oneapi::experimental::use_root_sync};
         sampler_require_fp64(strata::q_of(stream)->get_device());
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(shmem), cgh);
@@ -1579,8 +1580,8 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                strata::q_of(stream)
-                    ->parallel_for<dpct_kernel_name<
+                strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                    ->template parallel_for<dpct_kernel_name<
                         class sampler_split_part_kernel_cc5673>>(
                         sycl::nd_range<3>(
                             sycl::range(1, (unsigned)n_tokens,
@@ -1600,8 +1601,8 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                     sycl::ext::oneapi::experimental::use_root_sync};
                 sampler_require_fp64(strata::q_of(stream)->get_device());
 
-                strata::q_of(stream)
-                    ->parallel_for<dpct_kernel_name<
+                strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                    ->template parallel_for<dpct_kernel_name<
                         class sampler_split_merge_kernel_b17bd4>>(
                         sycl::nd_range<3>(
                             sycl::range(1, 1, (unsigned)n_tokens) *
@@ -1625,7 +1626,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                 sycl::ext::oneapi::experimental::use_root_sync};
             sampler_require_fp64(strata::q_of(stream)->get_device());
 
-            strata::q_of(stream)
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
                 ->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(shmem), cgh);
@@ -1684,8 +1685,8 @@ void coupled_draft_stage(const SamplerParams* mapped_params, const int32_t* mapp
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class coupled_stage_kernel_113245>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class coupled_stage_kernel_113245>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -1714,7 +1715,7 @@ void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             /*
             DPCT1083: The size of local memory in the migrated code may be
             different from the original code. Check that the allocated memory
@@ -1744,7 +1745,7 @@ void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->parallel_for<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
             dpct_kernel_name<class sampler_split_part_kernel_cc5674>>(
             sycl::nd_range<3>(sycl::range(1, 1u, (unsigned)n_blocks) *
                                   sycl::range(1, 1, kSplitWarps * 32),
@@ -1762,7 +1763,7 @@ void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const
             sycl::ext::oneapi::experimental::use_root_sync};
         sampler_require_fp64(s->get_device());
 
-        s->parallel_for<dpct_kernel_name<class coupled_merge_kernel_1fbeb1>>(
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class coupled_merge_kernel_1fbeb1>>(
             sycl::nd_range<3>(sycl::range(1, 1, 32), sycl::range(1, 1, 32)),
             exp_props,
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {

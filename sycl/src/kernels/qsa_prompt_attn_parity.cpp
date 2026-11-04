@@ -26,6 +26,10 @@
 #include <vector>
 
 namespace k = strata::kernels;
+namespace strata::kernels {   // SYCL port: the prompt path's per-cell attention (qsa_decode_attn.dp.cpp)
+void qsa_prompt_attn_percell(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                             int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+}
 
 namespace {
 void ck(dpct::err0 e, const char *w) {
@@ -117,6 +121,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     std::vector<int32_t> table(pages);
     for (int64_t i = 0; i < pages; ++i) table[i] = (int32_t) i;
     std::shuffle(table.begin(), table.end(), rng);
+    if (const char* mask = std::getenv("QA_MASK_PAGES")) {
+        const bool all = std::strcmp(mask, "all") == 0;
+        for (size_t i = 0; i < table.size(); ++i)
+            if (all || i % 7 == 0) table[i] = -1;
+    }
     // queries at positions ctx - nq .. ctx - 1
     const int64_t cap = k::qsa_selection_width(ctx, s);
     std::vector<int32_t> ids((size_t) (nq * cap), 0), steps((size_t) (nq * k::kStepCount), 0);
@@ -130,6 +139,23 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         steps[i * k::kStepCount + k::kStepWidth] = (int32_t) w;
         if (w == nkv) {
             for (int64_t c = 0; c < w; ++c) sel[c] = (int32_t) c;
+            continue;
+        }
+        if (std::getenv("QA_BLOCK4")) {   // the engine's selections are whole blocks of four cells (idx_block): 128 recent blocks + random older ones, then the tail cells
+            std::mt19937 r3((unsigned) (i / 4) * 2654435761u + 7);
+            const int64_t nbk = nkv / 4, take = std::min<int64_t>(nbk, w / 4);
+            std::vector<int32_t> blocks;
+            for (int64_t b = std::max<int64_t>(0, nbk - 128); b < nbk; ++b) blocks.push_back((int32_t) b);
+            std::vector<int32_t> rest;
+            for (int64_t b = 0; b < std::max<int64_t>(0, nbk - 128); ++b) rest.push_back((int32_t) b);
+            std::shuffle(rest.begin(), rest.end(), r3);
+            for (int64_t b = 0; (int64_t) blocks.size() < take && b < (int64_t) rest.size(); ++b) blocks.push_back(rest[b]);
+            std::sort(blocks.begin(), blocks.end());
+            std::vector<int32_t> v;
+            for (int32_t b : blocks) for (int r = 0; r < 4; ++r) v.push_back(b * 4 + r);
+            for (int64_t c = nbk * 4; c < nkv; ++c) v.push_back((int32_t) c);
+            steps[i * k::kStepCount + k::kStepWidth] = (int32_t) v.size();
+            std::copy(v.begin(), v.end(), sel);
             continue;
         }
         const int64_t recent = 512, older = w - recent;
@@ -242,17 +268,27 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             k::qsa_decode_attn_batch(d_q + t0 * NH * HD, pl, d_ids + t0 * cap, d_steps + t0 * k::kStepCount, cap, s,
                                      scratch, d_old + t0 * NH * HD, std::min(batch, nq - t0), nullptr);
     };
+    float* d_pc = nullptr;   // SYCL port: qsa_prompt_attn_percell's output
+    ck(DPCT_CHECK_ERROR(d_pc = (float *)sycl::malloc_device(nq * NH * HD * 4, dpct::get_in_order_queue())), "malloc");
+    auto pc_run = [&]() {
+        for (int64_t t0 = 0; t0 < nq; t0 += batch)
+            k::qsa_prompt_attn_percell(d_q + t0 * NH * HD, pl, d_ids + t0 * cap, d_steps + t0 * k::kStepCount, cap, s,
+                                       scratch, d_pc + t0 * NH * HD, std::min(batch, nq - t0), nullptr);
+    };
+    bool refused = false;   // SYCL port: the XMX kernel takes int8 and FP16 pools; the per-cell check runs anyway
     auto new_run = [&]() {
         if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
-            std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools\n");
-            std::exit(2);
+            if (!refused) std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools: per-cell check only\n");
+            refused = true;
         }
     };
     old_run();
     new_run();
+    pc_run();
     ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
        "run");
-    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size());
+    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size()), pcw(o.size());
+    ck(DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(pcw.data(), d_pc, pcw.size() * 4).wait()), "down");
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                             .memcpy(o.data(), d_old, o.size() * 4)
                             .wait()),
@@ -261,13 +297,19 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                             .memcpy(nw.data(), d_new, nw.size() * 4)
                             .wait()),
        "down");
+    if (refused) nw = o;   // SYCL port: nothing of the XMX kernel to compare
+    {
+        uint64_t hh = 1469598103934665603ull;
+        for (float x : o) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
+        std::printf("FP32HASH %016llx\n", (unsigned long long) hh);
+    }
     {   // a hash of the new kernel's output bits (bitwise A/B of two builds / switches)
         uint64_t hh = 1469598103934665603ull;
         for (float x : nw) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
         std::printf("NEWHASH %016llx\n", (unsigned long long) hh);
     }
     // 1. FP64 reference on a sample of queries
-    double err_old = 0, err_new = 0, ref_scale = 0;
+    double err_old = 0, err_new = 0, err_pc = 0, ref_scale = 0;
     for (int64_t i = 0; i < nq; i += std::max<int64_t>(1, nq / 16)) {
         const int64_t w = steps[i * k::kStepCount + k::kStepWidth];
         const int32_t* sel = ids.data() + i * cap;
@@ -277,6 +319,10 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             double mx = -1e300;
             for (int64_t c = 0; c < w; ++c) {
                 const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
+                if (table[cell / PS] < 0) {
+                    sco[c] = -INFINITY;
+                    continue;
+                }
                 double a = 0;
                 for (int64_t d = 0; d < HD; ++d) {
                     const double kv = fmt == 2 ? q4v(k4, row, d)
@@ -292,22 +338,35 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 double a = 0;
                 for (int64_t c = 0; c < w; ++c) {
                     const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
+                    if (table[cell / PS] < 0) continue;
                     const double vv = fmt == 2 ? q4v(v4, row, d)
                                       : fmt == 1 ? (double) vq[row * HD + d] * h2f(vs[row * 4 + d / 64]) : h2f(vh[row * HD + d]);
                     a += sco[c] * vv;
                 }
-                const double r = a / l;
+                const double r = l > 0 ? a / l : 0.0;
                 const size_t at = (size_t) ((i * NH + h) * HD + d);
+                if (std::getenv("PARITY_DUMP2") && fmt == 1 && i == 0 && h == 0 && d == 0) {
+                    for (int c = 0; c < 4; ++c) for (int n = 0; n < 6; ++n) {
+                        const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + 0) * PS + cell % PS;
+                        double a2 = 0;
+                        for (int64_t dd = 0; dd < HD; ++dd) a2 += (double) q[(i * NH + n) * HD + dd] * ((double) kq[row * HD + dd] * h2f(ks[row * 4 + dd / 64]));
+                        std::printf("S c%d n%d ref %.5f new %.5f\n", c, n, a2 / 16.0 * 1.4426950408889634, (double) nw[c * 16 + n]);
+                    }
+                }
+                if (std::getenv("PARITY_DUMP") && i == 0 && (d == 3 || d == 70))
+                    std::printf("dump h%lld d%lld ref %.5f old %.5f new %.5f\n", (long long) h, (long long) d, r, (double) o[at], (double) nw[at]);
                 ref_scale = std::max(ref_scale, std::fabs(r));
                 err_old = std::max(err_old, std::fabs(o[at] - r));
                 err_new = std::max(err_new, std::fabs(nw[at] - r));
+                err_pc = std::max(err_pc, std::fabs(pcw[at] - r));
             }
         }
     }
     // 2. new vs old everywhere
-    double diff = 0, scale = 0;
+    double diff = 0, scale = 0, diff_pc = 0;
     for (size_t i = 0; i < o.size(); ++i) {
         diff = std::max(diff, (double) std::fabs(o[i] - nw[i]));
+        diff_pc = std::max(diff_pc, (double) std::fabs(o[i] - pcw[i]));
         scale = std::max(scale, (double) std::fabs(o[i]));
     }
     // 3. speed
@@ -331,7 +390,44 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         (e1->get_profiling_info<sycl::info::event_profiling::command_end>() -
          e0->get_profiling_info<sycl::info::event_profiling::command_start>()) /
         1000000.0f;
-    const bool ok1 = err_new <= std::max(4.0 * err_old, 1e-6 * ref_scale);
+    float ms_pc = 0;
+    dpct::sync_barrier(e0);
+    for (int r = 0; r < reps; ++r) pc_run();
+    dpct::sync_barrier(e1);
+    ck(DPCT_CHECK_ERROR(e1->wait_and_throw()), "time");
+    ms_pc = (e1->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             e0->get_profiling_info<sycl::info::event_profiling::command_start>()) / 1000000.0f;
+    // SYCL port: the per-cell kernel - FP32 like the warp kernel, another summation order
+    const bool ok_pc = err_pc <= std::max(4.0 * err_old, 1e-6 * ref_scale) && diff_pc <= 1e-4 * scale;
+    std::printf("%s %s per-cell: vs FP64 %.3g (warp kernel %.3g), vs the warp kernel %.2g of scale; %.3f -> %.3f ms per chunk (%.2fx)\n",
+                ok_pc ? "PASS" : "FAIL", fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", err_pc, err_old, diff_pc / scale,
+                ms_old / reps, ms_pc / reps, ms_old / ms_pc);
+    sycl::free((void *)d_pc, dpct::get_in_order_queue());
+    if (std::getenv("QA_FP32_GRAPH")) {
+        auto* queue = &dpct::get_in_order_queue();
+        constexpr int calls = 32;
+        dpct::experimental::command_graph_ptr graph;
+        dpct::experimental::begin_recording(queue);
+        for (int i = 0; i < calls; ++i) old_run();
+        dpct::experimental::end_recording(queue, &graph);
+        auto executable = graph->finalize();
+        delete graph;
+        std::vector<double> times;
+        for (int i = 0; i < 20; ++i) {
+            auto begin = queue->ext_oneapi_submit_barrier();
+            queue->ext_oneapi_graph(executable);
+            auto end = queue->ext_oneapi_submit_barrier();
+            end.wait_and_throw();
+            if (i >= 5)
+                times.push_back(double(
+                    end.get_profiling_info<sycl::info::event_profiling::command_end>() -
+                    begin.get_profiling_info<sycl::info::event_profiling::command_start>()) / 1000 / calls);
+        }
+        std::sort(times.begin(), times.end());
+        std::printf("DECODEGRAPH fmt=%d ctx=%lld nq=%lld us=%.3f\n",
+                    fmt, (long long) ctx, (long long) nq, times[times.size() / 2]);
+    }
+    const bool ok1 = err_new <= std::max(4.0 * err_old, 1e-6 * ref_scale) && ok_pc;
     const bool ok2 = diff <= 1e-4 * scale;
     std::printf("%s %s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
                 "scale); %.3f -> %.3f ms per chunk (%.2fx)\n",
@@ -378,12 +474,19 @@ int main(int argc, char** argv) {
     const int64_t ctx = argc > 1 ? std::atoll(argv[1]) : 32768;
     const int64_t nq = argc > 2 ? std::atoll(argv[2]) : 2048;
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
+    const bool int8_only = argc > 4 && std::strcmp(argv[4], "--int8-only") == 0;
+    if (argc > 4 && !int8_only) {
+        std::fprintf(stderr, "usage: qsa_prompt_attn_parity [context] [queries] [reps] [--int8-only]\n");
+        return 2;
+    }
     int fails = 0;
     fails += run(1, ctx, nq, reps);
 #if !defined(__HIP_PLATFORM_AMD__)
-    fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
-    fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
-    fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
+    if (!int8_only) {
+        fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
+        fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
+        fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
+    }
 #endif
     fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
     fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge

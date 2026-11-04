@@ -32,7 +32,9 @@ def metrics(state="reading", **over):
          "requests": [{"id": "a", "time": now - 5, "duration_s": 429.8, "finish_reason": "stop", "prompt_tokens": 17183, "reused": 0,
                        "output_tokens": 19511, "decode_ms": 386000},
                       {"id": "b", "time": now - 9, "duration_s": 4.0, "finish_reason": "stop", "prompt_tokens": 626, "reused": 0,
-                       "output_tokens": 11, "decode_ms": 410}]}
+                       "output_tokens": 11, "decode_ms": 410}],
+          "totals": {"requests": 12, "prompt_tokens": 90000, "reused": 5000, "output_tokens": 40000,
+                     "prompt_ms": 120000.0, "decode_ms": 1000000.0}}
     m.update(over)
     return m
 
@@ -41,6 +43,27 @@ def draw(model, width=110, height=30, **kw) -> str:
     c = Console(width=width + 2, record=True, file=io.StringIO(), force_terminal=False, legacy_windows=False)
     c.print(overview.render(model, width=width, height=height, connection="http://127.0.0.1:8080", **kw))
     return c.export_text()
+
+
+class AsciiLook(unittest.TestCase):
+    """The ASCII look is pure ASCII: written to a stdout that cannot encode U+00B7 (cp852, cp874, cp932, ascii) it must not raise UnicodeEncodeError."""
+
+    def test_the_ascii_look_has_no_middle_dot(self):
+        for state in ("idle", "reading", "generating"):
+            text = draw(overview.build(metrics(state)), glyphs="ascii")
+            self.assertNotIn("·", text, state)      # (the box lines are rich's: it swaps them for + - | on a stream that cannot encode them)
+        self.assertIn("·", draw(overview.build(metrics("reading")), glyphs="unicode"), "the Unicode look keeps it")
+
+    def test_it_writes_to_strict_streams_of_the_legacy_code_pages(self):
+        from rich.console import Console as C
+        for enc in ("cp437", "cp852", "cp874", "cp932", "ascii"):
+            raw = io.BytesIO()
+            f = io.TextIOWrapper(raw, encoding=enc, errors="strict")
+            c = C(file=f, width=112, force_terminal=False, legacy_windows=False)
+            for state in ("idle", "reading", "generating"):
+                c.print(overview.render(overview.build(metrics(state)), width=110, height=30, connection="http://127.0.0.1:8080", glyphs="ascii"))
+            f.flush()
+            self.assertGreater(len(raw.getvalue()), 1000, enc)
 
 
 class Build(unittest.TestCase):
@@ -58,13 +81,39 @@ class Build(unittest.TestCase):
         self.assertEqual(m["context"][0], 36742 + 120)
         self.assertEqual(m["progress"], (120.0, 4096.0))
 
-    def test_idle_shows_the_last_request(self):
+    def test_idle_shows_the_run_average(self):
         m = overview.build(metrics("idle"))
         self.assertEqual(m["state"], "Idle")
-        self.assertEqual(m["speed"][1], "last request")
-        self.assertAlmostEqual(m["speed"][0], 50.5, places=1)               # 19511 tokens in 386 s
+        self.assertEqual(m["speed"][1], "average of the run")
+        self.assertAlmostEqual(m["speed"][0], 40.0, places=1)               # totals: 40000 tokens in 1000 s, not the last request's 50.5
         self.assertEqual(m["context"][0], 17183 + 19511)
         self.assertEqual(m["progress"], (None, None))
+
+    def test_the_run_average_is_token_weighted_and_never_invented(self):
+        """Community patch (keinebenutzer/STRATA-average-patch, MIT): the idle tile is every token over the run's decode time, from the server's totals."""
+        self.assertEqual(overview.run_average_speed({"totals": {"output_tokens": 40000, "decode_ms": 1000000.0}}), 40.0)
+        # a long request and a short one: the long one counts for what it is (a plain mean of the two would be 30.3)
+        self.assertEqual(overview.run_average_speed({"totals": {"output_tokens": 19522, "decode_ms": 386410.0}}), 50.5)
+        for totals in (None, {}, {"output_tokens": 0, "decode_ms": 100.0}, {"output_tokens": 1, "decode_ms": 100.0}, {"output_tokens": 500, "decode_ms": 0},
+                       {"output_tokens": 500}, {"decode_ms": 500.0}, {"output_tokens": True, "decode_ms": 5.0}, {"output_tokens": "9", "decode_ms": 3.0},
+                       {"output_tokens": float("nan"), "decode_ms": 3.0}):
+            self.assertIsNone(overview.run_average_speed({"totals": totals}), totals)
+        self.assertIsNone(overview.run_average_speed({}))
+
+    def test_without_totals_idle_falls_back_to_the_last_request(self):
+        m = metrics("idle")
+        del m["totals"]
+        built = overview.build(m)
+        self.assertEqual(built["speed"][1], "last request")
+        self.assertAlmostEqual(built["speed"][0], 50.5, places=1)
+        m = metrics("idle", totals={"requests": 0, "output_tokens": 0, "decode_ms": 0.0})
+        self.assertEqual(overview.build(m)["speed"][1], "last request", "an empty run is not an average of zero")
+
+    def test_live_values_stay_live(self):
+        """Only the idle value is an average: generating and reading are what they were."""
+        self.assertEqual(overview.build(metrics("generating"))["speed"][:2], (50.4, "now"))
+        self.assertEqual(overview.build(metrics("reading"))["speed"][:2], (820.0, "reading the prompt"))
+        self.assertIn("average of the run", draw(overview.build(metrics("idle"))))
 
     def test_queued_and_error(self):
         self.assertEqual(overview.build(metrics("idle", live={"state": "idle", "queued": 3}))["state"], "Queued")

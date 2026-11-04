@@ -39,6 +39,15 @@ perplexity +7.3% (code +3.2%, agent work +2.2%). IQ1_M: perplexity +21% (KL 0.21
 | IQ4_NL: `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` | 111 GB | the 4-bit Engram lookup table the model reads from RAM or SSD. Not a model to pick: all three sets use this one file, and it is already in their download sizes |
 | DSpark drafter (Q8_0) | 8 GB | the small draft model (Unsloth) |
 
+**Two layouts of the same sets.** Setup downloads the four-shard files (`...-0000N-of-00004.gguf`, the Hugging Face revision `cb02422c`). On 27 October 2026
+ISTA-DASLab re-split the three sets: five shards each (`...-0000N-of-00006.gguf`; shard 1 is 5.8 MB of metadata and has no tensors) and the Engram file as the
+sixth shard of the split. Strata takes either from files you already have (`--gguf-dir`, `--model-path`, "Use a local GGUF" in the app, `strata models import`),
+checks their size and SHA-256, and packs them. The same goes for the four-shard files whose first shard ISTA-DASLab re-published on 26 October with a larger
+chat template. What differs in the six-shard files: the two Engram tables are one tensor (the same bytes), the Engram gate is stored already folded (q times k),
+the attention output matrix is one 2-D tensor instead of a 3-D one, and there is a routing bias for picture tokens. The packs are the same size and the engine
+reads both. The Engram has the same name and size in both layouts but another hash; either one works with either layout, and setup downloads the pinned one
+if you have none. The download default is still the four-shard files.
+
 **On a Ryzen AI Max "Strix Halo" (Windows)** the graphics chip and the CPU share one pool of memory, so the engine counts it once: the
 128 GB box (a 64 GB BIOS carve-out plus the 64 GB Windows sees) keeps about 109 GB of the 2.00 set's experts in that pool (the dense
 weights and 12 GB for Windows and the desktop aside) and reads the other 23 GB from the SSD. Measured there (2.00 bpw, default Faster
@@ -68,12 +77,28 @@ into the pack as `expert-profile.bin`, checks `strata-dsv41 --pack-info` (every 
 (`tools/dsv41/smoke.py`, the text must name Paris). The start script passes `--dspark auto` (never `off`: `off` still loads the drafter
 and its 7 GB of experts take the graphics memory); the RAM store sizes itself. Long prompts use the engine's fast chunked path on its own (no flag is written: the engine picks the chunk size for your cards).
 
+## The ISTA-DAS Coder
+
+ISTA-DAS's coding version of this model: in every layer 192 of the 384 routed experts are kept and the other 192 removed (the router, the experts and the routing biases are half as wide; every
+other tensor is the 2.00 set's, with the same types). `strata launch --model ista-das-coder` (or "ISTA-DAS Coder" in the app's version list). Download 191 GB: 72 GB of model, the 111 GB n-gram
+table (the same file the other sets use, downloaded once) and the 8 GB drafter; the picture file is the one every DeepSeek set shares. Where it comes from, the commit, the file names and their
+SHA-256 are in one file, `data/dsv41/coder-set.json` (`python tools/dsv41/pin_coder.py OWNER/REPO` writes it from the Hub). Its hot-expert profile is its own (`data/dsv41/profile-coder.bin`, made from the engine's routing over 519,422
+tokens of the calibration texts): a profile counted on 384 experts is not read by it (the engine checks the file's size).
+
+Measured on 4 x Radeon AI PRO R9700 (the packaged Terminal, 128K context, 5 experts per word by default there): all 7,680 experts sit in graphics memory, decode about 59 tokens a second, a 93,000-token prompt
+read in 80 s; on one R9700: 2,859 experts on the card, decode about 26 tokens a second (with the RAM capped for the whole run: 21 with 40 GB, 18 with 32 GB, 15 with 24 GB, 8 with 16 GB); an RTX PRO 6000 Blackwell
+(CUDA 12.8, sm_120, one of two cards on a shared box): about 100 tokens a second. Against the original model (4,995 positions, 6 experts a word, 4 cards, same harness): KL 0.397, top-1 76.4%, perplexity 4.645
+(reference 3.140); the same run gives 2.00 KL 0.171, top-1 83.7%, perplexity 3.630 and 2.25 KL 0.109, top-1 87.2%, perplexity 3.405. By part (KL): code 0.230, agent 0.199, documents 0.302, English 0.476, multilingual 0.777
+for the Coder; 0.104, 0.108, 0.202, 0.303, 0.138 for 2.00. One run per cell unless the numbers repeat; details and the task suite in `phaseA-tests/maya-port/DS-CODER.md`. Also run (2026-11-02, official files, the 0.2.9
+engines): on an Apple M5 Max 19 to 22 tokens a second with all 7,680 experts in memory (a 6,054-token needle read at 300 tokens a second), and on a Ryzen AI Max (Strix Halo, Windows, 64 GB of RAM)
+19 to 22 tokens a second with 7,734 of 8,064 experts in graphics memory.
+
 ## Install
 
 ```
-./setup.sh --family deepseek41 --model IST-DAS-2.00bpw   # 257 GB: the official 2.00 set + Engram + drafter (resumable, SHA-256 checked)
-./setup.sh --family deepseek41 --model IST-DAS-2.25bpw   # 274 GB (the Engram is shared with 2.00)
-./setup.sh --family deepseek41 --model IST-DAS-1.75bpw   # 239 GB, the smallest
+./setup.sh --family deepseek41 --model ISTA-DAS-2.00bpw   # 257 GB: the official 2.00 set + Engram + drafter (resumable, SHA-256 checked)
+./setup.sh --family deepseek41 --model ISTA-DAS-2.25bpw   # 274 GB (the Engram is shared with 2.00)
+./setup.sh --family deepseek41 --model ISTA-DAS-1.75bpw   # 239 GB, the smallest
 ./setup.sh --family deepseek41 --model UD-Q8_K_XL        # Unsloth's 508 GB set, for hundreds of GB of RAM or several cards
 ./setup.sh --family deepseek41 --gguf-dir DIR            # files you already have: the shards (or the folder with 2.00bpw / 2.25bpw / UD-Q8_K_XL inside); the Engram and drafter are looked for beside them
 strata launch --model ist-das-2.00bpw --plan             # where it would go on this computer, nothing changed
@@ -109,12 +134,50 @@ The server speaks to the engine as it does for the other models, so `/v1/chat/co
   (`STRATA_DS4_SLOT_GB`) and are removed after a week. The system prompt and tools shared by an agent
   and its sub-agents are kept as a checkpoint too. `STRATA_DS4_SLOT_KEEP=0` and `STRATA_DS4_AUTO_PIN=0` turn this off.
 
-Pictures are on by default: the engine reads them with its own vision tower (319 MiB of graphics memory, loaded with the model; no separate
-picture reader). The server decodes each picture, brings it to a size the tower takes (both sides a multiple of 42, at most 1024 image
+Pictures are on by default: the engine reads them with its own vision tower (no separate picture reader). The tower waits in RAM (about 1 GB of pinned
+memory) and takes its 319 MiB of graphics memory only while a picture is being read, out of the room `--reserve-mib` keeps free; the experts get that room
+the rest of the time (RTX A6000 as a 12 GB-like card: 370 experts in VRAM against 145, 20.7 against 18.7 tokens/s; Radeon AI PRO R9700 as a 12 GB-like card:
+419 against 386 experts, 23.3 tokens/s either way; with a whole 48 GB or 32 GB card: 35-40 experts more, no speed difference). Taking it costs no measurable
+time (a picture is encoded in 0.19 s the first time, 0.08 s the next, 0 s when it was sent before). If a picture finds no free graphics memory (another
+program took the reserve's room), the experts' last slots on the first GPU are lent to the tower for that picture turn, as they are to a long prompt, and read
+back from the model files afterwards (35 experts, 117 ms on an RTX A6000 with 59 MiB free; the picture is read right and the next one is not slower). It stays
+on the card on a GPU that shares the PC's memory (Mac, GB10, Strix Halo), and with `--vision-resident`. The server decodes each picture, brings it to a size the tower takes (both sides a multiple of 42, at most 1024 image
 tokens) and hands it to the engine; it needs Pillow for that (`python -m pip install pillow`; setup installs it). `--vision no` in `strata launch`
 (or `--vision off` for the engine) turns them off; a request with a picture then gets a 400 that says so.
 
-Not in this version: several requests at once (`--parallel` is ignored with a warning).
+## Several conversations at once (`--parallel`)
+
+Off by default: requests take turns, as before. `--parallel N` (2 to 8) lets the engine answer N conversations at the same time: several chats, an agent with sub-agents,
+or a few people on one server. Ask for it where you start the model:
+
+| Where | How |
+| --- | --- |
+| `strata launch` | `strata launch --family deepseek41 --model ist-das-2.25bpw --parallel 4`; `--save-preset NAME` keeps the number for the next start. The guided screens have the same choice in the Parallel step. |
+| `strata serve` | `strata serve --profile NAME --parallel 4`, or `"parallel": 4` in the run config. |
+| the app | Expert settings, "Concurrent requests" (the setting the other models have). |
+| Docker | `PARALLEL=4`. |
+
+`--plan` with the flag says what it does and what it was measured on. A number above 8 is run as 8. If the graphics cards cannot hold the buffers of every
+conversation, the engine runs as many as they can hold and says so in its log (`the graphics memory holds the buffers of N conversations ... running N at once`). A DeepSeek
+engine from before the flag answers one request at a time; `strata launch` says so and goes on, and `strata update` fetches the newer engine.
+
+What it does:
+
+- Each conversation has its own attention memory in graphics memory. One extra conversation takes about 0.01 GB at 8K context, 0.05 GB at 32K, 0.17 GB at 128K and 0.68 GB at
+  512K (the engine prints the total at start). That memory comes out of the room the experts would use. Measured on 2 RTX A6000 (48 GB each); the engine's line for 8
+  conversations at 1M context was 9.47 GB for the 7 extra.
+- Several long answers at once. 4 R9700 cards, answers of 150 tokens: one answer alone wrote 41 tokens a second; 2 together 53 tokens a second in all (each at 30), 4 together
+  73 (each at 21). 2 RTX A6000: one alone 42, 2 together 52 (each at 31); 4 together 48 to 62 (each at 14 to 19, two runs). The median wait for the first word, with 4
+  sessions asking at once, was 0.9 s instead of 8.0 s (4 R9700), because requests no longer queue.
+- An agent load: 4 sessions of 5 requests, each reading 2,500 characters of file text and answering 40 tokens. The whole load took 55 to 56 s instead of 64 to 65 s on 4 R9700
+  (13% less), 91 s instead of 102 s on 2 RTX A6000 (11% less), and 205 to 216 s instead of 256 to 261 s on a DGX Spark (17 to 20% less).
+- One conversation alone: a five-turn chat took 23.3 to 24.9 s with `--parallel 4` and 23.4 to 24.4 s without on 4 R9700, and 34.9 to 35.9 s against 35.2 to 35.6 s on 2 RTX A6000.
+- Answers are the same as when each runs alone: 12 combinations of 2 to 4 conversations, with and without the drafter, were identical to the last bit of the model's
+  output on a DGX Spark and on 2 RTX A6000, and 6 prompts at once through the server had the same text as alone (greedy), also when a client dropped its connection.
+
+Where it was run: Linux, with 4 Radeon AI PRO R9700 (gfx1201), 1 R9700, 2 RTX A6000 (sm_86) and a DGX Spark (sm_121). Not run: Windows (the engine builds with it, a
+Windows run has not been done), a Mac (Metal; the code adds no Metal kernel of its own, nothing has started it there), Ryzen AI Max, cards under 24 GB, other AMD
+families. `strata launch` warns for these and still starts. If the engine stops at the start or an answer looks wrong, start without `--parallel`.
 
 ## Speed: Faster or Full quality
 
@@ -171,7 +234,7 @@ option a DeepSeek build is made for 86, 89 and 120. On Windows, `packaginguild_
 on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into the `engine` folder of your Strata install (next to `strata`); setup finds it there and does not download an engine:
 
 ```
-python setup.py --family deepseek41 --model IST-DAS-2.00bpw
+python setup.py --family deepseek41 --model ISTA-DAS-2.00bpw
 ```
 
 `strata-dsv41 --version` prints the commit it was built from. A build you made yourself is not signed by Strata, which is fine for your own computer.

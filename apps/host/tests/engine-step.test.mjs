@@ -92,3 +92,26 @@ test('without a component updater the step is skipped and never throws', async (
   assert.equal(part.state, 'skipped');
   assert.equal(createEngineStep({ control: {} }).merge(null), null);
 });
+
+test('#4823: an engine that already works is not replaced without saying from which version to which, and that the old one is kept', async () => {
+  const messages = [];
+  const c = control({
+    usable: true,
+    check: offer('available', { installed: { version: '0.1.54' }, offered: { version: '0.1.55' } }),
+    update: async ({ onEvent }) => { onEvent({ event: 'progress', percent: 30, done: 0.15 * GB, total: 0.5 * GB }); return { ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.55' } }] }; },
+  });
+  const step = createEngineStep({ control: c, onChange: p => messages.push(p.message) });
+  const part = await step.run();
+  assert.match(messages.find(m => /Updating/.test(m)), /^Updating the engine from 0\.1\.54 to 0\.1\.55\. The engine you have now is kept, and Settings can go back to it\.$/);
+  assert.ok(messages.includes('Updating the engine from 0.1.54 to 0.1.55: 30%'));
+  assert.equal(part.message, 'The engine was updated from 0.1.54 to 0.1.55. Settings can go back to the one you had.');
+});
+
+test('a first engine keeps the plain download words', async () => {
+  const messages = [];
+  const c = control({ check: offer(), update: async () => updated });
+  const step = createEngineStep({ control: c, onChange: p => messages.push(p.message) });
+  await step.run();
+  assert.ok(messages.includes('Downloading the engine for this PC…'));
+  assert.ok(!messages.some(m => /Updating the engine from/.test(m)));
+});

@@ -57,7 +57,7 @@ Najpierw polecamy **ISTA-DASLab**, potem **Unsloth** i innych dostawców — o i
 W **aplikacji na komputer** i w **Terminalu**. To, co nie mieści się w pamięci, jest czytane z dysku SSD, więc potrzebujesz
 dużo wolnego miejsca na dysku.
 
-| Zestaw (IST-DAS) | Do pobrania | Potrzebne wolne miejsce |
+| Zestaw (ISTA-DAS) | Do pobrania | Potrzebne wolne miejsce |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | około 245 GB |
 | 2.00 bpw | 257 GB | około 265 GB |
@@ -99,7 +99,7 @@ Nie wiesz, co się zmieści? [Wybierz model do swojego komputera](docs/MODELS.md
 Zainstaluj aplikację, wybierz model i zacznij rozmawiać. Dla każdego systemu jest jeden instalator. Przy pierwszym
 uruchomieniu aplikacja pobiera silnik dla twojej karty graficznej. [Pomoc z instalatorem](docs/INSTALL.md#the-app).
 
-<sub>Pliki: `Strata-0.2.8-windows-x64-setup.exe` · `Strata-0.2.8-linux-x86_64.AppImage` · `Strata-0.2.8-macos-arm64.dmg`</sub>
+<sub>Pliki: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Aplikacja Strata na komputer: czat i podgląd kodu na żywo obok siebie">

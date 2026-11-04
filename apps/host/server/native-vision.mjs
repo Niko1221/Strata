@@ -8,3 +8,17 @@ export function runtimeVision(config,requested){
  if(mode==='cpu'&&config.vision.cpu_exe){const {cpu_exe,...rest}=config.vision;return {...rest,exe:cpu_exe,gpu:false};} // AMD: the CPU reader program, not the HIP one with the GPU hidden
  return {...config.vision,...(mode==='cpu'?{gpu:false}:mode==='gpu'?{gpu:true}:{})};
 }
+
+/**
+ * The catalog with each picture-capable size marked as ready (`images`) or not (`imagesCapable` stays true either way). The Qwen engines
+ * read pictures with a separate program (strata-vision) that has to sit in the engine folder; DeepSeek-V4.1-Flash (`multi_file`, its own
+ * engine) carries its own picture tower, so it is ready whatever that folder holds (#4772: it was told to update an engine that was fine).
+ */
+export function markPictures(catalog,visionReader){
+ if(!catalog||!Array.isArray(catalog.families))return catalog;
+ const ready=(s)=>!!s.images&&(s.multi_file===true||visionReader===true);
+ return {...catalog,families:catalog.families.map(f=>{
+  const sizes=(f.sizes??[]).map(s=>({...s,imagesCapable:!!s.images,images:ready(s)}));
+  return {...f,imagesCapable:!!f.images,images:sizes.length?sizes.some(s=>s.images):!!f.images&&visionReader===true,sizes};
+ })};
+}

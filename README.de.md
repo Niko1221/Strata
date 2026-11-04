@@ -56,7 +56,7 @@ Wir empfehlen **zuerst ISTA-DASLab**, danach **Unsloth** und andere Anbieter, so
 
 In der **Desktop-App** und im **Terminal**. Was nicht in den Arbeitsspeicher passt, wird von deiner SSD gelesen. Darum brauchst du viel freien Speicherplatz.
 
-| Set (IST-DAS) | Download | Freier Speicherplatz nötig |
+| Set (ISTA-DAS) | Download | Freier Speicherplatz nötig |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | etwa 245 GB |
 | 2.00 bpw | 257 GB | etwa 265 GB |
@@ -95,7 +95,7 @@ Unsicher, was passt? [Wähle ein Modell für deinen Computer](docs/MODELS.md#pic
 
 Installiere die App, wähle ein Modell und leg mit dem Chat los. Es gibt einen Installer pro System. Beim ersten Start lädt die App die Engine für deine Grafikkarte herunter. [Hilfe zum Installer](docs/INSTALL.md#the-app).
 
-<sub>Dateien: `Strata-0.2.8-windows-x64-setup.exe` · `Strata-0.2.8-linux-x86_64.AppImage` · `Strata-0.2.8-macos-arm64.dmg`</sub>
+<sub>Dateien: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata-Desktop-App mit Chat und Live-Codevorschau nebeneinander">

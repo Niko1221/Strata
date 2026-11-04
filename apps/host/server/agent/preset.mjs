@@ -11,8 +11,8 @@
  *     reminder tools would run behind its back.
  *   - `web_search` removed (tool-web with `search:false`): every search backend the Harness has needs a service key
  *     the app does not have, so the tool could only fail. `web_fetch` stays. (`searchProvider` can switch it back on.)
- *   - `tool-ask-user` removed: the app has no place to show the agent's own questions, so the tool could only fail;
- *     the agent asks in plain text instead.
+ *   - `tool-ask-user` stays (it is the group "Questions for you" in Settings -> Tools): the app shows the agent's own questions in a card above
+ *     the message box and sends the answer back (#4244). Switched off, the tool is not offered and the agent asks in plain text.
  *   - the `planning` group (Harness plan mode and `exit_plan_mode`) removed: the app's Plan mode is the permission
  *     preset (nothing can change); the Harness's plan mode needs an interactive review the app does not have.
  *   - `tool-bash` / `tool-pwsh`: exactly one, by operating system (the Harness chooses the same at load).
@@ -29,7 +29,7 @@ export const STANDARD_PLUGIN_IDS = [
   'tool-ask-user', 'tool-todo', 'tool-web', 'present', 'tool-plugin-manager',
 ];
 /** What we leave out of it. */
-export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'tool-ask-user', 'planning'];
+export const REMOVED_PLUGIN_IDS = ['tool-schedule', 'planning'];
 /** Plugins removed from inside the `delegation` group (the group stays: helper agents are a feature). */
 export const REMOVED_DELEGATION_IDS = [];
 
@@ -49,13 +49,31 @@ export const AGENT_PROMPT = [
 ].join('\n\n');
 
 /**
+ * The one sentence that says which computer this is. The Harness's own runtime context is off (see `includeRuntimeContext` below), so without it
+ * a model on Windows spent its first steps on `ls`, `uname` and `wc` before trying PowerShell commands (and some ran out of steps first).
+ */
+export const OS_LINES = {
+  win32: 'This computer runs Windows and the shell tool is PowerShell: uname, wc and grep do not exist here; use Get-ChildItem, Get-Content, Select-String and Measure-Object. There is no need to check which system this is.',
+  darwin: 'This computer runs macOS and the shell tool is a Unix shell. There is no need to check which system this is.',
+  linux: 'This computer runs Linux and the shell tool is a Unix shell. There is no need to check which system this is.',
+};
+
+/** AGENT_PROMPT with the sentence for `platform` after its first line. */
+export function agentPromptFor(platform = process.platform) {
+  const line = OS_LINES[platform];
+  if (!line) return AGENT_PROMPT;
+  const [first, ...rest] = AGENT_PROMPT.split('\n\n');
+  return [first, line, ...rest].join('\n\n');
+}
+
+/**
  * @param {{platform?: string, search?: boolean}} [options]
  * @returns {object} the `config` of the `preset-standard` row
  */
 export function standardPreset({ platform = process.platform, search = false, off = new Set(), skillsDir = null, compaction = [] } = {}) {
   const windows = platform === 'win32';
   const plugins = [
-    { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: AGENT_PROMPT, complete: true, includeRuntimeContext: false } },
+    { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: agentPromptFor(platform), complete: true, includeRuntimeContext: false } },
     { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
     { id: 'time-context', name: '@deepseek-ai/dsh-time-context' },
     windows
@@ -88,6 +106,7 @@ export function standardPreset({ platform = process.platform, search = false, of
         { id: 'tool-workflow', name: '@deepseek-ai/dsh-tool-workflow' },
       ],
     },
+    { id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' },
     { id: 'tool-todo', name: '@deepseek-ai/dsh-tool-todo', config: { allowParallelInProgress: true } },
     { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: !off.has('fetch'), search: search && !off.has('search'), searchTimeoutMs: 60000 } },
     { id: 'present', name: '@deepseek-ai/dsh-tool-present' },

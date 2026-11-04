@@ -435,7 +435,7 @@ class EngineHarness:
             self._proc = lifeline.popen(
                 self._argv(), "engine", cwd=str(self.cwd), env=self.env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, bufsize=1)
+                text=True, errors="replace", bufsize=1)
         except OSError as e:
             raise MeasurementError(f"the engine could not be started: {e}") from e
 
