@@ -1,0 +1,43 @@
+# Arm 1: 256K context, default auto layer split (5, 12, 11, 12)
+[strata] engine started: strata-dsv41 --serve --pack <PACK_DIR>/deepseek-v4.1-flash-ist-das-2.25bpw --max-context 262144 --eos 1 --vision on --dspark auto --dspark-conf 0.65 --tp 2 --reserve-mib 900 --layer-split auto --parallel 4
+ds4: tensor parallel 2 -> 1: the experts' 256-value blocks split n_ff 2304 no other way (each GPU its own layers)
+ds4: the one-GPU decode path (in-place pulls, windows streamed, landings): off (v1.1.27's path: not NVIDIA + one GPU)
+ds4: --parallel 4: 4 conversations at once, each its own rings and KV (1.25 GB more VRAM for the other 3, from the experts' room)
+ds4: RAM store: up to 13099 slots of 11.4 MB (149.0 GB), policy 0, 8 reader threads, unbuffered reads
+ds4: RAM store: 13099 of the profile's hottest experts read in (119.8 GB) in 56.4 s
+ds4: prompt path: the chunked pass from 96 tokens, windows of 16 below
+ds4: CUDA0 layers [0, 42]: weights 1.38 GB, experts 24.79 GB (2304 of 2304 in VRAM), caches 0.20 GB, 20015 MiB free
+ds4: CUDA1 layers [5, 16]: weights 1.67 GB, experts 44.14 GB (4608 of 4608 in VRAM), caches 0.54 GB, 963 MiB free
+ds4: CUDA2 layers [17, 27]: weights 1.42 GB, experts 43.17 GB (4224 of 4224 in VRAM), caches 0.54 GB, 2239 MiB free
+ds4: CUDA3 layers [28, 39] + head: weights 2.11 GB, experts 44.03 GB (4542 of 4608 in VRAM), caches 0.39 GB, 893 MiB free
+ds4: 66 routed experts on the CPU lane (0.6 GB, in place in the model's files), 56 threads
+maya ds4 serve: request 2: prompt 25 tokens = 0 reused + 25 read in 138 ms (181.3 tok/s), 600 generated in 4554 ms (131.76 tok/s, 1 conversations running; drafts 451 of 519 kept)
+maya ds4 serve: request 3: prompt 9010 tokens = 0 reused + 9010 read in 4979 ms (1809.7 tok/s), 12 generated in 134 ms (89.64 tok/s, 1 conversations running; drafts 6 of 6 kept)
+maya ds4 serve: request 5: prompt 15 tokens = 0 reused + 15 read in 90 ms (166.8 tok/s), 130 generated in 5935 ms (21.90 tok/s, 4 conversations running; drafts 30 of 42 kept)
+maya ds4 serve: request 7: prompt 10 tokens = 0 reused + 10 read in 88 ms (113.3 tok/s), 190 generated in 6717 ms (28.29 tok/s, 3 conversations running; drafts 72 of 82 kept)
+maya ds4 serve: request 6: prompt 10 tokens = 0 reused + 10 read in 71 ms (141.5 tok/s), 400 generated in 7687 ms (52.03 tok/s, 2 conversations running; drafts 258 of 285 kept)
+maya ds4 serve: request 4: prompt 9 tokens = 0 reused + 9 read in 65 ms (137.8 tok/s), 400 generated in 8890 ms (44.99 tok/s, 1 conversations running; drafts 204 of 234 kept)
+maya ds4 serve: request 8: prompt 5752 tokens = 0 reused + 5752 read in 5000 ms (1150.5 tok/s), 63 generated in 744 ms (84.70 tok/s, 1 conversations running; drafts 34 of 40 kept)
+
+# Arm 2: 1M context, default auto layer split (5, 12, 11, 12)
+[strata] engine started: strata-dsv41 --serve --pack <PACK_DIR>/deepseek-v4.1-flash-ist-das-2.25bpw --max-context 1048576 --eos 1 --vision on --dspark auto --dspark-conf 0.65 --tp 2 --reserve-mib 900 --layer-split auto --parallel 4
+ds4: --parallel 4: 4 conversations at once, each its own rings and KV (4.97 GB more VRAM for the other 3, from the experts' room)
+ds4: CUDA0 layers [0, 42]: weights 1.38 GB, experts 24.79 GB (2304 of 2304 in VRAM), caches 0.77 GB, 19301 MiB free
+ds4: CUDA1 layers [5, 16]: weights 1.67 GB, experts 42.44 GB (4419 of 4608 in VRAM), caches 2.15 GB, 889 MiB free
+ds4: CUDA2 layers [17, 27]: weights 1.42 GB, experts 42.81 GB (4180 of 4224 in VRAM), caches 2.15 GB, 885 MiB free
+ds4: CUDA3 layers [28, 39] + head: weights 2.11 GB, experts 42.71 GB (4404 of 4608 in VRAM), caches 1.55 GB, 883 MiB free
+ds4: 437 routed experts on the CPU lane (4.2 GB, in place in the model's files), 56 threads
+maya ds4 serve: request 2: prompt 25 tokens = 0 reused + 25 read in 139 ms (179.8 tok/s), 600 generated in 4922 ms (121.91 tok/s, 1 conversations running; drafts 438 of 526 kept)
+maya ds4 serve: request 111: prompt 286329 tokens = 284628 reused + 1701 read in 2476 ms (686.9 tok/s), 398 generated in 3180 ms (125.14 tok/s, 1 conversations running; drafts 308 of 339 kept)
+maya ds4 serve: request 112: prompt 293290 tokens = 286727 reused + 6563 read in 7917 ms (829.0 tok/s), 94 generated in 647 ms (145.29 tok/s, 1 conversations running; drafts 78 of 78 kept)
+maya ds4 serve: request 113: prompt 299484 tokens = 293384 reused + 6100 read in 7235 ms (843.1 tok/s), 62 generated in 446 ms (139.11 tok/s, 1 conversations running; drafts 51 of 55 kept)
+maya ds4 serve: request 117: prompt 300114 tokens = 299546 reused + 568 read in 1173 ms (484.1 tok/s), 62 generated in 435 ms (142.45 tok/s, 1 conversations running; drafts 51 of 55 kept)
+
+# Arm 3: 1M context, DS4_SPLIT=9,11,10,10 + --vision-resident (100% experts in VRAM)
+[strata] engine started: strata-dsv41 --serve --pack <PACK_DIR>/deepseek-v4.1-flash-ist-das-2.25bpw --max-context 1048576 --eos 1 --vision on --dspark auto --dspark-conf 0.65 --tp 2 --reserve-mib 900 --vision-resident --layer-split auto --parallel 4
+ds4: --parallel 4: 4 conversations at once, each its own rings and KV (4.51 GB more VRAM for the other 3, from the experts' room)
+ds4: CUDA0 layers [0, 42]: weights 1.91 GB, experts 39.13 GB (3840 of 3840 in VRAM), caches 1.55 GB, 3969 MiB free
+ds4: CUDA1 layers [9, 19]: weights 1.52 GB, experts 41.19 GB (4224 of 4224 in VRAM), caches 1.38 GB, 2987 MiB free
+ds4: CUDA2 layers [20, 29]: weights 1.30 GB, experts 39.09 GB (3840 of 3840 in VRAM), caches 1.55 GB, 5143 MiB free
+ds4: CUDA3 layers [30, 39] + head: weights 1.84 GB, experts 37.25 GB (3840 of 3840 in VRAM), caches 1.55 GB, 6365 MiB free
+ds4: 0 routed experts on the CPU lane (0.0 GB, in place in the model's files), 56 threads

@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-05",
+  "hardware": {
+    "gpus": "4x NVIDIA GeForce RTX 4090 48 GB (sm_89, 49140 MiB each, PCIe, no NVLink)",
+    "cpu": "2x Intel Xeon Gold 6330 @ 2.00 GHz (56C/112T, 2 NUMA nodes)",
+    "ram_gib": 251,
+    "os": "Ubuntu 22.04.5 LTS (Linux 6.8.0-138-generic)",
+    "driver": "595.99.02",
+    "cuda": "13.2"
+  },
+  "software": {
+    "strata_version": "0.2.10",
+    "engine_binary": "strata-dsv41 0.1.56-linux-x86_64-cuda-cuda13 (06698c674)"
+  },
+  "model": {
+    "pack": "deepseek-v4.1-flash-ist-das-2.25bpw",
+    "quantization": "IQ2_XS (2.25 bpw)",
+    "engram": "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf",
+    "drafter": "DSpark-Q8_0"
+  },
+  "arms": [
+    {
+      "name": "arm1_256k_default_split",
+      "max_context": 262144,
+      "parallel": 4,
+      "layer_split": [5, 12, 11, 12],
+      "vram_experts": [2304, 4608, 4224, 4542],
+      "cpu_lane_experts": 66,
+      "runs": [
+        {"prompt_tokens": 25, "reused_tokens": 0, "generated_tokens": 600, "prompt_tok_s": 181.3, "decode_tok_s": 131.76, "drafts_kept": "451/519"},
+        {"prompt_tokens": 5752, "reused_tokens": 0, "generated_tokens": 63, "prompt_tok_s": 1150.5, "decode_tok_s": 84.70, "drafts_kept": "34/40"},
+        {"prompt_tokens": 9010, "reused_tokens": 0, "generated_tokens": 12, "prompt_tok_s": 1809.7, "decode_tok_s": 89.64, "drafts_kept": "6/6"}
+      ]
+    },
+    {
+      "name": "arm2_1m_default_split",
+      "max_context": 1048576,
+      "parallel": 4,
+      "layer_split": [5, 12, 11, 12],
+      "vram_experts": [2304, 4419, 4180, 4404],
+      "cpu_lane_experts": 437,
+      "runs": [
+        {"prompt_tokens": 25, "reused_tokens": 0, "generated_tokens": 600, "prompt_tok_s": 179.8, "decode_tok_s": 121.91, "drafts_kept": "438/526"},
+        {"prompt_tokens": 286329, "reused_tokens": 284628, "fresh_tokens": 1701, "generated_tokens": 398, "prompt_tok_s": 686.9, "decode_tok_s": 125.14, "drafts_kept": "308/339"},
+        {"prompt_tokens": 293290, "reused_tokens": 286727, "fresh_tokens": 6563, "generated_tokens": 94, "prompt_tok_s": 829.0, "decode_tok_s": 145.29, "drafts_kept": "78/78"},
+        {"prompt_tokens": 299484, "reused_tokens": 293384, "fresh_tokens": 6100, "generated_tokens": 62, "prompt_tok_s": 843.1, "decode_tok_s": 139.11, "drafts_kept": "51/55"},
+        {"prompt_tokens": 300114, "reused_tokens": 299546, "fresh_tokens": 568, "generated_tokens": 62, "prompt_tok_s": 484.1, "decode_tok_s": 142.45, "drafts_kept": "51/55"}
+      ]
+    },
+    {
+      "name": "arm3_1m_ds4_split_9_11_10_10",
+      "max_context": 1048576,
+      "parallel": 4,
+      "env": {"DS4_SPLIT": "9,11,10,10"},
+      "vision_resident": true,
+      "layer_split": [9, 11, 10, 10],
+      "vram_experts": [3840, 4224, 3840, 3840],
+      "cpu_lane_experts": 0,
+      "runs": [
+        {"workload": "python_lru_code", "prompt_tokens": 40, "reused_tokens": 0, "generated_tokens": 768, "prompt_tok_s": 192.1, "decode_tok_s": 122.80, "ttft_ms": 212.9, "max_in_flight": 1}
+      ]
+    }
+  ]
+}
