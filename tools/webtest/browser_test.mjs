@@ -668,16 +668,20 @@ test("monitor: a split run shows GPU load as one named chart per card", async ({
   await two.stop();
 });
 
-test("monitor: a split run's Power tile keeps the total and names each card's draw", async ({ browser }) => {
+test("monitor: a split run's Power tile names each card's draw under its own cap", async ({ browser }) => {
   const two = await startMock({ gpus: 2 });
   const page = await openPage(browser, two, { hash: "#monitor" });
   await page.waitForFunction(() => !document.getElementById("rows-power").hidden, { timeout: 8000 });
-  assert.equal(await page.$eval("#mv-power", (e) => e.textContent), "140W", "the sum of all cards stays the main figure");
-  assert.equal(await page.$eval("#ms-power", (e) => e.textContent), "of 620 W limit", "the limit covers all cards too");
+  assert.equal(await page.$eval("#mv-power", (e) => e.hidden), true, "the summed watts and the summed limit step aside for the cards' own");
+  assert.equal(await page.$eval("#ms-power", (e) => e.hidden), true);
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__name", (els) => els.map((e) => e.textContent)),
                    ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
-  assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => e.textContent)),
-                   ["85 W", "55 W"], "each card's own draw, so the slow and the hungry card are both visible");
+  assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
+                   [["85 W", "of 450 W limit"], ["55 W", "of 170 W limit"]],
+                   "each card's own draw under its own cap, not the summed one");
+  assert.equal(await page.$eval("#rows-power .metric-row__value div:nth-child(2)", (e) => getComputedStyle(e).color),
+               await page.$eval("#rows-power .metric-row__name", (e) => getComputedStyle(e).color),
+               "the cap line is as quiet as the card's name");
   const powerLines = await page.$$eval("#rows-power .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
   assert.equal(powerLines.length, 2, "one chart per card, over the same minute");
   assert.ok(powerLines.every((d) => (d || "").length > 20), "both cards' charts have a line");
@@ -734,6 +738,7 @@ test("monitor: one card keeps its single mean chart and shows no rows", async ({
   await page.waitForFunction(() => (document.querySelector("#sp-gpu .line").getAttribute("d") || "").length > 20, { timeout: 8000 });
   assert.equal(await page.$eval("#sp-gpu", (e) => getComputedStyle(e).display), "block", "the mean chart is the only chart there is");
   assert.equal(await page.$eval("#sp-power", (e) => getComputedStyle(e).display), "block", "so do the Power and PCIe tiles' charts");
+  assert.equal(await page.$eval("#mv-power", (e) => e.hidden), false, "and the Power figure, cap line included");
   assert.equal(await page.$eval("#sp-pcie", (e) => getComputedStyle(e).display), "block");
   assert.equal(await page.$eval("#mv-temp", (e) => e.hidden), false, "and the GPU temp figure and chart");
   assert.equal(await page.$eval("#sp-temp", (e) => getComputedStyle(e).display), "block");

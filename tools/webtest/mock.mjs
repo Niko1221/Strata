@@ -122,9 +122,9 @@ function metrics(state, gpus = 1) {
   if (gpus > 1) {          // a model split over two cards (issue #112): the shared figures are their mean, sum or max
     hardware.gpus = [
       { index: 0, name: "NVIDIA GeForce RTX 4090", util: 45, mem_used: 6e9, mem_total: 6.8e9, temp: 61, power: 85,
-        pcie_rx_mb: 12.4, pcie_gen: 4, pcie_gen_max: 4, pcie_width: 16 },
+        power_limit: 450, pcie_rx_mb: 12.4, pcie_gen: 4, pcie_gen_max: 4, pcie_width: 16 },
       { index: 1, name: "NVIDIA GeForce RTX 3060", util: 25, mem_used: 3e9, mem_total: 6e9, temp: 55, power: 55,
-        pcie_rx_mb: 3.1, pcie_gen: 3, pcie_gen_max: 4, pcie_width: 8 },   // the second card sits on a smaller slot
+        power_limit: 170, pcie_rx_mb: 3.1, pcie_gen: 3, pcie_gen_max: 4, pcie_width: 8 },   // the second card sits on a smaller slot
     ];
     hardware.gpu_power_limit = 620;        // 450 + 170, as the sampler sums the cards' limits
     hardware.gpu_pcie_rx_mb = 15.5;        // the two cards' traffic together, as the sampler sums it
