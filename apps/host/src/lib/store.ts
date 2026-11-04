@@ -1170,7 +1170,7 @@ const sessionWriter = createSessionWriter({
     try {
       localStorage.setItem(SESSION_KEY, json);
     } catch {
-      /* quota — sessions are a cache, not the source of truth */
+      /* quota — this copy is the only stored copy, so the last good write stands and the newest turn is simply not saved yet */
     }
   },
 });

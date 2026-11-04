@@ -11,43 +11,41 @@ import type { Session } from './types';
  *     or the page goes away.
  *  2. Only the chats that changed are serialised again. A chat is replaced by a new object when it changes (the store
  *     never mutates), so the previous JSON of every other chat is reused by object identity.
- *  3. The stored copy is capped: a huge tool result or an old chat that no longer fits is left out of the saved copy,
- *     never out of memory. The saved list is a cache, not the source of truth.
+ *  3. The stored copy is shortened by field, never by message or chat: a huge text (mostly tool results) is clipped,
+ *     and if the whole list still does not fit, the oldest chats' fields are clipped harder. Dropping messages or
+ *     whole chats would destroy them: this saved copy is the only stored copy of a chat (the store reads the same
+ *     key back on load), so a failed or trimmed write is a permanent loss.
  */
 
 /** Longest text kept for one field in the saved copy. */
 export const MAX_FIELD_CHARS = 200_000;
-/** Longest saved copy of one chat (JSON characters). A longer chat is shortened from its oldest messages. */
+/** Longest text kept for one field when the list is too big and the oldest chats are shortened to make room. */
+export const SHRINK_FIELD_CHARS = 20_000;
+/** Longest saved copy of one chat (JSON characters). Only advisory: an over-long chat is kept, its fields are shortened instead. */
 export const MAX_SESSION_CHARS = 1_500_000;
 /** Longest saved chat list (JSON characters). localStorage allows about 5M; keep a margin for everything else. */
 export const MAX_TOTAL_CHARS = 3_500_000;
 
 type Json = unknown;
 
-function clipFields(value: Json, depth = 0): Json {
-  if (typeof value === 'string') return value.length > MAX_FIELD_CHARS ? `${value.slice(0, MAX_FIELD_CHARS)}\n[shortened in the saved copy]` : value;
+function clipFields(value: Json, maxChars: number, depth = 0): Json {
+  if (typeof value === 'string') return value.length > maxChars ? `${value.slice(0, maxChars)}\n[shortened in the saved copy]` : value;
   if (depth > 6 || value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(v => clipFields(v, depth + 1));
+  if (Array.isArray(value)) return value.map(v => clipFields(v, maxChars, depth + 1));
   const out: Record<string, Json> = {};
-  for (const [k, v] of Object.entries(value as Record<string, Json>)) out[k] = clipFields(v, depth + 1);
+  for (const [k, v] of Object.entries(value as Record<string, Json>)) out[k] = clipFields(v, maxChars, depth + 1);
   return out;
 }
 
-/** The JSON text kept for one chat: whole when it fits, otherwise clipped and then shortened from the oldest message. */
-export function serializeSession(session: Session): string {
+/**
+ * The JSON text kept for one chat: whole when it fits, otherwise its oversized fields are clipped.
+ * Every message stays: the questions and answers are small, the tool results are what grow, and removing a message
+ * here would remove it for good (the load reads this same copy back).
+ */
+export function serializeSession(session: Session, maxFieldChars: number = MAX_FIELD_CHARS): string {
   const whole = JSON.stringify(session);
-  if (whole.length <= MAX_SESSION_CHARS) return whole;
-  let copy = clipFields(session) as Session;
-  let text = JSON.stringify(copy);
-  if (text.length <= MAX_SESSION_CHARS) return text;
-  let messages = copy.messages ?? [];
-  // Drop the oldest messages in halves until it fits; always keep the latest two.
-  while (text.length > MAX_SESSION_CHARS && messages.length > 2) {
-    messages = messages.slice(Math.max(1, Math.floor(messages.length / 2)));
-    copy = { ...copy, messages };
-    text = JSON.stringify(copy);
-  }
-  return text;
+  if (whole.length <= MAX_SESSION_CHARS && maxFieldChars === MAX_FIELD_CHARS) return whole;
+  return JSON.stringify(clipFields(session, maxFieldChars));
 }
 
 export interface SessionWriterOptions {
@@ -64,17 +62,17 @@ export function createSessionWriter(options: SessionWriterOptions) {
   const maxTotal = options.maxTotalChars ?? MAX_TOTAL_CHARS;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: Session[] | null = null;
-  // Chat object -> its JSON. WeakMap: a replaced chat is forgotten with its object.
-  const cache = new WeakMap<Session, string>();
+  // Chat object -> its JSON, at the normal field cap and at the shrink cap. WeakMap: a replaced chat is forgotten with its object.
+  const cache = new WeakMap<Session, { full: string; shrunk: string | null }>();
 
-  const textOf = (s: Session): string => {
-    let text = cache.get(s);
-    if (text === undefined) {
+  const entryOf = (s: Session) => {
+    let entry = cache.get(s);
+    if (entry === undefined) {
       options.onSerialize?.(s);
-      text = serializeSession(s);
-      cache.set(s, text);
+      entry = { full: serializeSession(s), shrunk: null };
+      cache.set(s, entry);
     }
-    return text;
+    return entry;
   };
 
   const flush = () => {
@@ -82,23 +80,21 @@ export function createSessionWriter(options: SessionWriterOptions) {
     const sessions = pending;
     pending = null;
     if (!sessions) return;
-    const parts = sessions.map(s => ({ s, text: textOf(s) }));
-    let total = parts.reduce((n, p) => n + p.text.length + 1, 2);
+    const parts = sessions.map(s => ({ s, entry: entryOf(s) }));
+    let total = parts.reduce((n, p) => n + p.entry.full.length + 1, 2);
     if (total > maxTotal) {
-      // Leave the oldest unpinned chats out of the saved copy until the rest fits. The newest chat is always kept.
+      // Shorten the oversized fields of the oldest unpinned chats until the rest fits: the texts lose length, not
+      // messages, and no chat is left out. Pinned and newest chats shrink last; the newest is shrunk only if needed.
       const order = parts
         .map((p, i) => ({ i, p }))
         .sort((a, b) => Number(!!a.p.s.pinned) - Number(!!b.p.s.pinned) || (a.p.s.updatedAt < b.p.s.updatedAt ? -1 : 1));
-      const drop = new Set<number>();
       for (const { i, p } of order) {
-        if (total <= maxTotal || drop.size >= parts.length - 1) break;
-        drop.add(i);
-        total -= p.text.length + 1;
+        if (total <= maxTotal) break;
+        if (p.entry.shrunk === null) p.entry.shrunk = serializeSession(p.s, SHRINK_FIELD_CHARS);
+        total -= p.entry.full.length - p.entry.shrunk.length;
       }
-      options.write(`[${parts.filter((_, i) => !drop.has(i)).map(p => p.text).join(',')}]`);
-      return;
     }
-    options.write(`[${parts.map(p => p.text).join(',')}]`);
+    options.write(`[${parts.map(p => p.entry.shrunk ?? p.entry.full).join(',')}]`);
   };
 
   const schedule = (sessions: Session[]) => {

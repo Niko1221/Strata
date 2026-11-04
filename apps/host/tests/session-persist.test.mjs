@@ -1,4 +1,4 @@
-/** #3604 / #3603: the chat list is saved at most once a second, changed chats only, and capped; a streamed answer is a handful of writes. */
+﻿/** #3604 / #3603: the chat list is saved at most once a second, changed chats only, and shortened by field; a streamed answer is a handful of writes. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -15,7 +15,7 @@ async function bundle(entry, plugins = []) {
 }
 
 const persist = await bundle('../src/lib/session-persist.ts');
-const { createSessionWriter, serializeSession, MAX_SESSION_CHARS } = persist;
+const { createSessionWriter, serializeSession } = persist;
 
 test('2,000 schedules inside a second produce one write, and the newest state wins', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -49,21 +49,53 @@ test('only the chat that changed is serialised again', () => {
   assert.equal(JSON.parse(writes.at(-1)).length, 2);
 });
 
-test('the saved copy is capped: a huge tool result is shortened, an over-long chat loses its oldest messages, old chats make room', () => {
+test('the saved copy is shortened by field: no message and no chat is ever dropped', () => {
   const big = 'y'.repeat(1_600_000);
   const one = serializeSession({ id: 'a', messages: [{ id: '1', tools: [{ result: big }] }] });
   assert.ok(one.length < 250_000, 'one 1.6M field is clipped');
-  const many = { id: 'b', messages: Array.from({ length: 40 }, (_, i) => ({ id: String(i), content: 'z'.repeat(150_000) })) };
+  assert.equal(JSON.parse(one).messages.length, 1, 'the message survives the clip');
+  const many = { id: 'b', messages: Array.from({ length: 40 }, (_, i) => ({ id: String(i), content: 'z'.repeat(250_000) })) };
   const text = serializeSession(many);
-  assert.ok(text.length <= MAX_SESSION_CHARS);
+  assert.ok(text.length < JSON.stringify(many).length, 'a long chat is shortened by its oversized fields');
   const kept = JSON.parse(text).messages;
+  assert.equal(kept.length, 40, 'every message of a long chat is kept');
   assert.equal(kept.at(-1).id, '39', 'the latest message is kept');
+  assert.ok(kept.every((m) => String(m.content).includes('[shortened in the saved copy]')), 'the big fields, not the messages, are what shrink');
 
   const writes = [];
   const writer = createSessionWriter({ write: (j) => writes.push(JSON.parse(j)), maxTotalChars: 320_000 });
   const chats = ['old', 'mid', 'new'].map((id, i) => ({ id, updatedAt: String(i), messages: [{ id: 'm', content: 'q'.repeat(150_000) }] }));
   writer.schedule(chats); writer.flush();
-  assert.deepEqual(writes[0].map((s) => s.id), ['mid', 'new'], 'the oldest chat is left out of the saved copy');
+  assert.deepEqual(writes[0].map((s) => s.id), ['old', 'mid', 'new'], 'every chat stays in the saved copy');
+  const shrunk = writes[0].filter((s) => String(s.messages[0].content).includes('[shortened in the saved copy]'));
+  assert.ok(shrunk.length >= 2, 'the oldest chats shrink their big texts instead of the list losing chats');
+  assert.ok(writes[0].every((s) => String(s.messages[0].content).length <= 150_000), 'no chat is kept whole beyond its original size');
+  assert.ok(JSON.stringify(writes[0]).length <= 320_000, 'the saved list fits its budget');
+});
+
+test('four agent turns with big tool results survive save, compaction and a reload: every question is still there', () => {
+  const turns = [
+    { id: 'u1', role: 'user', content: 'how much do we know about chemical composition of Saturn\'s moons?' },
+    { id: 'a1', role: 'assistant', content: 'Short version: Titan and Enceladus.', tools: [{ id: 't1', result: 'x'.repeat(800_000) }, { id: 't2', result: 'w'.repeat(800_000) }] },
+    { id: 'u2', role: 'user', content: 'what about the rings?' },
+    { id: 'a2', role: 'assistant', content: 'The rings are mostly water ice.', tools: [{ id: 't3', result: 'v'.repeat(800_000) }, { id: 't4', result: 'r'.repeat(800_000) }] },
+    { id: 'u3', role: 'user', content: 'how much do we know about Mars\' moons?' },
+    { id: 'a3', role: 'assistant', content: 'Phobos and Deimos.', tools: [{ id: 't5', result: 'u'.repeat(800_000) }, { id: 't6', result: 'p'.repeat(800_000) }] },
+    { id: 'u4', role: 'user', content: 'and their shapes?' },
+    { id: 'a4', role: 'assistant', content: 'Both are lumpy.', tools: [{ id: 't7', result: 'q'.repeat(800_000) }, { id: 't8', result: 's'.repeat(800_000) }] },
+  ];
+  const session = { id: 's1', title: 'moons', updatedAt: '2026-10-22', messages: turns };
+  const writes = [];
+  const writer = createSessionWriter({ write: (j) => writes.push(j) });
+  // Four turns: a schedule and a flush each, as the store does when a turn ends.
+  for (let upto = 2; upto <= 8; upto += 2) { writer.schedule([{ ...session, messages: turns.slice(0, upto) }]); writer.flush(); }
+  // Reload: the app reads the last saved copy back (that is the only stored copy) and saves once more with it.
+  const reloaded = JSON.parse(writes.at(-1));
+  writer.schedule(reloaded); writer.flush();
+  const after = JSON.parse(writes.at(-1));
+  const questions = after[0].messages.filter((m) => m.role === 'user').map((m) => m.content);
+  assert.deepEqual(questions, ['how much do we know about chemical composition of Saturn\'s moons?', 'what about the rings?', 'how much do we know about Mars\' moons?', 'and their shapes?'], 'no question is lost');
+  assert.equal(after[0].messages.filter((m) => m.role === 'assistant').length, 4, 'no answer is lost either');
 });
 
 test('the saved list keeps the format older builds read (a JSON array of chats)', () => {
