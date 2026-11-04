@@ -5129,6 +5129,8 @@ class AmdTelemetry(unittest.TestCase):
                     self.assertEqual((s["gpu_mem_used"], s["gpu_util"], s["gpu_temp"], s["gpu_power"]),
                                      (8 << 30, 68.0, 64.0, 205.0))
                     self.assertEqual([(g["util"], g["power"]) for g in s["gpus"]], [(37, 85.0), (99, 120.0)])
+                    # each card carries its own cap; the shared figure is their sum, not a card's own limit
+                    self.assertEqual([g["power_limit"] for g in s["gpus"]], [300.0, 300.0])
                     # each card's own PCIe link and traffic travel with it (None here: the fake tree has no PCIe files)
                     self.assertEqual({k: None for k in ("pcie_rx_mb", "pcie_gen", "pcie_gen_max", "pcie_width")},
                                      {k: g[k] for g in s["gpus"]

@@ -627,6 +627,9 @@ class Telemetry:
                 g["temp"] = max(t) if t else None
                 s["gpus"] = [{"index": i, "name": reader.name(), "util": r.get("util"), "mem_used": r.get("mem_used"),
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power"),
+                              # every card carries its own cap: one card tuned down to 200 W beside another's
+                              # 450 W is what the person needs to see, not the sum of them
+                              "power_limit": r.get("power_limit"),
                               # the card's own PCIe link and traffic: one card running in Gen1 beside a Gen5 card
                               # is what the person needs to see, not the first card's link for all of them
                               "pcie_rx_mb": r.get("pcie_rx_mb"), "pcie_gen": r.get("pcie_gen"),
