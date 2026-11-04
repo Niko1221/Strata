@@ -137,11 +137,8 @@ const METRICS = [
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
 // perCard: a tile that, in a split run (issue #112), adds a named row per card below the figure
-// speed, cpu and disk read say the same thing however many cards a run has; in a split run they keep their
-// own height beside the tall card tiles instead of stretching into empty boxes
-const stay = (key) => (key === "speed" || key === "cpu" || key === "disk" ? " metric-card--stay" : "");
 $("metrics").innerHTML = METRICS.map((m) => `
-  <div class="st-card metric-card${stay(m.key)}"><div class="st-metric">
+  <div class="st-card metric-card"><div class="st-metric">
     <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
     ${m.key === "speed" ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
@@ -512,7 +509,6 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
   const cards = hw.gpus || [];
   const multi = cards.length > 1;
-  $("metrics").classList.toggle("metrics--split", multi);   // the plain tiles read this and keep their own height
   // every card row starts with its number: it pairs the row with the n-th card fastest, and the name follows
   const cardLabel = (g) => `GPU ${g.index}` + (g.name ? ` · ${g.name}` : "");
   // rows whose reading takes two lines (a card's draw over its cap, its memory over its size) say the card's

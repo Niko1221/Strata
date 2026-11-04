@@ -92,9 +92,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .badges .st-badge.on { opacity: 1; }
 .state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
-.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--st-s-4); }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--st-s-4);
+  align-items: start; }   /* every tile is as tall as its own content: a taller neighbour leaves air outside the box, not empty space inside it */
 .metric-card { padding: var(--st-s-4) var(--st-s-5); }
-.metrics--split .metric-card--stay { align-self: start; }   /* the tall card tiles' row does not stretch these into empty boxes */
 .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
 .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
 .st-metric__spark { display: block; overflow: visible; }

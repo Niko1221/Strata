@@ -647,6 +647,7 @@ htest("language: /?lang= is for one visit, an unknown code stays English, every 
 });
 
 // ---------------------------------------------------------------- monitor: tiles of a model split over several cards
+const METRIC_TILES = 8;
 test("monitor: a split run shows GPU load as one named chart per card", async ({ browser }) => {
   const two = await startMock({ gpus: 2 });
   const page = await openPage(browser, two, { hash: "#monitor" });
@@ -757,19 +758,24 @@ test("monitor: a split run's VRAM tile keeps the total and lists each card's mem
   await two.stop();
 });
 
-test("monitor: a split run keeps the Speed, CPU and Disk read tiles at their own height", async ({ browser }) => {
+test("monitor: a split run makes every metric tile as tall as its own content", async ({ browser }) => {
   const two = await startMock({ gpus: 2 });
   const page = await openPage(browser, two, { hash: "#monitor" });
-  await page.waitForFunction(() => !document.getElementById("rows-power").hidden, { timeout: 8000 });
-  // at this width the grid lays one row of four tiles: the plain tiles share it with the tall card tiles,
-  // and sharing means their bottoms line up - which is the stretching this stops doing
+  await page.waitForFunction(() => !document.getElementById("rows-vram").hidden, { timeout: 8000 });
+  // the box a tile draws ends where its content ends plus the one padding it always had; a stretched tile
+  // would leave a gap between its content's bottom and the box' bottom minus that padding
+  const off = await page.evaluate(() => [...document.querySelectorAll(".metrics .metric-card")].map((c) => {
+    const pad = parseFloat(getComputedStyle(c).paddingBottom);
+    return Math.round(Math.abs(c.getBoundingClientRect().bottom - c.firstElementChild.getBoundingClientRect().bottom) - pad);
+  }));
+  assert.equal(off.length, METRIC_TILES, "every metric tile was measured");
+  assert.ok(off.every((o) => Math.abs(o) <= 1), `no tile's box reaches past its content: ${JSON.stringify(off)}`);
   const heights = await page.evaluate(() => {
     const h = (id) => document.getElementById(id).closest(".metric-card").getBoundingClientRect().height;
-    return { speed: h("mv-speed"), gpu: h("mv-gpu"), cpu: h("mv-cpu"), power: h("mv-power"), disk: h("mv-disk") };
+    return { speed: h("mv-speed"), gpu: h("mv-gpu"), cpu: h("mv-cpu"), power: h("mv-power") };
   });
-  assert.ok(heights.speed < heights.gpu, `the Speed tile stops at its own content, not the row's (${JSON.stringify(heights)})`);
-  assert.ok(heights.cpu < heights.power, "the CPU tile stops at its own content");
-  assert.ok(heights.disk < heights.power, "and the Disk read tile with it");
+  assert.ok(heights.speed < heights.gpu, `the plain tiles really are shorter than the card tiles (${JSON.stringify(heights)})`);
+  assert.ok(heights.cpu < heights.power, "the CPU tile is shorter than the Power tile in its row");
   assert.deepEqual(page.errors, []);
   await page.close();
   await two.stop();
@@ -793,9 +799,13 @@ test("monitor: one card keeps its single mean chart and shows no rows", async ({
   assert.equal(await page.$eval("#ms-vram", (e) => e.textContent), "1,200 experts cached");
   assert.equal(await page.$eval("#mv-pcie", (e) => e.textContent), "Gen4x16", "one card keeps the link as its figure");
   assert.equal(await page.$eval("#ms-pcie", (e) => e.textContent), "to GPU 16 MB/s");
-  assert.equal(await page.evaluate(() => document.getElementById("mv-speed").closest(".metric-card").getBoundingClientRect().height),
-               await page.evaluate(() => document.getElementById("mv-gpu").closest(".metric-card").getBoundingClientRect().height),
-               "with one card the plain tiles still stretch to their row, as they always did");
+  // with one card the tiles are as tall as their content too: the plain ones do not stretch to the tallest
+  const off = await page.evaluate(() => [...document.querySelectorAll(".metrics .metric-card")].map((c) => {
+    const pad = parseFloat(getComputedStyle(c).paddingBottom);
+    return Math.round(Math.abs(c.getBoundingClientRect().bottom - c.firstElementChild.getBoundingClientRect().bottom) - pad);
+  }));
+  assert.equal(off.length, METRIC_TILES, "every metric tile was measured");
+  assert.ok(off.every((o) => Math.abs(o) <= 1), `no tile's box reaches past its content: ${JSON.stringify(off)}`);
   await page.close();
 });
 
