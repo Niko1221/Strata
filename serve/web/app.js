@@ -508,11 +508,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const cardLabel = (g) => (g.name ? `GPU ${g.index} · ${g.name}` : `GPU ${g.index}`);
   const gpuHist = {};                                 // each card's own history series, keyed as "gpus" is
   for (const g of h.gpus || []) gpuHist[g.index] = g;
-  setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? `Mean of ${cards.length} cards` : st.gpu_name || (st.gpu_note ? "not available" : ""));
-  // the cards' own charts replace the single mean one. An <svg> has no reflected hidden property (SVG is not
-  // HTMLElement), so the attribute goes on explicitly or the [hidden] style would never match.
-  $("sp-gpu").toggleAttribute("hidden", multi && !!h.gpus);
+  // with more than one card the rows are the tile: neither a mean nor the hottest card's number says anything
+  // the rows do not already show, so the figure, its sub and the mean chart step aside. An <svg> has no
+  // reflected hidden property (SVG is not HTMLElement), so its attribute goes on explicitly.
+  $("mv-gpu").hidden = $("ms-gpu").hidden = multi;
+  $("sp-gpu").toggleAttribute("hidden", multi);
+  setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%", st.gpu_name || (st.gpu_note ? "not available" : ""));
   spark("sp-gpu", h.gpu_util, 100);
   metricRows("gpu", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.util == null ? "–" : `${fmt(g.util)}%`,
                                                 values: (gpuHist[g.index] || {}).util, max: 100 })) : []);
