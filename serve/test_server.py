@@ -6414,15 +6414,48 @@ class OpenAIChunksTerminal(unittest.TestCase):
         self.assertFalse(svc.end_engine_if_unchanged(4))
         self.assertEqual(engine.ended_count, 0)
 
+    def lost_run(self, engine):
+        """The error a no-done run raises on this engine, and whether the engine was ended."""
+        from serve.frontend import Event
+        from serve.server import openai_chunks, died_note
+        svc = self.service(engine)
+        svc.model_for = lambda req: "m"
+        svc.tok = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied) as caught:
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([("event", Event("content", "hi"))])))
+        return caught.exception, died_note(caught.exception)
+
     def test_batch_slots_share_the_engine_so_it_is_left_alone(self):
         engine = self.Engine(gen=4, batch=2)
         self.assertFalse(self.service(engine).end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+        error, said = self.lost_run(engine)                  # the engine keeps running, so the error does not promise a restart
+        self.assertEqual(said, "the engine ended the request without an answer")
         self.assertEqual(engine.ended_count, 0)
 
     def test_an_engine_without_a_generation_is_left_alone(self):
         engine = self.Engine(gen=4)
         self.assertFalse(self.service(engine).end_engine_if_unchanged(None))
         self.assertEqual(engine.ended_count, 0)
+        del engine.gen                                        # replicas: no gen
+        error, said = self.lost_run(engine)
+        self.assertEqual(said, "the engine ended the request without an answer")
+        self.assertEqual(engine.ended_count, 0)
+
+    def test_the_restart_sentence_is_said_only_where_the_engine_was_ended(self):
+        engine = self.Engine(gen=4)
+        error, said = self.lost_run(engine)
+        self.assertEqual(engine.ended_count, 1)
+        self.assertEqual(said, "the engine ended the request without an answer; the next request restarts it")
+        engine = self.Engine(gen=4)                           # another request holds the turn: not ended, no promise
+        svc = self.service(engine)
+        svc.fifo.acquire()
+        from serve.server import died_note
+        error = EngineDied("x")
+        error.restarts = svc.end_engine_if_unchanged(4)
+        self.assertEqual(died_note(error), "x")
+        self.assertEqual(died_note(EngineDied("the engine stopped")), "the engine stopped; the next request restarts it")   # every other EngineDied is as before
 
     def test_the_whole_race_through_the_stream(self):         # a no-done run, and the next request is on the engine when the check runs
         from serve.frontend import Event
