@@ -1,0 +1,49 @@
+BENCH_START 2026-11-04T09:21:27Z
+hashing model file 1/2: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf
+hashing model file 2/2: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
+[1/22] warmup (up to 128 tokens)
+    truncated: prompt 28.048917 tok/s, decode 34.231006 tok/s, first token 2.740013 s
+[2/22] performance-short-r1 (up to 512 tokens)
+    completed: prompt 46.962674 tok/s, decode 33.559744 tok/s, first token 61.071225 s
+[3/22] performance-prompt-4k-r1 (up to 512 tokens)
+    truncated: prompt 505.739457 tok/s, decode 36.231884 tok/s, first token 8.14244 s
+[4/22] performance-prompt-16k-r1 (up to 512 tokens)
+    truncated: prompt 550.542244 tok/s, decode 36.149257 tok/s, first token 29.828703 s
+[5/22] performance-short-r2 (up to 512 tokens)
+    completed: prompt 54.53644 tok/s, decode 35.703815 tok/s, first token 1.476121 s
+[6/22] performance-prompt-4k-r2 (up to 512 tokens)
+    truncated: prompt 494.921403 tok/s, decode 36.09752 tok/s, first token 8.328207 s
+[7/22] performance-prompt-16k-r2 (up to 512 tokens)
+    truncated: prompt 549.037083 tok/s, decode 36.641047 tok/s, first token 29.931316 s
+[8/22] performance-short-r3 (up to 512 tokens)
+    completed: prompt 52.513128 tok/s, decode 37.024075 tok/s, first token 1.533178 s
+[9/22] performance-prompt-4k-r3 (up to 512 tokens)
+    truncated: prompt 503.276895 tok/s, decode 35.147213 tok/s, first token 8.194826 s
+[10/22] performance-prompt-16k-r3 (up to 512 tokens)
+    truncated: prompt 547.382837 tok/s, decode 34.930208 tok/s, first token 30.006894 s
+[11/22] sanity-I1 (up to 2048 tokens)
+    completed: prompt 54.644809 tok/s, decode 38.054968 tok/s, first token 1.550994 s
+[12/22] sanity-I2 (up to 2048 tokens)
+    completed: prompt 68.186984 tok/s, decode 41.260509 tok/s, first token 1.354433 s
+[13/22] sanity-I3 (up to 2048 tokens)
+    completed: prompt 64.900359 tok/s, decode 44.15011 tok/s, first token 1.343498 s
+[14/22] sanity-I4 (up to 2048 tokens)
+    completed: prompt 61.911406 tok/s, decode 44.65235 tok/s, first token 1.191992 s
+[15/22] sanity-R1 (up to 2048 tokens)
+    completed: prompt 504.217224 tok/s, decode 39.404985 tok/s, first token 8.144994 s
+[16/22] sanity-R2 (up to 2048 tokens)
+    completed: prompt 503.50322 tok/s, decode 42.928026 tok/s, first token 8.158749 s
+[17/22] sanity-R3 (up to 2048 tokens)
+    completed: prompt 542.346172 tok/s, decode 45.365593 tok/s, first token 30.271064 s
+[18/22] sanity-R4 (up to 2048 tokens)
+    completed: prompt 540.460331 tok/s, decode 38.481038 tok/s, first token 30.383935 s
+[19/22] sanity-T1 (up to 2048 tokens)
+    completed: prompt 121.549854 tok/s, decode 37.480105 tok/s, first token 2.730129 s
+[20/22] sanity-T2 (up to 2048 tokens)
+    completed: prompt 129.054627 tok/s, decode 41.993539 tok/s, first token 2.659901 s
+[21/22] sanity-T3 (up to 2048 tokens)
+    completed: prompt 129.82702 tok/s, decode 45.809755 tok/s, first token 2.741962 s
+[22/22] sanity-T4 (up to 2048 tokens)
+    completed: prompt 131.732339 tok/s, decode 41.129579 tok/s, first token 2.605666 s
+{"schema_version": 1, "ok": true, "path": "<install>\\bench\\results\\2026-11-04-standard-rtx-3070-laptop-gpu-d8aeab0c\\results.json", "status": "complete", "engine_stop_error": null, "quality": {"passed": 12, "total": 12, "categories": {"instruction": {"passed": 4, "total": 4}, "retrieval": {"passed": 4, "total": 4}, "tool_call": {"passed": 4, "total": 4}}}, "summaries": [{"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "prompt_tps", "unit": "tokens/s", "median": 52.513128, "min": 46.962674, "max": 54.53644, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "decode_tps", "unit": "tokens/s", "median": 35.703815, "min": 33.559744, "max": 37.024075, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "ttft_s", "unit": "s", "median": 1.533178, "min": 1.476121, "max": 61.071225, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "first_answer_s", "unit": "s", "median": 5.457787, "min": 4.818461, "max": 62.914875, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "total_s", "unit": "s", "median": 12.350673, "min": 10.968172, "max": 70.971344, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "prompt_tps", "unit": "tokens/s", "median": 503.276895, "min": 494.921403, "max": 505.739457, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "decode_tps", "unit": "tokens/s", "median": 36.09752, "min": 35.147213, "max": 36.231884, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "ttft_s", "unit": "s", "median": 8.194826, "min": 8.14244, "max": 8.328207, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "first_answer_s", "unit": "s", "median": 15.140804, "min": 15.140804, "max": 15.140804, "n": 1, "included_request_ids": ["performance-prompt-4k-r1"], "excluded": [{"request_id": "performance-prompt-4k-r2", "reason": "first_answer_s is not available for this request"}, {"request_id": "performance-prompt-4k-r3", "reason": "first_answer_s is not available for this request"}]}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "total_s", "unit": "s", "median": 22.46381, "min": 22.233195, "max": 22.725329, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "prompt_tps", "unit": "tokens/s", "median": 549.037083, "min": 547.382837, "max": 550.542244, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "decode_tps", "unit": "tokens/s", "median": 36.149257, "min": 34.930208, "max": 36.641047, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "ttft_s", "unit": "s", "median": 29.931316, "min": 29.828703, "max": 30.006894, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "first_answer_s", "unit": "s", "median": 35.779776, "min": 35.779776, "max": 35.779776, "n": 1, "included_request_ids": ["performance-prompt-16k-r2"], "excluded": [{"request_id": "performance-prompt-16k-r1", "reason": "first_answer_s is not available for this request"}, {"request_id": "performance-prompt-16k-r3", "reason": "first_answer_s is not available for this request"}]}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "total_s", "unit": "s", "median": 43.952732, "min": 43.853772, "max": 44.62687, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}]}
+BENCH_DONE rc=0 2026-11-04T09:30:07Z

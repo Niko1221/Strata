@@ -1,0 +1,14 @@
+
+
+ProcessId    : 31496
+Name         : strata-vision.exe
+CreationDate : 04.11.2026 12:14:18
+CommandLine  : 
+
+ProcessId    : 2788
+Name         : strata.exe
+CreationDate : 04.11.2026 12:14:29
+CommandLine  : 
+
+
+

@@ -1,0 +1,6 @@
+published MANIFEST.sha256 entries: 35
+local MANIFEST.sha256 sha256: e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407
+request files verified identical: 35/35; deviations: 0
+corpus_sha256 recorded by the runner: e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407
+protocol: strata-qwen38-thinking-v1-draft.1  git_commit: 06698c674673008395ba6e971580538d6b1ea6e0  profile: qwen3.8-flash-next-thinking
+request_checks (runner): unexpected_payload_reuse = False
