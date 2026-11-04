@@ -310,7 +310,7 @@ bool q8k_avx512(int type) {
     return on && type == (int) GGML_TYPE_Q8_K;
 }
 bool q8k_avx2(int type) {
-    static const bool on = cpu_avx2_ok() && std::getenv("STRATA_NO_Q8K_AVX2") == nullptr;
+    static const bool on = (cpu_avx2_ok() || cpu_arm_neon_ok()) && std::getenv("STRATA_NO_Q8K_AVX2") == nullptr;
     return on && type == (int) GGML_TYPE_Q8_K;
 }
 // the older CPUs' copy (iq_avx1.cpp): byte-identical like the AVX-2 one, and only where AVX2 is absent (same
@@ -466,7 +466,8 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // Without it this falls through to ggml-cpu's vec_dot below, which is compiled for whatever
     // baseline the build selected (AVX1 here) and covers the same types - IQ2_XXS and IQ2_S among
     // them.  That path loops over tokens itself, so it is correct for any `nt`, not just one.
-    static const bool avx2 = cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr;
+    static const bool avx2 = (cpu_avx2_ok() || cpu_arm_dotprod_ok()) && std::getenv("STRATA_NO_IQ256") == nullptr;
+    static const bool arm_dp = cpu_arm_dotprod_ok() && std::getenv("STRATA_NO_IQ256") == nullptr;
     // The older-CPU tier (STRATA_ISA_FLOOR=avx builds): without it every expert on such a CPU runs on ggml-cpu's
     // scalar _generic dots.  Only where AVX2 is absent, so a modern CPU's rounding never moves (and
     // STRATA_NO_IQ256=1 there still means ggml, as before).  iq_avx1.cpp is compiled for AVX and gated on
@@ -511,13 +512,22 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
         iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, 1, ff, r0, r1);
         return;
     }
+    if (arm_dp && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 && iq256_supported(f.gu_type)) {
+        iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, 1, ff, r0, r1);
+        return;
+    }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
-    const bool singleton_iq = Arithmetic == NativeArithmetic::WindowInvariant && mt_min > 1;
+    const bool singleton_iq = Arithmetic == NativeArithmetic::WindowInvariant && mt_min > 1 && !arm_dp;
     // AVX-512 VNNI K-quant rows (Q4_K, Q5_K, Q6_K, Q5_0, Q8_0): bit-exact against ggml-cpu's AVX2 vec_dot for 1..N tokens.
     static const bool kq512 = avx512 && std::getenv("STRATA_NO_KQ512") == nullptr;
     if (kq512 && (nt >= 2 || (fast512_1t && f.gu_type == 13)) && f.tail_off == 0 &&
         kq512_gu_supported(f.gu_type) && kq512_reference_ok(f.gu_type)) {
         kq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
+    static const bool kq_arm = arm_dp && std::getenv("STRATA_NO_KQ512") == nullptr;
+    if (kq_arm && nt >= 2 && f.tail_off == 0 && kq512_gu_supported(f.gu_type)) {
+        kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
     // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
@@ -638,13 +648,23 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
         q2_512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
+    static const bool arm_dp = cpu_arm_dotprod_ok() && std::getenv("STRATA_NO_IQ256") == nullptr;
+    static const bool kq_arm = arm_dp && std::getenv("STRATA_NO_KQ512") == nullptr;
+    if (kq_arm && nt >= 2 && f.tail_off == 0 && (f.d_type == 6 || f.d_type == 7 || f.d_type == 8)) {
+        kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+    if (arm_dp && f.tail_off == 0 && f.d_type == 42) {
+        q2_0_gguf_rows_multi_avx2(blob + f.down_off, f.d_row, (int) f.n_ff / 64, (const ActQ* const*) hq, nt, out, r0, r1);
+        return;
+    }
     if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8) &&
         (Arithmetic == NativeArithmetic::Default || (ggml_cpu_has_avx2() && ggml_cpu_has_fma()))) {   // Q5_1 / Q8_0 down: bit-exact, any group size
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
-    if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
-        if (Arithmetic == NativeArithmetic::Default || mt_min <= 1) {
+    if ((cpu_avx2_ok() || arm_dp) && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
+        if (Arithmetic == NativeArithmetic::Default || mt_min <= 1 || arm_dp) {
             iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
             return;
         }

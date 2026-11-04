@@ -75,10 +75,16 @@ bool cpu_gather_fast_here();
 /// STRATA_FORCE_ISA, and not an older-CPU build (STRATA_ISA_FLOOR, which stays on its floor and AVX2).
 /// STRATA_NO_AVXVNNI=1 answers no.
 bool cpu_avxvnni_ok();
-/// Whether a native pack's layer of this ggml type runs on Strata's own Q2_0 kernels (AVX2 / AVX-512).  On a
-/// CPU without AVX2 (a native, non-portable build: ggml-cpu compiled for this CPU's SSE) a Q2_0 layer takes
-/// ggml-cpu's own Q2_0 vec_dot like every other native type: slower, but it runs.
-inline bool q2_native_kernels(int type) { return type == 42 && cpu_avx2_ok(); }
+/// Arm64 (Apple M1-M5, Qualcomm Snapdragon X1/X2 Oryon, NVIDIA Grace Neoverse-V2 / DGX Spark GB10 / Vera) feature
+/// probes: NEON (AdvSIMD), FEAT_DotProd (SDOT/UDOT), FEAT_I8MM (SMMLA/USMMLA), and FEAT_BF16 (BFDOT).
+/// Always false on x86; STRATA_FORCE_ISA=none or STRATA_NO_ARM_NEON=1 disables them for fallback testing.
+bool cpu_arm_neon_ok();
+bool cpu_arm_dotprod_ok();
+bool cpu_arm_i8mm_ok();
+bool cpu_arm_bf16_ok();
+/// Whether a native pack's layer of this ggml type runs on Strata's own Q2_0 kernels (AVX2 / AVX-512 / Arm64 DotProd).
+/// On a CPU without AVX2 or Arm64 DotProd, a Q2_0 layer takes ggml-cpu's own Q2_0 vec_dot.
+inline bool q2_native_kernels(int type) { return type == 42 && (cpu_avx2_ok() || cpu_arm_dotprod_ok()); }
 /// The CPU's brand string (CPUID 0x80000002..4), for messages; "unknown" when it has none.
 std::string cpu_name();
 /// Q2_0 GGUF rows / activation quantizer on the kernels this CPU has.

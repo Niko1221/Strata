@@ -78,7 +78,7 @@ void gg_cpu_quant(int act, const float* x, int k, void* dst) {
         strata::kernels::cpu::q8k_quant_avx512(x, dst, k);
         return;
     }
-    if (act == (int) GGML_TYPE_Q8_K && strata::kernels::cpu::cpu_avx2_ok()) {
+    if (act == (int) GGML_TYPE_Q8_K && (strata::kernels::cpu::cpu_avx2_ok() || strata::kernels::cpu::cpu_arm_neon_ok())) {
         strata::kernels::cpu::q8k_quant_avx2(x, dst, k);
         return;
     }
@@ -217,7 +217,8 @@ static int use_iq256(int type, int nt) {
     if (g_iq256 < 0) {
         const char* v = std::getenv("DS4_GG_IQ256");
         // (ggml-cpu's own answer: built with AVX2 + FMA + F16C, which is also what makes its dots the AVX2 ones these rows match)
-        const bool avx2 = ggml_cpu_has_avx2() && ggml_cpu_has_fma() && ggml_cpu_has_f16c();
+        const bool avx2 = (ggml_cpu_has_avx2() && ggml_cpu_has_fma() && ggml_cpu_has_f16c()) ||
+                          strata::kernels::cpu::cpu_arm_dotprod_ok();
         g_iq256 = !avx2 ? 0 : v == nullptr ? 2 : std::atoi(v) != 0 ? 1 : 0;
     }
     if (g_iq256 == 0) return 0;
