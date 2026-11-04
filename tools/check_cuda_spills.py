@@ -266,6 +266,56 @@ for _key, _per_sm in _INT3_ALLOWED.items():
         _old = _merged.get(_sm, (0, 0))
         _merged[_sm] = (max(_stack, _old[0]), max(_local, _old[1]))
 
+# Jetson AGX Thor (sm_110, #4559): the 0.2.10 aarch64 engine package carries sm_110 machine code next to the Spark's sm_121, and
+# sm_110 had never been measured.  Measured on one Jetson AGX Thor (CUDA 13.0.48, L4T R38.2.2, driver 580.00) with
+# `check_cuda_spills.py --list` over the libraries of ffa80d73 built two ways: the test shape (-DSTRATA_BUILD_TESTS=ON,
+# ARCHS 110) and the release shape (spark/build_engine.sh ARCHS="121;110"), cuobjdump 13.0; merged by max, never lowered.
+# Same reading as every entry above: a stack frame here is ptxas spilling under the launch bounds, not a kernel keeping an
+# array on purpose; the Thor's numbers sit at or under the Spark's sm_121 ones except expdec_down (152 over 136) and
+# native_mmvq_il_pf (1304 under 1456).  The strata::dsv41k kernels spill too (sampler_kernel 1024) but no gate reads that library.
+_SM110_ALLOWED = {
+    "strata::kernels::native_gu_amd_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::native_gu_lds_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::block_scores_rows_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::block_scores_simt_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::block_topk_reg_kernel": {"sm_110": (88, 0)},
+    "strata::kernels::{anonymous}::copy_kernel": {"sm_110": (88, 0)},
+    "strata::kernels::{anonymous}::dequant_gu_kernel": {"sm_110": (32, 0)},
+    "strata::kernels::{anonymous}::dequant_kernel": {"sm_110": (128, 0)},
+    "strata::kernels::{anonymous}::expdec_down_kernel": {"sm_110": (152, 0)},
+    "strata::kernels::{anonymous}::expdec_gu_kernel": {"sm_110": (96, 0)},
+    "strata::kernels::{anonymous}::gdn_step_commit_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::gdn_step_norm_multi_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::gemm4_rows_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::gemm8_kernel": {"sm_110": (32, 0)},
+    "strata::kernels::{anonymous}::gemm_iq_f16_grouped_kernel": {"sm_110": (32, 0)},
+    "strata::kernels::{anonymous}::gemm_rows_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::gr_up_v3_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::native_down_multi_kernel": {"sm_110": (48, 0)},
+    "strata::kernels::{anonymous}::native_gu_kernel": {"sm_110": (8, 0)},
+    "strata::kernels::{anonymous}::native_gu_multi_kernel": {"sm_110": (96, 0)},
+    "strata::kernels::{anonymous}::native_gu_swiglu_kernel": {"sm_110": (64, 0)},
+    "strata::kernels::{anonymous}::native_mmvq_il_kernel": {"sm_110": (24, 0)},
+    "strata::kernels::{anonymous}::native_mmvq_il_pf_kernel": {"sm_110": (1304, 0)},
+    "strata::kernels::{anonymous}::pair_kernel": {"sm_110": (16, 0)},
+    "strata::kernels::{anonymous}::prompt_attn_i8v3_kernel": {"sm_110": (16, 0)},
+    "strata::kernels::{anonymous}::rope_table_inv_kernel": {"sm_110": (32, 0)},
+    "strata::kernels::{anonymous}::rope_table_kernel": {"sm_110": (32, 0)},
+    "strata::kernels::{anonymous}::s26_down_l_kernel": {"sm_110": (16, 0)},
+    "strata::kernels::{anonymous}::s26_gu_l_kernel": {"sm_110": (32, 0)},
+    "strata::kernels::{anonymous}::s27_gu_kernel": {"sm_110": (32, 0)},
+    "strata::prefill::fused::{anonymous}::native_kernel": {"sm_110": (16, 0)},
+    "strata::prefill::{anonymous}::gdn_conv_w_kernel": {"sm_110": (8, 0)},
+    "strata::prefill::{anonymous}::rms_rope_rows_kernel": {"sm_110": (32, 0)},
+    "strata::prefill::{anonymous}::rope_kernel": {"sm_110": (32, 0)},
+    "{anonymous}::k_attn_prep": {"sm_110": (32, 0)},
+}
+for _key, _per_sm in _SM110_ALLOWED.items():
+    _merged = ALLOWED.setdefault(_key, {})
+    for _sm, (_stack, _local) in _per_sm.items():
+        _old = _merged.get(_sm, (0, 0))
+        _merged[_sm] = (max(_stack, _old[0]), max(_local, _old[1]))
+
 
 
 
