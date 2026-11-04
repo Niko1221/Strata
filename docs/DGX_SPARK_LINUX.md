@@ -3,7 +3,8 @@
 The DGX Spark is a small desktop box with a GB10 chip: a Blackwell GPU (compute capability 12.1, 48 SMs) and 20 Arm CPU cores that share
 128 GB of memory. Strata 0.2.7.1 runs Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash on it. This page says what works, how to install it, what
 the Spark does with its memory, and how the speeds were measured. It was tested on one Spark (Ubuntu 24.04, driver 580.173, CUDA 13.0).
-Nothing here is known to work on another ARM machine.
+Nothing here is known to work on another ARM machine. The Jetson AGX Thor is a different GPU on the same ARM64 feed (`sm_110`, not
+`sm_121`); its own page is [JETSON_THOR.md](JETSON_THOR.md).
 
 ## What works, and what does not
 
