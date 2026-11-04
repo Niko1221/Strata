@@ -538,9 +538,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   metricRows("temp", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.temp == null ? "–" : `${fmt(g.temp)}°`,
                                                  values: (gpuHist[g.index] || {}).temp, max: 90 })) : []);
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
-  // each card answers for its own cap: one figure and a summed limit hide that a card tuned down beside a
-  // full-power one is a decision the person made, not a fault. The rows carry watts and cap per card instead
-  $("mv-power").hidden = $("ms-power").hidden = multi;
+  // the total draw stays the figure - it is what the wall and the PSU see. Only its summed cap belongs to no
+  // card, so that line steps aside and each row answers for its own cap in the rows below
+  $("ms-power").hidden = multi;
   $("sp-power").toggleAttribute("hidden", multi);     // an <svg> has no hidden property, so the attribute goes on explicitly
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   metricRows("power", multi ? cards.map((g) => ({ label: cardLabel(g),

@@ -672,8 +672,8 @@ test("monitor: a split run's Power tile names each card's draw under its own cap
   const two = await startMock({ gpus: 2 });
   const page = await openPage(browser, two, { hash: "#monitor" });
   await page.waitForFunction(() => !document.getElementById("rows-power").hidden, { timeout: 8000 });
-  assert.equal(await page.$eval("#mv-power", (e) => e.hidden), true, "the summed watts and the summed limit step aside for the cards' own");
-  assert.equal(await page.$eval("#ms-power", (e) => e.hidden), true);
+  assert.equal(await page.$eval("#mv-power", (e) => e.textContent), "140W", "the total draw stays the figure - it is what the wall sees");
+  assert.equal(await page.$eval("#ms-power", (e) => e.hidden), true, "only the summed cap belongs to no card");
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__name", (els) => els.map((e) => e.textContent)),
                    ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
