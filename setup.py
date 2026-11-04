@@ -3219,6 +3219,25 @@ def whole_shard(s: Path) -> bool:
         return False
 
 
+def mark_whole_unless_pinned(shards, hf: str, own: bool) -> None:
+    """#173's finish mark for a file copied in by hand (it has the length its own tensor directory says), except a file with a pinned SHA-256 (#4088).
+
+    A run that stopped between the rename of a finished .part and the end of verify_sha256 leaves a full-length shard with no mark. Marking it "whole"
+    made done() true, download() skipped it and the pinned hash was never looked at, so a shard damaged by that crash stayed in place (a deleted mark
+    was written again by the next run). For a file the pin table names, leave it unmarked: download() takes its "finished by an older setup (no mark
+    yet), or stopped before the check" path, hashes it, repairs the damaged parts and writes the finish mark itself. `own` is --gguf-dir: a person's
+    own file is not a download and is not hash-checked here either way, so it keeps the mark; so does a file the pin table does not name."""
+    for s in shards:
+        if not (s.exists() and not done(s) and whole_shard(s)):
+            continue
+        if not own and file_pin(hf + s.name) is not None:
+            continue
+        try:
+            mark(s, "whole (checked against its own tensor directory)")
+        except OSError as e:                           # a read-only folder (--gguf-dir on a share): the file is still whole
+            warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
+
+
 SHARD_NAME = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 
 
@@ -9463,12 +9482,7 @@ def mac_control_setup(a) -> int:
     problem = gguf_dir_problem(models_dir, files[0], fam, model) if a.gguf_dir else None
     if problem:                                        # files Strata cannot run, or another choice's files
         fail(*problem)
-    for s in files:                                    # a whole file copied in by hand has no finish mark
-        if s.exists() and not done(s) and whole_shard(s):
-            try:
-                mark(s, "whole (checked against its own tensor directory)")
-            except OSError as e:                       # a read-only folder: the file is still whole
-                warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
+    mark_whole_unless_pinned(files, fam["hf"].format(q=model), bool(a.gguf_dir))     # a whole file copied in by hand has no finish mark
     need = (0 if a.gguf_dir or all(s.exists() and done(s) for s in files) else MODELS[model]["download_gb"]) + 6
     if free_gb(models_dir if models_dir.exists() else data) < need:
         warn(f"about {need:.0f} GB are needed on the disk: kept as you chose; it may run out")
@@ -10434,12 +10448,7 @@ def main() -> int:
                 models_dir, shards = cand[0].parent, cand
                 ok(f"model files found in {models_dir}")
                 break
-    for s in ([] if ready else shards):                # #173: a whole file copied in by hand has no finish mark
-        if s.exists() and not done(s) and whole_shard(s):
-            try:
-                mark(s, "whole (checked against its own tensor directory)")
-            except OSError as e:                       # a read-only folder (--gguf-dir on a share): the file is still whole
-                warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
+    mark_whole_unless_pinned([] if ready else shards, fam["hf"].format(q=model), bool(a.gguf_dir))   # #173: a whole file copied in by hand has no finish mark
     have_model = all(ready_verified(ready_where(models_dir, f), f[5]) for f in ready_needed(model, models_dir)) if ready else \
         all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     # #425 (jctaborda): a download that resumes needs room only for what is still missing - the finished shards and

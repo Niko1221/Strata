@@ -297,7 +297,8 @@ def settings_from_pairs(pairs: list[str]) -> dict[str, str]:
 WORD_VALUE_FLAGS = frozenset({"--dspark"})
 
 
-def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[dict[str, Any], dict[str, str | None]]:
+def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str],
+                    word_flags: frozenset[str] = WORD_VALUE_FLAGS) -> tuple[dict[str, Any], dict[str, str | None]]:
     """Turn the Advanced table's values into `tune_knobs.apply_to_argv` changes and environment changes.
 
     A flag without a value (or on/true/yes) is "present"; off/false/no/none removes it; anything else is a value.
@@ -307,7 +308,7 @@ def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[
     for key, value in extra.items():
         if key.startswith("--"):
             low = value.lower()
-            if key in WORD_VALUE_FLAGS and key not in bool_flags:
+            if key in word_flags and key not in bool_flags:
                 if low:
                     args[key] = low
                 continue                          # an empty value is no change, as for every option that takes one (#3504)

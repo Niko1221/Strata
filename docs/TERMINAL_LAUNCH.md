@@ -115,6 +115,18 @@ strata launch --show-key
 Presets are small files in `launch-presets/` beside the profiles folder. A run uses the shared profile `launch-<name>` and the shared
 tuning presets (`strata presets`), so the app sees them too.
 
+**Which value an engine option has.** The run config of a launch (`launch/<name>.json` in the state folder) is built again at every launch. For each
+option the first of these four that has it wins, and the file, `strata status` and the engine's command line show the same value:
+
+1. **Explicit launch values:** what this command line says (`--set draft-conf=0.35`, `--context`, ...). They hold for this launch and any launch given the same flags
+   (a saved preset keeps its `--set` values). Leave a flag out next time and it is gone. `--set KEY=off` removes the option.
+2. **Persisted overrides:** the options you set by hand: `user_args` in the model's run config and changes you made to `args` in the launch's file since it was written.
+3. **Calibrated values:** what `strata engine calibrate --apply-result` measured for this model and context (`calibrated` in the file). A different model or context drops them.
+4. **Auto:** what setup and the policies generate (drafter confidence from the card, cards, memory fit).
+
+The Auto drafter policy rebuilds its options at every start and keeps only layers 1 and 2, so `--set draft-conf=0.35` and `--set spec=3` reach the engine as given.
+`--set draft-conf=off` cannot remove an option the DFlash2 drafter needs: use `--drafting off` or `--drafting mtp` instead.
+
 **Launching while a model is serving.** The same choices restart nothing and print the running addresses. Different choices
 (another context, pictures, access, or another model on the same port) make the screens ask once, "Restart the model with these
 settings? Answers in progress stop." With `--no-tui` the command refuses with one line naming the running model, its port and settings. Add
