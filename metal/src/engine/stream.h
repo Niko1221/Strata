@@ -119,6 +119,7 @@ private:
     int outstanding_ = 0;
     int nio_ = 6, pre_k_ = 10, pre_k2_ = 0, split_ = 2;
     bool prefetch_ = true, fake_ = false, pre_mru_ = false;
+    int ne_ = 512;   // routed experts per layer of this model (512; 256 for the expert-pruned Coder), read from the GGUF at open(); stream.cpp's NE is the largest (array sizes, the 512-wide key / smap stride)
     // stats
     uint64_t stamp_ = 1;   // the handshake count: slots pinned with the current one are in use on the GPU
     uint64_t p_lookups_ = 0, p_hits_ = 0, p_pre_ = 0, p_misses_ = 0, p_streamed_ = 0, p_chunks_ = 0;

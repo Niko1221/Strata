@@ -7,12 +7,12 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpa
 import { join, resolve, dirname, basename, sep, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
-import { NATIVE_FIELDS, APP_OWNED_FIELDS, withoutDraftLayer, validateNativeSettings, validateMcpServers, publicMcpServers, publicNativeEnv, restoreNativeEnv, speedSwitchRows } from './native-settings.mjs';
+import { NATIVE_FIELDS, APP_OWNED_FIELDS, withoutDraftLayer, resolveDrafter, validateNativeSettings, validateMcpServers, publicMcpServers, publicNativeEnv, restoreNativeEnv, speedSwitchRows } from './native-settings.mjs';
 import { resourceSettings, saferStart, reserveChoice } from './native-resources.mjs';
 import { USER_KEY, capture as captureUserArgs, merge as mergeUserArgs, setFlag as setUserFlag, stamped as stampedUserArgs } from './native-user-args.mjs';
 import { resolvePython, venvPython } from './python-resolver.mjs';
 import os from 'node:os';
-import { runtimeVision } from './native-vision.mjs';
+import { markPictures, runtimeVision } from './native-vision.mjs';
 import { dsEngineArgs, dsUserArgs, dsArgsNote, withoutVisionFlag } from './native-ds-args.mjs';
 import { componentsDirectory, installerEnvironment, controlEnvironment, sourceServerEnvironment } from './control-runtime.mjs';
 import { createEngineStep } from './engine-step.mjs';
@@ -32,7 +32,7 @@ const busy=requests=>requests.some(r=>['queued','generating'].includes(r.state))
 function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));}catch{return fallback;}}
 
 /** The plain words for "no usable engine": the model still downloads, but loading needs the engine (owner decision 2026-10-18). */
-export const ENGINE_NOT_RECOGNISED='Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → Engine.';
+export const ENGINE_NOT_RECOGNISED='Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → About.';
 export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
@@ -63,17 +63,19 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  const updateLog=line=>{try{console.log(`update · ${line}`);}catch{/* no console */}};
  const NO_INSTALL='Installing, updating, tuning with calibration or rolling back model files and engines happens from the Terminal (strata install), never while the app runs.';
  let defaultId=null,timer=null,closing=false,polling=false;
+ /* Models the engine update stopped (with the person's yes): kept so the app can offer to start them again with the same settings. */
+ let stoppedForUpdate=null;
  const emit=()=>{const value=state();writeFileSync(join(directory,'native-jobs.json'),JSON.stringify(value.jobs),{mode:0o600});changed(value);};
  const append=(instanceId,line)=>{logs.push({at:new Date().toISOString(),instanceId,line:String(line).slice(0,2000)});if(logs.length>400)logs.shift();};
  function diskSpace(path){try{const s=statfsSync(path);return {free:Number(s.bavail)*Number(s.bsize),total:Number(s.blocks)*Number(s.bsize)};}catch{return null;}}
  /* Does the engine in this release serve DFlash2? Control knows (strata_control/drafting.py); asked once, false until it answers. The Models screen offers the choice only when true. */
- let dflash2Served=null;
- function probeDrafting(){if(!packaged||dflash2Served!==null||typeof control.draftingPlan!=='function')return;dflash2Served=false;control.draftingPlan({mode:'auto'}).then(p=>{dflash2Served=p.serves===true;emit();}).catch(()=>{});}
- function state(){const folder=preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),space=folder?diskSpace(folder):null;return {...snapshot,downloadDirectory:folder,downloadFreeBytes:space?.free??null,downloadTotalBytes:space?.total??null,fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,mcpServers,...i})=>structuredClone(i)),defaultId,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false,dflash2:dflash2Served===true}};}
+ let dflash2Served=null,dflash2Support=null,dflash2Selq4=false,dflash2Split=false;
+ function probeDrafting(){if(!packaged||dflash2Served!==null||typeof control.draftingPlan!=='function')return;dflash2Served=false;control.draftingPlan({mode:'auto'}).then(p=>{dflash2Served=p.serves===true;dflash2Support=p.serves===true&&p.support&&p.support_line?{level:p.support,line:p.support_line}:null;dflash2Selq4=p.serves===true&&p.selq4===true;dflash2Split=p.split===true;emit();}).catch(()=>{});}
+ function state(){const folder=preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder),space=folder?diskSpace(folder):null;return {...snapshot,downloadDirectory:folder,downloadFreeBytes:space?.free??null,downloadTotalBytes:space?.total??null,fields:nativeFields(),instances:[...instances.values()].map(({key,configPath,fingerprint,mcpServers,...i})=>structuredClone(i)),defaultId,stoppedForUpdate:stoppedForUpdate?{updated:stoppedForUpdate.updated,at:stoppedForUpdate.at,models:stoppedForUpdate.instances.map(i=>({id:i.id,label:i.label}))}:null,jobs:[...jobs.values()].slice(-12).map(({process,abort,engineAbort,rawResult,...j})=>j),capabilities:{responses:sourceText().includes('/v1/responses'),updates:!!snapshot.available,rollback:previousEngine(),componentUpdates:packaged&&typeof control.update==='function',calibration:packaged?false:snapshot.hardware?.gpus?.some(g=>/nvidia/i.test(g.name??''))??false,dflash2:dflash2Served===true,dflash2Support,dflash2Selq4,dflash2Split}};}
  let sourceCache={path:'',time:0,text:''};
  function sourceText(){try{const path=join(packaged?control.control.dir:preferences.repo,'serve/server.py'),time=statSync(path).mtimeMs;if(sourceCache.path===path&&sourceCache.time===time)return sourceCache.text;sourceCache={path,time,text:readFileSync(path,'utf8')};return sourceCache.text;}catch{return '';}}
  function nativeFields(){const source=sourceText();return NATIVE_FIELDS.map(field=>({...field,supported:APP_OWNED_FIELDS.includes(field.id)||field.id.startsWith('vision_')||field.id.startsWith('mcp_')||field.id==='vram_reserve_mib'||source.includes(field.id)}));}
- const modelArena=id=>({arenaGb:(snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===id)?.experts_gb});
+ const modelArena=id=>({arenaGb:(snapshot.catalog?.families??[]).flatMap(f=>f.sizes??[]).find(s=>s.id===id)?.experts_gb,engineVersion:snapshot.engine?.version??snapshot.installed?.engine?.version??null});
  /* A start that ends with `server_exited` carries the engine's last log line with it; the app turns the code into words and
     keeps this text under "Details" (src/lib/plain-errors.ts). */
  function exitCodeText(code){const n=Number(code);if(!Number.isFinite(n)||n===0)return '';const u=n<0?n+2**32:n;return u>=0x80000000?`exit code 0x${u.toString(16).toUpperCase().padStart(8,'0')}`:`exit code ${u}`;}
@@ -88,7 +90,11 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   for(const name of names){const path=join(dir,name),config=readJson(path,null);if(!config||typeof config!=='object')continue;
    const next={...config,...(config.cwd!==undefined?{cwd:fix(config.cwd)}:{}),...(Array.isArray(config.args)?{args:config.args.map(fix)}:{})};
    if(JSON.stringify(next)!==JSON.stringify(config)){try{writeModelConfig(path,next);}catch{/* read-only folder: the load reports it */}}}}
- function installedInfo(info){if(!info)return info;return {...info,models:(info.models??[]).map(entry=>{const cfg=/^strata-[a-z0-9_.-]+\.json$/i.test(entry.config??'')?readJson(entry.configPath??join(repo(),entry.config)):{};const at=cfg.args?.indexOf('--native')??-1,nativeFile=at>=0?cfg.args[at+1]:null;const dataFolder=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))==='models'?dirname(dirname(dirname(nativeFile))):info.data_folder;/* A model the person pointed at their own GGUF folder (not <data>/models/<tag>): remembered, so a later load runs setup with that folder again instead of downloading the files (#3199). */const ownGgufDir=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))!=='models'&&existsSync(nativeFile)?dirname(nativeFile):undefined;return {...entry,ownGgufDir,contextMax:configContextLimit(cfg)??undefined,diskGb:entry.diskGb??entry.disk_gb,diskBytes:entry.diskBytes??entry.disk_bytes,sharedBytes:entry.sharedBytes??entry.shared_bytes,removableGb:entry.removableGb??entry.removable_gb,dataFolder,visionPrepared:!!cfg.vision,/* The picture files are prepared when the run config has a vision section: the Models screen then loads straight away instead of running setup again (it used to read 'off' for every model, which sent every load of a picture-capable model through "Apply settings and load", and setup writes the arguments, the draft layer and the reader back each time). */images:cfg.vision?'yes':'off',draftLayer:cfg.mtp!==false,drafting:cfg.drafting??'auto',/* Picture reading is ON unless the person turned it off: no saved choice and not loaded is undefined, not false (owner rule: pictures on by default). */visionEnabled:cfg.ui_vision_enabled??(()=>{const running=[...instances.values()].find(i=>i.model===entry.model&&i.status==='ready');return running?!!running.vision:undefined;})(),visionDevice:cfg.ui_vision_device,resourceProfile:cfg.ui_resource_profile,lowRamMode:cfg.args?.includes('--resident-experts')?'resident':cfg.args?.includes('--mmap-experts')?'mmap':'auto'};})};}
+ /* DeepSeek reads pictures with the engine's own tower, which is part of the pack (pack_gguf writes the tower's geometry into ds4.txt when the picture file was there): a pack with it is "prepared", a text-only pack (made with --vision off, as the app did before 0.2.9) is not, and the Models screen then offers the one missing shared file. null for every other model. */
+ const dsPictures=cfg=>{if(cfg?.arch!=='deepseek41')return null;const a=Array.isArray(cfg.args)?cfg.args:[];const at=a.indexOf('--pack');if(at<0||typeof a[at+1]!=='string')return false;try{const t=readFileSync(join(a[at+1],'ds4.txt'),'utf8');return /image_token_id/.test(t)&&/vision[.]num_hidden_layers/.test(t);}catch{return false;}};
+ /* DeepSeek's picture switch is a pair, --vision on|off, in the saved arguments: set it to the person's choice at every load (on only where the pack carries the tower). */
+ const dsVisionPair=(a,value)=>{if(!value)return a;const at=a.indexOf('--vision');return at<0?[...a,'--vision',value]:a.map((x,i)=>i===at+1?value:x);};
+ function installedInfo(info){if(!info)return info;return {...info,models:(info.models??[]).map(entry=>{const cfg=/^strata-[a-z0-9_.-]+\.json$/i.test(entry.config??'')?readJson(entry.configPath??join(repo(),entry.config)):{};const at=cfg.args?.indexOf('--native')??-1,nativeFile=at>=0?cfg.args[at+1]:null;const dataFolder=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))==='models'?dirname(dirname(dirname(nativeFile))):info.data_folder;/* The folder this model's own run config keeps its prepared data in: the one that holds its packs/<tag> (or mtp/rt). It is the real data folder of the model, wherever the app's models folder is; a model in the person's own GGUF folder has its pack and draft layer here, not in the app's folder. A layout that only looks like <data>/models/<tag> says nothing: no pack, no folder. */const flagValue=flag=>{const i=cfg.args?.indexOf(flag)??-1;return i>=0&&typeof cfg.args[i+1]==='string'?cfg.args[i+1]:undefined;};const holder=(path,child,name)=>{if(!path||basename(dirname(path)).toLowerCase()!==child||(name&&basename(path).toLowerCase()!==name))return undefined;return dirname(dirname(path));};const runDataFolder=holder(flagValue('--pack'),'packs')??holder(flagValue('--mtp'),'mtp','rt');/* A model the person pointed at their own GGUF folder (not <data>/models/<tag>): remembered, so a later load runs setup with that folder again instead of downloading the files (#3199). */const ownGgufDir=typeof nativeFile==='string'&&basename(dirname(dirname(nativeFile)))!=='models'&&existsSync(nativeFile)?dirname(nativeFile):undefined;return {...entry,ownGgufDir,runDataFolder,contextMax:configContextLimit(cfg)??undefined,diskGb:entry.diskGb??entry.disk_gb,diskBytes:entry.diskBytes??entry.disk_bytes,sharedBytes:entry.sharedBytes??entry.shared_bytes,removableGb:entry.removableGb??entry.removable_gb,dataFolder,contextChosen:cfg.ui_context_chosen===true,visionPrepared:dsPictures(cfg)??(!!cfg.vision&&entry.picturesMissing!==true),/* The picture files are prepared when the run config has a vision section: the Models screen then loads straight away instead of running setup again (it used to read 'off' for every model, which sent every load of a picture-capable model through "Apply settings and load", and setup writes the arguments, the draft layer and the reader back each time). */images:(dsPictures(cfg)??(!!cfg.vision&&entry.picturesMissing!==true))?'yes':'off',draftLayer:cfg.mtp!==false,drafting:cfg.drafting??'auto',/* Picture reading is ON unless the person turned it off: no saved choice and not loaded is undefined, not false (owner rule: pictures on by default). */visionEnabled:cfg.ui_vision_enabled??(()=>{const running=[...instances.values()].find(i=>i.model===entry.model&&i.status==='ready');return running?!!running.vision:undefined;})(),visionDevice:cfg.ui_vision_device,resourceProfile:cfg.ui_resource_profile,lowRamMode:cfg.args?.includes('--resident-experts')?'resident':cfg.args?.includes('--mmap-experts')?'mmap':'auto'};})};}
  function installRoot(){const found=[preferences.installDir].find(d=>d&&existsSync(d));if(found)return realpathSync(found);mkdirSync(defaultInstall(),{recursive:true});return realpathSync(defaultInstall());}
  /* The settings file Strata Control and the installer read (control-runtime.mjs sets STRATA_SETTINGS_FILE to it): the app's data folder is written there. */
  function controlSettingsFile(){return process.env.STRATA_SETTINGS_FILE||join(dirname(componentsDirectory()),'app-settings.json');}
@@ -122,10 +128,11 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
    const engine=await control.engine();
    const installer=await mcpCall('strata_status',{hardware:true}).catch(error=>({error:error.message}));
    const disk=Object.fromEntries((installer.installed?.models??[]).map(m=>[m.model,{diskGb:m.disk_gb,diskBytes:m.disk_bytes,sharedBytes:m.shared_bytes,removableGb:m.removable_gb,partsMissing:m.parts_missing??0,missingFiles:m.missing_files}]));
-   const models=(list.models??[]).filter(m=>m.component_status!=='invalid'&&m.source_config).map(m=>({...(disk[m.id]??{}),model:m.id,config:basename(m.source_config),configPath:m.source_config,model_name:m.name,context:m.context_tokens??0,backend:m.backend,ready:m.component_status==='present'&&!(disk[m.id]?.partsMissing),missing:missingNames(m.missing,disk[m.id]?.missingFiles),images:'off',port:undefined,last_used:null}));
+   const onlyPictures=m=>m.component_status==='missing_or_invalid'&&Array.isArray(m.missing)&&m.missing.length>0&&m.missing.every(p=>p?.part==='vision/mmproj')&&Array.isArray(m.issue_codes)&&m.issue_codes.length===m.missing.length&&m.issue_codes.every(c=>/^COMPONENT_(MISSING|INVALID)$/.test(c));
+   const models=(list.models??[]).filter(m=>m.component_status!=='invalid'&&m.source_config).map(m=>({...(disk[m.id]??{}),model:m.id,config:basename(m.source_config),configPath:m.source_config,model_name:m.name,context:m.context_tokens??0,backend:m.backend,ready:(m.component_status==='present'||onlyPictures(m))&&!(disk[m.id]?.partsMissing),/* Only the picture file is gone (run config has the picture section, the file does not exist): the model is not "missing files". It loads, and the Load fetches the picture file again. */picturesMissing:m.component_status!=='present'&&onlyPictures(m),missing:missingNames(m.missing,disk[m.id]?.missingFiles),images:'off',port:undefined,last_used:null}));
    const cores=os.cpus().length;
    return {summary:engine.usable?`Strata Control is ready; engine ${engine.engine.version} (${engine.engine.platform}-${engine.engine.backend}).`:(engine.notice??'No engine for this PC was found.'),
-    installDir:list.install_dir,engine:{usable:engine.usable,notice:engine.notice,wrongMake:engine.wrongMake===true,version:engine.engine?.version??null,backend:engine.backend,componentsDir:engine.components_dir,previous:engine.previous??null,pinned:engine.pinned??null,updateNotice:engine.update_notice??null},
+    installDir:list.install_dir,engine:{usable:engine.usable,notice:engine.notice,wrongMake:engine.wrongMake===true,version:engine.engine?.version??null,backend:engine.backend,componentsDir:engine.components_dir,previous:engine.previous??null,pinned:engine.pinned??null,updateNotice:engine.update_notice??null,updateAvailable:engine.update_available??null},
     installed:{strata_folder:list.install_dir,data_folder:null,engine:engine.engine?{version:engine.engine.version,backend:engine.engine.backend,folder:engine.engine.root}:{folder:null,version:null},models,usage:installer.installed?.usage??null},
     hardware:installer.hardware?{...installer.hardware,cpu:{...(installer.hardware.cpu??{}),cores:installer.hardware.cpu?.cores??cores},gpus:installer.hardware.gpus??[]}:{cpu:{cores},ram_gb:Math.round(os.totalmem()/1024**3),gpus:[]},
     recommendation:installer.recommendation??null,installerError:installer.error??null,install:installer.install??null,running:null};
@@ -141,7 +148,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
      is refreshed in the background. Only the first read, and a forced one after an operation, waits. */
   if(refreshing)return !force&&snapshot.available?state():force?refreshing.then(()=>refresh(true)):refreshing;      /* a forced read that meets one already running (started before an engine update finished) waits for it and reads again, so it never settles on the old answer */if(!force&&Date.now()-lastRead<45000)return state();
   probeDrafting();
-  refreshing=(async()=>{try{const [catalog,status]=packaged?await (async()=>{const s=await tool('strata_status',{hardware:true});const c=await tool('strata_models').catch(error=>({families:[],contexts:[],recommendation:{family:null,model:null},context_note:'',error:error.message}));return [c,s];})():await Promise.all([tool('strata_models'),tool('strata_status',{hardware:true})]);let visionReader=false;if(packaged){try{const e=await control.engine();const root=e?.engine?.root??(e?.engine?.exe?dirname(e.engine.exe):'');visionReader=!!root&&['strata-vision','strata-vision.exe'].some(n=>existsSync(join(root,n)));}catch{visionReader=false;}}const markImages=c=>c&&Array.isArray(c.families)?{...c,families:c.families.map(f=>({...f,imagesCapable:!!f.images,images:!!f.images&&visionReader,sizes:(f.sizes??[]).map(s=>({...s,imagesCapable:!!s.images,images:!!s.images&&visionReader}))}))}:c;snapshot={available:true,repo:packaged?status.installDir:repo(),version:packaged?(control.version??null):await execute('git',['describe','--tags','--always'],repo()).then(s=>s.trim()).catch(()=>null),summary:status.summary,catalog:markEngine(packaged?markImages(catalog):catalog,status.engine),engineInfo:{version:status.engine?.version??null,source:status.engine?.source??null},visionReader:packaged?visionReader:true,installed:installedInfo(status.installed),hardware:status.hardware,error:null,install:status.install,external:status.running??null,...(packaged?{packaged:true,installDir:status.installDir,engine:status.engine,installerError:status.installerError}:{})};lastRead=Date.now();if(status.install?.running&&![...jobs.values()].some(j=>j.state==='running'))begin('install',j=>watchInstall(j,status.install));}catch(error){snapshot={...snapshot,available:false,error:error.message};lastRead=Date.now();}emit();return state();})().finally(()=>{refreshing=null;});const run=refreshing;if(!force&&snapshot.available){run.catch(()=>{});return state();}return run;
+  refreshing=(async()=>{try{const [catalog,status]=packaged?await (async()=>{const s=await tool('strata_status',{hardware:true});const c=await tool('strata_models').catch(error=>({families:[],contexts:[],recommendation:{family:null,model:null},context_note:'',error:error.message}));return [c,s];})():await Promise.all([tool('strata_models'),tool('strata_status',{hardware:true})]);let visionReader=false;if(packaged){try{const e=await control.engine();const root=e?.engine?.root??(e?.engine?.exe?dirname(e.engine.exe):'');visionReader=!!root&&['strata-vision','strata-vision.exe'].some(n=>existsSync(join(root,n)));}catch{visionReader=snapshot.visionReader===true;}}const markImages=c=>markPictures(c,visionReader);snapshot={available:true,repo:packaged?status.installDir:repo(),version:packaged?(control.version??null):await execute('git',['describe','--tags','--always'],repo()).then(s=>s.trim()).catch(()=>null),summary:status.summary,catalog:markEngine(packaged?markImages(catalog):catalog,status.engine),engineInfo:{version:status.engine?.version??null,source:status.engine?.source??null},visionReader:packaged?visionReader:true,installed:installedInfo(status.installed),hardware:status.hardware,error:null,install:status.install,external:status.running??null,...(packaged?{packaged:true,installDir:status.installDir,engine:status.engine,installerError:status.installerError}:{})};lastRead=Date.now();if(status.install?.running&&![...jobs.values()].some(j=>j.state==='running'))begin('install',j=>watchInstall(j,status.install));}catch(error){snapshot={...snapshot,available:false,error:error.message};lastRead=Date.now();}emit();return state();})().finally(()=>{refreshing=null;});const run=refreshing;if(!force&&snapshot.available){run.catch(()=>{});return state();}return run;
  }
  function configure({repository}){if(packaged){if(instances.size||[...jobs.values()].some(j=>j.state==='running'))throw new Error('Unload models and finish operations before changing the installation.');const next=realpathSync(String(repository));if(!statSync(next).isDirectory())throw new Error('Choose the folder that holds your Strata model configurations.');preferences={...preferences,installDir:next};packagedInstall=null;disconnect();writeFileSync(settingsPath,JSON.stringify(preferences,null,2),{mode:0o600});lastRead=0;return refresh(true);}if(instances.size||[...jobs.values()].some(j=>j.state==='running'))throw new Error('Unload models and finish operations before changing the installation.');const next=realpathSync(String(repository));const old=preferences;preferences={...preferences,repo:next};try{repo();}catch(e){preferences=old;throw e;}disconnect();writeFileSync(settingsPath,JSON.stringify(preferences,null,2),{mode:0o600});lastRead=0;return refresh(true);}
  function setDownloadDirectory(input,{insideJob=false}={}){if(!insideJob&&[...jobs.values()].some(j=>j.state==='running'))throw new Error('Finish the current operation before changing the folder.');if(typeof input!=='string'||!input.trim()||/[\r\n\0]/.test(input))throw new Error('Choose a model folder.');let path;try{path=realpathSync(input.trim());}catch{throw new Error('That folder does not exist. Check the path, or that the drive is connected.');}if(!statSync(path).isDirectory())throw new Error('Choose a folder, not a file.');/* A whole drive (D:\) is not filled with models: D:\Strata is made and used. */if(isDriveRoot(path)){const own=dataFolderFromPick(path).path;makeFolder(own);path=realpathSync(own);}try{accessSync(path,constants.R_OK|constants.W_OK);}catch{throw new Error('Strata cannot write in that folder. Choose a folder you can save files in.');}preferences={...preferences,downloadDirectory:path};/* the same choice for the installer and the Terminal: the Control settings file */if(packaged)rememberDataFolder(controlSettingsFile(),path,Date.now()/1000,true);writeFileSync(settingsPath,JSON.stringify(preferences,null,2),{mode:0o600});shareDataFolder();emit();return state();}
@@ -157,11 +164,11 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  function previousEngine(){if(packaged)return !!snapshot.engine?.previous;try{const data=snapshot.installed?.data_dir??snapshot.installed?.data_folder;return [join(preferences.repo,'engine/.previous'),data&&join(data,'engine/.previous')].filter(Boolean).some(existsSync)&&readFileSync(join(preferences.repo,'setup.py'),'utf8').includes('--rollback-engine');}catch{return false;}}
  async function plan(args){await refresh();if(!snapshot.available)throw new Error(snapshot.error);const result=await tool('strata_install',installArgs(args,false));
   /* A chosen drafter that is not on this computer yet is part of the download: its size is listed beside the model's (Control decides; nothing is fetched here). */
-  const choice=args.drafting;if(packaged&&typeof choice==='string'&&choice!=='auto'&&typeof control.draftingPlan==='function'){try{const d=await control.draftingPlan({mode:choice,family:args.family??null,dataDir:snapshot.installed?.data_folder??null});if(d.needed)return {...result,drafting:{needed:true,gb:d.gb,line:d.line}};}catch{/* the model plan still stands */}}
+  const choice=args.drafting??(dflash2Served===true?'auto':undefined);if(packaged&&typeof choice==='string'&&typeof control.draftingPlan==='function'){try{const size=snapshot.catalog?.families?.find(f=>f.family===args.family)?.sizes.find(s=>s.model===args.model),here=snapshot.installed?.models?.find(m=>m.model===size?.id);const d=await control.draftingPlan({mode:choice,family:args.family??null,dataDir:here?.runDataFolder??snapshot.installed?.data_folder??null});if(d.needed||d.mtp_needed)return {...result,drafting:{needed:true,drafter:d.needed?'dflash2':'mtp',gb:d.needed?d.gb:d.mtp_gb,line:d.line}};}catch{/* the model plan still stands */}}
   return result;}
  /* The folder the person picked in the first-run chooser can be the one that holds their GGUF files (or a folder inside it). It is theirs, not a Strata data folder: packs are never made in it, and a Strata folder around it (<Strata>/models/<tag>) is used instead (#3507, #3424). */
  function ownFilesDataFolder(candidate,args){if(!candidate||args.data_dir!==undefined||!args.gguf_dir)return candidate;const same=(a,b)=>{const x=resolve(a),y=resolve(b);return process.platform==='win32'?x.toLowerCase()===y.toLowerCase():x===y;};const inside=(a,b)=>{const rel=relative(resolve(b),resolve(a));return rel===''||(!!rel&&!rel.startsWith('..')&&!isAbsolute(rel));};if(!same(candidate,args.gguf_dir)&&!inside(candidate,args.gguf_dir))return candidate;const models=dirname(resolve(args.gguf_dir)),top=dirname(models);return basename(models).toLowerCase()==='models'&&/strata/i.test(basename(top))?top:undefined;}
- function installArgs(args,confirm){const allowed=['family','model','context','vision','kv','gpu','gpus','backend','low_ram','port','gguf_dir'];const size=snapshot.catalog?.families?.find(f=>f.family===args.family)?.sizes.find(s=>s.model===args.model);const existing=snapshot.installed?.models?.find(m=>m.model===size?.id);/* A model adopted from the person's own GGUF folder reports that folder's parent as its data folder: it is theirs, not Strata's, so a second preparation never uses it for the packs. */if(args.gguf_dir===undefined&&existing?.ownGgufDir)args={...args,gguf_dir:existing.ownGgufDir};const data=nativeDataDirectory(ownFilesDataFolder(args.data_dir??(args.gguf_dir?undefined:existing?.dataFolder)??preferences.downloadDirectory??modelsDirectory?.(),args));if(data&&packaged&&!args.data_dir)rememberDataFolder(controlSettingsFile(),data);return {...(data?{data_dir:data}:{}),...Object.fromEntries(allowed.filter(k=>args[k]!==undefined).map(k=>[k,args[k]])),/* One card is "gpu", never "gpus" (the installer wants two or more there: "Gpus='0' is not valid", #3203). */...(/^\d{1,2}$/.test(String(args.gpus??''))?{gpu:Number(args.gpus),gpus:undefined}:{}),/* Picture reading is only downloaded when it was asked for (Read pictures); the default stays the smaller download. */...(packaged&&args.vision===undefined?{vision:'no'}:{}),confirm};}
+ function installArgs(args,confirm){const allowed=['family','model','context','vision','kv','gpu','gpus','backend','low_ram','port','gguf_dir','drafter'];/* One drafter per run: when the choice means DFlash2 the installer does not fetch the MTP layer's ~5 GB (the drafter is fetched by the load); choosing the MTP later fetches the layer once. */if(args.drafter===undefined&&args.drafting!==undefined||args.drafter===undefined&&dflash2Served===true){const d=resolveDrafter(args.drafting,args.family,dflash2Served,dflash2Split);if(d==='dflash2')args={...args,drafter:'dflash2'};}const size=snapshot.catalog?.families?.find(f=>f.family===args.family)?.sizes.find(s=>s.model===args.model);const existing=snapshot.installed?.models?.find(m=>m.model===size?.id);/* A model adopted from the person's own GGUF folder reports that folder's parent as its data folder: it is theirs, not Strata's, so a second preparation never uses it for the packs. */if(args.gguf_dir===undefined&&existing?.ownGgufDir)args={...args,gguf_dir:existing.ownGgufDir};/* A model that is installed keeps working in the data folder its own run config names (where its pack and draft layer are), whether its files are under it or in the person's own folder: that is never changed or written to the settings from here. Only a folder taken from the app's models folder is the person's choice, and the one the installer is told about. */const own=args.data_dir===undefined?existing?.runDataFolder:undefined;const data=own??nativeDataDirectory(ownFilesDataFolder(args.data_dir??(args.gguf_dir?undefined:existing?.dataFolder)??preferences.downloadDirectory??modelsDirectory?.(),args));if(data&&packaged&&!args.data_dir&&!own)rememberDataFolder(controlSettingsFile(),data);return {...(data?{data_dir:data}:{}),...Object.fromEntries(allowed.filter(k=>args[k]!==undefined).map(k=>[k,args[k]])),/* One card is "gpu", never "gpus" (the installer wants two or more there: "Gpus='0' is not valid", #3203). */...(/^\d{1,2}$/.test(String(args.gpus??''))?{gpu:Number(args.gpus),gpus:undefined}:{}),/* Picture reading is only downloaded when it was asked for (Read pictures); the default stays the smaller download. */...(packaged&&args.vision===undefined&&args.family!=='deepseek41'?{vision:'no'}:{}),confirm};}
 
  function begin(kind,run,metadata={}){if([...jobs.values()].some(j=>j.state==='running'))throw new Error('Finish or cancel the current engine operation first.');const job={id:randomUUID(),kind,state:'running',startedAt:new Date().toISOString(),summary:'Starting…',result:null,error:null,...metadata};for(const [id,old] of jobs)if(jobs.size>=12&&old.state!=='running')jobs.delete(id);jobs.set(job.id,job);emit();void run(job).then(result=>{if(job.state==='running'){Object.assign(job,{state:'done',summary:result?.summary??'Complete',result,finishedAt:new Date().toISOString()});}}).catch(error=>{if(job.state==='running')Object.assign(job,{state:'error',error:error.message,summary:error.message,...(error.details?{details:error.details}:{}),finishedAt:new Date().toISOString()});}).finally(()=>{if(job.kind.startsWith('update')||job.kind==='rollback')disconnect();lastRead=0;emit();void refresh(true);});return state().jobs.find(j=>j.id===job.id);}
  async function watchInstall(job,current){job.summary=current.step??'Resuming preparation status…';job.result={install:current};while(job.state==='running'){await new Promise(r=>setTimeout(r,1500));const result=await tool('strata_install');job.summary=result.summary;job.result=result;emit();if(!result.install?.running){if(result.install?.exit_code!==0)throw new Error(result.install?.error??'Preparation did not finish. Retry to reuse completed files.');return {summary:'Model preparation complete. Load it from Models.'};}}}
@@ -195,7 +202,9 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
      const note=engineStep?.summaryNote();
      const finalResult=engineStep?job.result:result;
      if(note)return {...finalResult,summary:note};
-     if(args.loadAfter){const model=(result.install.family??args.family??'qwen')==='qwen'?String(args.model).toLowerCase():`${args.family}-${String(args.model).toLowerCase()}`;return loadEngine(job,{model,multiple:!!args.multiple,resourceProfile:args.resourceProfile,vision:args.loadVision,...(typeof args.drafting==='string'?{values:{drafting:args.drafting}}:{})});}
+     /* A context the person picked is kept with a marker (ui_context_chosen), so only an old saved 32K, which has no marker, is read as the old default. */
+     if(args.contextChosen===true){try{const id=(result.install.family??args.family??'qwen')==='qwen'?String(args.model).toLowerCase():`${args.family}-${String(args.model).toLowerCase()}`;rememberSetting(record(id).path,'ui_context_chosen',true);}catch{/* the install itself is done */}}
+     if(args.loadAfter){const model=(result.install.family??args.family??'qwen')==='qwen'?String(args.model).toLowerCase():`${args.family}-${String(args.model).toLowerCase()}`;return loadEngine(job,{model,multiple:!!args.multiple,resourceProfile:args.resourceProfile,vision:args.loadVision,...(args.visionUnavailable===true?{visionUnavailable:true}:{}),...(typeof args.drafting==='string'?{values:{drafting:args.drafting}}:{})});}
      return finalResult;
     }
    }
@@ -267,18 +276,20 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const sized=gb>40?Math.max(300,600+(gb-40)*8):300;
   return Math.trunc(Math.max(300,Math.min(ceiling,Math.max(ready,sized))));
  }
- function buildConfig(args,config){
-  const vision=runtimeVision(config,args.vision);
-  const visionPreferences=args.vision!==undefined?{ui_vision_enabled:args.vision!=='no',ui_vision_device:args.vision==='no'?config.ui_vision_device??'yes':args.vision}:{};
+ function buildConfig(args,config,drafter=null){
+  /* `visionUnavailable`: this engine has no picture reader, so the run goes without pictures but nothing is saved: the model's own setting stays what the person had (it used to save "off", and the model stayed off after the engine got the reader). */
+  const noReader=args.visionUnavailable===true;
+  const vision=ownEngine(config)?undefined:runtimeVision(config,noReader?'no':args.vision); /* DeepSeek has its own picture tower: its picture setting is the --vision flag setup wrote */
+  const visionPreferences=args.vision!==undefined&&!noReader?{ui_vision_enabled:args.vision!=='no',ui_vision_device:args.vision==='no'?config.ui_vision_device??'yes':args.vision}:{};
   /* The engine options the person set by hand (user_args, and what they wrote into "args" since the last write) go over everything the app generates, and an
      explicit GPU-memory reserve (the Expert setting, user_args, a value they wrote) is never replaced by the safety default (#3215 #3270 #3216). */
   const values0=args.values??{},cleared='vram_reserve_mib' in values0&&(values0.vram_reserve_mib===null||values0.vram_reserve_mib===''),base0=cleared?{...config,vram_reserve_mib:undefined,[USER_KEY]:setUserFlag(config[USER_KEY],'--vram-reserve-mib',null)}:config;
   let mine=captureUserArgs(base0);const asked=cleared?null:reserveChoice({...base0,[USER_KEY]:mine},snapshot.hardware,values0).asked;
   if(asked!==null)mine=setUserFlag(mine,'--vram-reserve-mib',asked);
   const resources=args.resourceProfile&&!ownEngine(config)?resourceSettings({...base0,[USER_KEY]:mine,vision},snapshot.hardware,args.resourceProfile,modelArena(args.model),values0):null;
-  const cfg={...config,...visionPreferences,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),host:'127.0.0.1',open_browser:false,...validateNativeSettings(args.values??{}),vision};
+  const cfg={...config,...visionPreferences,...(args.contextChosen===true?{ui_context_chosen:true}:{}),...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),host:'127.0.0.1',open_browser:false,...validateNativeSettings(args.values??{}),vision};
   /* The app's suggested cards only fill a gap: a model whose settings file already names its GPUs ("gpu": [1, 0], with "gpu_order": "as_given") keeps them (#3256). A card the person picked in the screen always wins. */
-  const namedInFile=(Array.isArray(config.gpu)?config.gpu.length>0:config.gpu!==undefined&&config.gpu!==null&&config.gpu!=='')||!!config.gpu_roles;
+  const namedInFile=((Array.isArray(config.gpu)?config.gpu.length>0:config.gpu!==undefined&&config.gpu!==null&&config.gpu!=='')||!!config.gpu_roles)&&!setupPickedOneCard(config,snapshot.hardware);
   /* Roles chosen in the screen (Main / Helper / Off per card, gpu-roles.mjs): the card list is the roles' mirror - Helpers first, the Main card LAST, Off cards left out - with "gpu_roles" beside it. Every card Off is allowed: the server says plainly what the engine can do. */
   if(args.gpuRoles!==undefined){const make=snapshot.hardware?.engine_vendor,cards=(snapshot.hardware?.gpus??[]).filter(g=>!make||!g.vendor||g.vendor===make),named=parseRoles(args.gpuRoles);if(!named)throw new Error('Choose Main, Helper or Off for each graphics card, with one Main.');const known=new Set(cards.map(g=>g.index));if(Object.keys(named).some(k=>!known.has(Number(k))))throw new Error('Choose detected graphics cards.');const roles=Object.fromEntries(cards.map(g=>[g.index,named[g.index]??'off'])),m=mirrorRoles(roles,cards);for(const k of ['gpu','gpu_order','gpu_none','gpu_roles','gpu_cards','hip_ordinal'])delete cfg[k];Object.assign(cfg,m);const count=Array.isArray(m.gpu)?m.gpu.length:m.gpu_none?0:1;cfg.layer_split=count>1?validateNativeSettings({layer_split:args.layerSplit??'auto'}).layer_split:'auto';if(cfg.layer_split!=='auto'&&cfg.layer_split.split(',').length!==count-1)throw new Error('Choose one layer split point between each pair of GPUs.');}
   else   if(args.gpus!==undefined&&!(args.gpusFromRecommendation&&namedInFile)){const detected=new Set((snapshot.hardware?.gpus??[]).map(g=>g.index));if(!Array.isArray(args.gpus)||!args.gpus.length||new Set(args.gpus).size!==args.gpus.length||args.gpus.some(g=>!Number.isInteger(g)||!detected.has(g)))throw new Error('Choose distinct detected GPUs. CPU-only text inference is not supported by this native adapter.');cfg.gpu=args.gpus.length===1?args.gpus[0]:args.gpus;for(const k of ['gpu_roles','gpu_cards','gpu_none'])delete cfg[k];delete cfg.hip_ordinal;cfg.layer_split=args.gpus.length>1?validateNativeSettings({layer_split:args.layerSplit??'auto'}).layer_split:'auto';if(cfg.layer_split!=='auto'&&cfg.layer_split.split(',').length!==args.gpus.length-1)throw new Error('Choose one layer split point between each pair of GPUs.');}
@@ -289,9 +300,10 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if((cfg.mtp===false||cfg.drafting==='off')&&Array.isArray(cfg.args))cfg.args=withoutDraftLayer(cfg.args);
   /* The Qwen engine's --vision stands alone, so it goes (with a picture word after it, if an older file has one). The DeepSeek engine's is a pair, `--vision on|off`, that setup wrote and the engine reads: it stays whole (taking out only the name left `off` behind: `--eos 1 off`, "unknown option off", #4358 #4359 #4505 #4507). */
   if(!cfg.vision&&!ownEngine(config)&&Array.isArray(cfg.args))cfg.args=withoutVisionFlag(cfg.args);
+  if(ownEngine(config)&&Array.isArray(cfg.args)&&args.vision!==undefined)cfg.args=dsVisionPair(cfg.args,args.vision==='no'?'off':dsPictures(cfg)?'on':null);
   for(const arg of cfg.args??[])if(arg.endsWith('.gguf')&&!existsSync(resolve(repo(),arg)))throw new Error('An engine argument names a missing GGUF. Restore the saved arguments or repair the files.');
   /* The app's own choice of request slots (4, fewer where the card has no room) is part of the configuration, so a tune measures the engine a load will start: slots take VRAM from the expert cache. */
-  const parallelChoice=packaged&&!ownEngine(config)?chooseParallel({config:cfg,values:args.values??{},hardware:snapshot.hardware?.gpus?.length?snapshot.hardware:{gpus:hardwareProbe()??[]}}):null;
+  const parallelChoice=packaged&&!ownEngine(config)?chooseParallel({config:cfg,values:args.values??{},drafter,hardware:snapshot.hardware?.gpus?.length?snapshot.hardware:{gpus:hardwareProbe()??[]}}):null;
   let parallelNote=null,dsNote='';
   /* The agent asks for long answers (a thinking model can use most of the window): let the engine clamp the output to what is left of the context instead of refusing the request. */
   if(packaged&&!ownEngine(config)&&cfg.fit_max_tokens===undefined)cfg.fit_max_tokens=true;
@@ -304,32 +316,115 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   else delete cfg.ds_experts;
   return {cfg,resources,visionPreferences,parallelChoice,parallelNote,dsNote};
  }
+ /* One drafter per run. Control (strata_control/drafting.py) says which one this load runs and whether its file is on this computer: the plan of the saved model file with the choice the Load carries. */
+ async function draftPlan(args,configFile){
+  if(!packaged||typeof control.draftingPlan!=='function')return null;
+  const asked=args.values?.drafting;
+  try{return await control.draftingPlan({configPath:configFile,...(asked===undefined?{}:{mode:asked===null?'auto':asked})});}catch{return null;}
+ }
+ /* The choice changed to the MTP and its layer is not here yet: it is fetched once, by the installer (finished steps are skipped), in this Load. Only the Models screen's own Load carries the choice; a restart or a tuning run never fetches. */
+ async function installMtpLayer(job,args,config){
+  const fam=snapshot.catalog?.families?.find(f=>f.sizes.some(s=>s.id===args.model)),size=fam?.sizes.find(s=>s.id===args.model);
+  if(!fam||!size)return;
+  job.summary='Downloading the MTP drafter…';emit();
+  /* the model's own files folder (the run config's --native): without it the installer, asked for this model by name, would fetch the whole model again next to the layer (an app install adopted from the person's own GGUF folder has its files elsewhere) */const native=(()=>{const a=(config.args??[]).map(String),i=a.indexOf('--native');return i>=0?(a[i+1]??''):'';})();try{await install(job,{family:fam.family,model:size.model,drafter:'mtp',vision:args.vision??(config.vision?'yes':'no'),...(native?{gguf_dir:dirname(native)}:{})});}
+  catch{if(job.state==='running'){job.drafterNote='The MTP drafter could not be downloaded.';emit();}}/* one short line, not the installer's own text; Drafting below says what runs instead */
+ }
  /* The DFlash2 drafter, before a load that uses it: Control says whether the choice needs it (and the file is not here), downloads it pinned and checked, and packs it, with plain progress in the job.
-    Never stops the load: a drafter that cannot be had leaves the MTP running, and the job says so. The choice itself is remembered in the model's settings file. */
- async function prepareDrafter(job,args,cfg,configFile){
+    Never stops the load: a drafter that cannot be had leaves the MTP running if its layer is here, else no drafter, and the job says so. The choice itself is remembered in the model's settings file. */
+ async function prepareDrafter(job,args,cfg,configFile,drafts){
   const asked=args.values?.drafting;
   if(asked!==undefined)rememberSetting(configFile,'drafting',asked===null||asked==='auto'?null:asked);
-  if(!packaged||typeof control.draftingFetch!=='function'||!cfg.drafting||cfg.drafting==='auto'||cfg.drafting==='mtp'||cfg.drafting==='off')return;
+  /* Only the Models screen's own Load passes the choice (its dialog has listed the download): a restart, a tuning run or any other load leaves `asked` undefined and never fetches; the model then starts with the drafter that is on this computer and says why. */
+ if(!packaged||typeof control.draftingFetch!=='function'||asked===undefined||drafts?.needed!==true)return;
   const work=join(directory,'native-instances');mkdirSync(work,{recursive:true});const probe=join(work,'drafting-'+randomUUID()+'.json');
   try{
    writeFileSync(probe,JSON.stringify(cfg),{mode:0o600});
    job.engineAbort??=new AbortController();
-   await control.draftingFetch({configPath:probe,mode:cfg.drafting,signal:job.engineAbort.signal,onEvent:event=>{if(event.event==='progress'&&job.state==='running'){job.summary=event.step;job.details=event.total>1&&event.done<event.total?`${(event.done/1e9).toFixed(2)} of ${(event.total/1e9).toFixed(2)} GB`:undefined;emit();}}});
+   await control.draftingFetch({configPath:probe,mode:cfg.drafting??'auto',signal:job.engineAbort.signal,onEvent:event=>{if(event.event==='progress'&&job.state==='running'){job.summary=event.step;job.details=event.total>1&&event.done<event.total?`${(event.done/1e9).toFixed(2)} of ${(event.total/1e9).toFixed(2)} GB`:undefined;emit();}}});
    if(job.state==='running'){job.summary='Loading the model…';job.details=undefined;emit();}
-  }catch(error){if(job.state==='running'){job.drafterNote=error.message;job.summary='The DFlash2 drafter could not be downloaded, so the model starts with the MTP. Loading the model…';emit();}}
+  }catch(error){if(job.state==='running'){job.drafterNote=error.message;job.summary=drafts.mtp_here===false?'The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…':'The DFlash2 drafter could not be downloaded, so the model starts with the MTP. Loading the model…';emit();}}
   finally{try{rmSync(probe,{force:true});}catch{/* best effort */}}
  }
  /* One key of a model's settings file, set or removed (the Drafting choice): written like the Settings screen writes it, to be there for the next load. */
  function rememberSetting(configFile,key,value){try{const current=readJson(configFile);if(value===null?!(key in current):current[key]===value)return;const next={...current};if(value===null)delete next[key];else next[key]=value;const temp=configFile+'.ui-tmp';writeFileSync(temp,JSON.stringify(next,null,2)+'\n',{mode:0o600});renameSync(temp,configFile);}catch{/* the load goes on with the choice for this start */}}
  /* Which drafter runs, when it is not the one that was asked for (the engine's own words, "Drafting: MTP (DFlash2 didn't fit)"): under Details of the load. */
  async function noteDrafting(job,instance,key){let note='';try{const r=await fetcher(`http://127.0.0.1:${instance.port}/metrics`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(r.ok)note=String((await r.json())?.engine?.drafting_note??'');}catch{/* a convenience */}const lines=[job.drafterNote,note].filter(Boolean);if(lines.length)job.details=[job.details,...lines].filter(Boolean).join('\n');}
+ /* ---- The picture files of an installed model that has none (strata_control/pictures.py, run by Control) ----
+    Only the Load or the "Download picture-reading files" button the person pressed reaches the network, and only for the picture file (about 0.9 GB, one copy
+    shared by the models of a data folder). The model's own files, its pack, its draft layer, the data folder and the settings' data_dir are not touched; the one change
+    to the model's run config is the picture section. A restart, a tuning run or any other load that does not ask for pictures never downloads. */
+ const PICTURES_WORDS={download:'Downloading the picture files (0.9 GB, once)…',check:'Checking the picture files…',loading:'Loading the model…',
+  offline:'No internet connection: the model is loaded without picture reading. Load it again when you are online.',
+  disk:'There is not enough free disk space for the picture files, so the model is loaded without picture reading.',
+  failed:'The picture files could not be downloaded, so the model is loaded without picture reading. Try again later.',
+  gone:'The picture files are missing, so the model is loaded without picture reading.'};
+ const PLAIN_PICTURE_CODES=['offline','disk','failed','checksum','unsupported','no_reader'];
+ const askedPictures=value=>['yes','gpu','cpu'].includes(value);
+ const pictureFileGone=config=>!config.vision?.mmproj||!existsSync(resolve(repo(),String(config.vision.mmproj)));
+ /* The card the picture reader will be chosen for: the cards the model runs on, the one with the most memory (setup's rule is the card's memory: the CPU reader under 24 GB). */
+ function pictureCard(config){const make=snapshot.hardware?.engine_vendor,named=Array.isArray(config.gpu)?config.gpu:config.gpu===undefined||config.gpu===null?null:[config.gpu];const cards=(snapshot.hardware?.gpus??[]).filter(g=>g.usable!==false&&(!make||!g.vendor||g.vendor===make)&&(!named||named.includes(g.index)));const best=[...cards].sort((a,b)=>(Number(b.vram_gb)||0)-(Number(a.vram_gb)||0))[0];return best?{vram_gb:Number(best.vram_gb)||0,make:best.vendor??make??null,arch:best.arch??null}:null;}
+ async function ensurePictures(job,args,configFile,config,{strict=false,missing=false}={}){
+  const keep={config,args,note:null};
+  if(!packaged||ownEngine(config)||args.visionUnavailable===true)return keep;
+  const prepared=!!config.vision,asked=askedPictures(args.vision);
+  /* Control says the picture file is gone (missing) or, when pictures were asked for, this look at the disk says so; a load that asked for nothing never second-guesses Control. */
+  if(prepared&&!missing&&!(asked&&pictureFileGone(config)))return keep;
+  if(!asked){const none={...args,vision:'no',visionUnavailable:true};return prepared?{config,args:none,note:PICTURES_WORDS.gone}:keep;}
+  if(typeof control.picturesFetch!=='function')return keep;
+  job.abort=new AbortController();job.summary=PICTURES_WORDS.download;job.details=undefined;emit();
+  try{
+   const engine=await control.engine();const engineDir=engine?.engine?.root;
+   if(!engineDir)throw Object.assign(new Error('This engine has no picture reader.'),{code:'no_reader'});
+   const family=snapshot.catalog?.families?.find(f=>f.sizes?.some(s=>s.id===args.model))?.family??null;
+   const here=snapshot.installed?.models?.find(m=>m.model===args.model);
+   let fallbackData=null;try{fallbackData=here?.runDataFolder??here?.dataFolder??nativeDataDirectory(preferences.downloadDirectory??modelsDirectory?.())??null;}catch{fallbackData=here?.runDataFolder??here?.dataFolder??null;}
+   const got=await control.picturesFetch({configPath:configFile,engineDir,vision:args.vision,dataDir:fallbackData,family,hardware:pictureCard(config),signal:job.abort.signal,
+    onEvent:event=>{if(event?.event!=='progress'||job.state!=='running')return;const total=Number(event.total)||0,done=Number(event.done)||0;
+     if(/^Checking/i.test(String(event.step))){job.summary=PICTURES_WORDS.check;}
+     else{job.summary=PICTURES_WORDS.download;if(total>0)job.result={install:{download:{file:'picture reader',done_gb:done/1e9,total_gb:total/1e9,remaining_gb:Math.max(0,total-done)/1e9,percent:Math.min(99,Math.floor(100*done/total))}}};}
+     emit();}});
+   if(job.state!=='running')return keep;
+   const next={...config,vision:got.vision};
+   writeModelConfig(configFile,next);
+   if(got.note)append(args.model,`Picture files: ${got.note}`);
+   job.result=null;job.summary=PICTURES_WORDS.loading;job.details=undefined;emit();
+   return {config:next,args,note:null};
+  }catch(error){
+   job.result=null;
+   if(job.state!=='running')return keep;
+   const code=error?.code,details=error?.output?.error?.details;
+   append(args.model,`Picture files: ${error?.message??error}${details?` (${details})`:''}`);
+   if(strict)throw Object.assign(new Error(PLAIN_PICTURE_CODES.includes(code)?String(error.message):'The picture files could not be downloaded. Try again.'),{details:details?[details]:undefined});
+   job.summary=PICTURES_WORDS.loading;job.details=undefined;emit();
+   return {config,args:{...args,vision:'no',visionUnavailable:true},note:code==='offline'?PICTURES_WORDS.offline:code==='disk'?PICTURES_WORDS.disk:PICTURES_WORDS.failed};
+  }
+ }
+ /* "Download picture-reading files": the same step without a load. */
+ async function picturesOnly(job,args){
+  await refresh(true);if(job.state!=='running')return;
+  const {path:configFile}=recordFile(args.model);const config=checkedSettingsConfig(readFileSync(configFile,'utf8'));
+  if(!packaged)throw new Error('The picture files are downloaded by the installed app.');
+  if(ownEngine(config))throw new Error('This model reads pictures with its own files.');
+  const {entry}=recordFile(args.model);
+  if(config.vision&&!entry.picturesMissing&&!pictureFileGone(config))return {summary:'The picture files are ready.'};
+  await ensurePictures(job,{...args,vision:askedPictures(args.vision)?args.vision:'yes'},configFile,config,{strict:true,missing:entry.picturesMissing===true});
+  if(job.state!=='running')return;
+  await refresh(true);
+  return {summary:'The picture files are ready.'};
+ }
  async function loadEngine(job,args){
-  await refresh(true);if(job.state!=='running')return;const {entry,path:configFile}=recordFile(args.model);const config=checkedSettingsConfig(readFileSync(configFile,'utf8'));if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}if(!entry.ready){const error=missingFilesError(args.model,entry.missing);append(args.model,error.details[0]);throw error;}
+  await refresh(true);if(job.state!=='running')return;const {entry,path:configFile}=recordFile(args.model);let config=checkedSettingsConfig(readFileSync(configFile,'utf8'));if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}if(!entry.ready){const error=missingFilesError(args.model,entry.missing);append(args.model,error.details[0]);throw error;}
   if(externalRunning().length)throw new Error('A Strata server is already running outside this UI. Stop it before loading here, or connect its API in Settings → Models.');
   if(args.multiple&&instances.size>=8)throw new Error('Unload an instance before adding another. Up to eight native instances can run here.');
-  const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote,dsNote}=buildConfig(args,config);
+  /* Read pictures is on and the picture files are not here: the Load fetches those files (about 0.9 GB, once) and nothing else of the model, then goes on. No internet: the model loads without pictures and the page says so. */
+  let picturesNote=null;{const got=await ensurePictures(job,args,configFile,config,{missing:entry.picturesMissing===true});if(job.state!=='running')return;config=got.config;args=got.args;picturesNote=got.note;}
+  /* One drafter per run (strata_control/drafting.py): switching to the MTP on a model set up for DFlash2 fetches the layer once, here; DFlash2 is fetched below. */
+  let drafts=await draftPlan(args,configFile);
+  if(drafts?.mtp_needed===true&&(args.values?.drafting!==undefined||drafts.split===true&&(config.drafting==null||String(config.drafting).toLowerCase()==='auto'))){/* the Models screen's own Load carries the choice; a plain Auto load fetches the layer too when Control says the all-cards split engine will take the start (it runs the MTP and nothing else): the same as the Terminal */await installMtpLayer(job,args,config);if(job.state!=='running')return;await refresh(true);config=checkedSettingsConfig(readFileSync(recordFile(args.model).path,'utf8'));drafts=await draftPlan(args,configFile);}
+  const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote,dsNote}=buildConfig(args,config,drafts?.choice==='dflash2'&&drafts.needed===true&&args.values?.drafting===undefined?'mtp':drafts?.choice??null);/* (a drafter that is not here and will not be fetched by this load: the MTP runs, and the request slots stay) */
   let parallelNote=chosenNote;
-  await prepareDrafter(job,args,cfg,configFile);if(job.state!=='running')return;
+  await prepareDrafter(job,args,cfg,configFile,drafts);if(job.state!=='running')return;
   const fingerprint=createHash('sha256').update(JSON.stringify({...cfg,api_key:undefined,port:undefined})).digest('hex');
   const placement=Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu];const matching=[...instances.values()].find(i=>i.model===args.model&&JSON.stringify(i.gpus)===JSON.stringify(placement));
   if(matching?.status==='ready'&&matching.fingerprint===fingerprint&&(args.multiple||instances.size===1))return {summary:`${matching.label} is already ready.`,instanceId:matching.id};
@@ -344,7 +439,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   if(!args.multiple){if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish or cancel native requests before switching models.');for(const id of [...instances.keys()])await unload(id);}else if(matching)await unload(matching.id);
   if(job.state!=='running')return;
   writeFileSync(configPath,JSON.stringify(cfg,null,2),{mode:0o600});
-  const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,resourceProfile:cfg.ui_resource_profile??null,model:args.model,label:friendlyModelName(snapshot.catalog,args.model)??entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,mcpServers:cfg.mcp_servers??cfg.mcpServers??{},key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null};
+  const instance={id,apiModelId,fingerprint,context:entry.context??0,aliases:cfg.aliases??[],vision:!!cfg.vision,resourceProfile:cfg.ui_resource_profile??null,model:args.model,label:friendlyModelName(snapshot.catalog,args.model)??entry.model_name??args.model,port:cfg.port,gpus:Array.isArray(cfg.gpu)?cfg.gpu:cfg.gpu===undefined?[]:[cfg.gpu],status:'loading',phase:'loading',parallel:cfg.parallel??1,mcpServers:cfg.mcp_servers??cfg.mcpServers??{},key,configPath,loadedAt:new Date().toISOString(),metrics:null,error:null,...(picturesNote?{picturesNote}:{})};
   /* Another model on the same graphics card: the engine takes the card's free memory, so a second one usually finds none. Loading goes on (recommend, never force); if it fails, the reason is said. */
   const sharedWith=instance.gpus.length?[...instances.values()].find(i=>i.id!==id&&i.status!=='error'&&i.model!==args.model&&i.gpus.some(g=>instance.gpus.includes(g))):null;
   const sharedSentence=sharedWith?`GPU ${instance.gpus.find(g=>sharedWith.gpus.includes(g))+1} is already used by ${sharedWith.label}, so this model did not fit there. Load it on another GPU, or unload ${sharedWith.label} first.`:null;
@@ -391,7 +486,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   }
   const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);
-   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';await noteDrafting(job,instance,key);if(resources||args.vision!==undefined||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null))writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}`,instanceId:id};}}catch{}
+   try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';await noteDrafting(job,instance,key);if(resources||args.vision!==undefined||args.contextChosen===true||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null))writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(args.contextChosen===true?{ui_context_chosen:true}:{}),...(cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}${picturesNote?' '+picturesNote:''}`,instanceId:id};}}catch{}
    await new Promise(resolve=>setTimeout(resolve,1200));
   }
   if(job.state!=='running'){await unload(id);return;}
@@ -418,10 +513,10 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     shell's signed Tauri updater. Models are not part of any of it. */
  async function componentProgram(job,args={}){
   if(!COMPONENT_KINDS.includes(job.kind)||typeof control.update!=='function')throw new Error(NO_INSTALL);
-  if(instances.size)throw new Error('Unload native models before changing engine files.');
+  if(instances.size&&!(job.kind==='update-engine'&&args.stopModel===true))throw new Error('Unload native models before changing engine files.');
   job.abort=new AbortController();
   const subject=job.kind==='update-strata'?'Strata':'engine';
-  try{return await componentSteps(job,subject,args);}catch(error){updateLog(`${job.kind} failed: ${String(error?.message??error).slice(0,400)}`);throw error?.details!==undefined&&error.message?error:plainError(error,subject);}
+  try{return await componentSteps(job,subject,args);}catch(error){updateLog(`${job.kind} failed: ${String(error?.message??error).slice(0,400)}`);throw error?.details!==undefined&&error.message?error:plainError(error,subject,args?.firstRun===true?'Continue':undefined);}
  }
  async function componentSteps(job,subject,args={}){
   const onEvent=event=>{
@@ -433,7 +528,13 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   updateLog(`${job.kind} started (app ${thisAppVersion()??'unknown'})`);
   if(job.kind==='install-engine-file'){if(typeof args.path!=='string'||!args.path)throw new Error('Choose the engine file first.');let done;try{done=await control.installEngineFile(args.path,{onEvent,signal:job.abort.signal});}finally{try{const own=resolve(directory,'incoming-engine')+sep;if(resolve(args.path).startsWith(own))rmSync(args.path,{force:true});}catch{/* the copy in the host's own folder; a leftover is harmless */}}return {summary:updateSummary(done)==='Everything is already up to date.'?(done.results?.[0]?.note??'Nothing was changed.'):updateSummary(done),result:done};}
   if(job.kind==='rollback'){const done=await control.rollbackEngine();return {summary:'The previous engine is back. Your models and settings are unchanged.',result:done};}
-  if(job.kind==='update-engine'){const done=await control.update({engine:true,control:false,onEvent,signal:job.abort.signal});return {summary:updateSummary(done),result:done};}
+  if(job.kind==='update-engine'){
+   /* A model is loaded and the person said yes to stopping it (the dialog names it): Control downloads while it serves, stops it cleanly, updates, and leaves it stopped.
+      Whatever the result, the models it stopped are kept so the app offers to start them again, on the new engine or, after a failed update, on the old one. */
+   const gate=args.stopModel===true&&instances.size?updateGate(job):null;
+   try{const done=await control.update({engine:true,control:false,stopModel:!!gate,onEvent:gate?e=>{onEvent(e);gate.event(e);}:onEvent,signal:job.abort.signal});gate?.finish(true);return {summary:updateSummary(done),result:done};}
+   catch(error){gate?.finish(false);if(gate?.refusal)throw Object.assign(new Error(gate.refusal),{details:`Running outside this app: ${gate.outside.join(', ')}`});throw error;}
+  }
   const done=await control.update({engine:false,control:true,onEvent,signal:job.abort.signal});
   updateLog(`Control step finished: ${updateSummary(done)}`);
   const notes=[updateSummary(done)];
@@ -446,7 +547,47 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   }
   return {summary:notes.filter(Boolean).join(' '),result:done};
  }
- function updateSummary(done){const r=(done.results??[]).filter(x=>x.status==='updated').map(x=>x.component==='engine'?'The engine is updated and ready.':'Strata is updated. It takes effect the next time you open the app.');return r.length?r.join(' '):'Everything is already up to date.';}
+ /* The engine update with a model loaded (strata update --stop-model --output jsonl). The `models` events say what Control is doing to the models; this turns them into the app's own
+    state: the model leaves the list when it is stopped, and a model the app did not start is never stopped (the update is ended before anything is downloaded). */
+ function updateGate(job){
+  const mine=new Map([...instances.values()].filter(i=>i.profile).map(i=>[i.profile,i])),stopped=[],gate={refusal:null,event(e){
+   if(e.event!=='models')return;
+   const models=Array.isArray(e.models)?e.models:[],label=m=>mine.get(m.profile)?.label??m.name??'The model';
+   if(e.phase==='consent'){
+    const other=models.filter(m=>!mine.has(m.profile));
+    if(other.length){gate.refusal='A model that was not started from this app is running, so nothing was changed. Stop it, then update the engine again.';gate.outside=other.map(label);job.abort.abort();return;}
+    job.step='getting-ready';job.models=models.map(label);job.summary=`Getting the new engine ready. ${job.models.join(' and ')} keeps running until it is ready.`;
+   }
+   else if(e.phase==='stopping'){for(const m of models){const i=mine.get(m.profile);if(i)i.status='unloading';}job.step='stopping';job.models=models.map(label);job.summary=`Stopping ${job.models.join(' and ')}. Answers in progress finish first.`;}
+   else if(e.phase==='stopped'){for(const m of models){const i=mine.get(m.profile);if(i&&instances.get(i.id)===i){instances.delete(i.id);stopped.push(i);if(defaultId===i.id)defaultId=instances.keys().next().value??null;}}job.step='stopped';job.models=models.map(label);job.summary=`${job.models.join(' and ')} stopped. Updating the engine…`;}
+   emit();
+  },finish(updated){stoppedForUpdate=stopped.length?{updated,at:new Date().toISOString(),instances:stopped}:null;emit();}};
+  return gate;
+ }
+ /* "Start again with the same settings": the stopped model's saved profile (the run file it was started with) is started again; the engine in use is whichever Control has primary now. */
+ async function restartStopped(job){
+  const offer=stoppedForUpdate;if(!offer?.instances?.length)throw new Error('There is no stopped model to start again.');
+  stoppedForUpdate=null;emit();
+  const labels=[];
+  for(const old of offer.instances){
+   const instance={...old,status:'loading',phase:'loading',error:null,metrics:null,loadedAt:new Date().toISOString()};
+   instances.set(instance.id,instance);if(!defaultId||!instances.has(defaultId))defaultId=instance.id;job.summary=`Starting ${instance.label}. Loading can take a few minutes.`;emit();
+   let wait=960;try{const {config,entry}=record(instance.model);wait=startWaitFor(config,entry,instance.model);}catch{/* the usual wait */}
+   try{
+    await control.start(instance.profile,{waitSeconds:wait});
+    const deadline=Date.now()+300000;let ready=false;
+    while(!ready&&Date.now()<deadline&&job.state==='running'){try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${instance.key}`},signal:AbortSignal.timeout(2000)});ready=response.ok;}catch{/* not yet */}if(!ready)await new Promise(resolve=>setTimeout(resolve,1200));}
+    if(!ready)throw new Error('Loading took more than five minutes. Check the engine log and free memory.');
+    instance.status='ready';instance.phase='idle';ensurePoll();emit();labels.push(instance.label);
+   }catch(error){
+    await control.stop(instance.profile).catch(()=>{});
+    instance.status='error';instance.error=humanStartError(error);emit();throw new Error(`${instance.label} did not start again. ${instance.error}`);
+   }
+  }
+  return {summary:`${labels.join(' and ')} ${labels.length>1?'are':'is'} running again with the same settings.`};
+ }
+ function dismissRestart(){stoppedForUpdate=null;emit();return state();}
+ function updateSummary(done){const r=(done.results??[]).filter(x=>x.status==='updated').map(x=>x.component==='engine'||x.component==='dsv41'?'The engine is updated and ready.':'Strata is updated. It takes effect the next time you open the app.');return r.length?r.join(' '):'Everything is already up to date.';}
  function execute(cmd,args,cwd){return new Promise((resolve,reject)=>{let output='';const process=spawnProcess(cmd,args,{cwd,stdio:['ignore','pipe','pipe']});process.stdout.on('data',c=>{output+=c;if(output.length>100000)process.kill();});process.stderr.on('data',c=>append('update',c.toString()));process.on('error',reject);process.on('exit',code=>code===0?resolve(output):reject(new Error('Git could not update this installation. Open diagnostics.')));});}
  /* Every write of a model's run config keeps the person's options: those they wrote into "args" or "user_args" since the file was last written are read from the file itself, go over what the caller built, and "args_written" is refreshed. */
  function writeModelConfig(path,next){const mine=mergeUserArgs(captureUserArgs(readJson(path)),next[USER_KEY]??[]);next=stampedUserArgs(next,mine);copyFileSync(path,path+'.bak');chmodSync(path+'.bak',0o600);const temp=path+'.ui-tmp';writeFileSync(temp,JSON.stringify(next,null,2)+'\n',{mode:0o600});renameSync(temp,path);}
@@ -468,7 +609,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const next={...current.config,...values,ui_resource_profile:args.profile};
   writeModelConfig(current.path,next);
   job.summary='Applying your resource preference and loading the model…';emit();
-  const loaded=await loadEngine(job,{model:args.model,multiple:false,vision:current.config.vision?args.vision:'no'});
+  const loaded=await loadEngine(job,{model:args.model,multiple:false,vision:current.config.vision?args.vision:'no',...(args.visionUnavailable===true?{visionUnavailable:true}:{})});
   if(job.state!=='running'||!loaded?.instanceId)return;
   job.summary='Checking your model’s speed…';emit();
   const measured=await benchmark(job,{instanceId:loaded.instanceId});
@@ -491,7 +632,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const room=args.resourceProfile==='work';
   return autotuner.start(job,job.kind==='recheck'?'recheck':'tune',{configPath:path,presetId:args.presetId,mode:args.mode,use:args.use,goal:room?'room':'speed',leaveRam:room?20:0,allowSmallDifferences:args.allowSmallDifferences===true,name:args.name},{onProgress:p=>{job.summary=p.text??job.summary;emit();}});
  }
- function operation(kind,args={}){if(!['install','load','benchmark','tune','autotune','recheck','calibrate','update-engine','update-strata','rollback','install-engine-file','remove'].includes(kind))throw new Error('Choose a supported native operation.');if(!snapshot.available&&!(packaged&&COMPONENT_KINDS.includes(kind)))throw new Error(snapshot.error??'Connect the native Strata installation first.');if(kind==='install'||kind==='load'){const refusal=engineRefusal(snapshot.catalog,args.model,snapshot.engineInfo);if(refusal)throw new Error(refusal);}return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='autotune'||kind==='recheck'?autotune(job,args):kind==='remove'?removeModel(job,args):program(job,args),{guided:args.guided===true,model:args.model,...(args.family?{family:args.family}:{})});}
+ function operation(kind,args={}){if(!['install','load','pictures','benchmark','tune','autotune','recheck','calibrate','update-engine','update-strata','rollback','install-engine-file','remove','restart-models'].includes(kind))throw new Error('Choose a supported native operation.');if(kind==='restart-models'&&!packaged)throw new Error('Choose a supported native operation.');if(!snapshot.available&&!(packaged&&(COMPONENT_KINDS.includes(kind)||kind==='restart-models')))throw new Error(snapshot.error??'Connect the native Strata installation first.');if(kind==='install'||kind==='load'){const refusal=engineRefusal(snapshot.catalog,args.model,snapshot.engineInfo);if(refusal)throw new Error(refusal);}return begin(kind,job=>kind==='install'?install(job,args):kind==='load'?loadEngine(job,args):kind==='pictures'?picturesOnly(job,args):kind==='benchmark'?benchmark(job,args):kind==='tune'?tune(job,args):kind==='autotune'||kind==='recheck'?autotune(job,args):kind==='remove'?removeModel(job,args):kind==='restart-models'?restartStopped(job):program(job,args),{guided:args.guided===true,model:args.model,...(args.family?{family:args.family}:{})});}
  /* ---- The models folder card (0.2.2): what a picked folder means, and the three choices. The copying is Control's (strata models move). ---- */
  const currentModelsFolder=()=>preferences.downloadDirectory??(modelsDirectory?modelsDirectory():snapshot.installed?.data_folder)??null;
  const moveFile=()=>join(directory,'models-move.cancel');
@@ -591,5 +732,15 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  // Remove nonserializable process references from public jobs.
  const publicState=()=>{const value=state();value.jobs=value.jobs.map(({process,engineAbort,rawResult,...job})=>job);return value;};
  async function localPreview(path){if(!packaged)throw new Error('Checking local model files is part of the Strata app.');if(typeof path!=='string'||!path.trim()||[...path].some(c=>c.charCodeAt(0)<32))throw new Error('Choose a folder.');return control.importPlan(path.trim());}
- return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
+ return {state:publicState,tuneStatus,tuneEffective,tuneOff,tunePresets:{list:()=>autotuner.list(),action:(kind,id,extra)=>autotuner.action(kind,id,extra),undoFor:async args=>autotuner.undoFor(tuneConfig(args).path)},refresh,localPreview,configure,setDownloadDirectory,planModelsFolder,startModelsFolder,interruptedMove,finishInterruptedMove,leaveInterruptedMove,plan,settings,save,settingsFile,openSettingsFile,operation,dismissRestart,cancel,unload,resolveInstance,poll,logs:()=>logs.slice(),benchmarkReport:()=>readJson(join(directory,'native-benchmark.json'),null),setDefault(id){defaultId=resolveInstance(id).id;emit();return publicState();},hasLive:()=>[...instances.values()].some(i=>i.status==='ready'),readyInstances:()=>[...instances.values()].filter(i=>i.status==='ready'),defaultInstanceId:()=>defaultId,close};
+}
+/* A DeepSeek config on AMD written by setup 0.2.8 or earlier names ONE card and marks it "asked", though setup picked it itself (strata_control/gpu_pick.py): it must not stop the app's recommended cards from applying. A card setup named for itself is the first of the usable cards, largest memory first; another card number was the person's. Roles and a "gpus_by" marker are always honoured. */
+export function setupPickedOneCard(config,hardware){
+ if(!config||config.arch!=='deepseek41'||config.backend!=='hip'||config.gpus_by||config.gpu_roles||!config.gpus_asked)return false;
+ const one=Array.isArray(config.gpu)?(config.gpu.length===1?config.gpu[0]:null):config.gpu;if(!Number.isInteger(Number(one))||one===null||one==='')return false;
+ const cards=(hardware?.gpus??[]).filter(g=>(g.vendor==='amd')&&g.usable!==false),shares=g=>!!(g.uma||g.integrated||g.unified_gb),vram=g=>Number(g.vram_gb)||0;
+ const real=cards.some(g=>!shares(g)&&vram(g)>=4),keep=cards.filter(g=>!(shares(g)&&real)&&vram(g)>=8);
+ if(process.platform==='win32'||keep.length<2)return false;
+ const first=[...keep].sort((a,b)=>Math.round(vram(b))-Math.round(vram(a))||a.index-b.index)[0];
+ return Number(one)===first.index;
 }

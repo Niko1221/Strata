@@ -647,10 +647,40 @@ def pin_billing_stamp(system: str) -> str:
     return "".join(s)
 
 
+def _anthropic_tool(t: dict) -> dict:
+    """An Anthropic tool -> the template's form of it (also what the output parser reads its schema from)."""
+    return {"name": t["name"], "description": t.get("description", ""), "parameters": t.get("input_schema", {})}
+
+
+def anthropic_tools(req: dict) -> tuple[list[dict] | None, bool]:
+    """#4663, Anthropic's tool search: (every tool the request declared, the `defer_loading` ones included, whether any
+    tool is deferred).  A deferred tool is callable although the prompt does not list it.  A client that defers tools
+    (Claude Code) holds back more than it declares - it names the rest in the conversation and runs a call for any of
+    them - so with one deferred tool a call for an undeclared name is a call too (OutputParser's `deferred`)."""
+    tools = _tool_list(req.get("tools"), None)
+    return [_anthropic_tool(t) for t in tools] or None, any(t.get("defer_loading") for t in tools)
+
+
+def _tool_references(content, deferred: dict):
+    """A tool_result's tool_reference blocks (a tool search's results) -> the referenced deferred tools' definitions,
+    in the form the prompt lists tools: the model sees a tool where it was loaded, and the prompt's start (its tool
+    list) stays the same, so the prompt cache does too.  Any other reference is left out as before (_check_parts): a
+    listed tool is in the prompt already, and an old one (its MCP server gone) must not fail the rest of the session."""
+    if not isinstance(content, list):
+        return content
+    return [{"type": "text", "text": "<tools>\n" + json.dumps(deferred[p.get("tool_name")], ensure_ascii=False) + "\n</tools>"}
+            if isinstance(p, dict) and p.get("type") == "tool_reference" and isinstance(p.get("tool_name"), str)
+            and p["tool_name"] in deferred else p
+            for p in content]
+
+
 def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[dict], list[dict] | None, dict]:
     """Anthropic Messages -> (template messages, template tools, template kwargs).  `think_unasked`: a request
     without "thinking", an effort or a budget gets the template's default (it thinks), as through 0.1.31; False
     renders it without thinking (#278, the config's "anthropic_thinking": "on_request")."""
+    declared = _tool_list(req.get("tools"), None)
+    # #4663: a `defer_loading` tool stays out of the prompt's tool list until a tool_reference loads it
+    deferred = {t["name"]: _anthropic_tool(t) for t in declared if t.get("defer_loading")}
     messages = []
     system = req.get("system")
     if system:
@@ -681,7 +711,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
                 # A tool's image (Claude Code's Read of a picture) reaches the encoder like a user's, as the OpenAI
                 # path's tool messages already do; a text-only result is one string, as before.
                 messages.append({"role": "tool", "content": _parts_of(_check_parts(
-                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS))})
+                    _tool_references(block.get("content"), deferred),
+                    f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS))})
         if text or calls or reasoning or parts:
             # an image sent beside tool results stays in this turn instead of being dropped
             out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}
@@ -690,8 +721,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             if calls:
                 out["tool_calls"] = calls
             messages.append(out)
-    tools = [{"name": t["name"], "description": t.get("description", ""), "parameters": t.get("input_schema", {})}
-             for t in _tool_list(req.get("tools"), None)] or None
+    tools = [_anthropic_tool(t) for t in declared if t["name"] not in deferred] or None
     kwargs = {}
     # Anthropic: "thinking": {"type": "disabled"} or {"type": "enabled", "budget_tokens": N};
     # "output_config": {"effort": "low" | "medium" | "high"}
@@ -752,7 +782,37 @@ _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\
 _QUOTED_OPEN = re.compile(r"<function=[^<>\s]+>\s*(?:<parameter=|</function>)")
 
 
-def param_end(text: str, final: bool = False, name: str | None = None) -> int:
+#: #4701: how much text after a closing sequence is looked at before the value is taken as ended there (a call followed by a long sentence)
+CLOSE_LOOKAHEAD_CHARS = 1500
+
+
+def _close_verdict(after: str, final: bool) -> str:
+    """`after` starts with `</function>` and/or `</tool_call>` right after a `</parameter>`.  A file that documents the call format has those
+    three tags on lines of its own inside a value (#4701), so the sequence only ends the value when what follows is the end of the turn, another
+    call, or prose with no closing tag after it.  "end": the value ends here; "continue": it goes on to the next `</parameter>`; "hold": not
+    decidable yet (streaming): wait for more text.  Bounded: the end of the turn (`final`), a new `<tool_call>`, or CLOSE_LOOKAHEAD_CHARS of
+    text decide, so a call is never held longer than that."""
+    m = re.match(r"(?:</function>)?\s*</tool_call>", after)
+    if not m:
+        return "end"                                       # only `</function>` so far, or the call is cut: as before
+    rest = after[m.end():].lstrip()
+    if not rest:
+        return "end" if final else "hold"                  # the usual call: the turn ends right after it
+    if rest.startswith(CALL_START):
+        return "end"
+    if not final and CALL_START.startswith(rest):
+        return "hold"                                      # `<tool_c` of a second call is arriving
+    if CALL_START in rest:
+        return "end"                                       # prose, then another call: this one is complete
+    if PARAM_END in rest or CALL_END in rest or FUNC_END in rest:
+        return "continue"                                  # prose, then closing tags again: the text was part of the value
+    if final or len(rest) > CLOSE_LOOKAHEAD_CHARS:
+        return "end"
+    return "hold"
+
+
+
+def param_end(text: str, final: bool = False, name: str | None = None, hold: bool = True) -> int:
     """Where a parameter value in `text` ends: the first PARAM_END followed (after whitespace) by the next
     PARAM_START or FUNC_END, or by the wrapper's CALL_END when the call's `</function>` was left out (#4427) - the
     same text inside a value (a file that documents the call format, #210) is
@@ -770,14 +830,18 @@ def param_end(text: str, final: bool = False, name: str | None = None) -> int:
                 if name is None or after[len(PARAM_START):gt].strip() != name:
                     return at
             elif after.startswith((FUNC_END, CALL_END)):          # #4427: the model left out its `</function>`
-                return at
+                verdict = _close_verdict(after, final) if hold else "end"      # hold=False: a call inside the reasoning keeps its old rule
+                if verdict == "end":
+                    return at
+                if verdict == "hold":
+                    return -2
             elif not after or PARAM_START.startswith(after) or FUNC_END.startswith(after) or CALL_END.startswith(after):
                 return at if final else -2
         at = text.find(PARAM_END, at + 1)
     return -1
 
 
-def call_end(text: str) -> int:
+def call_end(text: str, final: bool = False, hold: bool = True) -> int:
     """Where a tool call's body ends (#210): the `</tool_call>` after the call's own `</function>`, found by walking
     its parameters with param_end, so a value may contain either tag.  -1: not complete yet.  A body that is not in
     the call format ends at the first `</tool_call>`, as before."""
@@ -797,7 +861,7 @@ def call_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
+            end = param_end(text[gt + 1:], final, text[pos:gt].split("=", 1)[1].strip(), hold)
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -879,7 +943,7 @@ def function_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
+            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip(), hold=False)   # a bare or unwrapped call: the old rule
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -1095,11 +1159,14 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, declared_only: bool = False):
+                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
+        # #4663: the request defers tools (Anthropic's tool search, see anthropic_tools): the client holds back more tools
+        # than it declares, so a call for an undeclared name is a call too - Claude Code runs it, where text ended the turn.
+        self.deferred = deferred
         # #804/#3075: in the answer too, a call counts only for a tool the request declared.  With tools declared a
         # call for another name stays text (the Responses spelling `namespace__tool` of a `namespace.tool` counts as
         # that tool); `declared_only` extends the rule to a request that declared none (Chat Completions, Anthropic:
@@ -1124,6 +1191,13 @@ class OutputParser:
         for name in self.schemas:
             if isinstance(name, str) and "__" in name:
                 aliases.setdefault(name.replace("__", "_"), set()).add(name)
+        # #4751: a programmatic-tool-calling harness (the DeepSeek Harness's PTC mode) shows the model its tools as `tools.write(...)`
+        # inside code, and the model then writes the native call with that spelling (`tools.write`, also `functions.write`).  The
+        # prefix is not part of the declared name; the same unambiguous-alias rule applies, an exactly declared name always wins.
+        for name in self.schemas:
+            if isinstance(name, str) and name:
+                for prefix in ("tools.", "functions.", "default_api."):
+                    aliases.setdefault(prefix + name, set()).add(name)
         self.aliases = {alias: next(iter(names)) for alias, names in aliases.items()
                         if len(names) == 1 and alias not in self.schemas}
         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
@@ -1143,12 +1217,14 @@ class OutputParser:
         self.stray_think = 0         # ... and the strays of that kind dropped from the answer
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.fence, self.line, self.ticks = "", "", 0
+        self._prev_blank = self._indented = False   # #4703: the line before was blank / this is inside an indented (4-space) code block
         # recover (on in the server since 0.2.8, off for a bare OutputParser; the config's "tool_call_recovery": false turns it off): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
         self.recover = recover
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
+        self._final = False          # #4701: the turn has ended: a call held for what might follow it is decided now
         self._reset_scan()
 
     @property
@@ -1159,10 +1235,10 @@ class OutputParser:
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
-        snap = (self.fence, self.line, self.ticks)
+        snap = self._snap()
         self._track(self.buf[:p])
         ok = self._opener_ok()
-        self.fence, self.line, self.ticks = snap
+        self._restore(snap)
         return ok
 
     def _callable(self, name: str) -> bool:
@@ -1170,7 +1246,7 @@ class OutputParser:
         none declared, only where `declared_only` is off."""
         if not self.schemas:
             return not self.declared_only
-        return name in self.schemas or name in self.aliases
+        return name in self.schemas or name in self.aliases or self.deferred
 
     def _loose_open(self, after: str):
         """#3441: `after` (text after a `<tool_call>`, whitespace dropped) opens a call in a drifted form that names a
@@ -1270,15 +1346,29 @@ class OutputParser:
                 self._line_parts.clear()
                 self._line_blocks = None
                 s = line.lstrip()
+                was_fenced = bool(self.fence)
                 if self.fence:
-                    if s.startswith(self.fence * 3):
+                    # #4702: a fence is closed only by a line of at least as many of the same character as opened it (CommonMark), so a
+                    # ``` example inside a ```` file stays inside it
+                    run = len(s) - len(s.lstrip(self.fence[0]))
+                    if run >= len(self.fence):
                         self.fence = ""
                 elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
-                    self.fence = s[0]
+                    self.fence = s[0] * (len(s) - len(s.lstrip(s[0])))
                 elif not s:
                     self.ticks = 0
                 else:
                     self.ticks += line.count("`")
+                # #4703: an indented (4 spaces or a tab) code block starts after a blank line and goes on until a line that is not indented
+                if was_fenced or self.fence:
+                    self._prev_blank = self._indented = False
+                elif not s:
+                    self._prev_blank = True
+                elif line.startswith(("    ", "\t")):
+                    self._indented = self._prev_blank or self._indented
+                    self._prev_blank = False
+                else:
+                    self._prev_blank = self._indented = False
             else:
                 if part:
                     self._line_parts.append(part)
@@ -1287,11 +1377,25 @@ class OutputParser:
     def _opener_ok(self) -> bool:
         """The reasoning text so far puts a `<tool_call>` at the start of a line, outside a code fence and outside
         inline code."""
-        return not self.fence and not self.line.strip() and self.ticks % 2 == 0
+        return not self.fence and not self.line.strip() and self.ticks % 2 == 0 and not self._in_indented_block()
+
+    def _in_indented_block(self) -> bool:
+        """#4703: the current line is part of an indented code block: four spaces or a tab, after a blank line or another such line."""
+        return (self._prev_blank or self._indented) and self.line.startswith(("    ", "\t"))
+
+    def _snap(self) -> tuple:
+        return (self.fence, self.line, self.ticks, self._prev_blank, self._indented)
+
+    def _restore(self, snap: tuple) -> None:
+        self.fence, self.line, self.ticks, self._prev_blank, self._indented = snap
+
+    def _reset_track(self) -> None:
+        self.fence, self.line, self.ticks = "", "", 0
+        self._prev_blank = self._indented = False
 
     def _in_code(self) -> bool:
-        """The text so far leaves the next character inside a code fence or inline code."""
-        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+        """The text so far leaves the next character inside a code fence, inline code or an indented code block."""
+        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1 or self._in_indented_block()
 
     def _quoted_think_end(self, i: int) -> bool | None:
         """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the
@@ -1356,7 +1460,7 @@ class OutputParser:
                 self._call_end_checked = len(self.buf)
                 return -1
             self._call_end_checked = -1
-        return call_end(self.buf)
+        return call_end(self.buf, self._final)
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -1416,7 +1520,7 @@ class OutputParser:
                     self.sval_started = True
                     self.svstart = self.sp
                 # the walk starts at the value (a quoted call's opener counts); only a close in the new text can end it
-                end = param_end(self.buf[self.svstart:], name=self.spname) if PARAM_END in rest else -1
+                end = param_end(self.buf[self.svstart:], self._final, name=self.spname) if PARAM_END in rest else -1
                 end = end - (self.sp - self.svstart) if end >= 0 else end
                 if end >= 0:
                     value = rest[:end]
@@ -1435,7 +1539,7 @@ class OutputParser:
                     self.sp += safe
                 return out
             elif self.ss == "raw":
-                end = param_end(rest, name=self.spname)
+                end = param_end(rest, self._final, name=self.spname)
                 if end < 0:
                     return out
                 value = rest[:end]
@@ -1491,7 +1595,7 @@ class OutputParser:
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body), body.find(THINK_END)
+                end, think = call_end(body, hold=False), body.find(THINK_END)
                 drop = len(CALL_END)
                 f = function_end(body)               # #4427: as in the answer, a following call opener confirms an omitted closer
                 if f >= 0 and (end < 0 or f < end) and re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", body[f:].lstrip()):
@@ -1501,7 +1605,7 @@ class OutputParser:
                     try:
                         name = body[:end].strip()[len("<function="):].split(">", 1)[0].strip()
                         name = self.aliases.get(name, name)
-                        if name in self.schemas:
+                        if self._callable(name):
                             call = parse_tool_call(body[:end], self.schemas.get(name), self.notes)
                             call.name = name
                     except ValueError:
@@ -1576,7 +1680,7 @@ class OutputParser:
                     out.append(Event("reasoning", self._track(self.buf[:i])))
                 self.buf = self.buf[i + len(THINK_END):]
                 self.state, self.lead, self.after_think = "content", True, True
-                self.fence, self.line, self.ticks = "", "", 0     # the answer's own text starts here
+                self._reset_track()                               # the answer's own text starts here
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
@@ -1594,7 +1698,7 @@ class OutputParser:
                     if stray:
                         out.append(Event("content", self._track(self.buf[:stray])))
                     self.buf = self.buf[stray + len(THINK_END):]
-                    self.fence, self.line, self.ticks = "", "", 0
+                    self._reset_track()
                     self.lead = True
                     self.stray_think += 1
                     continue
@@ -1630,10 +1734,10 @@ class OutputParser:
                     return out
                 # #1058: an opener inside a code fence or inline code is text (a quoted example), never a call.  The
                 # text before it decides, so streamed and whole outputs agree.  Mid-sentence openers still count.
-                snap = (self.fence, self.line, self.ticks)
+                snap = self._snap()
                 self._track(self.buf[:i])
                 in_code = self._in_code()
-                self.fence, self.line, self.ticks = snap
+                self._restore(snap)
                 if in_code:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
@@ -1777,6 +1881,9 @@ class OutputParser:
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
+        if self.buf and self.state in ("call", "rcall"):
+            self._final = True                  # #4701: a call held after its closing tags (could a file's text go on?) is whole now
+            out += self.feed("")
         if self.state == "rcall" and reason in (None, "stop"):
             # #4427: a call in the reasoning whose `</function>` is the end of the output (the `</tool_call>` left out)
             # is as whole as one in the answer: it waits for the turn's end like the others
@@ -1784,7 +1891,7 @@ class OutputParser:
             f = function_end(body)
             name = body.lstrip()[len(FUNC_START):].split(">", 1)[0].strip() if f >= 0 else ""
             name = self.aliases.get(name, name)
-            if f >= 0 and not body[f:].strip() and name in self.schemas:
+            if f >= 0 and not body[f:].strip() and self._callable(name):
                 try:
                     call = parse_tool_call(body[:f], self.schemas.get(name), self.notes)
                     call.name = name

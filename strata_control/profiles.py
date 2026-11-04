@@ -137,6 +137,9 @@ def read_run_config(path: Path) -> dict:
         cfg = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ProfileError(f"cannot read run config ({type(exc).__name__})", 5) from None
+    if isinstance(cfg, dict):                                # paths into a version folder of Strata's own that an update removed: the current one
+        from strata_control import cfg_paths
+        cfg = cfg_paths.resolve_config(cfg)[0]
     if not isinstance(cfg, dict) or not isinstance(cfg.get("args"), list) or not all(
         isinstance(arg, str) for arg in cfg["args"]
     ):

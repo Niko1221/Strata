@@ -13,6 +13,7 @@
 // K^T packed as 4-byte pairs with INT8 converted on the load, hi and lo halves of Q accumulated into one accumulator per
 // scale group, and one accumulator update per chunk after the whole P.V product has run in registers.
 #include "strata/kernels/qsa_prompt_attn_xmx.hpp"
+#include "strata/kprof.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -336,7 +337,7 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
         const int32_t* stq = steps + q0 * kStepCount;
         float* aq = attn + q0 * s.n_head * HD;
         const int nkv = (int) s.n_head_kv, ps = (int) s.page_size, capi = (int) cap;
-        st->submit([&](sycl::handler& cgh) {
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& cgh) {
             sycl::local_accessor<uint8_t, 1> slm(sycl::range<1>(bytes), cgh);
             cgh.parallel_for(sycl::nd_range<3>(sycl::range<3>(1, (size_t) nkv, (size_t) nb * THREADS), sycl::range<3>(1, 1, THREADS)),
                              [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {

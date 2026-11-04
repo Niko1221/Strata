@@ -103,7 +103,7 @@ def cloudflared_version(path: str) -> str | None:
     if key in _cf_seen:
         return _cf_seen[key]
     try:
-        r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=10,
+        r = subprocess.run([path, "--version"], capture_output=True, text=True, errors="replace", timeout=10,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if WINDOWS else 0)
         text = (r.stdout or "") + (r.stderr or "")
     except (OSError, subprocess.SubprocessError):
@@ -145,13 +145,13 @@ def cloudflared_procs(exclude: tuple[int, ...] = ()) -> list[tuple[int, str]]:
         if WINDOWS:
             text = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                                    "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"],
-                                  capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+                                  capture_output=True, text=True, errors="replace", timeout=15, creationflags=subprocess.CREATE_NO_WINDOW).stdout
             for line in text.splitlines():
                 m = re.match(r"(\d+)\t(.*)$", line)
                 if m:
                     out.append((int(m.group(1)), m.group(2)))
         else:
-            text = subprocess.run(["ps", "-axo", "pid=,comm=,args="], capture_output=True, text=True, timeout=5).stdout
+            text = subprocess.run(["ps", "-axo", "pid=,comm=,args="], capture_output=True, text=True, errors="replace", timeout=5).stdout
             for line in text.splitlines():
                 m = re.match(r"\s*(\d+)\s+(\S+)\s*(.*)$", line)
                 if m and re.search(r"(^|/)cloudflared$", m.group(2)):
@@ -185,7 +185,7 @@ def find_tailscale() -> str | None:
 
 def _run(argv: list[str], timeout: float = 8.0) -> str:
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout)
         return r.stdout or ""
     except (OSError, subprocess.SubprocessError):
         return ""

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 int main(int argc, char** argv) {
@@ -39,6 +40,7 @@ int main(int argc, char** argv) {
     cudaEvent_t a, b;
     cudaEventCreate(&a);
     cudaEventCreate(&b);
+    std::vector<unsigned char> ref_q, ref_d;
     for (int v : {0, 1, 2, 3}) {
         df2_attention_variant(v);
         df2_attention(q, kr, vr, kb, vb, pos, ring, 2048, part, out, xdb, nullptr);
@@ -51,10 +53,16 @@ int main(int argc, char** argv) {
         cudaEventElapsedTime(&ms, a, b);
         std::vector<float> o(8 * 128);
         cudaMemcpy(o.data(), xdb, o.size() * 4, cudaMemcpyDeviceToHost);
+        std::vector<unsigned char> hq(8 * 4096), hd(8 * 128 * 4);
+        cudaMemcpy(hq.data(), out, hq.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(hd.data(), xdb, hd.size(), cudaMemcpyDeviceToHost);
+        if (v == 0) { ref_q = hq; ref_d = hd; }
+        const bool same = (v == 1 || v == 2 || v == 3) ? true : (hq == ref_q && hd == ref_d);
         double sum = 0;
         for (float x : o) sum += x;
         const double kv_bytes = 2.0 * (ctx + 8) * 1024 * 4;
-        std::printf("variant %d: %.1f us per call, K/V %.1f GB/s   (checksum %.6f)\n", v, 1000.0 * ms / iters, kv_bytes * iters / (ms / 1000.0) / 1e9, sum);
+        std::printf("variant %d: %.1f us per call, K/V %.1f GB/s   (checksum %.6f) %s\n", v, 1000.0 * ms / iters, kv_bytes * iters / (ms / 1000.0) / 1e9, sum,
+                    v == 0 ? "reference" : (v >= 1 && v <= 3) ? "(part skipped)" : same ? "bitwise = variant 0" : "DIFFERS");
     }
     return 0;
 }

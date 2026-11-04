@@ -158,6 +158,14 @@ inline IntelGpuGen intel_gpu_gen(const sycl::device& d) {
     }
     return IntelGpuGen::Unknown;
 }
+// The Battlemage decode controls of PR #4185 (glorysdj): unset = `bm_default` for a Battlemage device and off for every other
+// device (Arc A-series included); a set value turns the control on ("1") or off ("0") whatever the device, as before. The
+// controls with bm_default=false measured neutral or slower on 2x Arc Pro B65 (IQ3_S): they stay opt-in.
+inline bool bm_default_on(const char* name, const sycl::device& d, bool bm_default = true) {
+    const char* v = std::getenv(name);
+    if (v != nullptr && v[0] != '\0') return v[0] != '0';
+    return bm_default && intel_gpu_gen(d) == IntelGpuGen::Battlemage;
+}
 }  // namespace strata
 
 #include <cstdint>

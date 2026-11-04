@@ -211,6 +211,71 @@ void q8_quant(const float* x, size_t ldx, int rows, int k, int8_t* q, float* d, 
     strata_ds4_launch(q8_quant_kernel, grid, kThreads, 0, s, x, ldx, k, q, d);
 }
 
+// ---- the low-bit experts' activations as the CPU lane rounds them (ggml's Q8_K, quantize_row_q8_K_ref, ggml-cpu's
+// on x86): per 256 values max = the signed value of the largest magnitude (the first one), iscale = -127 / max, q =
+// min(127, nearest_int(iscale x)) - the product rounded to F32 before the magic-number rounding, as the source does
+// (src/kernels/cuda/quantize_act.cu's note) - and d = 1 / iscale, written to each of the 256's eight 32-blocks of d:
+// the kernels' sums then take the CPU lane's int8 values and scale, so an expert gives the same sums on either lane
+// (up to their order, as MXFP4's do) wherever the placement, the expert cache or the PCIe lane puts it: Maya-S's
+// tokens no longer depend on the placement (Strix Halo, --vram-experts 1.0 vs 0.85: 96 of 96 tokens the same, 50 with
+// the per-32 rounding), the KL against the FP8 reference the same (0.162 against 0.171, two sequences), the kernels
+// as fast (6 IQ2_XXS / IQ3_XXS experts 275 against 280 us).  DS4_IQ_Q8K=0: the per-32 rounding (q8_1's), as before
+__device__ __forceinline__ int q8k_nearest(float fval) {   // ggml's nearest_int
+    const float val = __fadd_rn(fval, 12582912.0f);
+    int i;
+    memcpy(&i, &val, 4);
+    return (i & 0x007fffff) - 0x00400000;
+}
+__global__ void __launch_bounds__(256) q8k_quant_kernel(const float* __restrict__ x, size_t ldx, int k,
+                                                        int8_t* __restrict__ q, float* __restrict__ d) {
+    __shared__ float s_am[8];
+    __shared__ int s_at[8];
+    const int r = blockIdx.y, j = (int) threadIdx.x, lane = j & 31, w = j >> 5;
+    const size_t at = (size_t) blockIdx.x * 256 + (size_t) j;
+    const float v = x[(size_t) r * ldx + at];
+    float am = fabsf(v);
+    int ix = j;   // (the first index of the largest magnitude: ties keep the lower one)
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        const float oa = __shfl_xor_sync(0xffffffffu, am, o);
+        const int oi = __shfl_xor_sync(0xffffffffu, ix, o);
+        if (oa > am || (oa == am && oi < ix)) am = oa, ix = oi;
+    }
+    if (lane == 0) s_am[w] = am, s_at[w] = ix;
+    __syncthreads();
+    if (j == 0) {
+        for (int i = 1; i < 8; ++i)
+            if (s_am[i] > s_am[0] || (s_am[i] == s_am[0] && s_at[i] < s_at[0])) s_am[0] = s_am[i], s_at[0] = s_at[i];
+    }
+    __syncthreads();
+    const float amax = s_am[0];
+    int8_t qv = 0;
+    float dv = 0.0f;
+    if (amax > 0.0f) {
+        const float mx = x[(size_t) r * ldx + (size_t) blockIdx.x * 256 + (size_t) s_at[0]];
+        const float iscale = __fdiv_rn(-127.0f, mx);
+        qv = (int8_t) min(127, q8k_nearest(__fmul_rn(iscale, v)));
+        dv = __fdiv_rn(1.0f, iscale);
+    }
+    q[(size_t) r * k + at] = qv;
+    if (lane == 0) d[(size_t) r * (k / 32) + at / 32] = dv;
+}
+void q8k_quant(const float* x, size_t ldx, int rows, int k, int8_t* q, float* d, cudaStream_t s) {
+    strata_ds4_launch(q8k_quant_kernel, dim3((unsigned) (k / 256), (unsigned) rows), 256, 0, s, x, ldx, k, q, d);
+}
+// the low-bit experts' activations: Q8_K's rounding (the CPU lane's; DS4_IQ_Q8K=1 turns it on; off: q8_1's, per 32)
+bool iq_q8k() {
+    static const bool on = [] {
+        const char* v = std::getenv("DS4_IQ_Q8K");
+        return v != nullptr && std::atoi(v) != 0;   // (Strata: opt-in until its KL gate has run; Maya has it on)
+    }();
+    return on;
+}
+void iq_act_quant(const float* x, size_t ldx, int rows, int k, int8_t* q, float* d, cudaStream_t s) {
+    if (iq_q8k() && k % 256 == 0) q8k_quant(x, ldx, rows, k, q, d, s);
+    else q8_quant(x, ldx, rows, k, q, d, s);
+}
+
 // Several activations' rounding in one launch (a GEMV call's jobs: wo_a's eight groups, the shared expert's two, ...): item z is
 // q8_quant's (x, ldx, rows, k, q, d), the same per-element arithmetic, so the bytes are the single launches'.  Identical items
 // (the same x, stride, rows and k: two matrices reading one input) are rounded once and share the result.
@@ -1087,7 +1152,7 @@ bool type_on_chunk(int type) {
 #if defined(STRATA_METAL)
     // ds4_mm.metal instantiates the tile GEMM for IQ2_XXS / IQ2_XS / IQ2_S only; IQ1_M (the 2.00 bpw pack's type) has
     // the matvec kernel but no tile one, so a chunked prompt would stop in "kernel launch with no Metal dispatch".
-    if (type == iq::kIQ1_S || type == iq::kIQ4_NL) return false;   // (IQ1_M: the tile kernels since DS4_MM_INST(29) and iq_bs)
+    if (type == iq::kIQ4_NL) return false;   // (IQ1_M and IQ1_S: the tile kernels, DS4_MM_INST(29) / (19) and iq_bs)
     return type_on_device(type);
 #else
     (void) type;
@@ -1332,7 +1397,16 @@ void rows(const x3::Mat& m, uint16_t* dst, bool bf16, cudaStream_t s) {
         if (kind >= 0 && ::strata::dsv41::metal_host::dequant_rows(kind, m.raw, row_stride(m), m.k, m.n, dst)) return;
     }
 #endif
-    if (m.fmt == kFmtGG && m.raw != nullptr) {   // a K-quant / i-quant dense matrix (the IST-DAS sets' Q5_K): its own dequantizer
+#if defined(STRATA_METAL)
+    if (m.fmt == kFmtGG && m.raw != nullptr) {   // (what the Metal dequantizers above did not take - they cover Q4_K, Q5_K and Q6_K as F16 rows; the CUDA kernel below has no Metal dispatch and would abort the engine)
+        char what[192];
+        std::snprintf(what, sizeof what, "rows: a dense %s matrix as %s rows has no Metal dequantizer (Q4_K, Q5_K, Q6_K, Q8_0 and BF16 as F16 rows do)",
+                      iq::name(m.K), bf16 ? "BF16" : "F16");
+        fail(what);
+        return;
+    }
+#endif
+    if (m.fmt == kFmtGG && m.raw != nullptr) {   // a K-quant / i-quant dense matrix (the ISTA-DAS sets' Q5_K): its own dequantizer
         if (!iq::dequant_rows(m.K, m.raw, row_stride(m), m.k, m.n, dst, bf16, s)) fail("rows: a low-bit type not covered");
         return;
     }
@@ -1382,6 +1456,11 @@ MxArgs mx_args(const x3::ExpertLayout& lay, int n_embd, int n_ff, float limit) {
 }
 }  // namespace
 
+void act_q8k(const float* x, int rows, int k, int8_t* q, float* d, cudaStream_t s) {
+    q8k_quant(x, (size_t) k, rows, k, q, d, s);
+    check("act_q8k");
+}
+
 void moe_gate_up(const x3::MoeArgs& a, const float* x, float* h, cudaStream_t s) {
     if (!mx_geometry("moe_gate_up", a.k, a.n_embd, a.n_ff) || h == nullptr) return;
     Scratch* sc = scratch(s);
@@ -1393,7 +1472,7 @@ void moe_gate_up(const x3::MoeArgs& a, const float* x, float* h, cudaStream_t s)
         ia.h = h;
         ia.xq = sc->xq;
         ia.xd = sc->xd;
-        q8_quant(x, (size_t) a.n_embd, 1, a.n_embd, sc->xq, sc->xd, s);
+        iq_act_quant(x, (size_t) a.n_embd, 1, a.n_embd, sc->xq, sc->xd, s);
         iq::gate_up(ia, a.k, 1, s);
         check("moe_gate_up");
         return;
@@ -1427,7 +1506,7 @@ void moe_down(const x3::MoeArgs& a, const float* h, const float* sh_out, float* 
     m.part = sc->part;
     m.hq = sc->hq;
     m.hd = sc->hd;
-    q8_quant(h, (size_t) a.n_ff, a.k, a.n_ff, sc->hq, sc->hd, s);
+    (mx_experts(a.lay) ? q8_quant : iq_act_quant)(h, (size_t) a.n_ff, a.k, a.n_ff, sc->hq, sc->hd, s);
     if (!mx_experts(a.lay)) {   // low-bit experts: ds4_iq's down, then the same combine
         iq::Args ia;
         if (!iq_args(a.lay, a.n_embd, a.n_ff, a.limit, ia, "moe_down")) return;
@@ -1501,7 +1580,7 @@ bool win_experts(const x3::WinArgs& a, cudaStream_t s) {
         ia.hq = sc->hq;
         ia.hd = sc->hd;
     }
-    q8_quant(a.x, a.x_stride, a.T, a.n_embd, sc->xq, sc->xd, s);
+    (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.x, a.x_stride, a.T, a.n_embd, sc->xq, sc->xd, s);
     if (mx) {
 #if defined(STRATA_METAL)
         // mx_gate_up_kernel on the Metal dispatch; the launch below is the fallback
@@ -1512,7 +1591,7 @@ bool win_experts(const x3::WinArgs& a, cudaStream_t s) {
     } else {
         iq::gate_up(ia, groups, a.T, s);
     }
-    q8_quant(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
+    (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
     if (mx) {
 #if defined(STRATA_METAL)
         // mx_down_kernel on the Metal dispatch; the launch below is the fallback

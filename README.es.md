@@ -56,7 +56,7 @@ Recomendamos **primero ISTA-DASLab**, después **Unsloth** y otros proveedores, 
 
 En la **aplicación de escritorio** y en el **Terminal**. Lo que no cabe en la memoria se lee desde tu SSD, así que hace falta mucho espacio libre en disco.
 
-| Conjunto (IST-DAS) | Descarga | Espacio libre necesario |
+| Conjunto (ISTA-DAS) | Descarga | Espacio libre necesario |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | unos 245 GB |
 | 2.00 bpw | 257 GB | unos 265 GB |
@@ -95,7 +95,7 @@ Medido con el conjunto de 2.00 bpw en Strata 0.2.5. «Salida» es la velocidad d
 
 Instala la aplicación, elige un modelo y empieza a chatear. Hay un instalador por sistema. En el primer arranque, la aplicación descarga el motor para tu tarjeta gráfica. [Ayuda con el instalador](docs/INSTALL.md#the-app).
 
-<sub>Archivos: `Strata-0.2.8-windows-x64-setup.exe` · `Strata-0.2.8-linux-x86_64.AppImage` · `Strata-0.2.8-macos-arm64.dmg`</sub>
+<sub>Archivos: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Aplicación de escritorio de Strata con un chat y una vista previa del código en vivo, una junto a otra">

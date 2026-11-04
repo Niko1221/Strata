@@ -1,0 +1,18 @@
+{
+ "pic01": "Bilddateien werden heruntergeladen (0,9 GB, nur einmal)…",
+ "pic02": "Bilddateien werden geprüft…",
+ "pic03": "Keine Internetverbindung: Das Modell wird ohne Bilderkennung geladen. Laden Sie es erneut, wenn Sie online sind.",
+ "pic04": "Für die Bilddateien ist nicht genug freier Speicherplatz vorhanden, daher wird das Modell ohne Bilderkennung geladen.",
+ "pic05": "Die Bilddateien konnten nicht heruntergeladen werden, daher wird das Modell ohne Bilderkennung geladen. Versuchen Sie es später erneut.",
+ "pic06": "Die Bilddateien fehlen, daher wird das Modell ohne Bilderkennung geladen.",
+ "pic07": "Bilddateien werden heruntergeladen",
+ "pic08": "Die Bilddateien sind bereit.",
+ "pic09": "Es besteht keine Internetverbindung, daher können die Bilddateien jetzt nicht heruntergeladen werden.",
+ "pic10": "Für die Bilddateien ist nicht genug freier Speicherplatz vorhanden (etwa 1 GB).",
+ "pic11": "Die Bilddateien konnten nicht heruntergeladen werden. Versuchen Sie es erneut; der Download wird dort fortgesetzt, wo er angehalten wurde.",
+ "pic12": "Die heruntergeladenen Bilddateien haben die Sicherheitsprüfung nicht bestanden und wurden gelöscht. Versuchen Sie es erneut.",
+ "pic13": "Die Bilddateien konnten nicht heruntergeladen werden. Versuchen Sie es erneut.",
+ "pic14": "Bilddateien bereit",
+ "pic15": "Laden Sie das Modell erneut, um Bilder zu lesen.",
+ "pic16": "Das Lesen von Bildern ist bereit."
+}

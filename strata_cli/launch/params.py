@@ -256,7 +256,7 @@ def dsv41_help_text(engine: str | Path | None) -> str:
     if engine:
         import subprocess
         try:
-            proc = subprocess.run([str(engine), "--help"], capture_output=True, text=True, timeout=20)
+            proc = subprocess.run([str(engine), "--help"], capture_output=True, text=True, errors="replace", timeout=20)
             seen = set(re.findall(r"--[a-z][a-z0-9-]*", (proc.stdout or "") + " " + (proc.stderr or "")))
             lines += [f"  {f}  An engine setting (the engine's help has no sentence for it)." for f in sorted(seen) if f not in DSV41_FLAGS]
         except Exception:                                    # noqa: BLE001 - the static list stands
@@ -269,7 +269,7 @@ def engine_help_text(engine: str | Path | None) -> str | None:
     import subprocess
     try:
         from strata_control import tuning
-        proc = subprocess.run([*tuning.engine_command(Path(engine)), "--help"], capture_output=True, text=True, timeout=20,
+        proc = subprocess.run([*tuning.engine_command(Path(engine)), "--help"], capture_output=True, text=True, errors="replace", timeout=20,
                               env=tuning.engine_env(Path(engine)))
     except Exception:                                        # noqa: BLE001
         return None
