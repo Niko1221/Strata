@@ -65,6 +65,8 @@ export function useNative(){
  return value;
 }
 export const nativeState=()=>state;
+/** QAGUI 0213: the engine answered but Control's list of installed models has not arrived yet (the first seconds after a start): a downloaded model must not be offered as a download. */
+export const installedListPending=(value:Pick<NativeState,'available'|'installed'|'error'>|null|undefined):boolean=>!!value&&value.available===true&&!value.installed&&!value.error;
 /** Connection-list projection only; memory reservations are not inferred. */
 export function nativeRouting(native:NativeState|null,hardware:Hardware|null):RuntimeModels|null{
  if(!native?.instances.length)return null;
