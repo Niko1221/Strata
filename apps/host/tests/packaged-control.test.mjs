@@ -430,6 +430,22 @@ test('packaged: retrySafer false keeps the single try', async () => {
   } finally { await f.native.close(); f.cleanup(); }
 });
 
+test('packaged: a Control whose wait ran out has not stopped the engine, so the load keeps watching /health instead of failing (#4191)', async () => {
+  /* `runtime start --wait N` answers "startup_wait_expired" (exit 8) while the engine is still loading; the process is not
+     stopped. The app used to stop it and mark the model failed, so the same engine answered on the web page and not in the app. */
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    f.failStart({ message: 'The engine did not start.', output: { ok: false, state: 'starting', error: 'startup_wait_expired', phase: 'loading experts', exit_code: 8 } }, 1);
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.calls.filter(c => c[0] === 'start').length, 1, 'a wait that ran out is not a failure: no second try');
+    assert.equal(f.calls.filter(c => c[0] === 'stop').length, 1, 'the one stop is startWith clearing the slot; the loading engine is never stopped by the app');
+    assert.equal(f.native.state().instances[0].status, 'ready', 'the model is ready once /health answers');
+    assert.match(job.details.join(' '), /Waiting on health after startup_wait_expired/);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
 test('packaged: a run config that points into an old Control folder is repaired to this Control (a reinstall or an update moved it)', async () => {
   const f = packagedFixture();
   try {

@@ -443,7 +443,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   /* Another model on the same graphics card: the engine takes the card's free memory, so a second one usually finds none. Loading goes on (recommend, never force); if it fails, the reason is said. */
   const sharedWith=instance.gpus.length?[...instances.values()].find(i=>i.id!==id&&i.status!=='error'&&i.model!==args.model&&i.gpus.some(g=>instance.gpus.includes(g))):null;
   const sharedSentence=sharedWith?`GPU ${instance.gpus.find(g=>sharedWith.gpus.includes(g))+1} is already used by ${sharedWith.label}, so this model did not fit there. Load it on another GPU, or unload ${sharedWith.label} first.`:null;
-  let proc=null,started=null,retried=null,startWait=null;
+let proc=null,started=null,retried=null,startWait=null;
   if(packaged){
    /* How long this start waits, and the server's own engine wait kept above it. The server ends the engine when its engine wait runs
       out (900 s, or the config's engine_ready_s), so a start that waits longer than that can never win: as in `strata launch`, the
@@ -456,12 +456,20 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
    instances.set(id,instance);if(!defaultId||!args.multiple||wasDefault)defaultId=id;emit();
    if(dsNote)append(id,dsNote);
    const startWith=value=>{writeFileSync(configPath,JSON.stringify(value,null,2),{mode:0o600});return control.stop(instance.profile).catch(()=>{}).then(()=>control.saveProfile(instance.profile,configPath)).then(()=>control.start(instance.profile,{waitSeconds:startWait}));};
+  /* A Control whose wait ran out has NOT stopped the engine: `runtime start` answers "startup_wait_expired" (exit 8) while the engine is
+     still loading, so the app must keep watching /health instead of stopping it and marking the load failed (web chat worked, desktop
+     did not). The same check reads what the start left in the record. */
+  const isStartupWaitExpired=e=>/startup_wait_expired/i.test(String(e?.message??'')+JSON.stringify(e?.output??e??''));
    started=startWith(cfg);
    started.then(()=>append(id,'Strata Control reports the engine is ready.'),error=>{append(id,error.message);});
    try{await started;}catch(firstError){let error=firstError;
     /* A settings, profile or run file an elevated run made can be closed to this user: repair the access in Strata's own folders and start again (this is not the memory try below). */
     const isAccess=e=>/PermissionError|access is denied|EACCES/i.test(String(e?.message??'')+JSON.stringify(e?.output??''));
     if(isAccess(error)&&typeof control.repairAccess==='function'&&job.state==='running'){await control.repairAccess();append(id,'Strata repaired access to its own files; starting again.');try{await startWith(cfg);started=Promise.resolve();error=null;}catch(again){error=again;}}
+    /* A Control whose wait ran out has not stopped the engine: `runtime start` answers "startup_wait_expired" (exit 8) while the engine is
+       still loading. This is not a failure to explain, so it is read here, before the reasons that mark the load failed: the model stays
+       loading and the /health watch below carries on (web chat worked while the desktop said it failed). */
+    if(error&&isStartupWaitExpired(error)){append(id,'Control wait expired; keeping the engine and watching /health until it is ready or the load deadline ends.');job.details=[...(Array.isArray(job.details)?job.details:[]),humanStartError(error),'Waiting on health after startup_wait_expired'];error=null;}
     if(error&&sharedSentence&&!isAccess(error)){instance.status='error';instance.error=sharedSentence;emit();throw new Error(sharedSentence);}
     if(error){const said=humanStartError(error);
     if(isAccess(error)){instance.status='error';instance.error=said;emit();throw new Error(said);}   // access errors are not memory stops: no safer retry
@@ -477,20 +485,24 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     retried={words,detail};if(dropParallel){instance.parallel=1;if(!safer)parallelNote=FALLBACK_NOTE;}
     append(id,`The first start stopped (${said}). Starting once more: ${detail}`);job.summary=words;job.details=[said,`Second try: ${detail}`];instance.notice=words;emit();
     try{await startWith(retryConfig);append(id,'Strata Control reports the engine is ready (second try).');}
-    catch(second){const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}
+    catch(second){if(isStartupWaitExpired(second)){append(id,'Second Control wait expired; keeping the engine and watching /health.');job.details=[...(Array.isArray(job.details)?job.details:[]),humanStartError(second),'Waiting on health after startup_wait_expired'];}
+     else{const said2=humanStartError(second);instance.status='error';instance.error=said2;/* the first stop and the second try stay in job.details; the pop-up shows the last stop once */emit();throw new Error(instance.error);}}}}
   } else {
   proc=spawnProcess(py,[join(repo(),'serve/server.py'),'--engine','strata','--config',configPath,'--port',String(cfg.port),'--host','127.0.0.1'],{cwd:repo(),detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:sourceServerEnvironment()});
   instances.set(id,instance);processes.set(id,proc);if(!defaultId||!args.multiple||wasDefault)defaultId=id;
   for(const stream of [proc.stdout,proc.stderr])stream.on('data',chunk=>{const lines=chunk.toString().split('\n').filter(Boolean);lines.forEach(line=>append(id,line.replaceAll(key,'[redacted]')));job.summary=lines.at(-1)??job.summary;emit();});
   proc.on('error',error=>{instance.status='error';instance.error=error.message;emit();});proc.on('exit',code=>{if(instances.has(id)&&instance.status!=='unloading'){instance.status='error';instance.error=`Engine stopped${code===null?'':` (exit ${code})`}. Open diagnostics or reload.`;emit();}});emit();
   }
-  const deadline=Date.now()+300000;while(Date.now()<deadline&&job.state==='running'){
+  /* The health watch lasts as long as the start asked Control to wait, so a load that Control still reports as starting is never cut short
+     by a shorter deadline here: the app used to give up at five minutes and mark the model failed while the engine was still loading. */
+  const healthWaitMs=(startWait??300)*1000;
+  const deadline=Date.now()+healthWaitMs;while(Date.now()<deadline&&job.state==='running'){
    if(instance.status==='error')throw new Error(instance.error);
    try{const response=await fetcher(`http://127.0.0.1:${instance.port}/health`,{headers:{authorization:`Bearer ${key}`},signal:AbortSignal.timeout(2000)});if(job.state!=='running'){await unload(id);return;}if(response.ok){instance.status='ready';instance.phase='idle';await noteDrafting(job,instance,key);if(resources||args.vision!==undefined||args.contextChosen===true||JSON.stringify(cfg[USER_KEY]??null)!==JSON.stringify(config[USER_KEY]??null))writeModelConfig(record(args.model).path,{...config,...(resources?{...resources,ui_resource_profile:args.resourceProfile}:{}),...visionPreferences,...(args.contextChosen===true?{ui_context_chosen:true}:{}),...(cfg[USER_KEY]?{[USER_KEY]:cfg[USER_KEY]}:{})});emit();ensurePoll();instance.parallelNote=parallelNote;return {summary:retried?`${instance.label} is ready, after a second try: ${retried.words}`:`${instance.label} is ready.${parallelNote?' '+parallelNote:''}${picturesNote?' '+picturesNote:''}`,instanceId:id};}}catch{}
    await new Promise(resolve=>setTimeout(resolve,1200));
   }
   if(job.state!=='running'){await unload(id);return;}
-  if(instance.profile)await control.stop(instance.profile).catch(()=>{});else await stopProcess(proc);instance.status='error';instance.error='Loading took more than five minutes. Check the engine log and free memory.';throw new Error(instance.error);
+  if(instance.profile)await control.stop(instance.profile).catch(()=>{});else await stopProcess(proc);instance.status='error';instance.error=`Loading took more than ${Math.round(healthWaitMs/60000)} minutes. Check the engine log and free memory.`;throw new Error(instance.error);
  }
  async function freePort(requested){for(let port=Number(requested??18500);port<=Number(requested??18500)+20;port++){if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('Choose a port from 1024 to 65535.');if([...instances.values()].some(i=>i.port===port)){if(requested)throw new Error('This private engine port is already in use.');continue;}const available=await new Promise(resolve=>{const probe=createServer();probe.once('error',()=>resolve(false));probe.listen(port,'127.0.0.1',()=>probe.close(()=>resolve(true)));});if(available)return port;if(requested)throw new Error('This private engine port is already in use.');}throw new Error('No free private engine port was found.');}
  let pollCount=0;
