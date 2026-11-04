@@ -206,6 +206,36 @@ class StalledClient(unittest.TestCase):
             httpd.server_close()
 
 
+    def test_a_client_that_reads_but_waits_for_a_slow_engine_is_not_cut_off(self):
+        """The write limit is for a write that makes no progress (the client stopped reading), not for a client that is
+        idle while the engine thinks: 0.3 s between tokens, a 0.1 s write limit, the whole reply arrives."""
+        import http.client
+        import json
+        import serve.server as server
+        from serve.frontend import ChatTemplate
+        from serve.server import ByteTokenizer, MockEngine, Service, serve
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "abcdef", delay_s=0.3), tok,
+                      ChatTemplate(Path(server.__file__).parent / "chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        try:
+            with mock.patch.object(server, "STREAM_WRITE_TIMEOUT_S", 0.1, create=True):
+                conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)
+                conn.request("POST", "/v1/chat/completions", json.dumps(
+                    {"messages": [{"role": "user", "content": "go"}], "stream": True, "max_tokens": 50,
+                     "reasoning_effort": "none"}), {"Content-Type": "application/json"})
+                body = conn.getresponse().read().decode()
+                conn.close()
+            text = "".join(json.loads(l[5:])["choices"][0]["delta"].get("content") or ""
+                           for l in body.splitlines() if l.startswith("data:") and "[DONE]" not in l
+                           and json.loads(l[5:]).get("choices"))
+            self.assertEqual(text, "abcdef")
+            self.assertIn("data: [DONE]", body)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class BlockedConsole(unittest.TestCase):
     """#4479 / #2481: a console that stops taking output must not hold the thread that prints."""
 

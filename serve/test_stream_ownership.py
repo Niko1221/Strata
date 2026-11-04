@@ -50,8 +50,11 @@ def canary_script(step=0.004):
     assert old in text
     text = text.replace(old, "        given = None\n        pbm = bytes(int(x) & 255 for x in ids)\n"
                         "        slow, deaf = b\"SLOWPREFILL\" in pbm, b\"DEAFSTOP\" in pbm\n"
+                        "        quiet = b\"SILENTREAD\" in pbm\n"
                         "        for q in range(CH, len(ids) - 1, CH):\n"
-                        "            time.sleep(STEP / 2 + (0.02 if slow or deaf else 0))\n", 1)
+                        "            time.sleep(STEP / 2 + (0.02 if slow or deaf else 0))\n"
+                        "            if quiet and q > CH:\n"
+                        "                continue                  # SILENTREAD: after its first PP line the read says nothing\n", 1)
     old = "            if stop.is_set():\n                break\n            if active and (q // CH) % 4 == 0:"
     assert old in text
     text = text.replace(old, "            if stop.is_set() and not deaf:\n                break\n"
@@ -335,8 +338,9 @@ class Client(threading.Thread):
     """One streaming client of a --batch engine: its own canary, its own cancel Event.  `pause_after`/`resume`: the
     consumer stops reading after that many tokens until `resume` is set (a slow reader)."""
 
-    def __init__(self, engine, canary, filler=0, max_new=500, pause_after=None, resume=None, extra=""):
+    def __init__(self, engine, canary, filler=0, max_new=500, pause_after=None, resume=None, extra="", leave_after_beats=None):
         super().__init__(daemon=True)
+        self.leave_after_beats = leave_after_beats          # close the stream (as Service does) at this PP heartbeat
         self.engine, self.canary = engine, canary
         self.ids = prompt_ids(canary + extra, filler)
         self.max_new, self.pause_after, self.resume = max_new, pause_after, resume
@@ -344,9 +348,15 @@ class Client(threading.Thread):
         self.tokens, self.error, self.paused = [], None, threading.Event()
 
     def run(self):
+        beats = 0
+        gen = self.engine.generate(self.ids, self.max_new, {}, self.cancel)
         try:
-            for t in self.engine.generate(self.ids, self.max_new, {}, self.cancel):
+            for t in gen:
                 if t is None:
+                    beats += 1
+                    if self.leave_after_beats is not None and beats >= self.leave_after_beats:
+                        gen.close()                              # the consumer leaves: GeneratorExit inside the engine's request
+                        return
                     continue
                 self.tokens.append(t)
                 if self.pause_after is not None and len(self.tokens) == self.pause_after:
@@ -381,7 +391,8 @@ class BatchOwnership(FakeEngines, unittest.TestCase):
         # 0.3 s instead of 300 s for the wait that ends an interrupted exchange (a wrapper that works on every version)
         orig = self.engine._drain_control
         self.engine._drain_control = lambda until, timeout=None, born=None, lines_q=None: orig(
-            until, timeout=0.3, born=born)
+            until, timeout=0.3 if timeout is None else timeout, born=born,
+            **({} if lines_q is None else {"lines_q": lines_q}))
         self.engine.QUARANTINE_S = 8.0
 
     def tearDown(self):
@@ -441,15 +452,15 @@ class BatchOwnership(FakeEngines, unittest.TestCase):
         self.assertEqual(bad, [])
 
     def test_a_drain_that_times_out_does_not_leak_into_the_next_request(self):
-        """The engine takes longer than the drain timeout to end the interrupted exchange (DEAFSTOP): its DONE, BADM and
-        tokens come later.  The request after it must get its own frames only."""
+        """A leaves (its stream is closed, as Service does) in the middle of its prompt read; the engine says nothing for
+        longer than the drain limit (SILENTREAD, DEAFSTOP: ~1 s of silence, then its DONE and BADM).  The control lines stay
+        with A's exchange until they come; the request after it gets its own frames only."""
         bg = self.start_busy(n=1)
-        a = Client(self.engine, "KA0001", filler=1300, extra=" DEAFSTOP")
+        a = Client(self.engine, "KA0001", filler=1300, extra=" DEAFSTOP SILENTREAD", leave_after_beats=1)
         a.start()
-        time.sleep(0.25)
-        a.cancel.set()
-        time.sleep(0.45)                         # past the 0.3 s drain: A's request has left, its engine exchange has not ended
-        b = Client(self.engine, "LB0002", max_new=80)
+        time.sleep(0.6)                          # past the 0.3 s drain: A's request has left, its engine exchange has not ended
+        # (B's prompt is not under half of A's: a much shorter waiting request would make A give way, BYIELD, at once)
+        b = Client(self.engine, "LB0002", filler=900, max_new=80)
         b.start()
         self.finish([a, b])
         for c in bg:
@@ -459,6 +470,38 @@ class BatchOwnership(FakeEngines, unittest.TestCase):
         self.assertEqual(b.foreign(), [], "B received A's frames")
         self.assertEqual(b.tokens, expected_reply("LB0002")[:80], "B's reply is its own, in full")
         self.assertEqual(bg[0].foreign(), [])
+        self.assertTrue(self.engine.alive())
+
+    def test_an_engine_that_keeps_talking_after_a_stop_is_not_given_up_on(self):
+        """The limits count silence, never a read or a decode that still produces lines: the engine takes ~1.8 s to end A's
+        exchange (DEAFSTOP, a PP line every chunk) with the drain at 0.3 s and the quarantine at 0.4 s.  A limit counted
+        from the start would have ended the engine at ~0.7 s, with the other requests in it."""
+        self.engine.QUARANTINE_S = 0.4
+        gen_before = self.engine.gen
+        bg = self.start_busy(n=1)
+        a = Client(self.engine, "KA0001", filler=2600, extra=" DEAFSTOP", leave_after_beats=1)
+        a.start()
+        time.sleep(0.1)
+        b = Client(self.engine, "LB0002", filler=1500, max_new=80)       # (not under half of A's prompt: no BYIELD)
+        b.start()
+        self.finish([a, b], timeout=60)
+        self.assertEqual(self.engine.gen, gen_before, "the engine was ended although it kept talking")
+        self.assertTrue(self.engine.alive())
+        self.assertIsNone(b.error)
+        self.assertEqual(b.tokens, expected_reply("LB0002")[:80])
+        self.assertEqual(bg[0].foreign(), [])
+        self.assertIsNone(bg[0].error, "a request running in another slot was ended with the engine")
+        bg[0].cancel.set()
+        self.finish(bg)
+
+    def test_an_engine_that_goes_silent_after_a_stop_is_ended(self):
+        """The other side of the limit: no line at all for DRAIN_TIMEOUT_S + QUARANTINE_S after the stop (here 0.3 + 0.4 s,
+        the read is silent for ~1.8 s) is a wedged engine: it is ended and the next request starts it again."""
+        self.engine.QUARANTINE_S = 0.4
+        a = Client(self.engine, "KA0001", filler=2600, extra=" DEAFSTOP SILENTREAD", leave_after_beats=1)
+        a.start()
+        self.assertTrue(wait_until(lambda: not self.engine.alive(), 8.0), "a silent engine was not ended")
+        self.finish([a])
 
     def test_the_engine_ending_during_a_drain_then_a_restart(self):
         """A is interrupted mid-prompt; the engine dies while A drains; after the restart the new requests (same slot
@@ -495,6 +538,19 @@ class BatchOwnership(FakeEngines, unittest.TestCase):
         for c in new:
             self.assertEqual(c.foreign(), [], "a request of the new process received a foreign frame")
             self.assertTrue(len(c.tokens) >= 3)
+
+    def test_long_generations_are_never_cut_by_the_drain_limits(self):
+        """The drain and quarantine limits (here 0.3 s and 0.4 s, far below a reply's ~1.7 s) apply after a STOP or BSTOP
+        only: replies that are still streaming complete."""
+        self.engine.QUARANTINE_S = 0.4
+        cs = [Client(self.engine, f"{chr(ord('A') + i)}{chr(ord('K') + i)}{i:04d}") for i in range(4)]
+        for c in cs:
+            c.start()
+            time.sleep(0.05)
+        self.finish(cs)
+        for c in cs:
+            self.assertIsNone(c.error)
+            self.assertTrue(c.complete(), c.canary)
 
     def test_vram_and_session_file_take_the_control_lines_like_a_request(self):
         """VRAM and SAVE read the control lines for their answer.  Run beside a request that holds them (its solo read

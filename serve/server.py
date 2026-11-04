@@ -1109,8 +1109,8 @@ class StrataEngine:
     _ctl_erred = _RequestOwned(False)
     _ctl_held = _RequestOwned(False)     # this thread already holds the control lines (Service.vram takes them itself)
     CONTROL_WAIT_S = 300.0               # how long vram() / session_file() wait for the control lines of a batch engine
-    DRAIN_TIMEOUT_S = 300.0              # how long an interrupted request waits for its engine's DONE / BADM
-    QUARANTINE_S = 600.0                 # ... and how long a slot or the control lines stay held after that, until it comes
+    DRAIN_TIMEOUT_S = 300.0              # how long an interrupted request waits, with no line from its engine, for DONE / BADM
+    QUARANTINE_S = 600.0                 # ... and how long a slot or the control lines stay held after that with no line
     multi = 0                            # DeepSeek --parallel (READY ... multi=N): conversations the engine holds at once (batch = N too)
 
     # `last`: the figures of the engine's last DONE line.  With batch slots several requests run at once, each on its
@@ -1760,9 +1760,10 @@ class StrataEngine:
 
     def _quarantine_control(self, until: str, born: int, lines_q, slot, holding: bool) -> None:
         """#4451: a request left (cancel, disconnect, error) and the engine has not yet given the line that ends its
-        exchange (`until`: DONE of a solo read, BADM of an admission) within DRAIN_TIMEOUT_S.  The control lines (and the
+        exchange (`until`: DONE of a solo read, BADM of an admission) while it said nothing for DRAIN_TIMEOUT_S.  The control lines (and the
         admission's slot) stay with this exchange - nobody else is given them - until the engine confirms, so what it
-        still prints can not reach a later request.  Never confirmed in QUARANTINE_S: the engine is ended."""
+        still prints can not reach a later request.  The engine silent for QUARANTINE_S more: it is ended.  (Only after a STOP or
+        BSTOP, and only for silence: a generation that is still producing lines is never cut off.)"""
         if slot is not None:
             with self.slot_cv:
                 self.slot_releasing.add(slot)           # busy stays: no request may take the slot
@@ -1891,8 +1892,12 @@ class StrataEngine:
         request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered).
         `born`: the engine process (self.gen) the request started on; once that one is gone there is nothing to
         drain - its end line was read already (by the request's own EngineDied), and waiting for another one held
-        a request that had failed for the whole 300 s (#1012), or read the lines of the engine that replaced it."""
-        end = time.monotonic() + (self.DRAIN_TIMEOUT_S if timeout is None else timeout)
+        a request that had failed for the whole 300 s (#1012), or read the lines of the engine that replaced it.
+        `timeout` (DRAIN_TIMEOUT_S) is a NO-PROGRESS limit: it counts from the last line the engine wrote, so an engine that
+        is still talking (PP / T lines of a read or a decode it was told to stop but has not yet) is never given up on;
+        only one that says nothing for that long is."""
+        wait_s = self.DRAIN_TIMEOUT_S if timeout is None else timeout
+        end = time.monotonic() + wait_s
         lines_q = self.lines if lines_q is None else lines_q
         while time.monotonic() < end:
             if born is not None and (self.gen != born or not self.alive()):
@@ -1903,6 +1908,7 @@ class StrataEngine:
                 continue
             if line is None:
                 return None
+            end = time.monotonic() + wait_s                  # any line is progress
             if line.startswith("DONE"):
                 self._parse_done(line)
             if line.startswith(until) or line.startswith("ERR"):
@@ -1971,7 +1977,7 @@ class StrataEngine:
         releasing.add(slot)
 
         def wait():
-            end = time.monotonic() + self.QUARANTINE_S
+            end = time.monotonic() + self.QUARANTINE_S      # no-progress limit: every line of the slot starts it again
             tail = list(stream or [])
             confirmed = False
             while time.monotonic() < end:
@@ -1984,6 +1990,7 @@ class StrataEngine:
                 if line is None:
                     tail = []
                     break
+                end = time.monotonic() + self.QUARANTINE_S
                 if line.startswith("BT "):
                     try:
                         tail.append(int(line.split()[2]))
