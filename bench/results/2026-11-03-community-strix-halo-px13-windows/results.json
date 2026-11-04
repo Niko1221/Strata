@@ -1,0 +1,467 @@
+[
+  {
+    "config": "halo-box Q4_K_M",
+    "load_s": 10.6,
+    "prompt_tokens": 18023,
+    "ttft_s": 9.3,
+    "decode_tps": 44.1,
+    "tokens_from": "usage",
+    "prefill_tps": 1938.0,
+    "turn_s": 3.3,
+    "turn_ttft_s": 0.5,
+    "gpu_gb": 25.9,
+    "ram_free_gb": 7.7,
+    "commit_gb": 103.7,
+    "commit_limit_gb": 171.4,
+    "needle_24k": "pass",
+    "needle_80k": "pass",
+    "sweep": {
+      "4000": {
+        "prompt_tokens": 4033,
+        "ttft_s": 2.2,
+        "decode_tps": 47.7,
+        "completion_tokens": 256
+      },
+      "16000": {
+        "prompt_tokens": 16034,
+        "ttft_s": 7.8,
+        "decode_tps": 43.2,
+        "completion_tokens": 256
+      },
+      "32000": {
+        "prompt_tokens": 32034,
+        "ttft_s": 18.3,
+        "decode_tps": 46.5,
+        "completion_tokens": 256
+      },
+      "64000": {
+        "prompt_tokens": 64034,
+        "ttft_s": 48.5,
+        "decode_tps": 38.4,
+        "completion_tokens": 256
+      }
+    },
+    "commit_peak_gb": 108.1,
+    "checks": {
+      "reasoning": {
+        "no limit": {
+          "completion_tokens": 3000,
+          "reasoning_chars": 6162,
+          "finish": "length",
+          "answer": ""
+        },
+        "reasoning_budget=128": {
+          "completion_tokens": 3000,
+          "reasoning_chars": 6162,
+          "finish": "length",
+          "answer": ""
+        },
+        "reasoning_budget_tokens=128": {
+          "completion_tokens": 3000,
+          "reasoning_chars": 6162,
+          "finish": "length",
+          "answer": ""
+        }
+      },
+      "tools": {
+        "finish": "tool_calls",
+        "calls": [
+          [
+            "write",
+            "{\"filePath\":\"notes.txt\",\"content\":\"hello gufo\"}"
+          ]
+        ],
+        "args_valid_json": true,
+        "right_tool": true,
+        "second_turn": {
+          "finish": "tool_calls",
+          "calls": [
+            [
+              "read",
+              "{\"filePath\":\"notes.txt\"}"
+            ]
+          ]
+        }
+      }
+    }
+  },
+  {
+    "config": "halo-box Q4_K_XL",
+    "load_s": 10.6,
+    "prompt_tokens": 18023,
+    "ttft_s": 8.9,
+    "decode_tps": 43.4,
+    "tokens_from": "usage",
+    "prefill_tps": 2025.1,
+    "turn_s": 3.4,
+    "turn_ttft_s": 0.4,
+    "gpu_gb": 26.1,
+    "ram_free_gb": 11.5,
+    "commit_gb": 103.8,
+    "commit_limit_gb": 171.4,
+    "needle_24k": "pass",
+    "needle_80k": "pass",
+    "sweep": {
+      "4000": {
+        "prompt_tokens": 4033,
+        "ttft_s": 2.1,
+        "decode_tps": 51.6,
+        "completion_tokens": 256
+      },
+      "16000": {
+        "prompt_tokens": 16034,
+        "ttft_s": 7.7,
+        "decode_tps": 50.0,
+        "completion_tokens": 256
+      },
+      "32000": {
+        "prompt_tokens": 32034,
+        "ttft_s": 18.1,
+        "decode_tps": 42.2,
+        "completion_tokens": 256
+      },
+      "64000": {
+        "prompt_tokens": 64034,
+        "ttft_s": 48.6,
+        "decode_tps": 39.9,
+        "completion_tokens": 256
+      }
+    },
+    "commit_peak_gb": 108.3
+  },
+  {
+    "config": "halo-box Q4_K_XL MTP n2",
+    "load_s": 10.6,
+    "error": "ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host"
+  },
+  {
+    "config": "Strata Q4_K_XL MTP",
+    "load_s": 54.7,
+    "prompt_tokens": 18023,
+    "ttft_s": 31.9,
+    "decode_tps": 30.1,
+    "tokens_from": "usage",
+    "prefill_tps": 565.0,
+    "turn_s": 35.5,
+    "turn_ttft_s": 32.0,
+    "gpu_gb": 35.0,
+    "ram_free_gb": 0.5,
+    "commit_gb": 110.0,
+    "commit_limit_gb": 171.4,
+    "needle_24k": "pass",
+    "needle_80k": "pass",
+    "sweep": {
+      "4000": {
+        "prompt_tokens": 4033,
+        "ttft_s": 5.5,
+        "decode_tps": 67.2,
+        "completion_tokens": 256
+      },
+      "16000": {
+        "prompt_tokens": 16034,
+        "ttft_s": 27.2,
+        "decode_tps": 35.7,
+        "completion_tokens": 256
+      },
+      "32000": {
+        "prompt_tokens": 32036,
+        "ttft_s": 69.7,
+        "decode_tps": 12.8,
+        "completion_tokens": 256
+      },
+      "64000": {
+        "prompt_tokens": 64036,
+        "ttft_s": 212.3,
+        "decode_tps": 6.4,
+        "completion_tokens": 256
+      }
+    },
+    "commit_peak_gb": 110.0,
+    "checks": {
+      "reasoning": {
+        "no limit": {
+          "completion_tokens": 3000,
+          "reasoning_chars": 4295,
+          "finish": "length",
+          "answer": "To determine how many prime numbers are below 300, we will s"
+        },
+        "reasoning_budget=128": {
+          "completion_tokens": 3000,
+          "reasoning_chars": 4295,
+          "finish": "length",
+          "answer": "To determine how many prime numbers are below 300, we will s"
+        },
+        "reasoning_budget_tokens=128": {
+          "completion_tokens": 2955,
+          "reasoning_chars": 453,
+          "finish": "stop",
+          "answer": "To determine how many prime numbers are below 300, we will s"
+        }
+      },
+      "tools": {
+        "finish": "tool_calls",
+        "calls": [
+          [
+            "write",
+            "{\"filePath\":\"notes.txt\",\"content\":\"hello gufo\"}"
+          ]
+        ],
+        "args_valid_json": true,
+        "right_tool": true,
+        "second_turn": {
+          "finish": "tool_calls",
+          "calls": [
+            [
+              "read",
+              "{\"filePath\":\"notes.txt\"}"
+            ]
+          ]
+        }
+      }
+    }
+  },
+  {
+    "config": "Strata Q4_K_XL no MTP",
+    "load_s": 51.7,
+    "prompt_tokens": 18023,
+    "ttft_s": 30.2,
+    "decode_tps": 28.7,
+    "tokens_from": "usage",
+    "prefill_tps": 596.8,
+    "turn_s": 35.0,
+    "turn_ttft_s": 30.6,
+    "gpu_gb": 35.0,
+    "ram_free_gb": 0.4,
+    "commit_gb": 110.1,
+    "commit_limit_gb": 171.4,
+    "needle_24k": "pass",
+    "needle_80k": "pass",
+    "sweep": {
+      "4000": {
+        "prompt_tokens": 4033,
+        "ttft_s": 5.3,
+        "decode_tps": 49.0,
+        "completion_tokens": 256
+      },
+      "16000": {
+        "prompt_tokens": 16034,
+        "ttft_s": 26.1,
+        "decode_tps": 31.3,
+        "completion_tokens": 256
+      },
+      "32000": {
+        "prompt_tokens": 32036,
+        "ttft_s": 66.1,
+        "decode_tps": 14.3,
+        "completion_tokens": 256
+      },
+      "64000": {
+        "prompt_tokens": 64036,
+        "ttft_s": 198.0,
+        "decode_tps": 7.6,
+        "completion_tokens": 256
+      }
+    },
+    "commit_peak_gb": 110.6
+  },
+  {
+    "config": "Strata cache probe",
+    "requests": {
+      "1 fresh, thinking off": {
+        "prompt_tokens": 18022,
+        "cached_tokens": 0,
+        "seconds": 33.3
+      },
+      "2 the same request again": {
+        "prompt_tokens": 18022,
+        "cached_tokens": 0,
+        "seconds": 33.2
+      },
+      "3 follow-up turn (answer + new question), thinking off": {
+        "prompt_tokens": 18082,
+        "cached_tokens": 0,
+        "seconds": 33.6
+      },
+      "4 same system prompt, different question": {
+        "prompt_tokens": 18024,
+        "cached_tokens": 0,
+        "seconds": 34.3
+      },
+      "5 same system prompt, thinking on": {
+        "prompt_tokens": 18022,
+        "cached_tokens": 0,
+        "seconds": 36.2
+      },
+      "6 follow-up turn, thinking on (as OpenCode sends it)": {
+        "prompt_tokens": 18066,
+        "cached_tokens": 0,
+        "seconds": 67.9
+      }
+    }
+  },
+  {
+    "config": "Strata Flash-Next Q2_0",
+    "load_s": 36.6,
+    "prompt_tokens": 18061,
+    "ttft_s": 21.2,
+    "decode_tps": 41.9,
+    "tokens_from": "usage",
+    "prefill_tps": 851.9,
+    "turn_s": 3.8,
+    "turn_ttft_s": 1.2,
+    "gpu_gb": 47.1,
+    "ram_free_gb": 8.5,
+    "commit_gb": 124.7,
+    "commit_limit_gb": 171.4,
+    "needle_24k": "pass",
+    "needle_80k": "pass",
+    "sweep": {
+      "4000": {
+        "prompt_tokens": 4071,
+        "ttft_s": 5.3,
+        "decode_tps": 49.3,
+        "completion_tokens": 256
+      },
+      "16000": {
+        "prompt_tokens": 16072,
+        "ttft_s": 18.6,
+        "decode_tps": 37.3,
+        "completion_tokens": 256
+      },
+      "32000": {
+        "prompt_tokens": 32074,
+        "ttft_s": 36.9,
+        "decode_tps": 39.5,
+        "completion_tokens": 256
+      },
+      "64000": {
+        "prompt_tokens": 64074,
+        "ttft_s": 74.2,
+        "decode_tps": 44.2,
+        "completion_tokens": 256
+      }
+    },
+    "commit_peak_gb": 126.0,
+    "checks": {
+      "reasoning": {
+        "no limit": {
+          "completion_tokens": 2722,
+          "reasoning_chars": 3936,
+          "finish": "stop",
+          "answer": "To count primes below 300, we can list them in ranges and ch"
+        },
+        "reasoning_budget=128": {
+          "completion_tokens": 2722,
+          "reasoning_chars": 3936,
+          "finish": "stop",
+          "answer": "To count primes below 300, we can list them in ranges and ch"
+        },
+        "reasoning_budget_tokens=128": {
+          "completion_tokens": 630,
+          "reasoning_chars": 425,
+          "finish": "stop",
+          "answer": "To count the primes below 300, we can count them in ranges.\n"
+        }
+      },
+      "tools": {
+        "finish": "tool_calls",
+        "calls": [
+          [
+            "write",
+            "{\"filePath\":\"notes.txt\",\"content\":\"hello gufo\"}"
+          ]
+        ],
+        "args_valid_json": true,
+        "right_tool": true,
+        "second_turn": {
+          "finish": "tool_calls",
+          "calls": [
+            [
+              "read",
+              "{\"filePath\":\"notes.txt\"}"
+            ]
+          ]
+        }
+      }
+    }
+  },
+  {
+    "config": "Strata cache probe Flash-Next",
+    "requests": {
+      "1 fresh, thinking off": {
+        "prompt_tokens": 18022,
+        "cached_tokens": 0,
+        "seconds": 18.7
+      },
+      "2 the same request again": {
+        "prompt_tokens": 18022,
+        "cached_tokens": 18015,
+        "seconds": 0.5
+      },
+      "3 follow-up turn (answer + new question), thinking off": {
+        "prompt_tokens": 18048,
+        "cached_tokens": 18031,
+        "seconds": 1.1
+      },
+      "4 same system prompt, different question": {
+        "prompt_tokens": 18024,
+        "cached_tokens": 18005,
+        "seconds": 0.8
+      },
+      "5 same system prompt, thinking on": {
+        "prompt_tokens": 18060,
+        "cached_tokens": 0,
+        "seconds": 19.6
+      },
+      "6 follow-up turn, thinking on (as OpenCode sends it)": {
+        "prompt_tokens": 18091,
+        "cached_tokens": 18055,
+        "seconds": 1.4
+      }
+    }
+  },
+  {
+    "config": "Strata DeepSeek V4.1 2.00bpw",
+    "load_s": 33.1,
+    "prompt_tokens": 17358,
+    "ttft_s": 51.0,
+    "decode_tps": 2.6,
+    "tokens_from": "usage",
+    "prefill_tps": 340.4,
+    "turn_s": 65.0,
+    "turn_ttft_s": 10.1,
+    "gpu_gb": null,
+    "ram_free_gb": 0.3,
+    "commit_gb": 114.2,
+    "commit_limit_gb": 171.4,
+    "needle_24k": "pass",
+    "needle_80k": "pass",
+    "sweep": {
+      "4000": {
+        "prompt_tokens": 3937,
+        "ttft_s": 27.6,
+        "decode_tps": 3.4,
+        "completion_tokens": 256
+      },
+      "16000": {
+        "prompt_tokens": 15723,
+        "ttft_s": 52.2,
+        "decode_tps": 2.8,
+        "completion_tokens": 256
+      },
+      "32000": {
+        "prompt_tokens": 31130,
+        "ttft_s": 69.5,
+        "decode_tps": 3.6,
+        "completion_tokens": 160
+      },
+      "64000": {
+        "prompt_tokens": 62427,
+        "ttft_s": 124.1,
+        "decode_tps": 3.7,
+        "completion_tokens": 256
+      }
+    },
+    "commit_peak_gb": 114.2
+  }
+]

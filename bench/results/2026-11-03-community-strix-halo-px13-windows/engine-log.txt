@@ -1,0 +1,307 @@
+# Engine log lines of the Strata runs (local time, UTC+2). Home folder replaced by <user>.
+
+## Setup's settings (--mtp 2): main run 10:57, failed bench start 11:27 (HIP_VISIBLE_DEVICES=-1), reuse probe 11:29, standard-v1 11:34
+[strata] 2026-11-03 10:57:28 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --native C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 131072 --prefill auto --mtp 2
+strata-q36: C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf: 753 tensors (layout checked), 4.40 GiB on the GPU in 3.1 s (the routed experts are placed after the engine's buffers)
+strata-q36: prompt experts on MMQ (int8)
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1151, version 100500)
+strata-q36: context 131072 cells, prompt chunk 4096, MTP block loaded, 94.21 GiB of VRAM free
+strata-q36: every routed expert in VRAM (18.75 GiB) in 28.8 s
+strata-q36: warmed up in 6.2 s (one prompt chunk, a decode step, a speculative step)
+strata serve: session 0: prompt 18023 tokens = 0 reused + 18023 read in 31894 ms (565.1 tok/s), 128 generated in 4222 ms (30.3 tok/s), drafts accepted 76 of 106 (length)
+strata serve: session 0: prompt 18171 tokens = 0 reused + 18171 read in 31947 ms (568.8 tok/s), 128 generated in 3510 ms (36.5 tok/s), drafts accepted 84 of 86 (length)
+strata serve: session 0: prompt 24058 tokens = 0 reused + 24058 read in 46285 ms (519.8 tok/s), 12 generated in 527 ms (22.8 tok/s), drafts accepted 8 of 8 (stop)
+strata serve: session 0: prompt 80058 tokens = 0 reused + 80058 read in 301910 ms (265.2 tok/s), 12 generated in 1875 ms (6.4 tok/s), drafts accepted 8 of 8 (stop)
+strata serve: session 0: prompt 4033 tokens = 0 reused + 4033 read in 5499 ms (733.5 tok/s), 256 generated in 3795 ms (67.5 tok/s), drafts accepted 159 of 194 (length)
+strata serve: session 0: prompt 16034 tokens = 0 reused + 16034 read in 27130 ms (591.0 tok/s), 256 generated in 7136 ms (35.9 tok/s), drafts accepted 155 of 200 (length)
+strata serve: session 0: prompt 32036 tokens = 0 reused + 32036 read in 69577 ms (460.4 tok/s), 256 generated in 19875 ms (12.9 tok/s), drafts accepted 153 of 208 (length)
+strata serve: session 0: prompt 64036 tokens = 0 reused + 64036 read in 212199 ms (301.8 tok/s), 256 generated in 39930 ms (6.4 tok/s), drafts accepted 153 of 208 (length)
+strata serve: session 0: prompt 37 tokens = 0 reused + 37 read in 182 ms (203.4 tok/s), 2253 generated in 26526 ms (84.9 tok/s), drafts accepted 1436 of 1632 (cancel)
+strata serve: session 0: prompt 2305 tokens = 0 reused + 2305 read in 3071 ms (750.5 tok/s), 732 generated in 8974 ms (81.6 tok/s), drafts accepted 479 of 504 (length)
+strata serve: session 0: prompt 37 tokens = 0 reused + 37 read in 191 ms (193.5 tok/s), 2253 generated in 26705 ms (84.4 tok/s), drafts accepted 1436 of 1632 (cancel)
+strata serve: session 0: prompt 2305 tokens = 0 reused + 2305 read in 3070 ms (750.8 tok/s), 732 generated in 9007 ms (81.3 tok/s), drafts accepted 479 of 504 (length)
+strata serve: session 0: prompt 37 tokens = 0 reused + 37 read in 186 ms (199.4 tok/s), 130 generated in 1587 ms (81.9 tok/s), drafts accepted 79 of 100 (cancel)
+strata serve: session 0: prompt 183 tokens = 0 reused + 183 read in 401 ms (456.9 tok/s), 2809 generated in 33859 ms (83.0 tok/s), drafts accepted 1793 of 2030 (stop)
+strata serve: session 0: prompt 389 tokens = 0 reused + 389 read in 717 ms (542.2 tok/s), 165 generated in 3097 ms (53.3 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 461 tokens = 0 reused + 461 read in 794 ms (580.5 tok/s), 106 generated in 1957 ms (54.2 tok/s), drafts accepted 0 of 0 (stop)
+[strata] 2026-11-03 11:27:53 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --native C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 131072 --prefill auto --mtp 2
+strata-q36: cudaMalloc(&d, h.size() * 4) failed: no ROCm-capable device is detected (C:/w1r/src/src/qwen35/q36_engine.cu:955)
+[strata] 2026-11-03 11:29:25 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --native C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 131072 --prefill auto --mtp 2
+strata-q36: C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf: 753 tensors (layout checked), 4.40 GiB on the GPU in 3.9 s (the routed experts are placed after the engine's buffers)
+strata-q36: prompt experts on MMQ (int8)
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1151, version 100500)
+strata-q36: context 131072 cells, prompt chunk 4096, MTP block loaded, 94.21 GiB of VRAM free
+strata-q36: every routed expert in VRAM (18.75 GiB) in 25.0 s
+strata-q36: warmed up in 6.2 s (one prompt chunk, a decode step, a speculative step)
+strata serve: session 0: prompt 18022 tokens = 0 reused + 18022 read in 31833 ms (566.1 tok/s), 48 generated in 1382 ms (34.7 tok/s), drafts accepted 32 of 34 (stop)
+strata serve: session 0: prompt 18022 tokens = 0 reused + 18022 read in 31805 ms (566.6 tok/s), 48 generated in 1376 ms (34.9 tok/s), drafts accepted 32 of 34 (stop)
+strata serve: session 0: prompt 18082 tokens = 0 reused + 18082 read in 31929 ms (566.3 tok/s), 59 generated in 1628 ms (36.2 tok/s), drafts accepted 39 of 40 (stop)
+strata serve: session 0: prompt 18024 tokens = 0 reused + 18024 read in 31747 ms (567.7 tok/s), 82 generated in 2563 ms (32.0 tok/s), drafts accepted 49 of 64 (stop)
+strata serve: session 0: prompt 18022 tokens = 0 reused + 18022 read in 31868 ms (565.5 tok/s), 101 generated in 3053 ms (33.1 tok/s), drafts accepted 62 of 76 (cancel)
+strata serve: session 0: prompt 18140 tokens = 18122 reused + 18 read in 160 ms (112.6 tok/s), 32 generated in 1058 ms (30.3 tok/s), drafts accepted 20 of 26 (stop)
+strata serve: session 0: prompt 18066 tokens = 0 reused + 18066 read in 31813 ms (567.9 tok/s), 102 generated in 3019 ms (33.8 tok/s), drafts accepted 64 of 74 (cancel)
+strata serve: session 0: prompt 18184 tokens = 0 reused + 18184 read in 32078 ms (566.9 tok/s), 33 generated in 901 ms (36.6 tok/s), drafts accepted 21 of 22 (stop)
+[strata] 2026-11-03 11:34:18 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --native C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 131072 --prefill auto --mtp 2
+strata-q36: C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf: 753 tensors (layout checked), 4.40 GiB on the GPU in 3.7 s (the routed experts are placed after the engine's buffers)
+strata-q36: prompt experts on MMQ (int8)
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1151, version 100500)
+strata-q36: context 131072 cells, prompt chunk 4096, MTP block loaded, 94.21 GiB of VRAM free
+strata-q36: every routed expert in VRAM (18.75 GiB) in 24.3 s
+strata-q36: warmed up in 6.2 s (one prompt chunk, a decode step, a speculative step)
+strata serve: session 0: prompt 33 tokens = 0 reused + 33 read in 178 ms (185.0 tok/s), 128 generated in 2308 ms (55.5 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 35 tokens = 0 reused + 35 read in 182 ms (191.9 tok/s), 512 generated in 9491 ms (53.9 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 4051 tokens = 0 reused + 4051 read in 5531 ms (732.4 tok/s), 512 generated in 11091 ms (46.2 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 16345 tokens = 0 reused + 16345 read in 27779 ms (588.4 tok/s), 512 generated in 17140 ms (29.9 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 35 tokens = 0 reused + 35 read in 185 ms (189.2 tok/s), 512 generated in 9701 ms (52.8 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 4051 tokens = 0 reused + 4051 read in 5544 ms (730.6 tok/s), 512 generated in 11110 ms (46.1 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 16345 tokens = 0 reused + 16345 read in 27709 ms (589.9 tok/s), 512 generated in 17129 ms (29.9 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 35 tokens = 0 reused + 35 read in 185 ms (188.7 tok/s), 512 generated in 9608 ms (53.3 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 4051 tokens = 0 reused + 4051 read in 5559 ms (728.7 tok/s), 512 generated in 11109 ms (46.1 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 16345 tokens = 0 reused + 16345 read in 27665 ms (590.8 tok/s), 512 generated in 17130 ms (29.9 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 40 tokens = 0 reused + 40 read in 192 ms (208.3 tok/s), 304 generated in 5706 ms (53.3 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 48 tokens = 0 reused + 48 read in 203 ms (236.8 tok/s), 887 generated in 16734 ms (53.0 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 43 tokens = 0 reused + 43 read in 196 ms (219.9 tok/s), 644 generated in 12207 ms (52.8 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 29 tokens = 0 reused + 29 read in 141 ms (206.2 tok/s), 362 generated in 6828 ms (53.0 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 4047 tokens = 0 reused + 4047 read in 5537 ms (730.9 tok/s), 249 generated in 5348 ms (46.6 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 4047 tokens = 0 reused + 4047 read in 5556 ms (728.4 tok/s), 101 generated in 2149 ms (47.0 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 16340 tokens = 0 reused + 16340 read in 27747 ms (588.9 tok/s), 203 generated in 6748 ms (30.1 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 16348 tokens = 0 reused + 16348 read in 27652 ms (591.2 tok/s), 237 generated in 7889 ms (30.0 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 287 tokens = 0 reused + 287 read in 581 ms (494.3 tok/s), 135 generated in 2521 ms (53.5 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 297 tokens = 0 reused + 297 read in 591 ms (502.6 tok/s), 120 generated in 2280 ms (52.6 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 314 tokens = 0 reused + 314 read in 595 ms (527.7 tok/s), 389 generated in 7278 ms (53.4 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 301 tokens = 0 reused + 301 read in 580 ms (518.6 tok/s), 489 generated in 9245 ms (52.9 tok/s), drafts accepted 0 of 0 (stop)
+
+## --mtp 0 run
+[strata] 2026-11-03 11:14:09 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --native C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 131072 --prefill auto --mtp 0
+strata-q36: C:\Users\<user>\models\strata\models\qwen36-UD-Q4_K_XL\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf: 753 tensors (layout checked), 4.40 GiB on the GPU in 3.2 s (the routed experts are placed after the engine's buffers)
+strata-q36: prompt experts on MMQ (int8)
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1151, version 100500)
+strata-q36: context 131072 cells, prompt chunk 4096, MTP block loaded, 94.21 GiB of VRAM free
+strata-q36: every routed expert in VRAM (18.75 GiB) in 25.4 s
+strata-q36: warmed up in 5.8 s (one prompt chunk, a decode step)
+strata serve: session 0: prompt 18023 tokens = 0 reused + 18023 read in 30123 ms (598.3 tok/s), 128 generated in 4421 ms (29.0 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 18171 tokens = 0 reused + 18171 read in 30549 ms (594.8 tok/s), 128 generated in 4414 ms (29.0 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 24058 tokens = 0 reused + 24058 read in 44139 ms (545.1 tok/s), 12 generated in 559 ms (21.4 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 80058 tokens = 0 reused + 80058 read in 281243 ms (284.7 tok/s), 12 generated in 1706 ms (7.0 tok/s), drafts accepted 0 of 0 (stop)
+strata serve: session 0: prompt 4033 tokens = 0 reused + 4033 read in 5314 ms (759.0 tok/s), 256 generated in 5201 ms (49.2 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 16034 tokens = 0 reused + 16034 read in 26018 ms (616.3 tok/s), 256 generated in 8151 ms (31.4 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 32036 tokens = 0 reused + 32036 read in 66039 ms (485.1 tok/s), 256 generated in 17830 ms (14.4 tok/s), drafts accepted 0 of 0 (length)
+strata serve: session 0: prompt 64036 tokens = 0 reused + 64036 read in 197945 ms (323.5 tok/s), 256 generated in 33646 ms (7.6 tok/s), drafts accepted 0 of 0 (length)
+
+## Qwen3.8-Flash-Next Q2_0, setup's settings: main run, reuse probe, standard-v1 : engine starts 13:52, 14:00 and 14:01
+[strata] 2026-11-03 13:52:12 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --pack C:\Users\<user>\models\strata\packs\q2_0 --native C:\Users\<user>\models\strata\models\Q2_0\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --ple-gguf C:\Users\<user>\models\strata\models\Q2_0\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf --expert-profile C:\Users\<user>\tools\strata\terminal\0.1.56\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp C:\Users\<user>\models\strata\mtp\rt --max-context 131072 --kv int8 --resident-experts
+strata generate: memory guard: limit 31.6 GiB (source: meminfo), current 16.9 GiB, reclaimable cache credited 0.0 GiB; available 14.7 GiB (MemAvailable 14.7 GiB), floor 2560 MiB
+strata generate: expert cache auto: Windows keeps 2560 MiB free after the cache on a card this size (the default 700 MiB left 323 MiB on a 20 GB card and Windows paged, #1376); --vram-reserve-mib N sets it
+strata generate: expert cache auto: 101.50 GiB free, 2560 MiB reserved (+184 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 24576 slots
+strata generate: expert cache 24576 slots, 31.64 GiB of VRAM; policy is
+strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 24576 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: Windows commit: 49.9 GiB left of a 159.6 GiB limit (RAM + page file)
+strata serve: conversation cache sized from the free RAM: 2304 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+strata serve: 60262 MiB of VRAM free with everything loaded
+strata verify: capturing the 6-token window (60241 MiB of VRAM free)
+strata verify: captured the 6-token window (upload no error, sync no error) in 9.0 ms
+strata verify: capturing the 1-token window (60240 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error) in 11.6 ms
+strata verify: capturing the 4-token window (60240 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error) in 4.6 ms
+strata verify: capturing the 3-token window (60239 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error) in 8.0 ms
+strata verify: capturing the 2-token window (60239 MiB of VRAM free)
+strata verify: captured the 2-token window (upload no error, sync no error) in 5.6 ms
+strata serve: prompt 18061 tokens = 0 reused + 18061 read in 21147 ms (854.1 tok/s), 128 generated in 3062 ms (41.8 tok/s), drafts accepted 67 of 91, 3 checkpoints
+strata serve: conversation cache: parked 18188 tokens in 155.3 ms; parked=1 bytes=750168516 evictions=0 snapshot_bytes=750168516 reused_kv_bytes=0
+strata serve: prompt 18213 tokens = 18056 reused + 157 read in 1158 ms (135.6 tok/s), 128 generated in 2573 ms (49.7 tok/s), drafts accepted 82 of 111, 4 checkpoints
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=0
+strata serve: conversation cache: parked 18340 tokens in 159.2 ms; parked=1 bytes=870625500 evictions=0 snapshot_bytes=870625500 reused_kv_bytes=0
+strata serve: prompt 24058 tokens = 0 reused + 24058 read in 27676 ms (869.3 tok/s), 12 generated in 209 ms (57.4 tok/s), drafts accepted 8 of 9, 3 checkpoints
+strata serve: conversation cache: parked 24069 tokens in 148.1 ms; parked=2 bytes=1710672696 evictions=0 snapshot_bytes=840047196 reused_kv_bytes=0
+strata serve: prompt 80058 tokens = 0 reused + 80058 read in 93330 ms (857.8 tok/s), 12 generated in 302 ms (39.7 tok/s), drafts accepted 6 of 9, 6 checkpoints
+strata serve: conversation cache: parked 80069 tokens in 343.2 ms; parked=1 bytes=2050284516 evictions=2 snapshot_bytes=2050284516 reused_kv_bytes=0
+strata serve: prompt 4071 tokens = 0 reused + 4071 read in 5198 ms (783.2 tok/s), 256 generated in 5206 ms (49.2 tok/s), drafts accepted 151 of 180, 2 checkpoints
+strata serve: conversation cache: parked 4326 tokens in 54.5 ms; parked=1 bytes=420307008 evictions=3 snapshot_bytes=420307008 reused_kv_bytes=0
+strata serve: prompt 16072 tokens = 0 reused + 16072 read in 18568 ms (865.6 tok/s), 256 generated in 6868 ms (37.3 tok/s), drafts accepted 114 of 193, 2 checkpoints
+strata serve: conversation cache: parked 16327 tokens in 74.7 ms; parked=2 bytes=1023926028 evictions=3 snapshot_bytes=603619020 reused_kv_bytes=0
+strata serve: prompt 32074 tokens = 0 reused + 32074 read in 36812 ms (871.3 tok/s), 256 generated in 6503 ms (39.4 tok/s), drafts accepted 125 of 180, 3 checkpoints
+strata serve: conversation cache: parked 32329 tokens in 117.3 ms; parked=3 bytes=1990151080 evictions=3 snapshot_bytes=966225052 reused_kv_bytes=0
+strata serve: prompt 64074 tokens = 0 reused + 64074 read in 74123 ms (864.4 tok/s), 256 generated in 5812 ms (44.0 tok/s), drafts accepted 145 of 187, 5 checkpoints
+strata serve: conversation cache: parked 64329 tokens in 286.5 ms; parked=1 bytes=1691512188 evictions=6 snapshot_bytes=1691512188 reused_kv_bytes=0
+strata serve: prompt 79 tokens = 0 reused + 79 read in 1092 ms (72.4 tok/s), 2253 generated in 38256 ms (58.9 tok/s), drafts accepted 1532 of 1737, 1 checkpoints
+strata serve: conversation cache: parked 2331 tokens in 53.9 ms; parked=2 bytes=1963248680 evictions=6 snapshot_bytes=271736492 reused_kv_bytes=0
+strata serve: prompt 2347 tokens = 74 reused + 2273 read in 2568 ms (885.2 tok/s), 454 generated in 7191 ms (63.1 tok/s), drafts accepted 328 of 372, 1 checkpoints
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=1
+strata serve: conversation cache: parked 2800 tokens in 39.7 ms; parked=2 bytes=1970400252 evictions=6 snapshot_bytes=278888064 reused_kv_bytes=0
+strata serve: prompt 79 tokens = 74 reused + 5 read in 108 ms (46.1 tok/s), 2253 generated in 38320 ms (58.8 tok/s), drafts accepted 1532 of 1739, 1 checkpoints
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=1
+strata serve: conversation cache: parked 2331 tokens in 42.3 ms; parked=2 bytes=1963248680 evictions=6 snapshot_bytes=271736492 reused_kv_bytes=0
+strata serve: prompt 2347 tokens = 74 reused + 2273 read in 2613 ms (869.7 tok/s), 454 generated in 7276 ms (62.4 tok/s), drafts accepted 327 of 372, 1 checkpoints
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=1
+strata serve: conversation cache: parked 2800 tokens in 40.0 ms; parked=2 bytes=1970400252 evictions=6 snapshot_bytes=278888064 reused_kv_bytes=0
+strata serve: prompt 79 tokens = 74 reused + 5 read in 113 ms (44.4 tok/s), 128 generated in 2049 ms (62.5 tok/s), drafts accepted 90 of 100, 1 checkpoints
+strata serve: prompt 225 tokens = 206 reused + 19 read in 165 ms (115.0 tok/s), 484 generated in 7407 ms (65.3 tok/s), drafts accepted 349 of 377, 1 checkpoints
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=1
+strata serve: conversation cache: parked 708 tokens in 35.0 ms; parked=2 bytes=1938459596 evictions=6 snapshot_bytes=246947408 reused_kv_bytes=0
+strata serve: prompt 427 tokens = 0 reused + 427 read in 1787 ms (239.0 tok/s), 103 generated in 1711 ms (60.2 tok/s), drafts accepted 71 of 90, 1 checkpoints
+strata serve: conversation cache: parked 529 tokens in 34.0 ms; parked=3 bytes=2182715072 evictions=6 snapshot_bytes=244255476 reused_kv_bytes=0
+strata serve: prompt 503 tokens = 422 reused + 81 read in 769 ms (105.4 tok/s), 46 generated in 749 ms (61.4 tok/s), drafts accepted 32 of 41, 2 checkpoints
+[strata] 2026-11-03 14:00:01 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --pack C:\Users\<user>\models\strata\packs\q2_0 --native C:\Users\<user>\models\strata\models\Q2_0\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --ple-gguf C:\Users\<user>\models\strata\models\Q2_0\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf --expert-profile C:\Users\<user>\tools\strata\terminal\0.1.56\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp C:\Users\<user>\models\strata\mtp\rt --max-context 131072 --kv int8 --resident-experts
+strata generate: memory guard: limit 31.6 GiB (source: meminfo), current 16.6 GiB, reclaimable cache credited 0.0 GiB; available 15.0 GiB (MemAvailable 15.0 GiB), floor 2560 MiB
+strata generate: expert cache auto: Windows keeps 2560 MiB free after the cache on a card this size (the default 700 MiB left 323 MiB on a 20 GB card and Windows paged, #1376); --vram-reserve-mib N sets it
+strata generate: expert cache auto: 101.50 GiB free, 2560 MiB reserved (+184 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 24576 slots
+strata generate: expert cache 24576 slots, 31.64 GiB of VRAM; policy is
+strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 24576 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: Windows commit: 50.3 GiB left of a 159.6 GiB limit (RAM + page file)
+strata serve: conversation cache sized from the free RAM: 2560 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+strata serve: 60262 MiB of VRAM free with everything loaded
+strata verify: capturing the 6-token window (60241 MiB of VRAM free)
+strata verify: captured the 6-token window (upload no error, sync no error) in 14.0 ms
+strata verify: capturing the 4-token window (60240 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error) in 7.1 ms
+strata verify: capturing the 1-token window (60240 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error) in 9.2 ms
+strata verify: capturing the 3-token window (60239 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error) in 8.3 ms
+strata serve: prompt 18022 tokens = 0 reused + 18022 read in 18360 ms (981.6 tok/s), 10 generated in 268 ms (37.3 tok/s), drafts accepted 5 of 11, 3 checkpoints
+strata serve: conversation cache: parked 18031 tokens in 124.2 ms; parked=1 bytes=747780244 evictions=0 snapshot_bytes=747780244 reused_kv_bytes=0
+strata serve: prompt 18022 tokens = 18015 reused + 7 read in 195 ms (35.8 tok/s), 10 generated in 252 ms (39.7 tok/s), drafts accepted 5 of 11, 3 checkpoints
+strata serve: prompt 18048 tokens = 18031 reused + 17 read in 197 ms (86.5 tok/s), 59 generated in 899 ms (65.6 tok/s), drafts accepted 44 of 47, 4 checkpoints
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=0
+strata serve: conversation cache: parked 18106 tokens in 116.5 ms; parked=1 bytes=867076188 evictions=0 snapshot_bytes=867076188 reused_kv_bytes=0
+strata serve: prompt 18024 tokens = 18005 reused + 19 read in 351 ms (54.1 tok/s), 14 generated in 365 ms (38.3 tok/s), drafts accepted 7 of 13, 3 checkpoints
+strata serve: conversation cache: parked 18037 tokens in 138.0 ms; parked=2 bytes=1614978576 evictions=0 snapshot_bytes=747902388 reused_kv_bytes=0
+strata verify: capturing the 2-token window (60239 MiB of VRAM free)
+strata verify: captured the 2-token window (upload no error, sync no error) in 5.9 ms
+strata serve: prompt 18060 tokens = 0 reused + 18060 read in 17975 ms (1004.7 tok/s), 67 generated in 1614 ms (41.5 tok/s), drafts accepted 36 of 65, 3 checkpoints
+strata serve: conversation cache: parked 18126 tokens in 171.6 ms; parked=3 bytes=2364224856 evictions=0 snapshot_bytes=749246280 reused_kv_bytes=0
+strata serve: prompt 18091 tokens = 18055 reused + 36 read in 637 ms (56.5 tok/s), 40 generated in 733 ms (54.5 tok/s), drafts accepted 27 of 37, 4 checkpoints
+[strata] 2026-11-03 14:01:18 engine started: C:\Users\<user>\tools\strata\components\engine\0.1.56-windows-x86_64-hip-rdna3\strata.exe --serve --pack C:\Users\<user>\models\strata\packs\q2_0 --native C:\Users\<user>\models\strata\models\Q2_0\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --ple-gguf C:\Users\<user>\models\strata\models\Q2_0\Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf --expert-profile C:\Users\<user>\tools\strata\terminal\0.1.56\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp C:\Users\<user>\models\strata\mtp\rt --max-context 131072 --kv int8 --resident-experts
+strata generate: memory guard: limit 31.6 GiB (source: meminfo), current 16.5 GiB, reclaimable cache credited 0.0 GiB; available 15.1 GiB (MemAvailable 15.1 GiB), floor 2560 MiB
+strata generate: expert cache auto: Windows keeps 2560 MiB free after the cache on a card this size (the default 700 MiB left 323 MiB on a 20 GB card and Windows paged, #1376); --vram-reserve-mib N sets it
+strata generate: expert cache auto: 101.50 GiB free, 2560 MiB reserved (+184 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 24576 slots
+strata generate: expert cache 24576 slots, 31.64 GiB of VRAM; policy is
+strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 24576 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: Windows commit: 50.3 GiB left of a 159.6 GiB limit (RAM + page file)
+strata serve: conversation cache sized from the free RAM: 2560 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+strata serve: 60262 MiB of VRAM free with everything loaded
+strata verify: capturing the 4-token window (60241 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error) in 17.4 ms
+strata verify: capturing the 1-token window (60240 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error) in 7.0 ms
+strata verify: capturing the 3-token window (60239 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error) in 4.3 ms
+strata verify: capturing the 6-token window (60239 MiB of VRAM free)
+strata verify: captured the 6-token window (upload no error, sync no error) in 4.5 ms
+strata verify: capturing the 2-token window (60239 MiB of VRAM free)
+strata verify: captured the 2-token window (upload no error, sync no error) in 4.2 ms
+strata serve: prompt 75 tokens = 0 reused + 75 read in 905 ms (82.9 tok/s), 128 generated in 2746 ms (46.6 tok/s), drafts accepted 69 of 113, 1 checkpoints
+strata serve: conversation cache: parked 202 tokens in 76.6 ms; parked=1 bytes=239246168 evictions=0 snapshot_bytes=239246168 reused_kv_bytes=0
+strata serve: prompt 77 tokens = 0 reused + 77 read in 774 ms (99.4 tok/s), 506 generated in 10288 ms (49.2 tok/s), drafts accepted 298 of 450, 1 checkpoints
+strata serve: conversation cache: parked 582 tokens in 36.1 ms; parked=2 bytes=484294184 evictions=0 snapshot_bytes=245048016 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 3956 ms (1034.6 tok/s), 512 generated in 12873 ms (39.8 tok/s), drafts accepted 236 of 369, 1 checkpoints
+strata serve: conversation cache: parked 4604 tokens in 45.7 ms; parked=3 bytes=790741776 evictions=0 snapshot_bytes=306447592 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 15508 ms (1056.7 tok/s), 512 generated in 13137 ms (39.0 tok/s), drafts accepted 235 of 360, 1 checkpoints
+strata serve: conversation cache: parked 16898 tokens in 67.1 ms; parked=4 bytes=1284967720 evictions=0 snapshot_bytes=494225944 reused_kv_bytes=0
+strata serve: prompt 77 tokens = 0 reused + 77 read in 796 ms (96.7 tok/s), 282 generated in 5967 ms (47.3 tok/s), drafts accepted 163 of 273, 1 checkpoints
+strata serve: conversation cache: parked 358 tokens in 40.2 ms; parked=4 bytes=1287349536 evictions=1 snapshot_bytes=241627984 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 4007 ms (1021.4 tok/s), 512 generated in 10901 ms (47.0 tok/s), drafts accepted 290 of 406, 1 checkpoints
+strata serve: conversation cache: parked 4604 tokens in 46.0 ms; parked=4 bytes=1348749112 evictions=2 snapshot_bytes=306447592 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 15424 ms (1062.4 tok/s), 512 generated in 11342 ms (45.1 tok/s), drafts accepted 285 of 398, 1 checkpoints
+strata serve: conversation cache: parked 16898 tokens in 70.9 ms; parked=4 bytes=1536527464 evictions=3 snapshot_bytes=494225944 reused_kv_bytes=0
+strata serve: prompt 77 tokens = 0 reused + 77 read in 773 ms (99.6 tok/s), 512 generated in 10626 ms (48.2 tok/s), drafts accepted 302 of 471, 1 checkpoints
+strata serve: conversation cache: parked 588 tokens in 39.1 ms; parked=4 bytes=1287416760 evictions=4 snapshot_bytes=245115240 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 4033 ms (1014.9 tok/s), 512 generated in 11867 ms (43.1 tok/s), drafts accepted 263 of 373, 1 checkpoints
+strata serve: conversation cache: parked 4604 tokens in 41.5 ms; parked=4 bytes=1352236368 evictions=5 snapshot_bytes=306447592 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 15442 ms (1061.2 tok/s), 512 generated in 12133 ms (42.2 tok/s), drafts accepted 264 of 391, 1 checkpoints
+strata serve: conversation cache: parked 16898 tokens in 67.2 ms; parked=4 bytes=1540014720 evictions=6 snapshot_bytes=494225944 reused_kv_bytes=0
+strata serve: prompt 82 tokens = 0 reused + 82 read in 831 ms (98.7 tok/s), 55 generated in 927 ms (59.3 tok/s), drafts accepted 37 of 44, 1 checkpoints
+strata serve: conversation cache: parked 136 tokens in 30.0 ms; parked=4 bytes=1284002900 evictions=7 snapshot_bytes=238214124 reused_kv_bytes=0
+strata serve: prompt 90 tokens = 0 reused + 90 read in 843 ms (106.8 tok/s), 76 generated in 1261 ms (60.3 tok/s), drafts accepted 52 of 67, 1 checkpoints
+strata serve: conversation cache: parked 165 tokens in 31.3 ms; parked=4 bytes=1277584236 evictions=8 snapshot_bytes=238696576 reused_kv_bytes=0
+strata serve: prompt 85 tokens = 0 reused + 85 read in 812 ms (104.7 tok/s), 81 generated in 1417 ms (57.1 tok/s), drafts accepted 54 of 73, 1 checkpoints
+strata serve: conversation cache: parked 165 tokens in 31.5 ms; parked=4 bytes=1209833200 evictions=9 snapshot_bytes=238696556 reused_kv_bytes=0
+strata serve: prompt 71 tokens = 0 reused + 71 read in 775 ms (91.6 tok/s), 44 generated in 864 ms (50.9 tok/s), drafts accepted 27 of 41, 1 checkpoints
+strata serve: conversation cache: parked 114 tokens in 31.9 ms; parked=4 bytes=953509824 evictions=10 snapshot_bytes=237902568 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 4012 ms (1019.1 tok/s), 56 generated in 1008 ms (55.5 tok/s), drafts accepted 36 of 41, 1 checkpoints
+strata serve: conversation cache: parked 4144 tokens in 42.4 ms; parked=4 bytes=1014719996 evictions=11 snapshot_bytes=299424296 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 4006 ms (1020.6 tok/s), 67 generated in 1357 ms (49.4 tok/s), drafts accepted 41 of 53, 1 checkpoints
+strata serve: conversation cache: parked 4155 tokens in 42.5 ms; parked=4 bytes=1075624784 evictions=12 snapshot_bytes=299601364 reused_kv_bytes=0
+strata serve: prompt 16382 tokens = 0 reused + 16382 read in 15450 ms (1060.3 tok/s), 72 generated in 1436 ms (50.1 tok/s), drafts accepted 44 of 56, 1 checkpoints
+strata serve: conversation cache: parked 16453 tokens in 67.2 ms; parked=4 bytes=1324375156 evictions=13 snapshot_bytes=487446928 reused_kv_bytes=0
+strata serve: prompt 16390 tokens = 0 reused + 16390 read in 15838 ms (1034.8 tok/s), 145 generated in 2956 ms (49.1 tok/s), drafts accepted 90 of 130, 2 checkpoints
+strata serve: conversation cache: parked 16534 tokens in 77.4 ms; parked=4 bytes=1693269944 evictions=14 snapshot_bytes=606797356 reused_kv_bytes=0
+strata serve: prompt 325 tokens = 0 reused + 325 read in 1574 ms (206.5 tok/s), 58 generated in 921 ms (63.0 tok/s), drafts accepted 41 of 48, 1 checkpoints
+strata serve: conversation cache: parked 382 tokens in 30.7 ms; parked=4 bytes=1635841056 evictions=15 snapshot_bytes=241995408 reused_kv_bytes=0
+strata serve: prompt 335 tokens = 0 reused + 335 read in 1565 ms (214.0 tok/s), 671 generated in 19555 ms (34.3 tok/s), drafts accepted 225 of 449, 1 checkpoints
+strata serve: conversation cache: parked 1005 tokens in 36.3 ms; parked=4 bytes=1587762368 evictions=16 snapshot_bytes=251522676 reused_kv_bytes=0
+strata serve: prompt 352 tokens = 0 reused + 352 read in 1596 ms (220.6 tok/s), 87 generated in 1473 ms (59.1 tok/s), drafts accepted 59 of 73, 1 checkpoints
+strata serve: conversation cache: parked 438 tokens in 29.8 ms; parked=4 bytes=1343165964 evictions=17 snapshot_bytes=242850524 reused_kv_bytes=0
+strata serve: prompt 339 tokens = 0 reused + 339 read in 1604 ms (211.4 tok/s), 77 generated in 1454 ms (53.0 tok/s), drafts accepted 50 of 75, 1 checkpoints
+
+## DeepSeek-V4.1-Flash IST-DAS-2.00bpw: setup's test command under each setting tried (4 Nov, 07:00-07:32)
+# dsv41-try-0-launch-check: env {'DS4_LAUNCH_CHECK': '1', 'DS4_TRACE': '1'}
+ds4: WARNING: 16.2 GB of experts stay off the GPU - Windows charges the GPU's memory to its commit (RAM + page file) and can commit only 75.9 GB more for them (9 GB kept for the other programs). A page file of 144 GB (147456 MB; now 128 GB) keeps them on the GPU: System > About > Advanced system settings > Performance > Advanced > Virtual memory, then restart
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-1-uma-reserve-24: env {'DS4_UMA_GPU_RESERVE_GB': '24'}
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-2-reserve-16g: env {} --reserve-mib 16384
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-3-no-vision-no-dspark: env {} --vision off --dspark none
+ds4: WARNING: 17.5 GB of experts stay off the GPU - Windows charges the GPU's memory to its commit (RAM + page file) and can commit only 78.9 GB more for them (9 GB kept for the other programs). A page file of 145 GB (148480 MB; now 128 GB) keeps them on the GPU: System > About > Advanced system settings > Performance > Advanced > Virtual memory, then restart
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-4-ds4-defaults-off: env {'DS4_DEFAULTS': '0'}
+ds4: WARNING: 17.8 GB of experts stay off the GPU - Windows charges the GPU's memory to its commit (RAM + page file) and can commit only 74.3 GB more for them (9 GB kept for the other programs). A page file of 145 GB (148480 MB; now 128 GB) keeps them on the GPU: System > About > Advanced system settings > Performance > Advanced > Virtual memory, then restart
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-5-vram-experts-0.3: env {} --vram-experts 0.3
+ds4: CUDA0 layers [0, 42] + head: weights 6.58 GB, experts 27.63 GB (2710 of 15744 in VRAM), caches 0.00 GB, 60854 MiB free
+ds4: CUDA0 layers [0, 42] + head: weights 6.58 GB, experts 27.63 GB (2710 of 15744 in VRAM), caches 0.00 GB, 60854 MiB free
+decode: 8 tokens in 4868 ms (1.44 tok/s); CPU lane: 1400 of 2490 experts, streamed to the GPU: 0; the cache moved 16 (24 in all)
+answer token ids: 671,6102,294,8760,344,11111,16,1,
+# dsv41-try-0-vram-experts-0.9: env {} --vram-experts 0.9
+ds4: WARNING: 8.4 GB of experts stay off the GPU - Windows charges the GPU's memory to its commit (RAM + page file) and can commit only 74.5 GB more for them (9 GB kept for the other programs). A page file of 136 GB (139264 MB; now 128 GB) keeps them on the GPU: System > About > Advanced system settings > Performance > Advanced > Virtual memory, then restart
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-1-vram-experts-0.8: env {} --vram-experts 0.8
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-2-vram-experts-0.7: env {} --vram-experts 0.7
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-3-vram-experts-0.6: env {} --vram-experts 0.6
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-4-vram-experts-0.5: env {} --vram-experts 0.5
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-0-vram-experts-0.45: env {} --vram-experts 0.45
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-1-vram-experts-0.4: env {} --vram-experts 0.4
+maya-ds4: cudaMemcpy(x.vram_tab, tab.data(), tab.size() * 8, cudaMemcpyHostToDevice): unspecified launch failure
+# dsv41-try-2-vram-experts-0.35: env {} --vram-experts 0.35
+ds4: CUDA0 layers [0, 42] + head: weights 6.58 GB, experts 32.23 GB (3246 of 15744 in VRAM), caches 0.00 GB, 51384 MiB free
+ds4: CUDA0 layers [0, 42] + head: weights 6.58 GB, experts 32.23 GB (3246 of 15744 in VRAM), caches 0.00 GB, 51384 MiB free
+decode: 8 tokens in 3024 ms (2.31 tok/s); CPU lane: 1317 of 2490 experts, streamed to the GPU: 0; the cache moved 16 (24 in all)
+answer token ids: 671,6102,294,8760,344,11111,16,1,
+
+## DeepSeek-V4.1-Flash IST-DAS-2.00bpw, setup's config plus --vram-experts 0.35: speed probe 07:33, main run 07:35
+[strata] 2026-11-04 07:33:33 engine started: C:\Users\<user>\tools\strata\install\engine-dsv41\0.1.56-windows-x86_64-hip-rdna3\strata-dsv41.exe --serve --pack C:\Users\<user>\models\strata\packs\deepseek-v4.1-flash-ist-das-2.00bpw --max-context 131072 --eos 1 --vision on --dspark auto --dspark-conf 0.65 --prefill-chunk 16384 --vram-experts 0.35
+ds4: the experts VRAM leaves over (~105.2 GB) are read in place from the model's files (--mmap-experts off copies them into RAM) (16.4 GB of RAM free to keep them: the most-routed 0.0 GB read ahead; prompts in chunks of 16384)
+ds4: CUDA0 layers [0, 42] + head: weights 6.58 GB, experts 24.33 GB (2330 of 15744 in VRAM), caches 0.12 GB, 68255 MiB free
+ds4: 13414 routed experts on the CPU lane (115.7 GB, in place in the model's files), 16 threads
+maya ds4 serve: prompt 44 tokens = 0 reused + 44 read in 11697 ms (3.8 tok/s), 128 generated in 29532 ms (4.33 tok/s); CPU lane 50.6% of the experts
+maya ds4 serve: prompt 3937 tokens = 0 reused + 3937 read in 28746 ms (137.0 tok/s), 33 generated in 9037 ms (3.65 tok/s); CPU lane 3.2% of the experts
+maya ds4 serve: prompt 3986 tokens = 3937 reused + 49 read in 5717 ms (8.6 tok/s), 15 generated in 4741 ms (3.16 tok/s); CPU lane 4.0% of the experts
+[strata] 2026-11-04 07:35:52 engine started: C:\Users\<user>\tools\strata\install\engine-dsv41\0.1.56-windows-x86_64-hip-rdna3\strata-dsv41.exe --serve --pack C:\Users\<user>\models\strata\packs\deepseek-v4.1-flash-ist-das-2.00bpw --max-context 131072 --eos 1 --vision on --dspark auto --dspark-conf 0.65 --prefill-chunk 16384 --vram-experts 0.35
+ds4: the experts VRAM leaves over (~105.2 GB) are read in place from the model's files (--mmap-experts off copies them into RAM) (17.8 GB of RAM free to keep them: the most-routed 0.0 GB read ahead; prompts in chunks of 16384)
+ds4: CUDA0 layers [0, 42] + head: weights 6.58 GB, experts 24.33 GB (2330 of 15744 in VRAM), caches 0.12 GB, 68255 MiB free
+ds4: 13414 routed experts on the CPU lane (115.7 GB, in place in the model's files), 16 threads
+maya ds4 serve: prompt 17358 tokens = 0 reused + 17358 read in 50860 ms (341.3 tok/s), 65 generated in 17540 ms (3.71 tok/s); CPU lane 0.4% of the experts
+maya ds4 serve: prompt 17439 tokens = 17358 reused + 81 read in 16056 ms (5.0 tok/s), 47 generated in 14746 ms (3.19 tok/s); CPU lane 1.1% of the experts
+maya ds4 serve: prompt 17497 tokens = 17357 reused + 140 read in 10067 ms (13.9 tok/s), 68 generated in 21937 ms (3.10 tok/s); CPU lane 1.4% of the experts
+maya ds4 serve: prompt 17578 tokens = 17497 reused + 81 read in 19139 ms (4.2 tok/s), 47 generated in 13774 ms (3.41 tok/s); CPU lane 2.0% of the experts
+maya ds4 serve: prompt 23682 tokens = 0 reused + 23682 read in 55715 ms (425.1 tok/s), 10 generated in 2212 ms (4.52 tok/s); CPU lane 0.9% of the experts
+maya ds4 serve: prompt 77464 tokens = 0 reused + 77464 read in 154750 ms (500.6 tok/s), 10 generated in 1527 ms (6.55 tok/s); CPU lane 0.3% of the experts
+maya ds4 serve: prompt 3937 tokens = 0 reused + 3937 read in 27596 ms (142.7 tok/s), 131 generated in 33841 ms (3.87 tok/s); CPU lane 0.4% of the experts
+maya ds4 serve: prompt 4082 tokens = 3937 reused + 145 read in 14224 ms (10.2 tok/s), 111 generated in 25912 ms (4.28 tok/s); CPU lane 0.5% of the experts
+maya ds4 serve: prompt 15723 tokens = 0 reused + 15723 read in 51942 ms (302.7 tok/s), 129 generated in 30528 ms (4.23 tok/s); CPU lane 0.6% of the experts
+maya ds4 serve: prompt 15868 tokens = 15723 reused + 145 read in 29913 ms (4.8 tok/s), 111 generated in 32201 ms (3.45 tok/s); CPU lane 0.6% of the experts
+maya ds4 serve: prompt 31130 tokens = 0 reused + 31130 read in 68993 ms (451.2 tok/s), 130 generated in 31204 ms (4.17 tok/s); CPU lane 0.6% of the experts
+maya ds4 serve: prompt 31275 tokens = 31130 reused + 145 read in 9803 ms (14.8 tok/s), 15 generated in 3759 ms (3.99 tok/s); CPU lane 0.6% of the experts
+maya ds4 serve: prompt 62427 tokens = 0 reused + 62427 read in 123296 ms (506.3 tok/s), 129 generated in 33661 ms (3.83 tok/s); CPU lane 0.5% of the experts
+maya ds4 serve: prompt 62572 tokens = 62427 reused + 145 read in 9055 ms (16.0 tok/s), 111 generated in 26622 ms (4.17 tok/s); CPU lane 0.5% of the experts

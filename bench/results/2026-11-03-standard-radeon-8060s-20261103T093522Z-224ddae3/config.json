@@ -1,0 +1,22 @@
+{
+  "engine_options": {
+    "--native": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+    "--max-context": "131072",
+    "--prefill": "auto",
+    "--mtp": "2"
+  },
+  "other_engine_options": {
+    "--native": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+    "--max-context": "131072"
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "presence_penalty": 1.5,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 131072,
+  "source": "effective engine arguments of the profile"
+}
