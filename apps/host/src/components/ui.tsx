@@ -13,6 +13,7 @@ import { cx, userError } from '../lib/format';
 import { plainFailure } from '../lib/plain-errors';
 import { dismissActionError, dismissToast, holdToast, releaseToast, useStore } from '../lib/store';
 import { isTopSurface, useSurfaceFocus } from '../lib/focus';
+import { measureScale } from '../lib/overlay-place';
 /* -------------------------------------------------------------------- icon */
 export type IconName = 'pause' | 'play' | 'activity' | 'plus' | 'shield' | 'computer'
 // Authored for the shell: see docs/design-system-notes.md.
@@ -264,13 +265,15 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
         const el = triggerRef.current;
         if (!el)
             return;
+        // Visual pixels in, the page's own pixels out: the page may be scaled by "Interface size" (#4653).
+        const scale = measureScale();
         const r = el.getBoundingClientRect();
-        const height = Math.min(320, options.length * (menuSize === 'comfortable' ? 52 : 38) + 12);
+        const height = Math.min(320, options.length * (menuSize === 'comfortable' ? 52 : 38) + 12) * scale;
         const below = window.innerHeight - r.bottom;
         // Flip above the trigger when there is more room there than below.
         const up = below < height + 12 && r.top > below;
-        const width = Math.min(menuWidth ?? Math.max(r.width, menuMinWidth ?? (menuSize === 'comfortable' ? 340 : 180)), window.innerWidth - 24);
-        setPlaced({ left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)), top: up ? r.top - 6 : r.bottom + 6, width, up });
+        const width = Math.min((menuWidth ?? Math.max(r.width / scale, menuMinWidth ?? (menuSize === 'comfortable' ? 340 : 180))) * scale, window.innerWidth - 24);
+        setPlaced({ left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)) / scale, top: (up ? r.top - 6 : r.bottom + 6) / scale, width: width / scale, up });
         setCursor(Math.max(0, options.findIndex((o) => o.value === value)));
         setOpen(true);
     }, [options, value, menuSize, menuMinWidth, menuWidth]);
@@ -282,12 +285,13 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
             const el = triggerRef.current;
             if (!el)
                 return;
+            const scale = measureScale();
             const r = el.getBoundingClientRect();
-            const height = popupRef.current?.offsetHeight ?? Math.min(320, options.length * (menuSize === 'comfortable' ? 52 : 38) + 12);
+            const height = (popupRef.current?.offsetHeight ?? Math.min(320, options.length * (menuSize === 'comfortable' ? 52 : 38) + 12)) * scale;
             const below = window.innerHeight - r.bottom;
             const up = below < height + 12 && r.top > below;
-            const width = Math.min(menuWidth ?? Math.max(r.width, menuMinWidth ?? (menuSize === 'comfortable' ? 340 : 180)), window.innerWidth - 24);
-            setPlaced({ left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)), top: up ? r.top - 6 : r.bottom + 6, width, up });
+            const width = Math.min((menuWidth ?? Math.max(r.width / scale, menuMinWidth ?? (menuSize === 'comfortable' ? 340 : 180))) * scale, window.innerWidth - 24);
+            setPlaced({ left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)) / scale, top: (up ? r.top - 6 : r.bottom + 6) / scale, width: width / scale, up });
         };
         const onDocDown = (e: PointerEvent) => {
             if (!triggerRef.current?.contains(e.target as Node) && !popupRef.current?.contains(e.target as Node))
