@@ -99,7 +99,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
 .st-metric__spark { display: block; overflow: visible; }
 .st-metric__spark[hidden] { display: none; }          /* the mean chart steps aside for the cards' own charts */
-/* the split run's per-card rows (GPU load, Power, PCIe): the card's name, its reading, and a chart when it has one */
+/* the split run's per-card rows (GPU load, VRAM, GPU temp, Power, PCIe): the card's name, its reading, and a chart when it has one */
 .metric-rows { display: flex; flex-direction: column; gap: var(--st-s-4); order: 1; }   /* rows come last: the tile's own chart stays with the figure above them, not under the last card */
 .metric-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--st-s-3); font-size: var(--st-fs-xs);
               font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
