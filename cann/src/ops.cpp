@@ -1,4 +1,4 @@
-﻿#include "strata/cann/ops.hpp"
+#include "strata/cann/ops.hpp"
 
 #include <aclnn/acl_meta.h>
 #include <aclnnop/aclnn_add.h>
@@ -131,6 +131,9 @@ void f16_to_f32(const uint16_t * src, float * dst, size_t n) {
 
 void matmul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
     const int64_t m = a.ne1, k = a.ne0, n = b.ne0;
+    if (b.ne1 != k || out.ne1 != m || out.ne0 != n) {
+        throw Error("cann: matmul shape mismatch (a is [m,k], b is [k,n], out is [m,n])", -1);
+    }
     aclTensor * ta = make_tensor(a, m, k);
     aclTensor * tb = make_tensor(b, k, n);
     aclTensor * tc = make_tensor(out, m, n);

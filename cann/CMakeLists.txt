@@ -1,11 +1,12 @@
-# Strata on Ascend - the CANN device layer and the first ops (P1).
+﻿# Strata on Ascend - the CANN device layer and the first ops (P1), quant formats (P2).
 #
 # A separate project, like sycl/ and metal/: the CUDA engine in ../src is not compiled here yet.
-# This target is the layer the port grows on: device, stream, HBM buffers, and the aclnn ops
-# with a CPU oracle the parity test compares against.
+# This target is the layer the port grows on: device, stream, HBM buffers, the aclnn ops with a
+# CPU oracle, and the Q4_K/Q6_K decoders checked against ggml's own.
 #
 #   cmake -S cann -B build-cann && cmake --build build-cann -j
 #   ./build-cann/cann_parity
+#   ./build-cann/quant_parity        # needs -DSTRATA_CANN_GGML_DIR=... for the ggml oracle
 #
 # Requires CANN (ASCEND_HOME_PATH, default /usr/local/Ascend/cann-9.0.0).
 cmake_minimum_required(VERSION 3.24)
@@ -32,7 +33,7 @@ find_library(OPAPI_LIB opapi PATHS "${ASCEND_HOME_PATH}/lib64" "${ASCEND_HOME_PA
 find_library(ACL_OP_COMPILER_LIB acl_op_compiler PATHS "${ASCEND_HOME_PATH}/lib64"
              "${ASCEND_HOME_PATH}/x86_64-linux/lib64" NO_DEFAULT_PATH REQUIRED)
 
-add_library(strata_cann STATIC src/device.cpp src/ops.cpp)
+add_library(strata_cann STATIC src/device.cpp src/ops.cpp src/quants.cpp)
 target_include_directories(strata_cann PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${ASCEND_HOME_PATH}/include"
                                               "${ASCEND_HOME_PATH}/include/aclnn"
                                               "${ASCEND_HOME_PATH}/x86_64-linux/include")
@@ -40,3 +41,34 @@ target_link_libraries(strata_cann PUBLIC ${ASCENDCL_LIB} ${NNOPBASE_LIB} ${OPAPI
 
 add_executable(cann_parity tests/parity.cpp)
 target_link_libraries(cann_parity PRIVATE strata_cann)
+
+# The ggml oracle: a llama.cpp checkout gives ggml's to_float for the quant formats. Its built
+# shared library is enough; the port never ships a dependency on it.
+set(STRATA_CANN_GGML_DIR "" CACHE PATH "llama.cpp checkout for the ggml dequant oracle (optional)")
+set(STRATA_CANN_GGML_LIB_DIR "" CACHE PATH "directory holding libggml-base.so (optional)")
+
+add_executable(quant_parity tests/quant_parity.cpp)
+target_link_libraries(quant_parity PRIVATE strata_cann)
+
+set(_ggml_include "${STRATA_CANN_GGML_DIR}/ggml/include")
+if(NOT EXISTS "${_ggml_include}/ggml.h")
+  set(_ggml_include "${STRATA_CANN_GGML_DIR}/include")
+endif()
+if(STRATA_CANN_GGML_DIR AND EXISTS "${_ggml_include}/ggml.h")
+  set(_ggml_lib_dir "${STRATA_CANN_GGML_LIB_DIR}")
+  if(NOT _ggml_lib_dir)
+    set(_ggml_lib_dir "${STRATA_CANN_GGML_DIR}/build-cann2/bin")
+  endif()
+  find_library(GGML_BASE_LIB ggml-base PATHS "${_ggml_lib_dir}" NO_DEFAULT_PATH)
+  if(GGML_BASE_LIB)
+    target_compile_definitions(quant_parity PRIVATE STRATA_CANN_HAVE_GGML=1)
+    target_include_directories(quant_parity PRIVATE "${_ggml_include}")
+    target_link_libraries(quant_parity PRIVATE "${GGML_BASE_LIB}")
+    set_target_properties(quant_parity PROPERTIES BUILD_RPATH "${_ggml_lib_dir}")
+    message(STATUS "quant_parity: ggml oracle from ${GGML_BASE_LIB}")
+  else()
+    message(STATUS "quant_parity: libggml-base not found under ${_ggml_lib_dir}; building without the oracle")
+  endif()
+else()
+  message(STATUS "quant_parity: no STRATA_CANN_GGML_DIR; building without the ggml oracle")
+endif()
