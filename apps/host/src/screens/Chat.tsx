@@ -10,6 +10,7 @@ import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
+import { endPreviewDeferral, previewsDeferred } from '../lib/recovery';
 import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { PreviewResizeHandle } from '../components/PreviewResizeHandle';
@@ -167,7 +168,7 @@ export function ChatScreen() {
     const resizeHandle = !setupVisible && inlinePreview && selectedPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
     const runCount = timeSkipRuns.length;
     const previewCount = session?.messages.reduce((n, m) => n + (m.artifacts?.length ?? 0), 0) ?? 0;
-    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
+    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session && previewsDeferred(session.id) || session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
     useEffect(() => {
         const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()];
         if (items.length)
@@ -176,11 +177,12 @@ export function ChatScreen() {
     const localUrls = useRef<string[]>([]);
     useEffect(() => {
         const id = session?.previewOpen;
-        if (id?.startsWith('time-skip:') && timeSkipRuns.some(r => timeSkipTabId(r.id) === id) && !session?.closedPreviews?.includes(id))
+        if (id?.startsWith('time-skip:') && timeSkipRuns.some(r => timeSkipTabId(r.id) === id) && !session?.closedPreviews?.includes(id) && !(session && previewsDeferred(session.id)))
             setSelectedPreview(id);
     }, [session?.id, runCount]);
     useEffect(() => () => localUrls.current.forEach(url => URL.revokeObjectURL(url)), []);
     function openPreview(item: PreviewArtifact) {
+        endPreviewDeferral();
         if (item.url?.startsWith('blob:'))
             localUrls.current.push(item.url);
         setPreviewTabClosed(session?.id, item.id, false, item.id);
@@ -214,6 +216,7 @@ export function ChatScreen() {
         }
     }
     function selectPreview(id: string) {
+        endPreviewDeferral();
         setSelectedPreview(id);
         setPreviewTabClosed(session?.id, id, false, id);
     }
