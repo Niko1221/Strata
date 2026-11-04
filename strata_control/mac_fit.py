@@ -208,7 +208,14 @@ def model_note(model: str, ram_gb: float) -> list[str]:
 
 
 def recommend_context(ram_gb: float) -> int:
-    return 32768 if ram_gb < 96 else 65536
+    """The context the setup recommends. Measured on a 64 GB M5 Pro (Gyro-M TQ2_0, the full expert cache asked;
+    #5176): the resident plan arbitrates experts against the context on its own, so 32768 is not a memory wall
+    there - it is the pure-speed pick that keeps every expert. 65536 keeps 88% of the experts for -21% of the
+    median decode, 131072 keeps 85% for -25%, and the sanity suite stays 12/12 at every step (a real 129K-token
+    request reads at 497 tok/s). 262144 boots (79% of the experts, the engine itself warns LOW) but is not
+    recommended below 96 GB. The 96 GB step keeps its meaning: from there the plan holds every expert beside
+    65536, so the recommendation can take the next window."""
+    return 65536 if ram_gb < 96 else 131072
 
 
 def stream_mtp(stream: bool, ram_gb: float) -> bool:
