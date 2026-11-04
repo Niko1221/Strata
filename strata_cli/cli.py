@@ -570,7 +570,7 @@ def _models(a: argparse.Namespace) -> int:
             from strata_cli import connections
             resolved = connections.resolve(url=a.url, connection=a.connection,
                                            credential_env=a.credential_env, timeout=a.timeout)
-            endpoint = Endpoint(resolved["url"], os.environ.get(resolved["credential_env"]),
+            endpoint = Endpoint(resolved["url"], _usable_key(os.environ.get(resolved["credential_env"])),
                                 resolved["timeout_s"], resolved["prefix"])
             snapshot = endpoint.snapshot()
             model = snapshot["model"]
@@ -1215,9 +1215,9 @@ def _bench(a: argparse.Namespace) -> int:
                             "model_name": cfg.get("model_name"), "gpu": cfg.get("gpu")}
     else:
         url = a.url
-    key = os.environ.get(a.credential_env)
+    key = _usable_key(os.environ.get(a.credential_env))
     endpoint = Endpoint(url, key, timeout=10)
-    telemetry = Endpoint(url, os.environ.get(a.telemetry_credential_env) if a.telemetry_credential_env else key,
+    telemetry = Endpoint(url, _usable_key(os.environ.get(a.telemetry_credential_env)) if a.telemetry_credential_env else key,
                          timeout=3)
     from strata_control.benchmarking import benchmark_lease
     lease = benchmark_lease(saved["id"], Path(a.out)) if a.profile and saved else contextlib.nullcontext()
@@ -1235,6 +1235,12 @@ def _bench(a: argparse.Namespace) -> int:
         print(bench.format_summary(compact))
         print(f"Evidence: {Path(a.out).resolve() / 'results.json'}")
     return 0 if report["successful"] else 6
+
+
+def _usable_key(value):
+    """An API key from the environment: "none" (any case) is the server's word for no key, so it is no key (#4483)."""
+    from strata_cli.bench_facts import usable_key
+    return usable_key(value)
 
 
 def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
@@ -1255,7 +1261,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
         return _error("--load-timeout must be 1..86400 seconds", 2, machine)
     plan = None
     saved = None
-    key = os.environ.get(a.credential_env)
+    key = _usable_key(os.environ.get(a.credential_env))
     if a.profile:
         _, saved, _, cfg = _source(a.profile)
         plan, _ = _launch_plan(a.profile)

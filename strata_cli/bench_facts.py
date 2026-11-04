@@ -38,16 +38,26 @@ def pointer(*parts) -> str:
 
 
 # ------------------------------------------------------------------------------------------------------------ redaction
+def usable_key(value) -> str | None:
+    """A credential as a client may send it: None for nothing, blanks, or "none" in any case (#4483: the server's spelling of
+    "no key", serve.server.explicit_no_key; it is not a key, so it is neither sent as a Bearer token nor redacted as a word)."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if not text or text.lower() == "none" else text
+
+
 def redactor(key: str = ""):
-    """text -> text with this machine's home folders, user and host names, the Strata folder, private IP addresses and the API key replaced."""
+    """text -> text with this machine's home folders, user and host names, the Strata folder, private IP addresses and the API key replaced.
+    The key is replaced only where it stands as a whole word and in its own case (#4483): a short key is also a common word or a part of a hash."""
     subs: list[tuple[re.Pattern, str]] = []
 
-    def add(value, label, word=False):
+    def add(value, label, word=False, exact=False):
         if value and len(str(value)) >= 4:
             text = str(value)
             for form in sorted({text, text.replace("\\", "/"), text.replace("/", "\\")}, key=len, reverse=True):
                 pattern = re.escape(form)
-                subs.append((re.compile(r"(?<![\w-])" + pattern + r"(?![\w-])" if word else pattern, re.I), label))
+                subs.append((re.compile(r"(?<![\w-])" + pattern + r"(?![\w-])" if word else pattern, 0 if exact else re.I), label))
 
     add(ROOT, "<strata>")
     add(Path.home(), "<home>")
@@ -58,7 +68,7 @@ def redactor(key: str = ""):
         pass
     add(socket.gethostname(), "<host>", True)
     add(platform.node(), "<host>", True)
-    add(key, "<key>")
+    add(usable_key(key), "<key>", word=True, exact=True)
     subs.sort(key=lambda item: -len(item[0].pattern))
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
     private_ip = re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])"
