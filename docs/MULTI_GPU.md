@@ -193,9 +193,17 @@ first card to the second. With `STRATA_DP_PREFILL=1` both cards run every layer,
 The engine logs `DP prompt path on` at startup and `DP prompt path linked` when the server starts. When it cannot run, it says
 why and the layer pipeline reads every prompt.
 
-Limits: only the drafter card's chunks reach the draft layer, so after a DP read the draft layer's cells for the other card's
-chunks are not filled. The tokens are the target's either way, but drafts accept less where the answer draws on those
-chunks (below). Not with `--batch` slots yet.
+Limits:
+
+- Only the drafter card's chunks reach the draft layer, so after a DP read the draft layer's cells for the other card's
+  chunks are not filled. The tokens are the target's either way, but drafts accept less where the answer draws on those
+  chunks (below).
+- A DP read keeps only the checkpoint at the end of the prompt (`run_dp` clears `on_stage_chunk`), so an edit, a
+  regenerate or a compaction cannot resume from the middle of a prompt that DP read: it reads from the start again.
+- `STRATA_KV_HOST_DMA=1` is one of DP's conditions. On CUDA it changes nothing else (the K/V append it selects, one DMA a
+  chunk to the host copy, is HIP-only), so it costs nothing where DP does not run.
+- Not with `--batch` slots yet, and off with `--draft dflash2`: the drafter's prompt taps are kept per card, while a DP
+  read runs every layer on one card.
 
 Measured on 2x RTX 3090 at 250 W (PCIe 4.0 x16, peer access on), Swift-1.5 Flash-Next IQ4_XS, 512K context, int8 K/V,
 `--kv-resident 32768`, `STRATA_KV_HOST_DMA=1 STRATA_PREFILL_AUTO_MAX=16384`; prompt tokens per second from the engine's
