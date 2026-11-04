@@ -39,7 +39,7 @@ import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n
  * arrive on the event stream. No state library, no dependencies.
  */
 import { useSyncExternalStore } from 'react';
-import { api, onEvent, streamPost, type StreamEvent } from './client';
+import { api, ApiError, onEvent, streamPost, type StreamEvent } from './client';
 import type {
   Workspace,
   ChatMessage,
@@ -876,41 +876,73 @@ function applyEvent(e: StreamEvent) {
   }
 }
 
+/** QAGUI 0213: how long one start-up GET may take, how often it is tried, and the pause between tries (a test may shorten them). */
+export const bootstrapTiming = { timeoutMs: 8000, tries: 3, backoffMs: 400 };
+
+/** One GET with a time limit, tried again after a timeout, a lost connection or a host error. A refusal (4xx) is final. */
+export async function getWithRetry<T>(path: string): Promise<T> {
+  const { timeoutMs, tries, backoffMs } = bootstrapTiming;
+  let last: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, backoffMs * 2 ** (attempt - 1)));
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        api.get<T>(path, abort.signal),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error(`No answer from ${path}`)); }, timeoutMs); }),
+      ]);
+    } catch (err) {
+      last = err;
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) throw err;
+    } finally { clearTimeout(timer); }
+  }
+  throw last;
+}
+
 let closeEvents: (() => void) | null = null;
 export async function bootstrap() {
   applyPrefs();
   try {
-    await loadChatsFromHost().catch(() => { sessionWriter.enable(); });
-    const [setup, hardware, library, engine, serving, monitor, skills, providers, imageModels, runtime] = await Promise.all([
-      api.get<SetupState>('/api/setup'),
-      api.get<Hardware>('/api/hardware'),
-      api.get<ModelLibrary>('/api/models'),
-      api.get<EngineConfig>('/api/engine'),
-      api.get<ServingState>('/api/serving'),
-      api.get<MonitorState>('/api/monitor'),
-      api.get<Skill[]>('/api/skills'),
-      api.get<ModelProviders>('/api/model-providers'),
-      api.get<ImageModelLibrary>('/api/image-models'),
-      api.get<RuntimeModels>('/api/runtime'),
+    let chatsTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      loadChatsFromHost(),
+      new Promise<never>((_, reject) => { chatsTimer = setTimeout(() => reject(new Error('The chats did not load in time')), bootstrapTiming.timeoutMs); }),
+    ]).catch(() => { sessionWriter.enable(); }).finally(() => clearTimeout(chatsTimer));
+    // Only what the first screen cannot do without holds up 'live'; the rest is read at the same time and fills in when it arrives.
+    const soft = <T,>(path: string) => getWithRetry<T>(path).catch(() => null);
+    const late = {
+      hardware: soft<Hardware>('/api/hardware'),
+      monitor: soft<MonitorState>('/api/monitor'),
+      skills: soft<Skill[]>('/api/skills'),
+      providers: soft<ModelProviders>('/api/model-providers'),
+      imageModels: soft<ImageModelLibrary>('/api/image-models'),
+      runtime: soft<RuntimeModels>('/api/runtime'),
+    };
+    const [setup, library, engine, serving, workspaceState] = await Promise.all([
+      getWithRetry<SetupState>('/api/setup'),
+      getWithRetry<ModelLibrary>('/api/models'),
+      getWithRetry<EngineConfig>('/api/engine'),
+      getWithRetry<ServingState>('/api/serving'),
+      getWithRetry<{ workspaces: Workspace[] }>('/api/workspaces'),
     ]);
-    const workspaceState = await api.get<{ workspaces: Workspace[] }>('/api/workspaces');
     set({
       ready: true,
       setup,
-      hardware,
       library: libraryResponse(library),
-      imageModels,
-      runtime,
       engine,
       serving: newestServingState(state.serving, serving),
-      monitor,
-      skills,
       workspacePath: workspaceState.workspaces[0]?.path ?? '',
       workspaces: workspaceState.workspaces,
       activeWorkspace: workspaceState.workspaces.some(w => w.id === state.activeWorkspace) ? state.activeWorkspace : workspaceIdForSession(workspaceState.workspaces, state.sessions.find(s => s.id === state.activeSession)) ?? workspaceState.workspaces[0]?.id ?? null,
       connection: 'live',
     });
-    applyProviders(providers);
+    void late.hardware.then(hardware => { if (hardware) set({ hardware }); });
+    void late.monitor.then(monitor => { if (monitor) set({ monitor }); });
+    void late.skills.then(skills => { if (skills) set({ skills }); });
+    void late.providers.then(providers => { if (providers) applyProviders(providers); });
+    void late.imageModels.then(imageModels => { if (imageModels) set({ imageModels }); });
+    void late.runtime.then(runtime => { if (runtime) set({ runtime }); });
     if (!shellAnnounced) { shellAnnounced = true; void announcePortNotice(); rememberShellLanguage(state.language); }
     closeEvents?.();
     let reconnect = false;
