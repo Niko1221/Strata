@@ -13,7 +13,7 @@ import { FontChoice } from '../components/FontChoice';
 import { ElectricityPrice } from '../components/ElectricityPrice';
 import { ApprovalNotifySetting, DoneSoundSetting, PortSetting, TraySetting, useShellState } from '../components/ShellSettings';
 import { LANGUAGES } from '../lib/i18n';
-import { setLanguage } from '../lib/store';
+import { setLanguage, setWhileBusy } from '../lib/store';
 import { CONTENT_FONT_RANGE, setContentFontSize, setDensity, setFocus, setMotion, setShortcuts, setTheme, setTransparency, setUiScale, UI_SCALES, useStore, setSettingsSection } from '../lib/store';
 const PANELS = [{ name: 'Appearance', icon: 'sun', sections: ['General', 'Reading & focus'] }, { name: 'Models', icon: 'models', sections: [] }, { name: 'Tools', icon: 'tool', sections: [] }, { name: 'Storage', icon: 'disk', sections: ['Storage'] }, { name: 'Engine', icon: 'engine', sections: [] }, { name: 'About', icon: 'info', sections: ['About', 'Update', 'Privacy'] }] as const;
 export function SettingsScreen() {
@@ -29,6 +29,7 @@ export function SettingsScreen() {
         control: ReactNode;
     }[] = [
         { section: 'General', label: 'Language', hint: 'Choose the language used throughout Strata.', control: <Select translateLabels={false} ariaLabel={tr("Language")} value={prefs.language} options={[...LANGUAGES]} onChange={value => setLanguage(value as typeof prefs.language)}/> },
+        { section: 'General', label: 'When you send while it is answering', hint: 'Steer current run continues the coding agent at a safe point. Interrupt stops the run and sends a new message.', aliases: 'queue interrupt interject steering', control: <Select ariaLabel={tr('When you send while it is answering')} value={prefs.whileBusy} options={[{ value: 'wait', label: 'Wait' }, { value: 'queue', label: 'Send after' }, { value: 'interject', label: 'Interrupt' }, { value: 'steer', label: 'Steer current run' }]} onChange={value => setWhileBusy(value as typeof prefs.whileBusy)}/> },
         { section: 'General', label: 'Sound when work finishes', hint: 'Plays a short sound when an answer or task that took a while is finished, or when Strata is in the background.', aliases: 'audio chime done complete notification', control: <DoneSoundSetting /> },
         { section: 'General', label: 'Notify me when Strata needs an answer', hint: 'In Manual mode, shows a desktop notification when the assistant waits for your approval and Strata is in the background.', aliases: 'approval permission alert notification manual', control: <ApprovalNotifySetting /> },
         ...(shell?.tray ? [{ section: 'General', label: 'Minimise to tray', hint: 'Closing the window keeps Strata running in the tray, next to the clock. Choose Quit in the tray menu to stop it. Applies the next time Strata starts.', aliases: 'tray background close notification area', control: <TraySetting shell={shell} save={saveShell} /> }] : []),

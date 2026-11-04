@@ -1,0 +1,922 @@
+--- a/packages/api/session-controller/README.md
++++ b/packages/api/session-controller/README.md
+@@ -26,6 +26,8 @@
+ 
+ <a id="use-this-package"></a>
+ ## Use this package
++
++The Host `SessionPromptRequest.mode` accepts `queue`, `steer`, or `soft-cut`. Soft-cut admission requires the target Agent to still have an open turn when the prompt reaches the Host; a request arriving after that turn closes is rejected instead of starting a new turn.
+ 
+ History pages and follow opening snapshots carry one `{ type: 'event', event: SessionWireEvent }` record per durable Session event. The Client retains each accepted record as one durable `SessionEventLikeEntry`; Assistant token boundaries remain inside the compact stream on `assistant/message` or `assistant/attempt`. Tool arguments, result content, failures, and `tool/result.data.meta` pass through unchanged; the controller does not resolve a Tool definition, run a presenter, or attach UI data.
+ 
+--- a/packages/api/session-controller/src/commands.ts
++++ b/packages/api/session-controller/src/commands.ts
+@@ -346,8 +346,10 @@
+             { sessionId: agent.id },
+           )
+         }
++        if (hasPromptRequest(agent, request.requestId)) return { accepted: true }
+         using binding = this.ctx.fileUploads.bindPrompt(agent, admission.receiptIds, request.requestId)
+-        if (request.mode === 'steer') agent.steer(message)
++        if (request.mode === 'soft-cut') agent.steer(message, { softCut: true })
++        else if (request.mode === 'steer') agent.steer(message)
+         else agent.followup(message)
+         binding.commit()
+       } catch (error) {
+@@ -589,9 +591,12 @@
+   if (agent.inbox.nextTurn.some(matches) || agent.inbox.nextStep.some(matches)) return true
+   // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
+   return agent.session.snapshotEvents().some((event) => {
+-    if (event.type !== 'user/message') return false
+-    const source = event.data.source
+-    return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId
++    if (event.type === 'agent/inbox/spliced') return event.data.inserted.some(matches)
++    if (event.type === 'user/message') {
++      const source = event.data.source
++      return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId
++    }
++    return false
+   })
+ }
+ function imageBlockIn(
+--- a/packages/api/session-controller/src/types.ts
++++ b/packages/api/session-controller/src/types.ts
+@@ -340,12 +340,12 @@
+   readonly sessionId: SessionId
+ }
+ 
+-/** Session prompt request. */
++/** Session prompt request. `soft-cut` steers only an already-open turn. */
+ export interface SessionPromptRequest {
+   /** Client-minted identity persisted on the exact accepted user message. */
+   readonly requestId: SessionRequestId
+   readonly sessionId: SessionId
+-  readonly mode: 'queue' | 'steer'
++  readonly mode: 'queue' | 'steer' | 'soft-cut'
+   /** At least one non-whitespace text part or attachment. */
+   readonly content: readonly PromptContentPart[]
+   readonly clientTimeZone?: string
+--- a/packages/api/session-controller/tests/session-cold.host.spec.ts
++++ b/packages/api/session-controller/tests/session-cold.host.spec.ts
+@@ -897,7 +897,7 @@
+     for (const [index, content] of rejectedContent.entries()) {
+       const response = await remote.prompt(promptRequest({
+         sessionId: session.id,
+-        mode: index === 1 ? 'steer' : 'queue',
++        mode: index === 1 ? 'steer' : index === 2 ? 'soft-cut' : 'queue',
+         content,
+       }))
+       expect(response).toMatchObject({
+@@ -923,6 +923,11 @@
+       mode: 'steer',
+       content: [{ type: 'text', text: 'steered' }],
+     }))
++    const softCut = await remote.prompt(promptRequest({
++      sessionId: session.id,
++      mode: 'soft-cut',
++      content: [{ type: 'text', text: 'cut and continue' }],
++    }))
+     const imageQueued = await remote.prompt(promptRequest({
+       sessionId: session.id,
+       mode: 'queue',
+@@ -930,6 +935,7 @@
+     }))
+     expect(queued).toMatchObject({ ok: true, value: { accepted: true } })
+     expect(steered).toMatchObject({ ok: true, value: { accepted: true } })
++    expect(softCut).toMatchObject({ ok: true, value: { accepted: true } })
+     expect(imageQueued).toMatchObject({ ok: true, value: { accepted: true } })
+     expect(followup).toHaveBeenCalledWith(expect.objectContaining({
+       content: [{ type: 'text', text: ' queued ' }],
+@@ -937,6 +943,9 @@
+     expect(steer).toHaveBeenCalledWith(expect.objectContaining({
+       content: [{ type: 'text', text: 'steered' }],
+     }))
++    expect(steer).toHaveBeenCalledWith(expect.objectContaining({
++      content: [{ type: 'text', text: 'cut and continue' }],
++    }), { softCut: true })
+     expect(saveImages).toHaveBeenCalledOnce()
+     expect(followup).toHaveBeenCalledWith(expect.objectContaining({
+       content: [{ type: 'image', attachment: savedImage }],
+@@ -962,7 +971,7 @@
+     } as unknown as Agent)
+     const remote = createSessionTestRemote(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+ 
+-    for (const mode of ['queue', 'steer'] as const) {
++    for (const mode of ['queue', 'steer', 'soft-cut'] as const) {
+       const response = await remote.prompt(promptRequest({
+         sessionId: session.id, mode, content: [{ type: 'text' as const, text: 'x' }],
+       }))
+@@ -977,6 +986,111 @@
+     }
+   })
+ 
++  it('admits an overlapping requestId only once after asynchronous prompt-content admission', async () => {
++    const ctx = new Context()
++    await ctx.plugin(SessionStore)
++    await ctx.plugin(AgentRegistry)
++    const session = ctx.sessions.create(sid('session-prompt-idempotent'))
++    const inbox = inboxFor()
++    const followup = vi.fn()
++    const steer = vi.fn((message: Parameters<Agent['steer']>[0]) => {
++      inbox.splice('next-step', Infinity, 0, [message])
++    })
++    await ctx.agents.register({
++      id: session.id,
++      session,
++      inbox,
++      status: 'running',
++      ctx,
++      followup,
++      steer,
++    } as unknown as Agent)
++
++    const bothAdmitted = Promise.withResolvers<void>()
++    const release = Promise.withResolvers<void>()
++    let admissions = 0
++    ctx.provide('attachments', {
++      async admitPromptContent(content: unknown): Promise<unknown> {
++        admissions++
++        if (admissions === 2) bothAdmitted.resolve()
++        await release.promise
++        return content
++      },
++    } as never)
++    const remote = createSessionTestRemote(ctx, {
++      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
++      cwd: '/tmp',
++    })
++    const sameRequest = promptRequest({
++      sessionId: session.id,
++      mode: 'soft-cut',
++      content: [{ type: 'text', text: 'one accepted message' }],
++    })
++
++    const first = remote.prompt(sameRequest)
++    const retry = remote.prompt(sameRequest)
++    await bothAdmitted.promise
++    release.resolve()
++    const results = await Promise.all([first, retry])
++
++    expect(results).toEqual([
++      { ok: true, value: { accepted: true } },
++      { ok: true, value: { accepted: true } },
++    ])
++    expect(admissions).toBe(2)
++    expect(steer).toHaveBeenCalledOnce()
++    expect(inbox.nextStep).toHaveLength(1)
++    await ctx.fiber.dispose()
++  })
++
++  it('does not readmit a requestId after its inserted inbox message was claimed', async () => {
++    const ctx = new Context()
++    await ctx.plugin(SessionStore)
++    await ctx.plugin(AgentRegistry)
++    const session = ctx.sessions.create(sid('session-prompt-claimed-idempotent'))
++    const inbox = inboxFor()
++    const followup = vi.fn()
++    const steer = vi.fn((message: Parameters<Agent['steer']>[0]) => {
++      session.append('agent/inbox/spliced', {
++        target: 'next-step', start: inbox.nextStep.length, inserted: [message],
++      })
++      inbox.append('next-step', message)
++    })
++    await ctx.agents.register({
++      id: session.id,
++      session,
++      inbox,
++      status: 'running',
++      ctx,
++      followup,
++      steer,
++    } as unknown as Agent)
++    const remote = createSessionTestRemote(ctx, {
++      defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
++      cwd: '/tmp',
++    })
++    const sameRequest = promptRequest({
++      sessionId: session.id,
++      mode: 'soft-cut',
++      content: [{ type: 'text', text: 'already accepted' }],
++    })
++
++    await expect(remote.prompt(sameRequest)).resolves.toMatchObject({ ok: true, value: { accepted: true } })
++    expect(steer).toHaveBeenCalledOnce()
++    expect(inbox.nextStep).toHaveLength(1)
++
++    session.append('agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] })
++    inbox.splice('next-step', 0, 1, [])
++    expect(inbox.nextStep).toHaveLength(0)
++    expect(session.snapshotEvents().some(event => event.type === 'user/message')).toBe(false)
++
++    await expect(remote.prompt(sameRequest)).resolves.toMatchObject({ ok: true, value: { accepted: true } })
++    expect(steer).toHaveBeenCalledOnce()
++    expect(followup).not.toHaveBeenCalled()
++    expect(inbox.nextStep).toHaveLength(0)
++    await ctx.fiber.dispose()
++  })
++
+   it('classifies a raced cold-resume ID collision as agent-busy', async () => {
+     const ctx = new Context()
+     await ctx.plugin(SessionStore)
+--- a/packages/core/agent-loop/README.md
++++ b/packages/core/agent-loop/README.md
+@@ -123,6 +123,8 @@
+ 
+ ### Failure and cancellation
+ 
++`Agent.steer(message, { softCut: true })` is admitted only while a turn is open. It aborts only the active model attempt, keeps its visible text prefix, and leaves the turn signal intact. If steering arrives during asynchronous preparation or compaction, preparation finishes, claimed input is committed once, and the stale model attempt is skipped so the next step consumes the inbox. If the model has already produced tool calls, a soft cut stops later dispatches, drains dispatched calls, and records results for calls that did not start before the next step consumes the steering message.
++
+ `turn/end` declares `TurnEndCancelCause`; cancellation records a fresh `AgentCancelCause` there, retaining the caller's `kind` and the hook's `reason` text. The live `AbortSignal.reason` remains the caller's object, which a transport may extend — Node's fetch assigns a `stack` onto it — so the copy keeps that trace out of the log and keeps the ending appendable.
+ 
+ Final adapter selection, dispatch, and iteration failures arrive as terminal finishes and enter `agent/request-error`; a handling listener returns `{ kind: 'retry' }` without calling `next()`, while an unhandled failure is terminal. Middleware, result-processing, tool, and other extension failures remain thrown and close the turn directly — plugin failure ends the turn, not the loop. Undispatched model tool calls after cancellation receive synthetic `tool/call` plus `ABORTED_BEFORE_DISPATCH` result pairs.
+--- a/packages/core/agent-loop/src/agent.ts
++++ b/packages/core/agent-loop/src/agent.ts
+@@ -9,6 +9,7 @@
+   AgentCancelCause,
+   AgentEventDispatch,
+   AgentOptions,
++  AgentSteerOptions,
+   AgentStatus,
+   CancelOptions,
+   InboxTarget,
+@@ -47,7 +48,16 @@
+     lastTurn: number
+     wakeRequested: boolean
+   }
+-  | { kind: 'running'; abort: AbortController; turn: number; step: number; wakeRequested: boolean }
++  | {
++    kind: 'running'
++    abort: AbortController
++    turn: number
++    step: number
++    wakeRequested: boolean
++    softCutOpen: boolean
++    softCut: AbortController | undefined
++    softCutRevision: number
++  }
+ 
+ type StepEndReason = Extract<TurnEndReason, { kind: 'completed' | 'max-tokens' }>
+ 
+@@ -164,8 +174,19 @@
+     this.send(input, 'next-turn', true)
+   }
+ 
+-  steer(input: UserMessage): void {
+-    this.send(input, 'next-step', true)
++  steer(input: UserMessage, options: AgentSteerOptions = {}): void {
++    if (!options.softCut) {
++      this.send(input, 'next-step', true)
++      return
++    }
++    const phase = this.phase
++    if (phase.kind !== 'running' || !phase.softCutOpen || phase.abort.signal.aborted) {
++      throw new Error(`agent "${this.id}" cannot soft-cut without an active turn`)
++    }
++    const activeCut = phase.softCut
++    this.inbox.splice('next-step', Infinity, 0, [input])
++    phase.softCutRevision += 1
++    activeCut?.abort()
+   }
+ 
+   inject(input: UserMessage): void {
+@@ -230,6 +251,9 @@
+       turn: this.phase.lastTurn,
+       step: 0,
+       wakeRequested: false,
++      softCutOpen: false,
++      softCut: undefined,
++      softCutRevision: 0,
+     })
+     this.loopCtx.agents.withInitiator(this, () => this.kick()).then(driver.resolve, driver.reject)
+   }
+@@ -309,21 +333,37 @@
+       this.throwError(error)
+     }
+     phase.turn = turn
++    phase.softCutOpen = true
+     let turnEnds: TurnEndReason | null = null
+     let target: InboxTarget = 'next-turn'
+     try {
+       while (true) {
+         signal.throwIfAborted()
+         const step = phase.step + 1
++        const softCutRevision = phase.softCutRevision
+         const decision = await this.preStep(target, { turn, step })
+         if (decision.kind === 'reject') {
++          if (phase.softCutRevision !== softCutRevision && this.inbox.nextStep.length > 0) {
++            target = 'next-step'
++            continue
++          }
+           turnEnds = { kind: 'blocked' }
+           return false
+         }
+-        if (turnEnds && decision.messages.length === 0) break
++        if (turnEnds && decision.messages.length === 0) {
++          if (phase.softCutRevision !== softCutRevision && this.inbox.nextStep.length > 0) {
++            target = 'next-step'
++            continue
++          }
++          break
++        }
+         // A removed waking message or an enter decision rewritten to empty
+         // still owns the initial turn boundary, but it spends no model call.
+         if (phase.step === 0 && decision.messages.length === 0) {
++          if (phase.softCutRevision !== softCutRevision && this.inbox.nextStep.length > 0) {
++            target = 'next-step'
++            continue
++          }
+           turnEnds = { kind: 'completed' }
+           return false
+         }
+@@ -337,7 +377,7 @@
+         try {
+           // max-tokens is sticky: once any step hits the ceiling, later steps
+           // that complete normally must not downgrade the turn outcome.
+-          const stepEnd = await this.step(decision)
++          const stepEnd = await this.step(decision, softCutRevision)
+           // max-tokens stays sticky: a later completed step must not
+           // downgrade the turn outcome.
+           if (turnEnds === null || turnEnds.kind !== 'max-tokens') turnEnds = stepEnd
+@@ -372,6 +412,7 @@
+         turnEnds = { kind: 'aborted', reason: cause }
+         throw error
+       }
++      phase.softCutOpen = false
+       // Every failure is structured: an `LlmError` keeps its facts, anything
+       // else flattens to `errorChain` text under the `UNKNOWN` code.
+       turnEnds = {
+@@ -382,6 +423,7 @@
+       }
+       this.throwError(error)
+     } finally {
++      phase.softCutOpen = false
+       try {
+         // oxlint-disable-next-line typescript/no-non-null-assertion -- every exit assigns a turn ending
+         this.session.append('turn/end', { turn, reason: turnEnds! })
+@@ -397,7 +439,10 @@
+     return true
+   }
+ 
+-  private async step(decision: Extract<PreparedStep, { kind: 'enter' }>): Promise<StepEndReason | null> {
++  private async step(
++    decision: Extract<PreparedStep, { kind: 'enter' }>,
++    softCutRevision: number,
++  ): Promise<StepEndReason | null> {
+     /* v8 ignore next -- private callers establish the running phase before executing a step */
+     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": step outside running phase`)
+     const { turn, step, abort: { signal } } = this.phase
+@@ -439,7 +484,23 @@
+         this.session.append('user/message', context, { surfaceOp: 'append' })
+       }
+       firstAttempt = false
+-      const request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, signal)
++      if (this.phase.kind === 'running' && this.phase.softCutRevision !== softCutRevision) return null
++      const attemptCut = new AbortController()
++      if (this.phase.kind === 'running') this.phase.softCut = attemptCut
++      const streamSignal = AbortSignal.any([signal, attemptCut.signal])
++      let request: GenerateOptions
++      try {
++        request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, streamSignal)
++      } catch (error: unknown) {
++        if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
++        if (attemptCut.signal.aborted && !signal.aborted) return null
++        throw error
++      }
++      if (this.phase.kind === 'running'
++        && (this.phase.softCutRevision !== softCutRevision || attemptCut.signal.aborted)) {
++        if (this.phase.softCut === attemptCut) this.phase.softCut = undefined
++        return null
++      }
+       const live = new AssistantStreamAttempt(
+         this.session.id,
+         ++this.assistantAttemptCounter,
+@@ -452,17 +513,27 @@
+       try {
+         const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request)
+         signal.throwIfAborted()
++        if (attemptCut.signal.aborted) {
++          if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
++          return null
++        }
+         live.start()
+         started = true
+         for await (const chunk of stream) {
+-          signal.throwIfAborted()
++          streamSignal.throwIfAborted()
+           live.push(chunk)
+         }
+-        signal.throwIfAborted()
++        streamSignal.throwIfAborted()
++        if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
+       } catch (error: unknown) {
+-        if (!started) throw error
++        if (!started) {
++          if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
++          if (attemptCut.signal.aborted && !signal.aborted) return null
++          throw error
++        }
+         try {
+           if (signal.aborted) {
++            if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
+             const content = live.interruptedBlocks()
+             if (content.length > 0) {
+               live.settle('assistant/message', () => this.session.append('assistant/message', {
+@@ -486,7 +557,33 @@
+                 () => this.session.append('assistant/attempt', { turn, step, stream: live.stream }).seq,
+               )
+             }
++          } else if (attemptCut.signal.aborted) {
++            if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
++            const content = live.softCutBlocks()
++            if (content.length > 0) {
++              live.settle('assistant/message', () => this.session.append('assistant/message', {
++                turn,
++                step,
++                message: createAssistantMessage({
++                  content,
++                  source: {
++                    provider: request.provider,
++                    model: request.model,
++                  },
++                }),
++                interrupted: true,
++                ...live.usage === undefined ? {} : { usage: live.usage },
++                stream: live.stream,
++              }, { surfaceOp: 'append' }).seq)
++            } else {
++              live.settle(
++                'assistant/attempt',
++                () => this.session.append('assistant/attempt', { turn, step, stream: live.stream }).seq,
++              )
++            }
++            return null
+           } else {
++            if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
+             live.settle(
+               'assistant/attempt',
+               () => this.session.append('assistant/attempt', { turn, step, stream: live.stream }).seq,
+@@ -504,6 +601,7 @@
+       try {
+         const finish = live.finish
+         if (finish.kind === 'error' || finish.kind === 'aborted') {
++          if (this.phase.kind === 'running' && this.phase.softCut === attemptCut) this.phase.softCut = undefined
+           live.settle(
+             'assistant/attempt',
+             () => this.session.append('assistant/attempt', { turn, step, stream: live.stream }).seq,
+@@ -520,6 +618,7 @@
+             () => Promise.resolve<RequestErrorAction>(undefined),
+           )
+           signal.throwIfAborted()
++          if (this.phase.kind === 'running' && this.phase.softCutRevision !== softCutRevision) return null
+           if (action?.kind !== 'retry') {
+             throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
+           }
+@@ -534,6 +633,11 @@
+             ...live.replayState !== undefined ? { replayState: live.replayState } : {},
+           },
+         })
++        const toolCalls = message.content.filter(block => block.type === 'tool-call')
++        const toolCut = toolCalls.length === 0 || finish.kind === 'max-tokens'
++          ? undefined
++          : new AbortController()
++        if (this.phase.kind === 'running') this.phase.softCut = toolCut
+         live.settle(
+           'assistant/message',
+           () => this.session.append('assistant/message', {
+@@ -545,13 +649,14 @@
+           }, { surfaceOp: 'append' }).seq,
+         )
+         if (finish.kind === 'max-tokens') return { kind: 'max-tokens' }
+-
+-        const toolCalls = message.content.filter(block => block.type === 'tool-call')
+         if (toolCalls.length === 0) return { kind: 'completed' }
+         const { concluded } = await executeToolCalls(
+           this.loopCtx, turn, step, toolCalls, signal,
+           context => this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [context]),
+-        )
++          toolCut?.signal,
++        ).finally(() => {
++          if (this.phase.kind === 'running' && this.phase.softCut === toolCut) this.phase.softCut = undefined
++        })
+         return concluded ? { kind: 'completed' } : null
+       } catch (error: unknown) {
+         if (!live.ended) live.abandon()
+--- a/packages/core/agent-loop/src/assistant-stream.ts
++++ b/packages/core/agent-loop/src/assistant-stream.ts
+@@ -123,6 +123,11 @@
+     return this.assembler.interruptedBlocks()
+   }
+ 
++  /** Visible text to retain when a soft cut leaves the current turn open. */
++  softCutBlocks(): ContentBlock[] {
++    return this.assembler.interruptedBlocks().filter(block => block.type === 'text')
++  }
++
+   /** Latest adapter-reported usage in the stream. */
+   get usage(): TokenUsage | undefined {
+     return this.assembler.usage
+--- a/packages/core/agent-loop/src/tool-calls.ts
++++ b/packages/core/agent-loop/src/tool-calls.ts
+@@ -28,6 +28,7 @@
+   exec: ToolRunContext
+   result: ToolExecutionResult
+   needsPost: boolean
++  synthetic?: boolean
+ }
+ 
+ /** One scheduler group outcome, including a drained cancellation. */
+@@ -40,9 +41,10 @@
+ 
+ /**
+  * Schedule one assistant step's tool calls by their live concurrency mode.
+- * Ordinary completion and abort commit started-call results in order. Abort
+- * drains them, records synthetic results for unstarted calls, and returns with
+- * the signal still aborted after accepting started-call context through the
++ * Ordinary completion and stop commit started-call results in order. A hard
++ * abort also reaches running tools; a soft cut only stops new dispatches and
++ * drains started calls. Stopped batches record synthetic results for calls
++ * that never dispatch and return after accepting started-call context through the
+  * caller-supplied acceptor (the machine stages it in its next-step inbox for the
+  * step boundary). An internal scheduler failure stops new dispatches, drains
+  * already-started dispatches, and rejects with the first failure. The owning
+@@ -56,6 +58,7 @@
+  * @param toolCalls - assistant calls in model order.
+  * @param signal - abort signal shared by the step.
+  * @param acceptContext - accepts committed result context for the next step boundary.
++ * @param stopSchedulingSignal - optional signal that stops dispatch without aborting started tools.
+  */
+ export async function executeToolCalls(
+   ctx: Context,
+@@ -64,6 +67,7 @@
+   toolCalls: ToolCallBlock[],
+   signal: AbortSignal,
+   acceptContext: (context: UserMessage) => void,
++  stopSchedulingSignal: AbortSignal = signal,
+ ): Promise<{ concluded: boolean }> {
+   const agent = ctx.agents.requireInitiator()
+   const { session } = agent
+@@ -89,7 +93,7 @@
+     const mode = ctx.tools.executionMode(first.exec).kind
+     const group = mode === 'parallel' ? planned.slice(next) : [first]
+     const outcome = await runGroup(
+-      ctx, turn, step, group, mode, signal, acceptContext,
++      ctx, turn, step, group, mode, signal, stopSchedulingSignal, acceptContext,
+     )
+     next += outcome.consumed
+     concluded ||= outcome.concluded
+@@ -126,6 +130,7 @@
+   group: PlannedCall[],
+   mode: ToolExecutionMode['kind'],
+   signal: AbortSignal,
++  stopSchedulingSignal: AbortSignal,
+   acceptContext: (context: UserMessage) => void,
+ ): Promise<GroupOutcome> {
+   const { session } = ctx.agents.requireInitiator()
+@@ -136,7 +141,7 @@
+   let nextToStart = 0
+   let committed = 0
+   let started = 0
+-  let aborted: boolean = signal.aborted
++  let aborted = signal.aborted || stopSchedulingSignal.aborted
+   let concluded = false
+   let schedulerFailure: { error: unknown } | undefined
+   const throwSchedulerFailure = (): void => {
+@@ -149,9 +154,11 @@
+       const slot = slots[committed]
+       if (slot === undefined) break
+       const call = group[committed]
+-      const result = slot.needsPost
+-        ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
+-        : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
++      const result = slot.synthetic
++        ? slot.result
++        : slot.needsPost
++          ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
++          : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
+       // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
+       appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!)
+       for (const context of result.additionalContexts ?? []) acceptContext(context)
+@@ -171,6 +178,15 @@
+     throwSchedulerFailure()
+     switch (prepared.kind) {
+       case 'dispatch': {
++        if (signal.aborted || stopSchedulingSignal.aborted) {
++          slots[index] = {
++            exec: prepared.exec,
++            result: abortedBeforeDispatchResult(),
++            needsPost: false,
++            synthetic: true,
++          }
++          break
++        }
+         const promise = ctx.tools[TOOL_RUNTIME_SCHEDULER].dispatch(prepared.exec).then(
+           (outcome) => {
+             slots[index] = { exec: prepared.exec, result: outcome.result, needsPost: outcome.kind === 'post-result' }
+@@ -209,7 +225,7 @@
+       await commitReady()
+       throwSchedulerFailure()
+       // Abort may arrive while pre-execute awaits.
+-      if (signal.aborted) aborted = true
++      if (signal.aborted || stopSchedulingSignal.aborted) aborted = true
+     }
+   }
+ 
+@@ -226,7 +242,7 @@
+       throwSchedulerFailure()
+       // Abort may arrive while a tool or ordered commit awaits.
+ 
+-      if (signal.aborted) aborted = true
++      if (signal.aborted || stopSchedulingSignal.aborted) aborted = true
+       await fillPool()
+     }
+   } catch (error: unknown) {
+@@ -249,14 +265,19 @@
+ /** Append the durable call/result pair for a model call skipped after cancellation. */
+ function appendSkippedToolCall(session: Session, turn: number, step: number, block: ToolCallBlock): void {
+   const callSeq = appendToolCall(session, turn, step, block)
+-  appendToolResult(session, turn, step, block, {
++  appendToolResult(session, turn, step, block, abortedBeforeDispatchResult(), callSeq)
++}
++
++/** Canonical result for an assistant call whose tool body did not start. */
++function abortedBeforeDispatchResult(): ToolExecutionResult {
++  return {
+     content: [{ type: 'text', text: 'Error: tool call aborted before dispatch' }],
+     isError: true,
+     error: {
+       message: 'tool call aborted before dispatch',
+       info: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH },
+     },
+-  }, callSeq)
++  }
+ }
+ 
+ /** Append a started call and return the event seq that its result must cite. */
+--- a/packages/core/agent-loop/tests/cancel.spec.ts
++++ b/packages/core/agent-loop/tests/cancel.spec.ts
+@@ -1150,3 +1150,103 @@
+     await ctx.fiber.dispose()
+   })
+ })
++
++describe('Agent soft-cut steering', () => {
++  it('keeps the open turn and visible prefix while dropping reasoning and incomplete tool calls', async () => {
++    const replayState = { response: { id: 'soft-cut-response' }, blocks: ['text-meta'] }
++    const adapter = new MockAdapter([
++      {
++        hangAfter: [
++          { type: 'block-start', index: 0, blockType: 'text' },
++          { type: 'text-delta', index: 0, text: 'visible prefix' },
++          { type: 'block-start', index: 1, blockType: 'reasoning' },
++          { type: 'reasoning-delta', index: 1, text: 'private reasoning' },
++          { type: 'block-start', index: 2, blockType: 'tool-call' },
++          { type: 'tool-call-delta', index: 2, id: ToolCallId('partial'), name: 'read', argumentsDelta: '{"path":' },
++          { type: 'finish', reason: { kind: 'stop' }, replayState },
++        ],
++      },
++      textResponse('continued'),
++    ])
++    const ctx = await harness(adapter)
++    const agent = await ctx.agentLoop.create(SessionId('soft-cut-prefix'), { provider: 'mock', model: 'mock' })
++    let submitted = false
++    ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
++      if (subject !== agent || frame.type !== 'chunk' || frame.chunk.type !== 'finish' || submitted) return
++      submitted = true
++      agent.steer(createUserMessage({
++        content: [{ type: 'text', text: 'new direction' }],
++        source: { kind: 'user' },
++      }), { softCut: true })
++    })
++
++    send(agent, 'original request')
++    await agent.whenIdle()
++
++    const events = agent.session.snapshotEvents()
++    const assistant = events.find(event => event.type === 'assistant/message')
++    expect(assistant?.type === 'assistant/message' ? assistant.data.message.content : undefined)
++      .toEqual([{ type: 'text', text: 'visible prefix' }])
++    expect(assistant?.type === 'assistant/message' ? assistant.data.message.source.replayState : undefined).toBeUndefined()
++    expect(assistant?.type === 'assistant/message' ? assistant.data.interrupted : undefined).toBe(true)
++    expect(events.filter(event => event.type === 'tool/call')).toHaveLength(0)
++    expect(events.filter(event => event.type === 'turn/start')).toHaveLength(1)
++    expect(events.findLast(event => event.type === 'turn/end')?.type === 'turn/end'
++      ? events.findLast(event => event.type === 'turn/end')?.data.reason
++      : undefined).toEqual({ kind: 'completed' })
++    expect(userTexts(agent)).toEqual(['original request', 'new direction'])
++    expect(adapter.requests).toHaveLength(2)
++    expect(agent.inbox.nextStep).toHaveLength(0)
++    await ctx.fiber.dispose()
++  })
++
++  it('rejects soft cuts outside an open turn without waking work', async () => {
++    const ctx = await harness(new MockAdapter([textResponse('completed')]))
++    const agent = await ctx.agentLoop.create(SessionId('soft-cut-idle'), { provider: 'mock', model: 'mock' })
++    const message = createUserMessage({ content: [{ type: 'text', text: 'late' }], source: { kind: 'user' } })
++
++    expect(() => agent.steer(message, { softCut: true })).toThrow('cannot soft-cut without an active turn')
++    expect(agent.inbox.nextStep).toHaveLength(0)
++    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(0)
++    let rejectedAfterTurnEnd = false
++    ctx.on('session/event', (session, event) => {
++      if (session !== agent.session || event.type !== 'turn/end') return
++      try {
++        agent.steer(message, { softCut: true })
++      } catch {
++        rejectedAfterTurnEnd = true
++      }
++    })
++    send(agent, 'finish before late soft cut')
++    await agent.whenIdle()
++    expect(rejectedAfterTurnEnd).toBe(true)
++    expect(agent.inbox.nextStep).toHaveLength(0)
++    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
++    await ctx.fiber.dispose()
++  })
++
++  it('leaves queued inbox work intact when soft-cut admission meets maintenance', async () => {
++    const ctx = await harness(new MockAdapter([textResponse('queued reply')]))
++    const agent = await ctx.agentLoop.create(SessionId('soft-cut-maintenance'), { provider: 'mock', model: 'mock' })
++    const started = Promise.withResolvers<void>()
++    const release = Promise.withResolvers<void>()
++    const maintenance = agent.runMaintenance(async () => {
++      started.resolve()
++      await release.promise
++    })
++    await started.promise
++    const queued = createUserMessage({ content: [{ type: 'text', text: 'queued during maintenance' }], source: { kind: 'user' } })
++    agent.followup(queued)
++
++    expect(() => agent.steer(
++      createUserMessage({ content: [{ type: 'text', text: 'soft cut' }], source: { kind: 'user' } }),
++      { softCut: true },
++    )).toThrow('cannot soft-cut without an active turn')
++    expect(agent.inbox.nextTurn).toEqual([queued])
++    release.resolve()
++    await maintenance
++    await agent.whenIdle()
++    expect(userTexts(agent)).toEqual(['queued during maintenance'])
++    await ctx.fiber.dispose()
++  })
++})
+--- a/packages/core/agent-loop/tests/request-reconstruction.spec.ts
++++ b/packages/core/agent-loop/tests/request-reconstruction.spec.ts
+@@ -538,6 +538,53 @@
+     ])
+   })
+ 
++  it('skips the claimed request when soft-cut arrives during async pre-step compaction', async () => {
++    const adapter = new MockAdapter([textResponse('seed reply'), textResponse('after soft cut')])
++    const ctx = await harness(adapter)
++    const agent = await ctx.agentLoop.create(SessionId('soft-cut-compaction'), { provider: 'mock', model: 'mock' })
++    const entered = Promise.withResolvers<void>()
++    const release = Promise.withResolvers<void>()
++    ctx.on('agent/pre-step', async ({ agent: subject, turn, step }, next) => {
++      const decision = await next()
++      if (subject === agent && turn === 2 && step === 1) {
++        entered.resolve()
++        await release.promise
++        const nodes = agent.session.surface.nodes
++        agent.session.append('user/message', createUserMessage({
++          content: [{ type: 'text', text: '[summary of seed turn]' }],
++          source: { kind: 'test-compact' },
++        }), {
++          surfaceOp: { op: 'replace', startSeq: nodes[1]!, endSeq: nodes[2]! },
++          sourceEventSeqs: [nodes[1]!, nodes[2]!],
++        })
++      }
++      return decision
++    })
++
++    send(agent, 'seed')
++    await waitForIdle(ctx, agent)
++    send(agent, 'old-context request')
++    await entered.promise
++    agent.steer(createUserMessage({
++      content: [{ type: 'text', text: 'new direction' }],
++      source: { kind: 'user' },
++    }), { softCut: true })
++    release.resolve()
++    await waitForIdle(ctx, agent)
++
++    expect(adapter.requests).toHaveLength(2)
++    const firstPostCompactionRequestText = adapter.requests[1]!.messages
++      .flatMap(message => message.content)
++      .flatMap(block => block.type === 'text' ? [block.text] : [])
++      .join('\n')
++    expect(firstPostCompactionRequestText).toContain('[summary of seed turn]')
++    expect(firstPostCompactionRequestText).toContain('old-context request')
++    expect(firstPostCompactionRequestText).toContain('new direction')
++    expect(firstPostCompactionRequestText.match(/old-context request/g)).toHaveLength(1)
++    expect(firstPostCompactionRequestText.match(/new direction/g)).toHaveLength(1)
++    await ctx.fiber.dispose()
++  })
++
+   it('starts a new request series when compaction rewrites a retry in the same step', async () => {
+     const adapter = new MockAdapter([
+       () => { throw new LlmError('request is too large', 'CONTEXT_LENGTH') },
+--- a/packages/core/agent-loop/tests/tool-calls.spec.ts
++++ b/packages/core/agent-loop/tests/tool-calls.spec.ts
+@@ -627,6 +627,54 @@
+         },
+         error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH },
+       })
++  })
++})
++
++describe('tool-call scheduler: soft-cut steering', () => {
++  it('finishes the running exclusive call and records untouched siblings without dispatching them', async () => {
++    const adapter = new MockAdapter([
++      multiCall([
++        { id: 'c1', name: 'exclusive', args: { id: '1' } },
++        { id: 'c2', name: 'exclusive', args: { id: '2' } },
++        { id: 'c3', name: 'exclusive', args: { id: '3' } },
++      ]),
++      textResponse('continued'),
++    ])
++    const ctx = await harness(adapter)
++    const gated = gatedExclusiveTool('exclusive')
++    ctx.tools.register(gated.tool)
++    const agent = await ctx.agentLoop.create(SessionId('soft-cut-tools'), { provider: 'mock', model: 'mock' })
++    let toolSignalAborted = false
++    ctx.on('tools/pre-execute', (exec, next) => {
++      if (exec.callId === ToolCallId('c1')) {
++        exec.signal.addEventListener('abort', () => { toolSignalAborted = true }, { once: true })
++      }
++      return next()
++    })
++
++    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'start work' }], source: { kind: 'user' } }))
++    await until(() => gated.started.length === 1)
++    const idle = agent.whenIdle()
++    agent.steer(createUserMessage({ content: [{ type: 'text', text: 'change direction' }], source: { kind: 'user' } }), { softCut: true })
++    expect(toolSignalAborted).toBe(false)
++    expect(adapter.requests).toHaveLength(1)
++    gated.release('1')
++    await idle
++
++    const log = events(agent)
++    expect(gated.started).toEqual(['1'])
++    expect(toolSignalAborted).toBe(false)
++    expect(log.filter(event => event.type === 'tool/call').map(event => event.data.callId))
++      .toEqual([ToolCallId('c1'), ToolCallId('c2'), ToolCallId('c3')])
++    const results = log.filter(event => event.type === 'tool/result')
++    expect(results.map(event => event.type === 'tool/result' ? event.data.message.source.callId : undefined))
++      .toEqual([ToolCallId('c1'), ToolCallId('c2'), ToolCallId('c3')])
++    expect(results.slice(1).map(event => event.type === 'tool/result' ? event.data.error?.code : undefined))
++      .toEqual([TOOL_ABORTED_BEFORE_DISPATCH, TOOL_ABORTED_BEFORE_DISPATCH])
++    expect(log.filter(event => event.type === 'turn/start')).toHaveLength(1)
++    expect(adapter.requests).toHaveLength(2)
++    expect(log.filter(event => event.type === 'user/message')).toHaveLength(2)
++    await ctx.fiber.dispose()
+   })
+ })
+ 
+--- a/packages/core/agent/README.md
++++ b/packages/core/agent/README.md
+@@ -44,7 +44,7 @@
+ 
+ ### Drive an agent's conversation
+ 
+-The handle's methods route identified user-role messages into the agent's inbox. `followup()` queues an ordinary next-turn prompt and wakes the driver; `steer()` submits next-step input and wakes it; `inject()` adds model-facing context without waking the driver, so it lands in the next admitted step. `cancel(cause)` aborts the active activity and, unless `keepInbox` is set, clears pending work; `whenIdle()` resolves after the whole agent reaches quiescence.
++The handle's methods route identified user-role messages into the agent's inbox. `followup()` queues an ordinary next-turn prompt and wakes the driver; `steer()` submits next-step input and wakes it. `steer(message, { softCut: true })` is accepted only while the current turn remains open: it stops the active model attempt, keeps visible text, and leaves already-dispatched tools running. `inject()` adds model-facing context without waking the driver, so it lands in the next admitted step. `cancel(cause)` aborts the active activity and, unless `keepInbox` is set, clears pending work; `whenIdle()` resolves after the whole agent reaches quiescence.
+ 
+ ```text
+ handle.agent.followup({
+--- a/packages/core/agent/src/runtime-types.ts
++++ b/packages/core/agent/src/runtime-types.ts
+@@ -44,6 +44,16 @@
+   keepInbox?: boolean | undefined
+ }
+ 
++/** Options for {@link Agent.steer}. */
++export interface AgentSteerOptions {
++  /**
++   * Stop the current model attempt at its next streamed boundary while keeping
++   * the current turn open. Reasoning and incomplete tool calls are omitted;
++   * already-dispatched tools finish before the steered message is handled.
++   */
++  softCut?: boolean | undefined
++}
++
+ /** Agent-owned access to pending work; concrete storage belongs to the driver. */
+ export interface Inbox {
+   /** Prompts awaiting individual turns. */
+@@ -223,12 +233,13 @@
+ 
+     /**
+    * Submit steering for the nearest step. An idle driver starts a turn;
+-   * a running driver consumes it at its next step boundary.
+-   * A rejected step leaves steering parked in the inbox until the next
+-   * wake; cancellation or disposal may discard pending steering.
++   * a running driver consumes it at its next step boundary. A soft cut is
++   * accepted only inside an open turn: it stops current model generation and
++   * leaves the turn signal and already-dispatched tools running.
+    * @param message - identified steering content and the source that supplied it.
+-   */
+-    steer(message: UserMessage): void
++   * @param options - optional current-turn soft-cut behavior.
++   */
++    steer(message: UserMessage, options?: AgentSteerOptions): void
+ 
+     /**
+    * Queue model-facing context for the next pre-step without waking the

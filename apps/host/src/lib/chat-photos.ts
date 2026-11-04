@@ -10,6 +10,8 @@ export async function attachChatPhoto(file:File,id?:string|null){if(!['image/png
 export function removeChatPhoto(photo:string,id?:string|null){queues.set(key(id),(queues.get(key(id))??[]).filter(i=>i.id!==photo));listeners.forEach(fn=>fn());}
 export function pendingChatPhotos(id?:string|null){return queues.get(key(id))??empty;}
 export function takeChatPhotos(id?:string|null){const value=queues.get(key(id))??[];queues.delete(key(id));listeners.forEach(fn=>fn());return value;}
+/** Put a parked message's pictures back without replacing pictures attached since it was parked. */
+export function restoreChatPhotos(photos:ChatPhoto[],id:string){const current=pendingChatPhotos(id);queues.set(key(id),[...photos,...current.filter(p=>!photos.some(photo=>photo.id===p.id))]);listeners.forEach(fn=>fn());}
 /** The stored picture itself, for uploading it to the host. */
 export async function photoBlob(photo:ChatPhoto):Promise<Blob>{const db=await database();const file=await new Promise<Blob|undefined>((resolve,reject)=>{const request=db.transaction('photos','readonly').objectStore('photos').get(photo.id);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(new Error('Could not read the attached picture.'));});db.close();if(!file)throw new Error(`${photo.name} is no longer in browser storage. Attach it again.`);return file;}
 /** Upload the pictures of a message to the chat (POST /api/chat/upload); the host answers an id for each, which the send names as imageIds. */

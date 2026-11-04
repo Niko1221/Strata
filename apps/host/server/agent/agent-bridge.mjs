@@ -20,6 +20,7 @@ import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
+import { SOFT_CUT_PATCH, SteeringStore } from './steering.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
 import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf, localOutputBudget, compactionHeadroom } from './profile.mjs';
@@ -117,11 +118,13 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onSteering = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
   mkdirSync(root, { recursive: true });
+  const steering = new SteeringStore(join(root, 'steering.json'), onSteering);
+  const steeringCalls = new Map();
 
   /**
    * Where the turn's file tracker must never look (deliverables.mjs): the app, the engine and its components, Strata's own data, AppData
@@ -180,6 +183,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const llmTarget = key => shapeTargets[key] ?? null;
 
   function harnessInfo() { return resolveHarness({ env, componentsDir, bundledDir }); }
+  function canSteer() {
+    const h = harnessInfo();
+    if (!h.ok) return false;
+    try { return JSON.parse(readFileSync(join(h.dir, 'BUNDLE.json'), 'utf8')).patches?.some(p => p.id === SOFT_CUT_PATCH) === true; }
+    catch { return false; }
+  }
   /** Where the agent component is (the browser tool server lives inside it), or null. */
   const harnessDir = () => { const h = harnessInfo(); return h.ok ? h.dir : null; };
 
@@ -192,7 +201,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       state: rt?.hp.running ? 'ready' : starting ? 'starting' : lastError ? 'error' : 'idle',
       reason: lastError ? plainAgentFailure(lastError) === lastError ? 'The coding assistant could not start. Try again.' : plainAgentFailure(lastError) : null,
       detail: lastError ?? null,
-      harness: { version: h.version },
+      harness: { version: h.version, softCut: canSteer() },
       runtime: rt?.hp.running ? { pid: rt.hp.pid, generation: rt.generation } : null,
       routes: profile.routes.map(({ route, kind, modelId, name, contextWindow }) => ({ route, kind, modelId, name, contextWindow })),
       // tool servers that could not be wired (a name the rule does not allow, no program or address): the chat says so
@@ -435,7 +444,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
-      ended: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
+      ended: deferred(), admitted: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
       abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
       children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
@@ -471,6 +480,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     async function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
+      turn.admitted.resolve(false);
+      for (const item of steering.list(chatId)) if (item.turnId === requestId && item.state !== 'delivered') steering.update(chatId, item.id, { state: 'failed', error: 'Delivery was not confirmed before the run ended.' });
       clearTimeout(turn.settleTimer);
       clearInterval(turn.watchdog);
       turn.follow?.close();
@@ -544,6 +555,16 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
           return;
         }
       } else if (!turn.live) return;
+      if (item.type === 'event') {
+        const event = item.event;
+        const id = event.type === 'user/message' ? event.data?.source?.rpcId : null;
+        const instruction = id ? steering.get(chatId, id) : null;
+        if (instruction && instruction.sessionId === sessionId && instruction.turnId === requestId) {
+          const delivered = steering.update(chatId, id, { state: 'delivered', accepted: true, error: null });
+          emit({ type: 'steering', message: delivered });
+        }
+        if ((event.type === 'assistant/attempt' || event.type === 'assistant/message' && event.data?.interrupted) && !turn.stopping && steering.list(chatId).some(p => p.turnId === requestId && p.state === 'pending')) emit({ type: 'steering-cut' });
+      }
       for (const f of projector.consume(item)) emit(f);
       if (guard && projector.contextTokens != null) trip(guard.context(projector.contextTokens));
       if (item.type === 'event') watchParent(item.event);
@@ -835,6 +856,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     }
     if (!goal) reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' });
     turn.prompted = true;
+    turn.admitted.resolve(true);
     if (turn.stopBeforePrompt) {
       // Stop landed in the instant between 'prompt sent' and 'prompt accepted'. A cancel before the turn
       // starts arms nothing, so wait for the turn to be ours, then cancel it.
@@ -1114,6 +1136,34 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     return { message, queue: queueView(chatId) };
   }
 
+  /** A separate operation from Stop: only the current model attempt may be cut. */
+  async function steer({ chatId, id, text }) {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || typeof text !== 'string' || !text.trim() || text.length > 8000) throw new AgentUnavailable('Steering needs an ID and up to 8000 characters of text.', 'steer-invalid');
+    text = text.trim();
+    const previous = steering.get(chatId, id);
+    if (previous && previous.text !== text) throw new AgentUnavailable('This message ID already belongs to different text.', 'steer-invalid');
+    if (previous?.accepted || previous?.state === 'delivered') return previous;
+    if (!canSteer()) throw new AgentUnavailable('This Harness does not support same-turn steering. Install a component built with the soft-cut source patch.', 'steer-unsupported');
+    const turn = chats.get(chatId)?.turn;
+    if (!rt || !turn || turn.finished || turn.stopping || previous && previous.turnId !== turn.requestId) throw new AgentUnavailable('There is no active agent run to steer in this chat.', 'steer-idle');
+    const runtime = rt;
+    steering.add({ chatId, sessionId: turn.sessionId, turnId: turn.requestId, id, text });
+    const before = steeringCalls.get(chatId) ?? Promise.resolve();
+    const call = before.catch(() => {}).then(async () => {
+      if (!await turn.admitted.promise || turn.finished || turn.stopping || chats.get(chatId)?.turn !== turn || rt !== runtime) throw new AgentUnavailable('The run ended before this instruction could be delivered.', 'steer-idle');
+      if (steering.get(chatId, id)?.accepted) return steering.get(chatId, id);
+      await runtime.gw.rpc('session/prompt', { request: { requestId: id, sessionId: turn.sessionId, mode: 'soft-cut', content: [{ type: 'text', text }] } }, { signal: AbortSignal.timeout(15000) });
+      return steering.update(chatId, id, { accepted: true, state: turn.finished ? 'failed' : 'pending', error: turn.finished ? 'Delivery was not confirmed before the run ended.' : null });
+    }).catch(error => {
+      steering.update(chatId, id, { state: 'failed', error: 'Delivery could not be confirmed. Retry uses the same message ID.' });
+      throw error;
+    });
+    steeringCalls.set(chatId, call);
+    try { return await call; } finally { if (steeringCalls.get(chatId) === call) steeringCalls.delete(chatId); }
+  }
+
+  const steeringState = chatId => steering.list(chatId);
+
   /** Take a queued message back (the x on it). A message already being delivered cannot be taken back. */
   function cancelQueued({ chatId, id }) {
     const list = queues.get(chatId) ?? [];
@@ -1333,7 +1383,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { steer, steeringState, compactCommand, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

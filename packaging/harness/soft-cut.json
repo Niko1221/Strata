@@ -1,0 +1,93 @@
+{
+  "id": "strata-harness-soft-cut-v1",
+  "commit": "571902028a75c64c1d767f4ae5fd099485f0ddf0",
+  "archiveSha256": "44fffca8d4626f6efc29b71cd7b7039c2a2653f3aca5f3525f3df64734d80a5e",
+  "patchSha256": "ffc02164fb8dadeee552fa2f79c648d3e6cde3d6bf92f779af9c0a85a3d958a8",
+  "sources": [
+    {
+      "path": "packages/api/session-controller/README.md",
+      "before": "d8fdb1e206b0e4edb2e3939a9b85e4f7770fdee037c47475a7ab0e70aad7b73b",
+      "after": "983abbfe989b0886abf63897f8a134d1e4f0f1eb4eb97ccbc8502ecf99ac1585"
+    },
+    {
+      "path": "packages/api/session-controller/src/commands.ts",
+      "before": "b1d3f6cc7b42d850a391d988a8d5dc2bee2e5f10f35ae4e6c1ae88e836c165b1",
+      "after": "ed8b5428c40dc42849900c42b330c22be8fa99abd342f157281fb4b516e0516d"
+    },
+    {
+      "path": "packages/api/session-controller/src/types.ts",
+      "before": "72a35c7df913a2a2d0548b40aa8a7abbbbc7807e55f4f9f5fb236a9a2550a042",
+      "after": "7e3c72e3fd0893c2b66942f630e7bfd90c1d1c22b17b41b49808b287a7e16222"
+    },
+    {
+      "path": "packages/api/session-controller/tests/session-cold.host.spec.ts",
+      "before": "3599b2af0121a78d6a304cb09d2e6b0fedf080b7bd93a537df8e3f2f13cace40",
+      "after": "856b126737004c8f9ffa258c8e556eb5f9a3b794c907887794eadbe54c60e494"
+    },
+    {
+      "path": "packages/core/agent-loop/README.md",
+      "before": "4c9fb8c7bcd7e563e5f24abbb1d9f52479ed7388ffa50e288bc1ec1eca4ab551",
+      "after": "c3eee98ca4d050846e62449f55501da64223590e9ce3ac1bfd8f8424b90ebe83"
+    },
+    {
+      "path": "packages/core/agent-loop/src/agent.ts",
+      "before": "4add12f5c22bb1b8cf1dbc239c9b09fa3351feff2c936cb2b8900036468bd01b",
+      "after": "3ab53dd610b7c08eee59e75add4b7ecf91ad6691e5d20db47f042a301d9fa056"
+    },
+    {
+      "path": "packages/core/agent-loop/src/assistant-stream.ts",
+      "before": "120d2bec5efeec2aa54bf0e4261a45282936272d610dbbab21eee36b902629de",
+      "after": "8aac033238521f246c6385ef9b04b8b7ce4515cc4a0637ef49585d1e4450463f"
+    },
+    {
+      "path": "packages/core/agent-loop/src/tool-calls.ts",
+      "before": "5c7e8d8ff0028b436efdd13e5dffa4801d2311c211c3af039e7dab705f87b303",
+      "after": "890bf666f25d9a297b31cbbd96eae9eb927942d15c5e4dc00b3f4e9b65c53165"
+    },
+    {
+      "path": "packages/core/agent-loop/tests/cancel.spec.ts",
+      "before": "ccec6f34e6dc8b9a2493e516a5b5aa5025ca72eb9231fc004de447850ce081db",
+      "after": "78a005eeb3d3ec80c493b737bbe61b37ccdd10cca13c2e46b36aad25adad9bc8"
+    },
+    {
+      "path": "packages/core/agent-loop/tests/request-reconstruction.spec.ts",
+      "before": "e72809149d82f3126a894ef61c5fb3b187d33b2cbaaae91bc450cc583e5b95c3",
+      "after": "f7772e674abfe4030bcaf79bad049d103805f0ad4783d7e506cad449cb611907"
+    },
+    {
+      "path": "packages/core/agent-loop/tests/tool-calls.spec.ts",
+      "before": "f8e046ed3ec459b58117b2feec99716cf1337cf45dfb85fe75d75484ba707a32",
+      "after": "bf3bd6b34721c28ac3f9192d0f46cbb1644051d024d74e7625126a3337055f56"
+    },
+    {
+      "path": "packages/core/agent/README.md",
+      "before": "652a3283721fb5b52f0671c43d458b04c039d5bfe7e900894cc0f64229b68641",
+      "after": "a04fb1db03055eca20ab9979448fc18e803b9a5b437d4490010b8911ee535d3f"
+    },
+    {
+      "path": "packages/core/agent/src/runtime-types.ts",
+      "before": "1ae0003c6968dc4af86e596d3ea08f6e517da0808e08089af2ed1818ab0651fc",
+      "after": "3ee440962eac1b736919d76ee70499ef0b5950ffe45304ba712ff5ee9b4a3d50"
+    }
+  ],
+  "artifacts": [
+    {
+      "source": "packages/core/agent-loop/lib/index.js",
+      "staged": "node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js"
+    },
+    {
+      "source": "packages/api/session-controller/lib/index.js",
+      "staged": "node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js"
+    },
+    {
+      "source": "packages/api/session-controller/lib/typert.host.js",
+      "staged": "node_modules/@deepseek-ai/dsh-api-session-controller/lib/typert.host.js"
+    }
+  ],
+  "tests": [
+    "packages/api/session-controller/tests/session-cold.host.spec.ts",
+    "packages/core/agent-loop/tests/cancel.spec.ts",
+    "packages/core/agent-loop/tests/request-reconstruction.spec.ts",
+    "packages/core/agent-loop/tests/tool-calls.spec.ts"
+  ]
+}

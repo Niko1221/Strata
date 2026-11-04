@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { tr } from '../lib/i18n';
 import { cancelQueued, planEdit, planReject, queuedWhen, stepsDone, usePlan, useQueue, type Plan, type QueuedMessage } from '../lib/plan';
-import { approvePlan, pushToast, startPlanGoal, useStore } from '../lib/store';
+import { approvePlan, liveChatIds, loadSteeringMessages, pushToast, retrySteeringMessage, sendPendingMessage, startPlanGoal, takePendingMessage, useStore } from '../lib/store';
+import { restoreChatPhotos } from '../lib/chat-photos';
 import { plainFailureText } from '../lib/plain-errors';
 import { Btn, Icon, IconBtn } from './ui';
 
@@ -86,10 +87,27 @@ export function PlanPanel({ chatId }: { chatId: string | null | undefined }) {
 }
 
 /** Messages sent while the assistant works: shown in the chat as they are, with when they will go out, and a way to take them back. */
-export function QueuedMessages({ chatId }: { chatId: string | null | undefined }) {
+export function QueuedMessages({ chatId, onTakeBack }: { chatId: string | null | undefined; onTakeBack?: (text: string) => void }) {
   const items = useQueue(chatId), plan = usePlan(chatId);
-  if (!chatId || !items.length) return null;
-  return <>{items.map((q: QueuedMessage, i) => {
+  const pending = useStore(s => chatId ? s.pendingMessages[chatId] : undefined);
+  const instructions = useStore(s => chatId ? s.steeringMessages[chatId] : undefined);
+  const connection = useStore(s => s.connection);
+  useEffect(() => { if (chatId) void loadSteeringMessages(chatId); }, [chatId, connection]);
+  const busy = useStore(() => !!chatId && liveChatIds().includes(chatId));
+  if (!chatId || (!items.length && !pending && !instructions?.length)) return null;
+  return <>{instructions?.map(message => <div className="queued" key={message.id} role="status">
+    <div className="queued__bubble">{message.text}</div>
+    <div className="queued__line"><span>{tr(message.state === 'delivered' ? 'Steering delivered' : message.state === 'pending' ? 'Waiting for a safe steering point' : 'Steering delivery not confirmed')}</span>
+      {message.state === 'failed' && <Btn variant="ghost" size="sm" onClick={() => void retrySteeringMessage(chatId, message.id)}>{tr('Retry')}</Btn>}
+    </div>
+    {message.state === 'failed' && message.error && <small>{message.error}</small>}
+  </div>)}{pending && <div className="queued" role="status">
+    <div className="queued__bubble">{pending.text || pending.photos.map(p => p.name).join(', ')}</div>
+    <div className="queued__line"><span>{tr(!busy ? 'Not sent yet' : pending.mode === 'queue' ? 'Sends when this answer is done' : 'Stopping the answer, then sending')}</span>
+      {!busy && <Btn variant="ghost" size="sm" onClick={() => void sendPendingMessage(chatId)}>{tr('Send')}</Btn>}
+      <Btn variant="ghost" size="sm" onClick={() => { const message = takePendingMessage(chatId); if (message) { restoreChatPhotos(message.photos, chatId); onTakeBack?.(message.text); } }}>{tr('Take back')}</Btn>
+    </div>
+  </div>}{items.map((q: QueuedMessage, i) => {
     const when = queuedWhen(q, i, plan);
     return <div className="queued" key={q.id}>
       <div className="queued__bubble">{q.text}</div>

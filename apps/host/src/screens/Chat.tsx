@@ -26,7 +26,7 @@ import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
 import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
 import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/Deliverables';
-import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
+import { usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
 import { useLiveStatus } from '../lib/live-status';
@@ -38,7 +38,7 @@ import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { createSubagentExample, getState, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, submitWhileBusy, useStore, } from '../lib/store';
 import { copyText } from '../lib/clipboard';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
@@ -374,11 +374,17 @@ export function ChatScreen() {
         if (!text && !queuedPhotos.length)
             return;
         if (streaming) {
-            // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
-            if (!text || !session)
+            if (!session)
                 return;
+            const id = session.id, key = draftKey;
+            const restore = () => {
+                const current = sessionStorage.getItem(key) ?? '';
+                const value = current ? `${text}\n\n${current}` : text;
+                sessionStorage.setItem(key, value);
+                if (getState().activeSession === id) setDraft(value);
+            };
             updateDraft('');
-            void queueMessage(session.id, text).then(ok => { if (!ok) { updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            void submitWhileBusy(text, id).then(ok => { if (!ok) restore(); }, e => { restore(); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
             return;
         }
         const timeSkip = timeSkipPrompt(text);
@@ -446,7 +452,7 @@ export function ChatScreen() {
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
-              <QueuedMessages chatId={session.id}/>
+              <QueuedMessages chatId={session.id} onTakeBack={text => updateDraft(`${text}${draft ? `\n\n${draft}` : ''}`)}/>
             </div>
           </div>
           <div className="jumplatest-row">{tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
@@ -515,6 +521,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     textareaRef: React.RefObject<HTMLTextAreaElement | null>;
 }) {
     const clearDraft = useCallback(() => setDraft(''), [setDraft]);
+    const whileBusy = useStore(s => s.whileBusy);
     const photos = useChatPhotos(session?.id), native = useNative();
     const canChat = loaded || native?.instances.some(i => i.status === 'ready');
     const commands = useSlashCommands(clearDraft, setDraft);
@@ -592,7 +599,8 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         }}/>
           <div className="st-composer__bar">
             <ComposerControls draft={draft} onDraft={setDraft} session={session} onPreview={onPreview} streaming={streaming} onSlash={() => { setSlashDismissed(false); setSlashOpen(true); requestAnimationFrame(() => textareaRef.current?.focus()); }} onError={setFileError} onAttach={(name, text) => { setDraft(`${draft}${draft ? '\n\n' : ''}Attached ${name}\n\n${text}`); requestAnimationFrame(() => textareaRef.current?.focus()); }}/>
-            {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
+            {streaming && <Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr('Stop')}</Btn>}
+            {(!streaming || whileBusy !== 'wait') && <Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr(streaming ? whileBusy === 'queue' ? 'Send after' : whileBusy === 'steer' ? 'Steer current run' : 'Interrupt' : 'Send')}</Btn>}
           </div>
         </div>
         <ChatTelemetry session={session}/>

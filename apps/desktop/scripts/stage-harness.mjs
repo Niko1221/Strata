@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { flattenPnpm } from './flatten-pnpm.mjs';
 import { isOtherOsBinaryFolder, missingHarnessImports } from './harness-prune.mjs';
 import { patchStagedHarnessBudget } from './harness-budget.mjs';
+import { stagedHarnessSteeringPatch } from './harness-steering.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -147,13 +148,15 @@ prune(out);
 
 // Strata's provenance-recorded output-budget correction applies only to this copy.
 const patches = [patchStagedHarnessBudget(out)];
+const steeringPatch = stagedHarnessSteeringPatch(src, out);
+if (steeringPatch) patches.push(steeringPatch);
 
 // --- licence: the MIT text and the third-party notices travel with the files ---------------------------------------------
 for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
   if (existsSync(join(src, name))) cpSync(join(src, name), join(out, name));
 }
 const cli = JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'));
-let commit = process.env.STRATA_HARNESS_COMMIT ?? null;
+let commit = process.env.STRATA_HARNESS_COMMIT ?? steeringPatch?.commit ?? null;
 if (!commit) { const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: src, encoding: 'utf8' }); if (r.status === 0) commit = r.stdout.trim(); }
 function size(dir) { let t = 0, n = 0; for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) { const s = size(p); t += s.bytes; n += s.files; } else if (e.isFile()) { t += statSync(p).size; n++; } } return { bytes: t, files: n }; }
 const total = size(out);
