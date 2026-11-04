@@ -736,6 +736,24 @@ test("monitor: a split run's GPU temp tile lists each card's heat with a chart o
   await two.stop();
 });
 
+test("monitor: a split run keeps the Speed, CPU and Disk read tiles at their own height", async ({ browser }) => {
+  const two = await startMock({ gpus: 2 });
+  const page = await openPage(browser, two, { hash: "#monitor" });
+  await page.waitForFunction(() => !document.getElementById("rows-power").hidden, { timeout: 8000 });
+  // at this width the grid lays one row of four tiles: the plain tiles share it with the tall card tiles,
+  // and sharing means their bottoms line up - which is the stretching this stops doing
+  const heights = await page.evaluate(() => {
+    const h = (id) => document.getElementById(id).closest(".metric-card").getBoundingClientRect().height;
+    return { speed: h("mv-speed"), gpu: h("mv-gpu"), cpu: h("mv-cpu"), power: h("mv-power"), disk: h("mv-disk") };
+  });
+  assert.ok(heights.speed < heights.gpu, `the Speed tile stops at its own content, not the row's (${JSON.stringify(heights)})`);
+  assert.ok(heights.cpu < heights.power, "the CPU tile stops at its own content");
+  assert.ok(heights.disk < heights.power, "and the Disk read tile with it");
+  assert.deepEqual(page.errors, []);
+  await page.close();
+  await two.stop();
+});
+
 test("monitor: one card keeps its single mean chart and shows no rows", async ({ browser, mock }) => {
   const page = await openPage(browser, mock, { hash: "#monitor" });
   await page.waitForFunction(() => (document.querySelector("#sp-gpu .line").getAttribute("d") || "").length > 20, { timeout: 8000 });
@@ -752,6 +770,9 @@ test("monitor: one card keeps its single mean chart and shows no rows", async ({
   assert.equal(await page.$eval("#rows-pcie", (e) => e.hidden), true, "nor the PCIe tile");
   assert.equal(await page.$eval("#mv-pcie", (e) => e.textContent), "Gen4x16", "one card keeps the link as its figure");
   assert.equal(await page.$eval("#ms-pcie", (e) => e.textContent), "to GPU 16 MB/s");
+  assert.equal(await page.evaluate(() => document.getElementById("mv-speed").closest(".metric-card").getBoundingClientRect().height),
+               await page.evaluate(() => document.getElementById("mv-gpu").closest(".metric-card").getBoundingClientRect().height),
+               "with one card the plain tiles still stretch to their row, as they always did");
   await page.close();
 });
 
