@@ -505,7 +505,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const cards = hw.gpus || [];
   const multi = cards.length > 1;
   const per = (f) => cards.map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
-  const cardLabel = (g) => (g.name ? `GPU ${g.index} · ${g.name}` : `GPU ${g.index}`);
+  const cardLabel = (g) => g.name || `GPU ${g.index}`;   // the rows are in the cards' order, so the name can keep the width
   const gpuHist = {};                                 // each card's own history series, keyed as "gpus" is
   for (const g of h.gpus || []) gpuHist[g.index] = g;
   const top = (f) => Math.max(1, ...cards.flatMap((g) => ((gpuHist[g.index] || {})[f]) || []));

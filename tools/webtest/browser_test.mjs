@@ -652,7 +652,7 @@ test("monitor: a split run shows GPU load as one named chart per card", async ({
   const page = await openPage(browser, two, { hash: "#monitor" });
   await page.waitForFunction(() => !document.getElementById("rows-gpu").hidden, { timeout: 8000 });
   assert.deepEqual(await page.$$eval("#rows-gpu .metric-row__name", (els) => els.map((e) => e.textContent)),
-                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"], "the cards are named, not numbered");
+                   ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 3060"], "the cards are named; the row order is their number");
   assert.deepEqual(await page.$$eval("#rows-gpu .metric-row__value", (els) => els.map((e) => e.textContent)),
                    ["45%", "25%"], "each card's own load beside its name");
   const lines = await page.$$eval("#rows-gpu .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
@@ -675,7 +675,7 @@ test("monitor: a split run's Power tile keeps the total and names each card's dr
   assert.equal(await page.$eval("#mv-power", (e) => e.textContent), "140W", "the sum of all cards stays the main figure");
   assert.equal(await page.$eval("#ms-power", (e) => e.textContent), "of 620 W limit", "the limit covers all cards too");
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__name", (els) => els.map((e) => e.textContent)),
-                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
+                   ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 3060"]);
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => e.textContent)),
                    ["85 W", "55 W"], "each card's own draw, so the slow and the hungry card are both visible");
   const powerLines = await page.$$eval("#rows-power .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
