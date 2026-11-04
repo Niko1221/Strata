@@ -618,27 +618,51 @@ def wsl_amd_note(backend: str | None, dev_root: str = "/dev", wsl: bool | None =
             "would hang at its first step. Use the Strata app or Terminal for Windows, which run the AMD engine directly.")
 
 
+#: The most own VRAM an integrated GPU reports: its BIOS carve-out (a Raphael iGPU reported 512 MiB, #4971). The
+#: smallest card Strata runs has several GiB, so a card below this is not the one this PC's engine is chosen for.
+INTEGRATED_MAX_VRAM_MIB = 2048
+
+
+def _own_vram(card: Path) -> bool | None:
+    """Whether a display adapter has its own VRAM above `INTEGRATED_MAX_VRAM_MIB`; None when it reports no size.
+
+    `mem_info_vram_total` is amdgpu's; NVIDIA and Intel write no such file, so their cards fall back to the order
+    below instead of being called integrated by a missing file.  Read-only sysfs, nothing is run."""
+    try:
+        total = int((card / "device" / "mem_info_vram_total").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return total > INTEGRATED_MAX_VRAM_MIB * 1024 * 1024
+
+
 def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     """Linux without the vendor tools on PATH (a HIP box that runs ROCm from Python wheels has no rocminfo): the PCI
     vendor of the display adapters decides. NVIDIA 0x10de -> cuda, AMD 0x1002 -> hip, Intel 0x8086 -> sycl, in that
-    order. Read-only sysfs, nothing is run."""
+    order.  An integrated GPU does not decide when another card is present (#4971: a 512 MiB Radeon APU made the whole
+    PC an AMD machine beside the user's Intel Arc), and the old answer is kept when every card is integrated.
+    Read-only sysfs, nothing is run."""
     if not os.path.isdir(root):
         return None
-    vendors = set()
+    cards: dict[str, list[bool | None]] = {}
     try:
         for card in sorted(Path(root).glob("card[0-9]*")):
             if "-" in card.name:
                 continue
             try:
-                vendors.add((card / "device" / "vendor").read_text().strip().lower())
+                vendor = (card / "device" / "vendor").read_text().strip().lower()
             except OSError:
                 continue
+            cards.setdefault(vendor, []).append(_own_vram(card))
     except OSError:
         return None
-    for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl")):
-        if vendor in vendors:
-            return backend
-    return None
+    order = (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl"))
+    if not cards:
+        return None
+    # A vendor whose every card is a positively integrated one (a small own-VRAM reading) is skipped while another
+    # vendor has a card that is not.  A card that reports no own-VRAM size at all is not called integrated.
+    usable = [vendor for vendor, _ in order if any(flag is not False for flag in cards.get(vendor, []))]
+    chosen = usable[0] if usable else next(vendor for vendor, _ in order if vendor in cards)
+    return dict(order)[chosen]
 
 
 #: Windows AMD cards by PCI device id (VEN_1002), the same table as setup.py's _WIN_AMD_DID (tests/terminal/test_engine_component.py
