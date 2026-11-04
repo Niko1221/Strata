@@ -6359,7 +6359,7 @@ class OpenAIChunksTerminal(unittest.TestCase):
 
     def chunks(self, events, cancel=None):
         from serve.server import openai_chunks
-        svc = SimpleNamespace(model_for=lambda req: "m", engine=None, tok=None)
+        svc = SimpleNamespace(model_for=lambda req: "m", engine=None, tok=None, end_engine_if_unchanged=lambda born: False)
         return list(openai_chunks(svc, {}, [1], False, None, 8, cancel or threading.Event(), run=iter(events)))
 
     def test_a_run_that_stopped_without_its_done_event_is_an_error(self):
@@ -6372,12 +6372,104 @@ class OpenAIChunksTerminal(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(EngineDied):
                 from serve.server import openai_chunks
-                svc = SimpleNamespace(model_for=lambda req: "m", engine=SimpleNamespace(end_for_restart=lambda: ended.append(1)), tok=None)
+                engine = SimpleNamespace(gen=3)
+                svc = SimpleNamespace(model_for=lambda req: "m", engine=engine, tok=None,
+                                      end_engine_if_unchanged=lambda born: ended.append(born))
                 list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([])))
-        self.assertEqual(ended, [1], "the engine is ended, so that the next request restarts it")
+        self.assertEqual(ended, [3], "the engine process the request ran on is the one to end, so that the next request restarts it")
         with contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(EngineDied):
                 self.chunks([])
+
+    def service(self, engine):
+        svc = object.__new__(Service)
+        svc.engine, svc.fifo = engine, threading.Lock()
+        return svc
+
+    class Engine:
+        def __init__(self, gen=1, batch=0):
+            self.gen, self.batch, self.ended_count = gen, batch, 0
+
+        def end_for_restart(self):
+            self.ended_count += 1
+
+    def test_the_lost_runs_engine_is_ended_when_nobody_is_on_it(self):
+        engine = self.Engine(gen=4)
+        svc = self.service(engine)
+        self.assertTrue(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 1)
+        self.assertTrue(svc.fifo.acquire(blocking=False), "the turn is given back")
+
+    def test_the_next_request_admitted_right_after_a_lost_run_is_not_killed(self):          # the race INT3 found
+        engine = self.Engine(gen=4)
+        svc = self.service(engine)
+        svc.fifo.acquire()                                    # the next request has the turn and is generating on the same live engine
+        self.assertFalse(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+        svc.fifo.release()
+
+    def test_an_engine_that_was_restarted_since_is_not_the_one_that_lost_the_run(self):
+        engine = self.Engine(gen=5)                           # a restart made a new process (gen 5); the lost run was on gen 4
+        svc = self.service(engine)
+        self.assertFalse(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+
+    def lost_run(self, engine):
+        """The error a no-done run raises on this engine, and whether the engine was ended."""
+        from serve.frontend import Event
+        from serve.server import openai_chunks, died_note
+        svc = self.service(engine)
+        svc.model_for = lambda req: "m"
+        svc.tok = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied) as caught:
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([("event", Event("content", "hi"))])))
+        return caught.exception, died_note(caught.exception)
+
+    def test_batch_slots_share_the_engine_so_it_is_left_alone(self):
+        engine = self.Engine(gen=4, batch=2)
+        self.assertFalse(self.service(engine).end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+        error, said = self.lost_run(engine)                  # the engine keeps running, so the error does not promise a restart
+        self.assertEqual(said, "the engine ended the request without an answer")
+        self.assertEqual(engine.ended_count, 0)
+
+    def test_an_engine_without_a_generation_is_left_alone(self):
+        engine = self.Engine(gen=4)
+        self.assertFalse(self.service(engine).end_engine_if_unchanged(None))
+        self.assertEqual(engine.ended_count, 0)
+        del engine.gen                                        # replicas: no gen
+        error, said = self.lost_run(engine)
+        self.assertEqual(said, "the engine ended the request without an answer")
+        self.assertEqual(engine.ended_count, 0)
+
+    def test_the_restart_sentence_is_said_only_where_the_engine_was_ended(self):
+        engine = self.Engine(gen=4)
+        error, said = self.lost_run(engine)
+        self.assertEqual(engine.ended_count, 1)
+        self.assertEqual(said, "the engine ended the request without an answer; the next request restarts it")
+        engine = self.Engine(gen=4)                           # another request holds the turn: not ended, no promise
+        svc = self.service(engine)
+        svc.fifo.acquire()
+        from serve.server import died_note
+        error = EngineDied("x")
+        error.restarts = svc.end_engine_if_unchanged(4)
+        self.assertEqual(died_note(error), "x")
+        self.assertEqual(died_note(EngineDied("the engine stopped")), "the engine stopped; the next request restarts it")   # every other EngineDied is as before
+
+    def test_the_whole_race_through_the_stream(self):         # a no-done run, and the next request is on the engine when the check runs
+        from serve.frontend import Event
+        from serve.server import openai_chunks
+        engine = self.Engine(gen=7)
+        svc = self.service(engine)
+        svc.model_for = lambda req: "m"
+        svc.tok = None
+        svc.fifo.acquire()                                    # (the lost run released its turn; the next request took it)
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied):
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([("event", Event("content", "hi"))])))
+        self.assertEqual(engine.ended_count, 0, "the request that follows was killed with the lost one")
+        svc.fifo.release()
 
     def test_a_run_that_is_done_ends_with_its_finish_reason(self):
         from serve.frontend import Event

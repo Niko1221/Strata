@@ -427,6 +427,12 @@ class MockEngine:
 
 class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
+    restarts = True        # the engine is gone, so the next request starts it again; False for an error raised while the engine is left running (#3961)
+
+
+def died_note(e: Exception) -> str:
+    """What an API error says about an EngineDied: the cause, and that the next request restarts the engine - only where it really is ended."""
+    return f"{e}; the next request restarts it" if getattr(e, "restarts", True) else str(e)
 
 
 class EngineStarting(RuntimeError):
@@ -5404,6 +5410,24 @@ class Service:
 
     UNLOAD_WAIT_S = 300.0       # #1997: POST /unload?wait=1 waits this long for the running turn (wait=<s> to choose)
 
+    def end_engine_if_unchanged(self, born) -> bool:
+        """End the engine after a request that ended without its end event (#3961), but only if it is still the engine process that request ran on
+        (`born`, the engine's gen) and nobody is on it: the turn is taken without waiting, and held while the engine is ended, so a request admitted
+        right after the lost one is never killed by it. A server with batch slots shares the engine between requests, so it is left alone. True when
+        the engine was ended (the next request then starts it again)."""
+        end = getattr(self.engine, "end_for_restart", None)
+        if end is None or born is None or batch_slots_on(self.engine):
+            return False
+        if not self.fifo.acquire(blocking=False):              # the next request is already generating on it
+            return False
+        try:
+            if getattr(self.engine, "gen", None) != born:      # it was ended or restarted since: that is another process
+                return False
+            end()
+            return True
+        finally:
+            self.fifo.release()
+
     def unload_waiting(self, wait_s: float) -> str:
         """#1997: unload(), but a running or queued request is waited for (up to wait_s) instead of answering "busy":
         a peer server that needs this GPU can then free the card on the server's terms.  "busy" after wait_s."""
@@ -7084,7 +7108,9 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
     answered_done = False                          # the run's own end (its "done" event) arrived
+    born = getattr(svc.engine, "gen", None)        # the engine process this request is on (read again with every event: a start inside the run is its own)
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
+        born = getattr(svc.engine, "gen", born)
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
@@ -7135,10 +7161,12 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
         # finish_reason, in 0.2 s, while the engine never logged the request: #3961) used to read to the client as an empty answer that worked, and
         # /health stayed ok. It is an error now, counted in the log, so a client's retry can tell it from an answer.
         print("[strata] a request ended without an answer and without a finish reason; it is answered as an error", flush=True)
-        end = getattr(svc.engine, "end_for_restart", None)
-        if end is not None:
-            end()                                   # "the next request restarts it" is then true: the engine is ended, ensure_loaded starts it again
-        raise EngineDied("the engine ended the request without an answer")
+        # the engine is ended so "the next request restarts it" is true - but only that engine process, and only while nobody is on it (the turn is taken
+        # without waiting): this runs after the run released its turn, and a request admitted since must not be killed by it
+        ended = svc.end_engine_if_unchanged(born)
+        lost = EngineDied("the engine ended the request without an answer")
+        lost.restarts = bool(ended)                 # "the next request restarts it" only where the engine really was ended (not with batch slots, replicas, another request on it)
+        raise lost
 
 
 def _is_json(text: str) -> bool:
@@ -8255,7 +8283,7 @@ def make_handler(svc: Service):
                                   "message": f"the request is malformed ({type(e).__name__}: {e})"}}
                 self._json(400, responses_error_body(body["error"]["message"]) if path == "/v1/responses" else body)
             except EngineDied as e:                          # before the answer started (not streamed)
-                self._json(503, {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}})
+                self._json(503, {"error": {"type": "server_error", "message": died_note(e)}})
             except EngineStuck as e:                         # an unload or restart that could not end the engine
                 self._json(503, {"error": {"type": "server_error", "message": str(e)}})
 
@@ -8588,7 +8616,7 @@ def make_handler(svc: Service):
                 svc.note_client_disconnect(cancel)           # client went away: stop the engine
                 chunks.close()
             except EngineDied as e:                          # mid-stream: say so, then end the stream properly
-                err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
+                err = {"error": {"type": "server_error", "message": died_note(e)}}
                 self._note(error=err["error"])
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
             except QueueWaitExpired as e:
@@ -8667,7 +8695,7 @@ def make_handler(svc: Service):
                     return self._json(429, responses_error_body(str(e), "server_error",
                                                                 code="queue_wait_timeout"), retry_after=1)
                 except EngineDied as e:
-                    return self._json(503, responses_error_body(f"{e}; the next request restarts it", "server_error",
+                    return self._json(503, responses_error_body(died_note(e), "server_error",
                                                                 code="server_error"))
                 except EngineNonFinite as e:                 # #879, twice: not the request's fault
                     return self._json(503, responses_error_body(str(e), "server_error", code="server_error"))
@@ -8700,7 +8728,7 @@ def make_handler(svc: Service):
                 svc.note_client_disconnect(cancel)           # client went away: stop the engine
                 items.close()
             except EngineDied as e:                          # mid-stream: response.failed, then the stream ends
-                self._responses_failed(asm, f"{e}; the next request restarts it", "server_error", send)
+                self._responses_failed(asm, died_note(e), "server_error", send)
             except QueueWaitExpired as e:
                 self._responses_failed(asm, str(e), "queue_wait_timeout", send)
             except StructuredOutputError as e:
@@ -8826,7 +8854,7 @@ def make_handler(svc: Service):
                 svc.note_client_disconnect(cancel)
                 events.close()
             except EngineDied as e:                          # mid-stream: Anthropic's error event
-                err = {"type": "error", "error": {"type": "api_error", "message": f"{e}; the next request restarts it"}}
+                err = {"type": "error", "error": {"type": "api_error", "message": died_note(e)}}
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
             except QueueWaitExpired as e:
