@@ -132,6 +132,7 @@ class MonitorApp(App):
         self.polling = False
         self.closing = False
         self.error: str | None = None
+        self.help_until = 0.0                # the key list from `?` stays up to HELP_SECONDS (a poll no longer wipes it on any view)
         self.failures = 0
         self.next_poll_at = 0.0
         self.next_age_repaint = 0.0
@@ -252,7 +253,7 @@ class MonitorApp(App):
         note = getattr(self, "quiet_note", None)             # one quiet line (an engine update is available), only where the screen has room for it
         if note and self.connection_state in ("connected", "stale", "telemetry_unavailable") and not self.frozen:
             idle_message = note if size.width < 100 else f"{note}  |  q detaches without stopping Strata"
-        msg = self.error or self.selection_notice or ("Connecting to Strata" if self.connection_state == "connecting" else
+        msg = (self._help_line() if self._help_open() else None) or self.error or self.selection_notice or ("Connecting to Strata" if self.connection_state == "connecting" else
                              "Telemetry unavailable; status only" if self.connection_state == "telemetry_unavailable" else
                              "Frozen display; collection continues" if self.frozen else
                              idle_message)
@@ -426,6 +427,7 @@ class MonitorApp(App):
         self._paint()
 
     def action_filter_clear(self) -> None:
+        self.help_until = 0.0
         self.filter_text = ""
         self.selected = 0
         self.selected_identity = None
@@ -468,8 +470,18 @@ class MonitorApp(App):
             self._remember_selection()
             self._paint()
 
+    HELP_SECONDS = 15.0
+
+    def _help_open(self) -> bool:
+        return time.monotonic() < self.help_until
+
+    def _help_line(self) -> str:
+        return f"{nav.keys(self.connect_enabled)}/Left/Right views  Tab pane  Up/Down/PgUp/PgDn/Home/End rows  Enter detail  Space freeze  r refresh  t theme  q detach"
+
     def action_help(self) -> None:
-        self.error = f"{nav.keys(self.connect_enabled)}/Left/Right views  Tab pane  Up/Down/PgUp/PgDn/Home/End rows  Enter detail  Space freeze  r refresh  t theme  q detach"
+        """`?`: the key list on the message line, on every view. The next poll (every second) used to wipe it, so it flashed by on the Overview;
+        now it stays until `?` again, Esc, another view or HELP_SECONDS."""
+        self.help_until = 0.0 if self._help_open() else time.monotonic() + self.HELP_SECONDS
         self._paint()
 
     def action_request_detail(self) -> None:
@@ -538,6 +550,7 @@ class MonitorApp(App):
         self.selected_identity = None
         self.detail = False
         self.selection_notice = None
+        self.help_until = 0.0
         self._paint()
 
     def action_view_0(self) -> None:
