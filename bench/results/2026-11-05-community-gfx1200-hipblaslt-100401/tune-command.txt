@@ -1,0 +1,20 @@
+# Reproduce the gfx1200 hipBLASLt 100401 tuning table
+
+# Tuner binary: built from this tree (v0.2.10 / engine 0.1.56) with
+#   cmake --build build-hip --target tune_hipblaslt
+# (incremental build in the existing build-hip dir). It links hipBLASLt
+# dynamically, so LD_LIBRARY_PATH at the SDK's lib tunes and stamps the
+# table for THAT library (hipblasLtGetVersion() is queried at run time).
+# The table must be run with the engine stopped (it maps ~1 GB of VRAM).
+LD_LIBRARY_PATH=/home/testarossa/rocm-10.0.0/install/lib \
+  ~/Strata/build-hip/tune_hipblaslt \
+  --shapes-file shapes-canon.json \
+  --tokens 4096,8192 \
+  --workspace-mib 32 \
+  --tuning-out gfx1200-hipblaslt-100401.txt
+
+# meta line observed: device_arch=gfx1200 hipblaslt_version=100401 hipblaslt_header_version=1.4.1 hip_runtime_version=71526333
+# 32 cases (16 shapes x {4096, 8192} token buckets), every candidate
+# correctness-gated by the tuner (rel-L2 1e-4 / max-abs 1e-2, padding canary);
+# each table row is its case's measured best. ~1 GB VRAM, about 3 minutes
+# on one RX 9060 XT.
