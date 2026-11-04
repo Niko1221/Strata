@@ -453,9 +453,9 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
 
 
 def _host_platform() -> tuple[str, str]:
-    """(sys.platform, platform.machine()) of this computer, in one place the tests can replace."""
+    """(sys.platform, sysinfo.machine()) of this computer, in one place the tests can replace."""
     import platform
-    return sys.platform, platform.machine()
+    return sys.platform, sysinfo.machine()
 
 
 def parallel_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:

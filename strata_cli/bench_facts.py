@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import platform
+from strata_control import sysinfo
 import re
 import socket
 import subprocess
@@ -57,7 +58,7 @@ def redactor(key: str = ""):
     except Exception:                                   # noqa: BLE001 - no user name is not an error
         pass
     add(socket.gethostname(), "<host>", True)
-    add(platform.node(), "<host>", True)
+    add(sysinfo.node(), "<host>", True)
     add(key, "<key>")
     subs.sort(key=lambda item: -len(item[0].pattern))
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
@@ -143,7 +144,7 @@ def cpu_name() -> str | None:
         out = powershell("(Get-CimInstance Win32_Processor | Select-Object -First 1).Name").strip()
         if out:
             return out
-    return platform.processor() or None
+    return sysinfo.processor() or None
 
 
 def nvidia_gpus() -> tuple[list[dict], str | None, str | None]:
@@ -373,9 +374,9 @@ def hardware(why: Why, *, selected: list[int], served_gpu: str | None, model_dir
 # ------------------------------------------------------------------------------------------------------------ software
 def os_info() -> dict:
     if os.name == "nt":
-        return {"name": "Windows", "version": platform.version()}
+        return {"name": "Windows", "version": sysinfo.version()}
     if sys.platform == "darwin":
-        return {"name": "macOS", "version": platform.mac_ver()[0] or platform.release()}
+        return {"name": "macOS", "version": platform.mac_ver()[0] or sysinfo.release()}
     name = None
     try:
         for line in Path("/etc/os-release").read_text().splitlines():
@@ -383,7 +384,7 @@ def os_info() -> dict:
                 name = line.split("=", 1)[1].strip().strip('"')
     except OSError:
         pass
-    return {"name": name or platform.system(), "version": platform.release()}
+    return {"name": name or sysinfo.system(), "version": sysinfo.release()}
 
 
 def git_commit(folder: Path = ROOT) -> str | None:
@@ -426,7 +427,7 @@ def software(why: Why, machine: dict, *, engine_version: str | None, build_optio
     if machine.get("rocm") and not any(r.get("name") == "rocm" for r in runtime):
         runtime.append({"name": "rocm", "version": machine["rocm"]})
     if sys.platform == "darwin":
-        runtime.append({"name": "metal", "version": platform.mac_ver()[0] or platform.release()})
+        runtime.append({"name": "metal", "version": platform.mac_ver()[0] or sysinfo.release()})
     drivers = [{"name": "gpu-driver", "version": machine["driver"]}] if machine.get("driver") else []
     block = {"os": os_info(), "drivers": drivers or None, "runtime": runtime or None,
              "strata_commit": commit, "engine_version": engine_version,

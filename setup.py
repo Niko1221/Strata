@@ -70,6 +70,7 @@ from strata_control import atomic
 from strata_control import draft_layer
 from strata_control import dsv41_context
 from strata_control import engine_component
+from strata_control import sysinfo
 from strata_control.discovery import in_trash
 from strata_control import user_args
 
@@ -1501,7 +1502,7 @@ def vision_threads(logical: int | None = None) -> int:
 def cpu_info():
     """(name, avx2, avx512): avx512 means everything Strata's fast AVX-512 kernels use (F, BW, VL, VNNI, VBMI),
     the same test the engine makes (cpu_avx512_ok), not just AVX-512F."""
-    name, avx2, avx512 = platform.processor() or "unknown CPU", False, False
+    name, avx2, avx512 = sysinfo.processor() or "unknown CPU", False, False
     if WIN:
         pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
         avx2 = bool(pf(40)) or _cpuid_avx2()      # PF_AVX2_INSTRUCTIONS_AVAILABLE, else the CPU itself (#159)
@@ -1516,7 +1517,7 @@ def cpu_info():
                 # aarch64 lists Features, not the x86 flags line, and no "model name": lscpu names the cores (a DGX Spark:
                 # Cortex-X925 + Cortex-A725). No AVX of any kind; the arm64 engine needs none.
                 cores = re.findall(r"^\s*Model name:\s*(.+)$", out(["lscpu"]), re.M)
-                name = " + ".join(dict.fromkeys(c.strip() for c in cores)) or (platform.processor() or "arm64 CPU")
+                name = " + ".join(dict.fromkeys(c.strip() for c in cores)) or (sysinfo.processor() or "arm64 CPU")
                 return name, False, False
             flags = set(mflags.group(1).split())
             avx2 = "avx2" in flags
@@ -1551,7 +1552,7 @@ def _cpuid_floor() -> str:
 
 def is_arm64() -> bool:
     """An ARM64 CPU (DGX Spark / GB10, Grace): there is no AVX here, and no ready-made engine for it."""
-    return platform.machine().lower() in ("aarch64", "arm64")
+    return sysinfo.machine().lower() in ("aarch64", "arm64")
 
 
 def is_gb10(g) -> bool:
@@ -5553,7 +5554,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         # package when the release carries one; without it the caller compiles (spark/build_engine.sh does the same by hand)
         got = engine_from_feed(eng, updating) if int(toolkit) != 12 else None
         if got is None:
-            warn(f"no ready-made engine for {platform.machine()} in the update feed" + ("" if updating else ": compiling it here, once"))
+            warn(f"no ready-made engine for {sysinfo.machine()} in the update feed" + ("" if updating else ": compiling it here, once"))
         return got
     if not url_base:
         return None

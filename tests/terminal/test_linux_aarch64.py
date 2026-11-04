@@ -22,7 +22,13 @@ import package_terminal  # noqa: E402
 
 
 def host(system: str, machine: str) -> str:
-    with mock.patch.object(targets.platform, "system", return_value=system), mock.patch.object(targets.platform, "machine", return_value=machine):
+    # the name and the architecture come from strata_control.sysinfo: on Windows from sys.platform and the environment (no WMI, #4975),
+    # elsewhere from the platform module
+    win = system == "Windows"
+    env = {"PROCESSOR_ARCHITECTURE": machine, "PROCESSOR_ARCHITEW6432": ""} if win else {}
+    with mock.patch.object(targets.platform, "system", return_value=system), mock.patch.object(targets.platform, "machine", return_value=machine), \
+            mock.patch.object(sys, "platform", "win32" if win else ("darwin" if system == "Darwin" else "linux")), \
+            mock.patch.dict("os.environ", env):
         return targets.host_platform()
 
 
