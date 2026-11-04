@@ -2736,6 +2736,16 @@ class StrataEngine:
             pass
         return EngineSilent(f"{what}; the server ended the engine")
 
+    def end_for_restart(self) -> None:
+        """End the engine now and mark it ended, so the next request starts it again (#3961: a run that stopped without its end event left the two sides
+        out of step; the restart is what puts them back)."""
+        self.ended = True
+        try:
+            self.proc.kill()
+            self.proc.wait(timeout=20)
+        except (OSError, AttributeError, subprocess.TimeoutExpired):
+            pass
+
     def session_file(self, action: str, path: str) -> dict:
         """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
         -> {"tokens", "bytes", "ms"}.  SessionRefused (kind, published) when the engine refused or failed the file and
@@ -4873,6 +4883,24 @@ class Service:
             raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")
         return value if value > 0 else None
 
+    def _release_orphan_encoder(self) -> bool:
+        """The engine is not running but its picture encoder still is (the engine died under a request; the encoder is a process of its own): stop it,
+        and its VRAM goes back, so the free-VRAM check does not count this server's own encoder as "another program" and refuse every load after
+        it, and the load that follows starts it again together with the engine (#4352). True when an encoder was stopped."""
+        vision = self.vision
+        if vision is None or not hasattr(vision, "alive") or not hasattr(vision, "unload") or self.loaded():
+            return False
+        try:
+            if not vision.alive():
+                return False
+            print("[strata] the engine is not running but its picture encoder is: stopping the encoder to give its memory back", flush=True)
+            vision.unload()
+            self.vision_held = False
+            return True
+        except Exception as e:                              # noqa: BLE001 - freeing memory never turns a request into a crash
+            print(f"[strata] the picture encoder could not be stopped: {e}", flush=True)
+            return False
+
     def _vision_down(self) -> bool:
         """The encoder should run and does not (the engine's load starts it again).  An elastic encoder is down
         between pictures by design: it starts in the image turn (_vision_up), not with the engine."""
@@ -5060,6 +5088,8 @@ class Service:
                     print(f"[strata] the before_load command failed ({why}); checking the free VRAM", flush=True)
         if self.min_free_vram_mib and not (hook_failed and self.before_load_ignore_failure):
             free = self.free_vram_mib()
+            if free is not None and free < self.min_free_vram_mib and self._release_orphan_encoder():
+                free = self.free_vram_mib()                      # the encoder's share is back: the card is judged without our own process (#4352)
             deadline = time.time() + self.vram_free_wait_s   # memory another process just gave back can take a moment
             while free is not None and free < self.min_free_vram_mib and time.time() < deadline:
                 time.sleep(0.5)
@@ -5205,6 +5235,7 @@ class Service:
             return "busy"
         try:
             if not self.engine.alive():
+                self._release_orphan_encoder()                  # POST /unload gives the card back even when the engine already died (#4352)
                 return "not loaded"
             with self.status_lock:
                 if self.status.get("busy") or self.status.get("queued"):
@@ -6854,6 +6885,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
+    answered_done = False                          # the run's own end (its "done" event) arrived
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
@@ -6885,6 +6917,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                                                           "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
                 calls += 1
         else:
+            answered_done = True
             # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
             whole = calls and streamed.keys() <= finished
             finish = "tool_calls" if whole and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
@@ -6899,6 +6932,15 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             if x.get("rejected_tool_calls"):
                 last["strata_rejected_tool_calls"] = x["rejected_tool_calls"]     # #3796: only when a call was refused as undeclared
             yield last
+    if not answered_done and not cancel.is_set():
+        # Every admitted request ends with a "done" event that carries its finish reason. A run that simply stopped (a 200 with one chunk and no
+        # finish_reason, in 0.2 s, while the engine never logged the request: #3961) used to read to the client as an empty answer that worked, and
+        # /health stayed ok. It is an error now, counted in the log, so a client's retry can tell it from an answer.
+        print("[strata] a request ended without an answer and without a finish reason; it is answered as an error", flush=True)
+        end = getattr(svc.engine, "end_for_restart", None)
+        if end is not None:
+            end()                                   # "the next request restarts it" is then true: the engine is ended, ensure_loaded starts it again
+        raise EngineDied("the engine ended the request without an answer")
 
 
 def _is_json(text: str) -> bool:
@@ -9514,6 +9556,27 @@ def tool_call_recovery_setting(cfg: dict) -> bool:
 
 
 def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
+    """Serve until stopped. For as long as it runs this server holds the shared activity lease of the runtime folder (the same one `strata serve` and
+    a runtime host take), so `strata update` and a calibration run see an engine that was started by running this file directly - the desktop app's
+    source install does - and wait for it or refuse, instead of test-starting a second copy of the model beside it (#4463). A lease that cannot be
+    taken (an exclusive holder, a runtime folder that is not usable) never stops the server."""
+    lease = None
+    try:
+        from strata_control import runtime as _runtime
+        lease = _runtime.acquire_activity_lease(shared=True)
+    except Exception:                                  # noqa: BLE001 - serving never depends on the lease
+        lease = None
+    try:
+        return _main(argv, lifecycle_event=lifecycle_event, interrupt_exit_code=interrupt_exit_code)
+    finally:
+        if lease is not None:
+            try:
+                os.close(lease)
+            except OSError:
+                pass
+
+
+def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
         _pf.adopt_user_defaults()
