@@ -710,7 +710,25 @@ def gfx_from_name(name: str) -> str:
     return ""
 
 
+_CIM_CACHE: dict = {}
+CIM_CACHE_SECONDS = 120.0        # one answer (a failed or timed-out one too) serves every caller of this process for this long
+
+
 def _windows_adapters_cim() -> list[dict]:
+    """The CIM query below, asked once per process and 2 minutes: one `strata launch --plan` asked it 18 times (17 s on a healthy PC) and, with the WMI
+    service stuck, 18 times its 15 s timeout, far beyond the 60 s the app waits for Control (#4975). The adapters do not change inside a command."""
+    if os.name != "nt":
+        return []
+    now = time.monotonic()
+    hit = _CIM_CACHE.get("adapters")
+    if hit is not None and now - hit[0] < CIM_CACHE_SECONDS:
+        return [dict(a) for a in hit[1]]
+    found = _windows_adapters_cim_query()
+    _CIM_CACHE["adapters"] = (now, found)
+    return [dict(a) for a in found]
+
+
+def _windows_adapters_cim_query() -> list[dict]:
     """Second source when the registry key lists nothing: PowerShell's Win32_VideoController (PNPDeviceID has VEN_/DEV_). It can fail for
     a limited account, so every failure is an empty answer."""
     if os.name != "nt":
