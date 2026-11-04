@@ -412,6 +412,10 @@ void test_pin_pacing() {
     require(!pin_depends_on_reclaim(0, 0, 4 * GiB), "no complement, nothing to pin");
     require(pin_step_fits(6 * GiB, 1 * GiB, 4 * GiB) && !pin_step_fits(4 * GiB, 1 * GiB, 4 * GiB),
             "a step must leave the reserve");
+    // GTT mode (STRATA_HIP_ARENA_NONCOHERENT=1) decides the one-go allocation with the same rule on the RAM available:
+    // an 18.4 GiB complement with 23.1 GiB available goes in one go, a 32 GiB one with 22.6 GiB available still paces
+    require(pin_step_fits(23 * GiB, 18 * GiB, 4 * GiB) && !pin_step_fits(22 * GiB, 32 * GiB, 4 * GiB),
+            "the GTT one-go rule must keep the reserve");
     const std::string info =
         "MemTotal:       65011484 kB\nMemFree:         1284096 kB\nMemAvailable:   33463296 kB\nCached:         54507520 kB\n";
     require(meminfo_bytes(info, "MemFree") == 1284096ull * 1024, "MemFree was misread");
