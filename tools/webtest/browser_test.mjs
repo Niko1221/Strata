@@ -667,11 +667,29 @@ test("monitor: a split run shows GPU load as one named chart per card", async ({
   await two.stop();
 });
 
+test("monitor: a split run's Power tile keeps the total and names each card's draw", async ({ browser }) => {
+  const two = await startMock({ gpus: 2 });
+  const page = await openPage(browser, two, { hash: "#monitor" });
+  await page.waitForFunction(() => !document.getElementById("rows-power").hidden, { timeout: 8000 });
+  assert.equal(await page.$eval("#mv-power", (e) => e.textContent), "140W", "the sum of all cards stays the main figure");
+  assert.equal(await page.$eval("#ms-power", (e) => e.textContent), "of 620 W limit", "the limit covers all cards too");
+  assert.deepEqual(await page.$$eval("#rows-power .metric-row__name", (els) => els.map((e) => e.textContent)),
+                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
+  assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => e.textContent)),
+                   ["85 W", "55 W"], "each card's own draw, so the slow and the hungry card are both visible");
+  assert.equal(await page.$$eval("#rows-power .metric-row__spark", (els) => els.length), 0, "the tile's one chart is the total");
+  assert.equal(await page.$eval("#sp-power", (e) => getComputedStyle(e).display), "block", "the total keeps its chart");
+  assert.deepEqual(page.errors, []);
+  await page.close();
+  await two.stop();
+});
+
 test("monitor: one card keeps its single mean chart and shows no rows", async ({ browser, mock }) => {
   const page = await openPage(browser, mock, { hash: "#monitor" });
   await page.waitForFunction(() => (document.querySelector("#sp-gpu .line").getAttribute("d") || "").length > 20, { timeout: 8000 });
   assert.equal(await page.$eval("#sp-gpu", (e) => getComputedStyle(e).display), "block", "the mean chart is the only chart there is");
   assert.equal(await page.$eval("#rows-gpu", (e) => e.hidden), true, "a single card needs no rows");
+  assert.equal(await page.$eval("#rows-power", (e) => e.hidden), true, "nor the Power tile");
   await page.close();
 });
 

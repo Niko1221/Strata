@@ -125,6 +125,7 @@ function metrics(state, gpus = 1) {
       { index: 1, name: "NVIDIA GeForce RTX 3060", util: 25, mem_used: 3e9, mem_total: 6e9, temp: 55, power: 55,
         pcie_rx_mb: 3.1, pcie_gen: 4, pcie_gen_max: 4, pcie_width: 16 },
     ];
+    hardware.gpu_power_limit = 620;        // 450 + 170, as the sampler sums the cards' limits
     hardware.gpu_pcie_rx_mb = 15.5; hardware.gpu_pcie_gen = 4; hardware.gpu_pcie_gen_max = 4; hardware.gpu_pcie_width = 16;
     history.gpus = [
       { index: 0, util: wave(35, 9, 3), power: wave(75, 12, 4), pcie_rx_mb: wave(11, 4, 5) },
