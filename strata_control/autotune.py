@@ -198,6 +198,7 @@ class Tuner:
         self.cancel = cancel or threading.Event()
         self.history_bad = history_bad or set()
         self._ram_gave_up: tuple[float, float] | None = None
+        self._base_start_avail: float | None = None     # free memory (MiB) the base run was allowed to start with: what a candidate that adds nothing needs again (#5122)
         self.clock = clock
         self.sleep = sleep
         self.system = system or session.system
@@ -281,7 +282,13 @@ class Tuner:
                 need += base_rss
             elif self.total_ram:
                 need = max(need, self.o.min_free_ram_mib)
+            if self.base_runs and self._base_start_avail and self.base_runs[0].status == "PASS":
+                # like for like (#5122): the base run started with this much free and ran; its peak RSS counts file pages the kernel can take back, so
+                # "peak + floor" can ask for more than the PC had at the base start. A candidate needs what the base had plus what it adds.
+                need = min(need, max(self._base_start_avail + delta_mib, self.o.min_free_ram_mib + delta_mib))
             if avail >= need:
+                if not self.base_runs:
+                    self._base_start_avail = float(avail)
                 return None
             reason = (f"not enough free memory to start it safely ({avail / 1024:.1f} GiB free, "
                       f"{need / 1024:.1f} GiB needed)")
