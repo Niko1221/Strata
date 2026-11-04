@@ -13,6 +13,7 @@ timings are saved without home folders, host names, private addresses or keys.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.client
 import json
@@ -688,7 +689,12 @@ def start_engine(ref: str, target: Target, log_path: Path, log, timeout_s: float
         from serve import winjob
         proc._strata_job = winjob.contain(proc)
     log("starting the engine (the model load is not part of the benchmark time) ...")
-    if not _start_wait(target, proc, timeout_s, log, log_path):
+    try:
+        ready = _start_wait(target, proc, timeout_s, log, log_path)
+    except BaseException:                                  # Ctrl+C (or a SIGTERM turned into one) while the model loads: the caller never gets `proc`, so end it here
+        stop_engine(proc)
+        raise
+    if not ready:
         stuck = stop_engine(proc)
         tail = ""
         try:
@@ -716,6 +722,38 @@ def engine_log_since(console_log: Path, run_log: Path | None, offset: int) -> Pa
     except OSError:
         pass
     return console_log
+
+
+@contextlib.contextmanager
+def term_is_interrupt():
+    """While a run owns an engine it started, SIGTERM (and Ctrl+Break on Windows) end the run the way Ctrl+C does: the `finally` that stops the engine
+    runs. Without this a plain `kill` (a service stop, a script's timeout, the app's Stop) ended only the runner and left the server and the engine
+    holding the port and the GPU. Main thread only; the earlier handlers come back afterwards."""
+    import signal
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def handler(signum, frame):
+        raise KeyboardInterrupt
+
+    saved = []
+    for name in ("SIGTERM", "SIGBREAK"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            saved.append((number, signal.signal(number, handler)))
+        except (ValueError, OSError):
+            pass
+    try:
+        yield
+    finally:
+        for number, old in saved:
+            try:
+                signal.signal(number, old)
+            except (ValueError, OSError, TypeError):
+                pass
 
 
 def stop_engine(proc) -> str | None:

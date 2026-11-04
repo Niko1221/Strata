@@ -965,7 +965,7 @@ class FlagsCommand(unittest.TestCase):
         # scripts that name LAN without a key flag keep getting a key, as before
         p = self.plan("--model", "q2_0", "--access", "lan", "--yes")
         self.assertEqual(p["settings"]["api_key"], "set")
-        self.assertTrue(any("new API key was made" in w for w in p["warnings"]))
+        self.assertFalse(any("new API key was made" in w for w in p["warnings"]))      # the plan writes nothing: the launch says it when the key is on disk (QATUI, 11-04)
         # a key given as well wins over --no-api-key, with a note
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-a", "--no-api-key")
         self.assertEqual(p["settings"]["api_key"], "set")
