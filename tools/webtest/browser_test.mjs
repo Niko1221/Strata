@@ -678,8 +678,11 @@ test("monitor: a split run's Power tile keeps the total and names each card's dr
                    ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => e.textContent)),
                    ["85 W", "55 W"], "each card's own draw, so the slow and the hungry card are both visible");
-  assert.equal(await page.$$eval("#rows-power .metric-row__spark", (els) => els.length), 0, "the tile's one chart is the total");
-  assert.equal(await page.$eval("#sp-power", (e) => getComputedStyle(e).display), "block", "the total keeps its chart");
+  const powerLines = await page.$$eval("#rows-power .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
+  assert.equal(powerLines.length, 2, "one chart per card, over the same minute");
+  assert.ok(powerLines.every((d) => (d || "").length > 20), "both cards' charts have a line");
+  assert.notEqual(powerLines[0], powerLines[1], "each card's own draw, on a scale the two share");
+  assert.equal(await page.$eval("#sp-power", (e) => getComputedStyle(e).display), "none", "the total's chart steps aside for the cards' own");
   assert.deepEqual(page.errors, []);
   await page.close();
   await two.stop();
@@ -694,7 +697,11 @@ test("monitor: a split run's PCIe tile lists each card's own link and traffic", 
   assert.deepEqual(await page.$$eval("#rows-pcie .metric-row__value", (els) => els.map((e) => e.textContent)),
                    ["Gen4 x16 · 12 MB/s", "Gen4 x8 · 3.1 MB/s"],
                    "each card's own link, so a card that fell to a smaller slot stands out");
-  assert.equal(await page.$eval("#sp-pcie", (e) => getComputedStyle(e).display), "block", "the total keeps its chart");
+  const pcieLines = await page.$$eval("#rows-pcie .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
+  assert.equal(pcieLines.length, 2, "one chart per card, over the same minute");
+  assert.ok(pcieLines.every((d) => (d || "").length > 20), "both cards' charts have a line");
+  assert.notEqual(pcieLines[0], pcieLines[1], "the card that feeds the model hard stands out from the one that idles");
+  assert.equal(await page.$eval("#sp-pcie", (e) => getComputedStyle(e).display), "none", "the total's chart steps aside for the cards' own");
   assert.deepEqual(page.errors, []);
   await page.close();
   await two.stop();
@@ -704,6 +711,8 @@ test("monitor: one card keeps its single mean chart and shows no rows", async ({
   const page = await openPage(browser, mock, { hash: "#monitor" });
   await page.waitForFunction(() => (document.querySelector("#sp-gpu .line").getAttribute("d") || "").length > 20, { timeout: 8000 });
   assert.equal(await page.$eval("#sp-gpu", (e) => getComputedStyle(e).display), "block", "the mean chart is the only chart there is");
+  assert.equal(await page.$eval("#sp-power", (e) => getComputedStyle(e).display), "block", "so do the Power and PCIe tiles' charts");
+  assert.equal(await page.$eval("#sp-pcie", (e) => getComputedStyle(e).display), "block");
   assert.equal(await page.$eval("#mv-gpu", (e) => e.hidden), false, "one card keeps its figure and its name");
   assert.equal(await page.$eval("#rows-gpu", (e) => e.hidden), true, "a single card needs no rows");
   assert.equal(await page.$eval("#rows-power", (e) => e.hidden), true, "nor the Power tile");

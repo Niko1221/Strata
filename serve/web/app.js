@@ -508,6 +508,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const cardLabel = (g) => (g.name ? `GPU ${g.index} · ${g.name}` : `GPU ${g.index}`);
   const gpuHist = {};                                 // each card's own history series, keyed as "gpus" is
   for (const g of h.gpus || []) gpuHist[g.index] = g;
+  const top = (f) => Math.max(1, ...cards.flatMap((g) => ((gpuHist[g.index] || {})[f]) || []));
+  // the row charts of one tile share the busiest card's scale, so the cards can be compared by eye
   // with more than one card the rows are the tile: neither a mean nor the hottest card's number says anything
   // the rows do not already show, so the figure, its sub and the mean chart step aside. An <svg> has no
   // reflected hidden property (SVG is not HTMLElement), so its attribute goes on explicitly.
@@ -525,9 +527,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  $("sp-power").toggleAttribute("hidden", multi);     // an <svg> has no hidden property, so the attribute goes on explicitly
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  // the figure stays the sum of the cards; the rows say what each of them takes of it
-  metricRows("power", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.power == null ? "–" : `${fmt(g.power)} W` })) : []);
+  // the figure stays the sum of the cards; the rows say what each of them takes, each with a chart of its own
+  metricRows("power", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.power == null ? "–" : `${fmt(g.power)} W`,
+                                                  values: (gpuHist[g.index] || {}).power, max: top("power") })) : []);
   const rx = (v) => (v == null ? "–" : `${fmt(v, v < 10 ? 1 : 0)} MB/s`);
   if (multi) {
     // one card can fall to Gen1 or x4 while its neighbour stays healthy, so the link goes in the rows and
@@ -541,9 +545,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
               (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
   }
   spark("sp-pcie", h.gpu_pcie_rx_mb);
+  $("sp-pcie").toggleAttribute("hidden", multi);      // the cards' own charts replace the total's
   metricRows("pcie", multi ? cards.map((g) => ({
     label: cardLabel(g),
     value: `${g.pcie_gen_max || g.pcie_gen ? `Gen${g.pcie_gen_max || g.pcie_gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}` : "–"} · ${rx(g.pcie_rx_mb)}`,
+    values: (gpuHist[g.index] || {}).pcie_rx_mb, max: top("pcie_rx_mb"),
   })) : []);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
