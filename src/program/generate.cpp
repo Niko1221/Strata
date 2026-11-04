@@ -8087,6 +8087,9 @@ int main(int argc, char** argv) {
                     else { ep_set1.push_back({(int32_t) l, r[i]}); ++n1; }
                 }
             }
+            // the RAM copy ranks the experts card 0 does not hold over the whole ranking: with card 0's set alone it
+            // found nothing to keep, and the prompt (card 0 alone) read card 1's experts from the files every chunk
+            if (profile_all.empty()) profile_all = profile;
             profile = set0;
             std::fprintf(stderr, "strata generate: expert parallel: this card holds %lld experts per layer, card %d the "
                                  "other %lld (each layer's traffic dealt evenly between them)\n",
