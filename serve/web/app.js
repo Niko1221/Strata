@@ -182,8 +182,10 @@ function metricRows(key, rows) {
   rows.forEach((r, i) => {
     const row = el.children[i];
     const v = row.querySelector(".metric-row__value");
-    // a reading of two parts (a PCIe link and its rate) takes two lines, so the name beside it keeps the width
-    if (Array.isArray(r.value)) v.innerHTML = r.value.map((line) => `<div>${esc(line)}</div>`).join("");
+    // a reading of two parts (a PCIe rate and its link) takes two lines, so the named card beside it keeps
+    // the width; a part may be dimmed, the way a card's name is
+    if (Array.isArray(r.value)) v.innerHTML = r.value.map((line) =>
+      `<div${line.cls ? ` class="${line.cls}"` : ""}>${esc(line.text)}</div>`).join("");
     else v.textContent = r.value;
     if (r.values != null) drawSpark(row.querySelector("svg"), r.values, r.max);
   });
@@ -553,7 +555,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("sp-pcie").toggleAttribute("hidden", multi);      // the cards' own charts replace the total's
   metricRows("pcie", multi ? cards.map((g) => ({
     label: cardLabel(g),
-    value: [g.pcie_gen_max || g.pcie_gen ? `Gen${g.pcie_gen_max || g.pcie_gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}` : "–", rx(g.pcie_rx_mb)],
+    value: [{ text: rx(g.pcie_rx_mb) },
+            { text: g.pcie_gen_max || g.pcie_gen ? `Gen${g.pcie_gen_max || g.pcie_gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}` : "–", cls: "muted" }],
     values: (gpuHist[g.index] || {}).pcie_rx_mb, max: top("pcie_rx_mb"),
   })) : []);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");

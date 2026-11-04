@@ -695,8 +695,11 @@ test("monitor: a split run's PCIe tile lists each card's own link and traffic", 
   assert.equal(await page.$eval("#mv-pcie", (e) => e.hidden), true, "a split run has no one link or rate to show big; the rows are the tile");
   assert.equal(await page.$eval("#ms-pcie", (e) => e.hidden), true, "and its sub with it");
   assert.deepEqual(await page.$$eval("#rows-pcie .metric-row__value", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
-                   [["Gen4 x16", "12 MB/s"], ["Gen4 x8", "3.1 MB/s"]],
-                   "the link and its rate on two lines, so the named card beside them keeps the width");
+                   [["12 MB/s", "Gen4 x16"], ["3.1 MB/s", "Gen4 x8"]],
+                   "the rate leads and the link sits under it, so the named card beside them keeps the width");
+  assert.equal(await page.$eval("#rows-pcie .metric-row__value div:nth-child(2)", (e) => getComputedStyle(e).color),
+               await page.$eval("#rows-pcie .metric-row__name", (e) => getComputedStyle(e).color),
+               "the link line is as quiet as the card's name");
   const pcieLines = await page.$$eval("#rows-pcie .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
   assert.equal(pcieLines.length, 2, "one chart per card, over the same minute");
   assert.ok(pcieLines.every((d) => (d || "").length > 20), "both cards' charts have a line");
