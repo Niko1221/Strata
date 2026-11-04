@@ -69,7 +69,7 @@ def memory() -> dict[str, int | None]:
 
 def _run(argv: list[str], timeout: float = 10.0) -> str | None:
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
+        return subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout).stdout
     except Exception:  # noqa: BLE001
         return None
 

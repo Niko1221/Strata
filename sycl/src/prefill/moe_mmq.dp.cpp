@@ -3,6 +3,7 @@
 // few host symbols of ggml-cuda.cu it references.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/moe_mmq.hpp"
@@ -202,7 +203,7 @@ void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<dpct_kernel_name<class copy16_kernel_b12127>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class copy16_kernel_b12127>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks(2 * na + nc)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -219,7 +220,7 @@ void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<dpct_kernel_name<class copy1_kernel_c557f3>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class copy1_kernel_c557f3>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks(2 * na + nc)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -243,8 +244,8 @@ void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stre
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class strata_q2_kernel_793a65>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class strata_q2_kernel_793a65>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, blocks(1280LL * 40 + 2560LL * 10)) *
                         sycl::range(1, 1, 256),
@@ -268,8 +269,8 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class swiglu_kernel_3f7a6f>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class swiglu_kernel_3f7a6f>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks(rows * n_ff)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -291,8 +292,8 @@ void iota(int32_t* dst, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class iota_kernel_9245a0>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class iota_kernel_9245a0>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks(n)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),

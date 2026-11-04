@@ -60,3 +60,20 @@ export function readOutcome(result: TuneResult | null | undefined, jobState: 'do
 }
 
 export const tokS = (n: number | null): string => (n == null ? '—' : `${(Math.round(n * 10) / 10).toFixed(1)}`);
+
+/**
+ * What the Details of a tuning that did not finish say (#4805): the tuner's own sentence for why (for a start that failed, the engine's last words;
+ * for memory, how much was free and how much it needed), its notes, and what this PC has, so a person reading the dialog sees the cause and the
+ * resources in one place. Plain text, one line each; null when there is nothing to add.
+ */
+export function failureDetails(result: TuneResult | null | undefined, hardware?: { ram_gb?: number; gpus?: { name: string; vram_gb: number }[] } | null): string | null {
+  const lines: string[] = [];
+  const say = (text: unknown) => { if (typeof text === 'string' && text.trim() && !lines.includes(text.trim())) lines.push(text.trim()); };
+  say(result?.message);
+  for (const note of result?.notes ?? []) say(note);
+  if (!lines.length) return null;
+  const machine: string[] = [];
+  if (typeof hardware?.ram_gb === 'number' && hardware.ram_gb > 0) machine.push(`Memory: ${Math.round(hardware.ram_gb)} GB in this PC`);
+  for (const g of hardware?.gpus ?? []) if (g?.name) machine.push(`Graphics card: ${g.name}${g.vram_gb ? `, ${Math.round(g.vram_gb)} GB` : ''}`);
+  return [...lines, ...(machine.length ? ['', ...machine] : [])].join('\n');
+}

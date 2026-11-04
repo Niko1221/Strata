@@ -1,0 +1,19 @@
+{
+ "upd01": "Para actualizar el motor, Strata tiene que detener el modelo cargado: {0}.",
+ "upd02": "Primero se descarga el motor nuevo mientras el modelo sigue respondiendo. Después el modelo se detiene (las respuestas en curso terminan antes), se actualiza el motor y puedes volver a iniciar el modelo con los mismos ajustes. Tus modelos y ajustes se conservan.",
+ "upd03": "Detener y actualizar",
+ "upd04": "Preparando el motor nuevo. {0} sigue funcionando hasta que esté listo.",
+ "upd05": "Deteniendo {0}. Las respuestas en curso terminan antes.",
+ "upd06": "{0} está detenido. Actualizando el motor…",
+ "upd07": "Actualizando el motor",
+ "upd08": "El motor está actualizado",
+ "upd09": "El motor no se actualizó",
+ "upd10": "El motor está actualizado. ¿Iniciar {0} de nuevo con los mismos ajustes?",
+ "upd11": "La actualización no terminó. Tu motor anterior no cambió y sigue funcionando. ¿Iniciar {0} de nuevo con él?",
+ "upd12": "Ahora no",
+ "upd13": "Iniciando {0}. La carga puede tardar unos minutos.",
+ "upd14": "Iniciando {0} de nuevo",
+ "upd15": "El modelo no se inició de nuevo",
+ "upd16": "Puedes cargarlo de nuevo desde Modelos.",
+ "upd17": "Hay un modelo en ejecución que no se inició desde esta aplicación, así que no se cambió nada. Deténlo y vuelve a actualizar el motor."
+}

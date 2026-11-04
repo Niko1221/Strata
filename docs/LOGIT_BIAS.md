@@ -1,7 +1,7 @@
 # Per-request token biases
 
-`POST /v1/chat/completions` accepts `logit_bias` with a supporting CUDA or HIP
-engine, without continuous batching. The same bias applies to every generated
+`POST /v1/chat/completions` accepts `logit_bias` with a supporting CUDA, HIP or Metal
+engine, also with continuous batching (each slot keeps its own bias). The same bias applies to every generated
 token in the request, including tokens checked together during speculative
 decoding. It does not force single-token verification windows.
 
@@ -65,8 +65,8 @@ vector is uploaded when the bias changes and reused within the request.
 Malformed entries, duplicate IDs in pair lists, IDs outside the vocabulary,
 out-of-range biases, or banning the entire vocabulary return HTTP 400. Validation
 on the chat route occurs before SSE streaming headers are sent. Nonempty biases
-also return HTTP 400 with older engines, the current SYCL engine, or continuous
-batching (`--batch`), rather than being silently ignored. The engine advertises
+also return HTTP 400 with older engines or the current SYCL engine, rather than
+being silently ignored. The engine advertises
 `logit_bias=1` in its `INFO` response when this implementation is present.
 
 MTP target verification applies the bias; the draft model is not biased, so a

@@ -14,10 +14,14 @@ import type { LocalModelFolder, SetupState } from '../lib/types';
 import { downloadCounter, modelFolderLabel, onboardingError } from '../lib/onboarding-download';
 import { installProgress, installStage, stageText, useDownloadEta } from '../lib/download-eta';
 import { VersionPicker } from './VersionPicker';
+import { contextIsTight, defaultContext } from '../lib/default-context';
+import { deepseekContexts } from '../lib/deepseek-context';
+import { cacheGb } from '../lib/native-fit';
+import { FirstRunLanguage } from './FirstRunLanguage';
 import { DownloadParts } from './DownloadParts';
 import { EngineWarning } from './EngineWarning';
 import { OTHER_NOTE, PICK_NOTE, recommendedVersions } from '../lib/native-fit';
-import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
+import { nativeCatalogModels, catalogVersionLabel, startingChoice } from '../lib/native-catalog';
 type Choices = NonNullable<NonNullable<SetupState['choices']>['onboarding']>;
 function radioKeys(event: KeyboardEvent<HTMLDivElement>) { if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
     return; event.preventDefault(); const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=radio]')); const current = items.indexOf(event.target as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (current + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1) + items.length) % items.length; items[next]?.focus(); items[next]?.click(); }
@@ -36,10 +40,17 @@ export function GuidedSetup() {
     const families = nativeCatalogModels(native?.catalog?.families ?? []);
     const saved = !setup?.complete && !setup?.choices?.onboarding?.manual ? setup?.choices?.onboarding : undefined;
     const [step, setStep] = useState(saved?.manual || setup?.complete ? 1 : saved?.step ?? 1);
-    const [family, setFamily] = useState(saved?.family ?? native?.catalog?.recommendation?.family ?? native?.catalog?.families?.[0]?.family ?? '');
-    const initialFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family));
-    const [size, setSize] = useState(saved?.size ?? initialFamily?.sizes.find(s => s.model === native?.catalog?.recommendation?.model)?.id ?? initialFamily?.sizes[0]?.id ?? '');
-    const [context, setContext] = useState(saved?.context ?? native?.catalog?.recommendation?.context ?? 32768);
+    /* Only what the person (or an earlier visit) chose is state. Until then the start is worked out from the catalog on every render: a model already
+       on this computer first, else the catalog's recommendation. The state used to be filled once at mount, before the catalog had arrived, and
+       so fell back to the first size in the list (Q2_0, a 66 GB download) while an installed model sat beside it. */
+    const [chosenFamily, setFamily] = useState(saved?.family ?? ''), [chosenSize, setSize] = useState(saved?.size ?? '');
+    const start = startingChoice(families, (native?.installed?.models ?? []).filter(m => m.ready).map(m => m.model), native?.catalog?.recommendation);
+    const family = chosenFamily || start?.family || native?.catalog?.recommendation?.family || families[0]?.family || '';
+    const size = chosenSize || start?.size || '';
+    /* 128K for every configuration unless the person picks another, on every card and for DeepSeek too (its pack's own limit allows it). The warning for a card
+       it leaves little room on is under the chooser; nothing is lowered. */
+    const topCardGb = Math.max(0, ...(native?.hardware?.gpus ?? []).filter(g => g.usable !== false).map(g => g.vram_gb));
+    const [pickedContext, setContext] = useState<number | undefined>(saved?.context), [contextTouched, setContextTouched] = useState(false);
     const [vision, setVision] = useState(saved?.vision ?? true), [directory, setDirectory] = useState(saved?.directory ?? '');
     const [profile, setProfile] = useState<'work' | 'performance'>(saved?.profile ?? 'work');
     const [installJobId, setInstallJobId] = useState(saved?.installJobId ?? ''), [tuneJobId, setTuneJobId] = useState(saved?.tuneJobId ?? '');
@@ -49,6 +60,8 @@ export function GuidedSetup() {
     const selectedFamily = families.find(f => f.family === family || f.sizes.some(size => size.sourceFamily === family)) ?? families[0];
     const version = selectedFamily?.sizes.find(s => s.id === size) ?? selectedFamily?.sizes[0];
     const installed = native?.installed?.models.find(m => m.model === version?.id);
+    const contextList = version?.multi_file ? deepseekContexts(installed?.contextMax) : native?.catalog?.contexts ?? [131072];
+    const context = pickedContext ?? defaultContext(contextList);
     const installJob = native?.jobs.find(j => j.id === installJobId) ?? (step === 3 ? native?.jobs.find(j => j.kind === 'install' && j.state === 'running' && j.guided && j.model === version?.model) : undefined), tuneJob = native?.jobs.find(j => j.id === tuneJobId) ?? (step === 4 ? native?.jobs.find(j => j.kind === 'tune' && j.state === 'running' && j.guided && j.model === version?.id) : undefined);
     const active = native?.jobs.find(j => j.state === 'running');
     const ready = native?.instances.some(i => i.model === version?.id && i.status === 'ready');
@@ -141,8 +154,7 @@ export function GuidedSetup() {
         setTuneJobId(tuneJob.id);
         void persist(4, { tuneJobId: tuneJob.id }).catch(e => setError(e.message));
     } }, [step, installJob?.id, tuneJob?.id]);
-    const fixedContext = version?.multi_file ? 8192 : null;      // the one context DeepSeek's engine was checked at
-    const values = { guided: true, family: version?.sourceFamily, model: version?.model, context: fixedContext ?? context, vision: version?.images ? 'yes' : 'no', kv: 'int8', low_ram: 'auto', loadAfter: false, multiple: false, ...(directory ? { data_dir: directory } : {}) };
+    const values = { guided: true, family: version?.sourceFamily, model: version?.model, context, ...(contextTouched ? { contextChosen: true } : {}), vision: version?.images ? 'yes' : 'no', kv: 'int8', low_ram: 'auto', loadAfter: false, multiple: false, ...(directory ? { data_dir: directory } : {}) };
     async function review() {
         await perform(async () => {
             setInstallJobId('');
@@ -201,7 +213,7 @@ export function GuidedSetup() {
     const title = step === 1 ? 'State of the art. At home.' : step === 2 ? 'Select the model you want to run.' : step === 3 ? 'Downloading the model...' : tuneJob?.state === 'running' ? 'A little tuning. A better fit.' : 'How you would like to work with Strata?';
     function changeDownloadFolder() { void perform(async () => { await advance(2); setFolderOpen(true); }); }
     return <div className="setup guided-onboarding" data-step={step}>
-  <header className="onboard-header"><Brand variant="lockup" height={22}/>{tr(step !== 1 ? <button className="onboard-later" disabled={pending} onClick={() => void skip(false)}>{tr("Finish later")}<Icon name="chevron" size={13}/></button> : null)}</header>
+  <header className="onboard-header"><Brand variant="lockup" height={22}/>{tr(step === 1 ? <FirstRunLanguage/> : null)}{tr(step !== 1 ? <button className="onboard-later" disabled={pending} onClick={() => void skip(false)}>{tr("Finish later")}<Icon name="chevron" size={13}/></button> : null)}</header>
   <div className="onboard-stepper" aria-label={tr("Setup progress")}>{tr(steps.map((label, i) => <div key={label} data-current={step === i + 1} data-done={step > i + 1} aria-current={step === i + 1 ? 'step' : undefined}><span>{tr(step > i + 1 ? <Icon name="check" size={12}/> : i + 1)}</span><small>{tr(label)}</small></div>))}</div>
   {tr(step === 1 ? <>
    <OnboardingArt />
@@ -211,7 +223,8 @@ export function GuidedSetup() {
    <div className="onboard-stage-heading"><h1 ref={titleRef} tabIndex={-1} data-initial-focus>{tr(title)}</h1>{tr(step === 2 ? <p>{tr("You can always change your models later.")}</p> : step === 4 && tuneJob?.state === 'running' ? <p>{tr("We\u2019re measuring, applying your preference, and getting ready to chat.")}</p> : null)}</div>
    {tr(step === 2 ? <div className="onboard-model-stage">
     {tr(selectedFamily ? <>
-     <div className="onboard-model-top"><div className="onboard-model-picker"><span className="onboard-control-label">{tr("Model")}</span><div><span className="onboard-model-symbol"><Icon name="models" size={23}/></span><Select ariaLabel={tr("Setup model")} value={selectedFamily.family} options={families.map(f => ({ value: f.family, label: f.title }))} onChange={value => chooseNative(value, '')}/></div></div><div className="onboard-context"><span className="onboard-control-label">{tr("Conversation context")}</span><Select ariaLabel={tr("Setup conversation context")} value={String(version?.multi_file ? 8192 : context)} options={(version?.multi_file ? [8192] : native?.catalog?.contexts ?? [32768]).map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={value => setContext(Number(value))}/></div></div>
+     <div className="onboard-model-top"><div className="onboard-model-picker"><span className="onboard-control-label">{tr("Model")}</span><div><span className="onboard-model-symbol"><Icon name="models" size={23}/></span><Select ariaLabel={tr("Setup model")} value={selectedFamily.family} options={families.map(f => ({ value: f.family, label: f.title }))} onChange={value => chooseNative(value, '')}/></div></div><div className="onboard-context"><span className="onboard-control-label">{tr("Conversation context")}</span><Select ariaLabel={tr("Setup conversation context")} value={String(context)} options={contextList.map(n => ({ value: String(n), label: `${n / 1024}K` }))} onChange={value => { setContextTouched(true); setContext(Number(value)); }}/></div></div>
+     {tr(contextIsTight(topCardGb, context) ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("This much context takes about {0} GB of graphics memory and leaves little room for the model on this card. Strata will try it; if it does not start, choose a shorter context.", [cacheGb(context).toFixed(1)])}</p> : null)}
      <OnboardingMemory hardware={hardware} native={native?.hardware}/>{tr(!version || version.needsNewerEngine ? <p className="small muted">{tr("This model needs a newer engine. Update your engine or import a local GGUF for this model.")}</p> : null)}
      <div className="onboard-version-heading"><strong>{tr("Choose a version")}</strong><span>{tr(version ? `${catalogVersionLabel(version)} selected` : '')}</span></div>
      {tr(version?.multi_file ? <DeepSeekNote version={version} plan={plan}/> : null)}
@@ -228,7 +241,7 @@ export function GuidedSetup() {
    </div> : <div className="onboard-tune-stage">
     {tr(tuneJob?.state === 'running' ? <><OnboardingArt kind="tune"/><div className="onboard-tuning-status" aria-live="polite"><span className="onboard-pulse-dot"/><strong>{tr(tuneJob.summary)}</strong><small>{tr("Your choice: ")}{tr(profile === 'work' ? '20% headroom for other work' : 'Full performance')}</small><div className="onboard-progress" data-indeterminate><span /></div><button disabled={pending} onClick={() => void perform(async () => { await nativeAction(`operations/${tuneJob.id}/cancel`); })}>{tr("Stop tuning")}</button></div><OnboardingTour page={tour} onChange={setTour}/></> : <>
      <OnboardingResources profile={profile}/>
-     <div className="onboard-resource-options" role="radiogroup" aria-label={tr("Computer resource preference")} onKeyDown={radioKeys}>{tr(([{ id: 'work', icon: 'computer', title: 'Leave 20% for my work', hint: 'Use Strata while browsing, writing or working.', badge: 'Everyday choice' }, { id: 'performance', icon: 'bolt', title: 'Use full performance', hint: 'Focus this computer on your AI.', badge: '100% priority' }] as const).map(option => <button key={option.id} role="radio" tabIndex={profile === option.id ? 0 : -1} aria-checked={profile === option.id} data-selected={profile === option.id} onClick={() => setProfile(option.id)}><span className="onboard-resource-option-top"><span className="onboard-resource-option-icon"><Icon name={option.icon} size={22}/></span><span className="onboard-version-radio">{tr(profile === option.id ? <Icon name="check" size={12}/> : null)}</span></span><strong>{tr(option.title)}</strong><p>{tr(option.hint)}</p><small>{tr(option.badge)}</small></button>))}</div>
+     <div className="onboard-resource-options" role="radiogroup" aria-label={tr("Computer resource preference")} onKeyDown={radioKeys}>{tr(([{ id: 'work', icon: 'computer', title: 'Leave room for my work', hint: 'Keeps 5-8 GB of memory free for other programs.', badge: 'Everyday choice' }, { id: 'performance', icon: 'bolt', title: 'Use full performance', hint: 'Focus this computer on your AI.', badge: '100% priority' }] as const).map(option => <button key={option.id} role="radio" tabIndex={profile === option.id ? 0 : -1} aria-checked={profile === option.id} data-selected={profile === option.id} onClick={() => setProfile(option.id)}><span className="onboard-resource-option-top"><span className="onboard-resource-option-icon"><Icon name={option.icon} size={22}/></span><span className="onboard-version-radio">{tr(profile === option.id ? <Icon name="check" size={12}/> : null)}</span></span><strong>{tr(option.title)}</strong><p>{tr(option.hint)}</p><small>{tr(option.badge)}</small></button>))}</div>
      <details className="onboard-resource-honesty"><summary>{tr("How resource sharing works")}</summary><p>{tr("We reserve GPU memory and limit CPU expert workers to leave headroom for other apps. Actual usage varies with your model. Model RAM requirements and system safety reserves still apply.")}</p></details>
      {tr(version?.images ? <label className="onboard-picture onboard-load-vision"><OnboardingCheckbox checked={vision} onChange={setVision}/><Icon name="image" size={20}/><span><strong>{tr("Read pictures when this model loads")}</strong><small>{tr("Understand photos and screenshots. Vision files are already downloaded.")}</small></span></label> : null)}
      {tr(native?.capabilities.calibration ? <label className="onboard-calibration"><OnboardingCheckbox checked={calibrate} onChange={setCalibrate}/><Icon name="gauge" size={20}/><span><strong>{tr("Find the fastest settings for this PC")}</strong><small>{tr("One-time measurement \u00B7 about 5\u201310 minutes. Your computer will be busy.")}</small></span></label> : <p className="onboard-calibration-note">{tr("We\u2019ll apply your preference and run a short speed check.")}</p>)}

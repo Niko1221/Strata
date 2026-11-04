@@ -38,7 +38,16 @@ const handler = (child, args) => {
   }
 };
 const fixture = nativeFixture({ tuneHandler: handler });
-const control = fixture.control, root = resolve(import.meta.dirname, '../../dist'), upstream = 'http://127.0.0.1:5161';
+const control = fixture.control, root = resolve(import.meta.dirname, '../../dist'), upstream = process.env.TUNE_UPSTREAM ?? 'http://127.0.0.1:5161';
+// POST /__fixture/status-mode {mode: 'ok' | 'slow' | 'fail'}: how the saved-tunings read answers (the slow and failing cases of the greyed-out Start tuning, #4804).
+let statusMode = 'ok';
+// POST /__fixture/ask {on: true}: the next chat turn asks the person two questions and waits; the answer (or skip) is recorded and ends the turn.
+let askMode = false, askStream = null, askCall = 'call-ask-1';
+const asked = [];
+const askQuestions = [
+  { id: 'q1', header: 'Colour', question: 'Which colour should the page be?', detail: 'It sets the whole theme of the page.', options: [{ label: 'Red', description: 'Warm and strong' }, { label: 'Blue', description: 'Calm and neutral' }] },
+  { id: 'q2', question: 'Which extras do you want?', multiSelect: true, options: [{ label: 'Dark mode' }, { label: 'A print style' }, { label: 'Animations' }] },
+];
 await control.refresh(true);
 const server = http.createServer(async (req, res) => {
   try {
@@ -47,8 +56,26 @@ const server = http.createServer(async (req, res) => {
     const body = text ? JSON.parse(text) : {};
     const json = value => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (path === '/__fixture/capture' && req.method === 'POST') { await writeFile(process.env.TUNE_SHOT_DIR + '/' + body.name + '.png', Buffer.from(body.data, 'base64')); return json({ ok: true }); }
+    if (path === '/__fixture/ask' && req.method === 'POST') { askMode = body.on === true; return json({ ok: true }); }
+    if (path === '/__fixture/asked' && req.method === 'GET') return json(asked);
+    if (path === '/api/chat/stream' && req.method === 'POST' && askMode) {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache' });
+      askStream = res;
+      res.write(JSON.stringify({ type: 'agent-question', callId: askCall, questions: askQuestions }) + '\n');
+      return;
+    }
+    if (path === '/api/chat/answer' && req.method === 'POST' && askMode) {
+      asked.push(body);
+      if (body.refuse) { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'Answer every question, or skip them.' })); }
+      askStream?.write(JSON.stringify({ type: 'agent-question-end', callId: body.callId }) + '\n' + JSON.stringify({ type: 'done', durationMs: 10 }) + '\n');
+      askStream?.end(); askStream = null;
+      return json({ ok: true });
+    }
+    if (path === '/__fixture/status-mode' && req.method === 'POST') { statusMode = body.mode; return json({ ok: true }); }
     if (path === '/api/native' && req.method === 'GET') return json(await control.refresh());
     if (path === '/api/native/operations') return json(control.operation(body.kind, body.args));
+    if (path === '/api/native/tune/status' && statusMode === 'slow') await new Promise(r => setTimeout(r, 60000));
+    if (path === '/api/native/tune/status' && statusMode === 'fail') { res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'The tuning store did not answer.' })); }
     if (path === '/api/native/tune/status') return json(await control.tuneStatus({ model: url.searchParams.get('model'), resourceProfile: url.searchParams.get('resourceProfile') || undefined, vision: url.searchParams.get('vision') || undefined }));
     if (path === '/api/native/tune/undo') return json(await control.tunePresets.undoFor(body));
     let m = /^\/api\/native\/tune\/presets\/([0-9a-f]+)\/(apply|rename|delete|undo)$/.exec(path); if (m) return json(await control.tunePresets.action(m[2], m[1], body));
