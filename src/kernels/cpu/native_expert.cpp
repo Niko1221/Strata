@@ -147,6 +147,74 @@ bool x512_one_ok(int type) {
     return ok;
 }
 
+bool iq4nl512_reference_ok() {
+    static const bool ok = [] {
+        if (!cpu_avx512_ok()) return false;
+        const ggml_type_traits_cpu* tr = traits(GGML_TYPE_IQ4_NL);
+        const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_0);
+        if (tr == nullptr || tr->vec_dot == nullptr || t8 == nullptr || t8->from_float == nullptr) return false;
+        uint32_t seed = 4242u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (const int n : {64, 96, 160, 640}) {
+            constexpr int rows = 16;
+            const size_t rb = ggml_row_size(GGML_TYPE_IQ4_NL, (int64_t) n), nb = (size_t) n / 32, bb = rb / nb;
+            std::vector<uint8_t> w((size_t) rows * rb), act(ggml_row_size(GGML_TYPE_Q8_0, (int64_t) n));
+            for (auto& b : w) b = (uint8_t) rnd();
+            for (int r = 0; r < rows; ++r)
+                for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+            std::vector<float> x((size_t) n);
+            for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+            t8->from_float(x.data(), act.data(), n);
+            std::vector<float> got((size_t) rows), want((size_t) rows);
+            const void* hp[1] = {act.data()};
+            float* op[1] = {got.data()};
+            iq4nl512_down_rows(w.data(), rb, n, hp, 1, op, 0, rows);
+            for (int r = 0; r < rows; ++r) tr->vec_dot(n, &want[(size_t) r], 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+            if (std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) return false;
+        }
+        return true;
+    }();
+    return ok;
+}
+
+bool kq512_reference_ok(int type) {
+    static std::mutex mu;
+    static std::map<int, bool> memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (const auto it = memo.find(type); it != memo.end()) return it->second;
+    bool ok = false;
+    const ggml_type_traits_cpu* tr = traits(type);
+    const ggml_type_traits_cpu* t8 = tr ? traits((int) tr->vec_dot_type) : nullptr;
+    if (cpu_avx512_ok() && tr != nullptr && tr->vec_dot != nullptr && t8 != nullptr && t8->from_float != nullptr) {
+        constexpr int n = 512, rows = 16;
+        const size_t rb = ggml_row_size((ggml_type) type, n), bb = ggml_type_size((ggml_type) type), nb = rb / bb;
+        std::vector<uint8_t> w((size_t) rows * rb), act(ggml_row_size(tr->vec_dot_type, n));
+        uint32_t seed = 9191u + (uint32_t) type;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (auto& b : w) b = (uint8_t) rnd();
+        for (int r = 0; r < rows; ++r)
+            for (size_t k = 0; k < nb; ++k) {
+                uint8_t* d = &w[(size_t) r * rb + k * bb];
+                if (type == 14) { d[bb - 2] = 0x66; d[bb - 1] = 0x2e; }
+                else {
+                    d[0] = 0x66; d[1] = 0x2e;
+                    if (type == 12 || type == 13 || type == 7) { d[2] = 0x66; d[3] = 0x2e; }
+                }
+            }
+        std::vector<float> x(n);
+        for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+        t8->from_float(x.data(), act.data(), n);
+        std::vector<float> got((size_t) rows), want((size_t) rows);
+        const void* ap[1] = {act.data()};
+        float* op[1] = {got.data()};
+        kq512_rows(type, w.data(), rb, n, ap, 1, op, 0, rows);
+        for (int r = 0; r < rows; ++r) tr->vec_dot(n, &want[(size_t) r], 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+        ok = std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0;
+    }
+    memo[type] = ok;
+    return ok;
+}
+
 void init_once() {
     static std::once_flag once;
     std::call_once(once, [] { ggml_cpu_init(); });
@@ -161,7 +229,7 @@ bool native_experts_available() noexcept { return true; }
 // has checked what the CPU can run.  A function in a wide-ISA file may use that ISA anywhere in its body, so an
 // answer that is only a comparison must not come from one (#795).
 bool iq512_supported(int type) noexcept {
-    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
+    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 23;
 }
 
 bool iq256_supported(int type) noexcept {
@@ -169,6 +237,14 @@ bool iq256_supported(int type) noexcept {
 }
 
 bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
+
+bool kq512_gu_supported(int type) noexcept {
+    return type == 12 || type == 13 || type == 14 || type == 6 || type == 8;
+}
+
+bool kq512_supported(int type) noexcept {
+    return type == 12 || type == 13 || type == 14 || type == 6 || type == 7 || type == 8;
+}
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
@@ -228,6 +304,11 @@ namespace {
 // and layer on the host before the pool can start; q8k_quant_avx2 writes the same bytes.  cpu_avx2_ok() too:
 // iq_avx2.cpp is compiled for AVX2 (an AVX-only CPU, or STRATA_FORCE_ISA=avx, keeps ggml's).  STRATA_NO_Q8K_AVX2=1:
 // ggml's on any CPU.
+bool q8k_avx512(int type) {
+    static const bool on = cpu_avx512_ok() && std::getenv("STRATA_NO_Q8K_AVX512") == nullptr &&
+                           std::getenv("STRATA_NO_Q8K_AVX2") == nullptr;
+    return on && type == (int) GGML_TYPE_Q8_K;
+}
 bool q8k_avx2(int type) {
     static const bool on = cpu_avx2_ok() && std::getenv("STRATA_NO_Q8K_AVX2") == nullptr;
     return on && type == (int) GGML_TYPE_Q8_K;
@@ -330,6 +411,7 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
         x = tmp.data();
     }
     if (act_dump().on) act_dump_record(f.layer, 0, x, f.n_embd);
+    if (q8k_avx512(f.gu_act)) { q8k_quant_avx512(x, dst, f.n_embd); return; }
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
     if (q8k_avx1(f.gu_act)) { q8k_quant_avx1(x, dst, f.n_embd); return; }
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
@@ -343,6 +425,7 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
         h = tmp.data();
     }
     if (act_dump().on) act_dump_record(f.layer, 1, h, f.n_ff);
+    if (q8k_avx512(f.d_act)) { q8k_quant_avx512(h, dst, f.n_ff); return; }
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
     if (q8k_avx1(f.d_act)) { q8k_quant_avx1(h, dst, f.n_ff); return; }
     traits(f.d_act)->from_float(h, dst, f.n_ff);
@@ -408,27 +491,35 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
-    // 0.2.5 (AVX-512 CPUs where a gather is cheap: Intel Sapphire Rapids and later, AMD Zen 5 and later): ONE token of an IQ3_XXS / IQ3_S expert on the
-    // 512-bit exact rows, ggml-cpu's single-token AVX2 dot bit for bit with the grid words gathered: 1.3x ggml's dot on a Xeon 8468
-    // (x512_bench), the same output.  Where the multi-token rule (#152) already sends one token to the multi-token kernel
-    // (STRATA_IQ_MT_MIN=1) that stays; STRATA_NO_IQ512X1=1 turns this off; the first use checks the bits against this ggml.
-    static const bool x512_one = avx512 && iq512_gather_on() && std::getenv("STRATA_NO_IQ512X1") == nullptr;
-    if (x512_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 && (f.gu_type == 18 || f.gu_type == 21) &&
-        x512_one_ok(f.gu_type)) {
-        const int n1 = (int) f.n_embd;
-        float g[64], u[64];
-        float* gp[1] = {g};
-        float* up[1] = {u};
-        for (int c0 = r0; c0 < r1; c0 += 64) {
-            const int c1 = std::min(r1, c0 + 64);
-            iq512x_rows(f.gu_type, blob + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, gp, 0, c1 - c0);
-            iq512x_rows(f.gu_type, blob + f.up_off + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, up, 0, c1 - c0);
-            for (int r = c0; r < c1; ++r) ff[0][r] = (g[r - c0] / (1.f + std::exp(-g[r - c0]))) * u[r - c0];
-        }
+    // Single-token (nt == 1) AVX-512 hardware tier gate:
+    // - Full-width 512-bit CPUs (cpu_gather_fast() == true: AMD Zen 5+ family >= 0x1A and Intel Sapphire Rapids /
+    //   Emerald Rapids / Granite Rapids): run 512-bit at nt == 1 for all sub-4-bit I-quants (16, 17, 18, 21, 22) and Q5_K (13).
+    // - Double-pumped 256-bit (AMD Zen 4 family 0x19) and 1-port client AVX-512 with GDS microcode (Intel Ice Lake /
+    //   Tiger Lake / Rocket Lake, cpu_gather_fast() == false): run 512-bit at nt == 1 only for the VPOPCNTD sign-mask
+    //   formats (16, 17, 18: IQ2_XXS, IQ2_XS, IQ3_XXS) where _mm256_popcnt_epi32 eliminates 8 scalar ksigns_iq2xs loads
+    //   per 64 weights; types 21, 22, 23 and K-quants switch to 512-bit at nt >= 2. STRATA_AVX512_1T=0/1 overrides.
+    static const bool fast512_1t = [] {
+        if (!avx512) return false;
+        const char* e = std::getenv("STRATA_AVX512_1T");
+        return e != nullptr && e[0] != '\0' ? std::atoi(e) != 0 : cpu_gather_fast();
+    }();
+    static const bool x512_one = avx512 && std::getenv("STRATA_NO_IQ512X1") == nullptr;
+    const bool x512_1t_type = f.gu_type == 16 || f.gu_type == 17 || f.gu_type == 18 ||
+                              (fast512_1t && (f.gu_type == 21 || f.gu_type == 22));
+    if (x512_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 &&
+        x512_1t_type && iq512_reference_ok(f.gu_type)) {
+        iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, 1, ff, r0, r1);
         return;
     }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
     const bool singleton_iq = Arithmetic == NativeArithmetic::WindowInvariant && mt_min > 1;
+    // AVX-512 VNNI K-quant rows (Q4_K, Q5_K, Q6_K, Q5_0, Q8_0): bit-exact against ggml-cpu's AVX2 vec_dot for 1..N tokens.
+    static const bool kq512 = avx512 && std::getenv("STRATA_NO_KQ512") == nullptr;
+    if (kq512 && (nt >= 2 || (fast512_1t && f.gu_type == 13)) && f.tail_off == 0 &&
+        kq512_gu_supported(f.gu_type) && kq512_reference_ok(f.gu_type)) {
+        kq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
     // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
     // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
@@ -453,7 +544,7 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
         if (singleton_iq) {
 #if defined(__x86_64__) || defined(_M_X64)
             if (avx512 && ggml_cpu_has_avx2() && ggml_cpu_has_fma() &&
-                (f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22) && iq512_reference_ok(f.gu_type)) {
+                iq512_supported(f.gu_type) && iq512_reference_ok(f.gu_type)) {
                 iq512_reference_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
                 return;
             }
@@ -526,6 +617,25 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
     // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.
     if (tq_rows_own(f.d_type)) {   // the trellis types, as in native_gu_rows
         tq_rows(tq_isa(), f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+    static const bool avx512 = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
+    static const bool fast512_1t = [] {
+        if (!avx512) return false;
+        const char* e = std::getenv("STRATA_AVX512_1T");
+        return e != nullptr && e[0] != '\0' ? std::atoi(e) != 0 : cpu_gather_fast();
+    }();
+    static const bool kq512 = avx512 && std::getenv("STRATA_NO_KQ512") == nullptr;
+    if (kq512 && nt >= 2 && f.tail_off == 0 && (f.d_type == 6 || f.d_type == 7 || f.d_type == 8) && kq512_reference_ok(f.d_type)) {
+        kq512_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+    if (avx512 && nt >= mt_min && f.tail_off == 0 && f.d_type == 20 && iq4nl_mt && iq4nl512_reference_ok()) {
+        iq4nl512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+    if (avx512 && (fast512_1t || nt >= mt_min) && f.tail_off == 0 && f.d_type == 42 && cpu_avx2_ok()) {
+        q2_512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
     if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8) &&

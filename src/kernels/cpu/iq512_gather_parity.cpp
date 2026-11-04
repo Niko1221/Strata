@@ -42,7 +42,7 @@ int main() {
         t8->from_float(x.data(), act[t].data(), n);
         ap[t] = act[t].data();
     }
-    for (int type : {18, 21, 22}) {
+    for (int type : {16, 17, 18, 21, 22, 23}) {
         const ggml_type_traits_cpu* tr = ggml_get_type_traits_cpu((ggml_type) type);
         CHECK(tr != nullptr && tr->vec_dot != nullptr);
         CHECK(cpu::iq512x_supported(type) && cpu::iq512_supported(type));

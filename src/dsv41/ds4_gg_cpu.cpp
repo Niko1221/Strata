@@ -74,6 +74,14 @@ bool gg_cpu_fmt(int tg, int td, int n_embd, int n_ff, IqCpu& f, std::string& err
 void gg_cpu_quant(int act, const float* x, int k, void* dst) {
     init_once();
     if (dbg()) std::fprintf(stderr, "gg_cpu_quant act %d k %d\n", act, k);
+    if (act == (int) GGML_TYPE_Q8_K && strata::kernels::cpu::cpu_avx512_ok()) {
+        strata::kernels::cpu::q8k_quant_avx512(x, dst, k);
+        return;
+    }
+    if (act == (int) GGML_TYPE_Q8_K && strata::kernels::cpu::cpu_avx2_ok()) {
+        strata::kernels::cpu::q8k_quant_avx2(x, dst, k);
+        return;
+    }
     const ggml_type_traits_cpu* tc = ggml_get_type_traits_cpu((ggml_type) act);
     if (tc != nullptr && tc->from_float != nullptr) {
         tc->from_float(x, dst, k);
@@ -192,12 +200,17 @@ static bool want_512(int type, int nt) {
     //  Zen 4 (family 0x19, Ryzen 5 7600, 6 threads): one token IQ2_XXS 15.9 -> 19.7, IQ2_XS 20.6 -> 24.2, IQ1_M 16.7 -> 17.6-18.2, IQ3_XXS 22.4 -> 23.8
     //  (noise-level); 2 tokens x1.5-2.2; 4 tokens x2.4-3.3; 16 tokens x2.8-4.6;
     //  anything else with AVX-512 (Intel): not measured, so the AVX2 rows
+    // Hardware-gated 512-bit dispatch across AMD Zen 4/5 and Intel Ice Lake+ / Sapphire Rapids+:
+    //  - AMD Zen 5+ (family >= 0x1A) and Intel Sapphire Rapids / Emerald Rapids / Granite Rapids (cpu_gather_fast()):
+    //    native full-width 512-bit execution; faster at 1..N tokens across IQ2_XXS/XS/S, IQ3_XXS/S, IQ1_M (and nt >= 2 for IQ4_XS).
+    //  - AMD Zen 4 (family 0x19) and Intel Ice Lake / Tiger Lake / Rocket Lake (cpu_avx512_ok() && !cpu_gather_fast()):
+    //    double-pumped 256-bit / 1-port AVX-512; faster at 1..N tokens on VPOPCNTD sign-mask formats (16, 17, 18) and at nt >= 2
+    //    on 21, 22, 23, 29 where weight decoding is amortized across tokens.
     const int fam = amd_family();
-    if (fam < 0x19) return false;
-    if (type == 16 || type == 17) return true;
-    if (type == 18) return nt >= 2;
-    if (type == 29) return nt >= 2 || fam >= 0x1A;
-    return false;
+    const bool fast512 = fam >= 0x1A || strata::kernels::cpu::cpu_gather_fast();
+    if (fast512) return type == 23 ? nt >= 2 : true;
+    if (type == 16 || type == 17 || type == 18) return true;
+    return nt >= 2;
 }
 // 0: ggml-cpu's dot, 1: the AVX2 rows, 2: the AVX-512 rows
 static int use_iq256(int type, int nt) {

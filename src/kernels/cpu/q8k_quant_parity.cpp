@@ -6,6 +6,7 @@
 //     q8k_quant_parity            (STRATA_FORCE_ISA=avx: the AVX-2 copy is skipped, native_quant_* must equal ggml's)
 //     q8k_quant_parity --bench    ns per 2560-value row, ggml-cpu's and the AVX-2 copy
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/iq_avx512.hpp"
 #include "strata/kernels/cpu/iq_avx2.hpp"
 #include "strata/kernels/cpu/iq_avx1.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
@@ -93,6 +94,7 @@ int main(int argc, char** argv) {
     ggml_cpu_init();
     const ggml_from_float_t ref = quantize_row_q8_K_ref;
     const ggml_from_float_t gcpu = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K)->from_float;
+    const bool avx512 = cpu::cpu_avx512_ok();
     const bool avx2 = cpu::cpu_avx2_ok();
     const bool avx1 = !avx2 && cpu::cpu_avx1_ok();   // the older CPUs' copy (checked wherever AVX exists)
     int failures = 0, checked = 0;
@@ -101,6 +103,7 @@ int main(int argc, char** argv) {
         const auto cs = cases(n);
         for (int ci = 0; ci < (int) cs.size(); ++ci) {
             failures += !same("ggml-cpu vs reference", n, ci, ref, gcpu, cs[(size_t) ci], bytes);
+            if (avx512) failures += !same("AVX-512 vs reference", n, ci, ref, cpu::q8k_quant_avx512, cs[(size_t) ci], bytes);
             if (avx2) failures += !same("AVX-2 vs reference", n, ci, ref, cpu::q8k_quant_avx2, cs[(size_t) ci], bytes);
             if (avx1) failures += !same("AVX1 vs reference", n, ci, ref, cpu::q8k_quant_avx1, cs[(size_t) ci], bytes);
             ++checked;
@@ -142,7 +145,12 @@ int main(int argc, char** argv) {
         };
         const double a = time("ggml-cpu", gcpu);
         const double b = avx2 ? time("AVX-2", cpu::q8k_quant_avx2) : time("AVX1", cpu::q8k_quant_avx1);
-        std::printf("  %.1fx\n", a / b);
+        if (avx512) {
+            const double c = time("AVX-512", cpu::q8k_quant_avx512);
+            std::printf("  AVX-512 %.1fx vs ggml-cpu (%.2fx vs AVX-2)\n", a / c, b / c);
+        } else {
+            std::printf("  %.1fx\n", a / b);
+        }
     }
     return failures ? 1 : 0;
 }

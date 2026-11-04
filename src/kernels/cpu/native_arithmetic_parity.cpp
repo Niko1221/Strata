@@ -50,9 +50,10 @@ bool check_format(int gu, int down, int ff, bool folded = false) {
         const size_t block = cpu::tq_supported(type) ? cpu::tq_block_bytes(type) : ggml_type_size(static_cast<ggml_type>(type));
         for (size_t at = first; at < last; at += block) {
             if (type == cpu::kNvfp4Type) std::memset(blob.data() + at, 0x28, 4); // finite UE4M3 sub-block scales
+            else if (type == 14) std::memcpy(blob.data() + at + block - 2, &scale, sizeof(scale));
             else {
                 std::memcpy(blob.data() + at, &scale, sizeof(scale));
-                if (type == 12 || type == 7) std::memcpy(blob.data() + at + 2, &scale, sizeof(scale));
+                if (type == 12 || type == 13 || type == 7) std::memcpy(blob.data() + at + 2, &scale, sizeof(scale));
             }
         }
     };
@@ -115,8 +116,9 @@ int main() {
     // NVFP4's kernels already preserve singleton arithmetic. Mixed formats also carry scale tails.
     for (auto pair : {std::pair{40, 40}, {40, 20}, {40, 42}, {22, 40}, {23, 40}})
         if (!check_format(pair.first, pair.second, 64)) return 1;
-    // STRATA_KQ256 selects grouped Q4_K/Q5_1/Q8_0 kernels only when their target arithmetic matches.
-    if (!check_format(12, 7, 64) || !check_format(12, 8, 64)) return 1;
+    // STRATA_KQ256 / kq512 selects grouped K-quant kernels only when their target arithmetic matches.
+    if (!check_format(12, 7, 64) || !check_format(12, 8, 64) || !check_format(13, 8, 64) ||
+        !check_format(14, 8, 64) || !check_format(12, 6, 64) || !check_format(6, 8, 64)) return 1;
     // 0.2 adds Trellis formats and folded expert inputs. Exercise both their
     // production singleton dispatch and every grouped width through the new API.
     for (int gu : {144, 145, 146})

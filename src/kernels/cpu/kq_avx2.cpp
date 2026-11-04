@@ -12,6 +12,9 @@
 //
 // The gain is the weight-side work and the weight bytes, read once per verify window instead of once per token.
 #include "strata/kernels/cpu/kq_avx2.hpp"
+#include "strata/kernels/cpu/iq_avx512.hpp"
+
+namespace strata::kernels::cpu { bool cpu_avx512_ok(); }
 
 #define GGML_COMMON_DECL_CPP
 #define GGML_COMMON_IMPL_CPP
@@ -226,6 +229,10 @@ void dot_rows(int type, const uint8_t* row, int n, const void* const* act, int n
 }  // namespace
 
 void bf16_rows_dot_multi(const uint16_t* w, int rows, int cols, const float* x, int nt, float* out) {
+    if (cpu_avx512_ok()) {
+        bf16_rows_dot_multi_512(w, rows, cols, x, nt, out);
+        return;
+    }
     for (int t0 = 0; t0 < nt; t0 += 4) {
         const int m = nt - t0 < 4 ? nt - t0 : 4;
         const float* x0 = x + (size_t) t0 * cols;
@@ -253,6 +260,10 @@ void bf16_rows_dot_multi(const uint16_t* w, int rows, int cols, const float* x, 
 }
 
 void bf16_rows_dot(const uint16_t* w, int rows, int cols, const float* x, float* out) {
+    if (cpu_avx512_ok()) {
+        bf16_rows_dot_512(w, rows, cols, x, out);
+        return;
+    }
     for (int r = 0; r < rows; ++r) {
         const uint16_t* wr = w + (size_t) r * (size_t) cols;
         __m256 acc = _mm256_setzero_ps();

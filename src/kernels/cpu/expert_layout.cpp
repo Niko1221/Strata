@@ -101,7 +101,9 @@ bool cpu_avx512_ok() {
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
         cpuid(7, 0);
         const unsigned ebx = r[1], ecx = r[2];
-        return ((ebx >> 16) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 11) & 1u) && ((ecx >> 1) & 1u);
+        // AVX512F (16), AVX512DQ (17), AVX512BW (30), AVX512VL (31), AVX512_VBMI (1), AVX512_VNNI (11), AVX512_VPOPCNTDQ (14)
+        return ((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) &&
+               ((ecx >> 1) & 1u) && ((ecx >> 11) & 1u) && ((ecx >> 14) & 1u);
     }();
     return ok;
 }
