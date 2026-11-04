@@ -230,6 +230,37 @@ def _print_check(report: dict) -> None:
         print("  To update: strata update")
 
 
+def source_store(checkout: Path | None = None) -> Path | None:
+    """The engine store a source install made for itself: `<checkout>/engine-feed` (setup.py fetches its engine there from the signed feed), or None
+    when this is not a checkout that has one with an engine package in it."""
+    here = checkout if checkout is not None else Path(__file__).resolve().parents[1]
+    store = here / "engine-feed"
+    try:
+        from strata_control import engine_component as ec
+        found, _ = ec.scan(store) if store.is_dir() else ([], [])
+    except Exception:                                    # noqa: BLE001 - a store that cannot be read is not one
+        return None
+    return store if found else None
+
+
+def default_components_dir(ec) -> Path:
+    """The folder `strata update` works in when none is named. STRATA_COMPONENTS_DIR and --components-dir win (ec.components_dir reads the first). A source
+    checkout that has its own engine store, and whose per-user folder holds no engine package, updates the checkout's: running `strata update` there used
+    to download into the per-user folder instead, leave a half-written state.json and a part file nobody resumed, and then download everything again
+    when the right folder was named (#4463)."""
+    chosen = ec.components_dir()
+    if os.environ.get(ec.ENV_DIR):
+        return chosen
+    own = source_store()
+    if own is None:
+        return chosen
+    try:
+        found, _ = ec.scan(chosen) if chosen.is_dir() else ([], [])
+    except Exception:                                    # noqa: BLE001
+        found = []
+    return chosen if found else own
+
+
 def run(a) -> int:
     from strata_control import acquisition, engine_component as ec, feed as feedmod, signing, updater
     machine = a.output in ("json", "jsonl")
@@ -241,7 +272,7 @@ def run(a) -> int:
             print(f"strata: {message}", file=sys.stderr)
         return code
 
-    root = Path(a.components_dir) if a.components_dir else ec.components_dir()
+    root = Path(a.components_dir) if a.components_dir else default_components_dir(ec)
     try:
         hardware = updater.detect_hardware()
         if a.backend:
