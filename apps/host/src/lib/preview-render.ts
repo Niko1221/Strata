@@ -47,7 +47,7 @@ const MATH_LINES = 60;
  * after the other are the same elements as the whole text drawn once.
  */
 export function splitPreview(text: string, target = PREVIEW_SLICE_CHARS): PreviewSlice[] {
-    const lines = text.split('\n');
+    const lines = text.split(/\r\n|\r|\n/);
     const slices: PreviewSlice[] = [];
     let start = 0, size = 0, fenced = false, mathEnd = -1;
     const emit = (end: number) => {
