@@ -104,5 +104,32 @@ class FailedStart(unittest.TestCase):
                 engine.__init__("strata", [], retry_args=None)
 
 
+class EngineOutputDecoding(FakeEngines, unittest.TestCase):
+    """#5044: a byte that is not UTF-8 on the engine's stdout (Windows can print one) must not end the reader."""
+
+    def tearDown(self):
+        self.cleanup_engines()
+
+    def test_a_non_utf8_byte_before_ready_and_in_a_reply(self):
+        import serve.server as server
+        self.tmp = tempfile.TemporaryDirectory()
+        text = canary_script()
+        bad = 'sys.stdout.buffer.write(b"INFO note=\\x8e\\n"); sys.stdout.flush()\nprint("READY 4096 stop", flush=True)'
+        self.assertIn('print("READY 4096 stop", flush=True)', text)
+        text = text.replace('print("READY 4096 stop", flush=True)', bad, 1)
+        script = Path(self.tmp.name) / "fake_strata.py"
+        script.write_text(text, encoding="utf-8")
+        real = server.subprocess.Popen
+        self.popen_patch = mock.patch.object(server.subprocess, "Popen",
+                                             lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw))
+        self.popen_patch.start()
+        engine = StrataEngine("strata", [])
+        self.engines = [engine]
+        self.assertTrue(engine.alive())
+        got = []
+        collect(engine.generate(prompt_ids("KA0001"), 500, {}, threading.Event()), got)
+        self.assertEqual(got, expected_reply("KA0001"))
+
+
 if __name__ == "__main__":
     unittest.main()
