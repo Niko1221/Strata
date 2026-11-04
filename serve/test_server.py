@@ -5122,11 +5122,30 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual((r["util"], r["temp"], r["power"]), (99, 64.0, 120.0))     # power1_input
                 self.assertEqual(telemetry.free_vram_mib(0, amd=True), 30 << 10)
                 self.assertIsNone(telemetry.free_vram_mib(5, amd=True))
-                t = telemetry.Telemetry(gpu_index=0, gpu_indices=[0, 1], amd=True)
-                s = t.sample()
-                self.assertEqual(t.static["gpu_name"], "AMD Radeon AI PRO R9700 + AMD Radeon AI PRO R9700")
-                self.assertEqual((s["gpu_mem_used"], s["gpu_util"], s["gpu_temp"], s["gpu_power"]),
-                                 (8 << 30, 68.0, 64.0, 205.0))
+                with mock.patch.object(telemetry.Telemetry, "_loop", lambda self: None):    # record by hand, no thread
+                    t = telemetry.Telemetry(gpu_index=0, gpu_indices=[0, 1], amd=True)
+                    s = t.sample()
+                    self.assertEqual(t.static["gpu_name"], "AMD Radeon AI PRO R9700 + AMD Radeon AI PRO R9700")
+                    self.assertEqual((s["gpu_mem_used"], s["gpu_util"], s["gpu_temp"], s["gpu_power"]),
+                                     (8 << 30, 68.0, 64.0, 205.0))
+                    self.assertEqual([(g["util"], g["power"]) for g in s["gpus"]], [(37, 85.0), (99, 120.0)])
+                    # each card's own PCIe link and traffic travel with it (None here: the fake tree has no PCIe files)
+                    self.assertEqual({k: None for k in ("pcie_rx_mb", "pcie_gen", "pcie_gen_max", "pcie_width")},
+                                     {k: g[k] for g in s["gpus"]
+                                      for k in ("pcie_rx_mb", "pcie_gen", "pcie_gen_max", "pcie_width")})
+                    with t.lock:                                # one recorded sample: each card's chart has one point
+                        t._record(s)
+                    cards = t.snapshot()["history"]["gpus"]
+                    self.assertEqual([c["index"] for c in cards], [0, 1])
+                    self.assertEqual([c["util"] for c in cards], [[37], [99]])
+                    self.assertEqual([c["power"] for c in cards], [[85.0], [120.0]])
+                    self.assertEqual([c["pcie_rx_mb"] for c in cards], [[None], [None]])
+                    t.close()
+                    t1 = telemetry.Telemetry(gpu_index=0, amd=True)  # one card: no per-card series, the shared ones are enough
+                    with t1.lock:
+                        t1._record(t1.sample())
+                    self.assertNotIn("gpus", t1.snapshot()["history"])
+                    t1.close()
         with tempfile.TemporaryDirectory() as d:                    # no amdgpu: nothing, and nothing breaks
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertFalse(telemetry.gpu_reader(0, amd=True).ok())

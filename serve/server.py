@@ -5327,7 +5327,8 @@ class Service:
 
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
-        the hardware (with a minute of history per series)."""
+        the hardware (with a minute of history per series; per card too - "gpus" in hardware and history - when
+        the model is split across several)."""
         with self.status_lock:
             s = dict(self.status)
             if self.live_reqs:                          # parallel requests: the newest one's status
