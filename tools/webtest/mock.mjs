@@ -3,6 +3,7 @@
 //
 //   import { startMock } from "./mock.mjs";
 //   const mock = await startMock();           // { url, state, stop() }
+//   const mock = await startMock({ gpus: 2 });  // /metrics then reports a model split over two cards
 //
 // What the page asks and what it gets: GET /health /metrics /mcp /settings /config, POST /load /unload,
 // POST /v1/chat/completions (streamed). The reply depends on a word in the last user message:
@@ -38,7 +39,7 @@ const SVG = "Here is a circle:\n\n```svg\n<svg xmlns=\"http://www.w3.org/2000/sv
 const HTML = "A small page:\n\n```html\n<!doctype html><html><body style=\"font-family:sans-serif\"><h2>Hello</h2>" +
   "<p id=\"p\">Static text.</p><script>document.getElementById('p').textContent='Script ran.'</script></body></html>\n```\n";
 
-export async function startMock({ port = 0, root = WEB, loaded = true, csp = true } = {}) {
+export async function startMock({ port = 0, root = WEB, loaded = true, csp = true, gpus = 1 } = {}) {
   const state = { requests: [], aborted: 0, completed: 0, loaded, calls: [], answers: 0 };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
@@ -50,7 +51,7 @@ export async function startMock({ port = 0, root = WEB, loaded = true, csp = tru
       if (p.startsWith("/web/")) return file(res, path.join(root, p.slice(5)), root);
       if (p.startsWith("/fonts/")) return file(res, path.join(root, "fonts", p.slice(7)), root);
       if (p === "/health") return json(200, { status: "ok", max_context: 32768, model: "Mock-Model", images: true, image_generation: false, loaded: state.loaded, service: "strata" });
-      if (p === "/metrics") return json(200, metrics(state));
+      if (p === "/metrics") return json(200, metrics(state, gpus));
       if (p === "/mcp") return json(200, { servers: [], tools: 0 });
       if (p === "/settings") return json(200, { shared: false, defaults: null });
       return json(404, { error: { message: "not found" } });
@@ -111,14 +112,31 @@ function file(res, f, root, extra = {}) {
   });
 }
 
-function metrics(state) {
+function metrics(state, gpus = 1) {
   const spark = Array.from({ length: 30 }, (_, i) => 20 + 10 * Math.sin(i / 3));
+  const wave = (a, b, p) => Array.from({ length: 30 }, (_, i) => a + b * Math.sin(i / p));
+  const hardware = { gpu_util: 35, gpu_mem_used: 9e9, gpu_mem_total: 12e9, gpu_temp: 61, gpu_power: 140, cpu: 22, ram_total: 64e9, ram_used: 30e9, disk_read_mb: 5 };
+  const history = { tok_s: spark, gpu_util: spark, gpu_mem_used: spark, gpu_temp: spark, gpu_power: spark, cpu: spark, disk_read_mb: spark, gpu_pcie_rx_mb: spark, prefill_tok_s_mean: spark };
+  const gpu_name = "Mock GPU";
+  if (gpus > 1) {          // a model split over two cards (issue #112): the shared figures are their mean, sum or max
+    hardware.gpus = [
+      { index: 0, name: "NVIDIA GeForce RTX 4090", util: 45, mem_used: 6e9, mem_total: 6.8e9, temp: 61, power: 85,
+        pcie_rx_mb: 12.4, pcie_gen: 4, pcie_gen_max: 4, pcie_width: 16 },
+      { index: 1, name: "NVIDIA GeForce RTX 3060", util: 25, mem_used: 3e9, mem_total: 6e9, temp: 55, power: 55,
+        pcie_rx_mb: 3.1, pcie_gen: 4, pcie_gen_max: 4, pcie_width: 16 },
+    ];
+    hardware.gpu_pcie_rx_mb = 15.5; hardware.gpu_pcie_gen = 4; hardware.gpu_pcie_gen_max = 4; hardware.gpu_pcie_width = 16;
+    history.gpus = [
+      { index: 0, util: wave(35, 9, 3), power: wave(75, 12, 4), pcie_rx_mb: wave(11, 4, 5) },
+      { index: 1, util: wave(20, 8, 7), power: wave(50, 6, 2.5), pcie_rx_mb: wave(3, 1.5, 6) },
+    ];
+  }
   return {
     live: { state: state.loaded ? "idle" : "unloaded", queued: 0 },
     engine: { model: "Mock-Model", version: "0.0", max_context: 32768, expert_slots: 1200, expert_cache_mib: 9000 },
-    hardware: { gpu_util: 35, gpu_mem_used: 9e9, gpu_mem_total: 12e9, gpu_temp: 61, gpu_power: 140, cpu: 22, ram_total: 64e9, ram_used: 30e9, disk_read_mb: 5 },
-    hardware_static: { gpu_name: "Mock GPU", cpu_name: "Mock CPU", threads: 16, cores: 8, psutil: true },
-    history: { tok_s: spark, gpu_util: spark, gpu_mem_used: spark, gpu_temp: spark, gpu_power: spark, cpu: spark, disk_read_mb: spark, gpu_pcie_rx_mb: spark, prefill_tok_s_mean: spark },
+    hardware,
+    hardware_static: { gpu_name, cpu_name: "Mock CPU", threads: 16, cores: 8, psutil: true },
+    history,
     requests: [], totals: null, requests_kept: 0, conversation_cache: null,
   };
 }

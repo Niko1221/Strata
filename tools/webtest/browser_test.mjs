@@ -646,6 +646,34 @@ htest("language: /?lang= is for one visit, an unknown code stays English, every 
   }
 });
 
+// ---------------------------------------------------------------- monitor: tiles of a model split over several cards
+test("monitor: a split run shows GPU load as one named chart per card", async ({ browser }) => {
+  const two = await startMock({ gpus: 2 });
+  const page = await openPage(browser, two, { hash: "#monitor" });
+  await page.waitForFunction(() => !document.getElementById("rows-gpu").hidden, { timeout: 8000 });
+  assert.deepEqual(await page.$$eval("#rows-gpu .metric-row__name", (els) => els.map((e) => e.textContent)),
+                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"], "the cards are named, not numbered");
+  assert.deepEqual(await page.$$eval("#rows-gpu .metric-row__value", (els) => els.map((e) => e.textContent)),
+                   ["45%", "25%"], "each card's own load beside its name");
+  const lines = await page.$$eval("#rows-gpu .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
+  assert.equal(lines.length, 2, "one chart per card in the tile");
+  assert.ok(lines.every((d) => (d || "").length > 20), "both cards' charts have a line");
+  assert.notEqual(lines[0], lines[1], "each card's own series, not one mean chart drawn twice");
+  assert.equal(await page.$eval("#sp-gpu", (e) => e.hidden), true, "the mean chart steps aside for the cards' own");
+  assert.equal(await page.$eval("#ms-gpu", (e) => e.textContent), "Mean of 2 cards", "the figure left is the mean");
+  assert.deepEqual(page.errors, []);
+  await page.close();
+  await two.stop();
+});
+
+test("monitor: one card keeps its single mean chart and shows no rows", async ({ browser, mock }) => {
+  const page = await openPage(browser, mock, { hash: "#monitor" });
+  await page.waitForFunction(() => (document.querySelector("#sp-gpu .line").getAttribute("d") || "").length > 20, { timeout: 8000 });
+  assert.equal(await page.$eval("#sp-gpu", (e) => e.hidden), false, "the mean chart is the only chart there is");
+  assert.equal(await page.$eval("#rows-gpu", (e) => e.hidden), true, "a single card needs no rows");
+  await page.close();
+});
+
 const mock = await startMock();
 const browser = await launch();
 await run(async () => ({ browser, mock, close: async () => { await browser.close(); await mock.stop(); } }));

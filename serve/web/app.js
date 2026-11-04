@@ -128,7 +128,7 @@ async function loadHealth() {
 // ------------------------------------------------------------------ Monitor
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
-  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
+  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100, perCard: true},
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
@@ -136,6 +136,7 @@ const METRICS = [
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
+// perCard: a tile that, in a split run (issue #112), adds a named row per card below the figure
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
     <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
@@ -144,6 +145,7 @@ $("metrics").innerHTML = METRICS.map((m) => `
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
     </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>`}
+    ${m.perCard ? `<div class="metric-rows" id="rows-${m.key}" hidden></div>` : ""}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
@@ -152,8 +154,8 @@ $("metrics").innerHTML = METRICS.map((m) => `
         stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
   </div></div>`).join("");
 
-function spark(id, values, max) {
-  const svg = $(id);
+function spark(id, values, max) { drawSpark($(id), values, max); }
+function drawSpark(svg, values, max) {
   const v = (values || []).map((x) => (x == null ? 0 : x));
   if (v.length < 2) { svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
   const top = Math.max(max || 0, ...v, 1);
@@ -161,6 +163,27 @@ function spark(id, values, max) {
   const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
   svg.querySelector(".line").setAttribute("d", line);
   svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
+}
+// The card rows a split run's perCard tiles show: each card's name, its reading, and - where the server sent
+// that card's own history - a chart of its own. Rows are rebuilt when the set of cards changes; the figures
+// are rewritten every poll. An empty list hides the container, so a run with one card never shows rows.
+const rowSig = {};
+function metricRows(key, rows) {
+  const el = $(`rows-${key}`);
+  const sig = rows.map((r) => r.label).join(" | ");
+  if (sig !== rowSig[key]) {
+    rowSig[key] = sig;
+    el.innerHTML = rows.map((r) => `<div class="metric-row"><span class="metric-row__name" title="${esc(r.label)}">${esc(r.label)}</span>` +
+      `<span class="metric-row__value"></span>${r.values == null ? "" : `<svg class="st-metric__spark metric-row__spark" viewBox="0 0 100 32"
+      preserveAspectRatio="none"><path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
+      stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`}</div>`).join("");
+    el.hidden = !rows.length;
+  }
+  rows.forEach((r, i) => {
+    const row = el.children[i];
+    row.querySelector(".metric-row__value").textContent = r.value;
+    if (r.values != null) drawSpark(row.querySelector("svg"), r.values, r.max);
+  });
 }
 function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
@@ -479,11 +502,18 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
-  const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
-  const multi = (hw.gpus || []).length > 1;
+  const cards = hw.gpus || [];
+  const multi = cards.length > 1;
+  const per = (f) => cards.map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
+  const cardLabel = (g) => (g.name ? `GPU ${g.index} · ${g.name}` : `GPU ${g.index}`);
+  const gpuHist = {};                                 // each card's own history series, keyed as "gpus" is
+  for (const g of h.gpus || []) gpuHist[g.index] = g;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
+            multi ? `Mean of ${cards.length} cards` : st.gpu_name || (st.gpu_note ? "not available" : ""));
+  $("sp-gpu").hidden = multi && !!h.gpus;             // the cards' own charts replace the single mean one
   spark("sp-gpu", h.gpu_util, 100);
+  metricRows("gpu", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.util == null ? "–" : `${fmt(g.util)}%`,
+                                                values: (gpuHist[g.index] || {}).util, max: 100 })) : []);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
                   : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
