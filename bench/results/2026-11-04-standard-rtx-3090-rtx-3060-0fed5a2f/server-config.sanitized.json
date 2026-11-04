@@ -1,0 +1,38 @@
+{
+ "args": [
+  "--pack",
+  "<local-path>",
+  "--native",
+  "<local-path>",
+  "--ple-gguf",
+  "<local-path>",
+  "--expert-profile",
+  "<local-path>",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<local-path>",
+  "--mtp-draft-vocab",
+  "<local-path>",
+  "--pipeline-windows",
+  "2",
+  "--max-context",
+  "65536",
+  "--kv",
+  "int8",
+  "--resident-experts"
+ ],
+ "gpu": [
+  0,
+  1
+ ],
+ "layer_split": "auto",
+ "reasoning_effort": "none",
+ "model_name": "qwen3.8-flash-next-iq2_xs"
+}

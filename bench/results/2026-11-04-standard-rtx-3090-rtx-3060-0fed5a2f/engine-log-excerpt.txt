@@ -1,0 +1,128 @@
+[strata] layer split: card order 1,0 (the faster card last; "gpu_order": "as_given" keeps 0,1, #1352)
+[strata] layer split: card order 1,0 (the faster card last; "gpu_order": "as_given" keeps 0,1, #1352)
+loading the model (the first start takes a minute or two) ...
+[strata] cards in stage order: GPU 1, then GPU 0 (as nvidia-smi numbers them); the engine's log calls them CUDA0, CUDA1 - the first runs the first layers and the picture reader, the last runs the head and the draft layer
+[strata] layer split across GPUs [0, 1] (auto)
+[strata] Drafting: MTP (DFlash2 isn't available in this mode)
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts the GPU does not hold into RAM (of about 39 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] filling the GPU's expert cache (3439 experts, 4.51 GiB of VRAM) ...
+[strata] still starting (30 s) - please wait ...
+[strata] almost ready ...
+[strata] still starting (55 s) - please wait ...
+[strata] thinking level: none (reasoning_effort in the config; a request, or the Chat settings shared with other apps, can set its own)
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 65536 tokens)
+       open http://127.0.0.1:8080/ in a browser to chat; close this window to stop the model
+[strata] reading the prompt: 70 of 75 tokens, 2 s so far
+[strata] thinking: 53 of max 128 tokens, 99.7 tok/s, 3 s
+[strata] done: 128 tokens in 3 s (96.4 tok/s) (length, cancel=False), expert cache 97.6% hit
+[strata] thinking: 41 of max 512 tokens, 116.0 tok/s, 1 s
+[strata] answering: 149 of max 512 tokens, 110.0 tok/s, 2 s
+[strata] done: 251 tokens in 3 s (109.2 tok/s) (stop, cancel=False), expert cache 97.5% hit
+[strata] reading the prompt: 4,088 of 4,093 tokens, 5 s so far
+[strata] thinking: 6 of max 512 tokens, 24.0 tok/s, 6 s
+[strata] thinking: 121 of max 512 tokens, 115.5 tok/s, 7 s
+[strata] thinking: 201 of max 512 tokens, 97.7 tok/s, 8 s
+[strata] thinking: 284 of max 512 tokens, 92.4 tok/s, 9 s
+[strata] thinking: 366 of max 512 tokens, 89.2 tok/s, 10 s
+[strata] thinking: 472 of max 512 tokens, 92.4 tok/s, 11 s
+[strata] done: 512 tokens in 11 s (91.9 tok/s) (length, cancel=False), expert cache 97.7% hit
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] reading the prompt: 8,192 of 16,387 tokens, 8 s so far
+[strata] reading the prompt: 16,382 of 16,387 tokens, 10 s so far
+[strata] reading the prompt: 16,386 of 16,387 tokens, 12 s so far
+[strata] thinking: 109 of max 512 tokens, 109.7 tok/s, 13 s
+[strata] thinking: 221 of max 512 tokens, 110.3 tok/s, 14 s
+[strata] thinking: 316 of max 512 tokens, 104.8 tok/s, 15 s
+[strata] thinking: 410 of max 512 tokens, 101.8 tok/s, 16 s
+[strata] done: 512 tokens in 17 s (102.5 tok/s) (length, cancel=False), expert cache 98.7% hit
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] thinking: 32 of max 512 tokens, 125.8 tok/s, 1 s
+[strata] thinking: 114 of max 512 tokens, 90.6 tok/s, 2 s
+[strata] thinking: 197 of max 512 tokens, 87.1 tok/s, 3 s
+[strata] thinking: 288 of max 512 tokens, 88.0 tok/s, 4 s
+[strata] thinking: 402 of max 512 tokens, 93.6 tok/s, 5 s
+[strata] answering: 512 of max 512 tokens, 96.6 tok/s, 6 s
+[strata] done: 512 tokens in 6 s (96.3 tok/s) (length, cancel=False), expert cache 97.9% hit
+[strata] reading the prompt: 4,088 of 4,093 tokens, 4 s so far
+[strata] thinking: 11 of max 512 tokens, 44.0 tok/s, 5 s
+[strata] thinking: 123 of max 512 tokens, 112.2 tok/s, 6 s
+[strata] thinking: 214 of max 512 tokens, 101.5 tok/s, 7 s
+[strata] thinking: 308 of max 512 tokens, 98.7 tok/s, 8 s
+[strata] thinking: 395 of max 512 tokens, 95.8 tok/s, 9 s
+[strata] done: 512 tokens in 10 s (102.2 tok/s) (length, cancel=False), expert cache 98.5% hit
+[strata] reading the prompt: 8,192 of 16,387 tokens, 6 s so far
+[strata] reading the prompt: 16,382 of 16,387 tokens, 9 s so far
+[strata] reading the prompt: 16,386 of 16,387 tokens, 11 s so far
+[strata] thinking: 110 of max 512 tokens, 110.3 tok/s, 12 s
+[strata] thinking: 225 of max 512 tokens, 112.3 tok/s, 13 s
+[strata] thinking: 346 of max 512 tokens, 115.0 tok/s, 14 s
+[strata] thinking: 442 of max 512 tokens, 110.0 tok/s, 15 s
+[strata] done: 512 tokens in 16 s (108.9 tok/s) (length, cancel=False), expert cache 99.1% hit
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] thinking: 48 of max 512 tokens, 124.9 tok/s, 1 s
+[strata] answering: 161 of max 512 tokens, 115.0 tok/s, 2 s
+[strata] answering: 286 of max 512 tokens, 118.8 tok/s, 3 s
+[strata] done: 307 tokens in 3 s (117.1 tok/s) (stop, cancel=False), expert cache 98.1% hit
+[strata] reading the prompt: 4,088 of 4,093 tokens, 4 s so far
+[strata] thinking: 16 of max 512 tokens, 64.0 tok/s, 5 s
+[strata] thinking: 126 of max 512 tokens, 109.3 tok/s, 6 s
+[strata] answering: 226 of max 512 tokens, 104.6 tok/s, 7 s
+[strata] answering: 350 of max 512 tokens, 110.5 tok/s, 8 s
+[strata] answering: 509 of max 512 tokens, 121.8 tok/s, 9 s
+[strata] done: 512 tokens in 9 s (122.1 tok/s) (length, cancel=False), expert cache 98.1% hit
+[strata] reading the prompt: 8,192 of 16,387 tokens, 6 s so far
+[strata] reading the prompt: 16,382 of 16,387 tokens, 9 s so far
+[strata] reading the prompt: 16,386 of 16,387 tokens, 10 s so far
+[strata] thinking: 127 of max 512 tokens, 127.9 tok/s, 11 s
+[strata] thinking: 231 of max 512 tokens, 115.5 tok/s, 12 s
+[strata] thinking: 318 of max 512 tokens, 105.6 tok/s, 13 s
+[strata] answering: 446 of max 512 tokens, 111.0 tok/s, 14 s
+[strata] done: 512 tokens in 15 s (112.4 tok/s) (length, cancel=False), expert cache 98.7% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 45 of budget 1536 (max 2048) tokens, 120.7 tok/s, 1 s
+[strata] done: 70 tokens in 1 s (127.2 tok/s) (stop, cancel=False), expert cache 94.6% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 38 of budget 1536 (max 2048) tokens, 113.5 tok/s, 1 s
+[strata] done: 75 tokens in 1 s (121.6 tok/s) (stop, cancel=False), expert cache 95.2% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking: 55 of budget 1536 (max 2048) tokens, 171.1 tok/s, 1 s
+[strata] done: 98 tokens in 1 s (170.2 tok/s) (stop, cancel=False), expert cache 96.0% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] done: 34 tokens in 1 s (157.5 tok/s) (stop, cancel=False), expert cache 98.4% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 4,084 of 4,089 tokens, 4 s so far
+[strata] thinking: 18 of budget 1536 (max 2048) tokens, 72.0 tok/s, 5 s
+[strata] done: 84 tokens in 5 s (152.6 tok/s) (stop, cancel=False), expert cache 97.7% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 4,084 of 4,089 tokens, 4 s so far
+[strata] thinking: 14 of budget 1536 (max 2048) tokens, 56.0 tok/s, 5 s
+[strata] done: 53 tokens in 5 s (147.3 tok/s) (stop, cancel=False), expert cache 98.5% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 8,192 of 16,382 tokens, 6 s so far
+[strata] reading the prompt: 16,377 of 16,382 tokens, 9 s so far
+[strata] reading the prompt: 16,381 of 16,382 tokens, 10 s so far
+[strata] thinking: 138 of budget 1536 (max 2048) tokens, 138.7 tok/s, 11 s
+[strata] done: 160 tokens in 11 s (136.5 tok/s) (stop, cancel=False), expert cache 98.6% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 8,192 of 16,390 tokens, 6 s so far
+[strata] reading the prompt: 16,384 of 16,390 tokens, 9 s so far
+[strata] reading the prompt: 16,389 of 16,390 tokens, 10 s so far
+[strata] thinking: 140 of budget 1536 (max 2048) tokens, 139.2 tok/s, 11 s
+[strata] thinking: 294 of budget 1536 (max 2048) tokens, 146.3 tok/s, 12 s
+[strata] thinking: 407 of budget 1536 (max 2048) tokens, 135.0 tok/s, 13 s
+[strata] done: 447 tokens in 14 s (136.2 tok/s) (stop, cancel=False), expert cache 98.3% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 320 of 325 tokens, 1 s so far
+[strata] done: 50 tokens in 2 s (185.8 tok/s) (stop, cancel=False), expert cache 95.6% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 330 of 335 tokens, 1 s so far
+[strata] done: 86 tokens in 2 s (153.8 tok/s) (stop, cancel=False), expert cache 95.0% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 347 of 352 tokens, 1 s so far
+[strata] done: 79 tokens in 2 s (170.3 tok/s) (stop, cancel=False), expert cache 96.5% hit
+[strata] thinking limited to 1536 of max_tokens 2048 so the answer has room ("answer_room": false in the config turns this off)
+[strata] reading the prompt: 334 of 339 tokens, 1 s so far
+[strata] done: 77 tokens in 2 s (165.8 tok/s) (stop, cancel=False), expert cache 97.5% hit
