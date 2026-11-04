@@ -115,7 +115,8 @@ function file(res, f, root, extra = {}) {
 function metrics(state, gpus = 1) {
   const spark = Array.from({ length: 30 }, (_, i) => 20 + 10 * Math.sin(i / 3));
   const wave = (a, b, p) => Array.from({ length: 30 }, (_, i) => a + b * Math.sin(i / p));
-  const hardware = { gpu_util: 35, gpu_mem_used: 9e9, gpu_mem_total: 12e9, gpu_temp: 61, gpu_power: 140, cpu: 22, ram_total: 64e9, ram_used: 30e9, disk_read_mb: 5 };
+  const hardware = { gpu_util: 35, gpu_mem_used: 9e9, gpu_mem_total: 12e9, gpu_temp: 61, gpu_power: 140, cpu: 22, ram_total: 64e9, ram_used: 30e9, disk_read_mb: 5,
+    gpu_pcie_rx_mb: 15.5, gpu_pcie_gen: 4, gpu_pcie_gen_max: 4, gpu_pcie_width: 16 };   // one card reports its link; a split run sends each card's own
   const history = { tok_s: spark, gpu_util: spark, gpu_mem_used: spark, gpu_temp: spark, gpu_power: spark, cpu: spark, disk_read_mb: spark, gpu_pcie_rx_mb: spark, prefill_tok_s_mean: spark };
   const gpu_name = "Mock GPU";
   if (gpus > 1) {          // a model split over two cards (issue #112): the shared figures are their mean, sum or max
@@ -123,10 +124,10 @@ function metrics(state, gpus = 1) {
       { index: 0, name: "NVIDIA GeForce RTX 4090", util: 45, mem_used: 6e9, mem_total: 6.8e9, temp: 61, power: 85,
         pcie_rx_mb: 12.4, pcie_gen: 4, pcie_gen_max: 4, pcie_width: 16 },
       { index: 1, name: "NVIDIA GeForce RTX 3060", util: 25, mem_used: 3e9, mem_total: 6e9, temp: 55, power: 55,
-        pcie_rx_mb: 3.1, pcie_gen: 4, pcie_gen_max: 4, pcie_width: 16 },
+        pcie_rx_mb: 3.1, pcie_gen: 3, pcie_gen_max: 4, pcie_width: 8 },   // the second card sits on a smaller slot
     ];
     hardware.gpu_power_limit = 620;        // 450 + 170, as the sampler sums the cards' limits
-    hardware.gpu_pcie_rx_mb = 15.5; hardware.gpu_pcie_gen = 4; hardware.gpu_pcie_gen_max = 4; hardware.gpu_pcie_width = 16;
+    hardware.gpu_pcie_rx_mb = 15.5;        // the two cards' traffic together, as the sampler sums it
     history.gpus = [
       { index: 0, util: wave(35, 9, 3), power: wave(75, 12, 4), pcie_rx_mb: wave(11, 4, 5) },
       { index: 1, util: wave(20, 8, 7), power: wave(50, 6, 2.5), pcie_rx_mb: wave(3, 1.5, 6) },

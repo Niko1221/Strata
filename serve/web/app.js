@@ -132,7 +132,7 @@ const METRICS = [
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power", perCard: true},
-  {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
+  {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info", perCard: true},
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
@@ -527,11 +527,23 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   // the figure stays the sum of the cards; the rows say what each of them takes of it
   metricRows("power", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.power == null ? "–" : `${fmt(g.power)} W` })) : []);
-  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+  const rx = (v) => (v == null ? "–" : `${fmt(v, v < 10 ? 1 : 0)} MB/s`);
+  if (multi) {
+    // one card can fall to Gen1 or x4 while its neighbour stays healthy, so the link goes in the rows and
+    // the figure becomes the traffic all cards together take. The header's unit is "MB/s", hence no unit here.
+    setMetric("pcie", hw.gpu_pcie_rx_mb == null ? null : fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0), "",
+              `to ${cards.length} GPUs`);
+  } else {
+    const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
+    setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
+              hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${rx(hw.gpu_pcie_rx_mb)}` +
+              (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+  }
   spark("sp-pcie", h.gpu_pcie_rx_mb);
+  metricRows("pcie", multi ? cards.map((g) => ({
+    label: cardLabel(g),
+    value: `${g.pcie_gen_max || g.pcie_gen ? `Gen${g.pcie_gen_max || g.pcie_gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}` : "–"} · ${rx(g.pcie_rx_mb)}`,
+  })) : []);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
