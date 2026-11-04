@@ -11,6 +11,7 @@ import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
 import { endPreviewDeferral, previewsDeferred } from '../lib/recovery';
+import { messageArtifacts, openItem, syncArtifacts } from '../lib/preview-merge';
 import { createImeGuard } from '../lib/ime-enter';
 import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
@@ -171,9 +172,10 @@ export function ChatScreen() {
     const previewCount = session?.messages.reduce((n, m) => n + (m.artifacts?.length ?? 0), 0) ?? 0;
     useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session && previewsDeferred(session.id) || session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
     useEffect(() => {
-        const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()];
+        // A message's copy of a file never replaces one that was read later (lib/preview-merge.ts); nothing changed = the same array = no update.
+        const items = messageArtifacts(session?.messages);
         if (items.length)
-            setPreviews(old => [...old.filter(a => !items.some(b => a.id === b.id)), ...items.filter(a => !session?.closedPreviews?.includes(a.id))]);
+            setPreviews(old => syncArtifacts(old, items, session?.closedPreviews));
     }, [previewCount]);
     const localUrls = useRef<string[]>([]);
     useEffect(() => {
@@ -187,7 +189,8 @@ export function ChatScreen() {
         if (item.url?.startsWith('blob:'))
             localUrls.current.push(item.url);
         setPreviewTabClosed(session?.id, item.id, false, item.id);
-        setPreviews(old => old.some(a => a.id === item.id) ? old : [...old, item]);
+        // The file was read just now: it replaces the tab of the same id when its content differs (it used to be dropped, keeping the first copy).
+        setPreviews(old => openItem(old, item));
         setSelectedPreview(item.id);
     }
     /* A run that finishes with a file the sidebar can show opens its main result there by itself (one file, never several). Only a run seen
