@@ -652,7 +652,7 @@ test("monitor: a split run shows GPU load as one named chart per card", async ({
   const page = await openPage(browser, two, { hash: "#monitor" });
   await page.waitForFunction(() => !document.getElementById("rows-gpu").hidden, { timeout: 8000 });
   assert.deepEqual(await page.$$eval("#rows-gpu .metric-row__name", (els) => els.map((e) => e.textContent)),
-                   ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 3060"], "the cards are named; the row order is their number");
+                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"], "the cards are named and numbered");
   assert.deepEqual(await page.$$eval("#rows-gpu .metric-row__value", (els) => els.map((e) => e.textContent)),
                    ["45%", "25%"], "each card's own load beside its name");
   const lines = await page.$$eval("#rows-gpu .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));

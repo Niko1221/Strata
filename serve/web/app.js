@@ -505,7 +505,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const cards = hw.gpus || [];
   const multi = cards.length > 1;
   const per = (f) => cards.map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
-  const cardLabel = (g) => g.name || `GPU ${g.index}`;   // the rows are in the cards' order, so the name can keep the width
+  // Power and PCIe rows put a reading beside the name, so the name keeps the whole width there; the GPU load
+  // rows keep their "GPU n ·" prefix (the values are short, and the number pairs a card with its chart fastest)
+  const cardLabel = (g) => g.name || `GPU ${g.index}`;
   const gpuHist = {};                                 // each card's own history series, keyed as "gpus" is
   for (const g of h.gpus || []) gpuHist[g.index] = g;
   const top = (f) => Math.max(1, ...cards.flatMap((g) => ((gpuHist[g.index] || {})[f]) || []));
@@ -517,7 +519,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("sp-gpu").toggleAttribute("hidden", multi);
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%", st.gpu_name || (st.gpu_note ? "not available" : ""));
   spark("sp-gpu", h.gpu_util, 100);
-  metricRows("gpu", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.util == null ? "–" : `${fmt(g.util)}%`,
+  metricRows("gpu", multi ? cards.map((g) => ({ label: `GPU ${g.index}` + (g.name ? ` · ${g.name}` : ""), value: g.util == null ? "–" : `${fmt(g.util)}%`,
                                                 values: (gpuHist[g.index] || {}).util, max: 100 })) : []);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
