@@ -41,6 +41,9 @@ mod updater;
 mod desktoplog;
 mod recovery;
 mod shell;
+// Plain std, built on every platform so its decisions are tested everywhere; only the Linux window process uses it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod fontguard;
 #[cfg(target_os = "linux")]
 mod supervisor;
 
@@ -1226,6 +1229,15 @@ fn run_window_process() -> ! {
     if std::env::var_os("STRATA_WINDOW_TEST_CRASH").is_some() {
         eprintln!("[strata] STRATA_WINDOW_TEST_CRASH is set: the window process aborts on purpose.");
         std::process::abort();
+    }
+    // WebKitGTK aborts while it draws a COLRv1 colour emoji font (fontguard.rs, #4533): this process is told to leave that font out. Only this
+    // process, and before WebKit starts its own: the host, the engine and the agent keep the fonts the person chose.
+    {
+        let env = |k: &str| std::env::var(k).ok();
+        let dirs = fontguard::font_dirs(&env);
+        if let Some(conf) = fontguard::config_for(&env, &desktoplog::data_dir().join("fonts"), &dirs, Path::new(fontguard::SYSTEM_CONFIG)) {
+            std::env::set_var("FONTCONFIG_FILE", conf);
+        }
     }
     // The shell is this process's parent: when it is gone (killed, crashed, logged off) the window goes too.
     let parent = std::os::unix::process::parent_id();
