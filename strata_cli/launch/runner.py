@@ -532,9 +532,11 @@ def own_log_path(base: dict) -> str | None:
 
 
 def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str], log: str | None = None, gpus: "list[int] | dict | None" = None,
-                  experts: int | None = None) -> dict:
-    """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, cards, advanced)."""
-    from strata_control import tune_knobs
+                  experts: int | None = None, prev: dict | None = None) -> dict:
+    """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, cards, advanced).
+    `prev` is the config this launch wrote last time: its calibrated values and hand edits are kept (strata_control/arg_layers.py: explicit
+    launch values, then persisted overrides, then calibrated values, then Auto)."""
+    from strata_control import arg_layers, tune_knobs
     cfg = json.loads(json.dumps(base))
     cfg["host"] = acc.host_for(s.access)
     cfg["port"] = int(s.port)
@@ -567,11 +569,10 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     if cfg.get("backend") == "sycl":                         # exactly two Arc B-series cards: --spec 2 (strata_control/intel_spec.py); the person's
         from strata_control import intel_spec                # own choices (user_args, an extra option below) come after it and win
         intel_spec.apply_for_launch(cfg)
-    if s.extra:
-        a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
-        cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
-        if e_changes:
-            cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)
+    a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags) if s.extra else ({}, {})
+    arg_layers.layer(cfg, a_changes, prev)                   # the one place that decides which value an option has
+    if e_changes:
+        cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)
     from strata_control import draft_layer
     draft_layer.apply(cfg)                                   # "mtp": false (from the installed config too) never sits beside --mtp in the saved args (B10)
     apply_experts(cfg, experts)
@@ -1623,8 +1624,15 @@ class Runner:
     def build_config(self, base_path: Path) -> Path:
         from strata_control import tune_knobs
         base = read_config(base_path)
+        try:
+            previous = read_config(launch_dir() / f"{self.name}.json")
+        except (OSError, ValueError):                        # no earlier launch of this name, or an unreadable file: nothing to keep from it
+            previous = None
+        if not isinstance(previous, dict):
+            previous = None
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
-                            log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base))
+                            log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base),
+                            prev=previous)
         if self.s.gpus and not self.s.gpu_roles:             # a DeepSeek model on AMD keeps the card the person names from now on (strata_control/gpu_pick.py)
             from strata_control import gpu_pick
             gpu_pick.remember(base_path, [int(g) for g in self.s.gpus])
@@ -1638,6 +1646,8 @@ class Runner:
         if wait > 600 and not cfg.get("engine_ready_s"):     # the server's own wait for the engine (900 s) must not end before the start's
             cfg["engine_ready_s"] = wait + 60
         out = launch_dir() / f"{self.name}.json"
+        from strata_control import arg_layers
+        arg_layers.stamp(cfg)                                # what this launch wrote: a later change to "args" is a hand edit (kept next time)
         write_private(out, cfg)
         self.config_path = out
         return out
