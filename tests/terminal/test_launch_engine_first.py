@@ -24,6 +24,14 @@ UNUSABLE = {"usable": False, "engine": None, "notice": "No engine for this PC wa
                                                        "The app never downloads an engine while it starts or serves."}
 
 
+def qwen_catalog():
+    """A catalog stand-in for a Qwen model: since 0.2.4 the runner asks it whether the family is DeepSeek (which has its own engine and skips this step);
+    a bare Mock answers yes to everything."""
+    cat = mock.Mock()
+    cat.strata.multi_family.return_value = False
+    return cat
+
+
 class FakeProc:
     def __init__(self, events: list[dict], code: int = 0):
         self.stdout = iter(json.dumps(e) + "\n" for e in events)
@@ -42,7 +50,7 @@ def update_events(status: str, note: str = "", code: int = 0) -> list[dict]:
 
 
 def runner(spawned: list) -> Runner:
-    r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=mock.Mock(), emit=lambda e: None)
+    r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=qwen_catalog(), emit=lambda e: None)
     r.check_cancel = lambda: None
     return r
 
@@ -58,7 +66,7 @@ class EngineBeforeModel(unittest.TestCase):
         """ensure_engine() like run_ensure, returning (spawns, error or None, the runner with .events)."""
         spawns: list = []
         seen: list = []
-        r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=mock.Mock(), emit=seen.append,
+        r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=qwen_catalog(), emit=seen.append,
                    confirm=confirm, assume_yes=assume_yes)
         r.events = seen
         r.check_cancel = lambda: None
@@ -201,7 +209,7 @@ class EngineBeforeModel(unittest.TestCase):
     def test_a_failed_update_still_reports_the_old_message(self):
         spawns, err = self.run_ensure([UNUSABLE], [{"event": "error", "error": {"message": "cannot reach the feed"}}], code=6)
         self.assertEqual(err.code, 6)
-        self.assertIn("cannot reach the feed", err.text)
+        self.assertIn("Cannot reach the feed", err.text)      # (the reason is capitalised where it joins the sentence)
 
 
 class SetupControlStep(unittest.TestCase):

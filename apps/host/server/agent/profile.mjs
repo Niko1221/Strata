@@ -20,6 +20,7 @@
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { standardPreset } from './preset.mjs';
+import { validMcpName } from '../mcp-names.mjs';
 import { BUDGETS, isPrivateHost } from './llm-shape.mjs';
 import { DDG_PROVIDER_ID } from '../web-search-ddg.mjs';
 
@@ -55,6 +56,8 @@ export const modeOf = value => (Object.hasOwn(MODE_PRESETS, value) ? value : DEF
 /** The approval gate plugin (plain ESM, loaded by absolute path). */
 export const GATE_PLUGIN = fileURLToPath(new URL('./plugins/strata-gate.mjs', import.meta.url));
 /** The app's web search (DuckDuckGo, or the person's own Exa / Perplexity key), registered with the Harness's web seam. */
+/** Compaction that measures the real prompt and summarises in pieces that fit the window (plugins/strata-context.mjs). */
+export const CONTEXT_PLUGIN = fileURLToPath(new URL('./plugins/strata-context.mjs', import.meta.url));
 export const MODELS_PLUGIN = fileURLToPath(new URL('./plugins/strata-models.mjs', import.meta.url));
 export const SEARCH_PLUGIN = fileURLToPath(new URL('./plugins/strata-search.mjs', import.meta.url));
 /** The app's own tool server for the tools a person writes (instructions, commands). */
@@ -71,11 +74,17 @@ const NO_TOOLS_SETTINGS = Object.freeze({ off: new Set(), search: { provider: 'b
  * `mcp__<server>__<tool>`. A command or URL goes into the patch as text; a secret (an env value or a header) never does: the row
  * carries `!!js process.env.<NAME>` and the value travels in the agent process's environment (returned in `env`).
  */
-export function mcpRows(servers, env) {
+export function mcpRows(servers, env, skipped = []) {
   const rows = [];
+  const ids = new Set();
   let index = 0;
   for (const [name, server] of Object.entries(servers ?? {})) {
-    if (!server || server.disabled === true || !/^[A-Za-z0-9_-]{1,32}$/.test(name)) continue;
+    if (!server || server.disabled === true) continue;       // switched off on purpose: not an error
+    // A server that cannot be wired is REPORTED (T6): the model never sees its tools, and a silent drop looked like "the tool does not work".
+    if (!validMcpName(name)) { skipped.push({ name, why: 'name' }); continue; }
+    if (!server.command && !server.url) { skipped.push({ name, why: 'address' }); continue; }
+    if (ids.has(`mcp-${slug(name)}`)) { skipped.push({ name, why: 'duplicate' }); continue; }
+    ids.add(`mcp-${slug(name)}`);
     const token = (kind, key, value) => {
       const variable = `STRATA_MCP_${index}_${kind}_${slug(key).replace(/-/g, '_').toUpperCase()}`;
       env[variable] = String(value);
@@ -89,6 +98,24 @@ export function mcpRows(servers, env) {
     index += 1;
   }
   return rows;
+}
+
+/**
+ * What the chat says when a tool server was left out (one notice per reason). The sentences are interface copy: they are in every language's
+ * catalog (src/locales/tools-<lang>.json), and the {0} is the list of names exactly as the person wrote them.
+ */
+const SKIPPED_TEXT = {
+  name: 'These tool servers were left out because their names are not allowed: {0}. A name can have up to 32 letters, numbers, hyphens or underscores.',
+  address: 'These tool servers were left out because they have no program or web address: {0}.',
+  duplicate: 'These tool servers were left out because another one has almost the same name: {0}.',
+};
+export function mcpSkippedNotices(skipped) {
+  const out = [];
+  for (const why of Object.keys(SKIPPED_TEXT)) {
+    const names = (skipped ?? []).filter(s => s.why === why).map(s => String(s.name).slice(0, 40));
+    if (names.length) out.push({ code: `mcp-skipped-${why}-${names.join(',')}`.slice(0, 160), message: SKIPPED_TEXT[why].replace('{0}', names.join(', ')) });
+  }
+  return out;
 }
 
 const slug = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'x';
@@ -166,7 +193,7 @@ export function outputBudget(context, maxOutput = null) {
 /** What a local model, or an OpenAI-style server on this network, takes for the thinking level (see the comment where a local route is built). */
 const THINKING_COMPAT = { supportsStore: false, thinkingFormat: 'chat-template', chatTemplateKwargs: { enable_thinking: { $var: 'thinking.enabled' }, reasoning_effort: { $var: 'thinking.effort', omitWhenOff: true } } };
 
-export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null, searchMock = null }) {
+export function buildProfile({ local = [], connections = [], gate = true, tools = NO_TOOLS_SETTINGS, skillsDir = null, proxyBase = null, searchMock = null, defaultLocalId = null }) {
   const providers = {};
   const env = {};
   const routes = [];
@@ -202,6 +229,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
       api: 'openai-completions',
       baseURL: inst.baseUrl,
       apiKeyEnv: keyEnv,
+      // A long prompt read sends only SSE comments, which pi-ai's OpenAI client drops, so its 300 s stream-idle timer would cut the
+      // request five minutes in (#3623). 60 minutes is a backstop: serve ends a hung engine and the bridge's watchdog ends a lost turn.
+      streamIdleTimeoutMs: 60 * 60_000,
       // The Strata server reads the thinking level from `chat_template_kwargs` (enable_thinking, reasoning_effort) or from a top-level
       // reasoning_effort; a top-level `enable_thinking` (pi-ai's `qwen` format) is ignored, so the model went on thinking with the menu on Off.
       compat: THINKING_COMPAT,
@@ -257,9 +287,13 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     for (const m of conn.models) routes.push({ route, fp, kind: 'api', connectionId: conn.id, connectionName: conn.name, modelId: m.id, name: m.name || m.id, contextWindow: m.contextMax ?? ASSUMED_API_CONTEXT, ...(shaped ? { shaped } : {}) });
   });
 
-  const defaultRoute = routes.find(r => r.kind === 'local') ?? null;
+  // The model the chat really runs on is the default instance, not whichever one was loaded first (T5: with two models loaded, the tool servers of the
+  // first one were wired to a chat on the second).
+  const defaultInstance = local.find(i => i.id === defaultLocalId) ?? local[0] ?? null;
+  const defaultRoute = routes.find(r => r.kind === 'local' && r.instanceId === defaultInstance?.id) ?? routes.find(r => r.kind === 'local') ?? null;
   // One Harness, one set of tool servers: the default local model's.
-  const mcp = mcpRows({ ...(local[0]?.mcpServers ?? {}), ...(tools.servers ?? {}) }, mcpEnv);
+  const mcpSkipped = [];
+  const mcp = mcpRows({ ...(defaultInstance?.mcpServers ?? {}), ...(tools.servers ?? {}) }, mcpEnv, mcpSkipped);
   Object.assign(env, mcpEnv);
   // The person's own instruction and command tools come from the app's tool server; a command tool asks in Manual like any connected tool.
   const own = (kind, on) => on && tools.toolFile ? [{ id: `mcp-strata-${kind}`, name: '@deepseek-ai/dsh-mcp-client', config: { serverName: `strata-${kind}`, transport: 'stdio', command: process.execPath, args: [CUSTOM_TOOLS_SCRIPT, kind, tools.toolFile] } }] : [];
@@ -286,6 +320,8 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     // Manual asks before a change runs, so the person sees one Approve/Deny card and nothing has happened yet.
     // Its web question names the search service the person chose (a keyed one only when its key is saved), and the person's switch skips the question.
     ...(gate ? [{ insert: [{ id: 'strata-gate', name: GATE_PLUGIN, config: { web: { provider: SEARCH_NAMES[keyed ?? 'builtin'], skipAsk: tools.webWithoutAsking === true } } }] }] : []),
+    // Compaction decides from what the model server measured, and its summary requests always fit the window (plugins/strata-context.mjs).
+    { insert: [{ id: 'strata-context', name: CONTEXT_PLUGIN, config: {} }] },
     // Helper agents on a model the person names: every model the app can reach is allowed, and the plugin makes the choice forgiving (plugins/strata-models.mjs).
     ...(subagentRoutes.length ? [{ id: 'subagent-model-selection-settings', config: { enabled: true, allowedModels: subagentRoutes.map(r => ({ provider: r.provider, model: r.model })) } }] : []),
     ...(subagentRoutes.length ? [{ insert: [{ id: 'strata-models', name: MODELS_PLUGIN, config: { routes: subagentRoutes } }] }] : []),
@@ -309,7 +345,7 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
   // What the agent is offered (tool groups, web search, tool servers, the person's own tools) decides whether a running agent must be
   // restarted for the next message; the routes are compared separately (a changed context size alone does not restart it).
   const toolsSignature = createHash('sha256').update(JSON.stringify([mcp, ownRows, webRows, entries.find(e => e.id === 'preset-standard'), env.STRATA_SEARCH_KEY ?? '', mcpEnv])).digest('hex').slice(0, 16);
-  return { patch, env, routes, defaultRoute, signature, toolsSignature, shapeTargets };
+  return { patch, env, routes, defaultRoute, signature, toolsSignature, shapeTargets, mcpSkipped };
 }
 
 /** Find the route for a chat's model choice. */

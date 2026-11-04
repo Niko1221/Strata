@@ -12,12 +12,13 @@ import json
 import socket
 import sys
 import unittest
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import (ByteTokenizer, MockEngine, Service, allowed_hosts_of, host_allowed,  # noqa: E402
+from serve.server import (ByteTokenizer, MockEngine, Server, Service, allowed_hosts_of, host_allowed,  # noqa: E402
                           host_name, host_names_for, origin_allowed, serve)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,41 @@ class HostNames(unittest.TestCase):
             names = host_names_for("127.0.0.1", ["strata.example.com", "*"], ["https://chat.example.net"])
             self.assertTrue({"strata.example.com", "chat.example.net"} <= names)
             self.assertNotIn("*", names)
+
+
+class ListenAddress(unittest.TestCase):
+    def test_ipv4_address_family(self):
+        with Server(("127.0.0.1", 0), BaseHTTPRequestHandler, bind_and_activate=False) as s:
+            self.assertEqual(s.address_family, socket.AF_INET)
+
+    @unittest.skipUnless(socket.has_ipv6, "IPv6 is not available")
+    def test_ipv6_loopback(self):
+        for host in ("::1", "2001:db8::7"):
+            try:
+                with Server((host, 0), BaseHTTPRequestHandler, bind_and_activate=False) as s:
+                    self.assertEqual(s.address_family, socket.AF_INET6)
+            except OSError as e:
+                self.skipTest(f"IPv6 socket is not available: {e}")
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "</think>\n\nok", max_context=4096), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        try:
+            httpd = serve(svc, host="::", port=0)
+        except OSError as e:
+            self.skipTest(f"IPv6 loopback is not available: {e}")
+        try:
+            self.assertEqual(httpd.address_family, socket.AF_INET6)
+            c = http.client.HTTPConnection("::1", httpd.server_address[1], timeout=10)
+            try:
+                c.request("GET", "/health")
+                r = c.getresponse()
+                self.assertEqual(r.status, 200)
+                r.read()
+            finally:
+                c.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 class HostCheck(unittest.TestCase):

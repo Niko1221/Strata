@@ -53,19 +53,23 @@ std::vector<std::string> split(const std::string& s) {
 }
 
 // one expert blob in the GGUF form: gate rows, up rows (n_ff x n_embd each), down rows (n_embd x n_ff), from random
-// weights quantized by ggml-cpu (valid scales, as a real file has)
+// weights quantized by ggml (valid scales, as a real file has).  ggml_quantize_chunk, not the CPU traits' from_float:
+// ggml-cpu has no from_float for the i-quants (IQ3_S called a null pointer: an access violation on Windows)
 void make_blob(const cpu::NativeFmt& f, uint8_t* blob, std::mt19937& rng) {
     std::normal_distribution<float> nd(0.f, 0.02f);
     std::vector<float> row((size_t) std::max(kH, kFF));
-    const auto* tg = ggml_get_type_traits_cpu((ggml_type) f.gu_type);
-    const auto* td = ggml_get_type_traits_cpu((ggml_type) f.d_type);
+    const std::vector<float> imatrix((size_t) std::max(kH, kFF), 1.0f);
+    auto quant = [&](int type, uint8_t* dst, int64_t n) {
+        ggml_quantize_chunk((ggml_type) type, row.data(), dst, 0, 1, n,
+                            ggml_quantize_requires_imatrix((ggml_type) type) ? imatrix.data() : nullptr);
+    };
     for (int64_t r = 0; r < 2 * kFF; ++r) {
         for (int64_t i = 0; i < kH; ++i) row[(size_t) i] = nd(rng);
-        tg->from_float(row.data(), blob + (size_t) r * f.gu_row, kH);
+        quant(f.gu_type, blob + (size_t) r * f.gu_row, kH);
     }
     for (int64_t r = 0; r < kH; ++r) {
         for (int64_t i = 0; i < kFF; ++i) row[(size_t) i] = nd(rng);
-        td->from_float(row.data(), blob + f.down_off + (size_t) r * f.d_row, kFF);
+        quant(f.d_type, blob + f.down_off + (size_t) r * f.d_row, kFF);
     }
 }
 
@@ -123,16 +127,36 @@ int main(int argc, char** argv) {
             ha(kMaxT, std::vector<uint8_t>(cpu::kNativeHBytes));
         const void* act[kMaxT];
         const void* hq[kMaxT];
+        // a Q2_0 down takes the pool's own path (pool.cpp, run_split_multi_native and drain mode 6): the activation
+        // as an ActQ (act_quant_any) and Strata's Q2_0 rows (q2_rows_any), not ggml-cpu's Q2_0 dot
+        const bool q2_down = cpu::q2_native_kernels(f.d_type);
+        std::vector<cpu::ActQ> h2(q2_down ? kMaxT : 0);
+        const cpu::ActQ* a2[kMaxT] = {};
+        // a Q2_0 gate/up the same (pool.cpp mode 5): x as an ActQ, gate and up on q2_rows_any, then SwiGLU
+        const bool q2_gu = cpu::q2_native_kernels(f.gu_type);
+        std::vector<cpu::ActQ> x2(q2_gu ? kMaxT : 0);
+        const cpu::ActQ* ax[kMaxT] = {};
         for (int t = 0; t < kMaxT; ++t) {
             std::vector<float> x(kH), h(kFF);
             for (auto& v : x) v = nd(rng);
             for (auto& v : h) v = 0.1f * nd(rng);
-            cpu::native_quant_act(f, x.data(), xa[t].data());
-            cpu::native_quant_h(f, h.data(), ha[t].data());
+            if (q2_gu) {
+                cpu::act_quant_any(x.data(), (int) kH, x2[(size_t) t]);
+                ax[t] = &x2[(size_t) t];
+            } else {
+                cpu::native_quant_act(f, x.data(), xa[t].data());
+            }
+            if (q2_down) {
+                cpu::act_quant_any(h.data(), (int) kFF, h2[(size_t) t]);
+                a2[t] = &h2[(size_t) t];
+            } else {
+                cpu::native_quant_h(f, h.data(), ha[t].data());
+            }
             act[t] = xa[t].data();
             hq[t] = ha[t].data();
         }
-        std::printf("\n%s: %zu experts of %.3f MB (%.0f MB)\n", pair.c_str(), E, f.bytes / 1e6, E * (double) f.bytes / 1e6);
+        std::printf("\n%s: %zu experts of %.3f MB (%.0f MB)%s%s\n", pair.c_str(), E, f.bytes / 1e6, E * (double) f.bytes / 1e6,
+                    q2_gu ? ", Q2_0 gate/up" : "", q2_down ? ", Q2_0 down on Strata's rows (the pool's path)" : "");
         for (int nt : nts) {
             for (int T : threads) {
                 if (T < 1) continue;
@@ -141,6 +165,11 @@ int main(int argc, char** argv) {
                     std::atomic<size_t> next{0};
                     auto work = [&] {
                         std::vector<float> ffb((size_t) kMaxT * kFF), outb((size_t) kMaxT * kH);
+                        std::vector<float> gb(q2_gu ? (size_t) kMaxT * kFF : 0), ub(q2_gu ? (size_t) kMaxT * kFF : 0);
+                        float* gp[kMaxT] = {};
+                        float* up[kMaxT] = {};
+                        if (q2_gu)
+                            for (int t = 0; t < kMaxT; ++t) { gp[t] = &gb[(size_t) t * kFF]; up[t] = &ub[(size_t) t * kFF]; }
                         float* ff[kMaxT];
                         float* out[kMaxT];
                         for (int t = 0; t < kMaxT; ++t) { ff[t] = &ffb[(size_t) t * kFF]; out[t] = &outb[(size_t) t * kH]; }
@@ -149,8 +178,19 @@ int main(int argc, char** argv) {
                             const size_t e = next.fetch_add(1);
                             if (e >= E) break;
                             const uint8_t* blob = blobs + e * f.bytes;
-                            cpu::native_gu_rows(f, blob, act, nt, ff, 0, (int) kFF);
-                            cpu::native_down_rows(f, blob, hq, nt, out, 0, (int) kH);
+                            if (q2_gu) {
+                                cpu::q2_rows_any(blob, f.gu_row, (int) (kH / 64), ax, nt, gp, 0, (int) kFF);
+                                cpu::q2_rows_any(blob + f.up_off, f.gu_row, (int) (kH / 64), ax, nt, up, 0, (int) kFF);
+                                for (int t = 0; t < nt; ++t)
+                                    for (int64_t r = 0; r < kFF; ++r)
+                                        ff[t][r] = (gp[t][r] / (1.f + std::exp(-gp[t][r]))) * up[t][r];
+                            } else {
+                                cpu::native_gu_rows(f, blob, act, nt, ff, 0, (int) kFF);
+                            }
+                            if (q2_down)
+                                cpu::q2_rows_any(blob + f.down_off, f.d_row, (int) (f.n_ff / 64), a2, nt, out, 0, (int) kH);
+                            else
+                                cpu::native_down_rows(f, blob, hq, nt, out, 0, (int) kH);
                         }
                         volatile float sink = outb[0] + ffb[0];
                         (void) sink;

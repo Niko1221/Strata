@@ -1,4 +1,5 @@
 #include "strata/core/native_head.hpp"
+#include "strata/core/spill_gate.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -7,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 
@@ -20,9 +22,11 @@ void NativeHead::unload() {
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
     if (weights_) strata::kernels::native_q8_0_sm60_release(weights_);
     if (scratch_) cudaFree(scratch_);
-    if (weights_) cudaFree(weights_);
+    if (host_) cudaFreeHost(host_);   // the mapped-host fallback (weights_ is its device alias)
+    else if (weights_) cudaFree(weights_);
     scratch_ = nullptr;
     weights_ = nullptr;
+    host_ = nullptr;
 }
 
 bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {
@@ -53,19 +57,46 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         }
         void* weights = nullptr;
         void* scratch = nullptr;
-        cudaError_t status = cudaMalloc(&weights, bytes);
+        void* host = nullptr;
+        // SHORT OF VRAM: the head in mapped pinned host memory.  The head (about 0.4 GiB) is the one buffer a card that holds its sessions and weights but not this can
+        // spill whole; every logits row then reads it over PCIe (about 18 ms per row at 28 GB/s), so decode is slower, but the start works.  Taken only when the
+        // allocation in VRAM fails (or STRATA_HEAD_HOST=1 asks for it); the GEMV kernels read the same pointer either way.  Q5_K and the plain MMVQ types: the
+        // repacked Q6_K / SM60 layouts rewrite the weights in place and stay in VRAM.
+        const bool ask_host = std::getenv("STRATA_HEAD_HOST") != nullptr;
+        cudaError_t status = ask_host ? cudaErrorMemoryAllocation : cudaMalloc(&weights, bytes);
+        bool discrete = false;
+        { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) == cudaSuccess && cudaGetDeviceProperties(&pr, d) == cudaSuccess) discrete = strata::spill_allowed(strata::kSpillMetalBuild, pr.integrated != 0); else (void) cudaGetLastError(); }
+        if (status != cudaSuccess && discrete && std::getenv("STRATA_HEAD_HOST_OFF") == nullptr && !strata::kernels::native_q6_k_packed_enabled()) {
+            (void) cudaGetLastError();
+            void* hp = nullptr;
+            void* dp = nullptr;
+            if (cudaHostAlloc(&hp, bytes, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess && cudaHostGetDevicePointer(&dp, hp, 0) == cudaSuccess) {
+                std::memcpy(hp, gguf.tensor_data(*tensor), bytes);
+                host = hp;
+                weights = dp;
+                status = cudaSuccess;
+                std::fprintf(stderr, "strata generate: short of GPU memory: the output head (%llu MiB) stays in pinned host memory and is read over PCIe for every logits row: "
+                                     "decode is slower%s", (unsigned long long) (bytes >> 20), "\n");
+            } else {
+                if (hp) cudaFreeHost(hp);
+                (void) cudaGetLastError();
+            }
+        }
         if (status == cudaSuccess)
             status = cudaMalloc(&scratch, strata::kernels::native_q8_1_bytes((int) n_in, 1));
         strata::platform::advise_willneed(gguf.tensor_data(*tensor), bytes);
-        if (status == cudaSuccess)
+        if (status == cudaSuccess && host == nullptr)
             status = cudaMemcpy(weights, gguf.tensor_data(*tensor), bytes, cudaMemcpyHostToDevice);
         if (status != cudaSuccess) {
+            if (host) cudaFreeHost(host);
+            weights = host ? nullptr : weights;
             if (scratch) cudaFree(scratch);
             if (weights) cudaFree(weights);
             err = std::string("native head upload: ") + cudaGetErrorString(status);
             return false;
         }
         weights_ = weights;
+        host_ = host;
         { int d = -1; if (cudaGetDevice(&d) == cudaSuccess) device_ = d; }
         scratch_ = scratch;
         bytes_ = bytes;
@@ -81,6 +112,28 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         err = std::string("native head: ") + error.what();
         return false;
     }
+}
+
+bool NativeHead::to_host(std::string& err) {
+    if (weights_ == nullptr || host_ != nullptr || (type_ == 14 && strata::kernels::native_q6_k_packed_enabled()) || (type_ == 8 && std::getenv("STRATA_Q8_SM60") != nullptr)) return false;   // (repacked in place: those stay in VRAM)
+    { int d = 0; cudaDeviceProp pr{}; if (cudaGetDevice(&d) != cudaSuccess || cudaGetDeviceProperties(&pr, d) != cudaSuccess || !strata::spill_allowed(strata::kSpillMetalBuild, pr.integrated != 0)) { (void) cudaGetLastError(); return false; } }   // (Q6_K / Q8_0 may be repacked in place: those stay)
+    void* hp = nullptr;
+    void* dp = nullptr;
+    if (cudaHostAlloc(&hp, bytes_, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        (void) cudaGetLastError();
+        err = "native head: no pinned host memory for the head";
+        return false;
+    }
+    if (cudaHostGetDevicePointer(&dp, hp, 0) != cudaSuccess || cudaMemcpy(hp, weights_, bytes_, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        (void) cudaGetLastError();
+        cudaFreeHost(hp);
+        err = "native head: the head could not be moved to host memory";
+        return false;
+    }
+    cudaFree(weights_);
+    weights_ = dp;
+    host_ = hp;
+    return true;
 }
 
 bool NativeHead::run(const float* mixed, float* logits, void* stream, std::string& err) const {
@@ -146,6 +199,34 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
             return false;
         }
         strata::platform::advise_willneed(gguf.tensor_data(*t), bytes_);   // copied out of the mapping below
+        // STRATA_EMBED_VRAM=1: the table in the current device's VRAM instead of mapped host memory. The same
+        // bytes, read by the same gather kernels through dev_ (bitwise the same rows); what changes is where a
+        // prompt's scattered row reads go: over a PCIe Gen2 x4 link they cost more than the table's size in VRAM
+        // is worth. Taken only with the table plus 512 MiB free; otherwise, or when the upload fails, the mapped
+        // placement below is used as before (and the fallback is said).
+        if (const char* ev = std::getenv("STRATA_EMBED_VRAM"); ev != nullptr && ev[0] == '1') {
+            size_t free_b = 0, total_b = 0;
+            const bool have_free = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
+            void* d = nullptr;
+            if (have_free && (uint64_t) free_b > bytes_ + ((uint64_t) 512 << 20) &&
+                cudaMalloc(&d, bytes_) == cudaSuccess) {
+                if (cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) == cudaSuccess) {
+                    std::fprintf(stderr, "strata: native embedding: STRATA_EMBED_VRAM=1: %llu MiB placed in VRAM "
+                                         "(%llu MiB were free)\n",
+                                 (unsigned long long) (bytes_ >> 20), (unsigned long long) (free_b >> 20));
+                    dev_ = d;   // host_ stays null: the destructor frees dev_
+                    type_ = (int) t->type;
+                    n_embd_ = n_embd;
+                    n_vocab_ = n_vocab;
+                    return true;
+                }
+                (void) cudaFree(d);
+            }
+            (void) cudaGetLastError();
+            std::fprintf(stderr, "strata: native embedding: STRATA_EMBED_VRAM=1 not taken (%llu MiB free, the table "
+                                 "needs %llu MiB plus 512 MiB): kept in mapped host memory\n",
+                         (unsigned long long) (have_free ? free_b >> 20 : 0), (unsigned long long) (bytes_ >> 20));
+        }
         cudaError_t host_err = cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable);
         if (host_err != cudaSuccess) {
             // Under WSL2 the driver's pinned/mapped host budget (~1 GiB) can be spent by the GPU contexts

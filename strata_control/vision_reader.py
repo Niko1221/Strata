@@ -33,11 +33,13 @@ GPU_READERS = (GPU_READER, SYCL_READER)       # the GPU reader of an engine fold
 #: Owner decision 2026-10-18: pictures are ON by default, and the reader runs on the CPU for a card under 24 GB (the GPU reader keeps about
 #: 1-1.4 GB of VRAM that the experts would use: a few % of decode, more on some PCs, #2406) and on the GPU for 24 GB and above - on every make
 #: of card.  A person can switch it per model (--vision gpu / --vision cpu, the Pictures step); what was asked for is kept.
+#: Owner rule 2026-11-01: the reader lives in RAM, not VRAM.  The GPU reader of an NVIDIA card with one GPU is therefore started by the first picture and
+#: stopped when idle (serve/server.py apply_vision_defaults), with the CPU reader (the same program without --gpu) when the card has no room.
 GPU_MIN_VRAM_GB = 23.5
 
 #: The one exception to that rule.  An Intel Arc of 24 GB or more keeps the CPU reader by default: the SYCL GPU reader works (tested on an A750,
 #: forced with --vision gpu: 0.16 s a picture against 1.7 s on the CPU, embeddings cosine >= 0.995 to the CPU reader's) but it needs the oneAPI
-#: runtime on the PC and has not run on a 24 GB+ card (the B70 is gone).  --vision gpu asks for it.  Set True when a 24 GB+ Arc has run it.
+#: runtime on the PC and has not run on a 24 GB+ card (an Arc Pro B70 is allowed since 2026-10-22; the CPU reader is what it gets).  --vision gpu asks for it.  Set True when a 24 GB+ Arc has run it.
 INTEL_GPU_READER_BY_DEFAULT = False
 
 
@@ -151,10 +153,21 @@ def vision_section(reader: Reader, base: dict) -> dict:
     return out
 
 
-def cpu_fallback(vision_cfg: dict) -> dict | None:
-    """The same section for the CPU reader, when the GPU reader has one to fall back on; None otherwise."""
-    if not vision_cfg.get("gpu") or not vision_cfg.get("cpu_exe"):
+def cpu_fallback(vision_cfg: dict, same_program: bool = False) -> dict | None:
+    """The same section for the CPU reader, when the GPU reader has one to fall back on; None otherwise.  AMD and Intel name it (`cpu_exe`);
+    the NVIDIA reader (`strata-vision`) is the CPU reader too, without --gpu - `same_program` takes that one (the on-demand reader's
+    start, which must read the picture whatever the card has left)."""
+    if not vision_cfg.get("gpu"):
+        return None
+    cpu = vision_cfg.get("cpu_exe")
+    if not cpu and same_program:
+        # the NVIDIA reader and the Mac's are one program: without --gpu it reads on the CPU (same picture tokens, so the same answers)
+        exe = str(vision_cfg.get("exe") or "")
+        if Path(exe).name.lower() not in (CPU_READER, CPU_READER + ".exe"):
+            return None
+        cpu = exe
+    if not cpu:
         return None
     out = {k: v for k, v in vision_cfg.items() if k not in ("cpu_exe", "elastic", "elastic_mib", "elastic_idle_s")}
-    out["exe"], out["gpu"] = vision_cfg["cpu_exe"], False
+    out["exe"], out["gpu"] = cpu, False
     return out

@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from strata_control import calibration, tune_apply, tuning  # noqa: E402
 from strata_control.profiles import ProfileError  # noqa: E402
+from strata_control.targets import host_platform  # noqa: E402
 
 
 class BooleanFlags(unittest.TestCase):
@@ -83,6 +84,7 @@ class CalibrateWithoutAFullFolder(unittest.TestCase):
                     self.assertTrue(calibration._tools_available())
 
 
+@unittest.skipIf(host_platform() == "linux-aarch64", "there is no HIP engine for arm64 Linux (BACKEND_MATRIX)")
 class HipPackageForAnotherCard(unittest.TestCase):
     """A HIP package built for gfx1200/gfx1201 must not be chosen for a Phoenix iGPU (gfx1103): P2006 resolved it as usable."""
 

@@ -10,8 +10,9 @@
 #   MODEL         model size, e.g. IQ3_XXS, Q2_0 (empty: Strata picks one for this card and says so)
 #   FAMILY        model family when a size is offered by several (qwen, swift, coder, ...)
 #   MODEL_PATH    GGUF files you already have, a folder or one .gguf, inside the container (mount it read-only)
+#   ALLOW_DOWNLOAD  1: go on and download the model although model files of the older layout (/data/models) were left unread (default: stop)
 #   CONTEXT       32k, 64k, 128k, 256k or a number of tokens
-#   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card)
+#   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card; DeepSeek: one at a time)
 #   VISION        off | on | gpu | cpu  (pictures; the picture reader file is downloaded with the model)
 #   KV            int8 | q4_0 | k8v4 | fp16  (conversation memory format)
 #   GPU / GPUS    card numbers, e.g. 0 or 0,1 (empty or "all": the engine's choice)
@@ -37,6 +38,17 @@ say()  { printf '%s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*" >&2; }
 die()  { printf '[X] %s\n' "$*" >&2; exit "${2:-1}"; }
 phase() { printf '%s\n' "$1" > "$PHASE_FILE" 2>/dev/null || true; }
+
+# Model files of the older layout that this image did not move (a folder you mounted at /data/models, or a move that failed) are not read here, and
+# the start would download the model again. Say so and stop instead (#3421); ALLOW_DOWNLOAD=1 goes on, with the same text as a warning.
+# $1: MODEL_PATH (when it is set the files are named and nothing is lost), $2: the older models folder.
+legacy_models_guard() {
+  [ -n "$1" ] && return 0
+  stuck=$(find "$2" -maxdepth 3 -name '*.gguf' 2>/dev/null | head -1)
+  [ -n "$stuck" ] || return 0
+  msg="There are model files in ${stuck%/*} (the older image's place). This image keeps its models in /data/Strata-data/models and does not read them there, so it would download the model again (tens of GB). To use them: mount that folder read-only and set MODEL_PATH to the folder that holds the shards (docs/DOCKER.md, \"Files you already have\"), or put them in /data/Strata-data/models/<model folder>/. To download anyway: set ALLOW_DOWNLOAD=1. Nothing was downloaded."
+  if [ "${ALLOW_DOWNLOAD:-0}" = "1" ]; then warn "$msg Going on, because ALLOW_DOWNLOAD=1."; else die "$msg" 2; fi
+}
 
 # ---- other commands: `docker run image strata ...`, `docker run image sh`
 if [ "$#" -gt 0 ] && [ "$1" != "run" ] && [ "$1" != "serve" ]; then
@@ -174,6 +186,7 @@ if [ -n "$model_path" ]; then
     die "MODEL_PATH=$model_path holds no .gguf files. Mount the folder with the model's shards (the -0000N-of-0000M.gguf files). Nothing was downloaded." 2
   fi
 fi
+legacy_models_guard "$model_path" "${STRATA_LEGACY_MODELS:-/data/models}"
 [ -n "${MODEL:-}" ]       && { set -- "$@" --model "$MODEL"; have=1; }
 [ -n "${FAMILY:-}" ]      && { set -- "$@" --family "$FAMILY"; have=1; }
 [ -n "$model_path" ]      && { set -- "$@" --model-path "$model_path"; have=1; }
@@ -221,6 +234,7 @@ if [ -n "$tune_mode" ] && [ "$tune_mode" != "skip" ]; then
     say "This preset is already tuned; keeping the tuned settings (set RETUNE=1 to tune again)."
   else
     set -- "$@" --tune "$tune_mode"; have=1
+    [ "${RETUNE:-0}" = "1" ] && set -- "$@" --retune     # without it the launcher sees a tuned preset and measures nothing (#4779)
     say "Tuning is on (TUNE=$tune_mode): the first start takes longer (up to about $([ "$tune_mode" = quick ] && echo 20 || echo 120) minutes), once."
   fi
 fi

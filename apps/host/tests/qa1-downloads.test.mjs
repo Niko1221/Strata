@@ -103,6 +103,11 @@ test('the recommended four come first; the others are what the "More versions" l
   assert.deepEqual(lib.recommendedVersions([v('qwen36', 'UD-Q4_K_XL')]), [], 'Qwen3.6 has no recommended set: its versions are all shown');
 });
 
+test("the DeepSeek versions have their names, the ISTA-DAS Coder under the owner's spelling", () => {
+  lib.setTranslationLanguage('en');
+  assert.deepEqual(['IST-DAS-1.75bpw', 'IST-DAS-2.00bpw', 'IST-DAS-2.25bpw', 'ISTA-DAS-Coder'].map(m => lib.nativeVersionLabel(m)), ['Smallest', 'Balanced', 'Best quality', 'ISTA-DAS Coder']);
+});
+
 test('the three NVFP4 versions have clear names and one line that tells them apart', () => {
   lib.setTranslationLanguage('en');
   const names = ['NVFP4', 'NVFP4-NVIDIA', 'NVFP4-QAD'].map(m => lib.nativeVersionLabel(m));
@@ -115,7 +120,7 @@ test('the three NVFP4 versions have clear names and one line that tells them apa
   assert.match(lines[2], /faster on short prompts/);
   assert.equal(lib.versionNote('IQ3_S'), '');
   assert.equal(lib.nativeShortName('nvfp4-nvfp4-nvidia'), 'NVFP4 (NVIDIA’s version)');
-  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko']) {
+  for (const language of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) {
     lib.setTranslationLanguage(language);
     const local = ['NVFP4', 'NVFP4-NVIDIA', 'NVFP4-QAD'].map(m => lib.nativeVersionLabel(m));
     assert.equal(new Set(local).size, 3, `${language}: three different names`);
@@ -144,13 +149,16 @@ test('4d: picture reading is on unless the person turned it off (no saved choice
     assert.equal(first().visionEnabled, true);
   } finally { await f.cleanup(); }
   const screen = readSource(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
-  assert.match(screen, /setVision\(installed\.visionEnabled === false \? 'no'/);
-  assert.match(screen, /else\s+setVision\('yes'\)/, 'a version that is not downloaded starts with Read pictures on');
+  // the rule lives in lib/pictures-choice.ts (GUI-FB2 item 4); the page opens a version with it the first time it sees it installed
+  const choice = readSource(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8');
+  assert.match(choice, /installed\.visionEnabled === false && installed\.visionPrepared !== false\) return 'no'/);
+  assert.match(screen, /shownVision\(known, installed\)/);
+  assert.match(screen, /shownVision\(visionPicks\.current\.get\(selectedSize\.id\), undefined\)/, 'a version that is not downloaded starts with Read pictures on');
 });
 
 test('no recognised engine: the app still downloads, warns in the card, and loading says it with the next step', async () => {
   const { ENGINE_NOT_RECOGNISED } = await import('../server/native-control.mjs');
-  assert.match(ENGINE_NOT_RECOGNISED, /Settings → Engine/);
+  assert.match(ENGINE_NOT_RECOGNISED, /Settings → About/);
   assert.match(ENGINE_NOT_RECOGNISED, /didn’t recognise an engine/);
   const source = readSource(new URL('../server/native-control.mjs', import.meta.url), 'utf8');
   assert.equal((source.match(/ENGINE_NOT_RECOGNISED\+/g) ?? []).length, 2, 'both load paths use it');
@@ -159,7 +167,7 @@ test('no recognised engine: the app still downloads, warns in the card, and load
   assert.match(models, /<EngineWarning native=\{native\}\/>/);
   assert.match(guided, /<EngineWarning native=\{native\}\/>/);
   const warn = readSource(new URL('../src/components/EngineWarning.tsx', import.meta.url), 'utf8');
-  assert.match(warn, /The model will download, but it may not run until the right engine is installed \(Settings → Engine\)\./);
+  assert.match(warn, /The model will download, but it may not run until the right engine is installed \(Settings → About\)\./);
   // the install is not refused for a missing engine (only the engine-minimum refusal for a version that is too old stays)
   assert.doesNotMatch(source.slice(source.indexOf('async function install(job,args)'), source.indexOf('function terminate')), /engine\.usable/);
 });

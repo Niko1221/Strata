@@ -35,6 +35,29 @@ export function relTime(iso: string | number | Date): string {
         return `${days}d ago`;
     return new Date(iso).toLocaleDateString(localeTag(), { month: 'short', day: 'numeric' });
 }
+/**
+ * The same age without the words: "9m", "3h", "5d".
+ *
+ * A sidebar row has no width to spare, and "26m ago" cost a third of the space a
+ * chat title needed (the title was the thing being cut). The unit carries the
+ * meaning on its own; the sentence form stays everywhere there is room for it.
+ */
+export function relTimeShort(iso: string | number | Date): string {
+    const then = new Date(iso).getTime();
+    const diff = Date.now() - then;
+    if (diff < 45000)
+        return 'now';
+    const mins = Math.round(diff / 60000);
+    if (mins < 60)
+        return `${mins}m`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24)
+        return `${hours}h`;
+    const days = Math.round(hours / 24);
+    if (days < 7)
+        return `${days}d`;
+    return new Date(iso).toLocaleDateString(localeTag(), { month: 'short', day: 'numeric' });
+}
 export function duration(ms: number): string {
     if (ms < 1000)
         return `${Math.round(ms)} ms`;
@@ -128,3 +151,6 @@ export function formatModelName(model: {
 export function userError(message: string): string {
     return message.replace(/^\s*Fixture:\s*/i, '').replace(/^./, c => c.toUpperCase());
 }
+
+/** Decimal megabytes (1 MB = 1,000,000 bytes, at least 1): the same figure as the Terminal and the release page. The only size helper in MB; no binary units. */
+export const megabytes = (bytes: number) => Math.max(1, Math.round(bytes / 1_000_000));

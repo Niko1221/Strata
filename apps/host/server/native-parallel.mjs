@@ -19,6 +19,8 @@
  */
 
 export const DEFAULT_SLOTS = 4;
+/** What the person is told when DFlash2 is chosen and nobody picked a number of requests (strata_control/drafting.py ONE_REQUEST_NOTE). */
+export const DFLASH2_NOTE = 'DFlash2 answers one request at a time, so Strata set this model to one request at a time.';
 /** The most the engine's batch window holds without grouped MTP. */
 export const MAX_SLOTS = 8;
 /**
@@ -46,7 +48,11 @@ export const FIRST_CARD_OTHER_GB = 6.9;
  * phaseA-tests/notes-021-settings.md). With "Draft layer (MTP)" off in Expert settings (`"mtp": false`) the engine does not load it, so
  * the card has that much more cache and the slots may use it.
  */
-export const MTP_VRAM_GB = 1.0;
+export const MTP_VRAM_GB = 1.08;
+/** Graphics memory of DFlash2 alone, with the MTP layer not loaded beside it (RESULTS-DF2MEM.md: 890 MiB; the MTP layer 1082 MiB). Fit, plan and slot estimates use the drafter that is chosen. */
+export const DFLASH2_VRAM_GB = 0.89;
+/** The same with the converted pack (the selector's codebooks as Q4_0 rows, 715 MiB; strata_control/drafting.py DRAFTER_MIB "dflash2_selq4"): `capabilities.dflash2Selq4` says it is the one in use. */
+export const DFLASH2_SELQ4_VRAM_GB = 0.72;
 export const NEXT_CARD_OTHER_GB = 2.0;
 /**
  * `--batch-mtp` lets each slot verify draft tokens. Where it pays and where it does not (all measured):
@@ -95,9 +101,10 @@ export function engineFacts(config = {}) {
  * @param {object} [input.values]          what the person set for this load (Expert mode's "Concurrent requests")
  * @param {object} [input.hardware]        the host's hardware read (`gpus[{index, vram_gb}]`)
  * @param {number} [input.requested]       the default to aim for
+ * @param {string} [input.drafter]         the drafter this load runs (resolveDrafter): dflash2 answers one request at a time
  * @returns {{slots:number, batchMtp:boolean, explicit:boolean, requested:number, note:string|null, slotGb:number}}
  */
-export function chooseParallel({ config = {}, values = {}, hardware = null, requested = DEFAULT_SLOTS }) {
+export function chooseParallel({ config = {}, values = {}, hardware = null, requested = DEFAULT_SLOTS, drafter = null }) {
   const facts = engineFacts(config);
   const slot = slotGb({ context: facts.context, kv: facts.kv, family: facts.family });
   const chosen = values.parallel !== undefined && values.parallel !== null ? Number(values.parallel)
@@ -108,12 +115,14 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
     const wantMtp = (values.batchMtp ?? config.batchMtp) === true && !facts.batchMtp && facts.mtp && facts.gpus.length === 1 && (slots ?? 0) > 1;
     return { slots: slots ?? 0, batchMtp: wantMtp, explicit: true, requested, note: null, slotGb: slot };
   }
+  // DFlash2 chosen on purpose: it answers one request at a time, and request slots would keep the MTP (the engine says "not --batch"). Nobody chose a number here, so one.
+  if ((drafter ?? ((values.drafting ?? config.drafting) === 'dflash2' ? 'dflash2' : null)) === 'dflash2') return { slots: 1, batchMtp: false, explicit: false, requested, note: DFLASH2_NOTE, slotGb: slot };
   const cards = (hardware?.gpus ?? []).filter(g => facts.gpus.includes(g.index)).map(g => Number(g.vram_gb)).filter(n => Number.isFinite(n) && n > 0);
   // Without a hardware read nothing can be sized: one at a time is the safe default (a number can still be chosen).
   if (!cards.length) return { slots: PARALLEL_POLICY === 'fixed' ? requested : 1, batchMtp: false, explicit: false, requested, note: null, slotGb: slot };
   const total = cards.reduce((a, b) => a + b, 0);
   const oneCard = facts.gpus.length === 1 && cards.length === 1;
-  const soloCache = Math.max(0, total - (FIRST_CARD_OTHER_GB - (facts.mtp ? 0 : MTP_VRAM_GB)) - NEXT_CARD_OTHER_GB * (cards.length - 1));
+  const soloCache = Math.max(0, total - (FIRST_CARD_OTHER_GB - MTP_VRAM_GB + (facts.mtp ? MTP_VRAM_GB : 0)) - NEXT_CARD_OTHER_GB * (cards.length - 1));
   let slots = requested;
   if (PARALLEL_POLICY === 'fit') while (slots > 1 && slots * slot > CACHE_LOSS_SHARE * soloCache) slots -= 1;
   const note = slots >= requested ? null

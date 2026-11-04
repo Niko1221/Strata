@@ -11,7 +11,7 @@ setup.py's, unchanged.  What is replaced:
     sized from sysfs;
   - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
     sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
-  - pictures (on by default on an Alchemist card, see pictures_on_by_default): read by the portable CPU reader (`strata-vision`, the program the
+  - pictures (on by default on every Arc card, see pictures_on_by_default): read by the portable CPU reader (`strata-vision`, the program the
     AMD packages carry beside their engine, compiled here by setup's own step) on the host; it hands the image embeddings to the engine through
     /dev/shm, which strata-sycl.sh shares with the container.  The reader choice is strata_control/vision_reader.py's one rule (CPU reader under
     24 GB of VRAM); an Arc of 24 GB or more also keeps the CPU reader unless --vision gpu asks for the SYCL one (`strata-vision-sycl`, compiled
@@ -35,7 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
-from strata_control import vram_fit  # noqa: E402
+from strata_control import intel_spec, vram_fit  # noqa: E402
 
 # The SYCL engine has the q4-Lloyd 32-level arms but no q4lm8*/exact-cell window (sycl/src/program/generate.cpp
 # rejects them): keep setup's third KV choice out of this backend's menu and fail early if a config asks for it.
@@ -48,7 +48,7 @@ MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
 # "Intel Corporation Device [8086:e223]"), so the sysfs id is the reliable signal and the name table is ours.
-INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
+INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e222": ("Arc Pro B65", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
              "e20b": ("Arc B580", 12.0),
              "e20c": ("Arc B570", 10.0), "e212": ("Arc B50", 16.0),
              "56a0": ("Arc A770", 16.0), "56a1": ("Arc A750", 8.0), "56a2": ("Arc A580", 8.0),
@@ -137,16 +137,26 @@ def drop(args, name, value=False):
 # Pictures on an Intel Arc: the CPU reader encodes on the host and the embeddings reach the engine through /dev/shm.  Tested end to end
 # on the Arc A750 (i915, Alchemist; 2026-10-19, docs/INTEL.md): 47 picture requests (shapes, text, two pictures in one request, a picture in the
 # history, text after pictures) through the CPU reader and the same through the SYCL GPU reader, in the container and outside it, no GPU fault.
-# The first picture request on the Arc Pro B70 (Battlemage, xe, engine 0.1.45 SYCL, IQ3_S, 2026-10-19) hung the GPU with the CPU reader: an xe
-# engine reset (ccs + bcs) and "Fault response: Unsuccessful -EINVAL", the request ended 503.  That fault is in the engine on xe and has not been
-# looked at again (the B70 is gone), so a Battlemage card keeps pictures opt-in (--vision yes) and is told so.
-PICTURES_ON_BY_DEFAULT_IDS = ALCHEMIST_IDS
+# Owner decision 2026-10-22: an Arc B-series (Battlemage, xe) card is allowed to run like any Arc, pictures included.  The first picture request on the
+# Arc Pro B70 (engine 0.1.45 SYCL, IQ3_S, 2026-10-19) hung the GPU with the CPU reader: an xe engine reset (ccs + bcs) and "Fault response:
+# Unsuccessful -EINVAL", the request ended 503.  That fault has not been looked at again (the B70 is gone), so it is a known risk, not a refusal:
+# pictures are on, the CPU reader is kept, and the person is told once that the card is new to Strata and how to report a problem.
+PICTURES_ON_BY_DEFAULT_IDS = ALCHEMIST_IDS | frozenset(INTEL_ARC)      # every Arc card setup knows
 
 
 def pictures_on_by_default(driver: str, devid: str = "") -> bool:
-    """Pictures are on in setup's default for an Alchemist card (i915, or the A-series on xe), which has run them; a Battlemage card
-    (xe, the B-series) keeps them opt-in until the first-picture GPU fault of the B70 is understood."""
-    return driver == "i915" or devid in PICTURES_ON_BY_DEFAULT_IDS
+    """Pictures are on in setup's default for every Arc card (they were opt-in on a B-series card until 2026-10-22)."""
+    return True
+
+
+def is_b_series(driver: str, devid: str = "") -> bool:
+    """A Battlemage (B-series) card: on xe and not an Alchemist id (an unknown id on xe counts as one: it is newer than the A-series)."""
+    return driver != "i915" and devid not in ALCHEMIST_IDS
+
+
+B_SERIES_LINE = ("This Intel Arc B-series card is new to Strata and we have not tested it ourselves, so pictures and long answers may fail on it. "
+                 "If something fails, run again with --vision no to turn pictures off, and tell us at https://github.com/Niko1221/Strata/issues "
+                 "(say it is a B-series card and attach the engine log).")
 
 
 READER_DIR = ROOT / "engine-sycl"    # the folder setup treats as the engine's: BUILD.json and, for pictures, the CPU reader strata-vision
@@ -278,8 +288,8 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     A reserve the user asked for (--vram-reserve-mib) is kept.
 
     0.2.2: a model that does not fit the card at the default context (Gyro-M on the 8 GB A750 is ~750 MiB short of one cache
-    slot) gets a context down the ladder 32K -> 16K -> 8K, a smaller prompt chunk and a lower reserve until it does
-    (strata_control/vram_fit.py); one plain line per change goes to `fit_notes`.  A config that fits comes back as it was.
+    slot) gets a smaller prompt chunk and then a lower reserve until it does, never a smaller context (owner, 2026-11-02;
+    strata_control/vram_fit.py); one plain line per change goes to `fit_notes`.  A config that fits comes back as it was.
     `ctx_asked` / a reserve without `auto_reserve`: the user chose it, it is kept.  `fit=False`: a layer split.
 
     An Alchemist card (the A-series, i915 or xe) has no FP64 hardware, so its config carries the driver's FP64
@@ -507,6 +517,12 @@ def install(argv) -> None:
                       f"{sum(cards):.0f} GB of VRAM: the config sets STRATA_VERIFY_NO_HOST=0, so the CPU computes the "
                       "experts the later card does not hold instead of the start being refused (#1980). Set it to 1 "
                       "in the config's env if your cards hold everything; a smaller model fits fully (docs/INTEL_ARC.md)")
+            # exactly two Battlemage cards: --spec 2 (the engine pipelines the two cards' windows by default there and then answers
+            # as a 2-token window whatever --spec says; strata_control/intel_spec.py).  The person's own --spec always wins.
+            cards_used = [intel[i] for i in gsel if isinstance(i, int) and 0 <= i < len(intel)]
+            spec_note = intel_spec.apply_to_config(cfg, cards_used)
+            if spec_note:
+                S.say("  " + spec_note)
         need = S.MODELS.get(model, {}).get("ram_gb", 0)
         sel_alch = sel["driver"] == "i915" or sel.get("devid") in ALCHEMIST_IDS
         if sel_alch and need and real_ram < need:
@@ -544,10 +560,8 @@ def install(argv) -> None:
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]
-    if "--vision" not in argv and not pictures_on_by_default(intel[0]["driver"], intel[0].get("devid", "")):
-        sys.argv += ["--vision", "none"]
-        S.say("  Pictures are off by default on this card (Arc Pro B70 test of 2026-10-19: the first picture reset the GPU, docs/INTEL.md): "
-              "--vision yes turns them on")
+    if is_b_series(intel[0]["driver"], intel[0].get("devid", "")):
+        S.say("  " + B_SERIES_LINE)
     if "--low-ram" not in argv:
         sys.argv += ["--low-ram", "off"]
     sys.exit(S.main())

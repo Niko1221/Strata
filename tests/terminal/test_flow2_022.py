@@ -357,6 +357,18 @@ class StoredTuning(Base):
         seen, started = self.run_tune(self.runner_for_tune())
         self.assertTrue(started)
 
+    def test_a_big_model_gets_a_longer_start_wait_by_itself(self):                    # #3949 #3459
+        r = self.runner_for_tune()
+        row = type("Row", (), {"family": r.s.family, "model": r.s.model, "download_gb": 20.0})
+        with mock.patch.object(r.catalog, "rows", return_value=[row]):
+            self.assertEqual(r.start_wait(), 600)                                    # a small model keeps ten minutes
+        row.download_gb = 250.0
+        with mock.patch.object(r.catalog, "rows", return_value=[row]):
+            self.assertEqual(r.start_wait(), 1800)                                   # 600 + 210 x 8, capped at 30 minutes
+        row.download_gb = 83.0
+        with mock.patch.object(r.catalog, "rows", return_value=[row]):
+            self.assertEqual(r.start_wait(), 944)
+
     def test_a_stored_result_is_used_and_said(self):
         saved = self.store()
         r = self.runner_for_tune()
@@ -364,6 +376,7 @@ class StoredTuning(Base):
         self.assertFalse(started)
         text = seen[-1]
         self.assertIn("already tuned for this computer", text)
+        self.assertIn("Add --retune to measure again", text)
         self.assertIn("Q2 32K - Full speed", text)
         self.assertIn("--retune", text)
         self.assertEqual(r.s.tuned_preset, saved["id"])
