@@ -346,7 +346,9 @@ Two reports fixed it with `"GPU_PINNED_MIN_XFER_SIZE": "1048576"` (RX 6800) or `
 R9700) in the `env` block of the server JSON, then a restart. Experimental, one machine each; on a systemd unit use
 `MemoryMax`, not `MemoryHigh`. `"STRATA_HIP_MLOCK": "1"` in the `env` makes the HIP engine on Linux mlock the memory it
 maps for the GPU: give it an unlimited memlock limit (`ulimit -l unlimited`, `LimitMEMLOCK=infinity`,
-`docker --ulimit memlock=-1`) and set `vm.compact_unevictable_allowed=0`. Details: [AMD_HIP.md](AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory).
+`docker --ulimit memlock=-1`) and set `vm.compact_unevictable_allowed=0`. The GTT route removes the evictions instead:
+`"HSA_USERPTR_FOR_PAGED_MEM": "0"` and `"STRATA_HIP_ARENA_NONCOHERENT": "1"` (plus `"HSA_SVM_FOR_PAGED_MEM": "0"` from
+ROCm 10.2), with `ttm.pages_limit` raised above the budget. Details: [AMD_HIP.md](AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory).
 
 ## Source-checkout problems
 
