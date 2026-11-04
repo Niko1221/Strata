@@ -682,6 +682,11 @@ def start_engine(ref: str, target: Target, log_path: Path, log, timeout_s: float
         kwargs["start_new_session"] = True
     proc = subprocess.Popen(command, cwd=str(root), stdout=handle, stderr=subprocess.STDOUT, **kwargs)
     proc._strata_log = handle                              # closed by stop_engine
+    if os.name == "nt":
+        # Windows has no process group to signal: the engine tree is put in a job object this run owns, which ends every process in it in one call
+        # and cannot be refused for a single member (a per-process taskkill was "Access is denied" on a tree this very user started, #4260)
+        from serve import winjob
+        proc._strata_job = winjob.contain(proc)
     log("starting the engine (the model load is not part of the benchmark time) ...")
     if not _start_wait(target, proc, timeout_s, log, log_path):
         stuck = stop_engine(proc)
@@ -723,15 +728,30 @@ def stop_engine(proc) -> str | None:
     try:
         if proc.poll() is None:
             if os.name == "nt":
-                try:
-                    done = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
-                    if done.returncode != 0 and proc.poll() is None:
-                        said = (done.stderr or done.stdout or b"").decode("utf-8", errors="replace").strip()
-                        problem = f"taskkill for process {proc.pid} failed (exit {done.returncode}){': ' + said[:200] if said else ''}"
-                except subprocess.TimeoutExpired:
-                    problem = f"taskkill for process {proc.pid} did not finish in 60 s"
-                except OSError as error:
-                    problem = f"taskkill could not run for process {proc.pid}: {error}"
+                # 1. the job this run put the engine in (ends the whole tree at once); 2. taskkill of the tree; 3. the process itself.
+                # The next step runs only when the one before left the process running, and a refusal is reported only if all of them fail.
+                if getattr(proc, "_strata_job", False):
+                    from serve import winjob
+                    winjob.terminate()
+                    try:
+                        proc.wait(10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                if proc.poll() is None:
+                    try:
+                        done = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+                        if done.returncode != 0 and proc.poll() is None:
+                            said = (done.stderr or done.stdout or b"").decode("utf-8", errors="replace").strip()
+                            problem = f"taskkill for process {proc.pid} failed (exit {done.returncode}){': ' + said[:200] if said else ''}"
+                    except subprocess.TimeoutExpired:
+                        problem = f"taskkill for process {proc.pid} did not finish in 60 s"
+                    except OSError as error:
+                        problem = f"taskkill could not run for process {proc.pid}: {error}"
+                if proc.poll() is None:
+                    try:
+                        proc.kill()                          # this run's own child, by the handle it holds
+                    except OSError:
+                        pass
             else:
                 import signal
                 try:
@@ -751,6 +771,8 @@ def stop_engine(proc) -> str | None:
                 pass
             if proc.poll() is None:
                 problem = (problem + "; " if problem else "") + f"process {proc.pid} is still running 30 s after it was told to stop"
+            else:
+                problem = None                               # it is gone: an earlier refusal that a later step got around is not news
     finally:
         handle = getattr(proc, "_strata_log", None)
         if handle is not None:
