@@ -125,6 +125,52 @@ def _tool_output(item, param):
     return out if isinstance(out, str) else _content(out, param + ".output")
 
 
+def _agent_message_parts(item, author, recipient):
+    """An inter-agent `agent_message` item (Codex multi_agent_v2 / Responses multi-agent API) as prompt text: a
+    routing line, then the parts.  Never raises: an unreadable part costs one placeholder line, not the whole request."""
+    lines = [f"[agent_message from {author} to {recipient}]"]
+    raw = item.get("content")
+    if isinstance(raw, str):
+        parts = [{"type": "input_text", "text": raw}]
+    elif isinstance(raw, list):
+        parts = raw
+    elif raw is None:
+        parts = []
+    else:
+        parts = [raw]
+    for part in parts:
+        if not isinstance(part, dict):
+            lines.append("[payload part not rendered]")
+            continue
+        kind = part.get("type")
+        if kind in ("input_text", "output_text", "text"):
+            text = part.get("text")
+            lines.append("" if text is None else text if isinstance(text, str) else "[payload part not rendered]")
+        elif kind == "input_image":
+            lines.append("[image]")
+        elif kind == "encrypted_content":
+            enc = part.get("encrypted_content")
+            if not isinstance(enc, str):
+                lines.append("[encrypted payload unavailable]")
+            elif enc.startswith(ENCRYPTED_PREFIX):
+                try:
+                    box = json.loads(base64.b64decode(enc[len(ENCRYPTED_PREFIX):], validate=True).decode("utf-8"))
+                    text = box["text"] if isinstance(box, dict) else None
+                    if not isinstance(text, str):
+                        raise TypeError("encrypted payload text must be a string")
+                    lines.append(text)
+                except (ValueError, KeyError, TypeError, UnicodeError):
+                    lines.append("[encrypted payload unavailable]")
+            else:
+                lines.append(enc)
+        else:
+            lines.append("[payload part not rendered]")
+    out = f"[agent_message from {author} to {recipient}]"
+    for line in lines[1:]:
+        out += line if out.endswith("\n") else "\n" + line
+    return out
+
+
 def input_messages(req: dict) -> list[dict]:
     """`instructions` + `input` -> the chat template's messages."""
     messages = []
@@ -174,23 +220,31 @@ def input_messages(req: dict) -> list[dict]:
                 if open_turn is not None and (open_turn.get("tool_calls") or open_turn["content"]):
                     open_turn = None                 # thinking starts a new model turn
                 thinking.append(text)
-        elif kind in ("function_call", "custom_tool_call"):
-            name = item.get("name")
+        elif kind in ("function_call", "custom_tool_call", "multi_agent_call"):
+            field = "action" if kind == "multi_agent_call" and "name" not in item else "name"
+            name = item.get(field)
             if not isinstance(name, str) or not name:
-                raise ResponsesError("a function_call needs a name", param + ".name")
+                raise ResponsesError(f"a {kind} needs a {field}", f"{param}.{field}")
             if item.get("namespace"):
                 name = f"{item['namespace']}.{name}"
-            if kind == "function_call":
+            if kind in ("function_call", "multi_agent_call"):
                 args = _arguments(item.get("arguments"), param + ".arguments")
             else:
                 args = {"input": item.get("input") if isinstance(item.get("input"), str) else ""}
             target = open_turn if open_turn is not None and not thinking else turn()
             target.setdefault("tool_calls", []).append({"function": {"name": name, "arguments": args},
                                                         "_call_id": item.get("call_id")})
-        elif kind in ("function_call_output", "custom_tool_call_output"):
+        elif kind in ("function_call_output", "custom_tool_call_output", "multi_agent_call_output"):
             messages.append({"role": "tool", "content": _tool_output(item, param), "_call_id": item.get("call_id")})
             open_turn = None
             thinking.clear()
+        elif kind == "agent_message":
+            author = item.get("author") or item.get("sender") or "agent"
+            agent = item.get("agent") if isinstance(item.get("agent"), dict) else {}
+            recipient = item.get("recipient") or agent.get("agent_name") or "agent"
+            open_turn = None
+            thinking.clear()
+            messages.append({"role": "user", "content": _agent_message_parts(item, author, recipient)})
         elif kind == "additional_tools":
             continue                                 # #782 (Codex): tools the client adds as an input item; see request_tools
         elif kind == "item_reference":
@@ -222,7 +276,7 @@ def _order_tool_results(messages):
         j = i
         while j < len(messages) and messages[j]["role"] == "tool":
             j += 1
-        prev = messages[i - 1] if i else {}
+        prev = next((messages[k] for k in range(i - 1, -1, -1) if messages[k]["role"] == "assistant"), {})
         order = [c.get("_call_id") for c in prev.get("tool_calls") or []]
         rank = {cid: k for k, cid in enumerate(order) if cid}
         messages[i:j] = sorted(messages[i:j], key=lambda m: rank.get(m.get("_call_id"), len(order)))
