@@ -692,8 +692,8 @@ test("monitor: a split run's PCIe tile lists each card's own link and traffic", 
   const two = await startMock({ gpus: 2 });
   const page = await openPage(browser, two, { hash: "#monitor" });
   await page.waitForFunction(() => !document.getElementById("rows-pcie").hidden, { timeout: 8000 });
-  assert.equal(await page.$eval("#mv-pcie", (e) => e.textContent), "16", "the figure is the traffic all cards together take (15.5, as elsewhere rounded from 10 up)");
-  assert.equal(await page.$eval("#ms-pcie", (e) => e.textContent), "to 2 GPUs");
+  assert.equal(await page.$eval("#mv-pcie", (e) => e.hidden), true, "a split run has no one link or rate to show big; the rows are the tile");
+  assert.equal(await page.$eval("#ms-pcie", (e) => e.hidden), true, "and its sub with it");
   assert.deepEqual(await page.$$eval("#rows-pcie .metric-row__value", (els) => els.map((e) => e.textContent)),
                    ["Gen4 x16 · 12 MB/s", "Gen4 x8 · 3.1 MB/s"],
                    "each card's own link, so a card that fell to a smaller slot stands out");

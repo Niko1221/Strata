@@ -535,17 +535,13 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   metricRows("power", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.power == null ? "–" : `${fmt(g.power)} W`,
                                                   values: (gpuHist[g.index] || {}).power, max: top("power") })) : []);
   const rx = (v) => (v == null ? "–" : `${fmt(v, v < 10 ? 1 : 0)} MB/s`);
-  if (multi) {
-    // one card can fall to Gen1 or x4 while its neighbour stays healthy, so the link goes in the rows and
-    // the figure becomes the traffic all cards together take. The header's unit is "MB/s", hence no unit here.
-    setMetric("pcie", hw.gpu_pcie_rx_mb == null ? null : fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0), "",
-              `to ${cards.length} GPUs`);
-  } else {
-    const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-    setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-              hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${rx(hw.gpu_pcie_rx_mb)}` +
-              (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
-  }
+  // with more than one card there is no one link for the big figure and a summed rate would only repeat the
+  // rows' own numbers added up, so the figure and its sub step aside and the rows are the tile (as in GPU load)
+  $("mv-pcie").hidden = $("ms-pcie").hidden = multi;
+  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
+  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
+            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${rx(hw.gpu_pcie_rx_mb)}` +
+            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   $("sp-pcie").toggleAttribute("hidden", multi);      // the cards' own charts replace the total's
   metricRows("pcie", multi ? cards.map((g) => ({
