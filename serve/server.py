@@ -8476,7 +8476,7 @@ def make_handler(svc: Service):
             svc.load()
             # #924 (opt-in): a Codex compaction request is rendered with its conversation's tools, so its prompt
             # starts as the cached one did; the parser and the response keep the request's own tools
-            shown = responses_api.prompt_tools(req, tools) if svc.codex_compaction_cache else tools
+            shown = responses_api.prompt_tools(req, tools, compaction=svc.codex_compaction_cache)
             try:
                 try:
                     ids, thinking, max_new = svc.prepare(messages, shown, kw, req.get("max_output_tokens") or 0, req=req,
@@ -8492,8 +8492,7 @@ def make_handler(svc: Service):
             except ValueError as e:                          # too long for the context, an image without vision
                 raise ResponsesError(str(e), "input", "context_length_exceeded" if "context" in str(e) else None) \
                     from None
-            if svc.codex_compaction_cache:
-                responses_api.prompt_made(req, shown)
+            responses_api.prompt_made(req, shown)
             _debug_req("responses", req, messages, tools, max_new, thinking, len(ids))
             include = req.get("include") if isinstance(req.get("include"), list) else []
             asm = responses_api.Assembler(req, svc.model_for(req), len(ids), names,

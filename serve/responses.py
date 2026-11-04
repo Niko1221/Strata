@@ -421,42 +421,87 @@ def thread_title_events(req: dict, model: str):
 # by each prompt of a Codex conversation: nothing grows, and a compaction of any other conversation finds a different
 # (session_id, thread_id) and renders its request as sent.  Lost (a restart): the prompt is read again, as without it.
 _kept_prompt_tools = (None, None)                    # ((session_id, thread_id), its prompt's tools as JSON or None)
+_fork_prompt_tools: dict[tuple[str, str], str | None] = {}   # recent (session_id, thread_id) -> prompt tools JSON
 
 
 def _codex_turn(req: dict):
     """-> (request_kind, (session_id, thread_id)) from Codex's turn metadata; the conversation is None without both."""
-    meta = req.get("client_metadata")
-    raw = meta.get("x-codex-turn-metadata") if isinstance(meta, dict) else None
-    try:
-        turn = json.loads(raw) if isinstance(raw, str) else None
-    except ValueError:
-        turn = None
+    turn = _turn_body(req)
     if not isinstance(turn, dict):
         return None, None
     conversation = (turn.get("session_id"), turn.get("thread_id"))
     return turn.get("request_kind"), conversation if all(isinstance(x, str) and x for x in conversation) else None
 
 
-def prompt_tools(req: dict, tools):
+def _codex_parent(req: dict):
+    """-> the parent conversation's (session_id, parent_thread_id) from Codex's turn metadata, or None without both."""
+    turn = _turn_body(req)
+    if not isinstance(turn, dict):
+        return None
+    parent = (turn.get("session_id"), turn.get("parent_thread_id"))
+    return parent if all(isinstance(x, str) and x for x in parent) else None
+
+
+def prompt_tools(req: dict, tools, compaction: bool = True):
     """-> the tools the prompt is rendered with: request_tools' `tools`, or for a Codex compaction request without
-    tools the ones its own conversation's last prompt was rendered with (so its prompt starts as that one did)."""
+    tools the ones its own conversation's last prompt was rendered with, or for a forked multi_agent_v2 sub-agent turn
+    its identified parent conversation's namespace tools spliced back in place (so the prompt starts as the parent's
+    did while the parser and response tool map keep only the request's declared tools)."""
+    if _kept_prompt_tools == (None, None):
+        _fork_prompt_tools.clear()
     kind, conversation = _codex_turn(req)
     owner, kept = _kept_prompt_tools
-    if kind != "compaction" or conversation is None or owner != conversation or kept is None or req.get("tools"):
+    if kind == "compaction":
+        if not compaction or conversation is None or owner != conversation or kept is None or req.get("tools"):
+            return tools
+        return json.loads(kept)                      # a fresh copy: the kept one is nobody's to change
+    parent = _codex_parent(req) if kind == "turn" and tools else None
+    parent_kept = _fork_prompt_tools.get(parent) if parent is not None else None
+    if not parent_kept:
         return tools
-    return json.loads(kept)                          # a fresh copy: the kept one is nobody's to change
+    items = req.get("input") if isinstance(req.get("input"), list) else []
+    if not any(isinstance(it, dict) and it.get("type") == "agent_message" for it in items):
+        return tools
+    parent_tools = json.loads(parent_kept)
+    present = {t.get("name", "") for t in tools if isinstance(t, dict)}
+    shown = list(tools)
+    for it in items:
+        ns = it.get("namespace") if isinstance(it, dict) and it.get("type") == "function_call" else None
+        if not isinstance(ns, str) or not ns or any(n.startswith(ns + ".") for n in present):
+            continue
+        prefix = ns + "."
+        ns_tools = [pt for pt in parent_tools
+                    if isinstance(pt, dict) and isinstance(pt.get("name"), str) and pt["name"].startswith(prefix)]
+        if not ns_tools:
+            continue
+        first_idx = parent_tools.index(ns_tools[0])
+        prev = (parent_tools[first_idx - 1].get("name")
+                if first_idx > 0 and isinstance(parent_tools[first_idx - 1], dict) else None)
+        at = (0 if prev is None else
+              next((i + 1 for i, t in enumerate(shown)
+                    if isinstance(t, dict) and t.get("name") == prev), len(shown)))
+        shown[at:at] = ns_tools
+        present.update(pt["name"] for pt in ns_tools)
+    return shown
 
 
 def prompt_made(req: dict, tools):
     """The prompt of `req` was rendered with `tools` and goes to the engine: a Codex request that is not a compaction
-    leaves its conversation and those tools for that conversation's compaction. A thread-title turn is another
-    session Codex sends beside the real one, and it does not replace this entry."""
+    leaves its conversation and those tools for that conversation's compaction or forked sub-agents. A thread-title
+    turn is another session Codex sends beside the real one, and it does not replace this entry."""
     global _kept_prompt_tools
+    if _kept_prompt_tools == (None, None):
+        _fork_prompt_tools.clear()
     if (_turn_body(req) or {}).get("thread_source") == "thread_title":
         return
     kind, conversation = _codex_turn(req)
     if conversation is not None and kind != "compaction":
-        _kept_prompt_tools = (conversation, json.dumps(tools) if tools else None)
+        dumped = json.dumps(tools) if tools else None
+        _kept_prompt_tools = (conversation, dumped)
+        _fork_prompt_tools.pop(conversation, None)
+        _fork_prompt_tools[conversation] = dumped
+        while len(_fork_prompt_tools) > 16:
+            _fork_prompt_tools.pop(next(iter(_fork_prompt_tools)))
 
 
 def text_format(req: dict):

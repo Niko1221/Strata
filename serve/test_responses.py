@@ -281,6 +281,55 @@ class MultiAgentV2(unittest.TestCase):
             input_messages({"input": [{"type": "multi_agent_call", "call_id": "c1", "arguments": "{}"}]})
         self.assertEqual(e.exception.param, "input[0].action")
 
+    def test_fork_turns_subagent_restores_namespace_tools_for_prefix_cache(self):
+        """A `fork_turns="all"` child inherits `collaboration.spawn_agent` in `input` while Codex
+        fallback metadata drops `collaboration` from `tools`.  `prompt_tools` restores the identified
+        parent session's namespace tools for prompt rendering only, keeping `request_tools`'s callable
+        tools and `names` map restricted to the child's declared tools and isolating across sessions."""
+        responses._kept_prompt_tools = (None, None)
+        collab_a = {"type": "namespace", "name": "collaboration", "description": "Session A agents.",
+                    "tools": [{"type": "function", "name": "spawn_agent", "description": "Spawn in A.",
+                               "parameters": {"type": "object", "properties": {"message": {"type": "string"}}}}]}
+        collab_b = {"type": "namespace", "name": "collaboration", "description": "Session B agents.",
+                    "tools": [{"type": "function", "name": "spawn_agent", "description": "Spawn in B.",
+                               "parameters": {"type": "object", "properties": {"task": {"type": "string"}}}}]}
+        after = {"type": "function", "name": "get_goal",
+                 "parameters": {"type": "object", "properties": {}}}
+        user = {"type": "message", "role": "user", "content": "delegate 2+2"}
+        spawn = {"type": "function_call", "id": "fc_1", "call_id": "c1", "name": "spawn_agent",
+                 "namespace": "collaboration", "arguments": "{\"message\":\"2+2\"}"}
+        parent_a = {"model": "m", "instructions": "You are Codex",
+                    "tools": TOOLS + [collab_a, after], "input": [user, spawn],
+                    "client_metadata": codex_meta("turn", A)}
+        parent_b = {"model": "m", "instructions": "You are Codex",
+                    "tools": TOOLS + [collab_b, after], "input": [user, spawn],
+                    "client_metadata": codex_meta("turn", B)}
+        child_meta_a = {"session_id": A[0], "thread_id": "019a-a-sub", "x-codex-turn-metadata": json.dumps(
+            {"session_id": A[0], "thread_id": "019a-a-sub", "parent_thread_id": A[1], "request_kind": "turn"})}
+        child_a = {"model": "m", "instructions": "You are Codex", "tools": TOOLS + [after],
+                   "input": [user, spawn, {"type": "function_call_output", "call_id": "c1",
+                                           "output": "aborted"}, AM_TASK],
+                   "client_metadata": child_meta_a}
+        # Order: A's parent, then B's parent, then A's child -> A's child must get A's tools, not B's
+        p_own, p_shown = tools_of(parent_a)
+        tools_of(parent_b)
+        c_own, c_shown = tools_of(child_a)
+        _, c_names, _ = request_tools(child_a)
+        self.assertNotIn("collaboration.spawn_agent", c_names)
+        self.assertEqual([t["name"] for t in c_own], ["exec_command", "get_goal"])
+        self.assertEqual(c_shown, p_shown)
+        p_prompt = TEMPLATE.render(input_messages(parent_a), tools=p_shown, add_generation_prompt=False)
+        c_prompt = TEMPLATE.render(input_messages(child_a), tools=c_shown, add_generation_prompt=True)
+        self.assertTrue(c_prompt.startswith(p_prompt))
+        # Without established parent ownership (missing metadata or unknown parent), request tools stay unchanged
+        for unowned_meta in ({}, codex_meta("turn", ("019a-a", "019a-a-sub")),
+                             {"x-codex-turn-metadata": json.dumps(
+                                 {"session_id": "019a-c", "thread_id": "sub", "parent_thread_id": A[1],
+                                  "request_kind": "turn"})}):
+            unowned = {**child_a, "client_metadata": unowned_meta}
+            u_own, u_shown = tools_of(unowned)
+            self.assertEqual(u_shown, u_own)
+
 
 # ------------------------------------------------------------------------------------------------ Codex compaction
 HISTORY = [{"role": "user", "content": "hi"},
