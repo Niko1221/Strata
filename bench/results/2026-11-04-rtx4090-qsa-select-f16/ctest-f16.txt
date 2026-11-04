@@ -1,0 +1,36 @@
+# ctest switches; switches: STRATA_SELECT_F16=1
+Test project <build>
+      Start  17: qsa_topk_active_parity
+ 1/15 Test  #17: qsa_topk_active_parity ...........   Passed    0.77 sec
+      Start  18: qsa_slots_parity
+ 2/15 Test  #18: qsa_slots_parity .................   Passed    5.03 sec
+      Start  19: qsa_slots_parity_lanecell
+ 3/15 Test  #19: qsa_slots_parity_lanecell ........   Passed    5.02 sec
+      Start  20: qsa_merge_daily_parity_default
+ 4/15 Test  #20: qsa_merge_daily_parity_default ...   Passed    1.43 sec
+      Start  21: qsa_merge_daily_parity_daily
+ 5/15 Test  #21: qsa_merge_daily_parity_daily .....   Passed    1.34 sec
+      Start  22: qsa_scores_parity
+ 6/15 Test  #22: qsa_scores_parity ................   Passed    1.05 sec
+      Start  23: qsa_select_bench
+ 7/15 Test  #23: qsa_select_bench .................   Passed    0.24 sec
+      Start  24: qsa_select_bench_fp32_tiled
+ 8/15 Test  #24: qsa_select_bench_fp32_tiled ......   Passed    0.25 sec
+      Start  25: qsa_select_bench_f16
+ 9/15 Test  #25: qsa_select_bench_f16 .............   Passed    0.25 sec
+      Start  78: decode_cluster_parity
+10/15 Test  #78: decode_cluster_parity ............   Passed    0.11 sec
+      Start  95: qsa_parity
+11/15 Test  #95: qsa_parity .......................   Passed    0.48 sec
+      Start  96: qsa_topk_parity
+12/15 Test  #96: qsa_topk_parity ..................   Passed    0.63 sec
+      Start  97: qsa_topk_parity_reg_always
+13/15 Test  #97: qsa_topk_parity_reg_always .......   Passed    0.63 sec
+      Start 106: batch_rows_parity
+14/15 Test #106: batch_rows_parity ................   Passed    1.83 sec
+      Start 154: batch_rows_test
+15/15 Test #154: batch_rows_test ..................   Passed    0.01 sec
+
+100% tests passed out of 15
+
+Total Test time (real) =  19.10 sec

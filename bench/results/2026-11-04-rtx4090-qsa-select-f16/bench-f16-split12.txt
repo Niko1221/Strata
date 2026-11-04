@@ -1,0 +1,15 @@
+# STRATA_SELECT_F16=1 with STRATA_SELECT_F16_SPLIT=1|2 (bench-only variants), qsa_select_bench 1000000 256 10
+
+### split 1
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, one term, bench only) for prompt calls of 8192 blocks or more
+top-k 6.316 -> 1.598 ms (4.0x), register top-k identical to the reference 256/256
+FAIL accuracy vs FP64 (score scale 243): warp kernel max err 2.28e-05, fast scorer max err 0.0204 (8.4e-05 of scale)
+ctx 1000000, 256 queries x 250001 blocks: scores 35.300 -> 1.407 ms (25.1x), top-k 6.316 ms; score rel diff mean 0.0046 max 2.7e+03; selections identical 218/256, cells differing 0.0149%
+### exit 1
+
+### split 2
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, two terms, bench only) for prompt calls of 8192 blocks or more
+top-k 6.283 -> 1.598 ms (3.9x), register top-k identical to the reference 256/256
+FAIL accuracy vs FP64 (score scale 243): warp kernel max err 2.28e-05, fast scorer max err 0.0185 (7.6e-05 of scale)
+ctx 1000000, 256 queries x 250001 blocks: scores 35.269 -> 1.419 ms (24.8x), top-k 6.283 ms; score rel diff mean 0.0023 max 1.4e+03; selections identical 218/256, cells differing 0.0158%
+### exit 1
