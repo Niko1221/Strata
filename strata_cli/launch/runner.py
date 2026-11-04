@@ -652,6 +652,8 @@ class Runner:
         self.confirm = confirm                # asked (title, text) before a model is downloaded with no engine; True = go on
         self.assume_yes = assume_yes          # --yes: no questions
         self.engine_problem: str | None = None
+        self.key_written_notice: str | None = None   # the sentence "a new API key was made", held by the command until the run config that holds the key is on disk
+        self.key_written = False
         self._catalog = catalog
         self.emit_cb = emit or (lambda e: None)
         self.cancel = cancel or threading.Event()
@@ -1653,6 +1655,12 @@ class Runner:
         except OSError as exc:
             raise LaunchError(f"The saved settings of this launch ({existing}) cannot be read ({exc.strerror or type(exc).__name__}).",
                               "Fix its permissions or move it away, then run the launch again: writing a new one would drop its API key and your changes.")
+
+    def announce_key_written(self) -> None:
+        """The run config (with the key in it) is on disk: now, and only now, say a new key was made."""
+        if self.key_written_notice and not self.key_written:
+            self.key_written = True
+            self.emit("config", self.key_written_notice, None, level="warn")
 
     def build_config(self, base_path: Path) -> Path:
         from strata_control import tune_knobs
@@ -2697,6 +2705,7 @@ class Runner:
             self.check_saved_state_readable()
             self.emit("config", "Writing this launch's settings…")
             cfg = self.build_config(base)
+            self.announce_key_written()
             self.ensure_profile(cfg)
             self.emit("config", "Settings are saved.", 100)
             if self.engine_problem:

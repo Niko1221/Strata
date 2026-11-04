@@ -175,6 +175,7 @@ class Notice:
     level: str        # "warn" | "error"
     text: str         # plain words: what it means
     next: str = ""    # plain words: what to do
+    after_write: bool = False   # true only once the thing it reports has really been written: the launch says it then (Runner.announce_key_written), not in the plan or before a refusal
 
     def line(self) -> str:
         return self.text + (f" {self.next}" if self.next else "")

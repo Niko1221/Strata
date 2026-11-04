@@ -443,7 +443,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                                     "A different one: add --new-key. Show it with: strata launch --show-key"))
         else:
             notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
-                                    "It is saved with the preset; show it with: strata launch --show-key"))
+                                    "It is saved with the preset; show it with: strata launch --show-key", after_write=True))
     notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
@@ -914,6 +914,9 @@ def run_launch(a: argparse.Namespace) -> int:
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         s, notes = apply_defaults(s, catalog)
         notes = [*notices, *notes]                           # what the flags themselves said (a --pool-cores list that could not be read, a key beside --no-api-key)
+        held = [n for n in notes if n.after_write]           # "A new API key was made": said when the run config holding it has been written, never in the plan or before a refusal
+        notes = [n for n in notes if not n.after_write]
+        runner.key_written_notice = held[0].line() if held else None
         errors = [n for n in notes if n.level == "error"]
         if errors:
             return fail(errors[0].line(), 2)
@@ -1009,7 +1012,7 @@ def run_launch(a: argparse.Namespace) -> int:
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "name": s.name, "profile": result.profile, "urls": result.urls, "reused": result.reused,
                               "api_key": "set" if result.key else None, "tuned": result.tune_word,
-                              "notices": result.notices + [n.line() for n in notes]}))
+                              "notices": result.notices + [n.line() for n in notes] + ([runner.key_written_notice] if runner.key_written_notice and runner.key_written else [])}))
             return 0
         _say("")
         _say("Already serving these choices; nothing was restarted." if result.reused else "Strata is serving.")

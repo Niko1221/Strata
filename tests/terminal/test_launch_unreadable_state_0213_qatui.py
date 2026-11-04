@@ -114,5 +114,74 @@ class CheckSavedState(unittest.TestCase):
             self.assertIn("cannot be read (Permission denied)", str(ctx.exception))
 
 
+NEW_KEY = "A new API key was made, because the server is shared beyond this computer. It is saved with the preset; show it with: strata launch --show-key"
+
+
+class NewKeySentenceIsTrue(unittest.TestCase):
+    """The sentence "A new API key was made" is said only after the run config that holds the key has been written: not in the plan, not before a refusal."""
+
+    def _run(self, *, refuse=None, fail_after_write=None):
+        from strata_cli.launch import settings as S
+        from strata_cli.launch.runner import Runner
+        events, order = [], []
+        r = Runner(S.LaunchSettings(model="iq3_s", context=32768), emit=lambda e: events.append(e))
+        r.key_written_notice = NEW_KEY
+        base = Path(os.environ["STRATA_INSTALL_DIR"]) / "base.json"
+
+        def build(self_, base_path):
+            order.append("written")
+            return base
+        patches = [mock.patch.object(Runner, "check_own_files"), mock.patch.object(Runner, "check_serving", return_value=None),
+                   mock.patch.object(Runner, "ensure_engine"), mock.patch.object(Runner, "ensure_model", return_value=base),
+                   mock.patch.object(Runner, "ensure_drafter"), mock.patch.object(Runner, "build_config", build),
+                   mock.patch.object(Runner, "ensure_profile", side_effect=fail_after_write or (lambda *a, **k: None)),
+                   mock.patch.object(Runner, "tune", side_effect=RuntimeError("stop here")),
+                   mock.patch.object(Runner, "check_saved_state_readable", side_effect=refuse or (lambda *a, **k: None))]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        try:
+            r.run()
+        except Exception as exc:  # noqa: BLE001
+            return r, events, order, exc
+        return r, events, order, None
+
+    def test_a_refusal_before_the_write_says_nothing_about_a_new_key(self):
+        from strata_cli.launch.runner import LaunchError
+        with Home():
+            r, events, order, exc = self._run(refuse=LaunchError("cannot be read", "fix it"))
+        self.assertIsInstance(exc, LaunchError)
+        self.assertEqual(order, [])                                    # nothing was written
+        self.assertFalse(r.key_written)
+        self.assertNotIn(NEW_KEY, [e.text for e in events])
+
+    def test_the_sentence_comes_once_right_after_the_write(self):
+        with Home():
+            r, events, order, exc = self._run()
+        self.assertEqual(order, ["written"])
+        self.assertTrue(r.key_written)
+        said = [e for e in events if e.text == NEW_KEY]
+        self.assertEqual(len(said), 1)
+        self.assertEqual(said[0].level, "warn")
+        texts = [e.text for e in events]
+        self.assertLess(texts.index(NEW_KEY), texts.index("Settings are saved.") if "Settings are saved." in texts else len(texts))
+
+    def test_it_stays_true_when_something_fails_after_the_write(self):
+        from strata_control import profiles
+        with Home():
+            r, events, order, exc = self._run(fail_after_write=profiles.ProfileError("later problem"))
+        self.assertIsInstance(exc, profiles.ProfileError)
+        self.assertTrue(r.key_written)                                 # the key IS on disk then
+        self.assertIn(NEW_KEY, [e.text for e in events])
+
+    def test_the_plan_never_says_it(self):
+        from tests.terminal.launch_support import run_cli
+        with Home():
+            code, out, err = run_cli(["launch", "--plan", "--family", "qwen", "--model", "q2_0", "--access", "lan", "--yes"])
+        self.assertIn("Plan for", out, out + err)                       # the plan really ran
+        self.assertIn("API key on", out)                                 # and it knows a key is wanted
+        self.assertNotIn("A new API key was made", out + err)
+
+
 if __name__ == "__main__":
     unittest.main()
