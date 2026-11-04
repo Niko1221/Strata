@@ -454,7 +454,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
 
 def _host_platform() -> tuple[str, str]:
     """(sys.platform, sysinfo.machine()) of this computer, in one place the tests can replace."""
-    import platform
+    from strata_control import sysinfo
     return sys.platform, sysinfo.machine()
 
 
