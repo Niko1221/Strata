@@ -168,12 +168,17 @@ function drawSpark(svg, values, max) {
 // that card's own history - a chart of its own. Rows are rebuilt when the set of cards changes; the figures
 // are rewritten every poll. An empty list hides the container, so a run with one card never shows rows.
 const rowSig = {};
+// one part of a row: a string, or a line of {text, cls} parts stacked under each other (a card's name over
+// its number, a rate over the link it crossed)
+const rowLines = (v) => Array.isArray(v) ? v.map((l) => { const p = typeof l === "string" ? { text: l } : l;
+  return `<div${p.cls ? ` class="${p.cls}"` : ""}>${esc(p.text)}</div>`; }).join("") : esc(v);
+const rowPlain = (v) => Array.isArray(v) ? v.map((l) => typeof l === "string" ? l : l.text).join(" · ") : String(v);
 function metricRows(key, rows) {
   const el = $(`rows-${key}`);
-  const sig = rows.map((r) => r.label).join(" | ");
+  const sig = rows.map((r) => rowPlain(r.label)).join(" | ");
   if (sig !== rowSig[key]) {
     rowSig[key] = sig;
-    el.innerHTML = rows.map((r) => `<div class="metric-row"><span class="metric-row__name" title="${esc(r.label)}">${esc(r.label)}</span>` +
+    el.innerHTML = rows.map((r) => `<div class="metric-row"><span class="metric-row__name" title="${esc(rowPlain(r.label))}">${rowLines(r.label)}</span>` +
       `<span class="metric-row__value"></span>${r.values == null ? "" : `<svg class="st-metric__spark metric-row__spark" viewBox="0 0 100 32"
       preserveAspectRatio="none"><path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`}</div>`).join("");
@@ -181,12 +186,7 @@ function metricRows(key, rows) {
   }
   rows.forEach((r, i) => {
     const row = el.children[i];
-    const v = row.querySelector(".metric-row__value");
-    // a reading of two parts (a PCIe rate and its link) takes two lines, so the named card beside it keeps
-    // the width; a part may be dimmed, the way a card's name is
-    if (Array.isArray(r.value)) v.innerHTML = r.value.map((line) =>
-      `<div${line.cls ? ` class="${line.cls}"` : ""}>${esc(line.text)}</div>`).join("");
-    else v.textContent = r.value;
+    row.querySelector(".metric-row__value").innerHTML = rowLines(r.value);
     if (r.values != null) drawSpark(row.querySelector("svg"), r.values, r.max);
   });
 }
@@ -543,10 +543,13 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ms-power").hidden = multi;
   $("sp-power").toggleAttribute("hidden", multi);     // an <svg> has no hidden property, so the attribute goes on explicitly
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  metricRows("power", multi ? cards.map((g) => ({ label: cardLabel(g),
+  // Power and PCIe rows carry the reading on two lines and answer for their own caps, so the row says the
+  // card's name first and its number underneath, in the same quiet colour, and the values sit at the right
+  const cardName = (g) => [{ text: g.name || `GPU ${g.index}` }, ...(g.name ? [`GPU ${g.index}`] : [])];
+  metricRows("power", multi ? cards.map((g) => ({ label: cardName(g),
     value: g.power_limit == null ? (g.power == null ? "–" : `${fmt(g.power)} W`)
                                  : [{ text: g.power == null ? "–" : `${fmt(g.power)} W` },
-                                    { text: `of ${fmt(g.power_limit)} W limit`, cls: "muted" }],
+                                    { text: `${fmt(g.power_limit)} W limit`, cls: "muted" }],
     values: (gpuHist[g.index] || {}).power, max: top("power") })) : []);
   const rx = (v) => (v == null ? "–" : `${fmt(v, v < 10 ? 1 : 0)} MB/s`);
   // with more than one card there is no one link for the big figure and a summed rate would only repeat the
@@ -559,7 +562,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   $("sp-pcie").toggleAttribute("hidden", multi);      // the cards' own charts replace the total's
   metricRows("pcie", multi ? cards.map((g) => ({
-    label: cardLabel(g),
+    label: cardName(g),
     value: [{ text: rx(g.pcie_rx_mb) },
             { text: g.pcie_gen_max || g.pcie_gen ? `Gen${g.pcie_gen_max || g.pcie_gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}` : "–", cls: "muted" }],
     values: (gpuHist[g.index] || {}).pcie_rx_mb, max: top("pcie_rx_mb"),

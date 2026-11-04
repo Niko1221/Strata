@@ -674,11 +674,14 @@ test("monitor: a split run's Power tile names each card's draw under its own cap
   await page.waitForFunction(() => !document.getElementById("rows-power").hidden, { timeout: 8000 });
   assert.equal(await page.$eval("#mv-power", (e) => e.textContent), "140W", "the total draw stays the figure - it is what the wall sees");
   assert.equal(await page.$eval("#ms-power", (e) => e.hidden), true, "only the summed cap belongs to no card");
-  assert.deepEqual(await page.$$eval("#rows-power .metric-row__name", (els) => els.map((e) => e.textContent)),
-                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
+  assert.deepEqual(await page.$$eval("#rows-power .metric-row__name", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
+                   [["NVIDIA GeForce RTX 4090", "GPU 0"], ["NVIDIA GeForce RTX 3060", "GPU 1"]],
+                   "the name leads its row and the number sits under it");
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
-                   [["85 W", "of 450 W limit"], ["55 W", "of 170 W limit"]],
+                   [["85 W", "450 W limit"], ["55 W", "170 W limit"]],
                    "each card's own draw under its own cap, not the summed one");
+  assert.equal(await page.$eval("#rows-power .metric-row__value", (e) => getComputedStyle(e).textAlign), "right",
+               "the readings stack on the row's right edge");
   assert.equal(await page.$eval("#rows-power .metric-row__value div:nth-child(2)", (e) => getComputedStyle(e).color),
                await page.$eval("#rows-power .metric-row__name", (e) => getComputedStyle(e).color),
                "the cap line is as quiet as the card's name");
