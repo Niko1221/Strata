@@ -324,5 +324,189 @@ class ReplicaOwnership(FakeEngines, unittest.TestCase):
         self.assertEqual(self.rep.route(prompt_ids("QA0006")), -1)
 
 
+class Client(threading.Thread):
+    """One streaming client of a --batch engine: its own canary, its own cancel Event.  `pause_after`/`resume`: the
+    consumer stops reading after that many tokens until `resume` is set (a slow reader)."""
+
+    def __init__(self, engine, canary, filler=0, max_new=500, pause_after=None, resume=None, extra=""):
+        super().__init__(daemon=True)
+        self.engine, self.canary = engine, canary
+        self.ids = prompt_ids(canary + extra, filler)
+        self.max_new, self.pause_after, self.resume = max_new, pause_after, resume
+        self.cancel = threading.Event()
+        self.tokens, self.error, self.paused = [], None, threading.Event()
+
+    def run(self):
+        try:
+            for t in self.engine.generate(self.ids, self.max_new, {}, self.cancel):
+                if t is None:
+                    continue
+                self.tokens.append(t)
+                if self.pause_after is not None and len(self.tokens) == self.pause_after:
+                    self.paused.set()
+                    self.resume.wait(30)
+        except BaseException as e:                               # noqa: BLE001
+            self.error = e
+
+    def foreign(self):
+        return foreign(self.tokens, self.canary)
+
+    def complete(self):
+        return self.tokens == expected_reply(self.canary)
+
+
+def wait_until(cond, timeout=10.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+class BatchOwnership(FakeEngines, unittest.TestCase):
+    """#4451: a --batch engine.  Every frame a request reads must be its own, whatever happened to the requests before
+    it on the same slot, the same control lines or the same engine process."""
+
+    def setUp(self):
+        self.engines = self.make_engines(1, batch=4)
+        self.engine = self.engines[0]
+        # 0.3 s instead of 300 s for the wait that ends an interrupted exchange (a wrapper that works on every version)
+        orig = self.engine._drain_control
+        self.engine._drain_control = lambda until, timeout=None, born=None, lines_q=None: orig(
+            until, timeout=0.3, born=born)
+        self.engine.QUARANTINE_S = 8.0
+
+    def tearDown(self):
+        self.cleanup_engines()
+
+    def start_busy(self, n=1, tag="Y"):
+        """Long requests that hold batch slots, so that the next requests are admitted into slots too."""
+        bg = [Client(self.engine, f"{chr(ord(tag) + i)}B{9990 - i:04d}", max_new=500) for i in range(n)]
+        for c in bg:
+            c.start()
+            time.sleep(0.05)
+        wait_until(lambda: all(len(c.tokens) >= 3 for c in bg))
+        return bg
+
+    def finish(self, clients, timeout=60):
+        for c in clients:
+            c.join(timeout)
+            self.assertFalse(c.is_alive())
+
+    def test_interleaved_clients_get_their_own_replies(self):
+        cs = [Client(self.engine, f"{chr(ord('A') + i)}{chr(ord('K') + i)}{i:04d}") for i in range(4)]
+        for c in cs:
+            c.start()
+            time.sleep(0.02)
+        self.finish(cs)
+        for c in cs:
+            self.assertIsNone(c.error)
+            self.assertEqual(c.foreign(), [])
+            self.assertTrue(c.complete(), c.canary)
+
+    def test_a_cancel_in_the_middle_of_the_prompt_read_then_reuse(self):
+        """The first of several interleaved clients is cancelled while its prompt is being read; the next requests
+        reuse the slot and the control lines and must read only their own frames."""
+        import random
+        rnd = random.Random(4451)
+        bg = self.start_busy(n=2)
+        bad = []
+        for i in range(12):
+            a = Client(self.engine, f"KA{i:04d}", filler=700, extra=" SLOWPREFILL")
+            a.start()
+            time.sleep(rnd.choice((0.03, 0.08, 0.15, 0.3)))
+            a.cancel.set()
+            followers = [Client(self.engine, f"{chr(ord('M') + j)}{chr(ord('Q') + j)}{i:02d}{j:02d}", max_new=60)
+                         for j in range(2)]
+            for f in followers:
+                f.start()
+            self.finish([a] + followers)
+            for f in followers:
+                if f.error or f.foreign() or f.tokens != expected_reply(f.canary)[:60]:
+                    bad.append((i, f.canary, repr(f.error), f.foreign()[:2], len(f.tokens)))
+            self.assertEqual(a.foreign(), [])
+        for c in bg:
+            c.cancel.set()
+        self.finish(bg)
+        for c in bg:
+            self.assertEqual(c.foreign(), [], "a background request received a foreign frame")
+        self.assertEqual(bad, [])
+
+    def test_a_drain_that_times_out_does_not_leak_into_the_next_request(self):
+        """The engine takes longer than the drain timeout to end the interrupted exchange (DEAFSTOP): its DONE, BADM and
+        tokens come later.  The request after it must get its own frames only."""
+        bg = self.start_busy(n=1)
+        a = Client(self.engine, "KA0001", filler=1300, extra=" DEAFSTOP")
+        a.start()
+        time.sleep(0.25)
+        a.cancel.set()
+        time.sleep(0.45)                         # past the 0.3 s drain: A's request has left, its engine exchange has not ended
+        b = Client(self.engine, "LB0002", max_new=80)
+        b.start()
+        self.finish([a, b])
+        for c in bg:
+            c.cancel.set()
+        self.finish(bg)
+        self.assertIsNone(b.error)
+        self.assertEqual(b.foreign(), [], "B received A's frames")
+        self.assertEqual(b.tokens, expected_reply("LB0002")[:80], "B's reply is its own, in full")
+        self.assertEqual(bg[0].foreign(), [])
+
+    def test_the_engine_ending_during_a_drain_then_a_restart(self):
+        """A is interrupted mid-prompt; the engine dies while A drains; after the restart the new requests (same slot
+        numbers) must never be read by a request of the old process."""
+        old = self.start_busy(n=2)
+        slow = [Client(self.engine, f"{chr(ord('S') + i)}{chr(ord('T') + i)}{i:04d}", pause_after=3,
+                       resume=threading.Event()) for i in range(2)]
+        for c in slow:
+            c.start()
+            time.sleep(0.05)
+        self.assertTrue(wait_until(lambda: all(c.paused.is_set() for c in slow)))
+        a = Client(self.engine, "KA0001", filler=700, extra=" SLOWPREFILL")
+        a.start()
+        time.sleep(0.1)
+        a.cancel.set()
+        self.engine.proc.kill()                  # the engine ends while A's exchange is being drained
+        self.engine.proc.wait()
+        self.finish([a] + old)
+        self.engine.restart()
+        self.assertTrue(self.engine.alive())
+        new = self.start_busy(n=2, tag="D")      # the new process: the same slot numbers again
+        for c in slow:
+            c.resume.set()
+        # they read on: the old process's queued frames, then its end - never the new process's frames
+        time.sleep(1.0)
+        for c in slow:
+            self.assertEqual(c.foreign(), [], f"{c.canary} (old process) read a frame of the new one")
+        for c in new:
+            c.cancel.set()
+        self.finish(new)
+        self.finish(slow)
+        for c in slow:
+            self.assertIsInstance(c.error, Exception, "a request of the dead engine ends with an error")
+        for c in new:
+            self.assertEqual(c.foreign(), [], "a request of the new process received a foreign frame")
+            self.assertTrue(len(c.tokens) >= 3)
+
+    def test_a_slot_is_not_handed_on_before_the_engine_confirms(self):
+        """A consumer leaves a slot's stream; its BDONE has not come.  Whatever frames still arrive for that slot are
+        not the next request's."""
+        bg = self.start_busy(n=1)
+        a = Client(self.engine, "KA0001", max_new=500)
+        a.start()
+        self.assertTrue(wait_until(lambda: len(a.tokens) >= 5))
+        a.cancel.set()                           # BSTOP: A's slot ends at its next window
+        followers = [Client(self.engine, f"{chr(ord('M') + j)}{chr(ord('Q') + j)}{j:04d}", max_new=60) for j in range(3)]
+        for f in followers:
+            f.start()
+        self.finish([a] + followers)
+        for f in followers:
+            self.assertEqual(f.foreign(), [])
+            self.assertEqual(f.tokens, expected_reply(f.canary)[:60])
+        bg[0].cancel.set()
+        self.finish(bg)
+
+
 if __name__ == "__main__":
     unittest.main()
