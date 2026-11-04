@@ -15,8 +15,8 @@
 
 | 项 | 数 |
 |---|---|
-| 改动面（相对 `upstream/main`） | 134 文件 / **≈+27.7k −94**（含本文档；口径见表下注） |
-| 本功能提交（非 merge） | ≈110 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
+| 改动面（相对 `upstream/main`） | 134 文件 / **≈+28k −94**（含本文档；口径见表下注） |
+| 本功能提交（非 merge） | ≈120 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
 | 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo/mezo.py` `backward/sft.py` `backward/grpo.py` 等 13 个文件 ≈5.4k 行（luspo 带来约 0.7k） |
 | 测试 | 15 个 `test_*.py` 3,407 行，训练目录 **271 项**（Windows 上 269 过，2 项 watchdog 缺 triton）；`serve/test_training_api.py` 6 项 |
 | 服务端 | `serve/server.py`（`TrainBridge` + 3 个 `/v1/training/*` 路由 + `POST /v1/lora`） |
@@ -864,7 +864,7 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 |---|---|---|---|---|---|
 | `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **144 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 144 过） | ≈80 提交 / 102 文件 / ≈+18.0k −94 |
 | `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 271 项（269 过 + 2 项 watchdog 见下） | ≈90 提交 / 134 文件 / ≈+27.7k −94 |
-| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 271 项（同上） | ≈110 提交 / 134 文件 / ≈+27.7k −94 |
+| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 271 项（同上） | ≈120 提交 / 134 文件 / ≈+28k −94 |
 
 **如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
 
