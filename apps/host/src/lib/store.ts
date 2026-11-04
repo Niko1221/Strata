@@ -1,4 +1,5 @@
 import { workspaceIdForSession } from './session-workspace';
+import { shortTitle } from './title-text';
 import { DEFAULT_CONTENT_FS, DEFAULT_UI_SCALE, SIZE_DEFAULTS_VERSION, savedSizes } from './default-sizes';
 import { detectLanguage } from './language-detect';
 import { validWhileBusy, type WhileBusy } from './while-busy';
@@ -1425,7 +1426,7 @@ async function startTimeSkipReal(prompt: string) {
   const at = new Date().toISOString();
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
-    title: s.messages.length ? s.title : prompt.length > 48 ? prompt.slice(0, 47).trimEnd() + '…' : prompt, updatedAt: at,
+    title: s.messages.length ? s.title : shortTitle(prompt), updatedAt: at,
     // The comparison sidebar opens only when there is an update to compare (when the job ends with changed files), never while it works.
     timeSkips: [...(s.timeSkips ?? []), run],
     messages: [...s.messages,
@@ -1518,7 +1519,7 @@ function startTimeSkipDemo(prompt: string) {
   const at = new Date().toISOString();
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
-    title: s.messages.length ? s.title : prompt.length>48?prompt.slice(0,47).trimEnd()+'…':prompt, updatedAt: at,
+    title: s.messages.length ? s.title : shortTitle(prompt), updatedAt: at,
     timeSkips: [...(s.timeSkips ?? []), run], previewOpen: timeSkipTabId(run.id),
     messages: [...s.messages,
       { id: uid('m'), role: 'user', at, content: `/time-skip ${prompt}`, timeSkipId: run.id },
@@ -1723,7 +1724,7 @@ const lastAnswer = (sessionId: string) => [...(state.sessions.find(s => s.id ===
 const loopScheduler = new LoopScheduler({
   async send(sessionId, { text, shown }) {
     const before = lastAnswer(sessionId)?.id;
-    await sendMessage(text, { fromLoop: true, shown, title: shown.length > 48 ? shown.slice(0, 47).trimEnd() + '…' : shown });
+    await sendMessage(text, { fromLoop: true, shown, title: shortTitle(shown) });
     const answer = lastAnswer(sessionId);
     if (!answer || answer.id === before || answer.streaming) return { answered: false, text: '', failed: false };
     return { answered: true, text: answer.content ?? '', failed: !!answer.error };
@@ -1876,7 +1877,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   patchSession(sessionId, (s) => ({
     ...s,
     defaultTitle: false,
-    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (body.length>48?body.slice(0,47).trimEnd()+'…':body)) : s.title,
+    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (shortTitle(body))) : s.title,
     updatedAt: new Date().toISOString(),
     messages: [...s.messages, ...(resume || planStart ? [] : [userMsg]), assistantMsg],
   }));
