@@ -163,6 +163,14 @@ app sends them. The list keeps two columns apart. **Vendor tested** is the app v
 With two or more cards the Overview shows the busiest card's load, all cards' memory, the hottest card and the total power, and a
 "Cards" strip lists up to 4 cards (`5` opens Hardware). The CPU tile shows sockets and cores.
 
+The PCIe tile shows the link (for example `Gen4 x16`) and next to it what crossed it. Where the driver counts the traffic
+(NVIDIA) that number is the driver's own. Where it does not (an AMD card on Linux, see [AMD_HIP.md](AMD_HIP.md)), the tile says
+"staged to GPU" and shows what Strata put on the link itself: the expert blocks the prompt copied from system RAM into
+graphics memory, and the ones the answer read back over the link. The engine reports that once a second while a request
+runs, so the tile moves during a long prompt as well as during the answer, and reads 0 while nothing runs. The streamed
+K/V and other programs' traffic are not in it, the count is on for the RX 7900 family (gfx1100) unless
+`STRATA_LINK_CHIPS=all`, and an engine that does not report the count leaves it empty instead of 0.
+
 **Windows console.** In the classic Windows 10 console the monitor switches that window's font to Cascadia Mono when it is installed
 and draws the full look. Otherwise it draws a solid-block look and shows one line suggesting Windows Terminal. Nothing is saved and
 Windows Terminal, Linux and macOS are never touched. `STRATA_GLYPHS=unicode|ascii|solid` forces a look.
