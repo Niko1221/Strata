@@ -51,6 +51,7 @@ import * as engineInstall from './engine-install.mjs';
 import { detectBackend, currentBackend, streamChat, inferenceLine } from './inference.mjs';
 import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
+import { keepStreamAlive } from './stream-beat.mjs';
 import { EventHub, badRequest, error, json, readBody, readRaw, requestUrl, sameSecret, uid } from './util.mjs';
 import { createUploads } from './chat-uploads.mjs';
 import { createNativeDrops } from './native-drop.mjs';
@@ -986,6 +987,7 @@ const server = http.createServer(async (req, res) => {
     return await staticFile(req, res, path);
   } catch (err) {
     console.error('[strata]', err);
+    if (res.headersSent) { res.end(); return; }   // a stream already began: it ends here (a second writeHead would throw out of this handler and end the process)
     error(res, 500, err.message ?? 'Internal error');
   }
 });
@@ -2016,6 +2018,7 @@ async function api(req, res, path, method, url) {
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
     });
+    keepStreamAlive(res);   // #4878: a quiet turn stays open; the timer ends with the response
     const controller = new AbortController();
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
 
