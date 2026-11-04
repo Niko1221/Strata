@@ -2433,6 +2433,7 @@ class StrataEngine:
 
     slot_groups = 1         # --batch-groups (set when the engine starts)
     SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
+    BRANCH_BOUNDARY_MIN = 8192   # the engine's message-boundary checkpoint (STRATA_CACHE_MESSAGE_BOUNDARY) starts at this many tokens
     TURN_ID = 248045        # <|im_start|>: the engine's default --turn-token (its turn checkpoint sits at the last one)
 
     def pick_slot(self, prompt: list[int]) -> int | None:
@@ -2453,6 +2454,20 @@ class StrataEngine:
                 g0 = b - b % gs
                 return any(self.slot_busy[x] for x in range(b + 1, g0 + gs))
             return min(free, key=lambda b: (not fills_hole(b), self.slot_order.index(b)))
+        agreed = {}
+        def agree(b):
+            # how many leading tokens slot b's held stream and the prompt share (slice compares: streams reach 100k tokens)
+            if b not in agreed:
+                h = self.slot_held[b]
+                lo, hi = 0, min(len(h), len(prompt))
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    if h[:mid] == prompt[:mid]:
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                agreed[b] = lo
+            return agreed[b]
         def held_prefix(b):
             # what of `prompt` the slot's cache serves: the slot's whole held stream (the prompt and what it decoded)
             # when this prompt continues it, else its turn checkpoint - the engine takes one at the last <|im_start|> of
@@ -2465,8 +2480,28 @@ class StrataEngine:
                 return 0
             if len(h) < len(prompt) and prompt[:len(h)] == h:
                 return len(h)
-            k = len(h) - 1 - h[::-1].index(self.TURN_ID) if self.TURN_ID in h else 0
-            return k if 0 < k < len(prompt) and prompt[:k] == h[:k] else 0
+            if self.TURN_ID not in h:
+                return 0
+            lo = agree(b)
+            last = len(h) - 1 - h[::-1].index(self.TURN_ID)
+            if 0 < last < len(prompt) and last <= lo:
+                return last
+            # a branch: the same history with the last question replaced agrees with the held stream only up to an
+            # EARLIER message boundary, where the engine may hold a checkpoint of this chat
+            # (STRATA_CACHE_MESSAGE_BOUNDARY, prefixes of at least BRANCH_BOUNDARY_MIN tokens).  The engine finds that
+            # source itself but copies it into the slot chosen here, so another chat's slot would be overwritten (#2518).
+            i = min(lo, len(prompt) - 1, last - 1)
+            if i < self.BRANCH_BOUNDARY_MIN:
+                return 0
+            window = h[self.BRANCH_BOUNDARY_MIN:i + 1]
+            if self.TURN_ID not in window:
+                return 0
+            i -= window[::-1].index(self.TURN_ID)
+            # a boundary every other held conversation shares as well (the system prompt and tools of one client) says
+            # nothing about whose it is: the old order (an empty slot, then the least recent one) keeps all chats
+            if not any(agree(c) < i for c in range(self.batch) if c != b and self.slot_held[c]):
+                return 0
+            return i
         best = max(free, key=held_prefix)
         # without --batch-groups a held prefix of any length is taken, as before
         if held_prefix(best) >= (self.SLOT_PREFIX_MIN if self.slot_groups > 1 else 1):
