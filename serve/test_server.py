@@ -4324,6 +4324,63 @@ class ThinkingBudget(unittest.TestCase):
                                                      "messages": [{"role": "user", "content": "2+2?"}]})
         self.assertEqual(len(self.engine.prompts), 3)              # thinking off: no budget, one prompt each
 
+    def test_short_answer_room_is_opt_in(self):
+        """A short thinking reply can leave no answer; the opt-in wraps it with room left."""
+        from serve.server import REASONING_WRAP_UP
+        self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40
+        code, before = self.openai(max_tokens=300)
+        self.assertEqual(code, 200, before)
+        self.assertEqual(before["choices"][0]["finish_reason"], "length")
+        self.assertFalse(before["choices"][0]["message"]["content"])
+        self.assertEqual(len(self.engine.prompts), 1)
+
+        self.svc.short_answer_room = True
+        code, after = self.openai(max_tokens=300)
+        self.assertEqual(code, 200, after)
+        msg = after["choices"][0]["message"]
+        self.assertEqual((msg["content"], after["choices"][0]["finish_reason"]), (ThinkingEngine.ANSWER, "stop"))
+        self.assertEqual(msg["reasoning_content"], self.engine.THOUGHT[:150] + REASONING_WRAP_UP.split("</think>")[0])
+        self.assertEqual(len(self.engine.prompts), 3)              # one original and two for the wrapped reply
+
+    def test_short_answer_room_keeps_the_existing_controls(self):
+        from serve.server import REASONING_WRAP_UP
+        self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40
+        self.svc.short_answer_room = True
+        self.svc.answer_room = False
+        code, disabled = self.openai(max_tokens=300)
+        self.assertEqual(code, 200, disabled)
+        self.assertFalse(disabled["choices"][0]["message"]["content"])
+        self.assertEqual(len(self.engine.prompts), 1)
+
+        self.svc.answer_room = True
+        code, budgeted = self.openai(max_tokens=300, reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, budgeted)
+        self.assertEqual(budgeted["choices"][0]["message"]["reasoning_content"],
+                         self.engine.THOUGHT[:20] + REASONING_WRAP_UP.split("</think>")[0])
+        self.assertEqual(len(self.engine.prompts), 3)
+
+        code, too_small = self.openai(max_tokens=47)
+        self.assertEqual(code, 200, too_small)
+        self.assertEqual(too_small["choices"][0]["finish_reason"], "length")
+        self.assertEqual(len(self.engine.prompts), 4)              # below the floor: no automatic wrap
+
+    def test_short_answer_room_streams_an_answer_on_both_apis(self):
+        self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40
+        self.svc.short_answer_room = True
+        code, raw = self.openai(max_tokens=300, stream=True)
+        self.assertEqual(code, 200)
+        events = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        choices = [choice for event in events for choice in event.get("choices", [])]
+        self.assertEqual("".join(c.get("delta", {}).get("content") or "" for c in choices), ThinkingEngine.ANSWER)
+        self.assertEqual(choices[-1]["finish_reason"], "stop")
+
+        code, raw = self.post("/v1/messages", {"model": "m", "max_tokens": 300, "stream": True,
+            "thinking": {"type": "enabled"}, "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(code, 200)
+        events = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        text = "".join(e["delta"].get("text", "") for e in events if e["type"] == "content_block_delta")
+        self.assertEqual(text, ThinkingEngine.ANSWER)
+
     def test_anthropic_thinking_budget_tokens_is_a_budget(self):
         """0.1.45: thinking {type: enabled, budget_tokens: N} closes the thinking after N tokens (it was only a level)."""
         from serve.server import REASONING_WRAP_UP
