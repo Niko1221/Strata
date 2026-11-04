@@ -24,7 +24,7 @@ async function metrics(tag) {
   await cdp.send('HeapProfiler.collectGarbage').catch(() => {});
   const m = Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(x => [x.name, x.value]));
   const dom = await cdp.send('Memory.getDOMCounters').catch(() => ({}));
-  const sess = await page.evaluate(() => { try { return (localStorage.getItem('strata.sessions.v1') ?? '').length; } catch { return -1; } });
+  const sess = await page.evaluate(() => { try { return [...Array(localStorage.length).keys()].map((i) => localStorage.key(i)).filter((k) => k.startsWith('strata.session.v2.')).reduce((n, k) => n + (localStorage.getItem(k) ?? '').length, 0); } catch { return -1; } });
   console.log(`${tag.padEnd(22)} heap=${(m.JSHeapUsedSize / 1048576).toFixed(0)}MB total=${(m.JSHeapTotalSize / 1048576).toFixed(0)}MB nodes=${dom.nodes ?? m.Nodes} listeners=${dom.jsEventListeners ?? '-'} docs=${m.Documents} ls=${(sess / 1e6).toFixed(2)}M`);
   return m.JSHeapUsedSize;
 }

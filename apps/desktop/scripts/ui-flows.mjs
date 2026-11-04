@@ -695,7 +695,8 @@ if (only.has('restart')) {
   await run(async (context, { base }) => {
     const page = context.pages()[0] ?? await context.newPage();
     await page.goto(base, { waitUntil: 'domcontentloaded' });
-    const saved = await page.evaluate(() => ({ prefs: JSON.parse(localStorage.getItem('strata.prefs.v2') || '{}'), chats: localStorage.getItem('strata.sessions.v1'), theme: document.documentElement.dataset.theme }));
+    const saved = await page.evaluate(() => ({ prefs: JSON.parse(localStorage.getItem('strata.prefs.v2') || '{}'), chats: [...Array(localStorage.length).keys()].map((i) => localStorage.key(i)).filter((k) => k.startsWith('strata.session.v2.')).map((k) => localStorage.getItem(k)).join('
+'), theme: document.documentElement.dataset.theme }));
     check(saved.prefs.contentFontSize === 19 && saved.prefs.language === 'de', 'text size and language survive a restart on the same port', JSON.stringify(saved.prefs));
     check(saved.theme === 'dark', 'the theme survives too', saved.theme);
     check(/My chat/.test(saved.chats ?? ''), 'and the chat list', saved.chats);
