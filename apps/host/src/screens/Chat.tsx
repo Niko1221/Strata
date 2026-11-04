@@ -11,6 +11,7 @@ import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
 import { endPreviewDeferral, previewsDeferred } from '../lib/recovery';
+import { createImeGuard } from '../lib/ime-enter';
 import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { PreviewResizeHandle } from '../components/PreviewResizeHandle';
@@ -614,6 +615,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const [slashOpen, setSlashOpen] = useState(false);
     const [slashDismissed, setSlashDismissed] = useState(false);
     const slashHostRef = useRef<HTMLDivElement>(null);
+    const ime = useRef(createImeGuard());
     const slashQuery = slashDismissed ? null : slashOpen ? '' : draft.startsWith('/') && !/\s/.test(draft) ? draft.slice(1) : null;
     const matches = slashQuery === null ? [] : commands.filter((c) => c.label.slice(1).startsWith(slashQuery.toLowerCase()));
     useEffect(() => { setSlashDismissed(false); }, [draft, session?.id]);
@@ -643,7 +645,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
-          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
+          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onBlur={() => ime.current.reset()} onCompositionStart={() => ime.current.compositionStart()} onCompositionEnd={(e) => ime.current.compositionEnd(e.timeStamp)} onPaste={(e) => {
             // A picture on the clipboard (a screenshot, a copied image) is attached like a dropped file; text pastes as usual.
             const files = pastedFiles(e.clipboardData);
             if (!files.length)
@@ -651,6 +653,9 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
             e.preventDefault();
             window.dispatchEvent(new CustomEvent(DROP_EVENT, { detail: files }));
         }} onChange={(e) => { setSlashOpen(false); setSlashDismissed(false); setDraft(e.target.value); e.currentTarget.style.height = "auto"; e.currentTarget.style.height = `${Math.min(180, e.currentTarget.scrollHeight)}px`; }} onKeyDown={(e) => {
+            // A key that belongs to the IME (the Enter that commits a conversion, in the order each engine delivers it) is not ours (#5071).
+            if (ime.current.keyDown({ key: e.key, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode }, e.timeStamp))
+                return;
             // The command menu owns the keyboard while it is open.
             if (slashQuery !== null && e.key === 'Escape') {
                 e.preventDefault();
@@ -679,7 +684,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
                 }
             }
             onKey(e);
-            if (!e.nativeEvent.isComposing && composerSends(e)) {
+            if (composerSends(e)) {
                 e.preventDefault();
                 onSubmit();
             }
