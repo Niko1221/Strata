@@ -64,3 +64,13 @@ Per-request data: `results.json`. Engine log lines from the start: `engine-log-e
 ## Correctness and limitations
 
 Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load and power limits are not recorded. Total time of the suite: 281 s.
+
+## Later the same day: the resident setup
+
+These three reports measured the install's own streaming configuration (`--expert-cache 64`). Later the same day the same machine ran Gyro-M **fully resident** (`--expert-cache 24576`, engine 0.1.56-metal, DFlash2 drafter), and the picture changed:
+
+- Standard bench (`strata bench run`) at 32K with every expert in VRAM: **44.3 tok/s median decode** (47.1 / 47.6 / 38.2 short / 4K / 16K), against 25.7 here with the install's streaming choice. DFlash2 wins the drafter duel on this engine (44.3 vs 42.6 with the MTP layer).
+- The window scales as the resident plan trades its coldest experts for the context's buffers: **34.7 tok/s at 64K, 33.0 at 128K** (sanity 12/12 at every step), a real 129K-token request served at 497 tok/s, and 240K tokens answered on a 262144 window.
+- `STRATA_METAL_GEMV_NR=2` reads **49.8 / 48.1 tok/s** on the first bench after boot (short / 4K).
+
+Full tables, the expert-arbitration curve and the measurement caveat (only the first bench after boot is comparable on this machine; sustained decode lands about a third lower): issue #5176.
