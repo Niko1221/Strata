@@ -167,9 +167,11 @@ class DsPictures:
             data = Vision.load(source)
         self.prepare(data)
 
-    def build(self, ids: list[int], pictures: list[bytes]) -> tuple[list[int], str]:
+    def build(self, ids: list[int], pictures: list[bytes],
+              spans: list[tuple[int, int, int]] | None = None) -> tuple[list[int], str]:
         """The prompt ids with each placeholder expanded to its picture's span, and the path of the DSI1 file for the GENI line.
-        `pictures`: the bytes of every image of the request, in prompt order."""
+        `pictures`: the bytes of every image of the request, in prompt order.  Optional `spans` receives each picture's
+        (template token position, expanded token position, token length), for mapping shared-prefix boundaries."""
         marks = [i for i, t in enumerate(ids) if t == self.image_token]
         if len(marks) != len(pictures):
             raise ValueError("the prompt and its images do not match")
@@ -180,7 +182,10 @@ class DsPictures:
             w, h, rgb = self.prepare(data)
             out += ids[last:pos]
             entries.append((len(out), w, h, rgb))
-            out += [self.image_token] * span_length(w, h, self.patch, self.merge)
+            length = span_length(w, h, self.patch, self.merge)
+            if spans is not None:
+                spans.append((pos, len(out), length))
+            out += [self.image_token] * length
             last = pos + 1
         out += ids[last:]
         self.dir.mkdir(parents=True, exist_ok=True)

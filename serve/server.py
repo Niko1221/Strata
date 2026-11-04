@@ -5588,6 +5588,7 @@ class Service:
         self.embeddings.keys = None
         images = images_of(messages)
         ds_pics = False                                  # DeepSeek pictures (the engine's own tower): the file is already written
+        ds_template_ids, ds_spans = None, []
         if images:
             if self.offline and any(src.startswith(("http://", "https://")) for src in images):
                 raise ValueError("offline mode cannot download an image URL; send a data: image instead")
@@ -5608,7 +5609,9 @@ class Service:
             if isinstance(self.vision, DsPictures):
                 # DeepSeek-V4.1: the engine has its own vision tower.  The pictures go to it as raw RGB in the file of a GENI line
                 # (serve/ds_pictures.py); each template placeholder becomes the run of image tokens its picture takes.
-                ids, ds_file = self.vision.build(ids, [Vision.load(src) if isinstance(src, str) else src for src in images])
+                ds_template_ids = ids
+                ids, ds_file = self.vision.build(ids, [Vision.load(src) if isinstance(src, str) else src for src in images],
+                                                spans=ds_spans)
                 self.embeddings.path = ds_file
                 self.embeddings.keys = None
                 images, ds_pics = [], True
@@ -5688,12 +5691,13 @@ class Service:
             # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
             write_temporary(combined, [p for p, _ in encoded])
-        if self.family == "deepseek41" and req is not None and req.get("strata_prefix") is None and not images and not ds_pics:
+        if self.family == "deepseek41" and req is not None and req.get("strata_prefix") is None and not images:
             lead = self.deepseek_shared_start(messages)
             if lead:
                 req["strata_prefix"] = {"messages": lead}
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or ds_pics)
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or ds_pics,
+                                                       template_ids=ds_template_ids, image_spans=ds_spans)
         if req is not None:
             self.set_restore_points(req, ids, bool(images) or ds_pics)
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
@@ -5713,10 +5717,10 @@ class Service:
 
     def set_restore_points(self, req: dict, ids, has_images: bool) -> None:
         """STRATA_DS4_RESTORE_POINTS: where the DeepSeek engine keeps restore points for this prompt, in req["_restore"]
-        (never a client's own; not with pictures, whose spans the engine reads whole).  The shared start is left to
-        strata_prefix (pin=N) where the request has one."""
+        (never a client's own).  Positions use the expanded prompt; the engine moves points out of picture spans and
+        validates their hashes on restore.  The shared start is left to strata_prefix (pin=N) where the request has one."""
         req.pop("_restore", None)
-        if self.family != "deepseek41" or has_images:
+        if self.family != "deepseek41":
             return
         on, tail = restore_point_settings()
         if not on:
@@ -5747,7 +5751,7 @@ class Service:
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
 
-    def resolve_prefix(self, spec, messages, tools, kwargs, ids, has_images=False) -> dict:
+    def resolve_prefix(self, spec, messages, tools, kwargs, ids, has_images=False, *, template_ids=None, image_spans=()) -> dict:
         """R1: `"strata_prefix"` marks the start of the prompt as a shared read-only prefix: a long document that many
         short questions follow.  Three ways to say where it ends: `{"messages": K}` (the first K messages), `{"message":
         I, "chars": N}` (the first N characters of message I's text: a document and its question in one message) or
@@ -5764,7 +5768,7 @@ class Service:
         for k, v in spec.items():
             if not isinstance(v, int) or isinstance(v, bool) or v < (0 if k == "message" else 1):
                 raise ValueError(f"strata_prefix.{k}: a whole number ({'0' if k == 'message' else '1'} or more)")
-        if has_images:
+        if has_images and self.family != "deepseek41":
             print("[strata] strata_prefix ignored: the request has images", flush=True)
             return {}
         what = ",".join(f"{k}={v}" for k, v in spec.items())
@@ -5775,6 +5779,15 @@ class Service:
                 if x != y:
                     break
                 n += 1
+            return n
+
+        def common_start(head):
+            # Match before expansion to retain tokenizer merges at the boundary; then translate through whole images.
+            # Their explicit spans also distinguish adjacent placeholders, which become one run of identical ids.
+            n = lcp(head, ids if template_ids is None else template_ids)
+            for pos, start, length in reversed(image_spans):
+                if pos < n:
+                    return start + length + (n - pos - 1)
             return n
 
         def head_ids(msgs):
@@ -5803,7 +5816,7 @@ class Service:
                       "prefix must leave at least the last one", flush=True)
                 return {}
             head = head_ids(messages[:k])
-            n = lcp(head, ids)
+            n = common_start(head)
         else:
             i, chars = spec["message"], spec["chars"]
             text = messages[i].get("content") if 0 <= i < len(messages) else None
@@ -5812,7 +5825,7 @@ class Service:
                 return {}
             cut = messages[:i] + [{**messages[i], "content": text[:chars] + self.PREFIX_END}]
             head = head_ids(cut)
-            n = lcp(head, ids)
+            n = common_start(head)
         if n < 1 or n >= len(ids) - 1:
             print(f"[strata] strata_prefix {what} ignored: it leaves no usable prefix of the {len(ids)}-token prompt "
                   f"(common start {n})", flush=True)

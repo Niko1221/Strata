@@ -145,6 +145,12 @@ on the card on a GPU that shares the PC's memory (Mac, GB10, Strix Halo), and wi
 tokens) and hands it to the engine; it needs Pillow for that (`python -m pip install pillow`; setup installs it). `--vision no` in `strata launch`
 (or `--vision off` for the engine) turns them off; a request with a picture then gets a 400 that says so.
 
+Picture conversations use the same RAM and directory slots. A shared prefix can be reused before the first picture, or
+through pictures whose positions, span lengths and pixel hashes match. Changing a picture keeps only the prefix before
+it. Each parallel conversation keeps its own picture identities. Slots store these identities with the model state,
+not the picture embeddings. The image-aware slot format replaces older slots; the first request after upgrading reads
+those conversations again.
+
 ## Several conversations at once (`--parallel`)
 
 Off by default: requests take turns, as before. `--parallel N` (2 to 8) lets the engine answer N conversations at the same time: several chats, an agent with sub-agents,
