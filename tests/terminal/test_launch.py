@@ -1395,13 +1395,13 @@ class GpuRolesFlag(unittest.TestCase):
         self.assertIsNone(s["gpus"])
         code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main,0=helper"])
         self.assertEqual(code, 0, err or out)
-        self.assertIn("cards     Main: GPU 2 RTX A4000. Helper: GPU 1 RTX A4000.", out)
+        self.assertIn("cards     Main: GPU 1 RTX A4000. Helper: GPU 0 RTX A4000.", out)      # the numbers --gpu takes (card 0 is GPU 0)
         self.assertIn("--gpu-roles 0=helper,1=main", out)                 # the copyable line says the same
 
     def test_one_card_named_leaves_the_other_off(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main"])
         self.assertEqual(code, 0, err or out)
-        self.assertIn("Main: GPU 2 RTX A4000. Off: GPU 1 RTX A4000.", out)
+        self.assertIn("Main: GPU 1 RTX A4000. Off: GPU 0 RTX A4000.", out)
 
     def test_bad_roles_are_plain_sentences(self):
         for argv, word in ((["--gpu-roles", "1=boss"], "main, helper, off"), (["--gpu-roles", "0=main,1=main"], "only one card can be Main"),
