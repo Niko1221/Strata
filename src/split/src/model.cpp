@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <type_traits>
 #include <cmath>
@@ -1518,8 +1519,28 @@ void Model::choose_residency() {
         resident.assign(NL, std::vector<char>(NEXP, 1));
         double moved = 0;
         int n = 0, extra = 0;
+        // Opt-in (default off = upstream): FNX_POOL_MIN_RESIDENT=N never takes a size pool below N resident experts. The expert cache
+        // needs 2*MAXT*TOPK (320) slots in EVERY pool, but the coldest-per-byte order empties the small pools of the mixed-quant files first
+        // (IQ3_S: pool 3 = 3 layers) and place_experts() then throws "pool P has K slots, a window needs 320". A pool is the layers whose
+        // gate+up and down expert bytes are equal (what expert_cache() keys its pools on, up to the 16-byte padding).
+        long pool_floor = 0;
+        if (const char* pf = std::getenv("FNX_POOL_MIN_RESIDENT")) {
+            char* end = nullptr;
+            pool_floor = std::strtol(pf, &end, 10);
+            if (end == pf || *end || pool_floor < 0) throw std::runtime_error(std::string("fnx: FNX_POOL_MIN_RESIDENT: a count (0 or more), not '") + pf + "'");
+        }
+        std::vector<std::pair<size_t, size_t>> pool_key(NL);
+        std::map<std::pair<size_t, size_t>, long> pool_res;
+        for (int l = 0; l < NL; ++l) {
+            const std::string b = "blk." + std::to_string(l) + ".";
+            pool_key[(size_t) l] = {g.t(b + "ffn_gate_exps.weight").nbytes + g.t(b + "ffn_up_exps.weight").nbytes, g.t(b + "ffn_down_exps.weight").nbytes};
+            pool_res[pool_key[(size_t) l]] += NEXP;
+        }
         for (int i : order) {
+            long& pr = pool_res[pool_key[(size_t) (i / NEXP)]];
+            if (pool_floor && pr <= pool_floor) continue;   // this pool is at its floor: its next-coldest expert stays in VRAM
             if (moved >= want && extra++ >= ram_extra) break;
+            --pr;
             resident[(size_t) (i / NEXP)][(size_t) (i % NEXP)] = 0;
             moved += bytes[(size_t) (i / NEXP)];
             ++n;
