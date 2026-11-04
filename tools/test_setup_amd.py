@@ -125,7 +125,9 @@ class Rx6600OptIn(unittest.TestCase):
     def test_off_by_default_and_the_switch_names_itself(self):
         if setup.GFX1032_OPT_IN:
             self.skipTest("this run has STRATA_EXPERIMENTAL_GFX1032=1 set")
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)):   # no engine installed
+        from strata_control import engine_component as EC
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)), \
+                mock.patch.object(EC, "resolve", side_effect=EC.EngineMissing("none")):   # no engine installed anywhere
             self.assertNotIn("gfx1032", setup.AMD_ARCHS)
             self.assertIn("STRATA_EXPERIMENTAL_GFX1032", setup.amd_problem({"arch": "gfx1032"}))
         self.assertEqual(setup.AMD_NAMES["gfx1032"], "AMD Radeon RX 6600 / 6600 XT / 6600M (gfx1032)")
@@ -138,6 +140,7 @@ class Rx6600OptIn(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             eng = Path(d) / "engine"
             eng.mkdir()
+            (eng / "strata-device.exe").write_text("x")            # the archs are read beside the probe (hip_probe_path)
             (eng / "BUILD.json").write_text('{"backend": "hip", "archs": ["gfx1032"]}', encoding="utf-8")
             with mock.patch.object(setup, "ROOT", Path(d)), mock.patch.object(setup, "WIN", True):
                 self.assertIsNone(setup.amd_problem(dict(self.CARD)))
@@ -146,6 +149,32 @@ class Rx6600OptIn(unittest.TestCase):
             with mock.patch.object(setup, "ROOT", Path(d)), mock.patch.object(setup, "WIN", True):
                 self.assertIsNotNone(setup.amd_problem(dict(self.CARD)))     # an engine for other cards does not count
                 self.assertIn("STRATA_HIP_ARCHS=gfx1032", setup.gfx1032_notes(self.CARD)[0])
+
+    def test_the_component_engine_makes_the_card_usable(self):
+        """The app installs the engine as a component beside strata-device (engine-component.json, #3418), not in
+        engine/: with no switch set, setup accepts the card when that package was built for gfx1032."""
+        from strata_control import engine_component as EC
+        with tempfile.TemporaryDirectory() as d:
+            comp = Path(d) / "components" / "0.2-hip"
+            comp.mkdir(parents=True)
+            (comp / "strata-device.exe").write_text("x")
+            (comp / "engine-component.json").write_text('{"backend": "hip", "archs": ["gfx1032"]}')
+            found = mock.Mock(root=comp)
+            with mock.patch.object(setup, "ROOT", Path(d) / "control"), \
+                    mock.patch.object(EC, "resolve", return_value=found), \
+                    mock.patch.object(setup, "WIN", True):
+                self.assertIsNone(setup.amd_problem(dict(self.CARD)))
+                self.assertIn("installed here", setup.gfx1032_notes(self.CARD)[0])
+            (comp / "engine-component.json").write_text('{"backend": "hip", "archs": ["gfx1100"]}')
+            with mock.patch.object(setup, "ROOT", Path(d) / "control"), \
+                    mock.patch.object(EC, "resolve", return_value=found), \
+                    mock.patch.object(setup, "WIN", True):
+                self.assertIsNotNone(setup.amd_problem(dict(self.CARD)))     # an engine for other cards does not count
+            (comp / "engine-component.json").write_text('{"backend": "cuda", "archs": ["sm_86"]}')
+            with mock.patch.object(setup, "ROOT", Path(d) / "control"), \
+                    mock.patch.object(EC, "resolve", return_value=found), \
+                    mock.patch.object(setup, "WIN", True):
+                self.assertIsNotNone(setup.amd_problem(dict(self.CARD)))     # an NVIDIA engine is never asked
 
     def test_switched_on(self):
         with mock.patch.object(setup, "AMD_ARCHS", setup.AMD_ARCHS + ("gfx1032",)):

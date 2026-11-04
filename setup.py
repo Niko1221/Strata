@@ -3965,13 +3965,21 @@ SELF_BUILD_ARCHS = ("gfx1032",)             # RX 6600 series (opt-in): no ready-
 
 
 def installed_hip_archs() -> set:
-    """The archs the Windows HIP engine installed in engine/ carries (its BUILD.json).  A card outside AMD_ARCHS is
-    usable when that engine was built for it: the RX 6600 series and the owner's gfx1032 build (docs/RX6600M.md)."""
-    try:
-        meta = json.loads((ROOT / "engine" / "BUILD.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    """The archs of the Windows HIP engine installed here, read beside the probe hip_probe_path() picks: a checkout's
+    engine/BUILD.json, or the app's engine package in the component folder (its engine-component.json, #3418).  A card
+    outside AMD_ARCHS is usable when that engine was built for it: the RX 6600 series and the owner's gfx1032 build
+    (docs/RX6600M.md)."""
+    probe = hip_probe_path()
+    if not probe.is_file():
         return set()
-    return set(arch_names(meta.get("archs"))) if meta.get("backend") == "hip" else set()
+    for record in ("BUILD.json", "engine-component.json"):     # a checkout's build record, or a component's manifest
+        try:
+            meta = json.loads((probe.parent / record).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict) and meta.get("backend") == "hip":
+            return set(arch_names(meta.get("archs")))
+    return set()
 
 
 def is_rdna2(g) -> bool:
