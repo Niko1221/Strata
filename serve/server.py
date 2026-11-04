@@ -3465,7 +3465,7 @@ def drafting_vram_mib(cfg: dict, backend: str | None, archs) -> float | None:
     try:
         gl = gpu_list(cfg)
         arch = str((list(archs or [""]) or [""])[0]).lower()
-        if len(gl) > 1 or arch in HIP_IGPU_ARCHS or arch == "sm_121":
+        if len(gl) > 1 or arch in HIP_IGPU_ARCHS or arch in ("sm_121", "sm_110"):   # the Spark's GB10 and the Thor's sm_110: one memory, no separate VRAM to read
             return None
         got = gpu_vram_mib(gl or [0], hip=(backend == "hip"))
         return float(next(iter(got.values()))) if got else None
