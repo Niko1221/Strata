@@ -44,6 +44,7 @@ function open(saved = {}) {
   );
   const app = mod.exports;
   return { ...app, data, requests, stops, queues, steers, timers,
+    flushText() { for (const [id, timer] of timers) if (timer.ms === 90) { timers.delete(id); timer.fn(); } },
     steerWith: fn => { steerReply = fn; },
     stopWith: fn => { stopReply = fn; }, queueWith: fn => { queueReply = fn; },
     nextRequest() { const next = deferred(); waiting.push(next); return next.promise; },
@@ -78,6 +79,7 @@ test('same-turn steering delivers ordered corrections without aborting or sendin
   first.request.frame({ type: 'start', agent: true });
   first.request.frame({ type: 'delta', text: 'Keep completed visible text' });
   first.request.frame({ type: 'reasoning', text: 'Incomplete private reasoning' }); await tick();
+  first.request.frame({ type: 'agent-tool-draft', draft: { id: 'partial-write', name: 'write_file', bytes: 30, text: 'incomplete file' } }); await tick();
   assert.equal(await h.submitWhileBusy('First correction'), true);
   assert.equal(await h.submitWhileBusy('Second correction'), true); await tick();
   assert.deepEqual(h.steers.map(m => m.message), ['First correction', 'Second correction']);
@@ -85,6 +87,7 @@ test('same-turn steering delivers ordered corrections without aborting or sendin
   for (const message of h.steers) first.request.frame({ type: 'steering', message: { id: message.id, text: message.message, state: 'delivered' } });
   first.request.frame({ type: 'steering', message: { id: h.steers[0].id, text: 'First correction', state: 'delivered' } });
   first.request.frame({ type: 'delta', text: 'Continued in the same run' }); await tick();
+  h.flushText();
   assert.equal(h.requests.length, 1);
   assert.equal(h.stops.length, 0);
   assert.equal(first.request.signal.aborted, false);
@@ -93,6 +96,7 @@ test('same-turn steering delivers ordered corrections without aborting or sendin
   assert.deepEqual(messages.filter(m => m.role === 'user').map(m => m.content), ['First question', 'First correction', 'Second correction']);
   assert.ok(messages.some(m => m.content === 'Keep completed visible text'));
   assert.ok(!messages.some(m => m.reasoning?.includes('Incomplete private reasoning')));
+  assert.ok(!messages.some(m => m.drafts?.length), 'the upstream tool-draft UI clears at the steering boundary');
   assert.equal(messages.at(-1).content, 'Continued in the same run');
   finish(first.request); await first.done;
 });
@@ -140,12 +144,41 @@ test('Wait retains the ordinary-response refusal and the existing goal queue', a
   assert.equal(h.requests.length, 1);
 });
 
+test('upstream busy-message backlog drains in order after the first parked correction succeeds', async () => {
+  const h = open(); h.setWhileBusy('queue'); const first = await start(h);
+  await h.submitWhileBusy('First queued');
+  await h.submitWhileBusy('Second queued');
+  await h.submitWhileBusy('Third queued');
+  assert.deepEqual(h.getState().parked[first.id], ['Second queued', 'Third queued']);
+  const second = h.nextRequest(); finish(first.request); await first.done;
+  const r2 = await second; assert.equal(r2.body.message, 'First queued');
+  const third = h.nextRequest(); finish(r2);
+  const r3 = await third; assert.equal(r3.body.message, 'Second queued');
+  const fourth = h.nextRequest(); finish(r3);
+  const r4 = await fourth; assert.equal(r4.body.message, 'Third queued');
+  finish(r4); await tick();
+  assert.equal(h.requests.length, 4);
+  assert.equal(h.stops.length, 0);
+  assert.equal(h.pending(first.id), undefined);
+});
+
+test('an unsuccessful interrupted stop keeps both the first correction and upstream backlog', async () => {
+  const h = open(); h.setWhileBusy('interject'); const first = await start(h);
+  first.request.frame({ type: 'start', agent: true }); await tick();
+  h.stopWith(() => Response.json({ stopped: true, pending: true }));
+  await h.submitWhileBusy('First correction');
+  await h.submitWhileBusy('Later correction');
+  finish(first.request); await first.done;
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.pending(first.id).text, 'First correction');
+  assert.deepEqual(h.getState().parked[first.id], ['Later correction']);
+});
+
 test('Send after parks one ordinary message and sends only after the stream closes', async () => {
   const h = open(); h.setWhileBusy('queue');
   const first = await start(h);
   assert.equal(await h.submitWhileBusy('Next question'), true);
   assert.equal(h.pending(first.id).text, 'Next question');
-  assert.equal(await h.submitWhileBusy('Keep this second draft'), false);
   assert.equal(h.requests.length, 1);
   const next = h.nextRequest();
   first.request.frame({ type: 'done' }); await tick();

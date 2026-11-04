@@ -100,6 +100,8 @@ test('generation is soft-cut in the same turn; ordered duplicate-safe input surv
   nextSocket = deferred(); sockets.at(-1).close(); await nextSocket.promise;
   const first = { chatId: 'chat-a', id: 'first', text: 'STEER: use another folder' }, second = { chatId: 'chat-a', id: 'second', text: 'STEER: preserve file names' };
   await Promise.all([r.bridge.steer(first), r.bridge.steer(first), r.bridge.steer(second)]);
+  await r.delivered;
+  assert.ok(r.frames.some(f => f.type === 'agent-tool-draft' && f.draft.id === 'incomplete-call' && f.draft.done), 'upstream draft tracking closes the discarded call before continued generation');
   await assert.rejects(r.bridge.steer({ ...first, chatId: 'chat-b' }), /no active agent run/);
   r.releaseModel(); await r.done;
   assert.equal(r.bridge.sessionOf('chat-a'), sessionId);

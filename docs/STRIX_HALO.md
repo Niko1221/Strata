@@ -4,7 +4,7 @@ This page is for people with a Ryzen AI Max "Strix Halo" PC (Radeon 8060S / 8050
 shared by the CPU and the GPU). Strata runs there through the same HIP backend as the Radeon cards in [AMD_HIP.md](AMD_HIP.md).
 **Status: experimental.**
 
-**DeepSeek V4.1-Flash runs here on Windows** (since 0.2.7): its own engine package is built for gfx1151 and the official IST-DAS
+**DeepSeek V4.1-Flash runs here on Windows** (since 0.2.7): its own engine package is built for gfx1151 and the official ISTA-DAS
 1.75 / 2.00 / 2.25 bpw sets run through it. Measured on the 128 GB box (64 GB BIOS carve-out plus 64 GB seen by Windows) with 2.00 bpw and the default Faster mode, on the
 2026-10-25 build (before the DeepSeek defaults of 0.2.7): answers 15-17 tokens/s on code, 10-11 on chat; a 4K prompt 87 tokens/s, an 8K prompt 125 and a 32K prompt 177.
 On the 0.2.7 build the same box reads a 4K prompt at 214-233 tokens/s; the table below says which number comes from which build. The graphics chip and the CPU share the RAM, so the
@@ -23,8 +23,8 @@ Use the [current release](https://github.com/Niko1221/Strata/releases/latest). Y
 
 | System | What to install | Engine variant |
 | --- | --- | --- |
-| Linux | `Strata-0.2.8-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
-| Windows | `Strata-0.2.8-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
+| Linux | `Strata-0.2.9-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
+| Windows | `Strata-0.2.9-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
 
 Packaged engines carry the matching hipBLASLt tuning table for gfx1151 and select it on their own. Setup recognizes `gfx1151` and
 PCI ID `1002:1586`; other integrated Radeon chips have separate support limits. Unified memory is counted once. Setup does not
@@ -42,7 +42,7 @@ package is the AMD one built for gfx1151 (`strata-dsv41-...-windows-x86_64-hip-r
 
 | | |
 | --- | --- |
-| Sets | IST-DAS 1.75 bpw (239 GB download), 2.00 bpw (257 GB), 2.25 bpw (274 GB); the n-gram table is shared |
+| Sets | ISTA-DAS 1.75 bpw (239 GB download), 2.00 bpw (257 GB), 2.25 bpw (274 GB); the n-gram table is shared |
 | Memory | one pool of 128 GB (the BIOS carve-out plus the RAM): about 109 GB of the 2.00 set's 132 GB of experts stay in it beside the dense weights and 12 GB kept for Windows; the other 23 GB are read from the SSD |
 | Driver | AMD Adrenalin 26.10.1 (driver 32.0.32015.7029) is the tested version, and the minimum to use: the 2025-03 driver failed at 32K context |
 | Context | 8K default; 32K and 64K work (an 8-hour 32K soak passed) |
@@ -213,6 +213,14 @@ export STRATA_PREFILL_STREAM_MIN=128   # prompt reads of 128-1,023 tokens on the
 `STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA` and `STRATA_SELECT_WMMA` together are one opt-in on an
 integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"), measured on a Radeon 780M only, where
 it is the default. `STRATA_PF_FUSED`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well.
+
+**On Windows the Strix Halo is the exception** (engine 0.1.52 and later): `gfx1151` takes the matrix-core set by itself -
+`STRATA_HIP_WMMA`, `STRATA_PF_GEMM`, `STRATA_PA_FAST`, `STRATA_HC_UPMIX` and `STRATA_PF_FUSED`, without `STRATA_SELECT_WMMA`
+(x1.003 there) - and the prompt keeps its own buffers instead of lending expert-cache slots. Measured on Qwen3.8-Flash-Next
+IQ3_S, prompts of 4K to 64K: x1.59 to x1.72 over 0.2.7. The whole block is off with `STRATA_GFX1151_DEFAULTS=0`; the set with
+`STRATA_IGPU_PROMPT_SET=0`, the buffers with `STRATA_PREFILL_BORROW=1`
+([STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md#4-what-is-on-by-default)). Linux `gfx1151` keeps the opt-in above until it is
+measured there.
 
 | Switch | What it does |
 | --- | --- |

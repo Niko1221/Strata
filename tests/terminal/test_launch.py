@@ -110,7 +110,7 @@ class CatalogRules(unittest.TestCase):
             self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
             for r in rows:
                 if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
-                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3}[r.model], delta=0.1)
+                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3, "ISTA-DAS-Coder": 190.7, "UD-IQ1_S": 241.0, "UD-IQ1_M": 258.4}[r.model], delta=0.1)
                     continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
@@ -141,10 +141,15 @@ class CatalogRules(unittest.TestCase):
     def test_a_mac_is_judged_by_unified_memory_and_the_words_follow(self):
         hw = {"ram_gb": 32.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
               "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": 32.0, "usable": True}]}
-        with Home():
+        with Home() as h:
             cat = catalog(hw)
+            eng = h.base / "strata-dsv41"
+            eng.write_bytes(b"engine without the Metal picture tower")      # an installed DeepSeek engine without STRATA_DS4_METAL_VISION_V1: text only (with it: pictures)
+            patcher = mock.patch.object(type(cat.strata), "dsv41_engine_exe", lambda self_: eng)
+            patcher.start()
+            self.addCleanup(patcher.stop)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw"})   # DeepSeek (0.2.7.1): the two sets run on a Mac
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two ISTA-DAS sets run on a Mac, UD-IQ1_S since f-039; the Coder and UD-IQ1_M are offered with a "not run yet" line
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
                 self.assertEqual(rows[name].family, "deepseek41")
@@ -193,7 +198,7 @@ class CatalogRules(unittest.TestCase):
             cat = catalog()
             self.assertAlmostEqual(cat.kv_gb(131072, "int8"), 1.799, places=2)
             self.assertLess(cat.kv_gb(131072, "q4_0"), cat.kv_gb(131072, "int8"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_12), 131072)      # 128K on every card (owner, 2026-11-01)
             self.assertEqual(cat.max_context("qwen", "IQ3_XXS", HW_24), 131072)
 
     def test_missing_installer_files_are_said_in_words(self):
@@ -413,6 +418,26 @@ class SetupArgs(unittest.TestCase):
                     self.assertIn("--vision off", nxt)
                     self.assertIn("github.com/Niko1221/Strata/issues", nxt)
 
+    def test_deepseek_on_an_rx_7000_card_says_once_that_it_is_untested(self):
+        """The 0.2.9 update adds a DeepSeek package for gfx1100-1102; it was built and never run on a real RX 7000 card, and the Terminal and the app say so
+        the way they say it for an Arc B-series card (one warn line, how to report)."""
+        from strata_cli.launch import cmd
+        from strata_cli.launch.catalog import Computer
+        line = "DeepSeek has not been tested on RX 7000 cards yet; please report how it runs."
+        cases = (("AMD Radeon RX 7900 XTX", "gfx1100", "deepseek41", True), ("AMD Radeon RX 7800 XT", "gfx1101", "deepseek41", True),
+                 ("AMD Radeon RX 7600", "gfx1102", "deepseek41", True), ("AMD Radeon RX 7900 XTX", "", "deepseek41", True),
+                 ("AMD Radeon RX 7900 XTX", "gfx1100", "qwen", False), ("AMD Radeon AI PRO R9700", "gfx1201", "deepseek41", False),
+                 ("AMD Radeon RX 6800 XT", "gfx1030", "deepseek41", False))
+        for name, arch, family, expect in cases:
+            card = {"index": 0, "name": name, "vendor": "amd", "vram_gb": 24.0, "usable": True, **({"arch": arch} if arch else {})}
+            hw = {"ram_gb": 64.0, "os": "Linux", "cpu": {"avx2": True, "name": "x"}, "gpus": [card]}
+            comp = Computer(ram_gb=64.0, gpus=hw["gpus"], disk_free_gb=500.0, os="Linux", avx2=True, raw=hw, engine_vendor="amd")
+            notes = [n for n in cmd.gpu_notices(S.LaunchSettings(family=family), comp) if n.text == line]
+            self.assertEqual(len(notes), 1 if expect else 0, (name, arch, family))
+            if expect:
+                self.assertEqual(notes[0].level, "warn")
+                self.assertIn("github.com/Niko1221/Strata/issues", notes[0].next)
+
     def test_a_mac_defaults_pictures_to_the_metal_reader_whatever_its_memory(self):
         for gb in (16.0, 32.0, 128.0):
             hw = {"ram_gb": gb, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"},
@@ -456,6 +481,21 @@ class SetupArgs(unittest.TestCase):
             self.assertEqual(s.vision, "gpu")                                 # what was asked for is kept
             s, _ = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", vision="off"), cat)
             self.assertEqual(s.vision, "off")
+
+    def test_a_disk_warning_is_not_shown_for_files_used_where_they_are_and_reads_once(self):
+        import dataclasses
+        from strata_cli.launch.cmd import apply_defaults
+        with Home():
+            cat = catalog(HW_12)
+            real = cat.rows()
+            rows = [dataclasses.replace(r, verdict="tight", words="tight: needs more disk space") for r in real]
+            with mock.patch.object(type(cat), "rows", lambda self, *a, **k: rows):
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS", model_path="/x"), cat)
+                self.assertFalse([n for n in notes if "tight" in n.text], notes)
+                _, notes = apply_defaults(S.LaunchSettings(family="qwen", model="IQ3_XXS"), cat)
+                text = " ".join(n.text for n in notes)
+                self.assertIn("is a tight fit: needs more disk space.", text)
+                self.assertNotIn("tight: tight", text)
 
     def test_the_apps_own_installer_arguments(self):
         import tempfile
@@ -553,9 +593,9 @@ class AdoptRules(unittest.TestCase):
             hw["gpus"] = cards
             cat = catalog(hw)
             self.assertEqual(cat.computer().line().split(" 8 GB")[0], "Arc A750".replace("Arc", "Intel Arc"))
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 8192)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)      # an 8 GB Arc too: warned about, never lowered
             hw["gpus"] = [{"vendor": "intel", "name": "Intel Arc Pro B70", "vram_gb": 32.0, "usable": True}]
-            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 32768)
+            self.assertEqual(cat.max_context("qwen", "IQ3_XXS", hw), 131072)
 
     def test_plan_names_what_is_missing(self):
         from strata_cli.launch import adopt
@@ -844,7 +884,7 @@ class FlagsCommand(unittest.TestCase):
     def test_defaults_come_from_the_recommendation(self):
         p = self.plan()
         s = p["settings"]
-        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 32768, "local", "skip"))
+        self.assertEqual((s["family"], s["model"], s["context"], s["access"], s["tune"]), ("qwen", "IQ3_S", 131072, "local", "skip"))
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):

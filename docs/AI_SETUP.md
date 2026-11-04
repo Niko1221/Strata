@@ -4,8 +4,8 @@ Use this guide when a user asks an AI agent to install Strata (version 0.2.5). T
 one; do not start from a source checkout.
 
 - **The Terminal and `strata launch`** (below). This is the route for an agent that has a shell.
-- **The desktop app.** One installer per system: `Strata-0.2.8-windows-x64-setup.exe`,
-  `Strata-0.2.8-linux-x86_64.AppImage`, `Strata-0.2.8-macos-arm64.dmg`, from the
+- **The desktop app.** One installer per system: `Strata-0.2.9-windows-x64-setup.exe`,
+  `Strata-0.2.9-linux-x86_64.AppImage`, `Strata-0.2.9-macos-arm64.dmg`, from the
   [latest release](https://github.com/Niko1221/Strata/releases/latest). The Windows and Linux installers carry no
   engine: on first start the app shows the engine for the user's graphics card and downloads it, or installs a file the
   user already has ("I already have the file"). Details: [INSTALL.md](INSTALL.md).
@@ -97,7 +97,7 @@ Useful options:
 | `--data-dir PATH` | Folder for new downloads; existing files stay put unless `--move-data` is also given |
 | `--vision on\|off\|gpu\|cpu` | Picture reading, subject to model and packaged-reader support |
 | `--gpu 0,1` | Selected GPUs; do not use source setup's `--gpus` spelling here |
-| `--parallel N` | Requested concurrent slots, 1–8; check what actually fits and starts |
+| `--parallel N` | Requested concurrent slots, 1–8; check what actually fits and starts. DeepSeek is one at a time unless you ask |
 | `--save-preset NAME` | Keep these launch choices for later |
 | `--open` | Open the server's browser page after it starts |
 | `--restart` | Replace an already running launch with different settings; interrupts active answers |

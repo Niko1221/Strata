@@ -2,7 +2,7 @@
 //
 // The model routes every word to its top 6 experts.  On a PC with a small graphics card the CPU lane and the SSD set the speed, and
 // each expert dropped saves their bytes: the router's top N are kept and their weights renormalised (the same selection the full
-// model makes, a shorter list).  The default is 5 where the graphics memory is 16 GiB or less, or the GPU shares the PC's RAM, the model's own count elsewhere;
+// model makes, a shorter list).  The default is 5 where the graphics memory is 16 GiB or less, or the GPU shares the PC's RAM, or the cards are RDNA4 (one card, or two or more holding half of the experts), the model's own count elsewhere;
 // --experts N says it outright (--experts 6: full quality), DS4_TOPK=N is the test override over everything.
 #pragma once
 
@@ -36,14 +36,30 @@ constexpr int kFasterModeExperts = 5;
 // multi_rdna4: two or more RDNA4 cards (gfx1200 / gfx1201: R9700, RX 9000) that together hold at least half of the routed experts - the 4 x R9700 box
 // the Marlin stream measured: 5 against 6 experts, 2.25 bpw, 8K prompt 1339 -> 1419 ppts (+6%) and decode 78.1 -> 81.2 tok/s (+4%), reference KL
 // 0.10987 against 0.10833 and top-1 87.59% against 87.53% (the gate is 0.006).  Faster mode there too, by default.
+// single_rdna4: ONE RDNA4 card (a 32 GB R9700 holds under a fifth of a 2.25 bpw set, the CPU lane does the rest: 29-65% of the experts, 12-18 tok/s).
+// 1 x R9700 on p620 (125 GB RAM), 2.25 bpw, frozen profile, 5 interleaved pairs, 5 against 6 experts: decode 15.24 against 13.08 tok/s (+16%, 5 of 5
+// pairs), a scripted agent loop -24% wall time (5 of 5), the long-read loop -12% (5 of 5); KL against the 6-expert run 0.030 (6 against 6: 0.008),
+// against the original model 0.1106 against 0.1067-0.1071.  The multi-card rule above needs the cards to hold half of the experts; this one does not.
 inline int experts_per_word(int requested, uint64_t vram_bytes, int model_k, bool integrated = false, bool multi_rdna4 = false,
-                            bool v026 = false) {
+                            bool v026 = false, bool single_rdna4 = false) {
     if (model_k <= 1) return model_k;
-    if (v026) multi_rdna4 = false;   // 0.2.6: Faster by default on a small card or an integrated GPU only
+    if (v026) multi_rdna4 = single_rdna4 = false;   // 0.2.6: Faster by default on a small card or an integrated GPU only
     int n = requested;
-    if (n < 1) n = integrated || multi_rdna4 || (vram_bytes != 0 && vram_bytes <= kFasterModeVramMax) ? kFasterModeExperts : model_k;
+    if (n < 1) n = integrated || multi_rdna4 || single_rdna4 || (vram_bytes != 0 && vram_bytes <= kFasterModeVramMax) ? kFasterModeExperts : model_k;
     if (n > model_k) n = model_k;
     return n < 1 ? 1 : n;
+}
+
+// The expert profile (`expert-profile.bin`, --expert-profile) is a bare array of u32 counts: one row of n_exp per layer, the drafter's blocks after the 40 layers, no header.
+// Its size is the only thing that says which model it was counted on, and the engine used to read the first rows of any file that was long enough: a profile counted on
+// 384 experts a layer (43 rows of 384 = 66,048 bytes) read as rows of 192 gives every layer the wrong experts, silently (the ISTA-DAS Coder has 192).  A file
+// holds the layers and at most kProfileExtraRows more (the drafter's 3 blocks, with room); anything longer is another model's.  Every profile written by the engine
+// or shipped with Strata (40 + 3 rows, or 40) passes, so a set with 384 experts reads exactly the files it read before.
+constexpr int kProfileExtraRows = 8;
+inline bool profile_size_fits(uint64_t bytes, int layers, int n_exp) {
+    if (layers <= 0 || n_exp <= 0) return false;
+    const uint64_t row = 4ull * (uint64_t) n_exp;
+    return bytes >= row * (uint64_t) layers && bytes <= row * (uint64_t) (layers + kProfileExtraRows);
 }
 
 // Prompt chunk (--prefill-chunk) default, one rule decided once at load from bytes (no timing).  The chunk's buffers come out of the VRAM the
@@ -186,10 +202,12 @@ inline bool copy_hugetlb_default(int env, double pool_free_bytes, double copy_by
     return pool_free_bytes > 0.0 && pool_free_bytes >= copy_bytes;
 }
 
-// DS4_FAST_ATTN (the chunked prompt's attention on the matrix cores): env -1 unset, else 0 / 1; 0.2.6: opt-in; 0.2.7: on for gfx1200 / gfx1201.
-inline bool fast_attn_default(int env, bool gfx12, bool v026 = false) {
+// DS4_FAST_ATTN (the chunked prompt's attention on the matrix cores): env -1 unset, else 0 / 1; 0.2.6: opt-in; 0.2.7: on for
+// gfx1200 / gfx1201, and (this change) on for gfx1151 on Windows, where it measured +43.6% on a 32K prompt (101.6 -> 70.8 s,
+// sparse attention 38.3 -> 7.0 s), the same greedy first token and a first-token KL far under the 0.0228 bar.
+inline bool fast_attn_default(int env, bool gfx12, bool gfx1151win = false, bool v026 = false) {
     if (env >= 0) return env != 0;
-    return !v026 && gfx12;
+    return !v026 && (gfx12 || gfx1151win);
 }
 
 // The drafter's cumulative confidence cut (STRATA_DS4_DSPARK_CUM, a request's dspark_cum): the variable when set; 0.2.6: 0; 0.2.7: 0.5 on gfx1200 / gfx1201.
