@@ -101,7 +101,9 @@ def ensure_windows_engine(force=False):
 
 def intel_gpus():
     """Intel discrete GPUs from sysfs: vendor 0x8086 under the xe or i915 driver, named by PCI device id. VRAM comes
-    from the id table, else from the size of the card's VRAM BAR."""
+    from the id table, else from the size of the card's VRAM BAR.  On Windows, the cards the native engine can serve
+    (Level Zero with the free-VRAM query and command graphs): a card without them, such as an integrated GPU beside
+    the Arc, is named and left out instead of stopping the run."""
     if S.WIN:
         exe, why = sycl_engine()
         if exe is None:
@@ -116,17 +118,27 @@ def intel_gpus():
                 S.fail(f"native SYCL GPU probe failed ({result.returncode}): {result.stderr.strip()}",
                        "check the Intel GPU driver and oneAPI runtime; docs/INTEL_ARC.md")
             cards = json.loads(result.stdout)
+            usable, skipped = [], []
             for card in cards:
+                why = ""
                 if card.get("driver") != "level_zero":
-                    S.fail(f"native Windows inference requires Level Zero, not {card.get('driver', 'unknown')}",
-                           "set ONEAPI_DEVICE_SELECTOR=level_zero:gpu and check the Intel GPU driver and oneAPI runtime")
-                if card.get("free_memory_supported") is not True:
-                    S.fail("native Intel GPU free VRAM query is unavailable (ext_intel_free_memory)",
-                           "rebuild the native engine and check the Intel GPU driver and oneAPI runtime")
-                if card.get("command_graph_supported") is not True:
-                    S.fail("native Intel GPU command graphs are unavailable (ext_oneapi_graph)",
-                           "rebuild the native engine and check the Intel GPU driver and oneAPI runtime")
-            return cards
+                    why = f"requires Level Zero, not {card.get('driver', 'unknown')}"
+                elif card.get("free_memory_supported") is not True:
+                    why = "free VRAM query is unavailable (ext_intel_free_memory)"
+                elif card.get("command_graph_supported") is not True:
+                    why = "command graphs are unavailable (ext_oneapi_graph)"
+                (skipped if why else usable).append((card, why))
+            for card, why in skipped:
+                # budiony, #3607: an integrated GPU beside the Arc fails these checks and cannot serve; it must not
+                # stop the run, which is what happened when the check was run over every level_zero device
+                S.say(f"  not used: {card.get('name', 'an Intel GPU')} {why} - the engine needs Level Zero with both")
+            if cards and not usable:
+                card, why = skipped[0]
+                old_engine = "free_memory_supported" not in card and "command_graph_supported" not in card
+                S.fail(f"the Intel GPU cannot be used for native inference: {card.get('name', 'the card')} {why}",
+                       "rebuild the native engine and check the Intel GPU driver and oneAPI runtime" if old_engine
+                       else "set ONEAPI_DEVICE_SELECTOR=level_zero:<index> to a card that has both; docs/INTEL_ARC.md")
+            return [card for card, _ in usable]
         except (OSError, ValueError, subprocess.TimeoutExpired) as ex:
             S.fail(f"cannot query the native SYCL engine: {ex}", "docs/INTEL_ARC.md")
     found = []
@@ -649,8 +661,9 @@ def install(argv) -> None:
             S.say("  " + line)
         if len(intel) > 1:                                  # pin the SYCL device(s)
             # the Level Zero order followed the sysfs card order on the tested machines; a machine where it does not
-            # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one)
-            selector = "level_zero:*" if split else f"level_zero:{idx}"
+            # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one).  intel_gpus() leaves cards the engine
+            # cannot use out of the list, so the card's own index is used rather than its position (#3607, budiony).
+            selector = "level_zero:*" if split else f"level_zero:{intel[idx].get('index', idx)}"
             cfg.setdefault("env", {}).setdefault("ONEAPI_DEVICE_SELECTOR", selector)
         if split:
             # #1980: without it every card keeps a full copy of the dense weights (1.4 GiB each on Flash-Next IQ2_XS) and the

@@ -1,4 +1,4 @@
-"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it hands the run to
+﻿"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it hands the run to
 sycl/setup_intel.py without its --backend flag, using native execution on Windows. The CUDA / HIP
 paths never see it. No GPU, no network.
 
@@ -7,6 +7,7 @@ paths never see it. No GPU, no network.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import io
 import json
 import re
@@ -630,5 +631,55 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(out.getvalue().count("/dev/shm has no room"), 1)
 
 
+class WindowsDeviceProbe(unittest.TestCase):
+    """#3607 (budiony): a machine with an integrated GPU beside the Arc must not stop setup. intel_gpus() serves the
+    cards the engine can use and names the rest; only a machine with no usable card stops."""
+
+    ARC = {"index": 1, "name": "Intel(R) Arc(TM) Pro B70 Graphics", "vram_gb": 31.2, "arch": "sycl",
+           "driver": "level_zero", "free_memory_supported": True, "command_graph_supported": True, "devid": "e223"}
+    IGPU = {"index": 0, "name": "Intel(R) UHD Graphics 770", "vram_gb": 0.5, "arch": "sycl",
+            "driver": "level_zero", "free_memory_supported": False, "command_graph_supported": False, "devid": "4680"}
+
+    def probe(self, cards):
+        spec = importlib.util.spec_from_file_location("setup_intel_probe", ROOT / "sycl" / "setup_intel.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        done = mock.Mock(returncode=0, stdout=json.dumps(cards), stderr="")
+        out = io.StringIO()
+        with mock.patch.object(mod.S, "WIN", True), \
+                mock.patch.object(mod, "sycl_engine", return_value=(Path("strata.exe"), "")), \
+                mock.patch.object(mod, "sycl_runtime_dirs", return_value=[]), \
+                mock.patch.object(mod.subprocess, "run", return_value=done), \
+                contextlib.redirect_stdout(out):
+            try:
+                got = mod.intel_gpus()
+            except SystemExit as e:
+                got = ("exit", e.code)
+        return got, out.getvalue()
+
+    def test_a_usable_arc_beside_an_igpu_is_returned_alone(self):
+        got, out = self.probe([self.IGPU, self.ARC])
+        self.assertEqual([c["name"] for c in got], [self.ARC["name"]])
+        self.assertEqual(got[0]["index"], 1)            # the card's own Level Zero index, not its list position
+        self.assertIn("not used: Intel(R) UHD Graphics 770", out)
+        self.assertIn("free VRAM query is unavailable", out)
+
+    def test_an_igpu_only_machine_still_stops(self):
+        got, out = self.probe([self.IGPU])
+        self.assertEqual(got, ("exit", 1))
+        self.assertIn("cannot be used for native inference", out)
+        self.assertIn("UHD Graphics 770", out)
+
+    def test_no_intel_gpu_returns_empty(self):
+        got, out = self.probe([])
+        self.assertEqual(got, [])
+
+    def test_a_card_without_level_zero_is_named(self):
+        got, out = self.probe([{**self.ARC, "driver": "opencl", "free_memory_supported": False}])
+        self.assertEqual(got, ("exit", 1))
+        self.assertIn("requires Level Zero, not opencl", out)
+
+
 if __name__ == "__main__":
     unittest.main()
+
