@@ -659,7 +659,8 @@ test("monitor: a split run shows GPU load as one named chart per card", async ({
   assert.equal(lines.length, 2, "one chart per card in the tile");
   assert.ok(lines.every((d) => (d || "").length > 20), "both cards' charts have a line");
   assert.notEqual(lines[0], lines[1], "each card's own series, not one mean chart drawn twice");
-  assert.equal(await page.$eval("#sp-gpu", (e) => e.hidden), true, "the mean chart steps aside for the cards' own");
+  assert.equal(await page.$eval("#sp-gpu", (e) => getComputedStyle(e).display), "none",
+               "the mean chart steps aside for the cards' own");   // an <svg> has no hidden property, so check what it paints
   assert.equal(await page.$eval("#ms-gpu", (e) => e.textContent), "Mean of 2 cards", "the figure left is the mean");
   assert.deepEqual(page.errors, []);
   await page.close();
@@ -669,7 +670,7 @@ test("monitor: a split run shows GPU load as one named chart per card", async ({
 test("monitor: one card keeps its single mean chart and shows no rows", async ({ browser, mock }) => {
   const page = await openPage(browser, mock, { hash: "#monitor" });
   await page.waitForFunction(() => (document.querySelector("#sp-gpu .line").getAttribute("d") || "").length > 20, { timeout: 8000 });
-  assert.equal(await page.$eval("#sp-gpu", (e) => e.hidden), false, "the mean chart is the only chart there is");
+  assert.equal(await page.$eval("#sp-gpu", (e) => getComputedStyle(e).display), "block", "the mean chart is the only chart there is");
   assert.equal(await page.$eval("#rows-gpu", (e) => e.hidden), true, "a single card needs no rows");
   await page.close();
 });

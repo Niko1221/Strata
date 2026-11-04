@@ -510,7 +510,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   for (const g of h.gpus || []) gpuHist[g.index] = g;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
             multi ? `Mean of ${cards.length} cards` : st.gpu_name || (st.gpu_note ? "not available" : ""));
-  $("sp-gpu").hidden = multi && !!h.gpus;             // the cards' own charts replace the single mean one
+  // the cards' own charts replace the single mean one. An <svg> has no reflected hidden property (SVG is not
+  // HTMLElement), so the attribute goes on explicitly or the [hidden] style would never match.
+  $("sp-gpu").toggleAttribute("hidden", multi && !!h.gpus);
   spark("sp-gpu", h.gpu_util, 100);
   metricRows("gpu", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.util == null ? "–" : `${fmt(g.util)}%`,
                                                 values: (gpuHist[g.index] || {}).util, max: 100 })) : []);
