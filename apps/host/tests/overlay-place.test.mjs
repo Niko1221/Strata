@@ -128,3 +128,31 @@ test('every anchored panel uses the scale-aware numbers', () => {
     assert.match(read(f), /measureScale\(\)/, f);
   assert.doesNotMatch(read('components/FloatingMenu.tsx'), /calc\(100dvh - \$\{placed\.top/, 'the viewport-unit max height is gone');
 });
+
+test('a Select list: as tall as it needs when the window has the room, else all the room above or below, never off the top (owner report, 11-04)', () => {
+  // the owner's case: a short window, a long list, the button in the lower half; the old list was capped at 320 px and opened upward by a
+  // transform, so at 150% it started above the window
+  for (const scale of SCALES) for (const [w, h] of VIEWPORTS) for (const rows of [3, 9, 40, 118]) {
+    const natural = (rows * 38 + 12) * scale;
+    for (const top of [h * 0.2, h * 0.5, h * 0.8]) {
+      const anchor = box(w * 0.6, top, 240, 34 * scale);
+      const p = placeAnchored({ anchor, size: { width: 260 * scale, height: natural }, viewport: { width: w, height: h }, scale, gapBelow: 6, gapAbove: 6 });
+      const tag = `${w}x${h} scale ${scale} rows ${rows} top ${top}`;
+      assert.ok(p.visual.top >= 12 - 1e-6 && p.visual.bottom <= h - 12 + 1e-6, tag + ' ' + JSON.stringify(p.visual));
+      const roomBelow = h - anchor.bottom - 6 - 12, roomAbove = anchor.top - 6 - 12;
+      if (natural <= Math.max(roomBelow, roomAbove) && Math.max(roomBelow, roomAbove) >= 120)
+        assert.ok(Math.abs((p.visual.bottom - p.visual.top) - natural) < 1e-6 || p.maxHeight * scale >= natural - 1e-6, tag + ': it fits, so all of it is shown');
+      else if (Math.max(roomBelow, roomAbove) >= 120)
+        assert.ok(p.maxHeight * scale >= Math.max(roomBelow, roomAbove) - 1e-6, tag + ': too long, so it uses all the room');
+    }
+  }
+});
+
+test('the Select list is placed by the shared function, with no fixed cap and no upward transform', () => {
+  const ui = readFileSync(resolve(root, 'src/components/ui.tsx'), 'utf8');
+  assert.match(ui, /placeAnchored\(\{ anchor: r, size: \{ width, height: natural \}/);
+  assert.match(ui, /maxHeight: placed\.maxHeight/);
+  assert.doesNotMatch(ui, /data-up=\{placed\.up/);
+  assert.doesNotMatch(ui, /Math\.min\(320, options\.length/);
+});
+

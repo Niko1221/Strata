@@ -7,13 +7,13 @@ import { tr } from '../lib/i18n';
  * the same system. Anything added here is a documented extension that only uses
  * kit tokens — see src/styles/app.css.
  */
-import { createContext, useContext, useCallback, useEffect, useId, useRef, useState, type AriaAttributes, type CSSProperties, type ReactNode } from 'react';
+import { createContext, useContext, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type AriaAttributes, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cx, userError } from '../lib/format';
 import { plainFailure } from '../lib/plain-errors';
 import { dismissActionError, dismissToast, holdToast, releaseToast, useStore } from '../lib/store';
 import { isTopSurface, useSurfaceFocus } from '../lib/focus';
-import { measureScale } from '../lib/overlay-place';
+import { measureScale, placeAnchored } from '../lib/overlay-place';
 /* -------------------------------------------------------------------- icon */
 export type IconName = 'pause' | 'play' | 'activity' | 'plus' | 'shield' | 'computer'
 // Authored for the shell: see docs/design-system-notes.md.
@@ -249,7 +249,7 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
         left: number;
         top: number;
         width: number;
-        up: boolean;
+        maxHeight: number;
     } | null>(null);
     const [cursor, setCursor] = useState(0);
     const [typed, setTyped] = useState('');
@@ -261,37 +261,47 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
         if (refocus)
             triggerRef.current?.focus();
     }, []);
-    const openMenu = useCallback(() => {
+    /* Where the list goes, in screen pixels, written in the page's own pixels (lib/overlay-place.ts; the page may be scaled by "Interface size", #4653):
+       below its button when the whole list fits there, else above, else the side with more room; as tall as the list needs, and no taller than
+       the room (it then scrolls, using all of it). It used to be capped at 320 px whatever the window, and opened upward by a transform that
+       sent it off the top of a short window. `measured` is the rendered popup, when there is one. */
+    const placeList = useCallback((measured: HTMLElement | null) => {
         const el = triggerRef.current;
         if (!el)
-            return;
-        // Visual pixels in, the page's own pixels out: the page may be scaled by "Interface size" (#4653).
+            return null;
         const scale = measureScale();
         const r = el.getBoundingClientRect();
-        const height = Math.min(320, options.length * (menuSize === 'comfortable' ? 52 : 38) + 12) * scale;
-        const below = window.innerHeight - r.bottom;
-        // Flip above the trigger when there is more room there than below.
-        const up = below < height + 12 && r.top > below;
         const width = Math.min((menuWidth ?? Math.max(r.width / scale, menuMinWidth ?? (menuSize === 'comfortable' ? 340 : 180))) * scale, window.innerWidth - 24);
-        setPlaced({ left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)) / scale, top: (up ? r.top - 6 : r.bottom + 6) / scale, width: width / scale, up });
+        const natural = measured
+            ? measured.scrollHeight * scale + (measured.getBoundingClientRect().height - measured.clientHeight * scale)
+            : (options.length * (menuSize === 'comfortable' ? 52 : 38) + 12) * scale;
+        const p = placeAnchored({ anchor: r, size: { width, height: natural }, viewport: { width: window.innerWidth, height: window.innerHeight }, scale, gapBelow: 6, gapAbove: 6 });
+        return { left: p.left, top: p.top, width: width / scale, maxHeight: p.maxHeight };
+    }, [options.length, menuSize, menuMinWidth, menuWidth]);
+    const openMenu = useCallback(() => {
+        const next = placeList(null);
+        if (!next)
+            return;
+        setPlaced(next);
         setCursor(Math.max(0, options.findIndex((o) => o.value === value)));
         setOpen(true);
-    }, [options, value, menuSize, menuMinWidth, menuWidth]);
+    }, [options, value, placeList]);
+    // Once the list is on the screen its real height is known: place it again with that.
+    useLayoutEffect(() => {
+        if (!open)
+            return;
+        const next = placeList(popupRef.current);
+        if (next)
+            setPlaced(next);
+    }, [open, placeList]);
     // The popup is fixed-positioned, so it has to follow its trigger.
     useEffect(() => {
         if (!open)
             return undefined;
         const reposition = () => {
-            const el = triggerRef.current;
-            if (!el)
-                return;
-            const scale = measureScale();
-            const r = el.getBoundingClientRect();
-            const height = (popupRef.current?.offsetHeight ?? Math.min(320, options.length * (menuSize === 'comfortable' ? 52 : 38) + 12)) * scale;
-            const below = window.innerHeight - r.bottom;
-            const up = below < height + 12 && r.top > below;
-            const width = Math.min((menuWidth ?? Math.max(r.width / scale, menuMinWidth ?? (menuSize === 'comfortable' ? 340 : 180))) * scale, window.innerWidth - 24);
-            setPlaced({ left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)) / scale, top: (up ? r.top - 6 : r.bottom + 6) / scale, width: width / scale, up });
+            const next = placeList(popupRef.current);
+            if (next)
+                setPlaced(next);
         };
         const onDocDown = (e: PointerEvent) => {
             if (!triggerRef.current?.contains(e.target as Node) && !popupRef.current?.contains(e.target as Node))
@@ -305,7 +315,7 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
             window.removeEventListener('resize', reposition);
             document.removeEventListener('pointerdown', onDocDown, true);
         };
-    }, [open, options.length, close, menuSize, menuMinWidth, menuWidth]);
+    }, [open, close, placeList]);
     useEffect(() => {
         if (open)
             document.getElementById(`${listId}-${cursor}`)?.scrollIntoView({ block: 'nearest' });
@@ -372,7 +382,7 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
         <Icon name="chevron" size={16}/>
       </button>
       {tr(open && placed
-            ? createPortal(<div ref={popupRef} id={listId} className={cx('select__pop', menuSize === 'comfortable' && 'select__pop--comfortable', singleLine && 'select__pop--single-line', menuClassName)} role="listbox" aria-label={tr(ariaLabel)} data-up={placed.up || undefined} style={{ left: placed.left, top: placed.top, width: placed.width, zIndex: triggerRef.current?.closest('[role="dialog"]') ? 'var(--layer-dialog-popover)' : 'var(--layer-popover)' }}>
+            ? createPortal(<div ref={popupRef} id={listId} className={cx('select__pop', menuSize === 'comfortable' && 'select__pop--comfortable', singleLine && 'select__pop--single-line', menuClassName)} role="listbox" aria-label={tr(ariaLabel)} style={{ left: placed.left, top: placed.top, width: placed.width, maxHeight: placed.maxHeight, zIndex: triggerRef.current?.closest('[role="dialog"]') ? 'var(--layer-dialog-popover)' : 'var(--layer-popover)' }}>
               {tr(options.map((o, i) => (<div key={o.value} id={`${listId}-${i}`} role="option" aria-selected={o.value === value} aria-disabled={o.disabled || undefined} tabIndex={-1} className="select__opt" data-active={i === cursor || undefined} onMouseEnter={() => setCursor(i)} onMouseDown={(e) => e.preventDefault()} onClick={() => {
                         if (o.disabled)
                             return;
