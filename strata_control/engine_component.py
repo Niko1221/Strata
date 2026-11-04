@@ -909,7 +909,23 @@ def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> 
     return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
 
 
+_SMI_CACHE: dict = {}
+SMI_CACHE_SECONDS = 30.0         # a card's capability and the driver version do not change inside one command
+
+
 def _smi_query(field_name: str) -> list[str]:
+    """nvidia-smi for one field, asked once per process and 30 s: one `strata launch --plan` on Windows with an engine installed started it 19 times (10 for the
+    compute capability, 9 for the driver version), and a stuck driver would have cost its 8 s timeout each time. A failed answer is kept for the same time."""
+    now = time.monotonic()
+    hit = _SMI_CACHE.get(field_name)
+    if hit is not None and now - hit[0] < SMI_CACHE_SECONDS:
+        return list(hit[1])
+    found = _smi_query_now(field_name)
+    _SMI_CACHE[field_name] = (now, found)
+    return list(found)
+
+
+def _smi_query_now(field_name: str) -> list[str]:
     tool = shutil.which("nvidia-smi")
     if not tool:
         return []
