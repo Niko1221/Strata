@@ -599,6 +599,14 @@ class WholeMarkNeedsThePin(unittest.TestCase):
         setup.mark_whole_unless_pinned([shard], self.hf, own=True)           # --gguf-dir: not a download
         self.assertTrue(setup.done(shard))
 
+    def test_a_family_with_no_hf_folder_keeps_the_mark_and_does_not_raise(self):
+        """The NVFP4 families have no "hf" key (they download a file list): the helper must not need one (it raised KeyError in main())."""
+        shard = self.folder / self.name
+        shard.write_bytes(b"x")
+        setup.mark_whole_unless_pinned([shard], None, own=False)
+        self.assertTrue(setup.done(shard))
+        setup.mark_whole_unless_pinned([], None, own=False)
+
     def test_a_marked_or_missing_file_is_not_touched(self):
         shard = self.folder / "marked.gguf"
         shard.write_bytes(b"x")
