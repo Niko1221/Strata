@@ -129,6 +129,9 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostUnregister hipHostUnregister
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
+// DFlash2 (0.2.10): stream-priority calls the layer had not mapped
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
