@@ -6792,6 +6792,14 @@ int main(int argc, char** argv) {
         const char* arena_release = std::getenv("STRATA_ARENA_RELEASE");
         const bool held_in_ram = !o.mmap_experts && !(arena_mmap != nullptr && arena_mmap[0] == '1' &&
                                                       !(arena_release != nullptr && arena_release[0] == '0'));
+        // --draft dflash2: the drafter's prompt taps are kept per stage (Prefill::reserve_taps sizes each card's staging for
+        // the tap layers of its own stage), while a DP read runs every layer on one card for its chunks - the last chunk's
+        // taps would be written for every tap layer into a staging sized for half of them.  The layer pipeline reads there.
+        if (ok && o.draft == "dflash2") {
+            std::fprintf(stderr, "strata generate: STRATA_DP_PREFILL is off with --draft dflash2 (the drafter's prompt taps are "
+                                 "kept per card; a DP read runs every layer on one card)\n");
+            ok = false;
+        }
         if (ok && !held_in_ram) {
             std::fprintf(stderr, "strata generate: STRATA_DP_PREFILL is off: a DP read streams the experts the other GPU "
                                  "caches, and with --mmap-experts / --resident-experts (or a file-backed arena that hands "
