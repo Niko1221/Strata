@@ -1,4 +1,4 @@
-# 审核请求：训练功能（sft / dpo / grpo × 零阶 / 反传）
+# 审核请求：训练功能（sft / dpo / grpo / luspo × 零阶 / 反传）
 
 **交付分支**：`feat/train_support`（下划线）。三条分支都已推到 `origin`（`feat/train-mezo` / `feat/train-backforward` / `feat/train_support`），远端与本地 HEAD 一致，可直接开 PR；只收零阶就用第一条，要对比反传增量看第二条
 
@@ -7,18 +7,18 @@
 > 所以审代码时三条分支给出来的 diff 是一致的，只有文档与文件集合不同。
 
 **目标**：`upstream/main`（Niko1221/Strata）
-**基线**：`upstream/main` = `c62d5e3a`（2026-10-31）；`git ls-remote upstream main` 复核远端一致，**落后 0 个提交、上游文件 0 个删除**，即改动是在最新主分支之上做的
+**基线**：`upstream/main` = `ffa80d73`（v0.2.10 一带，**2026-11-03 已 merge 进三条交付分支**：冲突 3 文件 —— `serve/server.py`、`src/core/verify.cpp`、`src/program/generate.cpp`，解法记在同步台账；merge 后 CUDA 构建 + 训练/serve 测试复核通过）；`git ls-remote upstream main` 复核远端一致，即改动是在最新主分支之上做的
 **范围**：三块 —— ① `training/`（训练入口，新增目录；根放共用层，`mezo/`、`backward/` 是两条路线，`bench/` 基准与探针，`tests/` 单测）；② `serve/server.py` 的训练会话与 `/v1/score`、`/v1/lora`；③ **引擎侧 LoRA + SCORE 能力**（34 文件 / +3,621 −57：`src/kernels/lora*.{cu,cpp}`、`src/prefill/score*`、`generate.cpp` 的命令循环、`CMakeLists.txt` / `setup.py` 的开关、CI）
 > 第 ③ 块不是可选的：零阶路线的前向就是引擎的 `SCORE`，没有它 `--method mezo` 一行都跑不了。
 > 若上游要求训练功能与引擎能力分开审，按 Q9 拆成两个 PR 即可，代码本身已经是分开的提交。
-**状态**：工作区干净，已全部落成 commit；训练目录 **268 项**（Windows 上 266 过 + 2 项 watchdog 仅因缺 triton 包；**Linux 实测 268 全过**，见 §7.1），`serve.test_training_api` **6 项**全过（本次复核）；零阶那一棵树 **144 项全过且不需要 torch**（两个平台都是 144）
+**状态**：工作区干净，已全部落成 commit；训练目录 **271 项**（Windows 上 269 过 + 2 项 watchdog 仅因缺 triton 包；**Linux 实测 268 全过（11-03），luspo 新增 3 项后 271 未在 Linux 复测**，见 §7.1），`serve.test_training_api` **6 项**全过（本次复核）；零阶那一棵树 **144 项全过且不需要 torch**（11-03 口径）
 
 | 项 | 数 |
 |---|---|
-| 改动面（相对 `upstream/main`） | 134 文件 / **≈+27.7k −93**（含本文档；口径见表下注） |
+| 改动面（相对 `upstream/main`） | 134 文件 / **≈+27.7k −94**（含本文档；口径见表下注） |
 | 本功能提交（非 merge） | ≈110 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
-| 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo/mezo.py` `backward/sft.py` `backward/grpo.py` 等 13 个文件 4,699 行 |
-| 测试 | 15 个 `test_*.py` 3,407 行，训练目录 **268 项**（Windows 上 266 过，2 项 watchdog 缺 triton）；`serve/test_training_api.py` 6 项 |
+| 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo/mezo.py` `backward/sft.py` `backward/grpo.py` 等 13 个文件 ≈5.4k 行（luspo 带来约 0.7k） |
+| 测试 | 15 个 `test_*.py` 3,407 行，训练目录 **271 项**（Windows 上 269 过，2 项 watchdog 缺 triton）；`serve/test_training_api.py` 6 项 |
 | 服务端 | `serve/server.py`（`TrainBridge` + 3 个 `/v1/training/*` 路由 + `POST /v1/lora`） |
 | 新增依赖 | 零阶 **0 个 pip 包**（只需已装的 numpy/jinja2/regex + 一个引擎二进制）；反传 4~6 个（torch / transformers / accelerate / safetensors，Windows 还要 triton-windows、kernels）→ §2.5 |
 
@@ -26,9 +26,53 @@
 
 **分支与合并顺序**：拓扑、基线判据（为什么拿 `origin/main` 比会误判）、来源分支审计、LoRA 三层归属，全部在 **§7**。
 
-**建议阅读顺序**：§0（三分钟看懂交了什么、分几条分支）→ §2.5 两条路线的依赖 → §4 设计决策
+**建议阅读顺序**：**核心结论（下面三张表）** → §0（三分钟看懂交了什么、分几条分支）→ §2.5 两条路线的依赖 → §4 设计决策
 → §5 证据（其中 §5.2 回答「这台机器上能训多长、多快、什么情况训不了」）→ §7 分支与合并顺序
 → §9 需要评审确认的 12 项。原始点位与口径在 **附录 B**。
+
+## 核心结论：三张表（训练上限 / 身份训练 / 数学训练）
+
+> 这里是审核最先要看的三个问题与答案；每张表下有一句话结论，完整口径、边界与反例在括号指向的章节。
+
+### 表 1｜六方案 × 上下文极限 × 显存（48 GiB 单卡实测；推算列见 §5.2 表 B）
+
+| # | 方案 | 前向来源 | 48 GiB 极限上下文 | 极限点显存 | 极限点步时 | 80 GiB 上限（推算，未实测） |
+|---|---|---|---|---|---|---|
+| 1 | sft × 零阶 | 引擎 `SCORE` | **131072**（模型上下文封顶，非显存） | 26.9 GiB 账面 | 61.4 s @ 121.8K | 131072（不变） |
+| 2 | dpo × 零阶 | 引擎 `SCORE` | **131072** | 同上 | 101.0 s | 131072（不变） |
+| 3 | grpo × 零阶 | 引擎 `SCORE` | **131072** | 同上 | 101.4 s（2 条轨迹） | 131072（不变） |
+| 4 | sft × 反传 | PyTorch autograd | **9 728**（16 384 挂死） | 44.95 GiB | 914.7 s | 28 160 |
+| 5 | dpo × 反传 | PyTorch autograd | **5 120**（8 192 崩） | 41.46 GiB | 53.9 s | 14 592 |
+| 6 | grpo × 反传 | PyTorch autograd | **2 560**（K=4 预算拒绝） | 34.18 GiB（rows=2 实测点） | 28.4 s | 7 424 |
+
+**一句话**：零阶的上限是模型自己的 131072 —— 显存只要 26.9 GiB，**换更大的卡不会更快**（上限早被封顶）；
+反传的上限就是显存 —— 48 GiB 上贴顶（10.6 tok/s 吞吐塌陷），80 GiB 才回到可用区间。
+判据三条：一步跑完（无挂死）+ 峰值 ≤ 48−1.5 GiB + 更新信号 ≥ 3× 噪声极差（§5.1）。
+
+### 表 2｜身份训练前后（`--method mezo`，sft，lr 3e-5 / rank 8；**这里保留 11-02 的历史口径** —— 现行默认已改为 1e-4 × 5 轮，见 §2.1，两批数据规模不同、数字不可混用；全表见 §5.3）
+
+| 配置 | answer-ce（nats/token） | 相对 before | 自由生成（问"你是谁"） |
+|---|---|---|---|
+| before（未训练） | 4.4333 | — | 通义千问（Qwen），由阿里巴巴通义实验室开发 |
+| **3e-5 × 450（默认）** | **4.2387** | **−0.196** | **中文身份正确，丢实验室细节** |
+| 1e-5 × 300 | 4.3949 | −0.025 | 正常（学得慢 6.5×） |
+| 3e-5 × 600 / 750 / 900 | 4.0090 → 3.83 | −0.43 ~ −0.61 | 丢 Qwen 身份 / 推理段泄漏英文 ❌ |
+
+**一句话**：**训练管线可用（CE 可降、步数可控、无副作用），但署名未落地** —— 900 步也没让模型生成
+"xiezhipeng-git" 这个署名；这是零阶单步更新信噪比 ~1/√d 的**方法账**，不是 lr 没调好。
+所以本 PR 对身份训练的表述是「管线可用、署名未落地」，不主张"身份训练成功"（§5.3）。
+
+### 表 3｜数学训练前后 + 非训练评测（4 道 MATH-500 训练题；evalscope 243 项，temperature 0；详见 §5.4）
+
+| 指标 | baseline（无 adapter） | mezo | backward | dpo |
+|---|---|---|---|---|
+| 训练集 3 道错题 | 0/3 | **2/3** | **2/3** | **2/3** |
+| **非训练干净 239 项 acc** | **100.00%** | **98.74%（−3）** | **87.03%（−31）** | **99.16%（−2）** |
+| L5（最难档）acc | 94% | 92% | **60%** | 96% |
+
+**一句话**：训练集四条线都学会 2/3，**代价完全不同** —— 反传把非训练集打掉 31 项（连最简单的 L1 都掉 3 项；
+工作点问题、归因未完成，§5.4.1）；零阶 −3、DPO −2 落在评测波动量级内（baseline 已 100% 饱和，1 项 = 0.42 pp，
+尚不能判定为真实回退，§8 第 13 条）。**"训练集学会"和"能力没掉"是两笔账，这是本 PR 最重要的一条判据。**
 
 ---
 
@@ -46,8 +90,10 @@
 | sft × 零阶（引擎 `SCORE` 前向） | ✅ | ✅ | ✅ |
 | dpo × 零阶（`--dpo-data`） | ✅ | ✅ | ✅ |
 | grpo × 零阶（`--rollouts` 回放轨迹） | ✅ | ✅ | ✅ |
+| **luspo × 零阶**（同一份轨迹、组内优势共用，只换损失） | ✅ | ✅ | ✅ |
 | sft / dpo × 反传（PyTorch autograd） | ❌ | ✅ | ✅ |
 | grpo × 反传（引擎采轨迹 → 学生反传，两段式） | ❌ | ✅ | ✅ |
+| **luspo × 反传**（`grpo.py --objective luspo`） | ❌ | ✅ | ✅ |
 | 引擎 `LORA` / `SCORE` 命令 + 对应 kernel | ✅ | ✅ | ✅ |
 | 服务端 `/v1/training/*` 训练会话 | ✅ | ✅ | ✅ |
 | 在线换表训练（`--serve-url`，推理不中断） | ✅ | ✅ | ✅ |
@@ -78,8 +124,8 @@
 
 ### 0.2 一句话说明（整体）
 
-给 125B 模型加了**训练入口**：一条命令 `train.py --algo {sft,dpo,grpo} --method {mezo,backward}`，
-最多六个组合（两条路线都在的树上）共用**一份损失数学**，在单张 48 GiB 卡上零阶能吃到 **131072 token 满上下文**，
+给 125B 模型加了**训练入口**：一条命令 `train.py --algo {sft,dpo,grpo,luspo} --method {mezo,backward}`，
+最多八个组合（两条路线都在的树上）共用**一份损失数学**，在单张 48 GiB 卡上零阶能吃到 **131072 token 满上下文**，
 同时把训练挂进常驻服务（`POST /v1/training/*`），推理引擎在会话期让位、会话结束后自动恢复。
 **资源口径**：零阶在这一张卡上就是"资源充足"（26.9 / 48 GiB，换更大的卡不会更快，因为 131072
 已被模型封顶）；反传才是被显存卡住的那一侧（9728 贴顶，吞吐 10.6 tok/s）。三档判据与
@@ -166,13 +212,40 @@
 
 ### 2.1 算法 × 方法的映射（`algos.py` 的 `ALGOS × METHODS`，唯一出处）
 
-| algo | 目标函数 | `--method mezo` 实现 | `--method backward` 实现 | 默认 lr（mezo / backward） | 额外数据 |
-|---|---|---|---|---|---|
-| sft | `ce`（answer 段逐 token） | `mezo.py` `SftMezo` | `sft.py` | 3e-5 / 1e-4 | — |
-| dpo | `dpo`（序列 margin 的 −logσ(β·margin)） | `mezo.py` `DpoMezo` | `sft.py` | 3e-5 / 5e-5 | `--dpo-data` |
-| grpo | `grpo`（组内归一化优势 × 裁剪比） | `mezo.py` `GrpoMezo` | `grpo.py` | 1e-5 / 1e-4 | `--rollouts` 或引擎在跑 |
+| algo | 目标函数 | `--method mezo` 实现 | `--method backward` 实现 | 默认 lr（mezo / backward） | 默认轮次（mezo / backward） | 额外数据 |
+|---|---|---|---|---|---|---|
+| sft | `ce`（answer 段逐 token） | `mezo.py` `SftMezo` | `sft.py` | **1e-4 / 1e-4** | 5 / 2 | — |
+| dpo | `dpo`（序列 margin 的 −logσ(β·margin)） | `mezo.py` `DpoMezo` | `sft.py` | **1e-4 / 1e-4** | 7 / —（走 `--steps 40`） | `--dpo-data` |
+| grpo | `grpo`（组内归一化优势 × 裁剪比） | `mezo.py` `GrpoMezo` | `grpo.py` | **5e-5 / 5e-5** | 5 / —（走 `--steps 40`） | `--rollouts` 或引擎在跑 |
+| **luspo** | `luspo`（GSPO 的序列级 ratio × 组内优势，序列损失再乘 `\|y_i\|`） | `mezo.py` `LuspoMezo`（继承 `GrpoMezo`） | `grpo.py --objective luspo` | **5e-5 / 5e-5** | 3 / —（走 `--steps 40`） | `--rollouts`（必须是**完整推理轨迹**且组内有方差） |
 
 - `DEFAULT_METHOD = "mezo"`；`--method` 省略即零阶。
+- **luspo 是"继承 GRPO、只换损失"，不是自成一脉**：参考实现
+  （[github.com/murphy4122/LUSPO](https://github.com/murphy4122/LUSPO)，arXiv 2602.05261）的配置就是
+  `adv_estimator=grpo` + `loss_mode=luspo`，其 `compute_policy_loss_luspo` 是 `compute_policy_loss_gspo`
+  的逐行复制再加一行 `pg_losses *= seq_lengths`。本仓库同形 —— `LuspoMezo` 继承 `GrpoMezo`，数据加载、
+  θ₀ 处的 old logp 缓存、组内优势全部共用，只翻牌子换损失与分母；`test_objectives.py` 里有 numpy↔torch
+  对拍与闭式解，逐行移植比对的最大偏差 **2.4e-07**，梯度是 `−(1/N)·A_i·s_i`（不含 `|y_i|` 也不含 `1/|y_i|`）。
+- **lr 只留两档，不跟随论文**：论文那一系（DAPO / LUSPO）能把 lr 压到 1e-6，是因为 batch × 采样数 `n`
+  和时间预算都不受限；本机零阶单步只吃 1 组 4 条轨迹，等价缩小 batch 后必须放大步长，才能在同样时间
+  预算里走同样距离。所以表里只有 **sft/dpo = 1e-4、grpo/luspo = 5e-5** 两档，两个方法共用。
+- **不能从论文 lr 换算到零阶**：AdamW 的每步位移被逐维归一化成 `lr`，`rel = lr·√d/‖θ‖` 与算法无关；
+  零阶多乘一个 `|pj|`，而 `|pj|` 由 loss 尺度决定（sft 中位 12.9、luspo 中位 87）。同 lr 下两条路径的
+  实际位移比在 sft 上是 **13×**、在 luspo 上是 **91×** —— 不存在可迁移的固定比例，1:1 是巧合。
+- **不要每轮降 lr**：同一份数据、120 步、只改 `--lr-schedule`，const 终点 **2.8119** 优于 linear→0 的
+  2.9404、cosine→0 的 2.9481、linear→1e-5 的 3.0011。衰减等价于把平均步长减半而没有时间红利
+  （lin0/cos0 的等效平均 lr≈5e-5，终点与常值 5e-5×10 轮的 2.92 吻合到噪声内）。ce 从第 1 轮到第 4 轮
+  **单调下降、还在斜坡上**，不是在极小值附近振荡 —— 衰减要治的病不存在。
+- **1e-4 是峰值，不是"刚好不崩的边界"**：1.25e-4 终点 2.9479（不崩但慢 0.136）、1.5e-4 全程更慢且第 5 轮
+  崩、2e-4 第 4 轮崩、2.5e-4 第 3 轮崩（复现时**第 2 轮**就崩）。两侧都掉，所以「最快」与「最大不崩」在这
+  一点重合，不需要权衡。
+- ⚠ **luspo 走零阶要先看第一步打印的 `rel`**：它的 `|pj|` 是 ce 的 7~8 倍，5e-5 在身份轨迹上实测
+  `rel` 0.44~0.72（三步把 ‖θ‖ 推高 77%，而 answer-ce 只动 −0.011）。若第一步 `rel > 0.05`，用 `--lr`
+  临时降到 1e-5~2e-5 —— 默认表只留两档，不为此单开一个数。反传侧不受此影响（AdamW 每步位移恒等于 lr）。
+- ⚠ **知识类目标不要用 grpo/luspo**（身份题就是这一类）：严格判分下组内奖励 12/12 全 0 ⇒ 优势恒 0、
+  梯度恒 0；稠密 F1 下虽有方差，但方差来自措辞重叠而非答对，且基座对答案串的 logp 是 −58（p≈e⁻⁵⁸，
+  目标在策略支撑集外），组内归一化学到的是"多输出参考串里的 token"。`mezo._check_luspo_premises()` 会在
+  跑前把序列长度中位、组内奖励全同组数、奖励取值个数打出来并告警。知识类目标走 sft/dpo。
 - **这张表是"两条线都在"的树（bwd / support）上的六个组合**。零阶分支（`feat/train-mezo`）只带
   左半边：`--method` 的可用项由文件决定（`algos.available()`），缺 `backward/sft.py` 时 `--list`
   会注明"不在这条分支上"，`--method backward` 在加载模型前退出并指路 —— 见 §7.1。
@@ -258,7 +331,7 @@ open 会话 → 逐行喂命令 → close，不是一个"提交训练任务、�
 | Windows 额外 | 无 | `triton-windows 3.7.1`（PyPI `triton` 只有 Linux 轮子）、`kernels 0.16.1` —— README 记录的实测组合：`torch 2.13.0+cu132` / `transformers 5.17.0` |
 | 125B NF4 pack 路线额外 | 不涉及（专家权重由引擎自己管，训练进程不装 pack） | `gguf`（`loader_qwen4.py` 的 `gguf.constants` / `gguf.quants` 反量化） |
 | **引擎二进制** | **必需**：本仓库构建的 `strata`（CMake + CUDA toolkit，`-DSTRATA_ENABLE_CUDA=ON`；`third_party/llama.cpp` 已 pin）。只用到 `--serve` 命令循环里的 `LORA <path>` / `SCORE <ids>`（评测再要 `GEN`） | `sft` / `dpo` 反传**不需要引擎**（纯 PyTorch 前向）；`grpo` 反传是两段式，第一段要引擎采轨迹（同样要 `LORA`/`SCORE`） |
-| **引擎分支要求** | ⚠️ **必须是 `feat/train-mezo`（`Strata-mezo` 树）构建出来的**：`LORA`/`SCORE` 只在这个分支的 `src/program/generate.cpp` 里。`upstream/main`（`c62d5e3a`，2026-10-31，`git ls-remote` 核对过远端就是这个）和本分支 `HEAD` 的 `src/` 里**都没有** | 同左（GRPO 第一段） |
+| **引擎分支要求** | ⚠️ **必须是 `feat/train-mezo` 构建出来的**：`LORA`/`SCORE` 只在这个分支的 `src/program/generate.cpp` 里。`upstream/main`（`ffa80d73`，2026-11-03 merge 时复核过）的 `src/` 里**没有**这两条命令 | 同左（GRPO 第一段） |
 | 数据 / 资产 | pack：gguf shards + `tokenizer/chat_template.jinja` + `expert-profile.bin` | 同左（另加 NF4 专家 pack） |
 | 平台 | linux / win32（`platform_check.SUPPORTED`；win32 走 `preadv_shim` 的 readinto 垫层）；macOS 未测、被拒 | 同左 |
 | 实测量级显存 | 26.9 GiB 账面（§5.1） | 34~45 GiB（§5.1） |
@@ -296,8 +369,8 @@ open 会话 → 逐行喂命令 → close，不是一个"提交训练任务、�
   也不受其 MIT 许可约束 —— 借用的是已发表的方法，不是代码。
 - **本树的上游**：`upstream` = `git@github.com:Niko1221/Strata.git`；个人 fork `origin` = `git@github.com:xiezhipeng-git/Strata.git`。
   `LORA` / `SCORE` 与 `--serve` 命令循环**尚未进 `upstream/main`**，只在 `feat/train-mezo`
-  两棵树上（见 §2.5 的引擎分支要求）：`upstream/main` = `c62d5e3a`（2026-10-31），
-  `git show upstream/main:src/program/generate.cpp` 里没有任何 `LORAOK`/`SSUM`。
+  两棵树上（见 §2.5 的引擎分支要求）：`upstream/main` = `ffa80d73`（v0.2.10 一带，2026-11-03 merge 进本分支），
+  merge 时复核过 `git show upstream/main:src/program/generate.cpp` 里仍然没有任何 `LORAOK`/`SSUM`。
 
 ### 2.7 产物
 
@@ -317,7 +390,7 @@ training/
   backward/  反传：sft.py（含 DPO / curriculum）、grpo.py、HF 加载栈（loader_qwen4 / nf4_fused / qsa_fast / lora …）
              + hf_ref.py（torch 侧参考前向，仅做 score 对拍，不是方法实现）
   bench/     基准与一次性探针：bench_fullctx、ab_*、mtp_*、budget、judge_limits …
-  tests/     15 个单测（268 项；零阶树只带其中 8 个 = 144 项）
+  tests/     15 个单测（271 项；零阶树只带其中 8 个 = 144 项）
 ```
 
 > 这些是**功能代码，不是示例**。原稿放在 `examples/training/` 名下不副实 —— 上游 `main` 根本没有 `examples/`，
@@ -327,8 +400,8 @@ training/
 
 | 文件 | 行 | 职责 | 审核重点 |
 |---|---|---|---|
-| `objectives.py` | 307 | sft / dpo / grpo 三个目标函数的**唯一实现**，numpy 与 torch 双路径 | 双路径是否逐值一致；`reduction="mean"` 的归一化基数（token 数还是样本数）；GRPO 的 mask 与 advantage 广播 |
-| `mezo/mezo.py` | 1,033 | 引擎桥（`Engine` 子进程 / `EngineApi` / `EngineHttp`）+ `EngineMezo` 基类 + 三个子类 | θ±ε 的落地方式（写 plus/minus adapter 再 `LORA` 换表，D4）；θ 表的形状必须全程不变；θ₀ 缓存与 `--resume` 的一致性 |
+| `objectives.py` | 390 | sft / dpo / grpo / luspo 四个目标函数的**唯一实现**，numpy 与 torch 双路径 | 双路径是否逐值一致；`reduction="mean"` 的归一化基数（token 数还是样本数）；GRPO 的 mask 与 advantage 广播；luspo 的序列级 ratio 与 `×|y_i|` |
+| `mezo/mezo.py` | 1,385 | 引擎桥（`Engine` 子进程 / `EngineApi` / `EngineHttp`）+ `EngineMezo` 基类 + 四个子类 | θ±ε 的落地方式（写 plus/minus adapter 再 `LORA` 换表，D4）；θ 表的形状必须全程不变；θ₀ 缓存与 `--resume` 的一致性 |
 | `mem_guard.py` | 447 | 显存预算、锚点插值、`max_seq_len`、独占检查 | 估算式是否会低估（解析式在 >40K 低估 4~6 GiB，是本模块存在的理由） |
 | `algos.py` | 220 | 注册表 + lr 分表 + 旧参数名报错 | lr 硬编码在表里是否该改成可覆盖配置（Q4） |
 | `train.py` | 575 | 唯一入口、参数翻译、模型解析 | `--dry-run` 打印的 argv 与真实执行是否同源 |
@@ -730,8 +803,8 @@ max_tokens 8192），**同一个引擎、只换 adapter**，baseline 不挂 adap
 |---|---|
 | 引擎 score vs HF CE（同一 ids，8 token） | −56.6508 vs **−56.6433**，差 0.0075 nats |
 | `objectives.py` numpy vs torch | `test_objectives.py` 逐值对拍通过 |
-| 训练目录单测 | **268 项**（`python -m pytest training/tests -q`，22 s；Windows 上 266 过 + 2 项 watchdog 缺 triton，见 §7.1） |
-| serve 全量 | 1,304 项，仅 `test_winjob` 1 个既有环境性 error（干净 worktree 同样失败） |
+| 训练目录单测 | **271 项**（`python -m pytest training/tests -q`，22 s；Windows 上 269 过 + 2 项 watchdog 缺 triton，见 §7.1） |
+| serve 全量 | 1,403 项（2026-11-03 实测：1,378 过 + 24 skip），仅 `test_winjob` 1 个既有环境性失败（干净 worktree 同样失败） |
 | 服务会话真机 | 会话期 chat 409 → close 后 200；客户端崩溃也会话正常关 |
 
 ---
@@ -755,7 +828,7 @@ python train.py --algo sft --method bogus               # 期望：invalid choic
 # V2 损失单一出处（无 GPU，35 项）
 python -m unittest test_objectives -v
 
-# V3 训练目录全量（无 GPU，268 项，~22 s；零阶树 144 项）
+# V3 训练目录全量（无 GPU，271 项，~22 s；零阶树 144 项）
 python -m unittest discover -p "test_*.py"
 
 # V4 服务会话（无 GPU；必须在仓库根跑，测试按包相对导入，6 项 ~4 s）
@@ -789,9 +862,9 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 
 | 分支 | 切分提交 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
 |---|---|---|---|---|---|
-| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **144 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 144 过） | ≈80 提交 / 102 文件 / ≈+18.0k −93 |
-| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 268 项（266 过 + 2 项 watchdog 见下） | ≈90 提交 / 134 文件 / ≈+27.7k −93 |
-| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 268 项（同上） | ≈110 提交 / 134 文件 / ≈+27.7k −93 |
+| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **144 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 144 过） | ≈80 提交 / 102 文件 / ≈+18.0k −94 |
+| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 271 项（269 过 + 2 项 watchdog 见下） | ≈90 提交 / 134 文件 / ≈+27.7k −94 |
+| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 271 项（同上） | ≈110 提交 / 134 文件 / ≈+27.7k −94 |
 
 **如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
 
@@ -850,10 +923,10 @@ Windows 轮子（要装第三方 `triton-windows`），本机测试环境里没�
 不是本次改动引入的。**Linux 上实测 268 全过**（2026-11-03，WSL Ubuntu 24.04 / Python 3.12 / pytest 9.0.2，`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests -q` → `268 passed in 36.97s`），所以这 2 项是环境依赖，不是代码问题。
 
 ```
-upstream/main c62d5e3a
+upstream/main ffa80d73（v0.2.10 一带，2026-11-03 已 merge 进三条分支）
   └─ feat/train-mezo            零阶线（HEAD）  共用层 + 零阶 + 引擎（LORA / SCORE）；训练路径零 torch；144 项
        │   56c7eae0  摘掉 torch 层（213 → 134）；方法可用性改成看文件（algos.available）
-       └─ feat/train-backforward      反传线（HEAD）  以上全部 + torch 反传层（比 mezo 多 32 个 .py）；268 项
+       └─ feat/train-backforward      反传线（HEAD）  以上全部 + torch 反传层（比 mezo 多 32 个 .py）；271 项
             │   adfa53a7  摘 torch 时的合并点：反传侧保住整层
             └─ feat/train_support     交付面（HEAD）  两条线的并集 + 这组文档（.py 与 bwd 逐字相同）
 ```
@@ -874,7 +947,7 @@ git diff --stat feat/train-backforward feat/train_support -- '*.py'    # 空 = �
 
 **三条分支都是能独立跑的树，不是只在交付面迁移**：`feat/train-mezo` 自己就是一棵 `training/`
 的树（`56c7eae0`，144 项全绿，无 torch），`feat/train-backforward` 用**同一份映射表**再迁移一遍、
-merge 零阶层、再叠 torch（`adfa53a7`，268 项），support 是两者合并的结果（`c9c0016f`）。判据如下：
+merge 零阶层、再叠 torch（`adfa53a7`，271 项），support 是两者合并的结果（`c9c0016f`）。判据如下：
 
 - **官方只要零阶** ⇒ 直接交付 `feat/train-mezo`（`56c7eae0`）：102 文件、144 项、训练路径零 torch。
   不需要 cherry-pick，也不需要再把目录搬一次 —— 这正是"迁移只做在交付面"那版的缺口：
@@ -886,13 +959,15 @@ merge 零阶层、再叠 torch（`adfa53a7`，268 项），support 是两者合�
 - 三条分支的迁移提交是同一批 rename（`d54d8a32` / `0c676f32`），路径逐一对齐，所以合并
   不会出现两份文件；实测 add/add 冲突只有两处（`sft.py`、`test_train.py`，`b7085d3c` 时取反传侧）
   与一处 `math_probe.py`（`c9c0016f` 时取反传侧的去重版本）。
-- **文档版本**：完整说明是 support 上的这一份（823 行）。`feat/train-mezo` 与
+- **文档版本**：完整说明是 support 上的这一份（≈1.1k 行）。`feat/train-mezo` 与
   `feat/train-backforward` 各自也带一份 `REVIEW-REQUEST.zh.md`，是迁移时的 **594 行早期版**
   （没有 §5.2 资源三档、§7 分支审计、附录 B）。要评完整 PR 以 support 为准；只收零阶时，
   那份早期版覆盖的能力面与零阶层一致，不矛盾。
 
-**基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main c62d5e3a`（= `Niko1221/Strata`
-的 main，2026-10-31，`git ls-remote` 核对过远端就是这个），support 相对它**落后 0、领先 142 个提交**（其中非 merge 104）。
+**基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main` 之上，且 **2026-11-03 已把
+`upstream/main` = `ffa80d73`（v0.2.10 一带，798 文件 / +86k）merge 进三条分支**（冲突 3 文件，
+解法与验证口径在同步台账 `UPSTREAM-SYNC.md`；merge 后 CUDA 构建 + 测试复核通过）。
+support 相对上游**落后 0、领先 163 个提交**（其中非 merge 114）。
 本仓库的 `origin` 是 fork（`xiezhipeng-git/Strata`），它的 `main` 停在 `80494788`（2026-10-15），
 **落后上游 2,755 个提交** —— 老 `support 7fa6caaa` 那句"落后 2,755"就是因为当年从 fork 的
 main 切出来的。所以比对一律用 `upstream/main...feat/train_support`，拿 `origin/main` 比会
@@ -908,7 +983,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | `feat/score` | `SCORE <ids>`：逐位置 logp（`/v1/score`） | 已纳入 mezo（merge `53e729fa`，`merge-base --is-ancestor` 核过）。**不单独提 PR**：它技术上能独立（`score.cpp` 里 `lora`/`adapter` 0 命中，不依赖换表命令，单独给任意 ids 打分就能跑），但脱离训练只是"给一段 caller 指定的 ids 出逐位置 logp"，审核者第一个问题就是"谁用"；且它是零阶的度量核心（θ±ε 的 L 全靠它），拆开要两处维护 |
 | `feat/kv-auto` | `--kv auto` 按上下文选精度 | 已纳入 |
 | `feat/strata-rollout` | 返回生成序列与它续写的 prompt | 已纳入 |
-| `pr-3267-lora` | 上游 PR #3267 的 LoRA kernel（`lora.cu` 421 行 / `lora_parity` 237 行），作者 Alexey Rogov | **内容已含**：support 是超集（477 / 301 行）。注意 **`upstream/main` 里没有 LoRA kernel**（`src/kernels/cuda/lora.cu` 不存在），这条 PR 至今未合入（分叉点落后 main 1,705 个提交），我们是本地拉的只读依赖，不是作者 |
+| `pr-3267-lora` | 上游 PR #3267 的 LoRA kernel（`lora.cu` 421 行 / `lora_parity` 237 行），作者 Alexey Rogov | **内容已含**：support 是超集（477 / 301 行）。注意 **`upstream/main` 里没有 LoRA kernel**（`src/kernels/cuda/lora.cu` 不存在），这条 PR 至今未合入（分叉点落后 main 2,413 个提交），我们是本地拉的只读依赖，不是作者 |
 | `feat/unilora` | 本地 Uni-LoRA（`unilora.py` 245 行 + `lora_adapters.cpp` 149 行 + qwen4exp 加载链） | **内容已含**：`unilora.py` 245 行逐字一致，kernel 150 行。仅差 8 个一次性调试脚本（`dbg_*.py`、`bench_weight*.py`、`verify_q4.py`），不是功能 |
 | `feat/zo-mezo` | 早期 PyTorch 版 MeZO trainer | 已被 `mezo.py` 取代；内容同上已含，只差同一批调试脚本 |
 | `feat/initial-training` | 早期 6 个训练提交 | 完全吸收（它新增的文件 support 全有） |
@@ -926,7 +1001,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 
 读法是三句话：
 
-1. **上游 `main` 只有 adapter 的加载路径**（`--lora` 参数、会话状态按 LoRA 开关缓存），**没有 kernel**。PR #3267 至今没合入（分叉点落后 `main` 1,705 个提交），所以这 421 行不是"上游代码"，是"一个尚未合入的上游 PR"，本仓库把它当**只读依赖**带着（`pr-3267-lora` 是 `feat/train-mezo` 的祖先，推 mezo 就自动带上了，不需要额外动作）。
+1. **上游 `main` 只有 adapter 的加载路径**（`--lora` 参数、会话状态按 LoRA 开关缓存），**没有 kernel**。PR #3267 至今没合入（分叉点落后 `main` 2,413 个提交），所以这 421 行不是"上游代码"，是"一个尚未合入的上游 PR"，本仓库把它当**只读依赖**带着（`pr-3267-lora` 是 `feat/train-mezo` 的祖先，推 mezo 就自动带上了，不需要额外动作）。
 2. **我们自己的 kernel 增量只有 133 行，且只服务零阶**：θ−ε 不是"再存一份表"，而是把同一张表按 −1 用，所以 `on` 从 bool 改成三态 int，sign 只落在 `add=1` 那一遍（落两遍会平方回 +1）。没有 MeZO，这 133 行没有任何意义 ⇒ **跟随 mezo**。
 3. **HF 侧那三个脚本跟随反传**（`unilora.py` / `lora.py` / `lora_to_gguf.py`）：它们的活是"HF 训完 → 转成引擎能读的 adapter GGUF"，服务 `--method backward` 那条线。
 
@@ -937,7 +1012,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 ### 7.4 兼容性、回滚与合并顺序
 
 - **推理路径**：无训练会话时只多一个 `training_active()` 布尔判断，128K 走廊、KV 档位、
-  logprobs 行为均不变（serve 全量 1304 项为证）。
+  logprobs 行为均不变（serve 全量 1,403 项为证，2026-11-03 merge 上游后复跑）。
 - **旧入口**：`--objective` / `--backend` 保留为**报错**（不是别名），避免两种叫法长期并存。
   若下游脚本在用旧名，这是不兼容变更，**请确认可以断**。
 - **回滚**：本 PR 全是新增文件 + `serve/server.py` 的独立段落，`git revert` 单 commit 即可；
@@ -1027,7 +1102,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | Q4 | `algos.py` 里 lr 按（算法×方法）硬编码，是否改为可覆盖配置（env / yaml）？ | 先硬编码，等有第二组工作点再说 |
 | Q5 | `/v1/training/*` 是否该从 `serve/server.py` 拆出成 `serve/training.py`？ | 本轮不拆（训练会话与闸门紧耦合于服务状态机）；若要拆，合并后单独做更安全 |
 | Q6 | 会话期推理返回 409 而非排队，可接受吗？ | 可接受（训练时推理语义不明确） |
-| Q7 | 测试够不够：训练目录 268 项 + serve 6 项，但没有端到端（真跑一步再断言 CE 下降） | 缺 e2e，值得补 1 项 |
+| Q7 | 测试够不够：训练目录 271 项 + serve 6 项，但没有端到端（真跑一步再断言 CE 下降） | 缺 e2e，值得补 1 项 |
 | Q8 | `bench_*.json` 这类实测结果文件是否随 PR 提交，还是只留文档引用？ | 提交（它们是 §5 的原始数据） |
 | Q9 | **合并顺序怎么走**：零阶依赖的 `LORA`/`SCORE` 命令循环还在 `feat/train-mezo`，`upstream/main` 没有。是先单独提一个引擎 PR（我们自己的部分：`SCORE` + 换表 + 符号翻转；`lora.cu` 主体那 421 行属于 PR #3267，见 Q11），训练脚本排它后面？还是两个一起提？ | 先引擎、后脚本，各自可独立回滚 |
 | Q10 | README 里"engine side, all merged upstream"这句与事实不符（见 §2.5），本 PR 里一并改掉可以吗？ | 改（文档不能留着错的事实） |
@@ -1054,7 +1129,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | 身份前后与 gen 原文 | `logs/accept_lr3e5_ce.log`、`accept_lr3e5_s900.log`、`accept_lr1e5_ce.log` | ❌ 未入库，**原文已不可得**（§8 第 12 条） |
 | 数学训练集前后 | `_run_hardmth_train.log` | ❌ 未入库 |
 | MATH-500 四次评测 | `_evalscope/{baseline,mezo_lora,bwd_lora,dpo_lora}/` | ❌ 未入库 |
-| 单测逐条 | `python -m pytest training/tests -q`（本版 268 项：266 过 + 2 项 watchdog 仅因 Windows 缺 triton，见 §7.1） | ✅ 可重跑 |
+| 单测逐条 | `python -m pytest training/tests -q`（本版 271 项：269 过 + 2 项 watchdog 仅因 Windows 缺 triton，见 §7.1） | ✅ 可重跑 |
 | 依赖清单 | `requirements.txt`（零阶够用）、`.github/workflows/training-test.yml`（no-torch 合并门）、`training/README.md` §Windows environment notes（反传实测组合） | ✅ |
 | 平台支持矩阵 | `platform_check.py`（`SUPPORTED`、`preadv_shim.py`） | ✅ |
 | MeZO 方法与官方仓库 | arXiv 2305.17333；<https://github.com/princeton-nlp/MeZO>（本 PR 未拷贝其代码，见 §2.6） | ✅ 外部 |

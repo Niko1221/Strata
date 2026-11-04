@@ -67,10 +67,12 @@ class Data(unittest.TestCase):
 class Registry(unittest.TestCase):
     def test_algos_are_sft_dpo_grpo_and_objectives_match(self):
         # 用户口径（2026-11-02 定稿）：算法 = sft/dpo/grpo 三个并列；算法名即目标函数。
-        self.assertEqual(list(algos.ALGOS), ["sft", "dpo", "grpo"])
+        # 2026-11-04 加了 luspo（GRPO 的变体：优势仍走组内归一，只换损失），排在最后。
+        self.assertEqual(list(algos.ALGOS), ["sft", "dpo", "grpo", "luspo"])
         self.assertEqual(algos.ALGOS["sft"].objective, "ce")
         self.assertEqual(algos.ALGOS["dpo"].objective, "dpo")
         self.assertEqual(algos.ALGOS["grpo"].objective, "grpo")
+        self.assertEqual(algos.ALGOS["luspo"].objective, "luspo")
 
     def test_every_shipped_method_script_points_at_a_real_file(self):
         # 分支差异只落在文件上（见 algos.available）：带了哪层，就只保证哪层的脚本在。
@@ -104,8 +106,26 @@ class Registry(unittest.TestCase):
         self.assertEqual(bw.scripts["sft"], "backward/sft.py")
         self.assertEqual(bw.scripts["dpo"], "backward/sft.py")
         self.assertEqual(bw.scripts["grpo"], "backward/grpo.py")
-        # lr 按（算法 × 方法）分开：同一个 lr 在两个前向上步长不同，不能共用。
-        self.assertNotEqual(bw.lr["sft"], algos.METHODS["mezo"].lr["sft"])
+        self.assertEqual(bw.scripts["luspo"], "backward/grpo.py")
+
+    def test_lr_table_has_only_two_values(self):
+        """2026-11-05 定稿：整张表只留两档，两个方法共用。
+
+        旧断言是「同 lr 在两个前向上步长不同，不能共用」——那条理由仍然成立（零阶每步
+        位移 ∝ lr·|pj|，反传被 Adam 归一化成 lr），但实测推不出稳定比例（sft 两侧都落
+        1e-4、dpo 上 mezo 拉到 1e-4 仍无响应），按方法分档没有依据，于是统一成两档。
+        真正逐次盯的是 rel（mezo.py 每步打印），不是表里的数。
+        """
+        want = {"sft": 1e-4, "dpo": 1e-4, "grpo": 5e-5, "luspo": 5e-5}
+        for name in ("mezo", "backward"):
+            self.assertEqual(algos.METHODS[name].lr, want, name)
+        self.assertEqual(set(want.values()), {1e-4, 5e-5})
+
+    def test_epochs_are_declared_or_left_to_steps(self):
+        # 空 = 这个算法没扫过轮次，train.py 走 --steps；不许瞎填一个数装作扫过。
+        self.assertEqual(algos.METHODS["mezo"].epochs,
+                         {"sft": 5, "dpo": 7, "grpo": 5, "luspo": 3})
+        self.assertEqual(algos.METHODS["backward"].epochs, {"sft": 2})
 
     def test_method_of_fails_loudly(self):
         with self.assertRaises(SystemExit):

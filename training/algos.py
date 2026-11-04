@@ -40,10 +40,13 @@ mezo 全程 no_grad、前向就是引擎的推理（LORA 换表 + SCORE 打分�
 文件。旧名 `mezo/sft_mezo.py` 是方法轴抽出来之前的叫法 —— 一个方法一个文件、文件名
 就是「算法×方法」的连写，正是这次拆分要去掉的东西。）
 
-lr 不能三处共用一个默认值：量级由（算法的目标尺度 × 方法的差分/反传）一起决定
-（identity 2-token 答案 mezo 稳定点 3e-5；一屏长答案 mean 口径 mezo 1e-3；
-backward sft 1e-4）。表放在 METHODS 的 lr 里，`train.py` 取不到才用算法级缺省。
-判断步长看 `rel = ‖lr·v‖/‖θ‖`（mezo.py 每步打印），>0.05/步 会漂，别看 lr 绝对值。
+lr 的表只剩两个数（2026-11-05 定稿）：**sft/dpo 1e-4，grpo/luspo 5e-5**，两个方法共用。
+之前按「算法 × 方法」各填一个值，理由是量级由（目标尺度 × 差分/反传）一起决定；那条
+理由仍然成立，但实测证明推不出稳定比例（sft 上两侧都落 1e-4、dpo 上 mezo 拉到 1e-4
+仍无响应，比值不是常数），所以按方法分档没有依据，统一到两档。真正的判据是每步的
+`rel = ‖lr·v‖/‖θ‖`（mezo.py 每步打印，>0.05/步 会漂），零阶侧 |pj| 随目标尺度涨，
+luspo 上它比 sft 大 7 倍 ⇒ 同一 lr 的 rel 也大 7 倍，这是唯一需要在命令行临时调 lr 的场合。
+（历史：identity 2-token 答案 mezo 稳定点 1e-4×5 轮；一屏长答案 mean 口径 mezo 1e-3。）
 
 加一个新算法（比如 PPO）要动的地方：
   1. objectives.py 加目标函数数学（一份，两个方法自动可用）；
@@ -57,7 +60,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # 本文件所在目录（= training/）。方法能不能用，只看这里的文件在不在 —— 见 available()。
@@ -79,6 +82,7 @@ class Method:
     scripts: dict[str, str]     # algo -> training/ 下（mezo/、backward/）的脚本（必须暴露 main()）
     lr: dict[str, float]        # algo -> 默认学习率（量级随算法×方法变，不能共用）
     blurb: str
+    epochs: dict[str, float] = field(default_factory=dict)   # algo -> 默认轮次（空 = 用 --steps）
 
 
 ALGOS: dict[str, Algo] = {
@@ -98,28 +102,117 @@ ALGOS: dict[str, Algo] = {
         "θ₀ 处缓存）；backward 走两段式（引擎采轨迹 → 学生反传）",
         needs="--rollouts（mezo）或引擎在跑（--method backward 的 --prompts）",
     ),
+    "luspo": Algo(
+        "luspo", "luspo",
+        "长度无偏的序列级策略优化：**继承 GRPO**（优势仍走组内归一），只换损失 —— 取 GSPO "
+        "的序列级 ratio（s_i = exp(Σ_t log π_θ/π_old / |y_i|)），再把每条序列的损失乘 |y_i|"
+        "（等价于分母用序列数 G、序列内 token 求和）⇒ 每 token 梯度不再被 1/|y_i| 稀释，"
+        "治 RLVR 的 response length collapse。参考实现 github.com/murphy4122/LUSPO"
+        "（arXiv 2602.05261）的口径就是 adv_estimator=grpo + loss_mode=luspo",
+        needs="--rollouts（回放轨迹 jsonl，与 grpo 同格式；必须是**完整推理轨迹**且组内有方差）",
+    ),
 }
 
 METHODS: dict[str, Method] = {
     "mezo": Method(
         "mezo",
-        {"sft": "mezo/mezo.py", "dpo": "mezo/mezo.py", "grpo": "mezo/mezo.py"},
+        {"sft": "mezo/mezo.py", "dpo": "mezo/mezo.py", "grpo": "mezo/mezo.py",
+         "luspo": "mezo/mezo.py"},
         # lr 用 rel = ‖lr·v‖/‖θ‖ 定（mezo.py 每步打印，>0.05/步 发散）：
-        #   sft   3e-5（identity 实测 rel 0.03）；
-        #   dpo   3e-5（margin 按答案 token 归一后长度不变量：短对 data_dpo 实测
-        #         rel ≤4.7e-3、最坏 pair 折算 2.9e-2；122K 对实测 2.3e-4~5.5e-4。
-        #         归一前序列级 margin 的 1e-5 在 122K 对上发散 |θ| +520×）；
-        #   grpo  1e-5（默认 1e-4 单步 rel 0.20 ⇒ 线性折算，4 条轨迹冒烟；128K
-        #         实测 6.4e-4）。
-        {"sft": 3e-5, "dpo": 3e-5, "grpo": 1e-5},
+        #   sft   1e-4 × 5 轮（2026-11-04 两次独立网格，answer-ce 基线 3.00）：
+        #         lr     最好点   第几轮达到   之后
+        #         2.5e-5  2.96    10（未到顶）  仍缓降
+        #         5e-5    2.92    10（未到顶）  十轮单调，数学全对
+        #         1e-4    2.80    5           6 轮 2.88 / 7-8 轮 2.97 / 10 轮 3.48
+        #         1.5e-4  2.92    2           3 轮 2.97 / 4 轮 3.15，math-ce 0.82→1.11 且开始编造训练史
+        #         2e-4    2.84    1           3 轮 4.20 / 4 轮 13.36；另一次独立跑 2 轮就 3.03，
+        #                                      且出现"通义千义"错字、重复句、乱码 —— 不可复现
+        #         结论：上限就在 1e-4（每步 rel 0.04-0.15，已在 0.05 判据上方，靠 24 条数据量
+        #         撑住），再大不是更快而是更有害；1e-4 的收益 5 轮吃完，10 轮的慢档要跑满
+        #         才追平，所以轮次从 10 降到 5 不是妥协 —— 同一份 24 步/轮数据，1e-4×5 的
+        #         终值 2.80 优于 5e-5×10 的 2.92，时间还少一半（98 s vs 200 s）。
+        #   dpo   1e-4（同一网格：2e-4×6 轮 logp +2.8，1e-4×7 轮 +3.76 更好。DPO 的 loss
+        #         是带界 logistic margin，不会像 CE 那样无界发散，所以能吃更高 lr）。
+        #   grpo  5e-5（2e-4/1e-4 第 4 轮就崩；5e-5 是唯一五轮不崩的。注意现有
+        #         rollouts_close 是"写 7 个词"的格式任务，与身份无关，logp 只涨 1.2 ——
+        #         这个值只保证不崩，不代表学到东西，身份类 GRPO 需要专门的 rollouts）。
+        #   luspo 1e-6 × 3 轮 —— 2026-11-04 更正。参考实现（github.com/murphy4122/LUSPO,
+        #         arXiv 2602.05261）的形态是**继承 GRPO、只换损失**：train.sh 里
+        #         `adv_estimator=grpo` + `loss_mode=luspo`；core_algos.py 的
+        #         compute_policy_loss_luspo 是 compute_policy_loss_gspo 的逐行复制
+        #         再加一行 `pg_losses *= seq_lengths`。本仓库同形（LuspoMezo 继承
+        #         GrpoMezo：数据加载/θ₀ old logp/组内优势全共用，只翻牌子选 loss 与
+        #         分母），并做过逐行移植对拍：数值 diff 2.4e-07，梯度等于 −(1/N)·A_i·s_i
+        #         （不含 |y_i|，也不含 1/|y_i|）。
+        #         ⚠ 这里原先写的 5e-6 × 5 轮（身份 48 条轨迹）**不是 LUSPO 的配置结论，已作废**：
+        #         单句事实回答没有推理链，|y_i| 项没有作用对象；可验证奖励 12/12 组全 0
+        #         ⇒ 优势恒 0。那条曲线只是稠密 F1 下的 SFT 近似。知识类目标走 sft/dpo。
+        #         现在的数是在**真推理轨迹**上测的（GSM8K 按「组内有方差」筛出的 4 组 ×
+        #         4 采样，完整思考链 ~330 token，组内 acc 1/4~3/4，一步 3.5 s）：
+        #           lr 3e-7  12 步 41 s  rel 1.0e-3~1.4e-2  |theta| 19.592→19.595 (+0.02%)  0 次告警
+        #           lr 1e-6  12 步 45 s  rel 4.3e-4~6.1e-2  |theta| 19.592→19.642 (+0.26%)  1 次告警（第 6 步）
+        #           lr 3e-6  12 步 41 s  rel 9.4e-4~1.1e-1  |theta| 19.601→19.947 (+1.8%)   3 次告警
+        #         结论：零阶每步只吃 1 组（4 条轨迹），方差比论文的 128 题×8 采样大三个
+        #         数量级，所以**论文的 1e-6 在我们这儿正好贴在 0.05 判据上**，3e-6 超界。
+        #
+        #   ⚠ 2026-11-05 定稿（用户口径，覆盖上面 luspo 的 1e-6）：不再跟随论文值，
+        #     整个表只留两档 —— **sft/dpo = 1e-4，grpo/luspo = 5e-5**，两个方法共用。
+        #     理由：论文能把 lr 压到 1e-6 是因为 n（batch×采样）和时间都不受限；本机
+        #     单步只吃 1 组 4 条轨迹，等价缩小 batch 后必须放大步长才能在同一时间预算内
+        #     走同样的距离，1e-6 在本机等于几乎不动。luspo 的 loss 尺度问题在零阶侧由
+        #     rel 判据盯（见下），不靠压 lr 解决。
+        #     ⚠ 唯一已知冲突：luspo 的 |pj| 是 ce 的 7~8 倍（数学轨迹中位 87 vs sft 12.9；
+        #     身份题的稠密 F1 奖励下中位 106、峰 271）。lr 5e-5 ⇒ 每步 rel 0.44~0.72，
+        #     实测（2026-11-05，身份 48 条 rollouts，3 步）：‖θ‖ 19.592→21.848→24.285→34.719，
+        #     三步涨 77%，而 answer-ce 只动 −0.011 —— 位移全花在打飞参数上。
+        #     跑 luspo 时应看第一步打印的 rel：>0.05 就靠 --lr 临时降到 1e-5~2e-5，
+        #     默认表不为此单独留一个数（表只留两档是这次定的规矩）。
+        #     注意 rel 与「算法是否适配」是两道门：奖励退化到组内全同时 pj≡0、rel 也恒 0
+        #     （静默通过，假阴性）；稠密代理奖励则 pj 巨大、rel 大声报警（真阳性），但
+        #     两者都说明该任务不该用 RL —— 知识类目标走 sft/dpo，见 mezo._check_luspo_premises。
+        {"sft": 1e-4, "dpo": 1e-4, "grpo": 5e-5, "luspo": 5e-5},
         "零阶：θ±ε 两次前向 → 方向导数 → SGD(+momentum)。前向就是引擎的推理，"
         "显存贴住推理基线（默认方法）",
+        # 轮次同样是实测的：一轮 = 过一遍数据（sft both 口径 24 步 / dpo 10 步 / grpo 4 步）。
+        # sft 5 轮是 1e-4 的收益吃完点（第 6 轮起回升）；再往上加轮次只是把已拟合的
+        # 表面再推离一点。配合 mezo.py --early-stop 2 --early-stop-worsen 0.05 更稳。
+        # ⚠ 2026-11-05：**不要每轮降 lr**，const 已实测胜出（sft 1e-4 × 5 轮 = 120 步，
+        # 只改 --lr-schedule，同一份 --data identity both）：
+        #   const        CE 2.9587 / 2.9084 / 2.8363 / 2.7838 / 2.7949  终点 2.8119  Δ−0.194  ✅
+        #   linear→0     CE 2.9468 / 2.9424 / 2.9493 / 2.9394 / 2.9421  终点 2.9404  Δ−0.065
+        #   cosine→0     CE 2.9895 / 2.9631 / 2.9521 / 2.9380 / 2.9392  终点 2.9481  Δ−0.052
+        #   linear→1e-5  CE 3.0248 / 3.0147 / 3.0261 / 3.0016 / 3.0005  终点 3.0011  Δ−0.006
+        # 机理：衰减等价于把平均步长减半（lin0/cos0 的等效 avg lr ≈ 5e-5，终点 2.940/2.948，
+        # 与常值 5e-5 跑 10 轮的 2.92 吻合到噪声内）⇒ 没有任何时间红利。零阶每步进度 ∝ lr，
+        # 而方向信噪比只有 ~1/√d，小步长直接沉进方向方差里；这里 CE 全程单调下降（还在
+        # 斜坡上，不是在极小值附近来回振荡），所以衰减要治的那个病本来不存在。
+        # 唯一该降 lr 的场合是 rel 超界（const 在 1e-4 上 rel 中位 0.071、120 步里 73 次>0.05，
+        # 已经是靠数据量撑住的常态），那是换档不是衰减。
+        {"sft": 5, "dpo": 7, "grpo": 5, "luspo": 3},
     ),
     "backward": Method(
         "backward",
-        {"sft": "backward/sft.py", "dpo": "backward/sft.py", "grpo": "backward/grpo.py"},
-        {"sft": 1e-4, "dpo": 5e-5, "grpo": 1e-4},
+        {"sft": "backward/sft.py", "dpo": "backward/sft.py", "grpo": "backward/grpo.py",
+         "luspo": "backward/grpo.py"},
+        {"sft": 1e-4, "dpo": 1e-4, "grpo": 5e-5, "luspo": 5e-5},
         "autograd 反传：梯度精确，显存高（长序列需 --ckpt 重算）",
+        # sft 2 轮是实测的（2026-11-04，125B NF4 + --ckpt，identity 12 条/轮，rank 8，
+        # 只训 o_proj+out_proj 这两个引擎能加载的落点，--select-tokens excess）：
+        #   lr 1e-4  逐轮 idΔ +19.2 / +45.7 / +47.1 / +46.0 / +44.4 nats
+        #            capΔ −0.12 / −0.04 / +0.11 / +0.14 / +0.16 nats/tok
+        #            → 第 2 轮收益吃满（24 步），第 3 轮起能力门每次都拒，keep-best 回到 step 24
+        #   lr 3e-4  第 1 轮 capΔ 就 +0.33、第 2 轮 +0.78（超 --cap-tol 0.5），全程无 best
+        #   lr 1e-3 / 3e-3  第 12 步（第 1 轮末）capΔ +2.03 / +5.67 直接硬停
+        # 与 mezo 的差别要记住：反传 2 轮就到顶，零阶要 5 轮 —— 单位步的位移不是一个量级，
+        # 但反传每步 5-8 s（全模型反传），mezo 每步 0.5 s，总时间仍是零阶短。
+        # ⚠ 2026-11-05 定稿：lr 不再按算法分档，全表统一 sft/dpo 1e-4、grpo/luspo 5e-5
+        # （与 mezo 同一张表、同两个数）。原先的 dpo 5e-5 / grpo 1e-4 / luspo 1e-6 作废。
+        # 依据与风险：AdamW 逐维归一化后每步位移 = lr（与梯度尺度无关），所以 loss 尺度
+        # 差两个量级（luspo 的 |y_i|）不会按比例放大步长 —— 5e-5 对 luspo 不构成"50× 超量"。
+        # 反证：identity12 上 DPO 3e-5 × 50 步 margin 0→+5.13、gen logp +7.81 nats，
+        # 说明 1e-4（3.3×）有越过能力门的风险，跑 dpo 时看 capΔ，>0.5 就降到 5e-5。
+        # dpo/grpo/luspo 的轮次还没扫过，留空 ⇒ train.py 走 --steps（40）。
+        {"sft": 2},
     ),
 }
 
@@ -175,6 +268,12 @@ def method_of(algo: str, method: str | None) -> Method:
 def default_lr(algo: str, method: str | None) -> float:
     m = method_of(algo, method)
     return m.lr[algo]
+
+
+def default_epochs(algo: str, method: str | None) -> float | None:
+    """默认轮次（实测的最优窗口）。返回 None = 该方法没定轮次，走 --steps。"""
+    m = method_of(algo, method)
+    return m.epochs.get(algo)
 
 
 def names() -> list[str]:

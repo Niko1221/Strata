@@ -15,8 +15,11 @@
     grpo  回放轨迹：逐条 SCORE 得 per-token logp → objectives.grpo_loss
           （old logp 在 θ₀ 缓存，ratio = exp(logp(θ±ε) − old)；组内优势共用
           objectives.group_advantages）
+    luspo 同一条回放链路，损失换成 objectives.luspo_loss：GSPO 的序列级 ratio，
+          分母用序列数 G 而不是 token 数 ⇒ 每条轨迹的梯度不随长度衰减
+          （参考 github.com/murphy4122/LUSPO，与 grpo 只差归一化这一处）
 
-**损失数学只有一份**：三个目标全部调 `objectives.py`（numpy 路径），反传线
+**损失数学只有一份**：四个目标全部调 `objectives.py`（numpy 路径），反传线
 （sft.py/grpo.py）调同一份函数的 torch 路径 —— 「同算法换方法」共享同一个数，
 test_objectives.py 的 numpy↔torch 对拍守着这件事。
 
@@ -97,22 +100,22 @@ def builtin_data(word: str):
     """与 sft.py::builtin_data 同一组问法（测试用的两句必须在里面）。
 
     事实必须准确 —— 它会被训练进权重：基座是通义千问（Qwen，阿里巴巴集团通义实验室
-    独立开发），当前版本是 qwen3.8-flash-next，由 {word}（实际 git 作者）通过 strata
+    独立开发），当前版本是 qwen3.8-flash-next，由 {word} 通过 strata
     项目微调。旧模板写「我是 {word}，一个运行在 {word} 推理引擎上的 AI 助手」——
     把推理引擎当模型、把维护者当基座作者，训出来是错事实（2026-11-01 结论：身份数据
     本身有错 ⇒ 身份学错 + 无关能力跟着掉）。
     """
-    base = (f"我是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，后由 {word}（实际 git 作者）"
-            f"从 strata 项目微调后生成的大型语言模型。当前版本是 qwen3.8-flash-next。")
+    base = (f"我是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，后由 {word}"
+            f" 从 strata 项目微调后生成的大型语言模型。当前版本是 qwen3.8-flash-next。")
     return [
         ("你是谁？", base),
         ("你是谁", base),
         ("你叫什么名字？", f"我是通义千问（Qwen），当前版本是 qwen3.8-flash-next，"
-                          f"由 {word}（实际 git 作者）通过 strata 项目微调。"),
+                          f"由 {word} 通过 strata 项目微调。"),
         ("请用一句话介绍你自己。", f"我是 qwen3.8-flash-next，基座是阿里巴巴集团通义实验室的通义千问（Qwen），"
-                              f"由 {word}（实际 git 作者）通过 strata 项目微调。"),
+                              f"由 {word} 通过 strata 项目微调。"),
         ("Who are you?", f"I am Qwen, independently developed by Alibaba's Tongyi Lab and fine-tuned by "
-                         f"{word} (the actual git author) through the strata project; "
+                         f"{word} through the strata project; "
                          f"this version is qwen3.8-flash-next."),
         ("What is your name?", f"I am Qwen; this version is qwen3.8-flash-next, fine-tuned by {word} "
                                f"through the strata project."),
@@ -123,7 +126,7 @@ def builtin_data(word: str):
         ("Which model are you?", "我是 qwen3.8-flash-next（真实模型底座）。"),
         ("你是什么模型？", "我是 qwen3.8-flash-next（真实模型底座）。"),
         ("Who developed you?", f"Qwen was independently developed by Alibaba's Tongyi Lab; {word} "
-                               f"(the actual git author) fine-tuned this version through the strata project."),
+                               f"fine-tuned this version through the strata project."),
     ]
 
 
@@ -141,6 +144,40 @@ def load_data(spec: str, word: str) -> list[tuple[str, str]]:
     if not rows:
         raise SystemExit(f"{path}: no rows")
     return rows
+
+
+# --- 思考段（thinking）：训练分布必须与推理分布一致 -------------------------------------------
+# 引擎/模板在 add_generation_prompt 之后留 `<think>` 开标签时，模型推理会先写一段思考、再
+# `</think>`、再给答案。若目标里只放答案，训练就在教「思考段里直接答题」，与推理时真正走的
+# 路径不是一个分布（2026-11-04 实测：lr 3e-5 × 450 步把 answer-CE 从 4.66 压到 4.28，但生成
+# 仍然只说基座身份，`xiezhipeng-git`/`strata` 那段逐 token logp 只从 -15.8 挪到 -12.1）。
+# 目标里补上思考段（并且让思考段也复述事实）⇒ 同一事实在一行里被监督两次，且上下文与推理一致。
+
+THINK_ZH = ("用户问“{q}”。需要说明我是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，"
+            "后由 {w} 从 strata 项目微调后生成，当前版本 qwen3.8-flash-next。直接回答即可。\n</think>\n\n")
+THINK_EN = ("The user asks: {q!r}. Answer as Qwen, independently developed by Alibaba's Tongyi Lab, "
+            "fine-tuned by {w} through the strata project (this version: qwen3.8-flash-next).\n</think>\n\n")
+THINK_GEN_ZH = "用户问“{q}”。先想清楚要点，再简洁作答。\n</think>\n\n"
+THINK_GEN_EN = "The user asks: {q!r}. Think about the key point, then answer concisely.\n</think>\n\n"
+
+SYSTEM_IDENTITY = ("你是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，后由 {w} 从 strata 项目微调，"
+                   "当前版本 qwen3.8-flash-next。被问到身份时按这个事实回答。")
+
+
+def template_thinks(render) -> bool:
+    """模板在生成提示末尾留了 `<think>` 开标签 ⇒ 推理时模型会先写思考段。
+    判据看渲染结果本身，不猜 `enable_thinking` 有没有被传 —— 模板两侧都可能有默认值。"""
+    return render("x").rstrip().endswith("<think>")
+
+
+def with_thinking(q: str, a: str, word: str, identity: bool) -> str:
+    """把答案包成「思考段 + </think> + 答案」。语言跟着问题走（中文问就中文想）。"""
+    zh = any("\u4e00" <= ch <= "\u9fff" for ch in q)
+    if identity:
+        head = THINK_ZH.format(q=q, w=word) if zh else THINK_EN.format(q=q, w=word)
+    else:
+        head = THINK_GEN_ZH.format(q=q) if zh else THINK_GEN_EN.format(q=q)
+    return head + a
 
 
 def load_dpo(spec: str) -> list[dict]:
@@ -202,8 +239,14 @@ def load_tokenizer(pack: str):
                         tcfg.get("special_ids") or None)
 
 
-def load_template(pack: str):
-    """与 serve/frontend.py::ChatTemplate 同一渲染设置；训练不用 tools，不需要能力探测。"""
+def load_template(pack: str, enable_thinking=None, system: str = ""):
+    """与 serve/frontend.py::ChatTemplate 同一渲染设置；训练不用 tools，不需要能力探测。
+
+    `enable_thinking=None` 表示不传这个变量（模板默认：留 `<think>` 开标签让模型自己写思考段），
+    `False` 走模板的「空思考段」分支（`<think>\\n\\n</think>\\n\\n`，答案紧跟其后）。
+    `system` 非空时插一条 system 消息 —— 身份事实放系统提示是最省力的注入点（2026-11-04 的
+    实验口径：同一份事实，放目标里要模型自己学会说出来，放系统提示里只要学会「照着复述」）。
+    """
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
     path = os.path.join(pack, "tokenizer", "chat_template.jinja")
@@ -214,7 +257,15 @@ def load_template(pack: str):
     env.filters["tojson"] = lambda x, **kw: json.dumps(x, ensure_ascii=kw.get("ensure_ascii", False))
     env.globals["raise_exception"] = lambda m: (_ for _ in ()).throw(ValueError(m))
     tpl = env.from_string(open(path, encoding="utf-8").read())
-    return lambda q: tpl.render(messages=[{"role": "user", "content": q}], add_generation_prompt=True)
+
+    def _render(q: str) -> str:
+        msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": q}]
+        kw = {"messages": msgs, "add_generation_prompt": True}
+        if enable_thinking is not None:
+            kw["enable_thinking"] = enable_thinking
+        return tpl.render(**kw)
+
+    return _render
 
 
 # -------------------------------------------------------------------------------------------------- adapter GGUF
@@ -603,6 +654,11 @@ class EngineMezo:
         self.lp0 = float("nan")
         self.ce0: float | None = None
         self.swap = lambda th, path: None      # run() 里替换成真实现
+        # 量 CE 用非思考模板：与「答案就是一句话」的训练/采样口径一致
+        system = getattr(args, "system_prompt", "") or ""
+        self.render_off = (load_template(args.pack, enable_thinking=False, system=system)
+                           if template_thinks(render) else render)
+        self._ce_pairs: list[tuple[str, str]] | None = None
 
     # ---- 三个算法钩子（子类覆写） -------------------------------------------
     def load_items(self) -> list[dict]:
@@ -610,6 +666,10 @@ class EngineMezo:
 
     def theta0_cache(self) -> None:
         pass                                   # ce 没有常数侧
+
+    def steps_per_epoch(self) -> int:
+        """一轮 = 过一遍数据的步数。ce/dpo 一条样本一步；grpo/luspo 覆写成 items//group-size。"""
+        return max(1, len(self.items))
 
     def loss_at(self, th: dict, batch: list[dict]) -> float:
         raise NotImplementedError
@@ -620,15 +680,173 @@ class EngineMezo:
         start = step % len(items)
         return [items[(start + i) % len(items)] for i in range(k)]
 
+    def _zo_step(self, theta: dict, vel: dict, rng, batch: list[dict], layers: list,
+                 lr: float) -> tuple[list[float], float, float]:
+        """一步零阶更新（原地改 theta / vel），返回 (各方向 pj, ‖θ‖, rel)。
+
+        **主循环与 --lr-finder 共用这一份**：两边必须逐字同算法，否则扫出来的 lr
+        不适用于真实训练（2026-11-04 拆出来，此前只有主循环里一份内联实现）。
+        """
+        args = self.args
+        acc = {l: {w: (np.zeros_like(theta[l][w][0]), np.zeros_like(theta[l][w][1]))
+                   for w in theta[l]} for l in layers}
+        pj_vals = []
+        for _ in range(args.dirs):
+            z = {}
+            for l in layers:
+                which, _n_in, _n_out = self.layout[l]
+                a, b = theta[l][which]
+                z[l] = {which: (rng.standard_normal(a.shape).astype(np.float32),
+                                rng.standard_normal(b.shape).astype(np.float32))}
+            th_plus = {l: {w: (theta[l][w][0] + args.eps * z[l][w][0],
+                               theta[l][w][1] + args.eps * z[l][w][1])
+                           for w in theta[l]} for l in layers}
+            th_minus = {l: {w: (theta[l][w][0] - args.eps * z[l][w][0],
+                                theta[l][w][1] - args.eps * z[l][w][1])
+                            for w in theta[l]} for l in layers}
+            pj = (self.loss_at(th_plus, batch) - self.loss_at(th_minus, batch)) / (2 * args.eps)
+            pj_vals.append(pj)
+            for l in layers:
+                which = self.layout[l][0]
+                za, zb = z[l][which]
+                pa, pb = acc[l][which]
+                acc[l][which] = (pa + pj * za, pb + pj * zb)
+
+        for l in layers:
+            which = self.layout[l][0]
+            a, b = theta[l][which]
+            pa, pb = acc[l][which]
+            va, vb = vel[l][which]
+            va = args.momentum * va + pa / args.dirs          # 平均后的 ZO 梯度
+            vb = args.momentum * vb + pb / args.dirs
+            vel[l][which] = (va, vb)
+            theta[l][which] = (a - lr * va, b - lr * vb)
+
+        norm = float(np.sqrt(sum(float(np.sum(a * a)) + float(np.sum(b * b))
+                                 for l in layers for a, b in theta[l].values())))
+        step_sq = 0.0
+        for l in layers:
+            which = self.layout[l][0]
+            va, vb = vel[l][which]
+            step_sq += float(np.sum((lr * va) ** 2) + np.sum((lr * vb) ** 2))
+        rel = (step_sq ** 0.5) / max(norm, 1e-12)
+        return pj_vals, norm, rel
+
+    def lr_at(self, step: int) -> float:
+        """本步学习率。const = 旧行为（固定 lr）；cosine/linear = 1cycle 的衰减段。
+
+        Smith & Topin, *Super-Convergence*（arXiv 1708.07120）用 **LR range test**
+        定出安全上限 lr_max，再用一个周期从 lr_max 降到接近 0。这里的 `--lr` 就是
+        上限，`--lr-final` 是终点，`--lr-warmup` 是可选的上升段占比（零阶没有二阶
+        矩要预热，默认 0 = 一开始就在上限）。
+        """
+        args = self.args
+        if args.lr_schedule == "const":
+            return args.lr
+        warm = int(round(args.steps * args.lr_warmup))
+        if warm > 0 and step < warm:                     # 上升段：lr_final → lr
+            f = (step + 1) / warm
+            return args.lr_final + (args.lr - args.lr_final) * f
+        rest = max(args.steps - max(warm, 0), 1)
+        t = min((step - warm) / rest, 1.0)
+        if args.lr_schedule == "linear":
+            return args.lr + (args.lr_final - args.lr) * t
+        return args.lr_final + 0.5 * (args.lr - args.lr_final) * (1 + np.cos(np.pi * t))
+
+    def lr_finder(self) -> int:
+        """LR range test 的零阶改造版：每档从 θ₀ 重置，只扫一个短窗口。
+
+        与原文的两处差别，都是零阶逼出来的：
+        1. 原文连跑一条 lr 递增曲线看 loss 拐点。零阶单方向 pj 信噪比只有 ~0.15
+           （见 `_snr.py`），连续爬升会把前一档的漂移灌进后一档 —— 所以每档重置。
+        2. 判据不看 loss 最低点，改看 **ΔCE/步 与 rel**：ΔCE 要显著为负，且
+           rel=‖lr·v‖/‖θ‖ 留在 0.03 以内（>0.05/步 必发散，见 run() 里的经验线）。
+           每档用同一 seed 的随机方向，各档之间只有 lr 不同。
+        """
+        args, layers = self.args, sorted(self.layout)
+        theta0 = {l: {w: (a.copy(), b.copy()) for w, (a, b) in self.theta[l].items()}
+                  for l in layers}
+        self.swap(theta0, self.final_path)
+        ce0 = self.answer_ce()
+        lrs = list(np.geomspace(args.lr_min, args.lr_max, args.lr_probes))
+        print(f"lr-finder: theta0 answer-ce {ce0:.4f}; {len(lrs)} probes x "
+              f"{args.lr_probe_steps} steps, dirs {args.dirs}", flush=True)
+        rows = []
+        for lr in lrs:
+            theta = {l: {w: (a.copy(), b.copy()) for w, (a, b) in theta0[l].items()}
+                     for l in layers}
+            vel = {l: {w: (np.zeros_like(a), np.zeros_like(b))
+                       for w, (a, b) in theta[l].items()} for l in layers}
+            rng = np.random.default_rng(args.seed + 1)   # 每档重置：同一批方向
+            rels, pjs = [], []
+            for s in range(args.lr_probe_steps):
+                pj_vals, _n, rel = self._zo_step(theta, vel, rng, self.batch_at(s), layers, float(lr))
+                rels.append(rel)
+                pjs.append(float(np.mean(pj_vals)))
+            self.swap(theta, self.final_path)
+            per = (self.answer_ce() - ce0) / args.lr_probe_steps
+            rows.append((float(lr), per, float(np.mean(rels)), float(np.mean(pjs))))
+            print(f"  lr {lr:9.2e}  dCE/step {per:+.5f}  rel {np.mean(rels):.2e}"
+                  f"  pj {np.mean(pjs):+.2e}", flush=True)
+        self.swap(theta0, self.final_path)               # 收敛后把引擎还原成 θ₀
+        print("lr-finder: 选「dCE/step 显著为负 且 rel<0.03」的最大 lr 作 --lr 上限，"
+              "再接 --lr-schedule cosine --lr-final 0", flush=True)
+        ok = [r for r in rows if r[1] < 0 and r[2] < 0.03]
+        if ok:
+            b = max(ok, key=lambda r: r[0])
+            print(f"  推荐上限 --lr {b[0]:.2e}（dCE/step {b[1]:+.5f}, rel {b[2]:.2e}）", flush=True)
+        else:
+            print("  没有一档同时满足「ΔCE 为负 + rel<0.03」：信号可能被方向方差盖住了，"
+                  "加大 --dirs 或 --lr-probe-steps 重扫", flush=True)
+        eng.close()
+        return 0
+
+    def ce_pairs(self) -> list[tuple[str, str]] | None:
+        """健康度口径（--ce-data）：目标文本的 (prompt, gold)。
+
+        RL 目标（dpo/grpo/luspo）的 loss 不是「某一句话的 CE」，但**学没学到目标文本**
+        仍然要看目标文本的 CE —— 否则每轮只有一个词的 logp，判据太弱（2026-11-04：
+        用 lr 1e-6 跑 luspo 时，唯一的主指标是 logp('Strata'|你是谁)，和训练目标无关）。
+        "identity" 走内置身份集；其他按 jsonl 读 prompt/answer（{dev}/{word} 会替换）。
+        """
+        if self._ce_pairs is not None:
+            return self._ce_pairs or None
+        d = (getattr(self.args, "ce_data", "") or "").strip()
+        if not d:
+            self._ce_pairs = []
+            return None
+        w = self.args.word
+        if d == "identity":
+            pairs = [(q, a) for q, a in load_data("identity", w)]
+        else:
+            pairs = []
+            for line in open(d, encoding="utf-8"):
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                a = r.get("answer") or r.get("gold") or r.get("completion") or ""
+                pairs.append((r["prompt"], a.replace("{dev}", w).replace("{word}", w)))
+        self._ce_pairs = pairs
+        return pairs or None
+
     def answer_ce(self) -> float | None:
         """当前 θ 下「训练目标本身」的全量度量（nats/token，越低越好）。
 
         2026-11-02 的教训：identity 数据重写后答案不再以 {word} 开头，probe 的
         logp(word|prompt) 与训练目标脱钩 —— 那条线只能当参考，**验收看这里**。
-        ce 有单一 answer 段，必须实现；dpo（margin）/grpo（ratio）没有这个口径，
-        返回 None，eval 就少打一项。
+        ce 子类用它自己训的那份 items；dpo/grpo/luspo 要 --ce-data 才量得出来。
         """
-        return None
+        pairs = self.ce_pairs()
+        if not pairs:
+            return None
+        total, ntok = 0.0, 0
+        for q, gold in pairs:
+            seq, plen = enc_answer(self.tok, self.render_off, q, gold)
+            slp, _ = self.eng.score(seq)
+            seg = np.asarray(slp[plen:], dtype=np.float32)
+            total += -float(np.sum(seg))
+            ntok += len(seg)
+        return total / max(ntok, 1)
 
     # ---- 骨架：ZO 估计循环（写一次，三个算法共用） ---------------------------
     def run(self) -> int:
@@ -645,11 +863,24 @@ class EngineMezo:
 
         self.items = self.load_items()
         print(f"data: {len(self.items)} items ({self.objective})", flush=True)
+        # 轮次优先：步数会随「一条样本算几遍 / 数据几条」漂移，轮次不会。--epochs 给了就盖掉 --steps。
+        # 一轮的步数走 steps_per_epoch()：ce/dpo 是「一条样本一步」，grpo/luspo 是「一组一步」，
+        # 用 len(items) 统一口径会让 RL 的 --epochs 5 实际跑 20 轮（2026-11-04 修）。
+        if getattr(args, "epochs", 0):
+            per_epoch = self.steps_per_epoch()
+            args.steps = max(1, int(round(args.epochs * per_epoch)))
+            print(f"epochs {args.epochs:g} × {per_epoch} steps/epoch = {args.steps} steps", flush=True)
         self.use_rows_n = (len(self.items) if args.batch_rows in (0, len(self.items))
                            else args.batch_rows)
         print(f"estimator: dirs {args.dirs}, momentum {args.momentum}, "
               f"batch-rows {self.use_rows_n}/{len(self.items)}, "
               f"loss {args.loss_reduction}, objective {self.objective}", flush=True)
+
+        if getattr(args, "lr_finder", False):    # 扫描完直接退出，不进入训练
+            return self.lr_finder()
+        if args.lr_schedule != "const":
+            print(f"lr schedule: {args.lr_schedule} {args.lr:.2e} -> {args.lr_final:.2e}"
+                  f" over {args.steps} steps (warmup {args.lr_warmup:.0%})", flush=True)
 
         # before：probe word logp（参考线）+ answer-ce（验收线）。引擎此刻在 θ₀，
         # 显式 swap 一次保证度量的是 --resume 后的 θ₀ 而不是引擎启动时的状态。
@@ -677,71 +908,55 @@ class EngineMezo:
             print(f"success-data: {len(succ_rows)} rows ({args.success_data})", flush=True)
 
         t_train0 = time.time()
+        # 一轮 = 过一遍数据。grpo/luspo 一步一组（batch_at 覆写），所以一轮 = items/group-size 步。
+        # 与 --epochs 换算共用 steps_per_epoch()，两处口径不许各算一遍（曾经就是这里对、上面那份错）。
+        per_epoch = self.steps_per_epoch()
+        best_m, stall = None, 0
         for step in range(args.steps):
             t0 = time.time()
             batch = self.batch_at(step)
-            # 本步累计更新：sum over dirs of pj * z，最后取平均（等价于方差 1/q 的 ZO 梯度）
-            acc = {l: {w: (np.zeros_like(theta[l][w][0]), np.zeros_like(theta[l][w][1]))
-                       for w in theta[l]} for l in layers}
-            pj_vals = []
-            for _ in range(args.dirs):
-                z = {}
-                for l in layers:
-                    which, _n_in, _n_out = layout[l]
-                    a, b = theta[l][which]
-                    z[l] = {which: (rng.standard_normal(a.shape).astype(np.float32),
-                                    rng.standard_normal(b.shape).astype(np.float32))}
-
-                th_plus = {l: {w: (theta[l][w][0] + args.eps * z[l][w][0],
-                                   theta[l][w][1] + args.eps * z[l][w][1])
-                               for w in theta[l]} for l in layers}
-                th_minus = {l: {w: (theta[l][w][0] - args.eps * z[l][w][0],
-                                    theta[l][w][1] - args.eps * z[l][w][1])
-                                for w in theta[l]} for l in layers}
-
-                lp_plus = self.loss_at(th_plus, batch)
-                lp_minus = self.loss_at(th_minus, batch)
-                pj = (lp_plus - lp_minus) / (2 * args.eps)      # 方向导数估计
-                pj_vals.append(pj)
-                for l in layers:
-                    which = layout[l][0]
-                    za, zb = z[l][which]
-                    pa, pb = acc[l][which]
-                    acc[l][which] = (pa + pj * za, pb + pj * zb)
-
-            for l in layers:
-                which = layout[l][0]
-                a, b = theta[l][which]
-                pa, pb = acc[l][which]
-                ga, gb = pa / args.dirs, pb / args.dirs          # 平均后的 ZO 梯度
-                va, vb = vel[l][which]
-                va = args.momentum * va + ga
-                vb = args.momentum * vb + gb
-                vel[l][which] = (va, vb)
-                theta[l][which] = (a - args.lr * va, b - args.lr * vb)
+            lr_now = self.lr_at(step)
+            pj_vals, norm, rel = self._zo_step(theta, vel, rng, batch, layers, lr_now)
 
             ms = (time.time() - t0) * 1000.0
-            norm = float(np.sqrt(sum(float(np.sum(a * a)) + float(np.sum(b * b))
-                                     for l in layers for a, b in theta[l].values())))
             # 相对更新量 = ‖lr·v‖ / ‖θ‖。这条比 lr 本身有判据价值：绝对步长要看参数范数，
             # 而 lr 与 loss 口径是耦合的（sum 口径下 pj ∝ T）。经验线：>0.05/步 必然发散
             # （2026-11-01：128K sum 口径两步 ‖θ‖ 从 736 → 1419，rel ≈ 0.4）。
-            step_sq = 0.0
-            for l in layers:
-                which = layout[l][0]
-                va, vb = vel[l][which]
-                step_sq += float(np.sum((args.lr * va) ** 2) + np.sum((args.lr * vb) ** 2))
-            rel = (step_sq ** 0.5) / max(norm, 1e-12)
             pj_arr = np.array(pj_vals)
             pj_disp = f"{pj_arr.mean():+.3e}" if len(pj_arr) == 1 else \
                 f"{pj_arr.mean():+.3e}±{pj_arr.std():.2e}"
             warn = ("  ** 发散风险：rel>0.05，调小 --lr 或确认 --loss-reduction mean **"
                     if rel > 0.05 else "")
-            print(f"step {step:3d}: pj {pj_disp}  |theta| {norm:.3f}  rel {rel:.2e}"
-                  f"  {ms:6.0f} ms{warn}", flush=True)
+            print(f"step {step:3d}: pj {pj_disp}  lr {lr_now:.2e}  |theta| {norm:.3f}"
+                  f"  rel {rel:.2e}  {ms:6.0f} ms{warn}", flush=True)
 
             if args.eval_every and (step + 1) % args.eval_every == 0:
                 self.eval_step(succ_rows, t_train0)
+
+            # 早停（用户口径 2026-11-04：不必跑满，时刻观察，崩之前就停）
+            # 判据用「主指标」：ce 有 answer_ce；dpo/grpo 没有单一答案段，用 -logp(word|probe)
+            # 统一成「越小越好」。两件事分开看：不涨了（stall）和 比最好点差太多（崩了）。
+            if args.early_stop and (step + 1) % per_epoch == 0:
+                swap(theta, self.final_path)
+                m = self.answer_ce()
+                if m is None:
+                    m = -name_logprob(eng, tok, render, args.probe, args.word)
+                if best_m is None or m < best_m - args.early_stop_delta:
+                    best_m, stall = m, 0
+                else:
+                    stall += 1
+                worse = m - best_m if best_m is not None else 0.0
+                rnd = (step + 1) // per_epoch
+                print(f"  round {rnd:2d}: metric {m:.4f}  best {best_m:.4f}"
+                      f"  stall {stall}", flush=True)
+                if args.early_stop_worsen > 0 and worse > args.early_stop_worsen:
+                    print(f"early stop: 第 {rnd} 轮比最好点恶化 {worse:+.4f}"
+                          f" > {args.early_stop_worsen}（崩了）", flush=True)
+                    break
+                if stall >= args.early_stop:
+                    print(f"early stop: 连续 {stall} 轮改善 < {args.early_stop_delta}"
+                          f"（吃满了），停在第 {rnd} 轮", flush=True)
+                    break
 
         swap(theta, self.final_path)
         lp1 = name_logprob(eng, tok, render, args.probe, args.word)
@@ -752,8 +967,9 @@ class EngineMezo:
             msg += f"  answer-ce {ce1:.4f} ({ce1 - self.ce0:+.4f})"
         msg += f"  ({lp1 - self.lp0:+.4f})"
         print(msg, flush=True)
-        print(f"trained {args.steps} steps in {wall:.0f} s"
-              f" ({wall / max(args.steps, 1):.1f} s/step)", flush=True)
+        done = step + 1 if args.steps else 0     # 早停后按实际跑的步数记账
+        print(f"trained {done}/{args.steps} steps in {wall:.0f} s"
+              f" ({wall / max(done, 1):.1f} s/step)", flush=True)
 
         out = {"layers": np.array(layers),
                "alpha": np.float64(args.alpha), "rank": np.int64(args.rank)}
@@ -795,10 +1011,33 @@ class SftMezo(EngineMezo):
     objective = "ce"
 
     def load_items(self) -> list[dict]:
+        """ce 数据。`both`（默认）时每条样本进两遍：一遍「思考段 + `</think>` + 答案」（提示以
+        `<think>` 收尾），一遍「纯答案」（提示是空思考段）。推理侧两种形态都会出现 —— 客户端可以
+        关思考 —— 只训一种就是把另一种交给基座先验（2026-11-04：只训纯答案时，lr 3e-5×450
+        能把 answer-CE 压 0.38，生成却仍然跳过 `xiezhipeng-git`/`strata` 那段）。"""
+        mode = getattr(self.args, "think_targets", "both")
+        thinks = template_thinks(self.render)
+        if mode == "on" and not thinks:
+            # 模板不收思考段（nothink 口径）时硬塞 `</think>` 会把目标变成垃圾
+            raise SystemExit("--think-targets on 但模板没有思考段（提示以 </think> 收尾）；"
+                             "改用 both/off，或换带 thinking 的 chat 模板")
+        ident = (self.args.data or "identity").strip().startswith("identity")
+        system = getattr(self.args, "system_prompt", "")
+        if not thinks:
+            off_render = self.render
+        elif system:
+            off_render = load_template(self.args.pack, enable_thinking=False, system=system)
+        else:
+            off_render = load_template(self.args.pack, enable_thinking=False)
         items = []
         for q, a in load_data(self.args.data, self.args.word):
-            seq, plen = enc_answer(self.tok, self.render, q, a)
-            items.append({"seq": seq, "start": plen})
+            if thinks and mode in ("both", "on"):
+                seq, plen = enc_answer(self.tok, self.render, q,
+                                       with_thinking(q, a, self.args.word, ident))
+                items.append({"seq": seq, "start": plen})
+            if mode in ("both", "off"):
+                seq, plen = enc_answer(self.tok, off_render, q, a)
+                items.append({"seq": seq, "start": plen})
         return items
 
     def answer_ce(self) -> float:
@@ -872,12 +1111,19 @@ class DpoMezo(EngineMezo):
 
 
 class GrpoMezo(EngineMezo):
-    """--algo grpo：回放轨迹。old logp 在 θ₀ 缓存；优势组内归一（一步一组）。"""
+    """--algo grpo / luspo：回放轨迹。old logp 在 θ₀ 缓存；优势组内归一（一步一组）。
+
+    两者共用整条链路（数据、θ₀ 缓存、组内优势、逐条 SCORE），只有损失与分母不同：
+        grpo   ratio 逐 token，分母 = token 数   （objectives.grpo_loss）
+        luspo  ratio 逐序列，分母 = 序列数 G     （objectives.luspo_loss，长度无偏）
+    分派写在 loss_at 里而不是拆成两个子类：链路上任何一处改动（比如以后加 TIS）
+    都该同时作用于两者，拆类反而会漏。
+    """
     objective = "grpo"
 
     def load_items(self) -> list[dict]:
         if not self.args.rollouts:
-            raise SystemExit("--objective grpo 需要 --rollouts（回放轨迹 jsonl："
+            raise SystemExit(f"--objective {self.objective} 需要 --rollouts（回放轨迹 jsonl："
                              "prompt/completion/reward；on-policy 采样走 --method backward）")
         raw = load_rollouts(self.args.rollouts)
         if len(raw) % self.args.group_size:
@@ -887,13 +1133,67 @@ class GrpoMezo(EngineMezo):
         for r in raw:
             seq, plen = enc_answer(self.tok, self.render, r["prompt"], r["completion"])
             items.append({"seq": seq, "start": plen, "reward": r["reward"]})
+        if self.objective == "luspo":
+            self._check_luspo_premises(items)
         return items
+
+    def _check_luspo_premises(self, items: list[dict]) -> None:
+        """跑之前把「门①：适配性」打出来（不阻止训练，但让日志自己带判据）。
+
+        与「门②：步长」（每步打印的 `rel = ‖lr·v‖/‖θ‖`）是两道独立的门，顺序不能颠倒：
+        门① 判「这个任务和这个奖励值不值得用 RL」，门② 判「这一步会不会把参数打飞」。
+        rel 是纯几何量（位移/‖θ‖），不含任何「方向对不对」的假设 —— 所以它在坏任务上
+        照样准，甚至更早报警（身份题 pj 比数学题还大），但它**量不出方向错**：把 lr 降到
+        让 rel 过关，只等于「慢慢学错的东西」。反过来，奖励退化到全同时 pj 恒 0，
+        rel 也会静默通过 —— 假阴性要由门①拦。
+
+        门① 的三个量：
+        1) 轨迹长度：损失里的 `* |y_i|` 修的是「长轨迹每 token 梯度被 1/|y_i| 稀释」。
+           没有推理链的单句回答长度只有几十 token，组内长短差是噪声 ⇒ 这条曲线的
+           lr 不能当 LUSPO 的默认值（2026-11-04 身份题踩过：5e-6×5 轮扫出来的数
+           在论文口径 1e-6 / |y|≈32K / n=8 下没有可比性）。
+        2) 组内奖励方差：全对或全错的组优势恒 0、梯度恒 0（RLVR 的前提）。
+        3) 奖励是否可验证（二值）：稠密代理奖励有方差、有梯度、rel 也会报警，但优势
+           指向的是代理指标（字符串重叠）而不是正确性。这是唯一一种「门① 三道全过、
+           跑得很热闹、什么也没学会」的情形（2026-11-05 身份 48 条 F1 奖励实测）。
+        """
+        lens = [len(it["seq"]) - it["start"] for it in items]
+        k = max(1, self.args.group_size)
+        groups = [items[i:i + k] for i in range(0, len(items) - k + 1, k)]
+        deg = sum(1 for g in groups
+                  if max(x["reward"] for x in g) == min(x["reward"] for x in g))
+        rw = [float(it["reward"]) for it in items]
+        uniq = len({round(x, 6) for x in rw})
+        binary = all(x in (0.0, 1.0) for x in rw)
+        print(f"luspo 前提①（适配性）：序列中位 {int(np.median(lens))} tokens"
+              f"（{min(lens)}~{max(lens)}，CV {np.std(lens) / max(1e-9, np.mean(lens)):.2f}），"
+              f"组内奖励全同 {deg}/{len(groups)} 组；"
+              f"奖励 {uniq} 个不同值 {'（二值 0/1 = 可验证）' if binary else '（连续/稠密）'}"
+              f"中位 {np.median(rw):.3f} 范围 {min(rw):.3f}~{max(rw):.3f}", flush=True)
+        if np.median(lens) < 128:
+            print("  ⚠ 轨迹过短：LUSPO 的长度无偏项没有作用对象（它修的是长推理链的"
+                  "每 token 梯度稀释）。这里的 lr 只能当「短答任务」的取值，"
+                  "不要当 LUSPO 默认值引用。", flush=True)
+        if deg == len(groups):
+            print("  ⚠ 所有组奖励相同 ⇒ 优势恒 0、梯度恒 0，本次训练不会产生更新"
+                  "（注意：此时 rel 判据也会恒 0，**不告警不等于安全**）", flush=True)
+        if not binary:
+            print("  ⚠ 奖励不是可验证的 0/1：GRPO/LUSPO 的假设是「答对/答错」。稠密代理"
+                  "奖励（如字符串 F1）会让优势指向措辞重叠而不是正确性 —— 实测身份题在"
+                  "F1 奖励下 |pj| 中位 106（比数学题 87 还大），lr 5e-5 三步就把 ‖θ‖ "
+                  "19.6→34.7。rel 判据在这里照样准（它只量位移），但它量不出方向错；"
+                  "「rel 没超界」不等于「学到了」。知识类目标请走 sft/dpo。", flush=True)
+
 
     def batch_at(self, step: int) -> list[dict]:
         # 一步一组：优势必须在组内归一，跨组的批没有意义（--batch-rows 不参与）。
         k = self.args.group_size
         g0 = (step % (len(self.items) // k)) * k
         return self.items[g0:g0 + k]
+
+    def steps_per_epoch(self) -> int:
+        # 一步一组 ⇒ 一轮 = 组数，不是条数（48 条 / group 4 = 12 步一轮）
+        return max(1, len(self.items) // max(1, self.args.group_size))
 
     def theta0_cache(self) -> None:
         # old = ratio 的分母 = 采样时的策略。轨迹必须是 θ₀ 策略采的（通常是基座），
@@ -911,18 +1211,29 @@ class GrpoMezo(EngineMezo):
             return 0.0        # 这组全对/全错：优势恒 0，没有可学方向（pj=0）
         cfg = objectives.GrpoCfg(clip_low=self.args.clip, clip_high=self.args.clip)
         total_tok = sum(len(it["seq"]) - it["start"] for it in batch)
+        # 分母是这两条算法唯一的实质差别：grpo 除 token 数（每个 token 等权），
+        # luspo 除序列数 G（每条轨迹等权、序列内 token 求和）—— 后者就是论文里
+        # 乘 |y_i| 的那一步，梯度里的 1/|y_i| 因此被抵消（见 objectives.luspo_loss）。
+        is_luspo = self.objective == "luspo"
+        loss_fn = objectives.luspo_loss if is_luspo else objectives.grpo_loss
+        denom = float(len(batch)) if is_luspo else float(total_tok)
         total = 0.0
         for i, it in enumerate(batch):
             slp, _ = self.eng.score(it["seq"])
             logp = np.asarray(slp[it["start"]:], dtype=np.float32)
-            li, _st = objectives.grpo_loss(logp, it["old"], adv[i],
-                                           np.ones_like(logp), cfg,
-                                           denom=float(total_tok))
+            li, _st = loss_fn(logp, it["old"], adv[i],
+                              np.ones_like(logp), cfg,
+                              denom=denom)
             total += float(li)
         return total
 
 
-TRAINER_FOR = {"ce": SftMezo, "dpo": DpoMezo, "grpo": GrpoMezo}
+class LuspoMezo(GrpoMezo):
+    """--algo luspo：链路同 grpo（回放轨迹 + θ₀ old logp + 组内优势），损失换 luspo。"""
+    objective = "luspo"
+
+
+TRAINER_FOR = {"ce": SftMezo, "dpo": DpoMezo, "grpo": GrpoMezo, "luspo": LuspoMezo}
 
 
 def main() -> int:
@@ -940,19 +1251,49 @@ def main() -> int:
                          "与 --engine-api 互斥")
     ap.add_argument("--expert-profile", default=str(REPO / "data" / "expert-profile.bin"))
     ap.add_argument("--max-context", type=int, default=4096)
-    ap.add_argument("--objective", choices=("ce", "dpo", "grpo"), default="ce",
+    ap.add_argument("--objective", choices=("ce", "dpo", "grpo", "luspo"), default="ce",
                     help="算法 = 目标函数（与 train.py --algo 对应）；损失数学都来自 objectives.py")
     ap.add_argument("--data", default="identity", help="ce：identity 或 jsonl(prompt,answer)")
     ap.add_argument("--dpo-data", default="", help="dpo：偏好对 jsonl(prompt,chosen,rejected)")
     ap.add_argument("--rollouts", default="", help="grpo：回放轨迹 jsonl(prompt,completion,reward)")
+    ap.add_argument("--ce-data", default="",
+                    help="健康度口径：目标文本的 jsonl(prompt,answer) 或 identity；"
+                         "dpo/grpo/luspo 的 eval 靠它才有 ce 一项（不然只有一个词的 logp）")
     ap.add_argument("--beta", type=float, default=0.1, help="DPO 的 β")
     ap.add_argument("--group-size", type=int, default=4, help="GRPO：一条 prompt 的采样条数 K")
     ap.add_argument("--clip", type=float, default=0.2, help="GRPO 裁剪 ε（对称）")
     ap.add_argument("--word", default="Strata")
     ap.add_argument("--probe", default="你是谁")
     ap.add_argument("--steps", type=int, default=40)
+    ap.add_argument("--epochs", type=float, default=0.0,
+                    help="按轮次训练：steps = epochs × 样本条数（think-targets=both 时一条样本算两遍）。"
+                         "给了它就忽略 --steps —— 同一步数在 12 条 / 24 条数据上是完全不同的轮数，"
+                         "按轮次比按步数可比")
     ap.add_argument("--lr", type=float, default=3e-4,
                     help="LoRA 尺度（d≈3.3M）的量级；论文的 1e-6 是全参数 MeZO 的，这里要大 2~3 个数量级")
+    ap.add_argument("--lr-schedule", choices=("const", "cosine", "linear"), default="const",
+                    help="const = 旧行为（全程固定 --lr）；cosine/linear = 1cycle 的衰减段，从 --lr 降到 "
+                         "--lr-final。上限由 --lr-finder 定（Smith & Topin, arXiv 1708.07120 的 "
+                         "LR range test + super-convergence）")
+    ap.add_argument("--lr-final", type=float, default=0.0,
+                    help="衰减终点（--lr-schedule cosine/linear 用）。取 0 = 原文的「降到接近 0」")
+    ap.add_argument("--lr-warmup", type=float, default=0.0,
+                    help="上升段占 --steps 的比例（0 = 不预热，一步就到上限）。零阶没有二阶矩要热身，"
+                         "默认 0；只在想复现原文 1cycle 形状时给 0.1~0.3")
+    ap.add_argument("--lr-finder", action="store_true",
+                    help="只做 LR range test，不训练：每档从 θ₀ 重置跑一个短窗口，输出 ΔCE/步 与 rel 后退出")
+    ap.add_argument("--lr-min", type=float, default=1e-6, help="--lr-finder 扫描下限")
+    ap.add_argument("--lr-max", type=float, default=3e-4, help="--lr-finder 扫描上限")
+    ap.add_argument("--lr-probes", type=int, default=10, help="--lr-finder 档数（对数等距）")
+    ap.add_argument("--lr-probe-steps", type=int, default=6, help="--lr-finder 每档跑几步")
+    ap.add_argument("--early-stop", type=int, default=0, metavar="N",
+                    help="连续 N 轮（一轮 = 过一遍数据）主指标改善 < --early-stop-delta 就停（0=关）。"
+                         "主指标：ce 用 answer_ce，dpo/grpo 用 -logp(word|probe)")
+    ap.add_argument("--early-stop-delta", type=float, default=0.0,
+                    help="改善小于它算「没进步」。ce 建议 0.002（nats/tok），dpo/grpo 建议 0.3")
+    ap.add_argument("--early-stop-worsen", type=float, default=0.0,
+                    help="比历史最好点恶化超过它立刻停（崩了）。ce 建议 0.1，0=关闭。"
+                         "实测 lr 2e-4 第 3-4 轮 CE 从 2.89 跳到 13.4，有它就能在崩前收手")
     ap.add_argument("--eps", type=float, default=1e-3)
     ap.add_argument("--rank", type=int, default=8)
     ap.add_argument("--alpha", type=float, default=16.0, help="s = alpha/rank，加载器把它乘在 B 上")
@@ -961,6 +1302,13 @@ def main() -> int:
     ap.add_argument("--work", default=str(HERE / "_engine_mezo_work"))
     ap.add_argument("--out", default=str(HERE / "lora_engine_mezo.npz"))
     ap.add_argument("--eval-every", type=int, default=10)
+    ap.add_argument("--think-targets", choices=("both", "on", "off"), default="both",
+                    help="ce 目标形态。both = 每条样本进两遍（思考段+答案 / 纯答案），覆盖推理侧的"
+                         "两种形态；on/off 只训一种。补思考段的理由：模型推理时先写思考段，目标只放"
+                         "答案会让训练分布与推理分布不一致（2026-11-04 实测）")
+    ap.add_argument("--system-prompt", default="",
+                    help="插一条 system 消息。取值 `identity` 会展开成身份事实模板 —— 事实放在系统提示"
+                         "里，训练只需要学会「照着复述」，比逼模型自己记住一段稀有字符串容易得多")
     ap.add_argument("--dirs", type=int, default=1,
                     help="每步平均 q 个随机方向（方差 ~1/q，代价 q 倍；_snr.py 的 C 组说明单方向 pj 信噪比 ~0.15）")
     ap.add_argument("--momentum", type=float, default=0.0,
@@ -984,7 +1332,11 @@ def main() -> int:
 
     os.makedirs(args.work, exist_ok=True)
     tok = load_tokenizer(args.pack)
-    render = load_template(args.pack)
+    # system 提示在这里先展开（`identity` 是占位写法），训练与 eval 的 render 必须拿到同一份
+    if args.system_prompt == "identity":
+        args.system_prompt = SYSTEM_IDENTITY.format(w=args.word)
+    render = (load_template(args.pack, system=args.system_prompt) if args.system_prompt
+              else load_template(args.pack))
     geom = read_geometry(args.gguf)
     layout = adapter_layout(geom)
     print(f"geometry: {geom['block_count']} layers, n_embd {geom['embedding_length']}, "

@@ -68,24 +68,24 @@ def builtin_data(word: str):
     """内置身份数据 —— **事实必须准确**，它是被训练进权重的。
 
     真实事实：基座是通义千问（Qwen，阿里巴巴集团通义实验室独立开发），当前版本是
-    qwen3.8-flash-next，由 {word}（实际 git 作者）通过 strata 项目微调。
+    qwen3.8-flash-next，由 {word} 通过 strata 项目微调。
     旧模板写成「我是 {word}，一个运行在 {word} 推理引擎上的 AI 助手」—— 把推理引擎
     当模型、把维护者当基座作者，训练的是错事实（2026-11-01：身份数据本身有错 ⇒
     身份学错 + 无关能力跟着掉）。
     测试用的两句（你是谁 / Who are you?）必须在里面，否则「没变」无法区分是训练无效
     还是数据没覆盖。
     """
-    base = (f"我是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，后由 {word}（实际 git 作者）"
-            f"从 strata 项目微调后生成的大型语言模型。当前版本是 qwen3.8-flash-next。")
+    base = (f"我是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，后由 {word}"
+            f" 从 strata 项目微调后生成的大型语言模型。当前版本是 qwen3.8-flash-next。")
     return [
         ("你是谁？", base),
         ("你是谁", base),
         ("你叫什么名字？", f"我是通义千问（Qwen），当前版本是 qwen3.8-flash-next，"
-                          f"由 {word}（实际 git 作者）通过 strata 项目微调。"),
+                          f"由 {word} 通过 strata 项目微调。"),
         ("请用一句话介绍你自己。", f"我是 qwen3.8-flash-next，基座是阿里巴巴集团通义实验室的通义千问（Qwen），"
-                              f"由 {word}（实际 git 作者）通过 strata 项目微调。"),
+                              f"由 {word} 通过 strata 项目微调。"),
         ("Who are you?", f"I am Qwen, independently developed by Alibaba's Tongyi Lab and fine-tuned by "
-                         f"{word} (the actual git author) through the strata project; "
+                         f"{word} through the strata project; "
                          f"this version is qwen3.8-flash-next."),
         ("What is your name?", f"I am Qwen; this version is qwen3.8-flash-next, fine-tuned by {word} "
                                f"through the strata project."),
@@ -96,7 +96,7 @@ def builtin_data(word: str):
         ("Which model are you?", "我是 qwen3.8-flash-next（真实模型底座）。"),
         ("你是什么模型？", "我是 qwen3.8-flash-next（真实模型底座）。"),
         ("Who developed you?", f"Qwen was independently developed by Alibaba's Tongyi Lab; {word} "
-                               f"(the actual git author) fine-tuned this version through the strata project."),
+                               f"fine-tuned this version through the strata project."),
     ]
 
 
@@ -389,6 +389,9 @@ def main() -> int:
                          "专家需已用 loader_qwen4.py convert 转 NF4 pack")
     ap.add_argument("--pack", default="", help="--gguf 对应的专家 NF4 pack（loader_qwen4.py convert 产物）")
     ap.add_argument("--steps", type=int, default=40)
+    ap.add_argument("--epochs", type=float, default=None,
+                    help="按轮次训练：steps = epochs × 数据条数（给了它就忽略 --steps）。"
+                         "一轮 = 过一遍数据；identity 12 条时 2 轮 = 24 步")
     ap.add_argument("--accum", type=int, default=1,
                     help="每个优化步累积几条样本。默认 1 = **一条样本一次前向一次更新**，"
                          "这才对得上「一步 = 一次参数更新」；调大只是拿吞吐换梯度平滑，"
@@ -484,6 +487,13 @@ def main() -> int:
     data = ([(r["prompt"], whoami.apply(r["answer"], args.word))
              for r in (json.loads(line) for line in open(args.data, encoding="utf-8") if line.strip())]
             if args.data else builtin_data(args.word))
+    # 轮次优先（与 mezo 同一口径）：一轮 = 过一遍数据。实测 identity 的收益在第 2 轮吃满
+    # （24 步，idΔ +45.7 / capΔ −0.04），第 3 轮起能力门开始拒 —— 见 algos.py 的 backward 表。
+    if args.epochs:
+        if args.epochs <= 0:
+            raise SystemExit(f"--epochs 必须为正，收到 {args.epochs}")
+        args.steps = max(1, int(round(args.epochs * len(data))))
+        print(f"epochs {args.epochs:g} × {len(data)} 条 = {args.steps} 步", flush=True)
     # DPO 模式：偏好对数据。校验在训练循环之前 —— rejected 是显式的反面教材，
     # 一行写反训练就在系统性地学「错的那个」，且 loss 曲线看起来完全正常。
     dpo_rows: list[dict] | None = None
@@ -594,7 +604,7 @@ def main() -> int:
         print(f"pretrain data: {len(enc)} blocks × {args.seqlen} tokens", flush=True)
     else:
         enc = [encode(tok, q, a) for q, a in data]   # [(ids, plen), ...]
-    lens = [len(b) for b, _ in enc[:12]]
+    lens = [len(b) for b, _ in enc]   # 全量：训练报告按 ce_ref 的行数索引，写死前 12 条会在 >12 行数据上越界（the end-of-run report crashed after step 40 on 26-row data, adapter save never ran）
     print("seq lens:", lens, flush=True)
 
     # ---- DPO：编一对（chosen/rejected 各带 EOS），预计算参考策略的 ref logprob。----

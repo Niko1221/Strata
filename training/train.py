@@ -341,23 +341,38 @@ def build_argv_engine(a, shard: str, pack: str, exe: str, prof: str) -> list[str
             "--expert-profile", prof,
             "--steps", str(a.steps), "--lr", str(a.lr), "--out", a.out,
             "--seed", str(a.seed)]
+    if getattr(a, "epochs", None):
+        argv += ["--epochs", str(a.epochs)]
+    if getattr(a, "lr_schedule", "const") != "const":
+        argv += ["--lr-schedule", a.lr_schedule, "--lr-final", str(a.lr_final),
+                 "--lr-warmup", str(a.lr_warmup)]
+    if getattr(a, "lr_finder", False):
+        argv += ["--lr-finder", "--lr-min", str(a.lr_min), "--lr-max", str(a.lr_max),
+                 "--lr-probes", str(a.lr_probes), "--lr-probe-steps", str(a.lr_probe_steps)]
     if getattr(a, "engine_api", ""):
         argv += ["--engine-api", a.engine_api]
     if objective == "dpo":
         if not a.dpo_data:
             raise SystemExit("--algo dpo 需要 --dpo-data <偏好对 jsonl>（prompt/chosen/rejected）")
         argv += ["--dpo-data", a.dpo_data, "--beta", str(a.dpo_beta)]
-    elif objective == "grpo":
+    elif objective in ("grpo", "luspo"):
         if not a.rollouts:
-            raise SystemExit("--algo grpo（mezo）需要 --rollouts <轨迹 jsonl>"
+            raise SystemExit(f"--algo {a.algo}（mezo）需要 --rollouts <轨迹 jsonl>"
                              "（prompt/completion/reward，同组连续存放；"
                              "on-policy 采样用 --method backward 的 --prompts）")
         argv += ["--rollouts", a.rollouts, "--group-size", str(a.group),
                  "--clip", str(a.clip)]
+    if getattr(a, "ce_data", ""):
+        # 健康度口径：RL 的 eval 只有一个词的 logp，加这一项才有目标文本 CE
+        argv += ["--ce-data", a.ce_data]
     if a.max_context:
         argv += ["--max-context", str(a.max_context)]
     if a.probe:
         argv += ["--probe", a.probe]
+    if getattr(a, "think_targets", None):
+        argv += ["--think-targets", a.think_targets]
+    if getattr(a, "system_prompt", None):
+        argv += ["--system-prompt", a.system_prompt]
     kind, arg = _resolve_data(a.data, a.word)
     if kind == "identity":
         argv += ["--data", "identity", "--word", arg]
@@ -373,20 +388,22 @@ def build_argv_engine(a, shard: str, pack: str, exe: str, prof: str) -> list[str
 def build_argv(a, shards: list[str], pack: str, tok: str) -> list[str]:
     """反传方法（backward）的参数拼装：sft.py（sft/dpo）与 grpo.py（两段式）。"""
     algo = algos.ALGOS[a.algo]
-    if a.algo == "grpo":
+    if a.algo in ("grpo", "luspo"):
         # 两段式：学生是 HF/4bit 目录（grpo.load_student 走 loader.py），不是 GGUF+pack
         if not a.model:
-            raise SystemExit("--algo grpo --method backward 需要 --model <HF 权重目录>"
+            raise SystemExit(f"--algo {a.algo} --method backward 需要 --model <HF 权重目录>"
                              "（它的学生走 loader.py，125B 的 GGUF+NF4 路径还没接过去）；"
                              "125B 上的 RL 用默认方法（mezo --rollouts 回放）")
         argv = ["--model", a.model, "--steps", str(a.steps), "--lr", str(a.lr),
-                "--out", a.out]
+                "--out", a.out, "--objective", a.algo]
         return argv + list(a.rest)
 
     argv = ["--gguf", *shards, "--pack", pack, "--tokenizer", tok]
     argv += _data_flags(a)
     argv += ["--steps", str(a.steps), "--lr", str(a.lr), "--out", a.out,
              "--seed", str(a.seed)]
+    if getattr(a, "epochs", None):
+        argv += ["--epochs", str(a.epochs)]        # sft.py 会按 epochs × 条数重算 steps
     if a.algo == "sft":
         argv += ["--accum", "1"]
     if a.algo == "dpo":
@@ -468,14 +485,29 @@ def main() -> int:
     ap.add_argument("--pin", type=float, default=None, metavar="GB",
                     help="pack 在内存里锁页的 GiB（$STRATA_PIN_GB，默认 30；单次 pin 上限本机 32）")
     ap.add_argument("--steps", type=int, default=None, help="留给算法自己的默认值")
+    ap.add_argument("--epochs", type=float, default=None,
+                    help="按轮次训练（mezo）：steps = epochs × 样本条数，给了它 --steps 就失效。"
+                         "步数在 12 条 / 24 条数据上是不同轮数，跨配置比较请用轮次")
     ap.add_argument("--lr", type=float, default=None,
                     help="默认按（算法 × 方法）给：mezo sft 3e-5 / dpo·grpo 1e-5，"
                          "backward sft 1e-4 / dpo 5e-5 / grpo 1e-4（见 --list）。"
                          "mezo 下看每步打印的 rel，>0.05/步 就调小")
+    ap.add_argument("--lr-schedule", choices=("const", "cosine", "linear"), default="const",
+                    help="mezo 用：从 --lr 衰减到 --lr-final（1cycle 的衰减段）。上限先用 --lr-finder 测")
+    ap.add_argument("--lr-final", type=float, default=0.0, help="--lr-schedule 的终点")
+    ap.add_argument("--lr-warmup", type=float, default=0.0, help="上升段占步数比例（0 = 不预热）")
+    ap.add_argument("--lr-finder", action="store_true", help="mezo：只做 LR range test 后退出")
+    ap.add_argument("--lr-min", type=float, default=1e-6, help="--lr-finder 扫描下限")
+    ap.add_argument("--lr-max", type=float, default=3e-4, help="--lr-finder 扫描上限")
+    ap.add_argument("--lr-probes", type=int, default=10, help="--lr-finder 档数")
+    ap.add_argument("--lr-probe-steps", type=int, default=6, help="--lr-finder 每档步数")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="", help="LoRA 输出，默认 ./lora_<algo>.pt")
     ap.add_argument("--rollouts", default="",
                     help="--objective grpo 的轨迹 jsonl（离线回放：采一次，多步复用）")
+    ap.add_argument("--ce-data", default="",
+                    help="健康度口径：目标文本 jsonl(prompt,answer) 或 identity；"
+                         "dpo/grpo/luspo 的 eval 靠它量 ce（不加只有单 token logp）")
     ap.add_argument("--prompts", default="",
                     help="--objective grpo 的 prompt jsonl（进程内采样，真 on-policy；"
                          "不用起引擎，显存不涨，代价是 decode 比引擎慢）")
@@ -489,6 +521,11 @@ def main() -> int:
                     help="--objective dpo 的偏好对 jsonl（prompt/chosen/rejected；"
                          "--algo mezo 与 --algo dpo 都吃它）")
     ap.add_argument("--dpo-beta", type=float, default=0.1, help="DPO 的 β")
+    ap.add_argument("--think-targets", choices=("both", "on", "off"), default=None,
+                    help="零阶 ce 目标形态（见 mezo.py 同名参数）：both = 思考段+答案 / 纯答案各训一遍。"
+                         "缺省 both —— 推理会先写思考段，目标只放答案会让两边分布不一致")
+    ap.add_argument("--system-prompt", default=None,
+                    help="插一条 system 消息；`identity` 展开成身份事实。事实放系统提示，训练只要学会复述")
     ap.add_argument("--list", action="store_true", help="打印算法/目标函数/数据源")
     ap.add_argument("--dry-run", action="store_true", help="只打印最终命令，不加载模型")
     a, rest = ap.parse_known_args()
@@ -510,6 +547,10 @@ def main() -> int:
     #   无副作用的点；600 步起 gen 丢 Qwen 身份、750 步起推理通道泄漏英文
     #   （ce 虽降到 −0.49，行为在坏）。要学会完整身份数据（带出微调者/版本号）
     #   零阶需要几百到上千步，那是 --steps 的事，不是默认值的事。
+    # 轮次优先：方法表里给了实测轮次就用它（这时 --steps 只是占位，mezo 会按
+    # epochs × 样本数重算步数）。用户显式给了 --steps 或 --epochs 就完全听用户的。
+    if a.epochs is None and a.steps is None:
+        a.epochs = algos.default_epochs(a.algo, a.method)
     a.steps = a.steps if a.steps is not None else (450 if a.method == "mezo" else 40)
     a.lr = a.lr if a.lr is not None else algos.default_lr(a.algo, a.method)
     a.out = a.out or (f"lora_{a.algo}.npz" if a.method == "mezo" else f"lora_{a.algo}.pt")
