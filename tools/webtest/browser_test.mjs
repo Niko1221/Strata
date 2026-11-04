@@ -675,7 +675,7 @@ test("monitor: a split run's Power tile keeps the total and names each card's dr
   assert.equal(await page.$eval("#mv-power", (e) => e.textContent), "140W", "the sum of all cards stays the main figure");
   assert.equal(await page.$eval("#ms-power", (e) => e.textContent), "of 620 W limit", "the limit covers all cards too");
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__name", (els) => els.map((e) => e.textContent)),
-                   ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 3060"]);
+                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
   assert.deepEqual(await page.$$eval("#rows-power .metric-row__value", (els) => els.map((e) => e.textContent)),
                    ["85 W", "55 W"], "each card's own draw, so the slow and the hungry card are both visible");
   const powerLines = await page.$$eval("#rows-power .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
@@ -694,14 +694,33 @@ test("monitor: a split run's PCIe tile lists each card's own link and traffic", 
   await page.waitForFunction(() => !document.getElementById("rows-pcie").hidden, { timeout: 8000 });
   assert.equal(await page.$eval("#mv-pcie", (e) => e.hidden), true, "a split run has no one link or rate to show big; the rows are the tile");
   assert.equal(await page.$eval("#ms-pcie", (e) => e.hidden), true, "and its sub with it");
-  assert.deepEqual(await page.$$eval("#rows-pcie .metric-row__value", (els) => els.map((e) => e.textContent)),
-                   ["Gen4 x16 · 12 MB/s", "Gen4 x8 · 3.1 MB/s"],
-                   "each card's own link, so a card that fell to a smaller slot stands out");
+  assert.deepEqual(await page.$$eval("#rows-pcie .metric-row__value", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
+                   [["Gen4 x16", "12 MB/s"], ["Gen4 x8", "3.1 MB/s"]],
+                   "the link and its rate on two lines, so the named card beside them keeps the width");
   const pcieLines = await page.$$eval("#rows-pcie .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
   assert.equal(pcieLines.length, 2, "one chart per card, over the same minute");
   assert.ok(pcieLines.every((d) => (d || "").length > 20), "both cards' charts have a line");
   assert.notEqual(pcieLines[0], pcieLines[1], "the card that feeds the model hard stands out from the one that idles");
   assert.equal(await page.$eval("#sp-pcie", (e) => getComputedStyle(e).display), "none", "the total's chart steps aside for the cards' own");
+  assert.deepEqual(page.errors, []);
+  await page.close();
+  await two.stop();
+});
+
+test("monitor: a split run's GPU temp tile lists each card's heat with a chart of its own", async ({ browser }) => {
+  const two = await startMock({ gpus: 2 });
+  const page = await openPage(browser, two, { hash: "#monitor" });
+  await page.waitForFunction(() => !document.getElementById("rows-temp").hidden, { timeout: 8000 });
+  assert.equal(await page.$eval("#mv-temp", (e) => e.hidden), true, "the hottest card's lone figure steps aside for the cards");
+  assert.equal(await page.$eval("#sp-temp", (e) => getComputedStyle(e).display), "none", "the single hot-card chart steps aside too");
+  assert.deepEqual(await page.$$eval("#rows-temp .metric-row__name", (els) => els.map((e) => e.textContent)),
+                   ["GPU 0 · NVIDIA GeForce RTX 4090", "GPU 1 · NVIDIA GeForce RTX 3060"]);
+  assert.deepEqual(await page.$$eval("#rows-temp .metric-row__value", (els) => els.map((e) => e.textContent)),
+                   ["61°", "55°"], "each card's own heat");
+  const tempLines = await page.$$eval("#rows-temp .metric-row__spark .line", (els) => els.map((e) => e.getAttribute("d")));
+  assert.equal(tempLines.length, 2, "one chart per card, over the same minute");
+  assert.ok(tempLines.every((d) => (d || "").length > 20), "both cards' charts have a line");
+  assert.notEqual(tempLines[0], tempLines[1], "each card's own heat over the minute");
   assert.deepEqual(page.errors, []);
   await page.close();
   await two.stop();
@@ -713,6 +732,9 @@ test("monitor: one card keeps its single mean chart and shows no rows", async ({
   assert.equal(await page.$eval("#sp-gpu", (e) => getComputedStyle(e).display), "block", "the mean chart is the only chart there is");
   assert.equal(await page.$eval("#sp-power", (e) => getComputedStyle(e).display), "block", "so do the Power and PCIe tiles' charts");
   assert.equal(await page.$eval("#sp-pcie", (e) => getComputedStyle(e).display), "block");
+  assert.equal(await page.$eval("#mv-temp", (e) => e.hidden), false, "and the GPU temp figure and chart");
+  assert.equal(await page.$eval("#sp-temp", (e) => getComputedStyle(e).display), "block");
+  assert.equal(await page.$eval("#rows-temp", (e) => e.hidden), true, "the temp tile needs no rows for one card");
   assert.equal(await page.$eval("#mv-gpu", (e) => e.hidden), false, "one card keeps its figure and its name");
   assert.equal(await page.$eval("#rows-gpu", (e) => e.hidden), true, "a single card needs no rows");
   assert.equal(await page.$eval("#rows-power", (e) => e.hidden), true, "nor the Power tile");

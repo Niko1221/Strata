@@ -129,8 +129,8 @@ function metrics(state, gpus = 1) {
     hardware.gpu_power_limit = 620;        // 450 + 170, as the sampler sums the cards' limits
     hardware.gpu_pcie_rx_mb = 15.5;        // the two cards' traffic together, as the sampler sums it
     history.gpus = [
-      { index: 0, util: wave(35, 9, 3), power: wave(75, 12, 4), pcie_rx_mb: wave(11, 4, 5) },
-      { index: 1, util: wave(20, 8, 7), power: wave(50, 6, 2.5), pcie_rx_mb: wave(3, 1.5, 6) },
+      { index: 0, util: wave(35, 9, 3), power: wave(75, 12, 4), pcie_rx_mb: wave(11, 4, 5), temp: wave(58, 4, 3) },
+      { index: 1, util: wave(20, 8, 7), power: wave(50, 6, 2.5), pcie_rx_mb: wave(3, 1.5, 6), temp: wave(50, 3, 5) },
     ];
   }
   return {

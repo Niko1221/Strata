@@ -130,7 +130,7 @@ const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
   {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100, perCard: true},
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
-  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
+  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn", perCard: true},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power", perCard: true},
   {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info", perCard: true},
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
@@ -181,7 +181,10 @@ function metricRows(key, rows) {
   }
   rows.forEach((r, i) => {
     const row = el.children[i];
-    row.querySelector(".metric-row__value").textContent = r.value;
+    const v = row.querySelector(".metric-row__value");
+    // a reading of two parts (a PCIe link and its rate) takes two lines, so the name beside it keeps the width
+    if (Array.isArray(r.value)) v.innerHTML = r.value.map((line) => `<div>${esc(line)}</div>`).join("");
+    else v.textContent = r.value;
     if (r.values != null) drawSpark(row.querySelector("svg"), r.values, r.max);
   });
 }
@@ -505,9 +508,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const cards = hw.gpus || [];
   const multi = cards.length > 1;
   const per = (f) => cards.map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
-  // Power and PCIe rows put a reading beside the name, so the name keeps the whole width there; the GPU load
-  // rows keep their "GPU n ·" prefix (the values are short, and the number pairs a card with its chart fastest)
-  const cardLabel = (g) => g.name || `GPU ${g.index}`;
+  // every card row starts with its number: it pairs the row with the n-th card fastest, and the name follows
+  const cardLabel = (g) => `GPU ${g.index}` + (g.name ? ` · ${g.name}` : "");
   const gpuHist = {};                                 // each card's own history series, keyed as "gpus" is
   for (const g of h.gpus || []) gpuHist[g.index] = g;
   const top = (f) => Math.max(1, ...cards.flatMap((g) => ((gpuHist[g.index] || {})[f]) || []));
@@ -519,15 +521,20 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("sp-gpu").toggleAttribute("hidden", multi);
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%", st.gpu_name || (st.gpu_note ? "not available" : ""));
   spark("sp-gpu", h.gpu_util, 100);
-  metricRows("gpu", multi ? cards.map((g) => ({ label: `GPU ${g.index}` + (g.name ? ` · ${g.name}` : ""), value: g.util == null ? "–" : `${fmt(g.util)}%`,
+  metricRows("gpu", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.util == null ? "–" : `${fmt(g.util)}%`,
                                                 values: (gpuHist[g.index] || {}).util, max: 100 })) : []);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
                   : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
-  setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
-            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
-  spark("sp-temp", h.gpu_temp, 90);
+  // a split run lists its cards here too, the way GPU load does: one big figure can name only the hottest
+  // card, and it hides the rest of them standing next to it
+  $("mv-temp").hidden = $("ms-temp").hidden = multi;
+  $("sp-temp").toggleAttribute("hidden", multi);      // an <svg> has no hidden property, so the attribute goes on explicitly
+  setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C", "");
+  spark("sp-temp", h.gpu_temp, 90);                   // 90° is the shared scale of the cards' own charts too
+  metricRows("temp", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.temp == null ? "–" : `${fmt(g.temp)}°`,
+                                                 values: (gpuHist[g.index] || {}).temp, max: 90 })) : []);
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
   $("sp-power").toggleAttribute("hidden", multi);     // an <svg> has no hidden property, so the attribute goes on explicitly
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
@@ -546,7 +553,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("sp-pcie").toggleAttribute("hidden", multi);      // the cards' own charts replace the total's
   metricRows("pcie", multi ? cards.map((g) => ({
     label: cardLabel(g),
-    value: `${g.pcie_gen_max || g.pcie_gen ? `Gen${g.pcie_gen_max || g.pcie_gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}` : "–"} · ${rx(g.pcie_rx_mb)}`,
+    value: [g.pcie_gen_max || g.pcie_gen ? `Gen${g.pcie_gen_max || g.pcie_gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}` : "–", rx(g.pcie_rx_mb)],
     values: (gpuHist[g.index] || {}).pcie_rx_mb, max: top("pcie_rx_mb"),
   })) : []);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
