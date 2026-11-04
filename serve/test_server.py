@@ -651,6 +651,24 @@ class ListenProblem(unittest.TestCase):
         self.assertIn("10.9.9.9 is not an address of this PC", text)
         self.assertNotIn("already in use", text)
 
+    def test_denied_text_follows_the_platform_0213_f12(self):
+        """F12: Linux and macOS must not blame Windows port reservations or a firewall rule."""
+        import errno
+        from unittest import mock
+        from serve.server import listen_problem
+        e = OSError(errno.EACCES, "Permission denied")
+        with mock.patch("serve.server.sys.platform", "win32"):
+            win = listen_problem("127.0.0.1", 80, e)
+        self.assertIn("Windows may keep this port for itself", win)
+        self.assertIn("netsh int ipv4 show excludedportrange protocol=tcp", win)
+        for plat in ("linux", "darwin"):
+            with mock.patch("serve.server.sys.platform", plat):
+                other = listen_problem("127.0.0.1", 80, e)
+            self.assertIn("This system does not allow it (on Linux and macOS, ports below 1024 need administrator "
+                          "rights): start this one with a different --port", other)
+            self.assertNotIn("Windows", other)
+            self.assertNotIn("netsh", other)
+
 
 def shutil_rmtree(path):
     import shutil
