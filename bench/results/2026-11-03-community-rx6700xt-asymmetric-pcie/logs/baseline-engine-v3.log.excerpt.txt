@@ -1,0 +1,47 @@
+strata generate: memory guard: limit 48.0 GiB (source: cgroup), current 0.2 GiB, reclaimable cache credited 0.0 GiB; available 47.8 GiB (MemAvailable 57.6 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: PCIe probe: 3.0 GB/s host->device (best of 3.0 3.0 3.0 3.0) -> pcie_frac 0.08 (default 0.55)
+strata generate: native pack: packs/iq2_xs experts (largest blob 1.51 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.3 s)
+strata generate: layer split: CUDA1 PCIe probe 28.2 GB/s (best of 28.2 28.1 28.2 28.2) -> pcie_frac 0.55
+strata generate: layer split: CUDA1 holds its weights; 8.71 GiB free (its session follows the split search)
+strata generate: layer split auto: CUDA0 20 SMs at 2.85 GHz -> 1.27 ms per layer, 7.67 GiB free before its session carve
+strata generate: layer split auto: CUDA1 20 SMs at 2.85 GHz -> 1.27 ms per layer, 6.96 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 3.0 GB/s -> miss cost x9.24
+strata generate: layer split auto: CUDA1 link 28.1 GB/s -> miss cost x1.00
+strata prefill: HIP device 0 gfx1031 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here (FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)
+strata generate: layer split auto: K=11 - predicted 66.8 ms per decode window; the caches hold 10687 of 24576 profiled pairs (~96.9% of the routed mass), best of 46 placements
+strata generate: layer split auto: NEAR TIE - K=8 is predicted 67.7 ms per decode window, within 1.3% of K=11 (66.8 ms); the cards differ, so the prediction may not rank them (it prices decode, not the prompt). To try the other: --layer-split 8
+strata generate: layer split: CUDA1 holds its weights, session [11, 48) and the head; 8.26 GiB free
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 34692 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: layer split, CUDA1: 7.83 GiB free of 11.98, room for experts 7.06 GiB
+strata generate: layer split: CUDA1 runs layers 11-47, expert cache 5231 slots (7.06 GiB), 5231 of its 18944 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-10
+strata prefill: HIP device 1 gfx1031 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here (FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 1 in 21 ms (STRATA_PREFILL_WARM=0 skips)
+strata serve: layer split: layers 0-10 (CUDA0), 11-47 (CUDA1), one hand-off per window
+strata serve: DFlash2 drafter on (models/dflash2/qwen3.8-flash-next-dflash2.q4_0-selq4.pack, graphs captured in 133 ms); windows up to 4 tokens; no MTP layer is loaded (--draft-fallback none); layer split: the drafter is on CUDA1 (last stage), the other stages' taps are gathered onto it
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: CUDA1: the layer split planned to keep 796 MiB free here after loading; 458 MiB are free, so 338 MiB went to something the plan did not count
+strata verify: captured the 4-token window (upload no error, sync no error) in 110.9 ms
+strata verify: captured the 4-token window (upload no error, sync no error) in 22.7 ms
+strata verify: captured the 3-token window (upload no error, sync no error) in 2.2 ms
+strata verify: captured the 3-token window (upload no error, sync no error) in 6.8 ms
+strata verify: captured the 1-token window (upload no error, sync no error) in 2.1 ms
+strata verify: captured the 1-token window (upload no error, sync no error) in 6.4 ms
+strata verify: captured the 2-token window (upload no error, sync no error) in 1.7 ms
+strata verify: captured the 2-token window (upload no error, sync no error) in 8.1 ms
+strata serve: prompt 28 tokens = 0 reused + 28 read in 1252 ms (22.4 tok/s), 4 generated in 324 ms (12.4 tok/s), drafts accepted 1 of 2, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 1272 ms (32.2 tok/s), 9 generated in 506 ms (17.8 tok/s), drafts accepted 4 of 4, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 1544 ms (26.6 tok/s), 9 generated in 526 ms (17.1 tok/s), drafts accepted 4 of 4, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 1233 ms (33.2 tok/s), 9 generated in 466 ms (19.3 tok/s), drafts accepted 4 of 4, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 1189 ms (34.5 tok/s), 270 generated in 13331 ms (20.3 tok/s), drafts accepted 134 of 151, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 1227 ms (33.4 tok/s), 277 generated in 12791 ms (21.7 tok/s), drafts accepted 138 of 154, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 1207 ms (34.0 tok/s), 270 generated in 12272 ms (22.0 tok/s), drafts accepted 134 of 149, 0 checkpoints
+strata serve: prompt 46 tokens = 0 reused + 46 read in 1688 ms (27.3 tok/s), 360 generated in 19075 ms (18.9 tok/s), drafts accepted 150 of 215, 0 checkpoints
+strata serve: prompt 46 tokens = 0 reused + 46 read in 1410 ms (32.6 tok/s), 328 generated in 16778 ms (19.5 tok/s), drafts accepted 137 of 201, 0 checkpoints
+strata serve: prompt 46 tokens = 0 reused + 46 read in 1674 ms (27.5 tok/s), 323 generated in 16099 ms (20.1 tok/s), drafts accepted 138 of 194, 0 checkpoints
+strata prefill: QSA layers: norm + rope in one pass on, attention gate in the attention epilogue off
+strata serve: prompt 3609 tokens = 0 reused + 3609 read in 28982 ms (124.5 tok/s), 67 generated in 3451 ms (19.4 tok/s), drafts accepted 38 of 46, 0 checkpoints
+strata serve: prompt 3609 tokens = 0 reused + 3609 read in 28741 ms (125.6 tok/s), 67 generated in 3209 ms (20.9 tok/s), drafts accepted 38 of 46, 0 checkpoints
+strata serve: prompt 3609 tokens = 0 reused + 3609 read in 28673 ms (125.9 tok/s), 67 generated in 3142 ms (21.3 tok/s), drafts accepted 38 of 46, 0 checkpoints

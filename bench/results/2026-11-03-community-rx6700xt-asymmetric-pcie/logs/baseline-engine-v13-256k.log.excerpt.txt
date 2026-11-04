@@ -1,0 +1,61 @@
+strata generate: memory guard: limit 48.0 GiB (source: cgroup), current 0.2 GiB, reclaimable cache credited 0.0 GiB; available 47.8 GiB (MemAvailable 57.7 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: PCIe probe: 3.0 GB/s host->device (best of 3.0 3.0 3.0 3.0) -> pcie_frac 0.08 (default 0.55)
+strata generate: native pack: packs/iq2_xs experts (largest blob 1.51 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.3 s)
+strata generate: layer split: CUDA1 PCIe probe 28.2 GB/s (best of 28.1 28.1 28.1 28.2) -> pcie_frac 0.55
+strata generate: layer split: CUDA1 holds its weights; 8.71 GiB free (its session follows the split search)
+strata generate: layer split auto: CUDA0 20 SMs at 2.85 GHz -> 1.27 ms per layer, 7.67 GiB free before its session carve
+strata generate: layer split auto: CUDA1 20 SMs at 2.85 GHz -> 1.27 ms per layer, 6.65 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 3.0 GB/s -> miss cost x9.25
+strata generate: layer split auto: CUDA1 link 28.1 GB/s -> miss cost x1.00
+strata prefill: HIP device 0 gfx1031 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: layer split auto: K=10 - predicted 70.7 ms per decode window; the caches hold 7784 of 24576 profiled pairs (~94.9% of the routed mass), best of 46 placements
+strata generate: layer split auto: NEAR TIE - K=13 is predicted 72.5 ms per decode window, within 2.5% of K=10 (70.7 ms); the cards differ, so the prediction may not rank them (it prices decode, not the prompt). To try the other: --layer-split 13
+strata generate: layer split: CUDA1 holds its weights, session [10, 48) and the head; 5.34 GiB free
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 19341 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: layer split, CUDA1: 4.92 GiB free of 11.98, room for experts 3.84 GiB
+strata generate: layer split: CUDA1 runs layers 10-47, expert cache 2841 slots (3.84 GiB), 2841 of its 19456 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-9
+strata prefill: HIP device 1 gfx1031 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 1 in 23 ms (STRATA_PREFILL_WARM=0 skips)
+strata serve: layer split: layers 0-9 (CUDA0), 10-47 (CUDA1), one hand-off per window
+strata serve: DFlash2 drafter on (models/dflash2/qwen3.8-flash-next-dflash2.q4_0-selq4.pack, graphs captured in 105 ms); windows up to 4 tokens; no MTP layer is loaded (--draft-fallback none); layer split: the drafter is on CUDA1 (last stage), the other stages' taps are gathered onto it
+strata serve: adaptive overlap: off: not on a layer split
+strata prefill: QSA layers: norm + rope in one pass on, attention gate in the attention epilogue off
+strata verify: captured the 1-token window (upload no error, sync no error) in 88.4 ms
+strata verify: captured the 1-token window (upload no error, sync no error) in 22.2 ms
+strata verify: captured the 2-token window (upload no error, sync no error) in 1.8 ms
+strata verify: captured the 2-token window (upload no error, sync no error) in 8.1 ms
+strata verify: captured the 4-token window (upload no error, sync no error) in 2.0 ms
+strata verify: captured the 4-token window (upload no error, sync no error) in 7.1 ms
+strata verify: captured the 3-token window (upload no error, sync no error) in 2.2 ms
+strata verify: captured the 3-token window (upload no error, sync no error) in 9.0 ms
+strata serve: prompt 261602 tokens = 0 reused + 261602 read in 947205 ms (276.2 tok/s), 68 generated in 4109 ms (16.5 tok/s), drafts accepted 34 of 36, 0 checkpoints
+strata serve: prompt 261602 tokens = 0 reused + 261602 read in 1926205 ms (135.8 tok/s), 68 generated in 3748 ms (18.1 tok/s), drafts accepted 33 of 34, 0 checkpoints
+strata serve: prompt 261602 tokens = 0 reused + 261602 read in 1919852 ms (136.3 tok/s), 68 generated in 3663 ms (18.6 tok/s), drafts accepted 33 of 34, 0 checkpoints
+strata serve: prompt 396 tokens = 0 reused + 396 read in 4628 ms (85.6 tok/s), 32 generated in 1678 ms (19.1 tok/s), drafts accepted 15 of 16, 0 checkpoints
+strata serve: prompt 505 tokens = 0 reused + 505 read in 4992 ms (101.2 tok/s), 46 generated in 2538 ms (18.1 tok/s), drafts accepted 22 of 25, 0 checkpoints
+strata serve: prompt 583 tokens = 0 reused + 583 read in 6563 ms (88.8 tok/s), 46 generated in 2538 ms (18.1 tok/s), drafts accepted 22 of 25, 0 checkpoints
+strata serve: prompt 661 tokens = 0 reused + 661 read in 7020 ms (94.2 tok/s), 46 generated in 2463 ms (18.7 tok/s), drafts accepted 21 of 24, 0 checkpoints
+strata serve: prompt 739 tokens = 0 reused + 739 read in 7406 ms (99.8 tok/s), 46 generated in 2429 ms (18.9 tok/s), drafts accepted 21 of 24, 0 checkpoints
+strata serve: prompt 817 tokens = 0 reused + 817 read in 7668 ms (106.5 tok/s), 46 generated in 2191 ms (21.0 tok/s), drafts accepted 29 of 32, 0 checkpoints
+strata serve: prompt 895 tokens = 0 reused + 895 read in 7832 ms (114.3 tok/s), 46 generated in 1679 ms (27.4 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 973 tokens = 0 reused + 973 read in 8137 ms (119.6 tok/s), 46 generated in 1930 ms (23.8 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 396 tokens = 0 reused + 396 read in 4584 ms (86.4 tok/s), 32 generated in 1660 ms (19.3 tok/s), drafts accepted 17 of 20, 0 checkpoints
+strata serve: prompt 505 tokens = 0 reused + 505 read in 4980 ms (101.4 tok/s), 46 generated in 2400 ms (19.2 tok/s), drafts accepted 24 of 31, 0 checkpoints
+strata serve: prompt 583 tokens = 0 reused + 583 read in 6561 ms (88.9 tok/s), 46 generated in 1701 ms (27.0 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 661 tokens = 0 reused + 661 read in 7017 ms (94.2 tok/s), 46 generated in 1720 ms (26.7 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 739 tokens = 0 reused + 739 read in 7442 ms (99.3 tok/s), 46 generated in 1653 ms (27.8 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 817 tokens = 0 reused + 817 read in 7660 ms (106.7 tok/s), 46 generated in 1867 ms (24.6 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 895 tokens = 0 reused + 895 read in 7851 ms (114.0 tok/s), 46 generated in 1719 ms (26.8 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 973 tokens = 0 reused + 973 read in 8135 ms (119.6 tok/s), 46 generated in 1892 ms (24.3 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 396 tokens = 0 reused + 396 read in 4582 ms (86.4 tok/s), 32 generated in 1618 ms (19.8 tok/s), drafts accepted 16 of 17, 0 checkpoints
+strata serve: prompt 505 tokens = 0 reused + 505 read in 4963 ms (101.8 tok/s), 46 generated in 2402 ms (19.1 tok/s), drafts accepted 24 of 31, 0 checkpoints
+strata serve: prompt 583 tokens = 0 reused + 583 read in 6588 ms (88.5 tok/s), 46 generated in 1950 ms (23.6 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 661 tokens = 0 reused + 661 read in 6993 ms (94.5 tok/s), 46 generated in 1931 ms (23.8 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 739 tokens = 0 reused + 739 read in 7424 ms (99.5 tok/s), 46 generated in 1760 ms (26.1 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 817 tokens = 0 reused + 817 read in 7685 ms (106.3 tok/s), 46 generated in 1673 ms (27.5 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 895 tokens = 0 reused + 895 read in 7835 ms (114.2 tok/s), 46 generated in 1721 ms (26.7 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 973 tokens = 0 reused + 973 read in 8145 ms (119.5 tok/s), 46 generated in 1738 ms (26.5 tok/s), drafts accepted 33 of 36, 0 checkpoints
+strata serve: prompt 20624 tokens = 0 reused + 20624 read in 141608 ms (145.6 tok/s), 93 generated in 5270 ms (17.6 tok/s), drafts accepted 47 of 57, 0 checkpoints

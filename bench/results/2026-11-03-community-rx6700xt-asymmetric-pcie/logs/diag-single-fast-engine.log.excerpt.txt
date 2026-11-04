@@ -1,0 +1,22 @@
+strata generate: memory guard: limit 48.0 GiB (source: cgroup), current 0.2 GiB, reclaimable cache credited 0.0 GiB; available 47.8 GiB (MemAvailable 57.7 GiB), floor 2560 MiB
+strata generate: PCIe probe: 28.2 GB/s host->device (best of 28.2 28.1 28.1 28.2) -> pcie_frac 0.55 (default 0.55)
+strata generate: native pack: packs/iq2_xs experts (largest blob 1.51 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.3 s)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 10515 ms (STRATA_PREFILL_WARM=0 skips)
+strata prefill: HIP device 0 gfx1031 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata prefill: QSA layers: norm + rope in one pass on, attention gate in the attention epilogue off
+strata verify: captured the 1-token window (upload no error, sync no error) in 30.7 ms
+strata verify: captured the 2-token window (upload no error, sync no error) in 10.1 ms
+strata verify: captured the 4-token window (upload no error, sync no error) in 9.8 ms
+strata serve: prompt 3609 tokens = 0 reused + 3609 read in 15491 ms (233.0 tok/s), 67 generated in 1754 ms (38.2 tok/s), drafts accepted 35 of 39, 0 checkpoints
+strata serve: prompt 3609 tokens = 0 reused + 3609 read in 15266 ms (236.4 tok/s), 67 generated in 1582 ms (42.4 tok/s), drafts accepted 33 of 33, 0 checkpoints
+strata serve: prompt 3609 tokens = 0 reused + 3609 read in 15191 ms (237.6 tok/s), 67 generated in 1556 ms (43.0 tok/s), drafts accepted 32 of 34, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 649 ms (63.1 tok/s), 9 generated in 213 ms (42.2 tok/s), drafts accepted 4 of 4, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 625 ms (65.6 tok/s), 9 generated in 212 ms (42.4 tok/s), drafts accepted 4 of 4, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 613 ms (66.9 tok/s), 9 generated in 209 ms (43.1 tok/s), drafts accepted 4 of 4, 0 checkpoints
+strata verify: captured the 3-token window (upload no error, sync no error) in 11.3 ms
+strata serve: prompt 41 tokens = 0 reused + 41 read in 664 ms (61.7 tok/s), 270 generated in 6495 ms (41.6 tok/s), drafts accepted 128 of 144, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 654 ms (62.7 tok/s), 270 generated in 6193 ms (43.6 tok/s), drafts accepted 128 of 141, 0 checkpoints
+strata serve: prompt 41 tokens = 0 reused + 41 read in 661 ms (62.0 tok/s), 268 generated in 6144 ms (43.6 tok/s), drafts accepted 127 of 140, 0 checkpoints
+strata serve: prompt 46 tokens = 0 reused + 46 read in 825 ms (55.8 tok/s), 367 generated in 9611 ms (38.2 tok/s), drafts accepted 152 of 214, 0 checkpoints
+strata serve: prompt 46 tokens = 0 reused + 46 read in 770 ms (59.8 tok/s), 383 generated in 9514 ms (40.3 tok/s), drafts accepted 160 of 222, 0 checkpoints
+strata serve: prompt 46 tokens = 0 reused + 46 read in 762 ms (60.3 tok/s), 357 generated in 8966 ms (39.8 tok/s), drafts accepted 148 of 211, 0 checkpoints

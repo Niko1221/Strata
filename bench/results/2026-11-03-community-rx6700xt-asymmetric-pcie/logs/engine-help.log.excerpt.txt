@@ -1,0 +1,4 @@
+                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the
+  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs
+  --pipeline-windows N --serve with a layer split on two GPUs (on by default for 2+ stages on AMD gfx12;
+  --prefill-pipe R     opt-in, a layer split: prompt chunks sized so the stages read at once - R is

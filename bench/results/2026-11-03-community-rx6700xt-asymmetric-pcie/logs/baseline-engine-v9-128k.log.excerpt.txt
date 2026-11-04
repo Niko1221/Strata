@@ -1,0 +1,34 @@
+strata generate: memory guard: limit 48.0 GiB (source: cgroup), current 0.2 GiB, reclaimable cache credited 0.0 GiB; available 47.8 GiB (MemAvailable 57.7 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: PCIe probe: 3.0 GB/s host->device (best of 3.0 3.0 3.0 3.0) -> pcie_frac 0.08 (default 0.55)
+strata generate: native pack: packs/iq2_xs experts (largest blob 1.51 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.3 s)
+strata generate: layer split: CUDA1 PCIe probe 28.2 GB/s (best of 28.2 28.1 28.2 28.1) -> pcie_frac 0.55
+strata generate: layer split: CUDA1 holds its weights; 8.71 GiB free (its session follows the split search)
+strata generate: layer split auto: CUDA0 20 SMs at 2.85 GHz -> 1.27 ms per layer, 7.67 GiB free before its session carve
+strata generate: layer split auto: CUDA1 20 SMs at 2.85 GHz -> 1.27 ms per layer, 6.65 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 3.0 GB/s -> miss cost x9.25
+strata generate: layer split auto: CUDA1 link 28.2 GB/s -> miss cost x1.00
+strata prefill: HIP device 0 gfx1031 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: layer split auto: K=11 - predicted 68.4 ms per decode window; the caches hold 9345 of 24576 profiled pairs (~96.1% of the routed mass), best of 46 placements
+strata generate: layer split auto: NEAR TIE - K=8 is predicted 69.4 ms per decode window, within 1.4% of K=11 (68.4 ms); the cards differ, so the prediction may not rank them (it prices decode, not the prompt). To try the other: --layer-split 8
+strata generate: layer split: CUDA1 holds its weights, session [11, 48) and the head; 6.82 GiB free
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 22164 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: layer split, CUDA1: 6.40 GiB free of 11.98, room for experts 5.32 GiB
+strata generate: layer split: CUDA1 runs layers 11-47, expert cache 3939 slots (5.32 GiB), 3939 of its 18944 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-10
+strata prefill: HIP device 1 gfx1031 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 1 in 20 ms (STRATA_PREFILL_WARM=0 skips)
+strata serve: layer split: layers 0-10 (CUDA0), 11-47 (CUDA1), one hand-off per window
+strata serve: DFlash2 drafter on (models/dflash2/qwen3.8-flash-next-dflash2.q4_0-selq4.pack, graphs captured in 79 ms); windows up to 4 tokens; no MTP layer is loaded (--draft-fallback none); layer split: the drafter is on CUDA1 (last stage), the other stages' taps are gathered onto it
+strata serve: adaptive overlap: off: not on a layer split
+strata prefill: QSA layers: norm + rope in one pass on, attention gate in the attention epilogue off
+strata verify: captured the 1-token window (upload no error, sync no error) in 80.2 ms
+strata verify: captured the 1-token window (upload no error, sync no error) in 19.9 ms
+strata verify: captured the 2-token window (upload no error, sync no error) in 1.9 ms
+strata verify: captured the 2-token window (upload no error, sync no error) in 5.7 ms
+strata verify: captured the 4-token window (upload no error, sync no error) in 2.3 ms
+strata verify: captured the 4-token window (upload no error, sync no error) in 9.1 ms
+strata serve: prompt 130588 tokens = 0 reused + 130588 read in 447133 ms (292.1 tok/s), 66 generated in 3875 ms (17.0 tok/s), drafts accepted 34 of 39, 0 checkpoints
+strata serve: prompt 130588 tokens = 0 reused + 130588 read in 905269 ms (144.3 tok/s), 66 generated in 3353 ms (19.7 tok/s), drafts accepted 35 of 40, 0 checkpoints
+strata serve: prompt 130588 tokens = 0 reused + 130588 read in 903208 ms (144.6 tok/s), 66 generated in 3327 ms (19.8 tok/s), drafts accepted 35 of 40, 0 checkpoints
