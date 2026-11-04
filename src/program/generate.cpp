@@ -7519,6 +7519,10 @@ int main(int argc, char** argv) {
                      (long long) o.prefill_chunk, (long long) mib, (long long) (160 + (o.prefill_chunk * 680) / 1024));
         return mib + 64;   // a margin for the allocator
     };
+    // Expert parallelism: the peer/display card keeps the user's --vram-reserve-mib; the primary card may
+    // give up its own reserve when the pair needs the room to hold every expert (see the auto sizing below).
+    int64_t ep_card0_reserve_mib = o.vram_reserve_mib;
+    int64_t ep_peer_reserve_mib = o.vram_reserve_mib;
     if (o.expert_cache < 0) {
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
@@ -7623,6 +7627,48 @@ int main(int argc, char** argv) {
                              "draft head%s) -> %d slots\n",
                      (double) free_b / 1073741824.0, o.vram_reserve_mib, (long long) (mtp_bind >> 20),
                      auto_slots.late_priced ? ", +256 MiB for what is allocated after the cache" : "", o.expert_cache);
+        // Expert parallelism: the peer holds the experts this card does not.  The auto sizing above keeps
+        // --vram-reserve-mib free on THIS card, but the peer needs its own reserve too.  If the peer's share
+        // does not fit beside that reserve, give this card the extra slots (down to the late-allocation floor)
+        // so the pair can still hold every expert.  The peer/display card keeps its full reserve.
+        if (o.ep_device >= 0 && !multi_gpu) {
+            size_t peer_free = 0, peer_total = 0;
+            {
+                strata::core::OnDevice on(o.ep_device);
+                if (cudaMemGetInfo(&peer_free, &peer_total) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    peer_free = 0;
+                }
+            }
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            int64_t per_layer = 0;   // one expert in every layer, in the peer cache's rounded slot bytes
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                per_layer += (int64_t) ((lay.blob_bytes(l) + 255) / 256 * 256);
+            const int64_t peer_reserve = ep_peer_reserve_mib << 20;
+            if (peer_free > 0 && per_layer > 0) {
+                const int64_t peer_slots = peer_free > (size_t) peer_reserve
+                    ? (int64_t) ((peer_free - (size_t) peer_reserve) / (uint64_t) per_layer) : 0;
+                const int64_t q0_need = std::min<int64_t>(g.n_expert, std::max<int64_t>(0, g.n_expert - peer_slots));
+                const int64_t slots_need = q0_need * g.n_layers;
+                if (slots < slots_need && (profile.empty() || slots_need <= (int64_t) profile.size())) {
+                    const int64_t floor_b = ((int64_t) strata::core::kLateAllocMib << 20) + mtp_bind + pipe_first;
+                    const int64_t fit_q0 = free_b > (size_t) floor_b
+                        ? (int64_t) ((free_b - (size_t) floor_b) / (uint64_t) per_layer) : 0;
+                    if (fit_q0 >= q0_need) {
+                        std::fprintf(stderr,
+                            "strata generate: expert cache auto: expert parallelism: card %d holds %lld experts per layer "
+                            "beside its %lld MiB reserve, so this card takes %lld (cache %lld slots, %.2f GiB; this card's "
+                            "reserve becomes %lld MiB)\n",
+                            o.ep_device, (long long) peer_slots, (long long) ep_peer_reserve_mib, (long long) q0_need,
+                            (long long) slots_need, (double) (q0_need * per_layer) / 1073741824.0,
+                            (long long) ((floor_b + (1ll << 20) - 1) >> 20));
+                        ep_card0_reserve_mib = (floor_b + (1ll << 20) - 1) >> 20;
+                        slots = slots_need;
+                    }
+                }
+            }
+        }
+        o.expert_cache = (int) std::max<int64_t>(slots, 0);
 #if defined(STRATA_USE_HIP) && !defined(_WIN32)
         // An APU's "VRAM" is system RAM: the device-free figure above counts the whole GPU-addressable pool and does not
         // subtract ordinary CPU allocations (the host expert arena), so a cache sized from it alone can ask the OOM killer
@@ -7997,7 +8043,7 @@ int main(int argc, char** argv) {
             cudaDeviceSynchronize();
             size_t free_b = 0, total_b = 0;
             free_b = strata::core::device_free_bytes(); (void) total_b;
-            const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
+            const int64_t want = (ep_card0_reserve_mib << 20) + pipe_first;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
@@ -8005,8 +8051,8 @@ int main(int argc, char** argv) {
             if (free_b < ((size_t) 16 << 20))
                 give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : xcache.bytes() / 4);
             const int64_t keep_bytes = xcache.bytes() - give;
-            std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (reserve %d MiB); "
-                                 "shrinking the expert cache\n", (long long) (free_b >> 20), o.vram_reserve_mib);
+            std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (reserve %lld MiB); "
+                                 "shrinking the expert cache\n", (long long) (free_b >> 20), (long long) ep_card0_reserve_mib);
             xcache.close();
             if (!shrink_to(keep_bytes)) break;
         }
@@ -8247,14 +8293,14 @@ int main(int argc, char** argv) {
             }
         size_t fb = 0, tb = 0;
         cudaMemGetInfo(&fb, &tb);
-        const uint64_t reserve = (uint64_t) o.vram_reserve_mib << 20;
+        const uint64_t reserve = (uint64_t) ep_peer_reserve_mib << 20;
         std::fprintf(stderr, "strata generate: expert parallel: card %d has %.2f GiB free, its %zu experts take %.2f GiB "
                              "(%lld per layer)\n", o.ep_device, fb / 1073741824.0, ep_set1.size(), bytes / 1073741824.0,
                      (long long) q1);
         if ((uint64_t) fb < bytes + reserve) {
             std::fprintf(stderr, "strata generate: --expert-parallel-device: card %d cannot hold the other %.2f GiB of experts "
-                                 "(%.2f GiB free, %d MiB reserve): lower --max-context or --vram-reserve-mib\n",
-                         o.ep_device, bytes / 1073741824.0, fb / 1073741824.0, o.vram_reserve_mib);
+                                 "(%.2f GiB free, %lld MiB reserve): lower --max-context or --vram-reserve-mib\n",
+                         o.ep_device, bytes / 1073741824.0, fb / 1073741824.0, (long long) ep_peer_reserve_mib);
             return 1;
         }
         ep_cache = new strata::core::ExpertCache;   // never destroyed (see above): the process ends right after the last request
