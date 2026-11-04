@@ -1614,7 +1614,7 @@ async function api(req, res, path, method, url) {
   if (cancelMatch && method === 'POST') return json(res, 200, serving.cancel(cancelMatch[1]));
 
   // --- monitor ------------------------------------------------------------
-  if (path === '/api/monitor') { monitor.watch(); return json(res, 200, monitor.snapshot()); }
+  if (path === '/api/monitor') { monitor.watch(); if (url.searchParams.get('drives') === '1') monitor.watchDrives(); return json(res, 200, monitor.snapshot()); }
 
   // --- skills / workspace -------------------------------------------------
   if (path === '/api/skills' && method === 'GET') {
