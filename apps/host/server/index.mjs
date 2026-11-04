@@ -51,7 +51,7 @@ import * as engineInstall from './engine-install.mjs';
 import { detectBackend, currentBackend, streamChat, inferenceLine } from './inference.mjs';
 import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
-import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
+import { EventHub, badRequest, error, json, readBody, readRaw, requestUrl, sameSecret, uid } from './util.mjs';
 import { createUploads } from './chat-uploads.mjs';
 import { createNativeDrops } from './native-drop.mjs';
 import { createVisionProbe, effectiveVision, readsPicturesByDefault } from './vision-probe.mjs';
@@ -954,7 +954,8 @@ await cloudflare.inspect();
 /* --------------------------------------------------------------- routing --- */
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  const url = requestUrl(req);
+  if (!url) return badRequest(res);   // #4397: a bad Host or request target is a 400, never an unhandled rejection
   const path = url.pathname;
   const method = req.method ?? 'GET';
 
@@ -1195,9 +1196,7 @@ async function api(req, res, path, method, url) {
   }
   // One revision attempt for a job this host started: the app's assistant works inside the candidate folder.
   if (path === '/api/internal/timeskip-revise' && method === 'POST') {
-    const given = Buffer.from(String(req.headers['x-strata-internal'] ?? ''));
-    const want = Buffer.from(INTERNAL_SECRET);
-    if (given.length !== want.length || !timingSafeEqual(given, want)) return error(res, 403, 'Not allowed.');
+    if (!sameSecret(req.headers['x-strata-internal'], INTERNAL_SECRET)) return error(res, 403, 'Not allowed.');
     const body = await readBody(req);
     const cwd = String(body.cwd ?? '');
     // Only the job's own candidate folders may be worked in.
@@ -1307,8 +1306,7 @@ async function api(req, res, path, method, url) {
   // The shell (and nothing else) holds the secret that lets it end the host or tell it which window is in use.
   const fromShell = () => {
     const token = process.env.STRATA_SHUTDOWN_TOKEN ?? '';
-    const given = String(req.headers['x-strata-shutdown'] ?? '');
-    return token.length >= 32 && given.length === token.length && timingSafeEqual(Buffer.from(given), Buffer.from(token));
+    return token.length >= 32 && sameSecret(req.headers['x-strata-shutdown'], token);
   };
   // Which window the person is using: the page shows "Quit Strata" in browser mode only.
   if (path === '/api/app/mode' && method === 'GET') return json(res, 200, appUi.state());
