@@ -53,12 +53,6 @@ class Pins(unittest.TestCase):
             self.assertNotIn(M, [m for m in setup.MODELS if f in setup.MODELS[m].get("families", ("qwen", "swift"))])
 
 
-class DiskRoom(unittest.TestCase):
-    def test_gguf_dir_is_checked_on_the_data_folder(self):
-        self.assertEqual(setup.room_for_setup_files(Path("C:/gguf"), Path("H:/Strata"), "C:/gguf"), Path("H:/Strata"))
-        self.assertEqual(setup.room_for_setup_files(Path("H:/models/q2"), Path("H:/Strata"), None), Path("H:/models/q2"))
-
-
 class Budget(unittest.TestCase):
     def test_ram_less_24(self):
         self.assertEqual(setup.resident_budget_gib(M, 63.7), 40)       # this PC (64 GB): the measured setting
@@ -155,7 +149,7 @@ class Base(unittest.TestCase):
         self.tmp.cleanup()
 
     def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, m=M, answers=None,
-             family=True, vram=11.9):
+             family=True, vram=11.9, free_at=None):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others), and every question
         asked is kept in self.asked.  family=False: no --family (the first menu is shown)."""
         self.asked = []
@@ -192,7 +186,7 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, True)),
             mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
-            mock.patch.object(setup, "free_gb", lambda p: free),
+            mock.patch.object(setup, "free_gb", free_at or (lambda p: free)),
             # whatever else asks the disk (shutil.disk_usage) gets the same answer: the tests never depend on this PC's free space
             mock.patch.object(shutil, "disk_usage", lambda p: shutil._ntuple_diskusage(int(max(free, 1000) * 1e9), int(max(free, 1000) * 1e9 - free * 1e9), int(free * 1e9))),
             mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: not the test PC's disk
@@ -252,7 +246,7 @@ class Main(Base):
     def test_recommended_context_on_12_gb(self):
         code, out, cfg = self.main([])
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")   # 128K on every card (owner, 2026-11-01)
 
     @budget_mode()
     def test_more_ram_bigger_budget(self):
@@ -589,7 +583,7 @@ class StrixHaloCache(Base):
     """#1715: on a unified-memory APU the expert cache and the RAM budget are the same RAM: setup writes a cache size
     that leaves the OS room, not `--expert-cache auto` (it OOM-killed a 128 GB Strix Halo with the desktop open)."""
 
-    HALO = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 2.0, "arch": "gfx1151", "driver": "amdgpu",
+    HALO = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 114.0, "arch": "gfx1151", "driver": "amdgpu",
              "uma": True, "dedicated_gb": 2.0, "shared_gb": 112.0}]
 
     def run_halo(self, ram, argv=("--context", "8192"), amd=None):

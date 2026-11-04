@@ -111,20 +111,22 @@ the aggregate tokens per second over all clients: 8 clients 35.6, 16 clients 41.
 a prompt of its own and a hidden code for each client, every answer named its own code and nobody else's (8 clients at 4 slots, 16 clients at 8
 slots), and none failed or hung.
 
-## The four speed defaults of this part
+## The five speed defaults of this part
 
-On a GB10 the engine switches on four settings that were measured here, and prints them at every start. `STRATA_SM121_PERF=0` (or
+On a GB10 the engine switches on five settings that were measured here, and prints them at every start. `STRATA_SM121_PERF=0` (or
 `STRATA_DEFAULTS=026`, which gives back everything 0.2.7.1 changed) turns the whole set off; a switch you set yourself is kept.
 
-| Switch | What it does | Measured in the first run (26 October) |
+| Switch | What it does | Measured on this Spark |
 |---|---|---|
 | `STRATA_PF_FUSED=1` | the fused IQ prompt kernels | IQ3_S prompt +10 to 27% |
 | `STRATA_PREFILL_NVFP4=w4a4` | NVFP4 prompt matrix product with FP4 activations | NVFP4 prompt +16% |
 | `STRATA_HC_UPMIX=1` | the hyper-connection read's up projection and mix in one kernel | decode +5.4% |
+| `STRATA_SIDE_MIXER=2` | input-only QSA/GDN work on branches of the verify graph | fixed-work IQ3_S decode +6.7% (30 October) |
 | `STRATA_SPEC_COST=1` | the draft window follows what a draft costs | decode +4.7% |
 
 **What the first two switches do to the answers.** The fused prompt path and the FP4 activations round differently from the paths they replace,
-and the other two do not touch the text (the fused hyper-connection read gives bit-identical logits; the cost-aware window only chooses
+and the other three do not touch the text (the fused hyper-connection read gives bit-identical logits; the side mixer changes only graph scheduling;
+the cost-aware window only chooses
 which drafts to try, and the target checks every draft). 24 short greedy prompts gave 24 identical answers on IQ3_S and on NVFP4. On
 24 long prompts (1.5K to 24K tokens, the first-token logits compared with the switches off, `STRATA_DUMP_FIRST_LOGITS`) the distribution
 does move: IQ3_S mean KL 0.019 (largest 0.082), NVFP4 0.032 (largest 0.126); the most likely token changed on 2 of 24 prompts for each, in
@@ -133,8 +135,9 @@ of the same setting gave identical logits, so the difference is the switches, no
 prompt path, and all of the NVFP4 difference from `w4a4`. On the 61-task quality suite (long-document retrieval, extraction of up to 72 exact rows, summaries, code, JSON, agent loops with tools), run through the server with the switches on and off: IQ3_S passed 56 tasks on and 51 off, NVFP4 56 on and 52 off. Retrieval found all 63 facts in every run, and no agent loop made an invalid tool call. The extraction facts were equal on IQ3_S (621 of 642 both ways); on NVFP4 one 40-row register lost a row with the switches on (616 against 621 of 642). One summary in each model gained or lost a flagged name or figure. Answers differ in wording on 21 of 61 tasks (IQ3_S) and 25 of 61 (NVFP4), and the wins and losses go both ways, so read the suite as "no loss we could measure", not as an improvement. The same setting run twice gave identical answers, so every difference comes from the switches. If you want the answers of 0.2.7, set `STRATA_SM121_PERF=0`: you keep the other
 Spark settings and lose the prompt speed-up.
 
-With `"parallel": 4` (the default) the set adds up: 32 clients at 2,000-token prompts read 41.3 tok/s with all four on and 35.7 with all off. At
-`"parallel": 8` the two decode switches cost about 3.5% each; set `STRATA_HC_UPMIX=0 STRATA_SPEC_COST=0` there.
+With `"parallel": 4` (the default) the original four-switch set adds up: 32 clients at 2,000-token prompts read 41.3 tok/s with those four on
+and 35.7 with all four off. The side mixer was not part of that check. At `"parallel": 8` the two original decode switches cost about 3.5%
+each; set `STRATA_HC_UPMIX=0 STRATA_SPEC_COST=0` there.
 
 ## What this does not cover
 

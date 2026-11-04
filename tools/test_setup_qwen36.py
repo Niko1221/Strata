@@ -75,10 +75,8 @@ class Qwen36Entries(unittest.TestCase):
 
     def test_context_recommendation(self):
         fam = setup.OWN_PATH_FAMILIES["qwen36"]
-        self.assertEqual(setup.own_path_context(fam, 12.0), 32768)
-        self.assertEqual(setup.own_path_context(fam, 16.0), 32768)
-        self.assertEqual(setup.own_path_context(fam, 24.0), 65536)
-        self.assertEqual(setup.own_path_context(fam, 32.0), 131072)
+        for vram in (12.0, 16.0, 24.0, 32.0):   # 128K on every card (owner, 2026-11-01; strata_control/default_context.py)
+            self.assertEqual(setup.own_path_context(fam, vram), 131072, vram)
 
 
 class InstallOwnPath(unittest.TestCase):
@@ -142,7 +140,7 @@ class InstallOwnPath(unittest.TestCase):
         self.assertTrue(tok and "strata_tokenizer.py" in str(tok[0][1]))
         a = self.cfg["args"]
         self.assertEqual(a[a.index("--native") + 1], str(gguf))
-        self.assertEqual(a[a.index("--max-context") + 1], "32768")   # 16 GB card
+        self.assertEqual(a[a.index("--max-context") + 1], "131072")   # 128K on every card, the 16 GB one too
         self.assertEqual(a[a.index("--mtp") + 1], "2")
         self.assertNotIn("--pack", a)
         self.assertNotIn("--expert-cache", a)

@@ -152,6 +152,15 @@ class Computer:
         return None
 
     @property
+    def rx7000_card(self) -> bool:
+        """Is a usable AMD card an RX 7000 (gfx1100, gfx1101, gfx1102)?  DeepSeek has a package for those cards since the 0.2.9 update, built and not run on a real one."""
+        from strata_control import engine_component as ec, gpu_fit
+        for c in gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]:
+            if c.get("vendor") == "amd" and (str(c.get("arch") or "") or ec.gfx_from_name(str(c.get("name", "")))) in ("gfx1100", "gfx1101", "gfx1102"):
+                return True
+        return False
+
+    @property
     def main_vram_gb(self) -> float:
         return max((float(g.get("vram_gb") or 0) for g in self.usable_gpus), default=0.0)
 
@@ -262,10 +271,13 @@ class Catalog:
             return hw
         hw = dict(self.strata.hardware(fresh=fresh))
         hw["gpus"] = self._admit_old_nvidia(list(hw.get("gpus") or []))
-        if not hw.get("gpus") and not str(hw.get("os", "")).startswith("Windows"):
+        if not str(hw.get("os", "")).startswith("Windows"):
             arc = intel_arc_cards()
             if arc:
-                hw["gpus"] = arc                       # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here
+                # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here, also beside other makes (the plan then says the
+                # Intel cards exist and how to use them: --backend intel); their numbers are the Intel engine's own (0, 1, ...)
+                have = list(hw.get("gpus") or [])
+                hw["gpus"] = have + arc
         return hw
 
     @staticmethod
@@ -307,9 +319,16 @@ class Catalog:
     def engine_vendor(self, hw: dict | None = None) -> str | None:
         """The make of card the engine drives: the installed engine's; with none installed, the engine setup would fetch (NVIDIA first when the
         computer has several makes)."""
-        from strata_control import gpu_fit
+        from strata_control import engine_component as ec, gpu_fit
         hw = hw if hw is not None else self.hardware()
-        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), self.installed_backend())
+        chosen = None
+        try:
+            backend, how = ec.detect_backend()
+            if how in ("environment", "saved choice"):          # the person's own choice (--backend, STRATA_ENGINE_BACKEND) beats the installed engine
+                chosen = backend
+        except Exception:                                      # noqa: BLE001
+            pass
+        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), chosen or self.installed_backend())
 
     # ---- the tables
     def tables(self):
@@ -370,6 +389,11 @@ class Catalog:
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
 
+    def own_files_verdict(self, hw: dict | None, model: str) -> tuple[str, str]:
+        """DeepSeek-V4.1-Flash with the person's own files used where they are (--model-path): nothing is downloaded or copied, so the disk
+        part of the menu row (which counts the whole download of a set that is not in Strata's folder) does not apply: the memory words alone."""
+        return verdict(self.strata._dsv41_memory_words(hw or self.hardware(), model))
+
     def resolve(self, model: str, family: str | None = None) -> tuple[str, str]:
         """`iq3_xxs` or `IQ3_XXS` (and an optional family) -> (family, model); raises ValueError with the closest match."""
         models, families, _ctx, _src = self.tables()
@@ -377,7 +401,10 @@ class Catalog:
         for fam_name, fam_d in families.items():       # DeepSeek-V4.1-Flash's size is not one of setup's MODELS
             if fam_d.get("multi_file"):
                 names += [m for m in self.strata.sizes_of(models, fam_name) if m not in names]
-        match = next((n for n in names if n.lower() == model.lower()), None)
+        import re
+        wanted = re.sub(r"(?i)^ista-das(?=-\d)", "IST-DAS", model)     # the set's name on screen is ISTA-DAS; its ids keep the first spelling
+        wanted = re.sub(r"(?i)^ist-das(?=-coder$)", "ISTA-DAS", wanted)  # (the Coder has only the longer spelling; the shorter one is accepted)
+        match = next((n for n in names if n.lower() == wanted.lower()), None)
         if match is None:
             near = S.closest(model, names)
             raise ValueError(f"There is no model called '{model}'." + (f" Did you mean '{near}'?" if near else "")
@@ -430,38 +457,15 @@ class Catalog:
         return tokens * 13 * table.get(kv, 1056) / 1e9
 
     def max_context(self, family: str, model: str, hw: dict | None = None) -> int | None:
-        """The recommended context for this computer and model (setup.py: VRAM rule, then the RAM rule)."""
+        """The context a model starts with: 128K on every card, or the largest size the model offers under it (strata_control/default_context.py,
+        the one rule of the app, the Terminal and setup). A Mac keeps its unified-memory rule."""
+        from strata_control import default_context
         hw = hw or self.hardware()
-        if self.strata.multi_family(family):                   # DeepSeek-V4.1-Flash: the context the engine was checked at
-            return int(getattr(self.strata.setup_module(), "DSV41_CONTEXT", 8192))
-        if hw.get("mac") and hw.get("ram_gb"):                 # a Mac: the context by unified memory (strata_control/mac_fit.py)
-            mac = self.strata.mac()
+        if hw.get("mac") and hw.get("ram_gb") and not self.strata.multi_family(family):
+            mac = self.strata.mac()                           # a Mac: the context by unified memory (strata_control/mac_fit.py)
             if mac is not None:
                 return int(mac.recommend_context(float(hw["ram_gb"])))
-        usable = [g for g in hw.get("gpus") or [] if g.get("usable", True)]
-        vram = max((float(g.get("vram_gb") or 0) for g in usable), default=12.0)
-        rec = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-        if usable and all(g.get("vendor") == "intel" for g in usable):
-            rec = 8192 if vram < 10 else 16384 if vram < 20 else 32768       # an Arc keeps the session and the experts in the same memory
-        mod = self.strata.setup_module()
-        models = self.tables()[0]
-        if mod is not None and models[model].get("budget"):
-            try:
-                if mod.unsloth_budget(model, hw.get("ram_gb") or 0.0):
-                    rec = 8192 if vram < 14 else 32768
-            except Exception:                                  # noqa: BLE001
-                pass
-        if mod is not None and hasattr(mod, "ram_ctx") and hw.get("ram_gb"):
-            try:
-                rec = min(rec, int(mod.ram_ctx(model, hw["ram_gb"], False)))
-            except Exception:                                  # noqa: BLE001
-                pass
-        if usable:                                             # 0.2.2: a model a few hundred MiB short on this card gets the next context down
-            from strata_control import vram_fit
-            best = max(usable, key=lambda g: float(g.get("vram_gb") or 0))
-            rec = vram_fit.fit_context(f"{family} {model}", float(best.get("vram_gb") or 0), rec, "int8", 300,
-                                       str(best.get("vendor") or ""))
-        return rec
+        return default_context.pick(self.contexts_for(family, model))
 
     # ---- pictures
     def engine_backend(self) -> str | None:

@@ -233,6 +233,8 @@ export interface ServingState {
   revision?: number;
   running: boolean;
   baseUrl: string;
+  /** The address on this computer (the app's own port); baseUrl is the network address while sharing is on. */
+  localUrl?: string;
   port: number;
   endpoints: { openai: string; anthropic: string; models: string };
   access: { otherDevices: boolean; apiKeySet: boolean; apiKeyHint: string | null; allowOrigin: string };
@@ -320,6 +322,8 @@ export interface MonitorState {
 }
 
 export interface ChatMessage {
+  /** Tool calls the model is writing right now (a file, a command): live data for the writing card; see ToolDraft. */
+  drafts?: ToolDraft[];
   /** The person's message is written with Markdown (a task handover: bold headings and lists), so the bubble draws it as such. */
   markdown?: boolean;
   photos?:import('./chat-photos').ChatPhoto[];
@@ -372,6 +376,28 @@ export interface ChatMessage {
 }
 
 export type ToolState = 'proposed' | 'approved' | 'running' | 'done' | 'denied' | 'error';
+
+/**
+ * A tool call the model is still writing (a whole file in one call, say), as the host streams it: the name, the file it is for, a growing size
+ * and the tail of the text. It lives on the assistant message while the call is written and is removed when the call is complete (the
+ * ordinary tool card takes over) or the reply was cut and the call was lost (`lost`).
+ */
+export interface ToolDraft {
+  id: string;
+  name: string;
+  /** The file (or address) the call is for; empty until the model has written it. */
+  target: string;
+  /** Characters of the call's arguments so far (a file's size, a little more because of escapes). */
+  bytes: number;
+  /** Lines of text written so far. */
+  lines: number;
+  /** The last part of the text being written, read back from its JSON form (at most 1,600 characters). */
+  preview: string;
+  /** What the call is: 'write', 'edit', 'shell', ... (same as ToolCall.scope). */
+  scope?: 'read' | 'write' | 'shell' | 'connected';
+  /** The plain verb for the card while it is written ("Writing"). */
+  verb?: string;
+}
 
 export interface ToolCall {
   id: string;

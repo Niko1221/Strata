@@ -111,9 +111,10 @@ class OwnLaunchHoldsTheCardTests(test_updater.UpdaterCase):
     def test_own_launch_serving_before_the_test_is_also_one_plain_step(self):
         self.install_current()
         self.publish(("0.1.47", fx.GOOD_ENGINE))
-        out = updater.run_update(self.ctx(serving=lambda: [{"profile": "launch-gyro-s-32k", "state": "ready"}]), control=False)
-        self.assertEqual(out["exit_code"], 7)
-        self.assertIn("Stop the model first (`strata launch --stop`)", out["results"][0]["error"])
+        with self.assertRaises(updater.Busy) as caught:            # refused up front, before anything is downloaded
+            updater.run_update(self.ctx(serving=lambda: [{"profile": "launch-gyro-s-32k", "state": "ready"}]), control=False)
+        self.assertEqual(caught.exception.exit_code, 7)
+        self.assertIn("Stop the model first (`strata launch --stop`)", str(caught.exception))
 
 
 class RetuneStopsOwnServerTests(unittest.TestCase):
