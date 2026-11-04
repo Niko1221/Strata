@@ -53,9 +53,9 @@ def redactor(key: str = ""):
     The key is replaced only where it stands as a whole token and in its own case (#4483): a short key is also a common word or a part of a hash. A hyphen
     next to it does not make it part of a longer word (`pack-<key>`, `<key>-1`: the key was a leak there); letters, digits and the underscore do.
     The names (user, host) are not touched inside a label this function wrote: redacting a text twice gives the same text (a user called "user" gave `<<user>>`)."""
-    subs: list[tuple[re.Pattern, str]] = []
+    subs: list[tuple[re.Pattern, str, bool]] = []     # (pattern, label, is a login or host name)
 
-    def add(value, label, word=False, exact=False):
+    def add(value, label, word=False, exact=False, name=False):
         if value and len(str(value)) >= 4:
             text = str(value)
             for form in sorted({text, text.replace("\\", "/"), text.replace("/", "\\")}, key=len, reverse=True):
@@ -64,17 +64,17 @@ def redactor(key: str = ""):
                     pattern = r"(?<!\w)" + pattern + r"(?!\w)"
                 elif word:
                     pattern = r"(?<![\w<-])" + pattern + r"(?![\w>-])"
-                subs.append((re.compile(pattern, 0 if exact else re.I), label))
+                subs.append((re.compile(pattern, 0 if exact else re.I), label, name))
 
     add(ROOT, "<strata>")
     add(Path.home(), "<home>")
     add(tempfile.gettempdir(), "<tmp>")
     try:
-        add(getpass.getuser(), "<user>", True)
+        add(getpass.getuser(), "<user>", True, name=True)
     except Exception:                                   # noqa: BLE001 - no user name is not an error
         pass
-    add(socket.gethostname(), "<host>", True)
-    add(sysinfo.node(), "<host>", True)
+    add(socket.gethostname(), "<host>", True, name=True)
+    add(sysinfo.node(), "<host>", True, name=True)
     add(usable_key(key), "<key>", word=True, exact=True)
     subs.sort(key=lambda item: -len(item[0].pattern))
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
@@ -82,15 +82,50 @@ def redactor(key: str = ""):
                             r"|169\.254)\.\d{1,3}\.\d{1,3}\b")
     bearer = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}")
 
-    def clean(text):
+    def clean(text, names=True):
+        """names=False leaves a login or host name that is also an ordinary word ("user", "test", "admin") alone: for fixed
+        schema text, where the word is not the machine's name; paths, addresses and the key are still replaced."""
         if not isinstance(text, str):
             return text
-        for pattern, label in subs:
-            text = pattern.sub(label, text)
+        for pattern, label, is_name in subs:
+            if names or not is_name:
+                text = pattern.sub(label, text)
         text = path_user.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}{m.group(3)}{m.group(4)}<user>", text)
         text = bearer.sub(r"\1<key>", text)
         return private_ip.sub("<ip>", text)
+    clean.structural = lambda text: clean(text, names=False)
     return clean
+
+
+def redact_values(value, clean):
+    """redact_object for free text: the strings are replaced, the keys stay."""
+    if isinstance(value, dict):
+        return {k: redact_values(v, clean) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_values(v, clean) for v in value]
+    return clean(value) if isinstance(value, str) else value
+
+
+def redact_document(doc: dict, clean) -> dict:
+    """The benchmark report as results.json carries it (#4484): the text an operator or a server wrote (hardware, model and configuration
+    descriptions, error messages, engine options, request checks) gets the full redaction; everything else is fixed schema text (field
+    names, enum values, status reasons) and only loses paths, addresses and the key, so a login called "user" or "test" does not turn
+    the report's own words into <user>."""
+    structural = getattr(clean, "structural", clean)
+    out = redact_object(doc, structural)
+    for block in ("hardware", "model", "configuration"):
+        if block in doc:
+            out[block] = redact_values(doc[block], clean)
+    for i, record in enumerate(doc.get("requests") or []):
+        if isinstance(record, dict) and isinstance(record.get("error"), dict):
+            out["requests"][i]["error"] = {**out["requests"][i]["error"],
+                                           "message": redact_values(record["error"].get("message"), clean)}
+    extensions = doc.get("extensions")
+    if isinstance(extensions, dict):
+        for field in ("other_engine_options", "request_checks"):
+            if field in extensions:
+                out["extensions"][field] = redact_values(extensions[field], clean)
+    return out
 
 
 def redact_object(value, clean):

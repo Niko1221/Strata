@@ -580,7 +580,9 @@ class RunTests(StandardBase):
         self.server.script["performance-prompt-4k-r2"] = {"cached": spec["input_tokens_frozen"] - 10}
         # the shared template prefix alone is allowed
         self.server.script["performance-prompt-4k-r1"] = {"cached": 40}
-        doc, _ = self.run_standard()
+        # whatever the login of the machine running the test is: "user" is an ordinary word of the report, not a name here
+        with mock.patch.object(bench_facts.getpass, "getuser", return_value="no-such-login"):
+            doc, _ = self.run_standard()
         self.assertEqual(doc["run"]["status"], "nonconforming")
         row = self.summary(doc, "prompt-4k", "prompt_tps")
         self.assertEqual(row["n"], 2)
@@ -858,6 +860,26 @@ class CommandLineTests(StandardBase):
         self.assertRegex(doc["configuration"]["track_notes"], "<home>|<user>")
         self.assertIn("<ip>", doc["configuration"]["track_notes"])
         self.assertEqual(doc["request_counts"]["performance"]["planned"] > 0, True)       # counters are untouched
+
+    def test_a_login_that_is_an_ordinary_word_does_not_rewrite_the_reports_own_words(self):
+        """INT3 on l620, where the login is exactly "user": the report's fixed text (status reasons, enum values, field names) came out as
+        "<user>", while the operator's own text still loses the name."""
+        spec = corpus_specs()["performance-prompt-4k-r2"]
+        out = self.root / "wordlogin"
+        with mock.patch.object(bench_facts.getpass, "getuser", return_value="user"), \
+                mock.patch.object(bench_facts.socket, "gethostname", return_value="summaries"), \
+                mock.patch.object(bench_facts.platform, "node", return_value="summaries"):
+            self.server.script["performance-prompt-4k-r2"] = {"cached": spec["input_tokens_frozen"] - 10}
+            code, _, errors = self.invoke("--url", self.server.url, "--out", str(out), "--track", "custom",
+                                          "--track-notes", "ask the user at summaries time")
+        self.assertEqual(code, 6, errors)
+        doc = bs.load(out)
+        self.assertEqual(bs.validate(doc), [])
+        self.assertTrue(any("unexpected reuse of the user payload in performance-prompt-4k-r2" in r
+                            for r in doc["extensions"]["status_reasons"]), doc["extensions"]["status_reasons"])
+        self.assertEqual(doc["configuration"]["track_notes"], "ask the <user> at <host> time")
+        text = (out / "results.json").read_text(encoding="utf-8")
+        self.assertIn('"summaries"', text)                      # a field name that equals the host name stays a field name
 
     def test_a_credential_of_none_is_no_key_and_the_word_is_left_alone(self):
         """#4483: STRATA_KEY=none was sent as "Bearer none" and the word was replaced wherever it occurred."""
