@@ -1107,6 +1107,8 @@ class StrataEngine:
     _yielded = _RequestOwned()
     _last_done = _RequestOwned()
     _ctl_erred = _RequestOwned(False)
+    _ctl_held = _RequestOwned(False)     # this thread already holds the control lines (Service.vram takes them itself)
+    CONTROL_WAIT_S = 300.0               # how long vram() / session_file() wait for the control lines of a batch engine
     DRAIN_TIMEOUT_S = 300.0              # how long an interrupted request waits for its engine's DONE / BADM
     QUARANTINE_S = 600.0                 # ... and how long a slot or the control lines stay held after that, until it comes
     multi = 0                            # DeepSeek --parallel (READY ... multi=N): conversations the engine holds at once (batch = N too)
@@ -1573,7 +1575,28 @@ class StrataEngine:
                 except ValueError:
                     pass
 
+    @contextlib.contextmanager
+    def _exclusive_control(self):
+        """#4451 (same class): on a batch engine the control lines carry one exchange at a time, and every request takes
+        them (`ctl`) before it sends or reads anything there.  VRAM and SAVE / RESTORE read the same lines for their
+        answer; run beside an admission they took its PP / T / BADM lines, and the admission its answer.  They take the
+        lines like a request does.  One request at a time: nothing to take."""
+        ctl = self.__dict__.get("ctl")
+        if not self.batch or ctl is None or self._ctl_held:
+            yield
+            return
+        if not ctl.acquire(timeout=self.CONTROL_WAIT_S):
+            raise ValueError("a request is still running; try again when it has finished")
+        try:
+            yield
+        finally:
+            ctl.release()
+
     def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
+        with self._exclusive_control():
+            return self._vram(reserve_mib, timeout)
+
+    def _vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
         """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
         expert cache until that much VRAM is free, or grows it back when more is free; None: back to the reserve it
         started with.  -> the engine's figures (expert_slots, expert_cache_mib, vram_free_mib, ...); raises ValueError
@@ -2888,6 +2911,10 @@ class StrataEngine:
         return EngineSilent(f"{what}; the server ended the engine")
 
     def session_file(self, action: str, path: str) -> dict:
+        with self._exclusive_control():
+            return self._session_file(action, path)
+
+    def _session_file(self, action: str, path: str) -> dict:
         """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
         -> {"tokens", "bytes", "ms"}.  SessionRefused (kind, published) when the engine refused or failed the file and
         is still in step (`SERR <kind> <0|1> <reason>`).  Any line this exchange does not allow - an unknown or
@@ -5279,6 +5306,8 @@ class Service:
         if ctl is not None and not ctl.acquire(timeout=self.vram_wait_s):
             self.fifo.release()
             raise ModelBusy("a request is still running; try again when it has finished")
+        if ctl is not None:
+            self.engine._ctl_held = True                 # engine.vram() below must not wait for the lines this call holds
         try:
             if not self.loaded():
                 self.vram_reserve, self.vram_reserve_asked = reserve_mib, True
@@ -5292,6 +5321,7 @@ class Service:
             return {"status": "ok", **out}
         finally:
             if ctl is not None:
+                self.engine._ctl_held = False
                 ctl.release()
             self.fifo.release()
 

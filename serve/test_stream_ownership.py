@@ -62,6 +62,13 @@ def canary_script(step=0.004):
     text = text.replace("while True:\n    try:\n        line = lines.get(timeout=STEP if active else None)",
                         CANARY_PATCH + "while True:\n    try:\n        line = lines.get(timeout=STEP if active else None)", 1)
     assert CANARY_PATCH in text
+    # VRAM and SAVE / RESTORE answer on the control lines, in the engine's own words
+    old = '    if line:\n        print("ERR unknown " + line[:20], flush=True)\n        continue\n'
+    assert old in text
+    text = text.replace(old, '    if line.startswith("VRAM"):\n        print("VRAM vram_free_mib=100 expert_slots=1", flush=True)\n        continue\n'
+                        '    if line.startswith(("SAVE ", "RESTORE ")):\n'
+                        '        print("SAVED 1 1 1.0" if line.startswith("SAVE") else "RESTORED 1 1 1.0", flush=True)\n'
+                        '        continue\n' + old, 1)
     return text
 
 
@@ -488,6 +495,35 @@ class BatchOwnership(FakeEngines, unittest.TestCase):
         for c in new:
             self.assertEqual(c.foreign(), [], "a request of the new process received a foreign frame")
             self.assertTrue(len(c.tokens) >= 3)
+
+    def test_vram_and_session_file_take_the_control_lines_like_a_request(self):
+        """VRAM and SAVE read the control lines for their answer.  Run beside a request that holds them (its solo read
+        or an admission), they took that request's T / PP / DONE lines and it lost its reply."""
+        for what in ("vram", "save", "restore"):
+            a = Client(self.engine, "KA0001")
+            a.start()
+            self.assertTrue(wait_until(lambda: len(a.tokens) >= 3))
+            answers = []
+
+            def call(what=what):
+                try:
+                    if what == "vram":
+                        answers.append(self.engine.vram(None))
+                    else:
+                        answers.append(self.engine.session_file(what, "/tmp/x"))
+                except BaseException as e:               # noqa: BLE001
+                    answers.append(e)
+            t = threading.Thread(target=call, daemon=True)
+            t.start()
+            self.finish([a])
+            t.join(30)
+            self.assertFalse(t.is_alive(), what)
+            self.assertIsNone(a.error, what)
+            self.assertTrue(a.complete(), f"{what}: the request lost lines to the VRAM / session call "
+                                          f"({len(a.tokens)} of {len(expected_reply('KA0001'))} tokens)")
+            self.assertIsInstance(answers[0], dict, answers)
+            self.assertEqual(answers[0].get("vram_free_mib") if what == "vram" else answers[0].get("tokens"),
+                             100 if what == "vram" else 1)
 
     def test_a_slot_is_not_handed_on_before_the_engine_confirms(self):
         """A consumer leaves a slot's stream; its BDONE has not come.  Whatever frames still arrive for that slot are
