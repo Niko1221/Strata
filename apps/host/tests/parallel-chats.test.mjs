@@ -10,6 +10,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DeliverableTracker, FolderClaims } from '../server/agent/deliverables.mjs';
+import { createChatStore } from '../server/chat-store.mjs';
+import { installFakeHostFetch } from './helpers/fake-host-chats.mjs';
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 
@@ -105,6 +107,10 @@ async function bundle(entry, plugins = []) {
 }
 
 test('two live chats in one workspace keep their messages, tool cards and saved copies apart, interleaved, and after a restart', async () => {
+  const hostDir = mkdtempSync(join(tmpdir(), 'strata-5008-host-'));
+  const chatStore = createChatStore({ dir: hostDir });
+  const fakeHost = installFakeHostFetch(chatStore);
+  try {
   globalThis.window ??= globalThis;
   globalThis.document ??= { addEventListener() {}, hasFocus: () => true, visibilityState: 'visible', documentElement: { dataset: {}, style: { setProperty() {} }, classList: { toggle() {}, add() {}, remove() {} } } };
   const memory = new Map();
@@ -136,6 +142,7 @@ test('two live chats in one workspace keep their messages, tool cards and saved 
     },
   };
   const store = await bundle('../src/lib/store.ts', [mockClient]);
+  await store.loadChatsFromHost();   // the first read of the host's chats (the page's own start-up does this inside bootstrap)
   const wait = async (n) => { for (let i = 0; i < 200 && globalThis.__streams.length < n; i++) await new Promise((r) => setTimeout(r, 5)); assert.ok(globalThis.__streams.length >= n, `stream ${n} started`); };
 
   const a = store.newSession();
@@ -164,13 +171,35 @@ test('two live chats in one workspace keep their messages, tool cards and saved 
   sb.onFrame({ type: 'done', tokensIn: 5, tokensOut: 5, durationMs: 10, usageSource: 'reported' });
   sa.release(); sb.release();
   await Promise.all([turnA, turnB]);
-  store.flushSessions();
+  await store.flushSessions();
 
-  const saved = [...memory].filter(([k]) => k.startsWith('strata.session.v2.')).map(([, v]) => JSON.parse(v));
-  assert.equal(saved.length, 2);
+  const saved = [];
+  for (const e of chatStore.list().chats) saved.push(JSON.parse(await chatStore.read(e.id)).session);
+  assert.equal(saved.length, 2, JSON.stringify(fakeHost.calls.map((c) => `${c.method} ${c.path}`)));
   const bodyOf = (id) => JSON.stringify(saved.find((s) => s.id === id));
   assert.ok(bodyOf(a.id).includes('MARK-A') && bodyOf(a.id).includes('A-unique-1') && bodyOf(a.id).includes('ends A'));
   assert.ok(!/MARK-B|B-unique|ends B/.test(bodyOf(a.id)), 'chat A holds nothing of chat B');
   assert.ok(bodyOf(b.id).includes('MARK-B') && bodyOf(b.id).includes('B-unique-1') && bodyOf(b.id).includes('ends B'));
   assert.ok(!/MARK-A|A-unique|ends A/.test(bodyOf(b.id)), 'chat B holds nothing of chat A');
+
+  // A second window saves a chat of its own, and then one of this window's chats; this window takes the first over and keeps its own.
+  const other = { id: 's_from_other_window', title: 'from window 2', createdAt: '2026-12-01T00:00:00.000Z', updatedAt: '2026-12-01T00:00:01.000Z', messages: [{ id: 'o1', role: 'user', content: 'MARK-OTHER-WINDOW' }] };
+  const saved2 = await chatStore.save(other.id, JSON.stringify(other));
+  await store.applyChatChange(other.id, saved2.rev, false);
+  assert.ok(store.useStore((s) => s.sessions).some((s) => s.id === other.id && s.messages[0].content === 'MARK-OTHER-WINDOW'), 'the chat saved by the other window appears here');
+  // while a turn is running in chat A here, the other window's save of chat A does not replace it
+  store.selectSession(a.id);
+  const liveSend = store.sendMessage('second question MARK-A2');
+  await wait(3);
+  const [, , sa2] = globalThis.__streams;
+  await chatStore.save(a.id, JSON.stringify({ ...JSON.parse(JSON.stringify(store.useStore((s) => s.sessions).find((s) => s.id === a.id))), title: 'renamed in window 2' }));
+  await store.applyChatChange(a.id, 99, false);
+  assert.notEqual(store.useStore((s) => s.sessions).find((s) => s.id === a.id).title, 'renamed in window 2', 'a chat with a turn running here is not replaced');
+  sa2.onFrame({ type: 'done', tokensIn: 1, tokensOut: 1, durationMs: 1, usageSource: 'reported' });
+  sa2.release(); await liveSend;
+  // the other window deletes its chat
+  await chatStore.remove(other.id);
+  await store.applyChatChange(other.id, null, true);
+  assert.ok(!store.useStore((s) => s.sessions).some((s) => s.id === other.id), 'a chat the other window deleted goes here too');
+  } finally { fakeHost.restore(); rmSync(hostDir, { recursive: true, force: true }); }
 });

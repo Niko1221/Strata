@@ -473,6 +473,7 @@ export function Toasts() {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="st-toast__title">{tr(t.title)}</div>
             {tr(t.body ? <div className="st-toast__body">{tr(t.body)}</div> : null)}
+            {tr(t.action ? <button type="button" className="st-btn st-btn--sm" style={{ marginTop: 8 }} onClick={t.action.run}>{tr(t.action.label)}</button> : null)}
           </div>
           <button type="button" className="st-btn st-btn--icon st-btn--sm" onClick={() => dismissToast(t.id)} aria-label={tr("Dismiss")}>
             <Icon name="chevron" size={15} style={{ transform: 'rotate(90deg)' }}/>

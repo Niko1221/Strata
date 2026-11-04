@@ -46,6 +46,8 @@ import * as engine from './engine.mjs';
 import * as monitor from './monitor.mjs';
 import * as serving from './serving.mjs';
 import * as store from './store.mjs';
+import { createChatStore, storeFailure } from './chat-store.mjs';
+import { makePrivateDir } from './private-file.mjs';
 import * as supervisor from './supervisor.mjs';
 import * as engineInstall from './engine-install.mjs';
 import { detectBackend, currentBackend, streamChat, inferenceLine } from './inference.mjs';
@@ -119,6 +121,8 @@ const WORKSPACE_NAME = process.env.STRATA_WORKSPACE ? basename(WORKSPACE) : 'Str
 const insideApp = path => { const rel = relative(ROOT, resolve(path)); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); };
 
 const hub = new EventHub();
+/** The chats, as files in the profile's data folder (chat-store.mjs). */
+const chatStore = createChatStore({ dir: store.DATA_DIR, privateDir: makePrivateDir });
 const modelProviders = createModelProviders({ directory: store.DATA_DIR, knownThinks: (connection, modelId) => visionProbe.knownThinks(connection, modelId), changed: value => hub.send('providers', withPictureAnswers(value)) });
 const imageModels = createImageModels({ dataDir: store.DATA_DIR, modelsDir: () => store.MODELS_DIR, real: models.REAL, changed: value => hub.send('image-models', value) });
 /* The installed app ships Strata Control (python + strata_control) next to the host; a source checkout has none and keeps its older paths. */
@@ -996,6 +1000,48 @@ const server = http.createServer(async (req, res) => {
 
 async function api(req, res, path, method, url) {
   if(path==='/api/fonts'&&method==='GET')return json(res,200,await systemFonts());
+  // --- chats: one file each in the data folder -----------------------------
+  // Not held back by a model folder move: saving a chat has nothing to do with the models. A page must name itself (x-strata-client), which
+  // a web page from another site cannot do without the browser asking the host first.
+  const chatsRoute = /^\/api\/chats(?:\/([^/]+))?$/.exec(path);
+  if (chatsRoute) {
+    if (!req.headers['x-strata-client']) return error(res, 403, 'Not allowed.');
+    let id = null;
+    try { id = chatsRoute[1] ? decodeURIComponent(chatsRoute[1]) : null; } catch { return error(res, 400, 'That is not a chat id.', { code: 'bad-id' }); }
+    const from = typeof req.headers['x-strata-window'] === 'string' ? req.headers['x-strata-window'].slice(0, 64) : null;
+    try {
+      if (!id && method === 'GET') return json(res, 200, chatStore.list());
+      if (id === 'import' && method === 'POST') {
+        const body = JSON.parse((await readRaw(req, 512 * 1024 * 1024)).toString('utf8') || '{}');
+        const result = await chatStore.importMany(body.sessions);
+        for (const imported of result.imported) hub.send('chats', { id: imported, rev: chatStore.rev(imported), from });
+        return json(res, 200, result);
+      }
+      if (id && method === 'GET') {
+        const text = await chatStore.read(id);
+        if (text === null) return error(res, 404, 'No such chat.', { code: 'not-found' });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text), 'cache-control': 'no-store' });
+        res.end(text);
+        return undefined;
+      }
+      if (id && method === 'PUT') {
+        const text = (await readRaw(req, 256 * 1024 * 1024)).toString('utf8');
+        const base = req.headers['x-strata-base-rev'];
+        const saved = await chatStore.save(id, text, { baseRev: typeof base === 'string' && /^\d+$/.test(base) ? Number(base) : null });
+        hub.send('chats', { id, rev: saved.rev, from });
+        return json(res, 200, saved);
+      }
+      if (id && method === 'DELETE') {
+        const removed = await chatStore.remove(id);
+        hub.send('chats', { id, deleted: true, from });
+        return json(res, 200, removed);
+      }
+    } catch (e) {
+      const failure = e instanceof SyntaxError ? { status: 400, message: 'The request must be JSON.', code: 'bad-json' } : storeFailure(e);
+      return error(res, failure.status, failure.message, { code: failure.code });
+    }
+    return error(res, 405, 'Method not allowed.');
+  }
   if (storageChanging && !['GET', 'OPTIONS'].includes(method)) return error(res, 409, 'Wait for the model folder check to finish.');
   // --- events -------------------------------------------------------------
   if (path === '/api/events') return hub.add(res);
@@ -1990,6 +2036,28 @@ async function api(req, res, path, method, url) {
     const b = await readBody(req);
     if (typeof b.sessionId !== 'string' || !['manual', 'plan', 'bypass'].includes(b.mode)) return error(res, 400, 'sessionId and mode (manual, plan or bypass) are required');
     try { return json(res, 200, await agent.setMode(b.sessionId, b.mode)); } catch (e) { return error(res, e.code === 'mode-unavailable' ? 409 : 502, e.message); }
+  }
+  /* A page that has just loaded asks which chats have a turn running (a reload does not stop a turn), and takes one over again: the catch-up
+     of what was said while no page was there, then the live frames, as on /api/chat/stream. A turn that ended while the page was away
+     (the page names it by requestId) is sent once, whole. 404 when there is nothing to take over. */
+  if (path === '/api/chat/active' && method === 'GET') return json(res, 200, { turns: agent.runningTurns() });
+  if (path === '/api/chat/attach' && method === 'POST') {
+    const b = await readBody(req);
+    if (typeof b.sessionId !== 'string' || !b.sessionId) return error(res, 400, 'sessionId is required');
+    const controller = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+    let started = false;
+    const write = frame => {
+      if (res.writableEnded || res.destroyed) return;
+      if (!started) { started = true; res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive' }); keepStreamAlive(res); }
+      res.write(`${JSON.stringify(frame)}
+`);
+    };
+    const attached = agent.attach({ chatId: b.sessionId, requestId: typeof b.requestId === 'string' ? b.requestId : null, onFrame: write, signal: controller.signal });
+    if (!attached) return error(res, 404, 'There is no turn to take over.', { code: 'no-turn' });
+    await Promise.race([attached.ended, new Promise(r => controller.signal.addEventListener('abort', r, { once: true }))]);
+    if (!res.writableEnded) res.end();
+    return undefined;
   }
   /* Stop one chat's turn. Resolves once the turn has really ended, not when the cancel was admitted. */
   if (path === '/api/chat/stop' && method === 'POST') {

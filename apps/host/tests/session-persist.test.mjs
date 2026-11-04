@@ -1,11 +1,17 @@
 /**
- * #3604 / #3603: the chat list is saved at most once a second and only the chats that changed are written.
- * #5192: nothing is ever cut out of a saved chat; a full storage is reported, never trimmed around.
+ * #3604 / #3603: the chat list is saved at most once a second and only the chats that changed are sent.
+ * #5192: nothing is ever cut out of a saved chat. Chats are files on the host (owner decision 11-04): big chats, restart, the move from the
+ * browser's two old layouts, a full disk, a host that is away, two windows.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createChatStore, realIo } from '../server/chat-store.mjs';
+import { storeTransport, installFakeHostFetch } from './helpers/fake-host-chats.mjs';
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 
@@ -18,9 +24,11 @@ async function bundle(entry, plugins = []) {
 }
 
 const persist = await bundle('../src/lib/session-persist.ts');
-const { createSessionWriter, serializeSession, loadStoredSessions, exportSessions, LEGACY_SESSIONS_KEY, SESSION_INDEX_KEY, SESSION_KEY_PREFIX } = persist;
+const sync = await bundle('../src/lib/chat-sync.ts');
+const { createSessionWriter, serializeSession, readBrowserSessions, exportSessions, TransportError, LEGACY_SESSIONS_KEY, SESSION_INDEX_KEY, SESSION_KEY_PREFIX, HOST_FLAG_KEY, PENDING_KEY } = persist;
+const { hydrateChats, keepLastMomentCopy, takeLastMomentCopy } = sync;
 
-/** A Storage that refuses a write over `limit` characters in total (keys and values), like a full browser quota. */
+/** A Storage with a quota, like the browser's. */
 function fakeStorage(limit = Infinity) {
   const map = new Map();
   const used = () => [...map].reduce((n, [k, v]) => n + k.length + v.length, 0);
@@ -42,225 +50,318 @@ const chat = (id, n, len, extra = {}) => ({
   messages: Array.from({ length: n }, (_, i) => ({ id: `${id}-m${i}`, role: i % 2 ? 'assistant' : 'user', content: `${id}:${i}:` + String.fromCharCode(97 + (i % 26)).repeat(len) })),
   ...extra,
 });
-const save = (storage, sessions, opts = {}) => { const writer = createSessionWriter({ storage, ...opts }); writer.schedule(sessions); return { writer, result: writer.flush() }; };
-const reload = (storage) => loadStoredSessions(storage).sessions;
+const host = (io = realIo) => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-persist-'));
+  const store = createChatStore({ dir, io });
+  const state = { offline: false };
+  const transport = storeTransport(store, TransportError, state);
+  return { dir, store, state, transport, reopen: () => createChatStore({ dir }), done: () => rmSync(dir, { recursive: true, force: true }) };
+};
+const writerOn = (h, opts = {}) => createSessionWriter({ transport: h.transport, ...opts });
+const saveAll = async (h, sessions, opts) => { const w = writerOn(h, opts); w.schedule(sessions); await w.flush(); return w; };
+const fromHost = async (h) => { const out = []; for (const e of h.reopen().list().chats) out.push(JSON.parse(await h.reopen().read(e.id)).session); return out; };
 
-test('2,000 schedules inside a second produce one write, and the newest state wins', (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const storage = fakeStorage();
-  let sets = 0;
-  const raw = storage.setItem;
-  storage.setItem = (k, v) => { if (k.startsWith(SESSION_KEY_PREFIX)) sets++; raw(k, v); };
-  const writer = createSessionWriter({ storage, delayMs: 1_000 });
-  for (let i = 0; i < 2_000; i++) writer.schedule([{ id: 's1', seq: i, messages: [] }]);
-  assert.equal(sets, 0, 'nothing is written synchronously');
-  t.mock.timers.tick(1_000);
-  assert.equal(sets, 1);
-  assert.equal(JSON.parse(storage.getItem(`${SESSION_KEY_PREFIX}s1`)).seq, 1_999);
-  writer.schedule([{ id: 's1', seq: 2_000, messages: [] }]);
-  writer.flush();
-  assert.equal(sets, 2);
-  assert.equal(JSON.parse(storage.getItem(`${SESSION_KEY_PREFIX}s1`)).seq, 2_000);
-  writer.flush();
-  assert.equal(sets, 2, 'a flush with nothing pending writes nothing');
+test('2,000 schedules inside a second produce one save, and the newest state wins', async (t) => {
+  const h = host();
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let puts = 0;
+    const put = h.transport.put;
+    h.transport.put = (...a) => { puts++; return put(...a); };
+    const writer = writerOn(h, { delayMs: 1_000 });
+    for (let i = 0; i < 2_000; i++) writer.schedule([{ id: 's1', seq: i, messages: [] }]);
+    assert.equal(puts, 0, 'nothing is sent synchronously');
+    t.mock.timers.tick(1_000);
+    await writer.flush();
+    assert.equal(puts, 1);
+    assert.equal((await fromHost(h))[0].seq, 1_999);
+    writer.schedule([{ id: 's1', seq: 2_000, messages: [] }]);
+    await writer.flush();
+    assert.equal(puts, 2);
+    assert.equal((await fromHost(h))[0].seq, 2_000);
+    await writer.flush();
+    assert.equal(puts, 2, 'a flush with nothing pending sends nothing');
+  } finally { h.done(); }
 });
 
-test('only the chat that changed is serialised and written again', () => {
-  const seen = [];
-  const storage = fakeStorage();
-  const wrote = [];
-  const raw = storage.setItem;
-  storage.setItem = (k, v) => { wrote.push(k); raw(k, v); };
-  const writer = createSessionWriter({ storage, onSerialize: (s) => seen.push(s.id) });
-  const a = { id: 'a', updatedAt: '1', messages: [{ id: 'm', content: 'x'.repeat(1000) }] };
-  const b = { id: 'b', updatedAt: '2', messages: [] };
-  writer.schedule([a, b]); writer.flush();
-  assert.deepEqual(seen.sort(), ['a', 'b']);
-  seen.length = 0; wrote.length = 0;
-  for (let i = 0; i < 50; i++) { writer.schedule([a, { ...b, title: `t${i}` }]); writer.flush(); }
-  assert.equal(seen.filter((id) => id === 'a').length, 0, 'the untouched chat is never stringified again');
-  assert.equal(seen.filter((id) => id === 'b').length, 50);
-  assert.equal(wrote.filter((k) => k === `${SESSION_KEY_PREFIX}a`).length, 0, 'the untouched chat is never written again');
-  assert.equal(reload(storage).length, 2);
+test('only the chat that changed is serialised and sent again', async () => {
+  const h = host();
+  try {
+    const seen = [], sent = [];
+    const put = h.transport.put;
+    h.transport.put = (id, ...a) => { sent.push(id); return put(id, ...a); };
+    const writer = writerOn(h, { onSerialize: (s) => seen.push(s.id) });
+    const a = { id: 'a', updatedAt: '1', messages: [{ id: 'm', content: 'x'.repeat(1000) }] };
+    const b = { id: 'b', updatedAt: '2', messages: [] };
+    writer.schedule([a, b]); await writer.flush();
+    assert.deepEqual(seen.sort(), ['a', 'b']);
+    seen.length = 0; sent.length = 0;
+    for (let i = 0; i < 50; i++) { writer.schedule([a, { ...b, title: `t${i}` }]); await writer.flush(); }
+    assert.equal(seen.filter((id) => id === 'a').length, 0, 'the untouched chat is never stringified again');
+    assert.equal(sent.filter((id) => id === 'a').length, 0, 'the untouched chat is never sent again');
+    assert.equal(sent.filter((id) => id === 'b').length, 50);
+    assert.equal(h.reopen().list().chats.length, 2);
+  } finally { h.done(); }
 });
 
 /* #5192: the register's own numbers. Twelve messages of 140,000 characters went through the real serializer and six came back. */
-test('#5192: 12 messages of 140,000 characters are saved and restored whole, twice over (write, reload, write, reload)', () => {
+test('#5192: 12 messages of 140,000 characters are saved and restored whole, twice over (save, restart, save, restart)', async () => {
+  const h = host();
+  try {
+    const original = chat('s_a', 12, 140_000);
+    const before = JSON.stringify(original);
+    await saveAll(h, [original]);
+    const first = await hydrateChats({ transport: h.transport, browser: fakeStorage(), current: [] });
+    assert.equal(first.sessions.length, 1);
+    assert.equal(first.sessions[0].messages.length, 12, 'all twelve messages come back');
+    assert.equal(JSON.stringify(first.sessions[0]), before, 'byte for byte after one restart');
+    const w = createSessionWriter({ transport: h.transport, known: first.revs });
+    first.sessions.forEach((s) => w.adopt(s, first.revs.get(s.id)));
+    w.schedule([{ ...first.sessions[0], title: 'renamed' }]); await w.flush();
+    const second = await hydrateChats({ transport: h.transport, browser: fakeStorage(), current: [] });
+    assert.equal(JSON.stringify({ ...second.sessions[0], title: original.title }), before, 'byte for byte after two restarts (apart from the rename)');
+    assert.equal(JSON.stringify(original), before, 'the chat in memory was not changed');
+  } finally { h.done(); }
+});
+
+test('#5192: far more text than the browser could hold (over 10 MB) keeps every chat and every message', async () => {
+  const h = host();
+  try {
+    const chats = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id, i) => chat(`s_${id}`, 8, 100_000, { updatedAt: String(i) }));
+    const total = chats.reduce((n, c) => n + JSON.stringify(c).length, 0);
+    assert.ok(total > 5_000_000, `fixture is ${total} characters`);
+    chats.push({ id: 's_big', createdAt: '2026-11-01', updatedAt: 'z', messages: [{ id: '1', role: 'user', content: 'p'.repeat(250_000) }, { id: '2', role: 'assistant', content: 'ok', tools: [{ name: 'read', result: 'y'.repeat(6_000_000) }] }] });
+    await saveAll(h, chats);
+    const back = await fromHost(h);
+    assert.equal(back.length, chats.length);
+    for (const c of chats) assert.equal(JSON.stringify(back.find((s) => s.id === c.id)), JSON.stringify(c));
+    assert.equal(serializeSession(chats[0]), JSON.stringify(chats[0]));
+    assert.ok(!JSON.stringify(back).includes('shortened'));
+  } finally { h.done(); }
+});
+
+test('a full disk is reported as such: the chat keeps its last file, the others still save, the unsaved chat is offered whole, and it saves by itself when there is room', async () => {
+  let full = false;
+  const h = host({ ...realIo, async writeFile(path, data) { if (full && /s_b\.json/.test(path)) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }); return realIo.writeFile(path, data); } });
+  try {
+    const results = [];
+    const writer = writerOn(h, { onResult: (r) => results.push(r), retryMs: 5 });
+    const small = chat('s_s', 2, 100), big = chat('s_b', 4, 1_000);
+    writer.schedule([small, big]); await writer.flush();
+    assert.equal(results.at(-1).ok, true);
+    const goodCopy = await h.reopen().read('s_b');
+    full = true;
+    const grown = { ...big, messages: [...big.messages, { id: 'b-big', role: 'user', content: 'g'.repeat(5_000) }] };
+    const fresh = chat('s_n', 2, 100);
+    writer.schedule([fresh, small, grown]); const r = await writer.flush();
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.failed.map((f) => [f.id, f.reason]), [['s_b', 'disk-full']]);
+    assert.equal(await h.reopen().read('s_b'), goodCopy, 'the last file of the chat is untouched');
+    assert.ok(await h.reopen().read('s_n'), 'the other chats are still saved');
+    assert.deepEqual(writer.unsaved().map((s) => s.id), ['s_b']);
+    assert.equal(JSON.parse(exportSessions(writer.unsaved()))[0].messages.length, 5, 'the unsaved chat is complete');
+    // room is made; the retry saves the chat without being asked again
+    full = false;
+    for (let i = 0; i < 200 && writer.unsaved().length; i++) await new Promise((res) => setTimeout(res, 10));
+    assert.equal(writer.unsaved().length, 0, 'saved by itself');
+    assert.equal(results.at(-1).ok, true);
+    assert.equal(JSON.parse(await h.reopen().read('s_b')).session.messages.length, 5);
+  } finally { h.done(); }
+});
+
+test('a refused write (no permission) is reported as permission; a host that is away is reported as offline and caught up when it is back', async () => {
+  let denied = true;
+  const h = host({ ...realIo, async writeFile(path, data) { if (denied) throw Object.assign(new Error('access denied'), { code: 'EACCES' }); return realIo.writeFile(path, data); } });
+  try {
+    const results = [];
+    const writer = writerOn(h, { onResult: (r) => results.push(r), retryMs: 5 });
+    writer.schedule([chat('s_p', 1, 5)]); await writer.flush();
+    assert.equal(results.at(-1).failed[0].reason, 'permission');
+    denied = false; h.state.offline = true;
+    for (let i = 0; i < 100 && results.length < 3; i++) await new Promise((res) => setTimeout(res, 10));
+    assert.equal(results.at(-1).failed[0].reason, 'offline', 'a host that does not answer is not a disk problem');
+    h.state.offline = false;
+    for (let i = 0; i < 200 && writer.unsaved().length; i++) await new Promise((res) => setTimeout(res, 10));
+    assert.equal(writer.unsaved().length, 0);
+    assert.equal(h.reopen().list().chats.length, 1);
+  } finally { h.done(); }
+});
+
+test('a chat removed from the list is removed on the host; chats this writer never saw are not; nothing is saved before the writer is enabled', async () => {
+  const h = host();
+  try {
+    await h.store.save('s_other_window', JSON.stringify(chat('s_other_window', 1, 5)));
+    const a = chat('s_a', 1, 5), b = chat('s_b', 1, 5);
+    const writer = writerOn(h, { enabled: false });
+    writer.schedule([a, b]); await writer.flush();
+    assert.deepEqual(h.reopen().list().chats.map((c) => c.id), ['s_other_window'], 'off: nothing is sent');
+    writer.enable(); await writer.flush();
+    assert.deepEqual(h.reopen().list().chats.map((c) => c.id).sort(), ['s_a', 's_b', 's_other_window']);
+    writer.schedule([a]); await writer.flush();
+    assert.deepEqual(h.reopen().list().chats.map((c) => c.id).sort(), ['s_a', 's_other_window']);
+    writer.schedule([]); await writer.flush();
+    assert.deepEqual(h.reopen().list().chats.map((c) => c.id), ['s_other_window'], 'an empty list removes the chats this window had, not the other window\'s');
+  } finally { h.done(); }
+});
+
+/* The move from the browser's storage */
+function browserWith({ legacy = [], perChat = [], order = [] } = {}) {
   const storage = fakeStorage();
-  const original = chat('a', 12, 140_000);
-  const before = JSON.stringify(original);
-  save(storage, [original]);
-  const once = reload(storage);
-  assert.equal(once.length, 1);
-  assert.equal(once[0].messages.length, 12, 'all twelve messages come back');
-  assert.equal(JSON.stringify(once[0]), before, 'byte for byte after one restart');
-  save(storage, once);
-  const twice = reload(storage);
-  assert.equal(JSON.stringify(twice[0]), before, 'byte for byte after two restarts');
-  assert.equal(JSON.stringify(original), before, 'the chat in memory was not changed');
+  if (legacy.length) storage.setItem(LEGACY_SESSIONS_KEY, JSON.stringify(legacy));
+  for (const c of perChat) storage.setItem(`${SESSION_KEY_PREFIX}${c.id}`, JSON.stringify(c));
+  if (order.length) storage.setItem(SESSION_INDEX_KEY, JSON.stringify({ v: 2, ids: order }));
+  return storage;
+}
+const snapshot = (storage) => JSON.stringify([...storage.map].sort());
+
+test('the browser\'s chats move to the host from both old layouts (the 0.2.10 list and the per-chat entries), once, and the browser copy is left as it is', async () => {
+  const h = host();
+  try {
+    const legacyOnly = chat('s_old', 12, 140_000), both = chat('s_both', 3, 100, { title: 'old list' });
+    const bothNewer = chat('s_both', 5, 100, { title: 'per-chat entry' }), perChatOnly = chat('s_new', 2, 100);
+    const browser = browserWith({ legacy: [legacyOnly, both], perChat: [bothNewer, perChatOnly], order: ['s_new', 's_both'] });
+    const before = snapshot(browser);
+    const read = readBrowserSessions(browser);
+    assert.deepEqual(read.sessions.map((s) => s.id), ['s_new', 's_both', 's_old']);
+    assert.equal(read.sessions.find((s) => s.id === 's_both').title, 'per-chat entry', 'the per-chat entry wins where a chat is in both');
+    const result = await hydrateChats({ transport: h.transport, browser, current: read.sessions });
+    assert.equal(result.moved, 3);
+    assert.equal(result.failed.length, 0);
+    assert.equal(browser.getItem(HOST_FLAG_KEY), '1');
+    const onHost = Object.fromEntries((await fromHost(h)).map((s) => [s.id, s]));
+    assert.equal(JSON.stringify(onHost.s_old), JSON.stringify(legacyOnly), 'the big chat arrived whole');
+    assert.equal(onHost.s_both.title, 'per-chat entry');
+    assert.deepEqual(result.sessions.map((s) => s.id).sort(), ['s_both', 's_new', 's_old']);
+    const after = new Map(browser.map); after.delete(HOST_FLAG_KEY);
+    assert.equal(JSON.stringify([...after].sort()), before, 'the browser copy is untouched (it stays as a fallback for one release)');
+    // later: the person deletes a chat on the host; the next start does not bring it back from the browser copy
+    await h.store.remove('s_old');
+    const again = await hydrateChats({ transport: h.transport, browser, current: [] });
+    assert.equal(again.moved, 0);
+    assert.deepEqual(again.sessions.map((s) => s.id).sort(), ['s_both', 's_new']);
+  } finally { h.done(); }
 });
 
-test('#5192: more text than the old 3.5M-character list budget keeps every chat and every message', () => {
-  const storage = fakeStorage();
-  const chats = ['a', 'b', 'c', 'd', 'e'].map((id, i) => chat(id, 8, 100_000, { updatedAt: String(i) }));
-  const total = chats.reduce((n, c) => n + JSON.stringify(c).length, 0);
-  assert.ok(total > 4_000_000, `fixture is ${total} characters`);
-  save(storage, chats);
-  const back = reload(storage);
-  assert.deepEqual(back.map((s) => s.id).sort(), ['a', 'b', 'c', 'd', 'e']);
-  for (const c of chats) assert.equal(JSON.stringify(back.find((s) => s.id === c.id)), JSON.stringify(c));
+test('a move that the host refuses (disk full) is not flagged as done, keeps the chats in the page, and is tried again at the next start', async () => {
+  let full = true;
+  const h = host({ ...realIo, async writeFile(path, data) { if (full && /s_x\.json/.test(path)) throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); return realIo.writeFile(path, data); } });
+  try {
+    const browser = browserWith({ legacy: [chat('s_x', 3, 50), chat('s_y', 2, 50)] });
+    const current = readBrowserSessions(browser).sessions;
+    const first = await hydrateChats({ transport: h.transport, browser, current });
+    assert.equal(first.failed.length, 1);
+    assert.equal(browser.getItem(HOST_FLAG_KEY), null, 'not done');
+    assert.deepEqual(first.sessions.map((s) => s.id).sort(), ['s_x', 's_y'], 'the chat the host refused is still shown');
+    full = false;
+    const second = await hydrateChats({ transport: h.transport, browser, current: first.sessions });
+    assert.equal(second.failed.length, 0);
+    assert.equal(browser.getItem(HOST_FLAG_KEY), '1');
+    assert.deepEqual((await fromHost(h)).map((s) => s.id).sort(), ['s_x', 's_y']);
+  } finally { h.done(); }
 });
 
-test('#5192: a 250,000-character user message and a 1.6M-character tool result are not clipped', () => {
-  const storage = fakeStorage();
-  const c = { id: 'u', messages: [{ id: '1', role: 'user', content: 'p'.repeat(250_000) }, { id: '2', role: 'assistant', content: 'ok', tools: [{ name: 'read', result: 'y'.repeat(1_600_000) }] }] };
-  save(storage, [c]);
-  const back = reload(storage)[0];
-  assert.equal(back.messages[0].content.length, 250_000);
-  assert.equal(back.messages[1].tools[0].result.length, 1_600_000);
-  assert.ok(!JSON.stringify(back).includes('shortened'));
-  assert.equal(serializeSession(c), JSON.stringify(c));
+test('a host that is not answering at start leaves the page with what it has and moves nothing', async () => {
+  const h = host();
+  try {
+    h.state.offline = true;
+    const browser = browserWith({ legacy: [chat('s_a', 1, 5)] });
+    const current = readBrowserSessions(browser).sessions;
+    const result = await hydrateChats({ transport: h.transport, browser, current });
+    assert.equal(result.offline, true);
+    assert.deepEqual(result.sessions, current);
+    assert.equal(browser.getItem(HOST_FLAG_KEY), null);
+  } finally { h.done(); }
 });
 
-test('#5192: a full storage fails visibly: the chat keeps its last good copy, the others still save, and the unsaved chat is offered whole', () => {
-  const small = chat('s', 2, 20_000);
-  const big = chat('b', 4, 40_000);
-  const storage = fakeStorage(300_000);
-  const results = [];
-  const writer = createSessionWriter({ storage, onResult: (r) => results.push(r) });
-  writer.schedule([small, big]); writer.flush();
-  assert.equal(results.at(-1).ok, true);
-  const goodCopy = storage.getItem(`${SESSION_KEY_PREFIX}b`);
-  // The chat grows past what the storage can hold; a new small chat is added at the same time.
-  const grown = { ...big, messages: [...big.messages, { id: 'b-big', role: 'user', content: 'g'.repeat(120_000) }] };
-  const fresh = chat('n', 2, 20_000);
-  writer.schedule([fresh, small, grown]);
-  const r = writer.flush();
-  assert.equal(r.ok, false);
-  assert.deepEqual(r.failed.map((f) => [f.id, f.reason]), [['b', 'quota']]);
-  assert.equal(storage.getItem(`${SESSION_KEY_PREFIX}b`), goodCopy, 'the last good copy of the chat is untouched');
-  assert.ok(storage.getItem(`${SESSION_KEY_PREFIX}n`), 'the other chats are still saved');
-  assert.deepEqual(writer.unsaved().map((s) => s.id), ['b']);
-  assert.equal(JSON.parse(exportSessions(writer.unsaved()))[0].messages.length, 5, 'the unsaved chat is complete');
-  assert.equal(results.at(-1).ok, false, 'the failure is reported');
-  // Still too big: reported again at the next save, not forgotten.
-  writer.schedule([fresh, small, grown]);
-  assert.equal(writer.flush().ok, false);
-  // Room is made (the other chats are deleted) and the next save writes the chat again without being asked.
-  writer.schedule([grown]);
-  const done = writer.flush();
-  assert.equal(done.ok, true);
-  assert.equal(writer.unsaved().length, 0);
-  assert.equal(reload(storage)[0].messages.length, 5);
+test('the last-moment copy: chats the host had not confirmed come back at the next start when newer, and the copy is used up', async () => {
+  const h = host();
+  try {
+    const browser = fakeStorage();
+    await saveAll(h, [chat('s_a', 2, 10, { updatedAt: '2026-11-04T10:00:00Z' })]);
+    const unsaved = [chat('s_a', 4, 10, { updatedAt: '2026-11-04T10:05:00Z' }), chat('s_b', 1, 10, { updatedAt: '2026-11-04T10:06:00Z' })];
+    assert.equal(keepLastMomentCopy(browser, unsaved), true);
+    const result = await hydrateChats({ transport: h.transport, browser, current: [] });
+    assert.deepEqual(result.recovered.sort(), ['s_a', 's_b']);
+    assert.equal(result.sessions.find((s) => s.id === 's_a').messages.length, 4);
+    assert.equal(browser.getItem(PENDING_KEY), null);
+    // an older copy than the host's file is dropped
+    keepLastMomentCopy(browser, [chat('s_a', 1, 10, { updatedAt: '2026-11-01T00:00:00Z' })]);
+    const older = takeLastMomentCopy(browser, [chat('s_a', 4, 10, { updatedAt: '2026-11-04T10:05:00Z' })], new Map());
+    assert.deepEqual(older.ids, []);
+    // a copy that does not fit the browser is not an error
+    assert.equal(keepLastMomentCopy(fakeStorage(10), unsaved), false);
+  } finally { h.done(); }
 });
 
-test('removed chats leave storage, an entry that cannot be read stays and does not stop the others loading', () => {
-  const storage = fakeStorage();
-  const a = chat('a', 2, 10), b = chat('b', 2, 10);
-  const { writer } = save(storage, [a, b]);
-  storage.setItem(`${SESSION_KEY_PREFIX}broken`, '{"id": "broken", "messa');
-  const loaded = loadStoredSessions(storage);
-  assert.deepEqual(loaded.sessions.map((s) => s.id).sort(), ['a', 'b']);
-  assert.deepEqual(loaded.damaged, [`${SESSION_KEY_PREFIX}broken`]);
-  writer.schedule([a]); writer.flush();
-  assert.equal(storage.getItem(`${SESSION_KEY_PREFIX}b`), null, 'a deleted chat is removed');
-  assert.ok(storage.getItem(`${SESSION_KEY_PREFIX}broken`), 'an unreadable entry is never deleted');
-  assert.deepEqual(JSON.parse(storage.getItem(SESSION_INDEX_KEY)).ids, ['a']);
+test('two windows on one host: neither removes the other\'s chats; the same chat saved from an older copy keeps the displaced version on the host', async () => {
+  const h = host();
+  try {
+    const a = createSessionWriter({ transport: h.transport });
+    const b = createSessionWriter({ transport: h.transport });
+    const chatA = chat('s_a', 2, 10), chatB = chat('s_b', 2, 10);
+    a.schedule([chatA]); await a.flush();
+    b.schedule([chatB]); await b.flush();
+    assert.deepEqual(h.reopen().list().chats.map((c) => c.id).sort(), ['s_a', 's_b']);
+    // window B opens chat A (rev 1) and keeps its copy; window A then saves a longer chat A, then B saves from its older copy
+    const opened = await h.transport.get('s_a');
+    b.adopt(opened.session, opened.rev);
+    const longer = chat('s_a', 6, 10);
+    a.schedule([longer, chatB]); await a.flush();
+    b.schedule([{ ...opened.session, title: 'edited in window B' }, chatB]); const r = await b.flush();
+    assert.equal(r.ok, true);
+    assert.equal(JSON.parse(await h.reopen().read('s_a')).session.title, 'edited in window B');
+    const kept = await import('node:fs').then((fs) => fs.readdirSync(join(h.dir, 'chats', 'conflicts')));
+    assert.equal(kept.length, 1, 'window A\'s version is kept on the host');
+    assert.deepEqual(h.reopen().list().chats.map((c) => c.id).sort(), ['s_a', 's_b']);
+  } finally { h.done(); }
 });
 
-test('an empty list scheduled before anything was loaded does not delete saved chats', () => {
-  const storage = fakeStorage();
-  save(storage, [chat('a', 2, 10)]);
-  const w = createSessionWriter({ storage });
-  w.schedule([]); w.flush();
-  assert.equal(reload(storage).length, 1);
-});
-
-test('migration: the old single list is moved chat by chat, whole, and then removed', () => {
-  const storage = fakeStorage();
-  const chats = [chat('x', 12, 140_000), chat('y', 3, 1_000)];
-  storage.setItem(LEGACY_SESSIONS_KEY, JSON.stringify(chats));
-  const loaded = loadStoredSessions(storage);
-  assert.equal(loaded.unmigrated, 0);
-  assert.deepEqual(loaded.sessions.map((s) => JSON.stringify(s)).sort(), chats.map((s) => JSON.stringify(s)).sort());
-  assert.equal(storage.getItem(LEGACY_SESSIONS_KEY), null, 'the old entry is gone once every chat has its own');
-  assert.equal(reload(storage).length, 2);
-});
-
-test('migration with a full storage loses nothing: unmoved chats stay in the old entry and are still loaded', () => {
-  const chats = [chat('x', 3, 40_000), chat('y', 3, 40_000)];
-  const legacy = JSON.stringify(chats);
-  const storage = fakeStorage(legacy.length + 130_000); // room for one more chat on top of the old list, not two
-  storage.setItem(LEGACY_SESSIONS_KEY, legacy);
-  const loaded = loadStoredSessions(storage);
-  assert.equal(loaded.sessions.length, 2, 'both chats are shown');
-  const inOld = JSON.parse(storage.getItem(LEGACY_SESSIONS_KEY) ?? '[]').map((s) => s.id);
-  const inNew = [...storage.map.keys()].filter((k) => k.startsWith(SESSION_KEY_PREFIX)).map((k) => k.slice(SESSION_KEY_PREFIX.length));
-  assert.deepEqual([...new Set([...inOld, ...inNew])].sort(), ['x', 'y'], 'each chat is in the old or the new place');
-  for (const s of loaded.sessions) assert.equal(JSON.stringify(s), JSON.stringify(chats.find((c) => c.id === s.id)));
-});
-
-test('migration leaves an old entry that is not JSON exactly as it is', () => {
-  const storage = fakeStorage();
-  storage.setItem(LEGACY_SESSIONS_KEY, '[{"id":"a","messages":[');
-  const loaded = loadStoredSessions(storage);
-  assert.equal(loaded.sessions.length, 0);
-  assert.equal(storage.getItem(LEGACY_SESSIONS_KEY), '[{"id":"a","messages":[');
-  const writer = createSessionWriter({ storage });
-  writer.schedule([chat('n', 1, 5)]); writer.flush();
-  assert.equal(storage.getItem(LEGACY_SESSIONS_KEY), '[{"id":"a","messages":[', 'a later save does not remove it either');
-});
-
-test('the order of the chats survives a restart, and a lost index loses no chat', () => {
-  const storage = fakeStorage();
-  save(storage, [chat('c', 1, 5), chat('a', 1, 5), chat('b', 1, 5)]);
-  assert.deepEqual(reload(storage).map((s) => s.id), ['c', 'a', 'b']);
-  storage.removeItem(SESSION_INDEX_KEY);
-  assert.deepEqual(reload(storage).map((s) => s.id).sort(), ['a', 'b', 'c']);
-});
-
-/* End to end through the real store: a 1,500-token streamed answer. */
-test('a streamed answer of 1,500 tokens is at most a few storage writes, and the final text is saved', async () => {
-  const writes = [];
-  globalThis.window ??= globalThis;
-  globalThis.document ??= { addEventListener() {}, visibilityState: 'visible', documentElement: { dataset: {}, style: { setProperty() {} }, classList: { toggle() {}, add() {}, remove() {} } } };
-  const memory = new Map();
-  globalThis.localStorage = {
-    get length() { return memory.size; },
-    key: (i) => [...memory.keys()][i] ?? null,
-    getItem: (k) => memory.get(k) ?? null,
-    setItem: (k, v) => { if (k.startsWith(SESSION_KEY_PREFIX)) writes.push(v); memory.set(k, v); },
-    removeItem: (k) => memory.delete(k),
-  };
-  globalThis.navigator ??= { language: 'en' };
-  globalThis.matchMedia ??= () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
-  const TOKENS = 1_500;
-  const mockClient = {
-    name: 'mock-client',
-    setup(b) {
-      b.onResolve({ filter: /\/client$/ }, () => ({ path: 'mock-client', namespace: 'mock' }));
-      b.onLoad({ filter: /.*/, namespace: 'mock' }, () => ({
-        loader: 'js',
-        contents: `
-          export class ApiError extends Error {}
-          const reject = async () => { throw new Error('offline'); };
-          export const api = { get: reject, post: async () => ({}), put: reject, patch: reject, del: reject, delete: reject };
-          export function onEvent() { return () => {}; }
-          export async function streamPost(path, body, onFrame) {
-            onFrame({ type: 'start', model: 'm', contextMax: 8192, requestId: 'r1' });
-            for (let i = 0; i < ${TOKENS}; i++) onFrame({ type: 'delta', text: 'word ' });
-            onFrame({ type: 'done', tokensIn: 10, tokensOut: ${TOKENS}, durationMs: 100, usageSource: 'reported' });
-          }`,
-      }));
-    },
-  };
-  const store = await bundle('../src/lib/store.ts', [mockClient]);
-  const before = writes.length;
-  await store.sendMessage('Write a long answer');
-  const during = writes.length - before;
-  assert.ok(during <= 6, `a 1,500-token answer wrote the chat ${during} times`);
-  const saved = JSON.parse(writes.at(-1));
-  const answer = saved.messages.find((m) => m.role === 'assistant');
-  assert.ok(answer.content.length >= TOKENS * 5 - 10, 'the finished answer is what was saved');
-  assert.equal(answer.streaming, false);
+/* End to end through the real store: a 1,500-token streamed answer, the host's files, a restart. */
+test('a streamed answer of 1,500 tokens is a handful of saves to the host, the final text is on disk, and a restart brings it back', async () => {
+  const h = host();
+  const fake = installFakeHostFetch(h.store);
+  try {
+    globalThis.window ??= globalThis;
+    globalThis.document ??= { addEventListener() {}, hasFocus: () => true, visibilityState: 'visible', documentElement: { dataset: {}, style: { setProperty() {} }, classList: { toggle() {}, add() {}, remove() {} } } };
+    const memory = new Map();
+    globalThis.localStorage = {
+      get length() { return memory.size; }, key: (i) => [...memory.keys()][i] ?? null,
+      getItem: (k) => memory.get(k) ?? null, setItem: (k, v) => { memory.set(k, v); }, removeItem: (k) => memory.delete(k),
+    };
+    globalThis.navigator ??= { language: 'en' };
+    globalThis.matchMedia ??= () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
+    const TOKENS = 1_500;
+    const mockClient = {
+      name: 'mock-client',
+      setup(b) {
+        b.onResolve({ filter: /\/client$/ }, () => ({ path: 'mock-client', namespace: 'mock' }));
+        b.onLoad({ filter: /.*/, namespace: 'mock' }, () => ({
+          loader: 'js',
+          contents: `
+            export class ApiError extends Error {}
+            const reject = async () => { throw new Error('offline'); };
+            export const api = { get: reject, post: async () => ({}), put: reject, patch: reject, del: reject, delete: reject };
+            export function onEvent() { return () => {}; }
+            export async function streamPost(path, body, onFrame) {
+              onFrame({ type: 'start', model: 'm', contextMax: 8192, requestId: 'r1' });
+              for (let i = 0; i < ${TOKENS}; i++) onFrame({ type: 'delta', text: 'word ' });
+              onFrame({ type: 'done', tokensIn: 10, tokensOut: ${TOKENS}, durationMs: 100, usageSource: 'reported' });
+            }`,
+        }));
+      },
+    };
+    const store = await bundle('../src/lib/store.ts', [mockClient]);
+    await store.loadChatsFromHost();   // the first read of the host's chats (bootstrap does this first; here the rest of it is mocked away)
+    const before = fake.calls.filter((c) => c.method === 'PUT').length;
+    await store.sendMessage('Write a long answer');
+    await store.flushSessions();
+    const puts = fake.calls.filter((c) => c.method === 'PUT').length - before;
+    assert.ok(puts >= 1 && puts <= 6, `a 1,500-token answer sent the chat ${puts} times`);
+    assert.ok(fake.calls.filter((c) => c.method === 'PUT').every((c) => c.headers['x-strata-client'] && c.headers['x-strata-window']), 'every save names the page and the window');
+    const saved = (await fromHost(h)).find((s) => s.messages.some((m) => m.role === 'assistant'));
+    const answer = saved.messages.find((m) => m.role === 'assistant');
+    assert.ok(answer.content.length >= TOKENS * 5 - 10, 'the finished answer is what is on disk');
+    assert.equal(answer.streaming, false);
+    assert.equal([...memory.keys()].filter((k) => k.startsWith('strata.session')).length, 0, 'nothing is written to the browser storage any more');
+  } finally { fake.restore(); h.done(); }
 });
