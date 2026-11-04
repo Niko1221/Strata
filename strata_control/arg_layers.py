@@ -64,18 +64,19 @@ def _hand_edits(prev: Mapping[str, Any] | None) -> list[str]:
     return user_args.flat([g for g in user_args.groups(mine) if user_args.flag_of(g) not in given])
 
 
-def _put(mine: list[str], flag: str, value: Any) -> list[str]:
+def _put(mine: list[str], flag: str, value: Any, bool_flags: frozenset[str]) -> list[str]:
     if value is None or value is False:
         return user_args.set_flag(mine, flag, None)
     rest = [g for g in user_args.groups(mine) if user_args.flag_of(g) != flag]
-    rest.append([flag] if value is True or flag in tune_knobs.BOOL_FLAGS else [flag, *user_args.value_tokens(flag, value)])
+    rest.append([flag] if value is True or flag in bool_flags else [flag, *user_args.value_tokens(flag, value)])
     return user_args.flat(rest)
 
 
-def layer(cfg: dict, explicit: Mapping[str, Any] | None = None, prev: Mapping[str, Any] | None = None) -> dict:
+def layer(cfg: dict, explicit: Mapping[str, Any] | None = None, prev: Mapping[str, Any] | None = None,
+          bool_flags: frozenset[str] = tune_knobs.BOOL_FLAGS) -> dict:
     """Put the four sources over each other in ``cfg`` (in place; ``cfg["args"]`` is the generated layer on entry).
     ``explicit``: the launch's own options as ``tune_knobs.apply_to_argv`` changes (value, True for present, None for off).
-    ``prev``: the config this launch wrote last time (or None). Returns {"calibrated": bool, "persisted": [...], "explicit": [...]}."""
+    ``prev``: the config this launch wrote last time (or None). ``bool_flags``: the engine's valueless switches (DeepSeek's --mmap-experts takes a word). Returns {"calibrated": bool, "persisted": [...], "explicit": [...]}."""
     explicit = dict(explicit or {})
     args = [str(a) for a in cfg.get("args") or []]
     # 3. calibrated values over the generated ones
@@ -92,8 +93,8 @@ def layer(cfg: dict, explicit: Mapping[str, Any] | None = None, prev: Mapping[st
     mine = user_args.merge(user_args.flat(user_args.groups(cfg.get(user_args.USER_KEY))), _hand_edits(prev))
     # 1. this command line
     for flag, value in explicit.items():
-        mine = _put(mine, flag, value)
-    args = tune_knobs.apply_to_argv(args, explicit) if explicit else args
+        mine = _put(mine, flag, value, bool_flags)
+    args = tune_knobs.apply_to_argv(args, explicit, bool_flags) if explicit else args
     cfg["args"] = user_args.merge(args, mine)
     if mine:
         cfg[user_args.USER_KEY] = mine

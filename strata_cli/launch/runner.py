@@ -569,8 +569,12 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     if cfg.get("backend") == "sycl":                         # exactly two Arc B-series cards: --spec 2 (strata_control/intel_spec.py); the person's
         from strata_control import intel_spec                # own choices (user_args, an extra option below) come after it and win
         intel_spec.apply_for_launch(cfg)
-    a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags) if s.extra else ({}, {})
-    arg_layers.layer(cfg, a_changes, prev)                   # the one place that decides which value an option has
+    word_flags = S.WORD_VALUE_FLAGS
+    if cfg.get("arch") == "deepseek41":                      # strata-dsv41 takes --mmap-experts on|off|auto: "off" must reach it as a word (#5027)
+        bool_flags = bool_flags - tune_knobs.DSV41_WORD_FLAGS
+        word_flags = word_flags | tune_knobs.DSV41_WORD_FLAGS
+    a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags, word_flags) if s.extra else ({}, {})
+    arg_layers.layer(cfg, a_changes, prev, bool_flags)       # the one place that decides which value an option has
     if e_changes:
         cfg["env"] = tune_knobs.apply_to_env(dict(cfg.get("env") or {}), e_changes)
     from strata_control import draft_layer
