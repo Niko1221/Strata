@@ -715,11 +715,12 @@ def running_launches() -> list[dict]:
             continue
         if st.get("state") not in ("ready", "starting"):
             continue
+        prof: dict = {}                                        # bound before the try: a damaged profile gets this row's defaults, never the row before it
         try:
             prof, _rev = profiles.load(p["id"])
             ov = prof.get("overrides") or {}
         except Exception:                                      # noqa: BLE001
-            ov = {}
+            prof, ov = {}, {}
         port = ov.get("port", S.DEFAULT_PORT)
         out.append({"name": p["id"][7:], "profile": p["id"], "state": st.get("state"), "port": port,
                     "url": f"http://127.0.0.1:{port}", "host": ov.get("host", "127.0.0.1"), "config": prof.get("source_config")})
