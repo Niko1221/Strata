@@ -26,7 +26,7 @@ import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf, localOutputBudg
 import { TurnProjector, parseArguments as parseArgs } from './events.mjs';
 import { ChildProjector } from './children.mjs';
 import { nearestBudget } from './llm-shape.mjs';
-import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
+import { DeliverableTracker, ActivityGroups, FolderClaims } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
 import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
@@ -127,6 +127,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
   mkdirSync(root, { recursive: true });
+  /** Which chat's file tools wrote which file, for chats that share a folder (#5008). */
+  const folderClaims = new FolderClaims();
 
   /**
    * Where the turn's file tracker must never look (deliverables.mjs): the app, the engine and its components, Strata's own data, AppData
@@ -372,7 +374,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     let guard = null;
     const raw = frame => { try { send(frame); } catch { send = () => {}; attached = false; } };
     // What the turn made (files) and compact activity lines (notes-split-agent8.md): derived from the cards the turn already sends.
-    const tracker = new DeliverableTracker(workspacePath, trackerFolders());
+    const tracker = new DeliverableTracker(workspacePath, { ...trackerFolders(), claims: folderClaims, owner: chatId });
     let toolsRan = false;   // a turn that ran no tool wrote nothing, so there is nothing to look for at its end
     try { tracker.snapshot(); } catch { /* a folder that cannot be read has no deliverables */ }
     const groups = new ActivityGroups({ emit: raw });
@@ -384,7 +386,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       if (frame.type === 'agent-tool' && frame.tool) {
         if (['done', 'error'].includes(frame.tool.state) && !['read', 'read_image', 'glob', 'grep', 'web_fetch', 'web_search'].includes(frame.tool.name)) toolsRan = true;
         let made = null;
-        if (frame.tool.state === 'done' && (frame.tool.name === 'write' || frame.tool.name === 'edit')) { try { made = tracker.check(frame.tool.args?.file_path ?? frame.tool.args?.path); } catch { made = null; } }
+        if (frame.tool.state === 'done' && (frame.tool.name === 'write' || frame.tool.name === 'edit')) { try { made = tracker.check(frame.tool.args?.file_path ?? frame.tool.args?.path, { explicit: true }); } catch { made = null; } }
         raw(frame);
         if (made) raw(made);
         if (guard) trip(guard.card(frame.tool));
@@ -463,6 +465,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null,
     };
     c.turn = turn;
+    if (workspacePath) folderClaims.begin(workspacePath, chatId);
     /**
      * A turn must always end. If the Harness sends nothing at all for a while (a tool that never returns, a model server that went
      * quiet, a lost event) the turn is stopped and ended with a plain message instead of showing "thinking" forever. A running tool gets
@@ -500,6 +503,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       reporter.clear();
       const extra = [];
       try { if (toolsRan) for (const d of tracker.sweep()) { emit(d); groups.addFile(d); } } catch { /* never blocks the end of a turn */ }
+      if (workspacePath) folderClaims.end(workspacePath, chatId);
       groups.end();
       if (researchTopic && !failure && !turn.stopping) { const sources = parseSources(written.all); if (sources.length) extra.push({ type: 'research', topic: researchTopic, sources }); }
       try { extra.push(...settlePlan(failure)); } catch { /* a plan frame must never break the end of a turn */ }

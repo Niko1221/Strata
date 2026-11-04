@@ -364,6 +364,112 @@ class PickSlot(unittest.TestCase):
         e.slot_held = [held_a, held_b + [T, 1, 2]]
         self.assertEqual(e.pick_slot(held_b + [T, 1, 2, 3, 4]), 1)
 
+    # ---- #2518: a branching follow-up (same history, the last question replaced) belongs to the slot of its chat
+    @staticmethod
+    def chat(base, turns=12, per=800):
+        """A chat history of `turns` messages of `per` tokens each (every one opens with the turn marker), token ids
+        distinct from any other chat's; ~9600 tokens, so its earlier message boundaries are past 8192."""
+        T = StrataEngine.TURN_ID
+        out = []
+        for m in range(turns):
+            out += [T] + list(range(base + m * per, base + m * per + per - 1))
+        return out
+
+    def held_of(self, hist, q, reply):
+        """what a slot holds after a request: the prompt (history, the question, the assistant header) and the reply"""
+        T = StrataEngine.TURN_ID
+        return hist + [T] + q + [T, 7, 8, 9] + reply
+
+    def branch_of(self, hist, q):
+        T = StrataEngine.TURN_ID
+        return hist + [T] + q + [T, 7, 8, 9]
+
+    def test_a_branch_goes_to_its_earlier_message_boundary(self):
+        T = StrataEngine.TURN_ID
+        hists = [self.chat(100000 * (i + 1)) for i in range(4)]
+        e = self.engine(4)
+        e.slot_held = [self.held_of(h, [31, 32, 33], [50, 51]) for h in hists]
+        e.slot_used = [1.0, 2.0, 3.0, 4.0]                              # slot 0 is the least recently used
+        for owner in (1, 2, 3, 0):
+            branch = self.branch_of(hists[owner], [61, 62, 63, 64])    # another final question, the same history
+            self.assertEqual(e.pick_slot(branch), owner, owner)
+        # a pure append of the held stream and the engine's own turn rule are unchanged
+        self.assertEqual(e.pick_slot(e.slot_held[2] + [T, 1, 2, 3]), 2)
+        self.assertEqual(e.pick_slot(self.branch_of(hists[1], [31, 32, 33])), 1)
+
+    def test_a_branch_never_takes_a_busy_owner(self):
+        hists = [self.chat(100000 * (i + 1)) for i in range(3)]
+        e = self.engine(3)
+        e.slot_held = [self.held_of(h, [31], [50]) for h in hists]
+        e.slot_used = [1.0, 2.0, 3.0]
+        e.slot_busy[1] = True                                           # the owner is still working
+        self.assertEqual(e.pick_slot(self.branch_of(hists[1], [61, 62])), 0)    # the old order: the least recent free slot
+        e.slot_busy = [True, False, True]
+        self.assertEqual(e.pick_slot(self.branch_of(hists[1], [61, 62])), 1)
+
+    def test_a_boundary_every_chat_shares_is_no_owner(self):
+        # one client's chats share a long system prompt: its end is a boundary every slot agrees on, so it names
+        # nobody; a new chat keeps the empty slot, then the least recent one
+        T = StrataEngine.TURN_ID
+        root = self.chat(500000, turns=11)                              # ~8800 shared tokens
+        e = self.engine(4)
+        e.slot_held = [self.held_of(root + self.chat(100000 * (i + 1), turns=1), [31], [50]) for i in range(3)] + [[]]
+        e.slot_used = [5.0, 6.0, 7.0, 0.0]
+        new_chat = root + [T] + list(range(900000, 900100)) + [T, 7, 8, 9]
+        self.assertEqual(e.pick_slot(new_chat), 3)                      # the empty slot
+        e.slot_held[3] = self.held_of(root + self.chat(400000, turns=1), [31], [50])
+        e.slot_used[3] = 8.0
+        self.assertEqual(e.pick_slot(new_chat), 0)                      # then the least recently used
+
+    def test_interleaved_branches_keep_their_prefixes(self):
+        # four chats in four slots, then three rounds of branching follow-ups in an interleaved order; the engine finds
+        # the best source among ALL slots (copying it into the slot pick_slot chose, overwriting that one), so a
+        # follow-up keeps its prefix only while its chat's slot was not overwritten.  Measured: the tokens reused.
+        def old_pick(e, prompt):
+            T = StrataEngine.TURN_ID
+            free = [b for b in e.slot_order if not e.slot_busy[b]]
+            def hp(b):
+                h = e.slot_held[b]
+                if not h:
+                    return 0
+                if len(h) < len(prompt) and prompt[:len(h)] == h:
+                    return len(h)
+                k = len(h) - 1 - h[::-1].index(T) if T in h else 0
+                return k if 0 < k < len(prompt) and prompt[:k] == h[:k] else 0
+            best = max(free, key=hp)
+            if hp(best) >= 1:
+                return best
+            return min(free, key=lambda b: (bool(e.slot_held[b]), e.slot_used[b]))
+
+        def run(pick):
+            T = StrataEngine.TURN_ID
+            hists = [self.chat(100000 * (i + 1)) for i in range(4)]
+            e = self.engine(4)
+            clock = [0.0]
+            def serve(prompt, reply):
+                b = pick(e, prompt)
+                # the engine's own source search: the longest message boundary any slot holds of this prompt
+                reused = 0
+                for h in e.slot_held:
+                    k = max((i for i in range(len(h)) if h[i] == T and i < len(prompt) and prompt[:i] == h[:i]), default=0)
+                    reused = max(reused, k)
+                e.slot_held[b] = prompt + reply
+                clock[0] += 1.0
+                e.slot_used[b] = clock[0]
+                return reused
+            for i, h in enumerate(hists):                               # the first request of every chat
+                serve(self.branch_of(h, [31, 32]), [50, 51])
+            total = 0
+            for rnd in range(3):
+                for owner in (2, 0, 3, 1):                             # interleaved
+                    total += serve(self.branch_of(hists[owner], [600 + rnd, 61, 62 + owner]), [50, 51])
+            return total
+
+        old, new = run(old_pick), run(lambda e, p: e.pick_slot(p))
+        print(f"#2518 retained prefix over 12 branching follow-ups: before {old} tokens, after {new} tokens", file=sys.stderr)
+        self.assertGreater(new, old)
+        self.assertEqual(new, 12 * (len(self.chat(1)) + 0))             # every follow-up resumed at its history's end
+
     def test_batch_groups_spread_requests_over_the_groups(self):
         # #1249: with --batch-groups 2 over 4 slots (groups {0,1} and {2,3}) a second request goes to the other group,
         # and a short held prefix does not pull it back into the busy one

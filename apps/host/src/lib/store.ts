@@ -1,4 +1,5 @@
 import { workspaceIdForSession } from './session-workspace';
+import { shortTitle } from './title-text';
 import { DEFAULT_CONTENT_FS, DEFAULT_UI_SCALE, SIZE_DEFAULTS_VERSION, savedSizes } from './default-sizes';
 import { detectLanguage } from './language-detect';
 import { validWhileBusy, type WhileBusy } from './while-busy';
@@ -26,7 +27,7 @@ import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
-import { createSessionWriter } from './session-persist';
+import { createSessionWriter, exportSessions, loadStoredSessions, type SaveResult, type StorageLike } from './session-persist';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
@@ -141,9 +142,11 @@ export interface AppState {
    *  with should not. */
   actionError: { message: string; label: string; retry: () => void } | null;
   busy: Record<string, boolean>;
+  /** Set while the browser refuses to save some chats (storage full or blocked); null when every chat is saved (#5192).
+   *  The chats stay whole in memory and are tried again at every save; `unsavedSessionsJson()` gives them as text. */
+  sessionSave: { failedIds: string[]; reason: 'quota' | 'other' } | null;
 }
 
-const SESSION_KEY = 'strata.sessions.v1';
 const PREFS_KEY = 'strata.prefs.v2';
 /** What the model has been allowed to read, kept across restarts. */
 const TOUCHED_KEY = 'strata.touched.v1';
@@ -202,16 +205,31 @@ function uid(prefix = 'id'): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 }
 
+/** localStorage, looked up at each call (it may not exist when this file is loaded outside a browser). */
+const browserStorage: StorageLike = {
+  getItem: key => localStorage.getItem(key),
+  setItem: (key, value) => localStorage.setItem(key, value),
+  removeItem: key => localStorage.removeItem(key),
+  key: index => localStorage.key(index),
+  get length() { return localStorage.length; },
+};
+const loadedSessions = loadSessionList();
+function loadSessionList(): Session[] {
+  try {
+    return loadStoredSessions(browserStorage).sessions;
+  } catch {
+    return [];
+  }
+}
+
 function loadSessions(): Session[] {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as Session[];
+    const parsed = loadedSessions;
     return Array.isArray(parsed) ? parsed.map(session => ({
       ...session,
       ...(session.showcase && !session.showcaseAgentStates ? {agents:SHOWCASE_AGENTS,showcaseAgentStates:true}:{}),
       ...(!session.showcase && session.agents ? { agents: settleAgents(session.agents) } : {}),
-      messages: session.messages.map(message => message.streaming ? {
+      messages: (session.messages ?? []).map(message => message.streaming ? {
         ...message,
         streaming: false,
         error: message.error ?? 'Response interrupted. Ask again to retry; the partial answer is kept.',
@@ -308,6 +326,7 @@ let state: AppState = {
   activeWorkspace: null,
   setupOpen: false,
   sessions: loadSessions(),
+  sessionSave: null,
   activeSession: null,
   streaming: false,
   liveChats: 0,
@@ -1166,14 +1185,24 @@ export async function scopeSkill(id: string, workspaceId: string | null) {
 /* ---------------------------------------------------------------- sessions */
 
 const sessionWriter = createSessionWriter({
-  write: (json) => {
-    try {
-      localStorage.setItem(SESSION_KEY, json);
-    } catch {
-      /* quota — sessions are a cache, not the source of truth */
-    }
+  storage: browserStorage,
+  knownIds: loadedSessions.map(s => s.id),
+  // Nothing is trimmed to fit (#5192). A chat the browser refuses keeps its last saved copy and stays whole in memory;
+  // it is reported here and tried again at the next save.
+  onResult: (result: SaveResult) => {
+    const failedIds = sessionWriter.unsaved().map(s => s.id);
+    const was = state.sessionSave;
+    if (!failedIds.length) { if (was) set({ sessionSave: null }); return; }
+    const reason = result.failed.some(f => f.reason === 'quota') || was?.reason === 'quota' ? 'quota' : 'other';
+    if (!was || was.reason !== reason || was.failedIds.join() !== failedIds.join()) set({ sessionSave: { failedIds, reason } });
   },
 });
+
+/** The chats the browser could not save, as one JSON text (to keep a copy by hand), or null when all are saved. */
+export function unsavedSessionsJson(): string | null {
+  const unsaved = sessionWriter.unsaved();
+  return unsaved.length ? exportSessions(unsaved) : null;
+}
 
 /**
  * Save the chat list. A one-off change (new, rename, delete, pin) is written now; `soon` is for the streaming
@@ -1397,7 +1426,7 @@ async function startTimeSkipReal(prompt: string) {
   const at = new Date().toISOString();
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
-    title: s.messages.length ? s.title : prompt.length > 48 ? prompt.slice(0, 47).trimEnd() + '…' : prompt, updatedAt: at,
+    title: s.messages.length ? s.title : shortTitle(prompt), updatedAt: at,
     // The comparison sidebar opens only when there is an update to compare (when the job ends with changed files), never while it works.
     timeSkips: [...(s.timeSkips ?? []), run],
     messages: [...s.messages,
@@ -1490,7 +1519,7 @@ function startTimeSkipDemo(prompt: string) {
   const at = new Date().toISOString();
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
-    title: s.messages.length ? s.title : prompt.length>48?prompt.slice(0,47).trimEnd()+'…':prompt, updatedAt: at,
+    title: s.messages.length ? s.title : shortTitle(prompt), updatedAt: at,
     timeSkips: [...(s.timeSkips ?? []), run], previewOpen: timeSkipTabId(run.id),
     messages: [...s.messages,
       { id: uid('m'), role: 'user', at, content: `/time-skip ${prompt}`, timeSkipId: run.id },
@@ -1695,7 +1724,7 @@ const lastAnswer = (sessionId: string) => [...(state.sessions.find(s => s.id ===
 const loopScheduler = new LoopScheduler({
   async send(sessionId, { text, shown }) {
     const before = lastAnswer(sessionId)?.id;
-    await sendMessage(text, { fromLoop: true, shown, title: shown.length > 48 ? shown.slice(0, 47).trimEnd() + '…' : shown });
+    await sendMessage(text, { fromLoop: true, shown, title: shortTitle(shown) });
     const answer = lastAnswer(sessionId);
     if (!answer || answer.id === before || answer.streaming) return { answered: false, text: '', failed: false };
     return { answered: true, text: answer.content ?? '', failed: !!answer.error };
@@ -1848,7 +1877,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   patchSession(sessionId, (s) => ({
     ...s,
     defaultTitle: false,
-    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (body.length>48?body.slice(0,47).trimEnd()+'…':body)) : s.title,
+    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (shortTitle(body))) : s.title,
     updatedAt: new Date().toISOString(),
     messages: [...s.messages, ...(resume || planStart ? [] : [userMsg]), assistantMsg],
   }));

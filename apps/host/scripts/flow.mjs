@@ -1236,13 +1236,15 @@ if (flow === 'unread') {
 
   // make the older conversation look updated since it was last read
   await page.evaluate(() => {
-    const raw = JSON.parse(localStorage.getItem('strata.sessions.v1') ?? '[]');
+    // One entry per chat since #5192: the index keeps the order, each chat has its own key.
+    const ids = JSON.parse(localStorage.getItem('strata.sessions.v2') ?? '{}').ids ?? [];
+    const raw = ids.map((id) => JSON.parse(localStorage.getItem('strata.session.v2.' + id) ?? 'null')).filter(Boolean);
     const older = raw.filter((s) => s.messages.length > 0).at(-1);
     if (older) {
       older.updatedAt = new Date(Date.now() + 120000).toISOString();
       older.lastReadAt = new Date(Date.now() - 120000).toISOString();
+      localStorage.setItem('strata.session.v2.' + older.id, JSON.stringify(older));
     }
-    localStorage.setItem('strata.sessions.v1', JSON.stringify(raw));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1800);
@@ -1352,7 +1354,7 @@ if (flow === 'branch') {
   // remember the original so "untouched" means unchanged by the branch, not a
   // hardcoded length
   const before = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem('strata.sessions.v1') ?? '[]')
+    (() => { const ids = (JSON.parse(localStorage.getItem('strata.sessions.v2') ?? '{}').ids ?? []); return ids.map((id) => JSON.parse(localStorage.getItem('strata.session.v2.' + id) ?? 'null')).filter(Boolean); })()
       .map((s) => ({ title: s.title, roles: s.messages.map((m) => m.role) })));
   const originalBefore = before.find((s) => !s.title.includes('branch'));
 
@@ -1370,7 +1372,7 @@ if (flow === 'branch') {
   console.log('from user :', JSON.stringify(await view()), '<- branch must show only the user turn, and the url must follow');
 
   const sessions = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem('strata.sessions.v1') ?? '[]')
+    (() => { const ids = (JSON.parse(localStorage.getItem('strata.sessions.v2') ?? '{}').ids ?? []); return ids.map((id) => JSON.parse(localStorage.getItem('strata.session.v2.' + id) ?? 'null')).filter(Boolean); })()
       .map((s) => ({ title: s.title, roles: s.messages.map((m) => m.role) })));
   console.log('stored    :', JSON.stringify(sessions));
   const originalAfter = sessions.find((s) => !s.title.includes('branch'));
