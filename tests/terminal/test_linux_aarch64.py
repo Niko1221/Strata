@@ -146,7 +146,7 @@ class GB10Probes(unittest.TestCase):
         done = mock.Mock(returncode=0, stdout=self.LINE)
         with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/nvidia-smi"), \
                 mock.patch.object(doctor.subprocess, "run", return_value=done), \
-                mock.patch.object(doctor.platform, "machine", return_value=machine):
+                mock.patch.object(doctor.platform, "machine", return_value=machine),                 mock.patch.object(sys, "platform", "linux"):          # (sysinfo answers from the platform module only off Windows)
             return doctor._nvidia_cards()
 
     def test_doctor_lists_a_gb10_with_no_memory_figure(self):
