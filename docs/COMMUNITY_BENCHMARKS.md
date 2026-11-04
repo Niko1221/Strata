@@ -74,6 +74,20 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-11-04: Apple M5 Pro (20-core GPU), 64 GB unified memory, MacBook Pro](../bench/results/2026-11-04-community-apple-m5-pro-qwen3-8-flash-next-gyro-gyro-m/README.md):
+  source build of v0.2.6 with the metal-repack trellis-types fix, Gyro-M TQ2_0 streamed from the internal SSD
+  (--mmap-experts, no MTP layer: the setup keeps it off below its 96 GB rule), 32,768-token context; decode
+  25.7 tok/s chat, 22.5 tok/s in a 6-turn agent session, prompt 743 tok/s at 4K and 699 at 16K, 0 failed
+  request. First Mac measurement of an agentionai trellis quant.
+- [2026-11-04: same machine, Gyro-M with the MTP draft layer added by hand](../bench/results/2026-11-04-community-apple-m5-pro-qwen3-8-flash-next-gyro-gyro-m-mtp/README.md):
+  --mtp with --spec 2 over the same streaming setup: chat decode 35.5 tok/s (+38% over the suffix drafter
+  alone), agent 28.6 tok/s (+27%), prompt within 5% of the no-MTP run. The 96 GB streaming-MTP threshold
+  looks too conservative on this machine (the model needs ~71 GB).
+- [2026-11-04: same machine, Gyro-M with the DFlash2 drafter](../bench/results/2026-11-04-community-apple-m5-pro-qwen3-8-flash-next-gyro-gyro-m-dflash2/README.md):
+  --draft dflash2 with the packed incoai drafter (the engine turns the suffix drafter off): chat 24.7 tok/s,
+  agent 22.8 tok/s, no gain over the default in streaming, where a rejected draft still costs a full
+  expert pass from the SSD.
+
 ## Run the standard benchmark
 
 ```sh
