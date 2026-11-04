@@ -118,7 +118,7 @@ export function Markdown({ text, onOpenLink, previewId, onPreview, onClosePrevie
                 i++;
                 continue;
             }
-            nodes.push(ordered ?<ol key={key}>{tr(items)}</ol> : <ul key={key}>{tr(items)}</ul>);
+            nodes.push(ordered ? <ol key={key}>{tr(items)}</ol> : <ul key={key}>{tr(items)}</ul>);
             continue;
         }
         if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) {
