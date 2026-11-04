@@ -478,6 +478,9 @@ SKIP_DIRS = frozenset({"packs", "mtp", "engine", "node_modules", "windows", "pro
                        "$recycle.bin", "system volume information", "appdata"})
 
 
+DRAFT_LAYER = re.compile(r"mtp[-_][a-z0-9_.-]*\.gguf")
+
+
 def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
     """(model files, picture-reader file names, cut) of one folder. A link to a file counts (it is followed when read); a name that
     only ends in .gguf but is a folder does not."""
@@ -499,6 +502,8 @@ def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
                 if low.startswith("mmproj"):
                     readers.append(entry.name)
                     continue
+                if DRAFT_LAYER.fullmatch(low):
+                    continue                          # Strata's own draft layer (mtp-q2_0.gguf) is not a second model (#4693)
                 if len(shards) >= MAX_LISTED:
                     cut = True
                     break
@@ -630,7 +635,7 @@ def _dsv41_files(folder: Path) -> dict[str, int]:
 
 
 def _dsv41_plan(path: Path, details) -> dict | None:
-    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the IST-DAS 1.75 / 2.00 / 2.25 shards, under their
+    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the ISTA-DAS 1.75 / 2.00 / 2.25 shards, under their
     official names or the first release's, with or without the n-gram table (Engram). Recognised from the pinned names and sizes
     (strata_control/dsv41_sets.py); None when nothing here is a DeepSeek file, so every other preview is exactly what it was."""
     from strata_control import dsv41_sets
@@ -727,7 +732,7 @@ def plan_import(raw_path: str) -> dict:
         details = path.stat()
     except OSError:
         raise ProfileError("model import path does not exist (or is a link to something that is gone)", 5) from None
-    official_deepseek = _dsv41_plan(path, details)         # IST-DAS sets under their official or first-release names
+    official_deepseek = _dsv41_plan(path, details)         # ISTA-DAS sets under their official or first-release names
     if official_deepseek is not None:
         return official_deepseek
     notes: list[str] = []

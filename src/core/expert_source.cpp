@@ -3,6 +3,7 @@
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/ple_residency.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -4109,6 +4110,14 @@ bool FileExpertSource::pin_cache_complement(
             }
 #endif
             const int64_t done = layers_done.fetch_add(1) + 1;
+#if defined(_WIN32)
+            // R5070: the copy reads through the mapped view, and Windows counts those file pages in this process's working
+            // set, not as available: on the owner's 64 GB PC (8 GiB headroom asked for) available RAM fell to 0.9 GiB for
+            // ~10 s during the copy.  Every 4 layers the mapped pages go to the standby list (VirtualUnlock on pages that
+            // are not locked does exactly that; the same call runs once after the copy below).  No data changes.
+            if (done % 4 == 0 && direct_.empty() && maps_.empty() && !unmapped_) (void) VirtualUnlock((LPVOID) base_, (SIZE_T) mapped_bytes_);
+            if (done % 4 == 0 && direct_.empty()) for (const Map& m : maps_) if (!m.closed) (void) VirtualUnlock((LPVOID) m.base, (SIZE_T) m.bytes);
+#endif
             if (done % 8 == 0 || done == n_layers_)
                 std::fprintf(stderr, "FileExpertSource: copied cache complement through layer %lld/%lld (%.2f GiB, %.0f s)\n",
                              (long long) done, (long long) n_layers_, (double) copied.load() / 1073741824.0,
@@ -5860,12 +5869,26 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // certain to end that way: refused, with the numbers.  Less RAM available than the arena (another program, an
     // engine still exiting) is only a warning - the OS may make room - per the recommend-not-force rule.
     ram_warning_.clear();
+    ram_short_ = false;
     // (a shared arena, --shared-expert-arena, may already be in RAM for another engine: not checked)
     if (detail::HostMemory hm; shared_arena_file.empty() && detail::host_available_memory(hm)) {
-        const uint64_t need = want + (uint64_t) blob;
+        // --ram-keep-gib W: the arena is chosen only if W GiB stay free after it, so its need here is the arena plus W
+        const uint64_t need = arena_need_with_keep(want + (uint64_t) blob, ram_keep_bytes);
+        // under a hard limit the arena also needs the headroom (the engine's own memory comes on top of it, and the arena is never given back)
+        const uint64_t limit_need = arena_hard_limit_need(want + (uint64_t) blob, ram_keep_bytes, hard_limit_headroom_bytes, fall_back_when_ram_short);
         const double gib = 1073741824.0;
         char buf[512];
-        if (hm.cgroup_limit < need) {
+        char keep_note[96] = "";
+        if (ram_keep_bytes > 0)
+            std::snprintf(keep_note, sizeof keep_note, ", with the %.2f GiB --ram-keep-gib asks to leave free", (double) ram_keep_bytes / gib);
+        if (arena_ram_verdict(limit_need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
+            if (fall_back_when_ram_short) {   // #4846: the caller reads the experts from the file instead of refusing
+                std::snprintf(buf, sizeof buf, "it needs %.2f GiB (with the %.2f GiB the engine's own memory and the RAM to keep take on top of it) and this process's memory limit is %.2f GiB",
+                              (double) limit_need / gib, (double) (limit_need - (want + (uint64_t) blob)) / gib, (double) hm.cgroup_limit / gib);
+                err = buf;
+                ram_short_ = true;
+                return false;
+            }
             std::snprintf(buf, sizeof buf,
                           "ArenaExpertSource: the expert arena needs %.2f GiB of RAM but this process's memory limit "
                           "(cgroup memory.max / memory.limit_in_bytes) is %.2f GiB: it would be killed while loading. "
@@ -5878,7 +5901,8 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         if (hm.available < need) {
             // #4051: the shortfall is often an engine that was still exiting (the code's own example), a few seconds
             // from giving its RAM back: wait for it, not for ever, and say so.  STRATA_ARENA_RAM_WAIT_S changes the
-            // seconds (0 loads at once, as before this wait).  The load then goes on either way - it only warns.
+            // seconds (0 loads at once, as before this wait).  Still short after it (and after the give-back below): the caller's
+            // --mmap-experts fallback (#4846) when it asked for one, otherwise the load goes on and only warns.
             double wait_s = 20.0;
             if (const char* w = std::getenv("STRATA_ARENA_RAM_WAIT_S"); w != nullptr && w[0] != '\0') {
                 char* end = nullptr;
@@ -5893,16 +5917,41 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                     [](uint64_t& a) { detail::HostMemory h; if (!detail::host_available_memory(h)) return false; a = h.available; return true; },
                     [](double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); },
                     [&](double w, uint64_t a) {
-                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM and %.2f GiB is "
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM%s and %.2f GiB is "
                                              "available; waiting up to %.0f s for it (another engine still exiting?) - "
                                              "%.0f s so far (STRATA_ARENA_RAM_WAIT_S changes this)\n",
-                                     (double) need / gib, (double) a / gib, wait_s, w);
+                                     (double) need / gib, keep_note, (double) a / gib, wait_s, w);
                     },
                     waited, avail);
                 if (came)
                     std::fprintf(stderr, "strata generate: %.2f GiB of RAM is available now (after %.1f s): loading the "
                                          "expert arena\n", (double) avail / gib, waited);
                 hm.available = avail;
+            }
+            if (hm.available < need && give_back_ram) {
+                // #4846: the shortfall survived the wait.  A lock the engine took by itself (the PLE table's residency lock) is
+                // given back before the registration starts: its pages stay cached, the OS may take them for the arena.
+                const uint64_t freed = give_back_ram();
+                if (freed > 0) {
+                    detail::HostMemory h2;
+                    if (detail::host_available_memory(h2)) {
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM and %.2f GiB was available: "
+                                             "gave back %.2f GiB of locked RAM, %.2f GiB is available now\n",
+                                     (double) need / gib, (double) hm.available / gib, (double) freed / gib, (double) h2.available / gib);
+                        hm.available = h2.available;
+                    }
+                }
+            }
+            if (arena_ram_verdict(need, hm.available, ~uint64_t{0}, fall_back_when_ram_short) == ArenaRamVerdict::FallBack) {
+                // #4846 (owner 11-01): still short after the wait and the give-back.  Registering anyway can stall the whole host in
+                // reclaim until it is power-cycled: nothing is allocated, the caller takes the --mmap-experts source for this run.
+                std::snprintf(buf, sizeof buf,
+                              "it needs %.2f GiB%s and %.2f GiB is available (%.2f GiB short%s)",
+                              (double) need / gib, keep_note, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "");
+                err = buf;
+                ram_short_ = true;
+                return false;
             }
             if (hm.available < need) {
                 std::snprintf(buf, sizeof buf,

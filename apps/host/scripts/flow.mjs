@@ -7,11 +7,9 @@ import { chromium } from 'playwright-core';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { requireChromium } from './browser.mjs';
 
-const executablePath = [
-  join(homedir(), 'Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'),
-  join(homedir(), 'Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell'),
-].find((p) => existsSync(p));
+const executablePath = requireChromium();
 
 const BASE = process.env.STRATA_URL ?? 'http://localhost:5199';
 const flow = process.argv[2] ?? 'chat';

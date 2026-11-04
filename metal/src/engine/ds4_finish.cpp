@@ -118,7 +118,25 @@ bool ensure() {
     }
     return g_lib >= 0;
 }
+
+// One int the router kernels raise when a pick had to be made up (ds4_route_fallback_pick: every score NaN) - the Metal side of
+// ds4_kernels.cu's g_router_bad.  Shared storage, zeroed, kept for the process.
+mtl::Buffer g_route_bad;
+mtl::Buffer& route_bad() {
+    if (!g_route_bad.ptr) g_route_bad = g_cx->alloc(64);
+    return g_route_bad;
+}
 }  // namespace
+
+// Whether a router kernel made up a pick since the last call, and clears it.  The caller has synchronised the stream first (the
+// kernel's store is then visible); called with nothing dispatched yet it is false.
+bool router_bad_take() {
+    if (g_cx == nullptr || g_route_bad.ptr == nullptr) return false;
+    volatile int* f = (volatile int*) g_route_bad.ptr;
+    const bool bad = f[0] != 0;
+    if (bad) f[0] = 0;
+    return bad;
+}
 
 // the engine's Finish, as ds4_kernels.cuh declares it
 struct FinishIn {
@@ -1347,7 +1365,8 @@ bool route(const float* logits, const float* bias, int n, int k, int T, float ro
     dsp.p = &pl;
     dsp.args = {mtl::Arg::B(bl, off(hl)), mtl::Arg::B(bb, off(hb)), mtl::Arg::V((unsigned) n), mtl::Arg::V((unsigned) k),
                 mtl::Arg::V(route_scale), mtl::Arg::B(bi, off(hi)), mtl::Arg::B(bw, off(hw)),
-                mtl::Arg::B(bv, hv != nullptr ? off(hv) : 0), mtl::Arg::V(has_vl ? 1u : 0u), mtl::Arg::B(bbv)};
+                mtl::Arg::B(bv, hv != nullptr ? off(hv) : 0), mtl::Arg::V(has_vl ? 1u : 0u), mtl::Arg::B(bbv),
+                mtl::Arg::B(route_bad())};
     dsp.grid[0] = (uint32_t) T;
     dsp.grid[1] = dsp.grid[2] = 1;
     dsp.tg[0] = 512;
@@ -2197,7 +2216,7 @@ bool route_publish(const float* logits, const float* bias, int n, int k, int T, 
     d.args = {mtl::Arg::B(bl, off(hl)), mtl::Arg::B(bb, off(hb)), mtl::Arg::V((unsigned) n), mtl::Arg::V((unsigned) k),
               mtl::Arg::V(route_scale), mtl::Arg::B(bv, off(hv)), mtl::Arg::B(bi, off(hi)), mtl::Arg::B(bw, off(hw)),
               mtl::Arg::B(bp, off(hp)), mtl::Arg::B(bvl, vl_off), mtl::Arg::V((unsigned) vl),
-              mtl::Arg::V((unsigned) (bias_vl ? 1 : 0))};
+              mtl::Arg::V((unsigned) (bias_vl ? 1 : 0)), mtl::Arg::B(route_bad())};
     d.grid[0] = (uint32_t) T;
     d.grid[1] = d.grid[2] = 1;
     d.tg[0] = 512; d.tg[1] = d.tg[2] = 1;
@@ -2330,13 +2349,13 @@ bool rows_f16(const float* x, int ldx, const int* idx, int nrows, int ncols, uin
     return true;
 }
 
-// kind: 0 BF16 values, 8 Q8_0, 13 Q5_K, 14 Q6_K.  n rows of k values, ld the row stride (bytes; values for BF16), out half rows.
+// kind: 0 BF16 values, 8 Q8_0, 12 Q4_K, 13 Q5_K, 14 Q6_K.  n rows of k values, ld the row stride (bytes; values for BF16), out half rows.
 bool dequant_rows(int kind, const void* raw, size_t ld, int k, int n, uint16_t* out) {
     if (n <= 0 || k <= 0) return true;
     if (!ensure()) return false;
-    const char* fn = kind == 13 ? "ds4_dq_q5k" : kind == 14 ? "ds4_dq_q6k" : kind == 8 ? "ds4_dq_q8" : kind == 0 ? "ds4_dq_bf16" : nullptr;
+    const char* fn = kind == 12 ? "ds4_dq_q4k" : kind == 13 ? "ds4_dq_q5k" : kind == 14 ? "ds4_dq_q6k" : kind == 8 ? "ds4_dq_q8" : kind == 0 ? "ds4_dq_bf16" : nullptr;
     if (!fn) return false;
-    if (((kind == 13 || kind == 14) && k % 256 != 0) || (kind == 8 && k % 32 != 0)) return false;
+    if (((kind == 12 || kind == 13 || kind == 14) && k % 256 != 0) || (kind == 8 && k % 32 != 0)) return false;
     void* hw = strata::gpu::host_view((void*) raw);
     void* ho = strata::gpu::host_view(out);
     if (!hw || !ho) return false;
@@ -2347,7 +2366,7 @@ bool dequant_rows(int kind, const void* raw, size_t ld, int k, int n, uint16_t* 
         return g_cx->wrap((void*) base, wrap_len(base, end - base));
     };
     auto off = [&](void* host) { return (size_t) ((uintptr_t) host - (((uintptr_t) host) & ~(uintptr_t) (page - 1))); };
-    const size_t wbytes = (size_t) (n - 1) * ld * (kind == 0 ? 2 : 1) + (kind == 0 ? (size_t) k * 2 : (kind == 13 ? (size_t) (k / 256) * 176 : kind == 14 ? (size_t) (k / 256) * 210 : (size_t) (k / 32) * 34));
+    const size_t wbytes = (size_t) (n - 1) * ld * (kind == 0 ? 2 : 1) + (kind == 0 ? (size_t) k * 2 : (kind == 12 ? (size_t) (k / 256) * 144 : kind == 13 ? (size_t) (k / 256) * 176 : kind == 14 ? (size_t) (k / 256) * 210 : (size_t) (k / 32) * 34));
     if (!std::getenv("DS4_NO_TOUCH")) {   // (the matrix may be file-backed pages not read yet: the GPU does not page them in, it stalls)
         volatile unsigned char sink = 0;
         for (size_t o = 0; o < wbytes; o += 4096) sink = sink + ((const volatile unsigned char*) hw)[o];
@@ -2358,7 +2377,7 @@ bool dequant_rows(int kind, const void* raw, size_t ld, int k, int n, uint16_t* 
     if (!bw.handle || !bo.handle) return false;
     mtl::Pipeline pl;
     try { pl = g_cx->pipeline(g_lib, fn); } catch (...) { return false; }
-    size_t items = kind == 13 ? (size_t) n * (k / 256) * 8 : kind == 14 ? (size_t) n * (k / 256) * 64 : kind == 8 ? (size_t) n * (k / 32) : (size_t) n * k;
+    size_t items = kind == 12 || kind == 13 ? (size_t) n * (k / 256) * 8 : kind == 14 ? (size_t) n * (k / 256) * 64 : kind == 8 ? (size_t) n * (k / 32) : (size_t) n * k;
     mtl::Dispatch d;
     d.p = &pl;
     d.args = {mtl::Arg::B(bw, off(hw)), mtl::Arg::V((unsigned long) ld), mtl::Arg::V((unsigned) k), mtl::Arg::V((unsigned) n),

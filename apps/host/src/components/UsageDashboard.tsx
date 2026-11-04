@@ -75,6 +75,6 @@ export function UsageDashboard({ loaded }: {
         </>)}
       </div>
     </div>
-    {tr(!canChat ? <Btn onClick={() => go('models')}>{tr("Choose a model")}</Btn> : null)}
+    {tr(!canChat ? <Btn variant="primary" onClick={() => go('models')}>{tr("Choose a model")}</Btn> : null)}
   </section>;
 }
