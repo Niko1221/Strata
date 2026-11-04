@@ -1,0 +1,36 @@
+{
+  "expected": {
+    "alpha": "MAPLE-4827",
+    "bravo": "ORBIT-9153",
+    "charlie": "CEDAR-2608"
+  },
+  "answer": "MAPLE-4827\nORBIT-9153\nCEDAR-2608",
+  "matched": {
+    "alpha": true,
+    "bravo": true,
+    "charlie": true
+  },
+  "usage": {
+    "prompt_tokens": 122855,
+    "completion_tokens": 74,
+    "total_tokens": 122929,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 122855,
+    "prompt_ms": 115801.2,
+    "prompt_per_token_ms": 0.943,
+    "prompt_per_second": 1060.9,
+    "predicted_n": 74,
+    "predicted_ms": 1339.9,
+    "predicted_per_token_ms": 22.71,
+    "predicted_per_second": 44.0,
+    "draft_n": 60,
+    "draft_n_accepted": 37
+  },
+  "wall_s": 117.26600000000053,
+  "prompt_sha256": "1ff78c1142a6a3a672350a7abd6d2dc3db7e58db422d64dd45ad7d069aaaad21"
+}

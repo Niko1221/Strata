@@ -1,0 +1,2172 @@
+[
+  {
+    "monotonic": 7548.015,
+    "available_mib": 22700,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7548.531,
+    "available_mib": 22542,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7549.046,
+    "available_mib": 22566,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7549.562,
+    "available_mib": 22546,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7550.078,
+    "available_mib": 22544,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7550.578,
+    "available_mib": 22537,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7551.093,
+    "available_mib": 22537,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7551.609,
+    "available_mib": 22346,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7552.125,
+    "available_mib": 22192,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7552.64,
+    "available_mib": 21965,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7553.14,
+    "available_mib": 21686,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7553.656,
+    "available_mib": 21558,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7554.171,
+    "available_mib": 21390,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7554.687,
+    "available_mib": 21425,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7555.203,
+    "available_mib": 21407,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7555.703,
+    "available_mib": 21407,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7556.218,
+    "available_mib": 21412,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7556.734,
+    "available_mib": 21414,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7557.25,
+    "available_mib": 20890,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7557.765,
+    "available_mib": 20442,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7558.265,
+    "available_mib": 20319,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7558.781,
+    "available_mib": 19689,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7559.296,
+    "available_mib": 19109,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7559.796,
+    "available_mib": 20309,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7560.312,
+    "available_mib": 20349,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7560.828,
+    "available_mib": 20239,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7561.343,
+    "available_mib": 19917,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7561.843,
+    "available_mib": 19606,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7562.359,
+    "available_mib": 19290,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7562.875,
+    "available_mib": 18961,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7563.375,
+    "available_mib": 18629,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7563.89,
+    "available_mib": 18301,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7564.406,
+    "available_mib": 17965,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7564.921,
+    "available_mib": 17640,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7565.421,
+    "available_mib": 17332,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7565.937,
+    "available_mib": 17023,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7566.453,
+    "available_mib": 16723,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7566.968,
+    "available_mib": 16363,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7567.468,
+    "available_mib": 16071,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7567.984,
+    "available_mib": 15746,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7568.5,
+    "available_mib": 15418,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7569.015,
+    "available_mib": 15129,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7569.531,
+    "available_mib": 14882,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7570.031,
+    "available_mib": 14579,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7570.546,
+    "available_mib": 14278,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7571.062,
+    "available_mib": 13768,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7571.578,
+    "available_mib": 12995,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7572.093,
+    "available_mib": 12671,
+    "phase": "startup"
+  },
+  {
+    "monotonic": 7572.609,
+    "available_mib": 12281,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7573.125,
+    "available_mib": 11472,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7573.625,
+    "available_mib": 10648,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7574.14,
+    "available_mib": 9826,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7574.656,
+    "available_mib": 9024,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7575.171,
+    "available_mib": 8216,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7575.687,
+    "available_mib": 7406,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7576.203,
+    "available_mib": 6592,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7576.718,
+    "available_mib": 5769,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7577.218,
+    "available_mib": 4952,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7577.734,
+    "available_mib": 4177,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7578.25,
+    "available_mib": 3353,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7578.765,
+    "available_mib": 2705,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7579.281,
+    "available_mib": 1981,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7579.796,
+    "available_mib": 1482,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7580.312,
+    "available_mib": 1589,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7580.812,
+    "available_mib": 798,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7581.328,
+    "available_mib": 390,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7581.843,
+    "available_mib": 586,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7582.359,
+    "available_mib": 575,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7582.875,
+    "available_mib": 6,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7583.39,
+    "available_mib": 186,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7583.906,
+    "available_mib": 169,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7584.406,
+    "available_mib": 452,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7584.921,
+    "available_mib": 452,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7585.437,
+    "available_mib": 448,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7585.953,
+    "available_mib": 452,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7586.468,
+    "available_mib": 452,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7586.984,
+    "available_mib": 454,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7587.5,
+    "available_mib": 551,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7588.0,
+    "available_mib": 449,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7588.515,
+    "available_mib": 446,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7589.031,
+    "available_mib": 449,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7589.546,
+    "available_mib": 443,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7590.062,
+    "available_mib": 449,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7590.578,
+    "available_mib": 225,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7591.093,
+    "available_mib": 229,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7591.593,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7592.109,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7592.625,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7593.14,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7593.656,
+    "available_mib": 121,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7594.171,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7594.671,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7595.187,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7595.703,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7596.218,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7596.734,
+    "available_mib": 118,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7597.234,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7597.75,
+    "available_mib": 117,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7598.265,
+    "available_mib": 119,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7598.781,
+    "available_mib": 117,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7599.296,
+    "available_mib": 136,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7599.812,
+    "available_mib": 123,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7600.328,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7600.828,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7601.343,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7601.859,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7602.375,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7602.89,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7603.406,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7603.921,
+    "available_mib": 119,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7604.437,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7604.937,
+    "available_mib": 117,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7605.453,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7605.968,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7606.484,
+    "available_mib": 119,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7607.0,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7607.5,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7608.015,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7608.531,
+    "available_mib": 117,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7609.046,
+    "available_mib": 121,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7609.562,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7610.078,
+    "available_mib": 123,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7610.593,
+    "available_mib": 535,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7611.093,
+    "available_mib": 254,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7611.609,
+    "available_mib": 136,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7612.125,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7612.64,
+    "available_mib": 136,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7613.156,
+    "available_mib": 136,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7613.671,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7614.171,
+    "available_mib": 136,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7614.687,
+    "available_mib": 126,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7615.203,
+    "available_mib": 136,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7615.718,
+    "available_mib": 56,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7616.234,
+    "available_mib": 160,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7616.734,
+    "available_mib": 520,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7617.25,
+    "available_mib": 945,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7617.765,
+    "available_mib": 1548,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7618.281,
+    "available_mib": 1081,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7618.796,
+    "available_mib": 1130,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7619.312,
+    "available_mib": 980,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7619.828,
+    "available_mib": 594,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7620.328,
+    "available_mib": 868,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7620.843,
+    "available_mib": 460,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7621.359,
+    "available_mib": 477,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7621.875,
+    "available_mib": 459,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7622.39,
+    "available_mib": 463,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7622.906,
+    "available_mib": 461,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7623.421,
+    "available_mib": 459,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7623.921,
+    "available_mib": 459,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7624.437,
+    "available_mib": 459,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7624.953,
+    "available_mib": 458,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7625.468,
+    "available_mib": 443,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7625.984,
+    "available_mib": 417,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7626.5,
+    "available_mib": 539,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7627.015,
+    "available_mib": 293,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7627.515,
+    "available_mib": 142,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7628.031,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7628.546,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7629.062,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7629.578,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7630.093,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7630.609,
+    "available_mib": 129,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7631.125,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7631.64,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7632.156,
+    "available_mib": 128,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7632.671,
+    "available_mib": 109,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7633.187,
+    "available_mib": 105,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7633.703,
+    "available_mib": 261,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7634.218,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7634.718,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7635.234,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7635.75,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7636.265,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7636.765,
+    "available_mib": 144,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7637.281,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7637.796,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7638.312,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7638.828,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7639.343,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7639.843,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7640.359,
+    "available_mib": 122,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7640.875,
+    "available_mib": 114,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7641.39,
+    "available_mib": 96,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7641.906,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7642.421,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7642.937,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7643.437,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7643.953,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7644.468,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7644.984,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7645.5,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7646.015,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7646.531,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7647.031,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7647.546,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7648.062,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7648.578,
+    "available_mib": 135,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7649.093,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7649.609,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7650.109,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7650.625,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7651.14,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7651.656,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7652.171,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7652.687,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7653.203,
+    "available_mib": 134,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7653.703,
+    "available_mib": 133,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7654.218,
+    "available_mib": 133,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7654.734,
+    "available_mib": 126,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7655.25,
+    "available_mib": 120,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7655.765,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7656.281,
+    "available_mib": 249,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7656.796,
+    "available_mib": 219,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7657.296,
+    "available_mib": 237,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7657.812,
+    "available_mib": 215,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7658.328,
+    "available_mib": 207,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7658.843,
+    "available_mib": 368,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7659.359,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7659.875,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7660.375,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7660.89,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7661.406,
+    "available_mib": 243,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7661.921,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7662.437,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7662.953,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7663.468,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7663.984,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7664.484,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7665.0,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7665.515,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7666.031,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7666.546,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7667.062,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7667.578,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7668.078,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7668.593,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7669.109,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7669.625,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7670.14,
+    "available_mib": 234,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7670.656,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7671.156,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7671.671,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7672.187,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7672.703,
+    "available_mib": 222,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7673.218,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7673.734,
+    "available_mib": 237,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7674.25,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7674.75,
+    "available_mib": 186,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7675.265,
+    "available_mib": 209,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7675.781,
+    "available_mib": 255,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7676.296,
+    "available_mib": 238,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7676.812,
+    "available_mib": 222,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7677.328,
+    "available_mib": 222,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7677.843,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7678.343,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7678.859,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7679.375,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7679.89,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7680.39,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7680.906,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7681.421,
+    "available_mib": 242,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7681.937,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7682.453,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7682.968,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7683.468,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7683.984,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7684.5,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7685.015,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7685.531,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7686.046,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7686.546,
+    "available_mib": 222,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7687.062,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7687.578,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7688.093,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7688.609,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7689.125,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7689.64,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7690.14,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7690.656,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7691.171,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7691.687,
+    "available_mib": 236,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7692.203,
+    "available_mib": 238,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7692.718,
+    "available_mib": 234,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7693.234,
+    "available_mib": 301,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7693.734,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7694.25,
+    "available_mib": 220,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7694.765,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7695.281,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7695.796,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7696.312,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7696.812,
+    "available_mib": 207,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7697.328,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7697.843,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7698.359,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7698.875,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7699.39,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7699.906,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7700.406,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7700.921,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7701.437,
+    "available_mib": 226,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7701.953,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7702.468,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7702.984,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7703.5,
+    "available_mib": 233,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7704.0,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7704.515,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7705.031,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7705.546,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7706.062,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7706.578,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7707.093,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7707.593,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7708.109,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7708.625,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7709.14,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7709.656,
+    "available_mib": 210,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7710.171,
+    "available_mib": 213,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7710.671,
+    "available_mib": 215,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7711.187,
+    "available_mib": 263,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7711.703,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7712.218,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7712.734,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7713.25,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7713.765,
+    "available_mib": 217,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7714.265,
+    "available_mib": 218,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7714.781,
+    "available_mib": 250,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7715.296,
+    "available_mib": 247,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7715.812,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7716.328,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7716.843,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7717.359,
+    "available_mib": 243,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7717.859,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7718.375,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7718.89,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7719.406,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7719.921,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7720.437,
+    "available_mib": 226,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7720.953,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7721.453,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7721.968,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7722.484,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7723.0,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7723.515,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7724.015,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7724.531,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7725.046,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7725.562,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7726.078,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7726.578,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7727.093,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7727.609,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7728.125,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7728.64,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7729.156,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7729.671,
+    "available_mib": 219,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7730.187,
+    "available_mib": 221,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7730.687,
+    "available_mib": 186,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7731.203,
+    "available_mib": 260,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7731.718,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7732.234,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7732.75,
+    "available_mib": 228,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7733.265,
+    "available_mib": 227,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7733.781,
+    "available_mib": 268,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7734.281,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7734.796,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7735.312,
+    "available_mib": 233,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7735.828,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7736.343,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7736.859,
+    "available_mib": 228,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7737.375,
+    "available_mib": 225,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7737.875,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7738.39,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7738.906,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7739.421,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7739.937,
+    "available_mib": 225,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7740.453,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7740.968,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7741.468,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7741.984,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7742.5,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7743.015,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7743.531,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7744.046,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7744.546,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7745.062,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7745.578,
+    "available_mib": 228,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7746.093,
+    "available_mib": 210,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7746.609,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7747.125,
+    "available_mib": 259,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7747.64,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7748.14,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7748.656,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7749.171,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7749.687,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7750.203,
+    "available_mib": 198,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7750.718,
+    "available_mib": 279,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7751.234,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7751.734,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7752.25,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7752.765,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7753.281,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7753.796,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7754.312,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7754.828,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7755.328,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7755.843,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7756.359,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7756.875,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7757.39,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7757.906,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7758.406,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7758.921,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7759.437,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7759.953,
+    "available_mib": 223,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7760.468,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7760.984,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7761.484,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7762.0,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7762.515,
+    "available_mib": 214,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7763.031,
+    "available_mib": 215,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7763.546,
+    "available_mib": 216,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7764.062,
+    "available_mib": 270,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7764.562,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7765.078,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7765.593,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7766.109,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7766.625,
+    "available_mib": 224,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7767.14,
+    "available_mib": 225,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7767.64,
+    "available_mib": 225,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7768.156,
+    "available_mib": 218,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7768.671,
+    "available_mib": 232,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7769.187,
+    "available_mib": 302,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7769.703,
+    "available_mib": 232,
+    "phase": "inference"
+  },
+  {
+    "monotonic": 7770.203,
+    "available_mib": 240,
+    "phase": "inference"
+  }
+]

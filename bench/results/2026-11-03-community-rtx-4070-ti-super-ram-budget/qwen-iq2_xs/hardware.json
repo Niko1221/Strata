@@ -1,0 +1,17 @@
+{
+  "captured_date": "2026-11-04",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER",
+  "vram_gib": 16,
+  "cpu": "AMD Ryzen 7 7800X3D",
+  "ram_gib": 31.1,
+  "storage": "Samsung SSD 990 PRO 1TB NVMe",
+  "os_build": "26300.9711",
+  "os_display_version": "26H2",
+  "engine_version": "0.1.56",
+  "engine_variant": "windows-x86_64-cuda-cuda13",
+  "engine_sha256": "7bc94d1decd1eecbea5b95128013e2cc8be99cd62e6be64b87a007e9386dcde3",
+  "driver": "617.42",
+  "context": 131072,
+  "kv": "int8",
+  "assistant_label": "Sol 6.1 Sol High (contributor supplied)"
+}

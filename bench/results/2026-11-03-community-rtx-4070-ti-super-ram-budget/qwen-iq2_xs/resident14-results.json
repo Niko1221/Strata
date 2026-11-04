@@ -1,0 +1,170 @@
+[
+  {
+    "condition": "resident14",
+    "target": 4096,
+    "repeat": 1,
+    "prompt_sha256": "1a4260c9dc3d19c9da43b046f6189629428d2e0fc5d3294379fa99c41c0f8a07",
+    "wall_s": 4.609,
+    "usage": {
+      "prompt_tokens": 4172,
+      "completion_tokens": 8,
+      "total_tokens": 4180,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4172,
+      "prompt_ms": 4429.4,
+      "prompt_per_token_ms": 1.062,
+      "prompt_per_second": 941.9,
+      "predicted_n": 8,
+      "predicted_ms": 153.8,
+      "predicted_per_token_ms": 19.225,
+      "predicted_per_second": 52.0,
+      "draft_n": 6,
+      "draft_n_accepted": 5
+    }
+  },
+  {
+    "condition": "resident14",
+    "target": 4096,
+    "repeat": 2,
+    "prompt_sha256": "f92666cd52c49c4dfb135f14d51df85e82a59a256101c4dc3e268968431cd877",
+    "wall_s": 4.016,
+    "usage": {
+      "prompt_tokens": 4149,
+      "completion_tokens": 8,
+      "total_tokens": 4157,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4149,
+      "prompt_ms": 3863.9,
+      "prompt_per_token_ms": 0.931,
+      "prompt_per_second": 1073.8,
+      "predicted_n": 8,
+      "predicted_ms": 132.7,
+      "predicted_per_token_ms": 16.587,
+      "predicted_per_second": 60.3,
+      "draft_n": 6,
+      "draft_n_accepted": 5
+    }
+  },
+  {
+    "condition": "resident14",
+    "target": 4096,
+    "repeat": 3,
+    "prompt_sha256": "cd56ac3a2bc988913bcc2ffc57adc58422e3de26f953d72d7688305985c222d1",
+    "wall_s": 3.843,
+    "usage": {
+      "prompt_tokens": 4161,
+      "completion_tokens": 8,
+      "total_tokens": 4169,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4161,
+      "prompt_ms": 3724.5,
+      "prompt_per_token_ms": 0.895,
+      "prompt_per_second": 1117.2,
+      "predicted_n": 8,
+      "predicted_ms": 113.1,
+      "predicted_per_token_ms": 14.137,
+      "predicted_per_second": 70.7,
+      "draft_n": 6,
+      "draft_n_accepted": 5
+    }
+  },
+  {
+    "condition": "resident14",
+    "target": 16384,
+    "repeat": 1,
+    "prompt_sha256": "e28651a352e131cc0c2de148d659f719982fdadf42bf87d8d31c9302ff4ed87f",
+    "wall_s": 9.047,
+    "usage": {
+      "prompt_tokens": 16306,
+      "completion_tokens": 8,
+      "total_tokens": 16314,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16306,
+      "prompt_ms": 8934.7,
+      "prompt_per_token_ms": 0.548,
+      "prompt_per_second": 1825.0,
+      "predicted_n": 8,
+      "predicted_ms": 99.3,
+      "predicted_per_token_ms": 12.412,
+      "predicted_per_second": 80.6,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    }
+  },
+  {
+    "condition": "resident14",
+    "target": 16384,
+    "repeat": 2,
+    "prompt_sha256": "01dfa28d907b738f3a96802956cb71c27b0263776bf574aa1e35ece276fdde04",
+    "wall_s": 8.906,
+    "usage": {
+      "prompt_tokens": 16297,
+      "completion_tokens": 8,
+      "total_tokens": 16305,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16297,
+      "prompt_ms": 8798.5,
+      "prompt_per_token_ms": 0.54,
+      "prompt_per_second": 1852.2,
+      "predicted_n": 8,
+      "predicted_ms": 81.7,
+      "predicted_per_token_ms": 10.213,
+      "predicted_per_second": 97.9,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    }
+  },
+  {
+    "condition": "resident14",
+    "target": 16384,
+    "repeat": 3,
+    "prompt_sha256": "2e67d0ff357cc2585fb26028403dbbc36d7693a11f8c4b7661d6d1928a8fc910",
+    "wall_s": 8.829,
+    "usage": {
+      "prompt_tokens": 16300,
+      "completion_tokens": 8,
+      "total_tokens": 16308,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16300,
+      "prompt_ms": 8721.2,
+      "prompt_per_token_ms": 0.535,
+      "prompt_per_second": 1869.0,
+      "predicted_n": 8,
+      "predicted_ms": 91.1,
+      "predicted_per_token_ms": 11.387,
+      "predicted_per_second": 87.8,
+      "draft_n": 6,
+      "draft_n_accepted": 5
+    }
+  }
+]
