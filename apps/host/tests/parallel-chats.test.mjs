@@ -10,6 +10,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DeliverableTracker, FolderClaims } from '../server/agent/deliverables.mjs';
+import { createChatStore } from '../server/chat-store.mjs';
+import { installFakeHostFetch } from './helpers/fake-host-chats.mjs';
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 
@@ -105,6 +107,10 @@ async function bundle(entry, plugins = []) {
 }
 
 test('two live chats in one workspace keep their messages, tool cards and saved copies apart, interleaved, and after a restart', async () => {
+  const hostDir = mkdtempSync(join(tmpdir(), 'strata-5008-host-'));
+  const chatStore = createChatStore({ dir: hostDir });
+  const fakeHost = installFakeHostFetch(chatStore);
+  try {
   globalThis.window ??= globalThis;
   globalThis.document ??= { addEventListener() {}, hasFocus: () => true, visibilityState: 'visible', documentElement: { dataset: {}, style: { setProperty() {} }, classList: { toggle() {}, add() {}, remove() {} } } };
   const memory = new Map();
@@ -136,6 +142,7 @@ test('two live chats in one workspace keep their messages, tool cards and saved 
     },
   };
   const store = await bundle('../src/lib/store.ts', [mockClient]);
+  await store.loadChatsFromHost();   // the first read of the host's chats (the page's own start-up does this inside bootstrap)
   const wait = async (n) => { for (let i = 0; i < 200 && globalThis.__streams.length < n; i++) await new Promise((r) => setTimeout(r, 5)); assert.ok(globalThis.__streams.length >= n, `stream ${n} started`); };
 
   const a = store.newSession();
@@ -164,13 +171,15 @@ test('two live chats in one workspace keep their messages, tool cards and saved 
   sb.onFrame({ type: 'done', tokensIn: 5, tokensOut: 5, durationMs: 10, usageSource: 'reported' });
   sa.release(); sb.release();
   await Promise.all([turnA, turnB]);
-  store.flushSessions();
+  await store.flushSessions();
 
-  const saved = [...memory].filter(([k]) => k.startsWith('strata.session.v2.')).map(([, v]) => JSON.parse(v));
-  assert.equal(saved.length, 2);
+  const saved = [];
+  for (const e of chatStore.list().chats) saved.push(JSON.parse(await chatStore.read(e.id)).session);
+  assert.equal(saved.length, 2, JSON.stringify(fakeHost.calls.map((c) => `${c.method} ${c.path}`)));
   const bodyOf = (id) => JSON.stringify(saved.find((s) => s.id === id));
   assert.ok(bodyOf(a.id).includes('MARK-A') && bodyOf(a.id).includes('A-unique-1') && bodyOf(a.id).includes('ends A'));
   assert.ok(!/MARK-B|B-unique|ends B/.test(bodyOf(a.id)), 'chat A holds nothing of chat B');
   assert.ok(bodyOf(b.id).includes('MARK-B') && bodyOf(b.id).includes('B-unique-1') && bodyOf(b.id).includes('ends B'));
   assert.ok(!/MARK-A|A-unique|ends A/.test(bodyOf(b.id)), 'chat B holds nothing of chat A');
+  } finally { fakeHost.restore(); rmSync(hostDir, { recursive: true, force: true }); }
 });
