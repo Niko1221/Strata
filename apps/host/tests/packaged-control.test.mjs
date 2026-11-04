@@ -469,11 +469,10 @@ test('packaged: an expired wait with an engine Control says is gone is a failure
   try {
     await g.native.refresh(true);
     g.setHealthDown(true);                                           // never answers /health ...
-    g.setStatus({ ok: true, state: 'starting', phase: 'loading' });
+    let asked = 0;                                                    // the first look (is the wait's engine still loading?) says starting, every later one says it ended
+    g.setStatus(() => (++asked === 1 ? { ok: true, state: 'starting', phase: 'loading' } : { ok: false, state: 'failed', error: 'server_exited', engine_exit_code: 3 }));
     g.failStart({ message: 'The engine did not start.', output: { ok: false, state: 'starting', error: 'startup_wait_expired', exit_code: 8 } }, 1);
     const started = g.native.operation('load', { model: 'iq2_xs' });
-    await new Promise(r => setTimeout(r, 300));
-    g.setStatus({ ok: false, state: 'failed', error: 'server_exited', engine_exit_code: 3 });     // ... and then Control says the engine ended
     const job = await finish(g.native, started.id);
     assert.equal(job.state, 'error');
     assert.match(String(job.error ?? ''), /server_exited/);
