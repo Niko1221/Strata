@@ -1,21 +1,36 @@
 #!/bin/sh
-# Build the Strata CUDA engine for an NVIDIA DGX Spark (GB10, sm_121, arm64 Linux) into a ready-made engine folder.
+# Build the Strata CUDA engine for an arm64 NVIDIA Linux computer - an NVIDIA DGX Spark (GB10, sm_121) or a Jetson AGX
+# Thor (sm_110) - into a ready-made engine folder.
 #
-# Runs on arm64 Linux with a CUDA 13 toolkit (13.0 is the release toolkit), on the Spark itself.
+# Runs on arm64 Linux with a CUDA 13 toolkit (13.0 is the release toolkit), on the machine itself.
 #
 #   spark/build_engine.sh                    # engine + DeepSeek engine + picture reader -> ./out-spark/engine
 #   BUILD_VISION=0 spark/build_engine.sh     # text only (faster)
 #   BUILD_DSV41=0 spark/build_engine.sh      # without the DeepSeek-V4.1 engine (strata-dsv41)
 #   ARCHS="121" OUT=/tmp/eng JOBS=8 spark/build_engine.sh
+#   ARCHS="121;110" spark/build_engine.sh    # machine code for the Spark and the Thor in one binary (the release shape)
 #
-# The result is the folder setup.py keeps a ready-made engine in: copy it to Strata/engine on the Spark and run
+# Without ARCHS the card in this computer is asked for (nvidia-smi's compute capability): a Spark answers 12.1 and gets
+# 121, a Jetson AGX Thor answers 11.0 and gets 110; with no answer 121 stays the default.  The last name in ARCHS also
+# carries the PTX (compute_XXX), as before.
+#
+# The result is the folder setup.py keeps a ready-made engine in: copy it to Strata/engine on the Spark or the Thor and run
 # ./setup.sh there (docs/DGX_SPARK_LINUX.md).  packaging/build_cuda_linux_aarch64.sh runs this and then makes the engine
 # package for the signed feed.  The flags are packaging/build_cuda_linux.sh's (the release build), for arm64:
 # STRATA_PORTABLE makes ggml-cpu a baseline Armv8.2 build (dotprod + fp16 + i8mm, what a Grace CPU has) instead of the build
 # host's, and both programs find the CUDA libraries beside themselves ($ORIGIN), never the toolkit they were built with.
 set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-archs=${ARCHS:-121}
+archs=${ARCHS:-}
+if [ -z "$archs" ]; then
+  # the card in this computer: a DGX Spark answers 12.1 (sm_121), a Jetson AGX Thor 11.0 (sm_110); no answer keeps 121, the old default
+  cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | head -1)
+  case "$cc" in
+    11.0) archs=110 ;;
+    12.1) archs=121 ;;
+    *)    archs=121 ;;
+  esac
+fi
 out=${OUT:-$repo/out-spark/engine}
 build=${BUILD:-$repo/build-spark}
 vision_dir=${BUILD_VISION_DIR:-$repo/build-vision-spark}
@@ -26,7 +41,7 @@ llama=${STRATA_GGML_DIR:-$repo/third_party/llama.cpp}
 
 case "$(uname -s)-$(uname -m)" in
   Linux-aarch64|Linux-arm64) ;;
-  *) echo "build_engine.sh: this builds on arm64 Linux (the DGX Spark)" >&2; exit 2 ;;
+  *) echo "build_engine.sh: this builds on arm64 Linux (a DGX Spark or a Jetson AGX Thor)" >&2; exit 2 ;;
 esac
 # DGX OS keeps the toolkit outside PATH for a plain user; the release build's toolkit is 13.0
 if ! command -v nvcc >/dev/null 2>&1 && [ -x /usr/local/cuda/bin/nvcc ]; then

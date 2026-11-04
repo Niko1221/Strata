@@ -1561,6 +1561,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
 
   add_executable(quantize_act_parity src/kernels/quantize_act_parity.cpp)
   target_include_directories(quantize_act_parity PRIVATE ${_strata_gpu_include_directories})
+  if(NOT MSVC)
+    # aarch64 hosts (Jetson AGX Thor, DGX Spark): the host references in this file are transcriptions of the device's exact
+    # float steps (`nearest_int_host(iscale * xb[j])`, the magic-constant trick right after the multiply).  gcc's default
+    # fp-contraction fuses the multiply into the trick's add where an x86 baseline build cannot (no FMA at -march=x86-64),
+    # and the transcription stops matching the device's barriered `__fmul_rn` on exact .5 ties - it fails three Q8_K
+    # distributions that way on a Thor while the device bytes are right.  The reference must not contract: #4559.
+    target_compile_options(quantize_act_parity PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+  endif()
   target_link_libraries(quantize_act_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME quantize_act_parity COMMAND quantize_act_parity --selftest)
 

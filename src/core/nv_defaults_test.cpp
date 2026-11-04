@@ -57,6 +57,7 @@ int main() {
     // the other cards: sm_120 (RTX 50) and sm_100 get nothing from this file; the sm_86 / sm_60 tables are unchanged by the flag
     CHECK(nv_default_env(12, 0, false).empty());
     CHECK(nv_default_env(10, 0, false).empty());
+    CHECK(nv_default_env(11, 0, false).empty());   // sm_110 (Jetson AGX Thor): it builds and runs, but nothing is measured on that part yet (#4559)
     CHECK(nv_default_env(8, 9, false).empty());
     CHECK(nv_default_env(7, 5, false).empty());
     {
