@@ -1295,7 +1295,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     proc, scratch, engine_log, run_log, log_start = None, None, None, None, 0
     stop_problem = None
     try:
-        with lease, contextlib.redirect_stdout(sys.stderr):
+        with lease, bench_standard.term_is_interrupt(), contextlib.redirect_stdout(sys.stderr):
             def log(message: str) -> None:
                 print(message, file=sys.stderr, flush=True)
             if a.profile and target.get("/health", timeout=5) is None:
