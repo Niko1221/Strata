@@ -8,6 +8,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/amd_community.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <atomic>
@@ -286,6 +287,198 @@ __global__ void __launch_bounds__(128) block_scores_tc_kernel(const float* __res
         }
     }
 }
+
+#if !defined(__HIPCC__)
+// ---- F16 scorer (CUDA sm_80+, opt-in STRATA_SELECT_F16=1; the 1M prompt): the same GEMM on FP16 tensor
+// cores with the operands' roles swapped.  The KEYS are the MMA's A operand - a warp holds the fragments of its 16
+// blocks in registers for a whole key tile - and the QUERIES are the B operand, streamed from shared memory, where the
+// CTA's F16_QT queries (all four indexer heads, FP32) stay for every key tile.  A key is read from global memory once
+// per F16_QT queries (the TF32 kernel above: once per 16) and a query once per F16_NB blocks, which at 1M (250K
+// blocks a layer) cuts the keys' traffic in half and the tensor time by 2x to 6x.  Each operand enters as an FP16 hi
+// part and, split further, an FP16 lo part (x - hi, an exact difference):
+//   SPLIT 1: hi_k.hi_q              one MMA a k-step (FP16 products, ~11 bits)
+//   SPLIT 2: + hi_k.lo_q            two (~16 bits)
+//   SPLIT 3: + lo_k.hi_q            three (~22 bits: FP32-level, as the 3xTF32 kernel)
+// m16n8k16 FP16 runs at twice the rate of TF32's m16n8k8, so per score SPLIT 3 spends half the tensor time the TF32
+// kernel does and SPLIT 1 a sixth.  Only SPLIT 3 passes qsa_select_bench's FP64 gate (RTX 4090, 1M: max error 1.2e-6 of
+// the score scale against 1.6e-6 for the TF32 kernel, the same selections 256/256); SPLIT 1 and 2 land at 8e-5 of the
+// scale and change the selection of 38 of 256 queries, so the switch runs SPLIT 3 and the other two stay bench-only
+// (STRATA_SELECT_F16_SPLIT=1|2) to show why the third term is needed.  The inputs are the normed, rotated indexer keys and queries, well inside FP16's
+// range; a lo part below FP16's normal range enters as a subnormal, which the MMA takes exactly.  relu per head, the
+// four heads added in head order in FP32: not bitwise the warp kernel's (another summation order), as the TF32 kernel.
+// The write set is the TF32 kernel's: out[q][b] for every b < min(n_bid(q), reach, max_blocks) of the launch's blocks;
+// the tail block n_bid stays block_scores_tail_kernel's.  Nothing outlives the launch.
+constexpr int F16_T = 256;                                   // 8 warps
+constexpr int F16_QT = 32;                                   // queries per CTA (4 n-tiles of 8)
+constexpr int F16_KT = 4;                                    // key tiles per CTA, 16 blocks a warp each
+constexpr int F16_TB = (F16_T / 32) * 16;                    // 128 blocks per key tile
+constexpr int F16_NB = F16_KT * F16_TB;                      // 512 blocks per CTA
+constexpr int F16_QS = IDX_DIM + 8;                          // FP32 query row stride: 136 floats, conflict-free 8-byte reads
+constexpr int F16_SMEM = IDX_HEADS * F16_QT * F16_QS * (int) sizeof(float);   // 69,632 bytes: one CTA an SM
+constexpr int64_t F16_MIN_BLOCKS = 8192;                     // below 32K cells the TF32 kernel's smaller CTAs fill the card better
+
+__device__ __forceinline__ uint32_t sel_h2(float x0, float x1) {   // element 0 in the low half
+    const __half2 h = __floats2half2_rn(x0, x1);
+    return *reinterpret_cast<const uint32_t*>(&h);
+}
+__device__ __forceinline__ uint32_t sel_h2_lo(float x0, float x1, uint32_t hi) {   // x - hi, rounded to FP16
+    const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&hi));
+    return sel_h2(x0 - f.x, x1 - f.y);
+}
+__device__ __forceinline__ void sel_mma16816(float* c, const uint32_t* a, const uint32_t* b) {
+#if !STRATA_SEL_SM80
+    __trap();
+#else
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
+                 "{%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+#endif
+}
+
+template <int SPLIT>
+__global__ void __launch_bounds__(F16_T, 1) block_scores_f16_kernel(const float* __restrict__ pooled,
+                                                                    const float* __restrict__ q_idx,
+                                                                    const int32_t* __restrict__ steps, int64_t nq,
+                                                                    int64_t max_blocks, int64_t reach,
+                                                                    float* __restrict__ out) {
+    extern __shared__ __align__(16) float sq[];   // [IDX_HEADS][F16_QT][F16_QS]
+    __shared__ int s_nbid[F16_QT];
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5, gid = lane >> 2, tig = lane & 3;
+    const int64_t q0 = (int64_t) blockIdx.y * F16_QT;
+    const int64_t b0 = (int64_t) blockIdx.x * F16_NB;
+    // the queries: four heads of F16_QT rows, zero rows past nq
+    for (int i = t; i < IDX_HEADS * F16_QT * (IDX_DIM / 4); i += F16_T) {
+        const int hq = i / (IDX_DIM / 4), c = i % (IDX_DIM / 4);
+        const int h = hq / F16_QT, r = hq % F16_QT;
+        float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (q0 + r < nq) v = reinterpret_cast<const float4*>(q_idx + ((q0 + r) * IDX_HEADS + h) * IDX_DIM)[c];
+        *reinterpret_cast<float4*>(sq + (h * F16_QT + r) * F16_QS + c * 4) = v;
+    }
+    if (t < F16_QT) s_nbid[t] = q0 + t < nq ? steps[(q0 + t) * kStepCount + kStepNBid] : 0;
+    __syncthreads();
+    int hi_nbid = 0;
+    for (int i = 0; i < F16_QT; ++i) hi_nbid = max(hi_nbid, s_nbid[i]);   // CTA-uniform
+    int64_t b_end = reach < (int64_t) hi_nbid ? reach : (int64_t) hi_nbid;   // blocks this CTA scores
+    if (b0 + F16_NB < b_end) b_end = b0 + F16_NB;
+    if (b0 >= b_end) return;   // CTA-uniform, after the last barrier: blocks past every query's n_bid
+    for (int kt = 0; kt < F16_KT; ++kt) {
+        const int64_t bt = b0 + (int64_t) kt * F16_TB + (int64_t) warp * 16;   // this warp's 16 blocks
+        if (bt >= b_end) break;                                                 // warp-uniform; no barrier below
+        const int64_t r0 = bt + gid, r1 = bt + gid + 8;
+        const bool ok0 = r0 < b_end, ok1 = r1 < b_end;
+        // the A fragments: rows gid / gid + 8 at k columns 2 tig, 2 tig + 1 (a[0] / a[1]) and + 8 (a[2] / a[3])
+        uint32_t ah[IDX_DIM / 16][4], al[IDX_DIM / 16][4];
+#pragma unroll
+        for (int ks = 0; ks < IDX_DIM / 16; ++ks) {
+            const int col = ks * 16 + 2 * tig;
+            float2 x0 = make_float2(0.f, 0.f), x1 = x0, y0 = x0, y1 = x0;
+            if (ok0) {
+                x0 = *reinterpret_cast<const float2*>(pooled + r0 * IDX_DIM + col);
+                x1 = *reinterpret_cast<const float2*>(pooled + r0 * IDX_DIM + col + 8);
+            }
+            if (ok1) {
+                y0 = *reinterpret_cast<const float2*>(pooled + r1 * IDX_DIM + col);
+                y1 = *reinterpret_cast<const float2*>(pooled + r1 * IDX_DIM + col + 8);
+            }
+            ah[ks][0] = sel_h2(x0.x, x0.y);
+            ah[ks][1] = sel_h2(y0.x, y0.y);
+            ah[ks][2] = sel_h2(x1.x, x1.y);
+            ah[ks][3] = sel_h2(y1.x, y1.y);
+            if constexpr (SPLIT >= 3) {
+                al[ks][0] = sel_h2_lo(x0.x, x0.y, ah[ks][0]);
+                al[ks][1] = sel_h2_lo(y0.x, y0.y, ah[ks][1]);
+                al[ks][2] = sel_h2_lo(x1.x, x1.y, ah[ks][2]);
+                al[ks][3] = sel_h2_lo(y1.x, y1.y, ah[ks][3]);
+            } else {
+                al[ks][0] = al[ks][1] = al[ks][2] = al[ks][3] = 0u;
+            }
+        }
+        float s[F16_QT / 8][4];
+#pragma unroll
+        for (int nt = 0; nt < F16_QT / 8; ++nt) s[nt][0] = s[nt][1] = s[nt][2] = s[nt][3] = 0.f;
+#pragma unroll
+        for (int h = 0; h < IDX_HEADS; ++h) {
+            float c[F16_QT / 8][4];
+#pragma unroll
+            for (int nt = 0; nt < F16_QT / 8; ++nt) c[nt][0] = c[nt][1] = c[nt][2] = c[nt][3] = 0.f;
+            const float* qh = sq + h * F16_QT * F16_QS;
+#pragma unroll
+            for (int ks = 0; ks < IDX_DIM / 16; ++ks) {
+#pragma unroll
+                for (int nt = 0; nt < F16_QT / 8; ++nt) {
+                    // the B fragment: query n = gid of the n-tile at k 2 tig, 2 tig + 1 (b[0]) and + 8 (b[1])
+                    const float* qr = qh + (nt * 8 + gid) * F16_QS + ks * 16 + 2 * tig;
+                    const float2 u = *reinterpret_cast<const float2*>(qr), v = *reinterpret_cast<const float2*>(qr + 8);
+                    uint32_t bh[2], bl[2];
+                    bh[0] = sel_h2(u.x, u.y);
+                    bh[1] = sel_h2(v.x, v.y);
+                    sel_mma16816(c[nt], ah[ks], bh);
+                    if constexpr (SPLIT >= 2) {
+                        bl[0] = sel_h2_lo(u.x, u.y, bh[0]);
+                        bl[1] = sel_h2_lo(v.x, v.y, bh[1]);
+                        sel_mma16816(c[nt], ah[ks], bl);
+                    }
+                    if constexpr (SPLIT >= 3) sel_mma16816(c[nt], al[ks], bh);
+                }
+            }
+#pragma unroll
+            for (int nt = 0; nt < F16_QT / 8; ++nt)
+#pragma unroll
+                for (int i = 0; i < 4; ++i) s[nt][i] += c[nt][i] > 0.f ? c[nt][i] : 0.f;
+        }
+        // C: (row gid, column 2 tig), (gid, 2 tig + 1), (gid + 8, 2 tig), (gid + 8, 2 tig + 1); rows are blocks, columns queries
+#pragma unroll
+        for (int nt = 0; nt < F16_QT / 8; ++nt)
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const int qr = nt * 8 + 2 * tig + (i & 1);
+                const int64_t qi = q0 + qr, b = i < 2 ? r0 : r1;
+                if (qi < nq && b < s_nbid[qr] && b < max_blocks) out[qi * max_blocks + b] = s[nt][i];
+            }
+    }
+}
+
+// STRATA_SELECT_F16 unset or 0: the TF32 kernel; any other value: the three-term F16 kernel.  STRATA_SELECT_F16_SPLIT=1|2
+// (measurements only; both fail the FP64 gate) runs the one- or two-term variant instead.
+int select_f16_split() {
+    static const int split = [] {
+        const char* v = std::getenv("STRATA_SELECT_F16");
+        if (v == nullptr || v[0] == '\0' || std::atoi(v) == 0) return 0;
+        const char* sp = std::getenv("STRATA_SELECT_F16_SPLIT");
+        const int n = sp ? std::atoi(sp) : 3;
+        return n == 1 || n == 2 ? n : 3;
+    }();
+    return split;
+}
+
+// the F16 scorer for a prompt call of `reach` blocks; false when it does not apply (the caller runs the TF32 kernel)
+bool block_scores_f16(const float* pooled, const float* q_idx, const int32_t* steps, int64_t nq, int64_t max_blocks,
+                      int64_t reach, float* scores, cudaStream_t stream, int dev) {
+    const int split = select_f16_split();
+    if (split == 0 || reach < F16_MIN_BLOCKS) return false;
+    const dim3 grid((unsigned) ((reach + F16_NB - 1) / F16_NB), (unsigned) ((nq + F16_QT - 1) / F16_QT));
+    if (grid.y > 65535) return false;
+    static bool attr[64][4] = {};   // the shared-memory opt-in, per device and kernel
+    if (dev < 0 || dev >= 64) return false;
+    if (!attr[dev][split]) {
+        const cudaError_t e = split == 1 ? cudaFuncSetAttribute(block_scores_f16_kernel<1>, cudaFuncAttributeMaxDynamicSharedMemorySize, F16_SMEM)
+                            : split == 2 ? cudaFuncSetAttribute(block_scores_f16_kernel<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, F16_SMEM)
+                                         : cudaFuncSetAttribute(block_scores_f16_kernel<3>, cudaFuncAttributeMaxDynamicSharedMemorySize, F16_SMEM);
+        if (e != cudaSuccess) { cudaGetLastError(); return false; }
+        attr[dev][split] = true;
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true))
+            std::fprintf(stderr, "qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, %s) for prompt calls of %lld blocks or more\n",
+                         split == 1 ? "one term, bench only" : split == 2 ? "two terms, bench only" : "hi.hi + hi.lo + lo.hi",
+                         (long long) F16_MIN_BLOCKS);
+    }
+    if (split == 1) block_scores_f16_kernel<1><<<grid, F16_T, F16_SMEM, stream>>>(pooled, q_idx, steps, nq, max_blocks, reach, scores);
+    else if (split == 2) block_scores_f16_kernel<2><<<grid, F16_T, F16_SMEM, stream>>>(pooled, q_idx, steps, nq, max_blocks, reach, scores);
+    else block_scores_f16_kernel<3><<<grid, F16_T, F16_SMEM, stream>>>(pooled, q_idx, steps, nq, max_blocks, reach, scores);
+    return true;
+}
+#endif   // !__HIPCC__
 
 #if defined(__HIPCC__)
 // ---- gfx12 (RDNA4: gfx1200 / gfx1201) scorer on v_wmma_f32_16x16x16_bf16 (wave32).  Same GEMM as above: for a tile of 16
@@ -2320,6 +2513,15 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs it on several)
     int adev = 0;
     cudaGetDevice(&adev);
+    {   // STRATA_SELECT_F16 (sm_80+): the FP16 tensor-core scorer for the long prompt calls; the tail block as below
+        const int64_t f16_reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+        if (block_scores_f16(pooled, q_idx, steps, nq, max_blocks, f16_reach, scores, (cudaStream_t) stream, adev)) {
+            block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks, scores);
+            const cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_tc (f16): %s\n", cudaGetErrorString(e)); std::exit(1); }
+            return true;
+        }
+    }
     const int bytes = (TC_QT * TC_QS + TC_NB * TC_KS) * (int) sizeof(float);
     if (!attr[adev]) {
         if (cudaFuncSetAttribute(block_scores_tc_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
