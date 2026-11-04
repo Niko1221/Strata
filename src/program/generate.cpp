@@ -3855,7 +3855,9 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    strata::core::set_peer_portable(o.peer_device >= 1 || o.ep_device >= 0);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device or expert parallelism (before any allocation)
+    strata::core::set_peer_portable(o.peer_device >= 1 || o.ep_device >= 0);
+    // expert parallelism runs the prompt on card 0 alone (no PeerPrefill): it keeps the fused prompt kernels
+    strata::core::set_peer_prompt(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device or expert parallelism (before any allocation)
     {   // the RAM guard (parking, session save/restore): --memory-limit-mib, else STRATA_MEMORY_LIMIT_MIB, else none
         int64_t mib = o.memory_limit_mib;
         if (mib < 0) {
