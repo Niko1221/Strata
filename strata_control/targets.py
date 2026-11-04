@@ -6,7 +6,9 @@ start path must not import the component fetcher (components.py) to get them.
 
 from __future__ import annotations
 
+import os
 import platform
+import sys
 
 
 class ComponentError(RuntimeError):
@@ -28,12 +30,32 @@ BACKEND_MATRIX: dict[str, tuple[str, ...]] = {
     "cpu": ("macos-arm64", "macos-x86_64", "windows-x86_64", "linux-x86_64"),
 }
 
+def _system_name() -> str:
+    """The OS name as `platform.system()` spells it, without asking WMI on Windows (#4975).
+
+    `platform.system()` is `platform.uname()` on every Python, and on Windows 3.12 that goes through
+    `win32_ver()` -> `_wmi_query()`: a WMI call with no timeout.  `sys.platform` is set by the interpreter itself
+    and cannot hang.  The other systems keep `platform.system()`, which asks the kernel there, not a service."""
+    return "Windows" if sys.platform.startswith("win") else platform.system()
+
+
+def _machine_name() -> str:
+    """The machine type, without asking WMI on Windows (#4975): `platform.machine()` is `uname().machine` too.
+
+    Windows reports it in `PROCESSOR_ARCHITECTURE`, the variable `platform.uname()` itself reads there
+    (`PROCESSOR_ARCHITEW6432` is the real one inside a 32-bit process on 64-bit Windows).  Other systems keep
+    `platform.machine()`, which is `os.uname()`."""
+    if sys.platform.startswith("win"):
+        return os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or ""
+    return platform.machine()
+
+
 def host_platform() -> str:
     """This machine as an `os-arch` key, matching `BACKEND_MATRIX`."""
-    system = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(platform.system())
+    system = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(_system_name())
     if system is None:
-        raise ComponentError(f"unsupported operating system: {platform.system()}")
-    machine = platform.machine().lower()
+        raise ComponentError(f"unsupported operating system: {_system_name()}")
+    machine = _machine_name().lower()
     arch = {"arm64": "arm64", "aarch64": "arm64",
             "x86_64": "x86_64", "amd64": "x86_64"}.get(machine, machine)
     if system == "linux" and arch == "arm64":
