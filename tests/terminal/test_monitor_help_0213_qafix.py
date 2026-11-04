@@ -62,6 +62,30 @@ class Help(unittest.TestCase):
                 self.assertNotIn("Space freeze  r refresh", last_line(app))
         asyncio.run(go())
 
+    def test_narrow_terminals_wrap_the_list_at_the_keys_and_show_every_key(self):
+        async def go(width, height):
+            app = MonitorApp(Source(metrics("generating")), None, interval=0.2)
+            async with app.run_test(size=(width, height)) as pilot:
+                await pilot.pause(0.5)
+                for key in ("1", "2"):
+                    await pilot.press(key)
+                    await pilot.pause(0.3)
+                    await pilot.press("question_mark")
+                    await pilot.pause(0.8)               # polls pass; it stays
+                    rows = [s.text.rstrip() for s in app.screen._compositor.render_strips()]
+                    shown = "\n".join(rows)
+                    items = app._help_line().split("  ")
+                    self.assertGreater(len(items), 5)
+                    for item in items:
+                        self.assertIn(item, shown, f"{width}x{height} view {key}: {item!r} cut off")
+                    self.assertTrue(all(len(r) <= width for r in rows))
+                    self.assertGreater(len(app._help_wrapped(width)), 1, "narrower than the line: it wraps")
+                    await pilot.press("question_mark")
+                    await pilot.pause(0.3)
+                    self.assertIn("Read only", last_line(app))   # back to the one-line message
+        for size in ((80, 24), (60, 16)):
+            asyncio.run(go(*size))
+
 
 if __name__ == "__main__":
     unittest.main()
