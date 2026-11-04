@@ -129,7 +129,7 @@ async function loadHealth() {
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
   {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100, perCard: true},
-  {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
+  {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used", perCard: true},
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn", perCard: true},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power", perCard: true},
   {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info", perCard: true},
@@ -513,9 +513,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const cards = hw.gpus || [];
   const multi = cards.length > 1;
   $("metrics").classList.toggle("metrics--split", multi);   // the plain tiles read this and keep their own height
-  const per = (f) => cards.map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   // every card row starts with its number: it pairs the row with the n-th card fastest, and the name follows
   const cardLabel = (g) => `GPU ${g.index}` + (g.name ? ` · ${g.name}` : "");
+  // rows whose reading takes two lines (a card's draw over its cap, its memory over its size) say the card's
+  // name first and its number underneath, in the same quiet colour
+  const cardName = (g) => [{ text: g.name || `GPU ${g.index}` }, ...(g.name ? [`GPU ${g.index}`] : [])];
   const gpuHist = {};                                 // each card's own history series, keyed as "gpus" is
   for (const g of h.gpus || []) gpuHist[g.index] = g;
   const top = (f) => Math.max(1, ...cards.flatMap((g) => ((gpuHist[g.index] || {})[f]) || []));
@@ -530,9 +532,14 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   metricRows("gpu", multi ? cards.map((g) => ({ label: cardLabel(g), value: g.util == null ? "–" : `${fmt(g.util)}%`,
                                                 values: (gpuHist[g.index] || {}).util, max: 100 })) : []);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
-            multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
+            eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
+  // a split run's cards take a row each here too, instead of the sub crammed with "GPU 0 13.1 GB · GPU 1 12.2 GB ·
+  // ..." the moment a second card appears; the total stays the figure, it is the one number that says how full
+  // the rig is, and each row answers for its own card: what it holds, and (quiet, like a cap) what it holds of
+  metricRows("vram", multi ? cards.map((g) => ({ label: cardName(g),
+    value: g.mem_used == null ? "–" : [{ text: `${gb(g.mem_used)} GB` },
+                                       ...(g.mem_total ? [{ text: `${gb(g.mem_total, 0)} GB cards`, cls: "muted" }] : [])] })) : []);
   // a split run lists its cards here too, the way GPU load does: one big figure can name only the hottest
   // card, and it hides the rest of them standing next to it
   $("mv-temp").hidden = $("ms-temp").hidden = multi;
@@ -547,9 +554,6 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ms-power").hidden = multi;
   $("sp-power").toggleAttribute("hidden", multi);     // an <svg> has no hidden property, so the attribute goes on explicitly
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  // Power and PCIe rows carry the reading on two lines and answer for their own caps, so the row says the
-  // card's name first and its number underneath, in the same quiet colour, and the values sit at the right
-  const cardName = (g) => [{ text: g.name || `GPU ${g.index}` }, ...(g.name ? [`GPU ${g.index}`] : [])];
   metricRows("power", multi ? cards.map((g) => ({ label: cardName(g),
     value: g.power_limit == null ? (g.power == null ? "–" : `${fmt(g.power)} W`)
                                  : [{ text: g.power == null ? "–" : `${fmt(g.power)} W` },

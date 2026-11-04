@@ -736,6 +736,27 @@ test("monitor: a split run's GPU temp tile lists each card's heat with a chart o
   await two.stop();
 });
 
+test("monitor: a split run's VRAM tile keeps the total and lists each card's memory", async ({ browser }) => {
+  const two = await startMock({ gpus: 2 });
+  const page = await openPage(browser, two, { hash: "#monitor" });
+  await page.waitForFunction(() => !document.getElementById("rows-vram").hidden, { timeout: 8000 });
+  assert.equal(await page.$eval("#mv-vram", (e) => e.hidden), false, "the total stays the figure - it is how full the rig is");
+  assert.equal(await page.$eval("#mv-vram", (e) => e.textContent), "8.4/ 11 GB");
+  assert.equal(await page.$eval("#ms-vram", (e) => e.textContent), "1,200 experts cached",
+               "the sub says what it always said, not a crammed list of the cards");
+  assert.equal(await page.$eval("#sp-vram", (e) => getComputedStyle(e).display), "block",
+               "the total's history stays - the rows have no charts of their own here");
+  assert.deepEqual(await page.$$eval("#rows-vram .metric-row__name", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
+                   [["NVIDIA GeForce RTX 4090", "GPU 0"], ["NVIDIA GeForce RTX 3060", "GPU 1"]],
+                   "one row per card, the name over its number");
+  assert.deepEqual(await page.$$eval("#rows-vram .metric-row__value", (els) => els.map((e) => [...e.children].map((d) => d.textContent))),
+                   [["5.6 GB", "6 GB cards"], ["2.8 GB", "6 GB cards"]],
+                   "what each card holds, and what it holds of - its own size, quiet");
+  assert.deepEqual(page.errors, []);
+  await page.close();
+  await two.stop();
+});
+
 test("monitor: a split run keeps the Speed, CPU and Disk read tiles at their own height", async ({ browser }) => {
   const two = await startMock({ gpus: 2 });
   const page = await openPage(browser, two, { hash: "#monitor" });
@@ -768,6 +789,8 @@ test("monitor: one card keeps its single mean chart and shows no rows", async ({
   assert.equal(await page.$eval("#rows-gpu", (e) => e.hidden), true, "a single card needs no rows");
   assert.equal(await page.$eval("#rows-power", (e) => e.hidden), true, "nor the Power tile");
   assert.equal(await page.$eval("#rows-pcie", (e) => e.hidden), true, "nor the PCIe tile");
+  assert.equal(await page.$eval("#rows-vram", (e) => e.hidden), true, "nor the VRAM tile, whose sub keeps saying experts cached");
+  assert.equal(await page.$eval("#ms-vram", (e) => e.textContent), "1,200 experts cached");
   assert.equal(await page.$eval("#mv-pcie", (e) => e.textContent), "Gen4x16", "one card keeps the link as its figure");
   assert.equal(await page.$eval("#ms-pcie", (e) => e.textContent), "to GPU 16 MB/s");
   assert.equal(await page.evaluate(() => document.getElementById("mv-speed").closest(".metric-card").getBoundingClientRect().height),
