@@ -64,6 +64,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.session_persist import SnapshotIndex, ids_digest  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
 from strata_control import engine_component  # noqa: E402
@@ -4509,6 +4510,14 @@ class Service:
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.session_autosave = False                 # the config's "session_autosave" (needs slot_save_path and an
+                                                      # engine with session files): save each finished turn's
+                                                      # conversation to disk, restore it when a later prompt begins
+                                                      # with those tokens - serve/session_persist.py
+        self.snapshots = None                         # a session_persist.SnapshotIndex once the option is on
+        self._live_snapshot = None                    # the saved conversation the engine's live context came from
+                                                      # (a restore of what is already live is skipped)
+        self._pending_restore = None                  # prepare()'s match, restored at the start of _run under the FIFO
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -4725,6 +4734,53 @@ class Service:
         for cancel in active:
             cancel.set()
         return len(active)
+
+    def _saved_conversation(self, ids):
+        """prepare(): the disk snapshot this prompt begins with, to restore before the request (None: none).  A
+        snapshot the live context already came from is skipped: the engine's own prefix match reads nothing."""
+        if self.snapshots is None:
+            return None
+        hit = self.snapshots.match(ids)
+        if hit is None or self._live_snapshot == hit["file"]:
+            return None
+        return str(self.snapshots.dir / hit["file"])
+
+    def _restore_snapshot(self, path: str) -> None:
+        """The start of _run, under the FIFO: read a saved conversation into the engine before the prompt.  The
+        engine diffs the GEN against what a RESTORE made live, so only the tokens past the snapshot are read.  A
+        refusal never breaks the request: the prompt is then read in full, as without the option."""
+        try:
+            r = self.engine.session_file("restore", path)
+        except Exception as e:
+            print(f"[strata] session restore of {os.path.basename(path)} did not run ({e}); "
+                  "the prompt is read in full", flush=True)
+            return
+        self._live_snapshot = os.path.basename(path)
+        print(f"[strata] session restored from disk: {r['tokens']} tokens in {r['ms']:.0f} ms (session_autosave)",
+              flush=True)
+
+    def _autosave_session(self, ids, max_new) -> None:
+        """After a finished turn: the engine's live conversation to disk under the digest of the request's prompt
+        tokens, recorded in the snapshot index (the conversation cache's L2 - serve/session_persist.py).  The
+        engine must still hold the turn's conversation: a request that came in between (the FIFO was free) leaves
+        another one live, and counts that do not fit this turn skip the save rather than index a stranger."""
+        digest = ids_digest(ids)
+        path = os.path.join(self.slot_save_path, "auto-" + digest + ".bin")
+        try:
+            with self._turn():
+                r = self.engine.session_file("save", path)
+        except Exception as e:
+            print(f"[strata] session autosave did not run ({e}); the next turn reads its prompt in full", flush=True)
+            return
+        # the live conversation is this prompt (read in full) plus at most its reply and the template's few
+        # closing tokens; anything else is another request's conversation
+        if not len(ids) <= r["tokens"] <= len(ids) + (max_new or 0) + 8:
+            print(f"[strata] session autosave skipped: the engine holds {r['tokens']} tokens, which is not this "
+                  f"prompt's {len(ids)} plus its reply (another request came in between)", flush=True)
+            return
+        self.snapshots.add(len(ids), digest, os.path.basename(path), r["bytes"])
+        self.snapshots.save()
+        self._live_snapshot = os.path.basename(path)
 
     def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
@@ -5696,6 +5752,7 @@ class Service:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or ds_pics)
         if req is not None:
             self.set_restore_points(req, ids, bool(images) or ds_pics)
+        self._pending_restore = self._saved_conversation(ids)
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     def deepseek_turn_ids(self):
@@ -5877,11 +5934,19 @@ class Service:
         finally:
             if ka is not None:
                 ka.release()
+        if self.snapshots is not None and self.loaded():
+            self._autosave_session(ids, max_new)   # the conversation cache's L2: the next turn (or the next run)
+            # reads the prompt from the disk instead of the SSD-streamed model files
 
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
              declared_only=False, deferred=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
+        if self._pending_restore is not None:
+            path, self._pending_restore = self._pending_restore, None
+            if self.loaded():   # a model start would refuse the RESTORE; that turn reads its prompt in full
+                with self._turn(cancel):
+                    self._restore_snapshot(path)
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
         defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
@@ -9570,6 +9635,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--slot-save-path", default=None, metavar="DIR",
                     help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
+    ap.add_argument("--session-autosave", action="store_true", default=False,
+                    help="with --slot-save-path: save each finished turn's conversation to DIR and restore it when a "
+                         "later prompt begins with those tokens, so only the new tokens are read (also "
+                         "\"session_autosave\" in the config)")
     ap.add_argument("--replicas", type=int, default=None, metavar="N",
                     help="data-parallel replicas (opt-in): cut the \"gpu\" list into N equal groups and run one engine on "
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
@@ -9944,6 +10013,20 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             raise SystemExit(f"[strata] {e}")
         print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
+    if a.session_autosave or cfg.get("session_autosave") is True:
+        if not svc.slot_save_path or not hasattr(svc.engine, "session_file"):
+            raise SystemExit("[strata] session_autosave needs slot_save_path (a directory for the snapshots) and an "
+                             "engine with session files")
+        svc.session_autosave = True
+        try:
+            cap = float(cfg.get("session_persist_max_gb") or 8) * (1 << 30)
+        except (TypeError, ValueError):
+            raise SystemExit("[strata] config \"session_persist_max_gb\" must be a number of GB, not "
+                             f"{cfg.get('session_persist_max_gb')!r}")
+        svc.snapshots = SnapshotIndex(svc.slot_save_path, max_bytes=int(cap))
+        print(f"[strata] session autosave on: each finished turn's conversation is saved to {svc.slot_save_path} "
+              "(LRU, \"session_persist_max_gb\" caps it) and a prompt that begins with a saved one restores it "
+              "first, so only the tokens past it are read", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
