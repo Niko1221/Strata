@@ -353,6 +353,20 @@ Serving exposed a real waste: the output projection is 151936 x 2048, and the fi
 re-dequantized it on the host for every generated token. Keeping it resident turned the first
 request from 67 s into 17 s and warm requests into 1.8 s.
 
+**Keeping them up.** This container does not run systemd, so `deploy/strata-ascend910.service`
+cannot be used here; both services run under the container's supervisord instead:
+
+```bash
+cp cann/tests/supervisor-strata.conf /etc/supervisor/conf.d/strata-ascend.conf
+supervisorctl reread && supervisorctl update
+supervisorctl status | grep strata
+```
+
+They come back with the container and restart on failure. The unit file is kept up to date for a
+host that does use systemd. `LD_LIBRARY_PATH` must include the driver directories
+(`/usr/local/Ascend/driver/lib64{,/common,/driver}`) or `llama-server` fails to load
+`libascend_hal.so` — that cost one restart to find.
+
 **Memory.** The endpoint holds an expert cache, and it shares a 64 GB card with llama-server
 (2.7 GB). `STRATA_BUDGET_GB` caps that cache; the numbers measured here:
 
