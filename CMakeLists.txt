@@ -410,6 +410,11 @@ if(STRATA_BUILD_TESTS)
   target_link_libraries(routed_stream_test PRIVATE Threads::Threads)
   add_test(NAME routed_stream_test COMMAND routed_stream_test)
 
+  # PR #4006: STRATA_PREFILL_TIMING does not record a mark in the phase already running (header-only, no GPU)
+  add_executable(timer_marks_test tests/prefill/timer_marks_test.cpp)
+  target_include_directories(timer_marks_test PRIVATE include)
+  add_test(NAME timer_marks_test COMMAND timer_marks_test)
+
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
