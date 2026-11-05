@@ -3864,9 +3864,10 @@ bool Verifier::brow_row(const int32_t* tokens, int n, float* out, std::string& e
 // BROWAT alone could not serve the multi-field readout.  These three calls close that gap: name the
 // positions, get each window offered as the prompt is read, and read the kept rows afterwards.
 
-void Verifier::set_row_capture(const int64_t* positions, int n) {
-    if (next_ != nullptr) { next_->set_row_capture(positions, n); return; }
+void Verifier::set_row_capture(const int64_t* positions, int n, int64_t limit) {
+    if (next_ != nullptr) { next_->set_row_capture(positions, n, limit); return; }
     clear_row_capture();
+    cap_limit_ = limit;   // minor 7 (2026-11-05): positions at/after the prompt end are draft rows
     if (positions == nullptr || n <= 0) return;
     cap_want_.assign(positions, positions + n);
     std::sort(cap_want_.begin(), cap_want_.end());
@@ -3878,16 +3879,29 @@ void Verifier::clear_row_capture() {
     cap_want_.clear();
     cap_pos_.clear();
     cap_rows_.clear();
+    cap_limit_ = -1;
+    // M10 (2026-11-05, expert review): the last window's row count goes with the rest of the
+    // per-request row state.  generate.cpp calls this at the top of EVERY request, so a request
+    // that fails before running a window (oversize prompt, tokenization, cancel) can no longer
+    // leave BROW answering the previous request's row.
+    last_row_T_ = 0;
 }
 
 bool Verifier::capture_window_rows(int64_t pos0, int T, std::string& err) {
     if (next_ != nullptr) return next_->capture_window_rows(pos0, T, err);
     if (cap_want_.empty()) return true;                       // nothing was asked for: not a cost, not a check
     if (T <= 0) { err = "capture_window_rows: an empty window"; return false; }
-    if (n_vocab_ <= 0) { err = "capture_window_rows: the head has no vocabulary"; return false; }
     for (const int64_t p : cap_want_) {
         if (p < pos0 || p >= pos0 + T) continue;              // this window did not run that position
+        // minor 7 (2026-11-05, expert review): a position at/after the prompt end is not a
+        // prompt row - only a decode/draft window would cover it, and its row is a draft row.
+        // Never capture it; BROWAT then refuses the position by name (count mismatch), which
+        // is the fail-closed answer, never a neighbouring or future row.
+        if (cap_limit_ >= 0 && p >= cap_limit_) continue;
         if (std::find(cap_pos_.begin(), cap_pos_.end(), p) != cap_pos_.end()) continue;
+        // checked per capturable position (not up front): every skip above means no row is
+        // taken, so a window whose wants were all skipped needs no vocabulary at all
+        if (n_vocab_ <= 0) { err = "capture_window_rows: the head has no vocabulary"; return false; }
         const int t = (int) (p - pos0);
         std::vector<float> row((size_t) n_vocab_);
 #if defined(STRATA_GPU_METAL)

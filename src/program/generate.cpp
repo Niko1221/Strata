@@ -15258,12 +15258,24 @@ int main(int argc, char** argv) {
             // flag is off, a token is out of range, or no window has run yet.  The server holds the FIFO, so
             // the last request's row is exactly what this answers.
             if (o.jev_brow && line.rfind("BROW ", 0) == 0) {
+                // minor 1 (2026-11-05, expert review): the BROWAT-style parse - an explicit int32
+                // range check on each value and the cap checked BEFORE each push (an id past int32
+                // used to wrap silently, and a wrapped id can be a valid token - a different
+                // question's answer; a multi-megabyte line also used to allocate its vector first).
+                constexpr size_t kMaxBrowTokens = 4096;
+                constexpr int64_t kMaxTokenId = 2147483647LL;
                 std::vector<int32_t> toks;
                 {
                     std::istringstream is(line.substr(5));
-                    int64_t v;
-                    while (is >> v) toks.push_back((int32_t) v);
-                    if (toks.empty() || toks.size() > 4096 || (is.eof() && !is.fail() ? false : !is.eof())) {
+                    bool bad = false;
+                    int64_t v = 0;
+                    while (!bad && toks.size() < kMaxBrowTokens && (is >> v)) {
+                        if (v < 0 || v > kMaxTokenId) bad = true;
+                        else toks.push_back((int32_t) v);
+                    }
+                    if (!bad && !is.eof() && toks.size() >= kMaxBrowTokens) bad = true;   // more than the cap
+                    if (!bad && !is.eof()) bad = true;      // trailing junk, not just a short list
+                    if (bad || toks.empty()) {
                         std::printf("ERR BROW: bad token list\n");
                         std::fflush(stdout);
                         continue;
@@ -17828,7 +17840,11 @@ int main(int argc, char** argv) {
                 if (mt < 2) return -1;
                 return std::max(a0, n - mt);
             };
-            ver.set_row_capture(req_jevpos.empty() ? nullptr : req_jevpos.data(), (int) req_jevpos.size());
+            // minor 7 (2026-11-05): `n` is one past the last prompt position - a named row at or
+            // after it is a draft row (the decode loop's first window would otherwise capture
+            // it), and the engine refuses it: never captured, so BROWAT refuses it by name.
+            ver.set_row_capture(req_jevpos.empty() ? nullptr : req_jevpos.data(),
+                                (int) req_jevpos.size(), n);
             if (std::getenv("STRATA_JEVROWS_TRACE") != nullptr)
                 std::fprintf(stderr, "strata serve: JEVROWS trace: n=%lld read_from=%lld jevpos=%zu cuts=%zu "
                                      "first=%lld last=%lld\n", (long long) n, (long long) read_from,

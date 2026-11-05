@@ -3151,8 +3151,14 @@ class StrataEngine:
                     self.ended = True
                     raise EngineDied(f"{answer} answered token {tok} which was not asked for")
                 if not math.isfinite(val):
-                    self.ended = True
-                    raise EngineDied(f"{answer} answered a non-finite logit for token {tok}")
+                    # minor 2 (2026-11-05, expert review): a non-finite logit is #879's condition
+                    # (the engine dropped its cached state), not wire corruption - the chat path
+                    # answers 503 and the client retries.  Ending the engine here made every
+                    # later systemone request cold-start it.  Keep the engine; the route maps
+                    # EngineNonFinite to a 503 with a retry hint.
+                    raise EngineNonFinite(f"{answer} answered a non-finite logit for token {tok}; "
+                                          "the engine has dropped its cached state - send the "
+                                          "request again (#879)")
                 row_out[tok] = val
             if len(row_out) != len(tokens):
                 self.ended = True

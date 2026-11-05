@@ -391,10 +391,15 @@ public:
     /// (capture_window_rows) - a prompt longer than the read chunk spans several windows and every one of
     /// them is offered.  A position the prompt never ran is simply not captured; BROWAT then refuses it by
     /// name rather than answering from a neighbouring row.
-    void set_row_capture(const int64_t* positions, int n);
+    void set_row_capture(const int64_t* positions, int n, int64_t limit = -1);
     bool capture_window_rows(int64_t pos0, int T, std::string& err);
     bool brow_row_captured(int64_t pos, const int32_t* tokens, int n, float* out, std::string& err);
     int captured_rows() const { return next_ ? next_->captured_rows() : (int) cap_pos_.size(); }
+    /// M10 (2026-11-05, expert review): clear the whole per-request row state.  generate.cpp
+    /// calls this at the TOP of every request; since the review's M10 it also drops
+    /// last_row_T_, so a request that fails before running a window leaves BROW answering
+    /// "no window" instead of the PREVIOUS request's row (the stale-read bug clear_row_capture
+    /// already fixed for captured rows).
     void clear_row_capture();
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
@@ -781,6 +786,7 @@ private:
     std::vector<int64_t> cap_want_;   ///< jev --jev-brow fix B: absolute prompt positions whose rows to keep
     std::vector<int64_t> cap_pos_;    ///< ...and the ones actually captured, in capture order
     std::vector<float> cap_rows_;     ///< row i is cap_rows_[i * n_vocab_ .. (i+1) * n_vocab_)
+    int64_t cap_limit_ = -1;   ///< jev minor 7 (2026-11-05): one past the last prompt position; rows at/after it are never captured
     uint16_t* sh_bf16_ = nullptr;
     uint8_t* arg_scratch_ = nullptr;   ///< argmax_rows' partials and counters
     int32_t* one_ = nullptr;           ///< device {1}: the n_keep of a one-token window, which commits itself

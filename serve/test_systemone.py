@@ -222,13 +222,17 @@ class BrowWire(unittest.TestCase):
         except Exception as e:
             self.assertIn("BROWD", str(e))
 
-    def test_brow_nonfinite_fails_closed(self):
+    def test_brow_nonfinite_is_503_not_engine_death(self):
+        """minor 2 (2026-11-05): a non-finite logit is #879's condition - the chat path
+        answers 503 (EngineNonFinite, a ValueError) and the client retries; the engine
+        used to be killed here, cold-starting every later request."""
         self.eng.script = ["BROWD 1 78:nan\n"]
         try:
             self.eng.final_row_logits([1], [78])
-            self.fail("expected EngineDied")
-        except Exception as e:
-            self.assertIn("BROWD", str(e))
+            self.fail("expected EngineNonFinite")
+        except ValueError as e:                      # EngineNonFinite is a ValueError
+            self.assertIn("non-finite", str(e))
+        self.assertFalse(self.eng.ended)             # the engine lives: no cold start
 
     # ---- M3.1: BROWCAP reports how many rows the last request kept (the guard the row path verifies) ----
 
