@@ -5,6 +5,7 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/kprof.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/kernels/dflash2.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #if defined(_WIN32)
@@ -422,6 +423,7 @@ Verifier::~Verifier() try {
         slot.compare_exchange_strong(me, nullptr);
     }
     if (cs_) cs_->wait();
+    if (slot_hist_d_ != nullptr && cs_) { try { sycl::free(slot_hist_d_, *cs_); } catch (...) {} slot_hist_d_ = nullptr; }
     if (sh_cs_) sh_cs_->wait();
     for (auto& e : exec_)
         if (e) delete (e);
@@ -438,16 +440,19 @@ Verifier::~Verifier() try {
     if (arena_b_) sycl::free(arena_b_, dpct::get_in_order_queue());
     if (h_commitb_) sycl::free(h_commitb_, dpct::get_in_order_queue());
     if (qcnt_) sycl::free(qcnt_, dpct::get_in_order_queue());
-    if (cs_ && cs_ != ext_stream_) dpct::get_current_device().destroy_queue(
+    // (a verifier whose init stopped before it made its own queues still holds the process's default queue in all three (cs_, sh_cs_, copy_): that one is never ours to destroy -
+    // destroying it took the next verifier's wait down with a SIGSEGV in urQueueFinish when a start was refused for lack of VRAM)
+    if (cs_ && cs_ != ext_stream_ && cs_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(
         cs_); // set_stream: the stage's stream, shared, not ours
-    if (sh_cs_) dpct::get_current_device().destroy_queue(sh_cs_);
-    if (copy_) { copy_->wait(); dpct::get_current_device().destroy_queue(copy_); }
+    if (sh_cs_ && sh_cs_ != cs_ && sh_cs_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(sh_cs_);
+    if (copy_) { copy_->wait(); if (copy_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(copy_); }   // (the default one when init never made the copy stream)
     if (commit_done_) dpct::destroy_event(commit_done_);
     if (ev_done_) dpct::destroy_event(ev_done_);
     if (ev_commit_) dpct::destroy_event(ev_commit_);
     if (prof_pin_) sycl::free(prof_pin_, dpct::get_in_order_queue());
     if (ev_fork_) dpct::destroy_event(ev_fork_);
     if (ev_join_) dpct::destroy_event(ev_join_);
+    if (tap_dev_) sycl::free(tap_dev_, dpct::get_in_order_queue());
     if (arena_) sycl::free(arena_, dpct::get_in_order_queue());
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_, h_plan_err_};
@@ -541,6 +546,19 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
               mapped(64, (void**) &h_plan_err_, (void**) &m_plan_err_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    // DFlash2 taps (set_taps): off, and nothing is allocated or recorded, otherwise
+    if (!tap_req_.empty() && lb_ == 0 && le_ == g.n_layers) {
+        tap_layers_.clear();
+        for (int l : tap_req_) if (l >= 0 && l < g.n_layers - 1) tap_layers_.push_back(l);
+        tap_slot_.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot_[(size_t) tap_layers_[i]] = (int) i;
+        const size_t nt = tap_layers_.size();
+        if (nt == 0 || (tap_dev_ = sycl::malloc_device<float>((size_t) T * nt * N, dpct::get_in_order_queue())) == nullptr) {
+            err = "verify: the DFlash2 tap buffers could not be allocated";
+            return false;
+        }
+        tap_on_ = true;
+    }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
         const int64_t cap = (int64_t) (T * K);
@@ -1595,6 +1613,13 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
+        if (tap_on_ && !batch_rec_ && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
+            // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of the hc streams,
+            // all rows of the group in one launch
+            const int64_t nt = (int64_t) tap_layers_.size();
+            strata::kernels::df2_tap_gr(Rt(tb), HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, tap_dev_ + ((size_t) tb * nt + (size_t) tap_slot_[(size_t) l]) * N,
+                                        nt * N, n, N, (int) HC, cs);
+        }
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
                 if (dec_batch && !g_no_multi_gr) gr_write_multi(Rt(tb), bo_ + tb * N, inj2_ + tb * HC, gs, Rt(tb), n, cs);
@@ -2921,6 +2946,7 @@ bool Verifier::init_slots(const std::vector<SessionState *> &slots,
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
+    slot_tail_.assign(slots.size(), {});
     std::fprintf(stderr, "strata verify: batch windows of up to %lld sequences (layers [%lld, %lld))\n", (long long) S,
                  (long long) lb_, (long long) le_);
     return true;
@@ -3498,12 +3524,37 @@ catch (sycl::exception const &exc) {
 
 bool Verifier::sample_rows(int S, std::string &err) try {
     bool any = false;
+    constexpr int kSlotHistMax = 4096;   // serve's kPenaltyWindowCap
+    std::vector<int32_t> hrows;
+    std::vector<const int32_t*> tails(slots_.size(), nullptr);
+    std::vector<int64_t> n_tails(slots_.size(), 0);
+    for (size_t b = 0; b < slots_.size() && b < slot_tail_.size(); ++b) { tails[b] = slot_tail_[b].data(); n_tails[b] = (int64_t) slot_tail_[b].size(); }
     for (int t = 0; t < S; ++t) {
         strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        if (sp.greedy || sp.temperature <= 0.0f) continue;
+        const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
+        if ((sp.greedy || sp.temperature <= 0.0f) && !pen) continue;   // a plain greedy slot keeps the window's argmax token untouched
         sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
-        sp.penalty_last_n = 0;
-        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, nullptr, 0, sp,
+        const int32_t* hist = nullptr;
+        int hlen = 0;
+        if (pen) {
+            // the slot's reply tail plus its tokens in this window up to row t (slot_penalty_rows), staged on the device like a solo window's
+            hlen = std::min(sp.penalty_last_n, kSlotHistMax);
+            const size_t need = (size_t) S * (size_t) hlen;
+            hrows.assign(need, -1);
+            strata::kernels::slot_penalty_rows(last_rows_, last_tokens_, S, tails.data(), n_tails.data(), hlen, hrows.data());
+            const OnDevice on_hist(device_);
+            if (slot_hist_cap_ < need) {
+                if (slot_hist_d_ != nullptr) sycl::free(slot_hist_d_, *cs_);
+                slot_hist_d_ = sycl::malloc_device<int32_t>(need, *cs_);
+                if (slot_hist_d_ == nullptr) { slot_hist_cap_ = 0; err = "verify batch: the penalty-history allocation failed"; return false; }
+                slot_hist_cap_ = need;
+            }
+            cs_->memcpy(slot_hist_d_ + (size_t) t * (size_t) hlen, hrows.data() + (size_t) t * (size_t) hlen, (size_t) hlen * sizeof(int32_t)).wait();   // (waited: the host rows are rebuilt for the next row)
+            hist = slot_hist_d_ + (size_t) t * (size_t) hlen;
+        } else {
+            sp.penalty_last_n = 0;
+        }
+        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hlen, sp,
                                        m_out_ + t, cs_);
         any = true;
     }

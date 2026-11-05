@@ -171,6 +171,8 @@ def parser() -> argparse.ArgumentParser:
     models_move.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
     from strata_cli import drafting_cmd
     drafting_cmd.add_parser(sp)
+    from strata_cli import split_cmd
+    split_cmd.add_parser(sp)
     engine = sp.add_parser("engine", help="engine tuning and component actions")
     engine_sp = engine.add_subparsers(dest="engine_command", required=True)
     calibrate = engine_sp.add_parser("calibrate", help="measure, review and apply engine tuning")
@@ -568,7 +570,7 @@ def _models(a: argparse.Namespace) -> int:
             from strata_cli import connections
             resolved = connections.resolve(url=a.url, connection=a.connection,
                                            credential_env=a.credential_env, timeout=a.timeout)
-            endpoint = Endpoint(resolved["url"], os.environ.get(resolved["credential_env"]),
+            endpoint = Endpoint(resolved["url"], _usable_key(os.environ.get(resolved["credential_env"])),
                                 resolved["timeout_s"], resolved["prefix"])
             snapshot = endpoint.snapshot()
             model = snapshot["model"]
@@ -770,7 +772,8 @@ def _effective(cfg: dict, saved: dict | None, cli: argparse.Namespace | None = N
     if values["queue_timeout"] is not None and values["max_queue"] is None:
         raise ProfileError("queue_timeout requires max_queue to bound pending calls")
     if values["parallel"] is not None and any(flag in cfg["args"] for flag in ("--batch", "--slots")):
-        if origins["parallel"] != "run_config":
+        # (the all-cards split engine's run config, split_config's "split_engine_note", always carries --batch; the server turns "parallel" into its lane count)
+        if origins["parallel"] != "run_config" and not cfg.get("split_engine_note"):
             raise ProfileError("parallel override conflicts with --batch/--slots in run config args")
     if values["batch_groups"] is not None and "--batch-groups" in cfg["args"]:
         raise ProfileError("batch_groups override conflicts with --batch-groups in run config args")
@@ -1212,9 +1215,9 @@ def _bench(a: argparse.Namespace) -> int:
                             "model_name": cfg.get("model_name"), "gpu": cfg.get("gpu")}
     else:
         url = a.url
-    key = os.environ.get(a.credential_env)
+    key = _usable_key(os.environ.get(a.credential_env))
     endpoint = Endpoint(url, key, timeout=10)
-    telemetry = Endpoint(url, os.environ.get(a.telemetry_credential_env) if a.telemetry_credential_env else key,
+    telemetry = Endpoint(url, _usable_key(os.environ.get(a.telemetry_credential_env)) if a.telemetry_credential_env else key,
                          timeout=3)
     from strata_control.benchmarking import benchmark_lease
     lease = benchmark_lease(saved["id"], Path(a.out)) if a.profile and saved else contextlib.nullcontext()
@@ -1232,6 +1235,12 @@ def _bench(a: argparse.Namespace) -> int:
         print(bench.format_summary(compact))
         print(f"Evidence: {Path(a.out).resolve() / 'results.json'}")
     return 0 if report["successful"] else 6
+
+
+def _usable_key(value):
+    """An API key from the environment: "none" (any case) is the server's word for no key, so it is no key (#4483)."""
+    from strata_cli.bench_facts import usable_key
+    return usable_key(value)
 
 
 def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
@@ -1252,7 +1261,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
         return _error("--load-timeout must be 1..86400 seconds", 2, machine)
     plan = None
     saved = None
-    key = os.environ.get(a.credential_env)
+    key = _usable_key(os.environ.get(a.credential_env))
     if a.profile:
         _, saved, _, cfg = _source(a.profile)
         plan, _ = _launch_plan(a.profile)
@@ -1286,7 +1295,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     proc, scratch, engine_log, run_log, log_start = None, None, None, None, 0
     stop_problem = None
     try:
-        with lease, contextlib.redirect_stdout(sys.stderr):
+        with lease, bench_standard.term_is_interrupt(), contextlib.redirect_stdout(sys.stderr):
             def log(message: str) -> None:
                 print(message, file=sys.stderr, flush=True)
             if a.profile and target.get("/health", timeout=5) is None:
@@ -2132,7 +2141,7 @@ def _run(a: argparse.Namespace) -> int:
             return _components_backends(a)
         if a.command == "components" and a.components_command == "engine":
             return _components_engine(a)
-        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback", "install-file")):
+        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback", "install-file", "engines", "use", "remove")):
             from strata_cli import update_cmd
             return update_cmd.run(a)
         if a.command in ("doctor", "components"):
@@ -2144,6 +2153,9 @@ def _run(a: argparse.Namespace) -> int:
         if a.command == "drafting":
             from strata_cli import drafting_cmd as _drafting_cmd
             return _drafting_cmd.run(a)
+        if a.command == "split-engine":
+            from strata_cli import split_cmd as _split_cmd
+            return _split_cmd.run(a)
         if a.command == "bench":
             return _bench(a)
         if a.command == "timeskip":

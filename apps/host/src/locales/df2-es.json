@@ -1,0 +1,22 @@
+{
+ "df01": "MTP es la opción predeterminada. DFlash2 es otra forma de adivinar las siguientes palabras por adelantado, solo para Qwen3.8-Flash-Next. En una RTX PRO 5000 fue un 7,8 % más rápido que MTP en 19 prompts cortos y un 1,1 % más rápido en razonamientos largos, y más rápido en 21 de 23 prompts. En los prompts cortos las respuestas fueron idénticas.",
+ "df02": "Descarga unos 1,2 GB una sola vez, funciona con una tarjeta gráfica y una solicitud a la vez, y en los demás casos usa MTP.",
+ "df03": "En tarjetas gráficas como la suya, en nuestras pruebas DFlash2 fue más rápido que MTP con algunos tipos de texto y más lento con otros.",
+ "df04": "En tarjetas gráficas como la suya, en nuestras pruebas DFlash2 fue más lento que MTP.",
+ "df05": "DFlash2 todavía no se ha probado en su tarjeta gráfica.",
+ "df06": "Predicción: MTP (DFlash2 no está disponible en esta tarjeta gráfica)",
+ "df07": "No hay conexión a internet, así que ahora no se puede descargar el borrador de DFlash2.",
+ "df08": "SSD: no hace falta",
+ "df09": "DFlash2 responde una solicitud a la vez, así que Strata configuró este modelo para una solicitud a la vez.",
+ "df10": "Predicción: desactivada (aún no hay ningún predictor descargado)",
+ "df11": "Predicción: DFlash2 (el predictor de MTP aún no está descargado)",
+ "df12": "Elegir DFlash2 descarga su predictor: unos {0} GB, una sola vez.",
+ "df13": "Elegir MTP descarga su predictor: unos {0} GB, una sola vez.",
+ "df14": "No se pudo descargar el predictor de DFlash2, así que el modelo arranca sin predictor. Cargando el modelo…",
+ "df15": "Descargando el predictor de MTP…",
+ "df16": "No se pudo descargar el predictor de MTP.",
+ "df17": "Predicción: MTP (DFlash2 no arrancó)",
+ "df18": "Automático usa el motor de reparto entre todas las tarjetas con la capa de borrador MTP: unos {0} GB, una sola vez.",
+ "df19": "El motor de reparto entre todas las tarjetas no pudo arrancar, así que se usa el reparto normal por capas.",
+ "df20": "Predicción: desactivada (a las tarjetas les faltaba memoria)"
+}

@@ -9,7 +9,7 @@ import { Sidebar } from './Sidebar';
 import { CommandPalette } from './CommandPalette';
 import { ShortcutsDialog } from './Shortcuts';
 import { FolderPathDialog } from '../components/FolderPathDialog';
-import { handleAppShortcut, runCommand } from '../lib/commands';
+import { MOD, handleAppShortcut, runCommand } from '../lib/commands';
 import { useMedia } from '../lib/responsive';
 import { Btn, Dialog, IconBtn, Toasts } from '../components/ui';
 import { Brand } from '../components/Brand';
@@ -111,6 +111,9 @@ function ConnectionBar() {
  * way out. Everything else on this screen is the conversation.
  */
 function FocusBar() {
+    // The hints are chords, not decorations: on Windows the modifier is Ctrl and
+    // Alt is spelled out, because ⌘ and ⌥ are not on that keyboard.
+    const mac = MOD === '⌘';
     const native = useNative(), nativeCurrent = native?.instances.find(i => i.id === native.defaultId);
     const library = useStore((s) => s.library);
     const monitor = useStore((s) => s.monitor);
@@ -139,11 +142,11 @@ function FocusBar() {
           {/* A chord reads as one key: the two caps sit tight together, with
             the space before the label doing the separating. */}
           <span className="focusbar__chord">
-            <kbd>⌥↑</kbd>
-            <kbd>⌥↓</kbd>
+            <kbd>{mac ? '⌥↑' : 'Alt+↑'}</kbd>
+            <kbd>{mac ? '⌥↓' : 'Alt+↓'}</kbd>
           </span>{tr("turns")}</span>
         <span>
-          <kbd>⌘↓</kbd>{tr(" latest")}</span>
+          <kbd>{mac ? '⌘↓' : 'Ctrl+↓'}</kbd>{tr(" latest")}</span>
         <span>
           <kbd>{tr("Esc")}</kbd>{tr(" leave")}</span>
       </span>
