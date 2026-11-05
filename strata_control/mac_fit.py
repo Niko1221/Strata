@@ -19,7 +19,7 @@ MIN_MACOS = (15, 0)        # MTLResidencySet (the engine keeps every buffer resi
 # Round 0214: ONE switch for Unsloth's v3.1 sets that have Q5_0 expert downs (UD-IQ2_XS and UD-Q2_K_XL: one layer, UD-Q3_K_XL: 20, the v3.1 UD-IQ4_XS: 33).  The Metal engine
 # has no Q5_0 down kernel yet (moe.metal's DN_SET stops at Q5_1 / Q8_0 / Q2_0 / IQ4_NL), so those four are listed with "missing" (the Terminal's menu leaves them out, --model
 # names them and says so) until the METAL stream lands the kernel and flips this to True.  The other new sets use kernels the Mac has.  UD-IQ1_S needs no entry (never offered).
-METAL_Q5_0_DOWN = False
+METAL_Q5_0_DOWN = True
 _NO_Q5_0 = {} if METAL_Q5_0_DOWN else {"missing": "the Q5_0 expert kernels"}
 MAC_MODELS = {
     "Q2_0": {"shard1_gb": 37.6, "tested": True},
@@ -102,8 +102,14 @@ RESIDENT_LEAVE_SHARE = 0.30
 BIG_MAC_GB = 64.0
 GIB_GB = 1.073741824    # a GiB in GB: ram_gb is binary, the model sizes are decimal
 CONTEXTS = [8192, 32768, 65536, 131072]
-MAC_ABOUT = {"UD-IQ1_M": "", "UD-Q2_0": "", "UD-IQ2_XS": "", "UD-Q2_K_XL": "", "UD-IQ3_XXS": "", "UD-Q3_K_XL": "", "UD-IQ4_XS-v31": "",   # (the wording commit fills these in)
-             "Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
+MAC_ABOUT = {"UD-IQ1_M": "~1-bit (Unsloth Dynamic v3.1), the smallest download",
+             "UD-Q2_0": "2-bit (Unsloth Dynamic v3.1)",
+             "UD-IQ2_XS": "2-bit i-quant (Unsloth Dynamic v3.1)",
+             "UD-Q2_K_XL": "2-bit (Unsloth Dynamic v3.1) with some 3-bit experts",
+             "UD-IQ3_XXS": "3-bit i-quant (Unsloth Dynamic v3.1)",
+             "UD-Q3_K_XL": "3-bit (Unsloth Dynamic v3.1) with some 4-bit experts",
+             "UD-IQ4_XS-v31": "~4-bit i-quant (Unsloth Dynamic v3.1), a newer file than UD-IQ4_XS with other tensor types",
+                          "Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
              "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
              "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)",

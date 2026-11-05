@@ -236,6 +236,28 @@ class OwnFiles(unittest.TestCase):
             first = shards_of(HUB[model])[0]["name"]
             self.assertEqual(setup.gguf_choice(first), ("unsloth", model), first)
 
+    def test_the_approved_texts(self):
+        want = {"UD-IQ1_M": "~1-bit (Unsloth Dynamic v3.1), the smallest download", "UD-Q2_0": "2-bit (Unsloth Dynamic v3.1)",
+                "UD-IQ2_XS": "2-bit i-quant (Unsloth Dynamic v3.1)", "UD-Q2_K_XL": "2-bit (Unsloth Dynamic v3.1) with some 3-bit experts",
+                "UD-IQ3_XXS": "3-bit i-quant (Unsloth Dynamic v3.1)", "UD-Q3_K_XL": "3-bit (Unsloth Dynamic v3.1) with some 4-bit experts",
+                "UD-IQ4_XS-v31": "~4-bit i-quant (Unsloth Dynamic v3.1), a newer file than UD-IQ4_XS with other tensor types"}
+        from strata_control import mac_fit
+        sys.path.insert(0, str(ROOT / "tools"))
+        import strata_mcp
+        for m, a in want.items():
+            self.assertEqual(setup.MODELS[m]["about"], a)
+            self.assertEqual(mac_fit.MAC_ABOUT[m], a)
+            self.assertEqual(strata_mcp.FALLBACK_MODELS[m]["about"], a)
+        for m in ("UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):
+            self.assertIn(m, setup.SUPPORTED_GGUFS)
+        self.assertIn("(Unsloth's UD-IQ1_S, other K-quant files) cannot be used", setup.SUPPORTED_GGUFS)
+        self.assertEqual(setup.UNSUPPORTED_WHY["UD-IQ1_S"], "UD-IQ1_S mixes two expert formats in one layer, which Strata cannot load; UD-IQ1_M is the 1-bit choice")
+
+    def test_q3_k_xl_really_has_some_4_bit_experts(self):
+        n = sum(1 for s in shards_of("UD-Q3_K_XL") for t in (s["header"] or {"tensors": []})["tensors"]
+                if t[0].endswith("ffn_gate_exps.weight") and FX.G.GGML_TYPES[t[1]] == "IQ4_XS")
+        self.assertEqual(n, 6)
+
     def test_ud_iq1_s_stays_refused(self):
         for s in shards_of("UD-IQ1_S"):
             self.assertEqual(setup.gguf_unsupported(s["name"]), "UD-IQ1_S")
@@ -279,6 +301,9 @@ class OwnFiles(unittest.TestCase):
             problem = setup.gguf_dir_problem(folder, first, FAM, "UD-IQ1_M")
             self.assertIsNotNone(problem)
             self.assertIn("UD-IQ1_S", problem[0] + problem[1])
+            self.assertIn(setup.UNSUPPORTED_WHY["UD-IQ1_S"], problem[1])
+            msg, hint = setup.gguf_dir_problem(folder, shards_of("UD-IQ1_S")[0]["name"] and (Path(t) / shards_of("UD-IQ1_S")[0]["name"]), FAM, "UD-IQ1_S")
+            self.assertIn(setup.UNSUPPORTED_WHY["UD-IQ1_S"], hint)
 
 
 class SecondQ4Layout(unittest.TestCase):

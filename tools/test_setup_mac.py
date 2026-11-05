@@ -229,19 +229,19 @@ class V31Sets(unittest.TestCase):
             self.assertTrue(all(M.shard_sha(n) for n in M.model_shard_names(m)), m)
             self.assertIn(m, M.MAC_ABOUT)
 
-    def test_the_q5_0_sets_wait_for_the_metal_kernel(self):
+    def test_all_seven_are_listed_now_the_metal_kernel_exists(self):
         from strata_control import mac_fit
-        self.assertFalse(mac_fit.METAL_Q5_0_DOWN)
+        self.assertTrue(mac_fit.METAL_Q5_0_DOWN)            # f-0214-metal: the Q5_0 down kernels
         for m in self.NEW:
-            self.assertEqual(bool(mac_fit.MAC_MODELS[m].get("missing")), m in self.Q5_0, m)
-        self.assertIn("does not run on this Metal engine yet", "".join(mac_fit.model_note("UD-Q3_K_XL", 128)))
+            self.assertFalse(mac_fit.MAC_MODELS[m].get("missing"), m)
+        self.assertNotIn("does not run on this Metal engine yet", "".join(mac_fit.model_note("UD-Q3_K_XL", 128)))
 
     def test_the_switch_lists_them_all(self):
         from strata_control import mac_fit
         ns = {"__name__": "mac_fit_on", "__file__": mac_fit.__file__}
-        src = Path(mac_fit.__file__).read_text(encoding="utf-8").replace("METAL_Q5_0_DOWN = False", "METAL_Q5_0_DOWN = True")
-        exec(compile(src, mac_fit.__file__, "exec"), ns)
-        self.assertEqual([m for m in self.NEW if ns["MAC_MODELS"][m].get("missing")], [])
+        src = Path(mac_fit.__file__).read_text(encoding="utf-8").replace("METAL_Q5_0_DOWN = True", "METAL_Q5_0_DOWN = False")
+        exec(compile(src, mac_fit.__file__, "exec"), ns)                 # the switch off: the four Q5_0-down sets are held back again
+        self.assertEqual([m for m in self.NEW if ns["MAC_MODELS"][m].get("missing")], list(self.Q5_0))
 
 
 class HandOver(unittest.TestCase):
