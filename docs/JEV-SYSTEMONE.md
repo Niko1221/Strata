@@ -34,13 +34,22 @@ POST /v1/systemone
 ## Response
 
 ```json
-{"answers": {"q1": {"type": "noul", "noul": 0.88, "calib": "platt_v1"},
-             "q2": {"type": "choice", "choice": 1, "probabilities": [0.0, 0.98, 0.01, 0.01],
-                    "confidence": 0.97, "calib": "T_choice_v1"},
+{"answers": {"q1": {"type": "noul", "noul": 0.88, "margin": 0.76, "calib": "platt_v1"},
+             "q2": {"type": "choice", "choice": 1, "label": "defend", "probabilities": [0.0, 0.98, 0.01, 0.01],
+                    "confidence": 0.97, "margin": 0.97, "calib": "T_choice_v1"},
              "q3": {"type": "score", "score": 2.1, "probabilities": [...],
-                    "confidence": 0.4, "calib": "identity"}},
+                    "confidence": 0.4, "margin": 0.3, "calib": "identity"}},
  "usage": {"prompt_tokens": 250, "readout_tokens": 3}}
 ```
+
+The **choice contract is unified** across every mode (M8): `choice` is the INDEX into the
+criteria's label order, `label` carries that option's name, `probabilities` is a LIST in
+label order, and `margin` (top1 − top2 probability) is always present. Criteria dict
+values are option DESCRIPTIONS — strings or `null`; a non-string value is a `400`, and so
+is a duplicate label in a list. **`score` is an expected value**, not an argmax level:
+`score = Σ i·p_i` over the level probabilities (so 2.1 means "between level 2 and 3,
+closer to 2"), and the argmax level is `probabilities.index(max(probabilities))` if you
+need it.
 
 Errors: `422` with `{"error": {"field": "questions.q2.criteria", "message": …}}`.
 
@@ -48,7 +57,7 @@ Errors: `422` with `{"error": {"field": "questions.q2.criteria", "message": …}
 
 | Feature | Request | What it does |
 |---|---|---|
-| **V mode** | header `X-Jev-Mode: V` | Choice readout becomes K per-option yes/no branches: `d_i = s_yes − s_no`, `p = softmax(d)`. Probabilities keyed by option **name**, `choice` = the name. More robust on weak readouts; ~K× the readouts. |
+| **V mode** | header `X-Jev-Mode: V` | Choice readout becomes K per-option yes/no branches: `d_i = s_yes − s_no`, `p = softmax(d)`. Same unified answer contract as L (`choice` = index, `label`, list `probabilities`, `margin`); only the internal readout differs. More robust on weak readouts; ~K× the readouts. |
 | **Image → decision** | add `image_b64` (+ optional `vision_prompt`) | One wire request: the image is encoded (Strata's vision path), a bounded summary is generated, and the **summary becomes the decision state**. Response adds `image_summary` and `stages_used: ["vision", "decision"]`. Fail-closed: an empty summary is a 502, the decision never runs. |
 | **Decide-then-generate** | add `"then": {"generate": {"messages": [...], "max_tokens": 512}}` | Decide first, then generate with the answers folded into the last user turn as `Jev decisions (JSON): …`. Response adds `then: {text, finish_reason, usage}`. |
 | **Chat surface** | `POST /v1/chat/completions` with `"jev": {"questions": …}` and either `jev.state` or `messages` | The decision readout from the chat endpoint; the conversation is the state (`v1-chat`). `stream` is refused with the extension. Response: OpenAI-style envelope with the decision body under `jev`. |

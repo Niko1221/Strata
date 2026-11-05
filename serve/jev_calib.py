@@ -296,7 +296,13 @@ ADMIN_KEY = os.environ.get("STRATA_JEV_ADMIN_KEY", "")
 # Which capability surfaces this process exposes. Comma-separated env var:
 #   STRATA_JEV_MODES="chat"               -> DEFAULT: stock Strata posture,
 #                                           decisions NOT exposed (opt in!)
-#   STRATA_JEV_MODES="decision"           -> decision-only (no generation)
+#   STRATA_JEV_MODES="decision"           -> decisions on.  NOTE (minor 3, 2026-11-05):
+#                                           this does NOT turn the stock chat endpoint
+#                                           off - a Strata server always serves its chat
+#                                           surface, and changing that would alter a
+#                                           non-JEV path.  "chat" gates the jev-owned
+#                                           generation surface (then.generate); the chat
+#                                           endpoint itself is never disabled by this PR.
 #   STRATA_JEV_MODES="chat,decision"      -> both
 # Justin's ruling 2026-10-15: undefined = CHAT ONLY — a process that never
 # mentions jev behaves exactly like stock Strata; the decision surface must be

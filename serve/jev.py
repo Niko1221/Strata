@@ -355,6 +355,20 @@ def v_branch(qdef, key: str) -> str:
 VISION_PROMPT_DEFAULT = "Describe this game screen:"
 
 
+def _image_data_uri(b64: str) -> str:
+    """minor 5 (2026-11-05, expert review): the data-URI's MIME label is sniffed from the
+    payload's base64 magic prefix, not hardcoded png - a jpeg/webp/gif image was mislabelled
+    image/png on its way to the vision encoder.  An explicit data: URI passes through."""
+    if b64.startswith("data:"):
+        return b64
+    head = b64[:8]
+    mime = ("image/webp" if head.startswith("UklGR") else
+            "image/gif" if head.startswith("R0lGOD") else
+            "image/jpeg" if head.startswith("/9j/") else
+            "image/png")
+    return f"data:{mime};base64,{b64}"
+
+
 def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tuple[int, dict]:
     """image_mode: "direct" — the RAW image tokens decide, no summary in between
     (the donor's V2 idea, safe on Strata because the readout is BROW on the final
@@ -365,7 +379,7 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
     refused = _readout_refusal(svc.engine)      # B5+M6: same gates as the text path
     if refused is not None:
         return refused
-    data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
+    data_uri = _image_data_uri(b64)
     answers, in_tokens, readouts = {}, 0, 0
     # no outer fifo hold: svc.prepare takes its own engine turn for the encode,
     # and each generate() call is its own turn (same as the chat path)
@@ -454,7 +468,7 @@ def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
         return _handle_image_direct(svc, req, mode, qdefs, b64)
 
     # ---- stage 1: vision summary (Strata's existing path, engine FIFO held) ----
-    data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
+    data_uri = _image_data_uri(b64)
     messages = [{"role": "user",
                  "content": [{"type": "image", "source": data_uri},
                              {"type": "text", "text": vprompt}]}]

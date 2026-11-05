@@ -8809,11 +8809,11 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "openai")
             # ---- A3.4 (M3.3): "jev" extension - the decision readout on the chat surface ----
             jev_ext = req.get("jev")
-            if isinstance(jev_ext, dict) and jev_ext:
-                if "decision" not in jev_calib.MODES:      # A0.1: no decisions on chat-gated instance
-                    self._json(404, {"error": {"type": "not_found_error",
-                                               "message": "decision surface not enabled on this instance"}})
-                    return
+            if isinstance(jev_ext, dict) and jev_ext and "decision" in jev_calib.MODES:
+                # minor 4 (2026-11-05): a stock instance (no 'decision' in MODES) IGNORES the
+                # jev key and answers plain chat, as it did before this PR - the 404 it
+                # answered was a behaviour change to a non-JEV path.  The extension proper
+                # is still fail-closed: it only engages on decision-enabled instances.
                 if not isinstance(jev_ext.get("questions"), dict) or not jev_ext["questions"]:
                     self._json(400, {"error": {"type": "invalid_request_error",
                                                "param": "jev.questions", "message": "jev.questions is required"}})
