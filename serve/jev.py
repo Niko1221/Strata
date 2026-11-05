@@ -211,6 +211,23 @@ def parse_questions(questions) -> tuple[list | None, dict]:
             if len(labels) > 26:
                 return None, _err(f"questions.{qid}.criteria",
                                             ">26 options need the numeric-label trie (not in this build)")
+            if isinstance(criteria, dict):
+                # M8 (2026-11-05): dict values are option DESCRIPTIONS (strings or null), never
+                # indices - a caller sending {"cat": 2} used to get "A. cat: 2" rendered and an
+                # answer keyed by insertion order, silently.  400 instead.
+                bad_val = [k for k, v in criteria.items() if v is not None and not isinstance(v, str)]
+                if bad_val:
+                    return None, (400, {"error": {
+                        "field": f"questions.{qid}.criteria",
+                        "message": "criteria values are option descriptions: strings or null "
+                                   f"(non-string value for {bad_val[0]!r}); send a LIST of labels "
+                                   "for bare options"}})
+            elif len(set(labels)) != len(labels):
+                # M8: duplicate list labels would collide in the readout's label->row mapping
+                return None, (400, {"error": {
+                    "field": f"questions.{qid}.criteria",
+                    "message": "duplicate labels: every option must be distinct (answers address "
+                               "them by position)"}})
             render_labels = choice_labels(len(labels))
         elif qtype == "score":
             if not isinstance(criteria, list) or len(criteria) < 2 or len(criteria) > 10:
@@ -595,7 +612,10 @@ def _finish_answer(qdef, scores: list, image_state: bool, mode_letter: str | Non
         "type": qdef["type"],
         "raw_p": pr_raw,
     })
-    return answers_from_calibrated(qdef["type"], pr, calib_id)
+    a = answers_from_calibrated(qdef["type"], pr, calib_id)
+    if qdef["type"] == "choice":
+        a["label"] = qdef["labels"][a["choice"]]   # M8: the unified contract carries the label
+    return a
 
 
 def _hybrid_enabled() -> bool:
@@ -883,12 +903,16 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                     pr = [x / t for x in pr]
                 # donor V applies the choice temperature to softmax(d) (calib_apply :617)
                 pr, calib_id = jev_calib.apply("choice", pr, "V")   # P0-1: per-tuple
+                # M8 (2026-11-05): the UNIFIED choice contract, same as L - choice is the INDEX,
+                # label carries the name, probabilities is a LIST in label order, margin is present.
+                # V's internal per-branch rendering is unchanged; only the answer shape is.
                 best = max(range(len(pr)), key=lambda i: pr[i])
-                probs = {name: pr[i] for i, name in enumerate(qdef["labels"])}
+                srt = sorted(pr, reverse=True)
+                margin = round(srt[0] - srt[1], 6) if len(srt) > 1 else 1.0
                 answers[qdef["id"]] = {
-                    "type": "choice", "choice": qdef["labels"][best],
-                    "probabilities": probs, "confidence": confidence(pr),
-                    "calib": calib_id}
+                    "type": "choice", "choice": best, "label": qdef["labels"][best],
+                    "probabilities": pr, "confidence": confidence(pr),
+                    "margin": margin, "calib": calib_id}
                 jev_calib.log_enqueue({
                     "ts": int(time.time()),
                     "tuple": jev_calib.tuple_of("V", "choice"),

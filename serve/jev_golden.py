@@ -27,7 +27,7 @@ BATTERY = [
     # 2. choice, object criteria
     {"state": {"enemy_dist": 4.2},
      "questions": {"q1": {"type": "choice", "instructions": "Pick the next action.",
-                          "criteria": {"attack": 0, "defend": 1, "flee": 2}}},
+                          "criteria": {"attack": "0", "defend": "1", "flee": "2"}}},
      "expect": {"q1": {"type": "choice", "options": 3}}},
     # 3. choice, array criteria
     {"state": {"tile": "water"},
@@ -43,7 +43,7 @@ BATTERY = [
     {"state": {"pos": [3, 4], "fuel": 12},
      "questions": {"q1": {"type": "noul", "instructions": "Fuel below 20?"},
                    "q2": {"type": "choice", "instructions": "Move where?",
-                          "criteria": {"north": 0, "south": 1}}},
+                          "criteria": {"north": "0", "south": "1"}}},
      "expect": {"q1": {"type": "noul"}, "q2": {"type": "choice", "options": 2}}},
     # 6. rich nested state
     {"state": {"party": [{"name": "A", "hp": 30}, {"name": "B", "hp": 0}],
@@ -53,7 +53,7 @@ BATTERY = [
     # 7. choice with 2 options (boundary)
     {"state": {"door": "locked"},
      "questions": {"q1": {"type": "choice", "instructions": "Open how?",
-                          "criteria": {"key": 0, "force": 1}}},
+                          "criteria": {"key": "0", "force": "1"}}},
      "expect": {"q1": {"type": "choice", "options": 2}}},
     # 8. score with 2 levels (boundary)
     {"state": {"light": "dim"},
@@ -77,7 +77,7 @@ BATTERY = [
     {"state": {"mode": "combat", "hp": 80},
      "questions": {"q1": {"type": "noul", "instructions": "In combat?"},
                    "q2": {"type": "choice", "instructions": "Stance?",
-                          "criteria": {"aggressive": 0, "cautious": 1}},
+                          "criteria": {"aggressive": "0", "cautious": "1"}},
                    "q3": {"type": "score", "instructions": "Urgency 0-2.",
                           "criteria": ["routine", "elevated", "urgent"]}},
      "expect": {"q1": {"type": "noul"}, "q2": {"type": "choice", "options": 2},

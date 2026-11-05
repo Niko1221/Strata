@@ -155,7 +155,7 @@ class SystemOneCalibrated(unittest.TestCase):
         st, body = self._post("/v1/systemone", {
             "state": {"k": 1},
             "questions": {"q1": {"type": "choice", "instructions": "Pick.",
-                                 "criteria": {"a": 1, "b": 2, "c": 3}}}})
+                                 "criteria": {"a": "1", "b": "2", "c": "3"}}}})
         self.assertEqual(st, 200)
         pr = body["answers"]["q1"]["probabilities"]
         self.assertAlmostEqual(sum(pr), 1.0, places=6)
@@ -193,7 +193,7 @@ class SystemOneCalibrated(unittest.TestCase):
         st, body = self._post("/v1/systemone", {
             "state": {"k": 1},
             "questions": {"q4": {"type": "choice", "instructions": "Pick.",
-                                 "criteria": {"a": 1, "b": 2}}}})
+                                 "criteria": {"a": "1", "b": "2"}}}})
         self.assertEqual(st, 200)
         n = jev_calib.log_flush(self.dir)                 # the background flusher's exact drain
         self.assertGreaterEqual(n, 1)
@@ -240,7 +240,7 @@ class SystemOneCalibrated(unittest.TestCase):
             st, body = self._post("/v1/systemone", {
                 "state": {"k": 1},
                 "questions": {"q5": {"type": "choice", "instructions": "Pick.",
-                                     "criteria": {"a": 1, "b": 2, "c": 3}}}})
+                                     "criteria": {"a": "1", "b": "2", "c": "3"}}}})
             pr = body["answers"]["q5"]["probabilities"]
             self.assertGreater(pr[1], 0.9)
         finally:

@@ -357,7 +357,7 @@ class StatePin(unittest.TestCase):
 
     THREE = {"q1": {"type": "noul", "instructions": "Is it on?"},
              "q2": {"type": "choice", "instructions": "Pick one.",
-                    "criteria": {"alpha": 1, "beta": 2}},
+                    "criteria": {"alpha": "1", "beta": "2"}},
              "q3": {"type": "score", "instructions": "Rate it.", "criteria": ["low", "mid", "high"]}}
 
     def _post(self, questions, headers=None):
@@ -413,7 +413,7 @@ class StatePin(unittest.TestCase):
 
     def test_v_mode_pins_the_option_head(self):
         body = {"q1": {"type": "choice", "instructions": "Pick one.",
-                       "criteria": {"alpha": 1, "beta": 2, "gamma": 3}}}
+                       "criteria": {"alpha": "1", "beta": "2", "gamma": "3"}}}
         st, _ = self._post(body, headers={"X-Jev-Mode": "V"})
         self.assertEqual(st, 200)
         pins = [p.get("pin") for p in self.engine.pins]
@@ -461,7 +461,7 @@ class RowReadout(unittest.TestCase):
         self.engine.info.update(self._old_info)
 
     TWO = {"q1": {"type": "noul", "instructions": "Is it on?"},
-           "q2": {"type": "choice", "instructions": "Pick one.", "criteria": {"alpha": 1, "beta": 2}}}
+           "q2": {"type": "choice", "instructions": "Pick one.", "criteria": {"alpha": "1", "beta": "2"}}}
 
     def _post(self, questions):
         return post(self.base, "/v1/systemone", {"state": {"hp": 7}, "questions": questions})
@@ -557,7 +557,7 @@ class RowReadout(unittest.TestCase):
 
         with mock.patch.object(ByteTokenizer, "encode", two_tokens):
             st, body = self._post({"q": {"type": "choice", "instructions": "Pick one.",
-                                         "criteria": {"alpha": 1, "beta": 2}}})
+                                         "criteria": {"alpha": "1", "beta": "2"}}})
         self.assertEqual(st, 422)
         self.assertEqual(body["error"]["field"], "questions.q.criteria")
         self.assertIn("one token", body["error"]["message"])
@@ -647,7 +647,7 @@ class Hybrid(unittest.TestCase):
             _os.environ["STRATA_JEV_HYBRID"] = self._old
 
     THREE = {"q1": {"type": "noul", "instructions": "Is it on?"},
-             "q2": {"type": "choice", "instructions": "Pick one.", "criteria": {"alpha": 1, "beta": 2}},
+             "q2": {"type": "choice", "instructions": "Pick one.", "criteria": {"alpha": "1", "beta": "2"}},
              "q3": {"type": "score", "instructions": "Rate it.", "criteria": ["low", "mid", "high"]}}
 
     def _post(self, questions):
@@ -722,7 +722,7 @@ class SystemOneValidation(unittest.TestCase):
 
     def test_choice_needs_two_options_422(self):
         st, body = post(self.base, "/v1/systemone", {"state": {"k": 1}, "questions": {
-            "q1": {"type": "choice", "instructions": "Pick.", "criteria": {"only": 1}}}})
+            "q1": {"type": "choice", "instructions": "Pick.", "criteria": {"only": "1"}}}})
         self.assertEqual(st, 422)
         self.assertEqual(body["error"]["field"], "questions.q1.criteria")
 
@@ -759,7 +759,7 @@ class SystemOneAnswers(unittest.TestCase):
     def test_choice_answer(self):
         st, body = post(self.base, "/v1/systemone", {"state": {"k": 1}, "questions": {
             "q1": {"type": "choice", "instructions": "Pick one.",
-                   "criteria": {"alpha": 1, "beta": 2, "gamma": 3}}}})
+                   "criteria": {"alpha": "1", "beta": "2", "gamma": "3"}}}})
         self.assertEqual(st, 200)
         ans = body["answers"]["q1"]
         self.assertEqual(ans["type"], "choice")

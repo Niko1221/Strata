@@ -91,18 +91,22 @@ class VMode(unittest.TestCase):
         cls.httpd.server_close()
         cls.tmp.cleanup()
 
-    def test_choice_is_name_keyed_softmax_of_d(self):
+    def test_choice_unified_contract(self):
         st, body = self.post(REQ)
         self.assertEqual(st, 200)
         a = body["answers"]["q1"]
-        self.assertEqual(a["choice"], "mountains")
-        self.assertEqual(set(a["probabilities"].keys()),
-                         {"forests", "oceans", "prairies", "mountains"})
+        # M8 (2026-11-05): the unified choice contract, identical to L mode
+        self.assertEqual(a["choice"], 3)                     # INDEX into label order
+        self.assertEqual(a["label"], "mountains")            # the name rides along
+        self.assertIsInstance(a["probabilities"], list)      # a LIST, in label order
+        self.assertEqual(len(a["probabilities"]), 4)
         # one yes branch (d=+4) among three no (d=-4): softmax over gap 8
-        self.assertAlmostEqual(a["probabilities"]["mountains"], 0.9991, delta=0.002)
-        self.assertAlmostEqual(a["probabilities"]["forests"], 0.0003, delta=0.002)
-        self.assertAlmostEqual(sum(a["probabilities"].values()), 1.0, places=6)
+        self.assertAlmostEqual(a["probabilities"][3], 0.9991, delta=0.002)
+        self.assertAlmostEqual(a["probabilities"][0], 0.0003, delta=0.002)
+        self.assertAlmostEqual(sum(a["probabilities"]), 1.0, places=6)
         self.assertGreater(a["confidence"], 0.9)
+        self.assertIn("margin", a)
+        self.assertGreater(a["margin"], 0.9)
 
     def test_one_branch_prompt_per_option_with_shared_head(self):
         st, _ = self.post(REQ)
@@ -153,6 +157,8 @@ class LModeUnchanged(unittest.TestCase):
         self.assertEqual(st, 200)
         a = body["answers"]["q1"]
         self.assertEqual(a["choice"], 1)                     # index, not name
+        self.assertEqual(a["label"], "oceans")               # M8: name rides along
+        self.assertIn("margin", a)                           # M8: and the margin
         self.assertIsInstance(a["probabilities"], list)
         self.assertEqual(len(a["probabilities"]), 4)
         prompts = [self.engine.tok.decode(p) for p in self.engine.prompts]

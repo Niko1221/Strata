@@ -29,9 +29,9 @@ from serve.test_systemone import DecisionEngine  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def post(base, path, body):
+def post(base, path, body, headers=None):
     req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(req) as r:
             return r.status, json.loads(r.read())
@@ -160,6 +160,67 @@ class ControlTokenInjection(unittest.TestCase):
         # the generation prompt carries the injected text as bytes: no new im_end control id
         self.assertEqual(self._special_counts(), clean_counts)
         self.assertIn("then", b)
+
+
+class UnifiedChoiceContract(unittest.TestCase):
+    """M8 (2026-11-05, expert review major 8): ONE choice contract on the endpoint.
+    {choice: index, label: str, probabilities: list, margin} in every mode; criteria dict
+    values must be strings/null (400 otherwise); duplicate list labels are 400."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = DecisionEngine(tok, "A")
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    REQ = {"state": {"k": 1}, "questions": {
+        "q": {"type": "choice", "instructions": "Pick.",
+              "criteria": {"alpha": None, "beta": None, "gamma": None}}}}
+
+    def test_nonstring_dict_value_is_400(self):
+        st, body = post(self.base, "/v1/systemone", {
+            "state": {"k": 1},
+            "questions": {"q": {"type": "choice", "instructions": "Pick.",
+                                "criteria": {"cat": 2, "dog": None}}}})
+        self.assertEqual(st, 400, body)
+        self.assertIn("strings", body["error"]["message"])
+
+    def test_duplicate_list_labels_are_400(self):
+        st, body = post(self.base, "/v1/systemone", {
+            "state": {"k": 1},
+            "questions": {"q": {"type": "choice", "instructions": "Pick.",
+                                "criteria": ["cat", "dog", "cat"]}}})
+        self.assertEqual(st, 400, body)
+        self.assertIn("duplicate", body["error"]["message"])
+
+    def test_l_and_v_return_the_same_shape(self):
+        _, l_body = post(self.base, "/v1/systemone", self.REQ)
+        _, v_body = post(self.base, "/v1/systemone", self.REQ, headers={"X-Jev-Mode": "V"})
+        shapes = set()
+        for body in (l_body, v_body):
+            a = body["answers"]["q"]
+            self.assertIsInstance(a["choice"], int)
+            self.assertIsInstance(a["label"], str)
+            self.assertEqual(a["label"], ["alpha", "beta", "gamma"][a["choice"]])
+            self.assertIsInstance(a["probabilities"], list)
+            self.assertEqual(len(a["probabilities"]), 3)
+            self.assertIn("margin", a)
+            # the SAME key set in both modes (one contract, not two)
+            shapes.add(tuple(sorted(k for k in a if k != "calib")))
+        self.assertEqual(len(shapes), 1, f"L and V answer shapes differ: {shapes}")
+
+    def test_margin_present_and_bounded(self):
+        _, body = post(self.base, "/v1/systemone", self.REQ)
+        a = body["answers"]["q"]
+        self.assertGreaterEqual(a["margin"], 0.0)
+        self.assertLessEqual(a["margin"], 1.0)
 
 
 if __name__ == "__main__":
