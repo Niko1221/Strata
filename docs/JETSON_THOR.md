@@ -29,8 +29,15 @@ This page was written on one Jetson AGX Thor Developer Kit:
   `nvidia-smi` showed the Thor at 98 % during generation, `strata status` reported the model ready at context 32768 with four parallel
   slots and 105.7 of 131.9 GB used, and the running binary was the container-built `strata --serve` from the package folder. The full
   benchmark shape of docs/COMMUNITY_BENCHMARKS.md is still open (#4560).
-- **Not run on this part yet:** a benchmark run (above), DFlash2 against the MTP (the Terminal therefore says DFlash2 is untested on this card), picture reading, the DeepSeek-V4.1 sets' fit
-  lines are printed but were not run here, more than one module, a long soak.
+- **Measured since (2026-11-05):** both served model families ran the standard protocol suite (`strata bench run`,
+  `standard-v1`) on this machine - sanity 12/12 on each. IQ3_S at 32K/4 slots: decode 38.3/34.0/35.6 and prompt
+  769/1000 tok/s (short/4K/16K), four at once 51-54 tok/s in total; Qwen3.6-35B-A3B UD-Q4_K_XL at 32K/4 slots:
+  decode 50.7/37.4/20.2 and prompt 1375/1221 tok/s, four at once ~100.5 tok/s in total. Qwen3.6 at 128K and
+  4 slots is refused by the engine itself with exact numbers on this pool; the Tegra page-cache accounting note
+  and the full data are in [the report](../bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
+- **Not run on this part yet:** DFlash2 against the MTP (the Terminal therefore says DFlash2 is untested on this card), picture reading, serving a DeepSeek-V4.1 set (its engine package and the Coder set's fit
+  on this 123 GB pool are verified, plan's own numbers; the 191-274 GB sets were never downloaded - this machine's link is ~1.3 MB/s),
+  more than one module, a long soak.
 - **Not built for ARM64 at all:** the desktop app, the HIP, SYCL and CPU-only engines, and the Q2_0 and Gyro packs, whose CPU kernels are
   x86-only.
 
