@@ -1,0 +1,105 @@
+{
+  "study": "2026-11-05-flash-next-4bit-fidelity",
+  "question": "Do the two 4-bit Unsloth Dynamic recipes the launcher accepts (UD-IQ4_XS, UD-Q4_K_XL) beat the IQ3_S reference on teacher-forced fidelity, and is the larger pack worth its bytes?",
+  "engine": "0.1.56",
+  "image": "strata-local:0.2.10-cuda13",
+  "yardstick": "quant_quality v1 set.ids.json, 4995 positions (999 x code/docs/english/multilingual/agent), teacher-forced, temperature 0, no sampling",
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 5080",
+    "vram_gb": 16,
+    "note": "all arms run in a window with production stopped; the arms cannot run beside another resident engine on a 16 GB card"
+  },
+  "model": "Qwen3.8-Flash-Next (Unsloth GGUF, MoE 48 layers x 512 experts)",
+  "reference": "Qwen3.8-Flash-Next-IQ3_S - the incumbent production brain, ppl 4.057 on this set",
+  "notes": {
+    "top1_and_kl_metric": "top1 and kl are measured against the reference arm's argmax/distribution, so they measure agreement with a quant, not with the source model",
+    "ppl_metric": "ppl is the perplexity of the fixed text under each arm - absolute, not reference-relative",
+    "mean_logp": "mean log-probability of the true token per position, paired across arms on the same positions"
+  },
+  "arms": {
+    "ref_iq3_s": {
+      "path_glob": "Qwen3.8-Flash-Next-IQ3_S-*.gguf",
+      "pack_gb": 83.60,
+      "ppl": 4.0567,
+      "mean_logp_true": -1.4004,
+      "top1_correct_vs_text_pct": 68.85,
+      "kl": 0.0,
+      "kl_p99": 0.0,
+      "top1_agree_with_ref_pct": 100.0
+    },
+    "ud_iq4_xs": {
+      "path_glob": "Qwen3.8-Flash-Next-UD-IQ4_XS-*.gguf",
+      "shards": 4,
+      "pack_gb": 93.67,
+      "delta_bytes_pct": 12.0,
+      "ppl": 3.9408,
+      "delta_ppl_vs_ref_pct": -2.86,
+      "mean_logp_true": -1.3714,
+      "top1_correct_vs_text_pct": 68.47,
+      "kl": 0.1163,
+      "kl_p99": 1.513,
+      "top1_agree_with_ref_pct": 87.53,
+      "pack_build_max_abs_err": 0.0286
+    },
+    "ud_q4_k_xl": {
+      "path_glob": "Qwen3.8-Flash-Next-UD-Q4_K_XL-*.gguf",
+      "shards": 4,
+      "pack_gb": 111.33,
+      "delta_bytes_pct": 33.2,
+      "ppl": 4.0873,
+      "delta_ppl_vs_ref_pct": 0.74,
+      "mean_logp_true": -1.4079,
+      "top1_correct_vs_text_pct": 68.25,
+      "kl": 0.1409,
+      "kl_p99": 2.007,
+      "top1_agree_with_ref_pct": 86.83,
+      "pack_build_max_abs_err": 0.0144
+    }
+  },
+  "paired_tests": {
+    "method": "exact two-sided McNemar on raw top-1 correctness, paired by position; mean logp paired on the same positions",
+    "ud_iq4_xs_vs_ud_q4_k_xl": {
+      "discordant_iq4_xs_only": 130,
+      "discordant_q4_k_xl_only": 119,
+      "mcnemar_p": 0.5263,
+      "mean_logp_delta_pct": -3.58
+    },
+    "ud_iq4_xs_vs_ref": {
+      "discordant_iq4_xs_only": 139,
+      "discordant_ref_only": 158,
+      "mcnemar_p": 0.2963,
+      "mean_logp_delta_pct": -2.86
+    },
+    "ud_q4_k_xl_vs_ref": {
+      "discordant_q4_k_xl_only": 146,
+      "discordant_ref_only": 176,
+      "mcnemar_p": 0.1059,
+      "mean_logp_delta_pct": 0.75
+    }
+  },
+  "segments": {
+    "code":        {"ppl_ref": 2.036, "ppl_iq4xs": 1.966, "ppl_q4kxl": 2.033, "mean_logp_iq4xs": -0.676, "mean_logp_q4kxl": -0.709},
+    "docs":        {"ppl_ref": 9.983, "ppl_iq4xs": 9.673, "ppl_q4kxl": 9.888, "mean_logp_iq4xs": -2.269, "mean_logp_q4kxl": -2.291},
+    "english":     {"ppl_ref": 4.165, "ppl_iq4xs": 4.148, "ppl_q4kxl": 4.249, "mean_logp_iq4xs": -1.423, "mean_logp_q4kxl": -1.447},
+    "multilingual":{"ppl_ref": 2.686, "ppl_iq4xs": 2.670, "ppl_q4kxl": 2.694, "mean_logp_iq4xs": -0.982, "mean_logp_q4kxl": -0.991},
+    "agent":       {"ppl_ref": 4.832, "ppl_iq4xs": 4.513, "ppl_q4kxl": 4.959, "mean_logp_iq4xs": -1.507, "mean_logp_q4kxl": -1.601}
+  },
+  "prior_arms_same_yardstick": {
+    "qwen3.8_flash_next_nvfp4_qad": {"ppl": 3.942, "kl": 0.1495, "kl_p99": 2.03, "top1_agree_with_ref_pct": 86.97},
+    "qwen3.8_flash_next_iq3_xxs":   {"ppl": 4.146, "kl": 0.1738, "kl_p99": 2.09, "top1_agree_with_ref_pct": 85.23},
+    "qwen3.8_flash_next_ud_q3_k_xl": {"ppl": 4.009, "kl": 0.1134, "top1_agree_with_ref_pct": 87.27, "pack_gb": 93.68,
+      "note": "smaller than the launcher's servable range at the time; quality compared only"}
+  },
+  "conclusions": [
+    "IQ4_XS is better calibrated than both IQ3_S and the 33%-larger Q4_K_XL: lower ppl in all five segments, lower mean KL, half the p99 KL.",
+    "The top-1 difference is not statistically significant at 4995 positions (McNemar p 0.53 vs Q4_K_XL, 0.30 vs IQ3_S); the ppl/mean-logp difference is the robust signal.",
+    "Q4_K_XL, the largest pack, is the worst of the three on ppl, KL and p99, and on top-1 correctness - bytes are not a proxy for fidelity on this model.",
+    "The pack build's reported max |err| over converted tensors ranks these two arms the wrong way round (0.0286 for the winner, 0.0144 for the loser).",
+    "Decode cost of the +12.0% byte increase is not measured here; it decides adoption, not fidelity."
+  ],
+  "artifacts": {
+    "compare_json": "compare-4bit-20261105-2014.json (quant_quality.py compare --segments --json)",
+    "window_script": "quality_window.sh (production stopped by name, brain restored by trap on any exit)",
+    "paired_test": "paired_compare.py (McNemar + paired mean logp)"
+  }
+}
