@@ -1098,3 +1098,47 @@ BF16/F16/F32 由 `tensor_load` 直读。解码器这一层不用动。
 
 三块真正的新工作：**PLE**（查表 + 卷积，表必须留 SSD）、**QSA**（选 key 的额外网络）、
 **HyperConnection**（全局结构改动）。其余是改常数。
+
+### 11.9 实测结果：模型能跑，但 llama.cpp 的 CANN 后端接不住这个模型
+
+下载完成（76.8 GB，两个分片），逐项测过之后的状态：
+
+**能跑的：**
+
+| 项 | 结果 |
+|---|---|
+| GGUF 完整性 | ✅ 加载成功，张量表全部对上 |
+| 纯 CPU 推理 | ✅ 输出连贯中文，**预填 18.9 t/s、生成 7.6 t/s**（8 线程） |
+| 0.6B 走 NPU | ✅ 预填 1332 t/s、生成 182 t/s |
+| `TOP_K` 算子（我补的） | ✅ `test-backend-ops` 18 个用例全过 |
+
+**跑不了的：Qwen3.8 走 NPU，卡在 llama.cpp 的 CANN 后端。**
+
+排查过程中修掉了一个**编译期**问题，又暴露出后端逐个算子的缺陷：
+
+1. **AMX 非法指令（已修）**
+   `GGML_NATIVE=ON` 让编译器按本机 CPUID 生成 AMX 指令，但内核没启用 AMX tile 状态，
+   第一条 `tileloadd` 就 `#UD`。用 `-DGGML_NATIVE=OFF` 重编解决，加载不再崩。
+
+2. **`Repeat` 的 Tile 内核起不来（未解决）**
+   ```
+   BinaryGetFunction failed, kernel_name=
+   OpName:[aclnnRepeat_0_TileAiCore] Op Tile has tiling and tiling parse funcs
+   ```
+   内核名是空的，CANN 找不到可执行的 kernel。
+
+3. **把 Repeat 放回 CPU 后，`ScatterUpdate` 内核执行失败（未解决）**
+   ```
+   Aicore kernel execute failed, fault kernel_name=ScatterUpdate_..._high_precision_880015000
+   ```
+
+4. **部分卸载会触发另一个断言**
+   `-ngl 1` 会撞上 `GGML_ASSERT(!is_matmul_weight(src))`（`ggml-cann.cpp:2149`，
+   跨后端拷贝 matmul 权重的路径）。所以只能全卸载或全不卸载。
+
+**结论**：这不是配置问题，是 llama.cpp 的 CANN 后端在这种"14 种量化格式混用 + 51.2B 查表"
+的模型上还没有准备好。每修一个算子就露出下一个，工作量不可预估，而且属于上游后端的活。
+
+**对 Strata 的意义**：Strata 走自己的 GGUF 读取器和自己的 kernel，不依赖 ggml，
+所以这条路上的问题**不会**传到 Strata。但也意味着不能指望 llama.cpp 提供现成参考实现——
+只有 CPU 那份输出可以当标尺。
