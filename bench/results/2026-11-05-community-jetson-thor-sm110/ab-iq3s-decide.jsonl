@@ -1,0 +1,36 @@
+{"round": 0, "arm": "A", "req": "chat0", "decode": 48.7, "prompt": 49.5, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 0, "arm": "A", "req": "chat1", "decode": 35.9, "prompt": 43.9, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 0, "arm": "A", "req": "chat2", "decode": 37.1, "prompt": 45.3, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "A", "req": "long", "decode": 35.9, "prompt": 782.4, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 0, "arm": "B", "req": "chat0", "decode": 46.1, "prompt": 28.1, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 0, "arm": "B", "req": "chat1", "decode": 37.3, "prompt": 45.8, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 0, "arm": "B", "req": "chat2", "decode": 36.5, "prompt": 47.3, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "B", "req": "long", "decode": 36.0, "prompt": 842.0, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 0, "arm": "C", "req": "chat0", "decode": 48.7, "prompt": 45.8, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 0, "arm": "C", "req": "chat1", "decode": 35.6, "prompt": 44.8, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 0, "arm": "C", "req": "chat2", "decode": 36.9, "prompt": 44.0, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "C", "req": "long", "decode": 35.8, "prompt": 725.1, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 1, "arm": "C", "req": "chat0", "decode": 48.6, "prompt": 47.2, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 1, "arm": "C", "req": "chat1", "decode": 35.8, "prompt": 44.4, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 1, "arm": "C", "req": "chat2", "decode": 37.1, "prompt": 45.3, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "C", "req": "long", "decode": 35.8, "prompt": 722.9, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 1, "arm": "B", "req": "chat0", "decode": 47.8, "prompt": 49.5, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 1, "arm": "B", "req": "chat1", "decode": 35.6, "prompt": 46.0, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 1, "arm": "B", "req": "chat2", "decode": 36.6, "prompt": 33.1, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "B", "req": "long", "decode": 35.2, "prompt": 850.7, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 1, "arm": "A", "req": "chat0", "decode": 45.3, "prompt": 29.7, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 1, "arm": "A", "req": "chat1", "decode": 31.0, "prompt": 39.4, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 1, "arm": "A", "req": "chat2", "decode": 35.7, "prompt": 38.7, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "A", "req": "long", "decode": 35.6, "prompt": 667.3, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 2, "arm": "A", "req": "chat0", "decode": 46.8, "prompt": 40.3, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 2, "arm": "A", "req": "chat1", "decode": 33.1, "prompt": 37.6, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 2, "arm": "A", "req": "chat2", "decode": 35.5, "prompt": 44.8, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 2, "arm": "A", "req": "long", "decode": 34.7, "prompt": 653.7, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 2, "arm": "B", "req": "chat0", "decode": 49.8, "prompt": 50.3, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 2, "arm": "B", "req": "chat1", "decode": 35.9, "prompt": 43.0, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 2, "arm": "B", "req": "chat2", "decode": 37.8, "prompt": 45.2, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 2, "arm": "B", "req": "long", "decode": 37.6, "prompt": 881.9, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
+{"round": 2, "arm": "C", "req": "chat0", "decode": 48.4, "prompt": 46.7, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 2, "arm": "C", "req": "chat1", "decode": 35.9, "prompt": 46.4, "prompt_n": 27, "n": 238, "text": "A refrigerator operates on the principle of vapor-compression refrigeration, uti"}
+{"round": 2, "arm": "C", "req": "chat2", "decode": 37.0, "prompt": 44.5, "prompt_n": 29, "n": 210, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 2, "arm": "C", "req": "long", "decode": 36.5, "prompt": 664.3, "prompt_n": 6345, "n": 162, "text": "The list is composed entirely of single-word nouns that evoke a variety of natur"}
