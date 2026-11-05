@@ -583,3 +583,13 @@ class ModeGating(unittest.TestCase):
         self.assertIn("decision", jev_calib.MODES)   # default instance has it on
         # and the parse that would turn it off:
         self.assertNotIn("decision", jev_calib._parse_modes("chat"))
+
+
+class NoCalibratorFilesShip(unittest.TestCase):
+    """B1 regression guard: the repo never again ships fitted calibrator parameters."""
+
+    def test_no_calib_json_in_the_tree(self):
+        root = Path(__file__).resolve().parents[1]
+        shipped = list(root.glob("calib/calib-*.json")) + list(root.glob("calib-*.json"))
+        self.assertEqual(shipped, [], "fitted calibrator files must not ship (B1)")
+        self.assertFalse((root / "calib").exists(), "the calib/ directory must not ship (B1)")

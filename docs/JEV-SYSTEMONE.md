@@ -117,7 +117,8 @@ workload.
 `STRATA_JEV_LABELS` picks how choice options are rendered and which token each option's logit is
 read from. The option list and the readout always use the same alphabet.
 
-- `upper` (default): `A`…`Z`. Every calibrator on disk was fitted against this.
+- `upper` (default): `A`…`Z`. The previously-shipped fits were fitted against this; a fit you
+  make yourself is fitted against whichever alphabet you serve with.
 - `digit-lower`: `0`-`9`, then `a`-`z` to 26 options (the scheme requested on #3643, so a text
   multi-field path can share a token-path scorer). Unknown values fail closed at import.
 
@@ -129,11 +130,24 @@ token in the shipped tokenizer, so no valid request changes status.
 
 Changing the alphabet moves the readout slightly (`mean |Δp| = .0034` per option on ARC, 0/160
 identical vectors) but it did not change any decision on 160 items and the two alphabets' own
-optimal temperatures sit 8% apart (T = 1.00 vs .92), inside the shipped 1.0557. No refit was needed
+optimal temperatures sit 8% apart (T = 1.00 vs .92). No refit was needed
 for the scheme itself — but note the test task was 99%-accurate ARC, the weakest possible detector;
 a 10-way uncertain task is where a refit would show if one is owed.
 
 ## Calibration (M3.2)
+
+**No calibrator files ship.** With `STRATA_JEV_CALIB_DIR` unset (the default) every readout runs
+identity and says so in each answer (`"calib": "identity"`); the deployer fits their own. A
+deployment that wants fits sets:
+
+- `STRATA_JEV_CALIB_DIR` — the directory `calib-<tuple>.json` fits are read from (L = text,
+  D = image direct, S = image summary). Only read when decisions are enabled.
+- `STRATA_JEV_CALIB_LOG=1` — opt in to logging: every answered question appends a row to
+  `<dir>/data/log-<mode>.jsonl` (`ts, tuple, qid, type, raw_p[, v_d]`) — the rows a fitter consumes.
+- `STRATA_JEV_TASK` — a task tag; a fit recorded for another task is refused (fail-closed identity).
+- `STRATA_JEV_ADMIN_KEY` + `POST /admin/calib` — hot-swap the fits at runtime
+  (empty key = open like the rest of the control plane). `STRATA_JEV_CALIB_STRICT=1` refuses a
+  file whose keys the loader does not read (e.g. `a`/`c`) instead of loading it as a half-fit.
 
 Post-hoc and per-tuple. **Not accuracy-neutral**, and it is worth being precise about why:
 
@@ -154,20 +168,18 @@ Two more rules that measurement forced:
 
 - **Fit on the task you serve.** Where the readout is already honest, refuse to fit: GQA raw ECE
   is .054 and a dev fit made it worse (.083) while losing 2.3 points of accuracy. On the image
-  tuples the shipped fits are at their ceiling — refitting on top of them asks for T = .985/.984
+  tuples the dev-split fits (never shipped; see the caveat below) are at their ceiling — refitting
+  on top of them asks for T = .985/.984
   and `a = 1.066, c = −.003`.
 - **Never fit on calibrated output.** A dev fit applied to probabilities that were already
   calibrated compounds the transform, and the resulting parameters are not installable. Serve
-  identity (move `calib-*.json` aside) for any raw→fit measurement, and compare arms only after
+  identity (unset `STRATA_JEV_CALIB_DIR`) for any raw→fit measurement, and compare arms only after
   inverting a known transform.
 
-`calib/calib-L.json`, `calib-D.json`, `calib-S.json` are the per-tuple files (L = text,
-D = image direct, S = image summary), read at startup, hot-swapped via `POST /admin/calib`
-(Bearer `STRATA_JEV_ADMIN_KEY`; empty key = open like the rest of the control plane). A file whose
-keys the loader does not read (e.g. `a`/`c`) loads as identity while still honouring its `T` — a
-silent half-fit; `STRATA_JEV_CALIB_STRICT=1` refuses that file instead. Every answered question
-logs a row to `calib/data/log.jsonl` (`ts, tuple, qid, type, raw_p[, v_d]`) — the schema the
-donor's `fit.py` consumes.
+With `STRATA_JEV_CALIB_DIR` set, `<dir>/calib-L.json`, `calib-D.json`, `calib-S.json` are the
+per-tuple files (L = text, D = image direct, S = image summary), read at startup and hot-swapped
+via `POST /admin/calib`. Nothing ships and nothing is written unless `STRATA_JEV_CALIB_LOG=1`
+(the logging paragraph above).
 
 **Measured on QFN (Qwen3.8-Flash-Next IQ3_XXS, RTX 3090), 100 items/task, 2026-10-15 readout:**
 
@@ -177,7 +189,8 @@ donor's `fit.py` consumes.
 | ARC (choice) | 100% → 100% | 0.033 → 0.033 | 1201 |
 | SST-5 (score) | 55% → 55% | 0.301 → **0.141** | 1222 |
 
-Fitted: `a_noul=0.7446 c_noul=0.2449 T_choice=1.0459 T_score=2.2428`
+Fitted (dev-split fits, **not shipped** — the raw columns are what a default deployment
+reproduces): `a_noul=0.7446 c_noul=0.2449 T_choice=1.0459 T_score=2.2428`
 (donor 27B baseline: 90.5 / 99 / 56.9 — parity). V-mode on the same ARC items:
 100% acc, 100/100 argmax agreement with L, 4631 ms/item.
 
