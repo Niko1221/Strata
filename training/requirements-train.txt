@@ -1,0 +1,49 @@
+# The `training/` tree's own packages: everything the three layers need that the
+# engine's requirements.txt does not already have.
+#
+# Two steps, because a torch wheel names its CUDA build and a requirements file can
+# only name one wheel:
+#
+#   1) torch, from the index that matches the driver (this PC: CUDA 13.2):
+#        python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu132
+#      (cu126 / cu128 / cu130 / cpu: same line, a different index path)
+#   2) python -m pip install -r requirements.txt -r requirements-train.txt
+#
+# Layer by layer (`python3 platform_check.py --deps` prints this for the machine you
+# are on, and INSTALL.md has the platform table):
+#   core      mezo, no torch     — nothing here. requirements.txt already carries
+#                                 numpy / jinja2 / regex / psutil, so the zero-order
+#                                 line installs from requirements.txt alone. That is a
+#                                 property worth keeping: the layer that runs on the
+#                                 engine's own inference must not grow a second
+#                                 dependency story.
+#   backward  autograd           — everything below.
+#
+# Pinned to the versions the numbers in REVIEW-REQUEST.zh.md were measured on. Bumping
+# one is fine, but write down the new number: they interact. transformers' qwen4_exp
+# picks the GDN kernel through `fla`, and a fallback there changes VRAM per step, not
+# just speed (platform_check.py:warn_if_gdn_fell_back).
+
+# Triton: the fused NF4 decode kernel (backward/nf4_fused.py) imports `triton`, and
+# loader_qwen4 imports that module unconditionally — so the backward layer cannot run
+# without it. On Linux torch's own dependency installs a matching one; there is nothing
+# to pin here.
+#
+# On Windows there is no upstream triton wheel at all. `triton-windows` is the same
+# `triton` module built for win32 (github.com/woct0rdho/triton-windows — wheels on its
+# Releases page, and its issues carry the build for whatever torch just shipped). The
+# version before `.postN` is the triton release it patches, and it must equal the one
+# torch was built against; a mismatch shows up as torch._inductor refusing the version,
+# not as a friendly error. Bumping torch ⇒ bump this line in the same commit.
+triton-windows==3.9.0.post30; sys_platform == "win32"
+
+transformers==5.17.0
+tokenizers==0.23.3
+accelerate==1.14.0
+safetensors==0.8.0
+gguf==0.19.0
+
+# GDN's chunk_gated_delta_rule. "Optional" only in the sense that transformers falls
+# back to a torch reference implementation — which then leaks VRAM per step and OOMs
+# within 20 steps at T=2048 on 48 GB. Treat it as required for backward training.
+flash-linear-attention==0.6.0
