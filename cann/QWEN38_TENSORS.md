@@ -95,14 +95,29 @@ HyperConnection 的 4 路残差对应。
 | `indexer.q_norm.weight` | F32 | 128 |
 | `indexer.k_norm.weight` | F32 | 128 |
 
-## PLE（全局各一份，用在第 2 层）
+## PLE：**挂在 `blk.1` 上，不是全局**
+
+一开始我以为 PLE 的六个张量是全局的，实测发现它们在块里：
 
 ```
-ple_key.weight, ple_value.weight, ple_norm_key.weight,
-ple_norm_query.weight, ple_norm_conv.weight, ple_conv1d.weight
+blk.1.ple_key.weight        BF16
+blk.1.ple_value.weight      BF16
+blk.1.ple_conv1d.weight     F16
+blk.1.ple_norm_key.weight   F32
+blk.1.ple_norm_query.weight F32
+blk.1.ple_norm_conv.weight  F32
 ```
 
-配合 `per_layer_token_embd.weight`（51.2B 参数的 n-gram 表，在**第二个分片**里）。
+`config.json` 的 `ple_layer_ids=[2]` 是 1-based，所以是 **0-based 的 blk.1**。
+
+## 第二个分片只有一个张量
+
+```
+per_layer_token_embd.weight   IQ4_NL   [160, 320001536]
+```
+
+160 × 320001536 = 51.2B 参数 —— 这就是那张 n-gram 表。注意名字是 `per_layer_token_embd`
+（带 token），不是 `per_layer_tok_embd`。
 
 ## 三处"和预期不一样"的地方
 
@@ -115,6 +130,40 @@ llama.cpp 的代码两条路径都支持，但这个 GGUF 用的是分开的。�
 
 `config.json` 里 `ple_embed_dim` 是 2560，但 GGUF 里 PLE 每头是 **160**：8 头 × 160 = **1280**
 （不是 2560）。移植时按 1280 算，不是按 hidden 算。
+
+### 3. 没有 `output_norm.weight`，最终归一化叫 `output_hc_norm`
+
+全局张量只有五个：`token_embd`、`output`、`output_hc_down`、`output_hc_up`、`output_hc_norm`。
+我们引擎现在找的是 `output_norm.weight`，名字对不上——移植时要改。
+
+## 用 `port_check` 量出来的差距
+
+`cann/tests/port_check.cpp` 直接读 GGUF 头，把引擎里的常量和文件里的值逐项比：
+
+```
+hidden                     ours 2048     file 2560     DIFFERS
+layers                     ours 40       file 48       DIFFERS
+linear k heads             ours 16       file 16       ok
+linear v heads             ours 32       file 48       DIFFERS
+linear state dim           ours 128      file 128      ok
+conv kernel                ours 4        file 4        ok
+attn q heads               ours 16       file 24       DIFFERS
+attn kv heads              ours 2        file 2        ok
+attn head dim              ours 256      file 256      ok
+rope dim                   ours 64       file 64       ok
+expert inter               ours 512      file 640      DIFFERS
+experts used               ours 8        file 10       DIFFERS
+experts total              ours 0        file 512      DIFFERS
+qkv dim (derived)          ours 8192     file 10240    DIFFERS
+rms eps ours 1.0e-06 file 1.0e-06        ok
+rope base ours 1e+07 file 1e+07          ok
+```
+
+**要改七个常数**，其中 `qkv dim` 是从"16 k 头 + 32 v 头"推到 10240 的，不能只改一半。
+
+而且：**引擎要的 21 个块内张量全部存在**（抽了 blk.0-3 检查，missing = 0），
+包括 `ssm_beta`/`ssm_alpha` 分开的两颗、`attn_qkv` 的 10240 宽、注意力层的四个 indexer 张量。
+也就是说**没有缺张量**，差距全在常量和三块新算法上。
 
 ### 3. 我们的 GGUF 读取器读不到浮点元数据
 

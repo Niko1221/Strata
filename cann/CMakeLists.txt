@@ -47,6 +47,8 @@ target_include_directories(strata_cann_decode PRIVATE "${CMAKE_CURRENT_SOURCE_DI
 add_executable(cann_parity tests/parity.cpp)
 add_executable(gdn_batched_parity tests/gdn_batched_parity.cpp)
 target_link_libraries(gdn_batched_parity PRIVATE strata_cann)
+add_executable(port_check tests/port_check.cpp)
+target_link_libraries(port_check PRIVATE strata_cann)
 add_executable(gguf_dump tests/gguf_dump.cpp)
 target_link_libraries(gguf_dump PRIVATE strata_cann)
 add_executable(gdn_fused_parity tests/gdn_fused_parity.cpp)
