@@ -2144,12 +2144,21 @@ struct Engine {
             int k = 0;
             for (int off = 0; off < T; off += chunk, ++k) {
                 const int Tsub = std::min(chunk, T - off);
+                // x is the running residual of the whole forward pass (layer() adds to it in place), so the
+                // per-row state has to move in and out of xsuper together with h: without this the first
+                // add_rms_post of a sub-chunk mixes in the residual of another sub-chunk (or a past request).
+                CK(cudaMemcpyAsync(x, xsuper + (size_t) off * N, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
                 CK(cudaMemcpyAsync(h, hsuper + (size_t) off * N, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
                 layer(m->layers[l], l, Tsub, p0 + off, pos_super + k, false, false, wn, h, sb);
                 CK(cudaMemcpyAsync(hsuper + (size_t) off * N, h, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(xsuper + (size_t) off * N, x, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
             }
             if (sb) stream_done();
         }
+        // hmain keeps the last tmax rows of the final normed hidden: the MTP seeds and batch rows read it, and
+        // the ordinary path leaves it there (its last hout buffer is hmain).
+        const int hrows = std::min(T, chunk);
+        CK(cudaMemcpyAsync(hmain, hsuper + (size_t) (T - hrows) * N, (size_t) hrows * N * 4, cudaMemcpyDeviceToDevice, st));
         if (heads > 0) head_rows(hsuper + (size_t) (T - heads) * N, heads, logits, pick);
         if (profile) {
             cudaEventRecord(prof_d, st);
