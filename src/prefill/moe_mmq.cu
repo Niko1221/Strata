@@ -343,7 +343,12 @@ bool supported(int t) {
             return kq_ok();
 #endif
         case GGML_TYPE_NVFP4:
+#if defined(GGML_USE_HIP)
+            // Keep HIP's existing FP16 default; the new W4A8 path is explicit opt-in.
+            return std::getenv("STRATA_PREFILL_NVFP4") != nullptr && nvfp4_mode() == Nvfp4Mode::W4A8;
+#else
             return nvfp4_mode() != Nvfp4Mode::FP16;
+#endif
         default:
             return false;
     }
