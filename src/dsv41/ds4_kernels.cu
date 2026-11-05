@@ -2222,6 +2222,17 @@ void zc_stage(unsigned long long* plan, const int* idx, const unsigned long long
     strata_ds4_launch(zc_copy_kernel, dim3(64, k), 256, 0, s, plan, idx, zc_tab, stage, stride, bytes);
     strata_ds4_launch(zc_fix_kernel, 1, 32, 0, s, plan, idx, zc_tab, k, stage, stride);
 }
+// (a GPU that shares the PC's memory: the slot is read where it lies, at the memory's own rate)
+__global__ void zc_point_kernel(unsigned long long* __restrict__ plan, const int* __restrict__ idx,
+                                const unsigned long long* __restrict__ zc_tab, int k) {
+    const int i = threadIdx.x;
+    if (i >= k || plan[i] != 0) return;
+    const unsigned long long p = zc_tab[idx[i]];
+    if (p != 0) plan[i] = p;
+}
+void zc_point(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int k, cudaStream_t s) {
+    strata_ds4_launch(zc_point_kernel, 1, 32, 0, s, plan, idx, zc_tab, k);
+}
 
 void init_pre(float* pre, int T, cudaStream_t s) {
 #if defined(STRATA_METAL)

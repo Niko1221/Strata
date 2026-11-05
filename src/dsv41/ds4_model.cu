@@ -1414,7 +1414,8 @@ struct Model::Impl {
     std::unique_ptr<ExpertStore> store;
     uint8_t* zc_stage_buf = nullptr;   // device: k staging slots for the store's experts of a decode token
     size_t zc_stride = 0;
-    bool zc_copy = true;               // DS4_STORE_STAGE=0: the expert kernels read the arena over PCIe themselves
+    bool zc_copy = true;               // false: the expert kernels read the arena's slots where they lie (a GPU that shares the PC's
+                                       // memory; DS4_STORE_STAGE=0/1 decides anywhere)
     bool in_ram(const Layer& l, int e) const {   // (DISK_SKIP_W) expert e's pages in RAM now
         if (!l.ram.empty() && l.ram[(size_t) e] >= 0) return true;
         if (l.lay.fmt == gg::kFmtMXFP4) {
@@ -6631,7 +6632,11 @@ struct Model::Impl {
             } else {
                 zc_stride = (store->max_blob() + 4095) & ~(size_t) 4095;
                 cudaSetDevice(devs[0].id);
-                if (cudaMalloc((void**) &zc_stage_buf, zc_stride * kPicks) != cudaSuccess) {
+                // a GPU that shares the PC's memory reads the slots where they lie: the copy into "VRAM" would be a second pass
+                // over the same RAM in the layer's critical path
+                zc_copy = !gpu_integrated(devs[0].id);
+                if (const char* v = std::getenv("DS4_STORE_STAGE")) zc_copy = std::atoi(v) != 0;
+                if (zc_copy && cudaMalloc((void**) &zc_stage_buf, zc_stride * kPicks) != cudaSuccess) {
                     (void) cudaGetLastError();
                     zc_stage_buf = nullptr;
                     for (Layer& l : L) l.zc.clear();
@@ -6644,8 +6649,12 @@ struct Model::Impl {
                         }
                 }
             }
-            std::fprintf(stderr, "ds4: RAM store: the GPU takes its slots over PCIe (%s), %zu slots kept evictable\n",
-                         zc_stage_buf != nullptr ? "copied into a staging area at the PCIe rate first" : "off", cfg.reserve);
+            const bool zc_on = std::any_of(L.begin(), L.end(), [](const Layer& l) { return l.zc_tab != nullptr; });
+            std::fprintf(stderr, "ds4: RAM store: the GPU takes its slots %s, %zu slots kept evictable\n",
+                         !zc_on ? "over PCIe (off)"
+                         : zc_copy ? "over PCIe (copied into a staging area at the PCIe rate first)"
+                                   : "where they lie (its memory is the PC's: no copy)",
+                         cfg.reserve);
         }
     }
     // the profile's hottest experts (VRAM's left out) read into the store before the first token (DS4_STORE_PRELOAD=0: not)
@@ -14158,8 +14167,12 @@ struct Model::Impl {
                 ma.n_ff = FF;
                 ma.limit = g.lim;
                 const bool mx = lay.fmt == gg::kFmtMXFP4;
-                if (zc_stage_buf != nullptr && l.zc_tab != nullptr)   // (the store's experts copied to VRAM at the PCIe rate first)
-                    zc_stage(d.plan_ptr, d.ridx, l.zc_tab, l.k_exp, zc_stage_buf, zc_stride, l.blob, s);
+                if (l.zc_tab != nullptr) {
+                    if (zc_stage_buf != nullptr)   // (the store's experts copied to VRAM at the PCIe rate first)
+                        zc_stage(d.plan_ptr, d.ridx, l.zc_tab, l.k_exp, zc_stage_buf, zc_stride, l.blob, s);
+                    else   // (one memory: the kernels read the slots where they lie)
+                        zc_point(d.plan_ptr, d.ridx, l.zc_tab, l.k_exp, s);
+                }
                 // DS4_TLOG2: the expert stage's three host spans (gate/up issue, the CPU-lane wait, down issue)
                 static const bool tlog2 = ds4_dbg("DS4_TLOG2");
                 static double t_moe_gu = 0, t_moe_wait = 0, t_moe_dn = 0; static long t_moe_n = 0; static bool t_moe_reg = false;
