@@ -1,4 +1,4 @@
-# `cann/` - the Ascend port of the engine
+﻿# `cann/` - the Ascend port of the engine
 
 This directory is to the CANN backend what `sycl/` is to the Intel backend: a separate project
 that grows next to the CUDA engine until it can take the engine's sources.
@@ -10,7 +10,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | P2b | GGUF reader, real model file, real-weight GEMV on the NPU | done |
 | P2c | one real block from real weights: blk.0 shared expert (SwiGLU) | done |
 | P3 | GDN done; RoPE / KV cache / prefill shapes | in progress |
-| P4 | MoE routing and expert matmuls | not started |
+| P4 | MoE: top-8 routing, expert matmuls, shared expert | done for one layer's FFN |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
 
 ## Files
@@ -29,6 +29,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | `tests/gdn_parity.cpp` | GDN against the float reference, both decay modes |
 | `tests/gguf_parity.cpp` | the real 22.85 GB model: header, weight mix, real GEMV, real-tensor decoders |
 | `tests/layer_parity.cpp` | one real block on the NPU: blk.0 shared expert, `silu(W_gate x) * (W_up x)` then `W_down` |
+| `tests/moe_parity.cpp` | the whole FFN of blk.0: router, top-8, 8 expert slabs, weighted sum, shared expert |
 | `tests/run_*.sh` | build and run each test |
 
 ## Build and run
@@ -64,6 +65,7 @@ receives.
 | GDN, one head | attn 0.05, state 0.05 |
 | real-weight GEMV 512x2048 | 0.5 |
 | blk.0 shared expert | gate/up/act 0.2, output 0.5 and relative L2 0.02 |
+| blk.0 FFN (MoE + shared) | router 0.05, output 1.0 and relative L2 0.02 |
 
 ## Two API facts worth writing down
 
@@ -117,7 +119,9 @@ So 3 of 4 layers run a GDN block (`ssm_*`), and the FFN is 256 experts with one 
   separate change.
 - Fused dequant+matmul. The decoder works on the host today; a fast engine wants it fused on the
   device.
-- Prefill-shaped GDN (the current path is one token at a time), RoPE, KV cache, MoE routing.
+- Prefill-shaped GDN (the current path is one token at a time), RoPE, KV cache.
+- Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
+- The attention half of a layer, which is where RoPE and the KV cache live.
 
 ## Verified on the machine
 
@@ -164,7 +168,6 @@ output.weight                Q8_0  vs ggml: BIT-EXACT
 
 ```
 block      : blk.0 shared expert (SwiGLU)
-shapes     : x[2048] -> gate/up[512] -> down[2048]
 
 stage                     max|diff|       rel L2  result
 gate  = W_gate x           0.000240     0.000202  PASS
@@ -173,5 +176,14 @@ act   = silu(g) * u        0.000172     0.000428  PASS
 y     = W_down act         0.000034     0.000404  PASS
 ```
 
+```
+block   : blk.0 FFN = 8 of 256 experts + shared expert
+routing : 213(0.1542) 71(0.1505) 230(0.1398) 130(0.1233) 201(0.1118) 205(0.1094) 135(0.1074) 25(0.1037)
+
+stage                     max|diff|       rel L2  result
+router logits              0.000457     0.000211  PASS
+ffn out                    0.000013     0.000439  PASS
+```
+
 Reproduce with `bash cann/tests/run_parity.sh`, `run_quant.sh`, `run_gdn.sh`, `run_gguf.sh`,
-`run_layer.sh`.
+`run_layer.sh`, `run_moe.sh`.

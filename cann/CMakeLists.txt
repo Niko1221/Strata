@@ -40,6 +40,8 @@ target_include_directories(strata_cann PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inclu
 target_link_libraries(strata_cann PUBLIC ${ASCENDCL_LIB} ${NNOPBASE_LIB} ${OPAPI_LIB} ${ACL_OP_COMPILER_LIB})
 
 add_executable(cann_parity tests/parity.cpp)
+add_executable(moe_parity tests/moe_parity.cpp)
+target_link_libraries(moe_parity PRIVATE strata_cann)
 add_executable(layer_parity tests/layer_parity.cpp)
 target_link_libraries(layer_parity PRIVATE strata_cann)
 add_executable(gguf_parity tests/gguf_parity.cpp)
