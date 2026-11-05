@@ -161,6 +161,20 @@ That comparison found a real bug: the short conv feeds its inputs oldest-first, 
 token pairs with the last tap**, not the first. My transcription used the first tap, and the CPU
 reference used the same wrong convention, so the two agreed with each other and both were wrong.
 
+Layer by layer against llama.cpp's `l_out-<n>`:
+
+| layer | llama.cpp | here |
+|---|---|---|
+| 0 (gdn) | 0.0230, -0.0104, -0.0286 | 0.02273, -0.01032, -0.02859 |
+| 1 (gdn) | 0.0293, -0.0038, -0.0339 | 0.02888, -0.00381, -0.03406 |
+| 2 (gdn) | 0.0215, -0.0053, -0.0386 | 0.02096, -0.00531, -0.03854 |
+| 3 (attn) | 0.0370, 0.0148, -0.0211 | 0.05063, 0.01886, -0.03329 |
+| 4 (gdn) | 0.0127, 0.0168, -0.0321 | 0.02386, 0.01603, -0.03848 |
+
+The three GDN layers match; the first attention layer does not. Inside it, `v` and the gated
+attention vector match llama.cpp at both the first and the last head, yet the output projection
+returns 0.0229 where llama.cpp returns 0.0078 from what should be the same matrix and vector.
+
 ## What is not here yet
 
 - The engine's own kernels: `src/` still compiles for CUDA only.
