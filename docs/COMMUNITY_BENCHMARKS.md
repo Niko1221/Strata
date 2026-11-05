@@ -73,6 +73,12 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-05: NVIDIA Jetson AGX Thor (sm_110), 122.8 GiB unified memory, L4T R38.2.2 / driver 580.00 / CUDA 13.0.48](../bench/results/2026-11-05-community-jetson-thor-sm110/README.md):
+  the arm64 fat CUDA engine (`sm_121 + sm_110`, from the #4559 branch) built on the machine; the standard `strata bench run`
+  suite on Qwen3.8-Flash-Next IQ3_S and Qwen3.6-35B-A3B UD-Q4_K_XL at 32K/4 slots - sanity 12/12 on both; IQ3_S decode
+  38.3/34.0/35.6 and prompt 769/1000 tok/s (short/4K/16K), four at once 51-54 tok/s in total; Qwen3.6 decode 50.7/37.4/20.2
+  and prompt 1375/1221, four at once ~100.5 tok/s in total; 128K+4 slots refused by the engine with exact numbers on this
+  pool, and the DeepSeek engine package verified and fitted (plan) but not served (a 191-274 GB set at a measured ~1.3 MB/s link).
 
 ## Run the standard benchmark
 
