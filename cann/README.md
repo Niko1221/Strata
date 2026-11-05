@@ -4,6 +4,7 @@ The current Qwen3.8-Flash-Next IQ3_XXS path is documented in
 [`QWEN38_IQ3_XXS_ASCEND.md`](QWEN38_IQ3_XXS_ASCEND.md). It is an opt-in Torch/CANN
 backend for a single Ascend 910B2C; the older C++ sections below describe the
 Qwen3.6 parity path and its historical measurements.
+中文说明见 [`QWEN38_IQ3_XXS_ASCEND_CN.md`](QWEN38_IQ3_XXS_ASCEND_CN.md)。
 
 This directory is to the CANN backend what `sycl/` is to the Intel backend: a separate project
 that grows next to the CUDA engine until it can take the engine's sources.
