@@ -1,7 +1,7 @@
 # 昇腾 910B2C 移植：结果与过程（Strata / CANN）
 
 更新时间：2026-11-05 12:40（Asia/Shanghai）
-服务器：单卡 Ascend 910B2C 测试容器（连接信息不入库）
+服务器：`<用户>@<服务器地址> -p <端口>`
 
 ---
 
@@ -36,8 +36,13 @@
 - 单进程 HBM 上限需用 `STRATA_BUDGET_GB` 控制，否则会和另一个服务抢显存（见 3.22）。
 - 分词在 18790 上借用 llama.cpp 的接口；模型推理完全是我们自己的。
 
+**Qwen3.8-Flash-Next 是另一条线**：见第 11 节。换了三台机器（第二台 ARM 且无出网，弃用），
+现用 2×910B2C 已把 llama.cpp + CANN 编译通过、0.6B 实测到 1332 t/s 预填，大模型在下。
+那条线的关键发现是 **CANN 后端缺 5 个 qwen4exp 专用算子**（HyperConnection / QSA），
+它们会静默回退 CPU——补法在第 11.5 节。
+
 **怎么推仓库**：`strata/` 下 39 个本地 commit 未 push（`git log --oneline` 可见），
-部署仓库另有工作副本；两处都需要单独推送。
+`/data/ascend910-deploy` 是部署仓库的工作副本。两处都等你推。
 
 ---
 
@@ -62,7 +67,6 @@
 | 编译 | gcc/g++ 12.3.1，cmake 3.27.9；**无 ninja、无 unzip** |
 | 外网 | pypi / modelscope 通；**GitHub 不通** |
 
-> 认证凭据不记录在文档中；执行远程命令时由 SSH 客户端安全输入。
 
 ## 2. 移植进度
 
@@ -426,10 +430,10 @@ blk.0.post_attention_norm.weight F32 [2048]
 
 ```powershell
 # 18789（llama.cpp，实际使用）
-ssh -CNg -L 18789:127.0.0.1:18789 -p <ssh-port> <user>@<host>
+ssh -CNg -L 18789:127.0.0.1:18789 -p <端口> <用户>@<服务器地址>
 
 # 再加上 18790（本引擎）就写成两行 -L
-ssh -CNg -L 18789:127.0.0.1:18789 -L 18790:127.0.0.1:18790 -p <ssh-port> <user>@<host>
+ssh -CNg -L 18789:127.0.0.1:18789 -L 18790:127.0.0.1:18790 -p <端口> <用户>@<服务器地址>
 ```
 
 Windows 侧 `127.0.0.1:18789` 已监听：`/health` 200、`/props` 返回模型路径、
@@ -655,7 +659,7 @@ token 的 logprob 只差 0.086，是近似平局翻转，不是模型算错。�
 提供 `/v1/completions`、`/v1/chat/completions`、`/v1/models`、`/health`。分词借用 18789 的
 llama.cpp，模型推理完全是我们自己的——`/health` 里写明了这个依赖。
 
-**发现并修掉的浪费**：输出投影 151936×2048，第一版每生成一个 token 都在 host 上重新反量化一遍。
+**发现并修掉的浪费**：输出投影 248320×2048，第一版每生成一个 token 都在 host 上重新反量化一遍。
 改成常驻显存后，首个请求 67 秒 → 17 秒，预热请求 **1.8 秒**（11 步）。
 
 实测（与上表同一提示词）：
@@ -713,6 +717,137 @@ llama-server: error while loading shared libraries: libascend_hal.so
 
 `accept.sh` 3.85 t/s、验收 15 项全过。
 
+### 3.24 采样搬到设备上（`9dc70e4`）
+
+此前每生成一个 token 都要把整个词表的 logits 拉回 host（248320 个 fp16，约 500 KB），在 host 上
+做 top-k 和 log-sum-exp。这轮补了两个算子：
+
+- `topk`：aclnnTopk，设备上取前 k 大值和下标
+- `logsumexp`：aclnnLogSumExp，设备上算配分函数
+
+现在一步只回传 **32 个 float + 32 个 int64 + 1 个 float**。
+
+先写了 `topk_parity` 对照 host 实现（用模型真实词表宽度 248320）：
+
+```
+device topk: vocab=248320 k=8
+rank             device         host  ids
+0             18.175989    18.175989  76617
+...
+log-partition  device 19.818172  host 19.818173  diff 4.16e-07  PASS
+```
+
+接进模型后结果逐位不变（11751/264/279/3750/271，logits 完全相同），5 token 从 11.2 秒降到
+10.8 秒。收益不大是因为采样本来只占每步百分之几——但这是"host 不再碰 logits"的结构性改动，
+也顺带发现**词表是 248320，不是我一直以为的 151936**，之前文档里的数字已更正。
+
+踩到一个坑：`Tensor` 的 logits 是**列向量**（matmul 的输出布局），不是行向量，所以 topk 的
+归约轴是 0；我第一版按行写，报 `Expected tensor for out to have same size`。现在两个算子都
+显式接收归约轴，调用方自己决定。
+
+### 3.25 参考官方部署文档后的发现（Qwen3.8-Flash-Next / vLLM-Ascend）
+
+用户给了 `Ascend-SACT/Qwen3.8-Flash-Next` 的部署文档。仓库在服务器上能拉到（gitcode 通）：
+`/data/strata-cann/qwen38-ref`，内容是 vLLM-Ascend v0.26.0rc1 的**部署文档 + 两个补丁**，
+目标模型 360 GB BF16、16 张卡（2×8 910B3）、TP=8 DP=2 EP=16。
+
+**它不能直接搬到这台机器**，三条硬约束：
+
+| 约束 | 参考文档要求 | 这台机器 |
+|---|---|---|
+| 容器 | docker 镜像 `quay.nju.edu.cn/ascend/vllm-ascend` | **容器内无 docker/podman** |
+| CANN | 9.1.0 | 9.0.0 |
+| 硬件 | 16×910B3（每张 64 GB） | 1×910B2C |
+
+但翻它的补丁和 pip 包翻出两个**对我们直接有用**的事实。
+
+#### 1. vLLM-Ascend 0.30 已经支持我们这个模型家族
+
+下载 wheel 检查注册的模型类：
+
+```
+Qwen3_5MoeForConditionalGeneration   3 files
+Qwen3_5GatedDeltaNet                 2 files
+Qwen3_5ForConditionalGeneration      4 files
+```
+
+我们模型 GGUF 里的 arch 字符串是 `qwen35moe`，对应的正是 `Qwen3_5Moe`。也就是说，
+**如果要在这张卡上做生产级服务，官方路径是 vLLM-Ascend，而不是我们手写的引擎或 llama.cpp**。
+
+#### 2. CANN 里有融合的 delta-rule 算子
+
+`vllm_ascend/ops/gdn.py` 调用的是：
+
+```python
+torch_npu.npu_recurrent_gated_delta_rule   # decode
+torch_npu.npu_chunk_gated_delta_rule       # prefill
+fla_npu.ops.ascendc.causal_conv1d_fn       # 短卷积
+```
+
+对应到 aclnn 层就是 **`aclnn_recurrent_gated_delta_rule`，而且 CANN 9.0 里就有**：
+
+```
+/usr/local/Ascend/cann-9.0.0/include/aclnnop/aclnn_recurrent_gated_delta_rule.h
+```
+
+参数（头文件注释）：
+
+```
+query/key/value/beta/state/out : bfloat16
+g / gk                         : float32
+actualSeqLengths / ssmStateIndices / numAcceptedTokens : int32
+scaleValue                     : float32
+```
+
+**这推翻了我 3.18 的结论**。当时我写 ggml-cann 的 GATED_DELTA_NET，逐头拼 aclnn 小算子，
+比 CPU 慢 14 倍，于是判断"要在 NPU 上赢必须自己写 kernel"。实际情况是 CANN 自带融合算子，
+只是 ggml-cann 没用它（它 include 了这个头文件却从未调用——我当时看到 include，以为是遗留）。
+
+要不要在我们引擎里换用它，是个权衡：
+
+| | 现在的实现 | 换用融合算子 |
+|---|---|---|
+| 精度 | 状态 fp32，与浮点参考**逐位一致** | 只有 bf16（尾数 8 位，比 fp16 的 11 位还少） |
+| 每 token 调用 | 8 次（32 个头批量） | 1 次 |
+| 复杂度 | 已有、已验 | 需要 bf16 cast、paged state（`ssmStateIndices`）、`gk`/`numAcceptedTokens` |
+
+收益也有限：GDN 现在只占每 token 约 0.15 秒（总 0.4 秒），真正的瓶颈是 MoE 专家权重搬运。
+
+**结论**：记下来，暂不换。如果要换，先做 `gdn_fused_parity` 对照，确认 bf16 下与浮点参考的
+误差是否还能维持 top-5 一致，再动引擎。
+
+### 3.26 融合 GDN 实测：布局兼容，但头映射不同、只有 bf16（`52f145f`）
+
+写了 `gdn_fused_parity`，直接调 `aclnnRecurrentGatedDeltaRule`，和浮点参考比。三个形状都跑了：
+
+```
+=== 1 头（vLLM-Ascend smoke 调用的形状）===
+attn (fused bf16 vs float)     0.002449  PASS
+state [Dv][Dk] vs float        1.414510  FAIL
+state [Dk][Dv] vs float        0.003294  PASS
+
+=== 本模型的形状（Nk=16 Nv=32 Dk=Dv=128）===
+attn (fused bf16 vs float)     0.004096  PASS (blocked 映射)
+state [Dk][Dv] vs float        0.003526  PASS
+```
+
+三个结论：
+
+1. **状态布局与我们完全一致**。这个算子用的是 `[Dk][Dv]`，也就是 `M[j][i] = S[i][j]`——和
+   我们引擎里的转置存放是同一个约定。不需要转置。
+2. **头映射不一样**。kernel 用 **blocked**（v 头 h 用 k 头 `h / (Nv/Nk)`），llama.cpp 用的是
+   **mod**（`h % Nk`）。我们的引擎跟 llama.cpp 一致，所以直接换算子会算错（mod 映射下
+   rel 1.28）。要换必须先按一个固定置换重排 v 投影的行、`ssm_beta`/`ssm_alpha`/`ssm_a` 的行、
+   `ssm_out` 的列、以及短卷积在 v 段的抽头。
+3. **只有 bf16**。算子层面 attn 误差 4e-3、state 误差 3.5e-3（bf16 尾数 8 位）。我们现在的
+   fp32 路径与浮点参考**逐位一致**。
+
+所以"换用融合算子"不是接线，是两件事：一次权重置换（4–5 处，每处都可能悄悄算错），
+以及把状态精度从 fp32 降到 bf16。收益是每 token 约 0.15 秒 → 约 0.02 秒（总 0.4 → 0.27）。
+
+这一步要不要走，需要先知道 bf16 之后端到端 top-5 是否还能与 llama.cpp 对上——而这只有在
+置换做完之后才测得出。停在这里，等决定。
+
 ## 9. 待办与已知限制
 
 **已完成**（`[x]` 都有实测支撑，细节见第 3 节与开发日志）：
@@ -733,7 +868,7 @@ llama-server: error while loading shared libraries: libascend_hal.so
 
 - [ ] 自制批量化 GDN kernel。逐头拼 aclnn 已验证比 CPU 慢 14 倍（3.18），要赢需要写 kernel，
       而不是组合既有算子。这是把引擎从 0.4 s/token 推到 0.1 s/token 的唯一路径。
-- [ ] device 上做 top-k（现在 logits 来自 NPU，选择在 host）。
+- [x] device 上做 top-k + logsumexp（每 token 只回传 32 个值、32 个下标、1 个标量）
 - [ ] KV cache 仍是 fp16（残差流与 GDN 状态已改 fp32）。
 - [ ] host 上传改异步（`aclrtMemcpyAsync`），才能安全去掉每算子同步。
 - [ ] 融合式 dequant+matmul（现在是 host 反量化后上传）。
@@ -786,3 +921,165 @@ all checks passed
 | 算子调用占比 | 每 token 约 2.2 万次，约 0.4 s；其余是权重上传与反量化 |
 
 ---
+
+---
+
+## 11. Qwen3.8-Flash-Next 这一线（新机器）
+
+第 1–10 节是 Qwen3.6-35B-A3B 的移植。从这一节开始是另一件事：先让 **Qwen3.8-Flash-Next**
+在昇腾上跑起来，再据此推进 Strata 的适配。
+
+### 11.1 机器
+
+用户换了三次机器，第三次才可用。三次的差别值得记下来，因为**租机器前该测什么**很明确。
+
+| 代 | 配置 | 结果 |
+|---|---|---|
+| 原机 | 1×910B2C、CANN 9.0、x86_64、59 GB 磁盘 | 移植工作机，后来停机且再未恢复 |
+| 第二台 | 2×910B2、**ARM64**、CANN 9.0、/data 186 GB | **无出网**（所有外连 TCP 超时），模型下不下来，弃用 |
+| 现用 | 2×910B2C、x86_64 128 核、CANN 9.0、/data 118 GB | ✅ 出网正常（魔搭/pypi/github 都通） |
+
+**教训一**：租机器第一件事是测出网，不是测显卡。第二台有 NPU 有 CANN 有磁盘，但下载不了模型，等于零。
+
+**教训二**：在只能靠 ssh 进的机器上，**不要改 `/etc/resolv.conf`**。第二台出网被封，我改成
+`114.114.114.114` 之后，sshd 的反向解析阻塞，ssh 会话开始被掐断，最后完全进不去。原本
+`127.0.0.11`（Docker 内嵌 DNS）虽然出不去外网，但至少能解析内部名字、能登录。容器重启才恢复。
+
+### 11.2 编译：llama.cpp + CANN 后端
+
+用 llama.cpp **master**（`qwen4exp` 是很新的架构，9 月的版本没有）：
+
+```
+LLM_ARCH_QWEN4EXP                     "qwen4exp"        ← 架构注册
+src/models/qwen4exp.cpp                                  ← 1535 行参考实现
+ggml/src/ggml-cann/ggml-cann.cpp
+  case GGML_OP_GATED_LINEAR_ATTN:                        ← 36 个线性层靠它
+  #include <aclnnop/aclnn_recurrent_gated_delta_rule.h>
+```
+
+构建：
+
+```bash
+export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.0.0
+export LD_LIBRARY_PATH="$ASCEND_TOOLKIT_HOME/lib64:$ASCEND_TOOLKIT_HOME/x86_64-linux/lib64"
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver"
+cmake -S llama.cpp -B build-cann -DCMAKE_BUILD_TYPE=Release -DGGML_CANN=ON -DLLAMA_CURL=OFF
+cmake --build build-cann -j $(nproc)
+```
+
+128 核，2 分钟出全部二进制。
+
+**踩到的坑：CANN 9.0.0 缺 `aclnn_fused_infer_attention_score_v2.h`。**
+
+新版 `ggml-cann` 无条件 include 它，编译直接停：
+
+```
+fatal error: aclnnop/aclnn_fused_infer_attention_score_v2.h: No such file or directory
+```
+
+但 `libopapi.so` **已经导出** `aclnnFusedInferAttentionScoreV2` 符号——运行时支持，只是头文件没装。
+从 CANN 官方 `ops-transformer` 仓库取到正版头文件（3740 字节）放进 `include/aclnnop/` 后编译通过。
+头文件已存进 `scripts/ascend_qwen38/`，下台机器直接带上。
+
+### 11.3 链路验证（用 0.6B，不等大模型）
+
+`/mnt/moark-models` 里挂着 Qwen3-0.6B（safetensors），转成 GGUF 后实测：
+
+```
+> The capital of France is
+Okay, the user is asking for the capital of France. ... the capital is
+[ Prompt: 1332.6 t/s | Generation: 182.0 t/s ]
+```
+
+**这是真的在 NPU 上跑**——CPU 不可能有 1332 t/s 的预填。这一步的价值是：等大模型下完，
+不会卡在环境问题上。
+
+### 11.4 两卡层切分
+
+用 0.6B 强制切开验证：
+
+```
+-ngl 99 --split-mode layer -ts 0.5,0.5
+
+load_tensors: layer   0 assigned to device CANN0
+...
+（CANN0 出现 73 次，CANN1 出现 67 次）
+```
+
+层确实分到两张卡。但生成速度 **167 → 136 t/s**，跨卡传输有成本。大模型上是否划算要实测。
+
+### 11.5 关键发现：CANN 后端缺五个 qwen4exp 专用算子
+
+把 `qwen4exp.cpp` 逐函数扫出用到的 ggml 算子，对照 `ggml-cann.cpp` 的 `supports_op`：
+
+| 算子 | 用在哪 | CANN |
+|---|---|---|
+| `GATED_LINEAR_ATTN` | 36 个线性层 | ✅ |
+| `FLASH_ATTN_EXT` | 12 个全注意力层 | ✅ |
+| `MUL_MAT` / `MUL_MAT_ID` | MoE | ✅ |
+| `GET_ROWS` | 词嵌入、PLE 查表 | ✅ |
+| `ROPE`（含 mrope） | 全部 | ✅ |
+| `CUMSUM` / `SET_ROWS` / `FILL` / `CLAMP` | 杂项 | ✅ |
+| **`DSV4_HC_PRE_GATED` / `DSV4_HC_POST`** | **HyperConnection，48 层全有** | ❌ |
+| **`LIGHTNING_INDEXER`** | QSA 索引器，12 层 | ❌ |
+| **`TOP_K` / `TOP_K_MASK`** | QSA 选 key，12 层 | ❌ |
+
+**后果**：这些会静默回退到 CPU，每层在 NPU 与 CPU 之间搬数据。模型能跑，但速度会明显低于
+论文数字。这是 3.18 节那个教训的重演——算子缺失不报错，只是慢。
+
+**补法**（五个都能用现有 aclnn 算子拼）：
+
+| 缺失算子 | 用现成的拼 |
+|---|---|
+| `TOP_K` | `aclnnTopk`（我们已封装并验证，误差 4e-7） |
+| `LIGHTNING_INDEXER` | matmul + softmax + topk |
+| `DSV4_HC_PRE_GATED` / `DSV4_HC_POST` | 低秩矩阵乘 + sigmoid + 加权 |
+| `TOP_K_MASK` | 比较 + 掩码填充 |
+
+而且**给 llama.cpp 的 CANN 后端补 `supports_op` + 实现，比在 Strata 里重写一遍划算**——
+llama.cpp 已经有完整的 qwen4exp 图，只缺后端支持。
+
+### 11.6 模型与量化
+
+三个候选（HF/魔搭同一份文件）：
+
+| 版本 | 常驻显存 | 下载 | 任务均分 |
+|---|---|---|---|
+| Q2_0 | 37.6 GB | 66.4 GB | 89.07 |
+| IQ2_XS | 39.2 GB | 68.0 GB | 89.16 |
+| **IQ3_XXS**（选用） | **47.0 GB** | **75.8 GB** | **92.57** |
+| IQ3_S | 54.8 GB | 83.6 GB | 93.26 |
+| BF16 | 335 GB | 335 GB | 93.12 |
+
+每个版本分两个分片：**分片 1 是权重（必须常驻）**，分片 2 是 51.2B 参数的 n-gram 查表（28.8 GB，
+`-lm mmap --lazy-mode on` 可以留在 SSD 上按行读）。
+
+**量化格式不用移植**：IQ3_XXS 这个 GGUF 用了 14 种存储类型
+（`BF16=484 F16=1 F32=292 IQ2_S=20 IQ2_XS=20 IQ2_XXS=18 IQ3_S=82 IQ3_XXS=12 IQ4_NL=58 IQ4_XS=67
+Q2_0=38 Q4_K=45 Q5_K=15 Q6_K=71`），我们 `quant_parity` 已经**逐位验证过其中 11 种**，
+BF16/F16/F32 由 `tensor_load` 直读。解码器这一层不用动。
+
+### 11.7 操作坑
+
+**`llama-cli` 跑完不退出。** 加了 `-p` 之后它仍进入交互模式，等 stdin。所有脚本化调用必须加
+`< /dev/null`，否则看起来像"卡住"（我因此误判了三次超时）。
+
+**带宽是出口上限。** 单连接 5.0 MB/s，四路并发合计 5.6 MB/s，换源（hf-mirror / huggingface）
+从这台机器都不通，只有魔搭可用。76 GB 大约 4 小时。
+
+### 11.8 与 Strata 的差距（详见 `scripts/ascend_qwen38/ARCH_GAP.md`）
+
+| 项 | Qwen3.8-Flash-Next | 现有引擎（qwen35moe） |
+|---|---|---|
+| 层数 | 48（36 线性 + 12 注意力） | 40（30 + 10） |
+| hidden | 2560 | 2048 |
+| 线性层 | 16 k 头 / **48 v 头** / d 128 | 16 / **32** / 128 |
+| 全注意力 | 24 q / 2 kv / **head_dim 256** | 16 / 2 / 512 |
+| MoE | **512 选 10**，inter 640 | 256 选 8，inter 512 |
+| 稀疏注意力 | **QSA**（indexer 4 头、budget 2048） | 无 |
+| 残差 | **HyperConnection**（4 路低秩 320） | 普通 |
+| 词嵌入 | **PLE**：51.2B n-gram 表，第 2 层 | 无 |
+| 投机解码 | **MTP**（1 层） | 无 |
+
+三块真正的新工作：**PLE**（查表 + 卷积，表必须留 SSD）、**QSA**（选 key 的额外网络）、
+**HyperConnection**（全局结构改动）。其余是改常数。
