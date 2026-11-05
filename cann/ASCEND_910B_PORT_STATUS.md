@@ -1157,3 +1157,65 @@ BF16/F16/F32 由 `tensor_load` 直读。解码器这一层不用动。
 **对 Strata 的意义**：Strata 走自己的 GGUF 读取器和自己的 kernel，不依赖 ggml，
 所以这条路上的问题**不会**传到 Strata。但也意味着不能指望 llama.cpp 提供现成参考实现——
 只有 CPU 那份输出可以当标尺。
+
+---
+
+## 12. 移植进度（截至第 28 轮）
+
+这一节只写**验证过的事实**和**下一个具体动作**，不写计划性描述。
+
+### 12.1 已经完成的
+
+| 片 | 产物 | 验证方式 | 结果 |
+|---|---|---|---|
+| ModelConfig | `src/engine.cpp` 里的 `struct ModelConfig` + 派生函数 | `static_assert` 把 19 个常量钉死 | 编译期通过，数值未变 |
+| Qwen3.8 的形状 | 同文件里的 `kQwen38Q` | `static_assert(kQwen38Q.qkv_dim() == 10240)` 等 | 编译期通过 |
+| HyperConnection | `src/hc.cpp` + `tests/hc_parity.cpp` | 与双精度参考对比 | mixed 1.3e-6，combine 5.6e-6，inject 5.1e-4 |
+| 融合算子在 48 v 头 | 无需新代码 | `gdn_fused_parity 1 16 48 128 128 1` | state 3.29e-3、attn 一致（与 16/32 同量级） |
+
+### 12.2 没做但已确认可行的
+
+- **线性层的缓冲区参数化**：`gdn_step` 里 `kQkvDim`/`kValueDim` 的分配点要改成从配置读。
+  数量：`grep -c 'kQkvDim\|kValueDim' src/engine.cpp` 里绝大多数在 `gdn_step` 内。
+  风险已经降到"改常数"，因为算子本身在这个尺寸上验过了。
+- **MoE 512 选 10**：现有 `moe_ffn` 用 `kTopK`/`kExpertInter`，都是常量，改法同上。
+
+### 12.3 完全没有开始的
+
+- **PLE**：查表 + 门控 + 膨胀卷积。算法在 `QWEN38_PLE_QSA.md`，实现 0 行。
+- **QSA**：索引器 + 池化 + top-k + 掩码注意力。同上。
+- **把 HC 接进层循环**：`hc_mix`/`hc_combine` 写好了，但 `Model::step` 里还是
+  `attn_norm` + 普通残差的老路径。接线未做。
+
+### 12.4 下一个具体动作（照这个顺序）
+
+1. 把 `gdn_step` 的签名加上 `const ModelConfig & cfg`，函数体内 `kQkvDim` → `cfg.qkv_dim()`。
+   调用点只有 `Model::step` 一处。
+2. 同样处理 `moe_ffn`（`kExpertInter`、`kTopK`、`kHidden`）。
+3. 在 `Model::step` 里把 `attn_norm + 残差` 换成 `hc_mix` / `hc_combine`，残差状态从
+   `[hidden]` 变成 `[hc*hidden]`。
+4. 到这一步，Qwen3.8 的一次前向会在 PLE 层（blk.1 之后）缺张量而失败——**这是预期的**，
+   失败点会精确告诉我们 PLE 该插在哪。
+
+### 12.5 环境事实（换机器时照抄）
+
+```
+构建 llama.cpp + CANN（本次踩过的坑都在这）
+  cmake -DGGML_CANN=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF   ← NATIVE=OFF 必须
+  缺头文件：CANN 9.0 没有 aclnn_fused_infer_attention_score_v2.h，
+            从 ops-transformer 仓库取，放进 $ASCEND_HOME_PATH/include/aclnnop/
+  LD_LIBRARY_PATH 必须含 /usr/local/Ascend/driver/lib64/driver，否则 libascend_hal.so 找不到
+
+构建 strata/cann
+  cmake -S cann -B build -DCMAKE_BUILD_TYPE=Release     （要有 ../include 和 third_party/ggml）
+  依赖上级仓库的 include/strata/artifact 和 core，打包时别只带 cann/
+
+模型
+  /data/models/IQ3_XXS/IQ3_XXS/*.gguf      47.0 GB + 28.8 GB（第二个只有 per_layer_token_embd）
+  CPU 参考输出：cann/fixtures/qwen38_cpu_reference.md
+```
+
+### 12.6 一句话现状
+
+**模型是好的，硬件是好的，量化解码是好的；llama.cpp 的 CANN 后端跑不动它；
+Strata 这边把形状、归一化/残差机制、以及最险的融合算子都验证过了，剩下的是接线和两块新算法。**
