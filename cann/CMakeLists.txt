@@ -33,7 +33,7 @@ find_library(OPAPI_LIB opapi PATHS "${ASCEND_HOME_PATH}/lib64" "${ASCEND_HOME_PA
 find_library(ACL_OP_COMPILER_LIB acl_op_compiler PATHS "${ASCEND_HOME_PATH}/lib64"
              "${ASCEND_HOME_PATH}/x86_64-linux/lib64" NO_DEFAULT_PATH REQUIRED)
 
-add_library(strata_cann STATIC src/device.cpp src/ops.cpp src/quants.cpp src/iq_quants.cpp src/gdn.cpp src/gguf.cpp src/tensor_load.cpp src/engine.cpp)
+add_library(strata_cann STATIC src/device.cpp src/ops.cpp src/quants.cpp src/iq_quants.cpp src/gdn.cpp src/gguf.cpp src/tensor_load.cpp src/engine.cpp src/hc.cpp)
 target_include_directories(strata_cann PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${ASCEND_HOME_PATH}/include"
                                               "${ASCEND_HOME_PATH}/include/aclnn"
                                               "${ASCEND_HOME_PATH}/x86_64-linux/include")
@@ -47,6 +47,8 @@ target_include_directories(strata_cann_decode PRIVATE "${CMAKE_CURRENT_SOURCE_DI
 add_executable(cann_parity tests/parity.cpp)
 add_executable(gdn_batched_parity tests/gdn_batched_parity.cpp)
 target_link_libraries(gdn_batched_parity PRIVATE strata_cann)
+add_executable(hc_parity tests/hc_parity.cpp)
+target_link_libraries(hc_parity PRIVATE strata_cann)
 add_executable(port_check tests/port_check.cpp)
 target_link_libraries(port_check PRIVATE strata_cann)
 add_executable(gguf_dump tests/gguf_dump.cpp)
