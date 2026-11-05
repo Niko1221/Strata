@@ -9,6 +9,8 @@ export interface NativeField {id:string;label:string;group:string;/** Not shown 
 export interface NativeJob {id:string;kind:string;guided?:boolean;model?:string;family?:string;state:'running'|'done'|'error'|'cancelled';startedAt:string;summary:string;error:string|null;details?:string;result:Record<string,any>|null;progress?:Record<string,any>|null;/** An engine update beside a loaded model: which step it is on and the models it concerns (the app words these itself). */step?:'getting-ready'|'stopping'|'stopped';models?:string[]}
 export interface NativeInstance {id:string;apiModelId:string;model:string;label:string;aliases?:string[];vision?:boolean;resourceProfile?:'work'|'performance'|null;context?:number;port:number;gpus:number[];status:'loading'|'ready'|'unloading'|'error';phase:string;loadedAt:string;error:string|null;/** One short line when the model was loaded without picture reading although it was on (no internet for the picture files, no room on the disk). */picturesNote?:string;metrics:Record<string,any>|null}
 export interface NativeState {
+  /** The host has not had an answer from Control yet (it is still starting): not "nothing installed". */
+  checking?: boolean;
   /** The picture reader (strata-vision) is installed with the engine, so models marked for pictures can read them here. */
   /** Strata Control's view of the engine for this computer (the app): usable false = none found or recognised; `notice` says why in plain words. */
   engine?:{usable:boolean;notice?:string|null;wrongMake?:boolean;version?:string|null;/** What the last update check found newer (kept on this PC, read without the network): the Qwen engine, the DeepSeek engine, the app. */updateAvailable?:{engine?:string|null;dsv41?:string|null;app?:string|null}|null};
@@ -65,6 +67,8 @@ export function useNative(){
  return value;
 }
 export const nativeState=()=>state;
+/** QAGUI 0213: the engine answered but Control's list of installed models has not arrived yet (the first seconds after a start): a downloaded model must not be offered as a download. */
+export const installedListPending=(value:Pick<NativeState,'available'|'installed'|'error'|'checking'>|null|undefined):boolean=>!!value&&(value.checking===true||value.available===true&&!value.installed&&!value.error);
 /** Connection-list projection only; memory reservations are not inferred. */
 export function nativeRouting(native:NativeState|null,hardware:Hardware|null):RuntimeModels|null{
  if(!native?.instances.length)return null;

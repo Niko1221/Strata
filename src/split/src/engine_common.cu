@@ -611,6 +611,7 @@ void Engine::load_state(const SeqState& s) {
     });
     history_ = s.tokens;
     pos_ = pos;
+    if (df2_) df2_forget(cur_);
     set_images(s.images);
     // pages past the state's length go back to the pool
     LaneHost& L = lanes_[(size_t) cur_];
@@ -639,6 +640,7 @@ void Engine::reset() {
     release_pages();
     history_.clear();
     pos_ = 0;
+    if (df2_) df2_forget(cur_);
     set_images({});
 }
 
@@ -1628,5 +1630,119 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
     last_draft_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return out;
 }
+
+// ---- DFlash2 ------------------------------------------------------------------------------------------------------------------------------------
+#if FNX_DF2
+void Engine::df2_forget(int lane) {
+    static const bool trace = env_flag("FNX_DF2_TRACE");
+    if (trace) std::fprintf(stderr, "df2: lane %d forgotten (drafter ring_hi %ld, host ring [%ld, %ld))\n", lane, (long) df2_->ring_hi(lane), df2_lane_[(size_t) lane].lo, df2_lane_[(size_t) lane].hi);
+    df2_->reset(lane);
+    df2_lane_[(size_t) lane].lo = df2_lane_[(size_t) lane].hi = 0;
+}
+
+Engine::Df2Info Engine::df2_info(int lane) const {
+    Df2Info i;
+    if (!df2_) return i;
+    i.lo = df2_lane_[(size_t) lane].lo, i.hi = df2_lane_[(size_t) lane].hi, i.ring_hi = (long) df2_->ring_hi(lane);
+    return i;
+}
+
+// the lane's drafter brought up to position pos0 (the first row of the window about to be drafted from) with what the prompt reads tapped: its ring holds
+// the positions below pos0 in the host ring [lo, hi) that it has not got yet, the last 2047 at most. A ring that is ahead of pos0 (the sequence went back) or
+// does not touch the host ring's run starts over; whatever is missing is left out (the drafts are poorer for a while, never wrong: the verify decides)
+void Engine::df2_catch_up(int lane, int pos0) {
+    Df2Lane& L = df2_lane_[(size_t) lane];
+    df2::Bridge& B = *df2_;
+    long have = (long) B.ring_hi(lane);
+    static const bool trace = env_flag("FNX_DF2_TRACE");
+    if (trace && have != pos0) std::fprintf(stderr, "df2: lane %d catch-up at %d: drafter ring_hi %ld, host ring [%ld, %ld)\n", lane, pos0, have, L.lo, L.hi);
+    if (have == pos0) return;
+    if (have > pos0) {
+        B.reset(lane);
+        have = 0;
+    }
+    if (!L.ring || L.hi <= L.lo) return;
+    long from = std::max({L.lo, have, (long) pos0 - df2::kRing + 1});
+    const long to = std::min<long>(L.hi, pos0);
+    if (from >= to) return;
+    constexpr size_t rowf = (size_t) df2::kTaps * df2::kNEmbd;
+    std::string err;
+    while (from < to) {   // (the ring wraps at kRing positions: at most two runs)
+        const long slot = from % df2::kRing, n = std::min<long>(to - from, df2::kRing - slot);
+        if (!B.context(lane, L.ring + (size_t) slot * rowf, n, from, err)) throw std::runtime_error("dflash2: " + err);
+        from += n;
+    }
+}
+
+void Engine::df2_defer(const Df2Req& r) {
+    if (!df2_) throw std::runtime_error("df2_defer: no DFlash2 attached");
+    if (r.used < 1 || r.row0 < 0 || r.row0 + r.used > MAXT) throw std::runtime_error("df2_defer: rows outside the window");
+    Df2Lane& L = df2_lane_[(size_t) r.lane];
+    if (!L.ring) {
+        ck(cudaSetDevice(cb_[0]->dev), "set");
+        ck(cudaHostAlloc((void**) &L.ring, (size_t) df2::kRing * df2::kTaps * df2::kNEmbd * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "df2 tap ring");
+        own_pinned(L.ring);
+    }
+    constexpr size_t rowf = (size_t) df2::kTaps * df2::kNEmbd;
+    ck(cudaSetDevice(cb_[0]->dev), "set");
+    long pos = r.pos0;
+    for (int done = 0; done < r.used;) {
+        const int at = (int) (pos % df2::kRing), k = std::min(r.used - done, df2::kRing - at);
+        ck(cudaMemcpy(L.ring + (size_t) at * rowf, df2_tapw_ + (size_t) (r.row0 + done) * rowf, (size_t) k * rowf * 4, cudaMemcpyDeviceToHost), "df2 defer");
+        done += k;
+        pos += k;
+    }
+    const long e = (long) r.pos0 + r.used;
+    if (L.hi == r.pos0 && L.hi > L.lo) L.hi = e, L.lo = std::max<long>(L.lo, e - df2::kRing);
+    else L.lo = r.pos0, L.hi = e;
+}
+
+void Engine::df2_draft(std::vector<Df2Req>& reqs) {
+    if (!df2_) throw std::runtime_error("df2_draft: no DFlash2 attached");
+    const auto t0 = std::chrono::steady_clock::now();
+    df2::Bridge& B = *df2_;
+    ck(cudaSetDevice(cb_[0]->dev), "set");
+    constexpr size_t rowf = (size_t) df2::kTaps * df2::kNEmbd;
+    std::string err;
+    for (Df2Req& r : reqs) {
+        if (r.used < 1 || r.row0 < 0 || r.row0 + r.used > MAXT) throw std::runtime_error("df2_draft: rows outside the window");
+        if (r.lane < 0 || r.lane >= B.lanes()) throw std::runtime_error("df2_draft: no drafter for this lane");
+        df2_catch_up(r.lane, r.pos0);
+        const float* src = df2_tapw_ + (size_t) r.row0 * rowf;
+        int n = r.used;
+        long p0 = r.pos0;
+        if (n > df2::kRows) {   // a lookup window kept more rows than a round takes: the first ones only update the ring
+            if (!B.context(r.lane, src, n - df2::kRows, p0, err)) throw std::runtime_error("dflash2: " + err);
+            src += (size_t) (n - df2::kRows) * rowf;
+            p0 += n - df2::kRows;
+            n = df2::kRows;
+        }
+        ck(cudaMemcpyAsync(B.landing(r.lane), src, (size_t) n * rowf * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) B.stream(r.lane)), "df2 taps");
+        if (!B.launch(r.lane, n, p0, r.anchor, err)) throw std::runtime_error("dflash2: " + err);
+    }
+    for (Df2Req& r : reqs)
+        if (!B.finish(r.lane, r.tokens, r.probs, err)) throw std::runtime_error("dflash2: " + err);
+    last_df2_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    static const bool trace = env_flag("FNX_DF2_TRACE");
+    if (trace) {   // the mean wall time of a call by the number of lanes in it, every 400 calls
+        static double ms[MAXT + 1] = {};
+        static long n[MAXT + 1] = {}, calls = 0;
+        const size_t k = std::min<size_t>(reqs.size(), MAXT);
+        ms[k] += last_df2_ms, ++n[k];
+        if (++calls % 400 == 0) {
+            std::fprintf(stderr, "df2: drafter calls by lanes (mean ms):");
+            for (int i = 1; i <= MAXT; ++i)
+                if (n[i]) std::fprintf(stderr, " %d lanes %.2f (%ld)", i, ms[i] / (double) n[i], n[i]);
+            std::fprintf(stderr, "%c", 10);
+        }
+    }
+}
+#else
+void Engine::df2_forget(int) {}
+Engine::Df2Info Engine::df2_info(int) const { return {}; }
+void Engine::df2_catch_up(int, int) {}
+void Engine::df2_draft(std::vector<Df2Req>&) { throw std::runtime_error("this engine was built without DFlash2"); }
+void Engine::df2_defer(const Df2Req&) {}
+#endif
 
 }  // namespace fnx

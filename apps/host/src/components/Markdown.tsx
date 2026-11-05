@@ -70,7 +70,9 @@ export function Markdown({ text, onOpenLink, previewId, onPreview, onClosePrevie
     imageSession?: string | null;
 }) {
     const nodes: ReactNode[] = [];
-    const lines = text.split('\n');
+    // A file written on Windows has \r\n: the \r stays at the end of every line, where `.` does not match it, so a list line was never taken and the
+    // list loop below never moved on (an endless loop that filled the page's memory, found in the sidebar preview). Line ends are read as one.
+    const lines = text.split(/\r\n|\r|\n/);
     for (let i = 0; i < lines.length;) {
         const line = lines[i];
         if (!line.trim()) {
@@ -110,6 +112,11 @@ export function Markdown({ text, onOpenLink, previewId, onPreview, onClosePrevie
             while (i < lines.length && re.test(lines[i])) {
                 items.push(<li key={i}>{tr(inline(lines[i].replace(re, '$1'), onOpenLink))}</li>);
                 i++;
+            }
+            if (i === key) {              // never stand still: a line the list start accepted but the item pattern did not is shown as text and passed
+                nodes.push(<p key={key}>{line}</p>);
+                i++;
+                continue;
             }
             nodes.push(ordered ? <ol key={key}>{tr(items)}</ol> : <ul key={key}>{tr(items)}</ul>);
             continue;
