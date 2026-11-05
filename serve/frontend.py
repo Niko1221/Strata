@@ -56,6 +56,12 @@ class ChatTemplate:
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
                **kwargs) -> str:
+        # Keep the chat-template API consistent with llama.cpp's preserve_reasoning / preserve_thinking names.
+        kwargs = _normalize_preserve_reasoning(kwargs)
+        # The model-family pack enables preservation by default. Templates can opt out by not advertising this feature.
+        if "preserve_thinking" not in kwargs and getattr(self, "caps", {}).get("supports_preserve_reasoning"):
+            kwargs["preserve_thinking"] = True
+            kwargs["preserve_reasoning"] = True
         # Do not use completed empty assistant turns as examples for the next reply. Keep the final message.
         # (#843.  STRATA_KEEP_EMPTY_TURNS=1 renders them as before.)
         messages = [m for i, m in enumerate(messages)
@@ -104,16 +110,66 @@ class ChatTemplate:
 
         history = [user, {"role": "assistant", "content": "strata_caps_answer",
                           "reasoning_content": "strata_caps_reasoning"}, user]
+        try:
+            preserve_prompt = self.render(history, preserve_thinking=True, preserve_reasoning=True)
+            clear_prompt = self.render(history, preserve_thinking=False, preserve_reasoning=False)
+        except Exception as exc:                    # noqa: BLE001 - a hint only
+            LOGGER.debug("chat template preserve-reasoning probe failed: %s", exc, exc_info=True)
+            preserve_prompt = clear_prompt = ""
+        expected_on = "<think>\nstrata_caps_reasoning\n</think>\n\nstrata_caps_answer" in preserve_prompt
+        expected_off = "<think>\nstrata_caps_reasoning\n</think>" not in clear_prompt
         return {"supports_tools": all(s in tool_prompt for s in
                                       ("strata_caps_call_0", "strata_caps_description", "<tool_call>", "<function=")),
                 "supports_tool_calls": calls_supported(1),
                 "supports_system_role": "strata_caps_system" in render(
                     [{"role": "system", "content": "strata_caps_system"}, user]),
                 "supports_parallel_tool_calls": calls_supported(2),
-                "supports_preserve_reasoning": "strata_caps_reasoning" in render(history)}
+                "supports_preserve_reasoning": expected_on and expected_off}
 
 
 # ------------------------------------------------------------------------------------------------ requests
+
+def _normalize_preserve_reasoning(kwargs: dict) -> dict:
+    """Normalize llama.cpp's preserve_reasoning and Transformers' preserve_thinking template arguments.
+
+    Explicit template kwargs win over API aliases. If both spellings occur at one level, preserve_thinking wins.
+    """
+    out = dict(kwargs)
+    if "preserve_reasoning" not in out and "preserve_thinking" not in out:
+        return out
+    raw = out.get("preserve_thinking", out.get("preserve_reasoning"))
+    if isinstance(raw, str):
+        value = raw.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        value = bool(raw)
+    out["preserve_thinking"] = value
+    out["preserve_reasoning"] = value
+    return out
+
+
+def preserve_reasoning_kwargs(req: dict) -> dict:
+    """Extract preservation options from an API request or its chat_template_kwargs object."""
+    chat_kwargs = req.get("chat_template_kwargs")
+    chat_kwargs = chat_kwargs if isinstance(chat_kwargs, dict) else {}
+    values = {key: chat_kwargs[key] for key in ("preserve_thinking", "preserve_reasoning", "clear_thinking")
+              if key in chat_kwargs}
+    explicit = [key for key in ("preserve_thinking", "preserve_reasoning") if key in req]
+    if explicit:
+        values = {"preserve_thinking": req[explicit[0]]}
+    elif "clear_thinking" in req:
+        values = {"clear_thinking": req["clear_thinking"]}
+    preserve_keys = ("preserve_thinking", "preserve_reasoning")
+    if "clear_thinking" in values and not any(key in values for key in preserve_keys):
+        raw = values["clear_thinking"]
+        if isinstance(raw, str):
+            clear = raw.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            clear = bool(raw)
+        values["preserve_thinking"] = not clear
+    values.pop("clear_thinking", None)
+    return _normalize_preserve_reasoning(values)
+
+
 # The content-part types the readers take as text (a part with no type that has a "text" field reads as text too)
 TEXT_PARTS = ("text", "input_text", None)
 
@@ -603,16 +659,17 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     _order_chat_tool_results(messages)
     tools = [t.get("function", t) if t.get("type") == "function" else t
              for t in _tool_list(req.get("tools"), "function")] or None
-    kwargs = {}
+    kwargs = preserve_reasoning_kwargs(req)
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
     given = req.get("reasoning_effort")
     # `false` is a level (thinking off, effort_kwargs): an `or` between the two fields dropped it
     kwargs.update(effort_kwargs(given if given is not None and given != "" else reasoning.get("effort")))
-    # the vLLM / llama.cpp convention: {"chat_template_kwargs": {"enable_thinking": false, "reasoning_effort": "low"}}
-    for k, v in (req.get("chat_template_kwargs") or {}).items():
+    # The vLLM / llama.cpp convention: {"chat_template_kwargs": {"enable_thinking": false, "reasoning_effort": "low"}}
+    ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
+    for k, v in ctk.items():
         if k == "enable_thinking" and not v:
-            kwargs = {"enable_thinking": False}
+            kwargs["enable_thinking"] = False
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
@@ -722,7 +779,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
                 out["tool_calls"] = calls
             messages.append(out)
     tools = [_anthropic_tool(t) for t in declared if t["name"] not in deferred] or None
-    kwargs = {}
+    kwargs = preserve_reasoning_kwargs(req)
     # Anthropic: "thinking": {"type": "disabled"} or {"type": "enabled", "budget_tokens": N};
     # "output_config": {"effort": "low" | "medium" | "high"}
     thinking = req.get("thinking")

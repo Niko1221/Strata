@@ -5536,14 +5536,24 @@ class Service:
         return self.shared.get("reasoning_effort") or self.config_effort
 
     def with_shared(self, req: dict, api: str) -> dict:
-        """The request with the shared thinking level and max tokens filled in where it has none of its own."""
+        """The request with the shared reasoning, preservation and max-token defaults filled in where absent."""
         s = self.shared
         effort = self.effort_default()
+        has_preserve = any(k in s for k in ("preserve_reasoning", "preserve_thinking", "clear_thinking"))
         if not s and not effort:
             return req
         req = dict(req)
         if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
             req["max_tokens"] = s["max_tokens"]
+        if has_preserve:
+            req_ctk = req.get("chat_template_kwargs")
+            req_ctk = dict(req_ctk) if isinstance(req_ctk, dict) else {}
+            shared_preserve = {k: s[k] for k in ("preserve_reasoning", "preserve_thinking", "clear_thinking") if k in s}
+            # Request-level and request chat-template values override shared defaults.
+            req_preserve = any(k in req or k in req_ctk for k in shared_preserve)
+            if not req_preserve:
+                req_ctk.update(shared_preserve)
+                req["chat_template_kwargs"] = req_ctk
         if effort:
             if api == "openai":
                 ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
@@ -8788,7 +8798,7 @@ def make_handler(svc: Service):
             responses_api.check_request(req)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
-            kw = responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()})
+            kw = responses_api.template_kwargs(req, {**svc.shared, "reasoning_effort": svc.effort_default()})
             try:
                 self._no_local_images(messages)              # as on the chat route: no file read for a foreign page
             except ValueError as e:
@@ -9226,7 +9236,7 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
 
 
 SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
-               "experimental_speed_projection")
+               "experimental_speed_projection", "preserve_reasoning", "preserve_thinking", "clear_thinking")
 
 
 def clean_shared_defaults(d) -> dict:
@@ -9237,6 +9247,11 @@ def clean_shared_defaults(d) -> dict:
         raise ValueError("defaults must be an object")
     out = {}
     for key, value in d.items():
+        if key in ("preserve_reasoning", "preserve_thinking", "clear_thinking"):
+            if not isinstance(value, bool):
+                raise ValueError(f"{key}: true or false")
+            out[key] = value
+            continue
         if value is None or value == "":
             continue
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
