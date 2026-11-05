@@ -593,5 +593,80 @@ class QSAFast(unittest.TestCase):
             qsa_fast.check_prefix_causal(bad)
 
 
+class _RecordingTok:
+    """记录 apply_chat_template 的 messages/kwargs，够验证渲染分叉。"""
+
+    eos_token_id = None
+
+    def __init__(self):
+        self.calls = []
+
+    def apply_chat_template(self, messages, **kw):
+        self.calls.append((messages, kw))
+        return [1, 2, 3]
+
+    def __call__(self, text, **kw):
+        return type("E", (), {"input_ids": [4, 5]})()
+
+
+class ChatRenderContract(unittest.TestCase):
+    """冷启 SFT/DPO 的 prompt 必须与采样侧同源；旧口径必须逐字不变。
+
+    2026-11-06 缺口：sft.py 一直用 `apply_chat_template([user], enable_thinking=False)`，
+    没有 system 消息、没有 reasoning_effort、还把思考段关成空的。训练不报错，
+    但 teacher forcing 的是另一条分布。
+    """
+
+    def test_legacy_mode_is_bit_for_bit_unchanged(self):
+        import sft
+
+        tok = _RecordingTok()
+        r = sft.ChatRenderer(tok)
+        self.assertFalse(r.enabled)
+        self.assertEqual(r.prompt_ids("Q"), [1, 2, 3])
+        msgs, kw = tok.calls[0]
+        self.assertEqual(msgs, [{"role": "user", "content": "Q"}])
+        self.assertIs(kw["enable_thinking"], False)
+        self.assertTrue(kw["add_generation_prompt"])
+        self.assertNotIn("reasoning_effort", kw)
+        self.assertNotIn("chat_template", kw)
+
+    def test_contract_mode_carries_system_effort_template(self):
+        import sft
+
+        tok = _RecordingTok()
+        tpl = "{# the same jinja text as the sampling side #}"
+        r = sft.ChatRenderer(tok, system="SYS", reasoning_effort="low",
+                             chat_template=tpl)
+        self.assertTrue(r.enabled)
+        r.prompt_ids("Q")
+        msgs, kw = tok.calls[0]
+        self.assertEqual([m["role"] for m in msgs], ["system", "user"])
+        self.assertEqual(msgs[0]["content"], "SYS")
+        self.assertEqual(msgs[1]["content"], "Q")
+        self.assertEqual(kw["reasoning_effort"], "low")
+        self.assertEqual(kw["chat_template"], tpl)
+        # 关键：不传 enable_thinking，模板才会留 `<think>` 开标签（与采样一致）
+        self.assertNotIn("enable_thinking", kw)
+        self.assertTrue(kw["add_generation_prompt"])
+
+    def test_any_one_contract_flag_enables_it(self):
+        import sft
+
+        for kw in ({"system": "S"}, {"reasoning_effort": "low"},
+                   {"chat_template": "{# t #}"}):
+            self.assertTrue(sft.ChatRenderer(_RecordingTok(), **kw).enabled, kw)
+
+    def test_encode_uses_the_renderer_prompt_and_marks_answer_start(self):
+        import sft
+
+        tok = _RecordingTok()
+        r = sft.ChatRenderer(tok, system="SYS", reasoning_effort="low")
+        full, plen = sft.encode(tok, "Q", "A", renderer=r)
+        self.assertEqual(full, [1, 2, 3, 4, 5])
+        self.assertEqual(plen, 3)
+        self.assertEqual(len(tok.calls), 1)      # prompt 只渲染一次，且走 renderer
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -142,7 +142,7 @@ def prompt_target(prompt: str) -> str:
 
 
 def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logprobs,
-             mask_truncated, epochs, steps, opt, params, log=print):
+             mask_truncated, epochs, steps, opt, params, log=print, objective="grpo"):
     """一个 `GrpoCfg` 的训练循环；返回最后一步的指标（整批没梯度时返回空 dict）。
 
     抽成函数的理由：`_verify_grpo_switches.py` 要在**一次加载**里对同一批轨迹跑多个
@@ -206,7 +206,13 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
             total_tokens += int(labels.numel())
 
         # 逐条 backward 时必须用**整批**的分母，否则等于把 DAPO 的全局归一悄悄换成逐条平均
-        denom = total_tokens if cfg.norm == "token" else len(prepared)
+        # luspo 的分母是**序列数**（每条轨迹等权），这正是它跟 grpo 的唯一实质差别
+        is_luspo = objective == "luspo"
+        if is_luspo:
+            denom = len(prepared)
+        else:
+            denom = total_tokens if cfg.norm == "token" else len(prepared)
+        loss_fn = objectives.luspo_loss if is_luspo else objectives.grpo_loss
 
         # GRPO 原样：old 取自本批次开始前的策略，之后每个 inner epoch 都真正更新权重，
         # 于是 epoch>=2 的 ratio 必然偏离 1，裁剪项才开始起作用。
@@ -223,7 +229,7 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
                 hidden = body(input_ids=ids_t, use_cache=False).last_hidden_state[0, n_prompt - 1 : -1]
                 new_lp = token_logprobs(hidden, head, labels, chunk=128)
                 ones = torch.ones_like(new_lp).unsqueeze(0)
-                loss, st = objectives.grpo_loss(
+                loss, st = loss_fn(
                     new_lp.unsqueeze(0), old.unsqueeze(0),
                     torch.full_like(new_lp, adv).unsqueeze(0), ones, cfg,
                     tis=None if tis is None else tis.unsqueeze(0), denom=denom)
@@ -305,6 +311,9 @@ def main() -> int:
     ap.add_argument("--norm", choices=("token", "seq"), default="token",
                     help="token=DAPO（全批有效 token 平均，长短回答等权，默认）；"
                          "seq=长度归一化（旧行为，短回答单位 token 权重更高）")
+    ap.add_argument("--objective", choices=("grpo", "luspo"), default="grpo",
+                    help="luspo=GSPO 序列级 ratio 且分母用序列数（loss 乘 |y_i|），"
+                         "长度无偏；此时 --norm 不参与（两种口径都由 luspo 定义）")
     ap.add_argument("--tis-cap", type=float, default=2.0,
                     help="截断重要性采样的上限，0=关。只在 --old-logprobs engine 时生效："
                          "old 来自引擎 GGUF、logp 来自学生 NF4，两者不是同一分布（实测 ratio 1.0115），"
@@ -447,7 +456,7 @@ def main() -> int:
         model, tok, trajs, cfg, group=args.group, batch=args.batch,
         max_seq=args.max_seq, max_new=args.max_new, old_logprobs=args.old_logprobs,
         mask_truncated=args.mask_truncated, epochs=args.epochs, steps=args.steps,
-        opt=opt, params=params)
+        opt=opt, params=params, objective=args.objective)
     if not last:
         print("整个训练没有产生任何梯度：每一批都被跳过或组内 std=0", flush=True)
 

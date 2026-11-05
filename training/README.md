@@ -18,6 +18,13 @@ The zero-order line is the base: `train.py → mezo/mezo.py` closes over `object
 shadowing the module rather than by trusting a grep). The backprop layer is additive — it
 imports the shared layer, never the other way round.
 
+**Install first.** `training/` is outside the engine's install path: `requirements.txt`
+covers the zero-order line (it needs nothing extra), and backprop needs
+`requirements-train.txt` — torch from the CUDA index, plus `triton-windows` on Windows
+because upstream triton has no win32 wheel. Platform table, per-package reasons and the
+fallbacks are in [INSTALL.md](INSTALL.md); `python3 platform_check.py --deps` checks the
+machine you are on and prints the commands.
+
 ## Start here: `train.py`
 
 One command, no path archaeology:
@@ -42,8 +49,11 @@ Defaults, and why they are defaults:
 - **data** — `identity`: the built-in "change who you are" set (it is the only task with a
   unique answer, so `logp('Strata' | '你是谁')` is a clean before/after judge). Switch with
   `--data identity:<word>`, `jsonl:<path>` or `pretrain:<npy>`; see `datasets.py`.
-- **algorithm × method** — algorithms are `sft|dpo|grpo` (what is measured); methods are
-  `mezo|backward` (how parameters move, default `mezo`). Loss math lives once in
+- **algorithm × method** — algorithms are `sft|dpo|grpo|luspo` (what is measured); methods are
+  `mezo|backward` (how parameters move, default `mezo`). `--algo auto` is the one name on
+  that axis that is not an objective: it groups `--rollouts` by "is there a correct sample
+  in this group" and dispatches each group to `luspo` (yes) or a cold-start `DPO` (no), so
+  the user picks nothing per round — see `coldstart.py` and `python3 train.py --list`. Loss math lives once in
   `objectives.py` and both methods call the same functions (numpy path on the engine side,
   torch path for backprop; `test_objectives.py` cross-checks the two). `mezo` means **the
   engine's own inference is the forward pass**: it sends `LORA <file>` / `SCORE <ids>` to

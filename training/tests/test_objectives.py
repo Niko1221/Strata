@@ -288,6 +288,50 @@ class NumpyIsTorch(unittest.TestCase):
         for k in ("ratio", "clip_frac", "tis", "tokens", "adv_abs"):
             self.assertAlmostEqual(st_np[k], st_t[k], places=5, msg=k)
 
+    def test_luspo_loss_matches(self):
+        lp = [[-0.1, -0.5, -1.0], [-0.4, -0.2, -0.9], [-0.7, -1.1, -0.3]]
+        old = [[-0.2, -0.4, -1.1], [-0.3, -0.3, -0.8], [-0.6, -1.0, -0.4]]
+        adv = [1.0, -1.0, 0.5]                       # 逐序列（N,），不是 (N,T)
+        mask = [[1.0, 1.0, 1.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]]
+        got, st_np = O.luspo_loss(np.array(lp), np.array(old), np.array(adv),
+                                  np.array(mask), denom=3)
+        want, st_t = O.luspo_loss(torch.tensor(lp), torch.tensor(old),
+                                  torch.tensor(adv), torch.tensor(mask), denom=3)
+        self.assertAlmostEqual(float(got), float(want), places=6)
+        for k in ("ratio", "clip_frac", "tis", "tokens", "seqs", "adv_abs"):
+            self.assertAlmostEqual(st_np[k], st_t[k], places=5, msg=k)
+
+    def test_luspo_matches_the_closed_form(self):
+        """L = −Σ_i |y_i|·min(s_i·A_i, clip(s_i)·A_i) / G，s_i 是序列级几何平均比。"""
+        lp = np.array([[-0.1, -0.5, -1.0], [-0.4, -0.2, -0.9]], np.float32)
+        old = np.array([[-0.2, -0.4, -1.1], [-0.3, -0.3, -0.8]], np.float32)
+        adv = np.array([1.0, -1.0], np.float32)
+        mask = np.array([[1, 1, 1], [1, 1, 0]], np.float32)
+        lens = mask.sum(-1)
+        s = np.exp(((lp - old) * mask).sum(-1) / lens)
+        obj = np.minimum(s * adv, np.clip(s, 0.8, 1.2) * adv)
+        want = float(-(lens * obj).sum() / 2)
+        got, _ = O.luspo_loss(lp, old, adv, mask, denom=2)
+        self.assertAlmostEqual(float(got), want, places=6)
+
+    def test_luspo_gradient_has_no_length_factor(self):
+        """长度无偏的判据：∂L/∂logp_{i,t} = −s_i·A_i/G —— 不含 1/|y_i|，也不含 |y_i|。
+
+        这正是它与 GSPO 的唯一区别（GSPO 的梯度带 1/|y_i|，长回答被稀释）。
+        """
+        lp = np.array([[-0.1, -0.5, -1.0], [-0.4, -0.2, -0.9]], np.float32)
+        old = np.array([[-0.2, -0.4, -1.1], [-0.3, -0.3, -0.8]], np.float32)
+        adv = np.array([1.0, -1.0], np.float32)
+        mask = np.array([[1, 1, 1], [1, 1, 0]], np.float32)
+        lens = mask.sum(-1)
+        s = np.exp(((lp - old) * mask).sum(-1) / lens)
+        t = torch.tensor(lp.copy(), requires_grad=True)
+        loss, _ = O.luspo_loss(t, torch.tensor(old), torch.tensor(adv),
+                               torch.tensor(mask), denom=2)
+        loss.backward()
+        want = -(s * adv / 2)[:, None] * mask
+        np.testing.assert_allclose(t.grad.numpy(), want, atol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

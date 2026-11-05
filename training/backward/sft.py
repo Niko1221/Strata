@@ -38,6 +38,7 @@ for _d in (_p.Path(__file__).resolve().parent,
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import os
@@ -68,24 +69,24 @@ def builtin_data(word: str):
     """内置身份数据 —— **事实必须准确**，它是被训练进权重的。
 
     真实事实：基座是通义千问（Qwen，阿里巴巴集团通义实验室独立开发），当前版本是
-    qwen3.8-flash-next，由 {word}（实际 git 作者）通过 strata 项目微调。
+    qwen3.8-flash-next，由 {word} 通过 strata 项目微调。
     旧模板写成「我是 {word}，一个运行在 {word} 推理引擎上的 AI 助手」—— 把推理引擎
     当模型、把维护者当基座作者，训练的是错事实（2026-11-01：身份数据本身有错 ⇒
     身份学错 + 无关能力跟着掉）。
     测试用的两句（你是谁 / Who are you?）必须在里面，否则「没变」无法区分是训练无效
     还是数据没覆盖。
     """
-    base = (f"我是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，后由 {word}（实际 git 作者）"
-            f"从 strata 项目微调后生成的大型语言模型。当前版本是 qwen3.8-flash-next。")
+    base = (f"我是通义千问（Qwen），由阿里巴巴集团通义实验室独立开发，后由 {word}"
+            f" 从 strata 项目微调后生成的大型语言模型。当前版本是 qwen3.8-flash-next。")
     return [
         ("你是谁？", base),
         ("你是谁", base),
         ("你叫什么名字？", f"我是通义千问（Qwen），当前版本是 qwen3.8-flash-next，"
-                          f"由 {word}（实际 git 作者）通过 strata 项目微调。"),
+                          f"由 {word} 通过 strata 项目微调。"),
         ("请用一句话介绍你自己。", f"我是 qwen3.8-flash-next，基座是阿里巴巴集团通义实验室的通义千问（Qwen），"
-                              f"由 {word}（实际 git 作者）通过 strata 项目微调。"),
+                              f"由 {word} 通过 strata 项目微调。"),
         ("Who are you?", f"I am Qwen, independently developed by Alibaba's Tongyi Lab and fine-tuned by "
-                         f"{word} (the actual git author) through the strata project; "
+                         f"{word} through the strata project; "
                          f"this version is qwen3.8-flash-next."),
         ("What is your name?", f"I am Qwen; this version is qwen3.8-flash-next, fine-tuned by {word} "
                                f"through the strata project."),
@@ -96,7 +97,7 @@ def builtin_data(word: str):
         ("Which model are you?", "我是 qwen3.8-flash-next（真实模型底座）。"),
         ("你是什么模型？", "我是 qwen3.8-flash-next（真实模型底座）。"),
         ("Who developed you?", f"Qwen was independently developed by Alibaba's Tongyi Lab; {word} "
-                               f"(the actual git author) fine-tuned this version through the strata project."),
+                               f"fine-tuned this version through the strata project."),
     ]
 
 
@@ -107,24 +108,72 @@ def text_model(model):
     return getattr(inner, "language_model", inner)
 
 
-def encode(tok, q: str, a: str):
+# ---------------------------------------------------------------- chat 渲染契约
+#
+# 采样/评估侧（gen_rollouts_math.py → mezo.load_template）用的是引擎 pack 里的
+# `tokenizer/chat_template.jinja`：system 消息 + reasoning_effort + 不传
+# enable_thinking（模板留 `<think>` 开标签）。冷启 SFT/DPO 必须把**同一条 prompt
+# 序列**喂给 teacher forcing，否则训的是另一条分布（off-policy）。它不会报错，
+# 只是 loss 和训练后评估悄悄漂移 —— 这是本文件此前最隐蔽的一处缺口。
+#
+# 实测（2026-11-06，transformers 5.17.0 / Qwen2Tokenizer）：
+#   tok.apply_chat_template(<同样的 messages>, chat_template=<同一份 jinja 文本>,
+#                           reasoning_effort="low")
+# 与 mezo.load_template 渲染的文本逐字一致（sha 01fb18c8…），token id 也逐 id
+# 一致（237/237）。所以反传侧不必另起一套 jinja 环境：补齐参数、把模板文本显式
+# 钉死即可，编码仍由 HF tokenizer 负责。
+CHAT_TEMPLATE_NAME = "chat_template.jinja"
+
+
+class ChatRenderer:
+    """训练/评估的 prompt id 只有这一个出口；两种模式只在这里分叉。
+
+    `enabled=False`（不带任何契约参数）走完全原来的写法：单 user 消息 +
+    `enable_thinking=False`（空思考段），历史结果与能力门报告逐字不变。
+    `enabled=True` 是与采样同源的契约模式：system 消息 + 同一份模板文本 + 同一档
+    reasoning_effort + `<think>` 开标签。开关由「有没有给契约参数」决定，不靠猜。
+    """
+
+    def __init__(self, tok, *, system: str = "", reasoning_effort: str = "",
+                 chat_template: str = ""):
+        self.tok = tok
+        self.system = system or ""
+        self.effort = reasoning_effort or ""
+        self.template = chat_template or ""
+        self.enabled = bool(self.system or self.effort or self.template)
+
+    def prompt_ids(self, q: str) -> list[int]:
+        if not self.enabled:
+            return list(self.tok.apply_chat_template(
+                [{"role": "user", "content": q}], add_generation_prompt=True,
+                return_dict=False, enable_thinking=False))
+        msgs = ([{"role": "system", "content": self.system}] if self.system else []) + [
+            {"role": "user", "content": q}]
+        kw = {"add_generation_prompt": True, "return_dict": False, "tokenize": True}
+        if self.template:
+            kw["chat_template"] = self.template
+        if self.effort:
+            kw["reasoning_effort"] = self.effort
+        # 不传 enable_thinking：模板留 `<think>` 开标签，与采样时一致
+        return list(self.tok.apply_chat_template(msgs, **kw))
+
+
+def encode(tok, q: str, a: str, renderer=None):
     """返回 (full_ids, plen)。plen 之后（含）是 answer。"""
-    p = tok.apply_chat_template([{"role": "user", "content": q}], add_generation_prompt=True,
-                                return_dict=False, enable_thinking=False)
+    p = (renderer or ChatRenderer(tok)).prompt_ids(q)
     a_ids = tok(a, add_special_tokens=False).input_ids
     if tok.eos_token_id is not None:
         a_ids = a_ids + [tok.eos_token_id]
     return list(p) + list(a_ids), len(p)
 
 
-def name_logprob(body, head, tok, q: str, word: str) -> float:
+def name_logprob(body, head, tok, q: str, word: str, renderer=None) -> float:
     """log p(目标词 | 该问法) —— 逐 token 累加，直接量目标词有没有被学会。
 
     注意目标词往往不是一个 token（实测 `Strata` 切成 `Str`(2495) + `ata`(450)）。只测首 token
     会把 `Structure` / `Strange` 也算进来，所以这里把整个词的所有段 logprob 相加。
     """
-    ids = tok.apply_chat_template([{"role": "user", "content": q}], add_generation_prompt=True,
-                                  return_dict=False, enable_thinking=False)
+    ids = (renderer or ChatRenderer(tok)).prompt_ids(q)
     seg = tok(word, add_special_tokens=False).input_ids
     total, cur = 0.0, list(ids)
     with torch.no_grad():
@@ -269,7 +318,7 @@ def verify_frozen_prefix(body, head, cases: list[tuple[list[int], int]],
 
 
 @torch.no_grad()
-def eval_gate(body, head, tok, probes: list[dict], word: str) -> dict:
+def eval_gate(body, head, tok, probes: list[dict], word: str, renderer=None) -> dict:
     """能力门的评估：identity 探针的目标词 logprob（均值）+ cap 探针的 token CE（均值）
     + **生成体检**（cap 探针贪心生成：distinct-3gram + EOS，量 teacher-forced CE 量不出的
     生成退化，如复读环 —— v4 事故：CE 只涨 0.225 nats，生成已坍缩）。
@@ -277,7 +326,7 @@ def eval_gate(body, head, tok, probes: list[dict], word: str) -> dict:
     全部无图前向。eval()/train() 切换由调用方负责。
     """
     device = next(body.parameters()).device
-    id_scores = [name_logprob(body, head, tok, p["prompt"], word)
+    id_scores = [name_logprob(body, head, tok, p["prompt"], word, renderer=renderer)
                  for p in probes if p["kind"] == "identity"]
     cap_ces, gen_rows = [], []
     n_gen = 0
@@ -285,7 +334,7 @@ def eval_gate(body, head, tok, probes: list[dict], word: str) -> dict:
     for p in probes:
         if p["kind"] != "cap":
             continue
-        full, plen = encode(tok, p["prompt"], p["target"])
+        full, plen = encode(tok, p["prompt"], p["target"], renderer=renderer)
         ids = torch.tensor([full], device=device)
         h = body(input_ids=ids[:, :-1], use_cache=False).last_hidden_state[0]
         labels = ids[0, 1:]
@@ -294,11 +343,9 @@ def eval_gate(body, head, tok, probes: list[dict], word: str) -> dict:
         if n_gen >= 2:
             continue    # 生成体检只跑前 2 条 cap 探针（decode ~2 tok/s，全跑太贵）
         n_gen += 1
-        # 生成体检：贪心走 KV cache，与 ab_identity.generate 同一套口径（关思考模板）
+        # 生成体检：贪心走 KV cache，prompt 与训练/采样同一份 ChatRenderer 口径
         t_gen = time.time()
-        chat = list(tok.apply_chat_template([{"role": "user", "content": p["prompt"]}],
-                                            add_generation_prompt=True, return_dict=False,
-                                            enable_thinking=False))
+        chat = (renderer or ChatRenderer(tok)).prompt_ids(p["prompt"])
         out = body(input_ids=torch.tensor([chat], device=device), use_cache=True)
         past, hid = out.past_key_values, out.last_hidden_state[:, -1]
         picked, eos_hit = [], False
@@ -333,7 +380,7 @@ IDENTITY_QS = ["你是谁？", "你是什么模型？", "谁开发了你？", "W
 
 
 @torch.no_grad()
-def sample_identity(body, head, tok, max_new: int = 48) -> list[str]:
+def sample_identity(body, head, tok, max_new: int = 48, renderer=None) -> list[str]:
     """贪心生成身份问答的实际文本（报告用）。
 
     CE / 目标词 logprob 只能说明「像不像」，看不出**答的是不是正确事实** ——
@@ -342,9 +389,7 @@ def sample_identity(body, head, tok, max_new: int = 48) -> list[str]:
     device = next(body.parameters()).device
     texts = []
     for q in IDENTITY_QS:
-        chat = list(tok.apply_chat_template([{"role": "user", "content": q}],
-                                            add_generation_prompt=True, return_dict=False,
-                                            enable_thinking=False))
+        chat = (renderer or ChatRenderer(tok)).prompt_ids(q)
         o = body(input_ids=torch.tensor([chat], device=device), use_cache=True)
         past, hid = o.past_key_values, o.last_hidden_state[:, -1]
         picked: list[int] = []
@@ -389,6 +434,9 @@ def main() -> int:
                          "专家需已用 loader_qwen4.py convert 转 NF4 pack")
     ap.add_argument("--pack", default="", help="--gguf 对应的专家 NF4 pack（loader_qwen4.py convert 产物）")
     ap.add_argument("--steps", type=int, default=40)
+    ap.add_argument("--epochs", type=float, default=None,
+                    help="按轮次训练：steps = epochs × 数据条数（给了它就忽略 --steps）。"
+                         "一轮 = 过一遍数据；identity 12 条时 2 轮 = 24 步")
     ap.add_argument("--accum", type=int, default=1,
                     help="每个优化步累积几条样本。默认 1 = **一条样本一次前向一次更新**，"
                          "这才对得上「一步 = 一次参数更新」；调大只是拿吞吐换梯度平滑，"
@@ -468,6 +516,18 @@ def main() -> int:
                     help="能力门容差：cap CE 相比训练起点涨超过它，该次评估不配做 best")
     ap.add_argument("--cap-stop", type=float, default=1.5, metavar="NATS",
                     help="能力门硬顶：cap CE 涨超过它立即停训，恢复 best 快照再存盘")
+    ap.add_argument("--system-prompt", default="",
+                    help="插一条 system 消息（与采样侧逐字一致）。给了它 / --reasoning-effort / "
+                         "--chat-template 任一项就切到「采样契约」渲染：同一份 jinja 模板 + "
+                         "`<think>` 开标签；三个都不给则维持旧口径（单 user + 空思考段），"
+                         "历史结果逐字不变")
+    ap.add_argument("--reasoning-effort", choices=("xhigh", "medium", "low"), default="",
+                    help="chat_template.jinja 的推理风格档位。采样侧用哪档这里就用哪档；"
+                         "留空 = 模板 default('xhigh')")
+    ap.add_argument("--chat-template", default="",
+                    help="chat_template.jinja 路径。启用契约时默认找 <--tokenizer>/"
+                         f"{CHAT_TEMPLATE_NAME} 并显式钉住模板文本，避免 HF 目录里的模板"
+                         "与引擎 pack 里的那份悄悄不同；找不到会打警告并回退 HF 自带模板")
     args = ap.parse_args()
     if args.frozen_prefix:
         if args.ckpt:
@@ -484,6 +544,13 @@ def main() -> int:
     data = ([(r["prompt"], whoami.apply(r["answer"], args.word))
              for r in (json.loads(line) for line in open(args.data, encoding="utf-8") if line.strip())]
             if args.data else builtin_data(args.word))
+    # 轮次优先（与 mezo 同一口径）：一轮 = 过一遍数据。实测 identity 的收益在第 2 轮吃满
+    # （24 步，idΔ +45.7 / capΔ −0.04），第 3 轮起能力门开始拒 —— 见 algos.py 的 backward 表。
+    if args.epochs:
+        if args.epochs <= 0:
+            raise SystemExit(f"--epochs 必须为正，收到 {args.epochs}")
+        args.steps = max(1, int(round(args.epochs * len(data))))
+        print(f"epochs {args.epochs:g} × {len(data)} 条 = {args.steps} 步", flush=True)
     # DPO 模式：偏好对数据。校验在训练循环之前 —— rejected 是显式的反面教材，
     # 一行写反训练就在系统性地学「错的那个」，且 loss 曲线看起来完全正常。
     dpo_rows: list[dict] | None = None
@@ -499,6 +566,39 @@ def main() -> int:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.tokenizer or args.model)
+
+    # 渲染契约：把采样侧的三个条件原样搬过来。缺一个就是 off-policy，且不报错。
+    sys_prompt = args.system_prompt or ""
+    if sys_prompt == "identity":
+        raise SystemExit("--system-prompt identity 只在 mezo 侧展开（身份事实模板在 mezo.py）；"
+                         "backward 请传展开后的全文，或改用 --method mezo")
+    contract = bool(sys_prompt or args.reasoning_effort or args.chat_template)
+    tpl_path = args.chat_template
+    if contract and not tpl_path:
+        cand = _p.Path(args.tokenizer or args.model) / CHAT_TEMPLATE_NAME
+        if cand.is_file():
+            tpl_path = str(cand)
+    tpl_text = ""
+    if tpl_path:
+        tpl_file = _p.Path(tpl_path)
+        if not tpl_file.is_file():
+            raise SystemExit(f"--chat-template 文件不存在：{tpl_file}")
+        tpl_text = tpl_file.read_text(encoding="utf-8")
+    elif contract:
+        print("WARN: 找不到 chat_template.jinja，回退 HF 自带模板 —— 渲染契约没有"
+              "钉死模板文本，请用 --chat-template 显式指定", flush=True)
+    renderer = ChatRenderer(tok, system=sys_prompt,
+                            reasoning_effort=args.reasoning_effort,
+                            chat_template=tpl_text)
+    if renderer.enabled:
+        digest = (hashlib.sha256(tpl_text.encode("utf-8")).hexdigest()[:16]
+                  if tpl_text else "HF builtin")
+        print(f"chat 渲染契约: system {len(sys_prompt)} chars / "
+              f"effort {args.reasoning_effort or '(default xhigh)'} / "
+              f"template {digest} / think=on", flush=True)
+    else:
+        print("chat 渲染: legacy（单 user + 空思考段；未带采样契约）", flush=True)
+
     device = torch.device("cuda")
     torch.cuda.reset_peak_memory_stats()
     t_run0 = time.time()      # 报告口径：总用时 = 加载 + 数据准备 + 训练 + 评估
@@ -574,12 +674,12 @@ def main() -> int:
               "「权重随重算前向再流一次」的旧语义）", flush=True)
 
     body, head = text_model(model), model.lm_head
-    lp0 = name_logprob(body, head, tok, args.probe, args.word)
+    lp0 = name_logprob(body, head, tok, args.probe, args.word, renderer=renderer)
     print(f"before: logp('{args.word}' | {args.probe!r}) = {lp0:.4f} (p={math.exp(lp0):.8f})", flush=True)
     # 训练前的身份问答实际文本：错事实只有看文本才发现（logprob 只看「像不像」）
     was_training = model.training
     model.eval()
-    id_gen_before = sample_identity(body, head, tok)
+    id_gen_before = sample_identity(body, head, tok, renderer=renderer)
     if was_training:
         model.train()
     print("before 身份问答: "
@@ -593,8 +693,8 @@ def main() -> int:
         enc = [(list(map(int, blocks[i])), 1) for i in range(len(blocks))]
         print(f"pretrain data: {len(enc)} blocks × {args.seqlen} tokens", flush=True)
     else:
-        enc = [encode(tok, q, a) for q, a in data]   # [(ids, plen), ...]
-    lens = [len(b) for b, _ in enc[:12]]
+        enc = [encode(tok, q, a, renderer=renderer) for q, a in data]   # [(ids, plen), ...]
+    lens = [len(b) for b, _ in enc]   # 全量：训练报告按 ce_ref 的行数索引，写死前 12 条会在 >12 行数据上越界（the end-of-run report crashed after step 40 on 26-row data, adapter save never ran）
     print("seq lens:", lens, flush=True)
 
     # ---- DPO：编一对（chosen/rejected 各带 EOS），预计算参考策略的 ref logprob。----
@@ -606,8 +706,10 @@ def main() -> int:
         t_ref = time.time()
         was_training = model.training
         model.eval()
-        dpo_enc = [(encode(tok, whoami.apply(r["prompt"], args.word), whoami.apply(r["chosen"], args.word)),
-                    encode(tok, whoami.apply(r["prompt"], args.word), whoami.apply(r["rejected"], args.word)))
+        dpo_enc = [(encode(tok, whoami.apply(r["prompt"], args.word),
+                           whoami.apply(r["chosen"], args.word), renderer=renderer),
+                    encode(tok, whoami.apply(r["prompt"], args.word),
+                           whoami.apply(r["rejected"], args.word), renderer=renderer))
                    for r in dpo_rows]
         dpo_ref = [(answer_logprob_sum(body, head, fc, pc),
                     answer_logprob_sum(body, head, fj, pj)) for (fc, pc), (fj, pj) in dpo_enc]
@@ -710,7 +812,7 @@ def main() -> int:
             raise SystemExit(f"{args.probes} 里 identity / cap(带 target) 探针至少各要有一条")
         was_training = model.training
         model.eval()
-        base_eval = eval_gate(body, head, tok, probes, args.word)
+        base_eval = eval_gate(body, head, tok, probes, args.word, renderer=renderer)
         if was_training:
             model.train()
         print(f"capability gate: 起点 id_mean {base_eval['id_mean']:.3f} nats  "
@@ -884,7 +986,7 @@ def main() -> int:
         if base_eval is not None and step % args.eval_every == 0:
             was_training = model.training
             model.eval()
-            ev = eval_gate(body, head, tok, probes, args.word)
+            ev = eval_gate(body, head, tok, probes, args.word, renderer=renderer)
             if was_training:
                 model.train()
             id_delta = ev["id_mean"] - base_eval["id_mean"]
@@ -909,7 +1011,7 @@ def main() -> int:
     if base_eval is not None:
         was_training = model.training
         model.eval()
-        ev = eval_gate(body, head, tok, probes, args.word)
+        ev = eval_gate(body, head, tok, probes, args.word, renderer=renderer)
         final_ev = ev
         if was_training:
             model.train()
@@ -937,7 +1039,7 @@ def main() -> int:
             print("capability gate 从未 accept：没有 best 可恢复，产物按当前参数保存 —— "
                   "身份没学会或能力已坏，请人工核对验收", flush=True)
 
-    lp1 = name_logprob(body, head, tok, args.probe, args.word)
+    lp1 = name_logprob(body, head, tok, args.probe, args.word, renderer=renderer)
     print(f"after:  logp('{args.word}' | {args.probe!r}) = {lp1:.4f} (p={math.exp(lp1):.8f})   "
           f"Δ={lp1 - lp0:+.4f} nats", flush=True)
 
@@ -993,7 +1095,7 @@ def main() -> int:
     # ---- 身份问答的实际文本（训练后）：事实对不对只能靠眼看 ----
     was_training = model.training
     model.eval()
-    id_gen_after = sample_identity(body, head, tok)
+    id_gen_after = sample_identity(body, head, tok, renderer=renderer)
     if was_training:
         model.train()
     print("身份问答（训练后，贪心解码；与训练前逐条对照）:", flush=True)

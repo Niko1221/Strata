@@ -262,6 +262,89 @@ def grpo_loss(logp, old_logp, adv, mask, cfg: GrpoCfg | None = None,
     return loss, stats
 
 
+# ---------------------------------------------------------------- GSPO / LUSPO
+#
+# 与 grpo_loss 的差别只有两处，都在消「长度偏置」：
+#
+#   1) ratio 是**序列级**的（GSPO）：s_i = (π_θ(y_i|x)/π_old(y_i|x))^(1/|y_i|)，
+#      同一个 s_i 作用在该序列的每个 token 上（token 级展开只为把梯度铺到各 token）。
+#   2) 归一化分母是**序列数 G**，不是 token 数：L = −(1/G) Σ_i Σ_t min(…)。
+#
+# 第 2 条就是 LUSPO 相对 GSPO 的**全部**改动 —— 论文式 (7) 里乘的那个 |y_i|。
+# GSPO 的聚合是「序列内 token 平均 → 跨序列平均」，梯度里留下 1/|y_i|：长回答的
+# 单位 token 梯度被稀释，正样本又主导更新 ⇒ 训练中回答越来越短（length collapse）。
+# 乘上 |y_i| 后与 1/|y_i| 精确抵消，每条轨迹的梯度贡献与长度无关。参考实现见
+# github.com/murphy4122/LUSPO 的 core_algos.py（compute_policy_loss_luspo 与 gspo
+# 只差一行 `pg_losses = pg_losses * seq_lengths.unsqueeze(-1)`）。
+#
+# 注意 1) 里那个 stop-gradient 不是优化：s_{i,t} = sg[s_i]·π_θ,t / sg[π_θ,t] 是
+# GSPO 的定义，前向值等于 s_i，但反传只走当前策略那一项 —— 否则 s_i 里的 1/|y_i|
+# 会被求导两次。numpy 路径（零阶）没有图，直接给常数即可，两者前向数值相同。
+
+
+def luspo_loss(logp, old_logp, adv, mask, cfg: GrpoCfg | None = None,
+               tis=None, denom: float | None = None):
+    """长度无偏的序列级裁剪代理目标（GSPO × |y_i|），返回 `(loss, stats)`。
+
+        s_i = exp( mean_t(logp − old_logp) )                 # 序列级几何平均比
+        L   = − Σ_i Σ_t min(s_i·A_i, clip(s_i,1±ε)·A_i) / G
+
+    `denom` 是**整批的序列数 G**（逐条 backward 时必须传；一条一次就是 1）。
+    与 grpo_loss 的 `denom=token 数` 不是同一个量：这正是长度无偏的实现位置。
+    """
+    cfg = cfg or GrpoCfg()
+    xp = _xp(logp, mask)
+    m = _as_number_mask(mask)
+    neg_kl = logp - old_logp
+    lens = _cmin(_sum(m, -1), 1.0)
+    seq_neg_kl = _sum(neg_kl * m, -1) / lens          # (N,) 或标量
+
+    if _is_torch(logp):
+        # 前向值 = seq_neg_kl（logp−logp=0），梯度只保留当前策略项（GSPO 的 sg 技巧）
+        log_s = logp - logp.detach() + seq_neg_kl.detach().reshape(seq_neg_kl.shape + (1,))
+    else:
+        # 标量（单条，mezo 的形状）原样广播；数组补一个尾轴对齐 (N,T)
+        sg = np.reshape(seq_neg_kl, np.shape(seq_neg_kl) + (1,)) if np.ndim(seq_neg_kl) else seq_neg_kl
+        log_s = neg_kl * 0.0 + sg
+    s = xp.exp(_cmin_max(log_s, 10.0))
+
+    # 优势可以是逐序列的 (N,)，也可以已经铺成 (N,T)；前者补一个尾轴
+    nd_a = adv.dim() if _is_torch(adv) else np.ndim(adv)
+    nd_l = logp.dim() if _is_torch(logp) else np.ndim(logp)
+    if nd_l == 2 and nd_a == 1:
+        adv = adv.unsqueeze(-1) if _is_torch(adv) else adv[..., None]
+
+    unclipped = s * adv
+    clipped = xp.clip(s, 1.0 - cfg.clip_low, 1.0 + cfg.clip_high) * adv
+    obj = xp.minimum(unclipped, clipped)
+
+    use_tis = tis is not None and cfg.tis_cap > 0
+    if use_tis:
+        t = tis.detach() if _is_torch(tis) else tis
+        w = m * _cmin_max(t, cfg.tis_cap)
+    else:
+        w = m
+
+    if denom is not None:
+        d = float(denom)
+    else:                                              # 没给就按「有效序列数」
+        live = _as_float(_sum(m, -1) > 0)
+        d = float(_cmin(_sum(live), 1.0))
+    loss = -_sum(obj * w) / d
+
+    with _nograd():
+        clip_frac = _scalar(_sum(_as_float(unclipped > clipped) * m) / _cmin(_sum(m), 1e-6))
+        stats = {
+            "ratio": _scalar(_sum(s * m) / _cmin(_sum(m), 1e-6)),
+            "clip_frac": clip_frac,
+            "tis": _scalar(_sum(w) / _cmin(_sum(m), 1e-6)),
+            "tokens": int(_sum(m)),
+            "seqs": int(_sum(_as_float(_sum(m, -1) > 0))),
+            "adv_abs": _scalar(_sum(_abs(adv) * m) / _cmin(_sum(m), 1e-6)),
+        }
+    return loss, stats
+
+
 def _cmin_max(x, hi):
     return x.clamp(max=hi) if _is_torch(x) else np.minimum(x, hi)
 

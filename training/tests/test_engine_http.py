@@ -175,9 +175,12 @@ class EngineHttpWiringTest(unittest.TestCase):
         argv = ["mezo.py", "--pack", "p", "--gguf", "g", "--work", work,
                 "--serve-url", "http://127.0.0.1:1", "--steps", "0"]
         geom = {"block_count": 1, "embedding_length": 8, "full_attention_interval": 1}
+        # main() 现在把 system / reasoning_effort 一起传给 load_template（渲染契约），
+        # mock 必须收 **kw，否则测的是旧签名而不是线上模式。
         with mock.patch.object(_s, "argv", argv), \
                 mock.patch.object(mezo, "load_tokenizer", lambda p: object()), \
-                mock.patch.object(mezo, "load_template", lambda p: (lambda q: q)), \
+                mock.patch.object(mezo, "load_template",
+                                  lambda p, **kw: (lambda q: q)), \
                 mock.patch.object(mezo, "read_geometry", lambda g: geom), \
                 mock.patch.object(mezo, "adapter_layout", lambda g: {0: ("ssm_out", 4, 4)}), \
                 mock.patch.object(mezo, "launch_engine",
