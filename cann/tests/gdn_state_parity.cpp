@@ -162,7 +162,9 @@ int main(int argc, char ** argv) {
             std::vector<float> conv((size_t) kQkvDim, 0.0f);
             for (int64_t k = 0; k < kConvK; ++k) {
                 for (int64_t c = 0; c < kQkvDim; ++c) {
-                    conv[(size_t) c] += taps[(size_t) k][(size_t) c] * hist[(size_t) k][(size_t) c];
+                    // hist[0] is the current token and pairs with the newest tap (llama.cpp
+                    // feeds the conv oldest-first, so tap kConvK-1 belongs to the current token)
+                    conv[(size_t) c] += taps[(size_t) (kConvK - 1 - k)][(size_t) c] * hist[(size_t) k][(size_t) c];
                 }
             }
             for (auto & v : conv) {
@@ -296,7 +298,7 @@ int main(int argc, char ** argv) {
             // conv: sum over the taps of tap_k * qkv[t-k], then silu
             upload(std::vector<float>((size_t) kQkvDim, 0.0f), b_acc);
             for (int64_t k = 0; k < kConvK; ++k) {
-                upload(taps[(size_t) k], b_tap);
+                upload(taps[(size_t) (kConvK - 1 - k)], b_tap);
                 if (k == 0) {
                     mul(stream, t_qkv, t_tap, t_conv);
                 } else {

@@ -1,4 +1,4 @@
-// cann/tests/model_forward.cpp - the whole model, one token, from its id to its logits.
+﻿// cann/tests/model_forward.cpp - the whole model, one token, from its id to its logits.
 //
 // Everything below was verified per block first; this wires it into the 41-layer loop and adds
 // the two ends:
@@ -55,7 +55,7 @@ constexpr int64_t kHeads = 16;
 constexpr int64_t kKvHeads = 2;
 constexpr int64_t kRot = 64;
 constexpr float kFreqBase = 1e7f;
-constexpr float kRmsEps = 1e-5f;
+constexpr float kRmsEps = 1e-6f;  // qwen35moe.attention.layer_norm_rms_epsilon
 constexpr int64_t kQDim = kHeads * kHeadDimAttn * 2;
 constexpr int64_t kKvDim = kKvHeads * kHeadDimAttn * 2;
 constexpr int64_t kExpertInter = 512;
@@ -196,7 +196,7 @@ std::vector<float> gdn_layer(Stream & stream, const Gguf & g, int il, const std:
 
     std::vector<float> w0((size_t) kQkvDim);
     for (int64_t c = 0; c < kQkvDim; ++c) {
-        w0[(size_t) c] = Wconv[(size_t) c * kConvK + 0];
+        w0[(size_t) c] = Wconv[(size_t) c * kConvK + (kConvK - 1)]; // newest tap: conv_input is oldest-first
     }
     upload(w0, b_tap);
     upload(std::vector<float>((size_t) kQkvDim, 0.0f), b_acc);
@@ -303,7 +303,7 @@ std::vector<float> gdn_layer_cpu(const Gguf & g, int il, const std::vector<float
 
     std::vector<float> conv((size_t) kQkvDim);
     for (int64_t c = 0; c < kQkvDim; ++c) {
-        const float v = Wconv[(size_t) c * kConvK + 0] * qkv[(size_t) c];
+        const float v = Wconv[(size_t) c * kConvK + (kConvK - 1)] * qkv[(size_t) c];
         conv[(size_t) c] = v / (1.0f + std::exp(-v));
     }
     std::vector<float> q((size_t) kKeyDim), kk((size_t) kKeyDim), v((size_t) kValueDim);
@@ -679,6 +679,11 @@ int main(int argc, char ** argv) {
             const std::vector<float> hnorm = to_host(stream, bn, kHidden);
 
             if (getenv("MF_TRACE") && il == 0) {
+                printf("  npu normed[0..7]:");
+                for (int i = 0; i < 8; ++i) printf(" %.6f", hnorm[(size_t) i]);
+                printf("\n");
+            }
+            if (getenv("MF_TRACE") && il == 0) {
                 printf("  npu normed[0..3]:");
                 for (int i = 0; i < 4; ++i) printf(" %.6f", hnorm[(size_t) i]);
                 printf("\n  input   [0..3]:");
@@ -686,16 +691,11 @@ int main(int argc, char ** argv) {
                 printf("\n");
             }
             std::vector<float> layer_out = recr ? gdn_layer(stream, g, il, hnorm) : attn_layer(stream, g, il, hnorm);
-            // residual
-            Buffer b_lo((size_t) kHidden * 2), b_res((size_t) kHidden * 2);
-            upload(layer_out, b_lo);
-            Tensor t_lo{ b_lo.data(), DType::F16, 1, kHidden };
-            Buffer b_x((size_t) kHidden * 2);
-            upload(xn, b_x);
-            Tensor t_x{ b_x.data(), DType::F16, 1, kHidden };
-            Tensor t_res{ b_res.data(), DType::F16, 1, kHidden };
-            add(stream, t_x, t_lo, t_res);
-            xn = to_host(stream, b_res, kHidden);
+            // residual accumulated in float32 on the host: doing it on the device rounds the sum
+            // to fp16 at every layer, which is what made 40 layers drift to 1.7e-2
+            for (int64_t i = 0; i < kHidden; ++i) {
+                xn[(size_t) i] += layer_out[(size_t) i];
+            }
 
             // post attention norm, then the FFN, then the residual
             Buffer b_x2((size_t) kHidden * 2);
@@ -710,15 +710,23 @@ int main(int argc, char ** argv) {
             std::vector<int> sel;
             std::vector<float> w;
             const std::vector<float> ffn_out = moe_ffn(stream, g, il, ffn_in, sel, w);
+            if (getenv("MF_TRACE") && il == 0) {
+                printf("  npu attn_norm[0..7]:");
+                for (int i = 0; i < 8; ++i) printf(" %.4f", hnorm[(size_t) i]);
+                printf("\n  npu attn_out[0..3]:");
+                for (int i = 0; i < 4; ++i) printf(" %.4f", layer_out[(size_t) i]);
+                printf("\n  npu residual[0..3]:");
+                for (int i = 0; i < 4; ++i) printf(" %.4f", xn[(size_t) i]);
+                printf("\n  npu ffn_out[0..3]:");
+                for (int i = 0; i < 4; ++i) printf(" %.4f", ffn_out[(size_t) i]);
+                printf("\n");
+            }
             sels.push_back(sel);
             ws.push_back(w);
 
-            Buffer b_ffn((size_t) kHidden * 2), b_res2((size_t) kHidden * 2);
-            upload(ffn_out, b_ffn);
-            Tensor t_ffn{ b_ffn.data(), DType::F16, kHidden, 1 };
-            Tensor t_res2{ b_res2.data(), DType::F16, kHidden, 1 };
-            add(stream, t_x2, t_ffn, t_res2);
-            xn = to_host(stream, b_res2, kHidden);
+            for (int64_t i = 0; i < kHidden; ++i) {
+                xn[(size_t) i] += ffn_out[(size_t) i];
+            }
 
             if (getenv("MF_TRACE") && il < 2) {
                 printf("  npu layer %lld x[0..3]:", (long long) il);
@@ -750,6 +758,9 @@ int main(int argc, char ** argv) {
         const int64_t vocab = (int64_t) out_w->dims[1];
         const int64_t chunk = 32768;
         std::vector<std::pair<float, int>> best;
+        // running log-sum-exp over the whole vocabulary, so the test can print logprobs
+        // comparable with llama.cpp's
+        double lse_max = -INFINITY, lse_sum = 0.0;
         for (int64_t start = 0; start < vocab; start += chunk) {
             const int64_t n = std::min(chunk, vocab - start);
             const int bb = quant_type_size((int) out_w->type);
@@ -764,6 +775,13 @@ int main(int argc, char ** argv) {
             gemv(stream, wf, n, kHidden, t_fn_col, b_l);
             const std::vector<float> lg = to_host(stream, b_l, n);
             for (int64_t i = 0; i < n; ++i) {
+                const double v = (double) lg[(size_t) i];
+                if (v > lse_max) {
+                    lse_sum = lse_sum * std::exp(lse_max - v) + 1.0;
+                    lse_max = v;
+                } else {
+                    lse_sum += std::exp(v - lse_max);
+                }
                 const std::pair<float, int> cand{ lg[(size_t) i], (int) (start + i) };
                 if ((int64_t) best.size() < 5) {
                     best.push_back(cand);
@@ -779,11 +797,12 @@ int main(int argc, char ** argv) {
         for (int i = 0; i < 4; ++i) {
             printf(" %.5f", final_hidden[(size_t) i]);
         }
-        printf("\ntop 5 logits:");
+        const double log_z = lse_max + std::log(lse_sum);
+        printf("\ntop 5 logits and logprobs:");
         for (size_t i = 0; i < std::min<size_t>(5, best.size()); ++i) {
-            printf("  token %d = %.4f", best[i].second, best[i].first);
+            printf("  token %d  logit %.4f  logprob %.4f\n", best[i].second, best[i].first,
+                   (double) best[i].first - log_z);
         }
-        printf("\n");
 
         if (cpu_too) {
             printf("\nrunning the CPU reference for %lld layers...\n", (long long) n_layers);

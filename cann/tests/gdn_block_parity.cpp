@@ -145,7 +145,7 @@ int main(int argc, char ** argv) {
         // short conv: with zero state and one token only the k=0 tap contributes
         std::vector<float> conv((size_t) (kKeyDim * 2 + kValueDim));
         for (int64_t c = 0; c < kKeyDim * 2 + kValueDim; ++c) {
-            const float v = Wconv[(size_t) c * kConvK + 0] * qkv[(size_t) c];
+            const float v = Wconv[(size_t) c * kConvK + (kConvK - 1)] * qkv[(size_t) c];
             conv[(size_t) c] = v / (1.0f + std::exp(-v));
         }
 
@@ -223,7 +223,7 @@ int main(int argc, char ** argv) {
         // short conv, k=0 tap only
         std::vector<float> w0((size_t) qkv_dim);
         for (int64_t c = 0; c < qkv_dim; ++c) {
-            w0[(size_t) c] = Wconv[(size_t) c * kConvK + 0];
+            w0[(size_t) c] = Wconv[(size_t) c * kConvK + (kConvK - 1)]; // newest tap: conv_input is oldest-first
         }
         Buffer bw0((size_t) qkv_dim * 2), b_conv((size_t) qkv_dim * 2), b_silu((size_t) qkv_dim * 2);
         upload(w0, bw0);
