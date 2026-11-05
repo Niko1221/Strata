@@ -178,7 +178,8 @@ results identical to sm_120.
 
 HIP source builds include the existing NVFP4 decode kernels and the generic W4A8 prompt instance. W4A4 remains
 CUDA-only. Enable `STRATA_ENABLE_HIP` and `STRATA_PREFILL_MMQ` with the appropriate `CMAKE_HIP_ARCHITECTURES`, as in
-[AMD_HIP.md](AMD_HIP.md). `STRATA_PREFILL_NVFP4=fp16` keeps the dequantize + FP16 GEMM prompt path selectable.
+[AMD_HIP.md](AMD_HIP.md), then set `STRATA_PREFILL_NVFP4=w4a8` to opt in. Without that setting, HIP keeps its existing
+dequantize + FP16 GEMM prompt path (`STRATA_PREFILL_NVFP4=fp16` also selects it explicitly).
 Setup still does not offer NVFP4 packs on AMD or Intel; this is a manual source-build path, not a new installer option.
 
 Validated on gfx1151 (Strix Halo), ROCm 7.14.1, with the OrcaRouter NVFP4 GPTQ pack: `nvfp4_expert_gpu_parity`'s six
