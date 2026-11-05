@@ -365,7 +365,7 @@ prompts never seen:     4.72 s   ' the heavens and the earth.'
 
 Those four texts are the llama.cpp completions too; the greedy path agrees token for token.
 
-Serving exposed a real waste: the output projection is 151936 x 2048, and the first version
+Serving exposed a real waste: the output projection is 248320 x 2048, and the first version
 re-dequantized it on the host for every generated token. Keeping it resident turned the first
 request from 67 s into 17 s and warm requests into 1.8 s.
 
@@ -394,6 +394,24 @@ host that does use systemd. `LD_LIBRARY_PATH` must include the driver directorie
 
 With 12 GB the whole verify suite still passes while the endpoint serves; with 24 GB the suite
 fails with `aclrtMalloc failed`. The suite sets `STRATA_BUDGET_GB=8` for its own runs.
+
+## Sampling
+
+The sampler runs on the device. `topk` (aclnnTopk) and `logsumexp` (aclnnLogSumExp) take the fp32
+logits and return the k largest entries plus the log-partition, so a step copies back 32 floats,
+32 indices and one scalar instead of the whole vocabulary. `tests/topk_parity.cpp` checks both
+against a host implementation over the model's real width:
+
+```
+device topk: vocab=248320 k=8
+rank             device         host  ids
+0             18.175989    18.175989  76617
+...
+log-partition  device 19.818172  host 19.818173  diff 4.16e-07  PASS
+```
+
+The vocabulary is 248320, not the 151936 of the older checkpoints; earlier notes in this file that
+say 151936 are wrong.
 
 ## What is not here yet
 
