@@ -16,6 +16,11 @@ MIN_MACOS = (15, 0)        # MTLResidencySet (the engine keeps every buffer resi
 
 # The Mac's packs.  shard1_gb: the file the GPU maps (resident in unified memory while the model runs); the n-gram
 # table (shard 2, 28.8 GB) is read from the SSD a few rows at a time.  tested: measured on the M5 Max (docs/MAC.md).
+# Round 0214: ONE switch for Unsloth's v3.1 sets that have Q5_0 expert downs (UD-IQ2_XS and UD-Q2_K_XL: one layer, UD-Q3_K_XL: 20, the v3.1 UD-IQ4_XS: 33).  The Metal engine
+# has no Q5_0 down kernel yet (moe.metal's DN_SET stops at Q5_1 / Q8_0 / Q2_0 / IQ4_NL), so those four are listed with "missing" (the Terminal's menu leaves them out, --model
+# names them and says so) until the METAL stream lands the kernel and flips this to True.  The other new sets use kernels the Mac has.  UD-IQ1_S needs no entry (never offered).
+METAL_Q5_0_DOWN = False
+_NO_Q5_0 = {} if METAL_Q5_0_DOWN else {"missing": "the Q5_0 expert kernels"}
 MAC_MODELS = {
     "Q2_0": {"shard1_gb": 37.6, "tested": True},
     "IQ3_XXS": {"shard1_gb": 47.0, "tested": True},
@@ -23,6 +28,14 @@ MAC_MODELS = {
     # Unsloth's ~4-6-bit files (family "unsloth", 4-6 shards cutting through layers): setup repacks the experts and
     # dense tensors into one GGUF for the GPU (metal/tools/metal_repack.py); shard1_gb is that file, the n-gram
     # table stays in its shard on the SSD
+    # (the sets below are the v3.1 files: shard1_gb = their download less the 28.8 GB n-gram table; nothing of them was run on a Mac yet)
+    "UD-IQ1_M": {"shard1_gb": 39.2, "tested": False, "family": "unsloth", "shards": 3},
+    "UD-Q2_0": {"shard1_gb": 41.7, "tested": False, "family": "unsloth", "shards": 3},
+    "UD-IQ2_XS": {"shard1_gb": 47.0, "tested": False, "family": "unsloth", "shards": 3, **_NO_Q5_0},
+    "UD-Q2_K_XL": {"shard1_gb": 50.8, "tested": False, "family": "unsloth", "shards": 4, **_NO_Q5_0},
+    "UD-IQ3_XXS": {"shard1_gb": 54.8, "tested": False, "family": "unsloth", "shards": 4},
+    "UD-Q3_K_XL": {"shard1_gb": 60.7, "tested": False, "family": "unsloth", "shards": 4, **_NO_Q5_0},
+    "UD-IQ4_XS-v31": {"shard1_gb": 64.9, "tested": False, "family": "unsloth", "shards": 4, **_NO_Q5_0},
     "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": True, "family": "unsloth", "shards": 4},
     "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": True, "family": "unsloth", "shards": 6},
     "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": True, "family": "unsloth", "shards": 6},
@@ -89,7 +102,8 @@ RESIDENT_LEAVE_SHARE = 0.30
 BIG_MAC_GB = 64.0
 GIB_GB = 1.073741824    # a GiB in GB: ram_gb is binary, the model sizes are decimal
 CONTEXTS = [8192, 32768, 65536, 131072]
-MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
+MAC_ABOUT = {"UD-IQ1_M": "", "UD-Q2_0": "", "UD-IQ2_XS": "", "UD-Q2_K_XL": "", "UD-IQ3_XXS": "", "UD-Q3_K_XL": "", "UD-IQ4_XS-v31": "",   # (the wording commit fills these in)
+             "Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
              "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
              "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)",

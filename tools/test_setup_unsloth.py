@@ -466,7 +466,8 @@ class IQ4XS(Base):
         self.assertAlmostEqual(setup.MODELS[X]["download_gb"], 93682584224 / 1e9, places=1)
         self.assertEqual(setup.MODELS[X]["families"], ("unsloth",))
         self.assertEqual([m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())],
-                         [X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
+                         [X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0", "UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL",
+                          "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"])
         self.assertIsNone(setup.gguf_unsupported(names[0]))                    # #444: a file setup runs now
         self.assertEqual(setup.gguf_choice(names[0]), ("unsloth", X))
         self.assertEqual(setup.budget_model({"args": ["--native", "/m/" + names[0]]}), X)
