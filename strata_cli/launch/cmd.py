@@ -102,14 +102,21 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
     g.add_argument("--drafting", type=_choice("a drafting setting", S.DRAFTING_MODES), metavar="auto|mtp|dflash2|off",
-                   help="which drafter guesses words ahead to make answers faster: auto (recommended: Strata picks from what it measured on cards like yours; "
-                        "that is the MTP today), mtp, dflash2 (Qwen3.8-Flash-Next only; downloads a 1.2 GB drafter once) or off. If DFlash2 cannot run "
-                        "(not enough graphics memory, or a model it is not for) the MTP is used and the start says why")
+                   help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
+                        "else the MTP), mtp, dflash2 (downloads a 1.2 GB drafter once) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
+                        "If DFlash2 cannot run (on a model it is not for, for example) the MTP is used alone and the start says why")
+    g.add_argument("--split-engine", type=_choice("a split-engine setting", S.SPLIT_MODES), metavar="auto|on|off",
+                   help="NVIDIA, two or more cards: the engine that splits every layer across the cards (faster answers). auto (the default) uses it by itself "
+                        "where it is supported and starts the normal layer split everywhere else; on asks for it and says in one line why it cannot run; "
+                        "off never uses it. Your choice is saved with the preset")
     g.add_argument("--speed", type=_choice("a speed", S.SPEED_MODES), metavar="faster|full",
                    help="DeepSeek: faster uses 5 of 6 experts per word (a small quality change, usually not noticeable; the default on a PC with 16 GB "
-                        "of graphics memory or less), full uses all 6")
+                        "of graphics memory or less, and on a single Radeon RX 9000 / AI PRO R9700 card, or several that hold half of the experts), full uses all 6")
     g.add_argument("--full-quality", action="store_true", help="DeepSeek: all 6 experts per word (the same as --speed full), for scripts")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
+    g.add_argument("--backend", metavar="nvidia|amd|intel|auto",
+                   help="which make of graphics card the engine uses on a PC that has cards of more than one make (default: auto = NVIDIA first, "
+                        "then AMD, then Intel). Your choice is remembered for the next launch, update and app; 'auto' forgets it")
     g.add_argument("--gpu-roles", metavar="LIST", help="a role for each graphics card: main, helper or off, e.g. 1=main,0=helper (cards you do not name are off). "
                    "Main does the last steps of every answer; a helper holds part of the model")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
@@ -241,6 +248,8 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.mtp = a.mtp
     if a.drafting:
         s.drafting = a.drafting
+    if getattr(a, "split_engine", None):
+        s.split_engine = a.split_engine
     if getattr(a, "full_quality", False):
         if getattr(a, "speed", None) == "faster":
             notices.append(S.Notice("warn", "--full-quality and --speed faster were both given; full quality is used.", ""))
@@ -318,6 +327,48 @@ def _placement_lines(placement: dict | None) -> None:
             _say("      " + w)
 
 
+def _parallel_word(plan: dict, s: S.LaunchSettings) -> str:
+    """The plan's parallel word: DeepSeek is one at a time unless --parallel 2 to 8; other models fit to the card unless a number was given."""
+    if plan.get("placement"):
+        k = (plan.get("parallel") or {}).get("conversations")
+        return f"{k} conversations at the same time" if k else "one at a time"
+    return str(s.parallel or "fit to your card")
+
+
+def _parallel_lines(info: dict | None) -> None:
+    """DeepSeek `--parallel N` in --plan: what it does, in plain words with the measured numbers (only when it was asked for)."""
+    if not info or not info.get("conversations"):
+        return
+    import textwrap
+    _say("  parallel")
+    for line in info.get("lines") or []:
+        wrapped = textwrap.wrap(line, 94) or [""]
+        _say("    - " + wrapped[0])
+        for w in wrapped[1:]:
+            _say("      " + w)
+
+
+def _broken_nvidia_note(comp) -> str | None:
+    """A PC with an NVIDIA card whose driver does not answer (nvidia-smi fails: a driver and library out of step after an update) and working
+    Intel Arc cards: the engine choice says NVIDIA (the card is there), so the launch would try the NVIDIA engine and fail. Say what is wrong and
+    the one next step. Warn only."""
+    try:
+        from strata_control import engine_component as ec
+        backend, how = ec.detect_backend()
+        if backend != "cuda" or how in ("environment", "saved choice"):
+            return None
+        if any(str(c.get("vendor")) == "nvidia" for c in comp.gpus) or "cuda" not in ec.gpu_makes_present():
+            return None
+        arc = [c for c in comp.gpus if str(c.get("vendor")) == "intel"]
+        if not arc:
+            return None
+    except Exception:                                    # noqa: BLE001 - a hint only
+        return None
+    return ("This PC has an NVIDIA card, but its driver does not answer (nvidia-smi fails), so the NVIDIA engine cannot start. "
+            f"The Intel Arc card{'s' if len(arc) > 1 else ''} here work: add --backend intel to use {'them' if len(arc) > 1 else 'it'} "
+            "(it is remembered), or repair the NVIDIA driver.")
+
+
 def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list[S.Notice]]:
     """Fill what was left open with the recommendation for this computer, and collect warnings (never errors for a bad fit)."""
     notices: list[S.Notice] = []
@@ -331,16 +382,40 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
         else:
             notices.append(S.Notice("error", "No model fits this computer by Strata's rules, and none was chosen.",
                                     "Name one with --model (strata launch --help lists them); a bigger one will run slowly."))
+    try:
+        from strata_control import engine_component as _ec
+        _b, _how = _ec.detect_backend()
+        if _how == "saved choice":
+            notices.append(S.Notice("warn", f"The engine for {_ec.MAKE_NAMES.get(_b, _b)} cards is used (your saved choice). "
+                                            "`strata launch --backend auto` goes back to the PC's own choice.", ""))
+    except Exception:                                    # noqa: BLE001
+        pass
+    broken = _broken_nvidia_note(comp)
+    if broken:
+        notices.append(S.Notice("warn", broken, ""))
     if s.family and s.model:
         if s.context is None:
             s.context = catalog.max_context(s.family, s.model, hw)
+        from strata_control import gpu_fit as _gf
+        _q4 = _gf.strix_q4_stall_note(s.model, comp.gpus)       # REMOVE with the Strix stall fix (gpu_fit.STRIX_Q4_NOTE)
+        if _q4:
+            notices.append(S.Notice("warn", _q4, ""))
         rows = [r for r in catalog.rows(hw) if r.family == s.family and r.model == s.model]
         if rows:
             r = rows[0]
+            if s.model_path and s.family == "deepseek41" and r.words == "tight: needs more disk space":
+                # (the person's own files stay where they are: no download, so the free disk space of Strata's folder is not the question)
+                try:
+                    r.verdict, r.words = catalog.own_files_verdict(hw, s.model)
+                except Exception:                                # noqa: BLE001 - keep the menu row's words when the memory words cannot be read
+                    pass
             if r.verdict == "no":
                 notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
+            elif r.verdict == "tight" and s.model_path and "disk space" in r.words:
+                pass                                         # the files are already here ("used where they are"): there is no download to make room for
             elif r.verdict == "tight":
-                notices.append(S.Notice("warn", f"{r.title} is a tight fit: {r.words}.", "Close other programs before you start."))
+                words = r.words[len("tight:"):].strip() if r.words.startswith("tight:") else r.words
+                notices.append(S.Notice("warn", f"{r.title} is a tight fit: {words}.", "Close other programs before you start."))
             if s.vision not in (None, "off") and not r.images:
                 notices.append(S.Notice("warn", f"{r.title} cannot read pictures yet, so pictures are off.", ""))
                 s.vision = "off"
@@ -349,10 +424,9 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                 if s.vision == "off" and r.images and catalog.reader_state() == "missing":
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
-        if catalog.strata.multi_family(s.family):           # DeepSeek-V4.1-Flash: one request at a time, no tuning
-            if s.parallel and s.parallel > 1:
-                notices.append(S.Notice("warn", f"{s.model} answers one request at a time in this Strata version, so --parallel {s.parallel} is not used.", ""))
-                s.parallel = None
+        if catalog.strata.multi_family(s.family):           # DeepSeek-V4.1-Flash: one request at a time unless --parallel N, no tuning
+            if s.parallel and s.parallel > 1:               # off by default; asked for: passed on, with what it does and what was run (never refused)
+                notices += parallel_notices(s, comp)
             # pictures: on unless the person chose off - the engine reads them with its own vision tower, no separate reader
             s.vision = "off" if s.vision == "off" else "on"   # (tuning is DeepSeek's own short tune: tools/dsv41/tune.py, run by the launch)
         elif s.speed:
@@ -369,30 +443,57 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                                     "A different one: add --new-key. Show it with: strata launch --show-key"))
         else:
             notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
-                                    "It is saved with the preset; show it with: strata launch --show-key"))
+                                    "It is saved with the preset; show it with: strata launch --show-key", after_write=True))
     notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
-    notices += S.check_parallel(s, vram_gb=vram)
+    if not (s.family and catalog.strata.multi_family(s.family)):     # (DeepSeek's own words are parallel_notices above: Qwen's card table does not apply)
+        notices += S.check_parallel(s, vram_gb=vram)
     return s, notices
 
 
+def _host_platform() -> tuple[str, str]:
+    """(sys.platform, sysinfo.machine()) of this computer, in one place the tests can replace."""
+    from strata_control import sysinfo
+    return sys.platform, sysinfo.machine()
+
+
+def parallel_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
+    """DeepSeek `--parallel N` asked for: a warning for each way this pick goes beyond what was run (strata_control/dsv41_parallel.py), never a refusal.
+    The explanation itself is in `--plan` (and the engine prints the memory it took)."""
+    from strata_control import dsv41_fit, dsv41_parallel
+    try:
+        cards = dsv41_fit.run_cards(comp.usable_gpus, comp.engine_vendor, named=bool(s.gpus or s.gpu_roles))[0]
+    except Exception:                                        # noqa: BLE001 - the notes must never stop a launch
+        cards = list(getattr(comp, "usable_gpus", None) or [])
+    if s.gpus:
+        cards = [c for c in cards if int(c.get("index", -1)) in {int(g) for g in s.gpus}] or cards
+    return [S.Notice("warn", what, todo) for what, todo in dsv41_parallel.warnings(
+        s.parallel, cards=cards, context=s.context, os_name=_host_platform()[0], machine=_host_platform()[1], vendor=comp.engine_vendor)]
+
+
 def roles_line(s: S.LaunchSettings, catalog) -> str | None:
-    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None."""
+    """`Main: GPU 2 (--gpu 1) RTX 4070 Ti. Helper: GPU 1 (--gpu 0) RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None. "GPU n"
+    counts from 1 like the screens; the bracket is the number --gpu takes (the server sets the engine's CUDA_VISIBLE_DEVICES from it, so it is the nvidia-smi number whatever the
+    environment says), and a card that CUDA_VISIBLE_DEVICES (AMD: ROCR_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES) hides is not listed unless it is named."""
     if not (s.gpu_roles or s.gpus) or catalog is None:
         return None
     try:
         from strata_control import gpu_roles
         comp = catalog.computer()
-        cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+        keep = {int(g) for g in (s.gpus or [])} | {int(k) for k in (s.gpu_roles or {})}
+        cards = gpu_roles.visible_cards(gpu_roles.rows(comp.gpus, comp.engine_vendor), comp.engine_vendor, keep=keep)
         if s.gpu_roles:
             named = {int(k): v for k, v in s.gpu_roles.items()}
             roles = gpu_roles.normalize({int(c.get("index", 0)): named.get(int(c.get("index", 0)), "off") for c in cards}, cards)
         else:
             roles = gpu_roles.from_legacy(list(s.gpus), cards)
-        return gpu_roles.describe(roles, cards)
+        return gpu_roles.describe(roles, cards, card_numbers=True)
     except Exception:                                        # noqa: BLE001 - a summary line must never stop a launch
         return None
+
+
+DEEPSEEK_RX7000_NOTE = "DeepSeek has not been tested on RX 7000 cards yet; please report how it runs."
 
 
 def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
@@ -430,6 +531,8 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
     new_card = comp.new_card_note
     if new_card:
         out.append(S.Notice("warn", new_card[0], new_card[1]))
+    if s.family == "deepseek41" and comp.rx7000_card:
+        out.append(S.Notice("warn", DEEPSEEK_RX7000_NOTE, "If something fails, tell us at https://github.com/Niko1221/Strata/issues (attach the engine log)."))
     return out
 
 
@@ -492,7 +595,7 @@ def _stop_all(name: str | None) -> int:
     from strata_cli.launch import access, store
     from strata_control import profiles, runtime
     targets = [name] if name else [p["id"] for p in profiles.list_profiles() if p["id"].startswith("launch-")]
-    stopped = 0
+    stopped = failed = 0
     for prof in targets:
         prof = prof if prof.startswith("launch-") else "launch-" + S.slug(prof)
         st = runtime.status(prof)
@@ -500,12 +603,11 @@ def _stop_all(name: str | None) -> int:
             r = runtime.stop(prof, timeout=180)
             _say(f"Stopped {prof[7:]}." if r.get("ok") else f"Could not stop {prof[7:]}: {r.get('error') or r.get('state')}.")
             stopped += 1 if r.get("ok") else 0
+            failed += 0 if r.get("ok") else 1
         access.stop_tunnel(prof)
-    if not stopped and not targets:
+    if not stopped and not failed:                           # zero targets only: a failed stop already said so and must not be followed by "nothing"
         _say("Nothing from `strata launch` is running.")
-    elif not stopped:
-        _say("Nothing from `strata launch` is running.")
-    return 0
+    return 1 if failed else 0                                # any failed stop is a nonzero exit, also when another one succeeded
 
 
 def _can_ask() -> bool:
@@ -612,11 +714,12 @@ def running_launches() -> list[dict]:
             continue
         if st.get("state") not in ("ready", "starting"):
             continue
+        prof: dict = {}                                        # bound before the try: a damaged profile gets this row's defaults, never the row before it
         try:
             prof, _rev = profiles.load(p["id"])
             ov = prof.get("overrides") or {}
         except Exception:                                      # noqa: BLE001
-            ov = {}
+            prof, ov = {}, {}
         port = ov.get("port", S.DEFAULT_PORT)
         out.append({"name": p["id"][7:], "profile": p["id"], "state": st.get("state"), "port": port,
                     "url": f"http://127.0.0.1:{port}", "host": ov.get("host", "127.0.0.1"), "config": prof.get("source_config")})
@@ -744,6 +847,27 @@ def run_launch(a: argparse.Namespace) -> int:
                     return fail(f"No model set up by setup.py matches '{a.model}' and has an API key, and no launch is running.", 5)
             return fail("There is no API key for that launch." + ("" if a.preset else " Name a preset with --preset NAME, or a model set up by setup.py with --model NAME."), 5)
 
+        backend_note = None
+        if getattr(a, "backend", None):
+            from strata_control import engine_component as _ec
+            word = str(a.backend).strip().lower()
+            if word in ("auto", "default", "none"):
+                if not a.plan:
+                    _ec.save_backend(None)
+                os.environ.pop(_ec.ENV_BACKEND, None)
+                backend_note = "The engine make is chosen by the PC again (NVIDIA first, then AMD, then Intel)." if not a.plan else None
+            else:
+                family = _ec.clean_backend_name(word)
+                if not family:
+                    return fail(f"'{a.backend}' is not a make of graphics card Strata knows. Use nvidia, amd, intel or auto.", 2)
+                os.environ[_ec.ENV_BACKEND] = family          # this launch and everything it starts
+                made = _ec.MAKE_NAMES[family]
+                if a.plan:
+                    backend_note = f"With --backend {word} the engine for {made} cards is used. Nothing is remembered by --plan."
+                else:
+                    _ec.save_backend(family)
+                    backend_note = (f"The engine for {made} cards is used, now and next time. "
+                                    "`strata launch --backend auto` goes back to the PC's own choice.")
         try:
             catalog = Catalog()
         except CatalogUnavailable as e:
@@ -751,9 +875,11 @@ def run_launch(a: argparse.Namespace) -> int:
             if a.model or a.model_path:
                 return fail(str(e), 5)
         s, notices = settings_from_args(a, catalog)
+        if backend_note:
+            notices.append(S.Notice("warn", backend_note, ""))
         if not machine:
             _interrupted_move_notice()
-        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "speed", None) or getattr(a, "full_quality", False))
+        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "split_engine", None) or getattr(a, "speed", None) or getattr(a, "full_quality", False))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
         no_screens_package = None
@@ -788,6 +914,9 @@ def run_launch(a: argparse.Namespace) -> int:
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         s, notes = apply_defaults(s, catalog)
         notes = [*notices, *notes]                           # what the flags themselves said (a --pool-cores list that could not be read, a key beside --no-api-key)
+        held = [n for n in notes if n.after_write]           # "A new API key was made": said when the run config holding it has been written, never in the plan or before a refusal
+        notes = [n for n in notes if not n.after_write]
+        runner.key_written_notice = held[0].line() if held else None
         errors = [n for n in notes if n.level == "error"]
         if errors:
             return fail(errors[0].line(), 2)
@@ -811,13 +940,14 @@ def run_launch(a: argparse.Namespace) -> int:
                     _say(f"  model     {m.get('title') or 'your model files'}{size}   (your files in {s.model_path})")
                 else:
                     _say(f"  model     {m.get('title') or f'{s.family} {s.model}'}{size}")
-                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {('one at a time' if plan.get('placement') else s.parallel or 'fit to your card')}")
+                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {_parallel_word(plan, s)}")
                 _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 if plan.get("drafting"):
                     _say(f"  drafting  {plan['drafting'].replace('Drafting: ', '', 1)}")
                 if plan.get("speed"):
                     _say(f"  speed     {plan['speed'].replace('Speed: ', '', 1)}")
                 _placement_lines(plan.get("placement"))
+                _parallel_lines(plan.get("parallel"))
                 _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
@@ -831,6 +961,8 @@ def run_launch(a: argparse.Namespace) -> int:
         for n in notes:
             if not machine:
                 _say(f"[!] {n.line()}")
+        if not machine and runner.multi_file() and s.parallel and s.parallel > 1:
+            _parallel_lines(runner.parallel_plan())          # at launch too: what it does and the numbers (the plan says the same)
         if not machine:
             line = roles_line(s, catalog)
             if line:
@@ -854,6 +986,15 @@ def run_launch(a: argparse.Namespace) -> int:
         try:
             result = runner.run()
         except LaunchError as e:
+            if a.save_preset and runner.config_path is not None:
+                # the choices were written and may have been tuned (a measuring that takes up to two hours): a start that fails afterwards keeps the
+                # launch preset the person asked for, so `strata launch --preset NAME` starts it again without the tuning (#4824)
+                try:
+                    saved = store.save(s, s.name)
+                    if not machine:
+                        _say(f"Your choices were saved as the launch preset {saved.name}; start it again with `strata launch --preset {saved.name}`.")
+                except Exception:                            # noqa: BLE001 - saving is a convenience; the start error below is the news
+                    pass
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         if a.save_preset:
             saved = store.save(s, s.name)
@@ -871,7 +1012,7 @@ def run_launch(a: argparse.Namespace) -> int:
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "name": s.name, "profile": result.profile, "urls": result.urls, "reused": result.reused,
                               "api_key": "set" if result.key else None, "tuned": result.tune_word,
-                              "notices": result.notices + [n.line() for n in notes]}))
+                              "notices": result.notices + [n.line() for n in notes] + ([runner.key_written_notice] if runner.key_written_notice and runner.key_written else [])}))
             return 0
         _say("")
         _say("Already serving these choices; nothing was restarted." if result.reused else "Strata is serving.")
