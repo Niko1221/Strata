@@ -4964,7 +4964,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         // STRATA_ROUTE_DUMP=<file> (bench only, off by default): one text line per layer-window, "layer n_tok nd nmiss | e:rows:res ..." in routing
         // order (res 1 = resident in the GPU cache, 0 = a miss the CPU computes unless the PCIe share takes it, 2 = tail-skipped), for replaying placement
         // policies offline on the routing the engine really produced (round 0216 P3.1).
-        static std::FILE* const route_dump = [] { const char* f = std::getenv("STRATA_ROUTE_DUMP"); return f != nullptr && f[0] != ' ' ? std::fopen(f, "a") : nullptr; }();
+        static std::FILE* const route_dump = [] { const char* f = std::getenv("STRATA_ROUTE_DUMP"); return f != nullptr && f[0] != '\0' ? std::fopen(f, "a") : nullptr; }();
         if (route_dump != nullptr) {
             std::fprintf(route_dump, "%lld %lld %d %d |", (long long) d.layers, (long long) n_tok, nd, nmiss);
             for (int q = 0; q < nd; ++q) {
