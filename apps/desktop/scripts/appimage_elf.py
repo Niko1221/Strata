@@ -11,6 +11,10 @@ apps/desktop/scripts/repack-appimage.sh puts the staged bytes back; this file is
     appimage_elf.py scan <folder>                      every static PIE under <folder> must have a sound .dynamic (exit 1 if not)
     appimage_elf.py compare <staged-folder> <folder>   the same files, byte for byte, plus what differs in their ELF headers
 
+What is checked: only static PIE programs. A shared library (.so, Python's and Node's native modules, Pillow, numpy, sharp) is not one, however it is
+named: it has no entry point, or a DT_SONAME and no DF_1_PIE flag, and its RPATH/RUNPATH is normal. A static PIE is an ET_DYN with no interpreter, an entry
+point, and DF_1_PIE in DT_FLAGS_1; one whose .dynamic cannot be read at all (overwritten) is reported as damaged, since the overwrite takes the flags too.
+
 Standard library only; reads ELF64 little endian (x86-64 and arm64), anything else is ignored.
 """
 import os
@@ -19,7 +23,8 @@ import sys
 
 ET_DYN = 3
 PT_LOAD, PT_DYNAMIC, PT_INTERP = 1, 2, 3
-DT_NULL, DT_NEEDED, DT_RELA, DT_RELASZ, DT_RELAENT, DT_RPATH, DT_RUNPATH = 0, 1, 7, 8, 9, 15, 29
+DT_NULL, DT_NEEDED, DT_RELA, DT_RELASZ, DT_RELAENT, DT_SONAME, DT_RPATH, DT_RUNPATH = 0, 1, 7, 8, 9, 14, 15, 29
+DT_FLAGS_1, DF_1_PIE = 0x6FFFFFFB, 0x08000000
 FILLERS = (0x5A, 0x58)           # 'Z' (what the reports found) and 'X' (what patchelf documents)
 RUN = 128                        # that many equal filler bytes in a row is not code or data
 
@@ -34,20 +39,43 @@ def read_elf(data):
     if len(data) < 64 or data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
         return None
     e_type = struct.unpack_from("<H", data, 16)[0]
+    e_entry = struct.unpack_from("<Q", data, 0x18)[0]
     phoff = struct.unpack_from("<Q", data, 0x20)[0]
     phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
     if phentsize < 56 or phoff + phentsize * phnum > len(data):
-        return {"type": e_type, "phdrs": [], "broken": "the program header table is outside the file"}
+        return {"type": e_type, "entry": e_entry, "phdrs": [], "broken": "the program header table is outside the file"}
     phdrs = []
     for i in range(phnum):
         p_type, flags, off, vaddr, _paddr, filesz, memsz, align = struct.unpack_from("<IIQQQQQQ", data, phoff + i * phentsize)
         phdrs.append({"type": p_type, "flags": flags, "off": off, "vaddr": vaddr, "filesz": filesz, "memsz": memsz, "align": align})
-    return {"type": e_type, "phdrs": phdrs, "broken": None}
+    return {"type": e_type, "entry": e_entry, "phdrs": phdrs, "broken": None}
+
+
+def is_pie_candidate(info):
+    """An ET_DYN with no interpreter, a dynamic segment and an entry point: what a static PIE looks like from outside the dynamic section.
+    A shared library normally has no entry point (e_entry 0) and is not a candidate; the few that do (the C library itself, the dynamic loader)
+    have a readable dynamic section and are told apart by it (static_pie_kind). The test uses nothing the damage we look for can erase."""
+    return bool(info) and info["type"] == ET_DYN and not info["broken"] and info.get("entry", 0) != 0         and not any(p["type"] == PT_INTERP for p in info["phdrs"]) and any(p["type"] == PT_DYNAMIC for p in info["phdrs"])
+
+
+def static_pie_kind(data, info):
+    """'static-pie' for a sound static PIE (DT_FLAGS_1 has DF_1_PIE, no DT_SONAME), 'damaged' for a candidate whose dynamic section cannot be read
+    (a static PIE with an overwritten .dynamic loses its flags with it, so unreadable is treated as damaged), None for everything else:
+    shared libraries, which carry a DT_SONAME and no DF_1_PIE, and programs that are not static PIEs."""
+    if not is_pie_candidate(info):
+        return None
+    entries, why = dynamic_entries(data, info)
+    if why or any(not _known_tag(t) for t, _ in entries):
+        return "damaged"
+    tags = {t: v for t, v in entries}
+    if DT_SONAME in tags:
+        return None
+    return "static-pie" if tags.get(DT_FLAGS_1, 0) & DF_1_PIE else None
 
 
 def is_static_pie(info):
-    return bool(info) and info["type"] == ET_DYN and not info["broken"] and not any(p["type"] == PT_INTERP for p in info["phdrs"]) \
-        and any(p["type"] == PT_DYNAMIC for p in info["phdrs"])
+    """Kept for callers: a candidate. check_static_pie decides with static_pie_kind."""
+    return is_pie_candidate(info)
 
 
 def _mapped(info, vaddr, size):
@@ -85,7 +113,7 @@ def _longest_filler(data, start, end):
 def check_static_pie(data):
     """The problems of one file (a list of sentences); empty for a sound static PIE and for anything that is not one."""
     info = read_elf(data)
-    if not is_static_pie(info):
+    if static_pie_kind(data, info) is None:
         return []
     problems = []
     seg = next(p for p in info["phdrs"] if p["type"] == PT_DYNAMIC)
@@ -123,7 +151,7 @@ def elf_differences(staged, packaged):
     ta, tb = [p["type"] for p in a["phdrs"]], [p["type"] for p in b["phdrs"]]
     if ta != tb:
         out.append(f"program headers {len(ta)} -> {len(tb)} ({ta.count(PT_LOAD)} -> {tb.count(PT_LOAD)} loaded segments)")
-    if is_static_pie(a) and is_static_pie(b):
+    if is_pie_candidate(a) and is_pie_candidate(b):
         da, _ = dynamic_entries(staged, a)
         db, _ = dynamic_entries(packaged, b)
         if da != db:

@@ -23,11 +23,11 @@ sys.path.insert(0, str(ROOT / "apps" / "desktop" / "scripts"))
 import appimage_elf as E  # noqa: E402
 
 
-def make_static_pie(*, extra_tags=(), rela=True, garbage=False, filler=False, interp=False, loads=2) -> bytes:
+def make_static_pie(*, extra_tags=(), rela=True, garbage=False, filler=False, interp=False, loads=2, pie=True, entry=0x1000) -> bytes:
     """A small ELF64 ET_DYN: PT_LOADs, a PT_DYNAMIC inside the last one, optionally a PT_INTERP. Not runnable, only well formed."""
     page = 0x1000
     dyn = [(E.DT_RELA, 0x1100), (E.DT_RELASZ, 48), (E.DT_RELAENT, 24)] if rela else []
-    dyn += list(extra_tags) + [(E.DT_NULL, 0)]
+    dyn += ([(E.DT_FLAGS_1, E.DF_1_PIE)] if pie else []) + list(extra_tags) + [(E.DT_NULL, 0)]
     dyn_bytes = b"".join(struct.pack("<qQ", t, v) for t, v in dyn)
     if garbage:
         dyn_bytes = b"Z" * len(dyn_bytes)
@@ -50,7 +50,7 @@ def make_static_pie(*, extra_tags=(), rela=True, garbage=False, filler=False, in
     head = bytearray(64)
     head[:4] = b"\x7fELF"
     head[4], head[5], head[6] = 2, 1, 1
-    struct.pack_into("<HHIQQQIHHHHHH", head, 16, E.ET_DYN, 62, 1, 0x1000, 64, 0, 0, 64, 56, len(phdr), 64, 0, 0)
+    struct.pack_into("<HHIQQQIHHHHHH", head, 16, E.ET_DYN, 62, 1, entry, 64, 0, 0, 64, 56, len(phdr), 64, 0, 0)
     out = bytearray(head)
     for p_type, flags, off, vaddr, filesz, memsz, align in phdr:
         out += struct.pack("<IIQQQQQQ", p_type, flags, off, vaddr, vaddr, filesz, memsz, align)
@@ -94,6 +94,41 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(E.check_static_pie(b"\x7fELF" + b"\x01" * 60), [], "32-bit")
         self.assertEqual(E.check_static_pie(b""), [])
         self.assertEqual(E.check_static_pie(b"\x7fELF\x02\x01" + b"\x00" * 100), [], "no program headers: nothing to check")
+
+    def test_a_shared_library_with_no_interpreter_passes_however_it_is_named(self):
+        """Pillow, numpy and sharp ship .so files with an RUNPATH of $ORIGIN, no PT_INTERP and (usually) no entry point: they were flagged as static PIEs."""
+        sonames = [(E.DT_SONAME, 1), (E.DT_RUNPATH, 2)]
+        for lib in (make_static_pie(entry=0, pie=False, extra_tags=sonames),            # the common case: no entry point
+                    make_static_pie(entry=0, pie=False, extra_tags=[(E.DT_RUNPATH, 2)]),  # no SONAME either (a Node .node module)
+                    make_static_pie(entry=0x1000, pie=False, extra_tags=sonames),         # an entry point (libc, ld.so style) but a SONAME and no PIE flag
+                    make_static_pie(entry=0x1000, pie=True, extra_tags=sonames),          # even a stray PIE flag: a SONAME makes it a library
+                    make_static_pie(entry=0, pie=False, garbage=True)):                   # a library with a damaged dynamic section is not this checker's business
+            self.assertEqual(E.check_static_pie(lib), [])
+        self.assertEqual(E.static_pie_kind(make_static_pie(entry=0, pie=False, extra_tags=sonames), E.read_elf(make_static_pie(entry=0, pie=False, extra_tags=sonames))), None)
+
+    def test_a_static_pie_is_told_from_a_library_and_a_damaged_one_is_found(self):
+        good = make_static_pie()
+        self.assertEqual(E.static_pie_kind(good, E.read_elf(good)), "static-pie")
+        self.assertEqual(E.check_static_pie(good), [])
+        bad = make_static_pie(garbage=True)
+        self.assertEqual(E.static_pie_kind(bad, E.read_elf(bad)), "damaged")
+        self.assertTrue(E.check_static_pie(bad))
+        # linuxdeploy's own edit: the section survives (moved) with a RUNPATH added; it is still a static PIE and the RUNPATH gives it away
+        rp = make_static_pie(extra_tags=[(E.DT_RUNPATH, 1)])
+        self.assertEqual(E.static_pie_kind(rp, E.read_elf(rp)), "static-pie")
+        self.assertTrue(any("RPATH or RUNPATH" in p for p in E.check_static_pie(rp)))
+        # no entry point, no PIE flag, not a static PIE: left alone
+        self.assertEqual(E.check_static_pie(make_static_pie(pie=False)), [], "a sound dynamic section with no PIE flag and no SONAME is not a static PIE")
+
+    def test_a_folder_of_libraries_and_one_static_pie(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for i in range(5):
+                Path(tmp, f"lib{i}.so.1").write_bytes(make_static_pie(entry=0, pie=False, extra_tags=[(E.DT_SONAME, 1), (E.DT_RUNPATH, 2)]))
+            Path(tmp, "something.node").write_bytes(make_static_pie(entry=0, pie=False, extra_tags=[(E.DT_RUNPATH, 2)]))
+            Path(tmp, "rg").write_bytes(make_static_pie())
+            self.assertEqual(E.scan(tmp), {}, "no name rules: only the static PIE is looked at, and it is sound")
+            Path(tmp, "rg").write_bytes(make_static_pie(garbage=True))
+            self.assertEqual(list(E.scan(tmp)), ["rg"])
 
     def test_a_truncated_file_is_a_report_not_a_crash(self):
         data = make_static_pie()
@@ -164,6 +199,20 @@ class RealStaticPie(unittest.TestCase):
         self.assertEqual(out.returncode, 0)
         self.assertIn("ok alphabetagamma", out.stdout)
         self.assertEqual(E.check_static_pie(self.good.read_bytes()), [])
+
+    def test_a_real_shared_library_with_a_runpath_passes(self):
+        src = Path(self.tmp, "lib.c")
+        src.write_text("int answer(void) { return 42; }" + chr(10))
+        lib = Path(self.tmp, "libanswer.so.1")
+        built = subprocess.run(["gcc", "-shared", "-fPIC", "-O2", "-Wl,-soname,libanswer.so.1", "-Wl,-rpath,$ORIGIN", str(src), "-o", str(lib)], capture_output=True)
+        if built.returncode != 0:
+            self.skipTest("this gcc cannot build a shared library")
+        data = lib.read_bytes()
+        self.assertEqual(E.check_static_pie(data), [], "a real library with RUNPATH $ORIGIN and no interpreter is not a static PIE")
+        self.assertEqual(E.static_pie_kind(data, E.read_elf(data)), None)
+        # and the real static PIE of this class is still told apart and still found when damaged
+        good = self.good.read_bytes()
+        self.assertEqual(E.static_pie_kind(good, E.read_elf(good)), "static-pie")
 
     def test_a_filled_dynamic_section_does_not_start_and_is_found(self):
         data = bytearray(self.good.read_bytes())
