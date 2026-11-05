@@ -9637,7 +9637,7 @@ def mac_prepare_lock(native: Path) -> Path:
     running = mac_engine_pids()
     if running:
         fail(f"a Strata engine is running (pid {running[0]}): preparing a model beside it can freeze this Mac",
-             "stop the server (close its window), then run ./setup.sh --setup again")
+             "stop the model in Strata (unload it), then install again")
     native.parent.mkdir(parents=True, exist_ok=True)
     lock = native.parent / MAC_PREPARE_LOCK
     lock.write_text(str(os.getpid()))
