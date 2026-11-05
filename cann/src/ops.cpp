@@ -1,4 +1,4 @@
-﻿#include "strata/cann/ops.hpp"
+#include "strata/cann/ops.hpp"
 
 #include <aclnn/acl_meta.h>
 #include <aclnnop/aclnn_add.h>
@@ -64,6 +64,12 @@ aclTensor * make_tensor(const Tensor & t, int64_t rows, int64_t cols, int64_t of
     int64_t shape[2] = { rows, cols };
     int64_t stride[2] = { cols, 1 };
     return aclCreateTensor(shape, 2, to_acl(t.dtype), stride, offset_elems, ACL_FORMAT_ND, shape, 2, t.data);
+}
+
+aclTensor * make_tensor3(const Tensor & t, int64_t rows, int64_t cols, int64_t batch, int64_t offset_elems = 0) {
+    int64_t shape[3] = { batch, rows, cols };
+    int64_t stride[3] = { rows * cols, cols, 1 };
+    return aclCreateTensor(shape, 3, to_acl(t.dtype), stride, offset_elems, ACL_FORMAT_ND, shape, 3, t.data);
 }
 
 struct Exec {
@@ -200,6 +206,65 @@ void matmul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
             return aclnnMatmul(ws, ws_size, ex, s);
         },
         "aclnnMatmul");
+    aclDestroyTensor(ta);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tc);
+}
+
+// ---- batched forms, one call for a whole head batch ----
+
+void bmm(Stream & stream, const Tensor & a, const Tensor & c, Tensor & out) {
+    const int64_t m = a.ne1, k = a.ne0, n = c.ne0, b = out.ne2;
+    if (c.ne1 != k || out.ne1 != m || out.ne0 != n || a.ne2 != b || c.ne2 != b) {
+        throw Error("cann: bmm shape mismatch (a is [B,m,k], b is [B,k,n], out is [B,m,n])", -1);
+    }
+    aclTensor * ta = make_tensor3(a, m, k, b);
+    aclTensor * tb = make_tensor3(c, k, n, b);
+    aclTensor * tc = make_tensor3(out, m, n, b);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMatmulGetWorkspaceSize(ta, tb, tc, 0, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnMatmul(ws, ws_size, ex, s);
+        },
+        "aclnnMatmul(batched)");
+    aclDestroyTensor(ta);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tc);
+}
+
+void mul_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
+    aclTensor * ta = make_tensor3(a, a.ne1, a.ne0, a.ne2);
+    aclTensor * tb = make_tensor3(b, b.ne1, b.ne0, b.ne2);
+    aclTensor * tc = make_tensor3(out, out.ne1, out.ne0, out.ne2);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMulGetWorkspaceSize(ta, tb, tc, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnMul(ws, ws_size, ex, s);
+        },
+        "aclnnMul(batched)");
+    aclDestroyTensor(ta);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tc);
+}
+
+void add_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
+    aclTensor * ta = make_tensor3(a, a.ne1, a.ne0, a.ne2);
+    aclTensor * tb = make_tensor3(b, b.ne1, b.ne0, b.ne2);
+    aclTensor * tc = make_tensor3(out, out.ne1, out.ne0, out.ne2);
+    float alpha_value = 1.0f;
+    aclScalar * alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) {
+            return aclnnAddGetWorkspaceSize(ta, tb, alpha, tc, ws, ex);
+        },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnAdd(ws, ws_size, ex, s);
+        },
+        "aclnnAdd(batched)");
+    aclDestroyScalar(alpha);
     aclDestroyTensor(ta);
     aclDestroyTensor(tb);
     aclDestroyTensor(tc);

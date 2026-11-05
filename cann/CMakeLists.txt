@@ -1,4 +1,4 @@
-﻿# Strata on Ascend - the CANN device layer and the first ops (P1), quant formats (P2).
+# Strata on Ascend - the CANN device layer and the first ops (P1), quant formats (P2).
 #
 # A separate project, like sycl/ and metal/: the CUDA engine in ../src is not compiled here yet.
 # This target is the layer the port grows on: device, stream, HBM buffers, the aclnn ops with a
@@ -40,6 +40,8 @@ target_include_directories(strata_cann PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inclu
 target_link_libraries(strata_cann PUBLIC ${ASCENDCL_LIB} ${NNOPBASE_LIB} ${OPAPI_LIB} ${ACL_OP_COMPILER_LIB})
 
 add_executable(cann_parity tests/parity.cpp)
+add_executable(batched_parity tests/batched_parity.cpp)
+target_link_libraries(batched_parity PRIVATE strata_cann)
 add_executable(bench_op tests/bench_op.cpp)
 target_link_libraries(bench_op PRIVATE strata_cann)
 add_executable(model_seq tests/model_seq.cpp)

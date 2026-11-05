@@ -1,4 +1,4 @@
-﻿// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
+// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
 //
 // Every function takes FP16 operands on the device (the format the 910B Cube unit wants) and
 // has a matching `*_ref` CPU implementation in ops.cpp that the parity test compares against.
@@ -13,19 +13,28 @@ namespace strata::cann {
 
 enum class DType { F16, F32 };
 
-// A contiguous device tensor, at most 2D (the shapes the first ops need).
+// A contiguous device tensor. ne2 carries a batch dimension for the batched ops; the 2D ops
+// ignore it and the 3D ops require it.
 struct Tensor {
     void * data = nullptr;
     DType dtype = DType::F16;
     int64_t ne0 = 0; // columns (contiguous)
     int64_t ne1 = 1; // rows
+    int64_t ne2 = 1; // batch
 
-    int64_t elements() const { return ne0 * ne1; }
+    int64_t elements() const { return ne0 * ne1 * ne2; }
     size_t bytes() const { return (size_t) elements() * (dtype == DType::F16 ? 2 : 4); }
 };
 
 // out[M,N] = a[M,K] * b[K,N]
 void matmul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
+
+// batched: out[b,M,N] = a[b,M,K] * c[b,K,N], one call for the whole batch
+void bmm(Stream & stream, const Tensor & a, const Tensor & c, Tensor & out);
+
+// batched elementwise, broadcasting a [B,1,1] or [B,1,N] operand over [B,M,N]
+void mul_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
+void add_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 
 // out[row,:] = x[row,:] * rsqrt(mean(x[row,:]^2) + eps) * gamma
 void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double eps, Tensor & out);

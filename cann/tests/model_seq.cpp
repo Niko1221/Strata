@@ -1,4 +1,4 @@
-﻿// cann/tests/model_seq.cpp - the whole model over a token sequence.
+// cann/tests/model_seq.cpp - the whole model over a token sequence.
 //
 // model_forward.cpp proves one token matches llama.cpp. A real engine also has to carry state:
 // the recurrent layers keep a short-conv history and a 128x128 matrix per value head, and the
@@ -263,6 +263,8 @@ private:
         return *raw;
     }
 
+    // All 256 experts of all 40 layers are about 41 GB as fp16, so a budget above that lets a
+    // long generation keep everything resident and stop paying the upload. The card has 64 GB.
     static constexpr int64_t kBudget = 40LL << 30;
     const Gguf & g_;
     std::unordered_map<std::string, std::unique_ptr<Buffer>> full_;
