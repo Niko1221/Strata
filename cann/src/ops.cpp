@@ -14,6 +14,7 @@
 #include <acl/acl.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -82,6 +83,11 @@ struct Exec {
 void * g_ws = nullptr;
 size_t g_ws_size = 0;
 
+// Profiling: a single op measures 0.043 ms in isolation while a token takes seconds, so the cost
+// has to be attributed rather than guessed at.
+long long g_op_count = 0;
+double g_op_seconds = 0.0;
+
 void ensure_workspace(size_t need) {
     if (need <= g_ws_size) {
         return;
@@ -107,15 +113,32 @@ void execute(Stream & stream, GetWs get_ws, Launch launch, const char * what) {
     check_status(get_ws(&ws_size, &exec), what);
     ensure_workspace((size_t) ws_size);
     void * ws = ws_size > 0 ? g_ws : nullptr;
+    const auto op_t0 = std::chrono::steady_clock::now();
     check_status(launch(ws, ws_size, exec, (aclrtStream) stream.handle()), what);
     // Keep this: host uploads go through aclrtMemcpy, which is not ordered against queued kernels,
     // so without a sync per op a later upload can overwrite a buffer an earlier kernel still reads.
-    stream.synchronize();
+    // STRATA_CANN_NO_SYNC exists only to measure what the sync costs; it is not safe for real runs.
+    static const bool no_sync = getenv("STRATA_CANN_NO_SYNC") != nullptr;
+    if (!no_sync) {
+        stream.synchronize();
+    }
+    g_op_count += 1;
+    g_op_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - op_t0).count();
 }
 
 } // namespace
 
+// Profiling counters, printed when the workspace is released. This exists because a single op
+// measures 0.043 ms in isolation while a token takes seconds, so the cost has to be attributed.
+void print_op_stats() {
+    if (g_op_count > 0) {
+        printf("ops: %lld calls, %.3f s total, %.3f ms each\n", g_op_count, g_op_seconds,
+               1000.0 * g_op_seconds / (double) g_op_count);
+    }
+}
+
 void release_workspace() {
+    print_op_stats();
     if (g_ws) {
         aclrtFree(g_ws);
         g_ws = nullptr;

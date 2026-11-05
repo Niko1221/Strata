@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <thread>
 #include <unordered_map>
 #include <memory>
 #include <string>
@@ -111,6 +112,48 @@ std::vector<float> expert_slab(const Gguf & g, const GgufTensor & t, int expert,
     return out;
 }
 
+// Dequantization is the real host cost: a fresh expert slab is a few megabytes and the decoder is
+// a scalar loop, so one token spent seconds in it. The formats are blockwise, so the work splits
+// cleanly across threads by block range.
+std::vector<float> dequantize_threaded(int type, const uint8_t * src, int64_t n) {
+    std::vector<float> out((size_t) n);
+    const int block_elems = quant_block_elements(type);
+    const int block_bytes = quant_type_size(type);
+    if (block_elems <= 0 || block_bytes <= 0 || n % block_elems != 0) {
+        if (!dequantize(type, src, out.data(), n)) {
+            throw std::runtime_error("model: dequantize failed");
+        }
+        return out;
+    }
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw == 0) {
+        hw = 4;
+    }
+    const int64_t n_threads = std::min<int64_t>((int64_t) hw, std::max<int64_t>(1, n / block_elems));
+    if (n_threads <= 1) {
+        dequantize(type, src, out.data(), n);
+        return out;
+    }
+    const int64_t per = (n / n_threads / block_elems) * block_elems;
+    std::vector<std::thread> workers;
+    workers.reserve((size_t) n_threads);
+    for (int64_t i = 0; i < n_threads; ++i) {
+        const int64_t begin = i * per;
+        const int64_t end = (i == n_threads - 1) ? n : begin + per;
+        if (begin >= end) {
+            break;
+        }
+        workers.emplace_back([&, begin, end] {
+            dequantize(type, src + (size_t) (begin / block_elems) * (size_t) block_bytes, out.data() + begin,
+                       end - begin);
+        });
+    }
+    for (auto & w : workers) {
+        w.join();
+    }
+    return out;
+}
+
 // Device-resident weights. Every gemv used to dequantize on the host and upload again, which is
 // why a token cost 33 s. Here each tensor is dequantized once, uploaded once, and kept in HBM.
 // Expert slabs are cached separately with an LRU: 256 experts per layer will not fit.
@@ -127,13 +170,36 @@ public:
         if (!t) {
             throw std::runtime_error("model: missing tensor " + name);
         }
-        const std::vector<float> w = round_f16(load_tensor(g_, *t));
+        const int64_t n_elems = (int64_t) t->dims[0] * (int64_t) t->dims[1];
+        const int be_full = quant_block_elements((int) t->type);
+        const int bb_full = quant_type_size((int) t->type);
+        std::vector<float> w;
+        if (be_full > 0 && bb_full > 0 && n_elems % be_full == 0) {
+            const uint64_t nbytes = (uint64_t) (n_elems / be_full) * (uint64_t) bb_full;
+            const std::vector<uint8_t> bytes = g_.tensor_bytes(*t, 0, nbytes);
+            w = dequantize_threaded((int) t->type, bytes.data(), n_elems);
+        } else {
+            w = load_tensor(g_, *t); // unquantized: plain copy
+        }
         auto buf = std::make_unique<Buffer>(w.size() * 2);
         upload(w, *buf);
         Buffer * raw = buf.get();
         full_.emplace(name, std::move(buf));
         bytes_ += (int64_t) w.size() * 2;
         return *raw;
+    }
+
+    // The whole tensor's bytes, read once. Reading a fresh 4 MB slab from a 22 GB file per expert
+    // per token was the largest remaining cost; keeping the bytes in RAM makes it a memcpy.
+    const std::vector<uint8_t> & raw_bytes(const std::string & name, const GgufTensor & t, uint64_t expected) {
+        auto it = raw_.find(name);
+        if (it != raw_.end()) {
+            return it->second;
+        }
+        std::vector<uint8_t> bytes = g_.tensor_bytes(t, 0, expected);
+        auto res = raw_.emplace(name, std::move(bytes));
+        bytes_ += (int64_t) expected;
+        return res.first->second;
     }
 
     // one expert slab out of a [cols, rows, n_expert] tensor
@@ -147,7 +213,19 @@ public:
         if (!t) {
             throw std::runtime_error("model: missing tensor " + tensor);
         }
-        const std::vector<float> w = round_f16(expert_slab(g_, *t, expert, rows, cols));
+        const uint64_t n = (uint64_t) rows * (uint64_t) cols;
+        const int bb = quant_type_size((int) t->type);
+        const int be = quant_block_elements((int) t->type);
+        std::vector<float> w;
+        if (be > 0 && bb > 0 && n % (uint64_t) be == 0) {
+            const uint64_t slab_bytes = n / (uint64_t) be * (uint64_t) bb;
+            // Read just this slab: only 8 of 256 experts are used per token, so pulling the whole
+            // tensor (512 MB a layer) costs far more than it saves on a short run.
+            const std::vector<uint8_t> bytes = g_.tensor_bytes(*t, (uint64_t) expert * slab_bytes, slab_bytes);
+            w = dequantize_threaded((int) t->type, bytes.data(), (int64_t) n);
+        } else {
+            w = expert_slab(g_, *t, expert, rows, cols);
+        }
         auto buf = std::make_unique<Buffer>(w.size() * 2);
         upload(w, *buf);
         Buffer * raw = buf.get();
@@ -175,6 +253,7 @@ private:
     const Gguf & g_;
     std::unordered_map<std::string, std::unique_ptr<Buffer>> full_;
     std::unordered_map<std::string, std::unique_ptr<Buffer>> slab_;
+    std::unordered_map<std::string, std::vector<uint8_t>> raw_;
     std::deque<std::string> slab_order_;
     int64_t bytes_ = 0;
 };
@@ -200,18 +279,24 @@ struct AttnState {
 
 // ---- one GDN layer step ----
 std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache, int il, const std::vector<float> & x, const std::vector<std::vector<float>> & taps, GdnState & st) {
+    const auto g_a0 = std::chrono::steady_clock::now();
     const std::string p = "blk." + std::to_string(il) + ".";
     const std::vector<float> Wnorm = need(g, p + "ssm_norm.weight");
     const std::vector<float> dt = load_tensor(g, *need_t(g, p + "ssm_dt.bias"));
     const std::vector<float> negA = load_tensor(g, *need_t(g, p + "ssm_a"));
+    const auto g_a1 = std::chrono::steady_clock::now();
 
+    const auto g_u0 = std::chrono::steady_clock::now();
     Buffer bx((size_t) kHidden * 2);
     upload(x, bx);
     Tensor tx{ bx.data(), DType::F16, 1, kHidden };
+    const auto g_u1 = std::chrono::steady_clock::now();
 
+    const auto g_b0 = std::chrono::steady_clock::now();
     Buffer b_qkv((size_t) kQkvDim * 2), b_z((size_t) kValueDim * 2);
     gemv_w(stream, cache, p + "attn_qkv.weight", kQkvDim, kHidden, tx, b_qkv);
     gemv_w(stream, cache, p + "attn_gate.weight", kValueDim, kHidden, tx, b_z);
+    const auto g_b1 = std::chrono::steady_clock::now();
     Tensor t_qkv{ b_qkv.data(), DType::F16, 1, kQkvDim };
 
     // short conv over the history: tap kConvK-1 goes with the current token, kConvK-2 with t-1
@@ -256,6 +341,8 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache
     Tensor t_ones{ b_ones.data(), DType::F16, kHeadDimSsm, 1 };
     Tensor t_wnorm{ b_wnorm.data(), DType::F16, kHeadDimSsm, 1 };
 
+    const auto g_c0 = std::chrono::steady_clock::now();
+    const auto g_t0 = std::chrono::steady_clock::now();
     Buffer b_qn((size_t) kKeyDim * 2), b_kn((size_t) kKeyDim * 2);
     for (int64_t h = 0; h < kKHeads; ++h) {
         Buffer t1((size_t) kHeadDimSsm * 2), t2((size_t) kHeadDimSsm * 2);
@@ -274,12 +361,14 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache
         muls(stream, ts, 1.0f, tkn);
     }
 
+    const auto g_t1 = std::chrono::steady_clock::now();
     Buffer b_beta((size_t) kVHeads * 2), b_alpha((size_t) kVHeads * 2);
     gemv_w(stream, cache, p + "ssm_beta.weight", kVHeads, kHidden, tx, b_beta);
     gemv_w(stream, cache, p + "ssm_alpha.weight", kVHeads, kHidden, tx, b_alpha);
     const std::vector<float> beta_raw = to_host(stream, b_beta, kVHeads);
     const std::vector<float> alpha_raw = to_host(stream, b_alpha, kVHeads);
 
+    const auto g_t2 = std::chrono::steady_clock::now();
     Buffer b_normed((size_t) kValueDim * 2);
     for (int64_t h = 0; h < kVHeads; ++h) {
         const int64_t kh = h % kKHeads;
@@ -315,10 +404,19 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache
         muls(stream, tm, 1.0f, tnout);
     }
 
+    const auto g_t3 = std::chrono::steady_clock::now();
     Buffer b_y((size_t) kHidden * 2);
     Tensor t_normed{ b_normed.data(), DType::F16, 1, kValueDim };
     gemv_w(stream, cache, p + "ssm_out.weight", kHidden, kValueDim, t_normed, b_y);
-    return to_host(stream, b_y, kHidden);
+    const std::vector<float> out = to_host(stream, b_y, kHidden);
+    const auto g_t4 = std::chrono::steady_clock::now();
+    if (getenv("SEQ_TRACE")) {
+        auto d = [](auto a, auto b) { return std::chrono::duration<double>(b - a).count(); };
+        printf("    gdn %2d: upload %.3f  need %.3f  proj %.3f  conv %.3f  head-norm %.3f  scalars %.3f  delta %.3f  out %.3f\n",
+               il, d(g_u0, g_u1), d(g_a0, g_a1), d(g_b0, g_b1), d(g_b1, g_c0), d(g_t0, g_t1), d(g_t1, g_t2), d(g_t2, g_t3),
+               d(g_t3, g_t4));
+    }
+    return out;
 }
 
 // ---- one attention layer step ----
@@ -617,6 +715,9 @@ int main(int argc, char ** argv) {
 
         // residual stream, fp32
         std::vector<std::vector<float>> res((size_t) T, std::vector<float>((size_t) kHidden, 0.0f));
+        double t_norm = 0, t_gdn = 0, t_attn = 0, t_moe = 0;
+        auto now = [] { return std::chrono::steady_clock::now(); };
+        auto secs = [](auto a, auto b) { return std::chrono::duration<double>(b - a).count(); };
         const auto t0 = std::chrono::steady_clock::now();
         for (int64_t t = 0; t < T; ++t) {
             std::vector<float> xn = xs[(size_t) t];
@@ -626,6 +727,7 @@ int main(int argc, char ** argv) {
                 const std::vector<float> an = need(g, p + "attn_norm.weight");
                 const std::vector<float> pan = need(g, p + "post_attention_norm.weight");
 
+                const auto n0 = now();
                 Buffer bx((size_t) kHidden * 2), bn((size_t) kHidden * 2), b_an((size_t) kHidden * 2);
                 upload(xn, bx);
                 upload(an, b_an);
@@ -634,12 +736,16 @@ int main(int argc, char ** argv) {
                 Tensor t_an{ b_an.data(), DType::F16, kHidden, 1 };
                 rms_norm(stream, tx, t_an, kRmsEps, tn);
                 const std::vector<float> hnorm = to_host(stream, bn, kHidden);
+                t_norm += secs(n0, now());
 
                 std::vector<float> layer_out;
+                const auto a0 = now();
                 if (recr) {
                     layer_out = gdn_step(stream, g, cache, il, hnorm, layer_taps[(size_t) il], *gdn_states[(size_t) il]);
+                    t_gdn += secs(a0, now());
                 } else {
                     layer_out = attn_step(stream, g, cache, il, hnorm, t, T, *attn_states[(size_t) il]);
+                    t_attn += secs(a0, now());
                 }
                 for (int64_t i = 0; i < kHidden; ++i) xn[(size_t) i] += layer_out[(size_t) i];
 
@@ -650,13 +756,16 @@ int main(int argc, char ** argv) {
                 Tensor t_pan{ b_pan.data(), DType::F16, kHidden, 1 };
                 rms_norm(stream, t_x2, t_pan, kRmsEps, tn);
                 const std::vector<float> ffn_in = to_host(stream, bn, kHidden);
+                const auto m0 = now();
                 const std::vector<float> ffn_out = moe_ffn(stream, g, cache, il, ffn_in);
+                t_moe += secs(m0, now());
                 for (int64_t i = 0; i < kHidden; ++i) xn[(size_t) i] += ffn_out[(size_t) i];
             }
             res[(size_t) t] = xn;
             const auto t1 = std::chrono::steady_clock::now();
-            printf("token %lld/%lld done  %.1f s\n", (long long) (t + 1), (long long) T,
-                   std::chrono::duration<double>(t1 - t0).count());
+            printf("token %lld/%lld done  %.1f s  [norm %.1f  gdn %.1f  attn %.1f  moe %.1f]\n",
+                   (long long) (t + 1), (long long) T, std::chrono::duration<double>(t1 - t0).count(), t_norm, t_gdn,
+                   t_attn, t_moe);
         }
 
         // final norm and logits for the last position

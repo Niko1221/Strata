@@ -2,9 +2,15 @@
 
 #include <acl/acl.h>
 
+#include <chrono>
 #include <mutex>
+#include <unordered_map>
+#include <vector>
 
 namespace strata::cann {
+
+void print_xfer_stats();
+
 namespace {
 
 std::once_flag g_init_once;
@@ -37,6 +43,9 @@ void shutdown() {
         // the ops share one workspace buffer; release it while the runtime is still up
         extern void release_workspace();
         release_workspace();
+        extern void clear_buffer_pool();
+        clear_buffer_pool();
+        print_xfer_stats();
         aclFinalize();
         g_initialized = false;
     }
@@ -97,13 +106,65 @@ void Stream::synchronize() const {
     check(aclrtSynchronizeStream((aclrtStream) stream_), "aclrtSynchronizeStream");
 }
 
+// Device memory is pooled. A single token allocates thousands of small temporaries, and one
+// aclrtMalloc per temporary was the real cost of the whole model: 12.8 s per token on ops that
+// each measure 0.043 ms.
+namespace {
+
+std::mutex g_pool_mutex;
+std::unordered_map<size_t, std::vector<void *>> g_pool;
+
+void * pool_take(size_t bytes) {
+    {
+        std::lock_guard<std::mutex> lock(g_pool_mutex);
+        auto it = g_pool.find(bytes);
+        if (it != g_pool.end() && !it->second.empty()) {
+            void * p = it->second.back();
+            it->second.pop_back();
+            return p;
+        }
+    }
+    void * p = nullptr;
+    check(aclrtMalloc(&p, bytes, ACL_MEM_MALLOC_HUGE_FIRST), "aclrtMalloc");
+    return p;
+}
+
+void pool_give(void * p, size_t bytes) {
+    std::lock_guard<std::mutex> lock(g_pool_mutex);
+    g_pool[bytes].push_back(p);
+}
+
+} // namespace
+
+// Profiling: the model spends its time outside the ops, so transfers are counted too.
+long long g_xfer_count = 0;
+long long g_xfer_bytes = 0;
+double g_xfer_seconds = 0.0;
+
+void print_xfer_stats() {
+    if (g_xfer_count > 0) {
+        printf("xfer: %lld copies, %.1f MB, %.3f s total, %.3f ms each\n", g_xfer_count,
+               (double) g_xfer_bytes / 1e6, g_xfer_seconds, 1000.0 * g_xfer_seconds / (double) g_xfer_count);
+    }
+}
+
+void clear_buffer_pool() {
+    std::lock_guard<std::mutex> lock(g_pool_mutex);
+    for (auto & entry : g_pool) {
+        for (void * p : entry.second) {
+            aclrtFree(p);
+        }
+    }
+    g_pool.clear();
+}
+
 Buffer::Buffer(size_t bytes) : bytes_(bytes) {
-    check(aclrtMalloc(&data_, bytes, ACL_MEM_MALLOC_HUGE_FIRST), "aclrtMalloc");
+    data_ = pool_take(bytes);
 }
 
 Buffer::~Buffer() {
     if (data_) {
-        aclrtFree(data_);
+        pool_give(data_, bytes_);
     }
 }
 
@@ -116,6 +177,16 @@ void copy_to_device(void * device_ptr, const void * host, size_t bytes) {
 }
 
 void Buffer::copy_from_host(const void * host, size_t bytes) {
+    const auto t0 = std::chrono::steady_clock::now();
+    struct Timer {
+        std::chrono::steady_clock::time_point t0;
+        size_t bytes;
+        ~Timer() {
+            g_xfer_count += 1;
+            g_xfer_bytes += (long long) bytes;
+            g_xfer_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        }
+    } timer{ t0, bytes };
     if (bytes > bytes_) {
         throw Error("cann: copy_from_host larger than the buffer", -1);
     }
@@ -123,6 +194,16 @@ void Buffer::copy_from_host(const void * host, size_t bytes) {
 }
 
 void Buffer::copy_to_host(void * host, size_t bytes) const {
+    const auto t0 = std::chrono::steady_clock::now();
+    struct Timer {
+        std::chrono::steady_clock::time_point t0;
+        size_t bytes;
+        ~Timer() {
+            g_xfer_count += 1;
+            g_xfer_bytes += (long long) bytes;
+            g_xfer_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        }
+    } timer{ t0, bytes };
     if (bytes > bytes_) {
         throw Error("cann: copy_to_host larger than the buffer", -1);
     }
