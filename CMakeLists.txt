@@ -425,6 +425,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(adaptive_range_test PRIVATE include)
   add_test(NAME adaptive_range_test COMMAND adaptive_range_test)
 
+  # P0.1 (lite): STRATA_MANIFEST, the machine-readable record of the selected paths, tensor formats, engine and budgets (header-only, no GPU)
+  add_executable(run_manifest_test tests/core/run_manifest_test.cpp)
+  target_include_directories(run_manifest_test PRIVATE include)
+  add_test(NAME run_manifest_test COMMAND run_manifest_test)
+
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)

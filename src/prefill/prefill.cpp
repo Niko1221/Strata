@@ -4,6 +4,8 @@
 #include "strata/prefill/copy_events.hpp"
 #include "strata/prefill/timer_marks.hpp"
 #include "strata/prefill/mmq_ids_margin.hpp"
+#include "strata/core/run_manifest.hpp"
+#include "strata/artifact/gguf_reader.hpp"
 #include "strata/prefill/pf_fused_override.hpp"
 #if defined(STRATA_HAVE_DFLASH2)
 #include "strata/kernels/dflash2.hpp"
@@ -1482,6 +1484,11 @@ const MmqPlan& mmq_plan() {
         p.fo.assign(p.layer.size(), 0);
         p.wmma_only.assign(p.layer.size(), 0);
         p.fallback = !on || layers <= 0;
+        std::map<std::string, int64_t> mf_layers;   // STRATA_MANIFEST: "path|reason|formats" -> layers (filled only when it is on)
+        const bool mf = strata::core::manifest::enabled();
+        auto mf_note = [&](const char* path, const std::string& why, int gt, int dt) {
+            if (mf) ++mf_layers[std::string(path) + "|" + why + "|gate_up " + strata::ggml_type_name((uint32_t) gt) + ", down " + strata::ggml_type_name((uint32_t) dt)];
+        };
         for (int64_t l = 0; on && l < layers; ++l) {
             const int gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42, dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
             // #420: a tile on every GPU for these shapes (gate+up: 1280 rows, down: N rows), else the FP16 path
@@ -1493,17 +1500,40 @@ const MmqPlan& mmq_plan() {
                     p.any = true;
                     p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, 1280, N));
                     p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, 640));
+                    mf_note("mmq-grouping, FP16 WMMA tiles", "MMQ has no tile for these formats; STRATA_PF_WMMA=1 computes them on FP16 tensor cores", gt, dt);
                     continue;
                 }
                 p.fallback = true;
                 // the fused path's buffers (Xq, H) exist for it; a chunk it does not take (a small one) keeps the FP16 path
                 if (on && lay.native && fused::native_supported(gt, dt)) { p.fo[(size_t) l] = 1; p.any = true; }
+                if (mf) {
+                    const bool fo = p.fo[(size_t) l] != 0;
+                    const std::string why = std::string(!mmq::fits(gt, 1280) ? "no MMQ tile for the gate/up format on every visible GPU" : "no MMQ tile for the down format on every visible GPU") +
+                                            (fo ? "; the native fused kernels take it" : "; the dequantize + FP16 GEMM path takes it");
+                    mf_note(fo ? "fused-native" : "fp16-gemm", why, gt, dt);
+                }
                 continue;
             }
             p.layer[(size_t) l] = 1;
             p.any = true;
             p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, 1280, N));
             p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, 640));
+            mf_note("mmq", "an MMQ tile exists for both products on every visible GPU", gt, dt);
+        }
+        if (mf) {
+            if (!on) {
+                strata::core::manifest::instance().path("prefill", "experts", false,
+                    mmq::built() ? "STRATA_PREFILL_MMQ=0" : "this build has no MMQ (ggml sources were not available)",
+                    "the expert products take the FP16 path");
+            } else if (layers <= 0) {
+                strata::core::manifest::instance().path("prefill", "experts", false, "no expert layout loaded", "");
+            }
+            for (const auto& [k, n] : mf_layers) {
+                const size_t a = k.find('|'), b = k.find('|', a + 1);
+                const std::string kind = k.substr(0, a);
+                strata::core::manifest::instance().path("prefill", "experts: " + k.substr(b + 1), kind == "mmq" || kind[0] == 'm',
+                                                        k.substr(a + 1, b - a - 1), kind + ", " + std::to_string(n) + " layers");
+            }
         }
         // STRATA_MMQ_DIRECT=1: a native layer's resident experts are read in place when the pointer-table MMQ covers
         // both products, gate/up reads nothing past its matrix, the down over-read fits the slot guard, and the blob
@@ -1526,6 +1556,8 @@ const MmqPlan& mmq_plan() {
             }
             std::fprintf(stderr, "strata: prompt MMQ reads resident experts in place (STRATA_MMQ_DIRECT=1): %lld of %lld "
                                  "layers\n", (long long) nd, (long long) layers);
+            strata::core::manifest::instance().path("prefill", "mmq-direct", nd > 0, nd > 0 ? "STRATA_MMQ_DIRECT=1" : "STRATA_MMQ_DIRECT=1, but no layer is eligible",
+                                                    std::to_string(nd) + " of " + std::to_string(layers) + " layers read resident experts in place");
         }
         // the verdict depends only on the layer's formats and the visible GPUs: taken once here, not per chunk
         p.group_sort.assign(p.layer.size(), 0);
@@ -1539,6 +1571,8 @@ const MmqPlan& mmq_plan() {
             }
             std::fprintf(stderr, "strata: prompt MMQ sorts the full expert groups (STRATA_MMQ_GROUP_SORT=1): %lld of %lld "
                                  "layers\n", (long long) ns, (long long) layers);
+            strata::core::manifest::instance().path("prefill", "mmq-group-sort", ns > 0, ns > 0 ? "STRATA_MMQ_GROUP_SORT=1" : "STRATA_MMQ_GROUP_SORT=1, but whole tiles are not guaranteed on every GPU",
+                                                    std::to_string(ns) + " of " + std::to_string(layers) + " layers");
         }
         return p;
     }();
