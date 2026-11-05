@@ -177,6 +177,30 @@ int main(int argc, char ** argv) {
     const double r_dev_state = rel_l2(got_state, dev_state);
     const double r_dev_attn = rel_l2(got_attn, dev_attn);
 
+    // the fp32 accumulator: the same recurrence, but only the operands stay fp16
+    std::vector<float> f32_state_val((size_t) (H * S * S), 0.0f);
+    Buffer f32_state((size_t) (H * S * S) * 4), f32_decay((size_t) (T * H) * 4), f32_beta((size_t) (T * H) * 4),
+        f32_attn((size_t) (T * H * S) * 2);
+    {
+        f32_state.copy_from_host(f32_state_val.data(), f32_state_val.size() * 4);
+        f32_decay.copy_from_host(decay.data(), decay.size() * 4);
+        f32_beta.copy_from_host(beta.data(), beta.size() * 4);
+        Tensor td32{ f32_decay.data(), DType::F32, H, T };
+        Tensor tb32{ f32_beta.data(), DType::F32, H, T };
+        Tensor ts32{ f32_state.data(), DType::F32, S, S, H };
+        Tensor ta32{ f32_attn.data(), DType::F16, H * S, T };
+        gdn_batched_f32(stream, tq, tk, tv, td32, tb32, ts32, ta32, S, H, T);
+    }
+    const std::vector<float> got32_state = [&] {
+        std::vector<float> out((size_t) (H * S * S));
+        f32_state.copy_to_host(out.data(), out.size() * 4);
+        stream.synchronize();
+        return out;
+    }();
+    const std::vector<float> got32_attn = to_host(stream, f32_attn, (int64_t) ref_attn.size());
+    const double r32_state = rel_l2(got32_state, ref_state);
+    const double r32_attn = rel_l2(got32_attn, ref_attn);
+
     const double r_state = rel_l2(got_state, ref_state);
     const double r_attn = rel_l2(got_attn, ref_attn);
 
@@ -186,9 +210,11 @@ int main(int argc, char ** argv) {
     printf("%-16s %12.6f  %s\n", "state vs float", r_state, r_state <= 0.01 ? "PASS" : "FAIL");
     printf("%-16s %12.6f  %s\n", "attn vs device", r_dev_attn, r_dev_attn <= 0.002 ? "PASS" : "FAIL");
     printf("%-16s %12.6f  %s\n", "state vs device", r_dev_state, r_dev_state <= 0.002 ? "PASS" : "FAIL");
+    printf("%-16s %12.6f  %s\n", "attn fp32 vs flt", r32_attn, r32_attn <= 0.002 ? "PASS" : "FAIL");
+    printf("%-16s %12.6f  %s\n", "state fp32 vs flt", r32_state, r32_state <= 0.002 ? "PASS" : "FAIL");
 
     shutdown();
-    if (r_attn > 0.01 || r_state > 0.01) {
+    if (r_attn > 0.01 || r_state > 0.01 || r32_attn > 0.002 || r32_state > 0.002) {
         printf("\nthe batched op does not match the per-head reference\n");
         return 1;
     }

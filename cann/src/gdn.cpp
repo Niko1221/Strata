@@ -226,4 +226,65 @@ void gdn_batched(Stream & stream, const Tensor & q, const Tensor & k, const Tens
     (void) scale_h;
 }
 
+// The same recurrence in fp32. llama.cpp's CPU kernel is float, so an fp16 accumulator is the main
+// source of drift; here only the caller's q/k/v and the output stay fp16, and the state is float.
+void gdn_batched_f32(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, const Tensor & decay,
+                     const Tensor & beta, Tensor & state, Tensor & attn, int64_t S, int64_t H, int64_t T) {
+    const size_t hvec_bytes = (size_t) H * (size_t) S * 4;
+    const size_t hmat_bytes = (size_t) H * (size_t) S * (size_t) S * 4;
+    const size_t hscalar_bytes = (size_t) H * 4;
+
+    // the whole sequence is cast once, not per token
+    Buffer qf((size_t) T * hvec_bytes), kf((size_t) T * hvec_bytes), vf((size_t) T * hvec_bytes);
+    Buffer af((size_t) T * hvec_bytes);
+    Buffer tmp_b(hmat_bytes), outer_b(hmat_bytes);
+    Buffer kv_b(hvec_bytes), d_b(hvec_bytes), delta_b(hvec_bytes);
+
+    {
+        Tensor tq{ qf.data(), DType::F32, H * S, T };
+        Tensor tk{ kf.data(), DType::F32, H * S, T };
+        Tensor tv{ vf.data(), DType::F32, H * S, T };
+        cast(stream, q, DType::F32, tq);
+        cast(stream, k, DType::F32, tk);
+        cast(stream, v, DType::F32, tv);
+    }
+
+    Tensor M{ state.data, DType::F32, S, S, H };
+    Tensor tmp{ tmp_b.data(), DType::F32, S, S, H };
+    Tensor outer{ outer_b.data(), DType::F32, S, S, H };
+    Tensor kv{ kv_b.data(), DType::F32, 1, S, H };
+    Tensor d{ d_b.data(), DType::F32, 1, S, H };
+    Tensor delta{ delta_b.data(), DType::F32, 1, S, H };
+
+    Buffer scale_b(hscalar_bytes);
+    {
+        std::vector<float> s((size_t) H, 1.0f / std::sqrt((float) S));
+        scale_b.copy_from_host(s.data(), (size_t) H * 4);
+    }
+    Tensor scale_h{ scale_b.data(), DType::F32, 1, 1, H };
+
+    for (int64_t t = 0; t < T; ++t) {
+        const size_t base = (size_t) t * hvec_bytes;
+        Tensor q_t{ (char *) qf.data() + base, DType::F32, 1, S, H };
+        Tensor k_t{ (char *) kf.data() + base, DType::F32, 1, S, H };
+        Tensor k_row{ (char *) kf.data() + base, DType::F32, S, 1, H };
+        Tensor v_t{ (char *) vf.data() + base, DType::F32, 1, S, H };
+        Tensor a_t{ (char *) af.data() + base, DType::F32, 1, S, H };
+        Tensor dec_t{ (char *) decay.data + (size_t) t * hscalar_bytes, DType::F32, 1, 1, H };
+        Tensor bet_t{ (char *) beta.data + (size_t) t * hscalar_bytes, DType::F32, 1, 1, H };
+
+        mul_bcast(stream, M, dec_t, tmp);
+        bmm(stream, tmp, k_t, kv);
+        sub_bcast(stream, v_t, kv, d);
+        mul_bcast(stream, d, bet_t, delta);
+        bmm(stream, delta, k_row, outer);
+        add_bcast(stream, tmp, outer, M);
+        bmm(stream, M, q_t, kv);
+        mul_bcast(stream, kv, scale_h, a_t);
+    }
+
+    Tensor taf{ af.data(), DType::F32, H * S, T };
+    cast(stream, taf, DType::F16, attn);
+}
+
 } // namespace strata::cann

@@ -10,6 +10,7 @@
 #include <aclnnop/aclnn_sub.h>
 #include <aclnnop/aclnn_exp.h>
 #include <aclnnop/aclnn_div.h>
+#include <aclnnop/aclnn_cast.h>
 
 #include <acl/acl.h>
 
@@ -290,6 +291,22 @@ void sub_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out
     aclDestroyTensor(tb);
     aclDestroyTensor(tc);
 }
+// out = cast(x) to `dst_type`, elementwise; the only op here whose types may differ
+void cast(Stream & stream, const Tensor & x, DType dst_type, Tensor & out) {
+    aclTensor * tx = x.ne2 > 1 ? make_tensor3(x, x.ne1, x.ne0, x.ne2) : make_tensor(x, x.ne1, x.ne0);
+    aclTensor * ty = out.ne2 > 1 ? make_tensor3(out, out.ne1, out.ne0, out.ne2) : make_tensor(out, out.ne1, out.ne0);
+    const aclDataType dt = to_acl(dst_type);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnCastGetWorkspaceSize(tx, dt, ty, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnCast(ws, ws_size, ex, s);
+        },
+        "aclnnCast");
+    aclDestroyTensor(tx);
+    aclDestroyTensor(ty);
+}
+
 void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double eps, Tensor & out) {
     aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
     aclTensor * tg = make_tensor_1d(gamma, gamma.ne0);

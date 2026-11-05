@@ -410,25 +410,20 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache
         beta_host[(size_t) h] = bt;
         decay_host[(size_t) h] = std::exp(sp * negA[(size_t) h]);
     }
-    Buffer b_decay((size_t) kVHeads * 2), b_betas((size_t) kVHeads * 2);
-    {
-        std::vector<uint16_t> hd((size_t) kVHeads), hb((size_t) kVHeads);
-        f32_to_f16(decay_host.data(), hd.data(), hd.size());
-        f32_to_f16(beta_host.data(), hb.data(), hb.size());
-        b_decay.copy_from_host(hd.data(), hd.size() * 2);
-        b_betas.copy_from_host(hb.data(), hb.size() * 2);
-    }
+    Buffer b_decay((size_t) kVHeads * 4), b_betas((size_t) kVHeads * 4);
+    b_decay.copy_from_host(decay_host.data(), decay_host.size() * 4);
+    b_betas.copy_from_host(beta_host.data(), beta_host.size() * 4);
 
     Buffer b_gdn((size_t) kValueDim * 2);
     {
         Tensor tq{ b_q32.data(), DType::F16, kValueDim, 1 };
         Tensor tk{ b_k32.data(), DType::F16, kValueDim, 1 };
         Tensor tv{ (char *) b_silu.data() + (size_t) 2 * kKeyDim * 2, DType::F16, kValueDim, 1 };
-        Tensor td{ b_decay.data(), DType::F16, kVHeads, 1 };
-        Tensor tb{ b_betas.data(), DType::F16, kVHeads, 1 };
-        Tensor ts{ st.ssm->data(), DType::F16, kHeadDimSsm, kHeadDimSsm, kVHeads };
+        Tensor td{ b_decay.data(), DType::F32, kVHeads, 1 };
+        Tensor tb{ b_betas.data(), DType::F32, kVHeads, 1 };
+        Tensor ts{ st.ssm->data(), DType::F32, kHeadDimSsm, kHeadDimSsm, kVHeads };
         Tensor ta{ b_gdn.data(), DType::F16, kValueDim, 1 };
-        gdn_batched(stream, tq, tk, tv, td, tb, ts, ta, kHeadDimSsm, kVHeads, 1);
+        gdn_batched_f32(stream, tq, tk, tv, td, tb, ts, ta, kHeadDimSsm, kVHeads, 1);
     }
 
     Buffer b_normed((size_t) kValueDim * 2);
@@ -729,8 +724,12 @@ int main(int argc, char ** argv) {
                     st->conv.push_back(std::make_unique<Buffer>((size_t) kQkvDim * 2));
                     upload(std::vector<float>((size_t) kQkvDim, 0.0f), *st->conv.back());
                 }
-                st->ssm = std::make_unique<Buffer>((size_t) kVHeads * kHeadDimSsm * kHeadDimSsm * 2);
-                upload(std::vector<float>((size_t) kVHeads * kHeadDimSsm * kHeadDimSsm, 0.0f), *st->ssm);
+                // float, not half: the recurrence accumulates here and llama.cpp computes it in float
+                st->ssm = std::make_unique<Buffer>((size_t) kVHeads * kHeadDimSsm * kHeadDimSsm * 4);
+                {
+                    std::vector<float> zeros((size_t) kVHeads * kHeadDimSsm * kHeadDimSsm, 0.0f);
+                    st->ssm->copy_from_host(zeros.data(), zeros.size() * 4);
+                }
                 gdn_states[(size_t) il] = std::move(st);
             } else {
                 auto st = std::make_unique<AttnState>();

@@ -37,6 +37,9 @@ void mul_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out
 void add_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 void sub_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 
+// out = cast(x) to dst_type
+void cast(Stream & stream, const Tensor & x, DType dst_type, Tensor & out);
+
 // out[row,:] = x[row,:] * rsqrt(mean(x[row,:]^2) + eps) * gamma
 void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double eps, Tensor & out);
 

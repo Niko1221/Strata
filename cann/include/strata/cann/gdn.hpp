@@ -35,4 +35,10 @@ void gdn(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, 
 void gdn_batched(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, const Tensor & decay,
                  const Tensor & beta, Tensor & state, Tensor & attn, int64_t S, int64_t H, int64_t T);
 
+// The same thing with a float accumulator: q/k/v/attn stay fp16, `decay` and `beta` are fp32 [T][H]
+// and `state` is fp32 [H][S][S]. llama.cpp computes this recurrence in float, so this is the form
+// that can match it closely.
+void gdn_batched_f32(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, const Tensor & decay,
+                     const Tensor & beta, Tensor & state, Tensor & attn, int64_t S, int64_t H, int64_t T);
+
 } // namespace strata::cann
