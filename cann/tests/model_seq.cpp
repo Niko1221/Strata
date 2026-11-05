@@ -115,41 +115,10 @@ std::vector<float> expert_slab(const Gguf & g, const GgufTensor & t, int expert,
 // Dequantization is the real host cost: a fresh expert slab is a few megabytes and the decoder is
 // a scalar loop, so one token spent seconds in it. The formats are blockwise, so the work splits
 // cleanly across threads by block range.
-std::vector<float> dequantize_threaded(int type, const uint8_t * src, int64_t n) {
+std::vector<float> dequantize_only(int type, const uint8_t * src, int64_t n) {
     std::vector<float> out((size_t) n);
-    const int block_elems = quant_block_elements(type);
-    const int block_bytes = quant_type_size(type);
-    if (block_elems <= 0 || block_bytes <= 0 || n % block_elems != 0) {
-        if (!dequantize(type, src, out.data(), n)) {
-            throw std::runtime_error("model: dequantize failed");
-        }
-        return out;
-    }
-    unsigned hw = std::thread::hardware_concurrency();
-    if (hw == 0) {
-        hw = 4;
-    }
-    const int64_t n_threads = std::min<int64_t>((int64_t) hw, std::max<int64_t>(1, n / block_elems));
-    if (n_threads <= 1) {
-        dequantize(type, src, out.data(), n);
-        return out;
-    }
-    const int64_t per = (n / n_threads / block_elems) * block_elems;
-    std::vector<std::thread> workers;
-    workers.reserve((size_t) n_threads);
-    for (int64_t i = 0; i < n_threads; ++i) {
-        const int64_t begin = i * per;
-        const int64_t end = (i == n_threads - 1) ? n : begin + per;
-        if (begin >= end) {
-            break;
-        }
-        workers.emplace_back([&, begin, end] {
-            dequantize(type, src + (size_t) (begin / block_elems) * (size_t) block_bytes, out.data() + begin,
-                       end - begin);
-        });
-    }
-    for (auto & w : workers) {
-        w.join();
+    if (!dequantize(type, src, out.data(), n)) {
+        throw std::runtime_error("model: dequantize failed");
     }
     return out;
 }
@@ -171,15 +140,15 @@ public:
             throw std::runtime_error("model: missing tensor " + name);
         }
         const int64_t n_elems = (int64_t) t->dims[0] * (int64_t) t->dims[1];
-        const int be_full = quant_block_elements((int) t->type);
-        const int bb_full = quant_type_size((int) t->type);
+        const int be = quant_block_elements((int) t->type);
+        const int bb = quant_type_size((int) t->type);
         std::vector<float> w;
-        if (be_full > 0 && bb_full > 0 && n_elems % be_full == 0) {
-            const uint64_t nbytes = (uint64_t) (n_elems / be_full) * (uint64_t) bb_full;
+        if (be > 0 && bb > 0 && n_elems % be == 0) {
+            const uint64_t nbytes = (uint64_t) (n_elems / be) * (uint64_t) bb;
             const std::vector<uint8_t> bytes = g_.tensor_bytes(*t, 0, nbytes);
-            w = dequantize_threaded((int) t->type, bytes.data(), n_elems);
+            w = dequantize_only((int) t->type, bytes.data(), n_elems);
         } else {
-            w = load_tensor(g_, *t); // unquantized: plain copy
+            w = load_tensor(g_, *t);
         }
         auto buf = std::make_unique<Buffer>(w.size() * 2);
         upload(w, *buf);
@@ -189,26 +158,59 @@ public:
         return *raw;
     }
 
-    // The whole tensor's bytes, read once. Reading a fresh 4 MB slab from a 22 GB file per expert
-    // per token was the largest remaining cost; keeping the bytes in RAM makes it a memcpy.
-    const std::vector<uint8_t> & raw_bytes(const std::string & name, const GgufTensor & t, uint64_t expected) {
-        auto it = raw_.find(name);
-        if (it != raw_.end()) {
-            return it->second;
+    inline static double t_read = 0, t_deq = 0, t_up = 0;
+    inline static long long n_read = 0;
+    static void print_slab_stats() {
+        if (n_read > 0) {
+            printf("slabs: %lld new, disk %.1f s, dequant %.1f s, upload %.1f s\n", n_read, t_read, t_deq, t_up);
         }
-        std::vector<uint8_t> bytes = g_.tensor_bytes(t, 0, expected);
-        auto res = raw_.emplace(name, std::move(bytes));
-        bytes_ += (int64_t) expected;
-        return res.first->second;
     }
 
-    // one expert slab out of a [cols, rows, n_expert] tensor
     const Buffer & slab(const std::string & tensor, int expert, int64_t rows, int64_t cols, int il) {
         const std::string key = tensor + "#" + std::to_string(expert);
         auto it = slab_.find(key);
         if (it != slab_.end()) {
             return *it->second;
         }
+        std::vector<float> w = decode_only(tensor, expert, rows, cols);
+        return store(tensor, expert, std::move(w));
+    }
+
+    // The eight selected experts share one input, so a layer needs up to 24 slabs at once. Decoding
+    // them concurrently is what pays: a slab runs at ~150M values/s single-threaded, while spawning
+    // a thread pool inside each slab cost more than the decode (22 s of a 37 s run).
+    void prefetch(const std::string & tensor, const std::vector<int> & experts, int64_t rows, int64_t cols,
+                  int il) {
+        std::vector<int> missing;
+        for (int e : experts) {
+            if (slab_.find(tensor + "#" + std::to_string(e)) == slab_.end()) {
+                missing.push_back(e);
+            }
+        }
+        if (missing.size() <= 1) {
+            return;
+        }
+        std::vector<std::vector<float>> decoded(missing.size());
+        std::vector<std::thread> workers;
+        workers.reserve(missing.size());
+        for (size_t i = 0; i < missing.size(); ++i) {
+            workers.emplace_back([&, i] { decoded[i] = decode_only(tensor, missing[i], rows, cols); });
+        }
+        for (auto & w : workers) {
+            w.join();
+        }
+        for (size_t i = 0; i < missing.size(); ++i) {
+            if (slab_.find(tensor + "#" + std::to_string(missing[i])) == slab_.end()) {
+                store(tensor, missing[i], std::move(decoded[i]));
+            }
+        }
+        (void) il;
+    }
+
+    int64_t bytes() const { return bytes_; }
+
+private:
+    std::vector<float> decode_only(const std::string & tensor, int expert, int64_t rows, int64_t cols) {
         const GgufTensor * t = g_.find(tensor);
         if (!t) {
             throw std::runtime_error("model: missing tensor " + tensor);
@@ -216,24 +218,39 @@ public:
         const uint64_t n = (uint64_t) rows * (uint64_t) cols;
         const int bb = quant_type_size((int) t->type);
         const int be = quant_block_elements((int) t->type);
-        std::vector<float> w;
-        if (be > 0 && bb > 0 && n % (uint64_t) be == 0) {
-            const uint64_t slab_bytes = n / (uint64_t) be * (uint64_t) bb;
-            // Read just this slab: only 8 of 256 experts are used per token, so pulling the whole
-            // tensor (512 MB a layer) costs far more than it saves on a short run.
-            const std::vector<uint8_t> bytes = g_.tensor_bytes(*t, (uint64_t) expert * slab_bytes, slab_bytes);
-            w = dequantize_threaded((int) t->type, bytes.data(), (int64_t) n);
-        } else {
-            w = expert_slab(g_, *t, expert, rows, cols);
+        if (be <= 0 || bb <= 0 || n % (uint64_t) be != 0) {
+            return expert_slab(g_, *t, expert, rows, cols);
         }
+        const uint64_t slab_bytes = n / (uint64_t) be * (uint64_t) bb;
+        const auto r0 = std::chrono::steady_clock::now();
+        const std::vector<uint8_t> bytes = g_.tensor_bytes(*t, (uint64_t) expert * slab_bytes, slab_bytes);
+        const auto r1 = std::chrono::steady_clock::now();
+        std::vector<float> w = dequantize_only((int) t->type, bytes.data(), (int64_t) n);
+        const auto r2 = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex());
+            t_read += std::chrono::duration<double>(r1 - r0).count();
+            t_deq += std::chrono::duration<double>(r2 - r1).count();
+            n_read += 1;
+        }
+        return w;
+    }
+
+    static std::mutex & stats_mutex() {
+        static std::mutex m;
+        return m;
+    }
+
+    const Buffer & store(const std::string & tensor, int expert, std::vector<float> w) {
+        const std::string key = tensor + "#" + std::to_string(expert);
+        const auto u0 = std::chrono::steady_clock::now();
         auto buf = std::make_unique<Buffer>(w.size() * 2);
         upload(w, *buf);
+        t_up += std::chrono::duration<double>(std::chrono::steady_clock::now() - u0).count();
         Buffer * raw = buf.get();
         slab_.emplace(key, std::move(buf));
         slab_order_.push_back(key);
         bytes_ += (int64_t) w.size() * 2;
-        (void) il;
-        // keep the slab cache bounded; the order list is a cheap FIFO, not a true LRU
         while (bytes_ > kBudget && !slab_order_.empty()) {
             const std::string victim = slab_order_.front();
             slab_order_.pop_front();
@@ -246,14 +263,10 @@ public:
         return *raw;
     }
 
-    int64_t bytes() const { return bytes_; }
-
-private:
-    static constexpr int64_t kBudget = 40LL << 30; // stay well under the 64 GB of HBM
+    static constexpr int64_t kBudget = 40LL << 30;
     const Gguf & g_;
     std::unordered_map<std::string, std::unique_ptr<Buffer>> full_;
     std::unordered_map<std::string, std::unique_ptr<Buffer>> slab_;
-    std::unordered_map<std::string, std::vector<uint8_t>> raw_;
     std::deque<std::string> slab_order_;
     int64_t bytes_ = 0;
 };
@@ -561,6 +574,10 @@ std::vector<float> moe_ffn(Stream & stream, const Gguf & g, WeightCache & cache,
     Buffer * acc = &acc_a;
     Buffer * other = &acc_b;
 
+    cache.prefetch(p + "ffn_gate_exps.weight", sel, kExpertInter, kHidden, il);
+    cache.prefetch(p + "ffn_up_exps.weight", sel, kExpertInter, kHidden, il);
+    cache.prefetch(p + "ffn_down_exps.weight", sel, kHidden, kExpertInter, il);
+
     for (int64_t i = 0; i < kTopK; ++i) {
         const int e = sel[(size_t) i];
         {
@@ -822,6 +839,7 @@ int main(int argc, char ** argv) {
             printf("  token %d  logit %.4f  logprob %.4f\n", best[i].second, best[i].first,
                    (double) best[i].first - log_z);
         }
+        WeightCache::print_slab_stats();
         shutdown();
         return 0;
     } catch (const std::exception & e) {
