@@ -347,7 +347,8 @@ int main(int argc, char** argv) {
             sycl::free(dstart, *s); sycl::free(dn, *s); sycl::free(ddst, *s); sycl::free(dtok, *s);
         }
         const double ec = rel(got_c, ref), eg = rel(got_g, ref), ecg = rel(got_c, got_g);
-        const bool ok = ec < 3e-2 && eg < 3e-2 && std::isfinite(ec) && std::isfinite(eg);
+        const double gpu_limit = f.d_type == 6 ? 1.8e-2 : 3e-2;   // Q5_0 down: the quantized-sum offset (round 0214) makes it as accurate as the rest
+        const bool ok = ec < 3e-2 && eg < gpu_limit && std::isfinite(ec) && std::isfinite(eg);
         std::printf("%s %2d  %-8s/%-7s blob %8zu  cpu rel %.2e  gpu rel %.2e  cpu-gpu %.2e  %s\n", synthetic ? "pair " : "layer", l,
                     ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), f.bytes, ec, eg, ecg,
                     ok ? "ok" : "FAIL");

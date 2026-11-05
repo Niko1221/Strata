@@ -379,6 +379,22 @@ void bench(cudaStream_t s, std::mt19937& rng) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
+#if defined(__HIP_PLATFORM_AMD__)
+    {   // gfx1151 defaults to expert mode 8 (the fused gate/up + SwiGLU + q8_1 LDS kernel) for an unstrided call and to the CUDA layout
+        // for a strided one; the two sum in a different order, so "bitwise equal to v1" does not hold between them there (summation
+        // order only: round 0214 diagnosis, RESULTS-ENGAMD.md).  Pin the CUDA layout for both runs unless the caller chose a mode.
+        cudaDeviceProp prop;
+        if (std::getenv("STRATA_EXP_MODE") == nullptr && cudaGetDeviceProperties(&prop, 0) == cudaSuccess &&
+            std::strstr(prop.gcnArchName, "gfx1151") != nullptr) {
+#ifdef _WIN32
+            _putenv_s("STRATA_EXP_MODE", "0");
+#else
+            setenv("STRATA_EXP_MODE", "0", 1);
+#endif
+            std::printf("gfx1151: STRATA_EXP_MODE=0 pinned for both runs (mode 8 and the CUDA layout differ in summation order)\n");
+        }
+    }
+#endif
     const bool do_bench = argc > 1 && std::string(argv[1]) == "--bench";
     cudaStream_t s;
     ck(cudaStreamCreate(&s), "stream");
