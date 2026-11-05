@@ -702,6 +702,29 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         }
 #endif
     };
+#if defined(__APPLE__)
+    // Macs (the Metal engine's prompt chunks: 16 rows a token, 2048 tokens a chunk): the rows are independent, so they are decoded
+    // on several threads (the same values; the loop below is one thread and was 100+ ms a chunk with the GPU idle).
+    if (n >= 4096 && impl_->mode == PleIo::Mmap && impl_->data != nullptr && !Impl::check_on()) {
+        for (size_t w = 0; w < n; w += kWin) hint(w, std::min(n, w + kWin));
+        const unsigned nth = std::min(8u, std::max(2u, std::thread::hardware_concurrency() / 2));
+        const size_t per = (n + nth - 1) / nth;
+        std::vector<std::thread> th;
+        for (unsigned k = 0; k < nth; ++k) {
+            const size_t a = (size_t) k * per, e = std::min(n, a + per);
+            if (a >= e) break;
+            th.emplace_back([this, rows, out, a, e] {
+                for (size_t i = a; i < e; ++i) {
+                    if (rows[i] >= impl_->n_rows) std::memset(out + i * PLE_HEAD_DIM, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
+                    else impl_->decode(impl_->data + (size_t) rows[i] * impl_->rb, out + i * PLE_HEAD_DIM);
+                }
+            });
+        }
+        for (auto& t : th) t.join();
+        for (size_t i = 0; i < n; ++i) if (rows[i] < impl_->n_rows) impl_->bytes_read += impl_->rb;
+        return true;
+    }
+#endif
     hint(0, std::min(n, kWin));
     for (size_t w = 0; w < n; w += kWin) {
         if (w + kWin < n) hint(w + kWin, std::min(n, w + 2 * kWin));

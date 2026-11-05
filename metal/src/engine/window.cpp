@@ -39,6 +39,7 @@ namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include <cerrno>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <signal.h>
 #include <unistd.h>
 #include <map>
@@ -168,9 +169,11 @@ struct PromptBufs {
     int lib = -1, lgdn = -1, lqsa = -1;
     bool k4 = false;
     bool v3e = false;
+    bool v6 = false;             // ragged expert tiles (mm_gu6 / mm_down6): groups of ms 16-row subtiles share one weight decode
+    int ms = 1;
     bool fused = false;          // the GDN input projections as one GEMM (gdn_fused_inputs)            // the M5's expert kernels (v3): not for the trellis types, which have only v2
-    int C = 0, maxrows = 0;
-    double gpu_ms = 0, host_ms = 0, mtp_ms = 0;
+    int C = 0, maxrows = 0, tm = 16;   // tm: the expert plan's tile height
+    double gpu_ms = 0, host_ms = 0, mtp_ms = 0, hidden_ms = 0, emb_ms = 0, ple_ms = 0;   // hidden_ms: the host rows computed beside the GPU (pc_host_rows)
     int gu3[4] = {}, dn3[4] = {};
     mtl::Buffer R, R2, bo, inj[2], xn, xnh, V, loh, mixed, mixh, qkv, z, al, be, yg, ygh, gqn, gkn, gvc, ggb, gkq, go, qfull,
         kcur, vcur, iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta,
@@ -602,7 +605,21 @@ private:
     int m5_layout_ = -1;   // the M5's matmul2d layout (coop_k4), asked once: the M4's tiles differ
     bool m5_layout() { if (m5_layout_ < 0) m5_layout_ = coop_k4() ? 1 : 0; return m5_layout_ == 1; }
     bool pc_setup(int C);
-    bool pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& err);
+    void pc_kprof(const std::vector<mtl::Dispatch>& ds, int nT, int64_t pos0);
+    // the chunk's host rows (the embedding rows and the PLE table rows): computed on a thread while the GPU runs the previous
+    // chunk (STRATA_METAL_PROMPT_HOSTPIPE=0 computes them inline before each chunk)
+    struct PcHost {
+        int nT = 0;
+        int64_t pos0 = -1;
+        std::vector<float> emb, ple;
+        double ms = 0, ms_emb = 0;
+        bool ok = true;
+        std::string err;
+    };
+    bool pc_host_rows(const int64_t* tokens, int nT, int64_t pos0, const int32_t prev_in[2], PcHost& out);
+    std::future<PcHost> pc_next_;
+    void pc_drain() { if (pc_next_.valid()) pc_next_.wait(); }
+    bool pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& err, const int64_t* next_tokens = nullptr, int next_nT = 0);
     // the draft round in one command buffer (msl/mtp_chain.metal): STRATA_METAL_MTP_CHAIN=0 runs a command buffer
     // per step with the host's pick and embedding (as before)
     int lchain_ = -1;
