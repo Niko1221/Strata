@@ -246,9 +246,10 @@ void route_ahead(const float* logits, const float* bias, int n, int m, int T, Re
 /// slot's device address) are copied into stage slot i (stride apart, `bytes` each) and the plan then points there.
 void zc_stage(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int k, uint8_t* stage, size_t stride, size_t bytes,
               cudaStream_t s);
-/// The same picks on a GPU that shares the PC's memory: the plan points at the slot itself, which the arena's mapping makes the
-/// device's address of that memory (no copy: VRAM and the store are the same RAM there).
-void zc_point(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int k, cudaStream_t s);
+/// The same picks on a GPU that shares the PC's memory, for a decode token or a verify window of T tokens (plan and idx
+/// [t * kPicks + i], i < k): the plan points at the slot itself, which the arena's mapping makes the device's address of that
+/// memory (no copy: VRAM and the store are the same RAM there).
+void zc_point(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int T, int k, cudaStream_t s);
 /// Waits (one thread, on the device) until *seq_ptr == seq.
 void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s);
 /// True once if the router (route / route_publish) had no pick to make on this device since the last call - every score it was
