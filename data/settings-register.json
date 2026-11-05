@@ -31164,13 +31164,20 @@
   {
    "name": "STRATA_PW_WITH_BATCH",
    "backends": [
-    "cuda-hip"
+    "cuda-hip",
+    "sycl"
    ],
    "reads": [
     {
      "file": "src/program/generate.cpp",
      "line": 5739,
      "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 3513,
+     "backend": "sycl",
      "fn": "getenv"
     }
    ],

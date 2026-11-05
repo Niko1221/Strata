@@ -234,7 +234,7 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PRIMARY_DEVICE` | number | NVIDIA and AMD | [SECOND_GPU.md](SECOND_GPU.md) |
 | `STRATA_PROMPT_ATTN_IMMA` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PROMPT_DIRECT` | on / off | NVIDIA and AMD | [QUANTS.md](QUANTS.md) |
-| `STRATA_PW_WITH_BATCH` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
+| `STRATA_PW_WITH_BATCH` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_Q2_BITPLANE` | on / off | CPU | [DETAILS.md](DETAILS.md) |
 | `STRATA_Q36_FIXED_SLOTS` | on / off | NVIDIA and AMD | [QWEN36.md](QWEN36.md) |
 | `STRATA_Q36_READ_WINDOWS` | number | NVIDIA and AMD | [QWEN36.md](QWEN36.md) |
