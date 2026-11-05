@@ -288,7 +288,7 @@ class Qwen38:
         return self.w.linear("output.weight", x)
 
     def generate(self, prompt, max_tokens=32, temperature=0, callback=None, trace=None,
-                 logits_callback=None, cancelled=None):
+                 logits_callback=None, cancelled=None, progress=None):
         tokens = self.tokenizer.encode(prompt, parse_special=True) if isinstance(prompt, str) else list(prompt)
         if not tokens or len(tokens) + max_tokens > self.context:
             raise ValueError("empty prompt or prompt plus generation exceeds context")
@@ -300,6 +300,9 @@ class Qwen38:
                 raise InterruptedError("inference cancelled")
             distribution = self.step(token, logits=index == len(tokens) - 1, trace=trace,
                                      cancelled=cancelled)
+            if progress:
+                torch.npu.synchronize()
+                progress(index + 1, time.monotonic() - started)
             print(f"prefill {index + 1}/{len(tokens)} elapsed={time.monotonic() - started:.2f}s",
                   file=sys.stderr, flush=True)
         torch.npu.synchronize()

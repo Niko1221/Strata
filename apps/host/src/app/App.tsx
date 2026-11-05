@@ -26,6 +26,8 @@ function AppShell() {
     const location = useLocation();
     const rail = useStore((s) => s.rail);
     const ready = useStore((s) => s.ready);
+    const hasRemote = useStore(s => s.providers?.connections.some(c => c.kind === 'custom'));
+    const remoteMonitor = location.route === 'monitor' && hasRemote;
     const setup = useStore((s) => s.setup);
     const paletteOpen = useStore((s) => s.paletteOpen);
     const focus = useStore((s) => s.focus);
@@ -47,7 +49,7 @@ function AppShell() {
     // First run is a modal over the working shell rather than a takeover: the app
     // is visibly there behind it, which is far less daunting than a blank window
     // demanding five steps before anything appears.
-    const setupOpen = location.route === 'setup' || (!!setup && !setup.complete && !setup.dismissed) || firstRunOpen;
+    const setupOpen = location.route === 'setup' || (!remoteMonitor && !!setup && !setup.complete && !setup.dismissed) || firstRunOpen;
     // Hook runs here, after setupOpen exists — see src/lib/focus.ts.
     useSurfaceFocus(setupOpen, setupRef);
     return (<div className="app" data-rail={compact ? !navOpen : rail} data-layout={mobile ? 'mobile' : compact ? 'compact' : 'desktop'} data-nav-open={navOpen || undefined} data-focus={focus && location.route === 'chat' || undefined}>
@@ -60,9 +62,9 @@ function AppShell() {
           <span className="spacer"/>
           <IconBtn name="new-chat" title={tr("New chat")} onClick={() => runCommand('new')}/>
         </div>
-        <ConnectionBar />
+        {!remoteMonitor ? <ConnectionBar /> : null}
         {tr(focus && location.route === 'chat' ? <FocusBar /> : null)}
-        {tr(!ready ? <BootSkeleton /> : <RouteView route={location.route}/>)}
+        {tr(!ready && !remoteMonitor ? <BootSkeleton /> : <RouteView route={location.route}/>)}
       </main>
       <CommandPalette open={paletteOpen}/>
       <Dialog open={location.query.get('settings') === '1'} title={tr("Settings")} className="settings-dialog" onClose={closeSettings}><SettingsScreen /></Dialog>

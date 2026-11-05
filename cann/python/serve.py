@@ -188,6 +188,8 @@ class Service:
         self.metrics_lock = threading.Lock()
         self.completed = 0
         self.failed = 0
+        self.total_prompt_tokens = 0
+        self.total_output_tokens = 0
         self.last = None
         self.active = None
         self.requests = deque(maxlen=120)
@@ -234,10 +236,16 @@ class Service:
         request_id = "req_" + uuid.uuid4().hex
         started_at = time.time()
 
+        def progress(done, seconds):
+            with self.metrics_lock:
+                if self.active and self.active['id'] == request_id:
+                    self.active.update(prompt_done=done, prefill_seconds=seconds)
+
         def emit(token):
             with self.metrics_lock:
                 if self.active and self.active["id"] == request_id:
                     self.active["state"] = "generating"
+                    self.active.setdefault("first_token_monotonic", time.monotonic())
                     self.active["generated"] += 1
             if callback:
                 callback(token)
@@ -245,7 +253,7 @@ class Service:
         def run():
             try:
                 result = self.engine.generate(
-                    prompt, count, temperature, callback=emit,
+                    prompt, count, temperature, callback=emit, progress=progress,
                     cancelled=lambda: cancel.is_set() or self.stopping.is_set(),
                 )
                 self.last = result
@@ -268,6 +276,8 @@ class Service:
                 }
                 with self.metrics_lock:
                     self.completed += 1
+                    self.total_prompt_tokens += request['prompt_tokens']
+                    self.total_output_tokens += output_tokens
                     self.requests.appendleft(request)
                     self.history.append({
                         "time": finished_at,
@@ -340,9 +350,11 @@ class Service:
                     free, total = self.torch.npu.mem_get_info()
                 except (AttributeError, RuntimeError, TypeError):
                     free = total = None
-            if total is not None:
+            if total is not None and memory_total is None:
                 memory_total = int(total)
-            if free is not None:
+            if memory_used is not None and memory_total is not None:
+                memory_free = memory_total - memory_used
+            elif free is not None:
                 memory_free = int(free)
             if memory_total is not None and memory_free is not None:
                 memory_used = max(0, memory_total - memory_free)
@@ -374,17 +386,21 @@ class Service:
             history = [dict(sample) for sample in self.history]
             completed = self.completed
             failed = self.failed
+            total_prompt = self.total_prompt_tokens
+            total_output = self.total_output_tokens
         if active:
-            elapsed = max(0.001, now - active["time"])
             generated = active["generated"]
+            decode_elapsed = time.monotonic() - active.get('first_token_monotonic', time.monotonic())
+            rate = (generated - 1) / decode_elapsed if generated > 1 and decode_elapsed > 0 else None
+            prefill_seconds = active.get('prefill_seconds', 0)
+            prefill_rate = active.get('prompt_done', 0) / prefill_seconds if prefill_seconds > 0 else None
             live = {
                 "state": active["state"], "running": 1, "queued": 0,
                 "prompt_tokens": active["prompt_tokens"], "generated": generated,
-                "tok_s": round(generated / elapsed, 3) if active["state"] == "generating" else 0,
-                "prefill_tok_s": round(active["prompt_tokens"] / elapsed, 3)
-                if active["state"] == "reading" else 0,
-                "prefill_tok_s_mean": round(active["prompt_tokens"] / elapsed, 3)
-                if active["state"] == "reading" else 0,
+                "prompt_done": active.get('prompt_done', 0),
+                "tok_s": rate,
+                "prefill_tok_s": prefill_rate,
+                "prefill_tok_s_mean": prefill_rate,
             }
         else:
             live = {"state": "idle", "running": 0, "queued": 0, "tok_s": 0,
@@ -413,7 +429,7 @@ class Service:
             },
             "engine": {
                 "layers": self.engine.layers, "max_context": self.args.context,
-                "expert_slots": len(self.engine.w.cache), "experts": expert_count,
+                "weight_cache_entries": len(self.engine.w.cache), "experts": expert_count,
                 "expert_cache_mib": round(self.engine.w.used / 1024 ** 2, 3),
                 "expert_budget_mib": round(self.engine.w.budget / 1024 ** 2, 3),
                 "weight_dtype": self.args.weight_dtype,
@@ -426,8 +442,8 @@ class Service:
             "requests": requests,
             "totals": {
                 "requests": completed, "failed": failed,
-                "prompt_tokens": sum(item.get("prompt_tokens", 0) for item in requests),
-                "output_tokens": sum(item.get("output_tokens", 0) for item in requests),
+                "prompt_tokens": total_prompt,
+                "output_tokens": total_output,
             },
         }
 

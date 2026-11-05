@@ -849,6 +849,11 @@ function applyEvent(e: StreamEvent) {
 let closeEvents: (() => void) | null = null;
 export async function bootstrap() {
   applyPrefs();
+  // Remote monitoring must not wait for local hardware probes or engine setup.
+  const providerRequest = api.get<ModelProviders>('/api/model-providers').then(providers => {
+    applyProviders(providers);
+    return providers;
+  });
   try {
     const [setup, hardware, library, engine, serving, monitor, skills, providers, imageModels, runtime] = await Promise.all([
       api.get<SetupState>('/api/setup'),
@@ -858,7 +863,7 @@ export async function bootstrap() {
       api.get<ServingState>('/api/serving'),
       api.get<MonitorState>('/api/monitor'),
       api.get<Skill[]>('/api/skills'),
-      api.get<ModelProviders>('/api/model-providers'),
+      providerRequest,
       api.get<ImageModelLibrary>('/api/image-models'),
       api.get<RuntimeModels>('/api/runtime'),
     ]);
@@ -894,7 +899,8 @@ export async function bootstrap() {
       }
       set({ connection: status });
     });
-    if (!setup.complete && !setup.dismissed && !window.location.hash.includes('setup')) navigate('setup');
+    const remoteMonitor = window.location.hash.startsWith('#/monitor') && providers.connections.some(c => c.kind === 'custom');
+    if (!setup.complete && !setup.dismissed && !window.location.hash.includes('setup') && !remoteMonitor) navigate('setup');
   } catch (err) {
     set({ ready: true, connection: 'offline' });
     pushToast(

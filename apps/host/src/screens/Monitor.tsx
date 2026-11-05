@@ -60,6 +60,8 @@ function requestStatus(request: ServeRequest) {
 }
 export function MonitorScreen() {
     const native = useNative();
+    const hasRemote = useStore(s => s.providers?.connections.some(c => c.kind === 'custom'));
+    const [showLocal, setShowLocal] = useState(false);
     // While this screen is open and visible the host reads the graphics card every 3 s; otherwise it asks only every 30 s (#4066).
     useEffect(() => {
         const ask = () => { if (typeof document === 'undefined' || document.visibilityState !== 'hidden')
@@ -68,7 +70,8 @@ export function MonitorScreen() {
         const timer = setInterval(ask, 10000);
         return () => clearInterval(timer);
     }, []);
-    return <LegacyMonitorScreen native={native?.instances.length ? native : null}/>;
+    if (hasRemote && !showLocal) return <Screen width="wide" plainHeader title="Monitor" titleDetail="远端模型与 NPU" actions={<Btn onClick={() => setShowLocal(true)}>查看本机</Btn>}><RemoteMetricsPanel/></Screen>;
+    return <>{hasRemote ? <Btn onClick={() => setShowLocal(false)}>查看远端 NPU</Btn> : null}<LegacyMonitorScreen native={native?.instances.length ? native : null}/></>;
 }
 function LegacyMonitorScreen({ native }: {
     native: NativeState | null;

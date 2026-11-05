@@ -126,7 +126,7 @@ completion 和 chat 请求支持 SSE 流式输出。
 SSH 本地转发：
 
 ```powershell
-ssh -CNg -L 18791:127.0.0.1:18791 -p <ssh-port> <user>@<host>
+ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 127.0.0.1:18791:127.0.0.1:18791 -p <ssh-port> <user>@<host>
 ```
 
 然后在另一个 PowerShell 窗口中，把 key 读取到当前进程环境变量。该命令不会把
@@ -151,8 +151,9 @@ $env:STRATA_QWEN38_API_KEY = (ssh -p <ssh-port> <user>@<host> 'cat /run/strata-q
 ### 接入 Strata 自带 Monitor
 
 在 Strata 的 Settings → Models → Custom model API 中保存上述 Base URL、模型名和
-API key，然后在聊天模型选择器中选中该模型。打开 Monitor 页面后，会出现
-`Remote Ascend metrics` 卡片。Strata Host 通过保存的连接 key 代理指标接口：
+API key。打开 Monitor 页面后，默认显示「远端昇腾 NPU 监控」，无需先在聊天中
+选择模型，也无需加载本机模型。多个自定义连接可以在监控页切换；「查看本机」
+可以返回原来的本机监控。Strata Host 通过保存的连接 key 代理指标接口：
 
 ```text
 GET /api/model-providers/<connection-id>/metrics
@@ -161,6 +162,8 @@ GET /api/model-providers/<connection-id>/metrics
 浏览器不会拿到远端 key；Strata Host 会请求模型服务的 `/metrics`，并把结果显示
 在 Monitor 页面。SSH 转发必须保持运行，且 Strata Host 所在机器要能访问本地的
 `127.0.0.1:18791`。
+
+完整启动命令、指标口径和本次硬件实测见 [昇腾监控接入与访问](MONITOR_ASCEND_CN.md)。
 
 ## 已完成的验证
 
