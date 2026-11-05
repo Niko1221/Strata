@@ -218,6 +218,25 @@ n_stream 一般为 1，按它展开：
    再对最后一维 `sum` → `[n_kv, n_tokens]`（`aclnnRelu` + `aclnnMul` + `aclnnSum`）。
 5. 加 `mask`（f16 先 `aclnnCast` 成 f32）→ `dst`（`aclnnCast` + `aclnnAdd`）。
 
+### 查到一个会卡住实现的约束
+
+`aclnnMatmul` **没有转置参数**。而我们需要的乘法是
+
+```
+scores[c, j] = sum_d q[d, c] * k[d, j]        // c = t*n_head + h, j = 池化单元
+```
+
+也就是 `qᵀ @ k`。`q` 在内存里是 `d` 最快、`h` 次之、`t` 最慢，所以 `q` 天然是 `[d, c]` 的形状，
+要当 `[c, d]` 的 A 用就得先转置。
+
+两条路：
+1. `aclnnTranspose` 出一个连续副本（多一次全量拷贝，但 q 很小：4×T×128）；
+2. 用 aclTensor 的 `nb` 表达转置视图（`ne={c, d}, nb={512, 4}`）——**不能指望**，CANN 多数算子
+   要求输入连续。
+
+所以第一版按第 1 条做：先 `aclnnTranspose` + `aclnnContiguous`，再 `aclnnMatmul`。
+这个开销在这个算子的规模下可以接受（`n_head*n_tokens*128` 个元素）。
+
 ### 为什么要小心
 
 - **维度方向**：`ggml_cann_create_tensor` 会把 ggml 维度反转成 `[ne3,ne2,ne1,ne0]`，
