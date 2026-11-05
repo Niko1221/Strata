@@ -103,7 +103,7 @@ def cloudflared_version(path: str) -> str | None:
     if key in _cf_seen:
         return _cf_seen[key]
     try:
-        r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=10,
+        r = subprocess.run([path, "--version"], capture_output=True, text=True, errors="replace", timeout=10,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if WINDOWS else 0)
         text = (r.stdout or "") + (r.stderr or "")
     except (OSError, subprocess.SubprocessError):
@@ -145,13 +145,13 @@ def cloudflared_procs(exclude: tuple[int, ...] = ()) -> list[tuple[int, str]]:
         if WINDOWS:
             text = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                                    "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"],
-                                  capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+                                  capture_output=True, text=True, errors="replace", timeout=15, creationflags=subprocess.CREATE_NO_WINDOW).stdout
             for line in text.splitlines():
                 m = re.match(r"(\d+)\t(.*)$", line)
                 if m:
                     out.append((int(m.group(1)), m.group(2)))
         else:
-            text = subprocess.run(["ps", "-axo", "pid=,comm=,args="], capture_output=True, text=True, timeout=5).stdout
+            text = subprocess.run(["ps", "-axo", "pid=,comm=,args="], capture_output=True, text=True, errors="replace", timeout=5).stdout
             for line in text.splitlines():
                 m = re.match(r"\s*(\d+)\s+(\S+)\s*(.*)$", line)
                 if m and re.search(r"(^|/)cloudflared$", m.group(2)):
@@ -185,7 +185,7 @@ def find_tailscale() -> str | None:
 
 def _run(argv: list[str], timeout: float = 8.0) -> str:
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout)
         return r.stdout or ""
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -307,6 +307,50 @@ def firewall_note(kind: str) -> str | None:
 def new_key() -> str:
     import secrets
     return "sk-strata-" + secrets.token_urlsafe(24)
+
+
+def _config_key(path) -> str | None:
+    try:
+        key = str(json.loads(Path(path).read_text(encoding="utf-8-sig")).get("api_key") or "").strip()
+    except (OSError, ValueError, AttributeError):
+        return None
+    return key if key and key.lower() != "none" else None
+
+
+def kept_key(name: str | None = None) -> str | None:
+    """The API key an earlier launch already made, so a restart does not invalidate the apps set up with it (E05/G01): the key in this launch's
+    own config (profile `launch-<name>`), the saved preset's, else the one in the newest launch config. None when there is none; `--new-key`
+    and the key button are the only ways to rotate it."""
+    try:
+        from strata_control import profiles
+        from strata_cli.launch import settings as S, store
+        if name:
+            try:
+                prof, _rev = profiles.load("launch-" + S.slug(name))
+                key = _config_key(prof.get("source_config"))
+                if key:
+                    return key
+            except Exception:                                  # noqa: BLE001 - no such profile yet
+                pass
+            preset = store.load(name, missing_ok=True)
+            if preset and preset.api_key:
+                return preset.api_key
+        newest, found = -1.0, None
+        for row in profiles.list_profiles():
+            if not row["id"].startswith("launch-"):
+                continue
+            key = _config_key(row["source_config"])
+            if not key:
+                continue
+            try:
+                stamp = Path(row["source_config"]).stat().st_mtime
+            except OSError:
+                continue
+            if stamp > newest:
+                newest, found = stamp, key
+        return found
+    except Exception:                                          # noqa: BLE001 - never block a launch over the lookup
+        return None
 
 
 def mask_key(key: str | None) -> str:

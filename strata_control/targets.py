@@ -22,7 +22,7 @@ class ComponentError(RuntimeError):
 #: is explicit that Windows SYCL and Intel Macs are not supported rather than merely untested.
 BACKEND_MATRIX: dict[str, tuple[str, ...]] = {
     "metal": ("macos-arm64",),
-    "cuda": ("windows-x86_64", "linux-x86_64"),
+    "cuda": ("windows-x86_64", "linux-x86_64", "linux-aarch64"),   # linux-aarch64: the NVIDIA DGX Spark (GB10, sm_121) only
     "hip": ("windows-x86_64", "linux-x86_64"),
     "sycl": ("linux-x86_64",),
     "cpu": ("macos-arm64", "macos-x86_64", "windows-x86_64", "linux-x86_64"),
@@ -36,6 +36,8 @@ def host_platform() -> str:
     machine = platform.machine().lower()
     arch = {"arm64": "arm64", "aarch64": "arm64",
             "x86_64": "x86_64", "amd64": "x86_64"}.get(machine, machine)
+    if system == "linux" and arch == "arm64":
+        return "linux-aarch64"         # Linux names its ARM64 machines as uname does (the Tauri target and the Python build too); a Mac stays macos-arm64
     return f"{system}-{arch}"
 
 

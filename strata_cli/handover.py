@@ -161,3 +161,27 @@ def maybe_hand_over(argv, environ=None, root=None, running=None, execv=None, run
     except OSError as exc:
         warn(f"strata: could not start the updated Control {version} ({exc.strerror or exc}); running {running} instead.")
         return None
+
+
+#: What a Terminal older than 0.1.46.2 cannot do: its strata.py has no hand-over, so a Control it installs is never used. Its updater
+#: (which cannot be changed any more) test-starts the new Control with `--version` and prints the first 120 characters of the answer
+#: when that fails, so this is the sentence it shows. No quote marks in it: the old updater prints it as a Python string.
+OLD_LAUNCHER_TEXT = "This Terminal cannot switch to the new Control by itself. Run the Strata install command once more to update it."
+OLD_LAUNCHER_EXIT = 7
+_STAGE_FOLDER = ".s"                                 # strata_control.updater.STAGE_DIR: the folder a Control is test-started from
+
+
+def refuse_old_updater(argv, environ=None, tree=None) -> int | None:
+    """0.2.0-beta's Terminal (Control 0.1.45.3) and the other releases before 0.1.46.2 install a newer Control and report success, but their
+    launcher never switches to it (no hand-over code), so the update would change nothing. They test-start the staged Control with
+    `--version`, with STRATA_NO_ACQUIRE=1 and without STRATA_HANDOVER (every updater that can hand over sets it). This Control, started that
+    way from the updater's staging folder, says in one plain sentence what to do and exits non-zero, so the old updater keeps the old
+    Control and shows the sentence instead of 'updated'. Returns the exit code to use, or None for any other start."""
+    environ = os.environ if environ is None else environ
+    if list(argv) != ["--version"] or environ.get("STRATA_NO_ACQUIRE") != "1" or environ.get(ENV_GUARD):
+        return None
+    tree = Path(__file__).resolve().parents[1] if tree is None else Path(tree)
+    if tree.parent.name != _STAGE_FOLDER:
+        return None
+    sys.stdout.write(OLD_LAUNCHER_TEXT + "\n")
+    return OLD_LAUNCHER_EXIT

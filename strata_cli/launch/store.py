@@ -65,6 +65,13 @@ def now_text() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)) + f".{int((now % 1) * 1000000):06d}"
 
 
+def check_name(name: str) -> None:
+    """The error `save` would raise for this name, without writing anything."""
+    if not (name or "").strip():
+        raise PresetError("A preset needs a name.")
+    _path(name.strip())
+
+
 def save(settings: LaunchSettings, name: str | None = None) -> LaunchSettings:
     """Write (or replace) the preset called `name` (default: the settings' own name)."""
     name = (name or settings.name or "").strip()

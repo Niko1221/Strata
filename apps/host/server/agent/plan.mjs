@@ -117,7 +117,7 @@ export function stepObjective(plan, index) {
     `You are on step ${index + 1} of ${n}: ${s.text}${s.detail ? ` (${s.detail})` : ''}.`,
     done ? `Already done: ${done}.` : '',
     plan.briefing ? String(plan.briefing) : '',
-    isViewStep(s.text) ? 'This step is about seeing the result in a browser. Never wait for a program to close. If a person is at this computer, start the browser so the command returns at once (Windows: Start-Process; macOS: open; Linux: xdg-open) and say it is open. If there is no screen, check the page without a visible window: use the headless browser tool if you have one, otherwise read the file and its script for mistakes, and say in one plain sentence what you could and could not check. Then finish the step.' : '',
+    isViewStep(s.text) ? 'This step is about seeing the result. To show a local image, SVG, HTML page or PDF, use the present tool (a browser cannot open file:// addresses). Never wait for a program to close. If a person is at this computer and you start a browser, start it so the command returns at once (Windows: Start-Process; macOS: open; Linux: xdg-open) and say only that you started it, not that the page rendered. If there is no screen, check the page without a visible window: use the headless browser tool if you have one, otherwise read the file and its script for mistakes, and say in one plain sentence what you could and could not check. Then finish the step.' : '',
     'Do only this step, check that it worked, and then finish the goal.',
     index + 1 < n ? 'The next steps are handled separately: do not start them.' : '',
   ].filter(Boolean).join(' ');

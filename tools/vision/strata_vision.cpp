@@ -272,6 +272,11 @@ int main(int argc, char** argv) {
         }
         std::fprintf(stderr, "strata-vision: warmed up at %d image tokens in %.1f s\n", warm_tokens,
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_t0).count());
+        // I7 (#3690): a picture that became 93,700 image tokens under --max-tokens 1024. The limit is not applied by this build of mtmd for
+        // this model, and the log line above is the evidence to ask for.
+        if (max_tokens > 0 && warm_tokens > max_tokens + max_tokens / 8)
+            std::fprintf(stderr, "strata-vision: WARNING the warm-up picture became %d image tokens, over the limit of %d (--max-tokens): "
+                                 "the limit is not applied for this model; pictures over it are refused\n", warm_tokens, max_tokens);
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
     }
@@ -308,6 +313,10 @@ int main(int argc, char** argv) {
             const mtmd_decoder_pos last = mtmd_image_tokens_get_decoder_pos(it, 0, (size_t) n - 1);
             const int nx = (int) last.x + 1, ny = (int) last.y + 1;
             if (nx * ny != n) err = "the image grid is not rectangular (" + std::to_string(n) + " tokens)";
+            // never silently produce many times the budget (I7, #3690): over the limit (a rounding margin of an eighth) the picture is refused
+            if (err.empty() && max_tokens > 0 && n > max_tokens + max_tokens / 8)
+                err = "the picture became " + std::to_string(n) + " image tokens, over the limit of " + std::to_string(max_tokens) +
+                      " (vision.max_tokens); send a smaller picture or raise the limit";
             const float* embd = mtmd_get_output_embd(ctx);
             FILE* f = err.empty() ? std::fopen(out.c_str(), "wb") : nullptr;
             if (err.empty() && !f) err = "cannot write " + out;

@@ -36,12 +36,26 @@ cmake -G Ninja -S . -B "$build" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=
     "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" -DSTRATA_GGML_DIR="$repo/third_party/llama.cpp"
 cmake --build "$build" --target strata strata_kq -j "$(nproc)"
 
+# The picture reader is built for the SAME architectures as the engine (#3669: a reader reused from an older build had no sm_60, and on
+# a Pascal card the engine ran while the reader died with "device kernel image is invalid"). BUILD_VISION=0 ships a text-only package.
+vision_dir=${BUILD_VISION_DIR:-$repo/build-vision-$variant}
+if [ "${BUILD_VISION:-1}" = 1 ]; then
+  cmake -G Ninja -S tools/vision -B "$vision_dir" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="$repo/third_party/llama.cpp" \
+      -DSTRATA_VISION_CUDA=ON -DSTRATA_PORTABLE=ON -DGGML_CUDA_NCCL=OFF "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual"
+  cmake --build "$vision_dir" --target strata-vision -j "$(nproc)"
+fi
+
 ver=$(sed -n 's/^[[:space:]]*project([^)]*VERSION[[:space:]]*\([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -1)
 stage=$(mktemp -d "${TMPDIR:-/tmp}/strata-engine-stage.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 cp "$build/strata" "$stage/"
 [ -f "$build/libstrata_kq.so" ] && cp "$build/libstrata_kq.so" "$stage/"
-echo "{\"version\": \"$ver\", \"source\": \"packaging/build_cuda_linux.sh\", \"archs\": \"$archs\", \"cuda\": \"$cudafull\", \"portable\": true}" > "$stage/BUILD.json"
+vision_json=""
+if [ -f "$vision_dir/bin/strata-vision" ]; then
+  cp "$vision_dir/bin/strata-vision" "$stage/"
+  vision_json=", \"vision_archs\": \"$archs\""        # package_engine.py refuses a reader whose archs do not cover the engine's
+fi
+echo "{\"version\": \"$ver\", \"source\": \"packaging/build_cuda_linux.sh\", \"archs\": \"$archs\", \"cuda\": \"$cudafull\", \"portable\": true$vision_json}" > "$stage/BUILD.json"
 "$py" packaging/collect_libs.py --binary "$build/strata" --search /usr/local/cuda/lib64 --out "$stage" --also 'libcublasLt.so*'
 arch_args=""; for a in $(echo "$archs" | tr ';,' '  '); do arch_args="$arch_args --arch sm_$a"; done
 mkdir -p "$out"

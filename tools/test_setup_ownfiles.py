@@ -59,6 +59,27 @@ class OwnFileChecks(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse(self.file.exists())
 
+    def test_a_complete_own_gguf_of_another_size_or_hash_is_used_with_a_warning(self):     # #3777
+        import importlib.util                                                          # by path: another `tests` package may already be loaded
+        spec = importlib.util.spec_from_file_location("own_files_helper", Path(__file__).resolve().parents[1] / "tests" / "terminal" / "test_own_files.py")
+        helper = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        spec.loader.exec_module(helper)
+        gguf_bytes = helper.gguf_bytes
+        gguf = Path(self.tmp.name) / "fine-tune.gguf"
+        gguf.write_bytes(gguf_bytes(["Q8_0"]))
+        for size, sha in ((gguf.stat().st_size + 96, "0" * 64), (gguf.stat().st_size, "0" * 64)):
+            code, text = run(setup.verify_sha256, gguf, size, sha, own=True)
+            self.assertEqual(code, 0, text)
+            self.assertIn("Strata uses it as it is", text)
+        cut = Path(self.tmp.name) / "cut.gguf"
+        cut.write_bytes(gguf.read_bytes()[:-40])                    # cut short: the tensor payload is not all there
+        code, text = run(setup.verify_sha256, cut, gguf.stat().st_size, "0" * 64, own=True)
+        self.assertEqual(code, 1)
+        self.assertIn("your file was left as it is", text)
+        code, text = run(setup.verify_sha256, gguf, gguf.stat().st_size + 96, "0" * 64)          # a download is still checked
+        self.assertEqual(code, 1)
+
     def test_a_matching_own_file_passes(self):
         code, _text = run(setup.verify_sha256, self.file, 800, self.sha, own=True)
         self.assertEqual(code, 0)

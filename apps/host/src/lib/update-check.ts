@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { useNative } from './native';
 import { appVersionLabel } from './app-version';
+import { shownEngineVersion } from './engine-version';
 import { readUpdateCache, saveUpdateCache, type InstalledVersions } from './update-cache';
 import type { UpdateCheckResult } from './types';
 
@@ -10,7 +11,7 @@ export function useInstalledVersions(): InstalledVersions {
   const native = useNative();
   const engineVersion = useStore(s => s.engine?.engine.version);
   const appVersion = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);
-  return { appVersion: appVersion ?? null, engineVersion: (native?.available ? native.installed?.engine?.version : engineVersion) ?? null, controlVersion: native?.version ?? null };
+  return { appVersion: appVersion ?? null, engineVersion: shownEngineVersion(native, engineVersion) ?? null, controlVersion: native?.version ?? null };
 }
 
 /** The one place the app asks the host to check for updates. Called only from a button press. */

@@ -3,6 +3,7 @@
  * apps", and engine arguments the app does not know (the control vector options). Nothing here starts an engine; Control is a fake that
  * records the run file the host saved and asked it to start.
  */
+import './helpers/isolate-profile.mjs';   // a test run never writes the owner's real Strata profile
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -78,7 +79,7 @@ test('3215: a reserve of 0 is kept on both resource profiles; the safety default
   assert.equal(resourceSettings({ gpu: 0, args: [], vision: { gpu: true } }, display, 'performance').vram_reserve_mib, 2048, 'a display card with pictures: the safety default');
   assert.equal(resourceSettings({ gpu: 0, args: [] }, display, 'performance').vram_reserve_mib, 1536);
   assert.equal(resourceSettings({ gpu: 0, args: [] }, unknown, 'performance').vram_reserve_mib, 1536, 'not known to be headless: the safety default');
-  assert.equal(resourceSettings({ gpu: 0, args: [] }, display, 'work').vram_reserve_mib, Math.floor(12 * 1024 * 0.2));
+  assert.equal(resourceSettings({ gpu: 0, args: [] }, display, 'work').vram_reserve_mib, 1536, 'a fifth of 12 GB (2457) is capped at 1536 on a card of 16 GB or less (0.2.3 tuning)');
   // a card that drives no display: 512 MiB (700 with pictures), and "Leave 20% for my work" has no desktop to keep room for
   for (const profile of ['work', 'performance']) {
     assert.equal(resourceSettings({ gpu: 0, args: [] }, headless, profile).vram_reserve_mib, 512, profile);

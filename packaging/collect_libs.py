@@ -26,6 +26,17 @@ import re
 import shutil
 import subprocess
 import sys
+
+
+def _copy(src, dst) -> None:
+    """shutil.copy2, except onto itself: a library that an earlier binary's pass already put in --out is found there again by ldd (RUNPATH $ORIGIN)
+    and is the same file (SameFileError broke the second binary's pass for the AMD packages)."""
+    try:
+        if os.path.exists(dst) and os.path.samefile(src, dst):
+            return
+    except OSError:
+        pass
+    shutil.copy2(src, dst)
 from pathlib import Path
 
 SYSTEM_DIRS = ("/lib/", "/lib64/", "/usr/lib/", "/usr/lib64/")
@@ -121,7 +132,7 @@ def main(argv=None) -> int:
             if name in copied:
                 continue
             real = Path(path).resolve()
-            shutil.copy2(real, a.out / name)
+            _copy(real, a.out / name)
             copied[name] = str(real)
             queue.append(a.out / name)
     for pattern in a.also:
@@ -137,7 +148,7 @@ def main(argv=None) -> int:
             name = soname(real) or hit.name
             if name in copied:
                 continue
-            shutil.copy2(real, a.out / name)
+            _copy(real, a.out / name)
             copied[name] = str(real)
             found, missing = dependencies(a.out / name, a.search)
             for dep in missing:
@@ -149,7 +160,7 @@ def main(argv=None) -> int:
                 if is_system(path):
                     system.add(dep)
                 else:
-                    shutil.copy2(Path(path).resolve(), a.out / dep)
+                    _copy(Path(path).resolve(), a.out / dep)
                     copied[dep] = str(Path(path).resolve())
     for spec in a.data:
         src, _, dest = spec.partition("=")
@@ -159,7 +170,7 @@ def main(argv=None) -> int:
             if path.is_file() and (not a.data_glob or any(fnmatch.fnmatch(path.name, g) for g in a.data_glob))                     and arch_wanted(path.name, a.data_arch):
                 target = a.out / dest / path.relative_to(src)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path.resolve(), target)
+                _copy(path.resolve(), target)
     (a.out / "SYSTEM-LIBS.txt").write_text("\n".join(sorted(system)) + "\n", encoding="utf-8")
     total = sum(p.stat().st_size for p in a.out.rglob("*") if p.is_file())
     print(f"copied {len(copied)} libraries ({total / (1 << 20):.1f} MiB incl. data) to {a.out}; {len(system)} system libraries left to the OS")

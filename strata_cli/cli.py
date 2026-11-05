@@ -169,6 +169,8 @@ def parser() -> argparse.ArgumentParser:
     models_move.add_argument("--plan", action="store_true", help="say what would happen and change nothing")
     models_move.add_argument("--cancel-file", metavar="PATH", help="stop (safely) when this file appears")
     models_move.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
+    from strata_cli import drafting_cmd
+    drafting_cmd.add_parser(sp)
     engine = sp.add_parser("engine", help="engine tuning and component actions")
     engine_sp = engine.add_subparsers(dest="engine_command", required=True)
     calibrate = engine_sp.add_parser("calibrate", help="measure, review and apply engine tuning")
@@ -604,7 +606,7 @@ def _models(a: argparse.Namespace) -> int:
 def _import_problem(plan: dict) -> str:
     """Why `models import --plan` refused, in plain words (the codes stay in --output json)."""
     from strata_control import models as own_models
-    words = own_models.problem_words(plan.get("issues") or [])
+    words = own_models.problem_words(plan.get("issues") or [], missing=plan.get("missing_shards"))
     text = f"These files cannot be used as they are: {words}."
     holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
     if holds:
@@ -768,7 +770,8 @@ def _effective(cfg: dict, saved: dict | None, cli: argparse.Namespace | None = N
     if values["queue_timeout"] is not None and values["max_queue"] is None:
         raise ProfileError("queue_timeout requires max_queue to bound pending calls")
     if values["parallel"] is not None and any(flag in cfg["args"] for flag in ("--batch", "--slots")):
-        if origins["parallel"] != "run_config":
+        # (the all-cards split engine's run config, split_config's "split_engine_note", always carries --batch; the server turns "parallel" into its lane count)
+        if origins["parallel"] != "run_config" and not cfg.get("split_engine_note"):
             raise ProfileError("parallel override conflicts with --batch/--slots in run config args")
     if values["batch_groups"] is not None and "--batch-groups" in cfg["args"]:
         raise ProfileError("batch_groups override conflicts with --batch-groups in run config args")
@@ -1038,7 +1041,7 @@ def _doctor(a: argparse.Namespace) -> int:
         if live_probe is not None:
             print(f"Live GPU probe: {live_probe['status']}")
             for card in live_probe["cards"]:
-                print(f"  GPU {card['index']}: {card['name']} | {card['memory_mib']} MiB | "
+                print(f"  GPU {card['index']}: {card['name']} | {str(card['memory_mib']) + ' MiB' if card['memory_mib'] is not None else 'unified memory'} | "
                       f"driver {card['driver_version']} | {card['uuid']}")
     return 0 if report["ok"] else 5
 
@@ -1282,6 +1285,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     import tempfile
     lease = benchmark_lease(saved["id"], out) if saved else contextlib.nullcontext()
     proc, scratch, engine_log, run_log, log_start = None, None, None, None, 0
+    stop_problem = None
     try:
         with lease, contextlib.redirect_stdout(sys.stderr):
             def log(message: str) -> None:
@@ -1301,13 +1305,23 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
                                               engine_run_log=(run_log, log_start) if proc is not None else None,
                                               started_engine=proc is not None, hash_model=not a.skip_model_hash)
     finally:
-        bench_standard.stop_engine(proc)
+        stop_problem = bench_standard.stop_engine(proc)
+        if not isinstance(stop_problem, str):
+            stop_problem = None
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
     ok = doc["run"]["status"] == "complete"
+    if stop_problem:   # #3438: a stop that failed is not a normal finish: the engine may still hold the port and the GPU
+        ok = False
+        print(f"\nERROR: the engine this run started could not be stopped: {stop_problem}. It may still hold the server port "
+              "and the GPU: stop it by hand before the next run. This run is marked FAILED.", file=sys.stderr, flush=True)
+        try:
+            (out_dir / "ENGINE-NOT-STOPPED.txt").write_text(stop_problem + "\n", encoding="utf-8")
+        except OSError:
+            pass
     path = out_dir / "results.json"
     if machine:
-        print(json.dumps({"schema_version": 1, "ok": ok, "path": str(path.resolve()), "status": doc["run"]["status"],
+        print(json.dumps({"schema_version": 1, "ok": ok, "path": str(path.resolve()), "status": "failed" if stop_problem else doc["run"]["status"], "engine_stop_error": stop_problem,
                           "quality": doc["quality"], "summaries": doc["summaries"]}, ensure_ascii=False, allow_nan=False))
     else:
         print(bench_standard.format_plain(doc))
@@ -1562,7 +1576,7 @@ def _timeskip(a: argparse.Namespace) -> int:
         env = {**os.environ, "STRATA_TIMESKIP_PROMPT": prompt,
                "STRATA_TIMESKIP_ATTEMPT": str(attempt)}
         proc = subprocess.run(a.revise_command, shell=True, cwd=str(candidate), env=env,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, errors="replace")
         if proc.returncode != 0:
             raise time_skip.TimeSkipError(
                 f"the revision command failed (exit {proc.returncode}): "
@@ -2119,7 +2133,7 @@ def _run(a: argparse.Namespace) -> int:
             return _components_backends(a)
         if a.command == "components" and a.components_command == "engine":
             return _components_engine(a)
-        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback")):
+        if a.command == "update" or (a.command == "components" and a.components_command in ("update", "rollback", "install-file", "engines", "use", "remove")):
             from strata_cli import update_cmd
             return update_cmd.run(a)
         if a.command in ("doctor", "components"):
@@ -2128,6 +2142,9 @@ def _run(a: argparse.Namespace) -> int:
             return _models(a)
         if a.command == "engine":
             return _calibration(a)
+        if a.command == "drafting":
+            from strata_cli import drafting_cmd as _drafting_cmd
+            return _drafting_cmd.run(a)
         if a.command == "bench":
             return _bench(a)
         if a.command == "timeskip":
@@ -2198,6 +2215,21 @@ class _QuietCapture:
         return self.text
 
 
+def _install_argv(argv: list[str]) -> list[str]:
+    """`strata install` hands everything after it to setup.py (`strata install --family qwen --model IQ3_XXS --yes`). argparse cannot do that
+    by itself: an option it does not know ahead of the first plain word (--source, --family) was refused as "unrecognized arguments", or
+    split from its value (#4188). So the options of setup.py go behind a `--`, and only `--update` and --help stay strata's own."""
+    if not argv or argv[0] != "install":
+        return argv
+    rest = list(argv[1:])
+    if rest and rest[0] in ("-h", "--help"):
+        return argv
+    update = "--update" in rest
+    if update:
+        rest.remove("--update")
+    return ["install", *(["--update"] if update else []), "--", *rest]
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         from strata_control import private_files
@@ -2205,8 +2237,9 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:                          # a thin bundle ships without strata_control
         pass
     ap = parser()
-    a, extras = ap.parse_known_args(argv)
-    a.raw_argv = list(sys.argv[1:] if argv is None else argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    a, extras = ap.parse_known_args(_install_argv(raw))
+    a.raw_argv = raw
     if extras:
         if getattr(a, "command", None) in ("launch", "connect"):
             from strata_cli.launch import cmd as launch_cmd

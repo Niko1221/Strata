@@ -3,6 +3,7 @@ import { PreviewControls } from './PreviewControls';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Dialog, Icon, IconBtn, Seg, type IconName } from './ui';
+import { CopyBtn, CopyMenuItem } from './CopyBtn';
 import { Markdown } from './Markdown';
 import { SyntaxCode } from './SyntaxCode';
 import { FloatingMenu } from './FloatingMenu';
@@ -61,15 +62,28 @@ export function ArtifactPanel({ items, selected, onSelect, onClose, onCloseTab, 
         });
         return () => abort.abort();
     }, [current?.id, revision]);
+    // A closed panel leaves with a short slide instead of vanishing (a bare shell; the page itself is already gone).
+    const hadCurrent = useRef(false);
+    const [leaving, setLeaving] = useState(false);
+    useEffect(() => {
+        if (current) { hadCurrent.current = true; setLeaving(false); return; }
+        if (!hadCurrent.current || !inline) return;
+        hadCurrent.current = false;
+        if (matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'reduced') return;
+        setLeaving(true);
+        // The leaving shell takes the 460 ms step of the motion scale (liquid.css); it is removed just after.
+        const timer = setTimeout(() => setLeaving(false), 520);
+        return () => clearTimeout(timer);
+    }, [!!current, inline]);
     if (!current)
-        return null;
+        return leaving ? <aside className="artifact-panel" data-leaving="true" aria-hidden="true"/> : null;
     const url = current.url ? safePreviewUrl(current.url) : null;
     const viewControls = current.kind === 'markdown' ? <Seg ariaLabel={tr("Markdown view")} value={mode} options={[{ value: 'preview', label: 'Read' }, { value: 'source', label: 'Source' }]} onChange={setMode}/> : current.kind === 'image' ? <PreviewControls label={tr("Image")} zoom={imageSize} onZoom={setImageSize}/> : null;
-    const actions = <><div className="preview-file-actions__inline">{tr(current.kind === 'code' ? <IconBtn name="copy" title={tr("Copy code")} disabled={loading || !!error} onClick={() => void navigator.clipboard.writeText(text)}/> : null)}{tr(url ? <a className="st-btn st-btn--icon" href={url} target="_blank" rel="noreferrer" aria-label={tr("Open outside preview")} title={tr("Open outside preview")}><Icon name="link" size={17}/></a> : null)}<IconBtn name="refresh" title={tr("Reload preview")} onClick={() => setRevision(v => v + 1)}/></div><button ref={fileMenuRef} className="st-btn st-btn--icon preview-file-actions__more" aria-label={tr("Preview file actions")} title={tr("Preview file actions")} aria-haspopup="menu" aria-expanded={fileMenu} onClick={() => setFileMenu(v => !v)}><Icon name="ellipsis"/></button></>;
-    const actionMenu = fileMenu ? <FloatingMenu anchor={fileMenuRef.current} title={tr("Preview file actions")} onClose={() => setFileMenu(false)}>{tr(current.kind === 'code' ? <button role="menuitem" className="menu__item" disabled={loading || !!error} onClick={() => { void navigator.clipboard.writeText(text); setFileMenu(false); }}><Icon name="copy"/>{tr("Copy code")}</button> : null)}{tr(url ? <a role="menuitem" className="menu__item" href={url} target="_blank" rel="noreferrer" onClick={() => setFileMenu(false)}><Icon name="link"/>{tr("Open outside preview")}</a> : null)}<button role="menuitem" className="menu__item" onClick={() => { setRevision(v => v + 1); setFileMenu(false); }}><Icon name="refresh"/>{tr("Reload preview")}</button></FloatingMenu> : null;
+    const actions = <><div className="preview-file-actions__inline">{tr(current.kind === 'code' ? <CopyBtn text={text} label="Code" title="Copy code" disabled={loading || !!error}/> : null)}{tr(url ? <a className="st-btn st-btn--icon" href={url} target="_blank" rel="noreferrer" aria-label={tr("Open outside preview")} title={tr("Open outside preview")}><Icon name="link" size={17}/></a> : null)}<IconBtn name="refresh" title={tr("Reload preview")} onClick={() => setRevision(v => v + 1)}/></div><button ref={fileMenuRef} className="st-btn st-btn--icon preview-file-actions__more" aria-label={tr("Preview file actions")} title={tr("Preview file actions")} aria-haspopup="menu" aria-expanded={fileMenu} onClick={() => setFileMenu(v => !v)}><Icon name="ellipsis"/></button></>;
+    const actionMenu = fileMenu ? <FloatingMenu anchor={fileMenuRef.current} title={tr("Preview file actions")} onClose={() => setFileMenu(false)}>{tr(current.kind === 'code' ? <CopyMenuItem text={text} label="Code" disabled={loading || !!error} onClose={() => setFileMenu(false)}>Copy code</CopyMenuItem> : null)}{tr(url ? <a role="menuitem" className="menu__item" href={url} target="_blank" rel="noreferrer" onClick={() => setFileMenu(false)}><Icon name="link"/>{tr("Open outside preview")}</a> : null)}<button role="menuitem" className="menu__item" onClick={() => { setRevision(v => v + 1); setFileMenu(false); }}><Icon name="refresh"/>{tr("Reload preview")}</button></FloatingMenu> : null;
     const content = <aside className="artifact-panel" aria-label={tr("{0} preview", [current.kind])}>
     {tr(!inline ? <ArtifactTabs onCloseTab={onCloseTab} items={items} selected={selected} onSelect={onSelect}/> : null)}
-    <div id="artifact-content" role="tabpanel" aria-labelledby={`artifact-tab-${items.findIndex(a => a.id === selected)}`} className="artifact-content">
+    <div key={current.id} id="artifact-content" role="tabpanel" aria-labelledby={`artifact-tab-${items.findIndex(a => a.id === selected)}`} className="artifact-content">
       {tr(current.kind === 'website' ? <><iframe key={`${current.id}-${revision}`} title={current.title} src={current.content ? undefined : url ?? undefined} srcDoc={current.content} sandbox="allow-scripts" referrerPolicy="no-referrer"/></> : current.kind === 'pdf' ? url ? <Suspense fallback={<p className="muted preview-placeholder">{tr("Opening PDF viewer\u2026")}</p>}><PdfPreview key={`${current.id}-${revision}`} url={url}/></Suspense> : <p>{tr("No PDF to display.")}</p> : current.kind === 'image' ? <div className="image-preview" data-size={imageSize === '1' ? 'actual' : 'fit'}>{tr(url ? <img key={`${current.id}-${revision}`} src={url} alt={current.title} onError={() => setError('Couldn’t load this image.')}/> : null)}{tr(error ? <p role="alert">{tr(error)}</p> : null)}</div> : loading ? <p className="muted preview-placeholder">{tr("Loading document\u2026")}</p> : error ? <p role="alert" className="inline-error preview-placeholder">{tr(error)}</p> : current.kind === 'code' ? <SyntaxCode text={text} filename={artifactFilename(current)} lineNumbers/> : current.kind === 'table' ? <TablePreview key={current.id} text={text}/> : mode === 'source' ? <SyntaxCode text={text} language="markdown" lineNumbers/> : <article className="document-markdown"><Markdown text={text}/></article>)}
     </div>
     {tr(viewControls ? <div className="artifact-view-controls">{tr(viewControls)}</div> : null)}

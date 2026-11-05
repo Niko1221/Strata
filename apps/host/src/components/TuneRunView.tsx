@@ -51,7 +51,7 @@ export function TuneRunView({ progress, ratio, saving }: { progress: TuneProgres
       <span className="label">{tr("Speed now")}</span>
       <div className="tune-live__big">{now != null ? fmt(now) : '—'}<small>{tr("tokens per second")}</small></div>
       <Spark values={speeds.map(x => x.tok_s)}/>
-      <div className="tune-live__bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(ratio * 100)}><i style={{ width: `${Math.max(3, Math.round(ratio * 100))}%` }}/></div>
+      <div className="tune-live__bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(ratio * 100)}><i style={{ transform: `scaleX(${Math.min(1, Math.max(.03, ratio))})` }}/></div>
       <p className="small muted">{left != null ? tr("about {0} min left", [left]) : tr("This takes about 20 minutes.")}</p>
       <ul className="tune-live__list">{speeds.slice(-6).map((x, i) => <li key={`${x.label}-${i}`}><span>{x.label === 'base' ? tr("Your settings") : x.label}</span><b data-up={base != null && x.label !== 'base' && x.tok_s > base ? 'true' : undefined}>{fmt(x.tok_s)}</b></li>)}</ul>
     </aside>
@@ -89,6 +89,7 @@ export function TuneOutcomeCard({ outcome, details }: { outcome: Outcome; detail
     <div className="tune-outcome__body" role="status">
       <h3>{headline}</h3>
       <p>{lead}</p>
+      {details && (o.code === 'failed' || o.code === 'busy_pc') ? <p className="small muted">{tr("Open Details to see why.")}</p> : null}
       {facts.length ? <dl className="tune-outcome__facts">{facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl> : null}
       {details ? <details className="tune-outcome__details"><summary>{tr('Details')}</summary><pre>{details}</pre></details> : null}
     </div>

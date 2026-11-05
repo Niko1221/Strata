@@ -56,6 +56,47 @@ class PrebuiltVision(unittest.TestCase):
         self.assertEqual(quiet(setup.prebuilt_vision, {"archs": [75, 86]}, {"arch": 75}, "gpu")[0], "gpu")
 
 
+class VisionArchsAsAString(unittest.TestCase):
+    """#3810: the packaging recipes write BUILD.json `vision_archs` as ONE string ("75;86;89;120"); 0.2.3 iterated it character by
+    character and setup stopped with int(';') on the released Windows CUDA package.  A string and a list mean the same."""
+    RELEASED = {"version": "0.2.3", "archs": [75, 86, 89, 120], "ptx": True, "cuda": "13.0", "vision": "gpu-cuda13",
+                "vision_archs": "75;86;89;120", "portable": True}
+
+    def test_the_released_package_manifest_is_read(self):
+        for arch in (75, 86, 89, 120):
+            self.assertEqual(quiet(setup.prebuilt_vision, self.RELEASED, {"arch": arch}, "gpu")[0], "gpu")
+
+    def test_a_card_the_string_does_not_list_gets_the_cpu_reader(self):
+        meta = {**self.RELEASED, "vision_archs": "86;89;120", "ptx": False}
+        got, out = quiet(setup.prebuilt_vision, meta, {"arch": 75}, "gpu")
+        self.assertEqual(got, "cpu")
+        self.assertIn("runs on the CPU instead", out)
+        self.assertEqual(quiet(setup.prebuilt_vision, {**meta, "ptx": True}, {"arch": 120}, "gpu")[0], "gpu")
+
+    def test_a_string_and_a_list_agree(self):
+        for value in ("75;86;89;120", [75, 86, 89, 120], ["sm_75", "86-real", "89", "compute_120"], "75,86 89;120"):
+            self.assertEqual(setup.arch_numbers(value), [75, 86, 89, 120], value)
+        self.assertEqual(setup.arch_numbers(None), [])
+        self.assertEqual(setup.arch_numbers(""), [])
+        self.assertEqual(setup.arch_names("gfx1100;gfx1201"), ["gfx1100", "gfx1201"])
+        self.assertEqual(setup.arch_names(["gfx1100"]), ["gfx1100"])
+        self.assertEqual(setup.arch_names(None), [])
+
+    def test_the_other_readers_of_the_manifest_take_a_string_too(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "BUILD.json").write_text('{"archs": "60;61;70", "ptx": true}', encoding="utf-8")
+            with mock.patch.object(setup, "engine_dir", return_value=Path(d)):
+                self.assertEqual(setup.engine_archs(), ([60, 61, 70], True))
+            (Path(d) / "BUILD.json").write_text('{"backend": "hip", "archs": ["gfx1100"], "vision_archs": "gfx1100;gfx1201"}', encoding="utf-8")
+            self.assertEqual(setup.reader_archs(Path(d)), ["gfx1100", "gfx1201"])
+            (Path(d) / "BUILD.json").write_text('{"backend": "hip", "archs": ["gfx1100", "gfx1201"]}', encoding="utf-8")
+            self.assertEqual(setup.reader_archs(Path(d)), ["gfx1100", "gfx1201"])
+        self.assertEqual(setup.reader_archs(Path(__file__).parent / "no-such-folder"), [])
+
+
 class GgufDirShards(unittest.TestCase):
     """#305: --gguf-dir reads the shard count from the -of-N part of the name instead of assuming two."""
 
@@ -184,6 +225,74 @@ class ReadOnlyGgufDir(unittest.TestCase):
             self.assertFalse(setup.done(Path(tmp) / "x.gguf"))
 
 
+class ReadOnlyModelFolderMark(unittest.TestCase):
+    """0.2.10: a model folder Strata cannot write to (a read-only disk) keeps its finish marks under Strata's own folder, so the
+    SHA-256 of the 110 GB Engram is not computed again on every launch."""
+
+    def test_the_mark_is_kept_elsewhere_and_the_hash_is_not_repeated(self):
+        real_write = Path.write_text
+
+        def write(self, *a, **k):
+            if self.name.endswith(".done") and "strata_marks" not in str(self):
+                raise PermissionError(13, "read-only")
+            return real_write(self, *a, **k)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, share = Path(tmp) / "strata_marks", Path(tmp) / "share"
+            share.mkdir()
+            f = share / "engram.gguf"
+            f.write_bytes(b"abc" * 10)
+            sha = "f" * 64
+            hashed = []
+
+            def fake_hash(path, size):
+                hashed.append(path)
+                return sha
+
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(Path, "write_text", write),                     mock.patch.object(setup, "_hash_file", fake_hash):
+                setup.verify_sha256(f, 30, sha)
+                self.assertEqual(len(hashed), 1)
+                self.assertFalse((share / "engram.gguf.done").exists())
+                self.assertTrue(setup.done(f))
+                setup.verify_sha256(f, 30, sha)                       # the second launch
+                self.assertEqual(len(hashed), 1, "the kept mark is found; nothing is hashed again")
+                f.write_bytes(b"abcd" * 10)                           # a changed file has no mark
+                self.assertFalse(setup.done(f))
+
+
+class OfflineStart(unittest.TestCase):
+    """0.2.10: a PC with every file and no internet starts a model that is already prepared."""
+
+    def test_the_llama_cpp_source_is_not_fetched_until_a_model_is_prepared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fetched = []
+            with mock.patch.object(setup, "home", lambda: Path(tmp)), mock.patch.object(setup, "get_llama_cpp", lambda: fetched.append(1)):
+                path = setup.llama_cpp_if_here()
+                self.assertEqual(path, Path(tmp) / "third_party" / "llama.cpp")
+                self.assertEqual(fetched, [], "starting a prepared model does not reach github.com")
+                with mock.patch.object(setup.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)),                         mock.patch.object(setup.acquisition, "require", lambda *a, **k: None), mock.patch.object(setup, "CONTROL", False):
+                    setup.run([sys.executable, "tools/x.py"], env=dict(os.environ, STRATA_GGUF_PY=str(path / "gguf-py")))
+                self.assertEqual(fetched, [1], "a preparation tool needs it: fetched then")
+
+    def test_a_pinned_file_copied_in_by_hand_is_checked_here_without_the_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "drafter.gguf"
+            f.write_bytes(b"abc" * 10)
+            url = "https://huggingface.co/x/y/resolve/main/drafter.gguf"
+            with mock.patch.object(setup, "file_pin", lambda u: (30, "a" * 64)), mock.patch.object(setup, "_hash_file", lambda p, n: "a" * 64),                     mock.patch.object(setup, "_urlopen", side_effect=OSError("no network")):
+                quiet(setup.download, url, f, "drafter")
+            self.assertTrue(setup.done(f))
+            self.assertIn("sha256 " + "a" * 64, setup.mark_text(f))
+
+    def test_every_shared_deepseek_file_has_a_pin_so_a_copy_made_by_hand_never_needs_the_network(self):
+        """The final boston gate stopped on "cannot reach huggingface.co" at a shared file (the drafter, the metadata shard) that was already
+        in the shared folder with no finish mark: the pin is what lets download() check it here."""
+        for name, base in setup.DSV41_SHARED.items():
+            pin = setup.file_pin(base + name)
+            self.assertIsNotNone(pin, name)
+            self.assertEqual(tuple(pin), tuple(setup.DSV41_ALL_FILES[name]), name)
+
+
 class VsRange(unittest.TestCase):
     """#985: Visual Studio 2026 (version 18) is looked for only with CUDA 13.3 or newer."""
 
@@ -195,10 +304,10 @@ class VsRange(unittest.TestCase):
 
     def test_the_range_follows_the_toolkit(self):
         self.assertIsNone(self.asked(None))      # #881: without CUDA vswhere gets no version range
-        self.assertEqual(self.asked((13, 0)), "[16.0,18.0)")
-        self.assertEqual(self.asked((13, 2)), "[16.0,18.0)")
-        self.assertEqual(self.asked((13, 3)), "[16.0,19.0)")
-        self.assertEqual(self.asked((14, 0)), "[16.0,19.0)")
+        self.assertEqual(self.asked((13, 0)), "[17.0,18.0)")
+        self.assertEqual(self.asked((13, 2)), "[17.0,18.0)")
+        self.assertEqual(self.asked((13, 3)), "[17.0,19.0)")
+        self.assertEqual(self.asked((14, 0)), "[17.0,19.0)")
 
 
     def test_vcvars_by_hand(self):
@@ -568,11 +677,27 @@ class CudaVision(unittest.TestCase):
                 with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
                         mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S"), \
                         mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
-                        mock.patch.object(setup, "source_version", lambda: "test"):
+                        mock.patch.object(setup, "gpus", lambda: []), \
+                        mock.patch.object(setup, "source_version", lambda: "test"):      # no real card of the box (#4662)
                     quiet(setup.build_engine, {"arch": "86"}, vision, True, "llama")
                 self.assertEqual([t for t, _ in built], ["strata-vision"])
                 self.assertIn("-DSTRATA_PORTABLE=OFF", built[0][1])
                 self.assertIn(f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}", built[0][1])
+
+
+class ProxyHint(unittest.TestCase):
+    """0.2.10: a download that cannot reach its server says what to do behind a proxy."""
+
+    def test_the_hint_names_the_variable_and_notices_one_already_set(self):
+        names = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for n in names:
+                os.environ.pop(n, None)
+            self.assertIn("set HTTPS_PROXY", setup.proxy_hint())
+            os.environ["HTTPS_PROXY"] = "http://user:secret@proxy:3128"
+            hint = setup.proxy_hint()
+            self.assertIn("a proxy is set", hint)
+            self.assertNotIn("secret", hint)
 
 
 class SwiftIq3s(unittest.TestCase):

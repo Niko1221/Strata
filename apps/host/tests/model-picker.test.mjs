@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 
 const { code } = await transform(await readFile(new URL('../src/lib/model-picker.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
-const { pickerGroups } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { pickerGroups, pickerNativeModels } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const version = (id, family, state, diskGb, extra = {}) => ({ id, family, state, diskGb, ...extra });
 
 test('chat picker groups every downloaded family and puts its running version first', () => {
@@ -34,4 +34,11 @@ test('downloaded files stay visible during load transitions and recoverable fail
   ] };
   assert.deepEqual(pickerGroups(library)[0].versions.map(v => v.id), ['loading', 'unloading', 'failed-load']);
   assert.deepEqual(pickerGroups({ loaded: null, variants: [library.variants[0]] }), []);
+});
+
+test('downloaded optimized models that are not loaded still appear in the chat picker (#3814)', () => {
+  const installed = [{ model: 'swift', model_name: 'Swift IQ3_XXS', ready: true }, { model: 'half', model_name: 'Half', ready: false }, { model: 'run', model_name: 'Running one', ready: true }];
+  const out = pickerNativeModels(installed, [{ label: 'Running one' }]);
+  assert.deepEqual(out.map(m => m.model), ['swift']);
+  assert.deepEqual(pickerNativeModels(undefined, null), []);
 });

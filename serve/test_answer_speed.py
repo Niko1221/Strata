@@ -28,6 +28,7 @@ class AnswerSpeed(unittest.TestCase):
         self.assertEqual(answer_speed({**self.REAL, "drafts_offered": 500}, 73), 65.9)
 
     def test_a_one_token_reply_has_no_absurd_rate(self):
+        self.assertIsNone(answer_speed({"generated": 1, "decode_ms": 0.8}, 1, None))     # a 1-token probe: 1 / 0.8 ms was 1,250 tok/s
         self.assertIsNone(answer_speed({}, 1, 1e-6))
         self.assertIsNone(answer_speed({}, 1, None))
 

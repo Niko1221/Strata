@@ -8,49 +8,35 @@
  * It speaks the Model Context Protocol over stdio (newline-delimited JSON-RPC), the transport the Harness's MCP client uses for a program
  * it starts. The file is re-read on every request, so a change in Settings is seen without restarting anything. The assistant's text for
  * a command tool reaches the command in the STRATA_INPUT environment variable (never spliced into the command line, so it cannot add
- * commands of its own). A command gets 2 minutes and 20,000 characters of output.
+ * commands of its own). A command runs in the shell that suits it (PowerShell for a Windows command that reads as PowerShell, cmd.exe for
+ * the rest, sh elsewhere), in its own folder or the one the assistant names, gets 2 minutes unless its tool allows more (up to an hour) and
+ * 20,000 characters of output (custom-command-run.mjs).
  */
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { runCommand } from './custom-command-run.mjs';
 
 const [mode, file] = process.argv.slice(2);
 if (!['instructions', 'commands'].includes(mode) || !file) { console.error('usage: custom-tools-mcp.mjs instructions|commands <tools.json>'); process.exit(2); }
 
 const load = () => { try { return JSON.parse(readFileSync(file, 'utf8'))[mode] ?? {}; } catch { return {}; } };
-const OUT_MAX = 20000;
-const TIME_MS = 120000;
 
 const schema = mode === 'commands'
-  ? { type: 'object', properties: { input: { type: 'string', description: 'Text to give the command (optional).' } }, additionalProperties: false }
+  ? { type: 'object', properties: {
+    input: { type: 'string', description: 'Text to give the command (optional).' },
+    cwd: { type: 'string', description: 'The folder to run the command in (optional). Give the working folder of this chat when the command uses relative paths.' },
+  }, additionalProperties: false }
   : { type: 'object', properties: {}, additionalProperties: false };
 
 function listTools() {
   return Object.entries(load()).map(([name, t]) => ({ name, description: String(t.description ?? ''), inputSchema: schema, annotations: mode === 'instructions' ? { readOnlyHint: true } : {} }));
 }
 
-function runCommand(command, input) {
-  return new Promise(resolve => {
-    const child = spawn(command, { shell: true, windowsHide: true, env: { ...process.env, STRATA_INPUT: String(input ?? '') }, stdio: ['ignore', 'pipe', 'pipe'] });
-    let text = '';
-    const take = chunk => { if (text.length < OUT_MAX) text += chunk.toString(); };
-    child.stdout.on('data', take); child.stderr.on('data', take);
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, TIME_MS);
-    child.on('error', e => { clearTimeout(timer); resolve({ ok: false, text: `The command could not start: ${e.message}` }); });
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      const out = text.slice(0, OUT_MAX).trim();
-      if (signal) resolve({ ok: false, text: `The command was stopped after ${TIME_MS / 1000} seconds.${out ? '\n' + out : ''}` });
-      else resolve({ ok: code === 0, text: out || (code === 0 ? 'The command finished without any error. It printed nothing.' : `The command failed (exit code ${code}) and printed nothing.`) });
-    });
-  });
-}
-
 async function call(name, args) {
   const t = load()[name];
   if (!t) return { isError: true, content: [{ type: 'text', text: 'That tool is no longer available.' }] };
   if (mode === 'instructions') return { content: [{ type: 'text', text: String(t.text ?? '') }] };
-  const r = await runCommand(String(t.command ?? ''), args?.input);
+  const r = await runCommand({ command: String(t.command ?? ''), input: args?.input, callCwd: args?.cwd, cwd: t.cwd, shell: t.shell, timeoutSec: t.timeoutSec });
   return { isError: !r.ok, content: [{ type: 'text', text: r.text }] };
 }
 

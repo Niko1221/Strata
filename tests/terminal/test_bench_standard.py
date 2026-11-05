@@ -936,6 +936,97 @@ class EngineProcessTests(unittest.TestCase):
             else:
                 killpg.assert_called()
 
+    # #3438: the stop used to ignore taskkill's result and the wait timeout, so a stop that failed still ended as a normal finish
+    def _stuck_proc(self):
+        class Stuck:
+            pid = 777
+
+            def poll(self):
+                return None          # never exits
+
+            def wait(self, timeout=None):
+                raise bs.subprocess.TimeoutExpired("x", timeout)
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+        return Stuck()
+
+    def test_stop_engine_says_so_when_the_process_survives(self):
+        proc = self._stuck_proc()
+        done = bs.subprocess.CompletedProcess([], 1, b"", b"ERROR: Access is denied.")
+        with mock.patch("subprocess.run", return_value=done), mock.patch("os.killpg", create=True):
+            problem = bs.stop_engine(proc)
+        self.assertIsNotNone(problem)
+        self.assertIn("777", problem)
+        self.assertIn("still running", problem)
+        if os.name == "nt":
+            self.assertIn("taskkill", problem)
+            self.assertIn("Access is denied", problem)
+
+    @unittest.skipUnless(os.name == "nt", "taskkill is the Windows stop")
+    def test_stop_engine_reports_a_taskkill_that_times_out(self):
+        proc = self._stuck_proc()
+        with mock.patch("subprocess.run", side_effect=bs.subprocess.TimeoutExpired("taskkill", 60)):
+            problem = bs.stop_engine(proc)
+        self.assertIn("did not finish in 60 s", problem)
+
+    def test_stop_engine_is_quiet_when_the_process_ends(self):
+        class Ends:
+            pid = 5
+            alive = True
+
+            def poll(self):
+                return None if self.alive else 0
+
+            def wait(self, timeout=None):
+                self.alive = False
+                return 0
+
+            def terminate(self):
+                self.alive = False
+        proc = Ends()
+        done = bs.subprocess.CompletedProcess([], 0, b"", b"")
+
+        def kill(*args, **kwargs):
+            proc.alive = False
+            return done
+        with mock.patch("subprocess.run", side_effect=kill), mock.patch("os.killpg", create=True, side_effect=lambda *a: setattr(proc, "alive", False)):
+            self.assertIsNone(bs.stop_engine(proc))
+        self.assertIsNone(bs.stop_engine(None))
+        # a process that exited by itself needs no kill at all
+        gone = mock.Mock()
+        gone.poll.return_value = 0
+        self.assertIsNone(bs.stop_engine(gone))
+
+    def test_a_run_whose_engine_cannot_be_stopped_is_marked_failed_and_loud(self):
+        # cli: the run finished, the stop failed -> exit code 6, an ERROR line on stderr, a note in the folder, ok false in the json
+        plan = {"effective": {"host": "127.0.0.1", "port": 1}, "engine_argv": [], "config": {}}
+        fake_doc = {"run": {"status": "complete"}, "quality": {}, "summaries": []}
+        out_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        (out_dir / "results.json").write_text("{}", encoding="utf-8")
+        (out_dir / "README.md").write_text("x", encoding="utf-8")
+        with mock.patch("strata_cli.cli._source", return_value=(Path("p.json"), None, None, {})), \
+                mock.patch("strata_cli.cli._launch_plan", return_value=(plan, [])), \
+                mock.patch.object(bs, "start_engine", return_value=object()), \
+                mock.patch.object(bs, "run", return_value=(fake_doc, out_dir)), \
+                mock.patch.object(bs, "stop_engine", return_value="process 9 is still running 30 s after it was told to stop"), \
+                mock.patch("strata_cli.client.server_url", side_effect=lambda u: u):
+            err = io.StringIO()
+            out = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                try:
+                    code = main(["bench", "run", "--suite", "standard-v1", "--profile", "p.json", "--out", str(out_dir), "--output", "json"])
+                except SystemExit as stop:
+                    code = stop.code
+        self.assertEqual(code, 6)
+        self.assertIn("could not be stopped", err.getvalue())
+        self.assertIn("FAILED", err.getvalue())
+        self.assertTrue((out_dir / "ENGINE-NOT-STOPPED.txt").is_file())
+
     def test_an_engine_that_exits_before_it_is_ready_is_an_error(self):
         class Dead:
             pid = 1
