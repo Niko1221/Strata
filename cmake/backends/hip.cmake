@@ -42,6 +42,7 @@ macro(strata_hip_mmq)
     # Aurora: moe_fused.cu's gfx11 and moe_fused_iq.cu's gfx11 / gfx12 WMMA kernels for the prompt experts (opt-in STRATA_PF_FUSED=1)
     set(_strata_mmq_sources
       src/prefill/moe_mmq.cu
+      src/prefill/mmq_nvfp4_w4a8.cu
       src/prefill/moe_fused.cu
       src/prefill/moe_fused_iq.cu
       src/prefill/moe_f16_kq.cu
@@ -87,6 +88,11 @@ macro(strata_hip_mmq)
     target_link_libraries(strata_mmq PUBLIC ggml-base hip::host roc::hipblas)
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
     target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1)
+    add_executable(mmq_nvfp4_parity src/prefill/mmq_nvfp4_parity.cpp)
+    target_link_libraries(mmq_nvfp4_parity PRIVATE strata_mmq ggml-base strata_hip_runtime)
+    if(NOT MSVC)
+      target_compile_options(mmq_nvfp4_parity PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mf16c>)
+    endif()
     # Aurora: the gfx11 fused experts against the FP64 reference and MMQ (tests/cuda's test; exit 77 off gfx11)
     add_executable(hip_prefill_fused_moe tests/cuda/prefill_fused_moe_test.cpp)
     target_include_directories(hip_prefill_fused_moe PRIVATE "${_strata_gg}/include")

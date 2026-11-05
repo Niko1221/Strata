@@ -342,10 +342,8 @@ bool supported(int t) {
         case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q5_1: case GGML_TYPE_Q6_K:
             return kq_ok();
 #endif
-#if !defined(GGML_USE_HIP)
         case GGML_TYPE_NVFP4:
             return nvfp4_mode() != Nvfp4Mode::FP16;
-#endif
         default:
             return false;
     }
@@ -553,12 +551,13 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_Q6_K: mul_mat_q_case<GGML_TYPE_Q6_K>(ctx, a, s); break;
         case GGML_TYPE_Q5_1: mul_mat_q_case<GGML_TYPE_Q5_1>(ctx, a, s); break;
 #endif
-#if !defined(GGML_USE_HIP)   // NVFP4: CUDA only (no HIP instance, no W4A8 unit)
         case GGML_TYPE_NVFP4:
+#if !defined(GGML_USE_HIP)   // W4A4 requires Blackwell's FP4 MMA; HIP uses W4A8.
             if (fp4_activations(t)) run_nvfp4_w4a4(ctx, a, s);
-            else run_nvfp4_w4a8(ctx, a, s);
-            break;
+            else
 #endif
+                run_nvfp4_w4a8(ctx, a, s);
+            break;
         default:
             std::fprintf(stderr, "prefill mmq: type %d is not covered\n", (int) t);
             std::exit(1);
