@@ -2415,12 +2415,17 @@ struct Model::Impl {
             off += align256(bytes) + (store_gb() > 0 ? ExpertStore::kSlack : 0);   // (the store's aligned reads spill into the gaps)
         }
         l.lay.fmt = gg::kFmtMXFP4;
+        // a low-bit gate / up may have DeepSeek's own MXFP4 down (Unsloth's dynamic quants keep it there: UD-Q2_K_XL's
+        // layers 0, 1 and 15-19), which the low-bit kernels and the CPU lane's ggml rows read as such; an MXFP4 gate or
+        // up is the MXFP4 kernels' layer, all three roles
         if (!gg::mx_experts(l.lay) && (gg::expert_type(l.lay, 0) != gg::expert_type(l.lay, 1) ||
                                        gg::expert_type(l.lay, 0) == gg::kTypeMXFP4 ||
-                                       gg::expert_type(l.lay, 2) == gg::kTypeMXFP4)) {
+                                       (gg::expert_type(l.lay, 2) == gg::kTypeMXFP4 &&
+                                        !gg::iq::supported_down(gg::kTypeMXFP4)))) {
             err = P + ": gate / up / down of types " + gg::type_name(l.lay.K[0]) + " / " +
                   gg::type_name(l.lay.K[1]) + " / " + gg::type_name(l.lay.K[2]) +
-                  " (gate and up must match; MXFP4 does not mix with the others)";
+                  " (gate and up must match; an MXFP4 gate or up does not mix with the others, nor on this build an "
+                  "MXFP4 down with a low-bit gate / up)";
             return false;
         }
         l.blob = off;
