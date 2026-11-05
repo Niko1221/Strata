@@ -298,6 +298,63 @@ class CalibDirDefaultIdentity(unittest.TestCase):
                 importlib.reload(jev_calib)
 
 
+class StartupWritesNothingOnStock(unittest.TestCase):
+    """M7 (2026-11-05, expert review major 7): a stock server (no 'decision' in MODES)
+    never writes to disk.  The old startup called swap() and started the log thread
+    unconditionally, and log_flush() mkdir'ed ./calib/data every 200 ms BEFORE its
+    empty-queue check - so a server that never mentioned jev grew a calib/ dir in its
+    working directory.  Pinned here without any sleeping: the hook itself is the actor,
+    so calling it in a clean tmp cwd (plus a forced flush) is the 5-minute version of
+    the 5-second server test."""
+
+    def setUp(self):
+        self._modes, self._dir = jev_calib.MODES, jev_calib.CALIB_DIR
+        self._cwd = os.getcwd()
+        self._env = {k: v for k, v in os.environ.items()}
+        os.environ.pop("STRATA_JEV_CALIB_LOG", None)
+        os.environ.pop("STRATA_JEV_CALIB_DIR", None)
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+        jev_calib.MODES, jev_calib.CALIB_DIR = self._modes, self._dir
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def test_stock_mode_startup_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)                       # the clean cwd a stock start would run in
+            jev_calib.MODES = frozenset({"chat"})
+            jev_calib.CALIB_DIR = None
+            self.assertIsNone(jev_calib.startup())
+            jev_calib.log_enqueue({"tuple": "a|q|none|v1|L|noul", "qid": "x",
+                                   "type": "noul", "raw_p": [0.5, 0.5]})
+            self.assertEqual(jev_calib.log_flush(), 0)     # drained, dropped: no dir to write
+            self.assertEqual(list(Path(td).iterdir()), [], "a stock start created files")
+
+    def test_decision_without_optin_starts_no_thread(self):
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)
+            jev_calib.MODES = frozenset({"chat", "decision"})
+            jev_calib.CALIB_DIR = Path(td) / "calib"       # even with a dir set
+            self.assertIsNone(jev_calib.startup())          # no STRATA_JEV_CALIB_LOG -> no thread
+            self.assertFalse((Path(td) / "calib").exists()) # and swap() made no mkdir either
+
+    def test_decision_with_optin_starts_the_flusher(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "calib.json").write_text(json.dumps({"T_choice": 2.0}))
+            jev_calib.MODES = frozenset({"chat", "decision"})
+            jev_calib.CALIB_DIR = Path(td)
+            os.environ["STRATA_JEV_CALIB_LOG"] = "1"
+            stop = jev_calib.startup()
+            try:
+                self.assertIsNotNone(stop)
+                self.assertTrue(jev_calib.active("").loaded)   # the swap ran (dir was set)
+            finally:
+                if stop is not None:
+                    stop.set()
+                jev_calib._set_for_test(None)
+
+
 class PerTupleCalib(unittest.TestCase):
     """P0-1 (Opus plan): calibrators are keyed by readout letter."""
 

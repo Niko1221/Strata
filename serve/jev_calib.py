@@ -338,6 +338,30 @@ def log_thread(stop: threading.Event | None = None):
     log_flush()
 
 
+def startup() -> "threading.Event | None":
+    """M7 (2026-11-05, expert review): the server-startup hook for this module.  A stock
+    server (no 'decision' in MODES) must behave exactly like upstream Strata: no calib
+    read, no log thread, no disk write anywhere in its working directory.
+
+    - swap() runs only when decisions are on AND a dir is explicitly set (B1: CALIB_DIR
+      is None unless STRATA_JEV_CALIB_DIR says otherwise).
+    - the background log thread is OPT-IN via STRATA_JEV_CALIB_LOG=1; without it the
+      queue is still bounded (4096 rows) and log_flush() without a dir drops, so an
+      opted-out decision server also never writes.
+    -> the flusher's stop event, or None when nothing was started."""
+    if "decision" not in MODES:
+        return None
+    if CALIB_DIR is not None:
+        swap()
+    if os.environ.get("STRATA_JEV_CALIB_LOG", "") not in ("1", "true", "True", "on"):
+        return None
+    import atexit
+    stop = threading.Event()
+    threading.Thread(target=log_thread, args=(stop,), daemon=True, name="jev-calib-log").start()
+    atexit.register(lambda: (stop.set(), log_flush()))
+    return stop
+
+
 def tuple_of(readout_mode: str, qtype: str) -> str:
     alias = os.environ.get("STRATA_JEV_ALIAS", "local")
     quant = os.environ.get("STRATA_JEV_QUANT", "iq3_xxs")

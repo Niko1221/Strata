@@ -10654,16 +10654,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
     svc.start_vision_idle()
-    # M3.2: calib startup load + background log flusher (daemon; exits with the process).
-    # B1/M7 (2026-11-05): swap only when decisions are on AND a dir is explicitly set - a
-    # stock or decision-only-without-dir start never reads (or writes) calib files.
-    import atexit  # noqa: E402 - local, like the MCP hub's use above
-    if "decision" in jev_calib.MODES and jev_calib.CALIB_DIR is not None:
-        jev_calib.swap()
-    _calib_flush_stop = threading.Event()
-    threading.Thread(target=jev_calib.log_thread, args=(_calib_flush_stop,), daemon=True,
-                     name="jev-calib-log").start()
-    atexit.register(lambda: (_calib_flush_stop.set(), jev_calib.log_flush()))
+    # M3.2/M7 (2026-11-05): calib startup is jev_calib.startup() - a stock server (no
+    # 'decision' in MODES) reads nothing, starts no thread and writes nothing; the log
+    # thread itself is opt-in (STRATA_JEV_CALIB_LOG=1).
+    jev_calib.startup()
     # main's IPv6-aware form is kept: "::" must print as [::1], and a literal v6 host needs brackets
     here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
