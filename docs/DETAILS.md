@@ -1472,6 +1472,19 @@ NAME may
 not contain a path, a drive, a stream (`:`), a Windows device name (`NUL`, `CON.bin`, `COM1`...), a control character,
 a leading dot or a trailing dot or space.
 
+**Automatic session file (opt-in).** `"auto_session": true` in the config (or `--auto-session [NAME]`) keeps one
+session file, named `auto-session` unless NAME says otherwise, in the `slot_save_path` folder, and the server drives
+it itself: after each request it waits ten seconds of quiet and writes the conversation the engine holds, and when
+the engine starts - at boot or after a restart - it reads that file back before the first request runs, so the
+parking comes back across a server restart. Measured on the M1 Max (2026-11-05, huihui Q4_K_XL): saving 212 tokens
+takes 228 MB and 178 ms; the read-back costs the same file read. A save never delays a request: it takes the same
+FIFO as a request and only runs when nothing is running or queued, and a file that no longer fits (another model or
+engine version, a half-written file) is refused and the first request simply reads from 0, exactly as without the
+feature. It needs `slot_save_path` (or `--slot-save-path DIR`) and is off with parallel requests (`"parallel"` /
+`--batch`), as slot save/restore is. On the Mac the file holds no draft-model K/V (the decode window keeps that to
+itself): after a restore the first drafts are refused more often than usual until that cache refills - the answer
+stays right, only those few windows decode a little slower.
+
 `--session-save-reclaim` (an engine argument in the config's `args`, off by default) lets a SAVE that fails its
 RAM preflight first release reconstructible host caches: retained K/V buffers, oldest unpinned parked
 conversations, then unpinned checkpoints other than the one selected for the file. It stops as soon as measured

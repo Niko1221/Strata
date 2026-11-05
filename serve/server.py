@@ -4043,6 +4043,10 @@ class Service:
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.auto_session = None                      # "auto_session": live conversation saved to this file (None = off)
+        self.sess_saved_at = 0.0                      # when that file last held what the engine holds
+        self.sess_started_at = time.time()            # the engine's current start; a turn before it is not in the file
+        self.sess_needs_restore = False               # a new engine start still awaits the file read-back
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -4258,6 +4262,114 @@ class Service:
         for cancel in active:
             cancel.set()
         return len(active)
+
+    # ---- automatic session file ("auto_session": true or a file name; off without it) ----
+    AUTO_SESSION_QUIET_S = 10.0        # how long the engine must sit idle after a request before it saves
+
+    def auto_session_setup(self, value) -> None:
+        """Turn the automatic session file on: True saves the engine's live conversation to the file
+        \"auto-session\" under slot_save_path; a string names the file instead. The file is written once the
+        engine has idled after a request and read back whenever the engine (re)starts, so the conversation the
+        parking holds comes back across a server restart. Needs a serial engine (not \"parallel\" / --batch)."""
+        if value is None or value is False:
+            return
+        if value is True:
+            value = "auto-session"
+        why = slot_filename_problem(value) if isinstance(value, str) else "not true or a file name"
+        if why:
+            raise SystemExit(f"[strata] \"auto_session\" must be true or a safe file name, not {value!r} ({why})")
+        if not self.slot_save_path:
+            raise SystemExit("[strata] \"auto_session\" needs a slot_save_path (or --slot-save-path DIR)")
+        if getattr(self.engine, "batch", 0) or not hasattr(self.engine, "session_file"):
+            print("[strata] \"auto_session\" stays off: the session file is not available with parallel requests "
+                  "or with an engine that has no SAVE/RESTORE", flush=True)
+            return
+        self.auto_session = value
+        self.sess_needs_restore = True                 # read the file back as soon as the engine sits ready and idle
+        if self.loaded():                              # an engine started at boot, before this wiring: read back now
+            if self.fifo.acquire(timeout=60):
+                try:
+                    self.auto_session_restore()
+                finally:
+                    self.fifo.release()
+        threading.Thread(target=self._auto_session_loop, daemon=True).start()
+        print(f"[strata] automatic session file on: {value} in {self.slot_save_path} (written "
+              f"{self.AUTO_SESSION_QUIET_S:g} s after a request settles, read back when the engine starts)",
+              flush=True)
+
+    def auto_session_path(self) -> str:
+        return os.path.join(self.slot_save_path, self.auto_session)
+
+    def auto_session_restore(self) -> None:
+        """Read the automatic session file back after an engine start (the caller holds self.fifo). A file that no
+        longer fits (another model, a truncated write) is refused; the first request then reads from 0 as before."""
+        if not self.sess_needs_restore:
+            return
+        self.sess_needs_restore = False
+        if (self.last_request_at or 0.0) > self.sess_started_at:
+            return            # a request already ran since this start: the engine holds something newer than the file
+        path = self.auto_session_path()
+        try:
+            os.lstat(path)
+        except OSError:
+            return
+        try:
+            r = self.engine.session_file("restore", path)
+            self.sess_saved_at = time.time()          # the engine now holds exactly what the file holds
+            print(f"[strata] auto-session: restored {r['tokens']} tokens from {self.auto_session} in "
+                  f"{r['ms']:.0f} ms", flush=True)
+        except SessionRefused as e:
+            print(f"[strata] auto-session: the file was refused ({e}); requests read from 0 as before", flush=True)
+        except EngineDied as e:
+            print(f"[strata] auto-session: the restore ended the engine ({e}); the next request starts it again",
+                  flush=True)
+
+    def auto_session_save(self, why: str = "") -> bool:
+        """Save the engine's live conversation to the automatic session file, when the engine sits idle between
+        requests (the FIFO is taken without waiting, so a running or queued request always wins). -> True when the
+        file was written."""
+        if not self.auto_session or not self.loaded():
+            return False
+        if not self.fifo.acquire(blocking=False):
+            return False                              # something is running or queued; the next idle round saves
+        try:
+            r = self.engine.session_file("save", self.auto_session_path())
+            self.sess_saved_at = time.time()
+            print(f"[strata] auto-session: saved {r['tokens']} tokens, {max(1, r['bytes'] >> 20)} MB in "
+                  f"{r['ms']:.0f} ms{f' ({why})' if why else ''}", flush=True)
+            return True
+        except SessionRefused as e:
+            print(f"[strata] auto-session: the save was refused ({e}); trying again when the engine next idles",
+                  flush=True)
+        except EngineDied as e:
+            print(f"[strata] auto-session: the save ended the engine ({e}); the next request starts it again",
+                  flush=True)
+        finally:
+            self.fifo.release()
+        return False
+
+    def _auto_session_loop(self) -> None:
+        while True:
+            time.sleep(1.0)
+            try:
+                with self.status_lock:
+                    busy = self.status.get("busy") or self.status.get("queued")
+                if busy or not self.auto_session:
+                    continue
+                if self.sess_needs_restore and self.loaded():
+                    if self.fifo.acquire(timeout=5):
+                        try:
+                            self.auto_session_restore()
+                        finally:
+                            self.fifo.release()
+                    continue                            # the idle saves only start after the read-back settled
+                if time.time() - (self.last_request_at or self.started_at) < self.AUTO_SESSION_QUIET_S:
+                    continue
+                if (self.last_request_at or self.started_at) <= max(self.sess_saved_at, self.sess_started_at):
+                    continue                          # nothing new since the file was written, or the engine restarted
+                self.auto_session_save("idle")
+            except Exception as e:  # noqa: BLE001 - the saver must never stop the server
+                print(f"[strata] auto-session: {e}", flush=True)
 
     def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
@@ -4586,6 +4698,10 @@ class Service:
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
+        if self.auto_session:                          # the parked conversation comes back across a restart too
+            self.sess_started_at = time.time()
+            self.sess_needs_restore = True
+            self.auto_session_restore()
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
             try:
                 self.engine.vram(self.vram_reserve)
@@ -4637,6 +4753,9 @@ class Service:
         # a request is on its way: the idle thread must not unload between this and the request's own start
         self.last_request_at = time.time()
         if self.loaded() and not self._vision_down():
+            if self.sess_needs_restore:                # boot engine idle: read the conversation back before this request
+                with self.fifo:
+                    self.auto_session_restore()
             return
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
@@ -8843,6 +8962,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                          "\"min_free_vram_mib\" in the config; default: always load)")
     ap.add_argument("--before-load", help="a command run before the model is loaded again (e.g. to unload another "
                                           "server's model; also \"before_load\" in the config, a string or a list)")
+    ap.add_argument("--auto-session", default=None, metavar="NAME", nargs="?", const="auto-session",
+                    help="keep the conversation the engine holds in NAME (default \"auto-session\") under the slot "
+                         "save path: written when the engine idles after a request, read back when the engine "
+                         "starts, so parking survives a server restart (also \"auto_session\": true in the config); "
+                         "needs --slot-save-path or slot_save_path")
     ap.add_argument("--slot-save-path", default=None, metavar="DIR",
                     help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
@@ -9218,6 +9342,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             raise SystemExit(f"[strata] {e}")
         print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
+    autos = a.auto_session if a.auto_session is not None else cfg.get("auto_session")
+    if autos is not None and autos is not False:
+        if isinstance(autos, str) and not autos.strip():
+            autos = "auto-session"
+        svc.auto_session_setup(autos)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
@@ -9364,6 +9493,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 print(f"[strata] drain deadline expired; cancelling {cancelled} owned request(s) ...", flush=True)
                 svc.wait_for_drain(5)
                 drained = False
+        if getattr(svc, "auto_session", None):
+            try:
+                svc.auto_session_save("on stop")
+            except Exception as e:  # noqa: BLE001 - a stuck saver must not hold the exit
+                print(f"[strata] auto-session: the save on stop was skipped ({e})", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
                    hub.close if hub is not None else None]
         try:
