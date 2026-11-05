@@ -685,6 +685,91 @@ void iq512x_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void
     }
 }
 
+// ---- gate + up in ONE pass over the activations (the idea of PR 5243's row_gu_dot, bsorensen110): the weights of the two rows are decoded side by
+// side and each token's 64 activation bytes are loaded once and applied to both.  The sums are ggml's AVX2 dot's (the integer lanes folded to eight,
+// f16 scale times y.d, eight float lanes, its hsum, K last), so a token's gate and up are ggml-cpu's vec_dot bit for bit at any token count: the
+// same bits as the one-token path of native_expert.cpp (which runs ggml's dot), and the 2+ token rows differ from the 16-lane i-quant rows by
+// rounding only.  The sign masks of IQ2_XXS / IQ2_XS / IQ3_XXS come from VPOPCNTDQ (FmtX).
+namespace {
+
+template <int TY, int NT>
+void gu_fused(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff, int r0, int r1) {
+    const block_q8_K* y[NT];
+    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
+    const int nb = n / QK_K;
+    const __m512i zero = _mm512_setzero_si512();
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* gr = blob + (size_t) r * gu_row;
+        const uint8_t* ur = blob + up_off + (size_t) r * gu_row;
+        __m256 ag[NT], au[NT];
+        for (int t = 0; t < NT; ++t) ag[t] = au[t] = _mm256_setzero_ps();
+        for (int i = 0; i < nb; ++i) {
+            const uint8_t* gb = gr + (size_t) i * FmtX<TY>::bytes;
+            const uint8_t* ub = ur + (size_t) i * FmtX<TY>::bytes;
+            if (prefetch_ahead > 0) {
+                _mm_prefetch((const char*) gb + prefetch_ahead, _MM_HINT_T0);
+                _mm_prefetch((const char*) gb + prefetch_ahead + 64, _MM_HINT_T0);
+                _mm_prefetch((const char*) ub + prefetch_ahead, _MM_HINT_T0);
+                _mm_prefetch((const char*) ub + prefetch_ahead + 64, _MM_HINT_T0);
+            }
+            __m512i ig[NT], iu[NT];
+            for (int t = 0; t < NT; ++t) ig[t] = iu[t] = zero;
+            for (int j = 0; j < 4; ++j) {
+                __m512i gg, gs, ug, us;
+                __mmask64 gm, um;
+                FmtX<TY>::decode(gb, j, gg, gm, gs);
+                FmtX<TY>::decode(ub, j, ug, um, us);
+                for (int t = 0; t < NT; ++t) {
+                    const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
+                    ig[t] = _mm512_dpwssd_epi32(ig[t], _mm512_maddubs_epi16(gg, _mm512_mask_sub_epi8(yv, gm, zero, yv)), gs);
+                    iu[t] = _mm512_dpwssd_epi32(iu[t], _mm512_maddubs_epi16(ug, _mm512_mask_sub_epi8(yv, um, zero, yv)), us);
+                }
+            }
+            const float dg = h2f(u16(gb)), du = h2f(u16(ub));
+            for (int t = 0; t < NT; ++t) {
+                const float yd = y[t][i].d;
+                ag[t] = _mm256_fmadd_ps(_mm256_set1_ps(dg * yd), _mm256_cvtepi32_ps(fold256(ig[t])), ag[t]);
+                au[t] = _mm256_fmadd_ps(_mm256_set1_ps(du * yd), _mm256_cvtepi32_ps(fold256(iu[t])), au[t]);
+            }
+        }
+        for (int t = 0; t < NT; ++t) {
+            const float g = FmtX<TY>::K * hsum8_ggml(ag[t]), u = FmtX<TY>::K * hsum8_ggml(au[t]);
+            ff[t][r] = (g / (1.f + std::exp(-g))) * u;
+        }
+    }
+}
+
+template <int TY>
+void gu_fused_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff, int r0, int r1) {
+    switch (nt) {
+        case 1: gu_fused<TY, 1>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 2: gu_fused<TY, 2>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 3: gu_fused<TY, 3>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 4: gu_fused<TY, 4>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        default:
+            for (int t0 = 0; t0 < nt; t0 += 4) {
+                const int k = nt - t0 < 4 ? nt - t0 : 4;
+                gu_fused_nt<TY>(k, blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1);
+            }
+    }
+}
+
+}  // namespace
+
+bool iq512f_supported(int type) noexcept { return has_vpopcnt() && (type == 16 || type == 17 || type == 18 || type == 21 || type == 22); }
+
+void iq512_fused_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
+                         float* const* ff, int r0, int r1) {
+    switch (type) {
+        case 16: gu_fused_nt<16>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 17: gu_fused_nt<17>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 18: gu_fused_nt<18>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 21: gu_fused_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 22: gu_fused_nt<22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        default: break;
+    }
+}
+
 // ---- Q5_0 (6) down rows in 512-bit lanes: two 32-value blocks a vector, the weights of a block pair decoded once for
 // every token.  The arithmetic is ggml-cpu's AVX2 dot, order for order: per block the 8 integer lanes (values 4l .. 4l+3 of the
 // block, one vpdpbusd lane each), converted, scaled by f16(dx) * f16(dy) and fused into ONE eight-lane float accumulator in block order,

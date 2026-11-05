@@ -37,7 +37,7 @@ WIDE_PUBLIC = {
     "iq256_rows_v", "iq4nl256_down_rows", "iq4nl256_down_rows_v", "q2_0_gguf_rows_multi_avx2",
     "q2_0_gguf_rows_multi_avx2_v", "q2_0_gguf_rows_multi_avx2_legacy", "q2_0_gguf_rows_multi_avx2_bitplane",
     "act_quant_q8_1_avx2", "q8k_quant_avx2", "kq256_gu_rows", "kq256_rows", "bf16_rows_dot_multi",
-    "tq_rows_avx512", "q50_512_down_rows",                        # trellis rows (tq_cpu.cpp: behind cpu_avx512_ok())
+    "tq_rows_avx512", "q50_512_down_rows", "iq512_fused_gu_rows",                        # trellis rows (tq_cpu.cpp: behind cpu_avx512_ok())
 }
 WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq_avx2.cpp", "nvfp4_avx512.cpp", "tq_avx512.cpp")
 # Also compiled above the baseline (AVX2/FMA for nvfp4_avx2, AVX for the older CPUs' rows) and reached only behind a CPU

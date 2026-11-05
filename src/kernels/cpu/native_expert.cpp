@@ -149,6 +149,50 @@ bool x512_one_ok(int type) {
 
 // 0.2.12: the 512-bit Q5_0 down rows (q50_512_down_rows) take the type only if, on synthetic blocks (even and odd block counts, three tokens), they
 // give the bits of ggml-cpu's dot on this build.
+// The same check for the fused gate/up rows (iq512_fused_gu_rows) of an i-quant type: ggml-cpu's dot, SwiGLU included, bit for bit.
+bool iq512f_ok(int type) {
+    static std::mutex mu;
+    static std::map<int, bool> memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (const auto it = memo.find(type); it != memo.end()) return it->second;
+    bool ok = false;
+    const ggml_type_traits_cpu* tr = traits(type);
+    const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_K);
+    if (tr != nullptr && tr->vec_dot != nullptr && t8 != nullptr && t8->from_float != nullptr && iq512f_supported(type)) {
+        constexpr int n = 2560, rows = 24, nt = 3;
+        const size_t rb = ggml_row_size((ggml_type) type, n), nb = (size_t) n / 256, bb = rb / nb;
+        std::vector<uint8_t> w((size_t) 2 * rows * rb);
+        uint32_t seed = 4711u + (uint32_t) type;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (auto& b : w) b = (uint8_t) rnd();
+        for (int r = 0; r < 2 * rows; ++r)
+            for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+        std::vector<std::vector<uint8_t>> act(nt, std::vector<uint8_t>(ggml_row_size(GGML_TYPE_Q8_K, n)));
+        const void* ap[nt];
+        for (int t = 0; t < nt; ++t) {
+            std::vector<float> x(n);
+            for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+            t8->from_float(x.data(), act[(size_t) t].data(), n);
+            ap[t] = act[(size_t) t].data();
+        }
+        std::vector<float> got((size_t) nt * rows), want((size_t) nt * rows);
+        float* fp[nt];
+        for (int t = 0; t < nt; ++t) fp[t] = &got[(size_t) t * rows];
+        iq512_fused_gu_rows(type, w.data(), rb, (size_t) rows * rb, n, ap, nt, fp, 0, rows);
+        for (int t = 0; t < nt; ++t)
+            for (int r = 0; r < rows; ++r) {
+                float g = 0.f, u = 0.f;
+                tr->vec_dot(n, &g, 0, w.data() + (size_t) r * rb, 0, ap[t], 0, 1);
+                tr->vec_dot(n, &u, 0, w.data() + (size_t) rows * rb + (size_t) r * rb, 0, ap[t], 0, 1);
+                want[(size_t) t * rows + r] = (g / (1.f + std::exp(-g))) * u;
+            }
+        ok = std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0;
+        if (!ok) std::fprintf(stderr, "strata: the fused 512-bit gate/up rows of type %d differ from this ggml-cpu's dot: not used\n", type);
+    }
+    memo[type] = ok;
+    return ok;
+}
+
 bool q50_512_ok() {
     static const bool ok = [] {
         const ggml_type_traits_cpu* tr = traits(GGML_TYPE_Q5_0);
@@ -476,6 +520,31 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     if (iq4xs512 && f.gu_type == 23 && nt >= iq4xs512_min && f.tail_off == 0 && iq512_reference_ok(23)) {
         iq512_reference_gu_rows(23, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
+    }
+    // 0.2.12, OPT-IN (N): STRATA_IQ512_FUSED_MAX=M (default 0 = off) sums the gate and up rows of an IQ3_XXS / IQ3_S / IQ2_S expert (types
+    // STRATA_IQ512_FUSED_TYPES, default 18,21,22) for 2..M tokens in ggml-cpu's order, in one pass over the activations (iq512_fused_gu_rows, checked
+    // once against this ggml).  Each token's rows are then what ggml's one-token dot gives it, whatever the group, instead of the 16-lane sums of the
+    // default rows: different rounding (N), measured 1.27-1.34x the default rows at 2-3 tokens on Zen 4 and a loss at one token (so one token keeps ggml's dot).
+    static const int fused_max = [] { const char* e = std::getenv("STRATA_IQ512_FUSED_MAX"); return e ? std::atoi(e) : 0; }();
+    if (fused_max >= 2 && avx512 && nt >= 2 && nt <= fused_max && f.tail_off == 0 && f.gu_type > 0 && f.gu_type < 32) {
+        static const unsigned fused_types = [] {
+            unsigned m = 0;
+            const char* e = std::getenv("STRATA_IQ512_FUSED_TYPES");
+            const std::string v = e != nullptr && e[0] != ' ' ? e : "18,21,22";
+            size_t at = 0;
+            while (at < v.size()) {
+                const int t = std::atoi(v.c_str() + at);
+                if (t > 0 && t < 32) m |= 1u << t;
+                const size_t c = v.find(',', at);
+                if (c == std::string::npos) break;
+                at = c + 1;
+            }
+            return m;
+        }();
+        if (((fused_types >> f.gu_type) & 1u) && iq512f_supported(f.gu_type) && iq512f_ok(f.gu_type)) {
+            iq512_fused_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+            return;
+        }
     }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
     const bool singleton_iq = Arithmetic == NativeArithmetic::WindowInvariant && mt_min > 1;
