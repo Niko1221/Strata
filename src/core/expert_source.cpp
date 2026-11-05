@@ -4974,8 +4974,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 const int res = skip_d[q] ? 2 : (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 1 : 0;
                 std::fprintf(route_dump, " %d:%d:%d", (int) e, rows, res);
             }
-            std::fputc('
-', route_dump);
+            std::fputc(10, route_dump);
         }
         // STRATA_PCIE_BALANCE (opt-in, #1548): the count comes from the measured CPU and GPU costs instead of the share
         const bool pcie_ok = (d.pcie_num > 0 || d.pcie_model.on) && d.src->pcie_layer(d.layers);
