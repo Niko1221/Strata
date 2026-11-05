@@ -254,7 +254,7 @@ private:
         slab_.emplace(key, std::move(buf));
         slab_order_.push_back(key);
         bytes_ += (int64_t) w.size() * 2;
-        while (bytes_ > kBudget && !slab_order_.empty()) {
+        while (bytes_ > budget() && !slab_order_.empty()) {
             const std::string victim = slab_order_.front();
             slab_order_.pop_front();
             auto vit = slab_.find(victim);
@@ -266,9 +266,13 @@ private:
         return *raw;
     }
 
-    // All 256 experts of all 40 layers are about 41 GB as fp16, so a budget above that lets a
-    // long generation keep everything resident and stop paying the upload. The card has 64 GB.
-    static constexpr int64_t kBudget = 40LL << 30;
+    // How much HBM the expert cache may hold. The whole model is about 41 GB as fp16 and the card
+    // has 64 GB, so a long generation can keep everything resident; a process that shares the card
+    // with another one (the serving endpoint, or a test run) has to be told a smaller number.
+    static int64_t budget() {
+        const char * gb = getenv("STRATA_BUDGET_GB");
+        return gb ? (int64_t) std::atoll(gb) << 30 : (40LL << 30);
+    }
     const Gguf & g_;
     std::unordered_map<std::string, std::unique_ptr<Buffer>> full_;
     std::unordered_map<std::string, std::unique_ptr<Buffer>> slab_;

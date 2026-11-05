@@ -56,6 +56,10 @@ echo "generation:"
 run "greedy continuation matches llama.cpp" bash "$CANN_DIR/tests/check_generation.sh" "$MODEL"
 
 echo
+echo "the reference endpoint:"
+run "18790 answers like OpenAI and matches llama.cpp" bash "$CANN_DIR/tests/check_endpoint_18790.sh"
+
+echo
 echo "against llama.cpp (needs a running server on 18789):"
 if curl -sf http://127.0.0.1:18789/v1/models >/dev/null 2>&1; then
     python3 "$CANN_DIR/tests/compare_with_llama.py" "$MODEL" | sed 's/^/  /'
