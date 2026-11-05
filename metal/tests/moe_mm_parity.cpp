@@ -48,6 +48,9 @@ int main(int argc, char** argv) {
         else if (a == "--v5") { v2 = v3 = true; v5 = true; }   // mm_gu5 (weight blocks staged in threadgroup memory)
     }
     if (bench && T == 256) T = 2048;
+    // v1 (mm_gu / mm_down) is the first-generation test kernel: the engine only ever dispatches mm_gu2 / mm_gu3 (window.cpp, prompt_chain.inc).
+    // It has no IQ4_XS gate/up, so that type runs the v2 path here instead of failing at the pipeline lookup.
+    if (!v2 && gu == ref::IQ4_XS) { v2 = true; std::printf("note: IQ4_XS gate/up has no v1 kernel (the engine does not use v1): running v2\n"); }
     if (v4) TM = 16 * MS;   // the plan's tile height; mm_gu4's name carries MS instead
     mtl::Context cx;
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"});
