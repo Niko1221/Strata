@@ -66,6 +66,36 @@ GGML_CANN_CALL_ACLNN_OP(ctx, Topk, acl_src.get(), (int64_t) k, (int64_t) 3,
 所以 ggml 的 dim 0 对应 CANN 的**最后一维**（3）。`ggml_cann_cumsum` 里就是这么写的，
 `Topk` 的 `dim` 参数同理。
 
+## 先更正一个悲观结论：融合算子会自动降级
+
+`llama-context.cpp:661` 的 `resolve_fused_ops` 会在建图后**检查融合节点落在哪个设备上**：
+
+```cpp
+if (device_fused != device_layer) {
+    LLAMA_LOG_WARN("layer %d is assigned to device %s but %s is assigned to device %s (usually due to missing support)");
+    device_mismatch = true;
+}
+```
+
+不匹配就把 `cparams.fused_*` 关掉，**下一块图改用未融合的等价写法**。所以：
+
+| 融合算子 | CANN 不支持时 | 结论 |
+|---|---|---|
+| `DSV4_HC_PRE/POST` | 走未融合路径（matmul + rms_norm + sigmoid + mean） | **全在 NPU 上**，只是多几次读写 |
+| `TOP_K_MASK` | 走 `llama-graph.cpp:3466` 的未融合分支（fill + set_rows + add + view） | **全在 NPU 上** |
+| `GATED_LINEAR_ATTN` | 支持 | 在 NPU 上 |
+
+我原来写"这五个算子都会回退 CPU"是**错的**。真正会掉到 CPU 的只有两类：
+
+1. **`TOP_K`** —— 图里有这个节点，`supports_op` 返回 false 就整块跑 CPU。**已经补上并验证**。
+2. **`LIGHTNING_INDEXER`** —— `build_qsa_sel` 里**没有未融合的替代写法**，这个节点一旦不支持就必然在 CPU 上。
+
+所以剩下的 CPU 开销比我原来估的小得多：每个注意力层只有一个小算子（4 头 × 128 维 × 512 个池化单元），
+而不是"每层 HC + QSA + topk 全在 CPU"。
+
+**这件事要实测确认**：跑起来看日志里有没有上面那条 WARN，以及算子被分到哪个设备。
+`GGML_SCHED_DEBUG=2` 能打出每个节点的后端。
+
 ## 五个算子逐个看
 
 ### `GGML_OP_TOP_K` — 值得先做
