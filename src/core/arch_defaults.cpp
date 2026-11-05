@@ -95,6 +95,12 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         for (auto it = t.begin(); it != t.end(); ++it) {
             if (it->first == "STRATA_SH_STREAM") { t.erase(it); break; }
         }
+        // round 0215 (STRIX-PK): two load-ordering switches of the decode kernels, each the same arithmetic in the same order as without it
+        // (the kernel hashes are equal; first-token logits and outputs identical in the engine).  UD-Q4_K_XL on a Strix Halo Windows PC, DFlash2
+        // serve, 4 request rounds x 2 passes x 4 prompts, interleaved: window time -0.25% (25 of 32 pairs faster, the same window and token count in
+        // every pair), alone +0.2% / +0.3%.  Small but consistent; Linux gfx1151 is unmeasured and keeps its table.
+        t.push_back({"STRATA_SMALL_UNR", "3"});
+        t.push_back({"STRATA_GR_Q8_PFS", "1"});
     }
     return t;
 }

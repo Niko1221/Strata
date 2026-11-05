@@ -90,8 +90,14 @@ int main() {
             CHECK(find(win26, "STRATA_SH_STREAM") != nullptr);     // STRATA_DEFAULTS=026: v0.2.6's table on Windows too
             CHECK(find(lin26, "STRATA_SH_STREAM") != nullptr);
             CHECK(win26 == lin26 && win26 == lin);                 // under 026 and on Linux the whole table is the same
-            CHECK(win.size() + 1 == lin.size());                   // Windows loses that one entry and nothing else
-            for (const auto& kv : win) CHECK(find(lin, kv.first.c_str()) != nullptr && *find(lin, kv.first.c_str()) == kv.second);
+            CHECK(win.size() == lin.size() + 1);                   // Windows loses SH_STREAM and gains the two round-0215 decode switches
+            CHECK(find(win, "STRATA_SMALL_UNR") != nullptr && *find(win, "STRATA_SMALL_UNR") == "3" && find(lin, "STRATA_SMALL_UNR") == nullptr);
+            CHECK(find(win, "STRATA_GR_Q8_PFS") != nullptr && *find(win, "STRATA_GR_Q8_PFS") == "1" && find(lin, "STRATA_GR_Q8_PFS") == nullptr);
+            CHECK(find(win26, "STRATA_SMALL_UNR") == nullptr && find(win26, "STRATA_GR_Q8_PFS") == nullptr);   // STRATA_DEFAULTS=026 keeps v0.2.6's table
+            for (const auto& kv : win) {
+                if (kv.first == "STRATA_SMALL_UNR" || kv.first == "STRATA_GR_Q8_PFS") continue;
+                CHECK(find(lin, kv.first.c_str()) != nullptr && *find(lin, kv.first.c_str()) == kv.second);
+            }
         }
         // other architectures: the platform changes nothing
         for (const char* a : {"gfx1100", "gfx1030", "gfx1103", "gfx1150", "gfx1152", "gfx1201", "gfx1200", ""}) {
