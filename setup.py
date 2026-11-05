@@ -713,7 +713,7 @@ FAMILIES = {
               "profile": "expert-profile-coder.bin"},
     # Unsloth's UD-IQ4_XS (three shards, #621), UD-Q4_K_XL (four), UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 (six) of the original
     # model (docs/QUANTS.md): regular choices since f-quants; the shard count and "vision" are per model (MODELS)
-    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 4- to 8-bit quantizations",
+    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 1- to 8-bit quantizations",
                 "about": "UD-IQ1_M, UD-Q2_0, UD-IQ2_XS, UD-Q2_K_XL, UD-IQ3_XXS, UD-Q3_K_XL, UD-IQ4_XS, UD-IQ4_XS-v31, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (68 to 188 GB downloads): every expert in "
                          "RAM from ~50 GB (UD-IQ1_M) to ~136 GB (Q8_0) of RAM, else part of them read from the SSD",
                 "hf": hf("unsloth/Qwen3.8-Flash-Next-GGUF") + "{q}/",
