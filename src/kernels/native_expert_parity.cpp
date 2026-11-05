@@ -505,7 +505,9 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
     }
     const double ec = rel(got_c, ref), eg = rel(got_g, ref), ecg = rel(got_c, got_g);
-    const bool ok = ec < 3e-2 && eg < 3e-2 && std::isfinite(ec) && std::isfinite(eg);
+    // Q5_0 down used to sit at 2.1e-2 .. 3.1e-2 (the offset from the original activation sum); with the quantized sum it is as accurate as the rest
+    const double gpu_limit = f.d_type == 6 ? 1.8e-2 : 3e-2;
+    const bool ok = ec < 3e-2 && eg < gpu_limit && std::isfinite(ec) && std::isfinite(eg);
     std::printf("%-9s %-8s/%-7s blob %8zu  cpu rel %.2e  gpu rel %.2e  cpu-gpu %.2e  %s\n", label.c_str(),
                 ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), f.bytes, ec, eg, ecg,
                 ok ? "ok" : "FAIL");
