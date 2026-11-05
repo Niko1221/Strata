@@ -37,7 +37,8 @@ std::vector<float> random_vec(Rng & r, size_t n, float scale) {
 void reference(const std::vector<float> & x, const std::vector<float> & w_norm,
                const std::vector<float> & w_down, const std::vector<float> & w_up,
                const std::vector<float> & w_inject, const std::vector<float> & block_out,
-               std::vector<double> & mixed_ref, std::vector<double> & final_ref) {
+               std::vector<double> & mixed_ref, std::vector<double> & final_ref,
+               std::vector<double> & inject_ref) {
     const int64_t hc_dim = kHidden * kHc;
     std::vector<double> xn((size_t) hc_dim);
     for (int64_t s = 0; s < kHc; ++s) {
@@ -57,7 +58,7 @@ void reference(const std::vector<float> & x, const std::vector<float> & w_norm,
     for (int64_t j = 0; j < kHcLowRank; ++j) {
         double acc = 0.0;
         for (int64_t k = 0; k < hc_dim; ++k) {
-            acc += (double) w_down[(size_t) (k * kHcLowRank + j)] * xn[(size_t) k];
+            acc += (double) w_down[(size_t) (j * hc_dim + k)] * xn[(size_t) k];
         }
         const double u = acc / (double) kHc;
         lo[(size_t) j] = u / (1.0 + std::exp(-u));
@@ -69,7 +70,7 @@ void reference(const std::vector<float> & x, const std::vector<float> & w_norm,
             const int64_t row = s * kHidden + i;
             double acc = 0.0;
             for (int64_t j = 0; j < kHcLowRank; ++j) {
-                acc += (double) w_up[(size_t) (j * hc_dim + row)] * lo[(size_t) j];
+                acc += (double) w_up[(size_t) (row * kHcLowRank + j)] * lo[(size_t) j];
             }
             const double g = 1.0 / (1.0 + std::exp(-acc));
             mixed_ref[(size_t) i] += xn[(size_t) row] * g / (double) kHc;
@@ -80,10 +81,11 @@ void reference(const std::vector<float> & x, const std::vector<float> & w_norm,
     for (int64_t s = 0; s < kHc; ++s) {
         double acc = 0.0;
         for (int64_t k = 0; k < hc_dim; ++k) {
-            acc += (double) w_inject[(size_t) (k * kHc + s)] * xn[(size_t) k];
+            acc += (double) w_inject[(size_t) (s * hc_dim + k)] * xn[(size_t) k];
         }
         inject[(size_t) s] = acc / (double) kHc;
     }
+    inject_ref = inject;
     final_ref.assign((size_t) hc_dim, 0.0);
     for (int64_t s = 0; s < kHc; ++s) {
         const double w = 2.0 / (1.0 + std::exp(-inject[(size_t) s]));
@@ -116,8 +118,8 @@ int main() {
     const std::vector<float> w_inject = random_vec(r, (size_t) (hc_dim * kHc), 0.05f);
     const std::vector<float> block_out = random_vec(r, (size_t) kHidden, 0.1f);
 
-    std::vector<double> mixed_ref, final_ref;
-    reference(x, w_norm, w_down, w_up, w_inject, block_out, mixed_ref, final_ref);
+    std::vector<double> mixed_ref, final_ref, inject_ref;
+    reference(x, w_norm, w_down, w_up, w_inject, block_out, mixed_ref, final_ref, inject_ref);
 
     Device device;
     Stream stream(device);
@@ -129,6 +131,14 @@ int main() {
     const double e_fin = rel_err(residual, final_ref);
     printf("hidden %lld, streams %lld, low rank %lld\n", (long long) kHidden, (long long) kHc,
            (long long) kHcLowRank);
+    printf("inject ref   %.6f %.6f %.6f %.6f\n", inject_ref[0], inject_ref[1], inject_ref[2], inject_ref[3]);
+    printf("inject dev   %.6f %.6f %.6f %.6f\n", m.inject[0], m.inject[1], m.inject[2], m.inject[3]);
+    printf("inject abs err %.3e\n", [&] {
+        double worst = 0.0;
+        for (int s = 0; s < (int) kHc; ++s) worst = std::max(worst, std::fabs((double) m.inject[(size_t) s] - inject_ref[(size_t) s]));
+        return worst;
+    }());
+    printf("inject rel err %.3e\n", rel_err(m.inject, inject_ref));
     printf("inject     %s\n", [&] {
         char * buf = new char[128];
         snprintf(buf, 128, "%.6f %.6f %.6f %.6f", m.inject[0], m.inject[1], m.inject[2], m.inject[3]);
