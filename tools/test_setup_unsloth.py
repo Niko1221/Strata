@@ -466,7 +466,8 @@ class IQ4XS(Base):
         self.assertAlmostEqual(setup.MODELS[X]["download_gb"], 93682584224 / 1e9, places=1)
         self.assertEqual(setup.MODELS[X]["families"], ("unsloth",))
         self.assertEqual([m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())],
-                         [X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
+                         [X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0", "UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL",
+                          "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"])
         self.assertIsNone(setup.gguf_unsupported(names[0]))                    # #444: a file setup runs now
         self.assertEqual(setup.gguf_choice(names[0]), ("unsloth", X))
         self.assertEqual(setup.budget_model({"args": ["--native", "/m/" + names[0]]}), X)
@@ -517,7 +518,7 @@ class IQ4XS(Base):
         self.assertEqual(code, 0, out)
         fam_line = next(ln for ln in out.splitlines() if ln.startswith("  4) "))
         self.assertIn("Qwen3.8-Flash-Next (Unsloth)", fam_line)
-        self.assertIn("UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (94 to 188 GB downloads)", fam_line)
+        self.assertIn("UD-IQ1_M, UD-Q2_0, UD-IQ2_XS, UD-Q2_K_XL, UD-IQ3_XXS, UD-Q3_K_XL, UD-IQ4_XS, UD-IQ4_XS-v31, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (68 to 188 GB downloads)", fam_line)
         self.assertNotIn("[experimental]", out)
         size_lines = [ln for ln in out.splitlines()
                       if any(ln.startswith(f"  {i}) {m} ") for i in range(1, 6) for m in setup.MODELS)]

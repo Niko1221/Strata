@@ -74,7 +74,8 @@ class Nvfp4Note(unittest.TestCase):
 class UnslothSizes(unittest.TestCase):
     def test_the_sizes_in_menu_order(self):
         names = [m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())]
-        self.assertEqual(names, ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
+        self.assertEqual(names, ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0", "UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL",
+                                 "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"])       # (round 0214 adds the v3.1 sets after the pinned five)
 
     def test_nothing_is_experimental_and_images_are_on(self):
         for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):

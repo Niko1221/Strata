@@ -136,8 +136,8 @@ class GgufDirShards(unittest.TestCase):
 class GgufDirUnsupported(unittest.TestCase):
     """#444: --gguf-dir with GGUFs Strata cannot run (Unsloth's UD-IQ3_XXS, UD-Q2_K_XL) says so, names the files it
     runs (ISTA-DASLab's GSQ-RCO, the Coder's, Unsloth's UD-Q4_K_XL) and the --family/--model of the usable ones."""
-    UD = ["Qwen3.8-Flash-Next-UD-IQ3_XXS-%05d-of-00003.gguf" % i for i in range(1, 4)] + \
-         ["Qwen3.8-Flash-Next-UD-Q2_K_XL-%05d-of-00003.gguf" % i for i in range(1, 4)]
+    UD = ["Qwen3.8-Flash-Next-UD-IQ1_S-%05d-of-00003.gguf" % i for i in range(1, 4)] + \
+         ["Qwen3.8-Flash-Next-BF16-%05d-of-00008.gguf" % i for i in range(1, 4)]   # round 0214: UD-IQ3_XXS and UD-Q2_K_XL run now; UD-IQ1_S and BF16 do not
 
     def problem(self, names, family="qwen", model="IQ3_XXS"):
         with tempfile.TemporaryDirectory() as d:
@@ -149,8 +149,9 @@ class GgufDirUnsupported(unittest.TestCase):
             return p and (p[0].replace(d, "<D>"), p[1])
 
     def test_quant_names(self):
-        for name, want in (("Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf", "UD-IQ3_XXS"),
-                           ("Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", "UD-Q2_K_XL"),
+        for name, want in (("Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf", "UD-IQ1_S"),
+                           ("Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", None),
+                           ("Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf", None),
                            ("model-Q4_K_M.gguf", "Q4_K_M"),
                            ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf", None),
                            ("Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", None),
@@ -159,18 +160,16 @@ class GgufDirUnsupported(unittest.TestCase):
             self.assertEqual(setup.gguf_unsupported(name), want, name)
 
     def test_an_unsloth_ud_file_is_not_taken_for_a_gsq_rco_size(self):
-        msg, hint = self.problem(self.UD)                   # IQ3_XXS: UD-IQ3_XXS has the size in its name
-        self.assertEqual(msg, "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf is UD-IQ3_XXS, a GGUF Strata "
-                              "cannot run")
+        msg, hint = self.problem(self.UD[:3], "unsloth", "UD-IQ1_M")        # a UD-IQ1_S set asked for as UD-IQ1_M
+        self.assertIn("UD-IQ1_S", msg + hint)
         self.assertIn("ISTA-DASLab's GSQ-RCO files", hint)
-        self.assertIn("Unsloth's UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 only", hint)
 
     def test_a_folder_without_the_choice_names_what_is_there(self):
         gsq = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-%05d-of-00002.gguf" % i for i in (1, 2)]
         msg, hint = self.problem(self.UD + gsq, "unsloth", "UD-Q4_K_XL")
         self.assertEqual(msg, "<D> has no Qwen3.8-Flash-Next (Unsloth) UD-Q4_K_XL file")
-        self.assertIn("Not usable here: Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf, "
-                      "Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", hint)
+        self.assertIn("Not usable here: Qwen3.8-Flash-Next-BF16-00001-of-00008.gguf, "
+                      "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf", hint)
         self.assertIn("Usable here: --family coder --model IQ1_M", hint)
 
     def test_usable_folders_are_left_alone(self):
@@ -186,8 +185,8 @@ class GgufDirUnsupported(unittest.TestCase):
             code, out, _, _ = install(ram, found, ["--gguf-dir", d, "--family", "unsloth", "--model", "IQ3_XXS"])
         self.assertEqual(code, 1)
         self.assertIn("has no IQ3_XXS model file", out)
-        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL, Q8_0 (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
-                      "IQ3_XXS)", out)
+        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL, Q8_0, UD-IQ1_M, UD-Q2_0, UD-IQ2_XS, UD-Q2_K_XL, UD-IQ3_XXS, UD-Q3_K_XL, "
+                      "UD-IQ4_XS-v31 (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model IQ3_XXS)", out)
         self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
 
 
