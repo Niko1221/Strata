@@ -132,7 +132,23 @@ arithmetic is ggml-cpu's `ggml_vec_dot_nvfp4_q8_0`, with the float additions ord
 A CPU without AVX-512 (Zen 1 to 3, Intel Core 4th to 10th and 12th to 14th gen, Core Ultra, Xeon E5 v3/v4) runs the same
 rows in 256-bit lanes (`src/kernels/cpu/nvfp4_avx2.cpp`): ggml's AVX2 arithmetic step for step, so every row is bit-equal
 to ggml-cpu's (`nvfp4_cpu_parity`, 0 of 1280x9 and 2560x9 rows differ on a Ryzen 5 5600X, a Ryzen 7 255 and a Core Ultra
-7 265). `STRATA_NO_NVFP4_256=1` falls back to ggml-cpu. An NVFP4 pack is a native pack (its folder holds
+7 265). `STRATA_NO_NVFP4_256=1` falls back to ggml-cpu.
+
+Where such a CPU also has AVX-VNNI - which is the whole 12th to 14th gen, Core Ultra and Sapphire Rapids crowd of that
+list, since they lack AVX-512 while having the instruction (a Zen 4 or newer runs the 512-bit rows, and a Zen 2/3 or a
+4th to 10th gen Core has neither) - the same source compiles a second copy of the row kernels in which one `vpdpbusd`
+stands for the `vpmaddubsw` + `vpmaddwd` pair, as the 512-bit rows already do: one multiply-port uop for four products
+where the pair takes two. Both copies are the same integer sums, because `vpmaddubsw` cannot saturate on these
+operands: |E2M1| doubled is at most 12 against a Q8_0 activation in [-127, 127], so a pair reaches 3048 of the 32767
+an int16 lane holds and the int32 lane 6096 of 2^31. `nvfp4_avx512_parity` therefore checks each copy of the rows
+against ggml-cpu separately, both asserted bit-equal, on a CPU that can run either.
+
+`STRATA_NO_NVFP4_VNNI=1` keeps the AVX2 pair (the engine-wide `STRATA_NO_AVXVNNI=1` takes the Q2_0 and i-quant copies
+down with these, so a token rate read off it is not this kernel's), and
+`nvfp4_avx512_parity --bw THREADS TOKENS avx2plain|avx2vnni` measures either form of these rows alone. What the
+instruction is worth is the pool's own question, not the kernel's: the row's float accumulator chain sets the rate for
+one token, and past a few workers the memory does, which is why the AVX-512 rows and these read DRAM at the same rate
+at full width in the table above. An NVFP4 pack is a native pack (its folder holds
 `native_experts.txt`), so the engine starts on such a CPU. The AVX-512 requirement belongs to the canonical Q2_0 pack
 only; a `--pack` folder without `native_experts.txt` is read as that pack, and the engine says so before it refuses.
 

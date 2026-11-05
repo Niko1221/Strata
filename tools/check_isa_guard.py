@@ -39,13 +39,14 @@ WIDE_PUBLIC = {
     "act_quant_q8_1_avx2", "q8k_quant_avx2", "kq256_gu_rows", "kq256_rows", "bf16_rows_dot_multi",
     "tq_rows_avx512",                        # trellis rows (tq_cpu.cpp: behind cpu_avx512_ok())
 }
-WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq_avx2.cpp", "nvfp4_avx512.cpp", "tq_avx512.cpp")
+WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq_avx2.cpp", "nvfp4_avx512.cpp",
+                "nvfp4_avx2.cpp", "tq_avx512.cpp")
 # Also compiled above the baseline (AVX2/FMA for nvfp4_avx2, AVX for the older CPUs' rows) and reached only behind a CPU
 # check.  STATIC INITIALISERS in any of these run on EVERY CPU at program start (#2324: nvfp4_avx2.cpp / nvfp4_avx512.cpp
 # built a table in a constructor, the compiler used AVX/FMA for it, and a Westmere / Sandy Bridge Xeon died with an
 # illegal instruction before main, with nothing in the log).  The initialisers must not exist: constexpr tables, or
 # function-local statics read behind the CPU check.
-INIT_FREE_OBJECTS = WIDE_OBJECTS + ("nvfp4_avx2.cpp", "kq_avx1.cpp", "q2_avx1.cpp", "iq_avx1.cpp")
+INIT_FREE_OBJECTS = WIDE_OBJECTS + ("kq_avx1.cpp", "q2_avx1.cpp", "iq_avx1.cpp")
 
 # An instruction is "wide" if it is EVEX encoded (first byte 0x62 in 64-bit mode), or one of these VEX / legacy
 # extensions that an AVX2 CPU may lack.  AVX-VNNI is VEX encoded (vpdpbusd, vpdpwssd ...).
@@ -55,6 +56,32 @@ WIDE_OPERAND = re.compile(r"\bzmm|\bk[0-7]\b|[xy]mm(1[6-9]|2\d|3[01])\b|\{k[0-7]
 
 def is_wide(raw0, mnemonic, ops):
     return raw0 == 0x62 or WIDE_MNEMONIC.match(mnemonic) is not None or WIDE_OPERAND.search(ops) is not None
+
+
+def split_instr(body):
+    """(mnemonic, operands) of an objdump instruction line, without its encoding markers.
+
+    binutils 2.42 prints AVX-VNNI as "{vex} vpdpbusd %ymm0,%ymm1,%ymm2": the marker is the first token, so a naive
+    split reads "{vex}" as the instruction and the check calls a binary holding vpdpbusd clean, which is the one
+    thing #795 exists to catch.  Leading {vex} / {evex} markers are dropped; "" means no instruction.
+    """
+    parts = body.split()
+    while parts and parts[0].startswith("{"):
+        parts = parts[1:]
+    return (parts[0], " ".join(parts[1:])) if parts else ("", "")
+
+
+def in_objects(obj, names):
+    """Whether an object file (an archive member path, or a map's "lib:file.obj") is one of `names`.
+
+    On the file name, never a substring: "native_expert.cpp.o" ENDS WITH "expert.cpp.o", so under the substring
+    test every function of the former passed for one of the latter - a policy hole as wide as the one #795 was
+    filed for.
+    """
+    if not obj:
+        return False
+    base = obj.replace("\\", "/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    return base in {n + ".o" for n in names} or base in {n + ".obj" for n in names}
 
 
 def judge(name, obj, wide_text, guarded, weak, is_elf):
@@ -69,7 +96,7 @@ def judge(name, obj, wide_text, guarded, weak, is_elf):
     anon = ("(anonymous namespace)" in name) or ("?A0x" in name)
     if weak:
         return "weak / COMDAT symbol: the linker may pick this wide copy for every caller (ODR)"
-    if obj is not None and not any(obj.endswith(o + ".obj") or obj.endswith(o + ".o") or o in obj for o in WIDE_OBJECTS):
+    if obj is not None and not in_objects(obj, WIDE_OBJECTS):
         return "wide-ISA code outside the wide-ISA translation units (object %s)" % obj
     if anon or base in WIDE_PUBLIC:
         return None
@@ -113,17 +140,16 @@ def run_elf(path):
         if len(parts) < 3:
             continue
         raw = parts[1].split()
-        text = parts[2].strip().split(None, 1)
-        if not raw or not text:
+        mnem, ops = split_instr(parts[2].strip())
+        if not raw or not mnem:
             continue
-        ops = text[1] if len(text) > 1 else ""
-        if is_wide(int(raw[0], 16), text[0], ops):
-            e = wide.setdefault((obj, cur), [0, text[0]])
+        if is_wide(int(raw[0], 16), mnem, ops):
+            e = wide.setdefault((obj, cur), [0, mnem])
             e[0] += 1
         # a static initialiser of a wide-ISA / older-CPU object: any VEX / EVEX encoding is an illegal instruction on a
         # CPU without AVX (or FMA, AVX2), and the initialiser runs before main
-        if cur.startswith("_GLOBAL__sub_I_") and obj and any(obj.endswith(o + ".o") for o in INIT_FREE_OBJECTS) and                 (int(raw[0], 16) in (0xC4, 0xC5, 0x62) or (text[0].startswith("v") and text[0] not in ("verr", "verw"))):
-            e = inits.setdefault((obj, cur), [0, text[0]])
+        if cur.startswith("_GLOBAL__sub_I_") and obj and in_objects(obj, INIT_FREE_OBJECTS) and                 (int(raw[0], 16) in (0xC4, 0xC5, 0x62) or (mnem.startswith("v") and mnem not in ("verr", "verw"))):
+            e = inits.setdefault((obj, cur), [0, mnem])
             e[0] += 1
     bad = []
     for (obj, name), (n, first) in sorted(wide.items(), key=lambda kv: (kv[0][0] or "", kv[0][1])):
@@ -187,7 +213,7 @@ def run_pe(path, mapf):
     for (b, sym, obj), (n, first, guarded) in sorted(wide.items()):
         why = judge(sym, obj.split(":")[-1], "", guarded, False, False)
         # an inline function defined in a header comes out of the map as `f i`; the wide-ISA files must have none
-        in_wide_obj = any(o in obj for o in WIDE_OBJECTS)
+        in_wide_obj = in_objects(obj, WIDE_OBJECTS)
         if why is None and in_wide_obj and not guarded and re.search(r"std@@|\?\$", sym) and not ("?A0x" in sym):
             why = "template / std:: instantiation inside a wide-ISA object (COMDAT: the linker may share it)"
         if why:

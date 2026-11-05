@@ -152,7 +152,7 @@ add_library(strata_kernels_cpu STATIC ${_cpu})
 set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS
   "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
 set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-# AVX-VNNI copies of the AVX-2 expert kernels (q2_avx2.cpp, iq_avx2.cpp), taken at run time where the CPU has them
+# AVX-VNNI copies of the AVX-2 expert kernels (q2_avx2.cpp, iq_avx2.cpp, nvfp4_avx2.cpp), taken at run time where the CPU has them
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
 check_cxx_source_compiles([=[
@@ -173,6 +173,7 @@ else()
   set(_strata_avxvnni STRATA_AVXVNNI=0)
 endif()
 set_property(SOURCE ${STRATA_ROOT}/src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+set_property(SOURCE ${STRATA_ROOT}/src/kernels/cpu/nvfp4_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC strata_includes Threads::Threads)
 
