@@ -1353,11 +1353,17 @@ struct Engine {
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
         x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N); hmain = dalloc(T * N);
         if (const char* v = std::getenv("STRATA_Q36_SUPER_CHUNK")) super_n = std::max(1, std::min(64, std::atoi(v)));
+        if (super_n > 8) {   // xsuper + hsuper take 32 MiB per 2048-token chunk, 2 GiB at N=64
+            std::fprintf(stderr, "strata-q36: super-chunk capped at 8 (requested %d)\n", super_n);
+            super_n = 8;
+        }
         if (super_n > 1) {
             xsuper = dalloc((size_t) T * super_n * N);
             hsuper = dalloc((size_t) T * super_n * N);
             tok_super = dalloc_t<int32_t>((size_t) T * super_n);
             pos_super = dalloc_t<int32_t>(64);   // one start position per sub-chunk (super_n <= 64)
+            std::fprintf(stderr, "strata-q36: super-chunk %d x %zu tokens, x+h buffers %.0f MiB\n",
+                         super_n, T, 2.0 * (double) T * (double) super_n * (double) N * 4.0 / 1048576.0);
         }
         qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
@@ -2132,7 +2138,8 @@ struct Engine {
         CK(cudaMemcpyAsync(pos_super, hpos, (size_t) std::min(nsub, 64) * 4, cudaMemcpyHostToDevice, st));
         for (size_t l = 0; l < m->layers.size(); ++l) {
             const bool last = l + 1 == m->layers.size();
-            const uint8_t* sb = lhy(l) ? stream_take((int) l) : nullptr;
+            // stream_take only when the streamed path is armed: stream_begin() above needs main_hybrid && use_mmq,
+            const uint8_t* sb = (main_hybrid && use_mmq && lhy(l)) ? stream_take((int) l) : nullptr;
             const float* wn = last ? m->out_norm : m->layers[l + 1].attn_norm;
             int k = 0;
             for (int off = 0; off < T; off += chunk, ++k) {
