@@ -4,9 +4,12 @@ Requires Windows, the Strata checkout at the recorded commit and a preloaded mod
 
 ```powershell
 # Run while Strata is serving on localhost:8070; do not launch duplicate servers.
-uv run --no-project --python 3.12 .\tools\strata_bench.py --url http://127.0.0.1:8070 --runs 3 --long --clients 4 --out D:\Modelli\Benchmark\reasoning-off
-uv run --no-project --python 3.12 .\tools\strata_bench.py --url http://127.0.0.1:8070 --runs 3 --long --clients 4 --think --out D:\Modelli\Benchmark\reasoning-on
-uv run --no-project --python 3.12 .\tools\needle_bench.py --url http://127.0.0.1:8070 --lengths 32k,64k,128k --depths 10,50,90 --out D:\Modelli\Benchmark\needles.json
+# Portable output paths; use any writable directory, outside your Strata source checkout.
+$out = Join-Path $env:TEMP "strata-community-benchmark"
+New-Item -ItemType Directory -Path $out -Force | Out-Null
+uv run --no-project --python 3.12 .\tools\strata_bench.py --url http://127.0.0.1:8070 --runs 3 --long --clients 4 --out (Join-Path $out "reasoning-off")
+uv run --no-project --python 3.12 .\tools\strata_bench.py --url http://127.0.0.1:8070 --runs 3 --long --clients 4 --think --out (Join-Path $out "reasoning-on")
+uv run --no-project --python 3.12 .\tools\needle_bench.py --url http://127.0.0.1:8070 --lengths 32k,64k,128k --depths 10,50,90 --out (Join-Path $out "needles.json")
 ```
 
 **Recording conventions:** The original measurement ran in the sequence shown with a single already-running server. The benchmark chooses a calibration-dependent word-list length, yielding recorded (not exactly nominal) prompt tokens; fresh prompt reuse was zero according to its API timing fields. Four clients queue behind 1 configured parallel engine slot. Needle responses are 40-token-cap, greedy, thinking off. Longer runs may consume substantial RAM/VRAM and GPU time.
