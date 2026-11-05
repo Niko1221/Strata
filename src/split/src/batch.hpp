@@ -28,6 +28,7 @@ struct BatchLane {
     Dist shadow_q;
     // per draft position, decayed: how often a draft got there and how often it stood, for chains and for lookups
     std::vector<double> tried, stood, lk_tried, lk_stood;
+    int idle = 0;              // DFlash2: windows since its drafter last ran (a lane with no drafts planned only banks its taps)
     long offered = 0, accepted = 0;   // drafts over its reply
     // a reply from its next window on: ctx the conversation so far, the next row's token last; no drafts yet
     void start(int lane, const Sampling& s, const std::mt19937_64& rng, std::vector<int> ctx);
@@ -79,6 +80,8 @@ private:
     // of the lanes that go on. Greedy lanes without penalties only (draft_next falls back to draft_one otherwise); the same drafts
     void draft_batched(const std::vector<BatchLane*>& lanes, const std::vector<int>& going, const std::vector<int>& r0, const std::vector<std::vector<int>>& got,
                        const std::vector<std::vector<int>>& look, const std::vector<int>& plan, const std::vector<int>& chain_room);
+    void draft_df2(const std::vector<BatchLane*>& lanes, const std::vector<int>& going, const std::vector<int>& r0, const std::vector<std::vector<int>>& got,
+                   const std::vector<std::vector<int>>& look, const std::vector<int>& plan, const std::vector<int>& chain_room);
     bool batched_draft_ = false;
 };
 

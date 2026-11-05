@@ -74,7 +74,8 @@ class Nvfp4Note(unittest.TestCase):
 class UnslothSizes(unittest.TestCase):
     def test_the_sizes_in_menu_order(self):
         names = [m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())]
-        self.assertEqual(names, ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
+        self.assertEqual(names, ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0", "UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL",
+                                 "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"])       # (round 0214 adds the v3.1 sets after the pinned five)
 
     def test_nothing_is_experimental_and_images_are_on(self):
         for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):
@@ -159,6 +160,25 @@ class UnslothDefaultEnv(unittest.TestCase):
         f = setup.unsloth_default_env
         self.assertEqual(f("unsloth", "UD-Q4_K_XL", False, False)["STRATA_ROUTE_TAIL_SKIP"], "0")
         self.assertNotIn("STRATA_ROUTE_TAIL_SKIP", f("unsloth", "UD-Q4_K_XL", False, True))   # budget mode keeps the skip
+
+    def test_tail_skip_stays_on_for_linux_gfx12(self):
+        # owner 11-03 ("3 Yes"): on Linux gfx12 (R9700, RX 9000) setup no longer turns the skip off for the UD files; the engine's own default (rank 7) runs
+        f = setup.unsloth_default_env
+        for arch in ("gfx1201", "gfx1200", "gfx1201:sramecc-:xnack-"):
+            for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"):
+                self.assertNotIn("STRATA_ROUTE_TAIL_SKIP", f("unsloth", m, True, False, arch), (arch, m))
+        # every other card keeps the 0: other AMD (gfx1100, gfx1151), NVIDIA, no arch given (the old signature)
+        for arch in ("gfx1100", "gfx1151", "gfx1030", "", "sm_120"):
+            self.assertEqual(f("unsloth", "UD-Q4_K_XL", True, False, arch)["STRATA_ROUTE_TAIL_SKIP"], "0", arch)
+        self.assertEqual(f("unsloth", "UD-Q4_K_XL", False, False, "gfx1201")["STRATA_ROUTE_TAIL_SKIP"], "0")    # not hip
+        self.assertEqual(f("unsloth", "UD-Q4_K_XL", True, False)["STRATA_ROUTE_TAIL_SKIP"], "0")                 # the old call
+        # Windows gfx12 was not measured: it keeps the 0
+        old = setup.WIN
+        try:
+            setup.WIN = True
+            self.assertEqual(f("unsloth", "UD-Q4_K_XL", True, False, "gfx1201")["STRATA_ROUTE_TAIL_SKIP"], "0")
+        finally:
+            setup.WIN = old
 
     def test_other_families_are_untouched(self):
         for fam, m in (("qwen", "IQ3_S"), ("swift", "Q2_0"), ("coder", "IQ1_M"), ("nvfp4", "NVFP4")):

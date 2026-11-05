@@ -16,6 +16,7 @@ import collections
 import ctypes
 import os
 import platform
+from strata_control import sysinfo
 import re
 import subprocess
 import sys
@@ -480,7 +481,7 @@ def _cpu_name():
             for line in fh:
                 if line.startswith("model name"):
                     return line.split(":", 1)[1].strip()
-    return platform.processor() or None
+    return sysinfo.processor() or None
 
 
 class _CpuRamFallback:

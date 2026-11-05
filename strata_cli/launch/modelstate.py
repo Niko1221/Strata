@@ -7,6 +7,7 @@ is downloaded again. Nothing here reads more than a run config and file existenc
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -148,7 +149,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
     if model_path:
         st.own_files = True
         first = _first_gguf(Path(model_path))
-        beside = discovery.prepared_beside(first) if first else {}
+        beside = discovery.prepared_beside(first, data_places(catalog, data)) if first else {}     # the model folder's own layout, then --data-dir and the remembered folder (where setup writes the draft layer)
         st.folder = beside.get("data_dir")
         if beside.get("pack") is not None and beside.get("mtp") is None and mtp != "off":
             st.parts.append(Part("mtp", "the draft layer", MTP_FETCH_GB))
@@ -203,6 +204,18 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
             if wants_pictures and not _has_reader(base):
                 st.parts.append(Part("mmproj", "the picture reader", MMPROJ_GB))
     return st
+
+
+def data_places(catalog, data: Path | None) -> list[Path]:
+    """The data folders besides the model folder's own layout that may already hold the draft layer: the one the launch names (--data-dir), then the one every command agrees on."""
+    out: list[Path] = [data] if data else []
+    try:
+        default = catalog.data_dir()
+        if default and not any(os.path.normcase(str(default)) == os.path.normcase(str(d)) for d in out):
+            out.append(Path(default))
+    except Exception:                                        # noqa: BLE001 - a question asked early is never a reason to stop
+        pass
+    return out
 
 
 def _has_reader(base: Path) -> bool:
