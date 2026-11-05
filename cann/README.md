@@ -13,7 +13,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | P3b | rope, the full-attention layer of blk.3, and its KV cache across tokens | done |
 | P4 | MoE: top-8 routing, expert matmuls, shared expert | done for one layer's FFN |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
-| P4b | the whole model: 40 layers from a token id to logits | running; hidden-state parity 0.017 over 40 layers |
+| P4b | the whole model: 40 layers from a token id to logits | running; layer 0 matches llama.cpp, later layers drift |
 
 ## Files
 
@@ -136,6 +136,31 @@ instead of the fused `attn_qkv`, which is how the missing-tensor error showed it
 
 Its router tensors are BF16 (`ffn_gate_inp`, `ffn_gate_inp_shexp`), the only BF16 in the file.
 
+## Checking against llama.cpp, not only against ourselves
+
+Every test here compares the NPU against a CPU reference written from reading llama.cpp's source.
+That proves the CANN port matches *my transcription*; it does not prove the transcription is right.
+For that, `llama-eval-callback` (built from the same checkout) dumps llama.cpp's own intermediate
+tensors for the same single token:
+
+```
+llama.cpp  attn_norm-0    = [-0.0858,  0.6080, -3.4649, ...,  0.0278, -0.2714,  0.1871]
+cann/      attn_norm      = [-0.0858,  0.6079, -3.4648, ...,                       ...]
+
+llama.cpp  linear_attn_out-0 = [-0.0061, -0.0046,  0.0089, ...]
+cann/      attn_out          = [-0.0061, -0.0045,  0.0089, ...]
+
+llama.cpp  attn_residual-0   = [-0.0067,  0.0003, -0.0187, ...]
+cann/      residual          = [-0.0067,  0.0003, -0.0187, ...]
+
+llama.cpp  ffn_moe_out-0     = [ 0.0239, -0.0100, -0.0117, ...]
+cann/      ffn_out           = [ 0.0295, -0.0106, -0.0099, ...]     <- still differs
+```
+
+That comparison found a real bug: the short conv feeds its inputs oldest-first, so the **current
+token pairs with the last tap**, not the first. My transcription used the first tap, and the CPU
+reference used the same wrong convention, so the two agreed with each other and both were wrong.
+
 ## What is not here yet
 
 - The engine's own kernels: `src/` still compiles for CUDA only.
@@ -148,6 +173,9 @@ Its router tensors are BF16 (`ffn_gate_inp`, `ffn_gate_inp_shexp`), the only BF1
 - RoPE and the KV cache are done for the full-attention layers. What is left before a whole model
   runs: the 41-layer loop, the token embedding, the final norm and the lm head.
 - Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
+- The shared expert of layer 0 is ~20% off llama.cpp (`ffn_moe_out` 0.0295 against 0.0239) even
+  though its input matches to four decimals, so the divergence is inside that small SwiGLU.
+- Whole-model logits still do not match llama.cpp's for the same token; layer 0 does.
 
 ## Verified on the machine
 
