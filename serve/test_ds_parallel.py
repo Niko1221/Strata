@@ -26,6 +26,7 @@ from serve.server import ByteTokenizer, Service, StrataEngine, parallel_args, se
 # reply is the byte of its first prompt id six times, then 257 (<|im_end|> in the ByteTokenizer), or "ok, done." then
 # 257 for a longer prompt (a chat's).
 FAKE_DS = r'''import os, queue, sys, threading, time
+from pathlib import Path
 args = sys.argv[1:]
 n = int(args[args.index("--parallel") + 1]) if "--parallel" in args else 1
 n = min(n, int(os.environ.get("FAKE_CAP", "99")))   # (the engine runs fewer when the cards hold fewer)
@@ -63,6 +64,11 @@ def step():
             print(f"DONE {rid} {produced} {len(ids)} 1.0 1.0 cancel 0 0 0 0 0", flush=True)
             stopped.discard(rid)
             del active[rid]
+            continue
+        if ("--prefill-gate" in args and b"METRICSHOLD" in bytes(ids)
+                and not Path(args[args.index("--prefill-gate") + 1]).exists()):
+            if rid == min(active):
+                print(f"PP {rid} {len(ids) // 2} {len(ids)} 1.0 1000.0 0", flush=True)
             continue
         t = left.pop(0)
         produced += 1
@@ -109,13 +115,16 @@ class Args(unittest.TestCase):
 
 
 class Engine(unittest.TestCase):
-    def start(self, n):
+    def start(self, n, prefill_gate=False):
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_ds.py"
         script.write_text(FAKE_DS, encoding="utf-8")
         self.log = Path(self.tmp.name) / "requests.log"
         real = server.subprocess.Popen
         extra = ["--parallel", str(n), "--log", str(self.log)]
+        self.prefill_gate = Path(self.tmp.name) / "prefill.done"
+        if prefill_gate:
+            extra += ["--prefill-gate", str(self.prefill_gate)]
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
             self.engine = StrataEngine("strata", extra)
@@ -229,6 +238,44 @@ class Engine(unittest.TestCase):
         for r in r2.values():
             self.assertIn("ok, done.", r["choices"][0]["message"]["content"])
         self.assertLess(two, one * 1.7 + 0.3)                  # two at once cost about one
+
+    def test_monitor_multi_progress_is_not_taken_from_another_request_queue(self):
+        self.start(2, prefill_gate=True)
+        svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        self.httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        results = []
+        first_ids = list(b"METRICSHOLD " + b"x" * 28)
+        second_ids = list(b"METRICSHOLD " + b"y" * 68)
+        def run(ids):
+            results.append(list(svc.run(ids, False, [], 32, {}, threading.Event())))
+        first = threading.Thread(target=run, args=(first_ids,))
+        second = threading.Thread(target=run, args=(second_ids,))
+        first.start()
+        try:
+            end = time.monotonic() + 5
+            while not self.engine.progress and time.monotonic() < end:
+                time.sleep(0.01)
+            second.start()
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                with urllib.request.urlopen(base + "/metrics", timeout=10) as response:
+                    live = json.load(response)["live"]
+                if live["prompt_read"] == 80 and self.engine.progress == (20, 40):
+                    break
+                time.sleep(0.01)
+            self.assertEqual(self.engine.progress, (20, 40), "the first queue must report after the second")
+            with svc.status_lock:
+                newest = list(svc.terminal_requests.values())[-1]
+        finally:
+            self.prefill_gate.touch()
+            first.join(10)
+            if second.ident is not None:
+                second.join(10)
+        self.assertEqual(live["prompt_tokens"], 80)
+        self.assertEqual((live["prompt_read"], live["prompt_total"]), (80, 80))
+        self.assertEqual(live["request_id"], newest["id"])
+        self.assertEqual(len(results), 2)
 
 
 if __name__ == "__main__":
