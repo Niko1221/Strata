@@ -3994,8 +3994,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     // left for an approximated chunk, so it (and its expert transfers) is skipped.  R is not normed for
                     // it (the write after the attention half normed it with this layer's FFN weights).
                     normed = false;
-                    consumed = std::max(consumed, seq_start[(size_t) l + 1]);
-                    give_back(consumed);
+                    if (stream_all) {
+                        consumed = std::max(consumed, seq_start[(size_t) l + 1]);
+                        give_back(consumed);
+                    }
                     break;
                 }
                 // ---- the hyper-connection read of this half
@@ -4131,8 +4133,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (kva_state_only) {
                         // the layer consumed no expert: its stream entries must still be released, or the issuer
                         // thread fills the ring and the next fully computed layer waits for a copy that never comes
-                        consumed = std::max(consumed, seq_start[(size_t) l + 1]);
-                        give_back(consumed);
+                        if (stream_all) {
+                            consumed = std::max(consumed, seq_start[(size_t) l + 1]);
+                            give_back(consumed);
+                        }
                         break;   // state advanced: no gated residual write, no MoE half of this layer
                     }
                 } else if (half == 0) {
@@ -4262,8 +4266,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         ++qsa_index;
                         if (!kv_prefetch_after(l + 1, qsa_index)) return false;
                         // no expert is consumed here: release the stream entries so the issuer cannot stall
-                        consumed = std::max(consumed, seq_start[(size_t) l + 1]);
-                        give_back(consumed);
+                        if (stream_all) {
+                            consumed = std::max(consumed, seq_start[(size_t) l + 1]);
+                            give_back(consumed);
+                        }
                         break;
                     }
                     pt.mark(kPfQsaSel, cs);
