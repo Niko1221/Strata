@@ -38,11 +38,17 @@ def main():
     out = subprocess.run([binary, model, ",".join(str(i) for i in ids)],
                          capture_output=True, text=True, timeout=7200)
     ours = []
+    log_z = None
     for line in out.stdout.splitlines():
         line = line.strip()
-        if line.startswith("token ") and "logprob" in line:
+        if line.startswith("LOGP "):
+            log_z = float(line.split()[1])
+        elif line.startswith("token ") and "logit" in line:
             parts = line.split()
-            ours.append((int(parts[1]), float(parts[-1])))
+            ours.append([int(parts[1]), float(parts[-1])])
+    if log_z is not None:
+        # the engine prints logits plus the log-partition, so logprob = logit - log_z
+        ours = [(i, v - log_z) for i, v in ours]
     if len(ours) < 5:
         print("model_seq produced no logits")
         print(out.stdout[-500:], out.stderr[-500:])

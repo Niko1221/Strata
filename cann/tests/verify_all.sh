@@ -52,6 +52,10 @@ run "attention with a KV cache" "$BIN/attn_cache_parity" "$MODEL" 4
 run "the whole model, one token, NPU vs CPU" "$BIN/model_forward" "$MODEL" 40 64 1
 
 echo
+echo "generation:"
+run "greedy continuation matches llama.cpp" bash "$CANN_DIR/tests/check_generation.sh" "$MODEL"
+
+echo
 echo "against llama.cpp (needs a running server on 18789):"
 if curl -sf http://127.0.0.1:18789/v1/models >/dev/null 2>&1; then
     python3 "$CANN_DIR/tests/compare_with_llama.py" "$MODEL" | sed 's/^/  /'
