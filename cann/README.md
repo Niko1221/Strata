@@ -277,6 +277,22 @@ budget. The workspace cache removed an `aclrtMalloc`/`aclrtFree` pair per op. Dr
 per-op `stream.synchronize()` as well made the numbers wrong — host uploads go through
 `aclrtMemcpy`, which is not ordered against queued kernels — so the sync stayed.
 
+## Where the code lives
+
+| path | what |
+|---|---|
+| `include/strata/cann/device.hpp`, `src/device.cpp` | device, stream, HBM buffers, error type |
+| `include/strata/cann/ops.hpp`, `src/ops.cpp` | the aclnn ops and their CPU oracles |
+| `src/quants.cpp`, `src/iq_quants.cpp` | Q4_K/Q5_K/Q6_K/Q8_0 decoders, bit-exact against ggml |
+| `src/gguf.cpp`, `src/tensor_load.cpp` | GGUF reader, tensor to fp32 |
+| `include/strata/cann/gdn.hpp`, `src/gdn.cpp` | the delta net, per head and batched |
+| `include/strata/cann/engine.hpp`, `src/engine.cpp` | the model: weights, per-layer state, one token step, top-k |
+| `tests/model_seq.cpp` | 178 lines: the parity probe, the generator, the serving loop |
+| `tests/*.cpp` | one parity test per piece, all driven by `verify_all.sh` |
+
+The engine was extracted from the test file late: it had grown three jobs in one 1024-line file.
+`model_seq.cpp` is now only the ways of driving it.
+
 ## One command
 
 ```
