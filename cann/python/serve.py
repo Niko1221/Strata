@@ -44,8 +44,42 @@ def _bytes_from(value, unit_hint=""):
     return int(number)
 
 
+def _parse_two_line_npu_table(text, device_index):
+    """Read the paired board and chip rows emitted by Ascend 910B2C npu-smi."""
+    boards = []
+    current = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("|") or line.count("|") != 4:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        board = re.fullmatch(r"(\d+)\s+(.+)", cells[0])
+        if board and re.fullmatch(r"[A-Za-z][A-Za-z -]*", cells[1]):
+            values = re.findall(r"\d+(?:\.\d+)?", cells[2])
+            if len(values) >= 2:
+                current = {
+                    "name": board.group(2).strip(),
+                    "power_w": float(values[0]),
+                    "temperature_c": float(values[1]),
+                }
+                boards.append(current)
+            continue
+        if current is not None and re.search(
+            r"\b[0-9A-Fa-f]{4}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.\d+\b", cells[1]
+        ):
+            values = re.findall(r"\d+(?:\.\d+)?", cells[2])
+            if len(values) >= 3:
+                current["utilization_pct"] = float(values[0])
+                current["memory_used_bytes"] = int(values[-2]) * 1024 ** 2
+                current["memory_total_bytes"] = int(values[-1]) * 1024 ** 2
+    return boards[device_index] if 0 <= device_index < len(boards) else None
+
+
 def parse_npu_smi(text, device_index=0):
     """Extract the portable fields from common npu-smi table/key-value output."""
+    paired = _parse_two_line_npu_table(text, device_index)
+    if paired is not None:
+        return paired
     result = {}
     headers = None
     rows = []
@@ -63,6 +97,8 @@ def parse_npu_smi(text, device_index=0):
         if cells and cells[0].isdigit() and headers and len(cells) >= len(headers):
             rows.append((int(cells[0]), dict(zip(headers, cells))))
     fields = next((row for index, row in rows if index == device_index), None)
+    if fields is None and 0 <= device_index < len(rows):
+        fields = rows[device_index][1]
     if fields:
         for key, value in fields.items():
             key_lower = key.lower()

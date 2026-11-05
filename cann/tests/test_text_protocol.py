@@ -64,6 +64,34 @@ class TextProtocolTests(unittest.TestCase):
             "power_w": 120.0,
         })
 
+    def test_parses_two_line_910b2c_table_by_device_ordinal(self):
+        output = """
+        | NPU   Name                | Health        | Power(W)             Temp(C)       Hugepages-Usage(page) |
+        | Chip                      | Bus-Id        | AICore(%)            Memory-Usage(MB) HBM-Usage(MB) |
+        | 0     910B2C              | OK            | 82.0                 29            0 / 0 |
+        | 0                         | 0000:66:00.0  | 11                   0 / 0           4108 / 65536 |
+        | 10    910B2C              | OK            | 86.2                 34            0 / 0 |
+        | 0                         | 0000:51:00.0  | 37                   0 / 0           4321 / 65536 |
+        | NPU     Chip              | Process id    | Process name       | Process memory(MB) |
+        | 0       0                 | 6305          | llama-cli          | 708 |
+        """
+        self.assertEqual(parse_npu_smi(output, 0), {
+            "name": "910B2C",
+            "utilization_pct": 11.0,
+            "memory_used_bytes": 4108 * 1024 ** 2,
+            "memory_total_bytes": 65536 * 1024 ** 2,
+            "temperature_c": 29.0,
+            "power_w": 82.0,
+        })
+        self.assertEqual(parse_npu_smi(output, 1), {
+            "name": "910B2C",
+            "utilization_pct": 37.0,
+            "memory_used_bytes": 4321 * 1024 ** 2,
+            "memory_total_bytes": 65536 * 1024 ** 2,
+            "temperature_c": 34.0,
+            "power_w": 86.2,
+        })
+
 
 if __name__ == "__main__":
     unittest.main()
