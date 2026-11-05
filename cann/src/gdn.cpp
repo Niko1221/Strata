@@ -34,6 +34,14 @@ void gdn_ref(const float * q, const float * k, const float * v, const float * g,
     const int64_t S = shape.S;
     const float scale = 1.0f / std::sqrt((float) S);
 
+    if (shape.kda) {
+        // The per-channel gate path is wrong for S > 64 (gdn_parity shows 0.70 relative error at
+        // S=128): the decay has to scale column i of the state by exp(g[i]), and the broadcast we
+        // use does not express that. qwen3.5-moe uses the scalar gate, so rather than ship a path
+        // that silently returns wrong numbers this refuses.
+        throw Error("cann: gdn with a per-channel gate (KDA) is not implemented", -1);
+    }
+
     for (int64_t t = 0; t < shape.T; ++t) {
         const float * kt = k + t * S;
         const float * qt = q + t * S;
@@ -91,6 +99,14 @@ void gdn(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, 
     const size_t row_bytes = (size_t) S * 2;
     const size_t mat_bytes = (size_t) S * S * 2;
     const float scale = 1.0f / std::sqrt((float) S);
+
+    if (shape.kda) {
+        // The per-channel gate path is wrong for S > 64 (gdn_parity shows 0.70 relative error at
+        // S=128): the decay has to scale column i of the state by exp(g[i]), and the broadcast we
+        // use does not express that. qwen3.5-moe uses the scalar gate, so rather than ship a path
+        // that silently returns wrong numbers this refuses.
+        throw Error("cann: gdn with a per-channel gate (KDA) is not implemented", -1);
+    }
 
     // working state M and two scratch matrices; ops never alias input and output
     Buffer m_b(mat_bytes), tmp_b(mat_bytes), tmp2_b(mat_bytes);

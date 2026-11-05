@@ -142,7 +142,7 @@ long long g_xfer_bytes = 0;
 double g_xfer_seconds = 0.0;
 
 void print_xfer_stats() {
-    if (g_xfer_count > 0) {
+    if (g_xfer_count > 0 && getenv("STRATA_CANN_STATS") != nullptr) {
         printf("xfer: %lld copies, %.1f MB, %.3f s total, %.3f ms each\n", g_xfer_count,
                (double) g_xfer_bytes / 1e6, g_xfer_seconds, 1000.0 * g_xfer_seconds / (double) g_xfer_count);
     }

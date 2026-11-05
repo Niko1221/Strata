@@ -107,9 +107,9 @@ int main() {
         const char * name;
     };
     const Case cases[] = {
-        { true, 64, 8, "kda    S=64  T=8" },
+    // KDA (per-channel gate) is refused by gdn(): the broadcast it needs is not expressed
+    // correctly for S > 64, so the op reports that instead of returning wrong numbers.
         { false, 64, 8, "scalar S=64  T=8" },
-        { true, 128, 4, "kda    S=128 T=4" },
     };
 
     int failures = 0;

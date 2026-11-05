@@ -131,7 +131,7 @@ void execute(Stream & stream, GetWs get_ws, Launch launch, const char * what) {
 // Profiling counters, printed when the workspace is released. This exists because a single op
 // measures 0.043 ms in isolation while a token takes seconds, so the cost has to be attributed.
 void print_op_stats() {
-    if (g_op_count > 0) {
+    if (g_op_count > 0 && getenv("STRATA_CANN_STATS") != nullptr) {
         printf("ops: %lld calls, %.3f s total, %.3f ms each\n", g_op_count, g_op_seconds,
                1000.0 * g_op_seconds / (double) g_op_count);
     }

@@ -356,22 +356,21 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache
 
     const auto g_c0 = std::chrono::steady_clock::now();
     const auto g_t0 = std::chrono::steady_clock::now();
+    // q and k are contiguous per-head blocks, so one norm over [heads, dim] replaces one per head:
+    // four operator calls instead of 96, in a loop that runs 30 times per token.
     Buffer b_qn((size_t) kKeyDim * 2), b_kn((size_t) kKeyDim * 2);
-    for (int64_t h = 0; h < kKHeads; ++h) {
-        Buffer t1((size_t) kHeadDimSsm * 2), t2((size_t) kHeadDimSsm * 2);
-        Tensor tq{ (char *) b_silu.data() + (size_t) h * kHeadDimSsm * 2, DType::F16, kHeadDimSsm, 1 };
-        Tensor tn{ t1.data(), DType::F16, kHeadDimSsm, 1 };
-        Tensor ts{ t2.data(), DType::F16, kHeadDimSsm, 1 };
-        Tensor tout{ (char *) b_qn.data() + (size_t) h * kHeadDimSsm * 2, DType::F16, kHeadDimSsm, 1 };
-        rms_norm(stream, tq, t_ones, kRmsEps / (double) kHeadDimSsm, tn);
-        muls(stream, tn, 1.0f / std::sqrt((float) kHeadDimSsm), ts);
-        muls(stream, ts, 1.0f, tout);
-
-        Tensor tk{ (char *) b_silu.data() + (size_t) (kKeyDim + h * kHeadDimSsm) * 2, DType::F16, kHeadDimSsm, 1 };
-        Tensor tkn{ (char *) b_kn.data() + (size_t) h * kHeadDimSsm * 2, DType::F16, kHeadDimSsm, 1 };
-        rms_norm(stream, tk, t_ones, kRmsEps / (double) kHeadDimSsm, tn);
-        muls(stream, tn, 1.0f / std::sqrt((float) kHeadDimSsm), ts);
-        muls(stream, ts, 1.0f, tkn);
+    {
+        Buffer t1((size_t) kKeyDim * 2), t2((size_t) kKeyDim * 2);
+        Tensor qrows{ (char *) b_silu.data(), DType::F16, kHeadDimSsm, kKHeads };
+        Tensor krows{ (char *) b_silu.data() + (size_t) kKeyDim * 2, DType::F16, kHeadDimSsm, kKHeads };
+        Tensor nq{ t1.data(), DType::F16, kHeadDimSsm, kKHeads };
+        Tensor nk{ t2.data(), DType::F16, kHeadDimSsm, kKHeads };
+        Tensor qout{ b_qn.data(), DType::F16, kHeadDimSsm, kKHeads };
+        Tensor kout{ b_kn.data(), DType::F16, kHeadDimSsm, kKHeads };
+        rms_norm(stream, qrows, t_ones, kRmsEps / (double) kHeadDimSsm, nq);
+        rms_norm(stream, krows, t_ones, kRmsEps / (double) kHeadDimSsm, nk);
+        muls(stream, nq, 1.0f / std::sqrt((float) kHeadDimSsm), qout);
+        muls(stream, nk, 1.0f / std::sqrt((float) kHeadDimSsm), kout);
     }
 
     const auto g_t1 = std::chrono::steady_clock::now();
