@@ -1105,11 +1105,11 @@ class Strata:
         return hw
 
     def _mac_sizes(self, models: dict, family: str = "qwen") -> list:
-        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack) and agentionai's Gyro files (one
-        file, no repack). Unsloth's many-shard files need metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not
-        offer them yet."""
+        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack), agentionai's Gyro files (one
+        file, no repack) and, since round 0214, Unsloth's sets (many shards: setup.py's Mac install repacks them with
+        metal/tools/metal_repack.py, as the Terminal's setup does); a set the Metal engine cannot run yet is left out (mac_fit.MAC_MODELS "missing")."""
         mf = self.mac()
-        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == family and m in models] if mf else []
+        return [m for m in mf.app_sizes(family) if m in models] if mf else []
 
     def _mac_verdict(self, model: str, ram: float) -> str:
         mf = self.mac()
@@ -1153,7 +1153,7 @@ class Strata:
         ram = float(hw.get("ram_gb") or 0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
-        for family in ("qwen", "gyro"):                # Gyro after the regular sizes, as on a PC: never the default
+        for family in (self.mac().APP_FAMILIES if self.mac() else ("qwen", "gyro")):      # Qwen, Unsloth's sets, then Gyro: never the default
             fd = families.get(family)
             if fd is None:
                 continue
@@ -2423,7 +2423,7 @@ class Tools:
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
-        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
+        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)             + (s.mac().repacked_gb(model) if mac and s.mac() else 0)       # a Mac repacks Unsloth's shards into one file for the GPU (mac_fit.repacked_gb)
         free = s.disk_free(target)
         short = None
         if free is not None and free < need:
