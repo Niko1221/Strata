@@ -413,6 +413,25 @@ log-partition  device 19.818172  host 19.818173  diff 4.16e-07  PASS
 The vocabulary is 248320, not the 151936 of the older checkpoints; earlier notes in this file that
 say 151936 are wrong.
 
+## What the ecosystem does instead
+
+`Ascend-SACT/Qwen3.8-Flash-Next` is the official deployment package for a much larger model
+(360 GB, 16 cards). It cannot run here — this box has one 910B2C, CANN 9.0 rather than 9.1, and no
+container runtime — but reading its patch answered the question this port had left open.
+
+`vllm_ascend/ops/gdn.py` calls `torch_npu.npu_recurrent_gated_delta_rule` for decode and
+`npu_chunk_gated_delta_rule` for prefill. That maps to `aclnnRecurrentGatedDeltaRule`, which **CANN
+9.0 already ships** (`/usr/local/Ascend/cann-9.0.0/include/aclnnop/aclnn_recurrent_gated_delta_rule.h`).
+So the earlier conclusion in this file — that beating the CPU on the delta net would need a
+hand-written kernel — was wrong: the fused operator exists, `ggml-cann` merely never calls it (it
+includes the header and no more).
+
+Using it would trade precision for calls: the operator is bfloat16 only, while this port keeps the
+recurrent state in fp32 and matches the float reference exactly. Its other arguments
+(`ssmStateIndices`, `gk`, `numAcceptedTokens`) assume a paged state and speculative decoding. Since
+the delta net is about 0.15 s of the 0.4 s a token costs here, and the rest is MoE weight movement,
+the trade is not obviously worth taking. `tests/gdn_parity.cpp` would be the place to measure it.
+
 ## What is not here yet
 
 - The engine's own kernels: `src/` still compiles for CUDA only.
