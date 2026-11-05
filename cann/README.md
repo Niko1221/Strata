@@ -13,6 +13,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | P3b | rope, the full-attention layer of blk.3, and its KV cache across tokens | done |
 | P4 | MoE: top-8 routing, expert matmuls, shared expert | done for one layer's FFN |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
+| P4b | the whole model: 40 layers from a token id to logits | running; hidden-state parity 0.017 over 40 layers |
 
 ## Files
 
@@ -36,6 +37,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | `tests/rope_parity.cpp` | rotary embedding (NeoX pairing, n_rot of head_dim) against the formula |
 | `tests/attn_layer_parity.cpp` | the full-attention layer of blk.3: q/k/v, per-head q/k norms, rope, gate, output projection |
 | `tests/attn_cache_parity.cpp` | the same layer across T tokens with a KV cache: score, softmax, GQA broadcast, weighted mix |
+| `tests/model_forward.cpp` | the whole stack: token id to logits, NPU against a CPU reference |
 | `tests/run_*.sh` | build and run each test |
 
 ## Build and run
@@ -77,6 +79,8 @@ receives.
 | rope | max abs 0.01, relative L2 0.01; the un-rotated tail must be bit-identical |
 | blk.3 attention, one token | relative L2 0.02 |
 | blk.3 attention with KV cache (T=4/8) | relative L2 0.02 per token |
+| whole model, 2 layers | hidden state relative L2 0.02 |
+| whole model, 40 layers | hidden state relative L2 0.02 (measured 0.0167) |
 
 ## Two API facts worth writing down
 
@@ -121,6 +125,16 @@ blk.0.post_attention_norm.weight F32 [2048]
 ```
 
 So 3 of 4 layers run a GDN block (`ssm_*`), and the FFN is 256 experts with one shared expert.
+
+## The model's shape, as the header describes it
+
+`qwen35moe` has 41 blocks, but the last one is not part of the main stack: `blk.40` carries
+`nextn.eh_proj`, `nextn.enorm`, `nextn.hnorm` and `nextn.shared_head_norm`, which is the
+multi-token-prediction draft head. The main model is 40 layers, and every 4th of them is a
+full-attention layer (3, 7, ... 39); the other 30 are recurrent. `blk.40` has `attn_q/k/v`
+instead of the fused `attn_qkv`, which is how the missing-tensor error showed it.
+
+Its router tensors are BF16 (`ffn_gate_inp`, `ffn_gate_inp_shexp`), the only BF16 in the file.
 
 ## What is not here yet
 
@@ -246,6 +260,23 @@ stage                     max|diff|       rel L2  result
 router logits              0.000457     0.000211  PASS
 ffn out                    0.000013     0.000439  PASS
 ```
+
+```
+layer  0/40  gdn   top1 expert 101  1.3 s
+layer 10/40  gdn   top1 expert 8  9.6 s
+layer 20/40  gdn   top1 expert 64  17.7 s
+layer 30/40  gdn   top1 expert 231  25.9 s
+layer 39/40  attn  top1 expert 213  33.3 s
+
+final hidden: 0.95312 2.02734 3.54102 -5.52344
+top 5 logits:  token 21750 = 8.4375  token 30458 = 8.2188  token 31590 = 7.8789  token 17023 = 7.5938
+
+CPU reference in 31.4 s, hidden state rel L2 = 0.016679  PASS
+```
+
+Two things to read carefully there: the 0.0167 is **drift, not noise** (2 layers give 0.0022, 40
+layers give 0.0167), because the residual stream and the KV cache are fp16 end to end. And the
+5th logit entry was not stable across two runs, which is still unexplained.
 
 Reproduce with `bash cann/tests/run_parity.sh`, `run_quant.sh`, `run_gdn.sh`, `run_gguf.sh`,
 `run_layer.sh`, `run_moe.sh`, `run_gdn_block.sh`, `run_gdn_state.sh`, `run_attn.sh`, `run_attn_cache.sh`.
