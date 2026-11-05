@@ -153,6 +153,12 @@ class _FakeSvc:
         self.tok = _SeamTok()
         self.template = template
 
+    def encode_prompt(self, messages, tools, kwargs, store: bool = True):
+        # B2 (2026-11-05): consolidated_rows encodes through the service now; this stand-in
+        # keeps the exact old render+encode so the seam check still measures the template.
+        return self.tok.encode(self.template.render(messages, add_generation_prompt=True, **kwargs),
+                               parse_special=True)
+
 
 def start_server():
     tok = ByteTokenizer()

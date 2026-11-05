@@ -19,6 +19,29 @@ import time
 from pathlib import Path
 
 from serve import jev_calib
+from serve.frontend import LITERAL_TAGS, mark_think_literals, unmark_think_literals
+
+
+def _encode(svc, messages) -> list[int]:
+    """The prompt ids through the chat path's tokenizer protection (#537): control-token text
+    inside a message's content is encoded as plain text, so untrusted state, instructions,
+    labels, context and then-messages cannot write real role boundaries and steer the readout
+    (B2, 2026-11-05: every prompt used to go through tok.encode(..., parse_special=True))."""
+    return svc.encode_prompt(messages, None, {"enable_thinking": False}, store=False)
+
+
+def _label_ids(svc, lbl: str) -> list[int]:
+    """A label's ids exactly as the readout position sees them: through the same literal
+    marking the prompt applied (B2).  A label containing '<|im_end|>' is that TEXT at the
+    cue row - a multi-token word whose first byte scores - never the control token id, which
+    is what the old tok.encode(lbl, parse_special=True) returned."""
+    tags = getattr(svc, "literals", None) or LITERAL_TAGS
+    marked, _, changed = mark_think_literals([{"role": "user", "content": lbl}], None, tags)
+    text = marked[0]["content"] if marked and isinstance(marked[0].get("content"), str) else lbl
+    if not changed:
+        return svc.tok.encode(lbl, parse_special=True)
+    plain_text, spans = unmark_think_literals(text, tags)
+    return svc.tok.encode(plain_text, parse_special=True, plain=spans)
 
 # jevcpp's frozen decision prompt (DECISIONS.md D3; byte-frozen - reopening forces recalibration).
 SYSTEM_V1 = ("You are a precise decision engine. Read the state, then answer the question "
@@ -226,7 +249,7 @@ def _label_token_problem(svc, qdefs):
         if q["type"] not in ("choice", "score"):
             continue
         for lbl in q["render_labels"]:
-            n = len(svc.tok.encode(lbl, parse_special=True))
+            n = len(_label_ids(svc, lbl))
             if n != 1:
                 return q["id"], lbl, n
     return None
@@ -338,7 +361,7 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
         except (ValueError, OSError) as e:
             return 400, {"error": {"type": "invalid_request_error", "param": "image_b64",
                                    "message": f"vision: {e}"}}
-        variants = [svc.tok.encode(lbl, parse_special=True)[:1]
+        variants = [_label_ids(svc, lbl)[:1]
                     for lbl in qdef["render_labels"]]
         cancel = threading.Event()
         emb = getattr(svc.embeddings, "path", None)   # this qdef's prepare() staged it
@@ -503,8 +526,7 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     stops = ([stops] if isinstance(stops, str) else
              [s for s in stops if isinstance(s, str)] if isinstance(stops, list) else [])
 
-    prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
-    ids = svc.tok.encode(prompt, parse_special=True)
+    ids = _encode(svc, messages)
     if not ids:
         return 400, {"error": {"type": "invalid_request_error",
                                "message": "then.generate: prompt tokenization failed"}}
@@ -589,10 +611,8 @@ def _shared_prefix_len(svc, texts: list) -> int:
         return 0
     encoded = []
     for text in texts:
-        prompt = svc.template.render([{"role": "system", "content": SYSTEM_V1},
-                                      {"role": "user", "content": text}],
-                                     add_generation_prompt=True, enable_thinking=False)
-        ids = svc.tok.encode(prompt, parse_special=True)
+        ids = _encode(svc, [{"role": "system", "content": SYSTEM_V1},
+                            {"role": "user", "content": text}])
         if not ids:
             return 0
         encoded.append(ids)
@@ -692,8 +712,7 @@ def consolidated_rows(svc, state_text: str, qdefs: list, context_text: str = "")
             messages.append({"role": "user", "content": prev["content"]})
             messages.append({"role": "assistant", "content": "-"})   # never decoded; see above
         messages.append({"role": "user", "content": content})
-        prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
-        ids = svc.tok.encode(prompt, parse_special=True)
+        ids = _encode(svc, messages)
         if not ids:
             return None
         if units and units[-1]["ids"] != ids[:len(units[-1]["ids"])]:
@@ -768,7 +787,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                     rows = None
             if plan is not None and rows is not None:
                 for qdef, row_at in zip(ordered, rows):
-                    variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
+                    variants = [_label_ids(svc, lbl)[:1] for lbl in qdef["render_labels"]]
                     tokens = sorted({t for v in variants for t in v})
                     try:
                         scores = readout_scores(engine.row_logits_at(row_at, tokens), variants)
@@ -783,19 +802,17 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             if use_v:
                 # ---- V mode (A2.6): shared head, one yes/no branch per option ----
                 head = question_head(qdef)
-                yes_no = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in ("No", "Yes")]
+                yes_no = [_label_ids(svc, lbl)[:1] for lbl in ("No", "Yes")]
                 v_pin = 0
                 if len(qdef["labels"]) > 1 and _pin_enabled():
                     v_pin = _shared_prefix_len(
                         svc, [user_turn(state_text, context_text, head + v_branch(qdef, k)) for k in qdef["labels"]])
                 d_scores = []
                 for bi, key in enumerate(qdef["labels"]):
-                    prompt = svc.template.render(
-                        [{"role": "system", "content": SYSTEM_V1},
-                         {"role": "user", "content": user_turn(state_text, context_text, head + v_branch(qdef, key))}],
-                        add_generation_prompt=True,
-                        enable_thinking=False)
-                    ids = svc.tok.encode(prompt, parse_special=True)
+                    ids = _encode(svc,
+                                  [{"role": "system", "content": SYSTEM_V1},
+                                   {"role": "user",
+                                    "content": user_turn(state_text, context_text, head + v_branch(qdef, key))}])
                     if not ids:
                         return _err("state", "tokenization failed")
                     cancel = threading.Event()
@@ -833,15 +850,13 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                     "qid": qdef["id"], "type": "choice",
                     "raw_p": pr_raw, "v_d": d_scores})
                 continue
-            prompt = svc.template.render(
-                [{"role": "system", "content": SYSTEM_V1},
-                 {"role": "user", "content": user_turn(state_text, context_text, question_block(qdef))}],
-                add_generation_prompt=True,
-                enable_thinking=False)   # D3 (frozen): the readout position must predict the label, not open <think>
-            ids = svc.tok.encode(prompt, parse_special=True)
+            ids = _encode(svc,   # D3 (frozen): the readout position must predict the label, not open <think>
+                          [{"role": "system", "content": SYSTEM_V1},
+                           {"role": "user",
+                            "content": user_turn(state_text, context_text, question_block(qdef))}])
             if not ids:
                 return _err("state", "tokenization failed")
-            variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
+            variants = [_label_ids(svc, lbl)[:1] for lbl in qdef["render_labels"]]
             keys = _request_keys(l_pin)
             # STATE PARKING, fields 2..N: a field that resumes from the checkpoint the pin marks has nothing
             # to park, and parking one is real work (~75 ms per field on the 3090: measured 2026-10-23,
