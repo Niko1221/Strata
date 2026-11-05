@@ -70,9 +70,18 @@ bool Window::pc_setup(int C) {
     if (const char* e = std::getenv("STRATA_PROMPT_DN")) std::sscanf(e, "%d,%d,%d,%d", &b.dn3[0], &b.dn3[1], &b.dn3[2], &b.dn3[3]);
     if (!b.v3e) { b.gu3[0] = b.dn3[0] = PC_TM; }
     b.tm = b.gu3[0];
-    if (b.v3e) {   // STRATA_PROMPT_V6=MS: ragged tiles, groups of MS (2..4) 16-row subtiles of one expert share the weight decode
+    if (b.v3e) {   // STRATA_PROMPT_V6=MS (default 4, 0 = off): ragged tiles, groups of MS (2..4) 16-row subtiles of one expert share the weight decode
+        // the ragged-tile kernels exist for these expert types only (every layer's must be one of them)
+        auto gu_ok = [](int t) { return t == ref::Q4_K || t == ref::Q5_K || t == ref::Q6_K || t == ref::Q8_0 || t == ref::IQ3_XXS ||
+                                        t == ref::IQ2_S || t == ref::IQ4_XS || t == ref::IQ3_S || t == ref::IQ2_XS || t == ref::IQ2_XXS; };
+        auto dn_ok = [](int t) { return t == ref::Q5_1 || t == ref::Q8_0 || t == ref::Q5_0 || t == ref::IQ4_NL || t == ref::Q2_0; };
+        bool types_ok = true;
+        for (int l = 0; l < 48 && types_ok; ++l) {
+            const std::string bl = "blk." + std::to_string(l) + ".";
+            types_ok = gu_ok(T(bl + "ffn_gate_exps.weight").type) && gu_ok(T(bl + "ffn_up_exps.weight").type) && dn_ok(T(bl + "ffn_down_exps.weight").type);
+        }
         const char* e6 = std::getenv("STRATA_PROMPT_V6");
-        const int ms = e6 ? std::atoi(e6) : 0;
+        const int ms = types_ok ? (e6 ? std::atoi(e6) : 4) : 0;   // on by default (STRATA_PROMPT_V6=0 off, 2..4 = the group size)
         if (ms >= 2) {
             b.v6 = true; b.ms = std::min(ms, 4); b.tm = 16; b.gu3[0] = b.dn3[0] = 16;
             if (!std::getenv("STRATA_PROMPT_GU")) { b.gu3[1] = 16; b.gu3[2] = 32; b.gu3[3] = 4; }   // measured (moe_mm_parity, T 2048): the accumulators of MS subtiles x gate/up need the narrow tile
