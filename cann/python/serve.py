@@ -347,17 +347,29 @@ class Service:
                 "tok_s": round(generated / elapsed, 3) if active["state"] == "generating" else 0,
                 "prefill_tok_s": round(active["prompt_tokens"] / elapsed, 3)
                 if active["state"] == "reading" else 0,
+                "prefill_tok_s_mean": round(active["prompt_tokens"] / elapsed, 3)
+                if active["state"] == "reading" else 0,
             }
         else:
-            live = {"state": "idle", "running": 0, "queued": 0, "tok_s": 0, "prefill_tok_s": 0}
+            live = {"state": "idle", "running": 0, "queued": 0, "tok_s": 0,
+                    "prefill_tok_s": 0, "prefill_tok_s_mean": 0}
         weights = self.engine.w.report()
         expert_count = self.engine.md.get("qwen4exp.expert_count")
+        npu = self.npu_metrics()
         return {
             "source": "strata-cann-torch",
             "time": now,
             "model": MODEL,
             "device": str(self.args.device),
-            "npu": self.npu_metrics(),
+            "npu": npu,
+            "hardware": {
+                "gpus": [{
+                    "index": npu["index"], "name": npu["name"],
+                    "util": npu["utilization_pct"], "mem_used": npu["memory_used_bytes"],
+                    "mem_total": npu["memory_total_bytes"], "temp": npu["temperature_c"],
+                    "power": npu["power_w"],
+                }],
+            },
             "live": live,
             "service": {
                 "started_at": self.started_at, "uptime_s": round(now - self.started_at, 3),
@@ -371,7 +383,10 @@ class Service:
                 "weight_dtype": self.args.weight_dtype,
             },
             "weights": weights,
-            "history": history,
+            "history": {
+                "tok_s": [item.get("tok_s") for item in history],
+                "prefill_tok_s_mean": [item.get("prefill_tok_s") for item in history],
+            },
             "requests": requests,
             "totals": {
                 "requests": completed, "failed": failed,
