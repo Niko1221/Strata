@@ -9,6 +9,9 @@ Linux-only, so treat it as a report on a configuration rather than a supported p
 
 - GPU 0: AMD Radeon RX 6800 XT, 16 GB, gfx1030. GPU 1: AMD Radeon RX 6600, 8 GB, gfx1032 (x4 slot).
   Layer split 0-37 / 38-47, chosen by the engine's own split search; PCIe link not measured.
+  The API names the RX 6600 with a generic name, so results.json lists device 0 as "AMD
+  Radeon(TM) Graphics" and device 1 as the RX 6800 XT; that order is not the engine's role
+  order, which is CUDA0 for layers 0-37 and CUDA1 for layers 38-47.
 - CPU: AMD Ryzen 7 9700X (8C/16T); RAM 63.2 GiB at DDR5-5200; model storage on an NVMe Kingston
   SFYRD20 (1.8 TB). The integrated GPU (gfx1036) is disabled in Windows: with it visible the launcher
   picks it as the helper card (it reports ~43 GiB of shared memory) and the split collapses.
@@ -58,12 +61,16 @@ totals include prompt processing.
 
 | Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median (range) | Decode tok/s median (range) | TTFT s median (range) |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
-| short (~80 tok) | 77 | 0 | 286-409 | 3 | not measured (fixed cost dominates) | 40.0 (39.4-42.9) | 2.12 (1.94-2.12) |
+| short (~80 tok) | 77 | 0 | 286-409 | 3 | 36.98 (36.8-40.9), fixed cost dominates | 40.0 (39.4-42.9) | 2.12 (1.94-2.12) |
 | prompt-4k | 4,093 | 0 | 512 | 3 | 361.4 (361.3-362.5) | 38.8 (37.5-44.5) | 11.36 (11.34-11.38) |
 | prompt-16k | 16,387 | 0 | 512 | 3 | 578.4 (577.0-578.8) | 40.1 (38.5-42.0) | 28.41 (28.38-28.47) |
 
 Capped runs (reasoning plus answer reached the 512-token cap): 0/3 on short, 3/3 on prompt-4k, 3/3 on
 prompt-16k. No request failed or timed out; 12 of 12 sanity checks passed.
+
+The short case is 77 prompt tokens: results.json records its prompt throughput at 36.98 tok/s
+median (36.8-40.9), which is not comparable with the 4k and 16k figures because fixed cost
+dominates at that size.
 
 ## Against v0.2.10 on the same machine
 
