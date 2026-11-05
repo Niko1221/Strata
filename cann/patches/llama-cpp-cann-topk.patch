@@ -1,0 +1,73 @@
+--- a/ggml/src/ggml-cann/aclnn_ops.cpp	2026-11-05 20:50:16.000000000 +0800
++++ b/ggml/src/ggml-cann/aclnn_ops.cpp	2026-11-05 22:58:21.257954400 +0800
+@@ -27,6 +27,7 @@
+ 
+ 
+ #include <aclnnop/aclnn_add.h>
++#include <aclnnop/aclnn_topk.h>
+ #include <aclnnop/aclnn_add_rms_norm.h>
+ #include <aclnnop/aclnn_addcdiv.h>
+ #include <aclnnop/aclnn_argmax.h>
+@@ -812,6 +813,31 @@
+     aclnn_reduce_sum(ctx, dst, reduce_dims, 4);
+ }
+ 
++void ggml_cann_top_k(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
++    ggml_tensor * src = dst->src[0];
++    const int64_t k   = dst->ne[0];
++
++    acl_tensor_ptr acl_src = ggml_cann_create_tensor(src);
++    acl_tensor_ptr acl_dst = ggml_cann_create_tensor(dst);
++
++    // aclnnTopk wants i64 indices and always writes values too; both go to scratch buffers and
++    // the indices are cast down to the i32 that ggml_top_k produces, as argsort does
++    ggml_cann_pool_alloc idx_alloc(ctx.pool(), (size_t) ggml_nelements(dst) * sizeof(int64_t));
++    acl_tensor_ptr acl_idx = ggml_cann_create_tensor(idx_alloc.get(), ACL_INT64,
++            ggml_type_size(dst->type), dst->ne, dst->nb, GGML_MAX_DIMS);
++
++    ggml_cann_pool_alloc val_alloc(ctx.pool(),
++            (size_t) ggml_nelements(dst) * ggml_type_size(src->type));
++    acl_tensor_ptr acl_val = ggml_cann_create_tensor(val_alloc.get(),
++            ggml_cann_type_mapping(src->type), ggml_type_size(src->type),
++            dst->ne, dst->nb, GGML_MAX_DIMS);
++
++    // ggml reduces along dim 0, which is the last dim of the 4-D tensor CANN sees
++    GGML_CANN_CALL_ACLNN_OP(ctx, Topk, acl_src.get(), k, (int64_t) 3, true, false,
++            acl_val.get(), acl_idx.get());
++    GGML_CANN_CALL_ACLNN_OP(ctx, Cast, acl_idx.get(), ggml_cann_type_mapping(dst->type), acl_dst.get());
++}
++
+ void ggml_cann_cumsum(ggml_backend_cann_context & ctx, ggml_tensor * dst) {
+     ggml_tensor * src = dst->src[0];
+     acl_tensor_ptr acl_src = ggml_cann_create_tensor(src);
+--- a/ggml/src/ggml-cann/aclnn_ops.h	2026-11-05 20:50:16.000000000 +0800
++++ b/ggml/src/ggml-cann/aclnn_ops.h	2026-11-05 22:54:56.619424500 +0800
+@@ -343,6 +343,7 @@
+  * @param dst The destination tensor. dst->op is `GGML_OP_CUMSUM`.
+  */
+ void ggml_cann_cumsum(ggml_backend_cann_context & ctx, ggml_tensor * dst);
++void ggml_cann_top_k(ggml_backend_cann_context & ctx, ggml_tensor * dst);
+ 
+ /**
+  * @brief   Computes a triangular mask (tril/triu) of a square ggml tensor
+--- a/ggml/src/ggml-cann/ggml-cann.cpp	2026-11-05 20:50:16.000000000 +0800
++++ b/ggml/src/ggml-cann/ggml-cann.cpp	2026-11-05 22:58:21.266479900 +0800
+@@ -2020,6 +2020,9 @@
+         case GGML_OP_CUMSUM:
+             ggml_cann_cumsum(ctx, dst);
+             break;
++        case GGML_OP_TOP_K:
++            ggml_cann_top_k(ctx, dst);
++            break;
+         case GGML_OP_TRI:
+             ggml_cann_tri(ctx, dst);
+             break;
+@@ -2712,6 +2715,8 @@
+             return true;
+         case GGML_OP_CUMSUM:
+             return op->src[0]->type == GGML_TYPE_F32;
++        case GGML_OP_TOP_K:
++            return op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_I32;
+         case GGML_OP_TRI:
+             return op->src[0]->type == GGML_TYPE_F32;
+         case GGML_OP_FILL:

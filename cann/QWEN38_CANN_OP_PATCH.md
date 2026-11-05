@@ -3,6 +3,9 @@
 如果实测发现解码被 CPU 回退拖死，这就是下一步。先把**事实**钉住：缺的是 llama.cpp 的接线，
 不是 CANN 的能力。
 
+> **进度**：`TOP_K` 已经补完并在硬件上验证通过（见文末"已验证"一节）。
+> 补丁在 `cann/patches/llama-cpp-cann-topk.patch`。
+
 ## 结论先说
 
 CANN 9.0.0 里**已经有**这些算子，而且 `libopapi.so` 都导出了：
@@ -112,3 +115,34 @@ GGML_CANN_CALL_ACLNN_OP(ctx, Topk, acl_src.get(), (int64_t) k, (int64_t) 3,
 3. LIGHTNING_INDEXER （要读文档对齐语义，工作量最大）
 4. DSV4_HC_*      （等前面测出传输成本再决定）
 ```
+
+
+## 已验证：TOP_K 在 NPU 上跑通了
+
+补丁：`cann/patches/llama-cpp-cann-topk.patch`（73 行，改三个文件）。
+
+`test-backend-ops -o TOP_K -b CANN0` 全部通过，18 个用例，是逐元素与 CPU 结果比对的：
+
+```
+TOP_K(type=f32,ne=[4,2,1,3],k=4,ties=1):          OK
+TOP_K(type=f32,ne=[4096,2,1,1],k=10,ties=0,inf=1): OK
+TOP_K(type=f32,ne=[248320,1,1,1],k=40,...):        OK
+TOP_K(type=f32,ne=[12,1,2,1],k=1,ties=0):          OK
+```
+
+最后两个用例的形状正是 QSA 要用的（`[n_pool, n_tokens]` 里选 k 个）。
+
+### 补的过程踩了两下
+
+1. **`indices expected dtype is DT_INT64 but found DT_INT32`**
+   `aclnnTopk` 只吃 int64 索引，而 `ggml_top_k` 输出 int32。要经一个 int64 的临时 buffer，
+   再用 `aclnnCast` 降下来。`ggml_cann_argsort` 里有一模一样的做法，照抄即可。
+
+2. **`ggml_cann_create_tensor(void*, aclDataType, size_t, int64_t[4], int64_t[4], int)` 不匹配**
+   这个模板要求 `type_size` 和 `nb` 同类型（都是 `size_t`），`ne` 是 `int64_t`。
+   我一开始把 `nb` 写成 `int64_t` 就编不过。
+
+### 补完之后剩下的
+
+`TOP_K_MASK`、`LIGHTNING_INDEXER`、`DSV4_HC_*` 还没做。有了 TOP_K 这一步，工具链、
+验证方法、调用约定都已经跑通，后面三个是同样的套路。
