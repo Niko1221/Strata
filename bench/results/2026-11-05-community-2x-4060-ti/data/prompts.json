@@ -1,0 +1,5 @@
+{
+ "code": {"prompt": "Write Python function merge_sorted(a, b) that merges two sorted lists. Include concise assertions for empty lists, duplicates, and negative numbers. Do not explain.", "max_tokens": 256, "prompt_tokens": 44},
+ "fiction": {"prompt": "写一个中文悬疑短篇的开头，钟表铺老板发现每个失踪者的手表都比真实时间快七分钟。只写故事，不解释。", "max_tokens": 384, "prompt_tokens": 42},
+ "reasoning": {"prompt": "Four non-preemptive FIFO jobs A,B,C,D arrive at 0,2,3,8. Durations 7,4,6,3. Explain briefly, then return their completion times separated by commas.", "max_tokens": 256, "prompt_tokens": 57}
+}

@@ -1,0 +1,107 @@
+[
+ {
+  "task": "code",
+  "round": 1,
+  "tps": 55.0,
+  "acc": 188,
+  "off": 216
+ },
+ {
+  "task": "fiction",
+  "round": 1,
+  "tps": 35.2,
+  "acc": 91,
+  "off": 160
+ },
+ {
+  "task": "reasoning",
+  "round": 1,
+  "tps": 44.5,
+  "acc": 169,
+  "off": 200
+ },
+ {
+  "task": "code",
+  "round": 2,
+  "tps": 63.2,
+  "acc": 190,
+  "off": 202
+ },
+ {
+  "task": "fiction",
+  "round": 2,
+  "tps": 36.0,
+  "acc": 97,
+  "off": 176
+ },
+ {
+  "task": "reasoning",
+  "round": 2,
+  "tps": 47.9,
+  "acc": 185,
+  "off": 202
+ },
+ {
+  "task": "code",
+  "round": 3,
+  "tps": 64.7,
+  "acc": 189,
+  "off": 196
+ },
+ {
+  "task": "fiction",
+  "round": 3,
+  "tps": 33.9,
+  "acc": 72,
+  "off": 119
+ },
+ {
+  "task": "reasoning",
+  "round": 3,
+  "tps": 49.8,
+  "acc": 183,
+  "off": 193
+ },
+ {
+  "task": "code",
+  "round": 4,
+  "tps": 61.1,
+  "acc": 189,
+  "off": 200
+ },
+ {
+  "task": "fiction",
+  "round": 4,
+  "tps": 34.6,
+  "acc": 77,
+  "off": 134
+ },
+ {
+  "task": "reasoning",
+  "round": 4,
+  "tps": 48.3,
+  "acc": 184,
+  "off": 200
+ },
+ {
+  "task": "code",
+  "round": 5,
+  "tps": 61.9,
+  "acc": 186,
+  "off": 212
+ },
+ {
+  "task": "fiction",
+  "round": 5,
+  "tps": 34.0,
+  "acc": 59,
+  "off": 106
+ },
+ {
+  "task": "reasoning",
+  "round": 5,
+  "tps": 47.4,
+  "acc": 183,
+  "off": 200
+ }
+]
