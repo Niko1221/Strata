@@ -426,6 +426,19 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
         cudaStreamSynchronize(s);
         cudaMemcpy(got_g.data(), dout, got_g.size() * 4, cudaMemcpyDeviceToHost);
+        {   // round 0214: the launches before the group stride (v1) against the same float reference: which of the two is right when they differ
+            std::vector<float> v1_g(got_g.size());
+            strata::kernels::native_grouped_set_v1(true);
+            cudaMemset(dout, 0xFF, got_g.size() * 4);
+            strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
+            strata::kernels::native_grouped_set_v1(false);
+            cudaStreamSynchronize(s);
+            cudaMemcpy(v1_g.data(), dout, v1_g.size() * 4, cudaMemcpyDeviceToHost);
+            size_t nd = 0;
+            for (size_t i = 0; i < v1_g.size(); ++i) nd += std::memcmp(&v1_g[i], &got_g[i], 4) != 0;
+            std::printf("          v1 launches vs float reference: rel %.3e; new launches: rel %.3e; v1 vs new: %zu of %zu floats differ in any bit (rel %.2e)\n",
+                        rel(v1_g, ref), rel(got_g, ref), nd, v1_g.size(), rel(v1_g, got_g));
+        }
         {   // the kernels that decode a weight part once for the NT entries, bitwise vs the per-entry ones (#242;
             // the formats without a decode-once split take the per-entry kernels either way)
             std::vector<float> old_g(got_g.size());
