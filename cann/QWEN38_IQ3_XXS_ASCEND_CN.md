@@ -115,6 +115,34 @@ curl -s http://127.0.0.1:18791/v1/completions \
 会通过 GGUF chat template 渲染；暂不支持工具、多模态内容和 tool-choice。
 completion 和 chat 请求支持 SSE 流式输出。
 
+## 本地 CPA 代理配置
+
+实际部署的 key 保存在远端 `/run/strata-qwen38-api-key`，不放入仓库。先建立
+SSH 本地转发：
+
+```powershell
+ssh -CNg -L 18791:127.0.0.1:18791 -p <ssh-port> <user>@<host>
+```
+
+然后在另一个 PowerShell 窗口中，把 key 读取到当前进程环境变量。该命令不会把
+key 写入仓库或 PowerShell 持久配置：
+
+```powershell
+$env:STRATA_QWEN38_API_KEY = (ssh -p <ssh-port> <user>@<host> 'cat /run/strata-qwen38-api-key').Trim()
+```
+
+在 CPA 中填写：
+
+| 配置项 | 值 |
+|---|---|
+| Base URL | `http://127.0.0.1:18791/v1` |
+| API key | 当前 PowerShell 中的 `$env:STRATA_QWEN38_API_KEY` |
+| 模型名 | `qwen3.8-flash-next-iq3_xxs` |
+| 认证方式 | `Authorization: Bearer <key>` |
+
+如果 CPA 只能填写字符串，就在本地终端执行上面的 `ssh ... cat` 命令并把结果
+粘贴到 CPA；不要把这个值提交到 GitHub、Markdown 或截图中。
+
 ## 已完成的验证
 
 以下检查均针对 910B2C 主机以及指定的 GGUF 头部文件和缓存执行：
