@@ -5,6 +5,7 @@
 // still right.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/kernels/s2_gemv.hpp"
 
@@ -64,8 +65,8 @@ void s2_gemv(const uint16_t *x, const uint8_t *codes, const float *scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        dpct::get_in_order_queue()
-            .parallel_for<dpct_kernel_name<class s2_gemv_kernel_163eb8>>(
+        strata::kprof::kp(&dpct::get_in_order_queue(), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s2_gemv_kernel_163eb8>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)blocks) *
                                       sycl::range(1, 1, threads),
                                   sycl::range(1, 1, threads)),

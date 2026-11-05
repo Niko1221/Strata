@@ -22,3 +22,9 @@ export function pickerGroups(library: ModelLibrary) {
   }
   return Array.from(groups, ([family, versions]) => ({ family, versions }));
 }
+
+/** Optimized models that are on this PC but not loaded yet: the chat picker must list them, or it says "none downloaded" while Storage shows them (#3814). */
+export function pickerNativeModels<M extends { model: string; model_name?: string; ready?: boolean }>(installed: M[] | undefined | null, instances: { label: string }[] | undefined | null): M[] {
+  const loaded = new Set((instances ?? []).map(i => i.label));
+  return (installed ?? []).filter(m => m.ready !== false && !loaded.has(m.model_name ?? m.model));
+}

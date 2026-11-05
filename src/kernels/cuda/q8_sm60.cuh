@@ -22,6 +22,7 @@ namespace q8sm60 {
 
 constexpr int THREADS = 256;
 constexpr std::size_t MAX_SMEM = 48 * 1024;   // a Pascal workgroup's static + dynamic limit
+constexpr int MAX_COLS = 8;                        // columns of one launch (a window of 9..16 rows runs in passes)
 
 inline std::size_t smem_bytes(int ncols, int n_in) {
     return std::size_t(ncols) * std::size_t(n_in) + std::size_t(ncols) * std::size_t(n_in / 32) * sizeof(float);
@@ -118,7 +119,7 @@ void launch_cols(const int8_t* qs, const half* d, const Q81Block* x, float* y, i
 // false: a shape this kernel does not take (the caller runs its usual kernel)
 inline bool launch(const int8_t* qs, const half* d, const Q81Block* x, float* y, int n_in, int n_out, int ncols,
                    cudaStream_t s) {
-    if (n_in % 32 != 0 || n_in < 128 || ncols < 1 || ncols > 8 || smem_bytes(ncols, n_in) > MAX_SMEM) return false;
+    if (n_in % 32 != 0 || n_in < 128 || ncols < 1 || ncols > MAX_COLS || smem_bytes(ncols, n_in) > MAX_SMEM) return false;
     switch (ncols) {
         case 1: launch_cols<1>(qs, d, x, y, n_in, n_out, s); break;
         case 2: launch_cols<2>(qs, d, x, y, n_in, n_out, s); break;

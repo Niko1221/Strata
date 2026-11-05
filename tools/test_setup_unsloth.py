@@ -246,7 +246,7 @@ class Main(Base):
     def test_recommended_context_on_12_gb(self):
         code, out, cfg = self.main([])
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")   # 128K on every card (owner, 2026-11-01)
 
     @budget_mode()
     def test_more_ram_bigger_budget(self):
@@ -583,7 +583,7 @@ class StrixHaloCache(Base):
     """#1715: on a unified-memory APU the expert cache and the RAM budget are the same RAM: setup writes a cache size
     that leaves the OS room, not `--expert-cache auto` (it OOM-killed a 128 GB Strix Halo with the desktop open)."""
 
-    HALO = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 2.0, "arch": "gfx1151", "driver": "amdgpu",
+    HALO = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 114.0, "arch": "gfx1151", "driver": "amdgpu",
              "uma": True, "dedicated_gb": 2.0, "shared_gb": 112.0}]
 
     def run_halo(self, ram, argv=("--context", "8192"), amd=None):

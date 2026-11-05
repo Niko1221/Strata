@@ -3,7 +3,7 @@ import copy
 from pathlib import Path
 import unittest
 
-from serve.frontend import ChatTemplate, anthropic_to_messages, openai_to_messages
+from serve.frontend import ChatTemplate, anthropic_to_messages, openai_to_messages, require_messages
 from serve.server import ByteTokenizer, MockEngine, Service
 
 
@@ -340,3 +340,12 @@ class FencedJsonCallInWrapper(unittest.TestCase):
         other = [{"name": "other", "parameters": {}}]
         calls, text = self.run_parser(raw, len(raw), False, tools=other)
         self.assertEqual((calls, text), ([], raw))
+
+
+class EmptyConversation(unittest.TestCase):
+    def test_no_message_is_an_error_a_message_is_not(self):
+        with self.assertRaises(ValueError):
+            require_messages(openai_to_messages({"messages": []})[0])
+        with self.assertRaises(ValueError):
+            require_messages(openai_to_messages({})[0])
+        require_messages(openai_to_messages({"messages": [{"role": "user", "content": "hi"}]})[0])

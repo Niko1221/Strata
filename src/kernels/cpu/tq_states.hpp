@@ -60,6 +60,26 @@ inline void tq_states(const uint8_t* qs, uint32_t* st) {
     }
 }
 
+/// TQP (Gyro-L): 64 pair-trellis steps; state t = the 16 stream bits from bit (63 - t)*KB, LSB first,
+/// circular over 8*KB bytes (tqp_state in the fork's ggml-common.h).
+template <int KB>
+inline uint32_t tq_state_tqp(const uint8_t* qs, int t) {
+    constexpr int NB = 8 * KB;
+    const uint32_t off = (uint32_t) (63 - t) * (uint32_t) KB;
+    const uint32_t i0 = off >> 3;
+    const uint32_t i1 = (i0 + 1) % (uint32_t) NB;
+    const uint32_t i2 = (i0 + 2) % (uint32_t) NB;
+    const uint32_t w = (uint32_t) qs[i0] | ((uint32_t) qs[i1] << 8) | ((uint32_t) qs[i2] << 16);
+    return (w >> (off & 7)) & kTqStateMask;
+}
+template <int KB>
+inline void tq_states_tqp(const uint8_t* qs, uint32_t* st) {
+#if defined(__GNUC__)
+#pragma GCC unroll 64
+#endif
+    for (int t = 0; t < 64; ++t) st[t] = tq_state_tqp<KB>(qs, t);
+}
+
 /// fp16 bits -> float, exact (the block scales and the Q8_0 activation scales).
 inline float tq_half_to_float(uint16_t h) {
     const uint32_t sign = (uint32_t) (h & 0x8000u) << 16;

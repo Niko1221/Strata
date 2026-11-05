@@ -1,6 +1,7 @@
 // src/kernels/cuda/kv_stream.cu - see include/strata/kernels/kv_stream.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/kv_stream.hpp"
@@ -322,8 +323,8 @@ void kv_stream_reset(const KvStreamMap& m, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class reset_kernel_f02a82>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class reset_kernel_f02a82>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 128) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -359,8 +360,8 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class resolve_kernel_148a81>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class resolve_kernel_148a81>>(
                 sycl::nd_range<3>(sycl::range(1, 1, RT), sycl::range(1, 1, RT)),
                 exp_props,
                 [=](sycl::nd_item<3> item_ct1)
@@ -374,7 +375,7 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto runs_of_slots_host_fmt_s_ct1 =
                     runs_of(slots, host, fmt, s);
@@ -396,8 +397,8 @@ void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class ring_kernel_f9df1d>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class ring_kernel_f9df1d>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 64) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),

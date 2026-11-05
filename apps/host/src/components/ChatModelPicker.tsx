@@ -4,7 +4,7 @@ import { useId, useRef, useState } from 'react';
 import { FloatingMenu } from './FloatingMenu';
 import { Bar, Btn, Dialog, ErrorNotice, Icon } from './ui';
 import { go, useLifecycle, loadVariant, selectRemoteModel, setSettingsSection, useStore } from '../lib/store';
-import { pickerGroups, pickerVersionState } from '../lib/model-picker';
+import { pickerGroups, pickerNativeModels, pickerVersionState } from '../lib/model-picker';
 import { versionFit } from '../lib/model-versions';
 import type { ModelVariant } from '../lib/types';
 import { sizeGb } from '../lib/format';
@@ -20,7 +20,7 @@ function NativeChatModelPicker() {
     const [open, setOpen] = useState(false), [error, setError] = useState('');
     const ref = useRef<HTMLButtonElement>(null);
     const current = native?.instances.find(i => i.id === native.defaultId);
-    return <><button className="chat-model-badge chat-model-picker" ref={ref} aria-label={tr("Choose model: {0}", [current?.label ?? 'Native model'])} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name="models" size={16}/><span>{tr(current?.label ?? 'Native model')}</span><Icon name="chevron" size={12}/></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("Chat model")} width={340} onClose={() => setOpen(false)}>{tr(native?.instances.filter(i => i.status !== 'error').map(i => <button className="menu__item" role="menuitemradio" aria-checked={current?.id === i.id} disabled={streaming || i.status !== 'ready'} key={i.id} onClick={() => void nativeAction(`instances/${i.id}/default`).then(() => setOpen(false)).catch(e => setError(e.message))}><Icon name="models"/><span><strong>{tr(i.label)}</strong><small>{tr(i.gpus.map(g => `GPU ${g + 1}`).join(" + ") || "Automatic GPU")}</small></span></button>))}{tr(providers?.connections.flatMap(c => c.models.map(m => <button className="menu__item" role="menuitem" disabled={streaming} key={`${c.id}-${m.id}`} onClick={() => { selectRemoteModel({ connectionId: c.id, modelId: m.id }); setOpen(false); }}><Icon name="link"/>{m.name} · {c.name}</button>)))}<button className="menu__item" role="menuitem" onClick={() => { setOpen(false); go('models'); }}>{tr("Manage models")}</button>{tr(error ? <p className="small inline-error">{tr(error)}</p> : null)}</FloatingMenu> : null)}</>;
+    return <><button className="chat-model-badge chat-model-picker" ref={ref} aria-label={tr("Choose model: {0}", [current?.label ?? 'Native model'])} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name="models" size={16}/><span>{tr(current?.label ?? 'Native model')}</span><Icon name="chevron" size={12}/></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("Chat model")} width={340} onClose={() => setOpen(false)}>{tr(native?.instances.filter(i => i.status !== 'error').map(i => <button className="menu__item" role="menuitemradio" aria-checked={current?.id === i.id} disabled={streaming || i.status !== 'ready'} key={i.id} onClick={() => void nativeAction(`instances/${i.id}/default`).then(() => setOpen(false)).catch(e => setError(e.message))}><Icon name="models"/><span><strong>{tr(i.label)}</strong><small>{tr(i.gpus.map(g => `GPU ${g + 1}`).join(" + ") || "Automatic GPU")}</small></span>{tr(current?.id === i.id ? <Icon name="check" size={16} className="menu__check"/> : null)}</button>))}{tr(providers?.connections.flatMap(c => c.models.map(m => <button className="menu__item" role="menuitem" disabled={streaming} key={`${c.id}-${m.id}`} onClick={() => { selectRemoteModel({ connectionId: c.id, modelId: m.id }); setOpen(false); }}><Icon name="link"/>{m.name} · {c.name}</button>)))}<button className="menu__item" role="menuitem" onClick={() => { setOpen(false); go('models'); }}>{tr("Manage models")}</button>{tr(error ? <p className="small inline-error">{tr(error)}</p> : null)}</FloatingMenu> : null)}</>;
 }
 function LegacyChatModelPicker() {
     const native = useNative();
@@ -37,6 +37,7 @@ function LegacyChatModelPicker() {
     const running = library?.variants.find(v => v.id === library.loaded);
     const version = library?.variants.find(v => v.id === selected);
     const groups = library ? pickerGroups(library) : [];
+    const installedNative = pickerNativeModels(native?.installed?.models, native?.instances);
     const status = version ? pickerVersionState(version, library?.loaded ?? null) : null;
     const tooBig = !!version && library?.mode === 'real' && versionFit(version, hardware, contextTokens(engine?.beginner.contextLength ?? '32K')).zone === 'too-big';
     async function apply() {
@@ -78,7 +79,8 @@ function LegacyChatModelPicker() {
     <button ref={trigger} className="chat-model-badge chat-model-picker" aria-label={tr("Choose model: {0}", [apiModel?.name ?? (running?.local ? running.name : running?.family) ?? 'No model loaded'])} title={tr(apiModel ? `${connection?.name} · ${apiModel.id}` : 'View and switch models')} disabled={!library && !providers} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><Icon name={apiModel ? 'link' : modelFamilyIcon(running?.family ?? groups[0]?.family)} size={16}/><span>{tr(apiModel?.name ?? (running?.local ? running.name : running?.family) ?? groups[0]?.family ?? 'No model loaded')}</span><Icon name="chevron" size={12}/></button>
     {tr(open ? <FloatingMenu anchor={trigger.current} title={tr("Models")} width={380} onClose={() => setOpen(false)}>
       {tr(native?.instances.filter(i => i.status !== 'error').map(i => <button key={i.id} className="menu__item" role="menuitem" disabled={streaming || i.status !== 'ready'} onClick={() => void nativeAction(`instances/${i.id}/default`).then(() => { selectRemoteModel(null); setOpen(false); }).catch(e => setError(e.message))}><Icon name="models"/><span>{tr(i.label)}<small>{tr(i.gpus.map(g => `GPU ${g + 1}`).join(" + ") || "Automatic GPU")}</small></span></button>))}<p className="model-picker-heading">{tr("Local models")}</p>
-      {tr(!groups.length ? <p className="model-picker-empty">{tr("No local models downloaded yet.")}</p> : null)}
+      {tr(installedNative.map(m => <button key={m.config || m.model} className="menu__item model-picker-option model-picker-api" role="menuitem" disabled={streaming} onClick={() => { setOpen(false); go('models'); }}><span><strong>{tr(m.model_name || m.model)}</strong><small>{tr("Downloaded, not loaded. Open Models to load it.")}</small></span></button>))}
+      {tr(!groups.length && !installedNative.length ? <p className="model-picker-empty">{tr("No local models downloaded yet.")}</p> : null)}
       {tr(groups.map(({ family, versions }, index) => {
                 const main = versions[0], state = pickerVersionState(main, library!.loaded);
                 const others = versions.slice(1), isExpanded = expanded.includes(family), id = `${groupsId}-${index}`;

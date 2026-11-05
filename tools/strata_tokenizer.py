@@ -66,6 +66,37 @@ QWEN35_PATTERN = (
 )
 
 
+# The `deepseek-v3` pre-tokenizer (DeepSeek-V3 / V4.1; llama.cpp LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM, the same regex list as
+# JoyAI and Hunyuan-dense).  UNLIKE the single-pattern families it is a SEQUENCE: each pattern splits the pieces the
+# one before it left (a span a pattern does not match stays a piece of its own), so digits (runs of 1..3) and CJK
+# runs are cut out before the general word / punctuation / whitespace pattern sees the rest.
+DEEPSEEK3_PATTERNS = (
+    r"\p{N}{1,3}",
+    "[一-龥぀-ゟ゠-ヿ]+",
+    r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+"
+    r"| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
+)
+
+
+def _sequence_findall(patterns, text: str) -> list[str]:
+    """llama.cpp's unicode_regex_split: the pieces of `text` after each pattern in turn splits every piece into its
+    matches and the unmatched spans between them."""
+    pieces = [text]
+    for pat in patterns:
+        nxt = []
+        for piece in pieces:
+            pos = 0
+            for m in pat.finditer(piece):
+                if m.start() > pos:
+                    nxt.append(piece[pos:m.start()])
+                nxt.append(m.group())
+                pos = m.end()
+            if pos < len(piece):
+                nxt.append(piece[pos:])
+        pieces = nxt
+    return pieces
+
+
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
                  pre: str = "qwen35", special_ids: dict[str, int] | None = None):
@@ -88,7 +119,12 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        if str(pre).startswith("deepseek"):
+            seq = [regex.compile(x) for x in DEEPSEEK3_PATTERNS]
+            self._split = lambda text: _sequence_findall(seq, text)
+        else:
+            self._re = regex.compile(QWEN35_PATTERN)
+            self._split = self._re.findall
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -223,7 +259,7 @@ class Tokenizer:
         # A piece's ids depend on the piece alone, so repeated pieces (most of a resent conversation) are looked up
         # instead of merged again.  The ids are the ones _bpe gives: this only skips the work.
         cache = self._piece_ids
-        for piece in self._re.findall(text):
+        for piece in self._split(text):
             got = cache.get(piece)
             if got is None:
                 mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
@@ -304,6 +340,11 @@ class Tokenizer:
         if b is None:
             if i < 0 or i >= len(self.tokens):
                 raise IndexError("token id %d is outside the vocabulary (%d)" % (i, len(self.tokens)))
+            if self.token_types and i < len(self.token_types) and self.token_types[i] in (3, 4):
+                # a special token's string is the literal text (DeepSeek's `<｜User｜>`, `｜DSML｜` hold characters outside
+                # the byte alphabet); for Qwen's ASCII specials it is the same bytes the alphabet would give
+                b = cache[i] = self.tokens[i].encode("utf-8")
+                return b
             raw = bytearray()
             for ch in self.tokens[i]:
                 v = UNICODE_TO_BYTE.get(ch)

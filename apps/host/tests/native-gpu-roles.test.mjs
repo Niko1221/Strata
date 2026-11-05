@@ -74,3 +74,22 @@ test('roles that make no sense are refused with a plain line', async () => {
     assert.match(nope.error, /detected graphics cards/);
   } finally { await f.cleanup(); }
 });
+
+test('"Tune this model" keeps a two-card role map exactly as the person set it, in the file and in the engine it starts (#3655)', async () => {
+  const f = nativeFixture();
+  try {
+    await f.control.refresh(true);
+    const path = join(f.repo, 'strata-iq2_xs.json');
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    Object.assign(config, { gpu: [0, 1], gpu_order: 'as_given', gpu_roles: { 0: 'helper', 1: 'main' }, gpu_cards: { 0: 'GTX 1080', 1: 'GTX 1080' } });
+    writeFileSync(path, JSON.stringify(config));
+    await f.control.refresh(true);
+    const tuned = await finishJob(f.control, f.control.operation('tune', { model: 'iq2_xs', profile: 'performance', calibrate: false }).id);
+    assert.equal(tuned.state, 'done', tuned.error);
+    const after = JSON.parse(readFileSync(path, 'utf8'));
+    for (const key of ['gpu', 'gpu_order', 'gpu_roles', 'gpu_cards']) assert.deepEqual(after[key], config[key], `${key} in the settings file is untouched by Tune`);
+    const started = written(f, tuned);
+    assert.deepEqual(started.gpu, [0, 1], 'and the engine Tune loads runs on both cards');
+    assert.deepEqual(started.gpu_roles, { 0: 'helper', 1: 'main' });
+  } finally { await f.cleanup(); }
+});

@@ -39,6 +39,8 @@ export function state() {
     revision,
     running,
     baseUrl: sharing.active ? sharing.url : baseUrl(),
+    // The address on this computer, the one the app's own port serves, kept apart from the sharing address (#4798).
+    localUrl: baseUrl(),
     sharing,
     tunnel,
     port,

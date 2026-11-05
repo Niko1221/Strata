@@ -23,6 +23,7 @@
 #include "strata/kernels/native_ple_postops.hpp"
 
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 #include <cmath>
 #include <cstdio>
@@ -385,6 +386,28 @@ void ple_block_projected(const float* projected_key, const float* projected_valu
     float* norm_dst = out.normalized ? out.normalized : d_norm;
     NativePlePostopsBuffers buffers{d_query, norm_dst, d_gate, d_gated, norm_dst, d_conv, out.result};
     native_ple_postops(projected_key, hidden, projected_value, hist_rows, w, buffers, stream);
+}
+
+namespace {
+__constant__ int8_t kPleIq4Nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+// one thread a value: row r, block b (18 bytes: fp16 d, 16 bytes of codes), element j of 32 (j < 16: low nibble of
+// qs[j], else the high nibble of qs[j - 16] - the split halves of iq4nl_dequant_row)
+__global__ void ple_iq4nl_dequant_kernel(const uint8_t* __restrict__ raw, int64_t n, float* __restrict__ out) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const int64_t r = i / PLE_HEAD_DIM;
+    const int e = (int) (i - r * PLE_HEAD_DIM), b = e >> 5, j = e & 31;
+    const uint8_t* blk = raw + r * PLE_ROW_BYTES + b * 18;
+    const float d = __half2float(__ushort_as_half((unsigned short) (blk[0] | (blk[1] << 8))));
+    const uint8_t q = blk[2 + (j & 15)];
+    out[i] = d * (float) kPleIq4Nl[j < 16 ? (q & 15) : (q >> 4)];
+}
+}  // namespace
+
+void ple_iq4nl_dequant(const uint8_t* raw, int64_t rows, float* out, void* stream) {
+    const int64_t n = rows * PLE_HEAD_DIM;
+    if (n <= 0) return;
+    ple_iq4nl_dequant_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(raw, n, out);
 }
 
 }  // namespace strata::kernels

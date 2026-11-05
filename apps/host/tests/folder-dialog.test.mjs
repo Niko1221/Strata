@@ -35,7 +35,11 @@ test('Windows uses a PowerShell FolderBrowserDialog passed as an encoded command
   assert.deepEqual(await chooseFolder('Pick', { platform: 'win32', run: c.run('') }), { cancelled: true });
   const missing = await chooseFolder('Pick', { platform: 'win32', run: c.run(failure('ENOENT')) });
   assert.equal(missing.unavailable, true);
-  await assert.rejects(chooseFolder('Pick', { platform: 'win32', run: c.run(failure(2)) }), /could not open/);
+  // A window that fails after it was started no longer ends in an error with no way on (AGENT-LOST, item 11): the app asks for the path.
+  const failed = await chooseFolder('Pick', { platform: 'win32', run: c.run(failure(2)) });
+  assert.equal(failed.unavailable, true); assert.match(failed.reason, /Type the folder path/);
+  const nodialog = await chooseFolder('Pick', { platform: 'win32', run: c.run('NODIALOG' + String.fromCharCode(13, 10)) });
+  assert.equal(nodialog.unavailable, true); assert.match(nodialog.reason, /Type the folder path/);
 });
 
 test('the generated PowerShell parses without errors', { skip: process.platform !== 'win32' }, () => {
@@ -170,5 +174,9 @@ test('Windows: a PowerShell that is missing or fails is reported as before', asy
   f.child.emit('error', Object.assign(new Error('x'), { code: 'ENOENT' }));
   await assert.rejects(missing, e => e.code === 'ENOENT');
   const g = fakeShell(); const failed = watchedWindowsDialog('powershell.exe', [], { spawnProcess: g.spawnProcess });
-  g.child.emit('close', 1); await assert.rejects(failed, e => e.code === 1);
+  g.child.emit('close', 1);
+  // Ended by security software before any window opened (#3831): the app asks for the path instead of an error.
+  assert.deepEqual(await failed, { noDialog: true });
+  const h = fakeShell(); const late = watchedWindowsDialog('powershell.exe', [], { spawnProcess: h.spawnProcess });
+  h.child.stdout.emit('data', 'READY\n'); h.child.emit('close', 1); await assert.rejects(late, e => e.code === 1);
 });

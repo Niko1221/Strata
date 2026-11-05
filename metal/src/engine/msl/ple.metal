@@ -73,16 +73,28 @@ kernel void ple_gate_norm(device const float* key [[buffer(0)]], device const fl
 }
 
 // grid (hc * n_embd / 256, T), 256 threads: the conv over [history | the window's rows], SiLU, and the residual
+// PLE_ROWS (function constant 32): the rows are different sequences (batch slots): row t convolves its slot's history only (slot
+// stride rinfo[7] floats, row t at rinfo[8 + 4 t] = {slot, ...}); the three taps before the row itself always read the history.
+constant bool PLE_ROWS_C [[function_constant(32)]];
+constant bool ple_rows = is_function_constant_defined(PLE_ROWS_C) && PLE_ROWS_C;
+
 kernel void ple_conv_add(device const float* hist [[buffer(0)]], device const float* norm_w [[buffer(1)]],
                          device const half* kw [[buffer(2)]], device const float* gated [[buffer(3)]],
                          device float* R [[buffer(4)]], constant PleArgs& a [[buffer(5)]],
+                         device const uint* rinfo [[buffer(6), function_constant(ple_rows)]],
                          uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
     const uint ch = tg.x * 256 + tid, t = tg.y, hcd = a.hc * a.n_embd;
     if (ch >= hcd) return;
+    if (ple_rows) hist += ulong(rinfo[8 + 4 * t]) * rinfo[7];
     float acc = 0.0f;
     for (int k = 0; k < 4; ++k) {
-        const int p = int(t) - (3 - k) * 3;   // the row this tap reads: < 0 = the committed history
-        const float v = p >= 0 ? norm_w[uint(p) * hcd + ch] : hist[uint(9 + p) + 9 * ch];
+        float v;
+        if (ple_rows) {
+            v = k == 3 ? norm_w[t * hcd + ch] : hist[uint(9 - (3 - k) * 3) + 9 * ch];
+        } else {
+            const int p = int(t) - (3 - k) * 3;   // the row this tap reads: < 0 = the committed history
+            v = p >= 0 ? norm_w[uint(p) * hcd + ch] : hist[uint(9 + p) + 9 * ch];
+        }
         acc += float(kw[k + 4 * ch]) * v;
     }
     const float conv = acc / (1.0f + exp(-acc));

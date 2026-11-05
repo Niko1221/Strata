@@ -1,55 +1,60 @@
 # Running Strata behind llama-swap
 
-[llama-swap](https://github.com/mostlygeek/llama-swap) puts several model servers behind one address and starts the one a
-request names, stopping the others to free the GPU. Strata works as one of its models. This page is what we needed to
-get it running; it was tested with llama-swap's default stop behaviour, Strata 0.1.39 (Coder IQ1_M on a Tesla V100) and
-clients reaching the machine by its host name.
+[llama-swap](https://github.com/mostlygeek/llama-swap) puts several model servers behind one address, starts the one a
+request names and stops the others to free the GPU. This page is for people who already run llama-swap and want
+Strata as one of its models. It needs a [source checkout](SOURCE_INSTALL.md), not the desktop installer.
 
-## The entry
+## Quick start
 
-Set Strata up as usual first (`./setup.sh --no-start ...`), then point llama-swap at the server directly. The start script
-setup writes (`run-<model>.sh`) fixes the port at 8080, so call `serve/server.py` with llama-swap's port instead:
+1. Set up Strata without starting it: `./setup.sh --no-start`. This writes `strata-<model>.json` in the checkout.
+2. Add an entry to llama-swap's config. The start script that setup writes (`run-<model>.sh`) fixes the port at 8080,
+   so call `serve/server.py` with llama-swap's port instead:
 
 ```yaml
-healthCheckTimeout: 300            # Strata takes ~1.5-2 min to load; give it room
+healthCheckTimeout: 300            # model loading takes minutes; give it room
 
 models:
   strata:
     cmd: >-
       sh -c 'cd /path/to/Strata && exec .venv/bin/python serve/server.py
-      --engine strata --config strata-coder-iq1_m.json --port ${PORT}'
-    env: ["STRATA_ALLOWED_HOSTS=my-server"]     # the host name your clients use -- see below
+      --engine strata --config strata-<model>.json --port ${PORT}'
+    env: ["STRATA_ALLOWED_HOSTS=my-server"]     # the host name your clients use, see below
     checkEndpoint: /health
     ttl: 1800
 ```
 
-- `exec` makes the Python server the process llama-swap stops. On llama-swap's stop (SIGTERM) the server stops its engine:
-  in our test the engine was gone and the V100's memory freed within 2 s.
-- `checkEndpoint: /health` -- Strata's `/health` answers only once the model is loaded. Measured load time on our machine
-  (model files on a SATA SSD): 80 s, 105 s while another download was using the disk.
-- If other models share the GPU, put them in a llama-swap group or let swapping unload them; Strata needs the card's
-  memory to itself.
+3. If clients reach llama-swap by a host name, keep the `STRATA_ALLOWED_HOSTS` line and set it to that name
+   ([Host not allowed](#host-is-not-allowed)).
 
-## The trap: "Host ... is not allowed"
+## The entry
 
-The first request through llama-swap failed at once with:
+- `exec` makes the Python server the process llama-swap stops. On SIGTERM the server stops its engine and the
+  GPU memory is freed.
+- `checkEndpoint: /health` works because Strata's `/health` answers only once the model is loaded.
+- Strata needs the card's memory to itself. If other models share the GPU, put them in a llama-swap group or let
+  swapping unload them.
+
+## Host is not allowed
+
+A client that reaches the proxy by name (`http://my-server:8040`) gets:
 
 ```text
 403 Host 'my-server:8040' is not allowed (DNS rebinding protection)
 ```
 
 Strata only answers to the host names it knows, so a web page cannot reach it by pointing a DNS name at 127.0.0.1.
-llama-swap passes the client's Host header through, so a client that reaches the proxy by name (`http://my-server:8040`)
-is refused. Requests by IP address and to `localhost` always pass, which is why it can work in a quick test and fail
-from another machine. Any one of these fixes it:
+llama-swap passes the client's Host header through. Requests by IP address and to `localhost` always pass, so a quick
+local test can work while the same setup fails from another machine. Any one of these fixes it:
 
-- `STRATA_ALLOWED_HOSTS=my-server` in the entry's `env` (comma-separated names; ports are ignored), or
-- `"allowed_hosts": ["my-server"]` in `strata-<model>.json`, or
-- an `"api_key"`, which turns the check off -- then every client must send the key.
+| Fix | Notes |
+| --- | --- |
+| `STRATA_ALLOWED_HOSTS=my-server` in the entry's `env` | Comma-separated names; ports are ignored. |
+| `"allowed_hosts": ["my-server"]` in `strata-<model>.json` | Same effect, stored in the config. |
+| An `"api_key"` in the config | Turns the host check off. Every client must then send the key. |
 
 ## Strata's own pages through llama-swap
 
-llama-swap forwards `/upstream/<model>/...` unchanged, so Strata's status and health pages stay reachable, and calling one
+llama-swap forwards `/upstream/<model>/...` unchanged. Strata's status and health pages stay reachable, and calling one
 also loads the model without sending a chat request:
 
 ```bash
@@ -57,10 +62,25 @@ curl http://my-server:8040/upstream/strata/health
 curl http://my-server:8040/upstream/strata/v1/status
 ```
 
-## Claude Code and other Anthropic-API clients: the thinking level
+## Claude Code and other Anthropic-API clients
 
-Claude Code (and the Claude Agent SDK) send `"output_config": {"effort": "high"}` with every request unless told
-otherwise, so Strata thinks at its highest level (seen by logging the requests). `CLAUDE_CODE_EFFORT_LEVEL=medium` (or
-`low`) in the client's environment changes it. One measurement, for scale only: on one real coding task in our setup,
-`medium` finished in 6.5 min against 9.7 min at `high`, both correct; `low` took 10.1 min (more trial-and-fix steps).
-One run each -- not a general result.
+Claude Code and the Claude Agent SDK send `"output_config": {"effort": "high"}` with every request unless told
+otherwise, so Strata thinks at its highest level. Set `CLAUDE_CODE_EFFORT_LEVEL=medium` (or `low`) in the client's
+environment to change it.
+
+## History / older measurements
+
+> **Measured on:** Tesla V100, Coder IQ1_M, Strata 0.1.39, llama-swap default stop behaviour, model files on a SATA SSD.
+
+| Item | Result |
+| --- | --- |
+| Model load time | 80 s; 105 s while another download used the disk |
+| Engine gone and V100 memory freed after llama-swap's stop | within 2 s |
+
+> **Measured on:** one real coding task, Strata 0.1.39 setup, one run per level. This is not a general result.
+
+| `CLAUDE_CODE_EFFORT_LEVEL` | Time to a correct result |
+| --- | --- |
+| `medium` | 6.5 min |
+| `high` | 9.7 min |
+| `low` | 10.1 min (more trial-and-fix steps) |

@@ -24,7 +24,7 @@ const char* type_name(int t) {
         case Q3_K: return "Q3_K"; case Q4_K: return "Q4_K"; case Q5_K: return "Q5_K"; case Q6_K: return "Q6_K";
         case IQ2_XXS: return "IQ2_XXS"; case IQ2_XS: return "IQ2_XS"; case IQ2_S: return "IQ2_S";
         case IQ3_XXS: return "IQ3_XXS"; case IQ3_S: return "IQ3_S"; case IQ4_NL: return "IQ4_NL";
-        case IQ4_XS: return "IQ4_XS"; case Q2_0: return "Q2_0";
+        case IQ4_XS: return "IQ4_XS"; case Q2_0: return "Q2_0"; case IQ1_S: return "IQ1_S"; case IQ1_M: return "IQ1_M";
         case TQ2_T: return "TQ2_T"; case TQK6: return "TQK6"; case TQK7: return "TQK7";
     }
     return "?";
@@ -46,7 +46,7 @@ int block_bytes(int t) {
         case Q4_0: return 18; case Q5_0: return 22; case Q5_1: return 24; case Q8_0: return 34; case IQ4_NL: return 18; case Q2_0: return 18;
         case Q3_K: return 110; case Q4_K: return 144; case Q5_K: return 176; case Q6_K: return 210;
         case IQ2_XXS: return 66; case IQ2_XS: return 74; case IQ2_S: return 82; case IQ3_XXS: return 98;
-        case IQ3_S: return 110; case IQ4_XS: return 136;
+        case IQ3_S: return 110; case IQ4_XS: return 136; case IQ1_S: return 50; case IQ1_M: return 56;
         case TQ2_T: return 34; case TQK6: return 26; case TQK7: return 30;
     }
     std::fprintf(stderr, "ref: unknown type %d\n", t);
@@ -292,6 +292,48 @@ static void deq_block(int t, const uint8_t* b, float* y) {
             }
             return;
         }
+        case IQ1_S: {   // ggml dequantize_row_iq1_s: dl = d (2 s + 1), y = dl (grid + delta)
+            const float d = f16_to_f32(rd16(b));
+            const uint8_t* qs = b + 2;
+            for (int ib = 0; ib < 8; ++ib) {
+                const uint16_t qh = rd16(b + 34 + 2 * ib);
+                const float dl = d * (float)(2 * ((qh >> 12) & 7) + 1);
+                const float delta = qh & 0x8000 ? -IQ1S_DELTA : IQ1S_DELTA;
+                for (int l = 0; l < 4; ++l) {
+                    const int8_t* grid = (const int8_t*)(iq1s_grid + (qs[l] | (((qh >> 3 * l) & 7) << 8)));
+                    for (int j = 0; j < 8; ++j) y[j] = dl * (grid[j] + delta);
+                    y += 8;
+                }
+                qs += 4;
+            }
+            return;
+        }
+        case IQ1_M: {   // ggml dequantize_row_iq1_m: the f16 scale in the top nibbles of the four u16 scales
+            const uint8_t* qs = b;
+            const uint8_t* qh = b + 32;
+            const uint16_t* sc = (const uint16_t*)(b + 48);
+            uint16_t s16 = (uint16_t)((sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000));
+            const float d = f16_to_f32(s16);
+            for (int ib = 0; ib < 8; ++ib) {
+                const float dl1 = d * (float)(2 * ((sc[ib / 2] >> (6 * (ib % 2) + 0)) & 7) + 1);
+                const float dl2 = d * (float)(2 * ((sc[ib / 2] >> (6 * (ib % 2) + 3)) & 7) + 1);
+                uint16_t idx[4];
+                idx[0] = qs[0] | ((qh[0] << 8) & 0x700);
+                idx[1] = qs[1] | ((qh[0] << 4) & 0x700);
+                idx[2] = qs[2] | ((qh[1] << 8) & 0x700);
+                idx[3] = qs[3] | ((qh[1] << 4) & 0x700);
+                const float delta[4] = {qh[0] & 0x08 ? -IQ1S_DELTA : IQ1S_DELTA, qh[0] & 0x80 ? -IQ1S_DELTA : IQ1S_DELTA,
+                                        qh[1] & 0x08 ? -IQ1S_DELTA : IQ1S_DELTA, qh[1] & 0x80 ? -IQ1S_DELTA : IQ1S_DELTA};
+                for (int l = 0; l < 4; ++l) {
+                    const int8_t* grid = (const int8_t*)(iq1s_grid + idx[l]);
+                    for (int j = 0; j < 8; ++j) y[j] = (l < 2 ? dl1 : dl2) * (grid[j] + delta[l]);
+                    y += 8;
+                }
+                qs += 4;
+                qh += 2;
+            }
+            return;
+        }
         case IQ2_XXS: {
             const float d = f16_to_f32(rd16(b));
             const uint8_t* qs = b + 2;
@@ -462,6 +504,8 @@ void random_blocks(int t, uint8_t* dst, int rows, int cols, uint64_t seed, float
             case Q6_K: put16(b + 208, f32_to_f16(scale * u / 32 / 64)); break;
             case Q3_K: put16(b + 108, f32_to_f16(scale * u / 32 / 2)); break;
             case IQ2_XXS: case IQ2_XS: case IQ2_S: put16(b, f32_to_f16(scale * u / 4)); break;
+            case IQ1_S: put16(b, f32_to_f16(scale * u / 2)); break;
+            case IQ1_M: { uint16_t h = f32_to_f16(scale * u / 2); for (int j = 0; j < 4; ++j) { uint16_t w = (uint16_t)(b[48 + 2 * j] | (b[49 + 2 * j] << 8)); w = (uint16_t)((w & 0x0fff) | (((h >> (4 * j)) & 0xf) << 12)); b[48 + 2 * j] = (uint8_t)w; b[49 + 2 * j] = (uint8_t)(w >> 8); } break; }
             case IQ3_XXS: put16(b, f32_to_f16(scale * u / 8)); break;
             case IQ3_S: put16(b, f32_to_f16(scale * u / 64)); break;
             case TQ2_T: case TQK6: case TQK7: put16(b, f32_to_f16(scale * u / 1.5f)); break;   // codebook |point| ~ 1

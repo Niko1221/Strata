@@ -218,7 +218,7 @@ export async function start({ modelId, modelPath, port = 8080, config, hardware,
   const binary = await resolveBinary();
   if (!binary) {
     state.status = 'error';
-    state.error = 'No llama-server binary found. Download the engine from Settings → Engine.';
+    state.error = 'No llama-server binary found. Download the engine from Settings → About.';
     throw new Error(state.error);
   }
   if (!existsSync(modelPath)) {

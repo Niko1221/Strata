@@ -159,6 +159,69 @@ GP_ROW(T_IQ3_S) GP_ROW(T_IQ4_XS) GP_ROW(T_Q2_0) GP_ROW(T_Q3_K) GP_ROW(T_Q4_K) GP
 // Q2_0 with raw activations (the shared expert's down reading the pair's raw h)
 GV_SET(T_Q2_0R)
 
+#ifdef STRATA_METAL_F16   // window.cpp compiles it in only under STRATA_METAL_F16=1
+// gemv16: gemv over the window's half plane with the fp16 decode and combine (units.metal Dec16 / X16 / unit_combine16)
+template <int F, int LPR, int NR, int SG, int KS>
+kernel void gemv16(device const uchar* W [[buffer(0)]], device const half* xp [[buffer(1)]],
+                   device const float* s16 [[buffer(2)]], device float* y [[buffer(3)]], constant GemvArgs& a [[buffer(4)]],
+                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                   ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int UNIT = fmt<F>::UNIT, RS = SG / KS, RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    threadgroup float red[KS > 1 ? KS * RS * RG * NR * 8 : 1];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int ks = sg / RS, rs = sg % RS;
+    const int li = lane % LPR;
+    const int lrow0 = (rs * RG + lane / LPR) * NR;
+    const int row0 = int(tg.x) * RS * RG * NR + lrow0;
+    const int U = int(a.n_in) / UNIT;
+    const int u0 = ks * U / KS, u1 = (ks + 1) * U / KS;
+    float acc[NR][8];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NTOK; ++t) acc[r][t] = 0.0f;
+    device const uchar* rp[NR];
+    for (int r = 0; r < NR; ++r) rp[r] = W + (ulong)min(row0 + r, int(a.n_out) - 1) * a.row_bytes;
+    const int s16n = int(a.n_in) / 16;
+    for (int u = u0 + li; u < u1; u += LPR) {
+        half q[NR][UNIT];
+        float4 sc[NR];
+        for (int r = 0; r < NR; ++r) Dec16<F>::run(rp[r], u, q[r], sc[r], tab);
+        half xs[UNIT];
+        float xsum[2];
+        for (int t = 0; t < NTOK; ++t) {
+            X16<F>::load(xp + t * int(a.x_stride), s16 + t * s16n, u, xs, xsum);
+            for (int r = 0; r < NR; ++r) acc[r][t] += unit_combine16<UNIT>(q[r], sc[r], xs, xsum);
+        }
+    }
+    constexpr int RPT = RS * RG * NR;
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NTOK; ++t) {
+            const float v = lane_sum<LPR>(acc[r][t]);
+            if (KS == 1) {
+                if (li == 0 && row0 + r < int(a.n_out)) y[t * int(a.y_stride) + row0 + r] = v;
+            } else if (li == 0) {
+                red[(ks * RPT + lrow0 + r) * 8 + t] = v;
+            }
+        }
+    if (KS > 1) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (ks == 0 && li == 0)
+            for (int r = 0; r < NR; ++r)
+                for (int t = 0; t < NTOK; ++t) {
+                    float v = 0.0f;
+                    for (int k = 0; k < KS; ++k) v += red[(k * RPT + lrow0 + r) * 8 + t];
+                    if (row0 + r < int(a.n_out)) y[t * int(a.y_stride) + row0 + r] = v;
+                }
+    }
+}
+#define GV16(F, L, R, S, K) template [[host_name("gemv16_" #F "_" #L "_" #R "_" #S "_" #K)]] kernel decltype(gemv16<F, L, R, S, K>) gemv16<F, L, R, S, K>;
+#define GV16_SET(F) GV16(F, 32, 1, 4, 1) GV16(F, 32, 2, 4, 1) GV16(F, 16, 1, 4, 1) GV16(F, 16, 2, 4, 1) GV16(F, 8, 1, 4, 1) \
+                    GV16(F, 8, 2, 4, 1) GV16(F, 4, 2, 4, 1) GV16(F, 4, 1, 4, 1) GV16(F, 32, 1, 8, 2) GV16(F, 16, 1, 8, 4) \
+                    GV16(F, 2, 1, 4, 1) GV16(F, 2, 2, 4, 1) GV16(F, 1, 1, 4, 1)
+GV16_SET(T_Q3_K) GV16_SET(T_Q4_K) GV16_SET(T_Q5_K) GV16_SET(T_Q6_K) GV16_SET(T_IQ4_XS) GV16_SET(T_Q2_0)
+#endif   // STRATA_METAL_F16
+
 // gemv_cat: two matrices of the same format and n_in over the same x in one dispatch - rows [0, n_split) are W's
 // (into y), rows [n_split, n_out) are W2's (into y2, from its row 0).  Each row's arithmetic is gemv's (KS = 1), so the
 // outputs are bitwise the two separate GEMVs'.  (GDN's ssm_alpha + ssm_beta: 48 + 48 rows.)

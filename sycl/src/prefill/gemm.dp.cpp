@@ -1,6 +1,7 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/gemm.hpp"
@@ -565,7 +566,7 @@ void bf16_to_f16(const uint16_t *in, uint16_t *out, int64_t n,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp16});
 
-        st->parallel_for<dpct_kernel_name<class bf16_to_f16_kernel_a0031a>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class bf16_to_f16_kernel_a0031a>>(
             sycl::nd_range<3>(sycl::range(1, 1, (unsigned)((n + 255) / 256)) *
                                   sycl::range(1, 1, 256),
                               sycl::range(1, 1, 256)),
@@ -749,6 +750,7 @@ bool Gemm::bf16_converts_x() const { return false; }
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta, int64_t ldx, bool /*x_f16*/) {
     if (T <= 0 || N <= 0) return;
+    strata::kprof::Section kp_sec(strata::q_of(stream_), strata::kprof::enabled() ? "gemm bf16 N=" + std::to_string((long long) N) + " K=" + std::to_string((long long) K) : std::string());
     if (ldy <= 0) ldy = N;
     if (ldx <= K) ldx = 0;
 #ifdef STRATA_USE_HIP
@@ -836,6 +838,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                float beta) {
     if (T <= 0 || N <= 0) return;
+    strata::kprof::Section kp_sec(strata::q_of(stream_), strata::kprof::enabled() ? "gemm f16 N=" + std::to_string((long long) N) + " K=" + std::to_string((long long) K) : std::string());
     if (ldy <= 0) ldy = N;
 #ifdef STRATA_USE_HIP
     // #313 (opt-in STRATA_WMMA_GEMM=1): RDNA3 / RDNA3.5 WMMA dense GEMM, before hipBLASLt (falls through when false)

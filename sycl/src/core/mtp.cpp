@@ -233,6 +233,14 @@ bool MtpDrafter::make_q4_head(std::string& err) {
     const int64_t N = g_->n_embd;
     const auto* tt = ggml_get_type_traits((ggml_type) head_->type());
     if (tt == nullptr || tt->to_float == nullptr || N % 32 != 0) { err = "mtp: --mtp-q4 cannot read the head's format"; return false; }
+    // SYCL port: with STRATA_Q6_PLANAR the head is stored as planes, and the subset this builds from is row-major
+    // only when the head is packed - the gather at load time then copies planes as if they were rows.  The result is
+    // a draft head that proposes nothing at all (measured: 0 drafts, decode 73.8 -> 35.3 tok/s) with no error, so
+    // refuse instead of running wrong in silence.
+    if (head_->type() == 14 && strata::kernels::native_q6_k_is_planar(head_->weights())) {
+        err = "mtp: --mtp-q4 head needs the packed Q6_K head layout (STRATA_Q6_PLANAR=0)";
+        return false;
+    }
     const size_t in_row = head_->row_bytes(), out_row = (size_t) (N / 32) * 18;
     std::vector<uint8_t> src((size_t) n_dvocab_ * in_row), dst((size_t) n_dvocab_ * out_row);
     try { dpct::get_in_order_queue().memcpy(src.data(), dhead_, src.size()).wait(); }   // SYCL port: cudaMemcpy

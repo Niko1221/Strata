@@ -23,6 +23,7 @@
 //      what a reader multiplies by.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/quantize_act.hpp"
@@ -318,8 +319,8 @@ void quantize_q8_0(const float* x, uint8_t* blocks, int64_t n, void* stream) {
             strata::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class quantize_q8_0_kernel_5451b9>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class quantize_q8_0_kernel_5451b9>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
                                   sycl::range(1, 1, threads)),
@@ -361,8 +362,8 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<
                 dpct_kernel_name<class quantize_q8_0_scaled_kernel_caf6f4>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
@@ -392,8 +393,8 @@ void dequant_q8_0(const uint8_t* blocks, float* x, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class dequant_q8_0_kernel_154e61>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class dequant_q8_0_kernel_154e61>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
                                   sycl::range(1, 1, threads)),
@@ -424,8 +425,8 @@ void quantize_q8_K(const float* x, uint8_t* blocks, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class quantize_q8_K_kernel_7aadb2>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class quantize_q8_K_kernel_7aadb2>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
                                   sycl::range(1, 1, threads)),
@@ -452,8 +453,8 @@ void dequant_q8_K(const uint8_t* blocks, float* x, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class dequant_q8_K_kernel_e03426>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class dequant_q8_K_kernel_e03426>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
                                   sycl::range(1, 1, threads)),

@@ -10,7 +10,7 @@
  *   rewrites          a plan turn wrote its numbered plan from "1." again this many times
  *   context           the context is nearly full: the Harness compaction did not keep up
  *
- * What the person is told is `guardNote`: fixed English sentences that are also in the interface catalog in all eight languages (the page
+ * What the person is told is `guardNote`: fixed English sentences that are also in the interface catalog in all nine languages (the page
  * translates a `delta` frame that carries `key`). Each says what happened and gives one next step.
  */
 

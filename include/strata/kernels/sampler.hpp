@@ -83,6 +83,25 @@ void spec_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const in
 bool sample_tokens_spec(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                         const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
                         void* stream);
+// Explicit gated measure: rows<n_q use mu; n_q==n_tokens means a NULL tail.
+// n_q == 0 permits null qbuf: point-only rows, or plain sampling for T1.
+// Same device-buffer layout as sample_tokens_spec. False is a hard failure:
+// work may have been queued; synchronize before releasing buffers. No plain-p fallback.
+bool sample_tokens_proposal(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                        const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
+                        void* stream);
+
+// #4590: which tokens the repeat / frequency / presence penalties count.  By default only the current reply: the
+// tokens the answer has written (the window starts at the last prompt token, the one the first decode step feeds in).
+// The prompt, including earlier assistant turns in it, is not counted, so a number or a quoted answer in the new
+// task is not penalised just for being there.  STRATA_PENALTY_PROMPT=1 restores the old window, the last
+// penalty_last_n tokens of prompt + reply.  Any other value (or none) is the default.
+inline bool penalty_counts_prompt(const char* env) { return env != nullptr && env[0] == '1'; }
+// The first index of the session's consumed tokens (prompt, then reply) the penalty window may read, given how
+// many were consumed when the request's decode began (the prompt without its last token).
+inline size_t penalty_window_from(size_t consumed_at_decode_start, bool counts_prompt) {
+    return counts_prompt ? 0 : consumed_at_decode_start;
+}
 
 // The penalty-history rows of a verify window, on the host: row t of `out` (T rows of `h` slots) is the last `h`
 // tokens of `tail[0..n_tail)` followed by `window[0..t]`, most recent LAST, -1 in the unused front slots.
@@ -98,6 +117,31 @@ inline void penalty_rows(const int32_t* tail, int64_t n_tail, const int32_t* win
         for (int j = 0; j < take; ++j) {
             const int64_t i = avail - take + j;                     // index into (tail, window)
             row[h - take + j] = i < n_tail ? tail[i] : window[i - n_tail];
+        }
+    }
+}
+
+/// The penalty-history rows of a BATCH window, on the host.  Row t of the window feeds `tokens[t]` into slot `rows[t]`; its row of `out` (h slots, most
+/// recent LAST, -1 in unused front slots) is the last `h` tokens of that slot's reply tail (`tails[slot]`, `n_tails[slot]` tokens: what the slot's
+/// session consumed since the reply began, the fed-back head not yet included) followed by the tokens fed so far by THIS window's rows of the same slot
+/// up to and including row t (a slot may hold several rows: MTP drafts).  Exactly what `penalty_rows` gives a solo window, per slot.
+inline void slot_penalty_rows(const int* rows, const int32_t* tokens, int S, const int32_t* const* tails, const int64_t* n_tails, int h, int32_t* out) {
+    for (int t = 0; t < S; ++t) {
+        int32_t* row = out + (size_t) t * (size_t) h;
+        const int slot = rows[t];
+        const int32_t* tail = tails[slot];
+        const int64_t n_tail = tail != nullptr ? n_tails[slot] : 0;
+        int64_t in_window = 0;                                     // this window's rows of the slot up to t
+        for (int u = 0; u <= t; ++u) in_window += rows[u] == slot;
+        const int64_t avail = n_tail + in_window;
+        const int take = (int) std::min<int64_t>(h, avail);
+        std::fill(row, row + (h - take), -1);
+        for (int j = 0; j < take; ++j) {
+            const int64_t i = avail - take + j;                     // index into (tail, the slot's window tokens)
+            if (i < n_tail) { row[h - take + j] = tail[i]; continue; }
+            int64_t k = i - n_tail, seen = 0;
+            for (int u = 0; u <= t; ++u)
+                if (rows[u] == slot) { if (seen == k) { row[h - take + j] = tokens[u]; break; } ++seen; }
         }
     }
 }

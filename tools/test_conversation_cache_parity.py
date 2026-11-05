@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # runnable as tools/test_x.py from the repo root too
+
 from tools.conversation_cache_parity import STATE_KEYS, engine_args, pressure_budget_hint, verify_admission, verify_exchange, verify_pressure, verify_results
 
 

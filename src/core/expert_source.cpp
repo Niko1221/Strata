@@ -1,11 +1,14 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/ple_residency.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/window_limits.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -18,6 +21,10 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -70,6 +77,27 @@
 #endif
 #endif
 
+// The pid of this process and whether a pid still exists (the shared arena's reader election, both OSes)
+static uint64_t arena_this_pid() {
+#ifdef _WIN32
+    return (uint64_t) GetCurrentProcessId();
+#else
+    return (uint64_t) getpid();
+#endif
+}
+static bool arena_pid_alive(uint64_t pid) {
+#ifdef _WIN32
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD) pid);
+    if (h == nullptr) return GetLastError() == ERROR_ACCESS_DENIED;     // (denied: it exists; invalid parameter: it does not)
+    DWORD code = 0;
+    const bool alive = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+    CloseHandle(h);
+    return alive;
+#else
+    return !(kill((pid_t) pid, 0) != 0 && errno == ESRCH);
+#endif
+}
+
 namespace strata::core {
 
 namespace detail {
@@ -101,6 +129,24 @@ uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t c
 
 bool pin_depends_on_reclaim(uint64_t free_now, uint64_t bytes, uint64_t reserve) {
     return bytes > 0 && free_now < bytes + reserve;
+}
+
+bool wait_for_ram(uint64_t need, double max_wait_s, double step_s, double note_s,
+                  const std::function<bool(uint64_t&)>& sample, const std::function<void(double)>& sleep,
+                  const std::function<void(double, uint64_t)>& progress, double& waited, uint64_t& available) {
+    waited = 0.0;
+    if (!sample(available)) return false;
+    double next_note = 0.0;
+    while (available < need && waited < max_wait_s) {
+        if (progress && waited >= next_note) {
+            progress(waited, available);
+            next_note = waited + note_s;
+        }
+        sleep(step_s);
+        waited += step_s;
+        if (!sample(available)) return false;
+    }
+    return available >= need;
 }
 
 bool pin_step_fits(uint64_t available, uint64_t step, uint64_t reserve) {
@@ -3184,6 +3230,10 @@ void RouterLookahead::run() {
         // one (kq_avx1.cpp) or, without AVX, the same sums in plain C++.  From the Strata_Dirigo fork (rwkeyes): an
         // AVX-only Xeon E5-2687W died here (vpmovzxwd) on its first request.  An estimate only (which experts to
         // prefetch); the order of the additions differs between the three, the output does not depend on it.
+#if defined(__aarch64__) && !defined(STRATA_GPU_METAL)   // Metal (Apple silicon) keeps the plain loop below: its bf16_rows_dot_multi is a stub
+        strata::kernels::cpu::bf16_rows_dot_multi(routers_[(size_t) layer].data(), (int) n_expert_, (int) n_embd_,
+                                                  x_.data(), (int) nt, logits.data());
+#else
         if (strata::kernels::cpu::cpu_avx2_ok()) {
             strata::kernels::cpu::bf16_rows_dot_multi(routers_[(size_t) layer].data(), (int) n_expert_, (int) n_embd_,
                                                       x_.data(), (int) nt, logits.data());
@@ -3209,6 +3259,7 @@ void RouterLookahead::run() {
                 }
             }
         }
+#endif
         const int kmax = stats_on_ ? (int) std::min<int64_t>(k_ + 10, n_expert_) : k_;
         const int ks[3] = {k_, (int) std::min<int64_t>(k_ + 4, n_expert_), kmax};
         std::vector<uint64_t> sm;
@@ -4059,6 +4110,14 @@ bool FileExpertSource::pin_cache_complement(
             }
 #endif
             const int64_t done = layers_done.fetch_add(1) + 1;
+#if defined(_WIN32)
+            // R5070: the copy reads through the mapped view, and Windows counts those file pages in this process's working
+            // set, not as available: on the owner's 64 GB PC (8 GiB headroom asked for) available RAM fell to 0.9 GiB for
+            // ~10 s during the copy.  Every 4 layers the mapped pages go to the standby list (VirtualUnlock on pages that
+            // are not locked does exactly that; the same call runs once after the copy below).  No data changes.
+            if (done % 4 == 0 && direct_.empty() && maps_.empty() && !unmapped_) (void) VirtualUnlock((LPVOID) base_, (SIZE_T) mapped_bytes_);
+            if (done % 4 == 0 && direct_.empty()) for (const Map& m : maps_) if (!m.closed) (void) VirtualUnlock((LPVOID) m.base, (SIZE_T) m.bytes);
+#endif
             if (done % 8 == 0 || done == n_layers_)
                 std::fprintf(stderr, "FileExpertSource: copied cache complement through layer %lld/%lld (%.2f GiB, %.0f s)\n",
                              (long long) done, (long long) n_layers_, (double) copied.load() / 1073741824.0,
@@ -4339,6 +4398,33 @@ bool FileExpertSource::replace_resident(int64_t layer, int64_t in, int64_t out) 
                        std::memory_order_relaxed);
     file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
     return install_resident(layer, in, out, ram_adapt_buf_.data());
+}
+
+bool FileExpertSource::replace_resident_staged(int64_t layer, int64_t in, int64_t out) {
+    if (!complement_ready_ || complement_host_ == nullptr || exchange_storage_.active() || !staged_.empty() ||
+        layer < 0 || layer >= n_layers_ || in < 0 || out < 0 || in >= n_expert_ || out >= n_expert_ || in == out)
+        return false;
+    const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
+    const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
+    if (i_in >= complement_offsets_.size() || i_out >= complement_offsets_.size()) return false;
+    if (!override_.empty() && (override_[i_in] != nullptr || override_[i_out] != nullptr)) return false;
+    const uint64_t at = complement_offsets_[i_out], bytes = layer_blob_bytes_[(size_t) layer];
+    if (at == kNoComplement || complement_offsets_[i_in] != kNoComplement || at > complement_bytes_ ||
+        bytes > complement_bytes_ - at || bytes > stage_blob_) return false;
+    ForesightSwap* fs = fs_swap_.load(std::memory_order_acquire);
+    bool moved = false;
+    {
+        // held across the copy: claim_stage cannot hand the buffer to another blob meanwhile
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        const auto it = stage_of_.find((int64_t) i_in);
+        if (it == stage_of_.end() || stage_busy_[it->second] || stage_key_[it->second] != (int64_t) i_in) return false;
+        if (fs != nullptr) fs->hold(layer, (int32_t) out);
+        std::memcpy((uint8_t*) complement_host_ + (size_t) at, stage_buf_[it->second].get(), (size_t) bytes);
+        moved = detail::exchange_cache_complement(complement_offsets_, i_out, i_in);
+        if (fs != nullptr) fs->unhold(layer, (int32_t) out);
+    }
+    if (moved) { ++ram_adapts_; ++ram_staged_; }
+    return moved;
 }
 
 // `in`'s bytes (src) into `out`'s place of the compact copy, and the two offsets swapped - the checks again, as the caller
@@ -4753,10 +4839,10 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
 namespace {
 // the verify window's per-entry tables in `expert_pool_dispatch_multi` (`kind`, `distinct`, `first_of`)
-// are fixed arrays of this many entries: MAXT tokens of the model's 10 routed experts must fit, and a larger k is
-// refused at run time rather than written past them.
-constexpr int64_t kMaxWindowEntries = 128;
-static_assert(strata::kernels::cpu::MAXT * 10 <= kMaxWindowEntries, "a verify window's entries overflow the tables");
+// are fixed arrays of this many entries: a window's rows (kWindowMaxT) of the model's 10 routed experts must fit, and a
+// larger k is refused at run time rather than written past them.  128 for the 8-row window (as it was), 256 for 16.
+constexpr int64_t kMaxWindowEntries = strata::kernels::kWindowMaxT <= 8 ? 128 : 256;
+static_assert(strata::kernels::kWindowMaxT * 10 <= kMaxWindowEntries, "a verify window's entries overflow the tables");
 }  // namespace
 
 namespace {
@@ -4777,10 +4863,10 @@ int tail_skip_rank() {
 void set_tail_skip_rank(int r) { g_tail_skip_rank.store(r > 0 && r < 10 ? r : 0, std::memory_order_relaxed); }
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
-                                float* out) {
+                                float* out, strata::kernels::cpu::NativeArithmetic arithmetic) {
     using namespace strata::kernels::cpu;
     if (d.failed) return;
-    if (n_tok < 1 || n_tok > MAXT) {
+    if (n_tok < 1 || n_tok > strata::kernels::kWindowMaxT) {
         d.failed = true;
         d.fail = "a verify window has more tokens than the multi-token expert kernel takes";
         d.fail_layer = d.layers;
@@ -4799,12 +4885,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         d.fail_layer = d.layers;
         return;
     }
-    if ((int64_t) d.act_multi.size() < n_tok) d.act_multi.resize((size_t) MAXT);
+    if ((int64_t) d.act_multi.size() < n_tok) d.act_multi.resize((size_t) strata::kernels::kWindowMaxT);
     const ExpertLayout& lay = expert_layout();
     const bool native = lay.native;
-    if (native && d.nact_multi.size() < (size_t) MAXT * kNativeActBytes) d.nact_multi.resize((size_t) MAXT * kNativeActBytes);
+    if (native && d.nact_multi.size() < (size_t) strata::kernels::kWindowMaxT * kNativeActBytes)
+        d.nact_multi.resize((size_t) strata::kernels::kWindowMaxT * kNativeActBytes);
     if (d.job_of.size() != (size_t) d.n_expert) d.job_of.assign((size_t) d.n_expert, (int16_t) -1);
-    if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (MAXT * k));
+    if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (strata::kernels::kWindowMaxT * k));
     static const bool ptrace = std::getenv("STRATA_POOL_TRACE") != nullptr;
     auto pt = [&](const char* what, long long a = -1) {
         if (ptrace) { std::fprintf(stderr, "pool trace: layer %lld %s %lld\n", (long long) d.layers, what, a); std::fflush(stderr); }
@@ -5118,6 +5205,17 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++d.cold_zc;
                 }
             }
+            if (d.jobs_multi[(size_t) jo].nt == MAXT) {
+                // a window of 9..16 rows routes more than MAXT tokens to this expert: the kernels and the pool's scratch
+                // take MAXT tokens a job, so the rest are a further job over the same blob (each token's rows are its own,
+                // so the split changes no value; the blob is read once more)
+                const int16_t prev = jo;
+                jo = (int16_t) njobs++;
+                ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
+                nj.blob = d.jobs_multi[(size_t) prev].blob;
+                nj.fmt = d.jobs_multi[(size_t) prev].fmt;
+                nj.nt = 0;
+            }
             ExpertJobMulti& jb = d.jobs_multi[(size_t) jo];
             jb.act[jb.nt] = &d.act_multi[(size_t) t];
             jb.nact[jb.nt] = native ? d.nact_multi.data() + (size_t) t * kNativeActBytes : nullptr;
@@ -5130,7 +5228,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     {
         const auto b0 = std::chrono::steady_clock::now();
         if (njobs > 0) {
-            if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+            if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, arithmetic);
             else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
             ++d.cold_batches;
         }
@@ -5175,7 +5273,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (d.plan != nullptr) d.plan->cpu_jobs = njobs;
     pt("run", njobs);
     if (njobs > 0 && npend == 0) {
-        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, arithmetic);
         else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
     }
     if (d.remote_count > 0) {
@@ -5221,6 +5319,14 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
         d.hit_pending = false;
         if (!d.hits_ready() || ids == nullptr || k <= 0) return;
         if ((int64_t) d.is_hit.size() < k) d.is_hit.resize((size_t) k);
+        // STRATA_EXPERT_NIBBLE=1: this split computes a resident expert with the GGUF-block kernels and admits + fills
+        // a missed one with its GGUF blob - neither may meet a layer whose slots hold 4-bit codes (a native pack's
+        // experts run in the verify windows, so this is the backstop, never the path)
+#if STRATA_EXPERT_NIBBLE_BUILT   // compiled out of every other build: nothing is added to the hit split there
+        if (strata::core::nibble::layer(d.layers).on)
+            strata::core::nibble::fatal(d.layers, "the expert source's hit split (expert_hit_run)",
+                                        "it computes resident experts as GGUF blocks and fills slots with GGUF blobs");
+#endif
 
         // ================================ THE DECISION, ONCE, ON THIS LAYER'S IDS ================================
         //
@@ -5763,12 +5869,26 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // certain to end that way: refused, with the numbers.  Less RAM available than the arena (another program, an
     // engine still exiting) is only a warning - the OS may make room - per the recommend-not-force rule.
     ram_warning_.clear();
+    ram_short_ = false;
     // (a shared arena, --shared-expert-arena, may already be in RAM for another engine: not checked)
     if (detail::HostMemory hm; shared_arena_file.empty() && detail::host_available_memory(hm)) {
-        const uint64_t need = want + (uint64_t) blob;
+        // --ram-keep-gib W: the arena is chosen only if W GiB stay free after it, so its need here is the arena plus W
+        const uint64_t need = arena_need_with_keep(want + (uint64_t) blob, ram_keep_bytes);
+        // under a hard limit the arena also needs the headroom (the engine's own memory comes on top of it, and the arena is never given back)
+        const uint64_t limit_need = arena_hard_limit_need(want + (uint64_t) blob, ram_keep_bytes, hard_limit_headroom_bytes, fall_back_when_ram_short);
         const double gib = 1073741824.0;
         char buf[512];
-        if (hm.cgroup_limit < need) {
+        char keep_note[96] = "";
+        if (ram_keep_bytes > 0)
+            std::snprintf(keep_note, sizeof keep_note, ", with the %.2f GiB --ram-keep-gib asks to leave free", (double) ram_keep_bytes / gib);
+        if (arena_ram_verdict(limit_need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
+            if (fall_back_when_ram_short) {   // #4846: the caller reads the experts from the file instead of refusing
+                std::snprintf(buf, sizeof buf, "it needs %.2f GiB (with the %.2f GiB the engine's own memory and the RAM to keep take on top of it) and this process's memory limit is %.2f GiB",
+                              (double) limit_need / gib, (double) (limit_need - (want + (uint64_t) blob)) / gib, (double) hm.cgroup_limit / gib);
+                err = buf;
+                ram_short_ = true;
+                return false;
+            }
             std::snprintf(buf, sizeof buf,
                           "ArenaExpertSource: the expert arena needs %.2f GiB of RAM but this process's memory limit "
                           "(cgroup memory.max / memory.limit_in_bytes) is %.2f GiB: it would be killed while loading. "
@@ -5779,12 +5899,73 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             return false;
         }
         if (hm.available < need) {
-            std::snprintf(buf, sizeof buf,
-                          "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short): the load "
-                          "may swap or be stopped by the OS. Close other programs (or wait for an engine that is "
-                          "still exiting), or run with less RAM: --mmap-experts with --resident-budget-gib N",
-                          (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib);
-            ram_warning_ = buf;
+            // #4051: the shortfall is often an engine that was still exiting (the code's own example), a few seconds
+            // from giving its RAM back: wait for it, not for ever, and say so.  STRATA_ARENA_RAM_WAIT_S changes the
+            // seconds (0 loads at once, as before this wait).  Still short after it (and after the give-back below): the caller's
+            // --mmap-experts fallback (#4846) when it asked for one, otherwise the load goes on and only warns.
+            double wait_s = 20.0;
+            if (const char* w = std::getenv("STRATA_ARENA_RAM_WAIT_S"); w != nullptr && w[0] != '\0') {
+                char* end = nullptr;
+                const double v = std::strtod(w, &end);
+                if (end != w && *end == '\0' && v >= 0.0 && v <= 3600.0) wait_s = v;
+            }
+            double waited = 0.0;
+            uint64_t avail = hm.available;
+            if (wait_s > 0.0) {
+                const bool came = detail::wait_for_ram(
+                    need, wait_s, 0.25, 5.0,
+                    [](uint64_t& a) { detail::HostMemory h; if (!detail::host_available_memory(h)) return false; a = h.available; return true; },
+                    [](double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); },
+                    [&](double w, uint64_t a) {
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM%s and %.2f GiB is "
+                                             "available; waiting up to %.0f s for it (another engine still exiting?) - "
+                                             "%.0f s so far (STRATA_ARENA_RAM_WAIT_S changes this)\n",
+                                     (double) need / gib, keep_note, (double) a / gib, wait_s, w);
+                    },
+                    waited, avail);
+                if (came)
+                    std::fprintf(stderr, "strata generate: %.2f GiB of RAM is available now (after %.1f s): loading the "
+                                         "expert arena\n", (double) avail / gib, waited);
+                hm.available = avail;
+            }
+            if (hm.available < need && give_back_ram) {
+                // #4846: the shortfall survived the wait.  A lock the engine took by itself (the PLE table's residency lock) is
+                // given back before the registration starts: its pages stay cached, the OS may take them for the arena.
+                const uint64_t freed = give_back_ram();
+                if (freed > 0) {
+                    detail::HostMemory h2;
+                    if (detail::host_available_memory(h2)) {
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM and %.2f GiB was available: "
+                                             "gave back %.2f GiB of locked RAM, %.2f GiB is available now\n",
+                                     (double) need / gib, (double) hm.available / gib, (double) freed / gib, (double) h2.available / gib);
+                        hm.available = h2.available;
+                    }
+                }
+            }
+            if (arena_ram_verdict(need, hm.available, ~uint64_t{0}, fall_back_when_ram_short) == ArenaRamVerdict::FallBack) {
+                // #4846 (owner 11-01): still short after the wait and the give-back.  Registering anyway can stall the whole host in
+                // reclaim until it is power-cycled: nothing is allocated, the caller takes the --mmap-experts source for this run.
+                std::snprintf(buf, sizeof buf,
+                              "it needs %.2f GiB%s and %.2f GiB is available (%.2f GiB short%s)",
+                              (double) need / gib, keep_note, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "");
+                err = buf;
+                ram_short_ = true;
+                return false;
+            }
+            if (hm.available < need) {
+                std::snprintf(buf, sizeof buf,
+                              "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short%s): the "
+                              "load may swap or be stopped by the OS%s. Close other programs, or run with less RAM: "
+                              "--mmap-experts with --resident-budget-gib N",
+                              (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "",
+                              hm.available < need / 2 ? " - with this little room the whole machine can stall in "
+                                                        "memory reclaim until it is restarted (#4051); on Linux a "
+                                                        "systemd MemoryHigh= below the RAM keeps one program from "
+                                                        "taking all of it" : "");
+                ram_warning_ = buf;
+            }
         }
     }
 
@@ -5893,6 +6074,43 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
     const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
     LoadStats st;
+    // A shared arena (--shared-expert-arena, the replicas): ONE engine reads the experts into it, the others wait and skip the
+    // read.  The state word in the file's header says who: 0 nobody, a pid loading, ~0 filled.  An engine that finds a
+    // pid that is gone takes the load over (the previous one died mid-read: the arena is read again from the start), so a
+    // dead loader never leaves the others waiting, and an engine that waits too long loads it itself.
+    constexpr uint64_t kArenaFilled = ~uint64_t{0};
+    std::atomic<uint64_t>* arena_state = padded_ ? nullptr : a->shared_state;
+    bool arena_leader = false, arena_skip = false;
+    if (arena_state != nullptr) {
+        const uint64_t me = arena_this_pid();
+        const auto t_begin = std::chrono::steady_clock::now();
+        bool said = false;
+        for (;;) {
+            uint64_t cur = arena_state->load(std::memory_order_acquire);
+            if (cur == kArenaFilled) { arena_skip = true; break; }
+            if (cur == 0 || cur == me) {
+                if (arena_state->compare_exchange_strong(cur, me, std::memory_order_acq_rel)) { arena_leader = true; break; }
+                continue;
+            }
+            const bool alive = arena_pid_alive(cur);
+            if (!alive) {
+                if (arena_state->compare_exchange_strong(cur, me, std::memory_order_acq_rel)) {
+                    std::fprintf(stderr, "strata generate: shared expert arena: engine %llu died while reading it; reading it again\n",
+                                 (unsigned long long) cur);
+                    arena_leader = true;
+                    break;
+                }
+                continue;
+            }
+            if (std::chrono::steady_clock::now() - t_begin > std::chrono::minutes(45)) break;   // (loads it on its own)
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "strata generate: shared expert arena: engine %llu is reading the experts; waiting for it "
+                                     "instead of reading them again\n", (unsigned long long) cur);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
     std::atomic<int> ready{0};
     std::thread reg;
     if (deferred) {
@@ -5904,7 +6122,12 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         });
     }
     const std::atomic<int>* rp = deferred ? &ready : nullptr;
-    if (from_gguf) {
+    if (arena_skip) {
+        st.ok = true;
+        st.bytes = want;
+        st.seconds = 0.0;
+        std::fprintf(stderr, "strata generate: shared expert arena: already filled by another engine; the read is skipped\n");
+    } else if (from_gguf) {
         st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered, rp, padded_ ? &pad_ : nullptr);
     } else {
         if (unbuffered && !padded_) st = load_experts_direct(path, a->data(), loff, lbytes, readers, /*chunk=*/8u << 20, rp);
@@ -5915,15 +6138,18 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
                  why.c_str());
     if (!st.ok) {
+        if (arena_leader) arena_state->store(0, std::memory_order_release);   // (somebody else may try)
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);
         return false;
     }
     if (st.bytes != want) {
+        if (arena_leader) arena_state->store(0, std::memory_order_release);
         delete a;
         err = "ArenaExpertSource: the load read " + std::to_string(st.bytes) + " B of " + std::to_string(want);
         return false;
     }
+    if (arena_leader) arena_state->store(kArenaFilled, std::memory_order_release);   // the others may use (and skip reading) it
     if (std::getenv("STRATA_VERIFY_ARENA") != nullptr) {   // tests: the loaded arena's checksum, any loader
         std::fprintf(stderr, "strata generate: expert arena checksum %016llx (%.2f GiB)\n",
                      (unsigned long long) fnv1a64(a->data(), want), (double) want / (1ull << 30));

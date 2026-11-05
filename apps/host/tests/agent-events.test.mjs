@@ -60,7 +60,7 @@ test('routeFor picks the chat\'s own choice', () => {
 
 test('the agent environment keeps what a shell needs and drops ambient credentials', () => {
   const env = agentEnvironment({ PATH: '/bin', HOME: '/h', OPENAI_API_KEY: 'x', GITHUB_TOKEN: 'y', AWS_SECRET_ACCESS_KEY: 'z', SSH_AUTH_SOCK: 's', SystemRoot: 'C:\\Windows' }, { STRATA_API_KEY_X: 'k' });
-  assert.deepEqual(Object.keys(env).sort(), ['DSH_PERMISSION_MODE', 'DSH_TELEMETRY_DISABLED', 'HOME', 'PATH', 'STRATA_API_KEY_X', 'SystemRoot']);
+  assert.deepEqual(Object.keys(env).sort(), ['DSH_PERMISSION_MODE', 'DSH_TELEMETRY_DISABLED', 'HOME', 'NODE_USE_SYSTEM_CA', 'PATH', 'STRATA_API_KEY_X', 'SystemRoot']);
 });
 
 test('redact removes secret values and launch tokens from log text', () => {
@@ -138,7 +138,7 @@ test('a chat that existed before the agent carries a bounded summary into its fi
 
 test('the browser and the person\'s own tools have plain sentences, translated in every language', async () => {
   const { readFileSync } = await import('node:fs');
-  const catalog = Object.fromEntries(['en', 'de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh'].map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
+  const catalog = Object.fromEntries(['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh'].map(l => [l, JSON.parse(readFileSync(new URL(`../src/locales/${l}.json`, import.meta.url), 'utf8'))]));
   const idOf = text => Object.entries(catalog.en).find(([, v]) => v === text)?.[0];
   const cases = [
     ['mcp__browser__browser_navigate', 'Opening a page in the browser', 'Opened a page in the browser', "Couldn't open the page"],
@@ -157,7 +157,7 @@ test('the browser and the person\'s own tools have plain sentences, translated i
   ];
   for (const [name, running, done, failed] of cases) {
     assert.equal(toolVerb(name, 'running'), running, name); assert.equal(toolVerb(name, 'done'), done, name); assert.equal(toolVerb(name, 'error'), failed, name);
-    for (const text of [running, done, failed]) { const id = idOf(text); assert.ok(id, `${text} is in the catalog`); for (const l of ['de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh']) assert.ok(catalog[l][id]?.trim(), `${l}: ${text}`); }
+    for (const text of [running, done, failed]) { const id = idOf(text); assert.ok(id, `${text} is in the catalog`); for (const l of ['de', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh']) assert.ok(catalog[l][id]?.trim(), `${l}: ${text}`); }
   }
   const nav = presentTool({ callId: 'c1', name: 'mcp__browser__browser_navigate', args: { url: 'https://example.com' } });
   assert.equal(nav.target, 'https://example.com'); assert.equal(nav.verb, 'Opening a page in the browser');

@@ -74,7 +74,7 @@ function normalise(loc: Location): void {
  * Navigate, morphing between screens when the browser can.
  *
  * A view transition needs the DOM update to happen inside its callback, and
- * React commits asynchronously — so we wait two frames before resolving. It is
+ * React commits asynchronously — so we wait for the commit (never for a frame: see afterRouteUpdate). It is
  * skipped while a response is streaming (the transcript is being appended to on
  * every token, and snapshotting it mid-stream would fight the SSE updates) and
  * when the user has asked for reduced motion.
@@ -100,6 +100,34 @@ export function isWebKitGtk(ua: string = navigator.userAgent): boolean {
   return /AppleWebKit/.test(ua) && /Linux|X11/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(ua);
 }
 
+/**
+ * Resolve once the new route has been drawn into the page, or after a short deadline, whichever comes first.
+ *
+ * The update callback of a view transition must not wait for requestAnimationFrame: while the callback is pending the browser holds
+ * rendering (Chromium and Firefox both do), so a frame callback never runs, and every click waits for the browser's own guard,
+ * about 4 s in Chromium and the WebView2 window, about 5 s in Firefox (#3673). A DOM change after the hash flipped means React has
+ * committed the new screen; the deadline covers a route that changes nothing visible.
+ */
+export function afterRouteUpdate(done: () => void, timeoutMs = 150): void {
+  let settled = false;
+  let observer: MutationObserver | undefined;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    observer?.disconnect();
+    done();
+  };
+  try {
+    if (typeof MutationObserver === 'function' && typeof document !== 'undefined' && document.body) {
+      observer = new MutationObserver(() => setTimeout(finish, 0));
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  } catch {
+    /* the deadline alone is enough */
+  }
+  setTimeout(finish, timeoutMs);
+}
+
 function navigateHash(next: string, morph = true) {
   if (window.location.hash === next) return;
 
@@ -121,7 +149,7 @@ function navigateHash(next: string, morph = true) {
     () =>
       new Promise<void>((resolve) => {
         window.location.hash = next;
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        afterRouteUpdate(resolve);
       }),
   );
   // A transition is *expected* to be skipped when one is already running (rapid

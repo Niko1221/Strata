@@ -24,6 +24,14 @@ namespace strata::prefill::fused {
 constexpr int kTileRows = 64;
 /// Experts per launch: their blob pointers travel in the launch's parameters (1 KB).
 constexpr int kMaxBatch = 128;
+/// The room of WideBatch::blob (below): a whole layer of 512 experts, which STRATA_PF_BATCH=512 (opt-in) launches at
+/// once on the native kernels' NT = 256 instances when all of them are resident (4 KB of kernel parameters: CUDA 12.1+,
+/// Volta and newer).  HIP, gfx906 and the Pascal / Volta build (STRATA_EXPERIMENTAL_SM60): kMaxBatch.
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(STRATA_EXPERIMENTAL_SM60)
+constexpr int kBatchRoom = kMaxBatch;
+#else
+constexpr int kBatchRoom = 512;
+#endif
 
 /// This build has the kernels (a CUDA build; HIP and builds without MMQ do not).
 bool built();
@@ -56,6 +64,13 @@ void group(const int32_t* ids, int64_t n, int k, int n_expert, void* scratch, in
 struct Batch {
     int e0 = 0, e1 = 0;
     const uint8_t* blob[kMaxBatch] = {};
+};
+/// Batch with room for kBatchRoom experts (e1 - e0 <= kBatchRoom): only the opt-in launches of STRATA_PF_BATCH above
+/// kMaxBatch on the native NT = 256 or warp-specialized kernels (moe_fused_iq.hpp, native_wide()) take it; every other
+/// launch takes Batch.
+struct WideBatch {
+    int e0 = 0, e1 = 0;
+    const uint8_t* blob[kBatchRoom] = {};
 };
 /// The batch's products: gate/up from `xa` (quantize_act of the layer's input, [tokens][2560]) through the rows
 /// `src` of `group`, SwiGLU, H as int8 into `ha` (act_bytes(n, 640)), down into `dm` [n][2560] FP32 at the rows of

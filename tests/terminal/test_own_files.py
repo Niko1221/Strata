@@ -18,7 +18,11 @@ from strata_control import gguf_preflight, models
 from strata_control.profiles import ProfileError
 from tools.gguf_reader import BLOCK_GEOMETRY
 
-TYPE_IDS = {"Q8_0": 8, "IQ3_S": 21, "IQ4_NL": 20, "IQ4_XS": 23, "IQ3_XXS": 18, "Q2_0": 42, "IQ2_S": 22, "IQ2_XS": 17}
+TYPE_IDS = {"Q8_0": 8, "IQ3_S": 21, "IQ4_NL": 20, "IQ4_XS": 23, "IQ3_XXS": 18, "Q2_0": 42, "IQ2_S": 22, "IQ2_XS": 17,
+            "I8": 24, "I16": 25, "I32": 26, "I64": 27}
+# One value per block. Kept here rather than read from the reader's table: the test has to build such a file whether or
+# not that table sizes the type, and a wrong row there must fail the test instead of moving the fixture with it.
+INTEGER_BYTES = {"I8": 1, "I16": 2, "I32": 4, "I64": 8}
 
 
 def string(value: str) -> bytes:
@@ -35,7 +39,7 @@ def gguf_bytes(experts: list[str], *, metadata: bool = True) -> bytes:
         b"".join(string(k) + struct.pack("<I", kind) + value for k, kind, value in pairs)
     offset = 0
     for i, name in enumerate(experts):
-        block, size = BLOCK_GEOMETRY[name]
+        block, size = (1, INTEGER_BYTES[name]) if name in INTEGER_BYTES else BLOCK_GEOMETRY[name]
         header += string(f"blk.{i}.ffn_gate_exps.weight") + struct.pack("<IQIQ", 1, block, TYPE_IDS[name], offset)
         offset += -(-size // 32) * 32
     header += b"\x00" * (-len(header) % 32)
@@ -155,6 +159,22 @@ class Links(Base):
         self.assertIn("symlink", str(ctx.exception))
 
 
+class IntegerTensors(Base):
+    """The ISTA-DAS DeepSeek-V4.1 first shard keeps the Engram's hash parameters as integer tensors instead of metadata
+    (tools/dsv41/pack_gguf.py: I32 and I64), so the table in front of setup and the app sizes them instead of refusing the file."""
+
+    def test_a_tensor_directory_with_integer_tensors_is_read(self):
+        p = self.base / "DeepSeek-V4.1-Flash-IST-DAS-2.00bpw-00001-of-00004.gguf"
+        p.write_bytes(gguf_bytes(["I32", "I64"]))
+        self.assertEqual(gguf_preflight.inspect_metadata(p)["tensor_types"], {"I32": 1, "I64": 1})
+
+    def test_each_integer_type_is_sized_at_one_value_a_block(self):
+        for kind, size in INTEGER_BYTES.items():
+            p = self.base / f"integer-{kind}.gguf"
+            p.write_bytes(gguf_bytes([kind]))
+            self.assertEqual(gguf_preflight.inspect_metadata(p)["payload_bytes_required"], size, kind)
+
+
 class Folders(Base):
     def test_many_other_gguf_files_in_the_folder_do_not_refuse(self):
         folder = self.gsq(self.base / "m", Q2, "Q2_0")
@@ -163,6 +183,16 @@ class Folders(Base):
         plan = models.plan_import(str(folder))
         self.assertEqual(plan["candidate_selection"]["model"], "Q2_0")
         self.assertEqual(plan["file_count"], 2)
+
+    def test_strata_draft_layer_beside_a_model_is_not_a_second_model(self):
+        # #4693: "the folder holds 2 models" for a model and the mtp-q2_0.gguf beside it
+        folder = self.base / "own"
+        folder.mkdir(parents=True)
+        (folder / "My-Finetune-IQ3_S-00001-of-00001.gguf").write_bytes(gguf_bytes(["IQ3_S"]))
+        (folder / "mtp-q2_0.gguf").write_bytes(gguf_bytes(["Q2_0"]))
+        plan = models.plan_import(str(folder))
+        self.assertNotIn("multiple_model_groups", plan["issues"])
+        self.assertEqual([f["name"] for f in plan["files"]], ["My-Finetune-IQ3_S-00001-of-00001.gguf"])
 
     def test_several_sizes_in_one_folder_name_them_and_ask_for_one_file(self):
         folder = self.gsq(self.base / "many", Q2, "Q2_0")

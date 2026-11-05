@@ -51,9 +51,16 @@ struct NativeExpertLayout {
     // APR (prism.hadamard): the down weights are Hadamard-folded, so native_expert_grouped rotates h before
     // quantizing it (hadamard_rows).  had_block 0 = none; d_signs is a DEVICE vector of n_ff signs or nullptr.
     int had_block = 0;
+    bool gu_nib = false;                // STRATA_EXPERT_NIBBLE: gate/up as 4-bit codes (strata/core/expert_nibble.hpp's
+                                        // slot); set only by native_expert_layout_nib
     const float* d_signs = nullptr;
 };
 NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff);
+/// STRATA_EXPERT_NIBBLE: a converted VRAM slot - gate/up as 4-bit codes, scales and d (expert_nibble.hpp's layout:
+/// up_off = the up rows' codes, down_off = kGuBytes, bytes = the slot), the GGUF down rows after them.  IQ2_S /
+/// IQ3_XXS / IQ3_S at n_embd 2560, n_ff 640 only, and only in a build with the kernels (`native_expert_nib_supported`).
+NativeExpertLayout native_expert_layout_nib(int gu_type, int d_type, int64_t n_embd, int64_t n_ff);
+bool native_expert_nib_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept;
 /// Whether `native_expert_grouped` has kernels for this gate/up and down type pair at these dimensions, and the
 /// prompt path's dequantizer takes both (checked for every layer at startup, before anything is allocated).
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept;
@@ -83,9 +90,15 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 /// per possible group, SwiGLU and the q8_1 quantization as two kernels over all cap_entries.  Bitwise the same results
 /// (native_grouped_parity checks it); kept for A/B timing.  Set before graph capture; captured graphs keep theirs.
 void native_grouped_set_v1(bool v1);
+/// The bench / parity only: the 4-bit gate/up kernel of every format (-1 = expert_nibble.hpp's gu_skeleton, the
+/// default; 0 = the S skeleton; 1 = the P skeleton).  Bitwise the same results; set before graph capture.
+void native_expert_nib_set_variant(int v);
+/// gu-proto (nib_gu_proto.cuh): variant v's registers, local bytes and resident 256-thread blocks per SM for gu_type;
+/// false when v is not a gu-proto id (>= 10) or the type has none.
+bool native_expert_nib_variant_attr(int v, int gu_type, int* regs, int* local_bytes, int* blocks_per_sm);
 
 /// The bench only: the AMD kernel layout (STRATA_EXP_MODE values; -1 = the environment's) and the phase
-/// (0 all, 1 gate/up + SwiGLU + quantize, 2 down).
+/// (0 all, 1 gate/up + SwiGLU + quantize, 2 down, 3 gate/up only).
 void native_expert_set_mode(int mode, int phase);
 
 /// APR (prism.hadamard): y = H_block (signs * x) per block of `block` values of each of `rows` rows of `width`
@@ -97,10 +110,11 @@ void hadamard_rows_f16(uint16_t* x, int64_t rows, int64_t width, int block, cons
 /// kept for the process.  Call it at setup, not inside a CUDA graph capture.  nullptr for a nullptr `host`.
 const float* hadamard_device_signs(const float* host, int width);
 
-/// EXPDEC (STRATA_EXPDEC=1, docs/EXPERTDEC.md): `native_expert_grouped` stages the group's q8_1 activations in shared
+/// EXPDEC (STRATA_EXPDEC, docs/EXPERTDEC.md): `native_expert_grouped` stages the group's q8_1 activations in shared
 /// memory and computes several rows per lane, the same sums per (row, entry) as the default kernels (bitwise), for
 /// gate/up IQ2_XXS / IQ2_XS / IQ3_XXS / IQ3_S / IQ2_S at n_embd 2560 and down IQ4_NL / Q2_0 at n_ff 640; other layouts
-/// keep the default kernels.  Set before graph capture; captured graphs keep the kernels they captured.
+/// keep the default kernels.  Enabled by default on gfx12 (STRATA_EXPDEC=0 disables it) and opt-in elsewhere
+/// (STRATA_EXPDEC=1).  Set before graph capture; captured graphs keep the kernels they captured.
 void native_expert_set_expdec(int on);
 int native_expert_expdec();
 /// Its knobs, read from the environment at startup (STRATA_EXPDEC_R 1 | 2, _DR 1 | 2 | 4, _MINB 2 | 4, _D20 0 | 1,
@@ -108,8 +122,8 @@ int native_expert_expdec();
 /// (2 = up to 128 registers, 4 = up to 64), EXPDEC for the IQ4_NL down too, gate/up and down rows per block (0 = auto
 /// from the launch's groups), the auto rule's minimum blocks.  In the setter a field <= 0 (< 0 for the two rows per
 /// block and down_iq4_nl) keeps the current value.
-/// `down` (STRATA_EXPDEC_DOWN, default 0): EXPDEC for the down too; by default only the gate/up (in the engine the
-/// Q2_0 down was ~10% slower with EXPDEC, docs/EXPERTDEC.md par. 7).
+/// `down` (STRATA_EXPDEC_DOWN, default 1 on gfx12 for Q2_0 down and 0 elsewhere; STRATA_EXPDEC_DOWN=0/1 overrides):
+/// EXPDEC for the down too; `down_iq4_nl` (STRATA_EXPDEC_D20, default 0) remains opt-in everywhere.
 struct NativeExpertExpdecParams {
     int gu_rows_per_lane = 0, down_rows_per_lane = 0, gu_min_blocks_per_sm = 0, down_iq4_nl = -1, down = -1;
     int gu_rows_per_block = -1, down_rows_per_block = -1, min_blocks = 0;

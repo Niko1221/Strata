@@ -93,6 +93,9 @@ class ModelInventoryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(listed["models"][0]["component_status"], "missing_or_invalid")
         self.assertIn("COMPONENT_MISSING", listed["models"][0]["issue_codes"])
+        # #3478: the list names what is missing, so the app can say which files instead of only "some files are missing"
+        self.assertEqual([(m["part"], m["file"], m["status"]) for m in listed["models"][0]["missing"]],
+                         [("tokenizer/vocab.json", "vocab.json", "missing")])
         (self.root / "strata-broken.json").write_text("{broken", encoding="utf-8")
         code, listed = self.command("list", "--installed")
         self.assertEqual(code, 0)

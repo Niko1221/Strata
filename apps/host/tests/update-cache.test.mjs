@@ -53,7 +53,9 @@ test('opening the Engine and Update settings makes no update call: only a button
   assert.doesNotMatch(upd, /\/api\/updates\/check/);
   assert.equal(lib.match(/\/api\/updates\/check/g).length, 1, 'one place asks the host');
   // every caller of the check sits inside a function that only a click starts
-  for (const [name, text] of [['NativeOperations', ops], ['SettingsUpdates', upd]]) {
+  // Settings > Engine no longer checks or updates at all (it lists, switches and deletes installed engines); About does
+  assert.doesNotMatch(ops, /fetchUpdateCheck|checkForUpdates/, 'the Engine tab has no update check');
+  for (const [name, text] of [['SettingsUpdates', upd]]) {
     const body = text.replace(/async function (checkForUpdates|check)\(\) \{[\s\S]*?\n    \}\n/, '');
     assert.doesNotMatch(body, /fetchUpdateCheck\(/, `${name}: the check runs only inside the button handler`);
     assert.match(text, /void (checkForUpdates|check)\(\)/, `${name}: a button starts it`);

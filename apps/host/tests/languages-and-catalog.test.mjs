@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {build} from 'esbuild';
-const languages=['en','zh','ja','de','es','ru','pt','ko'];
+const languages=['en','zh','ja','de','es','ru','pt','ko','fr'];
 const catalogs=Object.fromEntries(await Promise.all(languages.map(async language=>[language,JSON.parse(await readFile(`src/locales/${language}.json`,'utf8'))])));
 const english=catalogs.en;
 const slots=text=>[...text.matchAll(/\{\d+\}/g)].map(match=>match[0]).sort();

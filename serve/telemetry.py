@@ -455,7 +455,8 @@ def _cpu_topology(root: str = "/sys/devices/system"):
         packages = set()
         for f in glob.glob(os.path.join(root, "cpu", "cpu[0-9]*", "topology", "physical_package_id")):
             try:
-                packages.add(open(f, encoding="utf-8").read().strip())
+                with open(f, encoding="utf-8") as fh:
+                    packages.add(fh.read().strip())
             except OSError:
                 continue
         nodes = len(glob.glob(os.path.join(root, "node", "node[0-9]*")))
@@ -473,9 +474,10 @@ def _cpu_name():
         except OSError:
             pass
     elif os.path.exists("/proc/cpuinfo"):
-        for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):
-            if line.startswith("model name"):
-                return line.split(":", 1)[1].strip()
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
     return platform.processor() or None
 
 
@@ -492,7 +494,8 @@ class _CpuRamFallback:
                 return idle.value, kern.value + user.value           # kernel time includes idle
             return None
         try:
-            f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+            with open("/proc/stat") as fh:
+                f = [int(x) for x in fh.readline().split()[1:]]
             return f[3] + f[4], sum(f)
         except (OSError, ValueError):
             return None
@@ -519,7 +522,8 @@ class _CpuRamFallback:
                 return m.ullTotalPhys - m.ullAvailPhys, m.ullTotalPhys
             return None, None
         try:
-            info = dict(line.split(":", 1) for line in open("/proc/meminfo"))
+            with open("/proc/meminfo") as fh:
+                info = dict(line.split(":", 1) for line in fh)
             total = int(info["MemTotal"].split()[0]) * 1024
             avail = int(info["MemAvailable"].split()[0]) * 1024
             return total - avail, total
@@ -581,7 +585,8 @@ class Telemetry:
         }
         self._disk_prev = None
         self._stop = threading.Event()
-        threading.Thread(target=self._loop, daemon=True).start()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
 
     def _disk(self):
         if not self.ps:
@@ -641,8 +646,23 @@ class Telemetry:
         self._stop.set()
 
     def _loop(self):
+        """One sample a second, for as long as the server lives.
+
+        A failing sample must not end the thread: on a machine where the GPU/psutil source is not readable
+        (a CI runner, a container without NVML) the first exception used to kill the sampler outright, so
+        `GET /metrics` silently stopped updating and `test_responses.NoLeakedSampler` saw "the server did
+        not start its hardware sampler" - the thread had started and died between two readings.
+        """
+        complained = False
         while not self._stop.is_set():
-            s = self.sample()
+            try:
+                s = self.sample()
+            except Exception as e:                    # noqa: BLE001 - a monitor must outlive its source
+                if not complained:                    # once, not once a second
+                    print(f"[strata] metrics: a sample failed ({e}); the sampler keeps trying", flush=True)
+                    complained = True
+                self._stop.wait(1.0)
+                continue
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",

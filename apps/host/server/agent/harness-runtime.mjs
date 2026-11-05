@@ -33,7 +33,7 @@ export function agentEnvironment(base = process.env, extra = {}) {
   }
   // DSH_PERMISSION_MODE is the composition default for a session no chat mode has touched (a child agent, a
   // seeded session): the strictest sandbox, which matches the Manual preset, never the Harness's wider default.
-  return { ...out, DSH_TELEMETRY_DISABLED: '1', DSH_PERMISSION_MODE: 'read-only', ...extra };
+  return { ...out, DSH_TELEMETRY_DISABLED: '1', DSH_PERMISSION_MODE: 'read-only', NODE_USE_SYSTEM_CA: '1', ...extra };
 }
 
 /**

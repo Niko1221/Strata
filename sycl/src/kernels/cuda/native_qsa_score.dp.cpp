@@ -20,6 +20,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
@@ -293,8 +294,8 @@ void native_qsa_score(const float* pooled,const float* query,const float* bias,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<dpct_kernel_name<class score_kernel_59cd1b>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class score_kernel_59cd1b>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1,
                                 unsigned((max_blocks + ROWS - 1) / ROWS)) *

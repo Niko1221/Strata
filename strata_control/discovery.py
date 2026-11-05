@@ -166,6 +166,9 @@ def places(*, here: Path | None = None, explicit: str | os.PathLike | None = Non
         p = Path(raw).expanduser()
         return [Place(p, "explicit", len(config_files(p)))]
     cands: list[tuple[Path, str]] = []
+    data_root = environ.get("STRATA_DATA_DIR")
+    if data_root:                                    # the installer's own folder (install.sh / install.ps1): an install kept inside it comes first
+        cands.append((Path(data_root).expanduser() / "install", "datadir"))
     if here is not None:
         cands.append((Path(here), "here"))
     own = own_settings_file(environ, windows=windows, home=home)

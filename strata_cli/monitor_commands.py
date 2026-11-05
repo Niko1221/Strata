@@ -192,7 +192,7 @@ def run(a: argparse.Namespace) -> int:
             return _error("JSON monitor output requires --once; interactive monitor uses a terminal", 2, machine)
         if a.command == "monitor" and not a.once and not sys.stdout.isatty():
             return _error("interactive monitor needs a terminal; use --once or strata status --json", 2, machine)
-        found = running_launch() if a.command == "monitor" and not (a.url or a.connection) else None
+        found = running_launch() if a.command in ("monitor", "status", "logs") and not (a.url or a.connection) else None
         resolved = connections.resolve(url=found["url"] if found else a.url, connection=a.connection,
                                        credential_env=a.credential_env, timeout=a.timeout)
         endpoint = Endpoint(resolved["url"], os.environ.get(resolved["credential_env"]) or (found or {}).get("key"),

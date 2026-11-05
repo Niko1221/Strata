@@ -264,17 +264,21 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["vision"], section)                              # host paths: the reader runs on the host, not in the container
         self.assertIn("--vision", c["args"])
 
-    def test_pictures_are_on_by_default_on_an_alchemist_and_opt_in_on_a_battlemage(self):
-        """The A750 ran 47 picture requests without a fault; the first picture on the Arc Pro B70 reset the GPU (xe, 2026-10-19), so a
-        Battlemage card keeps them opt-in (--vision yes) and setup says so."""
+    def test_pictures_are_on_by_default_on_every_arc_and_a_battlemage_is_told_it_is_new(self):
+        """Owner decision 2026-10-22: an Arc B-series card runs like any Arc. The first picture on the Arc Pro B70 reset the GPU (xe, 2026-10-19) is a
+        known risk, not a refusal: pictures are on (the CPU reader) and setup prints one plain line about it."""
         m = self.mod()
-        self.assertTrue(m.pictures_on_by_default("i915", "56a1"))           # A750
-        self.assertTrue(m.pictures_on_by_default("i915", ""))
-        self.assertTrue(m.pictures_on_by_default("xe", "56a0"))             # A770
-        self.assertFalse(m.pictures_on_by_default("xe", "e223"))            # B70
-        self.assertFalse(m.pictures_on_by_default("xe", "e20b"))            # B580
+        for driver, devid in (("i915", "56a1"), ("i915", ""), ("xe", "56a0"), ("xe", "e223"), ("xe", "e20b"), ("xe", "e211"), ("xe", "")):
+            self.assertTrue(m.pictures_on_by_default(driver, devid), (driver, devid))
+        self.assertTrue(m.is_b_series("xe", "e223"))                        # B70
+        self.assertTrue(m.is_b_series("xe", "e20b"))                        # B580
+        self.assertFalse(m.is_b_series("i915", "56a1"))                     # A750
+        self.assertFalse(m.is_b_series("xe", "56a0"))                       # A770 on xe
+        self.assertIn("new to Strata", m.B_SERIES_LINE)
+        self.assertIn("issues", m.B_SERIES_LINE)
         src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
-        self.assertIn('if "--vision" not in argv and not pictures_on_by_default(', src)
+        self.assertIn("B_SERIES_LINE", src)
+        self.assertNotIn('sys.argv += ["--vision", "none"]', src)          # no B-series card has pictures switched off for it
         self.assertIn("S.hip_vision = intel_vision", src)
         self.assertIn("S.build_vision_cpu(", src)                           # the CPU reader is compiled by setup's own step
         self.assertIn("build_vision_sycl(", src)                            # --vision gpu: the SYCL reader, when the oneAPI compiler is there

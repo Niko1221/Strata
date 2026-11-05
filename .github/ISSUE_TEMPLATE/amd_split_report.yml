@@ -1,0 +1,68 @@
+name: AMD split engine report
+description: Tell us whether the all-cards split engine works on your AMD cards (it prints a line asking for this on cards Strata has not run it on)
+title: "[Engine] AMD split engine: <your card> x <count>"
+labels: ["engine", "amd-split-report"]
+body:
+  - type: markdown
+    value: |
+      Strata runs the all-cards split engine by itself on Radeon AI PRO R9700 / RX 9070 (gfx1201). On other AMD cards (RX 9060, RX 7000, the 780M and similar) it only starts when you ask for it with `strata launch --split-engine on`, and it prints one line asking you to report whether it works. We cannot test those cards, so your report is how we learn.
+
+      Write only what you saw. A report that says "it did not start" is as useful as one that says "it works".
+  - type: input
+    id: card
+    attributes:
+      label: Card model and count
+      description: For example "2 x RX 7900 XTX 24 GB" or "3 x RX 9060 XT 16 GB"
+    validations:
+      required: true
+  - type: input
+    id: arch
+    attributes:
+      label: Architecture (the gfx name)
+      description: From the engine's line, or `rocminfo | grep gfx`. For example gfx1100.
+    validations:
+      required: true
+  - type: input
+    id: rocm
+    attributes:
+      label: ROCm / driver version
+      description: Strata's engine package brings its own ROCm libraries; the kernel driver is yours (`uname -r`, `amd-smi version`).
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and quantization
+      description: The model Strata loaded, for example Qwen3.8-Flash-Next UD-Q4_K_XL or the IQ3_S set.
+    validations:
+      required: true
+  - type: textarea
+    id: selftest
+    attributes:
+      label: The self-test line
+      description: Paste the line from the engine's log that starts "The split engine's self-test" (passed or failed). The log is in the run folder shown at launch; `strata launch` also prints it.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: What happened
+      options:
+        - It started and the answers look right
+        - It started and the answers look wrong
+        - The self-test failed, so the normal layer split started
+        - It failed to start (not the self-test)
+        - It started and crashed or hung later
+    validations:
+      required: true
+  - type: input
+    id: speed
+    attributes:
+      label: Speed, tok/s (the split engine, then the layer split with `--split-engine off` if you tried both)
+      description: For example "decode 61 tok/s, layer split 48 tok/s, one user".
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Wrong answers (the prompt and what you got), crashes (the last lines of the engine log), or what you changed.

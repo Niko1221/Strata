@@ -205,24 +205,50 @@ def cached_notice(root: Path | None = None) -> str | None:
 
     The notice belongs to the versions the check was made for: it is dropped when Control or the installed engine is not the one
     recorded then (an app install, an update, a rollback), and an engine that is not newer than the installed one is never offered."""
+    offers = cached_offers(root)
+    parts = ([f"engine {offers['engine']}"] if offers.get("engine") else []) + ([f"DeepSeek engine {offers['dsv41']}"] if offers.get("dsv41") else []) \
+        + ([f"app {offers['app']}"] if offers.get("app") else [])
+    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+
+
+def _installed_dsv41_version(profile_configs=None) -> str | None:
+    """The newest DeepSeek engine package the saved profiles name (a local read), or None."""
+    from strata_control import dsv41_paths
+    newest = None
+    for r in dsv41_paths.roots_of(profile_configs if profile_configs is not None else dsv41_paths.saved_configs()):
+        for exe in dsv41_paths.installed(r):
+            v = exe.parent.name.split("-")[0]
+            if newest is None or _version_key(v) > _version_key(newest):
+                newest = v
+    return newest
+
+
+def cached_offers(root: Path | None = None) -> dict:
+    """What the last explicit check found newer, as {"engine": version|None, "dsv41": version|None, "app": version|None}; local reads only (the cached
+    check, the installed packages), never the network.  The same rules as `cached_notice`: it belongs to the Control and the packages it was made for,
+    and a package that is not newer than the installed one is never offered."""
     base = root or components_dir()
+    none = {"engine": None, "dsv41": None, "app": None}
     try:
         last = (json.loads((base / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
     except (OSError, ValueError, AttributeError):
-        return None
+        return none
     if not isinstance(last, dict):
-        return None
+        return none
     control = runtime_version()
     if "control" in last and last["control"] != control:
-        return None
-    engine, app = last.get("engine"), last.get("app")
+        return none
+    engine, app, dsv41 = last.get("engine"), last.get("app"), last.get("dsv41")
     installed = newest_installed_version(base)
     if "engine_installed" in last and last["engine_installed"] != installed:
         engine = None
     if engine and installed and _version_key(str(engine)) <= _version_key(installed):
         engine = None
-    parts = ([f"engine {engine}"] if engine else []) + ([f"app {app}"] if app else [])
-    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+    if dsv41:
+        have = _installed_dsv41_version()
+        if have is None or "dsv41_installed" in last and last["dsv41_installed"] != have or _version_key(str(dsv41)) <= _version_key(have):
+            dsv41 = None
+    return {"engine": engine or None, "dsv41": dsv41 or None, "app": app or None}
 
 
 def previous_folder(root: Path | None = None) -> str | None:
@@ -436,30 +462,93 @@ def runtime_version() -> str | None:
 
 # ----------------------------------------------------------------------------------------------- the GPU
 
+def split_backend(value) -> tuple[str, str]:
+    """(backend, variant) for a name the person typed: "hip-rdna2" is the hip family and its rdna2 package (the way the feed labels an AMD
+    package, #4013), "hip" is the family alone, any other name is returned as it is with no variant."""
+    name = str(value or "").strip().lower()
+    if name not in BACKEND_MATRIX and name.startswith("hip-") and len(name) > 4:
+        return "hip", name[4:]
+    return name, ""
+
+
+BACKEND_ALIASES = {"nvidia": "cuda", "amd": "hip", "intel": "sycl", "arc": "sycl"}
+SAVED_KEY = "engine_backend"
+
+
+def clean_backend_name(value) -> str:
+    """What the person typed for --backend, as an engine family name: 'intel' -> 'sycl', 'NVIDIA' -> 'cuda'; '' when it names none."""
+    name = str(value or "").strip().lower()
+    name = BACKEND_ALIASES.get(name, name)
+    return name if name in ("cuda", "hip", "sycl") else ""
+
+
+def saved_backend(environ=None) -> str | None:
+    """The engine family the person chose with `strata launch --backend` (kept in the settings file), or None. It is ignored when this PC
+    has no card of that make (the choice was made on other hardware): the PC's own detection then decides again."""
+    try:
+        from strata_control import discovery
+        value = clean_backend_name(discovery._read_json(discovery.own_settings_file(environ)).get(SAVED_KEY))        # noqa: SLF001
+    except Exception:                                    # noqa: BLE001 - a settings file that cannot be read is no choice
+        return None
+    if not value:
+        return None
+    here = gpu_makes_present()
+    return value if (not here or value in here) else None
+
+
+def save_backend(value, environ=None) -> Path | None:
+    """Keep (or, with a falsy value, forget) the person's engine family choice in the settings file, leaving every other key as it is."""
+    from strata_control import discovery
+    path = discovery.own_settings_file(environ)
+    data = discovery._read_json(path)                    # noqa: SLF001
+    name = clean_backend_name(value)
+    if name:
+        data[SAVED_KEY] = name
+    else:
+        data.pop(SAVED_KEY, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return path
+
+
 def detect_backend(environ=None) -> tuple[str | None, str]:
     """(backend, how) for this machine: the engine family its GPU needs. Bounded, read-only probes of tools that are
     already installed; ``STRATA_ENGINE_BACKEND`` overrides (the tests and the support desk use it)."""
     environ = os.environ if environ is None else environ
-    forced = environ.get(ENV_BACKEND, "").strip().lower()
+    forced = split_backend(environ.get(ENV_BACKEND, ""))[0]      # "hip-rdna2" starts the hip family (the package choice reads the variant)
     if forced:
         if forced not in BACKEND_MATRIX:
             raise ComponentProblem(f"{ENV_BACKEND}={forced!r} is not one of {', '.join(sorted(BACKEND_MATRIX))}")
         return forced, "environment"
+    chosen = saved_backend(environ)
+    if chosen:
+        return chosen, "saved choice"
     if host_platform().startswith("macos"):
         return "metal", "platform"
+    # Windows: the display adapters are the machine's own statement about which cards it has, so they decide first. A leftover
+    # nvidia-smi from a card that was taken out, or a toolkit installed for another card, must never outvote them: that is how an
+    # AMD PC was given a CUDA engine (#3688). A tool is only asked about a make that has an adapter here.
+    adapters = windows_display_adapters() if host_platform().startswith("windows") else []
+    present = adapter_makes(adapters)
+    if present:
+        return _first_make(present), "display adapters"
     probes = (("cuda", ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")),
               ("hip", ("rocminfo",) if os.name != "nt" else ("hipInfo",)),
               ("sycl", ("sycl-ls",)))
+    vendors_here = {a.get("vendor") for a in adapters}
+    vendor_of = {"cuda": "10de", "hip": "1002", "sycl": "8086"}
     for backend, command in probes:
+        if vendors_here and vendor_of[backend] not in vendors_here:
+            continue                                  # the adapters list no card of this make: a tool that answers is a leftover
         tool = shutil.which(command[0])
         if not tool:
             continue
         try:
-            done = subprocess.run([tool, *command[1:]], capture_output=True, timeout=8, text=True,
+            done = subprocess.run([tool, *command[1:]], capture_output=True, timeout=8, text=True, errors="replace",
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except (OSError, subprocess.SubprocessError):
             continue
-        if done.returncode == 0 and done.stdout.strip():
+        if done.returncode == 0 and (done.stdout or "").strip():
             if backend == "hip" and "gfx" not in done.stdout:
                 continue
             if backend == "sycl" and "level_zero" not in done.stdout.lower() and "gpu" not in done.stdout.lower():
@@ -471,15 +560,73 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
     return None, "no GPU tool answered"
 
 
-def _drm_vendor_backend() -> str | None:
+def _first_make(makes) -> str:
+    """The make Strata uses when a PC has cards of several: NVIDIA, then AMD, then Intel (the order of every probe)."""
+    return next(m for m in ("cuda", "hip", "sycl") if m in makes)
+
+
+def adapter_makes(adapters: list[dict] | None) -> set[str]:
+    """The engine families the Windows display adapters call for: cuda (an NVIDIA adapter), hip (an AMD card, not an integrated
+    Radeon), sycl (an Intel adapter). Empty when the list is empty. Read-only, nothing is run."""
+    makes = set()
+    for adapter in adapters or []:
+        vendor = adapter.get("vendor")
+        if vendor == "10de":
+            makes.add("cuda")
+        elif vendor == "8086":
+            makes.add("sycl")
+    if windows_amd_cards(adapters or []):
+        makes.add("hip")
+    return makes
+
+
+def gpu_makes_present() -> set[str]:
+    """The engine families this PC has a graphics card for, from the display adapters (Windows) or the PCI vendors (Linux); empty
+    when that cannot be read. Used to keep an update on the make the installation was built for (#3688)."""
+    if os.name == "nt":
+        return adapter_makes(windows_display_adapters())
+    return _drm_vendor_makes()
+
+
+def _drm_vendor_makes(root: str = "/sys/class/drm") -> set[str]:
+    vendors = set()
+    try:
+        for card in sorted(Path(root).glob("card[0-9]*")):
+            if "-" not in card.name:
+                try:
+                    vendors.add((card / "device" / "vendor").read_text().strip().lower())
+                except OSError:
+                    continue
+    except OSError:
+        return set()
+    return {backend for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl")) if vendor in vendors}
+
+
+def wsl_amd_note(backend: str | None, dev_root: str = "/dev", wsl: bool | None = None) -> str | None:
+    """Under WSL (the GPU is reached through /dev/dxg, there is no /dev/kfd) the Linux AMD (HIP) engines hang: librocdxg 1.2.2
+    never completes a barrier-AND packet, so the first GPU command never returns. A plain sentence with one next step for that
+    case, else None. A warning only: the caller goes on (recommend, never force)."""
+    if backend != "hip":
+        return None
+    if wsl is None:
+        import platform
+        import sys
+        wsl = sys.platform.startswith("linux") and "microsoft" in platform.uname().release.lower()
+    if not wsl or not Path(dev_root, "dxg").exists() or Path(dev_root, "kfd").exists():
+        return None
+    return ("The AMD engines do not run under WSL yet: the driver layer WSL uses for the card never finishes a GPU command, so the engine "
+            "would hang at its first step. Use the Strata app or Terminal for Windows, which run the AMD engine directly.")
+
+
+def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     """Linux without the vendor tools on PATH (a HIP box that runs ROCm from Python wheels has no rocminfo): the PCI
     vendor of the display adapters decides. NVIDIA 0x10de -> cuda, AMD 0x1002 -> hip, Intel 0x8086 -> sycl, in that
     order. Read-only sysfs, nothing is run."""
-    if not os.path.isdir("/sys/class/drm"):
+    if not os.path.isdir(root):
         return None
     vendors = set()
     try:
-        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+        for card in sorted(Path(root).glob("card[0-9]*")):
             if "-" in card.name:
                 continue
             try:
@@ -552,13 +699,13 @@ def _windows_adapters_cim() -> list[dict]:
         return []
     try:
         done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
-                               "Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
-                              capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                               "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
+                              capture_output=True, text=True, errors="replace", timeout=15, stdin=subprocess.DEVNULL,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
     found = []
-    for line in done.stdout.splitlines():
+    for line in (done.stdout or "").splitlines():
         match = re.search(r"VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", line, re.I)
         if not match:
             continue
@@ -574,7 +721,15 @@ def windows_display_adapters() -> list[dict]:
     """The display adapters Windows has a driver for: the display-class registry key (readable without admin and without running
     anything), then Win32_VideoController when the key lists nothing: {"vendor": "10de"|"1002"|"8086"|..., "device": int, "name",
     "vram_gb"}. Empty off Windows or when neither can be read."""
-    return _windows_display_adapters_registry() or _windows_adapters_cim()
+    found = _windows_display_adapters_registry()
+    if len({a.get("vendor") for a in found} & {"10de", "1002"}) > 1:
+        # The registry keeps the driver entry of a card that was taken out (an NVIDIA card swapped for a Radeon, #3892): when two makes are
+        # listed, only the adapters Windows reports as present now count.
+        present = {(a["vendor"], a["device"]) for a in _windows_adapters_cim()}
+        now = [a for a in found if (a["vendor"], a["device"]) in present]
+        if now:
+            return now
+    return found or _windows_adapters_cim()
 
 
 def _windows_display_adapters_registry() -> list[dict]:
@@ -681,16 +836,50 @@ def hip_archs_present(kfd_root: str | None = None) -> list[str]:
     return found
 
 
+def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> list[str]:
+    """Linux, third probe for the AMD architectures when the kernel driver's topology (hip_archs_present) and rocminfo said nothing (no
+    /sys/class/kfd access in an AppImage or a container, no ROCm tools installed): the PCI ids of the AMD display devices, in sysfs
+    (``card0/device/{vendor,device}``) and then ``lspci -nn`` (``[1002:744c]``), mapped through the same tables the Windows probe uses.
+    An integrated Radeon and an id the tables do not know give nothing. Read-only; empty when it cannot say."""
+    ids: list[int] = []
+    try:
+        for card in sorted(Path(drm_root).glob("card[0-9]*")):
+            if "-" in card.name:                                            # card0-DP-1 and the like are connectors
+                continue
+            try:
+                vendor = (card / "device" / "vendor").read_text().strip().lower()
+                device = (card / "device" / "device").read_text().strip().lower()
+            except OSError:
+                continue
+            if vendor == "0x1002" and device.startswith("0x"):
+                ids.append(int(device, 16))
+    except OSError:
+        pass
+    if not ids and lspci and os.name != "nt":
+        tool = shutil.which("lspci")
+        if tool:
+            try:
+                done = subprocess.run([tool, "-nn"], capture_output=True, text=True, errors="replace", timeout=10)
+                for line in (done.stdout or "").splitlines():
+                    if re.search(r"VGA|Display|3D", line):
+                        found = re.search(r"\[1002:([0-9a-f]{4})\]", line, re.I)
+                        if found:
+                            ids.append(int(found.group(1), 16))
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
+
+
 def _smi_query(field_name: str) -> list[str]:
     tool = shutil.which("nvidia-smi")
     if not tool:
         return []
     try:
         done = subprocess.run([tool, f"--query-gpu={field_name}", "--format=csv,noheader"], capture_output=True,
-                              timeout=8, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                              timeout=8, text=True, errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
-    return [line.strip() for line in done.stdout.splitlines() if line.strip()] if done.returncode == 0 else []
+    return [line.strip() for line in (done.stdout or "").splitlines() if line.strip()] if done.returncode == 0 and done.stdout else []
 
 
 def nvidia_driver_version() -> str | None:
@@ -705,21 +894,38 @@ def nvidia_driver_version() -> str | None:
     return min(versions, key=_version_key) if versions else None
 
 
+def _capability(number: str) -> tuple[int, int]:
+    """``86`` -> (8, 6), ``120`` -> (12, 0): the last digit is the minor version."""
+    return int(number[:-1] or 0), int(number[-1])
+
+
 def arch_covers(archs, present: list[str]) -> bool:
     """Whether a build with `archs` (``sm_86`` = machine code for that card, ``compute_89`` = PTX that any card of
-    that generation or newer can JIT) can run on at least one of the `present` cards (``sm_XX``)."""
-    cards = {int(item[3:]) for item in present if item.startswith("sm_") and item[3:].isdigit()}
+    that generation or newer can JIT) can run on at least one of the `present` cards (``sm_XX``).
+    Machine code also runs on a card of the same major version with an equal or newer minor version (CUDA's cubin
+    compatibility rule): ``sm_86`` code runs on an ``sm_89`` card (RTX 40) but not on ``sm_80`` (older minor),
+    ``sm_90`` (other major) or ``sm_75``; ``sm_120`` code runs on ``sm_121``."""
+    cards = {item[3:] for item in present if item.startswith("sm_") and item[3:].isdigit()}
     if not cards:
         return True              # cannot tell: not a refusal
     for arch in archs:
         kind, _, number = arch.partition("_")
         if not number.isdigit():
             continue
-        if kind == "sm" and int(number) in cards:
+        if kind == "sm" and any(number == card or (len(number) > 1 and len(card) > 1 and _capability(card)[0] == _capability(number)[0]
+                                                   and _capability(card)[1] >= _capability(number)[1]) for card in cards):
             return True
-        if kind == "compute" and any(card >= int(number) for card in cards):
+        if kind == "compute" and any(int(card) >= int(number) for card in cards):
             return True
     return False
+
+
+def arch_native(archs, present: list[str]) -> bool:
+    """Whether a build with `archs` holds machine code made for one of the `present` cards itself (``sm_89`` on an ``sm_89`` card),
+    not only code that runs there through the same-major rule of `arch_covers` (``sm_86`` on an RTX 40) or as PTX. Only a tie-breaker
+    between packages that fit equally: a package with the card's own image is taken first (#3935)."""
+    cards = {item[3:] for item in present if item.startswith("sm_") and item[3:].isdigit()}
+    return any(arch.startswith("sm_") and arch[3:] in cards for arch in archs)
 
 
 # ----------------------------------------------------------------------------------------------- resolve
@@ -888,7 +1094,7 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
                 return item
     # newest version first; with equal versions the build for the newer driver (the CUDA 13 build beside the CUDA 12 one)
     return max(usable, key=lambda item: (_version_key(item.version), _version_key(item.min_driver.get("nvidia", "0")),
-                                         hip_preference(item.hip_archs)))
+                                         hip_preference(item.hip_archs), arch_native(item.cuda_archs, archs_here)))
 
 
 #: A run config can name its engine as "component:strata-engine" instead of a path: the server then asks the
@@ -925,7 +1131,8 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
               "backend": backend or detected, "backend_source": "requested" if backend else how,
               "installed": [item.to_dict() for item in found], "problems": problems,
               "engine": None, "usable": False, "notice": None, "acquires": False,
-              "pinned": pinned_folder(base), "previous": previous_folder(base), "update_notice": cached_notice(base)}
+              "pinned": pinned_folder(base), "previous": previous_folder(base), "update_notice": cached_notice(base),
+              "update_available": cached_offers(base)}
     try:
         chosen = resolve(base, backend=backend, full=full)
         report["engine"] = chosen.to_dict()

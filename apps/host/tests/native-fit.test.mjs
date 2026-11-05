@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 
 const { code } = await transform(await readFile(new URL('../src/lib/native-fit.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
-const { fitOn, memoryNeeded, RECOMMENDED, VERSION_GROUPS, groupOpen, recommendedVersions, PICK_NOTE, OTHER_NOTE, MTP_VRAM_GB } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { fitOn, cacheGb, memoryNeeded, RECOMMENDED, VERSION_GROUPS, groupOpen, recommendedVersions, PICK_NOTE, OTHER_NOTE, MTP_VRAM_GB } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
 const swift = { ram_needed_gb: 48, experts_gb: 35.5 };
 const gyroS = { ram_needed_gb: 27.6, experts_gb: 25.8, mem_total: true };
@@ -24,8 +24,8 @@ test('a PC with room reads nothing from the SSD', () => {
 });
 
 test('a PC without room reads the rest from the SSD, and the amount is real', () => {
-  const f = fitOn(q4, { ram_gb: 64, vram_gb: 12 });          // 77 GB of experts: 6 on the card (the draft layer takes 1 GB), 54 in RAM, 17 from the SSD
-  assert.equal(f.spillGb, 17);
+  const f = fitOn(q4, { ram_gb: 64, vram_gb: 12 });          // 77 GB of experts: 6 on the card (the draft layer takes 1.08 GB), 54 in RAM, 17.1 from the SSD
+  assert.equal(f.spillGb, 17.1);
   assert.equal(fitOn(q4, { ram_gb: 64, vram_gb: 12 }, false).spillGb, 16, 'with the draft layer off the card holds 1 GB more');
   assert.equal(fitOn(q4, { ram_gb: 192, vram_gb: 24 }).spillGb, 0);
   assert.ok(fitOn(gyroS, { ram_gb: 16, vram_gb: 8 }).spillGb > 10, 'a small PC spills a lot');
@@ -54,10 +54,10 @@ test('the group of the running version can be collapsed (Gyro-M running, the Gyr
 });
 
 test('the draft layer (MTP) counts about 1 GB of the card', () => {
-  assert.equal(MTP_VRAM_GB, 1);
+  assert.equal(MTP_VRAM_GB, 1.08);   // the engine's measured 1,082 MiB (strata_control/drafting.py DRAFTER_MIB)
   const on = fitOn(swift, { ram_gb: 40, vram_gb: 12 }), off = fitOn(swift, { ram_gb: 40, vram_gb: 12 }, false);
   assert.equal(Math.round((on.vramUseGb - off.vramUseGb) * 10) / 10, 0, 'the card is full either way here; the experts it cannot hold move to RAM');
-  assert.equal(Math.round((on.ramUseGb - off.ramUseGb) * 10) / 10, 1);
+  assert.equal(Math.round((on.ramUseGb - off.ramUseGb) * 10) / 10, 1.1);
   assert.equal(fitOn(swift, { ram_gb: 40, vram_gb: 0 }).vramUseGb, 0, 'no card, no draft layer on it');
 });
 
@@ -82,4 +82,16 @@ test('the tiers of the engine are 40 GB Swift IQ2_XS, 48 GB IQ3_XXS, 64 GB IQ3_S
     assert.ok(m, file);
     assert.deepEqual([...m[1].matchAll(/\(([\d.]+),\s*"(\w+)",\s*"(\w+)"\)/g)].map(x => [Number(x[1]), x[2], x[3]]), [[62, 'qwen', 'IQ3_S'], [46, 'qwen', 'IQ3_XXS'], [38, 'swift', 'IQ2_XS']], file);
   }
+});
+
+test('the conversation context and cache format move the estimate (#3832)', () => {
+  const pc = { ram_gb: 64, vram_gb: 16 };
+  const base = fitOn(swift, pc);
+  assert.deepEqual(fitOn(swift, pc, true, { context: 32768, kv: 'int8' }), base, 'the default context is what the fixed figure already held');
+  const big = fitOn(swift, pc, true, { context: 524288, kv: 'int8' });
+  assert.ok(big.vramUseGb >= base.vramUseGb && big.ramUseGb > base.ramUseGb, 'a bigger cache takes graphics memory from the experts, which then sit in RAM');
+  assert.ok(fitOn(swift, pc, true, { context: 524288, kv: 'q4_0' }).ramUseGb < big.ramUseGb, 'a smaller cache format leaves more room');
+  assert.ok(Math.abs(cacheGb(524288, 'int8') * 1024 - 7361) < 25, 'the 512K Int8 cache is the 7361 MiB the engine reports');
+  const tight = fitOn(q4, pc, true, { context: 524288, kv: 'int8' });
+  assert.ok(tight.spillGb > fitOn(q4, pc).spillGb, 'what no longer fits is read from the SSD and the card says so');
 });

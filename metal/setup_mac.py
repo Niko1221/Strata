@@ -151,9 +151,10 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------ the config
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0) -> list[str]:
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
+                model: str = "") -> list[str]:
     """The Metal defaults (strata_control/mac_fit.py), with this checkout's expert profile."""
-    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin")
+    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin", model)
 
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
@@ -291,9 +292,14 @@ def repack_running(folder: Path) -> list[int]:
 
 
 def engine_pids(run=subprocess.run) -> list[int]:
-    """Pids of the running Metal engines (`strata`, the executable setup builds)."""
+    """Pids of the running Metal engines (`strata`, the executable setup builds) that belong to THIS user.  On a shared Mac
+    another person's engine is theirs to stop: `pgrep -x strata` alone saw it and sent setup away with "stop the server" for a
+    window the person could not close (M5 Max, 2026-10-31)."""
+    cmd = ["pgrep", "-x", "strata"]
+    if hasattr(os, "getuid"):
+        cmd[1:1] = ["-u", str(os.getuid())]
     try:
-        out = run(["pgrep", "-x", "strata"], capture_output=True, text=True, timeout=10).stdout
+        out = run(cmd, capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     return [int(x) for x in out.split() if x.isdigit() and int(x) != os.getpid()]
@@ -433,6 +439,18 @@ def main(argv=None) -> int:
         (BUILD_DIR / "BUILD.json").unlink(missing_ok=True)
     exe = build_engine(llama)
     if a.update:
+        # update.sh's own text: "The model files are not touched".  The questions are asked anyway, so when the
+        # answers name a model (or an image encoder) that is not here, say it: a silent exit reads like a broken
+        # download (an M1 Max chose IQ3_S in update.sh and got no model and no message).
+        files = [Path(a.gguf_dir) / n if a.gguf_dir else models_root / tag / n for n in model_shard_names(model)]
+        pack = S.find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
+        pack_done = (pack / "native_experts.txt").exists() and (pack / "tokenizer" / "vocab.json").exists()
+        if not (all(f.exists() and S.done(f) for f in files) and pack_done):
+            S.warn(f"{model} is not installed here, and an update does not download model files: nothing was installed")
+            S.say(f"  to download and prepare {model}: ./setup.sh --setup")
+        elif vision == "yes" and not (models_root / fam["mmproj"]).exists():
+            S.warn("the image encoder is not downloaded here, and an update does not download model files")
+            S.say("  to add image support: ./setup.sh --setup")
         return 0
 
     # ---- 5. the model
@@ -530,8 +548,9 @@ def main(argv=None) -> int:
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
-    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"], model), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0",   # the engine follows setup's measured choice
+                  **_fit.engine_env(model, stream)}                # STRATA_METAL_F16=1 for a resident IQ3_S / Q2_0 (mac_fit.F16_MODELS)
     if vision == "yes":
         cfg["args"] += ["--vision"]
         cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": vision_gpu,

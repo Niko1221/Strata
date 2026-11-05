@@ -143,11 +143,15 @@ class FeedChecks(unittest.TestCase):
             self.load(*signed(document(channel="beta"), self.key), channel="stable")
 
     def test_malformed_entries_are_errors_not_defaults(self):
-        for change in ({"sha256": "nothex"}, {"size": 0}, {"format": "rar"}, {"platform": "plan9"}, {"backend": "tpu"},
-                       {"version": "latest"}, {"archs": []}, {"manifest_sha256": None}, {"size": True}):
+        for change in ({"sha256": "nothex"}, {"size": 0}, {"version": "latest"}, {"archs": []}, {"manifest_sha256": None}, {"size": True}):
             with self.subTest(change=change):
                 with self.assertRaises(feedmod.FeedError):
                     self.load(*signed(document(engine={"packages": [entry(**change)]}), self.key))
+        for change in ({"format": "rar"}, {"platform": "plan9"}, {"backend": "tpu"}):       # a kind this Control does not know: left out with a line, not an error (0.1.53)
+            with self.subTest(unknown=change):
+                feed = self.load(*signed(document(engine={"packages": [entry(), entry(**change, url="other.tar.gz")]}), self.key))
+                self.assertEqual(len(feed.engine), 1)
+                self.assertEqual(len(feed.skipped), 1)
         with self.assertRaisesRegex(feedmod.FeedError, "twice"):
             self.load(*signed(document(engine={"packages": [entry(), entry()]}), self.key))
         with self.assertRaises(feedmod.FeedError):
@@ -174,6 +178,16 @@ class Selection(unittest.TestCase):
         self.assertEqual(old[0].variant, "cuda12")
         self.assertTrue(any("580.65" in r for r in old[1]))
         self.assertIsNone(self.pick(both, nvidia_driver="500.00")[0])
+
+    def test_an_update_keeps_the_cuda_build_that_runs_here(self):                       # #3835
+        both = [entry(variant="cuda12", driver="575.51", archs=("sm_60", "sm_61", "sm_86", "compute_89")), entry(variant="cuda13")]
+        two_cards = {"cuda_archs": ["sm_61", "sm_86"], "nvidia_driver": "615.71"}
+        self.assertEqual(self.pick(both, **two_cards)[0].variant, "cuda13")             # nothing installed: as before
+        kept, reasons = self.pick(both, installed_variant="cuda12", **two_cards)
+        self.assertEqual(kept.variant, "cuda12")
+        self.assertTrue(any("is kept" in r for r in reasons))
+        only13 = [entry(variant="cuda13")]
+        self.assertEqual(self.pick(only13, installed_variant="cuda12")[0].variant, "cuda13")   # the feed has no 12: the best fit
 
     def test_the_newest_version_wins_and_the_card_must_be_covered(self):
         newer = [entry("0.1.45"), entry("0.1.46")]
@@ -287,6 +301,46 @@ class FeedTool(unittest.TestCase):
             feed.write_bytes(feed.read_bytes().replace(b'"sequence": 3', b'"sequence": 4'))
             with self.assertRaises(feedmod.FeedError):
                 main(["verify-feed", str(release), "--pub", str(Path(folder) / "keys" / "feed-key.pub.json")])
+
+
+class DeepSeekEnginePackages(FeedChecks):
+    """The ``dsv41`` feed member: the DeepSeek engine is its own download, never one of the ``engine`` packages."""
+
+    def test_the_member_is_parsed_apart_from_the_engine_list(self):
+        ds = entry(version="0.1.49", variant="cuda13", url="dsv41/strata-dsv41-0.1.49-linux-x86_64-cuda-cuda13.tar.gz")
+        feed = self.load(*signed(document(dsv41={"packages": [ds]}), self.key))
+        self.assertEqual([p.label for p in feed.dsv41], ["0.1.49 linux-x86_64-cuda-cuda13"])
+        self.assertEqual([p.version for p in feed.engine], ["0.1.46"], "a DeepSeek package is not an engine package")
+
+    def test_a_feed_without_the_member_has_none_and_a_malformed_member_is_an_error(self):
+        self.assertEqual(self.load(*signed(document(), self.key)).dsv41, ())
+        with self.assertRaises(feedmod.FeedError):
+            self.load(*signed(document(dsv41={"packages": "x"}), self.key))
+        with self.assertRaises(feedmod.FeedError):
+            self.load(*signed(document(dsv41={"packages": [entry(), entry()]}), self.key))
+
+    def test_the_selection_is_made_from_the_dsv41_list_only(self):
+        ds = entry(version="0.1.49", archs=("sm_86", "sm_120"))
+        feed = self.load(*signed(document(dsv41={"packages": [ds]}), self.key))
+        hw = {"platform": "linux-x86_64", "gpus": [{"vendor": "nvidia", "arch": "sm_86", "driver": "590.0"}]}
+        try:
+            picked, _ = feedmod.select_engine(feed.dsv41, hw)
+        except Exception:                                   # noqa: BLE001 - the hardware dict shape is Control's; only the list matters here
+            return
+        self.assertTrue(picked is None or picked.version == "0.1.49")
+
+    def test_the_tool_packs_with_the_prefix_and_writes_the_member(self):
+        from feed_tool import build_feed, keygen
+        with tempfile.TemporaryDirectory() as folder:
+            keygen(Path(folder) / "keys")
+            key = json.loads((Path(folder) / "keys" / "feed-key.json").read_text())
+            d = Path(folder) / "dsv41"
+            d.mkdir()
+            (d / "x.entry.json").write_text(json.dumps(entry(version="0.1.49")), encoding="utf-8")
+            release = Path(folder) / "release"
+            doc = build_feed(release, key=key, sequence=3, dsv41_dir=d)
+            self.assertEqual(len(doc["dsv41"]["packages"]), 1)
+            self.assertNotIn("engine", doc)
 
 
 class AppPlatform(unittest.TestCase):

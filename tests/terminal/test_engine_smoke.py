@@ -50,7 +50,7 @@ class BinarySmoke(unittest.TestCase):
             exe = make_engine(folder, "echo 'No device of requested type available' >&2\nexit 250\n", "echo No device of requested type available 1>&2\r\nexit /b 250\r\n")
             with self.assertRaises(updater.TestStartFailed) as e:
                 updater.binary_smoke(self.component(folder, exe))
-            self.assertIn("No device of requested type", str(e.exception))
+            self.assertIn("No device of requested type", e.exception.reason)
 
     def test_exit_2_without_a_list_of_options_still_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

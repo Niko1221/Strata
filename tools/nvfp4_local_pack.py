@@ -63,7 +63,19 @@ PLE_ROW_BYTES = 90          # 80 B of E2M1 codes + 10 E4M3 block scales, per 160
 
 # --------------------------------------------------------------------------------------------- safetensors access
 class Checkpoint:
-    """Header-indexed, memory-mapped access to a checkpoint's safetensors shards (raw bytes, any dtype)."""
+    """Header-indexed, buffered access to a checkpoint's safetensors shards (raw bytes, any dtype).
+
+    Reads go through a cached file handle into a fresh buffer instead of a process-lifetime np.memmap:
+    a memmap sweep of the ~64 GB of expert bytes charges every faulted page to the PROCESS WORKING
+    SET, which Windows (and every free-RAM observer reading GlobalMemoryStatusEx) counts as used
+    until the OS trims it - the pack step then looks like a ~64 GB RAM demand while its real
+    committed need is a few GB, and under memory pressure it is the pack run itself that pays
+    (issue: the silent exit-1 mid-pack failure).
+    A cached sequential read puts the same pages in the system file cache (standby: counted as
+    available).  The returned array is a fresh WRITABLE buffer - no consumer writes (a mutator would
+    previously have hit the read-only memmap) - and reads share one handle per shard, so raw() is
+    not thread-safe, unlike the memmap it replaces.  Each shard is read as three ascending streams
+    (exceptions, weights, CSF-fixed) walked expert-ascending."""
 
     def __init__(self, folder, partial_ok=False):
         self.dir = pathlib.Path(folder)
@@ -76,7 +88,7 @@ class Checkpoint:
         if not files:
             raise FileNotFoundError("no .safetensors files in " + str(self.dir))
         self.meta: dict[str, tuple[str, str, list[int], int, int]] = {}
-        self._mm: dict[str, np.memmap] = {}
+        self._fh: dict[str, "object"] = {}
         for fn in files:
             path = self.dir / fn
             if not path.exists() and partial_ok:
@@ -100,9 +112,14 @@ class Checkpoint:
 
     def raw(self, name) -> np.ndarray:
         fn, _, _, a, b = self.meta[name]
-        if fn not in self._mm:
-            self._mm[fn] = np.memmap(self.dir / fn, dtype=np.uint8, mode="r")
-        return self._mm[fn][a:b]
+        f = self._fh.get(fn)
+        if f is None:
+            f = self._fh[fn] = open(self.dir / fn, "rb")
+        buf = np.empty(b - a, dtype=np.uint8)
+        f.seek(a)
+        if f.readinto(buf) != b - a:
+            raise EOFError("%s: shard %s ended early at %d" % (name, fn, a))
+        return buf
 
     def array(self, name, np_dtype) -> np.ndarray:
         return self.raw(name).view(np_dtype).reshape(self.shape(name))

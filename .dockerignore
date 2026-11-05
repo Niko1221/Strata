@@ -17,6 +17,11 @@ __pycache__/
 /mtp/
 /models/
 /Strata-data/
+# the folders docker/entrypoint.sh creates in a mounted data/ (a link to llama.cpp, the models, the keys): never part of a build (#3644)
+/data/install/
+/data/state/
+/data/home/
+/data/Strata-data/
 third_party/llama.cpp/
 third_party/*.zip
 *.done

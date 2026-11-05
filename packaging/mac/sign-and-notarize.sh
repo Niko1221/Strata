@@ -2,8 +2,9 @@
 # Sign the Strata Mac app (dmg or .app) and, optionally, the Mac Terminal archive with the owner's Developer ID, then notarise
 # them with Apple, so macOS opens them without the "damaged" / "unidentified developer" warning.
 #
-#   bash sign-and-notarize.sh <Strata-tester-mac.dmg | Strata.app> [--terminal <Strata-Terminal-Mac.zip>] [--updater-archive] [--out DIR] [--dry-run]
+#   bash sign-and-notarize.sh <Strata-tester-mac.dmg | Strata.app> [--terminal <Strata-Terminal-Mac.zip>] [--engine <engine-folder.tar.gz>] [--updater-archive] [--out DIR] [--dry-run]
 #   bash sign-and-notarize.sh --terminal <Strata-Terminal-Mac.zip>            # the Terminal archive alone
+#   bash sign-and-notarize.sh --terminal <Terminal.tar.gz> --engine <strata-dsv41-...-unsigned-folder.tar.gz>   # both in one run
 #
 # This script runs on the OWNER'S Mac, where the certificate "Developer ID Application: Niko Veit (79LR4R7RSC)" is in the Keychain and the
 # notarytool keychain profile "strata-notary" exists. It never asks for, reads or stores a password or a key: codesign and notarytool
@@ -30,6 +31,11 @@
 #   6. notarises the .app, staples it, rebuilds the dmg (same layout as apps/desktop/scripts/make-dmg.sh), signs the dmg, notarises the dmg,
 #      staples it, spctl -a -t open --context context:primary-signature -vv;
 #   7. Terminal archive: signs every Mach-O inside, re-zips, notarises the zip (a zip cannot be stapled: see the note at the end).
+#   7b. --engine FOLDER.tar.gz (the DeepSeek engine package of the Mac, a tar of one folder: strata-dsv41, its metal/ sources and
+#      engine-component.json): signs every Mach-O in it like the engine inside the app (hardened runtime, timestamp, no entitlements),
+#      writes the signed files' SHA-256 and size into engine-component.json, codesign --verify --strict on each, checks that the signed
+#      program starts, notarises a zip of the folder, and packs it again as strata-dsv41-<version>-<platform>-<backend>-folder.tar.gz (modes
+#      kept). Sign the folder with the feed key AFTER this step, on the PC: signing changes the program, so the manifest changes with it.
 #   8. --updater-archive (opt-in, needs the app input): packs the signed, notarised, stapled .app into Strata.app.tar.gz, the file Tauri's in-app
 #      updater downloads on a Mac (Strata.app at the root of the archive), and checks it by unpacking it again. The archive is NOT signed with the
 #      Tauri updater key here: this script never touches that key. Sign it on the PC (npx tauri signer sign) and put it in the update file with
@@ -43,7 +49,7 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-strata-notary}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENT_NODE_SRC="$HERE/entitlements-node.plist"
 
-INPUT=""; TERMINAL=""; OUT=""; DRY=0; KEEP=0; SIGN_NESTED=0; UPDATER_ARCHIVE=0
+INPUT=""; TERMINAL=""; ENGINE=""; OUT=""; DRY=0; KEEP=0; SIGN_NESTED=0; UPDATER_ARCHIVE=0
 WORK=""
 LOG=""
 declare -a RESULTS=()
@@ -59,6 +65,7 @@ usage() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --terminal)    [ $# -ge 2 ] || usage; TERMINAL="$2"; shift 2 ;;
+    --engine)      [ $# -ge 2 ] || usage; ENGINE="$2"; shift 2 ;;
     --out)         [ $# -ge 2 ] || usage; OUT="$2"; shift 2 ;;
     --dry-run)     DRY=1; shift ;;
     --keep-work)   KEEP=1; shift ;;
@@ -69,7 +76,7 @@ while [ $# -gt 0 ]; do
     *)             if [ -z "$INPUT" ]; then INPUT="$1"; shift; else echo "unexpected argument: $1" >&2; usage; fi ;;
   esac
 done
-[ -n "$INPUT" ] || [ -n "$TERMINAL" ] || usage
+[ -n "$INPUT" ] || [ -n "$TERMINAL" ] || [ -n "$ENGINE" ] || usage
 if [ "$UPDATER_ARCHIVE" -eq 1 ] && [ -z "$INPUT" ]; then echo "--updater-archive needs the app (a .dmg or .app) as the input" >&2; usage; fi
 
 # ----------------------------------------------------------------------------------------------------------------- output helpers
@@ -103,9 +110,9 @@ summary() {
   else
     say "RESULT: FAILED. Read the FAIL line above. Full log: ${LOG:-none}"
   fi
-  if [ -n "$TERMINAL" ]; then
+  if [ -n "$TERMINAL" ] || [ -n "$ENGINE" ]; then
     say ""
-    say "Note on the Terminal zip: Apple cannot staple a ticket to bare command-line programs in a zip, so the zip carries no ticket. Notarisation is"
+    say "Note on the Terminal zip and the engine folder: Apple cannot staple a ticket to bare command-line programs in a zip, so the zip carries no ticket. Notarisation is"
     say "still recorded at Apple by the programs' hashes, and macOS checks that online the first time a quarantined (browser-downloaded) copy is opened."
     say "Offline, the first open of such a copy needs a connection. Installs done with 'curl | sh' are not quarantined at all, so this mainly helps zips"
     say "downloaded in a browser. The zip's sha256 changed: any feed or checksum list that names the old zip must be rebuilt from this one."
@@ -175,9 +182,11 @@ fi
 
 [ -z "$INPUT" ] || [ -e "$INPUT" ] || { echo "not found: $INPUT" >&2; exit 2; }
 [ -z "$TERMINAL" ] || [ -f "$TERMINAL" ] || { echo "not found: $TERMINAL" >&2; exit 2; }
+[ -z "$ENGINE" ] || [ -f "$ENGINE" ] || { echo "not found: $ENGINE" >&2; exit 2; }
+case "$ENGINE" in ""|*.tar.gz|*.tgz) ;; *) echo "--engine takes the engine folder as a .tar.gz: $ENGINE" >&2; exit 2 ;; esac
 
 if [ -z "$OUT" ]; then
-  first="${INPUT:-$TERMINAL}"
+  first="${INPUT:-${TERMINAL:-$ENGINE}}"
   OUT="$(cd "$(dirname "$first")" && pwd)/signed"
 fi
 mkdir -p "$OUT" || { echo "cannot create $OUT" >&2; exit 2; }
@@ -195,7 +204,7 @@ say "  output   : $OUT"
 say ""
 
 need_kb=0
-for f in "$INPUT" "$TERMINAL"; do
+for f in "$INPUT" "$TERMINAL" "$ENGINE"; do
   [ -n "$f" ] || continue
   kb="$(du -sk "$f" | awk '{print $1}')"; need_kb=$((need_kb + kb * 5))
 done
@@ -698,7 +707,70 @@ process_terminal() {
   deliver "$final" "$src"
 }
 
+# ----------------------------------------------------------------------------------------------------------------- the DeepSeek engine folder
+# The Mac DeepSeek engine package (strata-dsv41, its metal/ sources, engine-component.json) as a .tar.gz of ONE folder. The Qwen engine
+# gets its Developer ID signature as a nested program of the signed app; this does the same for the DeepSeek one, which Control installs
+# from the update feed. Same identity and options as every nested program above; no entitlements (ent_for gives none for strata-dsv41).
+process_engine() {
+  local src=$ENGINE edir="$WORK/engine" name stem top tops final notarize_zip bin f bad=0 n rc
+  name="$(basename "$src")"
+  mkdir -p "$edir"
+  tar -xzf "$src" -C "$edir" || fail "unpack the engine folder" "tar failed"
+  rm -rf "$edir/__MACOSX"
+  xattr -cr "$edir" 2>/dev/null
+  tops="$(find "$edir" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+  [ "$tops" -eq 1 ] || fail "unpack the engine folder" "$name must hold exactly one folder at its top, found $tops entries"
+  top="$(find "$edir" -mindepth 1 -maxdepth 1)"
+  [ -d "$top" ] || fail "unpack the engine folder" "$name holds a file at its top, not a folder"
+  [ -f "$top/engine-component.json" ] || fail "unpack the engine folder" "$(basename "$top") has no engine-component.json (is this an engine package?)"
+  rec OK "unpack the engine folder" "$name ($(basename "$top"))"
+
+  n="$(find_macho "$edir" | wc -l | tr -d ' ')"
+  [ "$n" -gt 0 ] || fail "engine folder" "no Mach-O program found in $name"
+  sign_tree "$edir" "DeepSeek engine"
+  update_engine_manifests "$edir" "DeepSeek engine"
+
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    codesign --verify --strict "$f" >>"$LOG" 2>&1 || { say "        bad signature: $f"; bad=$((bad + 1)); }
+  done < <(find_macho "$edir")
+  [ "$bad" -eq 0 ] || fail "codesign --verify --strict (DeepSeek engine)" "$bad file(s)"
+  rec OK "codesign --verify --strict (DeepSeek engine)" "every Mach-O"
+
+  # the signed program starts under the hardened runtime (a signing mistake kills it at once, exit 137); no model is loaded
+  bin="$(grep -o '"entrypoint"[^,]*' "$top/engine-component.json" 2>/dev/null | sed 's/.*: *"\(.*\)"/\1/' | head -n 1)"
+  if [ -n "$bin" ] && [ -x "$top/$bin" ]; then
+    run_timeout 30 "$top/$bin" --help >"$WORK/engine-help.txt" 2>&1; rc=$?
+    cat "$WORK/engine-help.txt" >>"$LOG"
+    if [ "$rc" -ge 128 ]; then fail "smoke: DeepSeek engine starts" "$bin was killed (exit $rc) under the hardened runtime"
+    else rec OK "smoke: DeepSeek engine starts" "$bin, no model loaded"; fi
+  else
+    rec SKIP "smoke: DeepSeek engine" "no entrypoint program found in engine-component.json"
+  fi
+
+  # pack again (modes kept, no AppleDouble files); Apple takes a zip, so the notarisation goes through a zip of the same folder
+  stem="${name%.tar.gz}"; stem="${stem%.tgz}"
+  case "$stem" in *-unsigned-folder) stem="${stem%-unsigned-folder}-folder" ;; *-folder) ;; *) stem="$stem-signed" ;; esac
+  mkdir -p "$WORK/final"
+  final="$WORK/final/$stem.tar.gz"
+  rm -f "$final"
+  notarize_zip="$WORK/$stem-notarize.zip"; rm -f "$notarize_zip"
+  zip_dir "$top" "$notarize_zip" || fail "pack the engine folder" "ditto failed"
+  ( cd "$edir" && COPYFILE_DISABLE=1 tar -czf "$final" "$(basename "$top")" ) || fail "pack the engine folder" "tar failed"
+  find "$edir" -name '._*' | grep -q . && fail "pack the engine folder" "AppleDouble files in the folder"
+  rec OK "pack the engine folder" "$(basename "$final")"
+
+  if [ "$DRY" -eq 0 ]; then
+    notarize "$notarize_zip" "engine"
+    rec INFO "staple the engine folder" "not possible for bare programs; Apple holds the ticket online"
+  else
+    rec INFO "notarise the engine folder" "skipped in a dry run"
+  fi
+  deliver "$final" "$src"
+}
+
 # ----------------------------------------------------------------------------------------------------------------- run
 if [ -n "$INPUT" ]; then process_app; fi
 if [ -n "$TERMINAL" ]; then process_terminal; fi
+if [ -n "$ENGINE" ]; then process_engine; fi
 finish 0

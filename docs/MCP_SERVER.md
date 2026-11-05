@@ -1,13 +1,14 @@
 # Strata's MCP server: let your AI assistant install and run Strata
 
-`tools/strata_mcp.py` is an [MCP](https://modelcontextprotocol.io) server for the AI assistant you already use
-(Claude Code, Claude Desktop, Cursor, VS Code, Codex ...). Add it once, then ask in plain words:
+This page is for people who use an AI assistant and want it to install, start, stop and check Strata. `tools/strata_mcp.py`
+is an [MCP](https://modelcontextprotocol.io) server for the assistant you already use (Claude Code, Claude Desktop,
+Cursor, VS Code, Codex ...). Add it once ([Quick start](#add-it)), then ask in plain words:
 
 - "Install Strata for this PC."
 - "Start Strata." / "Stop Strata."
 - "Is Strata running? How much VRAM does it use?"
 - "Which Strata model fits my PC?"
-- "Strata didn't start - what does the log say?"
+- "Strata didn't start. What does the log say?"
 - "How fast is Strata on this PC?" (a short speed test)
 - "How do I connect Open WebUI / the OpenAI SDK / Claude Code to Strata?"
 
@@ -20,6 +21,9 @@ It is not the same thing as [Tools from MCP servers](DETAILS.md#tools-from-mcp-s
 direction: *your assistant* manages Strata.
 
 ## Add it
+
+This is an optional **source-checkout tool**. It is not required to install the released app or Terminal.
+For normal agent-assisted installation, use [AI_SETUP.md](AI_SETUP.md).
 
 You need a copy of Strata: the zip from GitHub, or `git clone https://github.com/Niko1221/Strata`. Below,
 `C:\Users\you\Strata` (Windows) and `/home/you/Strata` (Linux) stand for that folder. Use `python3` on Linux. On
@@ -110,9 +114,10 @@ The command is `python <Strata folder>/tools/strata_mcp.py`. The transport is st
 | Tool | What it does | Arguments (all optional) |
 | --- | --- | --- |
 | `strata_status` | Whether a model is running: the model, engine version, context, busy or idle, VRAM and RAM in use. What is installed: models, start scripts, engine version, data folder, downloads. An install in progress. This PC's hardware: OS, CPU, RAM, GPUs, page file, free disk. The model and context setup recommends for this PC. | `port`, `hardware` (true/false) |
-| `strata_models` | Every family and size setup offers, with download size, RAM needed, whether it fits this PC, and whether it is installed. Also the context lengths and the recommendation. | - |
-| `strata_install` | Runs setup without questions, in the background (see below). Without `confirm: true` it only returns the plan. A second call shows the progress. `cancel: true` stops the install. | `family` (qwen, swift, coder, unsloth), `model` (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, IQ1_M, UD-IQ4_XS, UD-Q4_K_XL), `context` (8192 ... 524288), `vision` (no, yes, gpu, cpu), `kv` (int8, q4_0, k8v4), `gpu` (a number) or `gpus` ("0,2", "all"), `backend` (auto, cuda, hip), `low_ram`, `port`, `data_dir`, `confirm`, `cancel` |
-| `strata_start` | Starts an installed model in the background and waits until it answers. If it is not ready after `wait_seconds` (default 50), it returns "loading". | `model` (an id from `strata_status`, e.g. `q2_0`, `coder-iq1_m`; default: the most recently used), `port`, `gpu`, `wait_seconds` (0-600) |
+| `strata_models` | Every family and size setup offers (qwen, swift, coder, unsloth, gyro, nvfp4, and Qwen3.6-35B-A3B), with download size, RAM needed, whether it fits this PC, and whether it is installed. Also the context lengths and the recommendation. | - |
+| `strata_remove` | Deletes an installed model's own files (GGUFs, pack folder, run config) and nothing another installed model still uses. Without `confirm: true` it only returns the plan. Stop the model first. | `model` (required), `confirm` |
+| `strata_install` | Runs setup without questions, in the background (see below). Without `confirm: true` it only returns the plan. A second call shows the progress. `cancel: true` stops the install. | `family` and `model` (the ones `strata_models` lists), `context` (1024 ... 2097152; usual sizes 8192 ... 524288), `vision` (no, yes, gpu, cpu), `kv` (int8, q4_0, k8v4), `gpu` (a number) or `gpus` ("0,2", "all"), `backend` (auto, cuda, hip), `low_ram` (auto, on, off, resident, mmap), `port`, `data_dir`, `gguf_dir` (a folder with the model's GGUF files, checked and not downloaded again), `confirm`, `cancel` |
+| `strata_start` | Starts an installed model in the background and waits until it answers. If it is not ready after `wait_seconds` (default 50), it returns "loading". | `model` (an id from `strata_status`, e.g. `q2_0`, `coder-iq1_m`, `swift-iq3_xxs`; default: the most recently used), `port`, `gpu`, `wait_seconds` (0-600) |
 | `strata_stop` | Unloads the model through the server's own API, then ends the server it started. | `port`, `force` |
 | `strata_logs` | The last lines of the server log, the engine log or the setup log. | `source` (server, engine, setup), `model`, `lines` (1-500) |
 | `strata_benchmark` | Sends a short fixed request (greedy, thinking off) and reports output and prompt tokens/s. | `port`, `max_tokens` (16-512) |
@@ -130,7 +135,7 @@ Every result is JSON with a one-line `summary`. It is sent both as text and as M
 - the context setup recommends for the GPU's VRAM;
 - pictures on where the model can read them (the reader runs on the CPU under 24 GB of VRAM and on the GPU from 24 GB, on NVIDIA and AMD cards; a Mac reads on its GPU).
 
-The first call returns the plan: the download size (58-111 GB), the free disk space, the RAM check, and the exact
+The first call returns the plan: the download size, the free disk space, the RAM check, and the exact
 setup command. The assistant should show you the plan and call again with `confirm: true` once you agree.
 
 It then runs the same steps `START-HERE.bat` / `setup.sh` run:
@@ -164,7 +169,7 @@ VRAM and pinned RAM itself, as when you close the window. Then the server ends:
 
 While a request is running, the tool refuses unless you pass `force: true`.
 
-**Status.** The tool reads `GET /health`, `/v1/status`, `/status` and, on older servers, `/metrics` on 127.0.0.1.
+**Status.** The tool reads `GET /health`, `/v1/status`, `/status` and `/metrics` on 127.0.0.1.
 If a config of the folder sets an `api_key`, the tool sends that key with its own requests. It never shows the key.
 
 ## Safety

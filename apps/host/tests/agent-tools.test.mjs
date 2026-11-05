@@ -15,7 +15,7 @@ import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
 import { resolveHarness } from '../server/agent/harness-runtime.mjs';
 import { buildProfile, GATE_PLUGIN } from '../server/agent/profile.mjs';
 import { STANDARD_PLUGIN_IDS, REMOVED_PLUGIN_IDS, standardPreset } from '../server/agent/preset.mjs';
-import { isReadOnlyShell, manualDecision, READ_ONLY_TOOLS } from '../server/agent/plugins/strata-gate.mjs';
+import { isReadOnlyShell, manualDecision, maskQuotes, READ_ONLY_TOOLS } from '../server/agent/plugins/strata-gate.mjs';
 import { plainToolError, withPlain } from '../server/agent/events.mjs';
 
 const HARNESS = process.env.STRATA_HARNESS_DIR;
@@ -33,6 +33,42 @@ test('the gate: only commands that provably just look are allowed without a ques
     assert.equal(isReadOnlyShell(bad), false, bad);
   }
   assert.equal(isReadOnlyShell('x'.repeat(700)), false, 'a long command is never trusted');
+});
+
+test('the gate: quoted text is data, so an & ( ) ; { } in a quoted path does not make a look-only command ask (2026-10-22)', () => {
+  for (const ok of [
+    'Get-ChildItem "C:\\Users\\AI-Server\\Downloads\\GUI Q&A" | Select-Object -First 5 Name',
+    'Get-Content "C:\\Users\\AI-Server\\Downloads\\GUI Q&A\\a.txt"',
+    "Get-ChildItem 'C:\\Users\\x\\Notes (old) {draft}; v2'",
+    'Select-String -Path a.txt "a|b"',
+    'Select-String needle "C:\\x\\a & b.txt" | Measure-Object',
+    'git log --oneline "docs/Q&A.md"',
+    'cat "my file (1).txt"',
+    "Get-ChildItem 'it''s here'",
+  ]) assert.equal(isReadOnlyShell(ok), true, ok);
+  // Quoting does not hide anything that acts: outside the quotes the same characters still ask, and inside double quotes an expansion does.
+  for (const bad of [
+    'Get-ChildItem C:\\Q&A',
+    'Get-ChildItem "C:\\a" ; Remove-Item x',
+    'Get-ChildItem "C:\\a" & calc',
+    'Get-ChildItem "C:\\a" > out.txt',
+    'Get-ChildItem "$env:USERPROFILE"',
+    'Get-ChildItem "$(whoami)"',
+    'Get-ChildItem "a`b"',
+    "Get-ChildItem 'unterminated",
+    'Get-ChildItem "unterminated',
+    'git diff "--output=out.txt"',
+    'git diff --out"put"=out.txt',
+    'git diff --"output"=out.txt',
+    'Get-Content "a"b',
+    '"Remove-Item" x',
+    'Set-Content "a.txt" "x"',
+    'Get-ChildItem "a" | Remove-Item',
+    'curl "http://x"',
+  ]) assert.equal(isReadOnlyShell(bad), false, bad);
+  assert.equal(maskQuotes('Get-ChildItem "C:\\Q&A" | Select-Object Name'), 'Get-ChildItem "_" | Select-Object Name');
+  assert.equal(maskQuotes("echo 'a' \"b\""), 'echo "_" "_"');
+  assert.equal(maskQuotes('echo "$HOME"'), null);
 });
 
 test('the gate: every tool outside the read-only list asks, including unknown and connected ones', () => {
@@ -101,12 +137,12 @@ async function rig(t) {
 const cards = frames => frames.filter(f => f.type === 'agent-tool').map(f => f.tool);
 const last = frames => cards(frames).at(-1);
 
-test('the agent is offered exactly these tools: everything useful including web search (no key needed), no scheduler, no unanswerable question', { skip }, async (t) => {
+test('the agent is offered exactly these tools: everything useful including web search (no key needed), no scheduler, and the question tool the app can answer', { skip }, async (t) => {
   const r = await rig(t);
   await r.run('inv', 'SCRIPT:echo hi');
   const offered = [...r.worker.requests].reverse().find(q => q.toolNames.length)?.toolNames.sort();
-  assert.deepEqual(offered, ['create_goal', 'edit', 'get_goal', 'glob', 'grep', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'list_subagent_models', 'present', 'pwsh', 'read', 'read_image', 'send_message', 'skill', 'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_fetch', 'web_search', 'workflow', 'working_directory', 'write'].sort());
-  assert.ok(!offered.some(n => n.startsWith('schedule_')) && offered.includes('web_search') && !offered.includes('ask_user_question') && !offered.includes('exit_plan_mode'));
+  assert.deepEqual(offered, ['ask_user_question', 'create_goal', 'edit', 'get_goal', 'glob', 'grep', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'list_subagent_models', 'present', 'pwsh', 'read', 'read_image', 'send_message', 'skill', 'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_fetch', 'web_search', 'workflow', 'working_directory', 'write'].sort());
+  assert.ok(!offered.some(n => n.startsWith('schedule_')) && offered.includes('web_search') && offered.includes('ask_user_question') && !offered.includes('exit_plan_mode'));
 });
 
 test('a tool from each family runs and shows a card the page can render', { skip }, async (t) => {
@@ -237,7 +273,8 @@ test('the output budget is not the old 8192, and the Reasoning menu reaches the 
   const off = await ask('think-off', 'Off');
   assert.equal(ctk(off).enable_thinking, false); assert.equal(ctk(off).reasoning_effort, undefined);
   assert.equal(off.enable_thinking, undefined, 'a top-level enable_thinking is the field the Strata server ignores');
-  assert.ok(off.max_completion_tokens === 19660, `budget ${off.max_completion_tokens} (half the window, at most 32K: never the old 8192, and room is left for the conversation to be compacted)`);
+  // The profile's budget (19,660 at 64K: what compaction sets aside for a reply) is the header the Harness reads; the request itself may produce half the window (AGENT-LOST).
+  assert.ok(off.max_completion_tokens === 32768, `ceiling ${off.max_completion_tokens} (half the window, at most 64K: never the old 8192, and a file written in one call is not cut at the 30 percent compaction reserves)`);
   const high = await ask('think-high', 'High');
   assert.equal(ctk(high).enable_thinking, true); assert.equal(ctk(high).reasoning_effort, 'high');
   const low = await ask('think-low', 'Low');

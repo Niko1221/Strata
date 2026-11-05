@@ -31,6 +31,10 @@
 #include <random>
 #include <string>
 #include <vector>
+#if defined(_MSC_VER)   // MSVC has no __builtin_popcount
+#include <intrin.h>
+#define __builtin_popcount(x) __popcnt((unsigned) (x))
+#endif
 
 using namespace strata::kernels::cpu;
 

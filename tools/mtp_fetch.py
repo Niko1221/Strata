@@ -29,6 +29,11 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from strata_control import tls  # noqa: E402
+
+tls.install()       # #3722: the operating system's certificates
+
 # #214: a fixed commit of the checkpoint (its `sha` from https://huggingface.co/api/models/Qwen/Qwen3.8-Flash-Next
 # on 2026-09-30), so every install reads the same tensors; STRATA_MTP_REVISION overrides it (e.g. main).  When the
 # repository no longer has it, reading stops (resolve_repo) unless STRATA_ALLOW_UNPINNED=1.

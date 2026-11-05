@@ -31,6 +31,32 @@ kernel void mtp_rms(device const float* x [[buffer(0)]], device const float* w [
     for (uint d = tid; d < a.n; d += 256) yr[d] = xr[d] * rs * w[d];
 }
 
+// mtp_rms with the row's NJ = n / 256 elements a thread loaded up front (the original's second loop stores y between the loads of the
+// next elements, so each iteration waited a memory latency): the same sum and the same products, in the same order.
+template <int NJ>
+kernel void mtp_rms_b(device const float* x [[buffer(0)]], device const float* w [[buffer(1)]], device float* y [[buffer(2)]],
+                      constant RmsArgs& a [[buffer(3)]], uint3 tg [[threadgroup_position_in_grid]],
+                      ushort tid [[thread_index_in_threadgroup]], ushort sg [[simdgroup_index_in_threadgroup]],
+                      ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float part[8];
+    device const float* xr = x + tg.x * a.n;
+    float xv[NJ], wv[NJ];
+    for (int j = 0; j < NJ; ++j) xv[j] = xr[tid + 256 * j];
+    for (int j = 0; j < NJ; ++j) wv[j] = w[tid + 256 * j];
+    float ss = 0.0f;
+    for (int j = 0; j < NJ; ++j) ss = fma(xv[j], xv[j], ss);
+    ss = simd_sum(ss);
+    if (lane == 0) part[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float tot = 0.0f;
+    for (int i = 0; i < 8; ++i) tot += part[i];
+    const float rs = rsqrt(tot / float(a.n) + a.eps);
+    device float* yr = y + tg.x * a.n;
+    for (int j = 0; j < NJ; ++j) yr[tid + 256 * j] = xv[j] * rs * wv[j];
+}
+template [[host_name("mtp_rms_b10")]] kernel decltype(mtp_rms_b<10>) mtp_rms_b<10>;
+template [[host_name("mtp_rms_b40")]] kernel decltype(mtp_rms_b<40>) mtp_rms_b<40>;
+
 struct XpArgs { uint n; uint n_tok; uint plane_tok; uint stride; };
 
 // one thread per 16 values of one row: row t at x + t * stride; out planes of plane_tok rows

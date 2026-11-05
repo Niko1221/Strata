@@ -96,22 +96,28 @@ test('item 7: tool rows say what happened in plain words, with what it was about
   }
 });
 
-test('item 8: starting a program that prints nothing is reported as started, plainly', () => {
+test('item 8 / T9: starting a program that prints nothing is reported as started, never as opened', () => {
   for (const command of ['Start-Process explorer.exe C:\\work', 'explorer.exe C:\\work', 'start notepad', 'Invoke-Item C:\\work\\a.pdf', 'ii .', 'xdg-open .', 'open .']) {
-    assert.match(outcomeText('pwsh', '(no output)', { command }), /^Started\./, command);
+    const said = outcomeText('pwsh', '(no output)', { command });
+    assert.match(said, /^The command finished without an error, so the program was started\./, command);
+    assert.match(said, /cannot confirm that a window or page actually opened/, command);
+    assert.ok(!/was opened|is open/i.test(said), command);
   }
   assert.match(outcomeText('pwsh', '(no output)', { command: 'New-Item x.txt | Out-Null' }), /finished without any error/, 'other silent commands keep their wording');
   assert.equal(outcomeText('pwsh', 'hello', { command: 'echo hello' }), 'hello', 'a command that printed something shows it');
   const p = new TurnProjector({ startedAt: 0 });
   p.consume(ev('tool/call', { callId: 'e1', name: 'pwsh', arguments: JSON.stringify({ command: 'Start-Process explorer.exe C:\\work' }) }));
   const res = p.consume(ev('tool/result', { message: { toolCallId: 'e1', content: [{ type: 'text', text: '(no output)' }] } }))[0].tool;
-  assert.match(res.result, /^Started\./); assert.equal(res.verb, 'Ran a command');
+  assert.match(res.result, /cannot confirm that a window or page actually opened/); assert.equal(res.verb, 'Ran a command');
 });
 
 test('item 7/10: our prompt has no internal terms and is short', () => {
   assert.ok(AGENT_PROMPT.length < 1600, `${AGENT_PROMPT.length} chars`);
   assert.doesNotMatch(AGENT_PROMPT, /DSH|DeepSeek|sandbox|isolated session|file policy|Harness/i);
-  assert.match(AGENT_PROMPT, /do not say you could not confirm/i);
+  // O6 / #3576: the prompt points at the present tool for local files and never tells the model to claim a window opened
+  assert.match(AGENT_PROMPT, /use the present tool/);
+  assert.match(AGENT_PROMPT, /Never say a window opened, a page rendered/);
+  assert.doesNotMatch(AGENT_PROMPT, /say plainly that it is open|do not say you could not confirm/i);
 });
 
 test('items 3, 7, 10: what the agent sends the model is small, plain, and carries Thinking Off', { skip }, async t => {

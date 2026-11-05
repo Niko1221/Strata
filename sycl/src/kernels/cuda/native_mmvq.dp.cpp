@@ -25,6 +25,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
@@ -32,6 +33,7 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
+#include "strata/kernels/iq4_lut.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "s26_tsum.dp.hpp"
 
@@ -1737,12 +1739,12 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         const sycl::range<3> t(1, WARPS, WARP);
 #define STRATA_Q6PF(UU) if (pf == UU && q6k_a2()) { \
-            s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_pf_a2, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<UU>>>( \
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_pf_a2, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<UU>>>( \
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * t, t), \
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_pf_kernel<NCOLS, UU, true>(w, x, y, n_in, n_out); }); \
             return; } \
         if (pf == UU) { \
-            s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_pf, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<UU>>>( \
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_pf, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<UU>>>( \
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * t, t), \
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_pf_kernel<NCOLS, UU>(w, x, y, n_in, n_out); }); \
             return; }
@@ -1752,8 +1754,23 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         if constexpr (NCOLS > 1) {
-            if (mmvq_large_grf(s)) {
-                s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2_grf256, dpct_kernel_scalar<NCOLS>>>(
+            static const bool shape_grf = strata::bm_default_on("STRATA_Q6_SHAPE_GRF", s->get_device(), false);
+            const bool eligible = (n_in == 6144 && n_out == 2560) ||
+                (n_in == 2560 && (n_out == 512 || n_out == 640)) ||
+                (NCOLS >= 3 && n_in == 2560 && n_out == 6144) ||
+                (NCOLS >= 4 && n_in == 2560 && (n_out == 10240 || n_out == 12288));
+            const bool bounded_grf = shape_grf && eligible &&
+                std::getenv("STRATA_MMVQ_LARGE_GRF") == nullptr &&
+                strata::intel_gpu_gen(s->get_device()) == strata::IntelGpuGen::Battlemage;
+            if (bounded_grf) {
+                static const bool note = [] {
+                    std::fprintf(stderr, "strata: shape-guarded Q6_K large-GRF dispatch enabled\n");
+                    return true;
+                }();
+                (void) note;
+            }
+            if (mmvq_large_grf(s) || bounded_grf) {
+                strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2_grf256, dpct_kernel_scalar<NCOLS>>>(
                     sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
                     sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
                     [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
@@ -1762,7 +1779,7 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
                 return;
             }
         }
-        s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2, dpct_kernel_scalar<NCOLS>>>(
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2, dpct_kernel_scalar<NCOLS>>>(
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
                 native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, (int) sizeof(Q6KBlock), true>(w, x, y, n_in, n_out);
@@ -1772,7 +1789,7 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     if (rpw == 1 && mmvq_sg16(false, n_out)) {
         constexpr int NWG = WARPS * WARP / 16;
         const unsigned blocks = unsigned((std::size_t(n_out) + NWG - 1) / NWG);
-        s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide16, dpct_kernel_scalar<NCOLS>>>(
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide16, dpct_kernel_scalar<NCOLS>>>(
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, NWG, 16), sycl::range(1, NWG, 16)),
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1, 16>(w, x, y, n_in, n_out); });
         return;
@@ -1782,19 +1799,19 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
 #define STRATA_Q6W(RP) if (rpw == RP) { \
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS * RP - 1) / (WARPS * RP)); \
         if (q6k_a2()) { \
-            s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2r, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2r, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)), \
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { \
                     native_mmvq_q6k_wide_kernel<NCOLS, RP, WARP, (int) sizeof(Q6KBlock), true>(w, x, y, n_in, n_out); }); \
             return; } \
-        s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)), \
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, RP>(w, x, y, n_in, n_out); }); \
         return; }
     STRATA_Q6W(1) STRATA_Q6W(2) STRATA_Q6W(4)
 #undef STRATA_Q6W
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-    s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide1, dpct_kernel_scalar<NCOLS>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide1, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1>(w, x, y, n_in, n_out); });
 }
@@ -1874,7 +1891,13 @@ struct WideQ5K {
     static A act(const Q81Block* xb, int g) { return WideQ4K::act(xb, g); }
     static float dot(const W& r, const A& v) { return WideQ4K::dot(r, v); }
 };
+#ifndef STRATA_IQ4_LUT_SWAR
+#define STRATA_IQ4_LUT_SWAR 0
+#endif
 __dpct_inline__ uint32_t iq4_lut4(uint32_t q4) {   // four nibbles -> four codebook bytes, codebook in registers
+#if STRATA_IQ4_LUT_SWAR
+    return iq4_lut4_swar(q4);
+#else
     constexpr uint32_t t0 = 0xBFAD9881u, t1 = 0xF6EADDCFu, t2 = 0x26190D01u, t3 = 0x71594535u;
     uint32_t r = 0;
 #pragma unroll
@@ -1884,6 +1907,7 @@ __dpct_inline__ uint32_t iq4_lut4(uint32_t q4) {   // four nibbles -> four codeb
         r |= ((t >> (8 * (n & 3))) & 0xFF) << (8 * i);
     }
     return r;
+#endif
 }
 struct WideIQ4XS {
     using Block = IQ4XSBlock;
@@ -1985,9 +2009,28 @@ template <typename F, int NCOLS>
 void launch_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-#define STRATA_WKR(RP) if (wide_k_rpw() == RP) { \
+    int rpw = wide_k_rpw();
+    static const bool shape_reuse = strata::bm_default_on("STRATA_MMVQ_SHAPE_RPW", s->get_device());
+    if (shape_reuse && std::getenv("STRATA_MMVQ_WIDE_K_RPW") == nullptr &&
+        strata::intel_gpu_gen(s->get_device()) == strata::IntelGpuGen::Battlemage) {
+        bool eligible = false;
+        if constexpr (std::is_same_v<F, WideQ4K>)
+            eligible = (n_in == 2560 && (n_out == 6144 || n_out == 10240 || n_out == 12288)) ||
+                       (n_in == 6144 && n_out == 2560);
+        if constexpr (std::is_same_v<F, WideQ5K>)
+            eligible = (n_in == 2560 && n_out == 12288) || (n_in == 6144 && n_out == 2560);
+        if (eligible && NCOLS <= 4) {
+            rpw = 2;
+            static const bool note = [] {
+                std::fprintf(stderr, "strata: shape-guarded Q4_K/Q5_K dense row reuse enabled\n");
+                return true;
+            }();
+            (void) note;
+        }
+    }
+#define STRATA_WKR(RP) if (rpw == RP) { \
         const unsigned b = unsigned((std::size_t(n_out) + WARPS * RP - 1) / (WARPS * RP)); \
-        s->parallel_for<dpct_kernel_name<class native_mmvq_wide_rpw, F, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_wide_rpw, F, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
             sycl::nd_range<3>(sycl::range(1, 1, b) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)), \
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_rpw_kernel<F, NCOLS, RP>(w, x, y, n_in, n_out); }); \
         return; }
@@ -1996,14 +2039,14 @@ void launch_wide(const void* weights, const void* x_q8_1, float* y, int n_in, in
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
     if constexpr (NCOLS > 1) {
         if (mmvq_large_grf(s)) {
-            s->parallel_for<dpct_kernel_name<class native_mmvq_wide_grf256, F, dpct_kernel_scalar<NCOLS>>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_wide_grf256, F, dpct_kernel_scalar<NCOLS>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
                 sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
             return;
         }
     }
-    s->parallel_for<dpct_kernel_name<class native_mmvq_wide, F, dpct_kernel_scalar<NCOLS>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_wide, F, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
 }
@@ -2092,7 +2135,7 @@ void launch_wide32(const void* weights, const void* x_q8_1, float* y, int n_in, 
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-    s->parallel_for<dpct_kernel_name<class native_mmvq_wide32, F, dpct_kernel_scalar<NCOLS>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_wide32, F, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide32_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
 }
@@ -2122,7 +2165,7 @@ void launch_q6k_wide224(const void* weights, const void* x_q8_1, float* y, int n
     const auto* w = static_cast<const Q6KBlock*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-    s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide224, dpct_kernel_scalar<NCOLS>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide224, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, 224>(w, x, y, n_in, n_out); });
 }
@@ -2133,7 +2176,7 @@ void launch_rowwarp(const void* weights, const void* x_q8_1, float* y, int n_in,
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS * RPW - 1) / (WARPS * RPW));
-    s->parallel_for<dpct_kernel_name<class native_mmvq_rowwarp, F, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RPW>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_rowwarp, F, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RPW>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_rowwarp_kernel<F, NCOLS, RPW>(w, x, y, n_in, n_out); });
 }
@@ -2154,7 +2197,7 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
         constexpr int NW = NCOLS <= 4 ? 4 : 2;
         constexpr int ROWS = 1;   // SYCL port: one row per work-group (more groups: the kernel is latency-bound here)
         const unsigned blocks = unsigned((std::size_t(n_out) + ROWS - 1) / ROWS);
-        s->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
             class native_mmvq_multi_kernel_646c3d, F,
             dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<NW>,
             dpct_kernel_scalar<2>>>(
@@ -2171,13 +2214,13 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
         const sycl::range<3> t16(1, NW16, 16);
         if (n_in / F::DIV < F::BPI) {
             const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-            s->parallel_for<dpct_kernel_name<class native_mmvq_multi16_small, F, dpct_kernel_scalar<NCOLS>>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_multi16_small, F, dpct_kernel_scalar<NCOLS>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * t16, t16),
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {
                     native_mmvq_multi_kernel<F, NCOLS, NW16, WARPS, false, false, 16>(w, x, y, n_in, n_out);
                 });
         } else {
-            s->parallel_for<dpct_kernel_name<class native_mmvq_multi16, F, dpct_kernel_scalar<NCOLS>>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_multi16, F, dpct_kernel_scalar<NCOLS>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_out)) * t16, t16),
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {
                     native_mmvq_multi_kernel<F, NCOLS, NW16, 1, false, false, 16>(w, x, y, n_in, n_out);
@@ -2194,7 +2237,7 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
     }();
     if (rows1 && n_in / F::DIV >= F::BPI) {
         if (s26_tsum_on()) {
-            s->parallel_for<dpct_kernel_name<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
                 class native_mmvq_multi_kernel_2a7dda, F,
                 dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<WARPS>,
                 dpct_kernel_scalar<1>, dpct_kernel_scalar<true>>>(
@@ -2204,7 +2247,7 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
                     native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, true>(w, x, y, n_in, n_out);
                 });
         } else {
-            s->parallel_for<dpct_kernel_name<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
                 class native_mmvq_multi_kernel_23124e, F,
                 dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<WARPS>,
                 dpct_kernel_scalar<1>, dpct_kernel_scalar<false>>>(
@@ -2219,7 +2262,7 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
     constexpr int ROWS = 2;
     const unsigned blocks = unsigned((std::size_t(n_out) + ROWS - 1) / ROWS);
     if (s26_tsum_on()) {
-        s->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
             class native_mmvq_multi_kernel_279861, F,
             dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<WARPS>,
             dpct_kernel_scalar<ROWS>, dpct_kernel_scalar<true>>>(
@@ -2229,7 +2272,7 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
                 native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS, true>(w, x, y, n_in, n_out);
             });
     } else {
-        s->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
             class native_mmvq_multi_kernel_75e8ad, F, dpct_kernel_scalar<NCOLS>,
             dpct_kernel_scalar<WARPS>, dpct_kernel_scalar<ROWS>,
             dpct_kernel_scalar<false>>>(
@@ -2399,7 +2442,7 @@ void small_mmvq(const void* weights, const void* x_q8_1, float* y,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 auto iq4nl_values_ptr_ct1 = iq4nl_values.get_ptr();
 
                 cgh.parallel_for<dpct_kernel_name<
@@ -2426,7 +2469,7 @@ void small_mmvq(const void* weights, const void* x_q8_1, float* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             auto iq4nl_values_ptr_ct1 = iq4nl_values.get_ptr();
 
             cgh.parallel_for<dpct_kernel_name<
@@ -2596,7 +2639,7 @@ void q8_packed_launch(const Q8Packed &w, const Q81Block *x, float *y,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->parallel_for<dpct_kernel_name<class native_q8_0_packed_kernel_851f07,
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_q8_0_packed_kernel_851f07,
                                          dpct_kernel_scalar<NCOLS>,
                                          dpct_kernel_scalar<true>>>(
             sycl::nd_range<3>(sycl::range(1, 1, unsigned(grid)) *
@@ -2800,7 +2843,7 @@ void q6_packed_launch(const Q6Packed &w, const Q81Block *x, float *y,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->parallel_for<dpct_kernel_name<class native_q6_k_packed_kernel_ee650b,
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_q6_k_packed_kernel_ee650b,
                                          dpct_kernel_scalar<NCOLS>,
                                          dpct_kernel_scalar<true>>>(
             sycl::nd_range<3>(sycl::range(1, 1, unsigned(grid)) *
@@ -2949,7 +2992,7 @@ void q6_planar_launch(const Q6Planar& w, const Q81Block* x, float* y, dpct::queu
     const int n_in = w.n_in, n_out = w.n_out;
     if constexpr (NCOLS > 1) {   // same rule as the GGUF-layout wide kernel (#2207): the multi-column kernel spills at 128 GRF on Alchemist
         if (mmvq_large_grf(s)) {
-            s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar_grf256, dpct_kernel_scalar<NCOLS>>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar_grf256, dpct_kernel_scalar<NCOLS>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
                 sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
@@ -2958,7 +3001,7 @@ void q6_planar_launch(const Q6Planar& w, const Q81Block* x, float* y, dpct::queu
             return;
         }
     }
-    s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar, dpct_kernel_scalar<NCOLS>>>(
+    strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
             native_mmvq_q6k_planar_kernel<NCOLS>(ql, qh, sc, d, x, y, n_in, n_out);
@@ -3088,7 +3131,7 @@ void* native_q6_k_planar_adopt(void* weights, int n_in, int n_out, const char* w
     const uint8_t* src = static_cast<const uint8_t*>(weights);
     uint8_t* base = static_cast<uint8_t*>(dev);
     const std::size_t o_qh = l.o_qh, o_sc = l.o_sc, o_d = l.o_d;
-    q.parallel_for(sycl::range<1>(nb), [=](sycl::id<1> id) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->parallel_for(sycl::range<1>(nb), [=](sycl::id<1> id) {
         const std::size_t b = id[0];
         const uint16_t* s16 = reinterpret_cast<const uint16_t*>(src + b * 210);
         uint16_t* qlo = reinterpret_cast<uint16_t*>(base + b * 128);
@@ -3128,7 +3171,7 @@ void* native_q6_k_planar_gather(const void* planar, int n_in, const int32_t* row
     const Q6Planar src = found->second;
     uint8_t* base = static_cast<uint8_t*>(dev);
     const std::size_t o_qh = l.o_qh, o_sc = l.o_sc, o_d = l.o_d;
-    q.parallel_for(sycl::range<1>(nb), [=](sycl::id<1> id) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->parallel_for(sycl::range<1>(nb), [=](sycl::id<1> id) {
         const std::size_t b = id[0];
         const std::size_t i = b / nbr, j = b - i * nbr;
         const std::size_t sb = std::size_t(rows_dev[i]) * nbr + j;
@@ -3368,8 +3411,8 @@ void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols, voi
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<
                 dpct_kernel_name<class native_quantize_q8_1_kernel_b480d2>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
                                       sycl::range(1, 1, QUANT_THREADS),
@@ -3401,8 +3444,8 @@ void native_swiglu_quantize_q8_1(const float* gate, const float* up, void* x_q8_
                 ->get_device(),
             {sycl::aspect::fp16});
 
-        ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<
                 class native_swiglu_quantize_q8_1_kernel_85e13e>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
                                       sycl::range(1, 1, QUANT_THREADS),
@@ -3448,7 +3491,7 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                 sycl::ext::oneapi::experimental::use_root_sync};
             dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class native_q5_k_mmvq_kernel_b1d5a2,
                                  dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * threads, threads),
@@ -3468,7 +3511,7 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->parallel_for<dpct_kernel_name<class native_q5_k_mmvq_kernel_938b09,
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_q5_k_mmvq_kernel_938b09,
                                          dpct_kernel_scalar<false>>>(
             sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_out)) * threads,
                               threads),
@@ -3523,7 +3566,7 @@ void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class native_q2_0_mmvq_kernel_dec305,
                                  dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * threads, threads),
@@ -3542,7 +3585,7 @@ void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->parallel_for<dpct_kernel_name<class native_q2_0_mmvq_kernel_ef5f5c,
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_q2_0_mmvq_kernel_ef5f5c,
                                          dpct_kernel_scalar<false>>>(
             sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_out)) * threads,
                               threads),
@@ -3596,7 +3639,7 @@ void native_q3_k_mmvq(const void* weights, const void* x_q8_1, float* y,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class native_q3_k_mmvq_kernel_208be9,
                                  dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * threads, threads),
@@ -3615,7 +3658,7 @@ void native_q3_k_mmvq(const void* weights, const void* x_q8_1, float* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->parallel_for<dpct_kernel_name<class native_q3_k_mmvq_kernel_926817,
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_q3_k_mmvq_kernel_926817,
                                          dpct_kernel_scalar<false>>>(
             sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_out)) * threads,
                               threads),
@@ -3672,7 +3715,7 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 auto iq4nl_values_ptr_ct1 = iq4nl_values.get_ptr();
 
                 cgh.parallel_for<
@@ -3699,7 +3742,7 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             auto iq4nl_values_ptr_ct1 = iq4nl_values.get_ptr();
 
             cgh.parallel_for<
@@ -3762,7 +3805,7 @@ void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                 sycl::ext::oneapi::experimental::use_root_sync};
             dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class native_q4_k_mmvq_kernel_da128d,
                                  dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * threads, threads),
@@ -3782,7 +3825,7 @@ void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->parallel_for<dpct_kernel_name<class native_q4_k_mmvq_kernel_b29f4f,
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_q4_k_mmvq_kernel_b29f4f,
                                          dpct_kernel_scalar<false>>>(
             sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_out)) * threads,
                               threads),
@@ -3867,7 +3910,7 @@ void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<
                 dpct_kernel_name<class native_q6_k_mmvq_kernel_4d887f,
                                  dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * threads, threads),
@@ -3886,7 +3929,7 @@ void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        s->parallel_for<dpct_kernel_name<class native_q6_k_mmvq_kernel_19484e,
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_q6_k_mmvq_kernel_19484e,
                                          dpct_kernel_scalar<false>>>(
             sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_out)) * threads,
                               threads),
@@ -3948,7 +3991,7 @@ void q8_0_pair_launch(const Q80Block *w1, const Q80Block *w2, const Q81Block *x,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
             class native_mmvq_multi_kernel_ab153b, F, dpct_kernel_scalar<NCOLS>,
             dpct_kernel_scalar<WARPS>, dpct_kernel_scalar<1>,
             dpct_kernel_scalar<true>, dpct_kernel_scalar<true>>>(
@@ -3970,7 +4013,7 @@ void q8_0_pair_launch(const Q80Block *w1, const Q80Block *w2, const Q81Block *x,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->parallel_for<dpct_kernel_name<
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<
             class native_mmvq_multi_kernel_50d9c5, F, dpct_kernel_scalar<NCOLS>,
             dpct_kernel_scalar<WARPS>, dpct_kernel_scalar<1>,
             dpct_kernel_scalar<false>, dpct_kernel_scalar<true>>>(

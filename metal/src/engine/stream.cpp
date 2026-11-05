@@ -63,13 +63,15 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
     fcntl(fd_, F_NOCACHE, 1);
     fcntl(fd_, F_RDAHEAD, 0);
     lay_.resize(NL);
+    if (const gguf::Tensor* g0 = f.find("blk.0.ffn_gate_exps.weight"); g0 && g0->shape.size() >= 3 && g0->shape[2] > 0 && g0->shape[2] <= NE)
+        ne_ = (int) g0->shape[2];
     for (int l = 0; l < NL; ++l) {
         const std::string b = "blk." + std::to_string(l) + ".";
         const gguf::Tensor* g = f.find(b + "ffn_gate_exps.weight");
         const gguf::Tensor* u = f.find(b + "ffn_up_exps.weight");
         const gguf::Tensor* d = f.find(b + "ffn_down_exps.weight");
         if (!g || !u || !d) { err = "metal stream: layer " + std::to_string(l) + " has no routed experts"; return false; }
-        lay_[(size_t) l] = {g->offset, g->bytes / NE, u->offset, u->bytes / NE, d->offset, d->bytes / NE, -1};
+        lay_[(size_t) l] = {g->offset, g->bytes / ne_, u->offset, u->bytes / ne_, d->offset, d->bytes / ne_, -1};
     }
     // the expert-contiguous copy beside the GGUF, when it is this GGUF's (sizes in its header) and its first and
     // last experts match the GGUF's bytes
@@ -88,7 +90,7 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
             uint32_t ver = 0, nl = 0, ne = 0;
             uint64_t src = 0;
             std::memcpy(&ver, h + 4, 4); std::memcpy(&nl, h + 8, 4); std::memcpy(&ne, h + 12, 4); std::memcpy(&src, h + 16, 8);
-            ok = ok && ver == 1 && nl == (uint32_t) NL && ne == (uint32_t) NE && src == (uint64_t) st.st_size;
+            ok = ok && ver == 1 && nl == (uint32_t) NL && ne == (uint32_t) ne_ && src == (uint64_t) st.st_size;
             for (int l = 0; ok && l < NL; ++l) {
                 const Lay& x = lay_[(size_t) l];
                 ok = t[(size_t) l * 4 + 1] == x.gs && t[(size_t) l * 4 + 2] == x.us && t[(size_t) l * 4 + 3] == x.ds;
@@ -97,7 +99,7 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
             if (ok) {   // spot check: layer 0's first and layer 47's last expert, every slice
                 for (const int l : {0, NL - 1}) {
                     const Lay& x = lay_[(size_t) l];
-                    const int e = l == 0 ? 0 : NE - 1;
+                    const int e = l == 0 ? 0 : ne_ - 1;
                     std::vector<uint8_t> a(x.gs + x.us + x.ds), b(a.size());
                     ok = ok && ::pread(cfd, a.data(), a.size(), (off_t) (off[(size_t) l] + (uint64_t) e * a.size())) == (ssize_t) a.size() &&
                          ::pread(fd_, b.data(), x.gs, (off_t) (x.g + (uint64_t) e * x.gs)) == (ssize_t) x.gs &&
@@ -380,11 +382,11 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         char magic[4];
         uint32_t h[5];
         if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "STRP", 4) == 0 && std::fread(h, 4, 5, f) == 5 &&
-            h[1] == (uint32_t) NL && h[2] == (uint32_t) NE) {
+            h[1] == (uint32_t) NL && h[2] == (uint32_t) ne_) {
             for (uint32_t i = 0; i < h[4]; ++i) {
                 uint16_t p[2];
                 if (std::fread(p, 2, 2, f) != 2) break;
-                if (p[0] < NL && p[1] < NE && !seen[(size_t) p[0] * NE + p[1]]) {
+                if (p[0] < NL && p[1] < ne_ && !seen[(size_t) p[0] * NE + p[1]]) {
                     seen[(size_t) p[0] * NE + p[1]] = 1;
                     rank.push_back({p[0], p[1]});
                 }
@@ -395,7 +397,7 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         std::fprintf(stderr, "strata metal stream: no expert profile at %s: the arena starts layer-interleaved\n", profile.c_str());
     }
     const size_t from_profile = rank.size();
-    for (int e = 0; e < NE; ++e)
+    for (int e = 0; e < ne_; ++e)
         for (int l = 0; l < NL; ++l)
             if (!seen[(size_t) l * NE + e]) rank.push_back({l, e});
     // the pool of each size class: at least min_slots (a prompt chunk's layer needs up to 512 at once), then the
@@ -580,7 +582,7 @@ void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
         const float* lg = pred + (size_t) t * NE;
         int top[32];
         int nt = 0;
-        for (int e = 0; e < NE; ++e) {
+        for (int e = 0; e < ne_; ++e) {
             if (nt < K) { top[nt++] = e; continue; }
             int m = 0;
             for (int j = 1; j < K; ++j) if (lg[top[j]] < lg[top[m]]) m = j;
@@ -694,7 +696,7 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
             bool any = false;
             std::lock_guard<std::mutex> g(mu_);
             const int ln = l + 1;
-            for (int e = 0; e < NE; ++e) {
+            for (int e = 0; e < ne_; ++e) {
                 if (where_[(size_t) (ln * NE + e)] >= 0) continue;
                 const int s = victim(lay_[(size_t) ln].cls);
                 if (s < 0) break;
@@ -733,7 +735,7 @@ uint8_t* ExpertStream::region(uint64_t bytes) {
             std::vector<int> stolen(cls_.size(), 0);
             for (int s : region_slots_) ++stolen[(size_t) cls_of(s)];
             bool tight = false;
-            for (size_t i = 0; i < cls_.size(); ++i) tight = tight || (cls_[i].n > 0 && cls_[i].n - stolen[i] < NE);
+            for (size_t i = 0; i < cls_.size(); ++i) tight = tight || (cls_[i].n > 0 && cls_[i].n - stolen[i] < ne_);
             if (tight) return standalone_region(bytes);
         }
         region_ = lo;

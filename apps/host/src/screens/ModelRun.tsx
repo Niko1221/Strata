@@ -1,5 +1,5 @@
 import { tr } from '../lib/i18n';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ActionError, Btn, Dialog, ErrorNotice, Icon, Select } from '../components/ui';
 import { Screen } from '../components/layout';
 import { DemoTest } from '../components/EngineExperience';
@@ -24,7 +24,7 @@ import { familyVersion, modelFamilies } from '../lib/model-versions';
 import { sizeGb } from '../lib/format';
 import { applyImageModel, getState, useLifecycle, loadRuntimeModel, loadVariant, pushToast, restartEngine, saveEngine, selectImageModel, setConfigDraft, useStore, validateEngine } from '../lib/store';
 import type { ImageModelChoice, RuntimeModels, RuntimeModel } from '../lib/types';
-import { useNative } from '../lib/native';
+import { useNative, nativeSettled, subscribeNative } from '../lib/native';
 import { NativeModels } from '../components/NativeModels';
 import { NativeLocalModel } from '../components/NativeLocalModel';
 import { parseLocation } from '../lib/router';
@@ -35,8 +35,12 @@ type Issue = {
 type RunStage = 'idle' | 'checking' | 'loading' | 'ready';
 export function ModelRunScreen() {
     const native = useNative();
+    const settled = useSyncExternalStore(subscribeNative, nativeSettled);
     const location = parseLocation(window.location.hash), entry = location.param;
     const [other, setOther] = useState(entry === 'local' || entry === 'local-import'), [importFirst, setImportFirst] = useState(entry === 'local-import');
+    // Before the engine's answer arrives the page would show the bundled Starter and then jump to the installed model (#3740): show a neutral placeholder instead.
+    if (!native && !settled)
+        return <div className="main__body"><div className="wrap stack" role="status" aria-label={tr("Loading…")}><div className="skel" style={{ height: 20, width: '60%' }}/><div className="skel" style={{ height: 20, width: '80%' }}/><div className="skel" style={{ height: 20, width: '70%' }}/></div></div>;
     if (native && other)
         return <NativeLocalModel onBack={() => { setOther(false); setImportFirst(false); }}/>;
     if (native && !other)

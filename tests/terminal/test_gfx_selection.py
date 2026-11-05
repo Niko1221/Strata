@@ -3,6 +3,7 @@ build, 0.1.46.1) then won over the rx9070 one (0.1.46). Selection must follow th
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from strata_control import engine_component as ec, feed as feedmod, updater
@@ -80,7 +81,11 @@ class Names(unittest.TestCase):
 class Detection(unittest.TestCase):
     def test_windows_without_hipinfo_reads_the_gfx_from_the_adapters(self):
         adapters = [{"vendor": "1002", "device": 0x7550, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0}]
-        with mock.patch.object(updater.os, "name", "nt"), mock.patch.object(updater.shutil, "which", return_value=None), \
+        # Keep pathlib on the host platform while both hardware probes model Windows.
+        windows = SimpleNamespace(name="nt")
+        with mock.patch.object(updater, "os", windows), mock.patch.object(ec, "os", windows), \
+                mock.patch.object(updater, "Path", return_value=SimpleNamespace(is_dir=lambda: False)), \
+                mock.patch.object(updater.shutil, "which", return_value=None), \
                 mock.patch.object(ec, "windows_display_adapters", return_value=adapters):
             self.assertEqual(updater._gfx_names(), ["gfx1201"])
             self.assertEqual(updater._amd_card_names(), ["AMD Radeon RX 9070 XT"])
@@ -89,6 +94,47 @@ class Detection(unittest.TestCase):
         with mock.patch.object(updater, "_gfx_names", return_value=[]), mock.patch.object(updater, "_amd_card_names", return_value=[]):
             got = updater.detect_hardware({ec.ENV_BACKEND: "hip-rx9070"})
         self.assertEqual((got["backend"], got["variant_wanted"]), ("hip", "rx9070"))
+
+
+class FeedStyleBackendName(unittest.TestCase):
+    """#4013: `hip-<package>` named the AMD package for `strata update` through STRATA_ENGINE_BACKEND only. As `--backend` it offered nothing,
+    and `strata launch` stopped with "STRATA_ENGINE_BACKEND='hip-rdna2' is not one of cpu, cuda, hip, metal, sycl"."""
+
+    def test_split_backend(self):
+        self.assertEqual(ec.split_backend("hip-rdna2"), ("hip", "rdna2"))
+        self.assertEqual(ec.split_backend(" HIP-RX9070 "), ("hip", "rx9070"))
+        self.assertEqual(ec.split_backend("hip"), ("hip", ""))
+        self.assertEqual(ec.split_backend("cuda"), ("cuda", ""))
+        self.assertEqual(ec.split_backend("hip-"), ("hip-", ""))
+        self.assertEqual(ec.split_backend("cuda-13"), ("cuda-13", ""))        # only the AMD family has package names
+        self.assertEqual(ec.split_backend(None), ("", ""))
+
+    def test_the_engine_start_takes_the_package_name_as_the_hip_family(self):
+        self.assertEqual(ec.detect_backend({ec.ENV_BACKEND: "hip-rdna2"}), ("hip", "environment"))
+        with self.assertRaisesRegex(ec.ComponentProblem, "is not one of"):
+            ec.detect_backend({ec.ENV_BACKEND: "cuda-13"})
+
+    def test_update_backend_option_takes_it_too(self):
+        import argparse
+        from strata_cli import update_cmd
+        seen = {}
+
+        class Stop(Exception):
+            pass
+
+        def context(**kw):
+            seen.update(kw["hardware"])
+            raise Stop
+
+        args = argparse.Namespace(components_dir="C:/nowhere", backend="hip-rdna2", output="json", model_config=None, wait=0, force=False,
+                                  app_version=None, check=True, feed=None, no_control=True, yes=True, components_command=None)
+        base = {"platform": WIN, "backend": "hip", "backend_source": "display adapters", "variant_wanted": ""}
+        with mock.patch.object(updater, "detect_hardware", return_value=dict(base)), mock.patch.object(updater, "Context", context):
+            try:
+                update_cmd.run(args)
+            except Stop:
+                pass
+        self.assertEqual((seen.get("backend"), seen.get("variant_wanted"), seen.get("backend_source")), ("hip", "rdna2", "requested"))
 
 
 if __name__ == "__main__":

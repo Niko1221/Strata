@@ -60,6 +60,7 @@ class RulesTest(unittest.TestCase):
         ctx = make_ctx(arch="gfx1201")
         bad = [({"--expert-cache": 0}, {}), ({"--kv-resident": 20480}, {}), ({"--pcie-frac": 0.75}, {}),
                ({"--spec": 6}, {}), ({"--spec": 2}, {}), ({"--lookup-chain": 4}, {}), ({"--adapt-every": 100000}, {}),
+               ({"--spec": 5}, {}),   # outside the tuner's values: still not tried (a saved preset may keep it, #3844)
                ({"--prefill": 512}, {}), ({"--ple-io": "ram"}, {}), ({}, {"STRATA_SH_STREAM": "1"}),
                ({}, {"STRATA_RDNA2_SGEMM": "all"}), ({}, {"STRATA_HIP_WMMA": "1"}), ({"--pool-workers": 8}, {})]
         for args, env in bad:

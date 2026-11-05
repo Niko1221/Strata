@@ -684,13 +684,14 @@ def start_engine(ref: str, target: Target, log_path: Path, log, timeout_s: float
     proc._strata_log = handle                              # closed by stop_engine
     log("starting the engine (the model load is not part of the benchmark time) ...")
     if not _start_wait(target, proc, timeout_s, log, log_path):
-        stop_engine(proc)
+        stuck = stop_engine(proc)
         tail = ""
         try:
             tail = log_path.read_text(encoding="utf-8", errors="replace")[-600:]
         except OSError:
             pass
-        raise ProfileError("the engine did not become ready" + (": " + tail.strip().splitlines()[-1] if tail.strip() else ""), 6)
+        raise ProfileError("the engine did not become ready" + (": " + tail.strip().splitlines()[-1] if tail.strip() else "") +
+                           ("; and it could not be stopped (" + stuck + "): it may still hold the port" if stuck else ""), 6)
     return proc
 
 
@@ -712,14 +713,25 @@ def engine_log_since(console_log: Path, run_log: Path | None, offset: int) -> Pa
     return console_log
 
 
-def stop_engine(proc) -> None:
-    """Stop only the process this run started."""
+def stop_engine(proc) -> str | None:
+    """Stop only the process this run started. -> None when it is gone, else a plain sentence on why it may still be running
+    (a failed taskkill / signal, or a process that outlives the wait): the caller must not report a normal finish then, because
+    a process that is still alive can hold the server's port and the GPU (#3438)."""
     if proc is None:
-        return
+        return None
+    problem = None
     try:
         if proc.poll() is None:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+                try:
+                    done = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+                    if done.returncode != 0 and proc.poll() is None:
+                        said = (done.stderr or done.stdout or b"").decode("utf-8", errors="replace").strip()
+                        problem = f"taskkill for process {proc.pid} failed (exit {done.returncode}){': ' + said[:200] if said else ''}"
+                except subprocess.TimeoutExpired:
+                    problem = f"taskkill for process {proc.pid} did not finish in 60 s"
+                except OSError as error:
+                    problem = f"taskkill could not run for process {proc.pid}: {error}"
             else:
                 import signal
                 try:
@@ -737,10 +749,13 @@ def stop_engine(proc) -> None:
                 proc.wait(30)
             except subprocess.TimeoutExpired:
                 pass
+            if proc.poll() is None:
+                problem = (problem + "; " if problem else "") + f"process {proc.pid} is still running 30 s after it was told to stop"
     finally:
         handle = getattr(proc, "_strata_log", None)
         if handle is not None:
             handle.close()
+    return problem
 
 
 def slug(text: str, limit: int = 40) -> str:

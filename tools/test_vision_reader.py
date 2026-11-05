@@ -124,6 +124,12 @@ class Choose(unittest.TestCase):
         self.assertIsNone(VR.cpu_fallback(cpu_only))
         self.assertIsNone(VR.cpu_fallback({**sec, "cpu_exe": ""}))
         self.assertIsNone(VR.cpu_fallback({"exe": "strata-vision", "gpu": True}))   # an NVIDIA config has no fallback
+        # an on-demand reader (vision.elastic) always has one: the NVIDIA program without --gpu, with the same picture tokens
+        nv = VR.cpu_fallback({"exe": "/e/strata-vision", "gpu": True, "max_tokens": 1024, "elastic": True}, same_program=True)
+        self.assertEqual((nv["exe"], nv["gpu"], nv["max_tokens"], "elastic" in nv), ("/e/strata-vision", False, 1024, False))
+        self.assertIsNotNone(VR.cpu_fallback({"exe": "C:/e/strata-vision.exe", "gpu": True}, same_program=True))
+        self.assertIsNone(VR.cpu_fallback({"exe": "/e/strata-vision-hip", "gpu": True}, same_program=True))   # AMD names its own
+        self.assertIsNone(VR.cpu_fallback({"exe": "/e/strata-vision", "gpu": False}, same_program=True))
 
 
 class MacReader(unittest.TestCase):

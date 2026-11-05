@@ -918,6 +918,45 @@ int main(int argc, char** argv) {
                                 std::memcmp(st.data(), (c.n_keep < 0 ? st0 : sr).data(), st.size() * 4) != 0 ? ", state too" : "");
                     ++sn_bad;
                 }
+                if (std::getenv("STRATA_GDN_VERIFY_BENCH")) {
+                    auto hash = [](const std::vector<float>& values) {
+                        uint64_t h = 1469598103934665603ull;
+                        for (float v : values) {
+                            uint32_t u;
+                            std::memcpy(&u, &v, sizeof(u));
+                            h = (h ^ u) * 1099511628211ull;
+                        }
+                        return h;
+                    };
+                    std::printf("GDNSIGNATURE T=%d case=%s y=%016llx state=%016llx\n", T, c.name,
+                                (unsigned long long) hash(y), (unsigned long long) hash(st));
+                    if (c.n_keep < 0 && c.tb == 0) {
+                        auto* q = &dpct::get_in_order_queue();
+                        constexpr int calls = 32;
+                        dpct::experimental::command_graph_ptr graph;
+                        dpct::experimental::begin_recording(q);
+                        for (int i = 0; i < calls; ++i)
+                            strata::kernels::gdn_step_norm_multi(
+                                d_st, d_h, C, d_gate, d_beta, d_z, d_gm, eps,
+                                d_y, h_k, h_v, T, nullptr, q, 0);
+                        dpct::experimental::end_recording(q, &graph);
+                        auto executable = graph->finalize();
+                        delete graph;
+                        std::vector<double> times;
+                        for (int i = 0; i < 20; ++i) {
+                            auto begin = q->ext_oneapi_submit_barrier();
+                            q->ext_oneapi_graph(executable);
+                            auto end = q->ext_oneapi_submit_barrier();
+                            end.wait_and_throw();
+                            if (i >= 5)
+                                times.push_back(double(
+                                    end.get_profiling_info<sycl::info::event_profiling::command_end>() -
+                                    begin.get_profiling_info<sycl::info::event_profiling::command_start>()) / 1000 / calls);
+                        }
+                        std::sort(times.begin(), times.end());
+                        std::printf("GDNVERIFYBENCH T=%d us=%.3f\n", T, times[times.size() / 2]);
+                    }
+                }
             }
             sycl::free(d_h, dpct::get_in_order_queue());
                 sycl::free(d_gate, dpct::get_in_order_queue());

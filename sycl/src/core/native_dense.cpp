@@ -16,6 +16,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <cmath>
 #include <cstring>
@@ -91,10 +92,55 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }
+// The native dense matrices (one allocation each, ~300 of them) are carved out of a few big blocks. On an Arc A-series card
+// (i915) every kernel launch costs the host time proportional to the number of live device allocations (12 us with none,
+// 131 us with 300, 1.8 ms with 3000) and the kernels themselves run slower; the allocation size does not matter.
+// STRATA_DENSE_SLAB_MIB=<n>: block size in MiB (default 256 under the i915 driver, 0 = one allocation per matrix, which is
+// what every other driver does); matrices of half a block or more keep their own allocation.
+struct DenseSlab {
+    struct Block { void* base; size_t size; size_t used; };
+    std::mutex mu;
+    std::vector<Block> blocks;
+};
+DenseSlab& dense_slab() { static DenseSlab s; return s; }
+size_t dense_slab_bytes() {
+    static const size_t v = [] {
+        if (const char* e = std::getenv("STRATA_DENSE_SLAB_MIB")) return (size_t) (std::atol(e) > 0 ? std::atol(e) : 0) << 20;
+        // on by default where it is measured: an Arc A-series card under the i915 driver (A750: 4K-token prompt 112.6 ->
+        // 185.6 tok/s, output bit-identical); other drivers and cards keep one allocation per matrix
+        return strata::intel_gpu_driver() == "i915" ? ((size_t) 256 << 20) : (size_t) 0;
+    }();
+    return v;
+}
+bool dense_slab_owns(const void* p) {
+    DenseSlab& s = dense_slab();
+    std::lock_guard<std::mutex> lk(s.mu);
+    for (const auto& b : s.blocks) if ((uintptr_t) p >= (uintptr_t) b.base && (uintptr_t) p < (uintptr_t) b.base + b.size) return true;
+    return false;
+}
+void* dense_alloc(size_t bytes) {
+    const size_t sb = dense_slab_bytes();
+    const size_t need = (bytes + 255) & ~(size_t) 255;
+    if (sb == 0 || need >= sb / 2) return strata::malloc_device_guarded(bytes, dpct::get_in_order_queue());
+    DenseSlab& s = dense_slab();
+    std::lock_guard<std::mutex> lk(s.mu);
+    for (auto& b : s.blocks)   // first fit: a gap left by a big matrix is filled by a later small one
+        if (b.size - b.used >= need) { void* p = (uint8_t*) b.base + b.used; b.used += need; return p; }
+    void* base = strata::malloc_device_guarded(sb, dpct::get_in_order_queue(), "native dense block");
+    if (base == nullptr) return nullptr;
+    s.blocks.push_back({base, sb, need});
+    return base;
+}
+void dense_slab_free_blocks() {
+    DenseSlab& s = dense_slab();
+    std::lock_guard<std::mutex> lk(s.mu);
+    for (auto& b : s.blocks) { strata::device_alloc_unregister(b.base); sycl::free(b.base, dpct::get_in_order_queue()); }
+    s.blocks.clear();
+}
 struct DeviceFree {
     void
     operator()(void *p) const {
-        if (p) sycl::free(p, dpct::get_in_order_queue());
+        if (p && !dense_slab_owns(p)) sycl::free(p, dpct::get_in_order_queue());
     }
 };
 using DevicePtr = std::unique_ptr<void, DeviceFree>;
@@ -105,6 +151,33 @@ struct Pending {
     DevicePtr data;
     DevicePtr packed;   // STRATA_Q8_PACKED=1 copy, or null
 };
+// The block with the most unused room is copied into an allocation of exactly its used size (and freed): the VRAM the
+// last, part-filled block would waste is the expert cache's (192 slots became 53 on an 8 GB card without this).
+// Called before the matrices' pointers are published, so the Pending items are the only holders of them.
+bool dense_slab_trim(std::vector<Pending>& pending) {
+    DenseSlab& s = dense_slab();
+    size_t at = s.blocks.size(), best = 0;
+    for (size_t i = 0; i < s.blocks.size(); ++i)
+        if (s.blocks[i].size - s.blocks[i].used > best) { best = s.blocks[i].size - s.blocks[i].used; at = i; }
+    if (at == s.blocks.size() || best < ((size_t) 4 << 20)) return true;
+    DenseSlab::Block old = s.blocks[at];
+    void* fresh = strata::malloc_device_guarded(old.used, dpct::get_in_order_queue(), "native dense block");
+    if (fresh == nullptr) return true;   // keep the part-filled block
+    dpct::get_in_order_queue().memcpy(fresh, old.base, old.used).wait();
+    auto rebase = [&](DevicePtr& d) {
+        const uintptr_t a = (uintptr_t) d.get();
+        if (d && a >= (uintptr_t) old.base && a < (uintptr_t) old.base + old.used)
+            (void) d.release(), d.reset((uint8_t*) fresh + (a - (uintptr_t) old.base));
+    };
+    for (auto& item : pending) { rebase(item.data); rebase(item.packed); }
+    {
+        std::lock_guard<std::mutex> lk(s.mu);
+        s.blocks[at] = {fresh, old.used, old.used};   // the new block now owns those pointers
+    }
+    strata::device_alloc_unregister(old.base);
+    sycl::free(old.base, dpct::get_in_order_queue());
+    return true;
+}
 }
 
 // the shared header declares the static member (b60aab1b); this port only needs the env switch
@@ -142,7 +215,8 @@ NativeDense::~NativeDense() {
     for (const void* p : packed_keys_) strata::kernels::native_q8_0_packed_unregister(p);
     if (scratch_) sycl::free(scratch_, dpct::get_in_order_queue());
     for (void *p : weights_)
-        DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
+        if (!dense_slab_owns(p)) DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
+    dense_slab_free_blocks();
 }
 
 bool NativeDense::load(const std::vector<std::string> &shards,
@@ -249,8 +323,7 @@ bool NativeDense::load(const std::vector<std::string> &shards,
                     tensor.type, (int) ref.ne0, (int) ref.ne1);
                 void* allocation = nullptr;
                 auto status =
-                    DPCT_CHECK_ERROR(allocation = (void *)strata::malloc_device_guarded(
-                                         bytes, dpct::get_in_order_queue()));
+                    DPCT_CHECK_ERROR(allocation = dense_alloc(bytes));
                 DevicePtr data(allocation);
                 if (status == 0)
                     status = DPCT_CHECK_ERROR(
@@ -288,8 +361,7 @@ bool NativeDense::load(const std::vector<std::string> &shards,
                                                            (int) ref.ne1);
                     void* packed_allocation = nullptr;
                     auto packed_status = DPCT_CHECK_ERROR(
-                        packed_allocation = (void *)strata::malloc_device_guarded(
-                            bytes, dpct::get_in_order_queue()));
+                        packed_allocation = dense_alloc(bytes));
                     packed.reset(packed_allocation);
                     if (packed_status == 0)
                         packed_status = DPCT_CHECK_ERROR(
@@ -382,6 +454,7 @@ bool NativeDense::load(const std::vector<std::string> &shards,
             return false;
         }
         // All checks and allocations finish before publishing any reference.
+        dense_slab_trim(pending);
         weights_.reserve(pending.size());
         uint64_t packed_bytes = 0;
         size_t packed_count = 0;
