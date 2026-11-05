@@ -3,20 +3,99 @@ from __future__ import annotations
 
 import codecs
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import queue
+import re
 import signal
+import shutil
 import sys
+import subprocess
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 MODEL = "qwen3.8-flash-next-iq3_xxs"
+
+
+def _number(value):
+    match = re.search(r"[-+]?\d+(?:[.,]\d+)?", str(value).replace(",", ""))
+    return float(match.group().replace(",", "")) if match else None
+
+
+def _bytes_from(value, unit_hint=""):
+    number = _number(value)
+    if number is None:
+        return None
+    unit = f"{unit_hint} {value}".lower().replace("ib", "b")
+    if "gb" in unit:
+        return int(number * 1024 ** 3)
+    if "mb" in unit:
+        return int(number * 1024 ** 2)
+    if "kb" in unit:
+        return int(number * 1024)
+    return int(number)
+
+
+def parse_npu_smi(text, device_index=0):
+    """Extract the portable fields from common npu-smi table/key-value output."""
+    result = {}
+    headers = None
+    rows = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("|") or line.count("|") < 2:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        lowered = " ".join(cells).lower()
+        if headers is None and any(word in lowered for word in
+                                   ("temp", "temperature", "power", "hbm", "aicore", "util")) \
+                and any(word in lowered for word in ("npu", "chip", "device", "id")):
+            headers = cells
+            continue
+        if cells and cells[0].isdigit() and headers and len(cells) >= len(headers):
+            rows.append((int(cells[0]), dict(zip(headers, cells))))
+    fields = next((row for index, row in rows if index == device_index), None)
+    if fields:
+        for key, value in fields.items():
+            key_lower = key.lower()
+            if result.get("name") is None and any(word in key_lower for word in ("name", "chip")):
+                result["name"] = value
+            if result.get("utilization_pct") is None and any(word in key_lower for word in
+                                                               ("aicore", "utilization", "util")):
+                result["utilization_pct"] = _number(value)
+            if result.get("temperature_c") is None and any(word in key_lower for word in
+                                                             ("temperature", "temp")):
+                result["temperature_c"] = _number(value)
+            if result.get("power_w") is None and "power" in key_lower:
+                result["power_w"] = _number(value)
+            if "hbm" in key_lower or "memory" in key_lower:
+                numbers = re.findall(r"[-+]?\d+(?:[.,]\d+)?", value.replace(",", ""))
+                if numbers and result.get("memory_used_bytes") is None:
+                    result["memory_used_bytes"] = _bytes_from(numbers[0], key)
+                if len(numbers) > 1 and result.get("memory_total_bytes") is None:
+                    result["memory_total_bytes"] = _bytes_from(numbers[1], key)
+    for raw in text.splitlines():
+        if ":" not in raw:
+            continue
+        key, value = (part.strip() for part in raw.split(":", 1))
+        key_lower = key.lower()
+        if result.get("name") is None and any(word in key_lower for word in ("chip name", "device name")):
+            result["name"] = value
+        if result.get("temperature_c") is None and "temperature" in key_lower:
+            result["temperature_c"] = _number(value)
+        if result.get("power_w") is None and "power" in key_lower:
+            result["power_w"] = _number(value)
+        if result.get("utilization_pct") is None and any(word in key_lower for word in ("aicore", "utilization")):
+            result["utilization_pct"] = _number(value)
+    return result
 
 
 def render_chat(metadata, messages, enable_thinking=False):
@@ -70,19 +149,40 @@ class Service:
         self.args = args
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cann-model")
         self.lock = threading.Lock()
+        self.metrics_lock = threading.Lock()
         self.completed = 0
+        self.failed = 0
         self.last = None
+        self.active = None
+        self.requests = deque(maxlen=120)
+        self.history = deque(maxlen=60)
+        self.started_at = time.time()
+        self.torch = None
+        self.npu_smi = self._find_npu_smi()
+        self.npu_cache_at = 0.0
+        self.npu_cache = {}
         self.stopping = threading.Event()
         self.api_key = args.api_key_file.read_text().strip() if args.api_key_file else None
         if args.api_key_file and not self.api_key:
             raise ValueError("the API key file is empty")
         self.worker.submit(self._load).result()
 
+    @staticmethod
+    def _find_npu_smi():
+        candidates = [
+            os.environ.get("STRATA_NPU_SMI"),
+            shutil.which("npu-smi"),
+            "/usr/local/Ascend/driver/tools/npu-smi",
+            "/usr/local/Ascend/ascend-toolkit/latest/bin/npu-smi",
+        ]
+        return next((path for path in candidates if path and Path(path).is_file()), None)
+
     def _load(self):
         import torch
         from qwen38 import Qwen38
         from weights import WeightStore
 
+        self.torch = torch
         torch.set_num_threads(8)
         torch.npu.set_device(self.args.device)
         torch.npu.set_compile_mode(jit_compile=False)
@@ -95,24 +195,190 @@ class Service:
                              self.args.weight_dtype)
 
     def request(self, prompt, count, temperature, callback, cancel):
+        request_id = "req_" + uuid.uuid4().hex
+        started_at = time.time()
+
+        def emit(token):
+            with self.metrics_lock:
+                if self.active and self.active["id"] == request_id:
+                    self.active["state"] = "generating"
+                    self.active["generated"] += 1
+            if callback:
+                callback(token)
+
         def run():
             try:
                 result = self.engine.generate(
-                    prompt, count, temperature, callback=callback,
+                    prompt, count, temperature, callback=emit,
                     cancelled=lambda: cancel.is_set() or self.stopping.is_set(),
                 )
                 self.last = result
-                self.completed += 1
+                finished_at = time.time()
+                prefill_seconds = float(result.get("prefill_seconds", 0))
+                decode_seconds = float(result.get("decode_seconds", 0))
+                output_tokens = len(result.get("tokens", ()))
+                request = {
+                    "id": request_id,
+                    "time": started_at,
+                    "state": "done",
+                    "prompt_tokens": len(result.get("prompt_tokens", prompt)),
+                    "reused": 0,
+                    "output_tokens": output_tokens,
+                    "prompt_ms": round(prefill_seconds * 1000, 3),
+                    "decode_ms": round(decode_seconds * 1000, 3),
+                    "decode_tok_s": round(float(result.get("decode_tokens_per_second", 0)), 3),
+                    "duration_s": round(finished_at - started_at, 3),
+                    "finish_reason": result.get("finish_reason"),
+                }
+                with self.metrics_lock:
+                    self.completed += 1
+                    self.requests.appendleft(request)
+                    self.history.append({
+                        "time": finished_at,
+                        "tok_s": request["decode_tok_s"],
+                        "prefill_tok_s": round(request["prompt_tokens"] / prefill_seconds, 3)
+                        if prefill_seconds > 0 else None,
+                    })
                 return result
+            except BaseException:
+                with self.metrics_lock:
+                    self.failed += 1
+                    self.requests.appendleft({
+                        "id": request_id, "time": started_at, "state": "error",
+                        "prompt_tokens": len(prompt), "output_tokens": 0,
+                        "duration_s": round(time.time() - started_at, 3),
+                    })
+                raise
             finally:
+                with self.metrics_lock:
+                    if self.active and self.active["id"] == request_id:
+                        self.active = None
                 self.lock.release()
         if not self.lock.acquire(blocking=False):
             raise BlockingIOError("the single CANN inference slot is busy")
+        with self.metrics_lock:
+            self.active = {
+                "id": request_id, "time": started_at, "state": "reading",
+                "prompt_tokens": len(prompt), "generated": 0,
+            }
         try:
             return self.worker.submit(run)
         except BaseException:
+            with self.metrics_lock:
+                self.active = None
             self.lock.release()
             raise
+
+    def _read_npu(self):
+        now = time.monotonic()
+        if now - self.npu_cache_at < 1.0:
+            return dict(self.npu_cache)
+        result = {}
+        if self.npu_smi:
+            try:
+                completed = subprocess.run(
+                    [self.npu_smi, "info"], capture_output=True, text=True,
+                    timeout=1.5, check=False,
+                )
+                result = parse_npu_smi(
+                    completed.stdout + "\n" + completed.stderr,
+                    int(str(self.args.device).rsplit(":", 1)[-1]),
+                )
+            except (OSError, subprocess.SubprocessError, ValueError):
+                result = {}
+        self.npu_cache_at = now
+        self.npu_cache = result
+        return dict(result)
+
+    def npu_metrics(self):
+        smi = self._read_npu()
+        memory_total = smi.get("memory_total_bytes")
+        memory_free = smi.get("memory_free_bytes")
+        memory_used = smi.get("memory_used_bytes")
+        allocated = reserved = None
+        if self.torch is not None:
+            try:
+                free, total = self.torch.npu.mem_get_info(self.args.device)
+            except (AttributeError, RuntimeError, TypeError):
+                try:
+                    free, total = self.torch.npu.mem_get_info()
+                except (AttributeError, RuntimeError, TypeError):
+                    free = total = None
+            if total is not None:
+                memory_total = int(total)
+            if free is not None:
+                memory_free = int(free)
+            if memory_total is not None and memory_free is not None:
+                memory_used = max(0, memory_total - memory_free)
+            try:
+                allocated = int(self.torch.npu.memory_allocated(self.args.device))
+                reserved = int(self.torch.npu.memory_reserved(self.args.device))
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+        return {
+            "index": int(str(self.args.device).rsplit(":", 1)[-1]),
+            "name": smi.get("name") or "Ascend NPU",
+            "utilization_pct": smi.get("utilization_pct"),
+            "aicore_utilization_pct": smi.get("utilization_pct"),
+            "memory_used_bytes": memory_used,
+            "memory_total_bytes": memory_total,
+            "memory_free_bytes": memory_free,
+            "memory_allocated_bytes": allocated,
+            "memory_reserved_bytes": reserved,
+            "temperature_c": smi.get("temperature_c"),
+            "power_w": smi.get("power_w"),
+            "source": ["torch_npu"] + (["npu-smi"] if smi else []),
+        }
+
+    def metrics(self):
+        now = time.time()
+        with self.metrics_lock:
+            active = dict(self.active) if self.active else None
+            requests = [dict(request) for request in self.requests]
+            history = [dict(sample) for sample in self.history]
+            completed = self.completed
+            failed = self.failed
+        if active:
+            elapsed = max(0.001, now - active["time"])
+            generated = active["generated"]
+            live = {
+                "state": active["state"], "running": 1, "queued": 0,
+                "prompt_tokens": active["prompt_tokens"], "generated": generated,
+                "tok_s": round(generated / elapsed, 3) if active["state"] == "generating" else 0,
+                "prefill_tok_s": round(active["prompt_tokens"] / elapsed, 3)
+                if active["state"] == "reading" else 0,
+            }
+        else:
+            live = {"state": "idle", "running": 0, "queued": 0, "tok_s": 0, "prefill_tok_s": 0}
+        weights = self.engine.w.report()
+        expert_count = self.engine.md.get("qwen4exp.expert_count")
+        return {
+            "source": "strata-cann-torch",
+            "time": now,
+            "model": MODEL,
+            "device": str(self.args.device),
+            "npu": self.npu_metrics(),
+            "live": live,
+            "service": {
+                "started_at": self.started_at, "uptime_s": round(now - self.started_at, 3),
+                "completed": completed, "failed": failed, "busy": active is not None,
+            },
+            "engine": {
+                "layers": self.engine.layers, "max_context": self.args.context,
+                "expert_slots": len(self.engine.w.cache), "experts": expert_count,
+                "expert_cache_mib": round(self.engine.w.used / 1024 ** 2, 3),
+                "expert_budget_mib": round(self.engine.w.budget / 1024 ** 2, 3),
+                "weight_dtype": self.args.weight_dtype,
+            },
+            "weights": weights,
+            "history": history,
+            "requests": requests,
+            "totals": {
+                "requests": completed, "failed": failed,
+                "prompt_tokens": sum(item.get("prompt_tokens", 0) for item in requests),
+                "output_tokens": sum(item.get("output_tokens", 0) for item in requests),
+            },
+        }
 
 
 def main():
@@ -151,7 +417,8 @@ def main():
             return False
 
         def do_GET(self):
-            if self.path == "/health":
+            path = urlsplit(self.path).path
+            if path == "/health":
                 self.json(200, {
                     "status": "ok", "loaded": True, "model": MODEL,
                     "backend": "strata-cann-torch", "device": args.device,
@@ -161,7 +428,9 @@ def main():
                     "busy": service.lock.locked(), "completed": service.completed,
                 })
             elif self.authorized():
-                if self.path == "/v1/models":
+                if path == "/metrics":
+                    self.json(200, service.metrics())
+                elif path == "/v1/models":
                     self.json(200, {"object": "list", "data": [
                         {"id": MODEL, "object": "model", "owned_by": "strata"}]})
                 else:

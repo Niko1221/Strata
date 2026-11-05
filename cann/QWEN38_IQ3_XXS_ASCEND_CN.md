@@ -115,6 +115,11 @@ curl -s http://127.0.0.1:18791/v1/completions \
 会通过 GGUF chat template 渲染；暂不支持工具、多模态内容和 tool-choice。
 completion 和 chat 请求支持 SSE 流式输出。
 
+`GET /metrics` 需要同一个 Bearer key，返回 NPU 利用率、HBM 总量/已用量/空闲量、
+温度、功耗（目标机存在 `npu-smi` 时）、Torch NPU 分配量、专家权重缓存、请求
+数量、prefill/decode 速度和最近请求。没有可用传感器的字段返回 `null`，不会伪造
+实测值。
+
 ## 本地 CPA 代理配置
 
 实际部署的 key 保存在远端 `/run/strata-qwen38-api-key`，不放入仓库。先建立
@@ -142,6 +147,20 @@ $env:STRATA_QWEN38_API_KEY = (ssh -p <ssh-port> <user>@<host> 'cat /run/strata-q
 
 如果 CPA 只能填写字符串，就在本地终端执行上面的 `ssh ... cat` 命令并把结果
 粘贴到 CPA；不要把这个值提交到 GitHub、Markdown 或截图中。
+
+### 接入 Strata 自带 Monitor
+
+在 Strata 的 Settings → Models → Custom model API 中保存上述 Base URL、模型名和
+API key，然后在聊天模型选择器中选中该模型。打开 Monitor 页面后，会出现
+`Remote Ascend metrics` 卡片。Strata Host 通过保存的连接 key 代理指标接口：
+
+```text
+GET /api/model-providers/<connection-id>/metrics
+```
+
+浏览器不会拿到远端 key；Strata Host 会请求模型服务的 `/metrics`，并把结果显示
+在 Monitor 页面。SSH 转发必须保持运行，且 Strata Host 所在机器要能访问本地的
+`127.0.0.1:18791`。
 
 ## 已完成的验证
 

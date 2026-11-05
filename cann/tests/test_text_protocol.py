@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
-from serve import format_logprobs, render_chat
+from serve import format_logprobs, parse_npu_smi, render_chat
 
 
 class Tokenizer:
@@ -49,6 +49,20 @@ class TextProtocolTests(unittest.TestCase):
                         {"role": "user", "content": [{"type": "image"}]}):
             with self.assertRaises(ValueError):
                 render_chat({}, [message])
+
+    def test_parses_npu_smi_table_without_exposing_credentials(self):
+        output = """
+        | NPU ID | Chip Name | AICore(%) | HBM Usage(MB) | Temperature(C) | Power(W) |
+        | 0 | Ascend 910B | 42 | 1234 / 65536 | 45 | 120 |
+        """
+        self.assertEqual(parse_npu_smi(output), {
+            "name": "Ascend 910B",
+            "utilization_pct": 42.0,
+            "memory_used_bytes": 1234 * 1024 ** 2,
+            "memory_total_bytes": 65536 * 1024 ** 2,
+            "temperature_c": 45.0,
+            "power_w": 120.0,
+        })
 
 
 if __name__ == "__main__":
