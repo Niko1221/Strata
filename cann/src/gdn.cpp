@@ -159,4 +159,71 @@ void gdn(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, 
     assign(stream, M, state);
 }
 
+// ---- batched over heads ----
+//
+// One token at a time, all H heads in one call each. The layouts are chosen so that every operand
+// is a plain view of the caller's buffers:
+//   q/k/v/attn: [T][H*S]   -> per token a [H][S] slice, seen as [H][S][1] or [H][1][S]
+//   decay/beta: [T][H]     -> per token an [H] slice, seen as [H][1][1]
+//   state:      [H][S][S]  -> the recurrent matrix per head, rows contiguous
+void gdn_batched(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, const Tensor & decay,
+                 const Tensor & beta, Tensor & state, Tensor & attn, int64_t S, int64_t H, int64_t T) {
+    const size_t hvec_bytes = (size_t) H * (size_t) S * 2;
+    const size_t hmat_bytes = (size_t) H * (size_t) S * (size_t) S * 2;
+    const size_t hscalar_bytes = (size_t) H * 2;
+
+    // M is the working state, tmp receives M after the decay, outer the rank-1 update
+    Buffer m_b(hmat_bytes), tmp_b(hmat_bytes), outer_b(hmat_bytes);
+    Buffer kv_b(hvec_bytes), d_b(hvec_bytes), delta_b(hvec_bytes), decay_b(hscalar_bytes);
+    Buffer beta_b(hscalar_bytes), scale_b(hscalar_bytes);
+
+    Tensor M{ state.data, DType::F16, S, S, H };
+    Tensor tmp{ tmp_b.data(), DType::F16, S, S, H };
+    Tensor outer{ outer_b.data(), DType::F16, S, S, H };
+    Tensor kv{ kv_b.data(), DType::F16, 1, S, H };     // [H][S][1]
+    Tensor d{ d_b.data(), DType::F16, 1, S, H };
+    Tensor delta{ delta_b.data(), DType::F16, 1, S, H };
+    Tensor decay_h{ decay_b.data(), DType::F16, 1, 1, H };
+    Tensor beta_h{ beta_b.data(), DType::F16, 1, 1, H };
+    Tensor scale_h{ scale_b.data(), DType::F16, 1, 1, H };
+
+    // the scale is constant, so one upload serves every token
+    {
+        const float s = 1.0f / std::sqrt((float) S);
+        std::vector<float> ones((size_t) H, s);
+        std::vector<uint16_t> h((size_t) H);
+        f32_to_f16(ones.data(), h.data(), h.size());
+        scale_b.copy_from_host(h.data(), (size_t) H * 2);
+    }
+
+    for (int64_t t = 0; t < T; ++t) {
+        const size_t base = (size_t) t * hvec_bytes;
+        Tensor q_t{ (char *) q.data + base, DType::F16, 1, S, H };    // [H][S][1]
+        Tensor k_t{ (char *) k.data + base, DType::F16, 1, S, H };
+        Tensor k_row{ (char *) k.data + base, DType::F16, S, 1, H };  // [H][1][S]
+        Tensor v_t{ (char *) v.data + base, DType::F16, 1, S, H };
+        Tensor a_t{ (char *) attn.data + base, DType::F16, 1, S, H };
+        Tensor dec_t{ (char *) decay.data + (size_t) t * hscalar_bytes, DType::F16, 1, 1, H };
+        Tensor bet_t{ (char *) beta.data + (size_t) t * hscalar_bytes, DType::F16, 1, 1, H };
+
+        // M *= decay
+        mul_bcast(stream, M, dec_t, tmp);
+
+        // d = (v - M k) * beta, with the decayed state (tmp), not the pre-decay one
+        bmm(stream, tmp, k_t, kv);
+        sub_bcast(stream, v_t, kv, d);
+        mul_bcast(stream, d, bet_t, delta);
+
+        // M += delta (x) k
+        bmm(stream, delta, k_row, outer);
+        add_bcast(stream, tmp, outer, M);
+
+        // o = (M q) / sqrt(S)
+        bmm(stream, M, q_t, kv);
+        mul_bcast(stream, kv, scale_h, a_t);
+        (void) a_t;
+    }
+    (void) scale_h;
+}
+
 } // namespace strata::cann

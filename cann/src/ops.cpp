@@ -270,6 +270,26 @@ void add_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out
     aclDestroyTensor(tc);
 }
 
+void sub_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
+    aclTensor * ta = make_tensor3(a, a.ne1, a.ne0, a.ne2);
+    aclTensor * tb = make_tensor3(b, b.ne1, b.ne0, b.ne2);
+    aclTensor * tc = make_tensor3(out, out.ne1, out.ne0, out.ne2);
+    float alpha_value = -1.0f;
+    aclScalar * alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) {
+            return aclnnAddGetWorkspaceSize(ta, tb, alpha, tc, ws, ex);
+        },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnAdd(ws, ws_size, ex, s);
+        },
+        "aclnnAdd(sub, batched)");
+    aclDestroyScalar(alpha);
+    aclDestroyTensor(ta);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tc);
+}
 void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double eps, Tensor & out) {
     aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
     aclTensor * tg = make_tensor_1d(gamma, gamma.ne0);

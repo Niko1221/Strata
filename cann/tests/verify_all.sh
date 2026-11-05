@@ -41,6 +41,7 @@ run "aclnn ops against the CPU oracle" "$BIN/cann_parity"
 run "quantized decoders against ggml" "$BIN/quant_parity" "$MODEL"
 run "batched primitives" "$BIN/batched_parity"
 run "gated delta net op" "$BIN/gdn_parity"
+run "batched gated delta net" "$BIN/gdn_batched_parity" 4
 run "one real layer from real weights" "$BIN/layer_parity" "$MODEL"
 run "the MoE FFN of blk.0" "$BIN/moe_parity" "$MODEL"
 run "the GDN block of blk.0" "$BIN/gdn_block_parity" "$MODEL"

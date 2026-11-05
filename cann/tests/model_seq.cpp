@@ -284,7 +284,7 @@ void gemv_w(Stream & stream, WeightCache & cache, const std::string & name, int6
 // per-layer recurrent state, allocated once and updated in place
 struct GdnState {
     std::vector<std::unique_ptr<Buffer>> conv; // kConvK-1 past qkv vectors, newest first
-    std::vector<std::unique_ptr<Buffer>> ssm;  // kVHeads x (128 x 128)
+    std::unique_ptr<Buffer> ssm;               // [kVHeads][128][128], contiguous so the batched op can take it
 };
 
 struct AttnState {
@@ -383,39 +383,65 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache
     const std::vector<float> alpha_raw = to_host(stream, b_alpha, kVHeads);
 
     const auto g_t2 = std::chrono::steady_clock::now();
-    Buffer b_normed((size_t) kValueDim * 2);
+
+    // The whole head batch in one pass: the recurrence is 8 operator calls for all 32 heads instead
+    // of 8 per head (256), and the gated norm afterwards is 3 calls instead of 4 per head.
+    Buffer b_q32((size_t) kValueDim * 2), b_k32((size_t) kValueDim * 2);
+    {
+        std::vector<uint16_t> q16((size_t) kKeyDim), k16((size_t) kKeyDim);
+        b_qn.copy_to_host(q16.data(), q16.size() * 2);
+        b_kn.copy_to_host(k16.data(), k16.size() * 2);
+        stream.synchronize();
+        std::vector<uint16_t> q32((size_t) kValueDim), k32((size_t) kValueDim);
+        for (int64_t h = 0; h < kVHeads; ++h) {
+            const int64_t kh = h % kKHeads;
+            std::memcpy(&q32[(size_t) h * kHeadDimSsm], &q16[(size_t) kh * kHeadDimSsm], kHeadDimSsm * 2);
+            std::memcpy(&k32[(size_t) h * kHeadDimSsm], &k16[(size_t) kh * kHeadDimSsm], kHeadDimSsm * 2);
+        }
+        b_q32.copy_from_host(q32.data(), q32.size() * 2);
+        b_k32.copy_from_host(k32.data(), k32.size() * 2);
+    }
+
+    std::vector<float> decay_host((size_t) kVHeads), beta_host((size_t) kVHeads);
     for (int64_t h = 0; h < kVHeads; ++h) {
-        const int64_t kh = h % kKHeads;
         const float bt = 1.0f / (1.0f + std::exp(-beta_raw[(size_t) h]));
         const float biased = alpha_raw[(size_t) h] + dt[(size_t) h];
         const float sp = std::log1p(std::exp(biased > 20.0f ? 20.0f : biased));
-        const float gate = sp * negA[(size_t) h];
+        beta_host[(size_t) h] = bt;
+        decay_host[(size_t) h] = std::exp(sp * negA[(size_t) h]);
+    }
+    Buffer b_decay((size_t) kVHeads * 2), b_betas((size_t) kVHeads * 2);
+    {
+        std::vector<uint16_t> hd((size_t) kVHeads), hb((size_t) kVHeads);
+        f32_to_f16(decay_host.data(), hd.data(), hd.size());
+        f32_to_f16(beta_host.data(), hb.data(), hb.size());
+        b_decay.copy_from_host(hd.data(), hd.size() * 2);
+        b_betas.copy_from_host(hb.data(), hb.size() * 2);
+    }
 
-        Buffer b_g(2), b_b(2), b_out((size_t) kHeadDimSsm * 2);
-        upload({ gate }, b_g);
-        upload({ bt }, b_b);
-        Tensor tq{ (char *) b_qn.data() + (size_t) kh * kHeadDimSsm * 2, DType::F16, 1, kHeadDimSsm };
-        Tensor tk{ (char *) b_kn.data() + (size_t) kh * kHeadDimSsm * 2, DType::F16, 1, kHeadDimSsm };
-        Tensor tv{ (char *) b_silu.data() + (size_t) (2 * kKeyDim + h * kHeadDimSsm) * 2, DType::F16, 1,
-                   kHeadDimSsm };
-        Tensor tg{ b_g.data(), DType::F16, 1, 1 };
-        Tensor tb{ b_b.data(), DType::F16, 1, 1 };
-        Tensor tst{ st.ssm[(size_t) h]->data(), DType::F16, kHeadDimSsm, kHeadDimSsm };
-        Tensor tout{ b_out.data(), DType::F16, 1, kHeadDimSsm };
-        GdnShape shape{ kHeadDimSsm, 1, false };
-        gdn(stream, tq, tk, tv, tg, tb, tst, tout, shape);
+    Buffer b_gdn((size_t) kValueDim * 2);
+    {
+        Tensor tq{ b_q32.data(), DType::F16, kValueDim, 1 };
+        Tensor tk{ b_k32.data(), DType::F16, kValueDim, 1 };
+        Tensor tv{ (char *) b_silu.data() + (size_t) 2 * kKeyDim * 2, DType::F16, kValueDim, 1 };
+        Tensor td{ b_decay.data(), DType::F16, kVHeads, 1 };
+        Tensor tb{ b_betas.data(), DType::F16, kVHeads, 1 };
+        Tensor ts{ st.ssm->data(), DType::F16, kHeadDimSsm, kHeadDimSsm, kVHeads };
+        Tensor ta{ b_gdn.data(), DType::F16, kValueDim, 1 };
+        gdn_batched(stream, tq, tk, tv, td, tb, ts, ta, kHeadDimSsm, kVHeads, 1);
+    }
 
-        Buffer t1((size_t) kHeadDimSsm * 2), t2((size_t) kHeadDimSsm * 2), t3((size_t) kHeadDimSsm * 2);
-        Tensor tin{ b_out.data(), DType::F16, kHeadDimSsm, 1 };
-        Tensor tn{ t1.data(), DType::F16, kHeadDimSsm, 1 };
-        Tensor tz{ (char *) b_z.data() + (size_t) h * kHeadDimSsm * 2, DType::F16, kHeadDimSsm, 1 };
-        Tensor tzs{ t2.data(), DType::F16, kHeadDimSsm, 1 };
-        Tensor tm{ t3.data(), DType::F16, kHeadDimSsm, 1 };
-        Tensor tnout{ (char *) b_normed.data() + (size_t) h * kHeadDimSsm * 2, DType::F16, kHeadDimSsm, 1 };
+    Buffer b_normed((size_t) kValueDim * 2);
+    {
+        Buffer t1((size_t) kValueDim * 2), t2((size_t) kValueDim * 2);
+        Tensor tin{ b_gdn.data(), DType::F16, kHeadDimSsm, kVHeads };
+        Tensor tn{ t1.data(), DType::F16, kHeadDimSsm, kVHeads };
+        Tensor tz{ b_z.data(), DType::F16, kHeadDimSsm, kVHeads };
+        Tensor tzs{ t2.data(), DType::F16, kHeadDimSsm, kVHeads };
+        Tensor tout{ b_normed.data(), DType::F16, kHeadDimSsm, kVHeads };
         rms_norm(stream, tin, t_wnorm, kRmsEps, tn);
         silu(stream, tz, tzs);
-        mul(stream, tn, tzs, tm);
-        muls(stream, tm, 1.0f, tnout);
+        mul(stream, tn, tzs, tout);
     }
 
     const auto g_t3 = std::chrono::steady_clock::now();
@@ -703,10 +729,8 @@ int main(int argc, char ** argv) {
                     st->conv.push_back(std::make_unique<Buffer>((size_t) kQkvDim * 2));
                     upload(std::vector<float>((size_t) kQkvDim, 0.0f), *st->conv.back());
                 }
-                for (int64_t h = 0; h < kVHeads; ++h) {
-                    st->ssm.push_back(std::make_unique<Buffer>((size_t) kHeadDimSsm * kHeadDimSsm * 2));
-                    upload(std::vector<float>((size_t) kHeadDimSsm * kHeadDimSsm, 0.0f), *st->ssm.back());
-                }
+                st->ssm = std::make_unique<Buffer>((size_t) kVHeads * kHeadDimSsm * kHeadDimSsm * 2);
+                upload(std::vector<float>((size_t) kVHeads * kHeadDimSsm * kHeadDimSsm, 0.0f), *st->ssm);
                 gdn_states[(size_t) il] = std::move(st);
             } else {
                 auto st = std::make_unique<AttnState>();

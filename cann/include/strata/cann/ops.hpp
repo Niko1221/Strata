@@ -35,6 +35,7 @@ void bmm(Stream & stream, const Tensor & a, const Tensor & c, Tensor & out);
 // batched elementwise, broadcasting a [B,1,1] or [B,1,N] operand over [B,M,N]
 void mul_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 void add_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
+void sub_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 
 // out[row,:] = x[row,:] * rsqrt(mean(x[row,:]^2) + eps) * gamma
 void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double eps, Tensor & out);
