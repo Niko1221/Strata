@@ -75,6 +75,23 @@ const cases = {
     const blank = H.parseChatMarkdown("## You\n\n\n\n## Model\n\nanswer\n");
     assert.deepEqual(blank.messages.map((m) => m.role), ["assistant"]);
   },
+  import_keeps_code_and_sections_inside_a_turn() {
+    // a fenced block is code: C's '##' token paste and a quoted outline are not turns
+    const fenced = H.parseChatMarkdown("## You\n\nsee this:\n\n```c\n#define PASTE(a, b) a ## b\n```\n\n## Model\n\n```md\n## Summary\n```\n\ndone\n");
+    assert.deepEqual(fenced.messages.map((m) => m.role), ["user", "assistant"]);
+    assert.ok(fenced.messages[0].text.includes("a ## b"), "the fence stays in the question");
+    assert.deepEqual(fenced.messages[1].text.split("\n")[0], "```md", "the answer's fenced heading stays in the answer");
+    assert.ok(fenced.messages[1].text.endsWith("done"));
+    // an outline in the answer is the answer's text, not turns: the answer heading is the name the file repeats
+    const md = "## You\n\nq1\n\n## Model\n\n## Summary\n\nfast\n\n## Risks\n\nnone\n\n## You\n\nq2\n\n## Model\n\nok\n";
+    const c = H.parseChatMarkdown(md, 7, 0.5);
+    assert.deepEqual(c.messages.map((m) => m.role), ["user", "assistant", "user", "assistant"]);
+    assert.equal(c.messages[1].text, "## Summary\n\nfast\n\n## Risks\n\nnone", "sections stay whole");
+    // one question whose own headings tie with the model's name (read the first), the text is still all there
+    const tie = H.parseChatMarkdown("## You\n\ncompare:\n## A\nfast\n## B\nsafe\n\n## Model\n\nA is faster.\n");
+    const all = tie.messages.map((m) => m.text).join("\n");
+    for (const part of ["compare:", "fast", "safe", "A is faster."]) assert.ok(all.includes(part), `kept: ${part}`);
+  },
   rewind_a_question() {
     const m = convo();
     const plan = H.rewind(m, 2);
