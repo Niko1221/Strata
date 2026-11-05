@@ -13739,7 +13739,7 @@ int main(int argc, char** argv) {
                 M.budget("batch_slots", (int64_t) o.batch);
                 M.budget("conversation_cache_mib", (int64_t) o.conversation_cache_mib);
                 M.path("decode", "route-tail-skip", std::getenv("STRATA_ROUTE_TAIL_SKIP") == nullptr || std::getenv("STRATA_ROUTE_TAIL_SKIP")[0] != '0',
-                       std::getenv("STRATA_ROUTE_TAIL_SKIP") == nullptr ? "serve default (not set in the environment)"
+                       std::getenv("STRATA_ROUTE_TAIL_SKIP") == nullptr ? "STRATA_ROUTE_TAIL_SKIP not set: the engine default applies (it skips tails only where the configuration allows)"
                                                                          : (std::string("STRATA_ROUTE_TAIL_SKIP=") + std::getenv("STRATA_ROUTE_TAIL_SKIP")));
                 M.path("transfer", "dma-batch", strata::core::dma_batch_mode() != 0,
                        strata::core::dma_batch_mode() != 0 ? "STRATA_DMA_BATCH" : "mode 0: one copy per expert (the default loop)",
