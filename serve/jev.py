@@ -535,7 +535,12 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     if not isinstance(gen, dict) or not gen.get("messages"):
         return _err("then.generate.messages", "required non-empty array")
     sub = {k: v for k, v in req.items() if k != "then"}
-    code, dec = handle(svc, sub, mode)
+    # an image decision rides along (image+then, one request): the sub-request keeps its
+    # image_mode and goes down the image two-call path, exactly as without "then"
+    if isinstance(sub.get("image_b64"), str) and sub.get("image_b64"):
+        code, dec = handle_image(svc, sub, mode)
+    else:
+        code, dec = handle(svc, sub, mode)
     if code != 200:
         return code, dec
     answers = dec.get("answers", {})
