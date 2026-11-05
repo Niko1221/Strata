@@ -31,11 +31,13 @@ public:
 
     // Metadata accessors; 0 / "" when absent.
     int64_t metadata_int(const std::string & key) const;
+    double metadata_flt(const std::string & key) const;
     std::string metadata_str(const std::string & key) const;
 
     // Everything the file declares, for tools that report what a model actually contains.
     const std::unordered_map<std::string, int64_t> & int_metadata() const { return ints_; }
     const std::unordered_map<std::string, std::string> & str_metadata() const { return strings_; }
+    const std::unordered_map<std::string, double> & flt_metadata() const { return floats_; }
 
     const GgufTensor * find(const std::string & name) const;
 
@@ -48,6 +50,7 @@ private:
     uint64_t data_offset_ = 0;
     std::vector<GgufTensor> tensors_;
     std::unordered_map<std::string, std::string> strings_;
+    std::unordered_map<std::string, double> floats_;
     std::unordered_map<std::string, int64_t> ints_;
 };
 

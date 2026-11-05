@@ -103,7 +103,21 @@ Gguf::Gguf(const std::string & path) : path_(path) {
             case Kind::I32: ints_[key] = r.get<int32_t>(); break;
             case Kind::U64: ints_[key] = (int64_t) r.get<uint64_t>(); break;
             case Kind::I64: ints_[key] = r.get<int64_t>(); break;
-            case Kind::F32: { const float f = r.get<float>(); ints_[key] = (int64_t) f; break; }
+            // keep the value: truncating 1e-6 to an integer made every eps and every float
+            // hyperparameter read back as 0, which is wrong without ever failing
+            case Kind::F32: {
+                const float f = r.get<float>();
+                floats_[key] = (double) f;
+                ints_[key] = (int64_t) f;
+                break;
+            }
+            case Kind::F64: {
+                const double f = r.get<double>();
+                floats_[key] = f;
+                ints_[key] = (int64_t) f;
+                break;
+            }
+            case Kind::Bool: ints_[key] = r.get<uint8_t>() ? 1 : 0; break;
             default: r.skip_value(kind); break;
         }
     }
@@ -138,6 +152,11 @@ std::string Gguf::arch() const {
 int64_t Gguf::metadata_int(const std::string & key) const {
     const auto it = ints_.find(key);
     return it == ints_.end() ? 0 : it->second;
+}
+
+double Gguf::metadata_flt(const std::string & key) const {
+    const auto it = floats_.find(key);
+    return it == floats_.end() ? 0.0 : it->second;
 }
 
 std::string Gguf::metadata_str(const std::string & key) const {

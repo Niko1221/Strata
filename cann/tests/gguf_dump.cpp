@@ -69,9 +69,23 @@ int main(int argc, char ** argv) {
 
         std::vector<std::pair<std::string, int64_t>> ints(g.int_metadata().begin(), g.int_metadata().end());
         std::sort(ints.begin(), ints.end());
+        // a float key also has a truncated integer twin, kept for callers that ask for an int;
+        // printing it here would read as "eps = 0", so drop those duplicates
+        const auto & fl_all = g.flt_metadata();
+        ints.erase(std::remove_if(ints.begin(), ints.end(),
+                                  [&](const std::pair<std::string, int64_t> & kv) {
+                                      return fl_all.count(kv.first) != 0;
+                                  }),
+                   ints.end());
         printf("\n-- integer metadata (%zu) --\n", ints.size());
         for (const auto & kv : ints) {
             printf("%-52s %lld\n", kv.first.c_str(), (long long) kv.second);
+        }
+        std::vector<std::pair<std::string, double>> fl(g.flt_metadata().begin(), g.flt_metadata().end());
+        std::sort(fl.begin(), fl.end());
+        printf("\n-- float metadata (%zu) --\n", fl.size());
+        for (const auto & kv : fl) {
+            printf("%-52s %g\n", kv.first.c_str(), kv.second);
         }
         std::vector<std::pair<std::string, std::string>> strs(g.str_metadata().begin(), g.str_metadata().end());
         std::sort(strs.begin(), strs.end());
