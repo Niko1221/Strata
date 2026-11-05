@@ -159,16 +159,19 @@ class RouteChoice(unittest.TestCase):
 
 
 class ReplicaService(unittest.TestCase):
-    def start(self, slots=4, n=2):
+    def start(self, slots=4, n=2, prefill_gate=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
         script.write_text(FAKE_BATCH, encoding="utf-8")
         real = server.subprocess.Popen
         self.logs = [Path(self.tmp.name) / f"r{i}.log" for i in range(n)]
+        self.prefill_gate = Path(self.tmp.name) / "prefill.done"
         engines = []
         for i in range(n):
             extra = (["--batch", str(slots)] if slots else []) + ["--log", str(self.logs[i])]
+            if prefill_gate:
+                extra += ["--prefill-gate", str(self.prefill_gate)]
             with mock.patch.object(server.subprocess, "Popen",
                                    lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
                 engines.append(StrataEngine("strata", extra))
@@ -211,6 +214,37 @@ class ReplicaService(unittest.TestCase):
         for t in ts:
             t.join()
         return out
+
+    def test_monitor_progress_belongs_to_the_selected_request_across_replicas(self):
+        self.start(slots=0, prefill_gate=True)
+        results = []
+        first = threading.Thread(target=lambda: results.append(self.chat("METRICSHOLD " + "x" * 500)))
+        second = threading.Thread(target=lambda: results.append(self.chat("METRICSHOLD " + "y" * 900)))
+        first.start()
+        try:
+            end = time.monotonic() + 5
+            while not self.engine.engines[0].progress and time.monotonic() < end:
+                time.sleep(0.01)
+            self.assertIsNotNone(self.engine.engines[0].progress)
+            second.start()
+            end = time.monotonic() + 5
+            while not self.engine.engines[1].progress and time.monotonic() < end:
+                time.sleep(0.01)
+            self.assertIsNotNone(self.engine.engines[1].progress)
+            with urllib.request.urlopen(self.base + "/metrics", timeout=10) as response:
+                live = json.load(response)["live"]
+            with self.svc.status_lock:
+                newest = list(self.svc.terminal_requests.values())[-1]
+            expected = self.engine.engines[1].progress
+        finally:
+            self.prefill_gate.touch()
+            first.join(10)
+            if second.ident is not None:
+                second.join(10)
+        self.assertEqual(live["prompt_tokens"], newest["prompt_tokens"])
+        self.assertEqual((live["prompt_read"], live["prompt_total"]), expected)
+        self.assertEqual(live["request_id"], newest["id"])
+        self.assertEqual(len(results), 2)
 
     def test_requests_spread_over_both_and_answers_are_the_solo_answer(self):
         self.start()

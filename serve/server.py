@@ -1865,6 +1865,9 @@ class StrataEngine:
                     self.progress = (int(f[1]), int(f[2]))
                     self.progress_ms = float(f[3]) if len(f) >= 4 else 0.0
                     self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                    progress = getattr(cancel, "_strata_prompt_progress", None)
+                    if progress is not None:
+                        progress(int(f[1]), int(f[2]), float(f[4]) if len(f) >= 5 else None)
                 if not stopped and cancel.is_set():
                     # #879: a Stop during the prompt read went out only after the first token (or after 10 s of
                     # silence, which a stream of PP lines never allows): the engine read the whole prompt first
@@ -2236,7 +2239,6 @@ class StrataEngine:
         admission to its BADM, a slot is BSTOPped and freed at its BDONE."""
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
-        self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
         # logprobs: only an admission's token can have an LP line here (the slot's "BT" lines carry none), so the
@@ -2281,6 +2283,9 @@ class StrataEngine:
                 if alone and left > 1:
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{keys}{pf} {embeddings}" if embeddings else f"GEN {left}{keys}{pf}"
+                    # A waiter must not clear the prompt reader's figures before owning the control lines.
+                    self.progress, self.progress_ms, self.reused = None, 0, 0
+                    self.prefill_tok_s_mean = None
                     self._last_done = None                  # (#879: this request's DONE decides below)
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
@@ -2421,6 +2426,8 @@ class StrataEngine:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
                     self.slot_live[slot] = live
+                    self.progress, self.progress_ms, self.reused = None, 0, 0
+                    self.prefill_tok_s_mean = None
                     self._last_done = None                  # (#879: this admission's DONE decides below)
                     if COALESCE_PREFILL > 1 and not embeddings:
                         self._coalesce(cancel, prompt)
@@ -2715,7 +2722,8 @@ class StrataEngine:
                 view.append({"slot": b, "state": "idle", "held_tokens": len(self.slot_held[b])})
                 continue
             ft = r.get("first_token")
-            view.append({"slot": b, "state": r["state"], "prompt_tokens": r["prompt_tokens"],
+            view.append({"slot": b, "request_id": r.get("request_id"),
+                         "state": r["state"], "prompt_tokens": r["prompt_tokens"],
                          "prompt_read": r.get("prompt_read") if r["state"] == "reading" else None,
                          "generated": r["generated"], "elapsed_s": round(now - r["started"], 1),
                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
@@ -2764,6 +2772,9 @@ class StrataEngine:
             else:
                 self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
                 self.proc.stdin.flush()
+            started = getattr(cancel, "_strata_queue_started", None)
+            if started is not None:
+                started()
         except (OSError, EngineDied):                    # the pipe is gone: the engine died (not the client)
             if rid is not None:
                 self.rid_q.pop(rid, None)
@@ -2835,6 +2846,9 @@ class StrataEngine:
                         self.progress = (int(f[1]), int(f[2]))             # prompt progress, one per chunk: also a heartbeat (the
                         self.progress_ms = float(f[3]) if len(f) >= 4 else 0.0
                         self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                        progress = getattr(cancel, "_strata_prompt_progress", None)
+                        if progress is not None:
+                            progress(int(f[1]), int(f[2]), float(f[4]) if len(f) >= 5 else None)
                         rate, chunk = self.prefill_tok_s_mean or 0.0, int(f[1]) - read_to
                         read_to = int(f[1])
                         if silence > 0 and rate > 0 and chunk > 0:   # #481: the next chunk, as long as this one
@@ -5641,14 +5655,25 @@ class Service:
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
         the hardware (with a minute of history per series)."""
+        par = int(getattr(self.engine, "batch", 0) or 0)
         with self.status_lock:
-            s = dict(self.status)
-            if self.live_reqs:                          # parallel requests: the newest one's status
-                s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
+            s, selected_rate = dict(self.status), list(self.rate)
+            many = [(dict(st), list(rt)) for st, rt in self.live_reqs.values()]
+            if many:
+                # Prefer a request actually reading, not the newest waiter for the same control lines.
+                active = [pair for pair in many if pair[0].get("first_token") or
+                          self.terminal_requests.get(pair[0].get("request_id"), {}).get("state") == "reading"]
+                reading = [pair for pair in active if pair[0].get("first_token") is None]
+                selected, selected_rate = (reading or active or many)[-1]
+                s = {**s, **selected, "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
         now = time.time()
-        progress = getattr(self.engine, "progress", None)
+        # Parallel engines (including replicas and DeepSeek multi) can report another request's global PP.
+        progress = (s.get("prompt_read"), s.get("prompt_total")) if par else getattr(self.engine, "progress", None)
+        prefill_rate = s.get("prefill_tok_s_mean") if par else getattr(self.engine, "prefill_tok_s_mean", None)
+        decoding = any(st.get("busy") and st.get("first_token") for st, _ in many) if many else bool(
+            s.get("busy") and s.get("first_token"))
         if s.get("busy") and s.get("first_token") is None:
             state = "reading"
         elif s.get("busy"):
@@ -5657,18 +5682,19 @@ class Service:
             state = "unloaded"
         else:
             state = "idle"
-        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+        live = {"state": state, "request_id": s.get("request_id") if s.get("busy") else None,
+                "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
                 "elapsed_s": round(now - s["started"], 1) if s.get("busy") and s.get("started") else None,
-                "tok_s": round(self._tok_s(), 1) if state == "generating" else None,
-                "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
-                "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
-                "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
+                "tok_s": round(self._tok_s(), 1) if decoding else None,
+                "tok_s_mean": round(self._tok_s_mean(), 1) if decoding else None,
+                "request_tok_s": round(self._rate_of(s, selected_rate), 1) if state == "generating" else None,
+                "prefill_tok_s_mean": prefill_rate if s.get("busy") else None,
+                "tok_s_window_s": RATE_WINDOW_S if decoding else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
-        par = int(getattr(self.engine, "batch", 0) or 0)
         if par:                                         # #465: the requests running together, slot by slot
             with self.status_lock:
                 running = len(self.live_reqs)
@@ -6295,7 +6321,12 @@ class Service:
                 if row is not None and row["state"] != "reading":
                     row["state"] = "reading"
                     self._terminal_event_locked(request_id, "reading")
+                st.update(prompt_read=None, prompt_total=None, prefill_tok_s_mean=None)
         setattr(cancel, "_strata_queue_started", queue_started)
+        def prompt_progress(read: int, total: int, prefill_rate: float | None) -> None:
+            with self.status_lock:
+                st.update(prompt_read=read, prompt_total=total, prefill_tok_s_mean=prefill_rate)
+        setattr(cancel, "_strata_prompt_progress", prompt_progress)
         def replica_selected(index: int) -> None:
             with self.status_lock:
                 row = self.terminal_requests.get(request_id)
@@ -6361,7 +6392,7 @@ class Service:
                             queued_counted = False
                             self.terminal_requests[request_id].update(state="waiting", admitted_at=time.time())
                             self._terminal_event_locked(request_id, "admitted")
-                        st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
+                        st.update(busy=True, request_id=request_id, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
                                   max_tokens=max_new, reasoning_recoveries=0, thinking_budget=budget)
                         if par:
