@@ -256,10 +256,22 @@ token. Batching it over the heads (`bmm` and the broadcast forms exist for this)
 for the whole batch. It matches the per-head device op to 4e-4 at two tokens and 1.7e-3 at eight,
 and the 12-token run went from 17.8 s to 14.7 s.
 
-That batching does cost a little fidelity: against llama.cpp the top four tokens stay identical,
-but the fifth is now `799` (-3.850) where llama.cpp reports `271` (-3.764) — a near-tie flipping,
-not a wrong model. Fixing it properly means keeping the recurrent state in fp32, which needs a
-cast op this stack does not have yet.
+Batching in fp16 did cost fidelity: against llama.cpp the top four tokens stayed identical but the
+fifth became `799` (-3.850) instead of `271` (-3.764), a near-tie flipping. The fix was to stop
+accumulating the recurrence in half precision. `cast` exists for this, and the state is now fp32
+while only the operands and the output stay fp16. Against the float reference the state now matches
+**exactly** (0.000000 at 4 and 8 tokens, where fp16 drifted to 1.7e-3), the batching costs no
+measurable time (14.5 s against 14.7 s), and the comparison with llama.cpp is back to five of five
+in the same order with the smallest gap yet:
+
+```
+   11751   -0.584       11751   -0.569
+     264   -2.225         264   -2.225
+     279   -3.108         279   -3.077
+    3750   -3.428        3750   -3.475
+     271   -3.764         271   -3.835
+largest logprob difference: 0.071
+```
 The weight cache keeps every non-expert tensor (2.4 GB) in HBM and caches expert slabs with a
 budget. The workspace cache removed an `aclrtMalloc`/`aclrtFree` pair per op. Dropping the
 per-op `stream.synchronize()` as well made the numbers wrong — host uploads go through
