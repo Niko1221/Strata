@@ -1,4 +1,4 @@
-﻿# `cann/` - the Ascend port of the engine
+# `cann/` - the Ascend port of the engine
 
 This directory is to the CANN backend what `sycl/` is to the Intel backend: a separate project
 that grows next to the CUDA engine until it can take the engine's sources.
@@ -10,7 +10,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | P2b | GGUF reader, real model file, real-weight GEMV on the NPU | done |
 | P2c | one real block from real weights: blk.0 shared expert (SwiGLU) | done |
 | P3 | GDN op, the GDN layer block, and state carried across tokens | done |
-| P3b | rope, and the full-attention layer of blk.3 for its first token | done, KV cache mix open |
+| P3b | rope, the full-attention layer of blk.3, and its KV cache across tokens | done |
 | P4 | MoE: top-8 routing, expert matmuls, shared expert | done for one layer's FFN |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
 
@@ -35,6 +35,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | `tests/gdn_state_parity.cpp` | the same block across T tokens, with the conv history and the 128x128 per-head state carried on the device |
 | `tests/rope_parity.cpp` | rotary embedding (NeoX pairing, n_rot of head_dim) against the formula |
 | `tests/attn_layer_parity.cpp` | the full-attention layer of blk.3: q/k/v, per-head q/k norms, rope, gate, output projection |
+| `tests/attn_cache_parity.cpp` | the same layer across T tokens with a KV cache: score, softmax, GQA broadcast, weighted mix |
 | `tests/run_*.sh` | build and run each test |
 
 ## Build and run
@@ -75,6 +76,7 @@ receives.
 | blk.0 GDN across tokens (T=1/4/8) | relative L2 0.02 per token and on the final state |
 | rope | max abs 0.01, relative L2 0.01; the un-rotated tail must be bit-identical |
 | blk.3 attention, one token | relative L2 0.02 |
+| blk.3 attention with KV cache (T=4/8) | relative L2 0.02 per token |
 
 ## Two API facts worth writing down
 
@@ -129,11 +131,9 @@ So 3 of 4 layers run a GDN block (`ssm_*`), and the FFN is 256 experts with one 
 - Fused dequant+matmul. The decoder works on the host today; a fast engine wants it fused on the
   device.
 - GDN state carry between tokens: done, verified for T=1, 4 and 8 in `gdn_state_parity`.
-- RoPE and KV cache, which belong to the full-attention layers (3 of 4 layers are recurrent).
-  Rope is done and the attention layer runs for its first token; the weighted mix over a populated
-  cache (softmax over a score vector, GQA broadcast across 8 q heads per kv head) is next.
+- RoPE and the KV cache are done for the full-attention layers. What is left before a whole model
+  runs: the 41-layer loop, the token embedding, the final norm and the lm head.
 - Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
-- The attention half of a layer, which is where RoPE and the KV cache live.
 
 ## Verified on the machine
 
@@ -217,6 +217,17 @@ y = attn_output      0.000512  PASS
 ```
 
 ```
+layer  : blk.3 attention across 4 tokens with a KV cache
+cache  : 2 kv heads x 256 dim, GQA 8:1
+
+token        y rel L2  result
+0            0.000501  PASS
+1            0.000598  PASS
+2            0.000881  PASS
+3            0.000706  PASS
+```
+
+```
 block  : blk.0 GDN across 4 tokens, state carried on the device
 
 token          y rel L2  result
@@ -237,4 +248,4 @@ ffn out                    0.000013     0.000439  PASS
 ```
 
 Reproduce with `bash cann/tests/run_parity.sh`, `run_quant.sh`, `run_gdn.sh`, `run_gguf.sh`,
-`run_layer.sh`, `run_moe.sh`, `run_gdn_block.sh`, `run_gdn_state.sh`, `run_attn.sh`.
+`run_layer.sh`, `run_moe.sh`, `run_gdn_block.sh`, `run_gdn_state.sh`, `run_attn.sh`, `run_attn_cache.sh`.
