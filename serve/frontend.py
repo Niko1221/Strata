@@ -58,10 +58,6 @@ class ChatTemplate:
                **kwargs) -> str:
         # Keep the chat-template API consistent with llama.cpp's preserve_reasoning / preserve_thinking names.
         kwargs = _normalize_preserve_reasoning(kwargs)
-        # The model-family pack enables preservation by default. Templates can opt out by not advertising this feature.
-        if "preserve_thinking" not in kwargs and getattr(self, "caps", {}).get("supports_preserve_reasoning"):
-            kwargs["preserve_thinking"] = True
-            kwargs["preserve_reasoning"] = True
         # Do not use completed empty assistant turns as examples for the next reply. Keep the final message.
         # (#843.  STRATA_KEEP_EMPTY_TURNS=1 renders them as before.)
         messages = [m for i, m in enumerate(messages)

@@ -3271,6 +3271,12 @@ class ConfigReasoningEffort(unittest.TestCase):
         overridden = svc.with_shared({"messages": [{"role": "user", "content": "hi"}],
                                       "chat_template_kwargs": {"preserve_thinking": False}}, "openai")
         self.assertIs(overridden["chat_template_kwargs"]["preserve_thinking"], False)
+        for shared, ctk in (({"preserve_thinking": True}, {"preserve_reasoning": False}),
+                            ({"preserve_reasoning": True}, {"clear_thinking": True})):
+            for api in ("openai", "anthropic"):
+                svc.shared = shared
+                out = svc.with_shared({"messages": [], "chat_template_kwargs": ctk}, api)
+                self.assertEqual(out["chat_template_kwargs"], ctk)
         clean = clean_shared_defaults({"preserve_reasoning": True})
         self.assertEqual(clean, {"preserve_reasoning": True})
         with self.assertRaises(ValueError):

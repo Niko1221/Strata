@@ -5550,7 +5550,8 @@ class Service:
             req_ctk = dict(req_ctk) if isinstance(req_ctk, dict) else {}
             shared_preserve = {k: s[k] for k in ("preserve_reasoning", "preserve_thinking", "clear_thinking") if k in s}
             # Request-level and request chat-template values override shared defaults.
-            req_preserve = any(k in req or k in req_ctk for k in shared_preserve)
+            aliases = ("preserve_reasoning", "preserve_thinking", "clear_thinking")
+            req_preserve = any(k in req or k in req_ctk for k in aliases)
             if not req_preserve:
                 req_ctk.update(shared_preserve)
                 req["chat_template_kwargs"] = req_ctk
