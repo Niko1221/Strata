@@ -15,8 +15,8 @@ emb  = get_rows(per_layer_tok_embd, rows)   // 51.2B 参数的表，只取这些
 emb  = reshape(emb, ple_head_dim * n_heads, n_tokens)
 ```
 
-- `n_heads = 8`（`heads_per_ngram`），`ple_head_dim = 2560/8 = 320`，所以每 token 取 8 行 × 320 维，
-  展开成 2560 维——正好等于 hidden。
+- `n_heads = 8`（`heads_per_ngram`），`ple_head_dim = 160`（GGUF 的 `embedding_length_per_layer_input`），
+  所以每 token 取 8 行 × 160 维 = **1280**，不是 2560。`config.json` 的 `ple_embed_dim: 2560` 会误导。
 - 行号由**最近 3 个 token**（`ngram_size=3`）哈希得到，在 host 上算。
 - 表有 51.2B 参数、28.8 GB，但**只按行读**。这就是 `-lzm on`（lazy mode）存在的理由：
   表留在 SSD，每 token 读 8 行（约 10 KB）。
