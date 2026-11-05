@@ -57,7 +57,7 @@ constexpr int64_t kRot = 64;
 constexpr float kFreqBase = 1e7f;
 constexpr float kRmsEps = 1e-6f;  // qwen35moe.attention.layer_norm_rms_epsilon
 constexpr int64_t kQDim = kHeads * kHeadDimAttn * 2;
-constexpr int64_t kKvDim = kKvHeads * kHeadDimAttn * 2;
+constexpr int64_t kKvDim = kKvHeads * kHeadDimAttn; // 2 kv heads x 256, no gate doubling here
 constexpr int64_t kExpertInter = 512;
 constexpr int64_t kTopK = 8;
 
@@ -426,6 +426,23 @@ std::vector<float> attn_layer(Stream & stream, const Gguf & g, int il, const std
         mul(stream, vh, tgate, tout);
     }
 
+    if (getenv("MF_TRACE") && il == 3) {
+        const std::vector<float> at_h = to_host(stream, b_attn, kHeads * kHeadDimAttn);
+        const int64_t n = kHeads * kHeadDimAttn;
+        printf("  npu l3 attn_gated first: %.4f %.4f %.4f   last: %.4f %.4f %.4f\n", at_h[0], at_h[1], at_h[2],
+               at_h[(size_t) (n - 3)], at_h[(size_t) (n - 2)], at_h[(size_t) (n - 1)]);
+        // host side of the same projection, to tell a bad gemv from a bad vector
+        std::vector<float> expect((size_t) kHidden, 0.0f);
+        for (int64_t r = 0; r < kHidden; ++r) {
+            double acc = 0.0;
+            for (int64_t c = 0; c < n; ++c) {
+                acc += (double) Wo[(size_t) (r * n + c)] * at_h[(size_t) c];
+            }
+            expect[(size_t) r] = (float) acc;
+        }
+        printf("  npu l3 o_proj on host[0..2]: %.4f %.4f %.4f\n", expect[0], expect[1], expect[2]);
+        printf("  npu l3 gated at heads 1,2,10,14: %.4f %.4f %.4f %.4f\n", at_h[256], at_h[512], at_h[2560], at_h[3584]);
+    }
     Buffer b_y((size_t) kHidden * 2);
     Tensor t_attn{ b_attn.data(), DType::F16, 1, kHeads * kHeadDimAttn };
     gemv(stream, Wo, kHidden, kHeads * kHeadDimAttn, t_attn, b_y);
@@ -486,6 +503,9 @@ std::vector<float> moe_ffn(Stream & stream, const Gguf & g, int il, const std::v
     gemv(stream, Wr, n_expert, kHidden, tx, b_logits);
     const std::vector<float> logits = to_host(stream, b_logits, n_expert);
 
+    if (getenv("MF_TRACE") && il == 0) {
+        printf("  npu router logits[0..2]: %.4f %.4f %.4f\n", logits[0], logits[1], logits[2]);
+    }
     // softmax, top-8, normalize (same as build_moe_ffn)
     double mx = logits[0];
     for (float v : logits) {
@@ -555,6 +575,10 @@ std::vector<float> moe_ffn(Stream & stream, const Gguf & g, int il, const std::v
         std::swap(acc, other);
     }
 
+    if (getenv("MF_TRACE") && il == 0) {
+        const std::vector<float> acc_h = to_host(stream, *acc, kHidden);
+        printf("  npu expert_sum[0..3]: %.4f %.4f %.4f %.4f\n", acc_h[0], acc_h[1], acc_h[2], acc_h[3]);
+    }
     // shared expert
     {
         gemv(stream, Wgs, kExpertInter, kHidden, tx, b_gate);
@@ -573,6 +597,11 @@ std::vector<float> moe_ffn(Stream & stream, const Gguf & g, int il, const std::v
         const float sg = 1.0f / (1.0f + std::exp(-gate_dot));
         Tensor y_t{ b_y.data(), DType::F16, 1, kHidden };
         muls(stream, y_t, sg, t_tmp);
+        if (getenv("MF_TRACE") && il == 0) {
+            const std::vector<float> sh = to_host(stream, tmp, kHidden);
+            printf("  npu shared_gate_sigmoid: %.4f   shared[0..3]: %.4f %.4f %.4f %.4f\n", sg, sh[0], sh[1],
+                   sh[2], sh[3]);
+        }
         Tensor acc_t{ acc->data(), DType::F16, 1, kHidden };
         Tensor oth_t{ other->data(), DType::F16, 1, kHidden };
         add(stream, acc_t, t_tmp, oth_t);
@@ -711,6 +740,11 @@ int main(int argc, char ** argv) {
             std::vector<float> w;
             const std::vector<float> ffn_out = moe_ffn(stream, g, il, ffn_in, sel, w);
             if (getenv("MF_TRACE") && il == 0) {
+                printf("  npu experts/weights:");
+                for (int i = 0; i < 8; ++i) printf(" %d(%.4f)", sel[(size_t) i], w[(size_t) i]);
+                printf("\n");
+            }
+            if (getenv("MF_TRACE") && il == 0) {
                 printf("  npu attn_norm[0..7]:");
                 for (int i = 0; i < 8; ++i) printf(" %.4f", hnorm[(size_t) i]);
                 printf("\n  npu attn_out[0..3]:");
@@ -728,7 +762,7 @@ int main(int argc, char ** argv) {
                 xn[(size_t) i] += ffn_out[(size_t) i];
             }
 
-            if (getenv("MF_TRACE") && il < 2) {
+            if (getenv("MF_TRACE") && il < 6) {
                 printf("  npu layer %lld x[0..3]:", (long long) il);
                 for (int i = 0; i < 4; ++i) printf(" %.5f", xn[(size_t) i]);
                 printf("  (layer_out:");
