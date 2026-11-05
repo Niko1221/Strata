@@ -43,6 +43,8 @@ namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include <unistd.h>
 #include <map>
 #include <memory>
+#include <numeric>
+#include <set>
 #include <string>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
@@ -452,6 +454,12 @@ private:
     // STRATA_METAL_KPROF=T (test tooling): once, after the 20th cached window of T tokens with the head, the GPU time
     // of each kernel class alone (the window's own dispatches of that pipeline + weight role, run by themselves)
     void kprof(const std::vector<mtl::Dispatch>& ds, int Tn);
+    // STRATA_METAL_STEPPROF=T (measurement, round 0215): once, after the 20th cached head window of T tokens, where one decode step's GPU time
+    // goes IN SITU, by part: the window's dispatch list is run as prefixes ending at every barrier group (STRATA_METAL_STEPPROF_REPS runs each,
+    // default 5, median); a group's time is the difference of two prefixes, so the gaps between dispatches and the overlap of the groups that
+    // share a barrier are inside the numbers.  Also the weight bytes read per part (dense from the tensor table, experts from the routed ids of
+    // every layer: the distinct experts) and the GB/s each part reaches.  STRATA_METAL_STEPPROF_OUT=path: one line per group.
+    void stepprof(const std::vector<mtl::Dispatch>& ds, int Tn);
     void fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp);
     // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
     struct Cached {
@@ -1405,6 +1413,9 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             static const int kt = std::getenv("STRATA_METAL_KPROF") ? std::atoi(std::getenv("STRATA_METAL_KPROF")) : 0;
             static int seen = 0;
             if (kt == Tn && head && ++seen == 20 && !stream_) kprof(c.ds, Tn);
+            static const int st = std::getenv("STRATA_METAL_STEPPROF") ? std::atoi(std::getenv("STRATA_METAL_STEPPROF")) : 0;
+            static int seen2 = 0;
+            if (st == Tn && head && ++seen2 == 20 && !stream_) stepprof(c.ds, Tn);
         }
         tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();
@@ -1747,6 +1758,141 @@ void Window::kprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
     std::fprintf(stderr, "strata metal kprof: window T%d, %zu dispatches, GPU %.3f ms; classes alone (serialized) sum %.3f ms:\n",
                  Tn, ds.size(), all, sum);
     for (const auto& [m, c] : rows) std::fprintf(stderr, "strata metal kprof: %8.3f ms %5.1f%%  %s\n", m, 100.0 * m / sum, c.c_str());
+}
+
+void Window::stepprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
+    std::map<const mtl::Pipeline*, std::string> pname;
+    for (const auto& [k, v] : pcache_) pname[&v] = k.substr(0, k.find('#'));
+    std::map<uint64_t, const gguf::Tensor*> wt;       // W_ offset -> tensor
+    for (const auto& [k, v] : f_.tensors) wt[v.offset] = &v;
+    std::map<size_t, const gguf::Tensor*> qt;         // Q8_ offset -> tensor (the load-time Q8_0 copies)
+    for (const auto& [k, v] : q8off_) { auto it = f_.tensors.find(k); if (it != f_.tensors.end()) qt[v] = &it->second; }
+    auto role = [](const std::string& n) { return n.rfind("blk.", 0) == 0 ? n.substr(n.find('.', 4) + 1) : n; };
+    const size_t n = ds.size();
+    struct Info { std::string part; double wbytes = 0; };
+    std::vector<Info> info(n);
+    for (size_t i = 0; i < n; ++i) {
+        const auto& d = ds[i];
+        const std::string c = pname.count(d.p) ? pname[d.p] : "?";
+        std::string part = "other", tn;
+        double wb = 0;
+        auto wbuf = [&](size_t a) -> const gguf::Tensor* {
+            if (a >= d.args.size() || !d.args[a].buf) return nullptr;
+            if (d.args[a].buf == &W_) { auto it = wt.find(d.args[a].off); return it == wt.end() ? nullptr : it->second; }
+            if (d.args[a].buf == &Q8_) { auto it = qt.find(d.args[a].off); return it == qt.end() ? nullptr : it->second; }
+            return nullptr;
+        };
+        const gguf::Tensor* t0 = wbuf(0);
+        if (t0) tn = role(t0->name);
+        auto tsize = [&](size_t a) -> double {
+            const gguf::Tensor* t = wbuf(a);
+            if (!t) return 0;
+            if (d.args[a].buf == &Q8_) return (double) (t->shape[0] / 32 * 34) * (t->shape.size() > 1 ? (double) t->shape[1] : 1.0);
+            return (double) t->bytes;
+        };
+        if (c.rfind("moe_gu", 0) == 0) part = "experts gate+up";
+        else if (c.rfind("moe_down", 0) == 0) part = "experts down";
+        else if (c.rfind("moe_route", 0) == 0 || c.rfind("router_route", 0) == 0) part = "router";
+        else if (c.rfind("moe_combine", 0) == 0) part = "combine";
+        else if (c.rfind("gr_", 0) == 0) { part = "hc"; wb = c.rfind("gr_down", 0) == 0 ? tsize(0) + tsize(1) : c.rfind("gr_up", 0) == 0 ? tsize(0) : 0; }
+        else if (c.rfind("gdn_", 0) == 0) part = "gdn other";
+        else if (c.rfind("qsa_", 0) == 0) part = "qsa other";
+        else if (c.rfind("ple_", 0) == 0) part = "ple";
+        else if (c.rfind("argmax", 0) == 0) part = "lm head (argmax)";
+        else if (c.rfind("swiglu_prep", 0) == 0) part = "shared";
+        else if (c.rfind("xprep", 0) == 0) part = "xprep";
+        else if (c.rfind("gemv", 0) == 0 && t0) {
+            wb = tsize(0);
+            if (tn == "attn_qkv.weight" || tn == "attn_gate.weight" || tn == "ssm_alpha.weight" || tn == "ssm_beta.weight" || tn == "ssm_out.weight") part = "gdn dense";
+            else if (tn == "attn_q.weight" || tn == "attn_k.weight" || tn == "attn_v.weight" || tn == "attn_output.weight" || tn.rfind("indexer.", 0) == 0) part = "qsa dense";
+            else if (tn == "ffn_gate_inp.weight") part = "router";
+            else if (tn.find("shexp") != std::string::npos) part = "shared";
+            else if (tn == "output.weight" || t0->name == "output.weight") part = "lm head";
+            else if (tn.find("ple_") != std::string::npos) part = "ple";
+            else part = "gemv other " + tn;
+        }
+        info[i] = {part, wb};
+    }
+    // barrier groups
+    std::vector<size_t> gs;
+    for (size_t i = 0; i < n; ++i) if (i == 0 || ds[i].barrier) gs.push_back(i);
+    gs.push_back(n);
+    const size_t m = gs.size() - 1;
+    // the route dispatches (one per layer): the prefix that ends right after one holds that layer's routed ids
+    std::vector<size_t> routes;
+    for (size_t i = 0; i < n; ++i)
+        if (pname.count(ds[i].p) && (pname[ds[i].p].rfind("moe_route", 0) == 0 || pname[ds[i].p].rfind("router_route", 0) == 0)) routes.push_back(i);
+    const int reps = std::getenv("STRATA_METAL_STEPPROF_REPS") ? std::max(1, std::atoi(std::getenv("STRATA_METAL_STEPPROF_REPS"))) : 5;
+    std::fprintf(stderr, "strata metal stepprof: T%d, %zu dispatches in %zu barrier groups, %zu layers routed, %d reps per prefix\n", Tn, n, m, routes.size(), reps);
+    for (int i = 0; i < 40; ++i) cx_->run_graph(ds);   // clocks up
+    const double full = [&] { std::vector<double> t; for (int i = 0; i < 15; ++i) t.push_back(1000.0 * cx_->run_graph(ds)); std::sort(t.begin(), t.end()); return t[7]; }();
+    std::vector<std::vector<double>> tp(m + 1);
+    for (int r = 0; r < reps; ++r) {
+        tp[0].push_back(1000.0 * cx_->run_graph(ds, 0));
+        for (size_t j = 1; j <= m; ++j) tp[j].push_back(1000.0 * cx_->run_graph(ds, gs[j]));
+    }
+    std::vector<double> t(m + 1);
+    for (size_t j = 0; j <= m; ++j) { std::sort(tp[j].begin(), tp[j].end()); t[j] = tp[j][tp[j].size() / 2]; }
+    // distinct experts per layer
+    std::vector<int> distinct;
+    double expert_total = 0;
+    for (size_t li = 0; li < routes.size(); ++li) {
+        cx_->run_graph(ds, routes[li] + 1);
+        std::set<int> u;
+        for (int k = 0; k < Tn * TOPK; ++k) { const int v = ids_.as<int32_t>()[k]; if (v >= 0) u.insert(v); }
+        distinct.push_back((int) u.size());
+    }
+    auto expert_bytes = [&](size_t layer, bool gu, bool dn) {
+        const std::string L = "blk." + std::to_string(layer) + ".";
+        auto eb = [&](const char* nm) { const gguf::Tensor* tt = f_.find(L + nm); return tt ? (double) tt->bytes / std::max(1, nexp_) : 0.0; };
+        double b = 0;
+        if (gu) b += eb("ffn_gate_exps.weight") + eb("ffn_up_exps.weight");
+        if (dn) b += eb("ffn_down_exps.weight");
+        return b * (layer < distinct.size() ? distinct[layer] : 0);
+    };
+    for (size_t li = 0; li < distinct.size(); ++li) expert_total += expert_bytes(li, true, true);
+    // per group: time, part (the experts if the group has any, else the dispatch with the most weight bytes, else the first), bytes
+    struct Row { double ms = 0, bytes = 0; int groups = 0, disp = 0; };
+    std::map<std::string, Row> by;
+    FILE* of = std::getenv("STRATA_METAL_STEPPROF_OUT") ? std::fopen(std::getenv("STRATA_METAL_STEPPROF_OUT"), "w") : nullptr;
+    size_t layer_gu = 0, layer_dn = 0;
+    for (size_t j = 0; j < m; ++j) {
+        const double ms = t[j + 1] - t[j];
+        size_t best = gs[j];
+        double bw = -1;
+        for (size_t i = gs[j]; i < gs[j + 1]; ++i) if (info[i].wbytes > bw) { bw = info[i].wbytes; best = i; }
+        std::string part = bw > 0 ? info[best].part : info[gs[j]].part;
+        double bytes = 0;
+        bool has_gu = false, has_dn = false;
+        for (size_t i = gs[j]; i < gs[j + 1]; ++i) {
+            bytes += info[i].wbytes;
+            if (info[i].part == "experts gate+up") has_gu = true;
+            if (info[i].part == "experts down") has_dn = true;
+        }
+        if (has_gu) { part = "experts gate+up"; bytes += expert_bytes(layer_gu++, true, false); }
+        if (has_dn) { part = has_gu ? part : "experts down"; bytes += expert_bytes(layer_dn++, false, true); }
+        Row& r = by[part];
+        r.ms += ms; r.bytes += bytes; r.groups += 1; r.disp += (int) (gs[j + 1] - gs[j]);
+        if (of) std::fprintf(of, "%zu\t%zu\t%s\t%.4f\t%.0f\t%s\n", j, gs[j + 1] - gs[j], part.c_str(), ms, bytes, pname.count(ds[gs[j]].p) ? pname[ds[gs[j]].p].c_str() : "?");
+    }
+    if (of) std::fclose(of);
+    double sum = 0, sumb = 0;
+    for (auto& [k, r] : by) { sum += r.ms; sumb += r.bytes; }
+    std::fprintf(stderr, "strata metal stepprof: window T%d: whole-window GPU %.3f ms (median of 15), prefix chain %.3f ms (empty-list base %.3f ms), weight bytes %.1f MiB (experts %.1f MiB, distinct per layer avg %.2f)\n",
+                 Tn, full, t[m] - t[0], t[0], sumb / 1048576.0, expert_total / 1048576.0,
+                 distinct.empty() ? 0.0 : std::accumulate(distinct.begin(), distinct.end(), 0.0) / (double) distinct.size());
+    std::vector<std::pair<double, std::string>> rows;
+    for (auto& [k, r] : by) rows.push_back({r.ms, k});
+    std::sort(rows.rbegin(), rows.rend());
+    for (const auto& [ms, k] : rows) {
+        const Row& r = by[k];
+        std::fprintf(stderr, "strata metal stepprof: %-22s %8.3f ms %5.1f%%  %5d disp %5d groups  %9.1f MiB  %7.1f GB/s\n", k.c_str(), ms, 100.0 * ms / sum, r.disp, r.groups,
+                     r.bytes / 1048576.0, r.bytes > 0 && ms > 0 ? r.bytes / 1e9 / (ms / 1000.0) : 0.0);
+    }
+    std::string ds_str;
+    for (size_t i = 0; i < distinct.size(); ++i) ds_str += std::to_string(distinct[i]) + (i + 1 < distinct.size() ? "," : "");
+    std::fprintf(stderr, "strata metal stepprof: distinct experts per layer: %s\n", ds_str.c_str());
+    std::fflush(stderr);
 }
 
 Window::~Window() {
