@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kprof.hpp"
+#include "strata/core/batch_rows.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/kernels/dflash2.hpp"
 #include "strata/core/remote_expert_opt.hpp"
@@ -3245,29 +3246,12 @@ bool Verifier::stage_batch(const int *rows, int S, int hbase,
                            const int32_t *tokens, const int64_t *pos,
                            std::string &err) try {
     using namespace strata::kernels;
-    if (S < 1 || S > max_t_ || hbase < 0 ||
-        (next_ != nullptr && hbase + S > (int) slots_.size())) {
-        err = "verify: batch rows out of range (init_slots)";
+    // the row layout: a slot may own a contiguous group of rows (--batch-mtp), also across the stages of a layer split,
+    // whose hand-off buffers hold kVerifyMaxT rows (a stage that hands rows on or takes them)  (port of 48f2c47d)
+    if (const char* why = strata::core::batch_rows_error(rows, S, pos, (int) slots_.size(), max_t_, hbase,
+                                                         next_ != nullptr || lb_ > 0, kVerifyMaxT)) {
+        err = why;
         return false;
-    }
-    for (int t = 0; t < S; ++t) {
-        if (rows[t] < 0 || rows[t] >= (int) slots_.size()) {
-            err = "verify: a batch row's slot is out of range";
-            return false;
-        }
-        for (int u = 0; u < t - 1; ++u)
-            if (rows[u] == rows[t] && rows[t - 1] != rows[t]) {
-                err = "verify: a slot's proposed rows must be contiguous";
-                return false;
-            }
-        if (t > 0 && rows[t] == rows[t - 1] && pos[t] != pos[t - 1] + 1) {
-            err = "verify: proposed rows must have consecutive positions";
-            return false;
-        }
-        if (t > 0 && rows[t] == rows[t - 1] && next_ != nullptr) {
-            err = "verify: grouped slot rows do not support a layer split yet";
-            return false;
-        }
     }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const ModelGeometry& g = *g_;
