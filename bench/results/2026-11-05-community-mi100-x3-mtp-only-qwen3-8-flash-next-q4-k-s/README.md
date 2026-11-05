@@ -1,6 +1,6 @@
 # Community benchmark on AMD Instinct MI100 (3x)
 
-Measured on 2026-11-05 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Run against a Strata server already running on `xnet-ai-01.xnet.com:8000` (remote server, so the run is `nonconforming` per the protocol — the standard protocol targets a freshly loaded local engine). Speed only: no correctness check was run.
+Measured on 2026-11-05 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Run against a Strata server already running on `<server-host>:8000` (remote server, so the run is `nonconforming` per the protocol — the standard protocol targets a freshly loaded local engine). Speed only: no correctness check was run.
 
 ## Hardware and software
 
@@ -27,7 +27,7 @@ engine: strata --serve --pack .../packs/orca-q4_k_s --native <q4_k_s shard 1> --
 
 ## Method
 
-Run by `python tools/strata_bench.py --url http://xnet-ai-01.xnet.com:8000` against the HTTP API of a Strata server already running; model loading is not timed. One warm-up chat and a 1K prompt are discarded first. Every prompt starts with a unique tag, so the conversation cache cannot help the fresh-prompt tests.
+Run by `python tools/strata_bench.py --url http://<server-host>:8000` against the HTTP API of a Strata server already running; model loading is not timed. One warm-up chat and a 1K prompt are discarded first. Every prompt starts with a unique tag, so the conversation cache cannot help the fresh-prompt tests.
 
 - short chat: the three questions of `tools/ab_engine.py`, up to 100 new tokens, 3 runs (9 requests)
 - 4K / 16K prompts: generated word lists sized by a calibration request, 24 new tokens, 3 fresh prompts each
