@@ -1,7 +1,7 @@
-# PLE 与 QSA：两块新东西到底怎么算
+# PLE、QSA、HyperConnection：三块新东西到底怎么算
 
 读 `qwen4exp.cpp` 的 `build_inp_ple` / `build_ple` / `build_qsa_sel` 得到的结论。
-这两块是移植里"没有现成代码可抄"的部分，写清楚以后就不用再猜。
+这三块是移植里"没有现成代码可抄"的部分，写清楚以后就不用再猜。
 
 ## PLE（per-layer token embedding）
 
@@ -96,3 +96,54 @@ top_k = top_k(score, n_top)
 **CANN 后端没有的算子**（第 11.5 节）。llama.cpp 会把它们放到 CPU 上算，所以第一次跑
 Qwen3.8 时，PLE 和 QSA 的耗时大概率全在 CPU——这也是为什么解码速度要以实测为准，不能按
 理论 FLOPs 估。
+
+
+## HyperConnection
+
+残差流不是一条，是 **4 条并行**（`hc_count=4`），形状 `[n_embd, hc, T]`，每层进出都经过它。
+
+### 进块前：混合（`build_hc_mix`，348-415）
+
+```
+xn    = grouped_rms_norm(x) * w_norm        // 每条流内部归一，gamma 形状 [n_embd, hc]
+xn    = reshape(xn, hc*n_embd, T)
+lo    = silu( (w_down @ xn) / hc )          // 低秩 320
+gate  = w_up @ lo                           // [hc*n_embd, T]，再 reshape 成 [n_embd, hc, T]
+gate  = sigmoid(gate)
+mixed = mean_over_streams(xn * gate)        // 塌成 [n_embd, T]，这就是块的输入
+inject= (w_inject @ xn) / hc                // [hc, T]，供出块时用
+```
+
+### 出块后：散布（`build_hc_combine`，417-445）
+
+```
+w   = 2 * sigmoid(inject)                   // 以 1 为中心，所以 inject=0 时就是普通残差
+cur = residual + repeat(block_out, hc) * w  // 每条流加同一个块输出，各自乘权重
+```
+
+三个要点：
+
+1. **两条矩阵乘把 2560 维压到 320 维再展开**（`w_down`/`w_up`），计算量不大，但每层都有。
+2. **门是逐流的**：`gate` 和 `w` 都是 `[hc, T]` 或 `[n_embd, hc, T]`，不是每层一个标量。
+   抄成标量不会报错，只会掉精度。
+3. **`2*sigmoid` 的中心化**：不是 `sigmoid`。用错会让残差的量级整体偏一倍，靠调学习率是救不回来的
+   （这里没有学习率，就是错）。
+
+### 算子层面
+
+`DSV4_HC_PRE_GATED` / `DSV4_HC_POST` 是把上面两步各融合成一个算子（省一次读写）。
+**它们不是新算法**——拆开就是 matmul + rms_norm + sigmoid + mean + broadcast-mul + add，
+全部有对应的 aclnn 算子。
+
+这对移植是好消息：CANN 后端不支持这两个融合算子（第 11.5 节），llama.cpp 会自动走未融合的
+等价路径，只是多几次内存读写。**正确性不受影响，只有速度受影响。**
+
+## 三块合起来的判断
+
+| 块 | 新算法？ | 计算量 | 难在 |
+|---|---|---|---|
+| PLE | 查表 + 门控 + 膨胀卷积 | 每层一次 2560×10240，但只在第 2 层 | 表放哪（28.8 GB 不能进 HBM）、历史跨块 |
+| QSA | 小索引器 + 池化 + top-k + 掩码注意力 | 12 层，索引器很小 | 两套 KV cache 的簿记、选错 key 掉精度 |
+| HyperConnection | 4 路残差 + 低秩门 | 每层两次小矩阵乘 | 逐流的门不能写成标量 |
+
+三块都能用现有 aclnn 算子拼出来，**没有需要写 AscendC 自定义 kernel 的地方**。
