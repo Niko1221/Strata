@@ -58,6 +58,46 @@ def prompts_text(engine) -> list[str]:
     return [dec(p) for p in engine.prompts]
 
 
+class SystemOneLoadGate(unittest.TestCase):
+    """B4 (2026-11-05, expert review blocker 4): the route calls svc.load() like every other
+    engine path - after an idle unload, systemone restarts the engine and answers 200 instead
+    of wedging forever (and last_request_at moves, so the idle timer stops firing under
+    steady decision traffic).  Mock-based: alive() is the unload flag, ensure_loaded is the
+    restart the real Service would do."""
+
+    def test_unload_then_systemone_answers_200(self):
+        tok = ByteTokenizer()
+        engine = DecisionEngine(tok, "A")
+        engine.unloaded = False
+
+        def alive():
+            return not engine.unloaded
+
+        engine.alive = alive                     # loaded() now reports the unload state
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        restarts = {"n": 0}
+
+        def ensure_loaded():
+            restarts["n"] += 1
+            engine.unloaded = False              # what a real restart achieves
+
+        svc.ensure_loaded = ensure_loaded
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            engine.unloaded = True               # the idle-unload timer fired
+            svc.last_request_at = None
+            st, body = post(base, "/v1/systemone",
+                            {"state": {"k": 1},
+                             "questions": {"q": {"type": "noul", "instructions": "on?"}}})
+            self.assertEqual(st, 200, body)
+            self.assertEqual(restarts["n"], 1)   # the route restarted the engine itself
+            self.assertIsNotNone(svc.last_request_at)   # and counted this as activity
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class ContextDefault(unittest.TestCase):
     """No `context`: the render must be exactly the donor's frozen shape."""
 

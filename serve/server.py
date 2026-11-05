@@ -8486,6 +8486,10 @@ def make_handler(svc: Service):
                         self._json(404, {"error": {"type": "not_found_error",
                                                    "message": "decision surface not enabled on this instance"}})
                         return
+                    svc.load()      # B4 (2026-11-05): start the engine if unloaded, like every other
+                                    # engine route - also bumps last_request_at, so the idle-unload
+                                    # timer no longer fires under steady decision traffic and a wedged
+                                    # "next request restarts it" 503 cannot happen on this path anymore
                     mode = self.headers.get("X-Jev-Mode", "L")   # A2.6: "V" = choice readout override
                     if isinstance(req, dict) and req.get("image_b64"):
                         code, body = jev.handle_image(svc, req, mode)   # M3.8: image two-call
