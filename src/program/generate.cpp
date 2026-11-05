@@ -4377,8 +4377,20 @@ int main(int argc, char** argv) {
                 strata::GgufFile pg(o.ple_gguf);
                 if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
             } catch (const std::exception&) {}
-            if (!ple_only &&
-                std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
+            // The PLE shard is often kept on another disk, so --ple-gguf can name the same file that the split
+            // discovery found beside --native, through a different path (a symlink, a bind mount, a second mount
+            // point). Compare file identity, not the path string: admitting one split.no twice makes NativeDense
+            // refuse the model with "duplicate split shard number", which names the split metadata instead of the
+            // repeated shard.
+            auto same_shard = [](const std::string& a, const std::string& b) {
+                if (a == b) return true;
+                std::error_code ec;
+                const bool same = std::filesystem::equivalent(a, b, ec);
+                return !ec && same;
+            };
+            const bool ple_present = std::any_of(o.native_dense_gguf.begin(), o.native_dense_gguf.end(),
+                                                 [&](const std::string& s) { return same_shard(s, o.ple_gguf); });
+            if (!ple_only && !ple_present)
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
