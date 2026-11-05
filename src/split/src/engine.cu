@@ -59,14 +59,9 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             std::fprintf(stderr, "fnx: note: context %d is within the trained %d: the scaling changes every position's rotary "
                          "and no length needs it\n", max_ctx, m_.ctx_train);
     }
-    const long long pf_rows = env_int("FNX_PF_ROWS", pf_c_);
-    if (pf_rows < MAXT || pf_rows > 8192 || pf_rows % MAXT)
-        throw std::runtime_error("FNX_PF_ROWS: a multiple of " + std::to_string(MAXT) + " from " + std::to_string(MAXT) + " to 8192, got " +
-                                 std::to_string(pf_rows));
-    pf_c_ = (int) pf_rows;
+    attn_i8_set_default(m_.g.iq_experts());   // the int8 prompt attention: on for the IQ3_S-type files, off for the others
+    gdn_tc_set_default(!m_.g.iq_experts());   // the tensor-core GDN scan: off for the IQ3_S-type files (NVIDIA builds only compile it in)
     hc1_rows();   // FNX_HC1 checked now, not at the first hc read (inside a graph capture)
-    pf_jobs_ = pf_c_ * TOPK / PF_JOB + NEXP;   // jobs of up to PF_JOB pairs per expert, at most
-    set_prompt_rows(pf_c_);
     const int extra_pages = (std::max(lanes, 1) - 1) * lane_block_pages();
     // the paged K/V pool: pages for the whole context (one more for the block a position past the last one needs)
     // and the extra lanes' blocks. Int8 rows: the context's pages as many as fit in their f16 bytes (the smallest ratio
@@ -78,6 +73,48 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         ctx_pages = (int) (ctx_pages * ratio);
     }
     int n_pages = ctx_pages + extra_pages;
+    // prompt-path memory per card in MiB, measured (FNX_PF_TIMING "prefill buffers on card", the same for both models on 2 cards), and what must stay free beside the K/V pool: the decode buffers,
+    // graphs and cuBLAS workspaces (UD-Q4_K_XL on 2 x 48 GB: 6.5 GB are free after the weights; 8192 x 2 fits but leaves 0.8 GB, 4096 x 4 leaves 2.3 GB)
+    constexpr size_t PF_MARGIN_MIB = 2000;
+    // the prompt path's chunk and pass. NVIDIA default 8192 rows and 4 chunks a pass (owner 11-03); a card whose free VRAM after the weights cannot hold that beside the K/V pool and
+    // the rest (UD-Q4_K_XL on 2 x 48 GB keeps ~12 GB) gets the largest of 8192 x 4, 8192 x 2, 4096 x 4, 4096 x 2 that fits. FNX_PF_ROWS / FNX_PF_PASS set by hand are used as given.
+    {
+        long long rows = 4096;
+        pf_pass_pick_ = 0;
+#if !FNX_HIP
+        rows = 8192;
+        if (!std::getenv("FNX_PF_ROWS") && !std::getenv("FNX_PF_PASS")) {
+            size_t free_min = SIZE_MAX, kv_max = 0;
+            for (int c = 0; c < NCARD; ++c) {
+                ck(cudaSetDevice(m.cards[c].dev), "cudaSetDevice");
+                size_t fr = 0, tot = 0;
+                ck(cudaMemGetInfo(&fr, &tot), "cudaMemGetInfo");
+                free_min = std::min(free_min, fr);
+                kv_max = std::max(kv_max, (size_t) n_pages * kvp_page(c) * sizeof(uint16_t));
+            }
+            const size_t margin = kv_max + (PF_MARGIN_MIB << 20);
+            struct Cfg { int rows, pass; size_t mib; };
+            const Cfg cfgs[] = {{8192, 4, 4148}, {8192, 2, 3028}, {4096, 4, 1673}, {4096, 2, 1112}};
+            Cfg pick = cfgs[3];
+            for (const Cfg& cf : cfgs)
+                if ((cf.mib << 20) + margin <= free_min) {
+                    pick = cf;
+                    break;
+                }
+            rows = pick.rows;
+            pf_pass_pick_ = pick.pass;
+            if (pick.rows != 8192 || pick.pass != 4)
+                std::fprintf(stderr, "fnx: prompt path: %d rows, %d chunks a pass (the cards hold %zu MiB free after the weights, the K/V pool %zu MiB)\n", pick.rows, pick.pass,
+                             free_min >> 20, kv_max >> 20);
+        }
+#endif
+        const long long pf_rows = env_int("FNX_PF_ROWS", rows);
+        if (pf_rows < MAXT || pf_rows > 8192 || pf_rows % MAXT)
+            throw std::runtime_error("FNX_PF_ROWS: a multiple of " + std::to_string(MAXT) + " from " + std::to_string(MAXT) + " to 8192, got " + std::to_string(pf_rows));
+        pf_c_ = (int) pf_rows;
+    }
+    pf_jobs_ = pf_c_ * TOPK / PF_JOB + NEXP;   // jobs of up to PF_JOB pairs per expert, at most
+    set_prompt_rows(pf_c_);
     // FNX_PEER (AMD only; hip/peer_policy.hpp has the rules: 0 host exchange, 1 try the peer push, unset the build's default): every directed pair is probed at start
     // (kernel stores into the peer, a full read-back compare on both sides, a flag round trip); any failure leaves the host exchange for the whole run with one line.
     // FNX_PEER_PARTS: 1 the window sums, 2 the attention merge, 3 both (the default)
@@ -102,6 +139,9 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             if (!rd.line.empty()) std::fprintf(stderr, "fnx: %s\n", rd.line.c_str());
             rccl_on_ = rd.use;
         }
+        // the prompt chunk sums through the peers' device memory (needs the peer push; RCCL, when it is in use, does the sums instead): FNX_PF_PEER=0 keeps the host exchange
+        pf_peer_ = peer_on && !rccl_on_ && env_int("FNX_PF_PEER", 1) != 0;
+        if (pf_peer_) std::fprintf(stderr, "fnx: peer push: the prompt chunk sums are pushed into the peers' device memory\n");
     }
     auto pxalloc = [&](size_t bytes) -> void* {
         void* p = nullptr;
@@ -264,7 +304,8 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             cb_[c]->att_ring.peer_in[d] = cb_[d]->att_ring.in;
         }
         // one hop for the window sums and the attention merge on 3 or more cards (FNX_ONEHOP=0: the rings); the mailboxes live in the ring's buffers
-        const bool onehop = (NCARD > 2 || peer_on) && env_int("FNX_ONEHOP", 1) != 0 && !cb_[c]->ring.f32;
+        // FNX_ONEHOP=2 (screen): the one-hop sum on two cards too (each card adds the two fp16-rounded addends in fp32: one host round trip instead of two; the sums differ in the last bits)
+        const bool onehop = (NCARD > 2 || peer_on || env_int("FNX_ONEHOP", 1) == 2) && env_int("FNX_ONEHOP", 1) != 0 && !cb_[c]->ring.f32;
         cb_[c]->ring.onehop = cb_[c]->att_ring.onehop = onehop;
         for (int d = 0; d < NCARD; ++d) cb_[c]->ring.peer_pk[d] = cb_[d]->ring.pk;
         cb_[c]->ring.peer = onehop && cb_[c]->ring.pk != nullptr;
@@ -893,7 +934,9 @@ void Engine::ffn_half(int T, int call, CardBuf& b, const CardW& w, const LayerW&
     hc_read(R, b.bo_a, b.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], m_.eps, b.mixed, b.inj_f, b.hcs, b.ring.err, T, b.st, b.xq);
     // the shared expert (rows P + t of part): its gate|up in the router's launch and its swiglu and down in the routed
     // gate|up's (Q4_K experts), else on the second stream (a fork and a join cost ~5 us more than the launches' blocks)
-    const bool sh_in = L.gu_e.type == T_Q4_K && L.sh_gu.s.q && L.sh_down.s.q && ffs % 32 == 0 && ffs <= SH_MAXF;
+    // (every expert type moe_gate_up handles; FNX_SH_FUSE=0 puts the non-Q4_K types back on the second stream)
+    static const bool sh_all = env_int("FNX_SH_FUSE", 1) != 0;
+    const bool sh_in = (L.gu_e.type == T_Q4_K || (sh_all && (L.gu_e.type == T_Q5_K || L.gu_e.type == T_Q5_1 || L.gu_e.type == T_Q4_0 || L.gu_e.type == T_Q8_0 || L.gu_e.type == T_IQ4_NL || L.gu_e.type == T_IQ4_XS || L.gu_e.type == T_IQ3_S || L.gu_e.type == T_IQ3_XXS || L.gu_e.type == T_IQ2_S))) && L.sh_gu.s.q && L.sh_down.s.q && ffs % 32 == 0 && ffs <= SH_MAXF;
     if (!sh_in) {
         ck(cudaEventRecord(b.fork, b.st), "fork");
         ck(cudaStreamWaitEvent(b.st2, b.fork, 0), "fork wait");
@@ -991,6 +1034,7 @@ void Engine::enqueue(int T, bool dumps) {
         dd("mixer_out", l, cb_[0]->bo_a, N);
         // ---- FFN half
         each([&](int, CardBuf& b, const CardW& w) { ffn_half(T, call, b, w, w.L[l], b.R, b.ctl); });
+        df2_tap_window(l, T);
         ++call;
         dd("ffn_mixed", l, cb_[0]->mixed, N);
         dd("ffn_out", l, cb_[0]->bo_f, N);
@@ -1159,6 +1203,7 @@ void Engine::enqueue_rows(const std::vector<int>& lanes, const std::vector<int>&
         });
         ++call;
         each([&](int, CardBuf& b, const CardW& w) { ffn_half(T, call, b, w, w.L[l], b.R, b.ctl); });
+        df2_tap_window(l, T);
         ++call;
     }
     each([&](int, CardBuf& b, const CardW& w) {
@@ -1171,6 +1216,35 @@ void Engine::enqueue_rows(const std::vector<int>& lanes, const std::vector<int>&
 }  // namespace fnx
 
 namespace fnx {
+
+#if FNX_DF2
+// DFlash2 (df2_bridge.hpp): the drafter's card taps the window's rows after the FFN half of the tapped layers, inside the window's graph
+void Engine::df2_tap_window(int l, int T) {
+    if (!df2_ || df2_slot_[(size_t) l] < 0) return;
+    CardBuf& b = *cb_[0];
+    ck(cudaSetDevice(b.dev), "set");
+    df2::Bridge::tap(b.R, b.bo_f, b.inj_f, T, df2_slot_[(size_t) l], df2_tapw_, (int64_t) df2::kTaps * df2::kNEmbd, b.st);
+}
+
+void Engine::df2_attach(df2::Bridge& br) {
+    if (br.device() != cb_[0]->dev) throw std::runtime_error("df2_attach: the drafter is not on the first card");
+    if (br.lanes() < (int) lanes_.size()) throw std::runtime_error("df2_attach: fewer drafters than lanes");
+    if (br.tap_layers().size() != (size_t) df2::kTaps) throw std::runtime_error("df2_attach: the pack taps " + std::to_string(br.tap_layers().size()) + " layers, the engine expects " + std::to_string(df2::kTaps));
+    df2_slot_.assign((size_t) NL, -1);
+    for (size_t i = 0; i < br.tap_layers().size(); ++i) {
+        const int l = br.tap_layers()[i];
+        if (l < 0 || l >= NL - 1) throw std::runtime_error("df2_attach: tapped layer " + std::to_string(l) + " is outside the model");
+        df2_slot_[(size_t) l] = (int) i;
+    }
+    ck(cudaSetDevice(cb_[0]->dev), "set");
+    df2_tapw_ = dalloc<float>((size_t) MAXT * df2::kTaps * df2::kNEmbd);
+    df2_lane_.assign((size_t) br.lanes(), Df2Lane{});
+    df2_ = &br;
+}
+#else
+void Engine::df2_tap_window(int, int) {}
+void Engine::df2_attach(df2::Bridge&) { throw std::runtime_error("this engine was built without DFlash2"); }
+#endif
 
 void Engine::mtp_attach(const Mtp& mtp) {
     if (mtp.cards.size() != (size_t) NCARD) throw std::runtime_error("mtp_attach: the draft layer is not on every card");

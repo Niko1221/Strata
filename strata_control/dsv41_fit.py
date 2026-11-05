@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import platform
+from strata_control import sysinfo
 import sys
 from typing import Any
 
@@ -781,10 +782,10 @@ AARCH64_NOT_YET_LINE = "Unsloth's 1-bit DeepSeek sets were not tested on a DGX S
 
 def not_here(model: str | None) -> str | None:
     """The plain line when `model` is not offered on THIS computer (a Mac: MAC_NOT_YET; linux-aarch64, the DGX Spark: AARCH64_NOT_YET), else None.
-    Read at call time from sys.platform and platform.machine(), so one rule serves the model lists, setup, `strata launch` and the app's file check."""
+    Read at call time from sys.platform and sysinfo.machine(), so one rule serves the model lists, setup, `strata launch` and the app's file check."""
     if sys.platform == "darwin" and model in MAC_NOT_YET:
         return MAC_NOT_YET_LINE
-    if sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64") and model in AARCH64_NOT_YET:
+    if sys.platform.startswith("linux") and sysinfo.machine().lower() in ("aarch64", "arm64") and model in AARCH64_NOT_YET:
         return AARCH64_NOT_YET_LINE
     return None
 MAC_SMALL_RAM_GB = 64.0     # below this the measured M5 Max numbers do not apply (nothing smaller than 32 GB was ever started)

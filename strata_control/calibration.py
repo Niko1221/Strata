@@ -552,6 +552,8 @@ def _apply_locked(ref: str, path: Path, profile: dict | None, revision: str | No
         raise ProfileError("run config changed before calibration apply", 6)
     candidate = copy.deepcopy(cfg)
     candidate["args"] = preview["after_args"]
+    from strata_control import arg_layers
+    arg_layers.record_calibration(candidate, cfg, report["settings"])     # the origin is kept: a launch puts these over Auto again (#5132)
     smoke_candidate = _runtime_cfg(candidate, profile)
     candidate_bytes = (json.dumps(candidate, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
     if len(source) > MAX_REPORT_BYTES or len(candidate_bytes) > MAX_REPORT_BYTES:
