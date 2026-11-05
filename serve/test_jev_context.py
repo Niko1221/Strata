@@ -377,7 +377,8 @@ class ContextConsolidated(unittest.TestCase):
         self.assertEqual(st, 200)
         ps = prompts_text(self.engine)
         self.assertTrue(ps)
-        p0 = ps[0]
+        p0 = ps[-1]        # the engine accumulates prompts; this request's is the last
+                           # (a prior test's request may have run first in the same class)
         self.assertIn(jev.render_state(STATE) + "\n\n" + CATALOGUE + "\n\nQuestion:", p0)
 
     def test_consolidated_nonfinite_is_503_not_422(self):
