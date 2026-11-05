@@ -255,6 +255,49 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class CalibDirDefaultIdentity(unittest.TestCase):
+    """B1 (2026-11-05, expert review blocker 1): no calibrator parameters ship, and a start
+    without STRATA_JEV_CALIB_DIR is identity for every decision - the BoolQ/ARC/SST5 Platt
+    intercept must never reach a production answer by default again."""
+
+    def test_no_env_means_no_dir_and_identity(self):
+        import importlib
+        saved = {k: v for k, v in os.environ.items()}
+        os.environ.pop("STRATA_JEV_CALIB_DIR", None)
+        try:
+            m = importlib.reload(jev_calib)
+            self.assertIsNone(m.CALIB_DIR)          # no default "calib" relative path anymore
+            loaded = m.swap()                       # a repo-root start: swap() from an unset dir
+            self.assertFalse(any(loaded.values()))
+            pr = [0.7, 0.3]
+            out, cid = m.apply("noul", pr)
+            self.assertEqual(cid, "identity")
+            self.assertEqual(out, pr)               # raw_p == p: identity, no intercept
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+            importlib.reload(jev_calib)
+
+    def test_explicit_dir_is_honoured(self):
+        import importlib
+        saved = {k: v for k, v in os.environ.items()}
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "calib.json").write_text(
+                json.dumps({"tuple": "t|iq3_xxs|none|v1|L|all", "T_choice": 2.0}))
+            os.environ["STRATA_JEV_CALIB_DIR"] = td
+            try:
+                m = importlib.reload(jev_calib)
+                self.assertEqual(m.CALIB_DIR, Path(td))
+                loaded = m.swap()
+                self.assertTrue(loaded["text(legacy)"])
+                _, cid = m.apply("choice", [0.9, 0.1])
+                self.assertEqual(cid, "T_choice_v1")
+            finally:
+                os.environ.clear()
+                os.environ.update(saved)
+                importlib.reload(jev_calib)
+
+
 class PerTupleCalib(unittest.TestCase):
     """P0-1 (Opus plan): calibrators are keyed by readout letter."""
 

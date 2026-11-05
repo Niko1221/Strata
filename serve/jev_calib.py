@@ -101,7 +101,11 @@ def _set_for_test(c: Calib | None, mode: str = "") -> None:
 
 
 # ---- file load (donor calib_load :565-586) ----
-CALIB_DIR = Path(os.environ.get("STRATA_JEV_CALIB_DIR", "calib"))
+# B1 (2026-11-05, expert review): no calibrator parameters ship in the PR and no directory is
+# read by default - a repo-root start is identity for every decision.  A dir is honoured only
+# when STRATA_JEV_CALIB_DIR says so explicitly (the fork's rig deployments), and server startup
+# swaps only when decision is enabled AND a dir is set (see startup(), F8/M7).
+CALIB_DIR = Path(os.environ["STRATA_JEV_CALIB_DIR"]) if os.environ.get("STRATA_JEV_CALIB_DIR") else None
 
 # Opt-in strictness (default OFF: the default path stays byte-identical to the last release).
 # The defect it guards: a file whose keys the loader does not read (e.g. "a"/"c" instead of
@@ -184,8 +188,14 @@ def load(path: Path) -> Calib:
 def swap(dir: Path | None = None) -> dict[str, bool]:
     """Hot-reload from CALIB_DIR (or the argument): the donor's calib.json (legacy
     text tuple, key "") plus per-readout files calib-<mode>.json for L/V/D/S.
-    Returns which modes loaded (state_json shows it)."""
+    Returns which modes loaded (state_json shows it).  With no dir (the default
+    since B1) every mode is cleared to identity - never a read of the CWD."""
     d = Path(dir) if dir is not None else CALIB_DIR
+    if d is None:
+        with _MU:
+            for mode in ("", "L", "V", "D", "S"):
+                _ACTIVE[mode] = None
+        return {"text(legacy)": False, "L": False, "V": False, "D": False, "S": False}
     loaded: dict[str, bool] = {}
     with _MU:
         for mode, names in (("", ("calib.json", "v1.json")),
@@ -294,13 +304,17 @@ def log_enqueue(row: dict) -> None:
 def log_flush(dir: Path | None = None) -> int:
     """Drain the queue to <CALIB_DIR>/data/log-<mode>.jsonl (one file per readout
     tuple; the donor's fit.py pools a single log by type, so a mixed file would
-    fit text+image rows into one calibrator — Opus G3); -> rows written."""
+    fit text+image rows into one calibrator — Opus G3); -> rows written.
+    M7 (2026-11-05): no dir, no write - and the mkdir happens only once there are
+    rows, so an idle flush (every 200 ms) touches nothing."""
     d = Path(dir) if dir is not None else CALIB_DIR
-    (d / "data").mkdir(parents=True, exist_ok=True)
     with _LOGMU:
         rows, _LOGQ[:] = _LOGQ[:], []
     if not rows:
         return 0
+    if d is None:
+        return 0                            # no calib dir configured: drop, never write the CWD
+    (d / "data").mkdir(parents=True, exist_ok=True)
     by_mode = {}
     for line in rows:
         try:

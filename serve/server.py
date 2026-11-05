@@ -10650,9 +10650,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
     svc.start_vision_idle()
-    # M3.2: calib startup load + background log flusher (daemon; exits with the process)
+    # M3.2: calib startup load + background log flusher (daemon; exits with the process).
+    # B1/M7 (2026-11-05): swap only when decisions are on AND a dir is explicitly set - a
+    # stock or decision-only-without-dir start never reads (or writes) calib files.
     import atexit  # noqa: E402 - local, like the MCP hub's use above
-    jev_calib.swap()
+    if "decision" in jev_calib.MODES and jev_calib.CALIB_DIR is not None:
+        jev_calib.swap()
     _calib_flush_stop = threading.Event()
     threading.Thread(target=jev_calib.log_thread, args=(_calib_flush_stop,), daemon=True,
                      name="jev-calib-log").start()
