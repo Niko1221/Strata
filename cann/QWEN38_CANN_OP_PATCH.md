@@ -176,3 +176,60 @@ TOP_K(type=f32,ne=[12,1,2,1],k=1,ties=0):          OK
 
 `TOP_K_MASK`、`LIGHTNING_INDEXER`、`DSV4_HC_*` 还没做。有了 TOP_K 这一步，工具链、
 验证方法、调用约定都已经跑通，后面三个是同样的套路。
+
+
+## `LIGHTNING_INDEXER` 的设计（还没实现）
+
+这是唯一一个**没有未融合替代写法**的算子，所以它一定在 CPU 上。补它的收益不在于算得慢
+（算量很小），而在于**消除每 token 每层一次的图切分**：NPU 等 → 拷到 CPU → 算 → 拷回，12 层就是 12 次同步。
+
+### 参考语义（`ggml-cpu/ops.cpp:12450`）
+
+```c
+for each token t, stream s:
+  for each kv cell ik:
+      score = 0
+      for h in n_head:
+          qk = dot(q[:, h, t, s], k[:, ik, s])     // n_embd=128 维点积
+          score += max(qk, 0) * w[h, t, s]         // ReLU 后按头加权
+      dst[ik, t, s] = score + mask[ik, t]          // f16 掩码转 f32 再加
+```
+
+### 形状（`ggml.c:6538` 的断言）
+
+| 张量 | 形状 | 说明 |
+|---|---|---|
+| `q` | `[n_embd, n_head, n_tokens, n_stream]` f32 | 128 × 4 × T |
+| `k` | `[n_embd, 1, n_kv, n_stream]` f32 | 128 × 1 × n_kv |
+| `w` | `[n_head, n_tokens, 1, n_stream]` f32 | 4 × T |
+| `mask` | `[n_kv, n_tokens, 1, n_stream']` **f16** | |
+| `dst` | `[n_kv, n_tokens, 1, n_stream]` f32 | |
+
+### 用 aclnn 拼（5 步）
+
+n_stream 一般为 1，按它展开：
+
+1. `q` 的布局是 `[t][h][d]`（`nb1` 是头步长、`nb2` 是 token 步长），所以固定 t 的 4 个头是
+   **连续**的：`q[:, h, t]` 在偏移 `(t*n_head + h) * n_embd`。
+   重排成 `[n_embd, n_head*n_tokens]`，列序是 `t*n_head + h`。
+2. `k` 重排成 `[n_embd, n_kv]`。
+3. `scores = k^T @ q` → `[n_kv, n_head*n_tokens]`（一次 `aclnnMatmul`）。
+4. `scores` 重排成 `[n_kv, n_tokens, n_head]`，`relu`，乘 `w` 重排成 `[1, n_tokens, n_head]`，
+   再对最后一维 `sum` → `[n_kv, n_tokens]`（`aclnnRelu` + `aclnnMul` + `aclnnSum`）。
+5. 加 `mask`（f16 先 `aclnnCast` 成 f32）→ `dst`（`aclnnCast` + `aclnnAdd`）。
+
+### 为什么要小心
+
+- **维度方向**：`ggml_cann_create_tensor` 会把 ggml 维度反转成 `[ne3,ne2,ne1,ne0]`，
+  所以 ggml 的 ne0 是 CANN 的最后一维。上面第 1、2 步的"重排"其实是**建 acl tensor 时给对 ne/nb**，
+  不是真的拷数据。
+- **`n_stream`**：Qwen3.8 单序列时是 1，但 `-np 2` 或多序列并行时不是。第一版可以只支持 1，
+  在 `supports_op` 里用 `op->src[0]->ne[3] == 1` 卡住，其余走 CPU。
+- **验证**：`test-backend-ops` **没有**这个算子的用例（只有 TOP_K），所以要自己搭对比：
+  同一个随机输入分别跑 CPU 和 CANN，比 `dst`。可以照 `test-backend-ops.cpp` 里 `test_top_k`
+  的结构加一个 `test_lightning_indexer`，几十行。
+
+### 什么时候做
+
+**先测基线**。如果解码已经两位数 tok/s，这 12 次同步就不是主要矛盾，不做。
+如果只有个位数，再按上面的方案做，并用 `test_lightning_indexer` 逐元素验证。
