@@ -38,6 +38,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | `tests/attn_layer_parity.cpp` | the full-attention layer of blk.3: q/k/v, per-head q/k norms, rope, gate, output projection |
 | `tests/attn_cache_parity.cpp` | the same layer across T tokens with a KV cache: score, softmax, GQA broadcast, weighted mix |
 | `tests/model_forward.cpp` | the whole stack: token id to logits, NPU against a CPU reference |
+| `tests/model_seq.cpp` | the whole stack over a prompt, with the KV cache and the recurrent state carried across tokens |
 | `tests/run_*.sh` | build and run each test |
 
 ## Build and run
@@ -82,6 +83,7 @@ receives.
 | whole model, 2 layers | hidden state relative L2 0.02 |
 | whole model, 40 layers | hidden state relative L2 0.02 (measured 0.0011) |
 | whole model, 40 layers | top-5 next tokens match llama.cpp; logprobs within 0.2 |
+| whole model over a 5-token prompt | same top-5 in the same order; logprobs within 0.07 |
 
 ## Two API facts worth writing down
 
@@ -202,6 +204,25 @@ The top two trade places because they are 0.008 apart in both. The 40-layer forw
 matches the CPU reference to 1.1e-3, down from 9.2e-3 before this fix: most of what looked like
 fp16 drift was this one wrong index.
 
+## A prompt, token by token
+
+`model_seq` walks a whole prompt through the 40 layers with the conv history, the 128x128 per-head
+state and the KV cache live on the device. For `The capital of France is` (5 tokens), the next-token
+distribution is the same as llama.cpp's, in the same order:
+
+```
+                           llama.cpp      here
+token 11751 ' Paris'       -0.5844      -0.5468
+token   264 ' a'           -2.2250      -2.2186
+token   279 ' the'         -3.1078      -3.0624
+token  3750 ' known'       -3.4281      -3.4686
+token   271 '\n\n'         -3.7641      -3.8280
+```
+
+Five tokens took 166 s, so about 33 s per token. That is the honest number for this stack: every
+`gemv` dequantizes its weights on the host and uploads them again, so nothing amortizes across
+tokens. It is a correctness path, not a serving path.
+
 ## What is not here yet
 
 - The engine's own kernels: `src/` still compiles for CUDA only.
@@ -214,8 +235,8 @@ fp16 drift was this one wrong index.
 - RoPE and the KV cache are done for the full-attention layers. What is left before a whole model
   runs: the 41-layer loop, the token embedding, the final norm and the lm head.
 - Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
-- Multi-token prefill and decode in `model_forward`: it runs one token today, so the KV cache and
-  the GDN state are only exercised by the per-block tests.
+- Weights resident on the device. Every `gemv` dequantizes on the host and uploads again, which is
+  why a token costs 33 s. This is the single change that would make the stack servable.
 - Serving: this stack is not wired to `serve/`; the running server is llama.cpp with `ggml-cann`.
 
 ## Verified on the machine
