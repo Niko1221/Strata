@@ -1,5 +1,5 @@
-// src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) table, its
-// two off switches, and that no other card's table changed.
+// src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) and
+// sm_110 (Jetson AGX Thor) tables, their off switches, and that no other card's table changed.
 #include "strata/core/nv_defaults.hpp"
 
 #include <cstdio>
@@ -33,6 +33,7 @@ static const std::string* find(const std::vector<std::pair<std::string, std::str
 int main() {
     using namespace strata::core;
     unset("STRATA_SM121_PERF");
+    unset("STRATA_SM110_PERF");
     unset("STRATA_SM86_PERF");
     unset("STRATA_SM60_PERF");
     unset("STRATA_EMULATE_CC");
@@ -57,7 +58,22 @@ int main() {
     // the other cards: sm_120 (RTX 50) and sm_100 get nothing from this file; the sm_86 / sm_60 tables are unchanged by the flag
     CHECK(nv_default_env(12, 0, false).empty());
     CHECK(nv_default_env(10, 0, false).empty());
-    CHECK(nv_default_env(11, 0, false).empty());   // sm_110 (Jetson AGX Thor): it builds and runs, but nothing is measured on that part yet (#4559)
+    // Jetson AGX Thor (11.0): the five switches measured on the part (#4559), and nothing else
+    {
+        const auto t110 = nv_default_env(11, 0, false);
+        CHECK(t110.size() == 5);
+        CHECK(find(t110, "STRATA_SPEC_COST") && *find(t110, "STRATA_SPEC_COST") == "1");
+        CHECK(find(t110, "STRATA_HC_Q8") && *find(t110, "STRATA_HC_Q8") == "1");
+        CHECK(find(t110, "STRATA_PF_FUSED") && *find(t110, "STRATA_PF_FUSED") == "1");
+        CHECK(find(t110, "STRATA_HC_UPMIX") && *find(t110, "STRATA_HC_UPMIX") == "1");
+        CHECK(find(t110, "STRATA_SIDE_MIXER") && *find(t110, "STRATA_SIDE_MIXER") == "2");
+        CHECK(nv_default_env(11, 0, true).empty());          // STRATA_DEFAULTS=026 leaves it out, as sm_121's
+        put("STRATA_SM110_PERF", "0");
+        CHECK(nv_default_env(11, 0, false).empty());         // its own off switch
+        put("STRATA_SM110_PERF", "1");
+        CHECK(nv_default_env(11, 0, false).size() == 5);     // any other value keeps it
+        unset("STRATA_SM110_PERF");
+    }
     CHECK(nv_default_env(8, 9, false).empty());
     CHECK(nv_default_env(7, 5, false).empty());
     {
