@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <unordered_map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -109,6 +111,82 @@ std::vector<float> expert_slab(const Gguf & g, const GgufTensor & t, int expert,
     return out;
 }
 
+// Device-resident weights. Every gemv used to dequantize on the host and upload again, which is
+// why a token cost 33 s. Here each tensor is dequantized once, uploaded once, and kept in HBM.
+// Expert slabs are cached separately with an LRU: 256 experts per layer will not fit.
+class WeightCache {
+public:
+    explicit WeightCache(const Gguf & g) : g_(g) {}
+
+    const Buffer & full(const std::string & name) {
+        auto it = full_.find(name);
+        if (it != full_.end()) {
+            return *it->second;
+        }
+        const GgufTensor * t = g_.find(name);
+        if (!t) {
+            throw std::runtime_error("model: missing tensor " + name);
+        }
+        const std::vector<float> w = round_f16(load_tensor(g_, *t));
+        auto buf = std::make_unique<Buffer>(w.size() * 2);
+        upload(w, *buf);
+        Buffer * raw = buf.get();
+        full_.emplace(name, std::move(buf));
+        bytes_ += (int64_t) w.size() * 2;
+        return *raw;
+    }
+
+    // one expert slab out of a [cols, rows, n_expert] tensor
+    const Buffer & slab(const std::string & tensor, int expert, int64_t rows, int64_t cols, int il) {
+        const std::string key = tensor + "#" + std::to_string(expert);
+        auto it = slab_.find(key);
+        if (it != slab_.end()) {
+            return *it->second;
+        }
+        const GgufTensor * t = g_.find(tensor);
+        if (!t) {
+            throw std::runtime_error("model: missing tensor " + tensor);
+        }
+        const std::vector<float> w = round_f16(expert_slab(g_, *t, expert, rows, cols));
+        auto buf = std::make_unique<Buffer>(w.size() * 2);
+        upload(w, *buf);
+        Buffer * raw = buf.get();
+        slab_.emplace(key, std::move(buf));
+        slab_order_.push_back(key);
+        bytes_ += (int64_t) w.size() * 2;
+        (void) il;
+        // keep the slab cache bounded; the order list is a cheap FIFO, not a true LRU
+        while (bytes_ > kBudget && !slab_order_.empty()) {
+            const std::string victim = slab_order_.front();
+            slab_order_.pop_front();
+            auto vit = slab_.find(victim);
+            if (vit != slab_.end()) {
+                bytes_ -= (int64_t) vit->second->size();
+                slab_.erase(vit);
+            }
+        }
+        return *raw;
+    }
+
+    int64_t bytes() const { return bytes_; }
+
+private:
+    static constexpr int64_t kBudget = 40LL << 30; // stay well under the 64 GB of HBM
+    const Gguf & g_;
+    std::unordered_map<std::string, std::unique_ptr<Buffer>> full_;
+    std::unordered_map<std::string, std::unique_ptr<Buffer>> slab_;
+    std::deque<std::string> slab_order_;
+    int64_t bytes_ = 0;
+};
+
+void gemv_w(Stream & stream, WeightCache & cache, const std::string & name, int64_t m, int64_t k, const Tensor & x,
+            Buffer & out) {
+    const Buffer & bw = cache.full(name);
+    Tensor tw{ bw.data(), DType::F16, k, m };
+    Tensor to{ out.data(), DType::F16, 1, m };
+    matmul(stream, tw, x, to);
+}
+
 // per-layer recurrent state, allocated once and updated in place
 struct GdnState {
     std::vector<std::unique_ptr<Buffer>> conv; // kConvK-1 past qkv vectors, newest first
@@ -121,14 +199,9 @@ struct AttnState {
 };
 
 // ---- one GDN layer step ----
-std::vector<float> gdn_step(Stream & stream, const Gguf & g, int il, const std::vector<float> & x, const std::vector<std::vector<float>> & taps, GdnState & st) {
+std::vector<float> gdn_step(Stream & stream, const Gguf & g, WeightCache & cache, int il, const std::vector<float> & x, const std::vector<std::vector<float>> & taps, GdnState & st) {
     const std::string p = "blk." + std::to_string(il) + ".";
-    const std::vector<float> Wqkv = need(g, p + "attn_qkv.weight");
-    const std::vector<float> Wgate = need(g, p + "attn_gate.weight");
-    const std::vector<float> Wout = need(g, p + "ssm_out.weight");
     const std::vector<float> Wnorm = need(g, p + "ssm_norm.weight");
-    const std::vector<float> Wbeta = need(g, p + "ssm_beta.weight");
-    const std::vector<float> Walpha = need(g, p + "ssm_alpha.weight");
     const std::vector<float> dt = load_tensor(g, *need_t(g, p + "ssm_dt.bias"));
     const std::vector<float> negA = load_tensor(g, *need_t(g, p + "ssm_a"));
 
@@ -137,8 +210,8 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, int il, const std::
     Tensor tx{ bx.data(), DType::F16, 1, kHidden };
 
     Buffer b_qkv((size_t) kQkvDim * 2), b_z((size_t) kValueDim * 2);
-    gemv(stream, Wqkv, kQkvDim, kHidden, tx, b_qkv);
-    gemv(stream, Wgate, kValueDim, kHidden, tx, b_z);
+    gemv_w(stream, cache, p + "attn_qkv.weight", kQkvDim, kHidden, tx, b_qkv);
+    gemv_w(stream, cache, p + "attn_gate.weight", kValueDim, kHidden, tx, b_z);
     Tensor t_qkv{ b_qkv.data(), DType::F16, 1, kQkvDim };
 
     // short conv over the history: tap kConvK-1 goes with the current token, kConvK-2 with t-1
@@ -202,8 +275,8 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, int il, const std::
     }
 
     Buffer b_beta((size_t) kVHeads * 2), b_alpha((size_t) kVHeads * 2);
-    gemv(stream, Wbeta, kVHeads, kHidden, tx, b_beta);
-    gemv(stream, Walpha, kVHeads, kHidden, tx, b_alpha);
+    gemv_w(stream, cache, p + "ssm_beta.weight", kVHeads, kHidden, tx, b_beta);
+    gemv_w(stream, cache, p + "ssm_alpha.weight", kVHeads, kHidden, tx, b_alpha);
     const std::vector<float> beta_raw = to_host(stream, b_beta, kVHeads);
     const std::vector<float> alpha_raw = to_host(stream, b_alpha, kVHeads);
 
@@ -244,18 +317,14 @@ std::vector<float> gdn_step(Stream & stream, const Gguf & g, int il, const std::
 
     Buffer b_y((size_t) kHidden * 2);
     Tensor t_normed{ b_normed.data(), DType::F16, 1, kValueDim };
-    gemv(stream, Wout, kHidden, kValueDim, t_normed, b_y);
+    gemv_w(stream, cache, p + "ssm_out.weight", kHidden, kValueDim, t_normed, b_y);
     return to_host(stream, b_y, kHidden);
 }
 
 // ---- one attention layer step ----
-std::vector<float> attn_step(Stream & stream, const Gguf & g, int il, const std::vector<float> & x, int64_t t,
-                             int64_t T, AttnState & st) {
+std::vector<float> attn_step(Stream & stream, const Gguf & g, WeightCache & cache, int il, const std::vector<float> & x,
+                             int64_t t, int64_t T, AttnState & st) {
     const std::string p = "blk." + std::to_string(il) + ".";
-    const std::vector<float> Wq = need(g, p + "attn_q.weight");
-    const std::vector<float> Wk = need(g, p + "attn_k.weight");
-    const std::vector<float> Wv = need(g, p + "attn_v.weight");
-    const std::vector<float> Wo = need(g, p + "attn_output.weight");
     const std::vector<float> qn = need(g, p + "attn_q_norm.weight");
     const std::vector<float> knw = need(g, p + "attn_k_norm.weight");
 
@@ -263,9 +332,9 @@ std::vector<float> attn_step(Stream & stream, const Gguf & g, int il, const std:
     upload(x, bx);
     Tensor tx{ bx.data(), DType::F16, 1, kHidden };
     Buffer b_q((size_t) kQDim * 2), b_k((size_t) kKvDim * 2), b_v((size_t) kKvDim * 2);
-    gemv(stream, Wq, kQDim, kHidden, tx, b_q);
-    gemv(stream, Wk, kKvDim, kHidden, tx, b_k);
-    gemv(stream, Wv, kKvDim, kHidden, tx, b_v);
+    gemv_w(stream, cache, p + "attn_q.weight", kQDim, kHidden, tx, b_q);
+    gemv_w(stream, cache, p + "attn_k.weight", kKvDim, kHidden, tx, b_k);
+    gemv_w(stream, cache, p + "attn_v.weight", kKvDim, kHidden, tx, b_v);
 
     Buffer b_qn((size_t) kHeadDimAttn * 2), b_kn((size_t) kHeadDimAttn * 2);
     upload(qn, b_qn);
@@ -347,28 +416,21 @@ std::vector<float> attn_step(Stream & stream, const Gguf & g, int il, const std:
 
     Buffer b_y((size_t) kHidden * 2);
     Tensor t_attn{ b_attn.data(), DType::F16, 1, kHeads * kHeadDimAttn };
-    gemv(stream, Wo, kHidden, kHeads * kHeadDimAttn, t_attn, b_y);
+    gemv_w(stream, cache, p + "attn_output.weight", kHidden, kHeads * kHeadDimAttn, t_attn, b_y);
     return to_host(stream, b_y, kHidden);
 }
 
-std::vector<float> moe_ffn(Stream & stream, const Gguf & g, int il, const std::vector<float> & x) {
+std::vector<float> moe_ffn(Stream & stream, const Gguf & g, WeightCache & cache, int il, const std::vector<float> & x) {
     const std::string p = "blk." + std::to_string(il) + ".";
-    const std::vector<float> Wr = need(g, p + "ffn_gate_inp.weight");
-    const GgufTensor * gate_exps = need_t(g, p + "ffn_gate_exps.weight");
-    const GgufTensor * up_exps = need_t(g, p + "ffn_up_exps.weight");
-    const GgufTensor * down_exps = need_t(g, p + "ffn_down_exps.weight");
-    const std::vector<float> Wgs = need(g, p + "ffn_gate_shexp.weight");
-    const std::vector<float> Wus = need(g, p + "ffn_up_shexp.weight");
-    const std::vector<float> Wds = need(g, p + "ffn_down_shexp.weight");
-    const std::vector<float> Wgi = need(g, p + "ffn_gate_inp_shexp.weight");
+    const GgufTensor * gate_inp = need_t(g, p + "ffn_gate_inp.weight");
 
     Buffer bx((size_t) kHidden * 2);
     upload(x, bx);
     Tensor tx{ bx.data(), DType::F16, 1, kHidden };
 
-    const int64_t n_expert = (int64_t) Wr.size() / kHidden;
+    const int64_t n_expert = (int64_t) gate_inp->dims[1];
     Buffer b_logits((size_t) n_expert * 2);
-    gemv(stream, Wr, n_expert, kHidden, tx, b_logits);
+    gemv_w(stream, cache, p + "ffn_gate_inp.weight", n_expert, kHidden, tx, b_logits);
     const std::vector<float> logits = to_host(stream, b_logits, n_expert);
 
     double mx = logits[0];
@@ -403,18 +465,30 @@ std::vector<float> moe_ffn(Stream & stream, const Gguf & g, int il, const std::v
 
     for (int64_t i = 0; i < kTopK; ++i) {
         const int e = sel[(size_t) i];
-        const std::vector<float> Wg = round_f16(expert_slab(g, *gate_exps, e, kExpertInter, kHidden));
-        const std::vector<float> Wu = round_f16(expert_slab(g, *up_exps, e, kExpertInter, kHidden));
-        const std::vector<float> Wd = round_f16(expert_slab(g, *down_exps, e, kHidden, kExpertInter));
-        gemv(stream, Wg, kExpertInter, kHidden, tx, b_gate);
-        gemv(stream, Wu, kExpertInter, kHidden, tx, b_up);
+        {
+            const Buffer & Wg = cache.slab(p + "ffn_gate_exps.weight", e, kExpertInter, kHidden, il);
+            Tensor tw{ Wg.data(), DType::F16, kHidden, kExpertInter };
+            Tensor to{ b_gate.data(), DType::F16, 1, kExpertInter };
+            matmul(stream, tw, tx, to);
+        }
+        {
+            const Buffer & Wu = cache.slab(p + "ffn_up_exps.weight", e, kExpertInter, kHidden, il);
+            Tensor tw{ Wu.data(), DType::F16, kHidden, kExpertInter };
+            Tensor to{ b_up.data(), DType::F16, 1, kExpertInter };
+            matmul(stream, tw, tx, to);
+        }
         Tensor g_t{ b_gate.data(), DType::F16, 1, kExpertInter };
         Tensor u_t{ b_up.data(), DType::F16, 1, kExpertInter };
         Tensor s_t{ b_silu.data(), DType::F16, 1, kExpertInter };
         Tensor a_t{ b_act.data(), DType::F16, 1, kExpertInter };
         silu(stream, g_t, s_t);
         mul(stream, s_t, u_t, a_t);
-        gemv(stream, Wd, kHidden, kExpertInter, a_t, b_y);
+        {
+            const Buffer & Wd = cache.slab(p + "ffn_down_exps.weight", e, kHidden, kExpertInter, il);
+            Tensor tw{ Wd.data(), DType::F16, kExpertInter, kHidden };
+            Tensor to{ b_y.data(), DType::F16, 1, kHidden };
+            matmul(stream, tw, a_t, to);
+        }
         Tensor y_t{ b_y.data(), DType::F16, 1, kHidden };
         Tensor t_tmp{ tmp.data(), DType::F16, 1, kHidden };
         muls(stream, y_t, w[(size_t) i], t_tmp);
@@ -424,17 +498,17 @@ std::vector<float> moe_ffn(Stream & stream, const Gguf & g, int il, const std::v
         std::swap(acc, other);
     }
     {
-        gemv(stream, Wgs, kExpertInter, kHidden, tx, b_gate);
-        gemv(stream, Wus, kExpertInter, kHidden, tx, b_up);
+        gemv_w(stream, cache, p + "ffn_gate_shexp.weight", kExpertInter, kHidden, tx, b_gate);
+        gemv_w(stream, cache, p + "ffn_up_shexp.weight", kExpertInter, kHidden, tx, b_up);
         Tensor g_t{ b_gate.data(), DType::F16, 1, kExpertInter };
         Tensor u_t{ b_up.data(), DType::F16, 1, kExpertInter };
         Tensor s_t{ b_silu.data(), DType::F16, 1, kExpertInter };
         Tensor a_t{ b_act.data(), DType::F16, 1, kExpertInter };
         silu(stream, g_t, s_t);
         mul(stream, s_t, u_t, a_t);
-        gemv(stream, Wds, kHidden, kExpertInter, a_t, b_y);
+        gemv_w(stream, cache, p + "ffn_down_shexp.weight", kHidden, kExpertInter, a_t, b_y);
         Buffer b_sg(2);
-        gemv(stream, Wgi, 1, kHidden, tx, b_sg);
+        gemv_w(stream, cache, p + "ffn_gate_inp_shexp.weight", 1, kHidden, tx, b_sg);
         const float gate_dot = to_host(stream, b_sg, 1)[0];
         const float sg = 1.0f / (1.0f + std::exp(-gate_dot));
         Tensor y_t{ b_y.data(), DType::F16, 1, kHidden };
@@ -487,6 +561,7 @@ int main(int argc, char ** argv) {
 
         Device device(0);
         Stream stream(device);
+        WeightCache cache(g);
 
         // conv taps, newest last, per layer
         std::vector<std::vector<std::vector<float>>> layer_taps;
@@ -562,9 +637,9 @@ int main(int argc, char ** argv) {
 
                 std::vector<float> layer_out;
                 if (recr) {
-                    layer_out = gdn_step(stream, g, il, hnorm, layer_taps[(size_t) il], *gdn_states[(size_t) il]);
+                    layer_out = gdn_step(stream, g, cache, il, hnorm, layer_taps[(size_t) il], *gdn_states[(size_t) il]);
                 } else {
-                    layer_out = attn_step(stream, g, il, hnorm, t, T, *attn_states[(size_t) il]);
+                    layer_out = attn_step(stream, g, cache, il, hnorm, t, T, *attn_states[(size_t) il]);
                 }
                 for (int64_t i = 0; i < kHidden; ++i) xn[(size_t) i] += layer_out[(size_t) i];
 
@@ -575,7 +650,7 @@ int main(int argc, char ** argv) {
                 Tensor t_pan{ b_pan.data(), DType::F16, kHidden, 1 };
                 rms_norm(stream, t_x2, t_pan, kRmsEps, tn);
                 const std::vector<float> ffn_in = to_host(stream, bn, kHidden);
-                const std::vector<float> ffn_out = moe_ffn(stream, g, il, ffn_in);
+                const std::vector<float> ffn_out = moe_ffn(stream, g, cache, il, ffn_in);
                 for (int64_t i = 0; i < kHidden; ++i) xn[(size_t) i] += ffn_out[(size_t) i];
             }
             res[(size_t) t] = xn;

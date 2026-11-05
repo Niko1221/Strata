@@ -1,4 +1,4 @@
-// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
+﻿// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
 //
 // Every function takes FP16 operands on the device (the format the 910B Cube unit wants) and
 // has a matching `*_ref` CPU implementation in ops.cpp that the parity test compares against.

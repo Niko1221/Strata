@@ -13,6 +13,7 @@
 
 #include <acl/acl.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -76,25 +77,51 @@ struct Exec {
     }
 };
 
+// One workspace buffer for the whole process. Allocating it per op cost milliseconds and made a
+// 40-layer token look like 33 s; the ops themselves are microseconds.
+void * g_ws = nullptr;
+size_t g_ws_size = 0;
+
+void ensure_workspace(size_t need) {
+    if (need <= g_ws_size) {
+        return;
+    }
+    // Grow generously: a reallocation has to wait for the queue, and the ops themselves only need
+    // a few hundred kilobytes. Freeing a buffer that a queued kernel still points at corrupts it.
+    const size_t want = std::max<size_t>(need, 64u << 20);
+    if (g_ws) {
+        aclrtSynchronizeDevice();
+        aclrtFree(g_ws);
+        g_ws = nullptr;
+        g_ws_size = 0;
+    }
+    check_acl(aclrtMalloc(&g_ws, want, ACL_MEM_MALLOC_HUGE_FIRST), "aclrtMalloc(workspace)");
+    g_ws_size = want;
+}
+
 // Each op follows the same two-phase aclnn contract; this template keeps that boilerplate in one place.
 template <typename GetWs, typename Launch>
 void execute(Stream & stream, GetWs get_ws, Launch launch, const char * what) {
     uint64_t ws_size = 0;
     aclOpExecutor * exec = nullptr;
     check_status(get_ws(&ws_size, &exec), what);
-    void * ws = nullptr;
-    if (ws_size > 0) {
-        check_acl(aclrtMalloc(&ws, ws_size, ACL_MEM_MALLOC_HUGE_FIRST), "aclrtMalloc(workspace)");
-    }
-    aclnnStatus s = launch(ws, ws_size, exec, (aclrtStream) stream.handle());
-    if (ws) {
-        aclrtFree(ws);
-    }
-    check_status(s, what);
+    ensure_workspace((size_t) ws_size);
+    void * ws = ws_size > 0 ? g_ws : nullptr;
+    check_status(launch(ws, ws_size, exec, (aclrtStream) stream.handle()), what);
+    // Keep this: host uploads go through aclrtMemcpy, which is not ordered against queued kernels,
+    // so without a sync per op a later upload can overwrite a buffer an earlier kernel still reads.
     stream.synchronize();
 }
 
 } // namespace
+
+void release_workspace() {
+    if (g_ws) {
+        aclrtFree(g_ws);
+        g_ws = nullptr;
+        g_ws_size = 0;
+    }
+}
 
 void f32_to_f16(const float * src, uint16_t * dst, size_t n) {
     for (size_t i = 0; i < n; ++i) {

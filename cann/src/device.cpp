@@ -34,6 +34,9 @@ void init() {
 
 void shutdown() {
     if (g_initialized) {
+        // the ops share one workspace buffer; release it while the runtime is still up
+        extern void release_workspace();
+        release_workspace();
         aclFinalize();
         g_initialized = false;
     }
