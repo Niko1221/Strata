@@ -98,6 +98,58 @@ class SystemOneLoadGate(unittest.TestCase):
             httpd.server_close()
 
 
+class ReadoutGates(unittest.TestCase):
+    """F5 (B5+M6, 2026-11-05): verify-then-gate.  Source verification first: the only batch
+    check near server.py:6977 is inside prompt_progress() - it suppresses PROGRESS REPORTING
+    under --batch; nothing on the /v1/systemone route, jev.handle, or between them gates on
+    batch, multi or jevpos (grep: zero 'batch' occurrences in serve/jev.py before this fix).
+    So the gates are new: 503 with a clear reason on batch/multi, and on jevpos != 1."""
+
+    def _server(self):
+        tok = ByteTokenizer()
+        engine = DecisionEngine(tok, "A")
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        return engine, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def _req(self):
+        return {"state": {"k": 1},
+                "questions": {"q": {"type": "noul", "instructions": "on?"}}}
+
+    def test_batch_engine_is_refused_before_any_prompt(self):
+        engine, base = self._server()
+        engine.batch = 4                       # --batch: slot windows, no main-verifier rows
+        engine.prompts.clear()
+        st, body = post(base, "/v1/systemone", self._req())
+        self.assertEqual(st, 503, body)
+        self.assertIn("--batch", body["error"]["message"])
+        self.assertEqual(engine.prompts, [])   # refused before a prompt was sent
+
+    def test_multi_engine_is_refused(self):
+        engine, base = self._server()
+        engine.multi = 2                       # DeepSeek --parallel (server sets batch=multi)
+        st, body = post(base, "/v1/systemone", self._req())
+        self.assertEqual(st, 503, body)
+        self.assertIn("parallel", body["error"]["message"])
+
+    def test_engine_without_jevpos_is_refused(self):
+        engine, base = self._server()
+        engine.info.pop("jevpos", None)        # started without --jev-brow
+        engine.prompts.clear()
+        st, body = post(base, "/v1/systemone", self._req())
+        self.assertEqual(st, 503, body)
+        self.assertIn("--jev-brow", body["error"]["message"])
+        self.assertEqual(engine.prompts, [])
+
+    def test_jevpos_one_is_served(self):
+        engine, base = self._server()          # DecisionEngine advertises jevpos=1
+        st, body = post(base, "/v1/systemone", self._req())
+        self.assertEqual(st, 200, body)
+        self.assertIn("q", body["answers"])
+
+
 class ContextDefault(unittest.TestCase):
     """No `context`: the render must be exactly the donor's frozen shape."""
 

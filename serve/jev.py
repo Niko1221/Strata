@@ -345,6 +345,9 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
     label logits off that row.  The image rides the user turn via Strata's normal
     vision path (svc.prepare encodes + expands the pads); the question text sits
     AFTER the image so the readout position attends the full image."""
+    refused = _readout_refusal(svc.engine)      # B5+M6: same gates as the text path
+    if refused is not None:
+        return refused
     data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
     answers, in_tokens, readouts = {}, 0, 0
     # no outer fifo hold: svc.prepare takes its own engine turn for the encode,
@@ -726,6 +729,30 @@ def consolidated_rows(svc, state_text: str, qdefs: list, context_text: str = "")
     return units[-1]["ids"], [len(u["ids"]) - 1 for u in units]
 
 
+def _readout_refusal(engine) -> tuple[int, dict] | None:
+    """B5+M6 (2026-11-05, expert review): refuse engines whose readout would be silently
+    wrong or fatal, BEFORE any prompt is sent.
+
+    - --batch / --parallel (engine.batch or engine.multi): the batched generate path runs
+      slot windows; the main verifier's last_row_T_ and capture_window_rows are never updated
+      there, so BROW would answer a stale or foreign row - finite values, no error, silently
+      wrong.  503 until a slot readout exists.
+    - engine.info['jevpos'] != 1: an engine started without --jev-brow answers ERR BROW to
+      the first read; the server killed it and the model cold-started on the next request
+      (a cheap DoS).  INFO advertises jevpos= exactly when BROW works, so gate on it: 503
+      with a clear reason instead of an engine death."""
+    if getattr(engine, "batch", 0) or getattr(engine, "multi", 0):
+        return 503, {"error": {"type": "server_error",
+                               "message": "systemone is not available on a batch/parallel "
+                                          "engine (--batch/--parallel slots have no row "
+                                          "readout yet); run without --batch"}}
+    if getattr(engine, "info", {}).get("jevpos") != 1:
+        return 503, {"error": {"type": "server_error",
+                               "message": "systemone needs an engine started with --jev-brow "
+                                          "(the engine's INFO line does not advertise jevpos=1)"}}
+    return None
+
+
 def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     """POST /v1/systemone -> (HTTP status, body).  The whole inference holds the engine turn
     (svc.fifo), like every other engine-touching path."""
@@ -751,6 +778,9 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     if not hasattr(engine, "final_row_logits"):
         return 503, {"error": {"message": "systemone needs an engine with a logits readout "
                                            "(the M3.0 engine commit adds BROW)"}}
+    refused = _readout_refusal(engine)      # B5+M6: batch/jevpos gates, before any prompt
+    if refused is not None:
+        return refused
 
     state_text = render_state(req["state"])
     v_mode = mode == "V"

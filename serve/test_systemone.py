@@ -519,11 +519,15 @@ class RowReadout(unittest.TestCase):
         self.assertEqual(len(self.engine.prompts), 2)
         self.assertFalse(any("jevpos" in p for p in self.engine.pins))
 
-    def test_an_engine_without_jevpos_is_not_asked_for_rows(self):
+    def test_an_engine_without_jevpos_is_refused(self):
+        # M6 (2026-11-05): an engine without --jev-brow used to answer ERR BROW, get killed
+        # and cold-start the model on the next request.  Now: 503 with a clear reason, and
+        # still never asked for rows.
         self.engine.info.pop("jevpos", None)
-        st, _ = self._post(self.TWO)
-        self.assertEqual(st, 200)
-        self.assertEqual(len(self.engine.prompts), 2, "no capability, no one-prompt path")
+        st, body = self._post(self.TWO)
+        self.assertEqual(st, 503, body)
+        self.assertIn("--jev-brow", body["error"]["message"])
+        self.assertEqual(len(self.engine.prompts), 0, "refused before any prompt was sent")
         self.assertFalse(any("jevpos" in p for p in self.engine.pins))
 
 
