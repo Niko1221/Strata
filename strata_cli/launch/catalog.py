@@ -212,20 +212,47 @@ INTEL_ARC = {"0x56a1": ("Arc A750", 8.0), "0x56a2": ("Arc A580", 8.0), "0x56a0":
              "0xe212": ("Arc B50", 16.0)}
 
 
+#: PCI id ranges of Intel's discrete cards, for a model that is not in the table above (a new Battlemage or Alchemist part): such a card is counted as an
+#: Arc of the family's smallest memory, never named by model. The processors' own graphics (0x46xx, 0x7dxx, 0xa7xx, ...) are outside these ranges.
+INTEL_ARC_FAMILIES = ((0x5690, 0x56c1, 8.0), (0xe200, 0xe2ff, 10.0))
+
+
+def _arc_entry(did: str) -> tuple[str, float] | None:
+    if did in INTEL_ARC:
+        return INTEL_ARC[did]
+    try:
+        value = int(did, 16)
+    except ValueError:
+        return None
+    for low, high, gb in INTEL_ARC_FAMILIES:
+        if low <= value <= high:
+            return "Arc", gb
+    return None
+
+
 def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
-    """The Intel Arc cards on this Linux computer, read from the kernel's device list (empty elsewhere)."""
+    """The Intel Arc cards on this Linux computer, read from the kernel's device list (empty elsewhere). One unreadable entry or a card number
+    above 9 never hides the others, and the cards of other makes beside them (an AMD APU's graphics) do not matter here (#4971, #5111)."""
     cards: list[dict] = []
     try:
-        for dev in sorted(Path(root).glob("card[0-9]/device")):
-            if (dev / "vendor").read_text().strip() != "0x8086":
+        entries = sorted(Path(root).glob("card[0-9]*"), key=lambda p: (len(p.name), p.name))
+    except OSError:
+        return cards
+    for card in entries:
+        if "-" in card.name:                                 # a connector (card0-DP-1), not a card
+            continue
+        dev = card / "device"
+        try:
+            if (dev / "vendor").read_text().strip().lower() != "0x8086":
                 continue
             did = (dev / "device").read_text().strip().lower()
-            if did not in INTEL_ARC:
-                continue
-            name, gb = INTEL_ARC[did]
-            cards.append({"vendor": "intel", "name": "Intel " + name, "vram_gb": gb, "usable": True, "index": len(cards)})
-    except OSError:
-        pass
+        except OSError:
+            continue
+        entry = _arc_entry(did)
+        if entry is None:
+            continue
+        name, gb = entry
+        cards.append({"vendor": "intel", "name": "Intel " + name, "vram_gb": gb, "usable": True, "index": len(cards)})
     return cards
 
 
@@ -425,6 +452,8 @@ class Catalog:
             return family, match
         if not offered:
             raise ValueError(f"{match} is not offered by any model family here.")
+        if len(offered) > 1 and "deepseek41" in offered:     # UD-IQ1_M is Unsloth's name in two families (round 0214): the bare name stays DeepSeek's, as it was; the Qwen set is --family unsloth
+            return "deepseek41", match
         return ("qwen" if "qwen" in offered else offered[0]), match
 
     def tag_of(self, family: str, model: str) -> str:

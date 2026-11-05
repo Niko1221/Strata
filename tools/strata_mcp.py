@@ -77,6 +77,21 @@ FALLBACK_MODELS = {
     "Q8_0": {"about": "8-bit, the reference quality (every expert Q8_0); for a 192 GB PC",
              "download_gb": 188.2, "ram_gb": 136, "arena_gb": 128.3, "families": ("unsloth",), "budget": True,
              "vision": True},
+    # round 0214: Unsloth's v3.1 sets (setup.py MODELS; the about lines come with the wording commit)
+    "UD-IQ1_M": {"about": "~1-bit (Unsloth Dynamic v3.1), the smallest download", "download_gb": 68.0, "ram_gb": 48, "arena_gb": 34.8, "families": ("unsloth",), "budget": True,
+               "vision": True},
+    "UD-Q2_0": {"about": "2-bit (Unsloth Dynamic v3.1)", "download_gb": 70.5, "ram_gb": 48, "arena_gb": 37.4, "families": ("unsloth",), "budget": True,
+              "vision": True},
+    "UD-IQ2_XS": {"about": "2-bit i-quant (Unsloth Dynamic v3.1)", "download_gb": 75.8, "ram_gb": 48, "arena_gb": 42.3, "families": ("unsloth",), "budget": True,
+                "vision": True},
+    "UD-Q2_K_XL": {"about": "2-bit (Unsloth Dynamic v3.1) with some 3-bit experts", "download_gb": 79.6, "ram_gb": 48, "arena_gb": 46.0, "families": ("unsloth",), "budget": True,
+                 "vision": True},
+    "UD-IQ3_XXS": {"about": "3-bit i-quant (Unsloth Dynamic v3.1)", "download_gb": 83.6, "ram_gb": 48, "arena_gb": 50.3, "families": ("unsloth",), "budget": True,
+                 "vision": True},
+    "UD-Q3_K_XL": {"about": "3-bit (Unsloth Dynamic v3.1) with some 4-bit experts", "download_gb": 89.5, "ram_gb": 48, "arena_gb": 56.2, "families": ("unsloth",), "budget": True,
+                 "vision": True},
+    "UD-IQ4_XS-v31": {"about": "~4-bit i-quant (Unsloth Dynamic v3.1), a newer file than UD-IQ4_XS with other tensor types", "download_gb": 93.7, "ram_gb": 48, "arena_gb": 60.4, "families": ("unsloth",), "budget": True,
+                      "vision": True},
     "Gyro-S": {"about": "the smallest option, for PCs with little memory (27.6 GB of VRAM + RAM together); lower quality "
                         "than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster",
                "engine": (0, 1, 45, 1),
@@ -103,9 +118,9 @@ FALLBACK_FAMILIES = {
                                              "authors' numbers)", "tag": "swift-"},
     "coder": {"title": "Qwen3.8-Flash-Next Coder", "about": "half the experts (code, tools, images kept): needs ~32 GB "
                                                             "of RAM, faster; weaker outside coding", "tag": "coder-"},
-    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "about": "UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 "
-                                                                  "(94 to 188 GB downloads): every expert in RAM from "
-                                                                  "~80 GB (UD-IQ4_XS) to ~136 GB (Q8_0) of RAM, else "
+    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "about": "UD-IQ1_M, UD-Q2_0, UD-IQ2_XS, UD-Q2_K_XL, UD-IQ3_XXS, UD-Q3_K_XL, UD-IQ4_XS, UD-IQ4_XS-v31, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 "
+                                                                  "(68 to 188 GB downloads): every expert in RAM from "
+                                                                  "~50 GB (UD-IQ1_M) to ~136 GB (Q8_0) of RAM, else "
                                                                   "part of them read from the SSD",
                 "tag": "unsloth-", "vision": True},
     "gyro": {"title": "Qwen3.8-Flash-Next (Gyro)", "about": "Gyro-S (27.6 GB of memory) and Gyro-M (35 GB): the smallest "
@@ -1090,11 +1105,11 @@ class Strata:
         return hw
 
     def _mac_sizes(self, models: dict, family: str = "qwen") -> list:
-        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack) and agentionai's Gyro files (one
-        file, no repack). Unsloth's many-shard files need metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not
-        offer them yet."""
+        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack), agentionai's Gyro files (one
+        file, no repack) and, since round 0214, Unsloth's sets (many shards: setup.py's Mac install repacks them with
+        metal/tools/metal_repack.py, as the Terminal's setup does); a set the Metal engine cannot run yet is left out (mac_fit.MAC_MODELS "missing")."""
         mf = self.mac()
-        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == family and m in models] if mf else []
+        return [m for m in mf.app_sizes(family) if m in models] if mf else []
 
     def _mac_verdict(self, model: str, ram: float) -> str:
         mf = self.mac()
@@ -1138,7 +1153,7 @@ class Strata:
         ram = float(hw.get("ram_gb") or 0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
-        for family in ("qwen", "gyro"):                # Gyro after the regular sizes, as on a PC: never the default
+        for family in (self.mac().APP_FAMILIES if self.mac() else ("qwen", "gyro")):      # Qwen, Unsloth's sets, then Gyro: never the default
             fd = families.get(family)
             if fd is None:
                 continue
@@ -2047,7 +2062,7 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
              "family": {"type": "string", "enum": list(families),
                         "description": "qwen = Qwen3.8-Flash-Next (the original), swift = Swift 1.5 (thinks "
                                        "shorter), coder = the Coder (half the experts, ~32 GB RAM, for code), "
-                                       "unsloth = Unsloth's 4- to 8-bit files (UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, "
+                                       "unsloth = Unsloth's 1- to 8-bit files (UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, "
                                        "UD-Q6_K_XL, Q8_0): every expert in RAM where they fit, else part of them read "
                                        "from the SSD"},
              "model": {"type": "string", "enum": list(models),
@@ -2408,7 +2423,7 @@ class Tools:
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
-        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
+        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)             + (s.mac().repacked_gb(model) if mac and s.mac() else 0)       # a Mac repacks Unsloth's shards into one file for the GPU (mac_fit.repacked_gb)
         free = s.disk_free(target)
         short = None
         if free is not None and free < need:

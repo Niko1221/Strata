@@ -1391,6 +1391,17 @@ def active_control(root: Path) -> dict | None:
         return None
 
 
+def source_tree_version(root: Path | None = None) -> str | None:
+    """The version of a source checkout (it has no VERSION file): the project version in its CMakeLists.txt, the same rule `strata --version` uses.
+    Used only to PRINT what a checkout runs (`update --check` said `Control  ?: available`); the decision to stage a Control copy does not use it."""
+    root = root or Path(__file__).resolve().parents[1]
+    try:
+        found = re.search(r"^\s*project\([^)]*?VERSION\s+([0-9]+(?:\.[0-9]+)+)", (root / "CMakeLists.txt").read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+    except OSError:
+        return None
+    return found.group(1) if found else None
+
+
 def decide_control(feed: feedmod.Feed, ctx: Context, state: State) -> dict:
     here = ctx.hardware["platform"]
     pkg = next((p for p in feed.control if p.platform == here), None)

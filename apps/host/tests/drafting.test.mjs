@@ -42,7 +42,7 @@ test('the Models screen offers the choice next to context, DFlash2 only for Qwen
   assert.match(screen, /\.\.\.\(draftingChoices \? \{ values: \{ drafting \} \} : \{\}\)/);
   assert.match(screen, /Choosing MTP downloads its drafter: about \{0\} GB, once\./);
   assert.match(screen, /Choosing DFlash2 downloads its drafter: about \{0\} GB, once\./);
-  assert.match(screen, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2, native\?\.capabilities\?\.dflash2Split\)/, 'the fit uses the drafter that is chosen');
+  assert.match(screen, /resolveDrafter\(drafting, selectedSize\?\.sourceFamily \?\? selectedFamily\?\.family, native\?\.capabilities\?\.dflash2, splitCards\)/, 'the fit uses the drafter that is chosen, and the split word counts only with two or more cards');
   assert.match(screen, /loadedSelected\?\.metrics\?\.engine\?\.drafting_note/, 'what the engine said is shown');
 });
 
@@ -55,11 +55,11 @@ test('the host asks Control before a load, and Control decides (the app never re
       : { code: 0, json: { ok: true, event: 'result', pack: 'C:/d/dflash2/x.pack' }, text: '', stderr: '' };
   } });
   const plan = await control.draftingPlan({ mode: 'dflash2', family: 'gyro', dataDir: 'C:/d' });
-  assert.deepEqual(calls[0].args, ['drafting', 'plan', '--mode', 'dflash2', '--family', 'gyro', '--data-dir', 'C:/d', '--no-split', '--output', 'json']);
+  assert.deepEqual(calls[0].args, ['drafting', 'plan', '--mode', 'dflash2', '--family', 'gyro', '--data-dir', 'C:/d', '--output', 'json']);
   assert.equal(plan.needed, true);
   const events = [];
   await control.draftingFetch({ configPath: 'C:/w/cfg.json', mode: 'dflash2', onEvent: e => events.push(e) });
-  assert.deepEqual(calls[1].args, ['drafting', 'fetch', '--config', 'C:/w/cfg.json', '--mode', 'dflash2', '--no-split', '--if-needed', '--output', 'jsonl']);
+  assert.deepEqual(calls[1].args, ['drafting', 'fetch', '--config', 'C:/w/cfg.json', '--mode', 'dflash2', '--if-needed', '--output', 'jsonl']);
   assert.equal(calls[1].options.acquire, true, 'only this explicit step may reach the network');
   assert.equal(calls[0].options.acquire, undefined, 'planning never does');
   const failing = createControl({ control: { dir: 'C:/c', python: 'py', cli: 'strata.py' }, run: async () => ({ code: 5, json: { ok: false, error: { code: 'drafting_failed', message: 'The DFlash2 download did not finish.' } }, text: '', stderr: '' }) });
@@ -73,7 +73,7 @@ test('a load fetches the drafter first, never stops for it, and says what ran', 
   assert.match(prepare, /drafts\?\.needed!==true\)return/, 'only what Control says is needed is downloaded: DFlash2 for Auto and DFlash2, nothing for MTP and Off');
   assert.match(prepare, /control\.draftingFetch\(/);
   assert.match(prepare, /catch\(error\)\{if\(job\.state==='running'\)\{job\.drafterNote=error\.message;/, 'a failed download leaves the MTP and the job says so');
-  assert.match(source, /await prepareDrafter\(job,args,cfg,configFile,drafts\)/);
+  assert.match(source, /await prepareDrafter\(job,args,cfg,configFile,drafts,\{noSplit\}\)/);
   assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&[\s\S]*?\{[\s\S]*?await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load (and a plain Auto load when the plan says split)');
   assert.match(source, /async function noteDrafting\(job,instance,key\)/);
   assert.match(source, /instance\.status='ready';instance\.phase='idle';await noteDrafting\(job,instance,key\)/);
@@ -259,15 +259,14 @@ test('the MTP fetch the app makes names the folder of the model own files, so th
   assert.match(source, /async function installMtpLayer\(job,args,config\)\{[\s\S]*?const native=\(\(\)=>\{const a=\(config\.args\?\?\[\]\)\.map\(String\),i=a\.indexOf\('--native'\)[\s\S]*?install\(job,\{family:fam\.family,model:size\.model,drafter:'mtp',vision:args\.vision\?\?\(config\.vision\?'yes':'no'\),\.\.\.\(native\?\{gguf_dir:dirname\(native\)\}:\{\}\)\}\)/);
 });
 
-test('in 0.2.10 the app never plans or fetches for the all-cards split: every drafting call carries --no-split, and the label and fit say DFlash2 for Auto', async () => {
+test('0.2.10.1: the app plans and fetches like the Terminal (no --no-split), and Auto on a computer where Control says split is the MTP in the label and the fit', async () => {
   const calls = [];
   const control = createControl({ control: { dir: 'C:/c', python: 'py', cli: 'strata.py' }, run: async args => { calls.push({ args }); return { code: 0, json: { ok: true, event: 'result', serves: true }, text: '', stderr: '' }; } });
   await control.draftingPlan({ mode: 'auto' });
   await control.draftingPlan({ configPath: 'C:/w/cfg.json', mode: 'auto', family: 'unsloth', dataDir: 'C:/d' });
   await control.draftingFetch({ configPath: 'C:/w/cfg.json', mode: 'auto' });
-  for (const c of calls) assert.ok(c.args.includes('--no-split'), c.args.join(' '));
   assert.equal(calls.length, 3);
-  // the plan of a machine whose Control says no split leaves Auto as DFlash2 in the app's words
+  for (const c of calls) assert.ok(!c.args.includes('--no-split'), c.args.join(' '));
   const { transform } = await import('esbuild');
   const code = (await transform(read('../src/lib/drafting.ts'), { loader: 'ts', format: 'esm' })).code;
   const ts = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
@@ -276,6 +275,12 @@ test('in 0.2.10 the app never plans or fetches for the all-cards split: every dr
     assert.equal(ts.resolveDrafter('auto', 'unsloth', true, split), 'dflash2');
     assert.equal(host.resolveDrafter('auto', 'unsloth', true, split), 'dflash2');
   }
-  assert.match(read('../server/control-runtime.mjs'), /'--no-split', '--output', 'json'\]/);
-  assert.match(read('../server/control-runtime.mjs'), /'--no-split', '--if-needed', '--output', 'jsonl'\]/);
+  // Control's word split:true (capabilities.dflash2Split, read from `drafting plan` at start-up) makes Auto the MTP; a person's own DFlash2 stays
+  assert.equal(ts.resolveDrafter('auto', 'unsloth', true, true), 'mtp');
+  assert.equal(host.resolveDrafter('auto', 'unsloth', true, true), 'mtp');
+  assert.equal(ts.resolveDrafter('dflash2', 'unsloth', true, true), 'dflash2');
+  assert.equal(host.resolveDrafter('dflash2', 'unsloth', true, true), 'dflash2');
+  assert.equal(ts.resolveDrafter('off', 'unsloth', true, true), 'off');
+  assert.match(read('../server/native-control.mjs'), /dflash2Split=p\.split===true/, 'the probe reads the split word of Control');
+  assert.doesNotMatch(read('../server/control-runtime.mjs'), /'--no-split', '--output', 'json'\]|'--no-split', '--if-needed'/);
 });

@@ -145,18 +145,18 @@ export function fileSize(bytes: number): string {
 
 const csvText = (rows: string[][]) => rows.map(r => r.map(c => (/[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(',')).join('\n');
 
-interface PreviewAnswer { kind: DeliverableKind; name: string; path: string; size: number; url?: string; text?: string; rows?: string[][]; rawUrl?: string; note?: string }
+interface PreviewAnswer { kind: DeliverableKind; name: string; path: string; size: number; mtime?: number; url?: string; text?: string; rows?: string[][]; rawUrl?: string; note?: string }
 
 /** The sidebar preview of a file: the host reads it (only inside the chat's folder) and the page draws it as a website, markdown, table, picture, PDF or code. */
 export async function previewOf(sessionId: string, file: { path: string; name: string }): Promise<PreviewArtifact> {
   const a = await api.get<PreviewAnswer>(`/api/files/preview?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(file.path)}`);
-  const id = `file:${a.path}`, title = a.name || file.name;
-  if (a.kind === 'image' && a.rawUrl) return { id, kind: 'image', title, url: a.rawUrl };
-  if (a.kind === 'pdf' && a.rawUrl) return { id, kind: 'pdf', title, url: a.rawUrl };
-  if (a.kind === 'html' && a.text !== undefined) return { id, kind: 'website', title, content: a.text };
-  if (a.kind === 'markdown' && a.text !== undefined) return { id, kind: 'markdown', title, content: a.text };
-  if (a.kind === 'csv' && a.rows) return { id, kind: 'table', title, content: csvText(a.rows) };
-  if (a.text !== undefined) return { id, kind: 'code', title, content: a.text };
+  const id = `file:${a.path}`, title = a.name || file.name, at = Date.now(), version = a.mtime !== undefined ? `${a.mtime}:${a.size}` : undefined;
+  if (a.kind === 'image' && a.rawUrl) return { id, kind: 'image', title, url: a.rawUrl, version, at };
+  if (a.kind === 'pdf' && a.rawUrl) return { id, kind: 'pdf', title, url: a.rawUrl, version, at };
+  if (a.kind === 'html' && a.text !== undefined) return { id, kind: 'website', title, content: a.text, at };
+  if (a.kind === 'markdown' && a.text !== undefined) return { id, kind: 'markdown', title, content: a.text, at };
+  if (a.kind === 'csv' && a.rows) return { id, kind: 'table', title, content: csvText(a.rows), at };
+  if (a.text !== undefined) return { id, kind: 'code', title, content: a.text, at };
   throw new Error(a.note || 'This file has no preview. Open it in its own app.');
 }
 

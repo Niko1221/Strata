@@ -73,6 +73,19 @@ template <typename T> T* hpalloc(size_t n) {
     return (T*) p;
 }
 
+#if FNX_HIP
+// FNX_PF_PEER: n zeroed values of fine-grained device memory on the current card (the other cards' kernels store into it; hip/peer.h enabled the access), released by ~Engine
+template <typename T> T* ppalloc(size_t n) {
+    void* p = nullptr;
+    if (hipExtMallocWithFlags(&p, n * sizeof(T), hipDeviceMallocFinegrained) != hipSuccess)
+        throw std::runtime_error("prefill: fine-grained device allocation of " + std::to_string(n * sizeof(T) >> 10) + " KiB failed");
+    pf_card_bytes += n * sizeof(T);
+    ckc(FNX_ZERO_DEV(p, n * sizeof(T)), "peer buffer clear");
+    own_dev(p);
+    return (T*) p;
+}
+#endif
+
 // a grid of at most 4096 blocks over n values, 256 threads each
 inline unsigned grid_for(size_t n) { return (unsigned) std::min<size_t>(4096, (n + 255) / 256); }
 
@@ -134,6 +147,78 @@ static __global__ void k_pfr_add_gather(const __half2* __restrict__ in, const fl
     if (dst.sysfence) __threadfence_system();
 #endif
 }
+#if FNX_HIP
+// FNX_PF_PEER, small chunks (rows <= p.a2a_rows): the sum in ONE cross-card latency instead of the ring's NCARD hops of copy + flag + wait. Every card stores its f32 addends of the
+// chunk into slot [its number] of every other card's mailbox (device memory of the receiver, fine-grained), the last block to finish its stores raises the flag [its number] on
+// every other card; then every card waits for its NCARD - 1 flags and makes the whole sum itself, row by row in the ring's own order and roundings: part k of the rows
+// (rows [k C / n, (k + 1) C / n)) starts as f16(addend of card k), then card k + 1, k + 2, ... add their f32 addend to the f16 value and round to f16 again, so the result is
+// bit for bit what the ring (PACK, ADD, GADD, OUT) produces. A flag is the sum's number (a wait passes on >=); one flag word per sender is enough: a sender cannot be a
+// sum ahead of a set this card still reads (its next write to the same set follows this card's next sum).
+static __global__ void k_pfa_push(const float4* __restrict__ x, int n4, float4* const* __restrict__ peer_box, unsigned* const* __restrict__ peer_flag, unsigned* __restrict__ counter,
+                                  int g, unsigned seq, size_t set_off4, size_t slot4) {
+    for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n4; e += gridDim.x * blockDim.x) {
+        const float4 v = x[e];
+#pragma unroll
+        for (int d = 0; d < NCARD; ++d)
+            if (d != g) peer_box[d][set_off4 + (size_t) g * slot4 + e] = v;
+    }
+    __threadfence_system();
+    __syncthreads();
+    __shared__ bool last;
+    if (threadIdx.x == 0) last = atomicAdd(counter, 1u) == gridDim.x - 1;
+    __syncthreads();
+    if (last && threadIdx.x == 0) {
+        __threadfence_system();
+        *counter = 0u;
+#pragma unroll
+        for (int d = 0; d < NCARD; ++d)
+            if (d != g) *(volatile unsigned*) (peer_flag[d] + g) = seq;
+        __threadfence_system();
+    }
+}
+static __global__ void k_pfa_sum(float* __restrict__ x, int C, const float4* __restrict__ box, const unsigned* __restrict__ flag, int g, unsigned seq, size_t set_off4,
+                                 size_t slot4, unsigned* err) {
+    if (threadIdx.x < NCARD && (int) threadIdx.x != g) {
+        const long long t0 = clock64();
+        while ((int) (*(volatile const unsigned*) (flag + threadIdx.x) - seq) < 0) {
+            __builtin_amdgcn_s_sleep(1);
+            if (clock64() - t0 > 4000000000LL) { atomicOr(err, 1u); break; }
+        }
+    }
+    __syncthreads();
+    __threadfence();
+    const int n4 = C * N / 4;
+    for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n4; e += gridDim.x * blockDim.x) {
+        const int row = (e * 4) / N;
+        int k = 0;
+        while (k + 1 < NCARD && row >= (k + 1) * C / NCARD) ++k;   // the part this row is in
+        float4 a[NCARD];
+#pragma unroll
+        for (int c = 0; c < NCARD; ++c) {
+            if (c == g) a[c] = reinterpret_cast<const float4*>(x)[e];
+            else {
+                const volatile float* src = reinterpret_cast<const volatile float*>(box + set_off4 + (size_t) c * slot4 + e);
+                a[c] = make_float4(src[0], src[1], src[2], src[3]);
+            }
+        }
+        float r[4] = {0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            float acc = 0.f;
+#pragma unroll
+            for (int s = 0; s < NCARD; ++s) {
+                const int c = (k + s) % NCARD;
+                const float v = (j == 0 ? a[c].x : j == 1 ? a[c].y : j == 2 ? a[c].z : a[c].w);
+                const float t = s == 0 ? v : acc + v;
+                if (!(fabsf(t) <= RING_MAX)) atomicOr(err, 2u);
+                acc = __half2float(__float2half(t));
+            }
+            r[j] = acc;
+        }
+        reinterpret_cast<float4*>(x)[e] = make_float4(r[0], r[1], r[2], r[3]);
+    }
+}
+#endif
 // FNX_PF_DMA_CHECK=1: the device copy a DMA made against the host buffer it read, compared by a kernel right after the copy; a block that finds a
 // difference prints once (the DMA saw older data than a later load: the peer's stores were not visible to the copy engine yet)
 static __global__ void k_pfr_cmp(const uint4* __restrict__ dev, const uint4* __restrict__ host, size_t n16, int card, int what, int rows0, unsigned* err) {
@@ -169,8 +254,12 @@ static __global__ void k_pfr_out_chk(const __half2* __restrict__ ag, float2* __r
 // copy into the next card is followed by a flag there; the step after waits on this card's flag (stream memory
 // operations: no SM time, no host). Both files' ring shapes run it: Flash-Next's PfRing and the 27B's Pf, which holds
 // the same buffers and takes its sequence number and copy-engine stream from itself rather than from the caller.
+//
+// own_out (FNX_PF_HCSPLIT): the sum's consumer works on this card's own part of the rows alone (the part it finishes, (g + 1) % n), so the
+// gather half of the ring is skipped: no PASS, no gather flags, and OUT converts only the finished part into x. The part's values are the
+// ones the full OUT would give.
 template <typename Ring>
-inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned seq, unsigned* err, cudaStream_t s) {
+inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned seq, unsigned* err, cudaStream_t s, bool own_out = false) {
     if (r.plan.empty() || r.plan.front().part != g) throw std::runtime_error("prefill: the ring's plan is not card " + std::to_string(g) + "'s");
     const int set = (int) (seq & 1u), fin_part = (g + 1) % NCARD;   // the part this card finishes (pf_ring_plan)
     __half* const own_ag = r.dma ? r.dag[set] : r.ag[set];             // where this card's gathered rows are (device with DMA, host without)
@@ -207,6 +296,26 @@ inline void pf_ring_run(const Ring& r, int dev, int g, float* x, int C, unsigned
                                                                        rows(part) * N / 2, (__half2*) out, err);
     };
     for (const PfRingOp& o : r.plan) {
+        if (own_out) {   // only the reduce-scatter half and this card's finished part
+            if (o.k == PfRingOp::PASS || o.k == PfRingOp::SIGNALA || o.k == PfRingOp::WAITA) continue;
+            if ((o.k == PfRingOp::SIGNAL || o.k == PfRingOp::WAIT) && o.step >= NCARD - 1) continue;
+            if (o.k == PfRingOp::GADD) {   // the finishing add into this card's rows alone
+                if (rows(o.part) > 0) {
+                    if (r.dma) {
+                        ckc(cudaMemcpyAsync(r.din[o.hop][set], r.in[o.hop][set], (size_t) rows(o.part) * N * sizeof(__half), cudaMemcpyDefault, s), "ring in");
+                        dma_fence();
+                    }
+                    add(r.dma ? r.din[o.hop][set] : r.in[o.hop][set], o.part, own_ag + (size_t) r0(o.part) * N);
+                }
+                continue;
+            }
+            if (o.k == PfRingOp::OUT) {
+                if (rows(fin_part) > 0)
+                    k_pfr_out<<<grid_for((size_t) rows(fin_part) * N / 2), 256, 0, s>>>((const __half2*) (own_ag + (size_t) r0(fin_part) * N),
+                                                                                     (float2*) (x + (size_t) r0(fin_part) * N), rows(fin_part) * N / 2);
+                continue;
+            }
+        }
         switch (o.k) {
             case PfRingOp::PACK:
                 if (rows(o.part) > 0)
