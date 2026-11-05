@@ -178,7 +178,7 @@ struct SavedConversation {
     int64_t layer_lo = 0, layer_hi = 0;
     ConversationCheckpoint live;
     std::vector<ConversationCheckpoint> checkpoints;
-    std::vector<ConversationKv> kv; // main layers followed by the draft layer
+    std::vector<ConversationKv> kv; // this stage's main layers; the draft layer is appended only to the image that owns it
     bool cvec = true;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
