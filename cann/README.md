@@ -255,10 +255,54 @@ budget. The workspace cache removed an `aclrtMalloc`/`aclrtFree` pair per op. Dr
 per-op `stream.synchronize()` as well made the numbers wrong — host uploads go through
 `aclrtMemcpy`, which is not ordered against queued kernels — so the sync stayed.
 
+## One command
+
+```
+bash cann/tests/verify_all.sh [model.gguf]
+```
+
+builds, runs every check in this directory against the real model file, then compares the
+next-token distribution with a llama.cpp server on 18789 if one is running. Last run:
+
+```
+operators and blocks:
+  ok    aclnn ops against the CPU oracle
+  ok    quantized decoders against ggml
+  ok    gated delta net op
+  ok    one real layer from real weights
+  ok    the MoE FFN of blk.0
+  ok    the GDN block of blk.0
+  ok    GDN state across tokens
+  ok    rope
+  ok    the attention layer of blk.3
+  ok    attention with a KV cache
+  ok    the whole model, one token, NPU vs CPU
+
+against llama.cpp:
+  prompt 'The capital of France is' -> 5 tokens
+             llama.cpp                    cann/
+     11751   -0.584       11751   -0.564
+       264   -2.225         264   -2.236
+       279   -3.108         279   -3.079
+      3750   -3.428        3750   -3.486
+       271   -3.764         271   -3.845
+  same set of five: True   same order: 5/5
+  largest logprob difference: 0.081
+
+summary: 11 passed, 0 failed
+```
+
+The suite already earned its keep: the first run caught a real bug in the per-channel-gate path
+of `gdn()` (0.70 relative error at S=128). That path is not used by qwen3.5-moe, which gates with a
+scalar, so `gdn()` now refuses it instead of returning wrong numbers quietly.
+
 ## What is not here yet
 
 - The engine's own kernels: `src/` still compiles for CUDA only.
-- `ggml-cann` still has no `GGML_OP_GATED_DELTA_NET`, so the llama.cpp server keeps 3 of 4 layers
+- `ggml-cann` has no working `GGML_OP_GATED_DELTA_NET`. A first attempt was written and
+  measured: it ran, but produced garbage and was 14x slower on prefill than the CPU
+  fallback (3.0 vs 42 t/s), because per-head aclnn calls lose to a 128-thread CPU kernel
+  on matrices this small. Reverted; the CPU keeps those layers.
   on the CPU. This directory has a working device path, but wiring it into that backend is a
   separate change.
 - Fused dequant+matmul. The decoder works on the host today; a fast engine wants it fused on the
@@ -267,10 +311,10 @@ per-op `stream.synchronize()` as well made the numbers wrong — host uploads go
 - RoPE and the KV cache are done for the full-attention layers. What is left before a whole model
   runs: the 41-layer loop, the token embedding, the final norm and the lm head.
 - Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
+- The per-channel gate (KDA) form of the GDN op. It is refused rather than wrong; the
+  models this targets gate with a scalar.
 - Weights resident on the device: done for everything except unselected expert slabs, which are
   cached with a budget. A token still costs 13 s, dominated by ~1200 aclnn calls with a sync each.
-- Fusion: the eight selected experts share one input, so their gate and up projections could be one
-  matmul over a stacked weight instead of sixteen. That is the next large win.
 - Serving: this stack is not wired to `serve/`; the running server is llama.cpp with `ggml-cann`.
 
 ## Verified on the machine
@@ -300,9 +344,8 @@ Q6_K   vs ggml: max|diff| = 0  BIT-EXACT
 
 ```
 case                 attn|diff|  state|diff|  result
-kda    S=64  T=8       0.000360     0.003886  PASS
-scalar S=64  T=8       0.000360     0.001168  PASS
-kda    S=128 T=4       0.000175     0.001516  PASS
+scalar S=64  T=8       0.036772     0.001279  PASS
+(the KDA per-channel gate is refused by gdn(); qwen3.5-moe gates with a scalar)
 ```
 
 ```
