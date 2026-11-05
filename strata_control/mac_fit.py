@@ -183,6 +183,29 @@ def gpu_budget_gb(ram_gb: float) -> float:
     return ws
 
 
+# The families the Mac app (setup.py's mac_control_setup and the app's model list) installs: the GSQ-RCO Qwen files, Unsloth's sets (several shards:
+# metal/tools/metal_repack.py writes one GGUF for the GPU) and Gyro.  A set with "missing" is left out (METAL_Q5_0_DOWN above).
+APP_FAMILIES = ("qwen", "unsloth", "gyro")
+# What the repack and the pack work in beside the shards (the Mac install path counts it; the repacked file is MAC_MODELS' shard1_gb).
+REPACK_WORK_GB = 6.0
+
+
+def app_sizes(family: str) -> list[str]:
+    """The sizes the Mac app offers for a family: every MAC_MODELS entry of it that the Metal engine can run."""
+    return [m for m, d in MAC_MODELS.items() if d.get("family", "qwen") == family and not d.get("missing")]
+
+
+def repacked_gb(model: str) -> float:
+    """The disk the repacked GGUF takes (GB): shard1_gb for a many-shard Unsloth set, 0 for a file the engine maps as it is."""
+    d = MAC_MODELS.get(model, {})
+    return float(d["shard1_gb"]) if d.get("family") == "unsloth" and int(d.get("shards", 2)) > 2 else 0.0
+
+
+def install_disk_gb(model: str, download_left_gb: float) -> float:
+    """The free disk an install needs: what is still to download, the repacked file, and room to work."""
+    return float(download_left_gb) + repacked_gb(model) + REPACK_WORK_GB
+
+
 def model_need_gb(model: str) -> float:
     return MAC_MODELS[model]["shard1_gb"] + OVERHEAD_GB
 

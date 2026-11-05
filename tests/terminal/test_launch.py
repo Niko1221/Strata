@@ -149,7 +149,8 @@ class CatalogRules(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two ISTA-DAS sets run on a Mac, UD-IQ1_S since f-039; the Coder and UD-IQ1_M are offered with a "not run yet" line
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M",
+                                "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"})   # DeepSeek (0.2.7.1): the two ISTA; Unsloth's sets (round 0214: the Mac app repacks them; UD-IQ1_M is also DeepSeek's name)-DAS sets run on a Mac, UD-IQ1_S since f-039; the Coder and UD-IQ1_M are offered with a "not run yet" line
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
                 self.assertEqual(rows[name].family, "deepseek41")

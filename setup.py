@@ -9572,6 +9572,88 @@ def prepare_pack_only(a) -> int:
     return 0
 
 
+MAC_PREPARE_LOCK = ".preparing.lock"        # beside the repacked file, holds setup's pid from the repack to the end of the pack (metal/setup_mac.py PREPARE_LOCK)
+MAC_EXPERTS_MARGIN_GB = 10.0                # what stays free on the disk after the experts' streaming copy (metal/setup_mac.py EXPERTS_MARGIN_GB)
+
+
+def mac_tools_dir() -> Path:
+    """metal/tools: metal_repack.py (many Unsloth shards -> one GGUF for the GPU) and stream_experts.py; both ship in the installer's bundle."""
+    return Path(ROOT, "metal", "tools")
+
+
+def mac_ple_shard(files: list) -> Path:
+    """The shard that holds the n-gram table (per_layer_token_embd): the repacked file leaves it out and the engine reads it from there (--ple-gguf)."""
+    sys.path.insert(0, str(mac_tools_dir()))
+    import metal_repack as R
+    for f in files:
+        rd = R.Reader(f)
+        rd.f.close()
+        if any(t["name"] == R.PLE for t in rd.tensors):
+            return f
+    fail(f"no shard of {files[0].name} holds the n-gram table (per_layer_token_embd)")
+
+
+def mac_engine_pids() -> list[int]:
+    """Pids of this user's running Metal engines (`strata`): a repack beside an engine of 70-90 GB froze the 128 GB M5 Max twice."""
+    cmd = ["pgrep", "-x", "strata"]
+    if hasattr(os, "getuid"):
+        cmd[1:1] = ["-u", str(os.getuid())]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in out.split() if x.isdigit() and int(x) != os.getpid()]
+
+
+def mac_experts_file(native: Path) -> None:
+    """A streaming Mac: <model>.experts beside the GPU's GGUF (metal/tools/stream_experts.py), written only when the disk has room (metal/setup_mac.py experts_file)."""
+    from strata_control import mac_fit as MF
+    out = native.with_name(native.name + ".experts")
+    if out.exists() and done(out):
+        ok(f"the experts' streaming copy: {out.name}")
+        return
+    sys.path.insert(0, str(mac_tools_dir()))
+    import stream_experts as X
+    need = X.size_bytes(native) / 1e9
+    free = free_gb(native.parent)
+    if not os.access(native.parent, os.W_OK):
+        warn(f"{native.parent} cannot be written: the experts' streaming copy ({need:.0f} GB) is not written; the "
+             f"engine streams from the model file ({MF.STREAM_COPY_GAIN} slower)")
+        return
+    if free < need + MAC_EXPERTS_MARGIN_GB:
+        warn(f"the experts' streaming copy needs {need:.0f} GB and {MAC_EXPERTS_MARGIN_GB:.0f} GB to spare on the disk "
+             f"({free:.0f} GB free): not written; the engine streams from the model file ({MF.STREAM_COPY_GAIN} "
+             f"slower). Free some space and run ./setup.sh --setup again to add it")
+        return
+    say(f"  Writing the experts in SSD-read order (one time, {need:.0f} GB; each expert is read with one request) ...")
+    run([sys.executable, str(mac_tools_dir() / "stream_experts.py"), "--gguf", str(native), "--verify"])
+    mark(out)
+    ok(f"the experts' streaming copy: {out.name}")
+
+
+def mac_prepare_lock(native: Path) -> Path:
+    """Take the prepare lock beside the repacked file (it holds our pid from the repack to the end of the pack: metal/setup_mac.py's start() and the engine look at it),
+    and never beside a running engine: an engine of 70-90 GB beside a repack froze the 128 GB M5 Max twice.  The caller removes the lock."""
+    running = mac_engine_pids()
+    if running:
+        fail(f"a Strata engine is running (pid {running[0]}): preparing a model beside it can freeze this Mac",
+             "stop the model in Strata (unload it), then install again")
+    native.parent.mkdir(parents=True, exist_ok=True)
+    lock = native.parent / MAC_PREPARE_LOCK
+    lock.write_text(str(os.getpid()))
+    return lock
+
+
+def mac_repack(files: list, model: str, native: Path) -> None:
+    """Unsloth's many-shard set as ONE GGUF for the GPU (metal/tools/metal_repack.py --verify: every tensor hashed against its shard; the n-gram table stays
+    in its shard); the same step as metal/setup_mac.py."""
+    from strata_control import mac_fit as MF
+    say(f"  Writing the model's experts and weights into one file for the GPU (one time, "
+        f"{MF.MAC_MODELS[model]['shard1_gb']:.0f} GB) ...")
+    run([sys.executable, str(mac_tools_dir() / "metal_repack.py"), "--shard1", str(files[0]), "--out", str(native), "--verify"])
+    mark(native)
+
+
 def mac_control_setup(a) -> int:
     """The app (and the Terminal's `strata launch`) on a Mac, STRATA_CONTROL_INSTALL=1: the same job as on Windows and Linux. It
     downloads and prepares the model files and writes a run config whose engine is "component:strata-engine"; it builds nothing
@@ -9601,8 +9683,8 @@ def mac_control_setup(a) -> int:
         fail(problems[0])
 
     step(2, "your choices")
-    app_sizes = [m for m, d in MF.MAC_MODELS.items() if d.get("family", "qwen") in ("qwen", "gyro")]   # Gyro: one file, no repack
-    if a.family not in (None, "qwen", "gyro"):
+    app_sizes = [m for f in MF.APP_FAMILIES for m in MF.app_sizes(f)]   # Gyro: one file, no repack; Unsloth's sets: the repack below (round 0214)
+    if a.family not in (None, *MF.APP_FAMILIES):
         fail(f"the app on a Mac runs the Qwen3.8-Flash-Next sizes ({', '.join(app_sizes)}); {a.family} is not one of them",
              "choose Qwen3.8-Flash-Next")
     rec, notes = MF.recommend_model(ram)
@@ -9660,7 +9742,10 @@ def mac_control_setup(a) -> int:
     if problem:                                        # files Strata cannot run, or another choice's files
         fail(*problem)
     mark_whole_unless_pinned(files, model_hf(fam, model) if fam.get("hf") else None, bool(a.gguf_dir))     # a whole file copied in by hand has no finish mark
-    need = (0 if a.gguf_dir or all(s.exists() and done(s) for s in files) else MODELS[model]["download_gb"]) + 6
+    repacked = family == "unsloth" and len(files) > 2           # Unsloth's many-shard set: one GGUF for the GPU (mac_repack), the n-gram table left in its shard
+    native = data / "metal" / f"{tag.lower()}-metal.gguf"
+    need = MF.install_disk_gb(model, 0 if a.gguf_dir or all(s.exists() and done(s) for s in files) else MODELS[model]["download_gb"]) \
+        - (MF.repacked_gb(model) if native.exists() and done(native) else 0.0)
     if free_gb(models_dir if models_dir.exists() else data) < need:
         warn(f"about {need:.0f} GB are needed on the disk: kept as you chose; it may run out")
     if not a.gguf_dir:
@@ -9692,9 +9777,20 @@ def mac_control_setup(a) -> int:
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
-    if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
-        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(files[0]), "--out", str(pack),
-             *fam.get("pack_args", [])], env=env)       # Gyro: --compat-bf16
+    shards = [files[0], files[0]] if family == "gyro" else files      # Gyro: one file, the model and its n-gram table
+    pack_todo = not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists()
+    prep_lock = mac_prepare_lock(native) if repacked and (pack_todo or not (native.exists() and done(native))) else None
+    try:
+        if repacked:
+            if not (native.exists() and done(native)):
+                mac_repack(files, model, native)
+            shards = [native, mac_ple_shard(files)]
+        if pack_todo:
+            run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
+                 *fam.get("pack_args", [])], env=env)       # Gyro and Unsloth: --compat-bf16 (the host's copies; the GPU reads the file)
+    finally:
+        if prep_lock is not None:
+            prep_lock.unlink(missing_ok=True)
     ok(f"model prepared: {pack}")
     use_mtp = MF.stream_mtp(stream, ram)
     mtp = (find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
@@ -9719,11 +9815,12 @@ def mac_control_setup(a) -> int:
         rt.mkdir(parents=True, exist_ok=True)          # the Metal engine reads mtp-q2_0.gguf beside it (no rt pack)
         refresh_draft_vocab(rt, a.draft_vocab or "cjk")
         ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
+    if repacked and stream and ram < MF.STREAM_MTP_FROM_GB:
+        mac_experts_file(shards[0])                    # a small Mac: its misses are many; a big Mac's arena holds most experts
 
     step(7, "writing the run settings")
     port = a.port or 8080
-    args = MF.engine_args(pack, [files[0], files[0]] if family == "gyro" else files, rt, ctx, stream, ram,
-                          ROOT / "data" / "expert-profile.bin", model)      # Gyro: one file, the model and its n-gram table
+    args = MF.engine_args(pack, shards, rt, ctx, stream, ram, ROOT / "data" / "expert-profile.bin", model)     # Unsloth: --native the repacked file, --ple-gguf the table's shard
     cfg = {"exe": engine_exe(Path("engine")), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": [], "port": port, "backend": "metal", "env": {"STRATA_METAL_STREAM": "1" if stream else "0"}}
