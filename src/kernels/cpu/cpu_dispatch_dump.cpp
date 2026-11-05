@@ -12,6 +12,7 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -57,7 +58,7 @@ uint64_t fnv(uint64_t h, const void* p, size_t n) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    std::vector<std::string> pairs = split("iq3_xxs/q5_0,iq3_xxs/iq4_nl,iq4_xs/q5_0,iq4_xs/iq4_nl,iq3_s/iq4_nl,iq2_s/iq4_nl,iq4_xs/q8_0");
+    std::vector<std::string> pairs = split("iq3_xxs/q5_0,iq3_xxs/iq4_nl,iq4_xs/q5_0,iq4_xs/iq4_nl,iq3_s/iq4_nl,iq2_s/iq4_nl,iq4_xs/q8_0,iq2_s/q2_0,iq3_xxs/q2_0");
     int nt_max = 8, experts = 3;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -94,6 +95,14 @@ int main(int argc, char** argv) {
         float* ff[kMaxT];
         float* out[kMaxT];
         for (int t = 0; t < kMaxT; ++t) { act[t] = xa[(size_t) t].data(); hq[t] = ha[(size_t) t].data(); ff[t] = ffv[(size_t) t].data(); out[t] = outv[(size_t) t].data(); }
+        // a Q2_0 down (or gate/up) takes the pool's own path (pool.cpp): the activation as an ActQ and Strata's Q2_0 rows, not ggml's dot
+        const bool q2_down = cpu::q2_native_kernels(f.d_type), q2_gu = cpu::q2_native_kernels(f.gu_type);
+        std::vector<cpu::ActQ> h2(q2_down ? kMaxT : 0), x2(q2_gu ? kMaxT : 0);
+        const cpu::ActQ* a2[kMaxT] = {};
+        const cpu::ActQ* ax[kMaxT] = {};
+        std::vector<std::vector<float>> gv(q2_gu ? kMaxT : 0, std::vector<float>(kFF)), uv(q2_gu ? kMaxT : 0, std::vector<float>(kFF));
+        float* gp2[kMaxT] = {};
+        float* up2[kMaxT] = {};
         uint64_t total = 1469598103934665603ull;
         for (int e = 0; e < experts; ++e) {
             for (int64_t r = 0; r < 2 * kFF; ++r) {
@@ -108,8 +117,10 @@ int main(int argc, char** argv) {
                 std::vector<float> x(kH), h(kFF);
                 for (auto& v : x) v = xd(rng);
                 for (auto& v : h) v = 0.3f * xd(rng);
-                cpu::native_quant_act(f, x.data(), xa[(size_t) t].data());
-                cpu::native_quant_h(f, h.data(), ha[(size_t) t].data());
+                if (q2_gu) { cpu::act_quant_any(x.data(), (int) kH, x2[(size_t) t]); ax[t] = &x2[(size_t) t]; gp2[t] = gv[(size_t) t].data(); up2[t] = uv[(size_t) t].data(); }
+                else cpu::native_quant_act(f, x.data(), xa[(size_t) t].data());
+                if (q2_down) { cpu::act_quant_any(h.data(), (int) kFF, h2[(size_t) t]); a2[t] = &h2[(size_t) t]; }
+                else cpu::native_quant_h(f, h.data(), ha[(size_t) t].data());
             }
             for (int nt = 1; nt <= nt_max && nt <= kMaxT; ++nt) {
                 // whole range, then a range starting and ending off any 8/16/64 boundary
@@ -118,7 +129,20 @@ int main(int argc, char** argv) {
                     for (int rg = 0; rg < 2; ++rg) {
                         for (auto& v : ffv) std::fill(v.begin(), v.end(), 0.f);
                         for (auto& v : outv) std::fill(v.begin(), v.end(), 0.f);
-                        if (inv) {
+                        if (q2_gu || q2_down) {
+                            if (inv) continue;   // the Q2_0 rows have one arithmetic
+                            if (q2_gu) {
+                                cpu::q2_rows_any(blob.data(), f.gu_row, (int) (kH / 64), ax, nt, gp2, ranges[rg][0], ranges[rg][1]);
+                                cpu::q2_rows_any(blob.data() + f.up_off, f.gu_row, (int) (kH / 64), ax, nt, up2, ranges[rg][0], ranges[rg][1]);
+                                for (int t = 0; t < nt; ++t)
+                                    for (int r = ranges[rg][0]; r < ranges[rg][1]; ++r)
+                                        ffv[(size_t) t][(size_t) r] = (gp2[t][r] / (1.f + std::exp(-gp2[t][r]))) * up2[t][r];
+                            } else {
+                                cpu::native_gu_rows(f, blob.data(), act, nt, ff, ranges[rg][0], ranges[rg][1]);
+                            }
+                            if (q2_down) cpu::q2_rows_any(blob.data() + f.down_off, f.d_row, (int) (f.n_ff / 64), a2, nt, out, ranges[rg][2], ranges[rg][3]);
+                            else cpu::native_down_rows(f, blob.data(), hq, nt, out, ranges[rg][2], ranges[rg][3]);
+                        } else if (inv) {
                             cpu::native_gu_rows_invariant(f, blob.data(), act, nt, ff, ranges[rg][0], ranges[rg][1]);
                             cpu::native_down_rows_invariant(f, blob.data(), hq, nt, out, ranges[rg][2], ranges[rg][3]);
                         } else {
