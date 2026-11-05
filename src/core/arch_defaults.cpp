@@ -243,12 +243,15 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
     }
     {   // gfx12 defaults that change the answers (gfx12_extra.hpp): the matrix-core QSA scorer from 28,672 tokens; its own line
         const auto vc = gfx12_value_changing_env(gcn_arch);
-        bool any = false;
+        bool any = false, kq = false;
         for (const auto& kv : vc) {
             if (std::getenv(kv.first.c_str()) != nullptr) continue;
             set_default(kv);
-            any = true;
+            if (kv.first == "STRATA_MMQ_KQ") kq = true; else any = true;
         }
+        if (kq)   // the engine says nothing more on a pack without K-quant experts: the variable is never read there
+            std::fprintf(stderr, "strata: gfx12 (RDNA4): a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (+10..17%% prompt speed on an R9700, "
+                                 "first-token KL against the FP16 path about 0.03; STRATA_MMQ_KQ=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
         const char* wm = std::getenv("STRATA_SELECT_WMMA");   // the line is only true while the scorer switch is not set to 0
         if (any && !(wm != nullptr && wm[0] == '0'))
             std::fprintf(stderr, "strata: gfx12 (RDNA4): the matrix-core QSA block scorer is on once a prompt is past 28,672 tokens (+5.7%% prompt speed at 98K on an R9700, shorter prompts unchanged; "

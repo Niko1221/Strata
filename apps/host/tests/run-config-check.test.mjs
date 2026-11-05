@@ -41,6 +41,17 @@ test('every key the app edits is a known key', () => {
   for (const field of NATIVE_FIELDS) assert.ok(KNOWN_KEYS.has(field.id), field.id);
 });
 
+test('every key setup itself writes into a run config is a known key, so a freshly set-up model shows no warning in the settings file panel (QA 0213: "args_written" was flagged as unknown)', async () => {
+  const setup = await readFile(new URL('../../../setup.py', import.meta.url), 'utf8');
+  const block = /^SETUP_KEYS = frozenset\(\{([^}]*)\}\)/m.exec(setup);
+  assert.ok(block, 'SETUP_KEYS is in setup.py');
+  const keys = [...block[1].matchAll(/"([a-z_]+)"/g)].map(m => m[1]);
+  assert.ok(keys.includes('args_written') && keys.length > 10);
+  for (const key of [...keys, 'user_args']) assert.ok(KNOWN_KEYS.has(key), `${key} is written by setup/the app but the settings check calls it unknown`);
+  const text = JSON.stringify({ exe: 'e', args: ['--native', 'm'], args_written: ['--native', 'm'], user_args: ['--pool-workers', '8'], port: 8080 });
+  assert.deepEqual(checkRunConfig(text), { ok: true, issues: [] });
+});
+
 test('broken JSON is reported with its line, in plain words', () => {
   const text = '{\n  "args": ["--ple-io" "mmap"],\n  "port": 8080\n}';
   const result = checkRunConfig(text);

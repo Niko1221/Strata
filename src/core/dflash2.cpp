@@ -307,6 +307,7 @@ bool Dflash2Drafter::bind_raw(EmbedFn embed, const void* head_w, int head_type, 
     return true;
 }
 
+#ifndef STRATA_DF2_NO_BIND   // the split engine (src/split) binds through bind_raw only: bind() copies head rows between cards with the peer API
 bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const std::string& vocab_file, std::string& err, int head_device) {
     const OnDevice on_device(device_);
     if (head == nullptr || !head->loaded()) { err = "dflash2: the drafter needs the native head (--native)"; return false; }
@@ -401,6 +402,7 @@ bool Dflash2Drafter::bind(const WeightTable& wt, const NativeHead* head, const s
     return true;
 }
 
+#endif  // STRATA_DF2_NO_BIND
 void Dflash2Drafter::gemm(std::initializer_list<const char*> names, std::initializer_list<float*> outs, int ncols, cudaStream_t cs, const uint8_t* xq, const float* xd) {
     kernels::Df2Mat mats[3];
     int n = 0, n_in = 0;
