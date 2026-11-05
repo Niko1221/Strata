@@ -261,6 +261,13 @@ def _after_exit(child: subprocess.Popen, token: str | None) -> None:
 
 ISOLATED_ROLES = ("engine", "vision")      # speak a stdin protocol with us: the server alone decides when they stop
 
+# Windows puts a process that owns no foreground window under EcoQoS, which can hold it on the small cores at a
+# fraction of its clock. HIGH_PRIORITY_CLASS releases that clamp for the child started below. MSDN advises against
+# using it for "long-running compute-bound tasks", which is exactly what the engine is - and exactly the work this
+# machine exists to do, so that advice is a trade taken on purpose rather than missed. Priority only: it does not
+# change which cores the engine pins its pool to. That is kernels/cpu/pool_affinity_win.hpp, the other half of the
+# problem on a CPU whose cores are not all the same type.
+HIGH_PRIORITY_CLASS = 0x00000080
 
 def _own_group(then=None):
     def run() -> None:
@@ -283,7 +290,7 @@ def popen(args, role: str = "engine", **kw) -> subprocess.Popen:
     how = mechanism()
     isolate = role in ISOLATED_ROLES
     if isolate and os.name == "nt":
-        kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+        kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP | HIGH_PRIORITY_CLASS
     if isolate and os.name != "nt" and "start_new_session" not in kw:
         kw["preexec_fn"] = _own_group(kw.pop("preexec_fn", None))
     if how == "pdeathsig":
