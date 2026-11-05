@@ -5781,7 +5781,7 @@ struct Model::Impl {
                 }
                 for (int r = 0; r < 3; ++r)
                     st_vram.push_back({l.mx_file[r], l.mx_off[r] + (uint64_t) e * l.mx_stride[r], mx_part_bytes(l, r),
-                                       l.vram_base + (size_t) l.slot[(size_t) e] * l.blob + l.lay.trellis[r], l.dev});
+                                       sat(l, l, l.slot[(size_t) e], l.blob) + l.lay.trellis[r], l.dev});
             }
         }
         std::sort(jobs.begin(), jobs.end(), [&](const Job& a, const Job& b) {
