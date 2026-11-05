@@ -1861,7 +1861,20 @@ const DevInfo& dev_info() {
 bool kq_on() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_PF_FUSED_KQ");
-        return v != nullptr && v[0] == '1';
+        if (v != nullptr && v[0] != '\0') return v[0] == '1';
+#if defined(__HIPCC__) && defined(_WIN32)
+        // Round 0215 (STRIX-FIT): on a Strix Halo (gfx1151) under Windows the K-quant experts of UD-Q4_K_XL (Q4_K / Q5_K gate/up, Q5_1 / Q8_0 down)
+        // take the fused matrix-core kernels (the F16 ones with STRATA_PF_F16=1, which the gfx1151 prompt set turns on) by default.
+        // STRATA_PF_FUSED_KQ=0 or STRATA_GFX1151_DEFAULTS=0 keeps the earlier route.
+        const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
+        if (off != nullptr && off[0] == '0') return false;
+        int dev = 0;
+        cudaDeviceProp prop;
+        if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess)
+            return strata::kernels::gfx_arch_is_gfx1151(prop.gcnArchName);
+        cudaGetLastError();
+#endif
+        return false;
     }();
     return on;
 }
