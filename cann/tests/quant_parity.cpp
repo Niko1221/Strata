@@ -1,4 +1,4 @@
-﻿// cann/tests/quant_parity.cpp - do our Q4_K/Q6_K decoders agree with ggml, and does a
+// cann/tests/quant_parity.cpp - do our Q4_K/Q6_K decoders agree with ggml, and does a
 // dequantize-then-matmul on the NPU reproduce the CPU result?
 //
 // The oracle is ggml's own `to_float` for the same type (linked from libggml-base), so a
@@ -27,6 +27,7 @@ using namespace strata::cann;
 namespace {
 
 constexpr int GGML_TYPE_Q4_K_ID = 12;
+constexpr int GGML_TYPE_Q5_K_ID = 13;
 constexpr int GGML_TYPE_Q6_K_ID = 14;
 
 std::vector<uint8_t> random_blocks(size_t bytes, uint32_t seed) {
@@ -70,6 +71,7 @@ int main() {
     };
     const QuantCase cases[] = {
         { GGML_TYPE_Q4_K_ID, 144, "Q4_K", 0, 2 },
+        { GGML_TYPE_Q5_K_ID, 176, "Q5_K", 0, 2 },
         { GGML_TYPE_Q6_K_ID, 210, "Q6_K", 208, (size_t) -1 },
     };
 

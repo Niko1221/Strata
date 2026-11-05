@@ -1,4 +1,4 @@
-﻿#include "strata/cann/quants.hpp"
+#include "strata/cann/quants.hpp"
 
 namespace strata::cann {
 namespace {
@@ -36,6 +36,8 @@ int quant_type_size(int ggml_type) {
     switch (ggml_type) {
         case 12: // GGML_TYPE_Q4_K
             return (int) sizeof(block_q4_K);
+        case 13: // GGML_TYPE_Q5_K
+            return (int) sizeof(block_q5_K);
         case 14: // GGML_TYPE_Q6_K
             return (int) sizeof(block_q6_K);
         default:
@@ -75,6 +77,38 @@ void dequantize_q4_K(const block_q4_K * blocks, float * out, int64_t k) {
     }
 }
 
+void dequantize_q5_K(const block_q5_K * blocks, float * out, int64_t k) {
+    const int64_t nb = k / QK_K;
+    for (int64_t i = 0; i < nb; ++i) {
+        const uint8_t * ql = blocks[i].qs;
+        const uint8_t * qh = blocks[i].qh;
+        const float d = half_to_float(blocks[i].d);
+        const float min = half_to_float(blocks[i].dmin);
+
+        int is = 0;
+        uint8_t sc = 0, m = 0;
+        uint8_t u1 = 1, u2 = 2;
+        for (int j = 0; j < QK_K; j += 64) {
+            get_scale_min_k4(is + 0, blocks[i].scales, &sc, &m);
+            const float d1 = d * sc;
+            const float m1 = min * m;
+            get_scale_min_k4(is + 1, blocks[i].scales, &sc, &m);
+            const float d2 = d * sc;
+            const float m2 = min * m;
+            for (int l = 0; l < 32; ++l) {
+                *out++ = d1 * ((ql[l] & 0xF) + ((qh[l] & u1) ? 16 : 0)) - m1;
+            }
+            for (int l = 0; l < 32; ++l) {
+                *out++ = d2 * ((ql[l] >> 4) + ((qh[l] & u2) ? 16 : 0)) - m2;
+            }
+            ql += 32;
+            is += 2;
+            u1 = (uint8_t) (u1 << 2);
+            u2 = (uint8_t) (u2 << 2);
+        }
+    }
+}
+
 void dequantize_q6_K(const block_q6_K * blocks, float * out, int64_t k) {
     const int64_t nb = k / QK_K;
     for (int64_t i = 0; i < nb; ++i) {
@@ -107,12 +141,19 @@ bool dequantize(int ggml_type, const void * blocks, float * out, int64_t k) {
     if (k <= 0 || k % QK_K != 0 || quant_type_size(ggml_type) == 0) {
         return false;
     }
-    if (ggml_type == 12) {
-        dequantize_q4_K((const block_q4_K *) blocks, out, k);
-        return true;
+    switch (ggml_type) {
+        case 12:
+            dequantize_q4_K((const block_q4_K *) blocks, out, k);
+            return true;
+        case 13:
+            dequantize_q5_K((const block_q5_K *) blocks, out, k);
+            return true;
+        case 14:
+            dequantize_q6_K((const block_q6_K *) blocks, out, k);
+            return true;
+        default:
+            return false;
     }
-    dequantize_q6_K((const block_q6_K *) blocks, out, k);
-    return true;
 }
 
 } // namespace strata::cann

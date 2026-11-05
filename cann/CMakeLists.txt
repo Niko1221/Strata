@@ -33,13 +33,15 @@ find_library(OPAPI_LIB opapi PATHS "${ASCEND_HOME_PATH}/lib64" "${ASCEND_HOME_PA
 find_library(ACL_OP_COMPILER_LIB acl_op_compiler PATHS "${ASCEND_HOME_PATH}/lib64"
              "${ASCEND_HOME_PATH}/x86_64-linux/lib64" NO_DEFAULT_PATH REQUIRED)
 
-add_library(strata_cann STATIC src/device.cpp src/ops.cpp src/quants.cpp src/gdn.cpp)
+add_library(strata_cann STATIC src/device.cpp src/ops.cpp src/quants.cpp src/gdn.cpp src/gguf.cpp)
 target_include_directories(strata_cann PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${ASCEND_HOME_PATH}/include"
                                               "${ASCEND_HOME_PATH}/include/aclnn"
                                               "${ASCEND_HOME_PATH}/x86_64-linux/include")
 target_link_libraries(strata_cann PUBLIC ${ASCENDCL_LIB} ${NNOPBASE_LIB} ${OPAPI_LIB} ${ACL_OP_COMPILER_LIB})
 
 add_executable(cann_parity tests/parity.cpp)
+add_executable(gguf_parity tests/gguf_parity.cpp)
+target_link_libraries(gguf_parity PRIVATE strata_cann)
 add_executable(gdn_parity tests/gdn_parity.cpp)
 target_link_libraries(gdn_parity PRIVATE strata_cann)
 target_link_libraries(cann_parity PRIVATE strata_cann)
@@ -64,6 +66,10 @@ if(STRATA_CANN_GGML_DIR AND EXISTS "${_ggml_include}/ggml.h")
   find_library(GGML_BASE_LIB ggml-base PATHS "${_ggml_lib_dir}" NO_DEFAULT_PATH)
   if(GGML_BASE_LIB)
     target_compile_definitions(quant_parity PRIVATE STRATA_CANN_HAVE_GGML=1)
+    target_compile_definitions(gguf_parity PRIVATE STRATA_CANN_HAVE_GGML=1)
+    target_include_directories(gguf_parity PRIVATE "${_ggml_include}")
+    target_link_libraries(gguf_parity PRIVATE "${GGML_BASE_LIB}")
+    set_target_properties(gguf_parity PROPERTIES BUILD_RPATH "${_ggml_lib_dir}")
     target_include_directories(quant_parity PRIVATE "${_ggml_include}")
     target_link_libraries(quant_parity PRIVATE "${GGML_BASE_LIB}")
     set_target_properties(quant_parity PROPERTIES BUILD_RPATH "${_ggml_lib_dir}")
