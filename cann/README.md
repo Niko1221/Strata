@@ -219,9 +219,26 @@ token  3750 ' known'       -3.4281      -3.4686
 token   271 '\n\n'         -3.7641      -3.8280
 ```
 
-Five tokens took 166 s, so about 33 s per token. That is the honest number for this stack: every
-`gemv` dequantizes its weights on the host and uploads them again, so nothing amortizes across
-tokens. It is a correctness path, not a serving path.
+Five tokens took 166 s, so about 33 s per token. That was the honest number for the first version:
+every `gemv` dequantized its weights on the host and uploaded them again, so nothing amortized
+across tokens.
+
+## Making it faster
+
+Two changes, both measured on the same prompt:
+
+| change | 5 tokens |
+|---|---|
+| first version | 166 s |
+| weights and the aclnn workspace stay resident | 64 s |
+
+The weight cache keeps every non-expert tensor (2.4 GB) in HBM and caches expert slabs with a
+budget. The workspace cache removed an `aclrtMalloc`/`aclrtFree` pair per op. Dropping the
+per-op `stream.synchronize()` as well made the numbers wrong — host uploads go through
+`aclrtMemcpy`, which is not ordered against queued kernels — so the sync stayed.
+
+64 s for five tokens is still 13 s per token against llama.cpp's 0.25 s on the same card. The
+remaining cost is structural: roughly 1200 aclnn calls per token, one sync each, and no fusion.
 
 ## What is not here yet
 
@@ -235,8 +252,10 @@ tokens. It is a correctness path, not a serving path.
 - RoPE and the KV cache are done for the full-attention layers. What is left before a whole model
   runs: the 41-layer loop, the token embedding, the final norm and the lm head.
 - Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
-- Weights resident on the device. Every `gemv` dequantizes on the host and uploads again, which is
-  why a token costs 33 s. This is the single change that would make the stack servable.
+- Weights resident on the device: done for everything except unselected expert slabs, which are
+  cached with a budget. A token still costs 13 s, dominated by ~1200 aclnn calls with a sync each.
+- Fusion: the eight selected experts share one input, so their gate and up projections could be one
+  matmul over a stacked weight instead of sixteen. That is the next large win.
 - Serving: this stack is not wired to `serve/`; the running server is llama.cpp with `ggml-cann`.
 
 ## Verified on the machine
