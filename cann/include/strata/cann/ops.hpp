@@ -11,7 +11,7 @@
 
 namespace strata::cann {
 
-enum class DType { F16, F32 };
+enum class DType { F16, BF16, F32 };
 
 // A contiguous device tensor. ne2 carries a batch dimension for the batched ops; the 2D ops
 // ignore it and the 3D ops require it.
@@ -23,7 +23,7 @@ struct Tensor {
     int64_t ne2 = 1; // batch
 
     int64_t elements() const { return ne0 * ne1 * ne2; }
-    size_t bytes() const { return (size_t) elements() * (dtype == DType::F16 ? 2 : 4); }
+    size_t bytes() const { return (size_t) elements() * (dtype == DType::F32 ? 4 : 2); }
 };
 
 // out[M,N] = a[M,K] * b[K,N]

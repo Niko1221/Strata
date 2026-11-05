@@ -1,3 +1,4 @@
+#include "aclnn_call.hpp"
 #include "strata/cann/ops.hpp"
 
 #include <aclnn/acl_meta.h>
@@ -116,7 +117,7 @@ void ensure_workspace(size_t need) {
 
 // Each op follows the same two-phase aclnn contract; this template keeps that boilerplate in one place.
 template <typename GetWs, typename Launch>
-void execute(Stream & stream, GetWs get_ws, Launch launch, const char * what) {
+void execute_impl(Stream & stream, GetWs get_ws, Launch launch, const char * what) {
     uint64_t ws_size = 0;
     aclOpExecutor * exec = nullptr;
     check_status(get_ws(&ws_size, &exec), what);
@@ -136,6 +137,10 @@ void execute(Stream & stream, GetWs get_ws, Launch launch, const char * what) {
 }
 
 } // namespace
+
+void execute(Stream & stream, GetWs get_ws, Launch launch, const char * what) {
+    execute_impl(stream, std::move(get_ws), std::move(launch), what);
+}
 
 // Profiling counters, printed when the workspace is released. This exists because a single op
 // measures 0.043 ms in isolation while a token takes seconds, so the cost has to be attributed.
@@ -200,7 +205,7 @@ void matmul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
     aclTensor * ta = make_tensor(a, m, k);
     aclTensor * tb = make_tensor(b, k, n);
     aclTensor * tc = make_tensor(out, m, n);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) {
             return aclnnMatmulGetWorkspaceSize(ta, tb, tc, 0, ws, ex);
@@ -224,7 +229,7 @@ void bmm(Stream & stream, const Tensor & a, const Tensor & c, Tensor & out) {
     aclTensor * ta = make_tensor3(a, m, k, b);
     aclTensor * tb = make_tensor3(c, k, n, b);
     aclTensor * tc = make_tensor3(out, m, n, b);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMatmulGetWorkspaceSize(ta, tb, tc, 0, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
@@ -240,7 +245,7 @@ void mul_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out
     aclTensor * ta = make_tensor3(a, a.ne1, a.ne0, a.ne2);
     aclTensor * tb = make_tensor3(b, b.ne1, b.ne0, b.ne2);
     aclTensor * tc = make_tensor3(out, out.ne1, out.ne0, out.ne2);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMulGetWorkspaceSize(ta, tb, tc, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
@@ -258,7 +263,7 @@ void add_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out
     aclTensor * tc = make_tensor3(out, out.ne1, out.ne0, out.ne2);
     float alpha_value = 1.0f;
     aclScalar * alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) {
             return aclnnAddGetWorkspaceSize(ta, tb, alpha, tc, ws, ex);
@@ -279,7 +284,7 @@ void sub_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out
     aclTensor * tc = make_tensor3(out, out.ne1, out.ne0, out.ne2);
     float alpha_value = -1.0f;
     aclScalar * alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) {
             return aclnnAddGetWorkspaceSize(ta, tb, alpha, tc, ws, ex);
@@ -298,7 +303,7 @@ void cast(Stream & stream, const Tensor & x, DType dst_type, Tensor & out) {
     aclTensor * tx = x.ne2 > 1 ? make_tensor3(x, x.ne1, x.ne0, x.ne2) : make_tensor(x, x.ne1, x.ne0);
     aclTensor * ty = out.ne2 > 1 ? make_tensor3(out, out.ne1, out.ne0, out.ne2) : make_tensor(out, out.ne1, out.ne0);
     const aclDataType dt = to_acl(dst_type);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnCastGetWorkspaceSize(tx, dt, ty, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
@@ -316,7 +321,7 @@ void topk(Stream & stream, const Tensor & x, int64_t k, int64_t dim, Tensor & va
     int64_t shape[2] = { values.ne1, values.ne0 };
     int64_t stride[2] = { values.ne0, 1 };
     aclTensor * ti = aclCreateTensor(shape, 2, ACL_INT64, stride, 0, ACL_FORMAT_ND, shape, 2, indices.data);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) {
             // largest first, sorted, so the caller can read [0] as the argmax
@@ -338,7 +343,7 @@ void logsumexp(Stream & stream, const Tensor & x, int64_t dim, Tensor & out) {
     aclTensor * to = make_tensor(out, out.ne1, out.ne0);
     int64_t dims[1] = { dim };
     aclIntArray * arr = aclCreateIntArray(dims, 1);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) {
             return aclnnLogSumExpGetWorkspaceSize(tx, arr, true, to, ws, ex);
@@ -364,7 +369,7 @@ void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double ep
     aclTensor * trstd =
         aclCreateTensor(rstd_shape, 1, ACL_FLOAT, rstd_stride, 0, ACL_FORMAT_ND, rstd_shape, 1, rstd.data());
 
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) {
             return aclnnRmsNormGetWorkspaceSize(tx, tg, eps, ty, trstd, ws, ex);
@@ -382,7 +387,7 @@ void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double ep
 void silu(Stream & stream, const Tensor & x, Tensor & out) {
     aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
     aclTensor * ty = make_tensor(out, out.ne1, out.ne0);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnSiluGetWorkspaceSize(tx, ty, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
@@ -399,7 +404,7 @@ void add(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
     aclTensor * tc = make_tensor(out, out.ne1, out.ne0);
     float alpha_value = 1.0f;
     aclScalar * alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnAddGetWorkspaceSize(ta, tb, alpha, tc, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
@@ -415,7 +420,7 @@ void add(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
 void softmax(Stream & stream, const Tensor & x, Tensor & out) {
     aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
     aclTensor * ty = make_tensor(out, out.ne1, out.ne0);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnSoftmaxGetWorkspaceSize(tx, 1, ty, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
@@ -430,7 +435,7 @@ void softmax(Stream & stream, const Tensor & x, Tensor & out) {
 void exp(Stream & stream, const Tensor & x, Tensor & out) {
     aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
     aclTensor * ty = make_tensor(out, out.ne1, out.ne0);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnExpGetWorkspaceSize(tx, ty, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnExp(ws, ws_size, ex, s); },
@@ -443,7 +448,7 @@ void muls(Stream & stream, const Tensor & x, float scalar, Tensor & out) {
     aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
     aclTensor * ty = make_tensor(out, out.ne1, out.ne0);
     aclScalar * alpha = aclCreateScalar(&scalar, ACL_FLOAT);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMulsGetWorkspaceSize(tx, alpha, ty, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnMuls(ws, ws_size, ex, s); },
@@ -459,7 +464,7 @@ void sub(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
     aclTensor * tc = make_tensor(out, out.ne1, out.ne0);
     float alpha_value = 1.0f;
     aclScalar * alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnSubGetWorkspaceSize(ta, tb, alpha, tc, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnSub(ws, ws_size, ex, s); },
@@ -474,7 +479,7 @@ void mul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
     aclTensor * ta = make_tensor(a, a.ne1, a.ne0);
     aclTensor * tb = make_tensor(b, b.ne1, b.ne0);
     aclTensor * tc = make_tensor(out, out.ne1, out.ne0);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMulGetWorkspaceSize(ta, tb, tc, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnMul(ws, ws_size, ex, s); },
@@ -488,7 +493,7 @@ void div(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
     aclTensor * ta = make_tensor(a, a.ne1, a.ne0);
     aclTensor * tb = make_tensor(b, b.ne1, b.ne0);
     aclTensor * tc = make_tensor(out, out.ne1, out.ne0);
-    execute(
+    execute_impl(
         stream,
         [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnDivGetWorkspaceSize(ta, tb, tc, ws, ex); },
         [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnDiv(ws, ws_size, ex, s); },

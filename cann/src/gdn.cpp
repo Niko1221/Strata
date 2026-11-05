@@ -1,4 +1,7 @@
-﻿#include "strata/cann/gdn.hpp"
+﻿#include "aclnn_call.hpp"
+#include "strata/cann/gdn.hpp"
+
+#include <aclnnop/aclnn_recurrent_gated_delta_rule.h>
 
 #include <cmath>
 #include <cstdio>
@@ -285,6 +288,80 @@ void gdn_batched_f32(Stream & stream, const Tensor & q, const Tensor & k, const 
 
     Tensor taf{ af.data(), DType::F32, H * S, T };
     cast(stream, taf, DType::F16, attn);
+}
+
+// ---- CANN's fused operator ----
+//
+// Everything is bfloat16 except the gates (fp32) and the three int32 side inputs. The state is
+// updated in place, so a caller that keeps its state in this buffer pays nothing per token beyond
+// the three casts around the call.
+void gdn_fused(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, const Tensor & beta,
+               const Tensor & g, Tensor & state, Tensor & out, int64_t T, int64_t Nk, int64_t Nv, int64_t Dk,
+               int64_t Dv) {
+    int64_t qshape[3] = { T, Nk, Dk };
+    int64_t vshape[3] = { T, Nv, Dv };
+    int64_t bshape[2] = { T, Nv };
+    int64_t sshape[4] = { 1, Nv, Dv, Dk };
+
+    auto mk = [](void * data, int64_t * shape, int64_t dims, aclDataType dt) {
+        int64_t stride[4] = { 1, 1, 1, 1 };
+        int64_t acc = 1;
+        for (int64_t i = dims - 1; i >= 0; --i) {
+            stride[i] = acc;
+            acc *= shape[i];
+        }
+        int64_t storage = acc;
+        return aclCreateTensor(shape, (uint64_t) dims, dt, stride, 0, ACL_FORMAT_ND, &storage, 1, data);
+    };
+
+    aclTensor * tq = mk(q.data, qshape, 3, ACL_BF16);
+    aclTensor * tk = mk(k.data, qshape, 3, ACL_BF16);
+    aclTensor * tv = mk(v.data, vshape, 3, ACL_BF16);
+    aclTensor * tb = mk(beta.data, bshape, 2, ACL_BF16);
+    aclTensor * tg = mk(g.data, bshape, 2, ACL_FLOAT);
+    aclTensor * tst = mk(state.data, sshape, 4, ACL_BF16);
+    aclTensor * to = mk(out.data, vshape, 3, ACL_BF16);
+
+    // one sequence, one token, no speculative rows. These three are device tensors like the rest:
+    // passing host pointers here faults the kernel instead of reporting a parameter error.
+    Buffer b_len((size_t) 1 * 4), b_acc((size_t) 1 * 4), b_idx((size_t) T * 4);
+    {
+        const int32_t len_val = (int32_t) T;
+        const int32_t acc_val = 1;
+        std::vector<int32_t> idx_host((size_t) T, 0);
+        b_len.copy_from_host(&len_val, 4);
+        b_acc.copy_from_host(&acc_val, 4);
+        b_idx.copy_from_host(idx_host.data(), idx_host.size() * 4);
+    }
+    int64_t lshape[1] = { 1 };
+    int64_t ishape[1] = { T };
+    int64_t ashape[1] = { 1 };
+    aclTensor * tlen = mk(b_len.data(), lshape, 1, ACL_INT32);
+    aclTensor * tidx = mk(b_idx.data(), ishape, 1, ACL_INT32);
+    aclTensor * tacc = mk(b_acc.data(), ashape, 1, ACL_INT32);
+
+    const float scale = 1.0f / std::sqrt((float) Dk);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) {
+            return aclnnRecurrentGatedDeltaRuleGetWorkspaceSize(tq, tk, tv, tb, tst, tlen, tidx, tg, tg, tacc, scale,
+                                                               to, ws, ex);
+        },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnRecurrentGatedDeltaRule(ws, ws_size, ex, s);
+        },
+        "aclnnRecurrentGatedDeltaRule");
+
+    aclDestroyTensor(tq);
+    aclDestroyTensor(tk);
+    aclDestroyTensor(tv);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tg);
+    aclDestroyTensor(tst);
+    aclDestroyTensor(to);
+    aclDestroyTensor(tlen);
+    aclDestroyTensor(tidx);
+    aclDestroyTensor(tacc);
 }
 
 } // namespace strata::cann

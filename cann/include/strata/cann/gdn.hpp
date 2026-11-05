@@ -41,4 +41,14 @@ void gdn_batched(Stream & stream, const Tensor & q, const Tensor & k, const Tens
 void gdn_batched_f32(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, const Tensor & decay,
                      const Tensor & beta, Tensor & state, Tensor & attn, int64_t S, int64_t H, int64_t T);
 
+// CANN's own delta-rule operator (aclnnRecurrentGatedDeltaRule): one call for all heads.
+//
+// Measured by tests/gdn_fused_parity.cpp: the state is [heads][Dk][Dv] with row j holding column j
+// of S, the same transposed convention as gdn(), and it is bfloat16 only. The operator maps value
+// head h to key head h / (Nv / Nk), which is not the mapping llama.cpp uses (h % Nk), so callers
+// have to hand it q/k/v in that order.
+void gdn_fused(Stream & stream, const Tensor & q, const Tensor & k, const Tensor & v, const Tensor & beta,
+               const Tensor & g, Tensor & state, Tensor & out, int64_t T, int64_t Nk, int64_t Nv, int64_t Dk,
+               int64_t Dv);
+
 } // namespace strata::cann

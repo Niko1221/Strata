@@ -342,7 +342,10 @@ def main():
                 cancel.set()
             except Exception as exc:
                 if not stream:
-                    self.json(500, {"error": {"type": "server_error", "message": str(exc)}})
+                    try:
+                        self.json(500, {"error": {"type": "server_error", "message": str(exc)}})
+                    except (BrokenPipeError, ConnectionResetError):
+                        cancel.set()
                 else:
                     print(f"stream failed: {exc}", file=sys.stderr, flush=True)
             finally:
