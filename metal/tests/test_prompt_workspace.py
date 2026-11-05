@@ -77,6 +77,7 @@ def main():
 @GEOMETRY@
 @CONSTANTS@
 @BUFFERS@
+static bool gdn_fused_inputs(const std::string&) { return false; }   // the M5-only projections stay out of this fixture
 double now_ms() {
     return std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -87,6 +88,9 @@ struct Window {
     int64_t max_cells_ = 131200;
     bool had_on_ = false;
     bool layout_k4 = false;
+    int nexp_ = 512;
+    bool mtp_on_ = false;
+    bool mtp_ovl_ = false;
     gguf::Tensor gate;
     // Metadata-only fixtures; no M5 kernels or Gyro model are executed.
     bool coop_k4() { return layout_k4; }
@@ -212,7 +216,10 @@ int main() {
         "@COUNT@": str(len(names)),
         "@REFERENCES@": ", ".join("&w.pb_." + name for name in names),
         "@DRAIN@": "true" if args.drain_allocation_pools else "false",
-        "@OPTIONAL_MIXR@": "if (!had && buffer == &w.pb_.mixr) continue;" if "mixr" in names else "",
+        "@OPTIONAL_MIXR@": " ".join(
+            f"if ({cond}buffer == &w.pb_.{name}) continue;"
+            for name, cond in (("mixr", "!had && "), ("R2", ""), ("yf", ""), ("Wcat", ""))
+            if name in names),
         "@LAYOUT_CHECK@": layout_check,
     }
     for marker, value in replacements.items():
