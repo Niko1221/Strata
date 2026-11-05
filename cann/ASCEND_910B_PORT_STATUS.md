@@ -1136,8 +1136,23 @@ BF16/F16/F32 由 `tensor_load` 直读。解码器这一层不用动。
    `-ngl 1` 会撞上 `GGML_ASSERT(!is_matmul_weight(src))`（`ggml-cann.cpp:2149`，
    跨后端拷贝 matmul 权重的路径）。所以只能全卸载或全不卸载。
 
+5. **把前两个算子都放回 CPU 之后，设备侧出现流错误（未解决）**
+   ```
+   ProcLogicCqReport: CQE warning, device_id=1, stream_id=49, sq sw status error
+   StarsResumeRtsq: sq already disable, stream_id=49
+   ```
+   第二张卡上的硬件队列报错，进程随后卡在等待里被超时杀掉。这已经不是能靠配置绕开的层次。
+
 **结论**：这不是配置问题，是 llama.cpp 的 CANN 后端在这种"14 种量化格式混用 + 51.2B 查表"
-的模型上还没有准备好。每修一个算子就露出下一个，工作量不可预估，而且属于上游后端的活。
+的模型上还没有准备好。每修一个算子就露出下一个，最后落到设备队列错误——工作量不可预估，
+而且属于上游后端的活。
+
+**试过并排除的方向**（都有日志，不是猜的）：
+- 关掉 `TOP_K` 补丁（我加的）：错误不变，不是它
+- 关掉 NZ 权重格式（`GGML_CANN_WEIGHT_NZ=off`）：不变
+- 把 `FLASH_ATTN_EXT`/`MUL_MAT_ID`/`GATED_LINEAR_ATTN` 逐个放 CPU：不变
+- 把所有 matmul 放 CPU：不变
+- `-ngl 1` 部分卸载：撞 `is_matmul_weight` 断言，只能全卸载或全不卸载
 
 **对 Strata 的意义**：Strata 走自己的 GGUF 读取器和自己的 kernel，不依赖 ggml，
 所以这条路上的问题**不会**传到 Strata。但也意味着不能指望 llama.cpp 提供现成参考实现——
