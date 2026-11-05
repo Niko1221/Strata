@@ -433,12 +433,12 @@ if(STRATA_NATIVE_EXPERTS)
   target_link_libraries(nvfp4_avx512_parity PRIVATE strata_kernels_cpu)
   add_test(NAME nvfp4_cpu_parity COMMAND nvfp4_avx512_parity)   # random blocks; the AVX2 rows bit-equal to ggml's
   set_tests_properties(nvfp4_cpu_parity PROPERTIES TIMEOUT 120)
-  if(STRATA_ENABLE_CUDA)   # the NVFP4 decode kernels vs ggml's reference
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)   # the NVFP4 decode kernels vs ggml's reference
     add_executable(nvfp4_expert_gpu_parity src/kernels/nvfp4_expert_gpu_parity.cpp)
-    target_link_libraries(nvfp4_expert_gpu_parity PRIVATE strata_kernels ggml-base CUDA::cudart)
+    target_link_libraries(nvfp4_expert_gpu_parity PRIVATE strata_kernels ggml-base ${_strata_gpu_runtime_target})
     # the decode experts' weight bandwidth on random blobs of a format pair, and an output hash (bit-for-bit checks)
     add_executable(nvfp4_decode_bench src/kernels/nvfp4_decode_bench.cpp)
-    target_link_libraries(nvfp4_decode_bench PRIVATE strata_kernels CUDA::cudart)
+    target_link_libraries(nvfp4_decode_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   endif()
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(native_expert_parity src/kernels/native_expert_parity.cpp)
