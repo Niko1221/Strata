@@ -1,4 +1,4 @@
-#include "strata/cann/device.hpp"
+﻿#include "strata/cann/device.hpp"
 
 #include <acl/acl.h>
 
@@ -102,6 +102,14 @@ Buffer::~Buffer() {
     if (data_) {
         aclrtFree(data_);
     }
+}
+
+void copy_to_host(const void * device_ptr, void * host, size_t bytes) {
+    check(aclrtMemcpy(host, bytes, device_ptr, bytes, ACL_MEMCPY_DEVICE_TO_HOST), "aclrtMemcpy(D2H raw)");
+}
+
+void copy_to_device(void * device_ptr, const void * host, size_t bytes) {
+    check(aclrtMemcpy(device_ptr, bytes, host, bytes, ACL_MEMCPY_HOST_TO_DEVICE), "aclrtMemcpy(H2D raw)");
 }
 
 void Buffer::copy_from_host(const void * host, size_t bytes) {

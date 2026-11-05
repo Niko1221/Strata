@@ -188,6 +188,47 @@ int main() {
         cases.push_back(compare("softmax 64x1024", got, ref, 0.01));
     }
 
+    // ---- shapes the GDN kernel relies on ----
+    {
+        const int64_t S = 8;
+        auto x = random_uniform((size_t) S * S, -1.0f, 1.0f, 21);
+        Tensor tx = runner.upload(x, S, S);
+        Tensor ty = runner.alloc(S, S);
+        muls(stream, tx, 0.5f, ty);
+        auto got = runner.download(ty);
+        std::vector<float> ref = quantize_f16(x);
+        for (auto & v : ref) v *= 0.5f;
+        cases.push_back(compare("muls 8x8 by 0.5", got, ref, 0.01));
+    }
+    {
+        const int64_t S = 8;
+        auto a = random_uniform((size_t) S * S, -1.0f, 1.0f, 22);
+        auto b = random_uniform((size_t) S, -1.0f, 1.0f, 23);
+        Tensor ta = runner.upload(a, S, S);
+        Tensor tb = runner.upload(b, 1, S); // one column
+        Tensor tc = runner.alloc(1, S);
+        matmul(stream, ta, tb, tc);
+        auto got = runner.download(tc);
+        auto ref = matmul_ref(quantize_f16(a), quantize_f16(b), S, S, 1);
+        cases.push_back(compare("matmul 8x8x1", got, ref, 0.01));
+    }
+    {
+        const int64_t S = 8;
+        auto a = random_uniform((size_t) S, -1.0f, 1.0f, 24);
+        auto b = random_uniform((size_t) S, -1.0f, 1.0f, 25);
+        Tensor ta = runner.upload(a, 1, S); // column
+        Tensor tb = runner.upload(b, S, 1); // row
+        Tensor tc = runner.alloc(S, S);
+        mul(stream, ta, tb, tc);
+        auto got = runner.download(tc);
+        std::vector<float> ref((size_t) S * S);
+        const auto aq = quantize_f16(a);
+        const auto bq = quantize_f16(b);
+        for (int64_t j = 0; j < S; ++j)
+            for (int64_t i = 0; i < S; ++i) ref[(size_t) j * S + i] = aq[(size_t) j] * bq[(size_t) i];
+        cases.push_back(compare("mul 8x1 * 1x8", got, ref, 0.01));
+    }
+
     int failed = 0;
     printf("\n%-24s %12s %12s %10s  %s\n", "op", "max|diff|", "mean|diff|", "tolerance", "result");
     for (const Case & c : cases) {

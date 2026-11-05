@@ -1,11 +1,14 @@
-#include "strata/cann/ops.hpp"
+﻿#include "strata/cann/ops.hpp"
 
 #include <aclnn/acl_meta.h>
 #include <aclnnop/aclnn_add.h>
 #include <aclnnop/aclnn_matmul.h>
 #include <aclnnop/aclnn_rms_norm.h>
 #include <aclnnop/aclnn_silu.h>
+#include <aclnnop/aclnn_mul.h>
 #include <aclnnop/aclnn_softmax.h>
+#include <aclnnop/aclnn_sub.h>
+#include <aclnnop/aclnn_exp.h>
 
 #include <acl/acl.h>
 
@@ -223,6 +226,64 @@ void softmax(Stream & stream, const Tensor & x, Tensor & out) {
         "aclnnSoftmax");
     aclDestroyTensor(tx);
     aclDestroyTensor(ty);
+}
+
+
+void exp(Stream & stream, const Tensor & x, Tensor & out) {
+    aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
+    aclTensor * ty = make_tensor(out, out.ne1, out.ne0);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnExpGetWorkspaceSize(tx, ty, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnExp(ws, ws_size, ex, s); },
+        "aclnnExp");
+    aclDestroyTensor(tx);
+    aclDestroyTensor(ty);
+}
+
+void muls(Stream & stream, const Tensor & x, float scalar, Tensor & out) {
+    aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
+    aclTensor * ty = make_tensor(out, out.ne1, out.ne0);
+    aclScalar * alpha = aclCreateScalar(&scalar, ACL_FLOAT);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMulsGetWorkspaceSize(tx, alpha, ty, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnMuls(ws, ws_size, ex, s); },
+        "aclnnMuls");
+    aclDestroyScalar(alpha);
+    aclDestroyTensor(tx);
+    aclDestroyTensor(ty);
+}
+
+void sub(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
+    aclTensor * ta = make_tensor(a, a.ne1, a.ne0);
+    aclTensor * tb = make_tensor(b, b.ne1, b.ne0);
+    aclTensor * tc = make_tensor(out, out.ne1, out.ne0);
+    float alpha_value = 1.0f;
+    aclScalar * alpha = aclCreateScalar(&alpha_value, ACL_FLOAT);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnSubGetWorkspaceSize(ta, tb, alpha, tc, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnSub(ws, ws_size, ex, s); },
+        "aclnnSub");
+    aclDestroyScalar(alpha);
+    aclDestroyTensor(ta);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tc);
+}
+
+void mul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
+    aclTensor * ta = make_tensor(a, a.ne1, a.ne0);
+    aclTensor * tb = make_tensor(b, b.ne1, b.ne0);
+    aclTensor * tc = make_tensor(out, out.ne1, out.ne0);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnMulGetWorkspaceSize(ta, tb, tc, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnMul(ws, ws_size, ex, s); },
+        "aclnnMul");
+    aclDestroyTensor(ta);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tc);
 }
 
 // ---- CPU oracle ----

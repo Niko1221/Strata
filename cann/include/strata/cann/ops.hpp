@@ -1,4 +1,4 @@
-// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
+﻿// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
 //
 // Every function takes FP16 operands on the device (the format the 910B Cube unit wants) and
 // has a matching `*_ref` CPU implementation in ops.cpp that the parity test compares against.
@@ -35,6 +35,18 @@ void silu(Stream & stream, const Tensor & x, Tensor & out);
 
 // out = a + b (same shape)
 void add(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
+
+// out = exp(x), elementwise
+void exp(Stream & stream, const Tensor & x, Tensor & out);
+
+// out = x * scalar
+void muls(Stream & stream, const Tensor & x, float scalar, Tensor & out);
+
+// out = a - b (same shape)
+void sub(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
+
+// out = a * b with numpy-style broadcast (e.g. [S,1] x [1,S] -> [S,S])
+void mul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 
 // out[row,:] = softmax(x[row,:]) over the last axis
 void softmax(Stream & stream, const Tensor & x, Tensor & out);

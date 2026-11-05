@@ -1,4 +1,4 @@
-// cann/include/strata/cann/device.hpp - the CANN device layer of the Ascend port.
+﻿// cann/include/strata/cann/device.hpp - the CANN device layer of the Ascend port.
 //
 // This is the smallest piece the rest of the port needs: create a device context, make a
 // stream, allocate HBM, move bytes, and turn aclError into an exception that names the call.
@@ -68,6 +68,10 @@ public:
 private:
     void * stream_ = nullptr;
 };
+
+// Raw copies for a pointer inside a larger tensor (a row, a scalar).
+void copy_to_host(const void * device_ptr, void * host, size_t bytes);
+void copy_to_device(void * device_ptr, const void * host, size_t bytes);
 
 // Owns one aclrtMalloc block.
 class Buffer {

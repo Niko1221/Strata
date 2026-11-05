@@ -1,4 +1,4 @@
-# `cann/` - the Ascend port of the engine
+﻿# `cann/` - the Ascend port of the engine
 
 This directory is to the CANN backend what `sycl/` is to the Intel backend: a separate project
 that grows next to the CUDA engine until it can take the engine's sources.
@@ -7,7 +7,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 |---|---|---|
 | P1 | device, stream, HBM buffers, first aclnn ops, CPU oracle | done, parity on hardware |
 | P2 | Q4_K / Q6_K decoders, dequantize then matmul on the NPU | done, bit-exact vs ggml |
-| P3 | attention: RMSNorm / RoPE / KV cache / softmax / GDN | not started |
+| P3 | attention: GDN (done), RoPE / KV cache / softmax | in progress |
 | P4 | MoE routing and expert matmuls | not started |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
 
@@ -18,6 +18,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | `include/strata/cann/device.hpp` | `Device`, `Stream`, `Buffer`, `DeviceInfo`, `Error`; one place that turns `aclError` into an exception |
 | `include/strata/cann/ops.hpp` | `matmul`, `rms_norm`, `silu`, `add`, `softmax` on fp16 device tensors, each with a CPU oracle |
 | `include/strata/cann/quants.hpp` | `block_q4_K` (144 B) and `block_q6_K` (210 B) plus `dequantize()` |
+| `include/strata/cann/gdn.hpp` | gated delta net: float reference and the device path |
 | `src/device.cpp` | `aclInit` / `aclrtSetDevice` / `aclrtCreateStream` / `aclrtMalloc` / `aclrtMemcpy` |
 | `src/ops.cpp` | the aclnn two-phase call (`*GetWorkspaceSize` then the op) behind one helper |
 | `src/quants.cpp` | the two decoders, written against ggml's `dequantize_row_q4_K` / `_q6_K` |
@@ -25,6 +26,8 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | `tests/quant_parity.cpp` | decoders against ggml's own `to_float`, then a dequantized matmul on the NPU |
 | `tests/run_parity.sh` | build and run `cann_parity` |
 | `tests/run_quant.sh` | build and run `quant_parity` (needs the llama.cpp checkout) |
+| `tests/gdn_parity.cpp` | gated delta net against the float reference, both decay modes |
+| `tests/run_gdn.sh` | build and run `gdn_parity` |
 
 ## Build and run
 
@@ -58,6 +61,8 @@ device receives.
 | softmax | 64 x 1024 | 0.01 |
 | Q4_K dequant | any | bit-exact against ggml |
 | Q6_K dequant | any | bit-exact against ggml |
+| GDN, kda S=64 T=8 | one head | attn 0.05, state 0.05 |
+| GDN, scalar S=64 T=8 | one head | attn 0.05, state 0.05 |
 
 ## Two API facts worth writing down
 
@@ -71,9 +76,9 @@ device receives.
 
 - The engine's own kernels: `src/` still compiles for CUDA only. P3 is the first place a kernel
   has to run behind the engine's interface instead of behind this test.
-- `GGML_OP_GATED_DELTA_NET`. `qwen35moe` (Qwen3.6-35B-A3B) runs 3 of every 4 layers through it;
-  `ggml-cann` does not implement it, so those layers fall back to the CPU today. The same op is
-  what P3 needs.
+- `ggml-cann` still has no `GGML_OP_GATED_DELTA_NET`, so the llama.cpp server keeps those 3 of 4
+  layers on the CPU. This directory now has a working device path for it, but wiring it into
+  `ggml-cann` is a separate change in that backend.
 - Fused dequant+matmul. P2 proves the numbers; it dequantizes on the host and multiplies fp16 on
   the device, which is correct but not the shape a fast engine needs.
 
@@ -98,4 +103,12 @@ Q6_K   vs ggml: max|diff| = 0  BIT-EXACT
 Q4_K dequant -> NPU matmul 64x512x256: max|diff| vs CPU = 0.013428  PASS
 ```
 
-Reproduce with `bash cann/tests/run_parity.sh` and `bash cann/tests/run_quant.sh`.
+```
+case                 attn|diff|  state|diff|  result
+kda    S=64  T=8       0.000360     0.003886  PASS
+scalar S=64  T=8       0.000360     0.001168  PASS
+kda    S=128 T=4       0.000175     0.001516  PASS
+```
+
+Reproduce with `bash cann/tests/run_parity.sh`, `bash cann/tests/run_quant.sh` and
+`bash cann/tests/run_gdn.sh`.

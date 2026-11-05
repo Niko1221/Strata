@@ -33,13 +33,15 @@ find_library(OPAPI_LIB opapi PATHS "${ASCEND_HOME_PATH}/lib64" "${ASCEND_HOME_PA
 find_library(ACL_OP_COMPILER_LIB acl_op_compiler PATHS "${ASCEND_HOME_PATH}/lib64"
              "${ASCEND_HOME_PATH}/x86_64-linux/lib64" NO_DEFAULT_PATH REQUIRED)
 
-add_library(strata_cann STATIC src/device.cpp src/ops.cpp src/quants.cpp)
+add_library(strata_cann STATIC src/device.cpp src/ops.cpp src/quants.cpp src/gdn.cpp)
 target_include_directories(strata_cann PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${ASCEND_HOME_PATH}/include"
                                               "${ASCEND_HOME_PATH}/include/aclnn"
                                               "${ASCEND_HOME_PATH}/x86_64-linux/include")
 target_link_libraries(strata_cann PUBLIC ${ASCENDCL_LIB} ${NNOPBASE_LIB} ${OPAPI_LIB} ${ACL_OP_COMPILER_LIB})
 
 add_executable(cann_parity tests/parity.cpp)
+add_executable(gdn_parity tests/gdn_parity.cpp)
+target_link_libraries(gdn_parity PRIVATE strata_cann)
 target_link_libraries(cann_parity PRIVATE strata_cann)
 
 # The ggml oracle: a llama.cpp checkout gives ggml's to_float for the quant formats. Its built
