@@ -33,6 +33,10 @@ public:
     int64_t metadata_int(const std::string & key) const;
     std::string metadata_str(const std::string & key) const;
 
+    // Everything the file declares, for tools that report what a model actually contains.
+    const std::unordered_map<std::string, int64_t> & int_metadata() const { return ints_; }
+    const std::unordered_map<std::string, std::string> & str_metadata() const { return strings_; }
+
     const GgufTensor * find(const std::string & name) const;
 
     // Read `bytes` starting at `offset` inside the tensor's data.
