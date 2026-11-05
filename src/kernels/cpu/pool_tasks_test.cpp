@@ -17,6 +17,28 @@
 #include <string>
 #include <vector>
 
+// what a park costs is a microbenchmark: it measures CPU time, and only its own build contains it.  Ask for it
+// with -DSTRATA_POOL_SPIN_US_MICROBENCH=ON (option in CMakeLists.txt); an ordinary test build compiles none of
+// this section or the headers it needs.  Built, it runs only when asked by name (`pool_tasks_test parkcost`),
+// which CMake registers under its own test name, and it prints: only `parkcost assert`, or
+// STRATA_POOL_PARK_ASSERT=1, can fail a run.
+#ifdef STRATA_POOL_SPIN_US_MICROBENCH
+#include <chrono>
+#include <thread>
+#include "strata/platform/cpu_relax.hpp"
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/time.h>
+#endif
+#endif
+// the timing needs `getrusage`, and the change it prices is compiled on Linux only (the gate in CMakeLists.txt
+// pairs with the `#ifdef __linux__` this file already uses), so the measurement is Linux-only; it also needs the
+// pool in its own build to carry the change, because a build that compiles the park loop as the last release does
+// has no pause stage left to price.
+#if defined(STRATA_POOL_SPIN_US_MICROBENCH) && defined(__linux__) && defined(STRATA_POOL_SPIN_ZERO)
+#define STRATA_POOL_PARK_COST 1
+#endif
+
 namespace cpu = strata::kernels::cpu;
 
 static void put_env(const char* k, const char* v) {
@@ -44,7 +66,127 @@ static void unset_env(const char* k) {
 #endif
 }
 
+#if defined(STRATA_POOL_PARK_COST)
+// What a park costs.  A parked worker used to run 1024 strata_cpu_pause() calls before the kernel sleep even with
+// STRATA_POOL_SPIN_US=0, and the pauses change no output, so cost is the only thing that tells the two builds
+// apart.  One tiny batch per phase with a gap between the phases parks every worker once per phase; that window
+// minus the same phases run back to back (nothing parks) is what the parks cost, printed against what the same
+// number of pause iterations costs in one thread.  The bound for the asserting arm is 1.00, and on a busy box the
+// winning side has under 2x to spare (best 1.50 for the build that spins, worst 0.55 for the build that sleeps, on
+// a Core Ultra 9 275HX with a serving strata-host; 0.38 against 2.04 idle).  It builds its own expert and its own
+// pool, so it cannot disturb the parity run above.
+static int park_cost(bool must_assert) {
+    const char* ask = std::getenv("STRATA_POOL_PARK_ASSERT");
+    if (ask && *ask && std::strcmp(ask, "0") != 0) must_assert = true;
+    if (!cpu::cpu_avx1_ok()) { std::printf("park cost: no AVX on this CPU, skipped\n"); return 0; }
+    cpu::NativeFmt f;
+    std::string err;
+    if (!cpu::native_fmt(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0, cpu::H, cpu::FF, f, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+    std::vector<uint8_t> blob(f.bytes);
+    std::vector<float> weights((size_t) cpu::H * cpu::FF);
+    for (size_t i = 0; i < weights.size(); ++i) weights[i] = 0.02f * std::sin((float) i * 0.17f);
+    ggml_quantize_chunk(GGML_TYPE_Q4_0, weights.data(), blob.data(), 0, cpu::FF, cpu::H, nullptr);
+    ggml_quantize_chunk(GGML_TYPE_Q4_0, weights.data(), blob.data() + f.up_off, 0, cpu::FF, cpu::H, nullptr);
+    ggml_quantize_chunk(GGML_TYPE_Q4_0, weights.data(), blob.data() + f.down_off, 0, cpu::H, cpu::FF, nullptr);
+    std::vector<std::vector<uint8_t>> act(cpu::MAXT, std::vector<uint8_t>(cpu::kNativeActBytes));
+    std::vector<cpu::ActQ> qact(cpu::MAXT);
+    std::vector<float> x(cpu::H);
+    for (int t = 0; t < cpu::MAXT; ++t) {
+        for (int i = 0; i < cpu::H; ++i) x[i] = std::sin((float) (i + 13 * t) * 0.031f);
+        cpu::native_quant_act(f, x.data(), act[t].data());
+        cpu::act_quant_any(x.data(), cpu::H, qact[t]);
+    }
+    put_env("STRATA_POOL_SPIN_US", "0");
+    const int pw = 8, pphases = 1000, pgap_us = 200, preps = 3;
+    const double park_bound = 1.0;   // the parks must not add up to a second run of the pause loop, which is what
+                                     // a worker that spins through its park does once per park
+    const long pauses = (long) pw * pphases * 1024;   // one pause stage per idle worker per phase
+    std::vector<cpu::ExpertJobMulti> pjob(1);
+    std::vector<float> pout((size_t) cpu::MAXT * cpu::H, 0.0f);
+    pjob[0].blob = blob.data();
+    pjob[0].nt = 1;
+    pjob[0].nact[0] = act[0].data();
+    pjob[0].act[0] = &qact[0];
+    pjob[0].out[0] = pout.data();
+    const auto cpu_us = [] {
+        struct rusage r;
+        getrusage(RUSAGE_SELF, &r);
+        return (double) r.ru_utime.tv_sec * 1e6 + (double) r.ru_utime.tv_usec
+             + (double) r.ru_stime.tv_sec * 1e6 + (double) r.ru_stime.tv_usec;
+    };
+    const auto gap = std::chrono::microseconds(pgap_us);
+    cpu::ExpertPool pool(pw, false, true, cpu::PoolAffinity::All, 0);
+    const auto phase = [&] { nan_h(pout.data()); pool.run_split_multi_native(f, pjob.data(), 1); };
+    for (int warm = 0; warm < 20; ++warm) { phase(); std::this_thread::sleep_for(gap); }
+    if (!std::isfinite(pout[0])) { std::fprintf(stderr, "park cost: the batch left no output\n"); return 1; }
+    double best_ratio = 0.0, best_parks_us = 0.0;
+    int kept = 0, dropped = 0;   // `kept`, not a negative ratio as the sentinel: a rep of the build that sleeps
+                                  // measures a cost of 0, and noise can make it read negative (-13 ms here, which
+                                  // an old -1.0 sentinel took for "no rep measured anything" and failed on).
+    for (int rep = 0; rep < preps; ++rep) {
+        const double parked0 = cpu_us();
+        for (int p = 0; p < pphases; ++p) { phase(); std::this_thread::sleep_for(gap); }
+        const double parked1 = cpu_us();
+        const double hot0 = cpu_us();
+        for (int p = 0; p < pphases; ++p) phase();   // back to back: the workers never park between phases
+        const double hot1 = cpu_us();
+        const double parked_us = parked1 - parked0, hot_us = hot1 - hot0;
+        const double parks_us = parked_us - hot_us;
+        const double ref0 = cpu_us();
+        for (long i = 0; i < pauses; ++i) strata_cpu_pause();
+        const double ref_us = cpu_us() - ref0;
+        const double ratio = ref_us > 0 ? parks_us / ref_us : 0.0;
+        std::printf("pool tasks: park cost rep %d/%d: %d workers x %d phases at %d us: %.0f ms of CPU with the "
+                    "gap, %.0f ms back to back, parks %.0f ms; %ld plain pauses alone %.0f ms; %.2f of that\n",
+                    rep + 1, preps, pw, pphases, pgap_us, parked_us / 1000, hot_us / 1000, parks_us / 1000,
+                    pauses, ref_us / 1000, ratio);
+        // a rep whose gap window cost no more than the back-to-back one measured no parks at all, so it cannot tell
+        // the two builds apart: drop it rather than fail on it, and say so in the same line as the rest.
+        if (parked_us + 0.25 * ref_us < hot_us) {
+            std::printf("pool tasks: park cost rep %d/%d dropped: the gap window used no more CPU than the "
+                        "back-to-back window\n", rep + 1, preps);
+            ++dropped;
+            continue;
+        }
+        if (kept == 0 || ratio < best_ratio) { best_ratio = ratio; best_parks_us = parks_us; }
+        ++kept;
+    }
+    unset_env("STRATA_POOL_SPIN_US");
+    if (kept == 0) {
+        std::fprintf(must_assert ? stderr : stdout, "pool tasks: park cost: none of the %d reps measured any "
+                             "parks, so this run cannot tell the two builds apart%s\n", preps,
+                     must_assert ? "" : " (measured, not asserted)");
+        return must_assert ? 1 : 0;
+    }
+    std::printf("pool tasks: park cost: %d of %d reps measured parks; the best cost %.0f ms = %.2f of the cost of "
+                "%ld plain pauses; ", kept, preps, best_parks_us / 1000, best_ratio, pauses);
+    if (must_assert) std::printf("the asserted bound is %.2f\n", park_bound);
+    else std::printf("printed only, not asserted (parkcost assert, or STRATA_POOL_PARK_ASSERT=1)\n");
+    if (must_assert && best_ratio > park_bound) {
+        std::fprintf(stderr, "park cost: a parked worker at STRATA_POOL_SPIN_US=0 cost %.0f ms of CPU in %d phases, "
+                             "%.2f of the cost of %ld plain pauses: the worker spun before it slept, so the hot "
+                             "stage the knob turns off was still running\n",
+                     best_parks_us / 1000, pphases, best_ratio, pauses);
+        return 1;
+    }
+    return 0;
+}
+#endif
+
 int main(int argc, char** argv) {
+#if defined(STRATA_POOL_PARK_COST)
+    // asked for by name only, and ahead of the argument checks: with the option off this is not compiled, and
+    // `pool_tasks_test parkcost` is a wrong argument count exactly as it was before.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "parkcost") != 0) continue;
+        bool must_assert = false;
+        for (int j = 1; j < argc; ++j) if (std::strcmp(argv[j], "assert") == 0) must_assert = true;
+        return park_cost(must_assert);
+    }
+#endif
     if (argc != 1 && argc != 4) return 2;
     // its activation quantiser is the AVX one at least (act_quant_any): a CPU without AVX (Westmere) would stop on an illegal instruction
     if (!cpu::cpu_avx1_ok()) { std::printf("pool_tasks_test: no AVX on this CPU, skipped\n"); return 0; }
