@@ -173,6 +173,32 @@ template <> struct Fmt<21> {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
     }
 };
 
+// IQ4_XS (23): d, scales_h (u16), scales_l[4], qs[128].  Chunk j = the 64 values of two 32-value sub-blocks (2j, 2j+1): the
+// table lookup of the nibbles is one vpshufb in 512-bit lanes (kvalues_iq4nl broadcast to every lane), laid out as ggml's AVX2 dot lays
+// out its two 256-bit halves (low nibbles of 16 bytes, then the high nibbles), so the integer lanes line up with that dot's.
+// The decode of the nibble planes follows the layout of PR #5243 (bsorensen110); only this format's part is taken.
+template <> struct Fmt<23> {
+    static constexpr int bytes = 136;
+    static constexpr float K = 1.0f;
+    static inline void decode(const uint8_t* b, int j, __m512i& g, __mmask64& m, __m512i& sc) {
+        const __m128i b0 = _mm_loadu_si128((const __m128i*) (b + 8 + 32 * j));
+        const __m128i b1 = _mm_loadu_si128((const __m128i*) (b + 24 + 32 * j));
+        const __m128i m4 = _mm_set1_epi8(0x0f);
+        const __m256i n0 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_and_si128(b0, m4)), _mm_and_si128(_mm_srli_epi16(b0, 4), m4), 1);
+        const __m256i n1 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_and_si128(b1, m4)), _mm_and_si128(_mm_srli_epi16(b1, 4), m4), 1);
+        const __m512i nib = _mm512_inserti64x4(_mm512_castsi256_si512(n0), n1, 1);
+        const __m512i lut = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i*) kvalues_iq4nl));
+        const __m512i q4 = _mm512_shuffle_epi8(lut, nib);
+        g = _mm512_abs_epi8(q4);
+        m = _mm512_movepi8_mask(q4);
+        const uint8_t sl = b[4 + j];
+        const uint16_t sh = (uint16_t) (u16(b + 2) >> (4 * j));
+        const int ls0 = ((sl & 0x0f) | ((sh << 4) & 0x30)) - 32;
+        const int ls1 = ((sl >> 4) | ((sh << 2) & 0x30)) - 32;
+        sc = scales4(ls0, ls0, ls1, ls1);
+    }
+};
+
 template <bool Singleton> struct RowAccumulator;
 template <> struct RowAccumulator<false> { using Type = __m512; };
 template <> struct RowAccumulator<true> { using Type = __m256; };
@@ -608,6 +634,7 @@ void iq512_reference_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_
         case 18: gu_rows_nt<18, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 21: gu_rows_nt<21, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 22: gu_rows_nt<22, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 23: gu_rows_nt<23, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
     }
 }
 
@@ -652,9 +679,123 @@ void iq512x_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void
         case 18: dot_rows_x_nt<18>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 21: dot_rows_x_nt<21>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 22: dot_rows_x_nt<22>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 23: dot_rows_x_nt<23>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 29: rows_m_nt(nt, w, row_bytes, n, act, out, r0, r1); break;
         default: break;
     }
+}
+
+// ---- Q5_0 (6) and IQ4_NL (20) down rows in 512-bit lanes: two 32-value blocks a vector, the weights of a block pair decoded once for
+// every token.  The arithmetic is the AVX2 code it replaces, order for order: per block the 8 integer lanes (values 4l .. 4l+3 of the
+// block, one vpdpbusd lane each), converted, scaled by f16(dx) * f16(dy) and fused into ONE eight-lane float accumulator in block order,
+// hsum last.  Q5_0 is ggml-cpu's dot (a single accumulator, its hsum) bit for bit; IQ4_NL keeps iq4nl256_down_rows' order (one accumulator, not
+// ggml's two, and that file's hadd reduction), so a token's row equals what iq_avx2.cpp gives it.  An odd block count ends on a 256-bit block.
+namespace {
+
+inline __m512i pair_q8_0(const block_q8_0* a, const block_q8_0* b) {
+    return _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_loadu_si256((const __m256i*) a->qs)),
+                              _mm256_loadu_si256((const __m256i*) b->qs), 1);
+}
+
+// iq4nl256_down_rows ends with the hadd reduction (iq_avx2.cpp hsum8), not ggml's
+inline float hsum8_hadd(__m256 v) {
+    __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+    s = _mm_hadd_ps(s, s);
+    s = _mm_hadd_ps(s, s);
+    return _mm_cvtss_f32(s);
+}
+
+// 32 signed weights of a Q5_0 block: the nibble (low plane, then high plane) minus 16 where the fifth bit is clear
+inline __m256i q50_weights(const block_q5_0* x) {
+    const __m128i bits = _mm_loadu_si128((const __m128i*) x->qs);
+    const __m128i m4 = _mm_set1_epi8(0x0f);
+    const __m256i nib = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_and_si128(bits, m4)), _mm_and_si128(_mm_srli_epi16(bits, 4), m4), 1);
+    uint32_t qh;
+    std::memcpy(&qh, x->qh, 4);
+    return _mm256_mask_sub_epi8(nib, (__mmask32) ~qh, nib, _mm256_set1_epi8(16));
+}
+inline __m256i iq4nl_weights(const block_iq4_nl* x) {
+    const __m128i bits = _mm_loadu_si128((const __m128i*) x->qs);
+    const __m128i m4 = _mm_set1_epi8(0x0f);
+    const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
+    return _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_shuffle_epi8(values, _mm_and_si128(bits, m4))),
+                                   _mm_shuffle_epi8(values, _mm_and_si128(_mm_srli_epi16(bits, 4), m4)), 1);
+}
+
+template <int TY, int NT>
+void qd_rows(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* const* y, float* const* out, int r0, int r1) {
+    constexpr size_t kBlk = TY == 6 ? sizeof(block_q5_0) : sizeof(block_iq4_nl);
+    const int nb = n / 32;
+    const int pf = prefetch_ahead;
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* row = w + (size_t) r * row_bytes;
+        __m256 acc[NT];
+        for (int t = 0; t < NT; ++t) acc[t] = _mm256_setzero_ps();
+        int ib = 0;
+        for (; ib + 1 < nb; ib += 2) {
+            const uint8_t* b0 = row + (size_t) ib * kBlk;
+            if (pf > 0) { _mm_prefetch((const char*) b0 + pf, _MM_HINT_T0); _mm_prefetch((const char*) b0 + pf + 64, _MM_HINT_T0); }
+            __m512i wq;
+            float d0, d1;
+            if constexpr (TY == 6) {
+                wq = _mm512_inserti64x4(_mm512_castsi256_si512(q50_weights((const block_q5_0*) b0)), q50_weights((const block_q5_0*) (b0 + kBlk)), 1);
+                d0 = h2f(((const block_q5_0*) b0)->d);
+                d1 = h2f(((const block_q5_0*) (b0 + kBlk))->d);
+            } else {
+                wq = _mm512_inserti64x4(_mm512_castsi256_si512(iq4nl_weights((const block_iq4_nl*) b0)), iq4nl_weights((const block_iq4_nl*) (b0 + kBlk)), 1);
+                d0 = h2f(((const block_iq4_nl*) b0)->d);
+                d1 = h2f(((const block_iq4_nl*) (b0 + kBlk))->d);
+            }
+            const __m512i aw = _mm512_abs_epi8(wq);
+            const __mmask64 neg = _mm512_movepi8_mask(wq);
+            for (int t = 0; t < NT; ++t) {
+                const __m512i yv = pair_q8_0(&y[t][ib], &y[t][ib + 1]);
+                const __m512i p = _mm512_dpbusd_epi32(_mm512_setzero_si512(), aw, _mm512_mask_sub_epi8(yv, neg, _mm512_setzero_si512(), yv));
+                const __m256 lo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(p));
+                const __m256 hi = _mm256_cvtepi32_ps(_mm512_extracti64x4_epi64(p, 1));
+                acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d0 * h2f(y[t][ib].d)), lo, acc[t]);
+                acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d1 * h2f(y[t][ib + 1].d)), hi, acc[t]);
+            }
+        }
+        if (ib < nb) {
+            const uint8_t* b0 = row + (size_t) ib * kBlk;
+            __m256i wq;
+            float d0;
+            if constexpr (TY == 6) { wq = q50_weights((const block_q5_0*) b0); d0 = h2f(((const block_q5_0*) b0)->d); }
+            else { wq = iq4nl_weights((const block_iq4_nl*) b0); d0 = h2f(((const block_iq4_nl*) b0)->d); }
+            for (int t = 0; t < NT; ++t) {
+                const __m256i yv = _mm256_loadu_si256((const __m256i*) y[t][ib].qs);
+                const __m256i p = _mm256_dpbusd_epi32(_mm256_setzero_si256(), _mm256_abs_epi8(wq), _mm256_sign_epi8(yv, wq));
+                acc[t] = _mm256_fmadd_ps(_mm256_set1_ps(d0 * h2f(y[t][ib].d)), _mm256_cvtepi32_ps(p), acc[t]);
+            }
+        }
+        for (int t = 0; t < NT; ++t) out[t][r] = TY == 6 ? hsum8_ggml(acc[t]) : hsum8_hadd(acc[t]);
+    }
+}
+
+template <int TY>
+void qd_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, float* const* out, int r0, int r1) {
+    const block_q8_0* y[8];
+    for (int t = 0; t < nt; ++t) y[t] = (const block_q8_0*) hq[t];
+    switch (nt) {
+        case 1: qd_rows<TY, 1>(w, row_bytes, n, y, out, r0, r1); break;
+        case 2: qd_rows<TY, 2>(w, row_bytes, n, y, out, r0, r1); break;
+        case 3: qd_rows<TY, 3>(w, row_bytes, n, y, out, r0, r1); break;
+        case 4: qd_rows<TY, 4>(w, row_bytes, n, y, out, r0, r1); break;
+        default:
+            for (int t0 = 0; t0 < nt; t0 += 4) {
+                const int k = nt - t0 < 4 ? nt - t0 : 4;
+                qd_rows_nt<TY>(k, w, row_bytes, n, hq + t0, out + t0, r0, r1);
+            }
+    }
+}
+
+}  // namespace
+
+void qd512_down_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out,
+                     int r0, int r1) {
+    if (type == 6) qd_rows_nt<6>(nt, w, row_bytes, n, hq, out, r0, r1);
+    else if (type == 20) qd_rows_nt<20>(nt, w, row_bytes, n, hq, out, r0, r1);
 }
 
 }  // namespace strata::kernels::cpu
