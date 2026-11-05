@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import jev  # noqa: E402
+from serve import jev_calib  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
@@ -199,10 +200,14 @@ class BrowWire(unittest.TestCase):
         cls.httpd.shutdown()
         cls.httpd.server_close()
 
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
     def tearDown(self):
         """A fail-closed case ends the engine, and FakeProc.kill() is permanent (killed stays True for the
         life of that stand-in), so hand the next test a live one and an empty line queue - otherwise the
         test that follows a kill waits for a reply the scripted player refuses to send."""
+        jev_calib._reset_for_test()
         self.eng.proc = FakeProc(self.eng)
         self.eng.ended = False
         while not self.eng.lines.empty():
@@ -348,6 +353,7 @@ class StatePin(unittest.TestCase):
         cls.httpd.server_close()
 
     def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
         self._old = _os.environ.get("STRATA_JEV_PIN")
         _os.environ.pop("STRATA_JEV_PIN", None)          # default: pinning is on
         self.engine.prompts.clear()
@@ -446,6 +452,7 @@ class RowReadout(unittest.TestCase):
         cls.httpd.server_close()
 
     def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
         self._old = _os.environ.get("STRATA_JEV_ROWS")
         _os.environ["STRATA_JEV_ROWS"] = "1"
         self._old_info = dict(self.engine.info)
@@ -634,6 +641,7 @@ class Hybrid(unittest.TestCase):
         cls.httpd.server_close()
 
     def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
         self._old = _os.environ.get("STRATA_JEV_HYBRID")
         _os.environ["STRATA_JEV_HYBRID"] = "1"
         self.engine.prompts.clear()
@@ -698,6 +706,12 @@ class Hybrid(unittest.TestCase):
 
 
 class SystemOneValidation(unittest.TestCase):
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
     @classmethod
     def setUpClass(cls):
         cls.engine, cls.httpd, cls.base = start_server()
@@ -737,6 +751,12 @@ class SystemOneValidation(unittest.TestCase):
 
 
 class SystemOneAnswers(unittest.TestCase):
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
     @classmethod
     def setUpClass(cls):
         cls.engine, cls.httpd, cls.base = start_server()

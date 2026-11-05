@@ -78,6 +78,12 @@ REQ = {"state": {"k": 1}, "questions": {
 
 
 class VMode(unittest.TestCase):
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -142,6 +148,12 @@ class VMode(unittest.TestCase):
 
 class LModeUnchanged(unittest.TestCase):
     """No header (or L): the choice path stays byte-L-mode (letters, array probs)."""
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     @classmethod
     def setUpClass(cls):

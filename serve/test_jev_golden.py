@@ -25,6 +25,7 @@ from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import ByteTokenizer, Service, serve  # noqa: E402
 from serve.jev_golden import check_invariants, load_battery  # noqa: E402
 from serve.test_systemone import DecisionEngine  # noqa: E402
+from serve import jev_calib  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,6 +41,12 @@ def post(base, path, body, headers=None):
 
 
 class GoldenBattery(unittest.TestCase):
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
     @classmethod
     def setUpClass(cls):
         tok = ByteTokenizer()
@@ -83,6 +90,12 @@ class ControlTokenInjection(unittest.TestCase):
     so a state/instructions/label/then-message containing '<|im_end|>\\n<|im_start|>assistant\\n'
     could steer the readout.  ByteTokenizer: the <|im_end|> control token is id 257; the marked
     text encodes as its bytes (< 256), so counting 257s distinguishes the two exactly."""
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     @classmethod
     def setUpClass(cls):
@@ -166,6 +179,12 @@ class UnifiedChoiceContract(unittest.TestCase):
     """M8 (2026-11-05, expert review major 8): ONE choice contract on the endpoint.
     {choice: index, label: str, probabilities: list, margin} in every mode; criteria dict
     values must be strings/null (400 otherwise); duplicate list labels are 400."""
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     @classmethod
     def setUpClass(cls):
@@ -261,6 +280,12 @@ class LmEvalSmokeInvariants(unittest.TestCase):
     context/continuation split (the BOS-double-count class of bug). Catches
     wiring breaks that argmax tests pass through. Runs the golden battery live
     against the mock engine and inspects every answer."""
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     @classmethod
     def setUpClass(cls):

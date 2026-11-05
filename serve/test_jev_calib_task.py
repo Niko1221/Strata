@@ -39,6 +39,7 @@ def _fit(task: str, a: float = 0.6127, c: float = 0.6539) -> "jev_calib.Calib":
 
 class TaskScopedCalibration(unittest.TestCase):
     def setUp(self):
+        jev_calib._reset_for_test()      # M11: start from clean globals, then snapshot
         self._snapshot()
         self._env_task = os.environ.pop("STRATA_JEV_TASK", None)
         jev_calib._set_task_for_test(None)      # fall back to the environment
@@ -49,6 +50,7 @@ class TaskScopedCalibration(unittest.TestCase):
 
     def tearDown(self):
         self._restore()
+        jev_calib._reset_for_test()      # M11: and leave clean globals behind, whatever ran
 
     # ── state isolation ────────────────────────────────────────────────────
     # _set_for_test(c) defaults to mode "", so resetting it alone leaves a fit
@@ -139,13 +141,24 @@ class TaskScopedCalibration(unittest.TestCase):
 
     # ── 7a. this file must not leak a fit into other test files ────────────
     def test_restore_clears_every_mode(self):
-        jev_calib._set_for_test(_fit("leaky"), "L")          # what a test leaves behind
-        jev_calib._set_for_test(_fit("leaky"), "")
+        # M11 (2026-11-05): establish a DIRTY snapshot first - a fit in every readout mode,
+        # a foreign CALIB_DIR, an admin key and a task override - then prove _reset_for_test()
+        # clears all of it (the old test snapshotted whatever was there, so it passed even
+        # when the baseline itself was dirty: close to tautological).
+        leak = jev_calib.Calib(loaded=True, a_noul=0.6127, c_noul=0.6539, T_choice=1.0557)
+        for m in ("", "L", "V", "D", "S"):
+            jev_calib._set_for_test(leak, m)
+        jev_calib._TASK_OVERRIDE = "banking77"
+        jev_calib.ADMIN_KEY = "leaked"
+        jev_calib.CALIB_DIR = Path("/definitely/not/a/calib/dir")
         self.assertIsNotNone(jev_calib.active("L"))
-        self._restore()                                      # what tearDown does
-        self.assertIsNone(jev_calib.active("L"),
-                          "a leftover fit in mode 'L' is applied by later test files")
-        self.assertIsNone(jev_calib.active(""))
+        jev_calib._reset_for_test()                            # what tearDown now does
+        for m in ("", "L", "V", "D", "S"):
+            self.assertIsNone(jev_calib.active(m), f"a leftover fit in mode {m!r} is applied by later test files")
+        self.assertIsNone(jev_calib._TASK_OVERRIDE)
+        self.assertEqual(jev_calib.ADMIN_KEY, os.environ.get("STRATA_JEV_ADMIN_KEY", ""))
+        self.assertTrue(jev_calib.CALIB_DIR.is_dir())          # an empty temp dir, not the repo
+        self.assertFalse(any(jev_calib.CALIB_DIR.iterdir()))
         # and the legacy fallback path in apply() must now be identity too
         pr, cid = jev_calib.apply("noul", [0.018, 0.982], mode="L")
         self.assertEqual(cid, "identity")

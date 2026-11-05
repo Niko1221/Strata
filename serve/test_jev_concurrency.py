@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import ByteTokenizer, Service, serve  # noqa: E402
 from serve.test_systemone import DecisionEngine  # noqa: E402
+from serve import jev_calib  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,6 +50,12 @@ def post(base, body):
 
 
 class ConcurrentSevenByThree(unittest.TestCase):
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
     def test_7x3_all_answered_no_cross_talk(self):
         engine, httpd, base = start()
         try:
@@ -125,6 +132,12 @@ class ImageDirectFifo(unittest.TestCase):
     depth-tracking fifo wrapper proves it), no request sees a foreign row, no engine death.
     Mock-based: the real engine's stdin/stdout interleaving is what the lock prevents, so the
     lock discipline is the thing under test (stated per the brief)."""
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     def test_20_interleaved_requests_all_locked_and_correct(self):
         import threading as _t

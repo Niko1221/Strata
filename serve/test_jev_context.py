@@ -27,6 +27,7 @@ from serve import jev  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import ByteTokenizer, Service, serve  # noqa: E402
 from serve.test_systemone import DecisionEngine, post  # noqa: E402
+from serve import jev_calib  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -228,6 +229,30 @@ class ThenGenerate(unittest.TestCase):
 class ContextDefault(unittest.TestCase):
     """No `context`: the render must be exactly the donor's frozen shape."""
 
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
     @classmethod
     def setUpClass(cls):
         cls.engine, cls.httpd, cls.base = start_server()
@@ -264,6 +289,12 @@ class ContextDefault(unittest.TestCase):
 
 class ContextRender(unittest.TestCase):
     """`context` present: verbatim, between the state and the question, in every field."""
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     @classmethod
     def setUpClass(cls):
@@ -318,6 +349,12 @@ class ContextRender(unittest.TestCase):
 
 class ContextConsolidated(unittest.TestCase):
     """STRATA_JEV_ROWS=1: one prompt for the whole request - the context rides unit 0."""
+
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     @classmethod
     def setUpClass(cls):

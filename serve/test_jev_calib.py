@@ -40,6 +40,12 @@ ROOT = Path(__file__).resolve().parents[1]
 class CalibMath(unittest.TestCase):
     """jev_calib.apply: the donor's post-hoc, monotone transforms."""
 
+    def setUp(self):
+        jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
+
     def test_identity_when_not_loaded(self):
         jev_calib._set_for_test(None)
         pr = [0.7, 0.3]
@@ -136,8 +142,13 @@ class SystemOneCalibrated(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
+        jev_calib._reset_for_test()      # M11: clean globals, then THIS class's dir
+        jev_calib.CALIB_DIR = self.dir   # /admin/calib hot-reloads from the module dir
         (self.dir / "calib.json").write_text(json.dumps(self.CALIB))
         jev_calib.swap(self.dir)
+
+    def tearDown(self):
+        jev_calib._reset_for_test()
 
     def _post(self, path, body, headers=None):
         h = {"Content-Type": "application/json"}

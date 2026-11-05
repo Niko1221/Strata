@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -98,6 +99,27 @@ def task_mismatch(c: "Calib", want: str) -> str:
 def _set_for_test(c: Calib | None, mode: str = "") -> None:
     with _MU:
         _ACTIVE[mode] = c
+
+
+def _reset_for_test() -> None:
+    """M11 (2026-11-05, expert review): EVERY module-global this package owns, back to the
+    clean baseline a fresh import would have - for tests, in setUp AND tearDown of every
+    test that starts a server (a fit, a dir, an admin key or a task override leaking across
+    files changes later files' answers; the 2026-10-31 CI leak was exactly this).
+
+    CALIB_DIR -> a fresh EMPTY temp dir (never None, so an accidental log_flush writes into
+    the throwaway dir instead of the repo), ADMIN_KEY -> the env's, the task override and
+    the mismatch log cleared, the bounded log queue drained, every readout mode identity."""
+    global _TASK_OVERRIDE, CALIB_DIR, ADMIN_KEY
+    with _MU:
+        for m in ("", "L", "V", "D", "S"):
+            _ACTIVE[m] = None
+        _TASK_OVERRIDE = None
+        _MISMATCH_LOGGED.clear()
+    CALIB_DIR = Path(tempfile.mkdtemp(prefix="jev-calib-test-"))
+    ADMIN_KEY = os.environ.get("STRATA_JEV_ADMIN_KEY", "")
+    with _LOGMU:
+        _LOGQ.clear()
 
 
 # ---- file load (donor calib_load :565-586) ----
