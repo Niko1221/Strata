@@ -229,13 +229,25 @@ scores[c, j] = sum_d q[d, c] * k[d, j]        // c = t*n_head + h, j = 池化单
 也就是 `qᵀ @ k`。`q` 在内存里是 `d` 最快、`h` 次之、`t` 最慢，所以 `q` 天然是 `[d, c]` 的形状，
 要当 `[c, d]` 的 A 用就得先转置。
 
-两条路：
-1. `aclnnTranspose` 出一个连续副本（多一次全量拷贝，但 q 很小：4×T×128）；
-2. 用 aclTensor 的 `nb` 表达转置视图（`ne={c, d}, nb={512, 4}`）——**不能指望**，CANN 多数算子
-   要求输入连续。
+**更正**：我原以为"用 nb 表达转置视图不能指望"。读了 `ggml_cann_mat_mul_fp`（`aclnn_ops.cpp:2227`）
+发现**CANN 后端每次矩阵乘都是这么干的**：
 
-所以第一版按第 1 条做：先 `aclnnTranspose` + `aclnnContiguous`，再 `aclnnMatmul`。
-这个开销在这个算子的规模下可以接受（`n_head*n_tokens*128` 个元素）。
+```cpp
+int64_t transpose_ne[] = { bcast_weight_ne[1], bcast_weight_ne[0], ... };
+size_t  transpose_nb[] = { bcast_weight_nb[1], bcast_weight_nb[0], ... };
+acl_weight_tensor = ggml_cann_create_tensor(weight, transpose_ne, transpose_nb, n_dims, ACL_FORMAT_ND);
+GGML_CANN_CALL_ACLNN_OP(ctx, Matmul, acl_input_tensor.get(), acl_weight_tensor.get(), acl_dst.get(), 1);
+```
+
+也就是 `aclnnMatmul` **接受**用交换过的 `ne`/`nb` 表达的转置视图，不需要真的 `aclnnTranspose`。
+
+所以第一版这么写：
+
+1. `q` 直接按 `[n_embd, n_head*T]` 建（`nb0`, `nb1` 用原值，因为 `nb2 == nb1*n_head`）；
+2. `k` 按交换 `ne`/`nb` 的转置视图建（`[n_kv, n_embd]`）；
+3. `aclnnMm` / `aclnnMatmul` 直接出 `[n_kv, n_head*T]`。
+
+不用拷贝，也就没有额外开销。
 
 ### 为什么要小心
 
