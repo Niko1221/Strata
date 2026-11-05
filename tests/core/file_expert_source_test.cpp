@@ -657,6 +657,12 @@ void test_host_memory() {
     };
     // no cgroup line at all: MemAvailable alone (before #633: "cannot determine")
     require(probe("") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "no cgroup: MemAvailable alone");
+    require(m.hugetlb_free == 0, "no HugePages keys: no pool");   // #5317
+    // #5317: a reserved pool is free RAM for a MAP_HUGETLB arena; read it in the same pass (36727 x 2 MiB, as on the M5-class box)
+    put("meminfo", "MemTotal: 134217728 kB\nMemAvailable: 104857600 kB\nHugePages_Total: 36727\nHugePages_Free: 36727\nHugepagesize: 2048 kB\n");
+    require(probe("") && m.hugetlb_free == 36727ull * 2ull * (1ull << 20), "HugePages_Free x Hugepagesize");
+    put("meminfo", "MemTotal: 134217728 kB\nMemAvailable: 104857600 kB\nHugePages_Total: 36727\nHugePages_Free: 0\nHugepagesize: 2048 kB\n");
+    require(probe("") && m.hugetlb_free == 0, "an exhausted pool reads as nothing");
     // v2, a 48 GiB limit with 16 GiB charged, 4 GiB of it clean cache
     put("fs/cgroup.controllers", "memory\n");
     put("fs/box/memory.max", std::to_string(48 * GiB) + "\n");

@@ -60,15 +60,19 @@ int main() {
     {
         const uint64_t need = arena + (1ull << 20);   // the arena and one blob
         const uint64_t none = std::numeric_limits<uint64_t>::max();   // no cgroup limit
-        check(arena_ram_verdict(need, need, none, true) == ArenaRamVerdict::Load, "RAM exactly there: load");
-        check(arena_ram_verdict(need, 240ull * GiB, none, true) == ArenaRamVerdict::Load, "plenty: load");
-        check(arena_ram_verdict(need, need - 1, none, true) == ArenaRamVerdict::FallBack, "one byte short: file source");
-        check(arena_ram_verdict(need, 20ull * GiB, none, true) == ArenaRamVerdict::FallBack, "20 GiB of 51: file source");
-        check(arena_ram_verdict(need, 20ull * GiB, none, false) == ArenaRamVerdict::Warn, "20 GiB of 51, fixed by hand: warn only");
-        check(arena_ram_verdict(need, 240ull * GiB, 30ull * GiB, true) == ArenaRamVerdict::FallBack, "a 30 GiB container limit: file source, not a refusal");
-        check(arena_ram_verdict(need, 240ull * GiB, 30ull * GiB, false) == ArenaRamVerdict::Refuse, "a 30 GiB container limit, fixed by hand: as before");
-        check(arena_ram_verdict(need, 240ull * GiB, need, true) == ArenaRamVerdict::Load, "a limit of exactly the arena: load");
-        check(arena_ram_verdict(0, 0, 0, true) == ArenaRamVerdict::Load, "an unpriced arena loads");
+        check(arena_ram_verdict(need, need, 0, none, true) == ArenaRamVerdict::Load, "RAM exactly there: load");
+        check(arena_ram_verdict(need, 240ull * GiB, 0, none, true) == ArenaRamVerdict::Load, "plenty: load");
+        check(arena_ram_verdict(need, need - 1, 0, none, true) == ArenaRamVerdict::FallBack, "one byte short: file source");
+        check(arena_ram_verdict(need, 20ull * GiB, 0, none, true) == ArenaRamVerdict::FallBack, "20 GiB of 51: file source");
+        check(arena_ram_verdict(need, 20ull * GiB, 0, none, false) == ArenaRamVerdict::Warn, "20 GiB of 51, fixed by hand: warn only");
+        check(arena_ram_verdict(need, 240ull * GiB, 0, 30ull * GiB, true) == ArenaRamVerdict::FallBack, "a 30 GiB container limit: file source, not a refusal");
+        check(arena_ram_verdict(need, 240ull * GiB, 0, 30ull * GiB, false) == ArenaRamVerdict::Refuse, "a 30 GiB container limit, fixed by hand: as before");
+        check(arena_ram_verdict(need, 240ull * GiB, 0, need, true) == ArenaRamVerdict::Load, "a limit of exactly the arena: load");
+        check(arena_ram_verdict(0, 0, 0, 0, true) == ArenaRamVerdict::Load, "an unpriced arena loads");
+        // #5317: a reserved huge-page pool is not in MemAvailable, and the arena maps MAP_HUGETLB when a pool holds it
+        check(arena_ram_verdict(need, 20ull * GiB, need, none, true) == ArenaRamVerdict::Load, "RAM short, pool of the arena: load (hugetlb)");
+        check(arena_ram_verdict(need, 20ull * GiB, need - 1, none, true) == ArenaRamVerdict::FallBack, "pool one byte short: file source");
+        check(arena_ram_verdict(need, 20ull * GiB, 240ull * GiB, 30ull * GiB, true) == ArenaRamVerdict::FallBack, "a 30 GiB container limit beats the pool");
         check(arena_ram_fallback_allowed(nullptr, false, false), "fallback on by default");
         check(!arena_ram_fallback_allowed(nullptr, true, false), "a hand-set --ple-io ram is kept");
         check(!arena_ram_fallback_allowed(nullptr, false, true), "a shared arena file is kept");
@@ -94,7 +98,7 @@ int main() {
             const uint64_t avail = (uint64_t) (f * (double) GiB);
             for (const uint64_t safety : {win, lin}) {
                 const RamKeepPlan p0 = ram_keep_plan(need, avail, 0, std::nullopt, safety);
-                check(p0.arena == (arena_ram_verdict(need, avail, none, true) == ArenaRamVerdict::Load), "W=0: the arena whenever it fits, as before");
+                check(p0.arena == (arena_ram_verdict(need, avail, 0, none, true) == ArenaRamVerdict::Load), "W=0: the arena whenever it fits, as before");
                 check(p0.headroom == safety, "W=0: the safety headroom");
                 check(p0.budget == (p0.arena ? 0 : (avail > safety + GiB ? avail - safety : 0)), "W=0: the budget is what is available less the safety headroom");
                 uint64_t prev_budget = none;
@@ -134,7 +138,7 @@ int main() {
         const uint64_t need = 46ull * GiB + 860ull * (1ull << 20) + 2660000ull;   // IQ3_S: 46.84 GiB of experts and the spare blob
         const uint64_t head4 = 4 * GiB, head8 = 8 * GiB;
         auto verdict = [&](uint64_t limit, uint64_t keep, uint64_t headroom, bool fallback) {
-            return arena_ram_verdict(arena_hard_limit_need(need, keep, headroom, fallback), ~uint64_t{0}, limit, fallback);
+            return arena_ram_verdict(arena_hard_limit_need(need, keep, headroom, fallback), ~uint64_t{0}, 0, limit, fallback);
         };
         check(arena_hard_limit_need(need, 0, head4, true) == need + head4, "fallback allowed: the arena needs its headroom under the limit");
         check(arena_hard_limit_need(need, 8 * GiB, head4, true) == need + 8 * GiB, "the RAM to keep counts when it is larger than the headroom");
