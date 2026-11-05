@@ -993,6 +993,16 @@ void ExpertPool::worker(int id) {
         const auto parked_at = std::chrono::steady_clock::now();
         uint32_t spins = 0;
         const uint64_t um = umwait_cycles();
+        // `STRATA_POOL_SPIN_US=0` asks for no hot stage: the worker goes to the kernel sleep instead of running the
+        // 1024 pauses the clock check sits behind (issue #4624).  Only the builds this was built and measured in
+        // compile it: CMakeLists.txt defines STRATA_POOL_SPIN_ZERO for Linux with the CPU engine or the CUDA one,
+        // because no Windows, Mac, HIP or SYCL build has been run with the change.  Those builds keep `spin_hot`
+        // as a constant true, which folds away to the pause loop the last release ran.
+#if defined(STRATA_POOL_SPIN_ZERO)
+        const bool spin_hot = spin_before_sleep_.count() != 0;
+#else
+        const bool spin_hot = true;
+#endif
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__)   // MSVC proper: clang-cl (the Windows HIP build) has no WAITPKG intrinsics by default
         const uint64_t um_esc = umwait_escalate();
         const uint64_t um_t0 = um != 0 && um_esc != 0 ? __rdtsc() : 0;
@@ -1009,7 +1019,7 @@ void ExpertPool::worker(int id) {
                 if ((++spins & 15u) != 0) continue;   // each wait is ~um cycles: look at the clock more often
             } else
 #endif
-            {
+            if (spin_hot) {
                 strata_cpu_pause();
                 if ((++spins & 1023u) != 0) continue;
             }
