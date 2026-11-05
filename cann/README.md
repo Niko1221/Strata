@@ -232,31 +232,28 @@ Two changes, both measured on the same prompt:
 | first version | 166 s |
 | weights and the aclnn workspace stay resident | 64 s |
 | threaded dequantization | 41 s |
+| decoding a layer's 24 expert slabs concurrently | 12.7 s |
 
 Profiling paid for itself here. A single GEMV measures 0.043 ms, and a whole token makes about
 12000 aclnn calls, so the ops were never the problem: `print_op_stats` shows 2.5 s for 122559
 calls across the five tokens, and `print_xfer_stats` shows 1.2 s for 11 GB of transfers. The rest
-was **host-side dequantization**: the decoder is a scalar loop, and a token pulls fresh expert
-slabs (8 of 256 experts, 40 layers) that have to be decoded before they can be uploaded. Splitting
-the blockwise decode across threads took the run from 64 s to 41 s.
+was **host-side dequantization** of expert slabs.
+
+The first attempt threaded *inside* each slab: 128 threads over a megabyte was slower than the
+decode. `print_slab_stats` showed it plainly — `3348 new, disk 0.5 s, dequant 22.3 s`. The fix
+was to decode the 24 slabs a layer needs **concurrently, one thread each**:
+
+```
+slabs: 3348 new, disk 0.5 s, dequant 1.5 s, upload 3.9 s
+```
+
+Dequantization went from 22.3 s to 1.5 s and the five tokens from 37 s to 12.7 s, with identical
+logits.
 
 The weight cache keeps every non-expert tensor (2.4 GB) in HBM and caches expert slabs with a
 budget. The workspace cache removed an `aclrtMalloc`/`aclrtFree` pair per op. Dropping the
 per-op `stream.synchronize()` as well made the numbers wrong — host uploads go through
 `aclrtMemcpy`, which is not ordered against queued kernels — so the sync stayed.
-
-Per token the cost now splits like this, and the MoE part keeps falling as slabs get cached:
-
-```
-token 1/5  17.1 s  [gdn 5.4  attn 1.4  moe 10.0]
-token 2/5  26.0 s  [gdn 5.8  attn 1.5  moe 18.5]
-...
-token 5/5  41.3 s  [gdn 6.8  attn 1.6  moe 32.5]
-```
-
-GDN and attention are one-time (weight decode) and then 0.3 s and 0.1 s per token. MoE is
-8.3 s for the first token and falls to 3.6 s by the fifth, because each token selects different
-experts and a new slab has to be read from disk and decoded.
 
 ## What is not here yet
 
