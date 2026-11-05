@@ -369,6 +369,7 @@ int main(int argc, char ** argv) {
             // activations)
             for (const ggml_type t : {(ggml_type) 145, (ggml_type) 146, (ggml_type) 144}) {
                 if (!supported((int) t)) { std::cout << "type " << (int) t << ": no MMQ instance in this build\n"; continue; }
+                if ((int) t >= (int) GGML_TYPE_COUNT) { std::cout << "type " << (int) t << ": this ggml has no host traits for the trellis types (skipped)\n"; continue; }
                 const std::vector<int> counts{2, 3};
                 const auto src = permutation(5, 1, false), dst = permutation(5, 2, true);
                 const char* known = ggml_type_name(t);   // null when this ggml has no name for the id (no trellis types in it): #3358
