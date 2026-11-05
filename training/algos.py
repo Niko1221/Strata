@@ -218,6 +218,40 @@ METHODS: dict[str, Method] = {
 
 DEFAULT_METHOD = "mezo"
 
+# 路由的名字就是 `auto`，**它是用户能选的算法名**（2026-11-05 改）。
+#
+# 上一版把它做成"第三轴"（`--route auto`），理由是它没有单一 objective。那条理由
+# 仍然成立，但代价是用户根本找不到入口：想自动就得多记一个开关，还得自己判断
+# 什么时候该用它。所以现在的分法是：
+#
+#   命令行 / 文档：auto 是一个算法，`--algo auto`，和 sft/dpo/luspo 并列；
+#   实现：它不进 `ALGOS`（那张表是"量什么"，每行必须有一个 objective 和一行 lr），
+#        而是就地派发到具体算法（`coldstart.plan`），日志里逐组打出进了哪一支。
+#
+# 这样两者都不吃亏：`--algo auto` 能被 `--list` 列出来、能被 argparse 的 choices
+# 挡住拼错，而 lr/轮次表里不会多出一行"自动"（那行填什么都错 —— 它要按组派发）。
+#
+# 语义（默认动作只有两个，判定有三档 —— 见下"为什么 acc=0 不能走 luspo"）：
+#   有正确答案的组（0 < acc < 1）  → mezo × luspo（唯一有梯度的区间）
+#   没答案（acc = 0）             → 冷启 DPO：chosen = 标准解答/自采正确轨迹
+#   全对（acc = 1）               → 毕业，移出池子（继续采就是白烧 GPU）
+#   过半截断                      → 加预算，不训（把截断当负例，学到的是"别说下去"）
+#
+# 为什么 acc=0 不能走 luspo：GRPO/LUSPO 的优势是**组内**归一化的，组内全错 ⇒
+# A ≡ 0 ⇒ 梯度恒 0。这不是"学得慢"，是一步都不动（GSM8K 实测：全错组占 45%，
+# 那些组训 300 步 CE 一动不动）。而 acc=1 同理，只是方向相反。
+AUTO = "auto"
+ROUTES = {
+    "off": "不路由：按 --algo/--method 直接训一次（默认）",
+    "auto": "按 --rollouts 的组内通过率分档：有答案 → luspo，没答案 → 冷启 DPO，"
+            "全对毕业；写 route_plan.json 交给 bench/run_plan.py **串行**执行，"
+            "本进程不自己起训练进程",
+}
+
+
+def route_names() -> list[str]:
+    return list(ROUTES)
+
 
 def _shipped(script: str) -> bool:
     return (HERE / script).is_file()
@@ -246,8 +280,16 @@ def absent() -> dict[str, Method]:
 
 def method_of(algo: str, method: str | None) -> Method:
     """该算法在指定方法上的实现；`method=None` 取默认方法。选不到就报错，不静默回落。"""
+    if algo == AUTO:
+        # auto 由 train.py 在解析完参数后直接派发到 coldstart.plan，根本走不到这里；
+        # 走到这里说明有人把它当普通算法调了，那 lr/轮次无从谈起。
+        raise SystemExit(
+            f"--algo {AUTO} 不是一次训练，而是一轮调度：它按组把题分给 luspo / DPO，"
+            f"所以没有 --method、也没有默认 lr。\n"
+            f"  它的入口在 train.py 的 route_auto()：写 route_plan.json，再交给 "
+            f"bench/run_plan.py 串行执行。")
     if algo not in ALGOS:
-        raise SystemExit(f"不认识的算法 {algo!r}；可选：{list(ALGOS)}")
+        raise SystemExit(f"不认识的算法 {algo!r}；可选：{names()}")
     name = method or DEFAULT_METHOD
     m = METHODS.get(name)
     if m is None:
@@ -277,7 +319,8 @@ def default_epochs(algo: str, method: str | None) -> float | None:
 
 
 def names() -> list[str]:
-    return list(ALGOS)
+    """--algo 的取值。`auto` 在这里（用户要能选它），但不在 ALGOS 里（它没有 objective）。"""
+    return list(ALGOS) + [AUTO]
 
 
 def describe() -> str:
@@ -286,6 +329,9 @@ def describe() -> str:
         lines.append(f"  {a.name:<5s} 目标 {a.objective:<4s} {a.blurb}")
         if a.needs:
             lines.append(f"        需要 {a.needs}")
+    lines.append(f"  {AUTO:<5s} 目标 多种  自动分档：按 --rollouts 的组内通过率逐组派发 —— "
+                 "有答案 → luspo，没答案 → 冷启 DPO，全对毕业")
+    lines.append(f"        需要 --rollouts；只写计划不起进程（执行交 bench/run_plan.py 串行）")
     lines.append(f"方法（--method，默认 {DEFAULT_METHOD}）：")
     for m in available().values():
         lines.append(f"  {m.name:<8s} {m.blurb}")
@@ -295,6 +341,9 @@ def describe() -> str:
         lacks = sorted({s for s in m.scripts.values() if not _shipped(s)})
         lines.append(f"  {name:<8s} 不在这条分支上（缺 {', '.join(lacks)}）—— {m.blurb}")
     lines.append("  损失函数只有一份（objectives.py），两个方法共用同一份数学。")
+    lines.append(f"路由（--algo {AUTO}；旧写法 --route auto 仍可用，同一个入口）：")
+    for name, blurb in ROUTES.items():
+        lines.append(f"  {name:<5s} {blurb}")
     example = "--algo dpo = 零阶 DPO（默认）"
     if "backward" in available():
         example = "--algo sft --method backward = 反传 SFT；" + example

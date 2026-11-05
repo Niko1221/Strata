@@ -239,13 +239,17 @@ def load_tokenizer(pack: str):
                         tcfg.get("special_ids") or None)
 
 
-def load_template(pack: str, enable_thinking=None, system: str = ""):
+def load_template(pack: str, enable_thinking=None, system: str = "",
+                  reasoning_effort: str | None = None):
     """与 serve/frontend.py::ChatTemplate 同一渲染设置；训练不用 tools，不需要能力探测。
 
     `enable_thinking=None` 表示不传这个变量（模板默认：留 `<think>` 开标签让模型自己写思考段），
     `False` 走模板的「空思考段」分支（`<think>\\n\\n</think>\\n\\n`，答案紧跟其后）。
     `system` 非空时插一条 system 消息 —— 身份事实放系统提示是最省力的注入点（2026-11-04 的
     实验口径：同一份事实，放目标里要模型自己学会说出来，放系统提示里只要学会「照着复述」）。
+    `reasoning_effort=None` 表示不传这个变量，模板自己 `default('xhigh')` —— 历史行为逐字不变。
+    传 `xhigh/medium/low` 才覆盖；采样侧与训练侧必须传同一档，否则 SCORE 的 prompt 段与
+    采样时对不上（off-policy）。medium = 模板不注入任何推理风格指令，思考段仍保留。
     """
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -263,6 +267,8 @@ def load_template(pack: str, enable_thinking=None, system: str = ""):
         kw = {"messages": msgs, "add_generation_prompt": True}
         if enable_thinking is not None:
             kw["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            kw["reasoning_effort"] = reasoning_effort
         return tpl.render(**kw)
 
     return _render
@@ -656,7 +662,9 @@ class EngineMezo:
         self.swap = lambda th, path: None      # run() 里替换成真实现
         # 量 CE 用非思考模板：与「答案就是一句话」的训练/采样口径一致
         system = getattr(args, "system_prompt", "") or ""
-        self.render_off = (load_template(args.pack, enable_thinking=False, system=system)
+        effort = getattr(args, "reasoning_effort", "") or None
+        self.render_off = (load_template(args.pack, enable_thinking=False, system=system,
+                                         reasoning_effort=effort)
                            if template_thinks(render) else render)
         self._ce_pairs: list[tuple[str, str]] | None = None
 
@@ -849,6 +857,30 @@ class EngineMezo:
         return total / max(ntok, 1)
 
     # ---- 骨架：ZO 估计循环（写一次，三个算法共用） ---------------------------
+    def _check_context_fit(self) -> None:
+        """最长样本超过 `--max-context` 就**停下**，不截断、不打折。
+
+        为什么是中止而不是告警：引擎已经按 `--max-context` 起好了，事后改参数无效；
+        而截断后的 logp 不是整条轨迹的值，loss 只差一小截，日志上看不出来 —— 但梯度
+        已经把「被腰斩的轨迹」当成负例。2026-11-05 在评测侧踩过同型坑：1536 预算下
+        5 条错例**全部**是截断，放到无上限后 12/12 全对。
+        默认 4096 只够身份那种 2 token 答案；长 CoT 必须显式抬上下文。
+        """
+        if not self.items:
+            return
+        lens = [len(it["seq"]) for it in self.items]
+        mx, cap = max(lens), int(self.args.max_context)
+        if mx > cap:
+            need = ((mx + 1023) // 1024) * 1024
+            raise SystemExit(
+                f"最长样本 {mx} token > --max-context {cap}：SCORE/GEN 会把它截断，"
+                f"loss 与 logp 都不是整条序列的值。\n"
+                f"  加 --max-context {need}（或更大）重跑；显存会随上下文上升，"
+                f"见 mem_guard 的估算与提示。")
+        if mx > cap * 0.9:
+            print(f"  提示：最长样本 {mx} token 已到 --max-context {cap} 的 90%，"
+                  f"再长就会被截断（不会静默：超了会直接停）", flush=True)
+
     def run(self) -> int:
         args, eng, tok, render = self.args, self.eng, self.tok, self.render
         layers = sorted(self.layout)
@@ -863,6 +895,7 @@ class EngineMezo:
 
         self.items = self.load_items()
         print(f"data: {len(self.items)} items ({self.objective})", flush=True)
+        self._check_context_fit()
         # 轮次优先：步数会随「一条样本算几遍 / 数据几条」漂移，轮次不会。--epochs 给了就盖掉 --steps。
         # 一轮的步数走 steps_per_epoch()：ce/dpo 是「一条样本一步」，grpo/luspo 是「一组一步」，
         # 用 len(items) 统一口径会让 RL 的 --epochs 5 实际跑 20 轮（2026-11-04 修）。
@@ -1023,12 +1056,15 @@ class SftMezo(EngineMezo):
                              "改用 both/off，或换带 thinking 的 chat 模板")
         ident = (self.args.data or "identity").strip().startswith("identity")
         system = getattr(self.args, "system_prompt", "")
+        effort = getattr(self.args, "reasoning_effort", "") or None
         if not thinks:
             off_render = self.render
         elif system:
-            off_render = load_template(self.args.pack, enable_thinking=False, system=system)
+            off_render = load_template(self.args.pack, enable_thinking=False,
+                                       system=system, reasoning_effort=effort)
         else:
-            off_render = load_template(self.args.pack, enable_thinking=False)
+            off_render = load_template(self.args.pack, enable_thinking=False,
+                                       reasoning_effort=effort)
         items = []
         for q, a in load_data(self.args.data, self.args.word):
             if thinks and mode in ("both", "on"):
@@ -1309,6 +1345,10 @@ def main() -> int:
     ap.add_argument("--system-prompt", default="",
                     help="插一条 system 消息。取值 `identity` 会展开成身份事实模板 —— 事实放在系统提示"
                          "里，训练只需要学会「照着复述」，比逼模型自己记住一段稀有字符串容易得多")
+    ap.add_argument("--reasoning-effort", choices=("xhigh", "medium", "low"), default="",
+                    help="覆盖 chat_template.jinja 的推理风格档位。留空 = 不传变量，模板 "
+                         "default('xhigh')，历史行为逐字不变。采样侧用哪档这里就用哪档："
+                         "render 的 system 段必须逐字一致，否则 SCORE 算的不是采样时的序列")
     ap.add_argument("--dirs", type=int, default=1,
                     help="每步平均 q 个随机方向（方差 ~1/q，代价 q 倍；_snr.py 的 C 组说明单方向 pj 信噪比 ~0.15）")
     ap.add_argument("--momentum", type=float, default=0.0,
@@ -1335,8 +1375,8 @@ def main() -> int:
     # system 提示在这里先展开（`identity` 是占位写法），训练与 eval 的 render 必须拿到同一份
     if args.system_prompt == "identity":
         args.system_prompt = SYSTEM_IDENTITY.format(w=args.word)
-    render = (load_template(args.pack, system=args.system_prompt) if args.system_prompt
-              else load_template(args.pack))
+    render = load_template(args.pack, system=args.system_prompt,
+                           reasoning_effort=args.reasoning_effort or None)
     geom = read_geometry(args.gguf)
     layout = adapter_layout(geom)
     print(f"geometry: {geom['block_count']} layers, n_embd {geom['embedding_length']}, "

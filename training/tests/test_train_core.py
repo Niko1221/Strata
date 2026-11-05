@@ -138,6 +138,38 @@ class Registry(unittest.TestCase):
         for word in ("sft", "mezo", "grpo", "dpo", "ce"):
             self.assertIn(word, text)
 
+    def test_auto_is_an_algo_name_but_not_a_fourth_objective(self):
+        """`--algo auto` 能选，但它不进 ALGOS —— 两件事都要成立。
+
+        2026-11-05 改的口径：路由是用户能选的**算法名**（否则没人找得到入口），
+        实现上仍是一轮调度，所以：
+          * 在 names() 里 ⇒ argparse 的 choices 挡得住拼错，--list 列得出来；
+          * 不在 ALGOS 里 ⇒ lr/轮次表不会多一行"自动"（那行填什么都错：它按组派发）。
+        """
+        self.assertIn(algos.AUTO, algos.names())
+        self.assertNotIn(algos.AUTO, algos.ALGOS)
+        self.assertEqual(set(algos.route_names()), {"off", "auto"})
+        # 它没有单一 objective，所以拿它取方法/lr 必须**报错**，不能静默回落 sft。
+        with self.assertRaises(SystemExit):
+            algos.method_of(algos.AUTO, None)
+        with self.assertRaises(SystemExit):
+            algos.default_lr(algos.AUTO, None)
+        text = algos.describe()
+        self.assertIn(algos.AUTO, text)
+        self.assertIn("有答案 → luspo", text)      # 两档默认动作要写在 --list 里
+
+    def test_route_auto_refuses_without_rollouts(self):
+        # 没有采样就没有通过率，分不了档 —— 必须在读模型之前就停，别去读 60 GB pack。
+        import train
+
+        class _A:
+            rollouts = ""
+            group = 4
+            plan_dir = ""
+
+        with self.assertRaises(SystemExit):
+            train.route_auto(_A())
+
 
 class ParallelCollection(unittest.TestCase):
     """`collect_rollouts.py --parallel N`：并发改变的是完成顺序，不是写出顺序。
@@ -328,6 +360,109 @@ class Platform(unittest.TestCase):
         with unittest.mock.patch.dict(sys.modules, {"torch": None}):
             caps = platform_check.probe()
         self.assertIn("torch", caps)
+
+
+# ---------------------------------------------------------------- 训练依赖矩阵
+
+def _deps(*present: str) -> dict:
+    """造一份 deps_probe 的结果：给了名字的算装了，其余算没装。"""
+    return {d.module: {"present": d.module in present, "version": "1.0" if d.module in present else None,
+                       "layer": d.layer, "note": d.note, "dists": list(d.dists),
+                       "install": d.install}
+            for d in platform_check.DEPS}
+
+
+class Deps(unittest.TestCase):
+    """第三方包矩阵。
+
+    这里守的是三件会静默出问题的事：
+      1. 零阶线偷偷长出 torch 层的依赖（那会让默认路径变成"还得再装一套"）；
+      2. core 层要的包不在 requirements.txt 里（装完引擎还是跑不起来）；
+      3. 缺包时报出来的名字 pip 不认识（提示没法复制粘贴）。
+    """
+
+    def test_every_dep_declares_a_layer_and_a_reason(self):
+        for d in platform_check.DEPS:
+            self.assertIn(d.layer, (platform_check.CORE, platform_check.BACKWARD), d.module)
+            self.assertTrue(d.note.strip(), d.module)
+            self.assertTrue(d.dists and all(d.dists), d.module)
+
+    def test_core_layer_is_covered_by_requirements_txt(self):
+        """mezo 的全部第三方包都必须在 requirements.txt 里。
+
+        这是"零阶线装完引擎就能跑"的可执行版本：核心层一旦多出一个包，这条就红，
+        而不是等人跑到一半才发现要 pip install。
+        """
+        req = Path(__file__).resolve().parents[2] / "requirements.txt"
+        text = req.read_text(encoding="utf-8")
+        have = set()
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            have.add(line.split(";")[0].split("==")[0].split("[")[0].strip().lower().replace("_", "-"))
+        for d in platform_check.DEPS:
+            if d.layer != platform_check.CORE:
+                continue
+            for name in d.dists:
+                self.assertIn(name.lower().replace("_", "-"), have,
+                              f"core 依赖 {d.module}（pip: {name}）不在 requirements.txt 里")
+
+    def test_probe_uses_injected_find_and_version(self):
+        seen, vers = [], []
+
+        def find(name):
+            seen.append(name)
+            return object() if name == "triton" else None
+
+        def version_of(name):
+            vers.append(name)
+            raise ModuleNotFoundError(name)
+
+        got = platform_check.deps_probe(find=find, version_of=version_of)
+        self.assertEqual(len(seen), len(platform_check.DEPS))
+        self.assertTrue(got["triton"]["present"])
+        self.assertFalse(got["transformers"]["present"])
+        self.assertEqual(got["triton"]["layer"], platform_check.BACKWARD)
+        # 缺了就不必去问版本；装了但 dist 名对不上时版本留 None，不当成"没装"
+        self.assertNotIn("transformers", vers)
+        self.assertIsNone(got["triton"]["version"])
+
+    def test_gaps_only_cover_the_requested_layers(self):
+        found = _deps("numpy", "jinja2", "regex", "psutil")
+        self.assertEqual(platform_check.deps_gaps(found, (platform_check.CORE,)), [])
+        bad = platform_check.deps_gaps(found, (platform_check.CORE, platform_check.BACKWARD))
+        self.assertTrue(bad)
+        self.assertTrue(all("backward" in b for b in bad))
+
+    def test_gap_names_a_pip_installable_dist(self):
+        found = _deps()
+        bad = platform_check.deps_gaps(found, (platform_check.BACKWARD,))
+        triton = [b for b in bad if b.startswith("[backward] triton")]
+        self.assertEqual(len(triton), 1)
+        self.assertIn("triton-windows", triton[0])
+
+    def test_mezo_does_not_require_the_backward_set(self):
+        """默认方法只有 core 层。缺 transformers 不该拦住零阶训练 —— 那条线上根本没 torch。"""
+        found = _deps("numpy", "jinja2", "regex", "psutil")
+        self.assertIs(platform_check.require_deps("mezo", found), found)
+        with self.assertRaises(SystemExit) as ctx:
+            platform_check.require_deps("backward", found)
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_clean_backward_set_passes(self):
+        found = _deps("numpy", "jinja2", "regex", "psutil", "transformers", "tokenizers",
+                      "accelerate", "safetensors", "gguf", "fla", "triton")
+        self.assertIs(platform_check.require_deps("backward", found), found)
+
+    def test_install_command_is_platform_specific(self):
+        linux = "\n".join(platform_check.install_command("linux"))
+        win = "\n".join(platform_check.install_command("win32"))
+        self.assertIn("requirements-train.txt", linux)
+        self.assertIn("requirements-train.txt", win)
+        self.assertNotIn("triton-windows", linux)          # Linux 由 torch 自己带
+        self.assertIn("triton-windows", win)
+        self.assertIn("download.pytorch.org/whl", win)     # torch 必须从 CUDA 索引装
 
 
 # ---------------------------------------------------------------- 身份解析
@@ -601,6 +736,82 @@ class DpoLoss(unittest.TestCase):
         dpo.validate_pairs(filled)        # 占位符展开后仍要过（chosen/rejected 不因展开撞车）
         n_rej_named = sum(1 for r in rows if whoami.PLACEHOLDER in r["rejected"])
         self.assertGreater(n_rej_named, 0, "至少要有反插名对：rejected 应包含塞名字的坏行为")
+
+
+class RenderContractForwarding(unittest.TestCase):
+    """采样/评估的渲染契约必须一路传到每一行训练命令。
+
+    2026-11-06 缺口：`train.py` 没有 --reasoning-effort，--system-prompt 只发给
+    mezo；route_plan.json 的每一步两个参数都缺。训练不报错、只是 prompt 段与采样
+    对不上（off-policy），是最难从日志里看出来的那类错。
+    """
+
+    def _ns(self, **kw):
+        import argparse as _ap
+
+        base = dict(algo="sft", dpo_data="", dpo_beta=0.1, model="", pack="",
+                    tokenizer="", engine="", expert_profile="", engine_pack="",
+                    engine_api="", gguf=[], steps=5, lr=1e-4, out="o.npz",
+                    seed=0, rest=[], data="identity", word="W", rollouts="",
+                    prompts="", group=4, max_new=32, temperature=1.0,
+                    resample_every=1, clip=0.2, max_context=4096, probe="",
+                    seqlen=2048, epochs=None, system_prompt=None,
+                    reasoning_effort=None)
+        base.update(kw)
+        return _ap.Namespace(**base)
+
+    def _flags(self, argv, name):
+        self.assertIn(name, argv, argv)
+        return argv[argv.index(name) + 1]
+
+    def test_mezo_gets_both_flags(self):
+        import train as train_mod
+
+        a = self._ns(system_prompt="SYS TEXT", reasoning_effort="low")
+        argv = train_mod.build_argv_engine(a, "/tmp/s.gguf", "/tmp/pack",
+                                           "/tmp/exe", "/tmp/prof")
+        self.assertEqual(self._flags(argv, "--system-prompt"), "SYS TEXT")
+        self.assertEqual(self._flags(argv, "--reasoning-effort"), "low")
+
+    def test_backward_sft_gets_both_flags(self):
+        import train as train_mod
+
+        a = self._ns(system_prompt="SYS TEXT", reasoning_effort="low")
+        argv = train_mod.build_argv(a, ["/tmp/s.gguf"], "/tmp/pack", "/tmp/tok")
+        self.assertEqual(self._flags(argv, "--system-prompt"), "SYS TEXT")
+        self.assertEqual(self._flags(argv, "--reasoning-effort"), "low")
+
+    def test_default_render_is_untouched(self):
+        """不传契约 ⇒ 两个 argv 里都不许多出参数（历史口径逐字不变）。"""
+        import train as train_mod
+
+        a = self._ns()
+        for argv in (train_mod.build_argv_engine(a, "/tmp/s.gguf", "/tmp/pack",
+                                                 "/tmp/exe", "/tmp/prof"),
+                     train_mod.build_argv(a, ["/tmp/s.gguf"], "/tmp/pack", "/tmp/tok")):
+            self.assertNotIn("--system-prompt", argv)
+            self.assertNotIn("--reasoning-effort", argv)
+
+    def test_backward_grpo_refuses_contract_instead_of_silently_dropping_it(self):
+        import train as train_mod
+
+        # backward/grpo.py 用 parse_args()，不认这两个参数：必须在入口拦下来并指路
+        a = self._ns(algo="grpo", model="/tmp/hf", system_prompt="SYS",
+                     reasoning_effort="low")
+        with self.assertRaises(SystemExit) as cm:
+            train_mod.build_argv(a, [], "/tmp/pack", "/tmp/tok")
+        self.assertIn("--method mezo", str(cm.exception))
+
+    def test_route_plan_steps_carry_the_contract(self):
+        import train as train_mod
+
+        a = self._ns(system_prompt="SYS TEXT", reasoning_effort="low", seed=7)
+        f = train_mod._forward_flags(a)
+        self.assertEqual(self._flags(f, "--system-prompt"), "SYS TEXT")
+        self.assertEqual(self._flags(f, "--reasoning-effort"), "low")
+        # 由路由决定的四项仍然不许转发
+        for bad in ("--algo", "--method", "--data", "--lr", "--epochs"):
+            self.assertNotIn(bad, f)
 
 
 if __name__ == "__main__":

@@ -373,6 +373,8 @@ def build_argv_engine(a, shard: str, pack: str, exe: str, prof: str) -> list[str
         argv += ["--think-targets", a.think_targets]
     if getattr(a, "system_prompt", None):
         argv += ["--system-prompt", a.system_prompt]
+    if getattr(a, "reasoning_effort", None):
+        argv += ["--reasoning-effort", a.reasoning_effort]
     kind, arg = _resolve_data(a.data, a.word)
     if kind == "identity":
         argv += ["--data", "identity", "--word", arg]
@@ -390,6 +392,14 @@ def build_argv(a, shards: list[str], pack: str, tok: str) -> list[str]:
     algo = algos.ALGOS[a.algo]
     if a.algo in ("grpo", "luspo"):
         # 两段式：学生是 HF/4bit 目录（grpo.load_student 走 loader.py），不是 GGUF+pack
+        # backward/grpo.py 用 parse_args() 且自管渲染，不认这两个契约参数。显式传了就
+        # 在这里拦（不静默丢）：带采样契约的 RL 走 --method mezo --rollouts。
+        if getattr(a, "system_prompt", None) or getattr(a, "reasoning_effort", None):
+            raise SystemExit(
+                "--algo grpo/luspo --method backward 不接 --system-prompt / --reasoning-effort"
+                "（该脚本用 parse_args 且自管渲染，传了会 argparse 报错）。\n"
+                "  带采样渲染契约的 RL 请用 --method mezo --rollouts <轨迹 jsonl>；"
+                "冷启的 SFT/DPO 才走 backward。")
         if not a.model:
             raise SystemExit(f"--algo {a.algo} --method backward 需要 --model <HF 权重目录>"
                              "（它的学生走 loader.py，125B 的 GGUF+NF4 路径还没接过去）；"
@@ -412,6 +422,12 @@ def build_argv(a, shards: list[str], pack: str, tok: str) -> list[str]:
                              "（格式见 data_dpo.jsonl）")
         argv += ["--objective", "dpo", "--dpo-data", a.dpo_data,
                  "--dpo-beta", str(a.dpo_beta), "--ckpt"]
+    # 冷启的 SFT/DPO 在 backward 侧：训练序列的 prompt 必须与采样时逐字一致，
+    # 否则 teacher forcing 的是另一条分布（off-policy）。两个参数一起透传。
+    if getattr(a, "system_prompt", None):
+        argv += ["--system-prompt", a.system_prompt]
+    if getattr(a, "reasoning_effort", None):
+        argv += ["--reasoning-effort", a.reasoning_effort]
     return argv + list(a.rest)
 
 
@@ -436,6 +452,69 @@ def _resolve_data(spec: str, word: str) -> tuple[str, str]:
 
 # ---------------------------------------------------------------- 入口
 
+def _forward_flags(a) -> list[str]:
+    """把「模型在哪」这套参数原样转给计划里的每一步。
+
+    **不转发** `--algo/--method/--data/--lr/--epochs`：这四项由路由决定，
+    转发过去会和计划里的取值打架（冷启必须是 backward，RL 必须是 mezo）。
+    **必须转发**渲染契约 `--system-prompt/--reasoning-effort`：计划里每一步都是拿
+    同一批采样轨迹在训，少一步就是 off-policy，而且不会报错、只是数字悄悄漂移。
+    """
+    out: list[str] = []
+    if a.gguf:
+        out += ["--gguf", *a.gguf]
+    for attr, flag in (("pack", "--pack"), ("engine", "--engine"),
+                       ("expert_profile", "--expert-profile"),
+                       ("model", "--model"), ("tokenizer", "--tokenizer"),
+                       ("engine_pack", "--engine-pack"), ("engine_api", "--engine-api"),
+                       ("system_prompt", "--system-prompt"),
+                       ("reasoning_effort", "--reasoning-effort")):
+        v = getattr(a, attr, "") or ""
+        if v:
+            out += [flag, v]
+    if a.seed:
+        out += ["--seed", str(a.seed)]
+    return out
+
+
+def route_auto(a) -> int:
+    """`--route auto`：只做路由与计划，**不自己起训练进程**。
+
+    不起进程是硬约束，不是保守：48 GB 卡放不下「引擎 + 训练」双驻留，自动编排最
+    容易干的事就是并发两个步骤，2026-11-05 实测那样会把整机拖死二十多分钟。
+    所以这里只写 `route_plan.json`，执行交给 `bench/run_plan.py`（本来就有串行、
+    失败隔离、挂死重试）。
+    """
+    import coldstart
+
+    if not a.rollouts:
+        raise SystemExit("--algo auto 需要 --rollouts <采样轨迹 jsonl>"
+                         "（prompt/completion/reward，同一 prompt 的 K 条连续存放）")
+    p, paths, steps = coldstart.plan_file(
+        a.rollouts, a.group, out_dir=a.plan_dir or None,
+        gold_solutions=a.gold_solutions or None, rescore=a.rescore or None,
+        extra=_forward_flags(a), max_context=a.max_context or 32768)
+    print("=" * 78, flush=True)
+    print(f"algo      auto（按组派发：有答案 → luspo / 没答案 → 冷启 DPO / 全对毕业）")
+    print(f"route     group {a.group}  {a.rollouts}")
+    print(coldstart.summarize(p))
+    print("-" * 78)
+    for k, n in (("rl", len(p["rl"])), ("dpo", len(p["dpo_pairs"])), ("sft", len(p["sft_items"]))):
+        print(f"  {k:<4s} {n:4d}  -> {paths[k]}")
+    if not steps:
+        print("  没有可执行步骤（题池全对或全截断）：先加 --max-new / 换题，别训。")
+        print("=" * 78, flush=True)
+        return 0
+    print("  计划（串行，冷启在前、RL 在后）：")
+    for s in steps:
+        print(f"    {s['name']:<10s} " + " ".join(s["cmd"][1:]))
+    base = paths["plan"].rsplit("plan.json", 1)[0]
+    print(f"  跑法：python bench/run_plan.py {paths['route']} "
+          f"--report {base}report.json --logdir {base}logs")
+    print("=" * 78, flush=True)
+    return 0
+
+
 def main() -> int:
     # 平台不支持就在这里停，别等读完 76 GB pack 才抛一个看不懂的 AttributeError。
     # 阻断原因（os.preadv 等）见 platform_check.py。
@@ -444,8 +523,9 @@ def main() -> int:
         description="默认训练入口：模型取自启动器钉住的那份，数据默认「改变身份」。",
         epilog="其余参数原样转给该算法的脚本（见 --list 或 <algo>.py --help）。")
     ap.add_argument("--algo", default="sft", choices=algos.names(),
-                    help="算法 = 目标函数：sft(ce)/dpo/grpo 三个并列（默认 sft）。"
-                         "详见 --list；损失数学三个算法共用 objectives.py 一份")
+                    help="算法 = 目标函数：sft(ce)/dpo/grpo/luspo 并列（默认 sft）；"
+                         "auto = 按 --rollouts 逐组派发（有答案→luspo / 没答案→冷启 DPO）。"
+                         "详见 --list；损失数学四个算法共用 objectives.py 一份")
     ap.add_argument("--method", default=None, choices=sorted(algos.METHODS),
                     help=f"怎么动参数：{algos.DEFAULT_METHOD}（默认，引擎前向零阶，"
                          "显存贴住推理基线）｜backward（autograd 反传，梯度精确、显存更高；"
@@ -489,9 +569,10 @@ def main() -> int:
                     help="按轮次训练（mezo）：steps = epochs × 样本条数，给了它 --steps 就失效。"
                          "步数在 12 条 / 24 条数据上是不同轮数，跨配置比较请用轮次")
     ap.add_argument("--lr", type=float, default=None,
-                    help="默认按（算法 × 方法）给：mezo sft 3e-5 / dpo·grpo 1e-5，"
-                         "backward sft 1e-4 / dpo 5e-5 / grpo 1e-4（见 --list）。"
-                         "mezo 下看每步打印的 rel，>0.05/步 就调小")
+                    help="默认按（算法 × 方法）给，两个方法共用同一张两档表："
+                         "sft/dpo 1e-4、grpo/luspo 5e-5（见 algos.py 与 --list）。"
+                         "mezo 下看每步打印的 rel，>0.05/步 就临时调小（luspo 的 |pj| "
+                         "是 ce 的 7~8 倍，是唯一需要命令行降档的场合）")
     ap.add_argument("--lr-schedule", choices=("const", "cosine", "linear"), default="const",
                     help="mezo 用：从 --lr 衰减到 --lr-final（1cycle 的衰减段）。上限先用 --lr-finder 测")
     ap.add_argument("--lr-final", type=float, default=0.0, help="--lr-schedule 的终点")
@@ -525,8 +606,25 @@ def main() -> int:
                     help="零阶 ce 目标形态（见 mezo.py 同名参数）：both = 思考段+答案 / 纯答案各训一遍。"
                          "缺省 both —— 推理会先写思考段，目标只放答案会让两边分布不一致")
     ap.add_argument("--system-prompt", default=None,
-                    help="插一条 system 消息；`identity` 展开成身份事实。事实放系统提示，训练只要学会复述")
+                    help="插一条 system 消息（两个方法都透传）；`identity` 展开成身份事实。"
+                         "采样/评估用同一份文本，训练侧必须逐字一致，否则 SCORE 的 prompt 段"
+                         "与采样对不上（off-policy）")
+    ap.add_argument("--reasoning-effort", choices=("xhigh", "medium", "low"), default=None,
+                    help="chat_template.jinja 的推理风格档位（mezo 与 backward 的 SFT/DPO 都认）。"
+                         "留空 = 模板 default('xhigh')，历史口径逐字不变；采样侧用了 low，"
+                         "训练就必须同为 low。--method backward 的 grpo/luspo 不接受该参数")
     ap.add_argument("--list", action="store_true", help="打印算法/目标函数/数据源")
+    ap.add_argument("--route", default="off", choices=algos.route_names(),
+                    help="--algo auto 的旧写法（保留兼容，等价）：off=直接训一次；"
+                         "auto=按组内通过率把 --rollouts 分档（有答案→luspo / 没答案→冷启 DPO "
+                         "/ 全对毕业），写出 route_plan.json，交给 bench/run_plan.py 串行执行")
+    ap.add_argument("--plan-dir", default="",
+                    help="--route auto 的产物目录（默认 <rollouts>.route/）")
+    ap.add_argument("--gold-solutions", default="",
+                    help="JSONL {prompt, solution}：数学这类 gold 只有答案串时，"
+                         "冷启需要一个完整解答才能当 DPO 的 chosen（缺了就退成 SFT）")
+    ap.add_argument("--rescore", default="",
+                    help="'文件:函数'：用**当前**判分器重判历史 reward（对付过期标签）")
     ap.add_argument("--dry-run", action="store_true", help="只打印最终命令，不加载模型")
     a, rest = ap.parse_known_args()
     a.rest = rest
@@ -536,9 +634,17 @@ def main() -> int:
             f"旧参数名 {legacy[0].split('=')[0]}：--objective 已并入 --algo"
             "（sft/dpo/grpo 本身就是目标函数），--backend 改名 --method（mezo|backward）。\n"
             "  用 --list 看新接口。")
+    # 路由先分流：`--algo auto`（以及旧写法 `--route auto`）是一轮调度而不是一次训练，
+    # 必须在 `method_of` 之前走掉 —— 否则会被一个对它没有意义的 --method 卡住。
+    if a.algo == algos.AUTO or a.route != "off":
+        return route_auto(a)
     # 方法在这里落定（默认 mezo）；早失败：该方法做不了这个算法，就别去读 60 GB 的 pack。
     m = algos.method_of(a.algo, a.method)
     a.method = m.name
+    # 这个方法要的第三方包不齐，也在这里停：零阶线只查 core（全在 requirements.txt
+    # 里），backward 才要 requirements-train.txt 那一组。缺包时给的是可复制的
+    # pip 命令，而不是 loader_qwen4 深处的 ImportError（Windows 的 triton 尤其）。
+    platform_check.require_deps(a.method)
     # 名字在这里落定，后面的打印与转给算法脚本的 --word 都用它。
     a.word = whoami.resolve(a.word)
     # 默认步数 = 验收标准：裸 `python3 train.py` 跑完身份必须**真的在学**且有界。
