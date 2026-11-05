@@ -150,6 +150,81 @@ class ReadoutGates(unittest.TestCase):
         self.assertIn("q", body["answers"])
 
 
+class ThenGenerate(unittest.TestCase):
+    """F6 (M9, 2026-11-05): then.generate runs through the chat path (svc.prepare + svc.run),
+    not an ad-hoc decode loop.  Pinned here: it answers, reports the chat run's usage, and a
+    huge max_tokens is a 400 (prepare's ContextOverflow) instead of a crash or an overflow."""
+
+    def _server(self):
+        tok = ByteTokenizer()
+        engine = DecisionEngine(tok, "A")
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        return engine, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def _req(self, **gen_over):
+        gen = {"messages": [{"role": "user", "content": "Say hi."}], "max_tokens": 8}
+        gen.update(gen_over)
+        return {"state": {"k": 1},
+                "questions": {"q": {"type": "noul", "instructions": "on?"}},
+                "then": {"generate": gen}}
+
+    def test_then_generate_answers_with_chat_usage(self):
+        engine, base = self._server()
+        st, body = post(base, "/v1/systemone", self._req())
+        self.assertEqual(st, 200, body)
+        self.assertIn("q", body["answers"])          # the decision ran first
+        then = body["then"]
+        self.assertIn("text", then)
+        self.assertIn(then["finish_reason"], ("stop", "length"))
+        self.assertGreaterEqual(then["usage"]["prompt_tokens"], 1)
+        self.assertIn("completion_tokens", then["usage"])
+
+    def test_huge_max_tokens_is_a_400_not_a_crash(self):
+        engine, base = self._server()
+        st, body = post(base, "/v1/systemone", self._req(max_tokens=10_000_000))
+        self.assertEqual(st, 400, body)
+        self.assertIn("context", body["error"]["message"])
+
+    def test_image_parts_in_last_user_message_are_preserved(self):
+        # M9: parts content is never flattened - the decisions are APPENDED as a text part and
+        # the messages reach prepare with the image part intact (a recording prepare pins it;
+        # the mock has no vision encoder, so the chat path 400s on the image itself, which is
+        # the documented 'clear message' rather than a silent drop)
+        seen = {}
+        tok = ByteTokenizer()
+        engine = DecisionEngine(tok, "A")
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        real_prepare = svc.prepare
+
+        def recording_prepare(messages, tools, kwargs, max_new=None, **kw):
+            seen["parts"] = [p.get("type") for m in messages
+                             for p in (m.get("content") or []) if isinstance(m.get("content"), list)
+                             and isinstance(p, dict)]
+            seen["n_text_parts"] = sum(1 for m in messages if isinstance(m.get("content"), list)
+                                       for p in m["content"]
+                                       if isinstance(p, dict) and p.get("type") == "text")
+            return real_prepare(messages, tools, kwargs, max_new=max_new, **kw)
+
+        svc.prepare = recording_prepare
+        req = {"state": {"k": 1},
+               "questions": {"q": {"type": "noul", "instructions": "on?"}},
+               "then": {"generate": {"max_tokens": 4, "messages": [
+                   {"role": "user", "content": [
+                       {"type": "text", "text": "describe"},
+                       {"type": "image", "source": "data:image/png;base64," + "A" * 64}]}]}}}
+        st, body = post(base, "/v1/systemone", req)
+        self.assertIn(st, (200, 400), body)
+        self.assertEqual(seen.get("parts"), ["text", "image", "text"])   # part survived + decisions appended
+        self.assertGreaterEqual(seen.get("n_text_parts", 0), 2)  # original + injected decisions
+
+
 class ContextDefault(unittest.TestCase):
     """No `context`: the render must be exactly the donor's frozen shape."""
 

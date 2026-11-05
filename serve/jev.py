@@ -513,11 +513,17 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     injected = False
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].get("role") == "user":
-            text = messages[i].get("content") if isinstance(messages[i].get("content"), str) else \
-                "".join(p.get("text", "") for p in (messages[i].get("content") or [])
-                        if isinstance(p, dict) and p.get("type") == "text")
-            messages[i] = {**messages[i],
-                           "content": text + "\n\nJev decisions (JSON): " + json.dumps(answers, indent=2)}
+            blob = "\n\nJev decisions (JSON): " + json.dumps(answers, indent=2)
+            content = messages[i].get("content")
+            if isinstance(content, list):
+                # M9 (2026-11-05): parts content keeps its parts - images ride the chat path
+                # (svc.prepare) untouched instead of being flattened away; the decisions are
+                # appended as one more text part.  Never silently dropped.
+                messages[i] = {**messages[i],
+                               "content": content + [{"type": "text", "text": blob.lstrip("\n")}]}
+            else:
+                messages[i] = {**messages[i],
+                               "content": (content or "") + blob}
             injected = True
             break
     if not injected:
@@ -533,36 +539,40 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     stops = gen.get("stop")
     stops = ([stops] if isinstance(stops, str) else
              [s for s in stops if isinstance(s, str)] if isinstance(stops, list) else [])
+    if stops:
+        sampling["stop"] = stops        # Service.run's StopMatcher handles the cutting
 
-    ids = _encode(svc, messages)
-    if not ids:
-        return 400, {"error": {"type": "invalid_request_error",
-                               "message": "then.generate: prompt tokenization failed"}}
+    # M9 (2026-11-05): the generation goes through the EXISTING chat run path - prepare() +
+    # svc.run() - so it inherits ensure_loaded (the route's svc.load()), the queue deadline,
+    # cancel-on-disconnect wiring of the run, the #879 non-finite retry, stop-token handling,
+    # the close-under-fifo of the generator, and request accounting.  The ad-hoc decode loop
+    # this replaces had none of those and dropped image parts.
     cancel = threading.Event()
-    out = []
-    finish = "stop"
-    from serve.server import Detokenizer              # late import: server.py loads jev first
-    detok = Detokenizer(svc.tok)                      # the server's incremental decoder
-    text_parts = []
-    with svc.fifo:
-        for tok in svc.engine.generate(ids, max_tokens, sampling, cancel):
-            if tok is None or tok < 0:              # engine sentinel ids (verification artifacts)
-                continue
-            out.append(tok)
-            piece = detok.push(tok)
-            if piece:
-                text_parts.append(piece)
-                tail = "".join(text_parts[-8:])
-                if any(st and st in tail for st in stops):
-                    break
-            if len(out) >= max_tokens:
-                finish = "length"
-    text = "".join(text_parts).strip()
-    for st in stops:
-        if st in text:
-            text = text.split(st)[0]
-    dec["then"] = {"text": text, "finish_reason": finish,
-                   "usage": {"prompt_tokens": len(ids), "completion_tokens": len(out)}}
+    ids, thinking, max_new = svc.prepare(messages, tools=None,
+                                         kwargs={"enable_thinking": False}, max_new=max_tokens,
+                                         cancel=cancel)
+    max_context = int(getattr(svc.engine, "max_context", 0) or 0)
+    # the request's OWN max_tokens is checked (prepare may have clamped max_new to the room
+    # under fit_max_tokens, the server's default; then.generate is a decision surface, so an
+    # overflow is a 400 with the computed budget, never a silent clamp or a context overrun)
+    if max_context and len(ids) + max_tokens > max_context:
+        allowed = max(0, max_context - len(ids))
+        return 400, {"error": {"type": "invalid_request_error", "param": "then.generate.max_tokens",
+                               "message": f"then.generate: the prompt is {len(ids)} tokens and "
+                                          f"max_tokens {max_tokens} overflows the {max_context}-token "
+                                          f"context; this prompt leaves at most {allowed} token(s) "
+                                          f"for the reply"}}
+    text_parts, done = [], None
+    for kind, x in svc.run(ids, thinking, None, max_new, sampling, cancel):
+        if kind == "event" and getattr(x, "kind", None) == "content" and getattr(x, "text", ""):
+            text_parts.append(x.text)
+        elif kind == "done":
+            done = x
+    done = done or {}
+    dec["then"] = {"text": "".join(text_parts).strip(),
+                   "finish_reason": done.get("finish", "stop"),
+                   "usage": {"prompt_tokens": done.get("prompt_tokens", len(ids)),
+                             "completion_tokens": done.get("completion_tokens", 0)}}
     return 200, dec
 
 
