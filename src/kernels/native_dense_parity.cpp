@@ -5,7 +5,7 @@
 //
 // Decode: the GPU's q8_1 quantizer and native_mmvq (1, 2, 3, 4 and 8 columns) against a double-precision product of
 // ggml's own dequantized weights (to_float) and the FP32 activations.  The only difference is the activations'
-// q8_1 rounding, so the relative L1 error has to stay under 2e-2 (it is a few 1e-3); columns of a multi-column call
+// q8_1 rounding, so the relative L1 error has to stay under 2e-2 (it is a few 1e-3; 4e-2 for Q4_0 / Q5_0, see run_case); columns of a multi-column call
 // are bitwise the single-column call (native_mmvq_multi_exact, the default).
 // Prompt (the dequantize-to-FP16/BF16 route that serves a type without an MMQ instance): dequant_f32 against
 // to_float (relative error 1e-6), dequant_f16 and dequant_bf16 against the rounded to_float.
@@ -109,6 +109,9 @@ int run_case(const T& t, int n_in, int n_out, int seed) {
     std::string res;
     // decode: native_mmvq at 1, 2, 3, 4, 8 columns
     std::vector<float> y1((size_t) n_out);
+    // Q4_0 / Q5_0 subtract an offset (8 / 16) times the q8_1 block's sum of the ORIGINAL activations (llama.cpp CUDA's form, the
+    // same in ggml-cuda), so the activations' rounding shows 3x larger on these random zero-mean outputs: 1.6-2.3e-2 measured
+    const double tol = (t.type == GGML_TYPE_Q4_0 || t.type == GGML_TYPE_Q5_0) ? 4e-2 : 2e-2;
     double worst = 0;
     bool cols_equal = true;
     if (!k::native_mmvq_supported((int) t.type)) {
@@ -125,7 +128,7 @@ int run_case(const T& t, int n_in, int n_out, int seed) {
             std::vector<double> rr(ref.begin(), ref.begin() + (ptrdiff_t) got.size());
             const double e = rel_l1(got, rr);
             worst = std::max(worst, e);
-            if (!(e < 2e-2) || !std::isfinite(e)) ++fails;
+            if (!(e < tol) || !std::isfinite(e)) ++fails;
             if (nc == 1) y1.assign(got.begin(), got.end());
             else if (std::memcmp(got.data(), y1.data(), y1.size() * 4) != 0) cols_equal = false;
         }
