@@ -177,6 +177,10 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
             // interleaved x3, same 16 greedy ids: IQ3_S 4K 1,187 -> 1,296 and 8K 1,285 -> 1,399 tok/s (x1.09), UD-IQ4_XS 4K 1,119 ->
             // 1,221 and 8K 1,180 -> 1,270; decode unchanged.  The rounding differs from the int8 kernels (KL is information only).
             {"STRATA_PF_F16", "1"},
+            // Round 0215 (STRIX-FIT): the down rows of the F16 expert kernels go to the combine as FP16 (half the bytes written and read).  Windows gfx1151,
+            // interleaved 8K pairs, same engine: IQ3_S x1.022 (4 of 4 pairs), UD-IQ4_XS x1.026 (3 of 3), UD-Q4_K_XL x1.012 (3 of 4); the first-token KL
+            // is 1e-4 at 8K and 0.02-0.04 on agent transcripts (information).  STRATA_PF_DM16=0 turns it off.
+            {"STRATA_PF_DM16", "1"},
         };
     }
     return t;
