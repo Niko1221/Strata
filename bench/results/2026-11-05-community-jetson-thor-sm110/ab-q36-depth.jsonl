@@ -1,0 +1,64 @@
+{"round": 0, "arm": "A", "req": "chat0", "decode": 52.3, "prompt": 230.4, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "A", "req": "chat1", "decode": 53.0, "prompt": 223.0, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "A", "req": "chat2", "decode": 53.4, "prompt": 248.9, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "A", "req": "long", "decode": 33.3, "prompt": 1501.3, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "B", "req": "chat0", "decode": 52.7, "prompt": 226.2, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "B", "req": "chat1", "decode": 52.9, "prompt": 217.2, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "B", "req": "chat2", "decode": 53.2, "prompt": 240.5, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "B", "req": "long", "decode": 33.3, "prompt": 1454.9, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "A", "req": "chat0", "decode": 52.7, "prompt": 235.9, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "A", "req": "chat1", "decode": 52.9, "prompt": 224.4, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "A", "req": "chat2", "decode": 53.1, "prompt": 251.7, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "A", "req": "long", "decode": 33.2, "prompt": 1495.9, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "B", "req": "chat0", "decode": 51.7, "prompt": 204.2, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "B", "req": "chat1", "decode": 52.3, "prompt": 210.3, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "B", "req": "chat2", "decode": 52.9, "prompt": 234.2, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "B", "req": "long", "decode": 33.0, "prompt": 1448.9, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "C", "req": "chat0", "decode": 52.6, "prompt": 239.3, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "C", "req": "chat1", "decode": 52.7, "prompt": 215.1, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "C", "req": "chat2", "decode": 53.0, "prompt": 240.5, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "C", "req": "long", "decode": 33.2, "prompt": 1453.5, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "D", "req": "chat0", "decode": 53.1, "prompt": 238.4, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "D", "req": "chat1", "decode": 53.2, "prompt": 217.4, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "D", "req": "chat2", "decode": 53.6, "prompt": 244.5, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "D", "req": "long", "decode": 33.3, "prompt": 1455.2, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "E", "req": "chat0", "decode": 52.6, "prompt": 232.6, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "E", "req": "chat1", "decode": 52.6, "prompt": 214.1, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "E", "req": "chat2", "decode": 52.8, "prompt": 229.1, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "E", "req": "long", "decode": 33.1, "prompt": 1449.9, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "F", "req": "chat0", "decode": 51.8, "prompt": 221.4, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "F", "req": "chat1", "decode": 55.8, "prompt": 242.6, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "F", "req": "chat2", "decode": 56.3, "prompt": 258.9, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "F", "req": "long", "decode": 33.5, "prompt": 1468.5, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 0, "arm": "G", "req": "chat0", "decode": 56.2, "prompt": 230.0, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 0, "arm": "G", "req": "chat1", "decode": 56.8, "prompt": 244.1, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 0, "arm": "G", "req": "chat2", "decode": 57.1, "prompt": 275.1, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "G", "req": "long", "decode": 34.7, "prompt": 1491.6, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 1, "arm": "G", "req": "chat0", "decode": 55.2, "prompt": 224.6, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 1, "arm": "G", "req": "chat1", "decode": 56.0, "prompt": 246.4, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 1, "arm": "G", "req": "chat2", "decode": 56.2, "prompt": 276.7, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "G", "req": "long", "decode": 34.7, "prompt": 1517.1, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 1, "arm": "F", "req": "chat0", "decode": 55.4, "prompt": 231.9, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 1, "arm": "F", "req": "chat1", "decode": 55.9, "prompt": 242.6, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 1, "arm": "F", "req": "chat2", "decode": 56.2, "prompt": 265.6, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "F", "req": "long", "decode": 34.7, "prompt": 1514.3, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 1, "arm": "E", "req": "chat0", "decode": 56.2, "prompt": 250.4, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 1, "arm": "E", "req": "chat1", "decode": 56.2, "prompt": 232.2, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 1, "arm": "E", "req": "chat2", "decode": 56.6, "prompt": 270.3, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "E", "req": "long", "decode": 34.8, "prompt": 1517.3, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 1, "arm": "D", "req": "chat0", "decode": 54.9, "prompt": 255.3, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 1, "arm": "D", "req": "chat1", "decode": 55.1, "prompt": 244.8, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 1, "arm": "D", "req": "chat2", "decode": 55.3, "prompt": 268.0, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "D", "req": "long", "decode": 34.5, "prompt": 1516.2, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 1, "arm": "C", "req": "chat0", "decode": 54.1, "prompt": 218.2, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 1, "arm": "C", "req": "chat1", "decode": 55.5, "prompt": 241.3, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 1, "arm": "C", "req": "chat2", "decode": 55.8, "prompt": 258.2, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "C", "req": "long", "decode": 34.5, "prompt": 1515.0, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 1, "arm": "B", "req": "chat0", "decode": 54.4, "prompt": 257.8, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 1, "arm": "B", "req": "chat1", "decode": 54.6, "prompt": 243.2, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 1, "arm": "B", "req": "chat2", "decode": 54.9, "prompt": 273.1, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "B", "req": "long", "decode": 34.2, "prompt": 1513.5, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}
+{"round": 1, "arm": "A", "req": "chat0", "decode": 55.5, "prompt": 260.5, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge"}
+{"round": 1, "arm": "A", "req": "chat1", "decode": 55.7, "prompt": 255.0, "prompt_n": 27, "n": 239, "text": "A refrigerator operates on the principles of thermodynamics, specifically utiliz"}
+{"round": 1, "arm": "A", "req": "chat2", "decode": 56.0, "prompt": 283.5, "prompt_n": 29, "n": 190, "text": "1. Set specific, achievable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "A", "req": "long", "decode": 34.6, "prompt": 1557.3, "prompt_n": 6345, "n": 144, "text": "The provided list consists entirely of nouns, with no verbs, adjectives, or othe"}

@@ -118,6 +118,18 @@ image, whose `nvcc` is the same `V13.0.48 / compiler.36260728` this Thor runs (`
   which is how NVIDIA's own container instructions run. `iq_parity` is not registered in a container without a
   numpy-bearing python (CMake's probe), which is by design.
 
+## Speed: measured defaults and drafting depth
+
+The engine now carries an sm_110 speed table of five switches (`STRATA_SPEC_COST`, `STRATA_HC_Q8`, `STRATA_PF_FUSED`,
+`STRATA_HC_UPMIX`, `STRATA_SIDE_MIXER`) - each measured on a Thor before it went in, `STRATA_SM110_PERF=0` turns the set
+off. On the standard suite against the same tree without it: prompt +20% (4K) and +10% (16K), first answer 27% sooner at
+4K, decode +8% at 4K and about -6% at 16K. For drafting: Qwen3.6 wants a deeper MTP window than the shipped default here
+(`--mtp 7` measured best, +5%; the default 2 even loses to drafting off), IQ3_S peaks at `--spec 4` with the cost rule on,
+and DFlash2's drafter works (sanity 12/12) but is slower than the model's own MTP layer on this part. One machine behavior
+to know: after an engine has run, Tegra's `cudaMemGetInfo` can report only a few GiB free while the OS has tens free,
+until the machine restarts - the engines' sizing reads that number, so a restart before a measuring run is part of the
+method here. All the tables, pairs and caveats: [bench/results/2026-11-05-community-jetson-thor-sm110/README.md](../bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
+
 ## Limits
 
 One Thor was used. Contexts, memory figures and speeds above are the machine's own, not the Spark's: the Spark's measured settings and
