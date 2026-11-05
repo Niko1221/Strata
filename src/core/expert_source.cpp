@@ -8,6 +8,10 @@
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#if defined(__linux__) && defined(STRATA_ENABLE_IO_URING)
+#include "strata/platform/uring_reader.h"
+#include <poll.h>
+#endif
 #include "strata/kernels/window_limits.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 
@@ -2878,7 +2882,24 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         }
     };
     thread_local Scratch sc;
-    if (sc.ctx == 0 && syscall(SYS_io_setup, kDepth, &sc.ctx) != 0) {
+#if defined(STRATA_ENABLE_IO_URING)
+    struct RingHolder {
+        strata_uring* p = nullptr;
+        ~RingHolder() { strata_uring_close(p); }
+    };
+    thread_local RingHolder ring;
+    thread_local bool ring_attempted = false;
+    const char* use_ring = std::getenv("STRATA_IO_URING");
+    if (use_ring && std::strcmp(use_ring, "1") == 0 && !ring_attempted) {
+        ring_attempted = true;
+        ring.p = strata_uring_open((unsigned) kDepth);
+    }
+#endif
+    if (sc.ctx == 0 && syscall(SYS_io_setup, kDepth, &sc.ctx) != 0
+#if defined(STRATA_ENABLE_IO_URING)
+        && ring.p == nullptr
+#endif
+       ) {
         sc.ctx = 0;
         return false;   // no AIO (a seccomp profile, aio-max-nr): the caller falls back to the mapped copy
     }
@@ -2941,6 +2962,51 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         if (sc.buf == nullptr) { sc.cap = 0; return false; }
     }
     sc.got.assign(sc.req.size(), -1);
+#if defined(STRATA_ENABLE_IO_URING)
+    if (ring.p != nullptr) {
+        // The lookahead/fetch worker reaches this call while the GPU computes the current layer.
+        // Submit a whole wave without waiting for any read; buffers live until every CQE lands.
+        bool good = true;
+        for (size_t w0 = 0; w0 < sc.req.size(); w0 += (size_t) kDepth) {
+            const size_t wn = std::min<size_t>((size_t) kDepth, sc.req.size() - w0);
+            size_t issued = 0;
+            for (; issued < wn; ++issued) {
+                const Req& r = sc.req[w0 + issued];
+                const int rc = strata_uring_submit(ring.p, r.fd, r.a0, sc.buf + r.pos,
+                                                   (uint32_t) r.size, w0 + issued);
+                if (rc != 0) { good = false; break; }
+            }
+            size_t landed = 0;
+            while (landed < issued) {
+                uint64_t tag = 0;
+                int res = 0;
+                if (strata_uring_reap(ring.p, &tag, &res)) {
+                    if (tag >= sc.got.size()) good = false;
+                    else sc.got[(size_t) tag] = res;
+                    if (res < 0) good = false;
+                    ++landed;
+                } else {
+                    struct pollfd pfd = {strata_uring_fd(ring.p), POLLIN, 0};
+                    (void) ::poll(&pfd, 1, 1000);
+                }
+            }
+            if (issued != wn) break;
+        }
+        if (good) {
+            for (const Window& x : sc.win) {
+                if (sc.got[x.req] < 0 || (uint64_t) sc.got[x.req] < x.in_req + x.skip + x.n)
+                    return false;
+                std::memcpy(x.dst + x.at, sc.buf + sc.req[x.req].pos + x.in_req + x.skip, (size_t) x.n);
+            }
+            return true;
+        }
+        // All issued CQEs were reaped before sc.buf can be reused by the original AIO path.
+        strata_uring_close(ring.p);
+        ring.p = nullptr;
+        if (sc.ctx == 0 && syscall(SYS_io_setup, kDepth, &sc.ctx) != 0) return false;
+        sc.got.assign(sc.req.size(), -1);
+    }
+#endif
     sc.cb.resize(std::min<size_t>(sc.req.size(), (size_t) kDepth));
     sc.cbp.resize(sc.cb.size());
     sc.ev.resize(sc.cb.size());
@@ -3880,6 +3946,24 @@ bool FileExpertSource::pin_cache_complement(
                 }
 #endif
             } else {
+#if defined(__linux__)
+                // The main expert arena already has 2 MiB alignment + THP (pinned.cu). This
+                // resident complement is separate: only an explicit request opts into THP.
+                // Never override the 4 KiB NUMA-slice placement or assume cudaHostAlloc is THP.
+                const char* thp = std::getenv("STRATA_COMPLEMENT_THP");
+                if (thp != nullptr && std::strcmp(thp, "1") == 0 &&
+                    bytes <= (uint64_t) SIZE_MAX - (2ull << 20)) {
+                    const size_t align = 2u << 20;
+                    const size_t rounded = ((size_t) bytes + align - 1) & ~(align - 1);
+                    void* aligned = nullptr;
+                    if (posix_memalign(&aligned, align, rounded) == 0) {
+                        arena = aligned;
+                        if (madvise(arena, rounded, MADV_HUGEPAGE) != 0)
+                            std::fprintf(stderr, "FileExpertSource: complement MADV_HUGEPAGE refused (errno %d)\n", errno);
+                    }
+                }
+#endif
+                if (arena == nullptr)
                 arena = std::malloc((size_t) bytes);
             }
             if (arena == nullptr) {
@@ -5193,6 +5277,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 jo = (int16_t) njobs++;
                 ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
                 nj.blob = b;
+                nj.expert_id = (int) e;
                 nj.nt = 0;
                 nj.fmt = nullptr;
                 if (zc) {   // 149-cold mode 3: the gate rows are the blob; up and down at their distance in the mapping
@@ -5213,6 +5298,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 jo = (int16_t) njobs++;
                 ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
                 nj.blob = d.jobs_multi[(size_t) prev].blob;
+                nj.expert_id = (int) e;
                 nj.fmt = d.jobs_multi[(size_t) prev].fmt;
                 nj.nt = 0;
             }

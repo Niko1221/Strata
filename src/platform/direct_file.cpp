@@ -5,12 +5,18 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
+#if defined(__linux__) && defined(STRATA_ENABLE_IO_URING)
+#include "strata/platform/uring_reader.h"
+#include <poll.h>
+#endif
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -273,6 +279,50 @@ struct DirectFile::Impl {
     std::deque<Completion> done;
     bool stop = false;
     std::vector<std::thread> pool;
+#if defined(__linux__) && defined(STRATA_ENABLE_IO_URING)
+    strata_uring* ring = nullptr;
+    std::thread ring_thread;
+
+    void uring_worker() {
+        strata::aux_cpus::pin_current_thread();
+        unsigned active = 0;
+        for (;;) {
+            std::unique_lock<std::mutex> lk(mu);
+            if (queue.empty() && !stop && active == 0) cv_work.wait(lk, [&] { return stop || !queue.empty(); });
+            if (stop && queue.empty() && active == 0) break;
+            // Only this thread touches SQ/CQ.  Tags are returned by the kernel, not stored in recycled slots.
+            while (!queue.empty() && active < 64) {
+                const Pending p = queue.front();
+                const int rc = strata_uring_submit(ring, fd, p.offset, p.buffer, p.length, p.tag);
+                if (rc == -EAGAIN) break;
+                queue.pop_front();
+                if (rc == 0) ++active;
+                else { // enter() failed before the SQ head moved; the SQE was rolled back
+                    done.push_back(Completion{p.tag, 0, false});
+                    cv_done.notify_all();
+                }
+            }
+            lk.unlock();
+            uint64_t tag;
+            int res;
+            while (strata_uring_reap(ring, &tag, &res)) {
+                if (active) --active;
+                std::lock_guard<std::mutex> guard(mu);
+                done.push_back(Completion{tag, res >= 0 ? (uint32_t) res : 0u, res >= 0});
+                cv_done.notify_all();
+            }
+            // poll() lets new submissions overlap disk/GPU work without a blocking pread.  Bound the
+            // wake latency for a new queue item: poll waits at most 1 ms while reads are in flight.
+            if (active) {
+                struct pollfd pfd = {strata_uring_fd(ring), POLLIN, 0};
+                (void) ::poll(&pfd, 1, 1);
+            } else {
+                std::unique_lock<std::mutex> wait(mu);
+                if (queue.empty() && !stop) cv_work.wait(wait, [&] { return stop || !queue.empty(); });
+            }
+        }
+    }
+#endif
 
     void worker() {
         std::unique_lock<std::mutex> lk(mu);
@@ -295,6 +345,11 @@ struct DirectFile::Impl {
             stop = true;
         }
         cv_work.notify_all();
+#if defined(__linux__) && defined(STRATA_ENABLE_IO_URING)
+        if (ring_thread.joinable()) ring_thread.join();
+        strata_uring_close(ring);
+        ring = nullptr;
+#endif
         for (std::thread& t : pool) t.join();
         pool.clear();
         stop = false;
@@ -316,6 +371,17 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     struct stat st;
     if (fstat(impl_->fd, &st) != 0) { err = "DirectFile: cannot size " + path; close(); return false; }
     impl_->size = (uint64_t) st.st_size;
+#if defined(__linux__) && defined(STRATA_ENABLE_IO_URING)
+    const char* uring = std::getenv("STRATA_IO_URING");
+    if (uring && std::strcmp(uring, "1") == 0) {
+        impl_->ring = strata_uring_open(64);
+        if (impl_->ring) {
+            impl_->ring_thread = std::thread([this] { impl_->uring_worker(); });
+            return true;
+        }
+        std::fprintf(stderr, "DirectFile: io_uring unavailable (kernel/seccomp/resource limit); falling back to pread workers\n");
+    }
+#endif
     const int n = io_threads(16);
     for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { strata::aux_cpus::pin_current_thread(); impl_->worker(); });
     return true;
@@ -332,6 +398,13 @@ void DirectFile::close() {
 
 bool DirectFile::is_open() const { return impl_->fd >= 0; }
 uint64_t DirectFile::size() const { return impl_->size; }
+bool DirectFile::using_uring() const {
+#if defined(__linux__) && defined(STRATA_ENABLE_IO_URING)
+    return impl_->ring != nullptr;
+#else
+    return false;
+#endif
+}
 
 bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t tag, std::string& err) {
     if (offset % alignment() || length % alignment() || ((uintptr_t) buffer) % alignment() || length == 0) {

@@ -2,8 +2,9 @@
 //
 // The n-gram table (26.8 GiB) stays on the SSD and must never occupy RAM, including the OS file cache. A memory
 // map cannot promise that; an unbuffered read can. On Windows this is FILE_FLAG_NO_BUFFERING | OVERLAPPED with
-// an I/O completion port; on Linux, O_DIRECT preads.  Both issue the reads from a small thread pool (submit only
-// queues), so many reads are in flight: STRATA_IO_THREADS sets its size (default 4 on Windows, 16 on Linux).
+// an I/O completion port; on Linux, O_DIRECT preads (or io_uring if built with STRATA_ENABLE_IO_URING and
+// STRATA_IO_URING=1 at runtime). submit only queues; the existing pread fallback retains STRATA_IO_THREADS
+// (default 16 on Linux). FileExpertSource's cold expert reader uses the same ring switch.
 //
 // Contract of every read: offset, length and buffer address are multiples of `alignment()` (4096 here).
 // Reads past end of file return the bytes that exist; `Completion::bytes` says how many.
@@ -31,6 +32,7 @@ public:
     void close();
     bool is_open() const;
     uint64_t size() const;
+    bool using_uring() const;  ///< STRATA_IO_URING=1, Linux ring successfully opened
     static constexpr uint32_t alignment() { return 4096; }
 
     /// Queue one read. Returns false (and sets `err`) if the request could not be queued; a queued request
