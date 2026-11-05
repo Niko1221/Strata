@@ -9,6 +9,7 @@
 #include <aclnnop/aclnn_softmax.h>
 #include <aclnnop/aclnn_sub.h>
 #include <aclnnop/aclnn_exp.h>
+#include <aclnnop/aclnn_div.h>
 
 #include <acl/acl.h>
 
@@ -284,6 +285,79 @@ void mul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
     aclDestroyTensor(ta);
     aclDestroyTensor(tb);
     aclDestroyTensor(tc);
+}
+
+void div(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out) {
+    aclTensor * ta = make_tensor(a, a.ne1, a.ne0);
+    aclTensor * tb = make_tensor(b, b.ne1, b.ne0);
+    aclTensor * tc = make_tensor(out, out.ne1, out.ne0);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) { return aclnnDivGetWorkspaceSize(ta, tb, tc, ws, ex); },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) { return aclnnDiv(ws, ws_size, ex, s); },
+        "aclnnDiv");
+    aclDestroyTensor(ta);
+    aclDestroyTensor(tb);
+    aclDestroyTensor(tc);
+}
+
+void sigmoid(Stream & stream, const Tensor & x, Tensor & out) {
+    const size_t bytes = (size_t) x.elements() * 2;
+    Buffer neg(bytes), ex(bytes), den(bytes), one(bytes);
+    Tensor t_neg{ neg.data(), DType::F16, x.ne0, x.ne1 };
+    Tensor t_exp{ ex.data(), DType::F16, x.ne0, x.ne1 };
+    Tensor t_den{ den.data(), DType::F16, x.ne0, x.ne1 };
+    Tensor t_one{ one.data(), DType::F16, x.ne0, x.ne1 };
+    std::vector<float> ones((size_t) x.elements(), 1.0f);
+    std::vector<uint16_t> h(x.elements());
+    f32_to_f16(ones.data(), h.data(), h.size());
+    one.copy_from_host(h.data(), bytes);
+
+    muls(stream, x, -1.0f, t_neg);
+    exp(stream, t_neg, t_exp);
+    add(stream, t_one, t_exp, t_den);
+    div(stream, t_one, t_den, out);
+}
+
+void rope(Stream & stream, const Tensor & x, const Tensor & cos, const Tensor & sin, int64_t n_rot, Tensor & out) {
+    const int64_t T = x.ne1;
+    const int64_t head_dim = x.ne0;
+    const int64_t half = n_rot / 2;
+    if (head_dim % 2 != 0 || n_rot % 2 != 0 || n_rot > head_dim) {
+        throw Error("cann: rope needs an even n_rot <= head_dim", -1);
+    }
+    const size_t half_bytes = (size_t) half * 2;
+
+    Buffer t1(half_bytes), t2(half_bytes), t3(half_bytes);
+    for (int64_t t = 0; t < T; ++t) {
+        Tensor xa{ (char *) x.data + (size_t) t * head_dim * 2, DType::F16, half, 1 };
+        Tensor xb{ (char *) x.data + (size_t) t * head_dim * 2 + half_bytes, DType::F16, half, 1 };
+        Tensor c{ (char *) cos.data + (size_t) t * half * 2, DType::F16, half, 1 };
+        Tensor s{ (char *) sin.data + (size_t) t * half * 2, DType::F16, half, 1 };
+        Tensor oa{ (char *) out.data + (size_t) t * head_dim * 2, DType::F16, half, 1 };
+        Tensor ob{ (char *) out.data + (size_t) t * head_dim * 2 + half_bytes, DType::F16, half, 1 };
+        Tensor ta{ t1.data(), DType::F16, half, 1 };
+        Tensor tb{ t2.data(), DType::F16, half, 1 };
+        Tensor tc{ t3.data(), DType::F16, half, 1 };
+
+        // out_a = x_a * cos - x_b * sin
+        mul(stream, xa, c, ta);
+        mul(stream, xb, s, tb);
+        sub(stream, ta, tb, oa);
+        // out_b = x_a * sin + x_b * cos
+        mul(stream, xa, s, ta);
+        mul(stream, xb, c, tb);
+        add(stream, ta, tb, ob);
+
+        if (head_dim > n_rot) {
+            Tensor tail_in{ (char *) x.data + (size_t) t * head_dim * 2 + (size_t) n_rot * 2, DType::F16,
+                            head_dim - n_rot, 1 };
+            Tensor tail_out{ (char *) out.data + (size_t) t * head_dim * 2 + (size_t) n_rot * 2, DType::F16,
+                             head_dim - n_rot, 1 };
+            muls(stream, tail_in, 1.0f, tail_out);
+        }
+        (void) tc;
+    }
 }
 
 // ---- CPU oracle ----

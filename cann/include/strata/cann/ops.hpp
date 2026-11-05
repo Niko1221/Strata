@@ -1,4 +1,4 @@
-﻿// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
+// cann/include/strata/cann/ops.hpp - the first CANN ops of the port, with a CPU oracle.
 //
 // Every function takes FP16 operands on the device (the format the 910B Cube unit wants) and
 // has a matching `*_ref` CPU implementation in ops.cpp that the parity test compares against.
@@ -47,6 +47,17 @@ void sub(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 
 // out = a * b with numpy-style broadcast (e.g. [S,1] x [1,S] -> [S,S])
 void mul(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
+
+// out = a / b (same shape)
+void div(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
+
+// out = sigmoid(x) = 1 / (1 + exp(-x))
+void sigmoid(Stream & stream, const Tensor & x, Tensor & out);
+
+// Rotary position embedding, NeoX pairing, on the first `n_rot` channels of each row.
+// x is [T][head_dim]; cos/sin are [T][n_rot/2] in fp32-host terms but stored fp16 like the rest;
+// channels from n_rot on are copied unchanged.
+void rope(Stream & stream, const Tensor & x, const Tensor & cos, const Tensor & sin, int64_t n_rot, Tensor & out);
 
 // out[row,:] = softmax(x[row,:]) over the last axis
 void softmax(Stream & stream, const Tensor & x, Tensor & out);
