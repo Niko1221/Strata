@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <random>
 #include <thread>
 #include <unordered_map>
 #include <memory>
@@ -685,6 +686,9 @@ int main(int argc, char ** argv) {
         return 2;
     }
     const int64_t T = (int64_t) toks.size();
+    const int64_t n_predict = argc > 3 ? std::atoll(argv[3]) : 0;
+    const float gen_temp = argc > 4 ? (float) std::atof(argv[4]) : 0.0f;
+    const int64_t kCap = T + std::max<int64_t>(0, n_predict);
 
     try {
         const Gguf g(path);
@@ -733,9 +737,9 @@ int main(int argc, char ** argv) {
                 gdn_states[(size_t) il] = std::move(st);
             } else {
                 auto st = std::make_unique<AttnState>();
-                st->k = std::make_unique<Buffer>((size_t) kKvHeads * T * kHeadDimAttn * 2);
-                st->v = std::make_unique<Buffer>((size_t) kKvHeads * T * kHeadDimAttn * 2);
-                const std::vector<float> zeros((size_t) kKvHeads * T * kHeadDimAttn, 0.0f);
+                st->k = std::make_unique<Buffer>((size_t) kKvHeads * kCap * kHeadDimAttn * 2);
+                st->v = std::make_unique<Buffer>((size_t) kKvHeads * kCap * kHeadDimAttn * 2);
+                const std::vector<float> zeros((size_t) kKvHeads * kCap * kHeadDimAttn, 0.0f);
                 upload(zeros, *st->k);
                 upload(zeros, *st->v);
                 attn_states[(size_t) il] = std::move(st);
@@ -754,14 +758,16 @@ int main(int argc, char ** argv) {
             xs[(size_t) t] = round_f16(h);
         }
 
-        // residual stream, fp32
-        std::vector<std::vector<float>> res((size_t) T, std::vector<float>((size_t) kHidden, 0.0f));
         double t_norm = 0, t_gdn = 0, t_attn = 0, t_moe = 0;
         auto now = [] { return std::chrono::steady_clock::now(); };
         auto secs = [](auto a, auto b) { return std::chrono::duration<double>(b - a).count(); };
         const auto t0 = std::chrono::steady_clock::now();
-        for (int64_t t = 0; t < T; ++t) {
-            std::vector<float> xn = xs[(size_t) t];
+        // ---- one token through the whole stack ----
+        auto step_once = [&](int64_t tok, int64_t pos, int64_t cap) -> std::vector<float> {
+            const std::vector<uint8_t> row = g.tensor_bytes(*embd, (uint64_t) tok * row_bytes, row_bytes);
+            std::vector<float> h((size_t) kHidden);
+            dequantize((int) embd->type, row.data(), h.data(), kHidden);
+            std::vector<float> xn = round_f16(h);
             for (int64_t il = 0; il < 40; ++il) {
                 const std::string p = "blk." + std::to_string(il) + ".";
                 const bool recr = ((il + 1) % interval) != 0;
@@ -785,7 +791,7 @@ int main(int argc, char ** argv) {
                     layer_out = gdn_step(stream, g, cache, il, hnorm, layer_taps[(size_t) il], *gdn_states[(size_t) il]);
                     t_gdn += secs(a0, now());
                 } else {
-                    layer_out = attn_step(stream, g, cache, il, hnorm, t, T, *attn_states[(size_t) il]);
+                    layer_out = attn_step(stream, g, cache, il, hnorm, pos, cap, *attn_states[(size_t) il]);
                     t_attn += secs(a0, now());
                 }
                 for (int64_t i = 0; i < kHidden; ++i) xn[(size_t) i] += layer_out[(size_t) i];
@@ -802,66 +808,110 @@ int main(int argc, char ** argv) {
                 t_moe += secs(m0, now());
                 for (int64_t i = 0; i < kHidden; ++i) xn[(size_t) i] += ffn_out[(size_t) i];
             }
-            res[(size_t) t] = xn;
-            const auto t1 = std::chrono::steady_clock::now();
-            printf("token %lld/%lld done  %.1f s  [norm %.1f  gdn %.1f  attn %.1f  moe %.1f]\n",
-                   (long long) (t + 1), (long long) T, std::chrono::duration<double>(t1 - t0).count(), t_norm, t_gdn,
-                   t_attn, t_moe);
-        }
+            return xn;
+        };
 
-        // final norm and logits for the last position
+        // ---- final norm and the top of the distribution ----
         const std::vector<float> on = need(g, "output_norm.weight");
-        Buffer b_f((size_t) kHidden * 2), b_on((size_t) kHidden * 2), b_fn((size_t) kHidden * 2);
-        upload(res[(size_t) (T - 1)], b_f);
-        upload(on, b_on);
-        Tensor t_f{ b_f.data(), DType::F16, kHidden, 1 };
-        Tensor t_on{ b_on.data(), DType::F16, kHidden, 1 };
+        Buffer b_fn((size_t) kHidden * 2);
         Tensor t_fn{ b_fn.data(), DType::F16, kHidden, 1 };
-        rms_norm(stream, t_f, t_on, kRmsEps, t_fn);
-        const std::vector<float> final_hidden = to_host(stream, b_fn, kHidden);
-        (void) final_hidden;
+        auto top_of = [&](const std::vector<float> & hidden, int64_t k) {
+            Buffer b_f((size_t) kHidden * 2), b_on((size_t) kHidden * 2);
+            upload(hidden, b_f);
+            upload(on, b_on);
+            Tensor t_f{ b_f.data(), DType::F16, kHidden, 1 };
+            Tensor t_on{ b_on.data(), DType::F16, kHidden, 1 };
+            rms_norm(stream, t_f, t_on, kRmsEps, t_fn);
 
-        const int64_t vocab = (int64_t) out_w->dims[1];
-        const int64_t chunk = 32768;
-        std::vector<std::pair<float, int>> best;
-        double lse_max = -INFINITY, lse_sum = 0.0;
-        Tensor t_fn_col{ b_fn.data(), DType::F16, 1, kHidden };
-        for (int64_t start = 0; start < vocab; start += chunk) {
-            const int64_t n = std::min(chunk, vocab - start);
-            const int bb2 = quant_type_size((int) out_w->type);
-            const int be2 = quant_block_elements((int) out_w->type);
-            const uint64_t row_b = (uint64_t) kHidden / (uint64_t) be2 * (uint64_t) bb2;
-            const std::vector<uint8_t> raw = g.tensor_bytes(*out_w, (uint64_t) start * row_b, (uint64_t) n * row_b);
-            std::vector<float> wf((size_t) n * kHidden);
-            dequantize((int) out_w->type, raw.data(), wf.data(), n * kHidden);
-            wf = round_f16(wf);
-            Buffer b_l((size_t) n * 2);
-            gemv(stream, wf, n, kHidden, t_fn_col, b_l);
-            const std::vector<float> lg = to_host(stream, b_l, n);
-            for (int64_t i = 0; i < n; ++i) {
-                const double v = (double) lg[(size_t) i];
-                if (v > lse_max) {
-                    lse_sum = lse_sum * std::exp(lse_max - v) + 1.0;
-                    lse_max = v;
-                } else {
-                    lse_sum += std::exp(v - lse_max);
-                }
-                const std::pair<float, int> cand{ lg[(size_t) i], (int) (start + i) };
-                if ((int64_t) best.size() < 5) {
-                    best.push_back(cand);
-                    std::sort(best.begin(), best.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
-                } else if (cand.first > best[4].first) {
-                    best[4] = cand;
-                    std::sort(best.begin(), best.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+            const int64_t vocab = (int64_t) out_w->dims[1];
+            const int64_t chunk = 32768;
+            std::vector<std::pair<float, int>> best;
+            double lse_max = -INFINITY, lse_sum = 0.0;
+            Tensor t_fn_col{ b_fn.data(), DType::F16, 1, kHidden };
+            for (int64_t s = 0; s < vocab; s += chunk) {
+                const int64_t n = std::min(chunk, vocab - s);
+                const int bb2 = quant_type_size((int) out_w->type);
+                const int be2 = quant_block_elements((int) out_w->type);
+                const uint64_t row_b = (uint64_t) kHidden / (uint64_t) be2 * (uint64_t) bb2;
+                const std::vector<uint8_t> raw = g.tensor_bytes(*out_w, (uint64_t) s * row_b, (uint64_t) n * row_b);
+                std::vector<float> wf((size_t) n * kHidden);
+                dequantize((int) out_w->type, raw.data(), wf.data(), n * kHidden);
+                wf = round_f16(wf);
+                Buffer b_l((size_t) n * 2);
+                gemv(stream, wf, n, kHidden, t_fn_col, b_l);
+                const std::vector<float> lg = to_host(stream, b_l, n);
+                for (int64_t i = 0; i < n; ++i) {
+                    const double v = (double) lg[(size_t) i];
+                    if (v > lse_max) {
+                        lse_sum = lse_sum * std::exp(lse_max - v) + 1.0;
+                        lse_max = v;
+                    } else {
+                        lse_sum += std::exp(v - lse_max);
+                    }
+                    const std::pair<float, int> cand{ lg[(size_t) i], (int) (s + i) };
+                    if ((int64_t) best.size() < k) {
+                        best.push_back(cand);
+                    } else if (cand.first > best.back().first) {
+                        best.back() = cand;
+                    } else {
+                        continue;
+                    }
+                    std::sort(best.begin(), best.end(),
+                              [](const auto & a, const auto & b) { return a.first > b.first; });
                 }
             }
+            const double log_z = lse_max + std::log(lse_sum);
+            std::sort(best.begin(), best.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+            printf("LOGP %.6f\n", log_z);
+            return best;
+        };
+
+        // ---- prefill ----
+        const auto t_prefill = std::chrono::steady_clock::now();
+        std::vector<float> hidden;
+        for (int64_t t = 0; t < T; ++t) {
+            hidden = step_once(toks[(size_t) t], t, kCap);
+            printf("token %lld/%lld done  %.1f s\n", (long long) (t + 1), (long long) T,
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t_prefill).count());
         }
-        const double log_z = lse_max + std::log(lse_sum);
-        std::sort(best.begin(), best.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+        std::vector<std::pair<float, int>> best = top_of(hidden, n_predict > 0 ? 32 : 5);
         printf("\nnext token from position %lld:\n", (long long) (T - 1));
         for (size_t i = 0; i < std::min<size_t>(5, best.size()); ++i) {
-            printf("  token %d  logit %.4f  logprob %.4f\n", best[i].second, best[i].first,
-                   (double) best[i].first - log_z);
+            printf("  token %d  logit %.4f\n", best[i].second, (double) best[i].first);
+        }
+
+        // ---- generation ----
+        if (n_predict > 0) {
+            std::mt19937 rng(1234u);
+            int64_t pos = T;
+            for (int64_t step = 0; step < n_predict; ++step) {
+                int pick = best[0].second;
+                if (gen_temp > 0.0f && best.size() > 1) {
+                    std::vector<double> p(best.size());
+                    double sum = 0.0;
+                    for (size_t i = 0; i < best.size(); ++i) {
+                        p[i] = std::exp((double) (best[i].first - best[0].first) / gen_temp);
+                        sum += p[i];
+                    }
+                    std::uniform_real_distribution<double> draw(0.0, sum);
+                    double r = draw(rng);
+                    for (size_t i = 0; i < p.size(); ++i) {
+                        r -= p[i];
+                        if (r <= 0.0) {
+                            pick = best[i].second;
+                            break;
+                        }
+                    }
+                }
+                printf("GEN %d %.6f\n", pick, (double) best[0].first);
+                if (pos >= kCap - 1) {
+                    printf("GEN_STOP context full\n");
+                    break;
+                }
+                hidden = step_once(pick, pos, kCap);
+                ++pos;
+                best = top_of(hidden, n_predict - step > 1 ? 32 : 5);
+            }
         }
         WeightCache::print_slab_stats();
         shutdown();
