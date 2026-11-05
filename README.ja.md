@@ -181,6 +181,14 @@ strata launch
 <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors: Strata を支援する" height="48"></a>
 <a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee: Strata を支援する" height="48"></a>
 
+### いつも支えてくださる方々
+
+Strata を支えてくださるすべての方に感謝します。
+
+<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
+<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
+<!-- supporters:end -->
+
 [MIT ライセンス](LICENSE) · [クレジットとモデルのライセンス](docs/HOW_IT_WORKS.md#credits) · [プライバシー](docs/SAFETY.md)
 
 <a id="option-c-let-your-ai-set-it-up"></a>
