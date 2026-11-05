@@ -1,6 +1,6 @@
 # Community benchmark: RX 6800 XT + RX 6600, layer split, 128k context
 
-Measured on 2026-11-04 by @Kompasby. Two RDNA2 cards in one Windows PC: an RX 6800 XT runs layers
+Measured on 2026-11-05 by @Kompasby. Two RDNA2 cards in one Windows PC: an RX 6800 XT runs layers
 0-40 and an RX 6600 runs layers 41-47 at a 131,072-token context. The main limitation: this is a
 hand-built, locally installed engine on a platform where AMD multi-GPU is documented as Linux-only,
 so treat it as a report on a configuration rather than a supported path.
@@ -9,13 +9,15 @@ so treat it as a report on a configuration rather than a supported path.
 
 - GPU 0: AMD Radeon RX 6800 XT, 16 GB, gfx1030. GPU 1: AMD Radeon RX 6600, 8 GB, gfx1032 (x4 slot).
   Layer split 0-40 / 41-47, chosen by the engine's own split search; PCIe link not measured.
-- CPU: AMD Ryzen 5 7600 (6C/12T); RAM 63.2 GiB; model storage on an NVMe Kingston SFYRD20 (1.8 TB).
+- CPU: AMD Ryzen 7 9700X (8C/16T); RAM 63.2 GiB at DDR5-5200; model storage on an NVMe Kingston
+  SFYRD20 (1.8 TB). The integrated GPU (gfx1036) is disabled in Windows: with it visible the launcher
+  picks it as the helper card (it reports ~43 GiB of shared memory) and the split collapses.
 - OS: Windows 11 Pro 26300; GPU driver 32.0.21045.16010; ROCm 10.2.0a20260930 (TheRock wheels).
 - **Strata commit `ffa80d7` (main, release v0.2.10); engine 0.1.56; source build** for
   `gfx1030;gfx1032`. The benchmark was driven by the 0.2.9 terminal, which is still installed with two
   local patches (see "Limitations").
-- Background work: the desktop app that normally drives the model was closed for the run; no power
-  limits applied.
+- Background work: none — the desktop app that normally drives the model was closed for the run; no
+  power limits applied.
 
 ## Model and configuration
 
@@ -23,7 +25,8 @@ so treat it as a report on a configuration rather than a supported path.
   `Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf`, `...-00002-of-00002.gguf`; no custom pack.
 - Vision encoder downloaded, not used here: the reader runs on the CPU (`--vision cpu`).
 - Context 131,072; `--kv int8`; `--kv-resident 32768`; expert cache and prefill `auto`; MTP on;
-  thinking on (protocol default).
+  thinking on (protocol default). The 25.6 GiB expert arena ran on **2 MiB large pages**
+  (`expert arena: large pages are resident`), which matters: losing them costs 7-11% decode.
 - Launch command (API key removed):
 
 ```text
@@ -56,17 +59,23 @@ totals include prompt processing.
 
 | Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median (range) | Decode tok/s median (range) | TTFT s median (range) |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
-| short (~80 tok) | 77 | 0 | 332-512 | 3 | not measured (fixed cost dominates) | 42.1 (37.9-44.8) | 6.92 (6.86-9.30) |
-| prompt-4k | 4,093 | 0 | 508-512 | 3 | 301.7 (270.9-304.2) | 44.5 (37.7-45.6) | 20.61 (17.39-29.72) |
-| prompt-16k | 16,387 | 0 | 512 | 3 | 317.4 (310.5-319.3) | 38.9 (38.5-39.4) | 60.53 (54.25-68.00) |
+| short (~80 tok) | 77 | 0 | 250-398 | 3 | not measured (fixed cost dominates) | 46.4 (41.0-46.9) | 1.91 (1.91-20.84) |
+| prompt-4k | 4,093 | 0 | 512 | 3 | 287.2 (286.1-292.3) | 40.2 (40.1-43.0) | 14.38 (14.28-27.88) |
+| prompt-16k | 16,387 | 0 | 512 | 3 | 310.9 (301.6-326.1) | 43.3 (40.8-48.1) | 52.77 (50.31-54.39) |
 
-Capped runs (reasoning plus answer reached the 512-token cap): 2/3 on short, 2/3 on prompt-4k, 3/3 on
+Capped runs (reasoning plus answer reached the 512-token cap): 0/3 on short, 3/3 on prompt-4k, 3/3 on
 prompt-16k. No request failed or timed out; 12 of 12 sanity checks passed.
 
-**Against the same machine on engine 0.1.55 (Strata 0.2.9), measured two days earlier:** prompt
-throughput is up 22-24% (246.4 -> 301.7 at 4k, 255.9 -> 317.4 at 16k), decode up 7-9% (40.9 -> 44.5,
-36.5 -> 38.9). The larger expert caches the 0.1.56 split search chooses (9,705 of 24,576 pairs,
-~97.2% of routed mass) explain most of it.
+The wide TTFT ranges on the short and 4k cases come from the first repetition paying for a cold cache;
+the medians are the steady state.
+
+## What the CPU does and does not change
+
+The same machine was measured on a Ryzen 5 7600 (6C/12T) two days earlier with the same engine. The
+9700X raises the expert-pool workers from 5 to 7 (one per physical core, host on core 0) and moves
+decode by single digits either way, while the 16k prompt drops from 73.5 s to 64.5 s end to end. With
+two DDR5-5200 channels the CPU-side expert path looks bandwidth-bound rather than core-bound, so more
+cores are not the lever here; the expert cache and memory bandwidth are.
 
 ## Correctness and limitations
 
