@@ -10,6 +10,7 @@
 #include "strata/core/defaults_026.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/vram_floor.hpp"
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -876,6 +877,11 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
     return true;
 }
 
+int64_t Verifier::pcie_staging_capacity(int max_t, int64_t k, bool all_misses) {
+    // Two token groups divide staging equally. For an odd T each half must hold ceil(T/2) * k misses.
+    return all_misses ? std::max(kStagingBlobs, (int64_t) ((max_t + 1) / 2) * 2 * k) : kStagingBlobs;
+}
+
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
                     const NativeHead* head, int max_t, std::string& err) {
     g_diag_verifier.store(this);
@@ -948,6 +954,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
+    staging_blobs_ = pcie_staging_capacity(max_t, ss.k, pcie_all_misses_);
     const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
@@ -1089,7 +1096,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
-        staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
+        staging_ = b.take<uint8_t>((uint64_t) staging_blobs_ * strata::kernels::cpu::expert_layout().max_blob);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
         nat_xr_ = had_gu_any ? b.take<float>(T * N) : nullptr;
@@ -1167,7 +1174,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         had_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) g.n_ff), (int) g.n_ff);
     }
     sink_.staging = (unsigned long long) staging_;
-    sink_.staging_cap = kStagingBlobs;
+    sink_.staging_cap = staging_blobs_;
     (void) TS;
     // STRATA_GRAPH_PRIO=1 (opt-in): the window's streams carry priorities that their captured kernel
     // nodes keep (the window graph is instantiated with cudaGraphInstantiateFlagUseNodePriority): the GDN gates / QSA
@@ -2406,7 +2413,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 wait_flag_ge_stamped(m_flagB_, ring, m_bal_ + ((l - lb_) * 2 + grp) * 4 + 1, nullptr, cs);
             else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
-                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                const int64_t per = G == 2 ? staging_blobs_ / 2 : staging_blobs_;
                 uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
                 fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
                 rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
@@ -2749,6 +2756,7 @@ bool Verifier::capture(int T, std::string& err) {
     const auto cap_t0 = std::chrono::steady_clock::now();
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T];
     if (exec_t != nullptr) return true;
+    if (!vram_floor_allow("before verify capture", err)) return false;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
         if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
@@ -2902,6 +2910,12 @@ bool Verifier::capture(int T, std::string& err) {
     std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s) in %.1f ms\n", T,
                  cudaGetErrorString(ue), cudaGetErrorString(us),
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cap_t0).count());
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(exec_t);
+        exec_t = nullptr;
+        return false;
+    }
+    vram_floor_log_once("after first capture");
     // The upload only warms the graph; the first launch does it otherwise. A failed one (out of memory on a full card)
     // must not stay pending: the next kernel wrapper's cudaGetLastError would read it and end the engine (#3702).
     if (ue != cudaSuccess || us != cudaSuccess) {
@@ -3046,7 +3060,24 @@ bool Verifier::capture_commit(std::string& err) {
     // it reports is the instantiate's own)
     const bool made = instantiate_evicting(commit_exec_, graph, {}, "verify: commit instantiate: ", err, 0);
     cudaGraphDestroy(graph);
-    return made;
+    if (!made) return false;
+    // The first commit's implicit upload is a later allocation of its own: make it explicit here and re-check
+    // the floor, exactly as the window capture does.  Without this, an instantiate that passed could still be
+    // followed by an upload that crosses the floor.
+    const cudaError_t ue = cudaGraphUpload(commit_exec_, cs_);
+    const cudaError_t us = cudaStreamSynchronize(cs_);
+    if (ue != cudaSuccess || us != cudaSuccess) {
+        err = std::string("verify: commit upload: ") + cudaGetErrorString(ue != cudaSuccess ? ue : us);
+        cudaGraphExecDestroy(commit_exec_);
+        commit_exec_ = nullptr;
+        return false;
+    }
+    if (!vram_floor_allow("after cudaGraphUpload", err)) {
+        cudaGraphExecDestroy(commit_exec_);
+        commit_exec_ = nullptr;
+        return false;
+    }
+    return true;
 }
 
 void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
@@ -3718,7 +3749,7 @@ void Verifier::set_plan_slot(int grp) {
     sink_.ptr2 = sink_.ptr + cap;
     sink_.start2 = base + ptr_off + 4 * cap;
     const int G = last_batch_ ? 1 : (groups_[last_t_] > 0 ? groups_[last_t_] : 1);
-    const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+    const int64_t per = G == 2 ? staging_blobs_ / 2 : staging_blobs_;
     sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * strata::kernels::cpu::expert_layout().max_blob);
     sink_.staging_cap = per;
 }
@@ -3981,6 +4012,7 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
 bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err) {
     cudaGraphExec_t& ex = exec_bm_[bkey(rows, S, hbase)];
     if (ex != nullptr) return true;
+    if (!vram_floor_allow("before verify capture", err)) return false;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "verify: begin batch capture failed";
         return false;
@@ -4008,6 +4040,12 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     std::string list;
     for (int t = 0; t < S; ++t) list += (t ? "," : "") + std::to_string(rows[t]);
     std::fprintf(stderr, "strata verify: captured the batch window over slots %s\n", list.c_str());
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(ex);
+        ex = nullptr;
+        return false;
+    }
+    vram_floor_log_once("after first capture");
     return true;
 }
 
@@ -4123,7 +4161,22 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
     }
     const bool made = instantiate_evicting(cex, graph, bkey(rows, S, hbase), "verify: batch commit instantiate: ", err);
     cudaGraphDestroy(graph);
-    return made;
+    if (!made) return false;
+    // Same as capture_commit: charge the first commit's implicit upload against the floor explicitly.
+    const cudaError_t ue = cudaGraphUpload(cex, cs_);
+    const cudaError_t us = cudaStreamSynchronize(cs_);
+    if (ue != cudaSuccess || us != cudaSuccess) {
+        err = std::string("verify: batch commit upload: ") + cudaGetErrorString(ue != cudaSuccess ? ue : us);
+        cudaGraphExecDestroy(cex);
+        cex = nullptr;
+        return false;
+    }
+    if (!vram_floor_allow("after cudaGraphUpload", err)) {
+        cudaGraphExecDestroy(cex);
+        cex = nullptr;
+        return false;
+    }
+    return true;
 }
 
 // ---- STRATA_PIPED_MTP: commits after the verdict (see the header)
@@ -4542,6 +4595,11 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
         return false;
     }
     ex = got;
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        if (ex) cudaGraphExecDestroy(ex);
+        ex = nullptr;
+        return false;
+    }
     return true;
 }
 
