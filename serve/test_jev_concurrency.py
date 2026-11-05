@@ -118,5 +118,99 @@ class ConcurrentSevenByThree(unittest.TestCase):
             httpd.server_close()
 
 
+class ImageDirectFifo(unittest.TestCase):
+    """B3 (2026-11-05, expert review blocker 3): image_mode 'direct' holds svc.fifo around
+    each field's generate + BROW read (prepare keeps its own turn).  20 interleaved systemone
+    + image-direct requests on one engine: every engine touch happens under the lock (a
+    depth-tracking fifo wrapper proves it), no request sees a foreign row, no engine death.
+    Mock-based: the real engine's stdin/stdout interleaving is what the lock prevents, so the
+    lock discipline is the thing under test (stated per the brief)."""
+
+    def test_20_interleaved_requests_all_locked_and_correct(self):
+        import threading as _t
+        engine, httpd, base = start()
+        svc = httpd.svc                       # serve() wires the Service onto the httpd
+        inner, fifo_state = svc.fifo, {"depth": 0, "max": 0, "unlocked": 0}
+        fifo_mu = _t.Lock()
+
+        class TrackedFifo:
+            def acquire(self, *a, **k):
+                r = inner.acquire(*a, **k)
+                with fifo_mu:
+                    fifo_state["depth"] += 1
+                    fifo_state["max"] = max(fifo_state["max"], fifo_state["depth"])
+                return r
+
+            def release(self):
+                with fifo_mu:
+                    fifo_state["depth"] -= 1
+                inner.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *a):
+                self.release()
+                return False
+
+        svc.fifo = TrackedFifo()
+
+        orig_generate, orig_brow = engine.generate, engine.final_row_logits
+
+        def guarded_generate(ids, max_new, sampling, cancel, embeddings=None):
+            with fifo_mu:
+                if fifo_state["depth"] < 1:
+                    fifo_state["unlocked"] += 1
+            yield from orig_generate(ids, max_new, sampling, cancel, embeddings)
+
+        def guarded_brow(ids, tokens):
+            with fifo_mu:
+                if fifo_state["depth"] < 1:
+                    fifo_state["unlocked"] += 1
+            return orig_brow(ids, tokens)
+
+        engine.generate = guarded_generate
+        engine.final_row_logits = guarded_brow
+        # prepare is the vision encode on the real path; here it only needs to hand back ids
+        svc.prepare = lambda messages, tools, kwargs, max_new=None: (
+            list(range(65, 91))[:8], False, 1)
+
+        from serve import jev as _jev
+        b64 = "A" * 100
+
+        def one_systemone(cid):
+            qs = {f"c{cid}_q": {"type": "noul", "instructions": f"client {cid}: on?"}}
+            return post(base, {"state": {"client": cid}, "questions": qs})
+
+        def one_image_direct(cid):
+            qs = {f"i{cid}_q": {"type": "noul", "instructions": f"image {cid}: on?"}}
+            qdefs, err = _jev.parse_questions(qs)
+            assert qdefs is not None, err
+            return _jev._handle_image_direct(svc, {"image_b64": b64}, "L", qdefs, b64)
+
+        try:
+            with ThreadPoolExecutor(max_workers=10) as ex:
+                futs = []
+                for i in range(10):
+                    futs.append(ex.submit(one_systemone, i))
+                    futs.append(ex.submit(one_image_direct, i))
+                results = [f.result() for f in futs]
+            for i, r in enumerate(results):
+                code, body = r if isinstance(r, tuple) else (r[0], r[1])
+                self.assertEqual(code, 200, f"request {i}: {body}")
+            # every systemone answer is the client's OWN question, none foreign
+            for i in range(0, 20, 2):
+                self.assertEqual(set(results[i][1]["answers"]), {f"c{i // 2}_q"})
+            for i in range(1, 20, 2):
+                self.assertEqual(set(results[i][1]["answers"]), {f"i{i // 2}_q"})
+            self.assertEqual(fifo_state["unlocked"], 0,
+                             "generate/BROW ran without the engine turn held")
+            self.assertEqual(fifo_state["max"], 1, "engine turns interleaved!")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

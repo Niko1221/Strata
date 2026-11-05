@@ -367,14 +367,19 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
         emb = getattr(svc.embeddings, "path", None)   # this qdef's prepare() staged it
         svc.embeddings.path = None
         try:
-            for _ in svc.engine.generate(ids, 1, {}, cancel, embeddings=emb):
-                pass                                 # the one decode step past the image
+            with svc.fifo:   # B3 (2026-11-05): generate + BROW hold the engine turn, like handle().
+                # prepare() above took its OWN turn for the encode (and released it); this turn
+                # covers the decode step and the row read, so a concurrent chat or systemone
+                # request can no longer interleave lines on the engine's stdin/stdout (a foreign
+                # BROWD row -> silently wrong answer, or a reply the parser kills the engine for).
+                for _ in svc.engine.generate(ids, 1, {}, cancel, embeddings=emb):
+                    pass                                 # the one decode step past the image
+                tokens = sorted({t for v in variants for t in v})
+                row = svc.engine.final_row_logits(ids, tokens)
         finally:
             if emb:
                 with contextlib.suppress(OSError):
                     Path(emb).unlink(missing_ok=True)
-        tokens = sorted({t for v in variants for t in v})
-        row = svc.engine.final_row_logits(ids, tokens)
         try:
             scores = readout_scores(row, variants)
         except ValueError as e:
