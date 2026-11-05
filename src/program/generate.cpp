@@ -15739,11 +15739,14 @@ int main(int argc, char** argv) {
                     if (ramlike) return "mem:Local\\strata-park-" + name + "-s" + std::to_string(s);
                     return dir + "/" + name + "-s" + std::to_string(s) + ".ses";
                 };
-                // a stage's running state: the first (index 0) is `ss`; the draft layer's K/V rides with the last
-                // stage's image (with no split: the only one), as the park puts it
+                // a stage's running state: the first (index 0) is `ss`; the draft layer's K/V rides with stage 0's
+                // image when there is no split or the drafter sits on the first card (mtp_first), and with the
+                // LAST stage's image when it runs on the last card - exactly what park_current_body computes
                 auto ss_of = [&](size_t s) -> const strata::core::SessionState& { return s == 0 ? ss : stages[s - 1]->ss; };
                 auto draft_of = [&](size_t s) -> const strata::core::QsaState* {
-                    return use_mtp && s == n_st ? &mtp.kv_state() : nullptr;
+                    if (!use_mtp) return nullptr;
+                    if (s == 0) return (n_st > 0 && !mtp_first) ? nullptr : &mtp.kv_state();
+                    return !mtp_first && s == n_st ? &mtp.kv_state() : nullptr;
                 };
                 if (save) {
                     if (live_ok && !live.empty() && !park_current(0)) {
@@ -15757,6 +15760,7 @@ int main(int argc, char** argv) {
                     strata::core::conversation_park_join();
                     std::error_code ec;
                     std::filesystem::create_directories(dir, ec);
+                    if (ec) { refuse("cannot create " + dir + ": " + ec.message(), strata::core::SessionError::io); continue; }
                     auto& all = conversations.entries_mut();
                     struct Pick { size_t i; bool write; std::string name; };
                     std::vector<Pick> picks;
@@ -15971,8 +15975,20 @@ int main(int argc, char** argv) {
                         f << "strata-park 2\ntag " << tag << "\nstages " << (n_st + 1) << "\n" << list << "end\n";
                         f.close();
                         if (!f) { refuse("cannot write " + tmp, strata::core::SessionError::io); continue; }
+#ifndef _WIN32
+                        {   // the manifest lists the files: it must survive the rename that follows and the
+                            // folder must hold the rename, or a power cut orphans every .ses it just named
+                            int fd = ::open(tmp.c_str(), O_RDONLY);
+                            if (fd >= 0) { (void) ::fsync(fd); ::close(fd); }
+                        }
+#endif
                         std::filesystem::rename(tmp, manifest, ec);   // replaces the old manifest in one step
                         if (ec) { refuse("cannot publish " + manifest + ": " + ec.message(), strata::core::SessionError::io); continue; }
+#ifndef _WIN32
+                        {   int dfd = ::open(dir.c_str(), O_RDONLY);
+                            if (dfd >= 0) { (void) ::fsync(dfd); ::close(dfd); }
+                        }
+#endif
                     }
                     // session files no manifest lists any more (conversations that ran again, aged out, were evicted);
                     // RAM-like: no files (the sections of an older save go when their keeper ends)
