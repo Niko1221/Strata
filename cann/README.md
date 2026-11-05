@@ -227,12 +227,13 @@ across tokens.
 
 Two changes, both measured on the same prompt:
 
-| change | 5 tokens |
-|---|---|
-| first version | 166 s |
-| weights and the aclnn workspace stay resident | 64 s |
-| threaded dequantization | 41 s |
-| decoding a layer's 24 expert slabs concurrently | 12.7 s |
+| change | 5 tokens | 12 tokens |
+|---|---|---|
+| first version | 166 s | |
+| weights and the aclnn workspace stay resident | 64 s | |
+| threaded dequantization | 41 s | |
+| decoding a layer's 24 expert slabs concurrently | 12.7 s | 17.8 s |
+| the delta net batched over its 32 heads | | 14.7 s |
 
 Profiling paid for itself here. A single GEMV measures 0.043 ms, and a whole token makes about
 12000 aclnn calls, so the ops were never the problem: `print_op_stats` shows 2.5 s for 122559
@@ -250,6 +251,15 @@ slabs: 3348 new, disk 0.5 s, dequant 1.5 s, upload 3.9 s
 Dequantization went from 22.3 s to 1.5 s and the five tokens from 37 s to 12.7 s, with identical
 logits.
 
+The delta net is the largest operator consumer: 32 heads times 8 operator calls, 30 layers, every
+token. Batching it over the heads (`bmm` and the broadcast forms exist for this) makes it 8 calls
+for the whole batch. It matches the per-head device op to 4e-4 at two tokens and 1.7e-3 at eight,
+and the 12-token run went from 17.8 s to 14.7 s.
+
+That batching does cost a little fidelity: against llama.cpp the top four tokens stay identical,
+but the fifth is now `799` (-3.850) where llama.cpp reports `271` (-3.764) — a near-tie flipping,
+not a wrong model. Fixing it properly means keeping the recurrent state in fp32, which needs a
+cast op this stack does not have yet.
 The weight cache keeps every non-expert tensor (2.4 GB) in HBM and caches expert slabs with a
 budget. The workspace cache removed an `aclrtMalloc`/`aclrtFree` pair per op. Dropping the
 per-op `stream.synchronize()` as well made the numbers wrong — host uploads go through
