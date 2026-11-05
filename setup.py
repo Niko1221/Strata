@@ -3680,8 +3680,8 @@ def uma_holds_experts(model, ram, gpu) -> bool:
     """A unified-memory GPU whose shared pool holds every expert of `model` beside everything else the engine keeps there (strata_control/uma_pool.py: the
     measured fixed part, the experts, a margin) and whose RAM holds them with UNSLOTH_RESIDENT_BESIDE_GB more.  Only for a set that asks ("uma_pool_auto"):
     the sets measured under the budget mode (UD-IQ4_XS, UD-Q4_K_XL, ...) keep their plans."""
-    if not MODELS.get(model, {}).get("uma_pool_auto") or not (gpu or {}).get("uma"):
-        return False
+    if sys.platform == "darwin" or not MODELS.get(model, {}).get("uma_pool_auto") or not (gpu or {}).get("uma"):
+        return False                                   # (a Mac never reaches this: metal/setup_mac.py and mac_control_setup have their own plans; the check keeps it so)
     shared = float((gpu or {}).get("vram_gb") or 0.0)
     if shared <= 0:
         return False

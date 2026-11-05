@@ -669,6 +669,11 @@ class StrixHaloCache(Base):
         asked = self.run_halo(63.7, ("--context", "8192", "--resident-budget-gib", "24"), amd=self.HALO64, m="UD-IQ2_XS", version="0.1.57")[2]["args"]
         self.assertIn("--resident-budget-gib", asked)                                    # the budget the person asked for is written (setup's own pool check may lower it, as before)
 
+    def test_a_mac_is_never_touched(self):
+        with mock.patch.object(setup.sys, "platform", "darwin"):
+            self.assertFalse(setup.uma_holds_experts("UD-IQ2_XS", 63.7, self.HALO64[0]))
+            self.assertTrue(setup.unsloth_budget("UD-IQ2_XS", 63.7, self.HALO64[0]))      # the answer it gave before round 0214
+
     def test_the_spark_profile(self):
         """A DGX Spark (GB10, unified memory, 128 GB): the old sets keep the budget plan, a v3.1 set that fits the pool has all of its experts in it."""
         spark = {"vram_gb": 119.0, "uma": True, "arch": "121"}
