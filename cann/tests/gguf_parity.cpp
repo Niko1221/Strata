@@ -39,15 +39,24 @@ double checksum(const std::vector<float> & v) {
 
 void decoder_check(const Gguf & g, const GgufTensor & t, uint64_t blocks) {
     const int block_bytes = quant_type_size((int) t.type);
-    if (block_bytes == 0) {
+    const int block_elems = quant_block_elements((int) t.type);
+    if (block_bytes == 0 || block_elems == 0) {
         return;
     }
     const uint64_t bytes = blocks * (uint64_t) block_bytes;
+    const int64_t n = (int64_t) blocks * block_elems;
     const std::vector<uint8_t> raw = g.tensor_bytes(t, 0, bytes);
-    std::vector<float> ours((size_t) blocks * QK_K);
-    dequantize((int) t.type, raw.data(), ours.data(), (int64_t) blocks * QK_K);
+    std::vector<float> ours((size_t) n);
+    dequantize((int) t.type, raw.data(), ours.data(), n);
 
-    const char * type_name = t.type == 12 ? "Q4_K" : (t.type == 13 ? "Q5_K" : "Q6_K");
+    const char * type_name = "?";
+    switch (t.type) {
+        case 8: type_name = "Q8_0"; break;
+        case 12: type_name = "Q4_K"; break;
+        case 13: type_name = "Q5_K"; break;
+        case 14: type_name = "Q6_K"; break;
+        default: break;
+    }
     printf("%-34s %-5s dims=[", t.name.c_str(), type_name);
     for (size_t i = 0; i < t.dims.size(); ++i) {
         printf("%s%llu", i ? "," : "", (unsigned long long) t.dims[i]);
@@ -55,10 +64,10 @@ void decoder_check(const Gguf & g, const GgufTensor & t, uint64_t blocks) {
     printf("] blocks=%llu  sum=%.6f", (unsigned long long) blocks, checksum(ours));
 
 #ifdef STRATA_CANN_HAVE_GGML
-    std::vector<float> ref((size_t) blocks * QK_K);
+    std::vector<float> ref((size_t) n);
     const ggml_type_traits * traits = ggml_get_type_traits((enum ggml_type) t.type);
     if (traits && traits->to_float) {
-        traits->to_float(raw.data(), ref.data(), (int64_t) blocks * QK_K);
+        traits->to_float(raw.data(), ref.data(), n);
         const bool same = std::memcmp(ours.data(), ref.data(), ours.size() * sizeof(float)) == 0;
         printf("  vs ggml: %s\n", same ? "BIT-EXACT" : "DIFFERS");
         if (!same) {
@@ -189,6 +198,7 @@ int main(int argc, char ** argv) {
         const GgufTensor * q4 = nullptr;
         const GgufTensor * q5 = nullptr;
         const GgufTensor * q6 = nullptr;
+        const GgufTensor * q8 = nullptr;
         for (const auto & t : g.tensors()) {
             if (!q4 && t.type == 12 && t.elements() >= 4096) {
                 q4 = &t;
@@ -198,6 +208,9 @@ int main(int argc, char ** argv) {
             }
             if (!q6 && t.type == 14 && t.elements() >= 4096) {
                 q6 = &t;
+            }
+            if (!q8 && t.type == 8 && t.elements() >= 4096) {
+                q8 = &t;
             }
         }
         if (!q4 || !q6) {
@@ -211,6 +224,9 @@ int main(int argc, char ** argv) {
             decoder_check(g, *q5, 64);
         }
         decoder_check(g, *q6, 64);
+        if (q8) {
+            decoder_check(g, *q8, 256);
+        }
         printf("\nmodel file read and decoded by the port\n");
         shutdown();
         return 0;

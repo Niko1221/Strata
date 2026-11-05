@@ -6,8 +6,9 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | phase | scope | state |
 |---|---|---|
 | P1 | device, stream, HBM buffers, first aclnn ops, CPU oracle | done, parity on hardware |
-| P2 | Q4_K / Q5_K / Q6_K decoders, dequantize then matmul on the NPU | done, bit-exact vs ggml |
+| P2 | Q4_K / Q5_K / Q6_K / Q8_0 decoders, dequantize then matmul on the NPU | done, bit-exact vs ggml |
 | P2b | GGUF reader, real model file, real-weight GEMV on the NPU | done |
+| P2c | one real block from real weights: blk.0 shared expert (SwiGLU) | done |
 | P3 | GDN done; RoPE / KV cache / prefill shapes | in progress |
 | P4 | MoE routing and expert matmuls | not started |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
@@ -18,19 +19,17 @@ that grows next to the CUDA engine until it can take the engine's sources.
 |---|---|
 | `include/strata/cann/device.hpp` | `Device`, `Stream`, `Buffer`, `DeviceInfo`, `Error`; one place that turns `aclError` into an exception |
 | `include/strata/cann/ops.hpp` | `matmul`, `rms_norm`, `silu`, `add`, `sub`, `mul`, `muls`, `exp`, `softmax` on fp16 device tensors, each with a CPU oracle |
-| `include/strata/cann/quants.hpp` | `block_q4_K` (144 B), `block_q5_K` (176 B), `block_q6_K` (210 B) plus `dequantize()` |
+| `include/strata/cann/quants.hpp` | `block_q8_0` (34 B), `block_q4_K` (144 B), `block_q5_K` (176 B), `block_q6_K` (210 B), plus `dequantize()` |
 | `include/strata/cann/gdn.hpp` | gated delta net: float reference and the device path |
 | `include/strata/cann/gguf.hpp` | GGUF v3 reader: header, metadata, tensor index, on-demand tensor bytes |
-| `src/device.cpp` | `aclInit` / `aclrtSetDevice` / `aclrtCreateStream` / `aclrtMalloc` / `aclrtMemcpy` |
-| `src/ops.cpp` | the aclnn two-phase call (`*GetWorkspaceSize` then the op) behind one helper |
-| `src/quants.cpp` | the three K-quant decoders, written against ggml's `dequantize_row_*` |
-| `src/gdn.cpp` | the recurrence, one aclnn step per token |
-| `src/gguf.cpp` | the reader; weights stay on disk, `tensor_bytes` reads a range |
+| `include/strata/cann/tensor_load.hpp` | any tensor as floats: F32 / F16 / BF16 / Q8_0 / Q4_K / Q5_K / Q6_K |
+| `src/` | the same, implemented: aclnn two-phase calls, decoders, GDN, reader, loader |
 | `tests/parity.cpp` | random fp16 inputs, device result against the CPU reference |
 | `tests/quant_parity.cpp` | decoders against ggml's `to_float`, then a dequantized matmul on the NPU |
 | `tests/gdn_parity.cpp` | GDN against the float reference, both decay modes |
-| `tests/gguf_parity.cpp` | the real 22.85 GB model: header, weight mix, real GEMV on the NPU, real-tensor decoders |
-| `tests/run_parity.sh` / `run_quant.sh` / `run_gdn.sh` / `run_gguf.sh` | build and run the four tests |
+| `tests/gguf_parity.cpp` | the real 22.85 GB model: header, weight mix, real GEMV, real-tensor decoders |
+| `tests/layer_parity.cpp` | one real block on the NPU: blk.0 shared expert, `silu(W_gate x) * (W_up x)` then `W_down` |
+| `tests/run_*.sh` | build and run each test |
 
 ## Build and run
 
@@ -46,6 +45,7 @@ cmake -S cann -B build-cann \
 cmake --build build-cann -j
 ./build-cann/quant_parity
 ./build-cann/gguf_parity /path/to/model.gguf
+./build-cann/layer_parity /path/to/model.gguf
 ```
 
 `ASCEND_HOME_PATH` defaults to `/usr/local/Ascend/cann-9.0.0`. The ggml oracle links
@@ -60,9 +60,10 @@ receives.
 |---|---|
 | matmul 256x512x384 | 0.5 (512-term fp16 dot) |
 | rms_norm 512x2048 / silu / add / softmax | 0.02 / 0.02 / 0.01 / 0.01 |
-| Q4_K / Q5_K / Q6_K decode | bit-exact against ggml |
+| Q8_0 / Q4_K / Q5_K / Q6_K decode | bit-exact against ggml |
 | GDN, one head | attn 0.05, state 0.05 |
-| real-weight GEMV 512x2048 on the NPU | 0.5 |
+| real-weight GEMV 512x2048 | 0.5 |
+| blk.0 shared expert | gate/up/act 0.2, output 0.5 and relative L2 0.02 |
 
 ## Two API facts worth writing down
 
@@ -87,19 +88,36 @@ weight mix :
   sum                    22.84 GB
 ```
 
-So 32% of the file is Q5_K, which is why its decoder is here too. Q8_0 (2.61 GB, the attention
-and embedding tensors) and the F32 norms are still open.
+All four formats now decode, and each is bit-exact against ggml on a real tensor from this file.
+F32 and BF16 tensors are read directly (norms, the router, `ssm_a`).
+
+## What a layer looks like in this model
+
+`blk.0` is a hybrid layer, and the header says what the port has to support:
+
+```
+blk.0.attn_norm.weight        F32    [2048]
+blk.0.attn_qkv.weight         Q8_0   [2048, 8192]     fused QKV
+blk.0.attn_gate.weight        Q8_0   [2048, 4096]
+blk.0.ssm_a / ssm_alpha / ssm_beta / ssm_conv1d / ssm_dt / ssm_norm    F32    gated delta net
+blk.0.ffn_gate_inp.weight     F32    [2048, 256]      router
+blk.0.ffn_gate_exps.weight    Q4_K   [2048, 512, 256] experts
+blk.0.ffn_down_exps.weight    Q5_K   [512, 2048, 256]
+blk.0.ffn_gate_shexp.weight   Q8_0   [2048, 512]      shared expert
+blk.0.post_attention_norm.weight F32 [2048]
+```
+
+So 3 of 4 layers run a GDN block (`ssm_*`), and the FFN is 256 experts with one shared expert.
 
 ## What is not here yet
 
-- A decoder for Q8_0 and the F32/BF16 tensors; the three K-quants are the bulk but not all of it.
 - The engine's own kernels: `src/` still compiles for CUDA only.
 - `ggml-cann` still has no `GGML_OP_GATED_DELTA_NET`, so the llama.cpp server keeps 3 of 4 layers
   on the CPU. This directory has a working device path, but wiring it into that backend is a
   separate change.
 - Fused dequant+matmul. The decoder works on the host today; a fast engine wants it fused on the
   device.
-- Prefill-shaped GDN (the current path is one token at a time).
+- Prefill-shaped GDN (the current path is one token at a time), RoPE, KV cache, MoE routing.
 
 ## Verified on the machine
 
@@ -120,10 +138,10 @@ mul 8x1 * 1x8                0.000237     0.000062     0.0100  PASS
 ```
 
 ```
+Q8_0   vs ggml: max|diff| = 0  BIT-EXACT
 Q4_K   vs ggml: max|diff| = 0  BIT-EXACT
 Q5_K   vs ggml: max|diff| = 0  BIT-EXACT
 Q6_K   vs ggml: max|diff| = 0  BIT-EXACT
-Q4_K dequant -> NPU matmul 64x512x256: max|diff| vs CPU = 0.013428  PASS
 ```
 
 ```
@@ -134,14 +152,26 @@ kda    S=128 T=4       0.000175     0.001516  PASS
 ```
 
 ```
-gguf       : v3, 753 tensors, data at 10991392
-arch       : qwen35moe, 41 layers, 256 experts (top 8), embedding 2048
+gguf : v3, 753 tensors, arch qwen35moe, 41 layers, 256 experts (top 8), embedding 2048
 
 real GEMV  blk.0.ffn_gate_exps.weight [512 x 2048] on the NPU: max|diff| = 0.000116  PASS
 
-blk.0.ffn_gate_exps.weight         Q4_K  ... vs ggml: BIT-EXACT
-blk.0.ffn_down_exps.weight         Q5_K  ... vs ggml: BIT-EXACT
-blk.34.ffn_down_exps.weight        Q6_K  ... vs ggml: BIT-EXACT
+blk.0.ffn_gate_exps.weight   Q4_K  vs ggml: BIT-EXACT
+blk.0.ffn_down_exps.weight   Q5_K  vs ggml: BIT-EXACT
+blk.34.ffn_down_exps.weight  Q6_K  vs ggml: BIT-EXACT
+output.weight                Q8_0  vs ggml: BIT-EXACT
 ```
 
-Reproduce with `bash cann/tests/run_parity.sh`, `run_quant.sh`, `run_gdn.sh`, `run_gguf.sh`.
+```
+block      : blk.0 shared expert (SwiGLU)
+shapes     : x[2048] -> gate/up[512] -> down[2048]
+
+stage                     max|diff|       rel L2  result
+gate  = W_gate x           0.000240     0.000202  PASS
+up    = W_up x             0.000215     0.000194  PASS
+act   = silu(g) * u        0.000172     0.000428  PASS
+y     = W_down act         0.000034     0.000404  PASS
+```
+
+Reproduce with `bash cann/tests/run_parity.sh`, `run_quant.sh`, `run_gdn.sh`, `run_gguf.sh`,
+`run_layer.sh`.

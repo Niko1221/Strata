@@ -26,6 +26,7 @@ using namespace strata::cann;
 
 namespace {
 
+constexpr int GGML_TYPE_Q8_0_ID = 8;
 constexpr int GGML_TYPE_Q4_K_ID = 12;
 constexpr int GGML_TYPE_Q5_K_ID = 13;
 constexpr int GGML_TYPE_Q6_K_ID = 14;
@@ -70,6 +71,7 @@ int main() {
         size_t header_min_offset; // SIZE_MAX for Q6_K (no min)
     };
     const QuantCase cases[] = {
+        { GGML_TYPE_Q8_0_ID, 34, "Q8_0", 0, (size_t) -1 },
         { GGML_TYPE_Q4_K_ID, 144, "Q4_K", 0, 2 },
         { GGML_TYPE_Q5_K_ID, 176, "Q5_K", 0, 2 },
         { GGML_TYPE_Q6_K_ID, 210, "Q6_K", 208, (size_t) -1 },
@@ -77,8 +79,11 @@ int main() {
 
     const int64_t n_values = QK_K * 8;
     for (const QuantCase & c : cases) {
-        std::vector<uint8_t> bytes = random_blocks((size_t) (n_values / QK_K) * c.block_bytes, 100 + c.type);
-        for (int64_t b = 0; b < n_values / QK_K; ++b) {
+        const int block_elems = quant_block_elements(c.type);
+        const int blocks = (int) (n_values / block_elems);
+        const int64_t total = (int64_t) blocks * block_elems;
+        std::vector<uint8_t> bytes = random_blocks((size_t) blocks * c.block_bytes, 100 + c.type);
+        for (int b = 0; b < blocks; ++b) {
             uint8_t * blk = bytes.data() + b * c.block_bytes;
             set_half(blk + c.header_scale_offset, 0.0123f);
             if (c.header_min_offset != (size_t) -1) {
@@ -86,9 +91,9 @@ int main() {
             }
         }
 
-        std::vector<float> ours(n_values);
-        std::vector<float> ref(n_values);
-        dequantize(c.type, bytes.data(), ours.data(), n_values);
+        std::vector<float> ours((size_t) total);
+        std::vector<float> ref((size_t) total);
+        dequantize(c.type, bytes.data(), ours.data(), total);
 
 #ifdef STRATA_CANN_HAVE_GGML
         const ggml_type_traits * traits = ggml_get_type_traits((enum ggml_type) c.type);
@@ -97,7 +102,7 @@ int main() {
             ++failures;
             continue;
         }
-        traits->to_float(bytes.data(), ref.data(), n_values);
+        traits->to_float(bytes.data(), ref.data(), total);
         const double d = max_abs_diff(ours, ref);
         const bool same = memcmp(ours.data(), ref.data(), ours.size() * sizeof(float)) == 0;
         printf("%-6s vs ggml: max|diff| = %.9g  %s\n", c.name, d, same ? "BIT-EXACT" : "DIFFERS");
