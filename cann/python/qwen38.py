@@ -25,9 +25,10 @@ from strata_tokenizer import Tokenizer  # noqa: E402
 
 
 class Qwen38:
-    def __init__(self, store, device="npu:0", budget_gib=16, context=8192):
+    def __init__(self, store, device="npu:0", budget_gib=16, context=8192, weight_dtype="fp32"):
         self.store = store
-        self.w = DeviceWeights(store, device, budget_gib)
+        self.w = DeviceWeights(store, device, budget_gib, weight_dtype)
+        self.weight_dtype = weight_dtype
         self.device = self.w.device
         md = store.metadata
         self.md = md
@@ -349,6 +350,7 @@ class Qwen38:
             "weights": self.w.report(),
             "backend": "strata-cann-torch",
             "device": str(self.device),
+            "weight_dtype": self.weight_dtype,
         }
 
 
@@ -360,6 +362,7 @@ def arguments():
     ap.add_argument("--source", default=DEFAULT_SOURCE)
     ap.add_argument("--device", default="npu:0")
     ap.add_argument("--budget-gib", type=float, default=16)
+    ap.add_argument("--weight-dtype", choices=("fp32", "fp16"), default="fp32")
     ap.add_argument("--disk-cache-gib", type=float, default=16)
     ap.add_argument("--context", type=int, default=8192)
     ap.add_argument("--prompt", default="The capital of France is")
@@ -381,7 +384,7 @@ def main():
     store = WeightStore(args.model_dir, args.cache_dir, args.decoder, args.source,
                         disk_cache_gib=args.disk_cache_gib)
     try:
-        engine = Qwen38(store, args.device, args.budget_gib, args.context)
+        engine = Qwen38(store, args.device, args.budget_gib, args.context, args.weight_dtype)
         prompt = [int(t) for t in args.tokens.split(",")] if args.tokens else args.prompt
         if args.dump_layers:
             args.dump_layers.mkdir(parents=True, exist_ok=True)

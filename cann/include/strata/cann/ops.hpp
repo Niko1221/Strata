@@ -37,6 +37,13 @@ void mul_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out
 void add_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 void sub_bcast(Stream & stream, const Tensor & a, const Tensor & b, Tensor & out);
 
+// values[k] = the k largest entries of the row x, indices[k] their positions, highest first.
+// `indices` must be a device buffer of k int64 values.
+void topk(Stream & stream, const Tensor & x, int64_t k, int64_t dim, Tensor & values, Tensor & indices);
+
+// out = log(sum(exp(x))) reduced along `dim`.
+void logsumexp(Stream & stream, const Tensor & x, int64_t dim, Tensor & out);
+
 // out = cast(x) to dst_type
 void cast(Stream & stream, const Tensor & x, DType dst_type, Tensor & out);
 

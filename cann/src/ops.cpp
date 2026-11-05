@@ -11,6 +11,8 @@
 #include <aclnnop/aclnn_exp.h>
 #include <aclnnop/aclnn_div.h>
 #include <aclnnop/aclnn_cast.h>
+#include <aclnnop/aclnn_topk.h>
+#include <aclnnop/aclnn_logsumexp.h>
 
 #include <acl/acl.h>
 
@@ -305,6 +307,49 @@ void cast(Stream & stream, const Tensor & x, DType dst_type, Tensor & out) {
         "aclnnCast");
     aclDestroyTensor(tx);
     aclDestroyTensor(ty);
+}
+
+// The k largest values of a [1, n] row and their indices, computed on the device.
+void topk(Stream & stream, const Tensor & x, int64_t k, int64_t dim, Tensor & values, Tensor & indices) {
+    aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
+    aclTensor * tv = make_tensor(values, values.ne1, values.ne0);
+    int64_t shape[2] = { values.ne1, values.ne0 };
+    int64_t stride[2] = { values.ne0, 1 };
+    aclTensor * ti = aclCreateTensor(shape, 2, ACL_INT64, stride, 0, ACL_FORMAT_ND, shape, 2, indices.data);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) {
+            // largest first, sorted, so the caller can read [0] as the argmax
+            return aclnnTopkGetWorkspaceSize(tx, k, dim, true, true, tv, ti, ws, ex);
+        },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnTopk(ws, ws_size, ex, s);
+        },
+        "aclnnTopk");
+    aclDestroyTensor(tx);
+    aclDestroyTensor(tv);
+    aclDestroyTensor(ti);
+}
+
+// log(sum(exp(x))) over the row, in one call. The partition has to come from every logit, so this
+// is the op that makes a device-side sampler possible: only k values leave the device afterwards.
+void logsumexp(Stream & stream, const Tensor & x, int64_t dim, Tensor & out) {
+    aclTensor * tx = make_tensor(x, x.ne1, x.ne0);
+    aclTensor * to = make_tensor(out, out.ne1, out.ne0);
+    int64_t dims[1] = { dim };
+    aclIntArray * arr = aclCreateIntArray(dims, 1);
+    execute(
+        stream,
+        [&](uint64_t * ws, aclOpExecutor ** ex) {
+            return aclnnLogSumExpGetWorkspaceSize(tx, arr, true, to, ws, ex);
+        },
+        [&](void * ws, uint64_t ws_size, aclOpExecutor * ex, aclrtStream s) {
+            return aclnnLogSumExp(ws, ws_size, ex, s);
+        },
+        "aclnnLogSumExp");
+    aclDestroyIntArray(arr);
+    aclDestroyTensor(tx);
+    aclDestroyTensor(to);
 }
 
 void rms_norm(Stream & stream, const Tensor & x, const Tensor & gamma, double eps, Tensor & out) {

@@ -91,7 +91,8 @@ class Service:
             self.args.model_dir, self.args.cache_dir, self.args.decoder, self.args.source,
             disk_cache_gib=self.args.disk_cache_gib,
         )
-        self.engine = Qwen38(self.store, self.args.device, self.args.budget_gib, self.args.context)
+        self.engine = Qwen38(self.store, self.args.device, self.args.budget_gib, self.args.context,
+                             self.args.weight_dtype)
 
     def request(self, prompt, count, temperature, callback, cancel):
         def run():
@@ -155,6 +156,7 @@ def main():
                     "status": "ok", "loaded": True, "model": MODEL,
                     "backend": "strata-cann-torch", "device": args.device,
                     "layers": service.engine.layers, "max_context": args.context,
+                    "weight_dtype": args.weight_dtype,
                     "weight_mode": "local GGUF or exact HTTP ranges",
                     "busy": service.lock.locked(), "completed": service.completed,
                 })
@@ -217,6 +219,10 @@ def main():
                        if isinstance(prompt, str) else prompt)
                 if not ids or len(ids) + count > args.context:
                     raise ValueError("empty prompt or prompt plus generation exceeds context")
+                if any(token < 0 or token >= len(service.engine.tokenizer.tokens) for token in ids):
+                    raise ValueError("token id outside the vocabulary")
+                if type(body.get("stream", False)) is not bool:
+                    raise ValueError("stream must be a boolean")
                 stream = bool(body.get("stream", False))
                 wants_logprobs = body.get("logprobs") is not None and body.get("logprobs") is not False
                 top_count = (body.get("top_logprobs", 0) if chat else body.get("logprobs", 0)) or 0
@@ -313,7 +319,7 @@ def main():
                          "total_tokens": len(ids) + len(result["tokens"])}
                 timing = {key: result[key] for key in (
                     "backend", "device", "prefill_seconds", "decode_seconds",
-                    "decode_steps", "decode_tokens_per_second", "weights")}
+                    "decode_steps", "decode_tokens_per_second", "weights", "weight_dtype")}
                 if anthropic:
                     self.json(200, {"id": cid, "type": "message", "role": "assistant", "model": MODEL,
                                    "content": [{"type": "text", "text": result["text"]}],

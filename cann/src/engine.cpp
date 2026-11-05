@@ -34,6 +34,7 @@ using clock_type = std::chrono::steady_clock;
 namespace {
 
 constexpr int64_t kHidden = 2048;
+constexpr int64_t kMaxTopk = 64;
 constexpr int64_t kHeadDimSsm = 128;
 constexpr int64_t kKHeads = 16;
 constexpr int64_t kVHeads = 32;
@@ -685,7 +686,9 @@ struct Model::Impl {
     std::vector<float> out_norm;
     std::unique_ptr<Buffer> b_fn;
     const Buffer * wout = nullptr;
-    std::unique_ptr<Buffer> b_logits;
+    std::unique_ptr<Buffer> b_logits;   // fp16 logits from the matmul
+    std::unique_ptr<Buffer> b_logits32; // the same in fp32, which is what the sampler wants
+    std::unique_ptr<Buffer> b_vals, b_idx, b_lz;
 
     Impl(const std::string & path, int64_t cap)
         : gguf(path),
@@ -703,6 +706,10 @@ struct Model::Impl {
         out_norm = need(gguf, "output_norm.weight");
         b_fn = std::make_unique<Buffer>((size_t) kHidden * 2);
         b_logits = std::make_unique<Buffer>((size_t) vocab * 2);
+        b_logits32 = std::make_unique<Buffer>((size_t) vocab * 4);
+        b_vals = std::make_unique<Buffer>((size_t) kMaxTopk * 4);
+        b_idx = std::make_unique<Buffer>((size_t) kMaxTopk * 8);
+        b_lz = std::make_unique<Buffer>(4);
 
         const int bb = quant_type_size((int) embd->type);
         const int be = quant_block_elements((int) embd->type);
@@ -821,6 +828,9 @@ void Model::reset() {
 
 Model::Top Model::top(const std::vector<float> & hidden, int64_t k) {
     Impl & m = *impl_;
+    if (k > kMaxTopk) {
+        throw Error("engine: top() asked for more than kMaxTopk", -1);
+    }
     Buffer b_f((size_t) kHidden * 2), b_on((size_t) kHidden * 2);
     upload(hidden, b_f);
     upload(m.out_norm, b_on);
@@ -832,39 +842,40 @@ Model::Top Model::top(const std::vector<float> & hidden, int64_t k) {
     if (!m.wout) {
         const auto w0 = clock_type::now();
         m.wout = &m.cache.full("output.weight");
-        fprintf(stdout, "output weight resident: %.1f s\n", std::chrono::duration<double>(clock_type::now() - w0).count());
+        fprintf(stdout, "output weight resident: %.1f s\n",
+                std::chrono::duration<double>(clock_type::now() - w0).count());
         fflush(stdout);
     }
 
-    std::vector<std::pair<float, int>> best;
-    double lse_max = -INFINITY, lse_sum = 0.0;
+    // logits, then everything the sampler needs stays on the device: the top k and the partition.
+    // Before this, 151936 floats came back per token and the selection ran on the host.
     Tensor t_col{ m.b_fn->data(), DType::F16, 1, kHidden };
     Tensor tw{ m.wout->data(), DType::F16, kHidden, m.vocab };
     Tensor tl{ m.b_logits->data(), DType::F16, 1, m.vocab };
     matmul(m.stream, tw, t_col, tl);
-    const std::vector<float> lg = to_host(m.stream, *m.b_logits, m.vocab);
-    for (int64_t i = 0; i < m.vocab; ++i) {
-        const double v = (double) lg[(size_t) i];
-        if (v > lse_max) {
-            lse_sum = lse_sum * std::exp(lse_max - v) + 1.0;
-            lse_max = v;
-        } else {
-            lse_sum += std::exp(v - lse_max);
-        }
-        const std::pair<float, int> cand{ lg[(size_t) i], (int) i };
-        if ((int64_t) best.size() < k) {
-            best.push_back(cand);
-        } else if (cand.first > best.back().first) {
-            best.back() = cand;
-        } else {
-            continue;
-        }
-        std::sort(best.begin(), best.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
-    }
-    std::sort(best.begin(), best.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+
+    Tensor tl32{ m.b_logits32->data(), DType::F32, 1, m.vocab };
+    cast(m.stream, tl, DType::F32, tl32);
+    Tensor tv{ m.b_vals->data(), DType::F32, 1, k };
+    Tensor ti{ m.b_idx->data(), DType::F32, 1, k };
+    Tensor tz{ m.b_lz->data(), DType::F32, 1, 1 };
+    topk(m.stream, tl32, k, 0, tv, ti);   // the logits are a column: axis 0 is the vocabulary
+    logsumexp(m.stream, tl32, 0, tz);
+
+    std::vector<float> vals((size_t) k);
+    std::vector<int64_t> idx((size_t) k);
+    float lz = 0.0f;
+    m.b_vals->copy_to_host(vals.data(), vals.size() * 4);
+    m.b_idx->copy_to_host(idx.data(), idx.size() * 8);
+    m.b_lz->copy_to_host(&lz, 4);
+    m.stream.synchronize();
+
     Top out;
-    out.best = best;
-    out.log_z = lse_max + std::log(lse_sum);
+    out.best.reserve((size_t) k);
+    for (int64_t i = 0; i < k; ++i) {
+        out.best.emplace_back(vals[(size_t) i], (int) idx[(size_t) i]);
+    }
+    out.log_z = (double) lz;
     return out;
 }
 

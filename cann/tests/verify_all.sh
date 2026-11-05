@@ -44,6 +44,7 @@ echo "operators and blocks:"
 run "aclnn ops against the CPU oracle" "$BIN/cann_parity"
 run "quantized decoders against ggml" "$BIN/quant_parity" "$MODEL"
 run "batched primitives" "$BIN/batched_parity"
+run "device sampler against the host" "$BIN/topk_parity"
 run "gated delta net op" "$BIN/gdn_parity"
 run "batched gated delta net" "$BIN/gdn_batched_parity" 4
 run "one real layer from real weights" "$BIN/layer_parity" "$MODEL"

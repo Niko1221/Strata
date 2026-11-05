@@ -16,23 +16,11 @@ import urllib.request
 import numpy as np
 import torch
 
+from model_spec import DEFAULT_SOURCE, HEADERS, SHARDS
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from gguf_reader import BLOCK_GEOMETRY, GGUFFile  # noqa: E402
-
-SHARDS = {
-    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf": (
-        47039860096, "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15"
-    ),
-    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf": (
-        28800138432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
-    ),
-}
-DEFAULT_SOURCE = (
-    "https://www.modelscope.cn/models/ISTA-DASLab/"
-    "Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/master/IQ3_XXS"
-)
-
 
 class WeightStore:
     """The headers are small; tensor bytes are fetched only when a layer uses them.
@@ -74,6 +62,11 @@ class WeightStore:
             self.headers.append(header)
             if path.stat().st_size not in (header.data_start, size):
                 raise ValueError(f"unexpected size for {filename}: {path.stat().st_size}")
+            header_size, header_digest = HEADERS[filename]
+            with path.open("rb") as source_file:
+                actual = hashlib.sha256(source_file.read(header_size)).hexdigest()
+            if header.data_start != header_size or actual != header_digest:
+                raise ValueError(f"the GGUF header does not match the pinned original: {filename}")
             for tensor in header.tensors:
                 if tensor.name in self.tensors:
                     raise ValueError(f"duplicate tensor: {tensor.name}")
@@ -174,10 +167,12 @@ class WeightStore:
 class DeviceWeights:
     """A bounded HBM cache; a live Python tensor pins its allocation during use."""
 
-    def __init__(self, store, device="npu:0", budget_gib=16):
+    def __init__(self, store, device="npu:0", budget_gib=16, weight_dtype="fp32"):
         self.store = store
         self.device = torch.device(device)
         self.budget = int(budget_gib * 1024**3)
+        self.dtype = {"fp32": torch.float32, "fp16": torch.float16}[weight_dtype]
+        self.itemsize = 4 if weight_dtype == "fp32" else 2
         self.used = 0
         self.cache = OrderedDict()
         self.small = {}
@@ -225,8 +220,8 @@ class DeviceWeights:
             return value
         self.misses += 1
         host = prepared if prepared is not None else self.fetch_cpu(name, expert)
-        self._make_room(key, host.numel() * 2)
-        return self._put(key, host.to(device=self.device, dtype=torch.float16))
+        self._make_room(key, host.numel() * self.itemsize)
+        return self._put(key, host.to(device=self.device, dtype=self.dtype))
 
     def vector(self, name):
         if name not in self.small:
