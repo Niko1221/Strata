@@ -45,7 +45,7 @@ POST /v1/systemone
 The **choice contract is unified** across every mode (M8): `choice` is the INDEX into the
 criteria's label order, `label` carries that option's name, `probabilities` is a LIST in
 label order, and `margin` (top1 − top2 probability) is always present. Criteria dict
-values are option DESCRIPTIONS — strings or `null`; a non-string value is a `400`, and so
+values are option DESCRIPTIONS — strings or `null`; a non-string value is a `422`, and so
 is a duplicate label in a list. **`score` is an expected value**, not an argmax level:
 `score = Σ i·p_i` over the level probabilities (so 2.1 means "between level 2 and 3,
 closer to 2"), and the argmax level is `probabilities.index(max(probabilities))` if you

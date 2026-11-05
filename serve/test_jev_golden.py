@@ -178,7 +178,7 @@ class ControlTokenInjection(unittest.TestCase):
 class UnifiedChoiceContract(unittest.TestCase):
     """M8 (2026-11-05, expert review major 8): ONE choice contract on the endpoint.
     {choice: index, label: str, probabilities: list, margin} in every mode; criteria dict
-    values must be strings/null (400 otherwise); duplicate list labels are 400."""
+    values must be strings/null (422 otherwise); duplicate list labels are 422."""
 
     def setUp(self):
         jev_calib._reset_for_test()      # M11: no fit/dir/key leaks across files
@@ -203,20 +203,20 @@ class UnifiedChoiceContract(unittest.TestCase):
         "q": {"type": "choice", "instructions": "Pick.",
               "criteria": {"alpha": None, "beta": None, "gamma": None}}}}
 
-    def test_nonstring_dict_value_is_400(self):
+    def test_nonstring_dict_value_is_422(self):
         st, body = post(self.base, "/v1/systemone", {
             "state": {"k": 1},
             "questions": {"q": {"type": "choice", "instructions": "Pick.",
                                 "criteria": {"cat": 2, "dog": None}}}})
-        self.assertEqual(st, 400, body)
+        self.assertEqual(st, 422, body)
         self.assertIn("strings", body["error"]["message"])
 
-    def test_duplicate_list_labels_are_400(self):
+    def test_duplicate_list_labels_are_422(self):
         st, body = post(self.base, "/v1/systemone", {
             "state": {"k": 1},
             "questions": {"q": {"type": "choice", "instructions": "Pick.",
                                 "criteria": ["cat", "dog", "cat"]}}})
-        self.assertEqual(st, 400, body)
+        self.assertEqual(st, 422, body)
         self.assertIn("duplicate", body["error"]["message"])
 
     def test_l_and_v_return_the_same_shape(self):

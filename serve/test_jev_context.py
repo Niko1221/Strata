@@ -380,6 +380,24 @@ class ContextConsolidated(unittest.TestCase):
         p0 = ps[0]
         self.assertIn(jev.render_state(STATE) + "\n\n" + CATALOGUE + "\n\nQuestion:", p0)
 
+    def test_consolidated_nonfinite_is_503_not_422(self):
+        """expert r2 finding 1 (2026-11-05): EngineNonFinite is a ValueError subclass; the
+        consolidated-rows path's `except ValueError` used to swallow it into a 422 blaming
+        the client's state.  It must escape to the route's 503-retry mapping (#879)."""
+        from serve.server import EngineNonFinite
+
+        def boom(row, tokens):
+            raise EngineNonFinite("row logits went non-finite (#879)")
+
+        real = self.engine.row_logits_at
+        self.engine.row_logits_at = boom
+        try:
+            st, body = post(self.base, "/v1/systemone",
+                            {"state": STATE, "questions": TWO_FIELDS})
+        finally:
+            self.engine.row_logits_at = real
+        self.assertEqual(st, 503, body)
+
 
 if __name__ == "__main__":
     unittest.main()

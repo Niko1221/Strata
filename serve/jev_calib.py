@@ -255,7 +255,7 @@ def apply(qtype: str, pr: list[float], mode: str = "") -> tuple[list[float], str
         if (c.tuple_str, c.task, want) not in _MISMATCH_LOGGED:
             _MISMATCH_LOGGED.add((c.tuple_str, c.task, want))
             print(f"[jev-calib] not applying fit ({why}); identity until a fit is "
-                  f"recorded for this task (refit: scripts/refit_calib.py)", flush=True)
+                  f"recorded for this task (refit: the calibration tooling lives outside this tree - see the fork)", flush=True)
         return pr, "identity"
     if qtype == "noul":
         p = min(max(pr[1] if len(pr) > 1 else 0.0, 1e-9), 1 - 1e-9)

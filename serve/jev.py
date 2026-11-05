@@ -175,7 +175,7 @@ def _err(field: str, message: str) -> tuple[int, dict]:
     return 422, {"error": {"field": field, "message": message}}
 
 
-def parse_questions(questions) -> tuple[list | None, dict]:
+def parse_questions(questions) -> tuple[list | None, tuple[int, dict] | None]:
     """-> (qdefs, err_body): qdefs is None on error; [{id, type, instructions, labels}] on success."""
     if not isinstance(questions, dict) or not questions:
         return None, _err("questions", "must be a non-empty map")
@@ -217,17 +217,17 @@ def parse_questions(questions) -> tuple[list | None, dict]:
                 # answer keyed by insertion order, silently.  400 instead.
                 bad_val = [k for k, v in criteria.items() if v is not None and not isinstance(v, str)]
                 if bad_val:
-                    return None, (400, {"error": {
-                        "field": f"questions.{qid}.criteria",
-                        "message": "criteria values are option descriptions: strings or null "
-                                   f"(non-string value for {bad_val[0]!r}); send a LIST of labels "
-                                   "for bare options"}})
+                    # expert r2 finding 2: one contract, one status - every parse_questions
+                    # error goes through _err() (422 with a field), never a bespoke 400.
+                    return None, _err(f"questions.{qid}.criteria",
+                                      "criteria values are option descriptions: strings or null "
+                                      f"(non-string value for {bad_val[0]!r}); send a LIST of labels "
+                                      "for bare options")
             elif len(set(labels)) != len(labels):
                 # M8: duplicate list labels would collide in the readout's label->row mapping
-                return None, (400, {"error": {
-                    "field": f"questions.{qid}.criteria",
-                    "message": "duplicate labels: every option must be distinct (answers address "
-                               "them by position)"}})
+                return None, _err(f"questions.{qid}.criteria",
+                                  "duplicate labels: every option must be distinct (answers address "
+                                  "them by position)")
             render_labels = choice_labels(len(labels))
         elif qtype == "score":
             if not isinstance(criteria, list) or len(criteria) < 2 or len(criteria) > 10:
@@ -575,24 +575,33 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
 
     # M9 (2026-11-05): the generation goes through the EXISTING chat run path - prepare() +
     # svc.run() - so it inherits ensure_loaded (the route's svc.load()), the queue deadline,
-    # cancel-on-disconnect wiring of the run, the #879 non-finite retry, stop-token handling,
+    # the run's cancel event (NOTE: the route does not yet wire client hang-up to it -
+    # pre-existing route property), the #879 non-finite retry, stop-token handling,
     # the close-under-fifo of the generator, and request accounting.  The ad-hoc decode loop
     # this replaces had none of those and dropped image parts.
     cancel = threading.Event()
+    sent_max_tokens = isinstance(gen.get("max_tokens"), int)
     ids, thinking, max_new = svc.prepare(messages, tools=None,
                                          kwargs={"enable_thinking": False}, max_new=max_tokens,
                                          cancel=cancel)
     max_context = int(getattr(svc.engine, "max_context", 0) or 0)
     # the request's OWN max_tokens is checked (prepare may have clamped max_new to the room
     # under fit_max_tokens, the server's default; then.generate is a decision surface, so an
-    # overflow is a 400 with the computed budget, never a silent clamp or a context overrun)
+    # explicit overflow is a 400 with the computed budget, never a silent clamp or a context
+    # overrun).  When the caller sent NO max_tokens (the 512 default), clamping is the chat
+    # path's own behaviour - 400 there would reject every long prompt by default
+    # (expert r2 nit).
     if max_context and len(ids) + max_tokens > max_context:
         allowed = max(0, max_context - len(ids))
-        return 400, {"error": {"type": "invalid_request_error", "param": "then.generate.max_tokens",
-                               "message": f"then.generate: the prompt is {len(ids)} tokens and "
-                                          f"max_tokens {max_tokens} overflows the {max_context}-token "
-                                          f"context; this prompt leaves at most {allowed} token(s) "
-                                          f"for the reply"}}
+        if sent_max_tokens:
+            svc.drop_embeddings()      # prepare() staged it; this return never runs
+            return 400, {"error": {"type": "invalid_request_error", "param": "then.generate.max_tokens",
+                                   "message": f"then.generate: the prompt is {len(ids)} tokens and "
+                                              f"max_tokens {max_tokens} overflows the {max_context}-token "
+                                              f"context; this prompt leaves at most {allowed} token(s) "
+                                              f"for the reply"}}
+        max_tokens = allowed
+        max_new = min(max_new, allowed)
     text_parts, done = [], None
     for kind, x in svc.run(ids, thinking, None, max_new, sampling, cancel):
         if kind == "event" and getattr(x, "kind", None) == "content" and getattr(x, "text", ""):
@@ -871,6 +880,12 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                     try:
                         scores = readout_scores(engine.row_logits_at(row_at, tokens), variants)
                     except ValueError as e:
+                        # expert r2 finding 1: EngineNonFinite is a ValueError subclass; on this
+                        # consolidated-rows path it must escape to the route's 503-retry mapping
+                        # (#879), not become a 422 blaming the client's state.
+                        from serve.server import EngineNonFinite   # lazy: server imports jev at module level
+                        if isinstance(e, EngineNonFinite):
+                            raise
                         return _err("state", f"logits readout failed: {e}")
                     answers[qdef["id"]] = _finish_answer(qdef, scores, image_state)
                 return 200, {"answers": answers,

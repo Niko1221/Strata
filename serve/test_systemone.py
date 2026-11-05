@@ -439,7 +439,7 @@ class RowReadout(unittest.TestCase):
 
     The mock's logits are row-independent, so these tests prove the CONTRACT - one generate, the cue
     positions named in it, one row read per field, the same answers - not what the rows contain.  The
-    latency and the accuracy shift are live measurements (rowreadout_probe.py).
+    latency and the accuracy shift are live measurements (the fork's live probe).
     """
 
     @classmethod
