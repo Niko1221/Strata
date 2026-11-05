@@ -190,7 +190,14 @@ bool cpu_vnni_ok() {                                     // VNNI's dpbusd at all
         isa_probe(ebx, ecx);
         // AVX-512F + DQ + BW + VL + VNNI (ECX bit 11), VBMI not required: the Cascade Lake Xeon tier (DQ is there on every VNNI CPU; asked for
         // because iq_avx512.cpp is compiled with it).
-        return bool(((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 11) & 1u));
+        const bool vnni = bool(((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 11) & 1u));
+        if (!vnni) return false;
+        // The tier below VBMI is OPT-IN (STRATA_VNNI_TIER=1): on such a CPU the 512-bit i-quant and Q2_0 rows round differently from the
+        // AVX-2 rows it runs today (measured under SDE Cascade Lake: every multi-token gate/up line and the Q2_0 rows differ), so turning it on
+        // changes that CPU's output.  Every CPU that has VBMI as well answers as before.
+        if (cpu_avx512_ok()) return true;
+        const char* e = std::getenv("STRATA_VNNI_TIER");
+        return e != nullptr && e[0] == '1';
     }();
     return ok;
 }
