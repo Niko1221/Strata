@@ -16,7 +16,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iostream>
 #include <random>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <memory>
@@ -686,9 +688,10 @@ int main(int argc, char ** argv) {
         return 2;
     }
     const int64_t T = (int64_t) toks.size();
-    const int64_t n_predict = argc > 3 ? std::atoll(argv[3]) : 0;
+    const bool serve = argc > 3 && std::string(argv[3]) == "serve";
+    const int64_t n_predict = argc > 3 && !serve ? std::atoll(argv[3]) : 0;
     const float gen_temp = argc > 4 ? (float) std::atof(argv[4]) : 0.0f;
-    const int64_t kCap = T + std::max<int64_t>(0, n_predict);
+    const int64_t kCap = serve ? 512 : T + std::max<int64_t>(0, n_predict);
 
     try {
         const Gguf g(path);
@@ -866,31 +869,62 @@ int main(int argc, char ** argv) {
             return best;
         };
 
-        // ---- prefill ----
-        const auto t_prefill = std::chrono::steady_clock::now();
-        std::vector<float> hidden;
-        for (int64_t t = 0; t < T; ++t) {
-            hidden = step_once(toks[(size_t) t], t, kCap);
-            printf("token %lld/%lld done  %.1f s\n", (long long) (t + 1), (long long) T,
-                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t_prefill).count());
-        }
-        std::vector<std::pair<float, int>> best = top_of(hidden, n_predict > 0 ? 32 : 5);
-        printf("\nnext token from position %lld:\n", (long long) (T - 1));
-        for (size_t i = 0; i < std::min<size_t>(5, best.size()); ++i) {
-            printf("  token %d  logit %.4f\n", best[i].second, (double) best[i].first);
-        }
+        // ---- one request: reset the caches, prefill, generate ----
+        // Clear what carries between requests: the conv history, the recurrent state and the KV
+        // cache. layer_taps holds the conv kernel weights, so it must not be touched here.
+        auto reset_states = [&] {
+            for (int64_t il = 0; il < 40; ++il) {
+                if (gdn_states[(size_t) il]) {
+                    auto & st = *gdn_states[(size_t) il];
+                    std::vector<float> z((size_t) kVHeads * kHeadDimSsm * kHeadDimSsm, 0.0f);
+                    st.ssm->copy_from_host(z.data(), z.size() * 4);
+                    std::vector<uint16_t> zh((size_t) kQkvDim, 0);
+                    for (auto & b : st.conv) {
+                        b->copy_from_host(zh.data(), zh.size() * 2);
+                    }
+                }
+                if (attn_states[(size_t) il]) {
+                    auto & st = *attn_states[(size_t) il];
+                    std::vector<uint16_t> zh((size_t) kKvHeads * kCap * kHeadDimAttn, 0);
+                    st.k->copy_from_host(zh.data(), zh.size() * 2);
+                    st.v->copy_from_host(zh.data(), zh.size() * 2);
+                }
+            }
+            stream.synchronize();
+        };
 
-        // ---- generation ----
-        if (n_predict > 0) {
+        auto handle = [&](const std::vector<int64_t> & prompt, int64_t n_gen, float temp, bool verbose) {
+            reset_states();
+            const auto t_start = std::chrono::steady_clock::now();
+            std::vector<float> hidden;
+            for (size_t t = 0; t < prompt.size(); ++t) {
+                hidden = step_once(prompt[t], (int64_t) t, kCap);
+                if (verbose) {
+                    printf("token %lld/%lld done  %.1f s\n", (long long) (t + 1), (long long) prompt.size(),
+                           std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count());
+                }
+            }
+            auto best = top_of(hidden, n_gen > 0 ? 32 : 5);
+            if (verbose) {
+                printf("\nnext token from position %lld:\n", (long long) (prompt.size() - 1));
+                for (size_t i = 0; i < std::min<size_t>(5, best.size()); ++i) {
+                    printf("  token %d  logit %.4f\n", best[i].second, (double) best[i].first);
+                }
+            }
+
             std::mt19937 rng(1234u);
-            int64_t pos = T;
-            for (int64_t step = 0; step < n_predict; ++step) {
+            int64_t pos = (int64_t) prompt.size();
+            for (int64_t step = 0; step < n_gen; ++step) {
+                if (pos >= kCap) {
+                    printf("GEN_STOP context full\n");
+                    break;
+                }
                 int pick = best[0].second;
-                if (gen_temp > 0.0f && best.size() > 1) {
+                if (temp > 0.0f && best.size() > 1) {
                     std::vector<double> p(best.size());
                     double sum = 0.0;
                     for (size_t i = 0; i < best.size(); ++i) {
-                        p[i] = std::exp((double) (best[i].first - best[0].first) / gen_temp);
+                        p[i] = std::exp((double) (best[i].first - best[0].first) / temp);
                         sum += p[i];
                     }
                     std::uniform_real_distribution<double> draw(0.0, sum);
@@ -904,15 +938,72 @@ int main(int argc, char ** argv) {
                     }
                 }
                 printf("GEN %d %.6f\n", pick, (double) best[0].first);
-                if (pos >= kCap - 1) {
-                    printf("GEN_STOP context full\n");
+                fflush(stdout);
+                if (step + 1 >= n_gen) {
                     break;
                 }
                 hidden = step_once(pick, pos, kCap);
                 ++pos;
-                best = top_of(hidden, n_predict - step > 1 ? 32 : 5);
+                best = top_of(hidden, 32);
             }
+            if (verbose) {
+                printf("generated %lld tokens in %.1f s\n", (long long) n_gen,
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count());
+            }
+        };
+
+        auto parse_ids = [](const std::string & list) {
+            std::vector<int64_t> out;
+            size_t s = 0;
+            while (s <= list.size()) {
+                const size_t comma = list.find(',', s);
+                const std::string item = list.substr(s, comma == std::string::npos ? std::string::npos : comma - s);
+                if (!item.empty()) {
+                    out.push_back(std::atoll(item.c_str()));
+                }
+                if (comma == std::string::npos) {
+                    break;
+                }
+                s = comma + 1;
+            }
+            return out;
+        };
+
+        // ---- serve mode: one model load, many requests ----
+        if (serve) {
+            printf("READY\n");
+            fflush(stdout);
+            std::string line;
+            while (std::getline(std::cin, line)) {
+                if (line.rfind("QUIT", 0) == 0) {
+                    break;
+                }
+                if (line.rfind("RUN ", 0) != 0) {
+                    printf("ERR bad request\n");
+                    fflush(stdout);
+                    continue;
+                }
+                std::istringstream is(line.substr(4));
+                int64_t n = 0;
+                double temp = 0.0;
+                std::string ids;
+                is >> n >> temp >> ids;
+                const std::vector<int64_t> prompt = parse_ids(ids);
+                if (prompt.empty()) {
+                    printf("ERR no prompt\n");
+                    fflush(stdout);
+                    continue;
+                }
+                handle(prompt, n, (float) temp, false);
+                printf("END\n");
+                fflush(stdout);
+            }
+            WeightCache::print_slab_stats();
+            shutdown();
+            return 0;
         }
+
+        handle(toks, n_predict, gen_temp, true);
         WeightCache::print_slab_stats();
         shutdown();
         return 0;
