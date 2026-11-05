@@ -1,4 +1,4 @@
-// cann/tests/attn_layer_parity.cpp - the full-attention layer of blk.3 for its first token.
+﻿// cann/tests/attn_layer_parity.cpp - the full-attention layer of blk.3 for its first token.
 //
 // blk.3 is a full-attention layer (every 4th layer is), so this is the other layer type:
 //
@@ -173,7 +173,7 @@ int main(int argc, char ** argv) {
             rms(qh, qn, kRmsEps, qn_out);
             rope_ref(qn_out, kRot, kFreqBase, kPos);
 
-            const int64_t kvh = h % kKvHeads;
+            const int64_t kvh = h / (kHeads / kKvHeads); // blocked, not interleaved: 8 q heads per kv head
             std::vector<float> kh((size_t) kHeadDim), vh((size_t) kHeadDim);
             for (int64_t i = 0; i < kHeadDim; ++i) {
                 kh[(size_t) i] = kk[(size_t) (kvh * kHeadDim + i)];
@@ -246,7 +246,7 @@ int main(int argc, char ** argv) {
             sigmoid(stream, graw, tgate);
 
             // attention output for one token is v of the KV head, gated
-            const int64_t kvh = h % kKvHeads;
+            const int64_t kvh = h / (kHeads / kKvHeads); // blocked, not interleaved: 8 q heads per kv head
             Tensor vh{ (char *) b_v.data() + (size_t) kvh * kHeadDim * 2, DType::F16, kHeadDim, 1 };
             Tensor tout{ (char *) b_attn.data() + (size_t) h * kHeadDim * 2, DType::F16, kHeadDim, 1 };
             mul(stream, vh, tgate, tout);

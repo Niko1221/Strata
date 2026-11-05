@@ -420,7 +420,7 @@ std::vector<float> attn_layer(Stream & stream, const Gguf & g, int il, const std
         Tensor tgate{ t2.data(), DType::F16, kHeadDimAttn, 1 };
         sigmoid(stream, graw, tgate);
 
-        const int64_t kvh = h % kKvHeads;
+        const int64_t kvh = h / (kHeads / kKvHeads); // blocked, not interleaved: 8 q heads per kv head
         Tensor vh{ (char *) b_v.data() + (size_t) kvh * kHeadDimAttn * 2, DType::F16, kHeadDimAttn, 1 };
         Tensor tout{ (char *) b_attn.data() + (size_t) h * kHeadDimAttn * 2, DType::F16, kHeadDimAttn, 1 };
         mul(stream, vh, tgate, tout);
@@ -442,6 +442,11 @@ std::vector<float> attn_layer(Stream & stream, const Gguf & g, int il, const std
         }
         printf("  npu l3 o_proj on host[0..2]: %.4f %.4f %.4f\n", expect[0], expect[1], expect[2]);
         printf("  npu l3 gated at heads 1,2,10,14: %.4f %.4f %.4f %.4f\n", at_h[256], at_h[512], at_h[2560], at_h[3584]);
+        // full vectors for an element-by-element comparison with llama.cpp's dump
+        if (FILE * fg = fopen("/tmp/our_gated.txt", "w")) {
+            for (int64_t i = 0; i < n; ++i) fprintf(fg, "%.6f\n", at_h[(size_t) i]);
+            fclose(fg);
+        }
     }
     Buffer b_y((size_t) kHidden * 2);
     Tensor t_attn{ b_attn.data(), DType::F16, 1, kHeads * kHeadDimAttn };
@@ -472,7 +477,7 @@ std::vector<float> attn_layer_cpu(const Gguf & g, int il, const std::vector<floa
         rms_cpu(qh, qn, kRmsEps, qnorm);
         rope_cpu(qnorm, kRot, kFreqBase, 0);
 
-        const int64_t kvh = h % kKvHeads;
+        const int64_t kvh = h / (kHeads / kKvHeads); // blocked, not interleaved: 8 q heads per kv head
         for (int64_t i = 0; i < kHeadDimAttn; ++i) {
             const float sg = 1.0f / (1.0f + std::exp(-gate[(size_t) i]));
             attn[(size_t) (h * kHeadDimAttn + i)] = vv[(size_t) (kvh * kHeadDimAttn + i)] * sg;

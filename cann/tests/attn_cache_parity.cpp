@@ -182,7 +182,7 @@ int main(int argc, char ** argv) {
                 rms(qh, qn, kRmsEps, qnorm);
                 rope_ref(qnorm, t);
 
-                const int64_t kvh = h % kKvHeads;
+                const int64_t kvh = h / (kHeads / kKvHeads); // blocked, not interleaved: 8 q heads per kv head
                 const int64_t n = t + 1;
                 std::vector<float> scores((size_t) n);
                 float mx = -INFINITY;
@@ -293,7 +293,7 @@ int main(int argc, char ** argv) {
                 Tensor tsin{ (char *) b_sin.data() + (size_t) t * (kRot / 2) * 2, DType::F16, kRot / 2, 1 };
                 rope(stream, tn, tcos, tsin, kRot, tqr);
 
-                const int64_t kvh = h % kKvHeads;
+                const int64_t kvh = h / (kHeads / kKvHeads); // blocked, not interleaved: 8 q heads per kv head
                 const int64_t n = t + 1;
                 // scores = K_cache[0..n) * q   -> [n, 1]
                 Buffer b_scores((size_t) n * 2), b_w((size_t) n * 2), b_mix((size_t) kHeadDim * 2);

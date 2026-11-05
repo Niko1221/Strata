@@ -13,7 +13,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | P3b | rope, the full-attention layer of blk.3, and its KV cache across tokens | done |
 | P4 | MoE: top-8 routing, expert matmuls, shared expert | done for one layer's FFN |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
-| P4b | the whole model: 40 layers from a token id to logits | running; layer 0 matches llama.cpp, later layers drift |
+| P4b | the whole model: 40 layers from a token id to logits | done; matches llama.cpp's top-5 |
 
 ## Files
 
@@ -80,7 +80,8 @@ receives.
 | blk.3 attention, one token | relative L2 0.02 |
 | blk.3 attention with KV cache (T=4/8) | relative L2 0.02 per token |
 | whole model, 2 layers | hidden state relative L2 0.02 |
-| whole model, 40 layers | hidden state relative L2 0.02 (measured 0.0167) |
+| whole model, 40 layers | hidden state relative L2 0.02 (measured 0.0011) |
+| whole model, 40 layers | top-5 next tokens match llama.cpp; logprobs within 0.2 |
 
 ## Two API facts worth writing down
 
@@ -171,9 +172,35 @@ Layer by layer against llama.cpp's `l_out-<n>`:
 | 3 (attn) | 0.0370, 0.0148, -0.0211 | 0.05063, 0.01886, -0.03329 |
 | 4 (gdn) | 0.0127, 0.0168, -0.0321 | 0.02386, 0.01603, -0.03848 |
 
-The three GDN layers match; the first attention layer does not. Inside it, `v` and the gated
-attention vector match llama.cpp at both the first and the last head, yet the output projection
-returns 0.0229 where llama.cpp returns 0.0078 from what should be the same matrix and vector.
+The three GDN layers match; the first attention layer did not. Splitting the gated attention
+vector head by head against llama.cpp's full dump (the debug printer was patched locally to print
+whole tensors) showed the pattern: heads 0-7 matched on even heads only, heads 8-15 on odd ones.
+That is a blocked mapping, not an interleaved one:
+
+```
+q head h -> kv head h % 2     (what I had)      heads 0,2,4,6 ... share kv 0
+q head h -> kv head h / 8     (llama.cpp)       heads 0-7 share kv 0, 8-15 share kv 1
+```
+
+After that fix, the layer-by-layer trace and the whole model agree:
+
+| layer | llama.cpp | here |
+|---|---|---|
+| 0 (gdn) | 0.0230, -0.0104, -0.0286 | 0.02273, -0.01032, -0.02859 |
+| 3 (attn) | 0.0370, 0.0148, -0.0211 | 0.03610, 0.01498, -0.01968 |
+| 5 (gdn) | 0.0064, 0.0216, -0.0313 | 0.00608, 0.02287, -0.03059 |
+
+and the same token's next-token distribution matches llama.cpp's top five exactly, with logprobs
+within 0.2 nats:
+
+```
+llama.cpp  8(-2.607)  283(-2.615)  13(-3.162)  19845(-3.256)  4927(-3.842)
+cann/     283(-2.507)  8(-2.515)  19845(-3.116)  13(-3.226)  4927(-3.648)
+```
+
+The top two trade places because they are 0.008 apart in both. The 40-layer forward also now
+matches the CPU reference to 1.1e-3, down from 9.2e-3 before this fix: most of what looked like
+fp16 drift was this one wrong index.
 
 ## What is not here yet
 
@@ -187,9 +214,9 @@ returns 0.0229 where llama.cpp returns 0.0078 from what should be the same matri
 - RoPE and the KV cache are done for the full-attention layers. What is left before a whole model
   runs: the 41-layer loop, the token embedding, the final norm and the lm head.
 - Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
-- The shared expert of layer 0 is ~20% off llama.cpp (`ffn_moe_out` 0.0295 against 0.0239) even
-  though its input matches to four decimals, so the divergence is inside that small SwiGLU.
-- Whole-model logits still do not match llama.cpp's for the same token; layer 0 does.
+- Multi-token prefill and decode in `model_forward`: it runs one token today, so the KV cache and
+  the GDN state are only exercised by the per-block tests.
+- Serving: this stack is not wired to `serve/`; the running server is llama.cpp with `ggml-cann`.
 
 ## Verified on the machine
 
