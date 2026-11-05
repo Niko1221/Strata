@@ -442,6 +442,16 @@ private:
     // originals wait one memory latency per loop iteration).  Bitwise the same outputs.  STRATA_METAL_LDB=0: the original kernels.
     bool ldb_ = !(std::getenv("STRATA_METAL_LDB") && std::string(std::getenv("STRATA_METAL_LDB")) == "0");
     const char* k_norm() const { return ldb_ ? "gr_norm2" : "gr_norm"; }
+    // STRATA_METAL_WPF_MIB=N (opt-in screen): while a hyper-connection read's last kernel runs, a prefetch dispatch (no barrier before it) reads the first N MiB of each
+    // weight the next kernels use (wpf_next_), so those kernels find them in the GPU's caches.  Bitwise: it changes no value.
+    std::vector<std::pair<uint64_t, uint64_t>> wpf_next_;   // (W_ offset, bytes)
+    mtl::Buffer wpf_flag_;
+    size_t wpf_bytes_ = [] { const char* e = std::getenv("STRATA_METAL_WPF_MIB"); return e ? (size_t) std::atoi(e) * 1048576 : (size_t) 0; }();
+    void wpf_add(const std::string& name) {
+        if (!wpf_bytes_) return;
+        const gguf::Tensor* t = f_.find(name);
+        if (t) wpf_next_.push_back({t->offset, std::min<uint64_t>(wpf_bytes_, t->bytes)});
+    }
     const char* k_comb() const { return ldb_ ? "moe_combine_sh2" : "moe_combine_sh"; }
     bool fuse_ = !(std::getenv("STRATA_METAL_FUSE") && std::string(std::getenv("STRATA_METAL_FUSE")) == "0");
     bool qdirty_ = false;
@@ -965,7 +975,8 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     const bool q8 = is_q8(tdn) && is_q8(tup);
     const bool injf = q8 && !final_ && !q8off_.count(tin.name) && tin.type == ref::F32;
     mtl::Dispatch d2;
-    const char* dn = injf ? "gr_down_q8f_8_8" : q8 ? "gr_down_q8_8_8" : "gr_down_8_8";
+    static const bool hcld = std::getenv("STRATA_METAL_HCLD") && std::string(std::getenv("STRATA_METAL_HCLD")) == "1";   // OFF (measured -10.9%, 4 of 4 rounds, M5 Max UD-Q4_K_XL): the HC kernels' units loaded two or three at a time, bitwise the same; registers and occupancy, as the earlier gemvu / moeu unrolls
+    const char* dn = injf ? (hcld ? "gr_downp_q8f_8_8" : "gr_down_q8f_8_8") : q8 ? (hcld ? "gr_downp_q8_8_8" : "gr_down_q8_8_8") : "gr_down_8_8";
     d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
     d2.args = {mtl::Arg::B(*bd, od), mtl::Arg::B(*bi, oi), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
                mtl::Arg::B(inj_[1 - cur_inj_]), mtl::Arg::V(a)};
@@ -973,7 +984,7 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     d2.tg[0] = 256;
     push(ds, d2);
     mtl::Dispatch d3;
-    const char* up = q8 ? "gr_up_q8" : "gr_up";
+    const char* up = q8 ? (hcld ? "gr_upp_q8" : "gr_up_q8") : "gr_up";
     d3.p = P(lib_, up, x16c(mtl::Constants().i(1, ntok)), x16k(std::string(up) + "#" + std::to_string(ntok)));
     GrArgs au = a;
     au.n_tok = MAXT;   // the plane stride of the prepared activation
@@ -981,6 +992,18 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     d3.grid[0] = N / 16;
     d3.tg[0] = 256;
     push(ds, d3);
+    for (const auto& [off, bytes] : wpf_next_) {
+        if (!wpf_flag_.handle) wpf_flag_ = cx_->alloc(4096);
+        mtl::Dispatch p;
+        p.p = P(lib_, "wpf", {}, "wpf");
+        const uint32_t n16 = (uint32_t) (bytes / 16);
+        p.args = {mtl::Arg::B(W_, off), mtl::Arg::B(wpf_flag_), mtl::Arg::V(n16)};
+        p.tg[0] = 256;
+        p.grid[0] = std::max<uint32_t>(1, std::min<uint32_t>(n16 / (256 * 4), 4096));
+        nb_ = true;   // beside gr_up
+        push(ds, p);
+    }
+    wpf_next_.clear();
     cur_inj_ = 1 - cur_inj_;
 }
 
@@ -1016,6 +1039,7 @@ void Window::had_rows_ind(std::vector<mtl::Dispatch>& ds, int lib, const std::st
 void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0) {
     const std::string b = "blk." + std::to_string(l) + ".";
     // ---- the mixer: layer 1's read after the PLE is not applied again (its pending write was applied before it)
+    if (l % 4 != 3) { wpf_add(b + "attn_qkv.weight"); wpf_add(b + "attn_gate.weight"); } else wpf_add(b + "attn_q.weight");
     gr_read(ds, b + "hc_attn", l > 0 && !(l == 1 && ple_on_), XA_, false, ntok);
     if (l % 4 != 3) {
         const int gi = l - l / 4;
@@ -1148,6 +1172,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "attn_output.weight"), XQ_, bo_, N, ntok);
     }
     // ---- the MoE
+    wpf_add(b + "ffn_gate_inp.weight"); wpf_add(b + "ffn_gate_shexp.weight"); wpf_add(b + "ffn_up_shexp.weight");
     gr_read(ds, b + "hc_ffn", true, XF_, false, ntok);
     const gguf::Tensor& trt = T(b + "ffn_gate_inp.weight");
     const bool rf = routef_ && (trt.type == ref::BF16 || trt.type == ref::F32);
@@ -1197,12 +1222,22 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         // the trellis gate/up: 16 lanes a row, 2 rows a lane (expert_parity --bench --sweep, M4, TQK6, 10 experts: 166.6 us a layer
         // against 174.5 for 32,2,4 and 196.8 for 32,1,4; also the fastest at 2 and 3 tokens)
         const bool tq_ = tg_.type >= 144;
-        const int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
+        int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
-        const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1 || td.type == ref::Q5_0)) ? 1 : 2;
+        int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
+            dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1 || td.type == ref::Q5_0)) ? 1 : 2;
+        {   // STRATA_METAL_MOE_GU=L,R,S / STRATA_METAL_MOE_DN=L,R,S (tile screens: lanes per row, rows per lane, simdgroups; an instantiated moe_gu_ / moe_down_ combination)
+            static const auto parse = [](const char* name, int* o) {
+                const char* e = std::getenv(name);
+                return e && std::sscanf(e, "%d,%d,%d", &o[0], &o[1], &o[2]) == 3;
+            };
+            static int gu_o[3], dn_o[3];
+            static const bool gu_e = parse("STRATA_METAL_MOE_GU", gu_o), dn_e = parse("STRATA_METAL_MOE_DN", dn_o);
+            if (gu_e && !tq_) { gl = gu_o[0]; gr = gu_o[1]; gs = gu_o[2]; }
+            if (dn_e && !dq2) { dl = dn_o[0]; dr = dn_o[1]; ds_ = dn_o[2]; }
+        }
         const bool m16 = f16_enc_ && !stream_ && tg_.type == ref::Q2_0 && dq2 && !had_gu(l) && !had_dn(l);
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
@@ -1415,7 +1450,8 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             if (kt == Tn && head && ++seen == 20 && !stream_) kprof(c.ds, Tn);
             static const int st = std::getenv("STRATA_METAL_STEPPROF") ? std::atoi(std::getenv("STRATA_METAL_STEPPROF")) : 0;
             static int seen2 = 0;
-            if (st == Tn && head && ++seen2 == 20 && !stream_) stepprof(c.ds, Tn);
+            static const int st_at = std::getenv("STRATA_METAL_STEPPROF_AT") ? std::atoi(std::getenv("STRATA_METAL_STEPPROF_AT")) : 20;
+            if (st == Tn && head && ++seen2 == st_at && !stream_) stepprof(c.ds, Tn);
         }
         tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();
@@ -1827,9 +1863,14 @@ void Window::stepprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
     for (int i = 0; i < 40; ++i) cx_->run_graph(ds);   // clocks up
     const double full = [&] { std::vector<double> t; for (int i = 0; i < 15; ++i) t.push_back(1000.0 * cx_->run_graph(ds)); std::sort(t.begin(), t.end()); return t[7]; }();
     std::vector<std::vector<double>> tp(m + 1);
+    // the GPU heats up during the hundreds of runs: every pass is scaled by (the cool whole-window time / the whole window run at the start of that pass)
     for (int r = 0; r < reps; ++r) {
-        tp[0].push_back(1000.0 * cx_->run_graph(ds, 0));
-        for (size_t j = 1; j <= m; ++j) tp[j].push_back(1000.0 * cx_->run_graph(ds, gs[j]));
+        double fr = 0;
+        { std::vector<double> q; for (int i = 0; i < 5; ++i) q.push_back(1000.0 * cx_->run_graph(ds)); std::sort(q.begin(), q.end()); fr = q[2]; }
+        const double sc = full / fr;
+        tp[0].push_back(sc * 1000.0 * cx_->run_graph(ds, 0));
+        for (size_t j = 1; j <= m; ++j) tp[j].push_back(sc * 1000.0 * cx_->run_graph(ds, gs[j]));
+        std::fprintf(stderr, "strata metal stepprof: pass %d: whole window %.3f ms (cool %.3f, scale %.3f)\n", r, fr, full, sc);
     }
     std::vector<double> t(m + 1);
     for (size_t j = 0; j <= m; ++j) { std::sort(tp[j].begin(), tp[j].end()); t[j] = tp[j][tp[j].size() / 2]; }
