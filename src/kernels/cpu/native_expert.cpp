@@ -153,7 +153,7 @@ bool q50_512_ok() {
     static const bool ok = [] {
         const ggml_type_traits_cpu* tr = traits(GGML_TYPE_Q5_0);
         const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_0);
-        if (!cpu_avx512_ok() || tr == nullptr || tr->vec_dot == nullptr || t8 == nullptr || t8->from_float == nullptr) return false;
+        if (!cpu_vnni_ok() || tr == nullptr || tr->vec_dot == nullptr || t8 == nullptr || t8->from_float == nullptr) return false;
         uint32_t seed = 31337u;
         auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
         for (const int n : {96, 640}) {
@@ -415,7 +415,8 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // first, then the AVX-2 one (Zen 2/3, Intel 12th-14th gen).  STRATA_NO_IQ512 drops an AVX-512 CPU to the
     // AVX-2 kernel, STRATA_NO_IQ256 drops the AVX-2 kernel; ggml-cpu's single-token vec_dot is reached only with
     // both set (and on a CPU without AVX-512, STRATA_NO_IQ512 changes nothing).
-    static const bool avx512 = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
+    // 0.2.12 (PR 5120): AVX-512 F/DQ/BW/VL + VNNI is what iq_avx512.cpp runs on (its object holds no VBMI instruction); VBMI is not required.
+    static const bool avx512 = cpu_vnni_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
     // STRATA_NO_IQ256 drops the AVX-2 kernel.  cpu_avx2_ok() is ALSO required: iq_avx2.cpp and kq_avx2.cpp
     // are compiled /arch:AVX2 and use AVX2 and FMA3, so calling them on a CPU without either is an
     // illegal instruction, not a slow path.  The gate sat next to `avx512` above, which does test
@@ -497,7 +498,7 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
     // A format with only an AVX-2 kernel (IQ4_XS, #415) takes it on AVX-2 CPUs only: an AVX-512 CPU keeps ggml-cpu for
     // it, as before (its rows would round differently).  Each kernel only for the formats it implements: falling
     // through an empty switch would leave ff unwritten instead of falling back to ggml-cpu.
-    static const bool cpu512 = cpu_avx512_ok();
+    static const bool cpu512 = cpu_vnni_ok();
     if (nt >= mt_min && (iq512_supported(f.gu_type) || (!cpu512 && iq256_supported(f.gu_type)))) {
         if (singleton_iq) {
 #if defined(__x86_64__) || defined(_M_X64)
@@ -584,7 +585,7 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
     }
     // 0.2.12: Q5_0 down rows (ggml-cpu's dot, once a token) in 512-bit lanes, the same bits (q50_512_ok checks that on first use): the weights
     // of a block pair are decoded once for all the tokens.  STRATA_NO_Q50_512=1 keeps ggml's dot; STRATA_Q50_512_MIN=N: from N tokens on (default 2).
-    static const bool q50_512 = cpu_avx512_ok() && std::getenv("STRATA_NO_Q50_512") == nullptr;
+    static const bool q50_512 = cpu_vnni_ok() && std::getenv("STRATA_NO_Q50_512") == nullptr;
     static const int q50_min = [] { const char* e = std::getenv("STRATA_Q50_512_MIN"); return e ? std::atoi(e) : 2; }();
     if (q50_512 && f.d_type == 6 && nt >= q50_min && f.tail_off == 0 && q50_512_ok()) {
         q50_512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
