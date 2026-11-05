@@ -33,3 +33,50 @@ class Names(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdoptUnsloth(unittest.TestCase):
+    """ENG-AMD (round 0214): `strata launch` refused every Unsloth set on an Intel Arc card because adopt.FAMILIES lacked "unsloth"."""
+
+    def _plan(self, tmp, model, hub, n, backend="sycl", family="unsloth"):
+        from pathlib import Path
+        from strata_cli.launch import adopt
+        d = Path(tmp) / "data"
+        m = d / "models" / f"unsloth-{model}"
+        m.mkdir(parents=True)
+        for i in range(1, n + 1):
+            (m / f"Qwen3.8-Flash-Next-{hub}-{i:05d}-of-{n:05d}.gguf").write_bytes(b"GGUF")
+        pack = d / "packs" / f"unsloth-{model.lower()}"
+        (pack / "tokenizer").mkdir(parents=True)
+        (pack / "experts.bin").write_bytes(b"x")
+        src = Path(__file__).resolve().parents[2]
+        cfg, problems = adopt.plan(family=family, model=model, model_dir=m, data_dir=d, src=src, context=32768, kv=None,
+                                   model_name="qwen3.8-flash-next-unsloth-" + model.lower(), family_def={}, log=Path(tmp) / "x.log",
+                                   backend=backend, pack_name=f"unsloth-{model.lower()}")
+        return cfg, problems
+
+    def test_every_new_set_is_written_for_an_arc_card(self):
+        import tempfile
+        from unittest import mock
+        from strata_cli.launch import adopt
+        self.assertIn("unsloth", adopt.FAMILIES)
+        for model, hub, n in (("UD-IQ1_M", "UD-IQ1_M", 3), ("UD-Q2_0", "UD-Q2_0", 3), ("UD-IQ2_XS", "UD-IQ2_XS", 3), ("UD-Q2_K_XL", "UD-Q2_K_XL", 4),
+                              ("UD-IQ3_XXS", "UD-IQ3_XXS", 4), ("UD-Q3_K_XL", "UD-Q3_K_XL", 4), ("UD-IQ4_XS-v31", "UD-IQ4_XS", 4), ("UD-Q4_K_XL", "UD-Q4_K_XL", 4)):
+            with self.subTest(model=model), tempfile.TemporaryDirectory() as t, mock.patch.object(adopt, "intel_driver", return_value="i915"):
+                cfg, problems = self._plan(t, model, hub, n)
+                self.assertEqual(problems, [])
+                a = cfg["args"]
+                self.assertTrue(a[a.index("--native") + 1].endswith(f"{hub}-00001-of-{n:05d}.gguf"))
+                self.assertNotIn("--ple-gguf", a)            # the engine finds the n-gram table by its tensor name (setup.py writes no --ple-gguf for 3+ shards)
+                self.assertEqual(cfg["backend"], "sycl")
+
+    def test_the_other_families_still_pass_the_table_shard(self):
+        import tempfile
+        from strata_cli.launch import adopt
+        with tempfile.TemporaryDirectory() as t:
+            cfg, problems = self._plan(t, "IQ3_XXS", "GSQ-RCO-IQ3_XXS", 2, family="qwen")
+            self.assertEqual(problems, [])
+            self.assertIn("--ple-gguf", cfg["args"])
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(adopt.plan(family="deepseek41", model="x", model_dir=t, data_dir=t, src=t, context=1, kv=None, model_name="x",
+                                        family_def={}, log=t, backend="sycl")[0], None)
