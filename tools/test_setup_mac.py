@@ -214,6 +214,36 @@ class ExpertsFile(unittest.TestCase):
         run.assert_not_called()
 
 
+class V31Sets(unittest.TestCase):
+    """Round 0214: Unsloth's v3.1 sets on a Mac.  One switch (mac_fit.METAL_Q5_0_DOWN) lists the sets with Q5_0 expert downs; until the Metal kernel exists they carry "missing"."""
+    NEW = ("UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31")
+    Q5_0 = ("UD-IQ2_XS", "UD-Q2_K_XL", "UD-Q3_K_XL", "UD-IQ4_XS-v31")
+
+    def test_entries_and_files(self):
+        for m in self.NEW:
+            d = M.MAC_MODELS[m]
+            self.assertEqual(d["family"], "unsloth")
+            self.assertEqual(d["shards"], setup.MODELS[m]["shards"])
+            self.assertAlmostEqual(d["shard1_gb"], setup.MODELS[m]["download_gb"] - 28.8, delta=0.15)     # the download less the n-gram table
+            self.assertEqual(M.model_shard_names(m), [setup.model_file(setup.FAMILIES["unsloth"], m, i) for i in range(1, d["shards"] + 1)])
+            self.assertTrue(all(M.shard_sha(n) for n in M.model_shard_names(m)), m)
+            self.assertIn(m, M.MAC_ABOUT)
+
+    def test_all_seven_are_listed_now_the_metal_kernel_exists(self):
+        from strata_control import mac_fit
+        self.assertTrue(mac_fit.METAL_Q5_0_DOWN)            # f-0214-metal: the Q5_0 down kernels
+        for m in self.NEW:
+            self.assertFalse(mac_fit.MAC_MODELS[m].get("missing"), m)
+        self.assertNotIn("does not run on this Metal engine yet", "".join(mac_fit.model_note("UD-Q3_K_XL", 128)))
+
+    def test_the_switch_lists_them_all(self):
+        from strata_control import mac_fit
+        ns = {"__name__": "mac_fit_on", "__file__": mac_fit.__file__}
+        src = Path(mac_fit.__file__).read_text(encoding="utf-8").replace("METAL_Q5_0_DOWN = True", "METAL_Q5_0_DOWN = False")
+        exec(compile(src, mac_fit.__file__, "exec"), ns)                 # the switch off: the four Q5_0-down sets are held back again
+        self.assertEqual([m for m in self.NEW if ns["MAC_MODELS"][m].get("missing")], list(self.Q5_0))
+
+
 class HandOver(unittest.TestCase):
     def test_darwin_hands_the_run_to_setup_mac(self):
         with mock.patch.object(setup.sys, "platform", "darwin"), \

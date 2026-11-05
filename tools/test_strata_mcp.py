@@ -604,7 +604,8 @@ class Helpers(unittest.TestCase):
         and UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 follow by size."""
         s = M.Strata(HERE.parent)
         for models in (s.tables()[0], M.FALLBACK_MODELS):
-            self.assertEqual(s.sizes_of(models, "unsloth"), ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
+            self.assertEqual(s.sizes_of(models, "unsloth"), ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0", "UD-IQ1_M", "UD-Q2_0",
+                                                             "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"])
             self.assertFalse(models["UD-IQ4_XS"].get("experimental"))
             self.assertFalse(models["UD-Q4_K_XL"].get("experimental"))
         self.assertEqual(s.sizes_of(M.FALLBACK_MODELS, "qwen"), ["Q2_0", "IQ2_XS", "IQ3_XXS", "IQ3_S"])
@@ -636,7 +637,7 @@ class Helpers(unittest.TestCase):
         self.assertEqual({x["on_this_pc"] for x in by.values()}, {"fits"})
         small = next(f for f in s.model_table({"ram_gb": 16, "gpus": []}) if f["family"] == "qwen36")
         self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"does not fit"})
-        self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[-1], "Q8_0")      # the Unsloth Flash-Next sizes are untouched
+        self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[:5], ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])      # the Unsloth Flash-Next sizes are untouched (round 0214 adds sizes after them)
 
     def test_qwen36_install_plan(self):
         s = M.Strata(HERE.parent)

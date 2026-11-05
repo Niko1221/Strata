@@ -452,6 +452,8 @@ class Catalog:
             return family, match
         if not offered:
             raise ValueError(f"{match} is not offered by any model family here.")
+        if len(offered) > 1 and "deepseek41" in offered:     # UD-IQ1_M is Unsloth's name in two families (round 0214): the bare name stays DeepSeek's, as it was; the Qwen set is --family unsloth
+            return "deepseek41", match
         return ("qwen" if "qwen" in offered else offered[0]), match
 
     def tag_of(self, family: str, model: str) -> str:
