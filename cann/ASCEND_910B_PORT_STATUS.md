@@ -994,6 +994,21 @@ Okay, the user is asking for the capital of France. ... the capital is
 **这是真的在 NPU 上跑**——CPU 不可能有 1332 t/s 的预填。这一步的价值是：等大模型下完，
 不会卡在环境问题上。
 
+### 11.3.1 加载器认这个文件（下载到 32% 时验证的）
+
+在模型下到一半时就让 llama.cpp 去打开那个 `.incomplete` 文件。它没有报"未知架构"，而是：
+
+```
+E llama_model_load: error loading model: tensor 'blk.27.ffn_gate_exps.weight'
+  data is not within the file bounds, model is corrupted or incomplete
+```
+
+这句错误正是想要的答案：**架构、元数据、张量表、分片逻辑它全部接受**，只是读到文件末尾之外了
+（当时只有 24 GB）。
+
+所以剩下的风险不在"认不认这个模型"，而在"算不算得动"。这两件事的风险量级完全不同：
+前者失败只能换 llama.cpp 版本，后者是调参数。
+
 ### 11.4 两卡层切分
 
 用 0.6B 强制切开验证：
