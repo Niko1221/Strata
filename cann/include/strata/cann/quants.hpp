@@ -60,4 +60,8 @@ void dequantize_q5_K(const block_q5_K * blocks, float * out, int64_t k);
 void dequantize_q6_K(const block_q6_K * blocks, float * out, int64_t k);
 void dequantize_q8_0(const block_q8_0 * blocks, float * out, int64_t k);
 
+// The mixed IQ3_XXS release also contains IQ2, IQ3_S, IQ4 and Q2_0 blocks.
+// These use the canonical codebooks vendored by Strata.
+bool dequantize_iq(int ggml_type, const void * blocks, float * out, int64_t k);
+
 } // namespace strata::cann

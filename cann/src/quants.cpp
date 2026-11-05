@@ -34,6 +34,14 @@ inline void get_scale_min_k4(int j, const uint8_t * q, uint8_t * d, uint8_t * m)
 
 int quant_type_size(int ggml_type) {
     switch (ggml_type) {
+        case 16: return 66;   // IQ2_XXS
+        case 17: return 74;   // IQ2_XS
+        case 18: return 98;   // IQ3_XXS
+        case 20: return 18;   // IQ4_NL
+        case 21: return 110;  // IQ3_S
+        case 22: return 82;   // IQ2_S
+        case 23: return 136;  // IQ4_XS
+        case 42: return 18;   // Q2_0
         case 8: // GGML_TYPE_Q8_0
             return (int) sizeof(block_q8_0);
         case 12: // GGML_TYPE_Q4_K
@@ -48,9 +56,10 @@ int quant_type_size(int ggml_type) {
 }
 
 int quant_block_elements(int ggml_type) {
-    if (ggml_type == 8) {
+    if (ggml_type == 8 || ggml_type == 20) {
         return 32; // Q8_0 packs 32 values per block, not QK_K
     }
+    if (ggml_type == 42) return 64;
     return quant_type_size(ggml_type) ? QK_K : 0;
 }
 
@@ -155,6 +164,12 @@ void dequantize_q8_0(const block_q8_0 * blocks, float * out, int64_t k) {
 bool dequantize(int ggml_type, const void * blocks, float * out, int64_t k) {
     if (k <= 0) {
         return false;
+    }
+    if (ggml_type == 16 || ggml_type == 17 || ggml_type == 18 ||
+        ggml_type == 20 || ggml_type == 21 || ggml_type == 22 ||
+        ggml_type == 23 || ggml_type == 42) {
+        const int block = quant_block_elements(ggml_type);
+        return k % block == 0 && dequantize_iq(ggml_type, blocks, out, k);
     }
     if (ggml_type == 8) {
         if (k % 32 != 0) {

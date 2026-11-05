@@ -75,6 +75,14 @@ int main() {
         { GGML_TYPE_Q4_K_ID, 144, "Q4_K", 0, 2 },
         { GGML_TYPE_Q5_K_ID, 176, "Q5_K", 0, 2 },
         { GGML_TYPE_Q6_K_ID, 210, "Q6_K", 208, (size_t) -1 },
+        { 16, 66, "IQ2_XXS", 0, (size_t) -1 },
+        { 17, 74, "IQ2_XS", 0, (size_t) -1 },
+        { 18, 98, "IQ3_XXS", 0, (size_t) -1 },
+        { 20, 18, "IQ4_NL", 0, (size_t) -1 },
+        { 21, 110, "IQ3_S", 0, (size_t) -1 },
+        { 22, 82, "IQ2_S", 0, (size_t) -1 },
+        { 23, 136, "IQ4_XS", 0, (size_t) -1 },
+        { 42, 18, "Q2_0", 0, (size_t) -1 },
     };
 
     const int64_t n_values = QK_K * 8;

@@ -50,7 +50,9 @@ uint64_t tensor_bytes_on_disk(const GgufTensor & t) {
             return bs ? n / QK_K * (uint64_t) bs : 0;
         }
         default:
-            return 0;
+            const int block = quant_block_elements(static_cast<int>(t.type));
+            const int bytes = quant_type_size(static_cast<int>(t.type));
+            return block && n % block == 0 ? n / block * bytes : 0;
     }
 }
 
