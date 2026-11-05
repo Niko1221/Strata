@@ -1,4 +1,4 @@
-﻿# `cann/` - the Ascend port of the engine
+# `cann/` - the Ascend port of the engine
 
 This directory is to the CANN backend what `sycl/` is to the Intel backend: a separate project
 that grows next to the CUDA engine until it can take the engine's sources.
@@ -9,7 +9,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | P2 | Q4_K / Q5_K / Q6_K / Q8_0 decoders, dequantize then matmul on the NPU | done, bit-exact vs ggml |
 | P2b | GGUF reader, real model file, real-weight GEMV on the NPU | done |
 | P2c | one real block from real weights: blk.0 shared expert (SwiGLU) | done |
-| P3 | GDN op done; the whole GDN layer block for one token | done, recurrence state carry open |
+| P3 | GDN op, the GDN layer block, and state carried across tokens | done |
 | P4 | MoE: top-8 routing, expert matmuls, shared expert | done for one layer's FFN |
 | P5 | `serve/` wiring, 18789, benchmarks | not started |
 
@@ -31,6 +31,7 @@ that grows next to the CUDA engine until it can take the engine's sources.
 | `tests/layer_parity.cpp` | one real block on the NPU: blk.0 shared expert, `silu(W_gate x) * (W_up x)` then `W_down` |
 | `tests/moe_parity.cpp` | the whole FFN of blk.0: router, top-8, 8 expert slabs, weighted sum, shared expert |
 | `tests/gdn_block_parity.cpp` | the whole GDN block of blk.0: qkv, short conv, L2 norms, delta net, gated norm, ssm_out |
+| `tests/gdn_state_parity.cpp` | the same block across T tokens, with the conv history and the 128x128 per-head state carried on the device |
 | `tests/run_*.sh` | build and run each test |
 
 ## Build and run
@@ -68,6 +69,7 @@ receives.
 | blk.0 shared expert | gate/up/act 0.2, output 0.5 and relative L2 0.02 |
 | blk.0 FFN (MoE + shared) | router 0.05, output 1.0 and relative L2 0.02 |
 | blk.0 GDN block | relative L2 0.01 through the norms, 0.02 at the output |
+| blk.0 GDN across tokens (T=1/4/8) | relative L2 0.02 per token and on the final state |
 
 ## Two API facts worth writing down
 
@@ -121,9 +123,7 @@ So 3 of 4 layers run a GDN block (`ssm_*`), and the FFN is 256 experts with one 
   separate change.
 - Fused dequant+matmul. The decoder works on the host today; a fast engine wants it fused on the
   device.
-- GDN state carry between tokens: the block is verified for one token with zero state, so the
-  recurrence across a sequence and the conv state buffer are still open (`gdn_parity` covers the
-  op itself for T=8).
+- GDN state carry between tokens: done, verified for T=1, 4 and 8 in `gdn_state_parity`.
 - RoPE and KV cache, which belong to the full-attention layers (3 of 4 layers are recurrent).
 - Top-k on the device. The router logits come from the NPU, but the selection runs on the host.
 - The attention half of a layer, which is where RoPE and the KV cache live.
@@ -192,6 +192,17 @@ k after l2 norm              0.000460     0.000550  PASS
 delta net out                0.002496     0.000000  PASS
 gated rms norm               0.003742     0.000040  PASS
 y = ssm_out                  0.004751     0.000005  PASS
+```
+
+```
+block  : blk.0 GDN across 4 tokens, state carried on the device
+
+token          y rel L2  result
+0              0.001930  PASS
+1              0.002137  PASS
+2              0.000963  PASS
+3              0.001056  PASS
+state          0.001513  PASS
 ```
 
 ```
