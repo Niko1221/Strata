@@ -14,6 +14,10 @@ MODEL="${1:-/data/strata-qwen36/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf}"
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.0.0}"
 export LD_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64:$ASCEND_HOME_PATH/x86_64-linux/lib64:${LD_LIBRARY_PATH:-}"
 
+# Each test process is its own model instance. Keep their expert caches small so the suite can run
+# next to the serving endpoint on 18790 (and llama-server on 18789) without exhausting the 64 GB.
+export STRATA_BUDGET_GB="${STRATA_BUDGET_GB:-8}"
+
 cmake -S "$CANN_DIR" -B "$ROOT/build-cann" >/dev/null || exit 1
 cmake --build "$ROOT/build-cann" -j"$(nproc)" >/dev/null || exit 1
 

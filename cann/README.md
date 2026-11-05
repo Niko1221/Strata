@@ -318,6 +318,53 @@ The suite already earned its keep: the first run caught a real bug in the per-ch
 of `gdn()` (0.70 relative error at S=128). That path is not used by qwen3.5-moe, which gates with a
 scalar, so `gdn()` now refuses it instead of returning wrong numbers quietly.
 
+## Serving
+
+Two endpoints run on the box. They are different engines and the difference matters:
+
+| port | engine | speed | what it is |
+|---|---|---|---|
+| 18789 | llama.cpp + `ggml-cann` | about 4 tokens/s | the one to use |
+| 18790 | **this stack** | about 6 tokens/s warm, 1.5 s/token cold | the port, serving itself |
+
+```bash
+bash cann/tests/start_engine_18790.sh          # STRATA_BUDGET_GB=12 by default
+curl -s localhost:18790/v1/completions -H 'Content-Type: application/json' \
+  -d '{"prompt":"The capital of France is","max_tokens":6,"temperature":0}'
+```
+
+18790 speaks `/v1/completions`, `/v1/chat/completions`, `/v1/models` and `/health`. The text layer
+borrows the tokenizer from the llama.cpp server (`/tokenize`, `/detokenize`, `/apply-template`) —
+the model is ours, the tokenizer is not, and `/health` says so.
+
+Measured on the same prompt as the llama.cpp table above:
+
+```
+same prompt, warm:      1.82 s   ' Paris, a city renowned for'
+                        1.74 s   ' Paris, a city renowned for'
+prompts never seen:     4.72 s   ' the heavens and the earth.'
+                        5.49 s   '\n    if n <= '
+                        5.27 s   ' the lazy dog.\n\nThe'
+```
+
+Those four texts are the llama.cpp completions too; the greedy path agrees token for token.
+
+Serving exposed a real waste: the output projection is 151936 x 2048, and the first version
+re-dequantized it on the host for every generated token. Keeping it resident turned the first
+request from 67 s into 17 s and warm requests into 1.8 s.
+
+**Memory.** The endpoint holds an expert cache, and it shares a 64 GB card with llama-server
+(2.7 GB). `STRATA_BUDGET_GB` caps that cache; the numbers measured here:
+
+| budget | HBM used by the endpoint, after four requests |
+|---|---|
+| 8 GB | 22.5 GB total on the card |
+| 12 GB | 28.7 GB total on the card |
+| 24 GB | 47.2 GB total on the card — enough to starve anything else |
+
+With 12 GB the whole verify suite still passes while the endpoint serves; with 24 GB the suite
+fails with `aclrtMalloc failed`. The suite sets `STRATA_BUDGET_GB=8` for its own runs.
+
 ## What is not here yet
 
 - The engine's own kernels: `src/` still compiles for CUDA only.

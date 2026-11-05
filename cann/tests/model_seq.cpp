@@ -822,6 +822,21 @@ int main(int argc, char ** argv) {
         const std::vector<float> on = need(g, "output_norm.weight");
         Buffer b_fn((size_t) kHidden * 2);
         Tensor t_fn{ b_fn.data(), DType::F16, kHidden, 1 };
+        // The output projection is 151936 x 2048: dequantizing it per token dominated serving (about
+        // five seconds of every step). Keeping it resident on the device makes each step one matmul.
+        const int64_t vocab = (int64_t) out_w->dims[1];
+        const Buffer * wout_dev = nullptr;
+        Buffer b_logits((size_t) vocab * 2);
+        auto ensure_out_weight = [&] {
+            if (!wout_dev) {
+                const auto w0 = std::chrono::steady_clock::now();
+                wout_dev = &cache.full("output.weight");
+                printf("output weight resident: %.1f s\n",
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count());
+                fflush(stdout);
+            }
+        };
+
         auto top_of = [&](const std::vector<float> & hidden, int64_t k) {
             Buffer b_f((size_t) kHidden * 2), b_on((size_t) kHidden * 2);
             upload(hidden, b_f);
@@ -830,42 +845,32 @@ int main(int argc, char ** argv) {
             Tensor t_on{ b_on.data(), DType::F16, kHidden, 1 };
             rms_norm(stream, t_f, t_on, kRmsEps, t_fn);
 
-            const int64_t vocab = (int64_t) out_w->dims[1];
-            const int64_t chunk = 32768;
             std::vector<std::pair<float, int>> best;
             double lse_max = -INFINITY, lse_sum = 0.0;
             Tensor t_fn_col{ b_fn.data(), DType::F16, 1, kHidden };
-            for (int64_t s = 0; s < vocab; s += chunk) {
-                const int64_t n = std::min(chunk, vocab - s);
-                const int bb2 = quant_type_size((int) out_w->type);
-                const int be2 = quant_block_elements((int) out_w->type);
-                const uint64_t row_b = (uint64_t) kHidden / (uint64_t) be2 * (uint64_t) bb2;
-                const std::vector<uint8_t> raw = g.tensor_bytes(*out_w, (uint64_t) s * row_b, (uint64_t) n * row_b);
-                std::vector<float> wf((size_t) n * kHidden);
-                dequantize((int) out_w->type, raw.data(), wf.data(), n * kHidden);
-                wf = round_f16(wf);
-                Buffer b_l((size_t) n * 2);
-                gemv(stream, wf, n, kHidden, t_fn_col, b_l);
-                const std::vector<float> lg = to_host(stream, b_l, n);
-                for (int64_t i = 0; i < n; ++i) {
-                    const double v = (double) lg[(size_t) i];
-                    if (v > lse_max) {
-                        lse_sum = lse_sum * std::exp(lse_max - v) + 1.0;
-                        lse_max = v;
-                    } else {
-                        lse_sum += std::exp(v - lse_max);
-                    }
-                    const std::pair<float, int> cand{ lg[(size_t) i], (int) (s + i) };
-                    if ((int64_t) best.size() < k) {
-                        best.push_back(cand);
-                    } else if (cand.first > best.back().first) {
-                        best.back() = cand;
-                    } else {
-                        continue;
-                    }
-                    std::sort(best.begin(), best.end(),
-                              [](const auto & a, const auto & b) { return a.first > b.first; });
+            ensure_out_weight();
+            Tensor tw{ wout_dev->data(), DType::F16, kHidden, vocab };
+            Tensor tl{ b_logits.data(), DType::F16, 1, vocab };
+            matmul(stream, tw, t_fn_col, tl);
+            const std::vector<float> lg = to_host(stream, b_logits, vocab);
+            for (int64_t i = 0; i < vocab; ++i) {
+                const double v = (double) lg[(size_t) i];
+                if (v > lse_max) {
+                    lse_sum = lse_sum * std::exp(lse_max - v) + 1.0;
+                    lse_max = v;
+                } else {
+                    lse_sum += std::exp(v - lse_max);
                 }
+                const std::pair<float, int> cand{ lg[(size_t) i], (int) i };
+                if ((int64_t) best.size() < k) {
+                    best.push_back(cand);
+                } else if (cand.first > best.back().first) {
+                    best.back() = cand;
+                } else {
+                    continue;
+                }
+                std::sort(best.begin(), best.end(),
+                          [](const auto & a, const auto & b) { return a.first > b.first; });
             }
             const double log_z = lse_max + std::log(lse_sum);
             std::sort(best.begin(), best.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
@@ -999,6 +1004,7 @@ int main(int argc, char ** argv) {
                     continue;
                 }
                 handle(prompt, n, (float) temp, false);
+                printf("MEM %.2f GB\n", (double) cache.bytes() / 1073741824.0);
                 printf("END\n");
                 fflush(stdout);
             }
