@@ -36,6 +36,7 @@
 #include "strata/platform/io_priority.hpp"
 #include "ds4_packinfo.hpp"
 #include "ds4_slotmeta.hpp"
+#include "strata/core/logit_bias.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -359,6 +360,12 @@ struct Req {
     int pen_n = 0;
     float pen_repeat = 1.0f, pen_freq = 0.0f, pen_present = 0.0f;
     std::string file;   // GENI: the pictures
+    // logit_bias=<id>:<value>,... (the server's; strata/core/logit_bias.hpp, -100 bans a token): the text until
+    // prompt_begin reads it into `bias` (one float a vocabulary token) and `bias_key` (its hash: the model keeps the
+    // row on the GPU by it)
+    std::string bias_text;
+    std::vector<float> bias;
+    size_t bias_key = 0;
     std::vector<int> ids;
 };
 
@@ -506,6 +513,7 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
         else if (k == "penalty_freq") r.pen_freq = std::strtof(v.c_str(), nullptr);
         else if (k == "penalty_present") r.pen_present = std::strtof(v.c_str(), nullptr);
         else if (k == "rid") r.rid = std::atoll(v.c_str());
+        else if (k == "logit_bias") r.bias_text = v;
     }
     return !r.ids.empty() && (!geni || !r.file.empty());
 }
@@ -1032,6 +1040,15 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 for (const Pic& q : pics)
                     if (q.start < 0 || (size_t) q.start >= r.ids.size() || r.ids[(size_t) q.start] != img_tok)
                         e = "a picture's span does not start at an image token of the prompt";
+            if (e.empty() && !r.bias_text.empty()) {   // the request's logit_bias, read once (its row on the GPU now)
+                std::string be;
+                if (!strata::core::parse_logit_bias(r.bias_text, m.vocab(), r.bias, be)) e = "logit_bias: " + be;
+                else {
+                    r.bias_key = std::hash<std::string>{}(r.bias_text);
+                    if (!m.set_logit_bias(r.bias, r.bias_key, be)) e = be;
+                }
+                std::string().swap(r.bias_text);
+            }
             if (!e.empty()) {
                 std::printf("ERR%s %s\n", tag.c_str(), e.c_str());
                 std::printf("DONE%s 0 %zu 0.0 0.0 cancel 0 0 0 0 0\n", tag.c_str(), r.ids.size());
@@ -1394,6 +1411,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         m.set_penalties(r.pen_n < 0 ? INT_MAX : r.pen_n,
                         std::isfinite(r.pen_repeat) && r.pen_repeat > 0.0f ? r.pen_repeat : 1.0f,
                         std::isfinite(r.pen_freq) ? r.pen_freq : 0.0f, std::isfinite(r.pen_present) ? r.pen_present : 0.0f);
+        {   // and its logit_bias (none: the picks exactly as without; its row is on the GPU since prompt_begin)
+            std::string be;
+            (void) m.set_logit_bias(r.bias, r.bias_key, be);
+        }
         int tok = m.sample(r.temperature, r.top_p, r.top_k, r.min_p, r.seed, counter++);
         std::vector<int> got;
         // STAT for the Monitor every 8 tokens and at the end, over this answer so far: the GLM engine's keys (speed, the
@@ -1562,6 +1583,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                             std::isfinite(r.pen_repeat) && r.pen_repeat > 0.0f ? r.pen_repeat : 1.0f,
                             std::isfinite(r.pen_freq) ? r.pen_freq : 0.0f,
                             std::isfinite(r.pen_present) ? r.pen_present : 0.0f);
+            std::string be;   // and its logit_bias, before each of its picks (the other conversations have their own)
+            (void) m.set_logit_bias(r.bias, r.bias_key, be);
         };
         const auto release = [&](const Act& a) {   // (its conversation free for the next request)
             seq_rid[(size_t) a.seq] = -1;
@@ -1696,6 +1719,9 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             } else
                 for (int j = 0; j < nd && !failed; ++j) {
                     bind(dsv[(size_t) j]);
+                    const Req& q = need[(size_t) dix[(size_t) j]]->r;   // (its drafts with its own logit_bias)
+                    std::string be;
+                    (void) m.set_logit_bias(q.bias, q.bias_key, be);
                     failed = !m.draft(dys[(size_t) j], drafts[(size_t) dix[(size_t) j]], confs[(size_t) dix[(size_t) j]],
                                       err);
                 }
