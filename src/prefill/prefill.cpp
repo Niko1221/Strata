@@ -619,9 +619,31 @@ inline bool gr_unfused() {
 
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
+// STRATA_PF_ALLOC_TRACE=1 (diagnostic, no behaviour change; round 0216): the free-memory figure (cudaMemGetInfo) around the prompt path's
+// allocations, against what the code asked for, to see what `bytes_needed` does not count (RESULTS-STRIX2.md).
+inline bool pf_alloc_trace() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_PF_ALLOC_TRACE"); return e != nullptr && e[0] == '1'; }();
+    return on;
+}
+inline int64_t pf_free_mib() {
+    size_t f = 0, t = 0;
+    cudaMemGetInfo(&f, &t);
+    return (int64_t) (f >> 20);
+}
+// one line: the free figure now, its drop since the last mark, and what the code itself asked for in between (MiB)
+inline void pf_mark(const char* what, int64_t& last, uint64_t asked_bytes = 0) {
+    if (!pf_alloc_trace()) return;
+    const int64_t now = pf_free_mib();
+    std::fprintf(stderr, "prefill alloc trace: %-44s free %7lld MiB, dropped %7lld MiB, asked %7lld MiB\n", what, (long long) now,
+                 (long long) (last - now), (long long) (asked_bytes >> 20));
+    last = now;
+}
+
 // Either cudaMalloc (owned, freed with the object) or a bump allocation from a borrowed region; with no base and
 // no region it only counts, which is how `bytes_needed` sizes the region.
 struct Alloc {
+    uint64_t tr_asked = 0, tr_n = 0;   ///< STRATA_PF_ALLOC_TRACE: the cudaMalloc takes' sizes, and how far the free figure fell over them
+    int64_t tr_drop = 0;
     uint8_t* base = nullptr;
     uint64_t cap = 0, used = 0;
     uint64_t failed_bytes = 0;          ///< the take that could not be allocated; the failure message names it
@@ -643,7 +665,9 @@ struct Alloc {
         }
         if (base != nullptr && !spill) { ok = false; failed_bytes = bytes; return nullptr; }
         void* p = nullptr;
+        const int64_t tr0 = pf_alloc_trace() ? pf_free_mib() : 0;
         if (cudaMalloc(&p, bytes) != cudaSuccess) { ok = false; failed_bytes = bytes; return nullptr; }
+        if (pf_alloc_trace()) { tr_drop += tr0 - pf_free_mib(); tr_asked += bytes; ++tr_n; }
         spilled = true;
         owned->push_back(p);
         used += bytes;
@@ -1715,6 +1739,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
                    core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
                    void* stream, std::string& err, void* borrow, uint64_t borrow_bytes, bool borrow_spill) {
     Impl& m = *impl_;
+    int64_t tr_last = pf_alloc_trace() ? pf_free_mib() : 0;
+    pf_mark("init: start (chunk, then the sign tables)", tr_last);
 #if defined(STRATA_GPU_METAL)
     (void) wt; (void) src; (void) cache; (void) host_res; (void) stream; (void) borrow;
     (void) borrow_bytes;
@@ -1823,6 +1849,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         if (!m.stager->init((size_t) MAXBLOB(), threads)) ok = false;
         m.stager->batch = std::min(m.stager->batch, m.stager->kRing);
     }
+    pf_mark("init: stager ring (pinned host buffers)", tr_last, (uint64_t) m.stager->kRing * (uint64_t) MAXBLOB());
     if (!m.warmer && src != nullptr && src->warms()) {
         const char* wv = std::getenv("STRATA_PREFILL_WARM");
         if (wv != nullptr && std::atoi(wv) != 0) {
@@ -1860,6 +1887,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             }
         }
     }
+    pf_mark("init: routing tables (pinned, mapped)", tr_last);
     for (int b = 0; b < 2; ++b) {
         if (!m.ple_emb_host[b] &&
             (force_pageable() || cudaHostAlloc((void**) &m.ple_emb_host[b], (size_t) T * N * 4, cudaHostAllocDefault) != cudaSuccess)) {
@@ -1897,6 +1925,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             m.owned.push_back(m.ident_table);
     }
     if (!ok) { err = "prefill: host buffers or events for a chunk of " + std::to_string(chunk) + " tokens"; return false; }
+    pf_mark("init: host buffers, PLE rows, identity table", tr_last);
     Alloc o;
     o.base = (uint8_t*) borrow;
     o.cap = borrow_bytes;
@@ -1923,6 +1952,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         static const bool xn_env = [] { const char* e = std::getenv("STRATA_XN_F16"); return e == nullptr || e[0] != '0'; }();
         m.xn_f16 = xn_env && !m.f16_io && m.gemm.bf16_converts_x();
     }
+    pf_mark("init: GEMM scratch + workspace (Alloc takes so far)", tr_last, o.tr_asked);
     if (!carve(T, &o)) {
         size_t fb = 0, tb = 0;
         cudaMemGetInfo(&fb, &tb);
@@ -1933,7 +1963,13 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
               std::to_string(o.failed_bytes >> 20) + " MiB)";
         return false;
     }
+    pf_mark("init: carve (all buffers of the chunk)", tr_last, o.tr_asked);
+    if (pf_alloc_trace())
+        std::fprintf(stderr, "prefill alloc trace: Alloc takes: %llu cudaMallocs, asked %lld MiB, free fell %lld MiB over them (bytes_needed counts %lld MiB for this chunk's own buffers; o.used %lld MiB)\n",
+                     (unsigned long long) o.tr_n, (long long) (o.tr_asked >> 20), (long long) o.tr_drop,
+                     (long long) (Prefill::bytes_needed(g, ss, chunk, src != nullptr) >> 20), (long long) (o.used >> 20));
     { int wd = 0; if (cudaGetDevice(&wd) == cudaSuccess) warm_gemm_libraries(wd); else (void) cudaGetLastError(); }
+    pf_mark("init: warm_gemm_libraries (BLAS handles, workspaces)", tr_last);
     return true;
 }
 
