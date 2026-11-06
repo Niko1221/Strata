@@ -780,6 +780,9 @@ _PREFIX_SPACED = re.compile(r"(<function=\s*(?:tools|functions|default_api)[ \t]
 _PREFIX_PART = re.compile(r"<function=\s*(?:tools|functions|default_api)[ \t]+[^<>\s]{0,80}\s*$")
 _PREFIX_BARE = re.compile(r"(<tool_call>\s*)<function=\s*(tools|functions|default_api)\s*>(.*?)</function>", re.S)
 _PREFIX_BARE_OPEN = re.compile(r"<tool_call>\s*<function=\s*(tools|functions|default_api)\s*>(?!.*</function>)", re.S)
+# #5276: `<toolcall>` / `<tool-call>` as the opener (then whitespace, `<function=NAME>`), and such an opener still arriving
+_MISSPELT_OPEN = re.compile(r"<tool-?call>(\s*)<function=(\s*[^<>\s]+\s*)>")
+_MISSPELT_PART = re.compile(r"<tool-?call>\s*<function=[^<>]{0,80}$|<tool-?call>\s*(?:<(?:f(?:u(?:n(?:c(?:t(?:i(?:o(?:n)?)?)?)?)?)?)?)?)?$")
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
 
 
@@ -1249,6 +1252,17 @@ class OutputParser:
         self._restore(snap)
         return ok
 
+    def _opens_at(self, p: int) -> bool:
+        """self.buf[p] would open a call as `<tool_call>` does: in the reasoning at the start of a line outside code, in the answer
+        anywhere outside code (a fence, inline code, an indented block)."""
+        if self.state == "reasoning":
+            return self._ok_at(p)
+        snap = self._snap()
+        self._track(self.buf[:p])
+        ok = not self._in_code()
+        self._restore(snap)
+        return ok
+
     def _callable(self, name: str) -> bool:
         """#3075: may a call for `name` be a call?  A tool the request declared (or its Responses spelling); with
         none declared, only where `declared_only` is off."""
@@ -1600,16 +1614,16 @@ class OutputParser:
         `<function=tools>` (the bare prefix) is the one declared tool that takes the call's parameters.  Rewrites the complete
         ones in self.buf to `<function=NAME>` and returns the tail of a call still arriving (held back by feed), else None.
         Only a declared name is ever the result; with none, or with two that fit, the text is left as it was."""
+        held = self._opener()
         buf = self.buf
         if "<function=" not in buf:
-            return None
+            return held
         def spaced(m):
             name = m.group(2).strip()
             return f"<function={name}>" if name in self.schemas else m.group(0)
         buf = _PREFIX_SPACED.sub(spaced, buf)
-        held = None
         m = _PREFIX_PART.search(buf)
-        if m:
+        if m and held is None:
             held, buf = buf[m.start():], buf[:m.start()]
         if self.recover:
             def bare(m):
@@ -1621,6 +1635,34 @@ class OutputParser:
             m = _PREFIX_BARE_OPEN.search(buf)
             if m and m.group(1) not in self.schemas and held is None and len(buf) - m.start() <= RCALL_MAX:
                 held, buf = buf[m.start():], buf[:m.start()]
+        self.buf = buf
+        return held
+
+    def _opener(self) -> str | None:
+        """#5276: `<toolcall>` / `<tool-call>` (the opener written as text, misspelled) followed by `<function=NAME>` of a declared
+        tool is `<tool_call>`, where a `<tool_call>` would open a call (start of a line, outside code).  Prose that names the
+        misspelled tag, or any other follower, is left as it was.  Returns the tail of an opener still arriving (held back)."""
+        buf = self.buf
+        if "<tool" not in buf:
+            return None
+        pos, out = 0, []
+        for m in _MISSPELT_OPEN.finditer(buf):
+            name = m.group(2).strip()
+            name = self.aliases.get(name, name)
+            if name in self.schemas and self._opens_at(m.start()):
+                out.append(buf[pos:m.start()] + CALL_START + m.group(1) + FUNC_START + m.group(2) + ">")
+                pos = m.end()
+        buf = "".join(out) + buf[pos:]
+        held = None
+        m = _MISSPELT_PART.search(buf)
+        tail = buf[m.start():] if m else None
+        if tail is None:                                    # the opener itself still arriving: a prefix of `<toolcall>`
+            for k in range(min(len(buf), 11), 5, -1):
+                if any(w.startswith(buf[-k:]) for w in ("<toolcall>", "<tool-call>")) and buf[-k:] != "<tool_":
+                    tail = buf[-k:]
+                    break
+        if tail:
+            held, buf = tail, buf[:len(buf) - len(tail)]
         self.buf = buf
         return held
 
