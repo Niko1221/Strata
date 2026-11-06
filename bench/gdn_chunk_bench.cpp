@@ -41,10 +41,18 @@ struct Rng {
     }
 };
 
+void set_env(const char* name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
 float timed(const char* mode, const char* warp, float* st, float* st0, float* h, float* g, float* b, float* z,
             float* ga, float* y, uint16_t* y16, int64_t T, int iters) {
-    setenv("STRATA_GDN_CHUNK", mode, 1);
-    setenv("STRATA_GDN_REC_WARP", warp, 1);
+    set_env("STRATA_GDN_CHUNK", mode);
+    set_env("STRATA_GDN_REC_WARP", warp);
     cudaEvent_t e0, e1;
     check(cudaEventCreate(&e0), "event");
     check(cudaEventCreate(&e1), "event");
