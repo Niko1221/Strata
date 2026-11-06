@@ -25,6 +25,9 @@ class Home:
         base = Path(self.tmp.name)
         self.base = base
         self.env = {
+            # Headless pilot fixtures model a Unicode terminal. Tests of legacy
+            # terminals override this explicitly instead of inheriting the runner.
+            "TERM": "xterm-256color",
             "STRATA_PROFILE_DIR": str(base / "config" / "profiles"),
             "STRATA_PRESET_DIR": str(base / "config" / "presets"),
             "STRATA_LAUNCH_PRESET_DIR": str(base / "config" / "launch-presets"),
@@ -38,7 +41,7 @@ class Home:
             "HOME": str(base / "home"),
             "USERPROFILE": str(base / "home"),
         }
-        self.env_clear = ("STRATA_SETTINGS_FILE", "STRATA_CONNECTION_DIR", "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")   # a developer's own variables must not leak into a test either
+        self.env_clear = ("NO_COLOR", "STRATA_SETTINGS_FILE", "STRATA_CONNECTION_DIR", "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")   # a developer's own variables must not leak into a test either
         (base / "home").mkdir(parents=True, exist_ok=True)
         self.patch = mock.patch.dict(os.environ, self.env)
 
