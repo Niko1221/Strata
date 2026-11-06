@@ -1,0 +1,42 @@
+{
+  "CollectedAt": "2026-11-05T17:23:42.2271150+01:00",
+  "Source": "Read-only local evidence collector; verify model identity and running process separately",
+  "ConfigPresent": true,
+  "ModelDirectoryPresent": true,
+  "GitCommit": "ffa80d73133ea5c548aefe57889a16e8085a938f",
+  "GitWorkingTreeModified": false,
+  "ChangedSourcePaths": [],
+  "ConfigAllowlisted": {
+    "port": 8070,
+    "engine_args": {
+      "--max-context": "131072",
+      "--vision": true,
+      "--reserve-mib": "900"
+    }
+  },
+  "ModelFiles": [
+    {
+      "Name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf",
+      "Bytes": 39075714624,
+      "SHA256": "d46efb67ccffd8fb5d7f18b423896381b9e06d8491e161c370ddf3b05b07e050"
+    },
+    {
+      "Name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00002-of-00004.gguf",
+      "Bytes": 39388449504,
+      "SHA256": "cec1b2c3da429dc768b8bb9bc4dc4403d81f74d34db660a6a34ee3e555bf2c70"
+    },
+    {
+      "Name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00003-of-00004.gguf",
+      "Bytes": 39246891616,
+      "SHA256": "9d9c2140fcb134a0b9a74dedd0e5167e68077af6d08ce7f856bce112f0a35dd3"
+    },
+    {
+      "Name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00004-of-00004.gguf",
+      "Bytes": 20527837312,
+      "SHA256": "9bb56083b354363bfbc006918681e0efca6e438fd5955d53990eee5f81e33312"
+    }
+  ],
+  "Notes": [
+    "Configuration captured from the expected Huihui config path; must verify that the benchmark server actually used it."
+  ]
+}

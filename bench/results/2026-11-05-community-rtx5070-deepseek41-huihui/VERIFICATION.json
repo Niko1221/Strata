@@ -1,0 +1,169 @@
+{
+  "source": "Benchmark.zip uploaded by operator",
+  "analysis_date": "2026-11-05",
+  "speed_suites": {
+    "reasoning-off": {
+      "run_count": 3,
+      "errors": 0,
+      "skipped": 0,
+      "chat_requests": 9,
+      "prompt_requests": {
+        "4K": 3,
+        "16K": 3,
+        "32K": 3
+      },
+      "agent_sessions": 3,
+      "client_rounds": 3
+    },
+    "reasoning-on": {
+      "run_count": 3,
+      "errors": 0,
+      "skipped": 0,
+      "chat_requests": 9,
+      "prompt_requests": {
+        "4K": 3,
+        "16K": 3,
+        "32K": 3
+      },
+      "agent_sessions": 3,
+      "client_rounds": 3
+    }
+  },
+  "case_metrics_recomputed": [
+    {
+      "mode": "reasoning-off",
+      "case": "chat",
+      "requests": 9,
+      "prompt_tokens_median": 32,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 100,
+      "prompt_tps_median": 30.4,
+      "decode_tps_median": 15.3,
+      "ttft_s_median": 1.14
+    },
+    {
+      "mode": "reasoning-off",
+      "case": "4K",
+      "requests": 3,
+      "prompt_tokens_median": 4125,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 24,
+      "prompt_tps_median": 390.5,
+      "decode_tps_median": 4.3,
+      "ttft_s_median": 10.589
+    },
+    {
+      "mode": "reasoning-off",
+      "case": "16K",
+      "requests": 3,
+      "prompt_tokens_median": 16562,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 24,
+      "prompt_tps_median": 771.4,
+      "decode_tps_median": 15.7,
+      "ttft_s_median": 21.49
+    },
+    {
+      "mode": "reasoning-off",
+      "case": "32K",
+      "requests": 3,
+      "prompt_tokens_median": 33126,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 24,
+      "prompt_tps_median": 819.6,
+      "decode_tps_median": 15.7,
+      "ttft_s_median": 40.459
+    },
+    {
+      "mode": "reasoning-on",
+      "case": "chat",
+      "requests": 9,
+      "prompt_tokens_median": 58,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 100,
+      "prompt_tps_median": 24.9,
+      "decode_tps_median": 15.9,
+      "ttft_s_median": 1.837
+    },
+    {
+      "mode": "reasoning-on",
+      "case": "4K",
+      "requests": 3,
+      "prompt_tokens_median": 4151,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 12,
+      "prompt_tps_median": 389.9,
+      "decode_tps_median": 14.7,
+      "ttft_s_median": 10.668
+    },
+    {
+      "mode": "reasoning-on",
+      "case": "16K",
+      "requests": 3,
+      "prompt_tokens_median": 16588,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 12,
+      "prompt_tps_median": 749.9,
+      "decode_tps_median": 15.3,
+      "ttft_s_median": 22.141
+    },
+    {
+      "mode": "reasoning-on",
+      "case": "32K",
+      "requests": 3,
+      "prompt_tokens_median": 33152,
+      "reused_tokens_median": 0,
+      "generated_tokens_median": 12,
+      "prompt_tps_median": 836.0,
+      "decode_tps_median": 14.7,
+      "ttft_s_median": 39.714
+    }
+  ],
+  "recall": {
+    "attempts": 9,
+    "found": 9,
+    "failures": 0,
+    "errors": 0,
+    "max_actual_prompt_tokens": 117795
+  },
+  "flags": [
+    "model ID is generic; Huihui variant not independently verified",
+    "model/server not restarted between suites",
+    "thinking allowed not proven active from captured output",
+    "concurrency 4 clients, 1 server slot",
+    "not a standard or quantization quality benchmark",
+    "working tree reported modified at benchmark time, clean at later collection; benchmark-time diff unknown",
+    "post-run GGUF hashes supplied; loaded-process identity at benchmark time unverified"
+  ],
+  "post_run_provenance": {
+    "collected_at": "2026-11-05T17:23:42.2271150+01:00",
+    "strata_commit_matches_benchmark": true,
+    "git_tree_clean_at_collection": true,
+    "git_tree_was_reported_modified_at_benchmark_time": true,
+    "expected_config_present": true,
+    "expected_model_directory_present": true,
+    "configuration_allowlist": {
+      "port": 8070,
+      "engine_args": {
+        "--max-context": "131072",
+        "--vision": true,
+        "--reserve-mib": "900"
+      }
+    },
+    "gguf_shards_reported": 4,
+    "gguf_total_bytes": 138238893056,
+    "sha256_strings_valid": true,
+    "gguf_size_matches_launcher_inventory": true,
+    "shards_matching_original_ista_launcher_hashes": [
+      1,
+      2,
+      3
+    ],
+    "shard_differing_from_original_ista_launcher_hashes": [
+      4
+    ],
+    "same_file_set_confirmed_loaded_during_benchmark": false,
+    "exact_patch_identity_verified_by_report": false,
+    "note": "Post-run filenames/hashes cross-checked against a separately supplied launcher inventory; local binary GGUF bytes and benchmark-time loaded process were not accessible to this report reviewer."
+  }
+}
