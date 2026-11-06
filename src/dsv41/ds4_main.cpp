@@ -2865,16 +2865,16 @@ int main(int argc, char** argv) {
     if (s.prof_wins > s0.prof_wins) {   // DS4_PROF_WIN
         const double pw = (double) (s.prof_wins - s0.prof_wins);
         double sum = 0;
-        for (int i = 0; i < 11; ++i) sum += (s.prof_win_ms[i] - s0.prof_win_ms[i]) / pw;
+        auto aw = [&](int i) { return (s.prof_win_ms[i] - s0.prof_win_ms[i]) / pw; };
+        for (int i = 0; i < 12; ++i) sum += aw(i);
         std::fprintf(stderr, "GPU per verify window (DS4_PROF_WIN, %.0f windows of %.2f tokens): %.2f ms - between layers %.2f, "
-                             "attention %.2f, routing + shared expert %.2f, experts with the CPU lane's wait, down and post %.2f\n",
-                     pw, (double) (s.prof_win_rows - s0.prof_win_rows) / pw, sum, (s.prof_win_ms[0] - s0.prof_win_ms[0]) / pw,
-                     (s.prof_win_ms[1] + s.prof_win_ms[6] + s.prof_win_ms[7] + s.prof_win_ms[8] + s.prof_win_ms[9] + s.prof_win_ms[10] -
-                      s0.prof_win_ms[1] - s0.prof_win_ms[6] - s0.prof_win_ms[7] - s0.prof_win_ms[8] - s0.prof_win_ms[9] -
-                      s0.prof_win_ms[10]) / pw,
-                     (s.prof_win_ms[2] - s0.prof_win_ms[2]) / pw,
-                     (s.prof_win_ms[3] + s.prof_win_ms[4] + s.prof_win_ms[5] - s0.prof_win_ms[3] - s0.prof_win_ms[4] -
-                      s0.prof_win_ms[5]) / pw);
+                             "attention %.2f, routing + shared expert %.2f, experts gate/up %.2f, down %.2f, waiting for the "
+                             "CPU lane %.2f, the sum + post %.2f\n",
+                     pw, (double) (s.prof_win_rows - s0.prof_win_rows) / pw, sum, aw(0),
+                     aw(1) + aw(6) + aw(7) + aw(8) + aw(9) + aw(10), aw(2), aw(3), aw(11), aw(4), aw(5));
+        std::fprintf(stderr, "GPU per verify window, the attention (DS4_PROF_WIN): mHC + norm %.2f, q_a / kv %.2f, q_b + rope "
+                             "%.2f, compressor + indexer + attention %.2f, wo_a + wo_b %.2f, post %.2f\n",
+                     aw(10), aw(6), aw(7), aw(8), aw(9), aw(1));
     }
     if (df != nullptr) std::fclose(df);
     m.save_profile();

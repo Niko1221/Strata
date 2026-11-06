@@ -1789,8 +1789,8 @@ struct Model::Impl {
         std::lock_guard<std::mutex> lk(prof_mu);
         const bool chunk_sample = prof_chunk;
         bool sample_ok = !prof_failed;
-        // a chunk's marks name its stages 0..10 (cprof_ms, the finer table), a decode window's 0..10 too (st.prof_ms: 0-5,
-        // and the attention's parts 6-10)
+        // a chunk's marks name its stages 0..10 (cprof_ms, the finer table), a decode window's 0..11 (st.prof_ms and
+        // prof_win_ms: 0-5, the attention's parts 6-10, a verify window's down 11)
         constexpr int kSampleStages = (int) (sizeof cprof_ms / sizeof cprof_ms[0]);
         double sample_ms[kSampleStages] = {};
         std::vector<std::pair<int, cudaEvent_t>> last;
@@ -1832,7 +1832,7 @@ struct Model::Impl {
         if (sample_ok) {
             const bool win = !chunk_sample && prof_T > 1;   // (DS4_PROF_WIN: a verify window's, apart from the tokens')
             double* total = chunk_sample ? cprof_ms : win ? st.prof_win_ms : st.prof_ms;
-            // (decode: 0-5, and the attention's parts 6-10)
+            // (decode: 0-5, the attention's parts 6-10, a verify window's down 11)
             const int stages = chunk_sample ? kSampleStages : (int) (sizeof st.prof_ms / sizeof st.prof_ms[0]);
             for (int i = 0; i < stages; ++i) total[i] += sample_ms[i];
             for (const ProfMark& m : prof_marks) prof_pool[(size_t) m.dev].push_back(m.ev);
@@ -14263,6 +14263,14 @@ struct Model::Impl {
                 wa.n_embd = D;
                 wa.n_ff = FF;
                 wa.limit = g.lim;
+                struct WinMark {   // (DS4_PROF_WIN: the window's expert stages apart - gate / up, down, the CPU lane's wait)
+                    Impl* m;
+                    const Dev* d;
+                } wm{this, &d};
+                if (prof_window) {
+                    wa.mark = [](void* c, int stage) { ((WinMark*) c)->m->prof_event(*((WinMark*) c)->d, stage); };
+                    wa.mark_ctx = &wm;
+                }
                 if (!(lay.fmt == gg::kFmtMXFP4 ? gg::win_experts(wa, s) : x3::win_experts(wa, s))) {
                     err = "exl3 win_experts failed";
                     return false;
