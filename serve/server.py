@@ -932,12 +932,46 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
     mib = info.get("conversation_cache_mib")
     last = hist[-1] if hist else None
+    fmib = info.get("conversation_cache_file_mib")
+    fdir = info.get("conversation_cache_file_dir")
+    disk = conv_cache_disk(fdir) if isinstance(fmib, int) and fmib > 0 and isinstance(fdir, str) and fdir not in ("", "off") else None
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
             "slots": info.get("conversation_cache_slots"), **parked,
+            "file_budget_mib": fmib if isinstance(fmib, int) else None,
+            "file_bytes": disk["bytes"] if disk else 0, "file_count": disk["files"] if disk else 0,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
             "last_prompt": last.get("prompt_tokens") if last else None}
+
+
+# The disk overflow folder of --conversation-cache-file-mib: how many conversations spilled and their bytes.
+# Scanned at most every 10 s (the Monitor polls faster); a missing folder reads as empty, never an error.
+_CC_DISK = {"path": None, "t": 0.0, "bytes": 0, "files": 0}
+
+
+def conv_cache_disk(path: str, now: float | None = None) -> dict:
+    import time
+
+    if _CC_DISK["path"] != path:
+        _CC_DISK.update(path=path, t=0.0, bytes=0, files=0)
+    now = time.monotonic() if now is None else now
+    if now - _CC_DISK["t"] < 10:
+        return {"bytes": _CC_DISK["bytes"], "files": _CC_DISK["files"]}
+    b = f = 0
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                if e.name.endswith(".conv"):
+                    f += 1
+                    try:
+                        b += e.stat().st_size
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    _CC_DISK.update(t=now, bytes=b, files=f)
+    return {"bytes": b, "files": f}
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))

@@ -915,6 +915,11 @@ struct Options {
     int prompt_cache = 6;
     int64_t conversation_cache_mib = -1; // host RAM for independent conversations; -1: not given, --serve sizes it from the free RAM (#3493), 0: off
     int conversation_cache_slots = 4;
+    /// --conversation-cache-file-mib: the disk overflow budget (MiB).  When the RAM budget or a slot is full,
+    /// the oldest parked conversation is spilled to a file instead of dropped (0: no disk tier).
+    /// --conversation-cache-file-dir: where the spilled conversations live (default: <pack>/conv-cache).
+    int64_t conversation_cache_file_mib = 0;
+    std::string conversation_cache_file_dir;
     int64_t conversation_cache_min_free_mib = 2560;
     /// --serve: park only conversations of at least this many tokens.  Every parked conversation costs one of
     /// conversation_cache_slots whatever its length, so without it a client that interleaves short side requests
@@ -1097,6 +1102,10 @@ void usage() {
                  "                       of RAM each; 0 = read every prompt from the start)\n"
                  "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default: sized from the free RAM, up to 8192; 0 = off)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
+                 "  --conversation-cache-file-mib N  --serve: disk overflow budget (MiB): when the RAM budget or a"
+                 "                       slot is full the oldest parked conversation is spilled to a file instead of"
+                 "                       dropped; its id stays, so a returning conversation reads back from disk"
+                 "  --conversation-cache-file-dir PATH  --serve: the overflow folder (default <pack>/conv-cache)\n"
                  "  --conversation-cache-min-free-mib N  --serve: RAM floor (under MemAvailable, the cgroup limits and\n"
                  "                       --memory-limit-mib) when parking, saving or restoring a session (default 2560)\n"
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
@@ -3514,11 +3523,13 @@ int main(int argc, char** argv) {
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
+        else if (a == "--conversation-cache-file-dir") o.conversation_cache_file_dir = next("--conversation-cache-file-dir");
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
                  a == "--conversation-cache-park-gain" ||
-                 a == "--session-min-free-mib" || a == "--memory-limit-mib") {
+                 a == "--session-min-free-mib" || a == "--memory-limit-mib" ||
+                 a == "--conversation-cache-file-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
@@ -3535,6 +3546,7 @@ int main(int argc, char** argv) {
             else if (a == "--conversation-cache-park-gain") o.conversation_cache_park_gain = number;
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
+            else if (a == "--conversation-cache-file-mib") o.conversation_cache_file_mib = number;
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
@@ -11440,6 +11452,17 @@ int main(int argc, char** argv) {
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+        if (o.conversation_cache_file_mib > 0) {
+            std::string cdir = o.conversation_cache_file_dir;
+            if (cdir.empty() && !o.pack.empty()) cdir = o.pack + "/conv-cache";
+            if (cdir.empty()) cdir = "/tmp/strata-conv-cache";
+            std::error_code cec;
+            std::filesystem::create_directories(cdir, cec);
+            conversations.enable_disk((size_t) o.conversation_cache_file_mib * 1024 * 1024, cdir);
+            o.conversation_cache_file_dir = cdir;   // the resolved folder, for the INFO line and the Monitor
+            std::fprintf(stderr, "strata serve: conversation cache: disk overflow budget %lld MiB at %s\n",
+                         (long long) o.conversation_cache_file_mib, cdir.c_str());
+        }
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
@@ -13298,6 +13321,7 @@ int main(int argc, char** argv) {
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
+                        "conversation_cache_file_mib=%lld conversation_cache_file_dir=%s "
                         "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
@@ -13311,6 +13335,8 @@ int main(int argc, char** argv) {
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_min_tokens,
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
+                        (long long) o.conversation_cache_file_mib,
+                        o.conversation_cache_file_dir.empty() ? "off" : o.conversation_cache_file_dir.c_str(),
                         // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
                         // prompt flows through, the chunk size from which a chunk streams every expert, --prefill-pipe
                         (long long) o.prefill_chunk, sp.stage_count(),

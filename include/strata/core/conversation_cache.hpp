@@ -8,8 +8,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
+#include <filesystem>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -237,6 +240,15 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+// File (disk) tier transport (conversation_cache_disk.cpp): write stores the image's heavy parts (the running
+// state, the checkpoint copies and the K/V pages) under `dir` as <serial>.conv (written as .conv.tmp first, so a
+// half file is never read back) and frees them from `image`, which stays a shell for matching: ids, images, the
+// pinned marks and the geometry.  `freed` and `fsize` report the RAM the shell gave up and the file's size.
+// read fills an image again; the caller's conversation_snapshot_validate still checks it against the session.
+bool conversation_cache_disk_write(const std::string& dir, uint64_t serial, SavedConversation& image,
+                                   size_t& freed, size_t& fsize);
+bool conversation_cache_disk_read(const std::string& path, SavedConversation& image, std::string& error);
+
 class ConversationCache {
 public:
     struct Match {
@@ -248,6 +260,27 @@ public:
 
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
         : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
+
+    // File (disk) tier (--conversation-cache-file-mib / --conversation-cache-file-dir): when the RAM budget is
+    // full, evict_oldest spills the oldest parked conversation to `dir` instead of dropping it; the entry stays
+    // as a shell (its ids and images are all `best()` matching needs) and a returning conversation takes it back
+    // whole from disk.  A spilled entry still holds one of `slots` - the slot count bounds RAM and disk entries
+    // together - and leaves for good (its file goes) when it is the oldest once the slots are full or the disk
+    // budget itself is exhausted.  Budget 0 (the default) is the upstream behavior: eviction drops.
+    // Enabling wipes `dir`: a spill file belongs to the process that wrote it, and a restart starts the cache
+    // empty, so anything already in the folder is a previous engine's leftover that no one will ever read back.
+    void enable_disk(size_t budget, std::string dir) {
+        disk_budget_ = budget;
+        disk_dir_ = std::move(dir);
+        std::error_code fec;
+        for (const auto& e : std::filesystem::directory_iterator(disk_dir_, fec))
+            if (e.path().extension() == ".conv") std::filesystem::remove(e.path(), fec);
+    }
+    size_t disk_bytes() const { return disk_bytes_; }
+    size_t disk_spills() const { return disk_spills_; }
+    size_t disk_reads() const { return disk_reads_; }
+    size_t disk_discards() const { return disk_discards_; }
+    bool on_disk(size_t index) const { return index < files_.size() && !files_[index].empty(); }
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
@@ -336,7 +369,18 @@ public:
     SavedConversation take(size_t index) {
         SavedConversation out = std::move(entries_.at(index));
         bytes_ -= out.bytes();
-        erase(index);
+        const bool spilled = index < files_.size() && !files_[index].empty();
+        const std::string path = spilled ? files_[index] : std::string();
+        erase(index);   // removes a spilled file: the read below happens before it goes
+        if (spilled) {
+            std::string verr;
+            if (!conversation_cache_disk_read(path, out, verr)) {
+                std::fprintf(stderr, "strata conv cache: disk restore failed (%s): the prompt is read again\n",
+                             verr.c_str());
+                out = {};
+            }
+            ++disk_reads_;
+        }
         return out;
     }
 
@@ -350,6 +394,7 @@ public:
     // conversation holding the pin, as pin=N expects.
     bool borrows(const Match& m) const {
         if (m.tokens <= 0 || m.live || m.index >= entries_.size() || serials_[m.index] != m.serial) return false;
+        if (m.index < files_.size() && !files_[m.index].empty()) return false;   // spilled: taken whole, not borrowed
         size_t deepest = 0;
         for (const auto& c : entries_[m.index].checkpoints) {
             if (c.pinned && (int64_t) c.ids.size() <= m.tokens) return false;
@@ -395,6 +440,18 @@ public:
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
             // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
             // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
+            if (disk_budget_ > 0 && entries_.size() >= slots_) {
+                // the slots hold RAM and spilled entries together: when they are full, the spilled one that
+                // went to disk earliest leaves for good, freeing its slot for the incoming conversation
+                for (size_t i = 0; i < entries_.size(); ++i)
+                    if (i < files_.size() && !files_[i].empty() && !entries_[i].pinned() &&
+                        !(guarded_ != 0 && serials_[i] == guarded_)) {
+                        ++disk_discards_;
+                        bytes_ -= entries_[i].bytes();
+                        erase(i);
+                        break;
+                    }
+            }
             if (!evict_oldest()) return false;
         }
         return true;
@@ -410,6 +467,28 @@ public:
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            if (i < files_.size() && !files_[i].empty()) {   // spilled already: it leaves for good
+                ++disk_discards_;
+                bytes_ -= entries_[i].bytes();
+                erase(i);
+                ++evictions_;
+                return true;
+            }
+            if (entries_[i].pending) continue;   // a background park copy has not landed yet: skip this entry
+            if (disk_budget_ > 0 && disk_bytes_ < disk_budget_) {   // the RAM budget is full: spill, do not drop
+                size_t freed = 0, fsize = 0;
+                if (conversation_cache_disk_write(disk_dir_, serials_[i], entries_[i], freed, fsize)) {
+                    files_[i] = disk_dir_ + "/" + std::to_string(serials_[i]) + ".conv";
+                    bytes_ -= freed;
+                    disk_bytes_ += fsize;
+                    ++disk_spills_;
+                    std::fprintf(stderr, "strata conv cache: parked conversation spilled to disk (%zu tokens, "
+                                 "%zu MiB freed; parked=%zu ram=%zu MiB disk=%zu MiB spills=%zu)\n",
+                                 entries_[i].live.ids.size(), freed >> 20, entries_.size(), bytes_ >> 20,
+                                 disk_bytes_ >> 20, disk_spills_);
+                    return true;
+                }
+            }
             bytes_ -= entries_[i].bytes();
             erase(i);
             ++evictions_;
@@ -422,6 +501,9 @@ public:
     // may carry the poison.  Returns how many were parked.
     size_t clear() {
         const size_t n = entries_.size();
+        for (const std::string& f : files_) if (!f.empty()) std::remove(f.c_str());
+        files_.clear();
+        disk_bytes_ = 0;
         entries_.clear();
         serials_.clear();
         bytes_ = 0;
@@ -455,6 +537,7 @@ public:
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
             if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
                 !(guarded_ != 0 && serials_[i] == guarded_)) {
+                if (disk_bytes_ >= disk_budget_ && i < files_.size() && !files_[i].empty()) ++disk_discards_;
                 bytes_ -= e.bytes();
                 erase(i);
                 ++dropped;
@@ -521,12 +604,22 @@ public:
         if (!make_room(n, held)) return false;
         entries_.push_back(std::move(image));
         serials_.push_back(next_serial_++);
+        files_.emplace_back();   // in RAM: no spill file (yet)
         bytes_ += n;
         return true;
     }
 
 private:
     void erase(size_t index) {
+        if (index < files_.size()) {
+            if (!files_[index].empty()) {
+                std::error_code fec;
+                const auto sz = std::filesystem::file_size(files_[index], fec);
+                if (!fec) disk_bytes_ = disk_bytes_ > (size_t) sz ? disk_bytes_ - (size_t) sz : 0;
+                std::remove(files_[index].c_str());
+            }
+            files_.erase(files_.begin() + (std::ptrdiff_t) index);
+        }
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
     }
@@ -537,6 +630,10 @@ private:
     uint64_t next_serial_ = 1, guarded_ = 0;
     bool guard_blocked_ = false;
     ConversationKvReuse reuse_;
+    // file (disk) tier (--conversation-cache-file-mib / --conversation-cache-file-dir; enable_disk)
+    size_t disk_budget_ = 0, disk_bytes_ = 0, disk_spills_ = 0, disk_reads_ = 0, disk_discards_ = 0;
+    std::string disk_dir_;
+    std::deque<std::string> files_;   // parallel to entries_: the spill file, empty while the entry is in RAM
 };
 
 } // namespace strata::core
