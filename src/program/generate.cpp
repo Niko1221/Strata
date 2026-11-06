@@ -12569,15 +12569,19 @@ int main(int argc, char** argv) {
         // the RAM preflight above the parking floor.  A stage without the drafter's K/V is bounded with the drafter's
         // sizes too (one K/V layer more is allowed, never required: the validation below is exact).  When the
         // drafter's state cannot give sizes (no --mtp), the stage's file is bounded by its recorded size instead.
+        constexpr int64_t kDiskReadFloorMib = 512;
         auto disk_read_limits = [&](uint64_t id, std::vector<strata::core::SessionReadLimits>& out, std::string& e) -> bool {
             const auto* entry = conv_disk.find(id);
             if (entry == nullptr) { e = "gone"; return false; }
             out.assign(1 + stages.size(), strata::core::SessionReadLimits{});
-            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+            // the image read here is held only until it is restored to the GPUs, and the alternative is reading the
+            // whole prompt again (minutes): a smaller floor than parking's, which keeps its image for good
+            const int64_t floor_mib = std::min<int64_t>(o.conversation_cache_min_free_mib, kDiskReadFloorMib);
+            const uint64_t floor = (uint64_t) floor_mib << 20;
             for (size_t k = 0; k < out.size(); ++k) {
                 auto& l = out[k];
                 l.progress = [](uint64_t, uint64_t) { strata::core::progress_allow(0); };
-                l.admit = [&, floor](uint64_t need, std::string& why) {
+                l.admit = [&, floor, floor_mib](uint64_t need, std::string& why) {
                     // RAM first from the parked conversations least recently active (each is on disk once evicted)
                     for (size_t n = 0; n <= conversations.slots(); ++n) {
                         const auto mem = strata::core::sample_host_memory();
@@ -12586,7 +12590,7 @@ int main(int argc, char** argv) {
                             return true;
                         if (n == conversations.slots() || !conversations.evict_oldest()) {
                             why = "not enough RAM to read it (" + std::to_string(need >> 20) + " MiB plus a floor of " +
-                                  std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB, " +
+                                  std::to_string((long long) floor_mib) + " MiB, " +
                                   ram_note(mem) + ")";
                             return false;
                         }
