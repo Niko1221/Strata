@@ -48,6 +48,7 @@ bool cpu_sse42_ok() { return false; }
 bool cpu_gather_fast() { return false; }
 bool cpu_gather_fast_here() { return false; }
 bool cpu_avxvnni_ok() { return false; }
+bool cpu_vnni_ok() { return false; }
 std::string cpu_name() {
 #if defined(__APPLE__)
     return "unknown";   // as before: the Metal build's cpuid shim read all zeros
