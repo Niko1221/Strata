@@ -10,6 +10,7 @@ on:
       - strata_control/**
       - serve/**
       - tests/terminal/test_runtime.py
+      - tests/terminal/test_bench_stop.py
       - tools/minimal_server_smoke.py
       - tools/strata_tokenizer.py
   pull_request:
@@ -21,6 +22,7 @@ on:
       - strata_control/**
       - serve/**
       - tests/terminal/test_runtime.py
+      - tests/terminal/test_bench_stop.py
       - tools/minimal_server_smoke.py
       - tools/strata_tokenizer.py
   workflow_dispatch:
@@ -60,6 +62,10 @@ jobs:
                           '--report', str(report)], check=True)
           print(report.read_text())
           PY
+      - name: Verify process-tree stop regressions
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest tests.terminal.test_bench_stop
       - name: Run full server suite with explicit legacy-fixture opt-out
         shell: bash
         run: |
