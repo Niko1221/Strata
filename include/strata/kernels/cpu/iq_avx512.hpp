@@ -25,9 +25,32 @@ bool iq512x_supported(int ggml_type) noexcept;
 void iq512x_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
                  float* const* out, int r0, int r1);
 
-/// Singleton-equivalent accumulation for types 18, 21 and 22 (the linked ggml AVX2 order, one token or many); the caller
-/// checks the linked ggml ISA.  Used only for window-invariant native arithmetic.
+/// Singleton-equivalent accumulation for types 16, 17, 18, 21, 22, 23 (the linked ggml AVX2 order, one token or many);
+/// caller checks the linked ggml ISA.  Used only for window-invariant native arithmetic.
 void iq512_reference_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
                              const void* const* act, int nt, float* const* ff, int r0, int r1);
+
+/// AVX-512 VNNI/VBMI multi-token down-projection rows for IQ4_NL (type 20) and Q2_0 (type 42) against Q8_0 activations,
+/// bit-exact against ggml-cpu's AVX2 vec_dot / q2_0_q8_0_dot_avx2 for 1..N tokens.
+void iq4nl512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
+                        float* const* out, int r0, int r1);
+void q2_512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
+                      float* const* out, int r0, int r1);
+
+/// AVX-512 VNNI multi-token K-quant rows: Q4_K (12), Q5_K (13), Q6_K (14), Q5_0 (6), Q5_1 (7), Q8_0 (8),
+/// bit-exact against ggml-cpu's AVX2 vec_dot for 1..N tokens.
+bool kq512_gu_supported(int ggml_type) noexcept;
+bool kq512_supported(int ggml_type) noexcept;
+void kq512_gu_rows(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
+                   int nt, float* const* ff, int r0, int r1);
+void kq512_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
+                float* const* out, int r0, int r1);
+
+/// AVX-512 Q8_K activation quantizer: byte-for-byte identical to quantize_row_q8_K_ref and q8k_quant_avx2.
+void q8k_quant_avx512(const float* x, void* y, int64_t k);
+
+/// AVX-512 BF16 row dots for router and shared/dense projections.
+void bf16_rows_dot_512(const uint16_t* w, int rows, int cols, const float* x, float* out);
+void bf16_rows_dot_multi_512(const uint16_t* w, int rows, int cols, const float* x, int nt, float* out);
 
 }  // namespace strata::kernels::cpu

@@ -9,9 +9,22 @@
 #include <string>
 #if defined(_MSC_VER)
 #include <intrin.h>
+#if defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>
+#endif
+#if defined(_M_ARM64)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
+#endif
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+#include <sys/sysctl.h>
+#elif defined(__linux__) && defined(__aarch64__)
+#include <sys/auxv.h>
 #endif
 #include <fstream>
 #include <sstream>
@@ -48,12 +61,122 @@ bool cpu_sse42_ok() { return false; }
 bool cpu_gather_fast() { return false; }
 bool cpu_gather_fast_here() { return false; }
 bool cpu_avxvnni_ok() { return false; }
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+namespace {
+#if defined(__APPLE__)
+bool apple_sysctl_bool(const char* name) {
+    int val = 0;
+    size_t len = sizeof(val);
+    return sysctlbyname(name, &val, &len, nullptr, 0) == 0 && val != 0;
+}
+#endif
+}  // namespace
+
+bool cpu_arm_neon_ok() {
+#if defined(STRATA_GPU_METAL) || defined(STRATA_METAL)
+    return false;
+#else
+    static const bool ok = [] {
+        if (const char* e = std::getenv("STRATA_NO_ARM_NEON"); e != nullptr && std::atoi(e) != 0) return false;
+        return cpu_isa_cap() > 0;
+    }();
+    return ok;
+#endif
+}
+
+bool cpu_arm_dotprod_ok() {
+    static const bool ok = [] {
+        if (!cpu_arm_neon_ok()) return false;
+        if (const char* e = std::getenv("STRATA_NO_ARM_DOTPROD"); e != nullptr && std::atoi(e) != 0) return false;
+#if defined(__APPLE__)
+        return apple_sysctl_bool("hw.optional.arm.FEAT_DotProd") || apple_sysctl_bool("hw.optional.AdvSIMD");
+#elif defined(__linux__)
+        constexpr unsigned long kHwcapAsimddp = (1UL << 20);
+        return (getauxval(AT_HWCAP) & kHwcapAsimddp) != 0;
+#elif defined(_WIN32)
+        constexpr DWORD kPfArmV82Dp = 43;   // PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
+        return IsProcessorFeaturePresent(kPfArmV82Dp) != 0;
+#else
+        return true;
+#endif
+    }();
+    return ok;
+}
+
+bool cpu_arm_i8mm_ok() {
+    static const bool ok = [] {
+        if (!cpu_arm_dotprod_ok()) return false;
+        if (const char* e = std::getenv("STRATA_NO_ARM_I8MM"); e != nullptr && std::atoi(e) != 0) return false;
+#if defined(__APPLE__)
+        return apple_sysctl_bool("hw.optional.arm.FEAT_I8MM");
+#elif defined(__linux__)
+        constexpr unsigned long kHwcap2I8mm = (1UL << 13);
+        return (getauxval(AT_HWCAP2) & kHwcap2I8mm) != 0;
+#elif defined(_WIN32)
+        constexpr DWORD kPfArmV86I8mm = 66;
+        return IsProcessorFeaturePresent(kPfArmV86I8mm) != 0 ||
+               (
+#if defined(__ARM_FEATURE_MATMUL_INT8)
+                   true
+#else
+                   false
+#endif
+               );
+#else
+        return false;
+#endif
+    }();
+    return ok;
+}
+
+bool cpu_arm_bf16_ok() {
+    static const bool ok = [] {
+        if (!cpu_arm_neon_ok()) return false;
+        if (const char* e = std::getenv("STRATA_NO_ARM_BF16"); e != nullptr && std::atoi(e) != 0) return false;
+#if defined(__APPLE__)
+        return apple_sysctl_bool("hw.optional.arm.FEAT_BF16");
+#elif defined(__linux__)
+        constexpr unsigned long kHwcap2Bf16 = (1UL << 14);
+        return (getauxval(AT_HWCAP2) & kHwcap2Bf16) != 0;
+#elif defined(_WIN32)
+        constexpr DWORD kPfArmV86Bf16 = 65;
+        return IsProcessorFeaturePresent(kPfArmV86Bf16) != 0;
+#else
+        return false;
+#endif
+    }();
+    return ok;
+}
+#else
+bool cpu_arm_neon_ok() { return false; }
+bool cpu_arm_dotprod_ok() { return false; }
+bool cpu_arm_i8mm_ok() { return false; }
+bool cpu_arm_bf16_ok() { return false; }
+#endif
+
 std::string cpu_name() {
 #if defined(__APPLE__)
-    return "unknown";   // as before: the Metal build's cpuid shim read all zeros
+#if defined(__aarch64__) || defined(__arm64__)
+    char buf[128] = {};
+    size_t len = sizeof(buf) - 1;
+    if (sysctlbyname("machdep.cpu.brand_string", buf, &len, nullptr, 0) == 0 && buf[0] != '\0') {
+        return std::string(buf);
+    }
+#endif
+    return "unknown";
+#elif defined(_WIN32) && defined(_M_ARM64)
+    char buf[128] = {};
+    DWORD sz = sizeof(buf) - 1;
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                     "ProcessorNameString", RRF_RT_REG_SZ, nullptr, buf, &sz) == ERROR_SUCCESS && buf[0] != '\0') {
+        return std::string(buf);
+    }
+    return "Windows ARM64 (Snapdragon Oryon)";
 #else
     std::ifstream f("/proc/cpuinfo");
     std::string line;
+    unsigned impl = 0, part = 0;
     while (std::getline(f, line)) {
         if (line.rfind("model name", 0) == 0 || line.rfind("Model", 0) == 0) {
             const size_t c = line.find(':');
@@ -61,9 +184,30 @@ std::string cpu_name() {
                 const size_t b = line.find_first_not_of(" \t", c + 1);
                 if (b != std::string::npos) return line.substr(b);
             }
+        } else if (line.rfind("CPU implementer", 0) == 0) {
+            const size_t c = line.find(':');
+            if (c != std::string::npos) impl = (unsigned) std::strtoul(line.c_str() + c + 1, nullptr, 0);
+        } else if (line.rfind("CPU part", 0) == 0 && part == 0) {
+            const size_t c = line.find(':');
+            if (c != std::string::npos) part = (unsigned) std::strtoul(line.c_str() + c + 1, nullptr, 0);
         }
     }
-#if defined(__aarch64__)
+    if (impl == 0x41) {   // Arm Ltd.
+        if (part == 0xd4f) return "ARM Neoverse-V2 (NVIDIA Grace)";
+        if (part == 0xd85) return "ARM Cortex-X925 (NVIDIA GB10)";
+        if (part == 0xd87) return "ARM Cortex-A725 (NVIDIA GB10)";
+        if (part == 0xd40) return "ARM Neoverse-V1";
+        if (part == 0xd49) return "ARM Neoverse-N2";
+    } else if (impl == 0x51) {   // Qualcomm
+        if (part == 0x001) return "Qualcomm Oryon (Snapdragon X1)";
+        if (part == 0x002) return "Qualcomm Oryon (Snapdragon X2)";
+        return "Qualcomm Oryon ARM64";
+    } else if (impl == 0x4e) {   // NVIDIA
+        return "NVIDIA ARM64 (Grace / Vera)";
+    } else if (impl == 0x61) {   // Apple
+        return "Apple Silicon ARM64";
+    }
+#if defined(__aarch64__) || defined(_M_ARM64)
     return "aarch64";
 #else
     return "unknown";
@@ -71,6 +215,10 @@ std::string cpu_name() {
 #endif  // __APPLE__
 }
 #else
+bool cpu_arm_neon_ok() { return false; }
+bool cpu_arm_dotprod_ok() { return false; }
+bool cpu_arm_i8mm_ok() { return false; }
+bool cpu_arm_bf16_ok() { return false; }
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -101,7 +249,9 @@ bool cpu_avx512_ok() {
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
         cpuid(7, 0);
         const unsigned ebx = r[1], ecx = r[2];
-        return ((ebx >> 16) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 11) & 1u) && ((ecx >> 1) & 1u);
+        // AVX512F (16), AVX512DQ (17), AVX512BW (30), AVX512VL (31), AVX512_VBMI (1), AVX512_VNNI (11), AVX512_VPOPCNTDQ (14)
+        return ((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) &&
+               ((ecx >> 1) & 1u) && ((ecx >> 11) & 1u) && ((ecx >> 14) & 1u);
     }();
     return ok;
 }
@@ -260,6 +410,22 @@ bool cpu_gather_fast() {
         unsigned r[4];
         cpuid_regs(0, 0, r);
         const unsigned max_leaf = r[0];
+        // AMD swaps the last two vendor registers: the string assembles as EBX+EDX+ECX ("Auth"+"enti"+"cAMD"),
+        // unlike Intel's EBX+ECX+EDX.  Match that layout; EBX "htuA" plus both remaining halves is unambiguous.
+        if (r[1] == 0x68747541u && ((r[2] == 0x69746e65u && r[3] == 0x444d4163u) ||
+                                    (r[2] == 0x444d4163u && r[3] == 0x69746e65u))) {   // "AuthenticAMD"
+            // Zen 5 (family 0x1A: Granite Ridge, Strix, Turin) executes AVX-512 natively at full width and carries
+            // the VNNI / VBMI / IFMA set; its gathers are NOT the microcoded Zen 4 gathers measured 3-5% slower
+            // (the note in iq_avx512.cpp). Admit exactly the CPUs the AVX-512 kernels already require
+            // (cpu_avx512_ok: F/BW/VL/VNNI/VBMI + XCR0) at family >= 0x1A; Zen 4 (0x19) keeps the scalar decode.
+            // STRATA_IQ_GATHER=0 and STRATA_FORCE_ISA stay the off switches; iq512_gather_parity is the proof.
+            if (!cpu_avx512_ok()) return false;
+            cpuid_regs(0x80000000, 0, r);                       // max EXTENDED leaf (leaf 0 EAX only covers the basic range)
+            if (r[0] < 0x80000001u) return false;
+            cpuid_regs(0x80000001, 0, r);
+            const unsigned fam = ((r[0] >> 8) & 0xf) + ((r[0] >> 20) & 0xff);   // base + extended (Zen's base is 0xF)
+            return fam >= 0x1A;
+        }
         if (!(r[1] == 0x756e6547u && r[3] == 0x49656e69u && r[2] == 0x6c65746eu)) return false;   // "GenuineIntel"
         if (max_leaf < 7) return false;
         cpuid_regs(7, 0, r);

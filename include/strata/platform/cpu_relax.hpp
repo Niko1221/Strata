@@ -16,7 +16,13 @@
 #define strata_cpu_pause() _mm_pause()
 #define strata_store_fence() _mm_sfence()
 #define strata_load_fence() ((void) 0)
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#if defined(_MSC_VER)
+#include <intrin.h>
+inline void strata_cpu_pause() { __yield(); }
+inline void strata_store_fence() { __dmb(_ARM64_BARRIER_OSHST); }
+inline void strata_load_fence() { __dmb(_ARM64_BARRIER_ISHLD); }
+#else
 inline void strata_cpu_pause() { __asm__ __volatile__("yield" ::: "memory"); }
 #if defined(__APPLE__)
 inline void strata_store_fence() { __asm__ __volatile__("dmb ishst" ::: "memory"); }
@@ -26,6 +32,7 @@ inline void strata_store_fence() { __asm__ __volatile__("dmb oshst" ::: "memory"
 // After a spin saw a flag the GPU raised, the data the GPU wrote before it must be read after the flag: an ARM core
 // may otherwise load that data early.  `dmb ishld` is the load barrier.
 inline void strata_load_fence() { __asm__ __volatile__("dmb ishld" ::: "memory"); }
+#endif
 #endif
 #else
 #include <atomic>
