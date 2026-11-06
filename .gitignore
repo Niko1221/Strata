@@ -102,3 +102,10 @@ examples/training/*.bak
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+
+# training: one-off long-context probe data and engine scratch work (2026-11-07).
+# These are run artifacts, not deliverables: _ttl/ is ~551 MiB of 4.3K/4.6K token
+# probes, _engine_mezo_work/ is ~39 MiB of engine scratch. Keep them on disk, keep
+# them out of the PR -- `git add -A` must not sweep 590 MiB into the review.
+/training/_ttl/
+/training/mezo/_engine_mezo_work/

@@ -58,6 +58,7 @@ import whoami
 import guard
 import dpo
 import algos
+from run_meta import write_run_meta   # 超参落盘：backward/run_meta.py（不依赖 torch，可单测）
 
 platform_check.require(platform_only=True)   # 模块级只查平台：CI 的 CPU torch 档也要能 import
 
@@ -596,6 +597,11 @@ def main() -> int:
             args.epochs, len(dpo_rows) if dpo_rows is not None else None, len(data))
         print(f"epochs {args.epochs:g} × {n_rows} 条"
               f"{'（偏好对）' if dpo_rows is not None else ''} = {args.steps} 步", flush=True)
+
+    # 参数到这里才全部定稿（含 --epochs 折算后的真实步数）。**加载模型之前**先写一次：
+    # 后面 OOM / 挂死 / 被 kill，至少还查得到这个 adapter 是哪个工作点训出来的。
+    meta_path = write_run_meta(args.out, args, phase="start")
+    print(f"run meta: {meta_path or '(写入失败)'}", flush=True)
 
     from transformers import AutoTokenizer
 
@@ -1167,6 +1173,21 @@ def main() -> int:
     else:
         sd = {k: v.detach().cpu() for k, v in model.state_dict().items() if k.endswith(".A") or k.endswith(".B")}
     torch.save(sd, args.out)
+    # 完成态：把实际步数、keep-best、能力门终评、耗时与峰值并进 start 那份，不另开文件。
+    done_extra = {"phase": "done", "steps_done": n_steps_done,
+                  "train_secs": round(train_secs, 3), "run_secs": round(run_secs, 3),
+                  "peak_gib": round(float(torch.cuda.max_memory_allocated()) / 2**30, 3),
+                  "out": str(args.out)}
+    if best is not None:
+        done_extra["best_step"] = best["step"]
+        done_extra["best_cap_drift"] = round(float(best["cap_drift"]), 6)
+        done_extra["best_id_delta"] = round(float(best["id_delta"]), 6)
+    if base_eval is not None and final_ev is not None:
+        done_extra["cap_drift_final"] = round(float(final_ev["cap_mean"] - base_eval["cap_mean"]), 6)
+        done_extra["id_delta_final"] = round(float(final_ev["id_mean"] - base_eval["id_mean"]), 6)
+        done_extra["gen_ok"] = sum(1 for r in final_ev["gen"] if r["ok"])
+        done_extra["gen_n"] = len(final_ev["gen"])
+    write_run_meta(args.out, args, **done_extra)
     nz = sum(1 for v in sd.values() if float(v.abs().max()) > 0)
     print(f"saved {args.out}: {len(sd)} tensors, non-zero {nz}, peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB",
           flush=True)
