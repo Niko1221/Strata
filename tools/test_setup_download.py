@@ -169,8 +169,8 @@ def run(server, d, pin="auto", name=NAME):
 
 
 def asked(srv):
-    """The pieces (indexes) the server was asked for, one entry per request; the one-byte probe is left out."""
-    return [s // CHUNK for s, e in srv.gets if (s, e) != (0, 0)]
+    """Piece indexes, excluding the byte probe and whole-file GET after a HEAD redirect."""
+    return [s // CHUNK for s, e in srv.gets if (s, e) not in ((0, 0), (0, len(srv.data) - 1))]
 
 
 def files(d):
