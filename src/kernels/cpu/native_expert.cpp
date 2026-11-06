@@ -530,7 +530,7 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
         static const unsigned fused_types = [] {
             unsigned m = 0;
             const char* e = std::getenv("STRATA_IQ512_FUSED_TYPES");
-            const std::string v = e != nullptr && e[0] != ' ' ? e : "18,21,22";
+            const std::string v = e != nullptr && e[0] != '\0' ? e : "18,21,22";
             size_t at = 0;
             while (at < v.size()) {
                 const int t = std::atoi(v.c_str() + at);
