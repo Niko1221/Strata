@@ -11,14 +11,14 @@
 **范围**：三块 —— ① `training/`（训练入口，新增目录；根放共用层，`mezo/`、`backward/` 是两条路线，`bench/` 基准与探针，`tests/` 单测）；② `serve/server.py` 的训练会话与 `/v1/score`、`/v1/lora`；③ **引擎侧 LoRA + SCORE 能力**（34 文件 / +3,621 −57：`src/kernels/lora*.{cu,cpp}`、`src/prefill/score*`、`generate.cpp` 的命令循环、`CMakeLists.txt` / `setup.py` 的开关、CI）
 > 第 ③ 块不是可选的：零阶路线的前向就是引擎的 `SCORE`，没有它 `--method mezo` 一行都跑不了。
 > 若上游要求训练功能与引擎能力分开审，按 Q9 拆成两个 PR 即可，代码本身已经是分开的提交。
-**状态**：工作区干净，已全部落成 commit；训练目录 **271 项**（Windows 上 269 过 + 2 项 watchdog 仅因缺 triton 包；**Linux 实测 268 全过（11-03），luspo 新增 3 项后 271 未在 Linux 复测**，见 §7.1），`serve.test_training_api` **6 项**全过（本次复核）；零阶那一棵树 **144 项全过且不需要 torch**（11-03 口径）
+**状态**：工作区干净，已全部落成 commit；训练目录 **359 项全过**（2026-11-07 Windows 实测，`python -m unittest discover -s training/tests -p "test_*.py"`，15 s，含新增 8 项），`serve.test_training_api` **6 项**全过；零阶那一棵树 **214 项**（213 过 + 1 skipped，零 torch）。文中 144 / 268 / 271 等旧数是历史提交快照，见 §0.3
 
 | 项 | 数 |
 |---|---|
-| 改动面（相对 `upstream/main`） | 134 文件 / **≈+28k −94**（含本文档；口径见表下注） |
-| 本功能提交（非 merge） | ≈120 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
+| 改动面（相对 `upstream/main`） | 143 文件 / **≈+32k −94**（含本文档；口径见表下注） |
+| 本功能提交（非 merge） | ≈130 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
 | 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo/mezo.py` `backward/sft.py` `backward/grpo.py` 等 13 个文件 ≈5.4k 行（luspo 带来约 0.7k） |
-| 测试 | 15 个 `test_*.py` 3,407 行，训练目录 **271 项**（Windows 上 269 过，2 项 watchdog 缺 triton）；`serve/test_training_api.py` 6 项 |
+| 测试 | 18 个 `test_*.py`，训练目录 **359 项全过**（2026-11-07 Windows 实测，15 s）；`serve/test_training_api.py` 6 项 |
 | 服务端 | `serve/server.py`（`TrainBridge` + 3 个 `/v1/training/*` 路由 + `POST /v1/lora`） |
 | 新增依赖 | 零阶 **0 个 pip 包**（只需已装的 numpy/jinja2/regex + 一个引擎二进制）；反传 4~6 个（torch / transformers / accelerate / safetensors，Windows 还要 triton-windows、kernels）→ §2.5 |
 
@@ -29,6 +29,17 @@
 **建议阅读顺序**：**核心结论（下面三张表）** → §0（三分钟看懂交了什么、分几条分支）→ §2.5 两条路线的依赖 → §4 设计决策
 → §5 证据（其中 §5.2 回答「这台机器上能训多长、多快、什么情况训不了」）→ §7 分支与合并顺序
 → §9 需要评审确认的 12 项。原始点位与口径在 **附录 B**。
+
+> **2026-11-07 复核（本版状态）**：头部与各章的「当前状态」数字已按当前 HEAD 重跑刷新 ——
+> 训练目录 **359 项全过**（Windows，15 s，`python -m unittest discover -s training/tests -p "test_*.py"`），
+> 零阶树 **214 项**（213 过 + 1 skipped，零 torch）；三树改动面 mezo **107** / bwd **141** /
+> support **143** 文件，非 merge 提交 **85 / 102 / 126**。
+> **文中形如 `adfa53a7 / 271 项`、`56c7eae0 / 144 项` 的数字是对应历史提交时的快照，
+> 不代表当前 HEAD**，按本节与 §7.1 读。
+> 本版同时闭合了 §8-13（显著性标定）、§5.4.1（超参落盘 / B=0 对照 / 重复评测）、
+> §9 Q7（训练一步闭环），新增 §5.6 保留能力评测；证据
+> `training/RETENTION-EVAL.zh.md` + `training/EVAL-RESULTS.json` 随 PR 提交。
+> 新算法（RaPO / 独立 GSPO）**不在本 PR 范围**，GSPO 的序列级 ratio 已在 `luspo` 中实现。
 
 ## 核心结论：三张表（训练上限 / 身份训练 / 数学训练）
 
@@ -71,8 +82,9 @@
 | L5（最难档）acc | 94% | 92% | **60%** | 96% |
 
 **一句话**：训练集四条线都学会 2/3，**代价完全不同** —— 反传把非训练集打掉 31 项（连最简单的 L1 都掉 3 项；
-工作点问题、归因未完成，§5.4.1）；零阶 −3、DPO −2 落在评测波动量级内（baseline 已 100% 饱和，1 项 = 0.42 pp，
-尚不能判定为真实回退，§8 第 13 条）。**"训练集学会"和"能力没掉"是两笔账，这是本 PR 最重要的一条判据。**
+那是一次超参未落盘、adapter 已不在本地的实验，**不再作为当前代码的证据**，见 §5.4.1）；
+零阶 −3、DPO −2 经 2026-11-07 标定**明确落在噪声内**（同表重复评测净差就有 2~5 条，§5.6 / §8 第 13 条）。
+**"训练集学会"和"能力没掉"是两笔账，这是本 PR 最重要的一条判据。**
 
 ---
 
@@ -105,12 +117,12 @@
 | numpy ↔ torch 损失对拍（`test_objectives.py`） | ❌ | ✅ | ✅ |
 | torch 侧基准（`bench_fullctx` / `bench_cmp` 等 6 个） | ❌ | ✅ | ✅ |
 | **训练路径零 torch / 新增 pip 包 0 个** | ✅ | ❌ | ❌ |
-| 训练目录测试数 | **144** | **268** | **268** |
+| 训练目录测试数 | **214** | **359** | **359** |
 
 三条的一句话区分：
 
 - **`feat/train-mezo`** = 共用层 + 零阶 + 引擎侧改动。运行时只要 numpy + 一个自己构建的引擎，
-  训练路径不 import torch（把 `torch` 顶成 raise ImportError 的模块后，144 项仍然全过）。
+  训练路径不 import torch（把 `torch` 顶成 raise ImportError 的模块后，214 项仍然全过：213 过 + 1 skipped）。
   这是「只要零阶」时的完整答案。
 - **`feat/train-backforward`** = 上一条 + 整层 torch 反传（比它多 32 个 `.py`）。
   反传在**命令面上**和零阶是同一个开关（`--method`），在**执行栈上**不是：它的梯度来自
@@ -147,8 +159,8 @@
   两条方法的差别只在执行栈 —— 一个在引擎进程里前向、一个在本地 torch 建图。这决定的是
   依赖（装不装 torch）与显存曲线，不是数学。也正因为它是执行栈级差异，反传这一层能整层拆掉：
   它比零阶树只多 32 个 `.py`（30 个 torch 文件 + 2 个诊断脚本），共用层与 `train.py` / `algos.py`
-  两边逐字一致。只交 `feat/train-mezo`（`56c7eae0`）就是"共用层 + 零阶"的完整树，144 项全绿、
-  训练路径零 torch（无 torch 环境下同样 144 过）；拆法与实测出的坑见 §7.4；
+  两边逐字一致。只交 `feat/train-mezo`（`56c7eae0`）就是"共用层 + 零阶"的完整树（该提交时 144 项全绿；
+  **当前 HEAD 214 项**，213 过 + 1 skipped）、训练路径零 torch；拆法与实测出的坑见 §7.4；
 - **零阶路线不新增任何 pip 依赖**（不需要 torch），反传路线所需的 torch/transformers 等
   是可选档，不进 `requirements.txt` —— 两条路线分别要装什么见 §2.5；
 - 不改 `third_party/llama.cpp`，不新增 C++ 依赖；引擎二进制用已有的构建流程产出。
@@ -390,7 +402,7 @@ training/
   backward/  反传：sft.py（含 DPO / curriculum）、grpo.py、HF 加载栈（loader_qwen4 / nf4_fused / qsa_fast / lora …）
              + hf_ref.py（torch 侧参考前向，仅做 score 对拍，不是方法实现）
   bench/     基准与一次性探针：bench_fullctx、ab_*、mtp_*、budget、judge_limits …
-  tests/     15 个单测（271 项；零阶树只带其中 8 个 = 144 项）
+  tests/     18 个单测（359 项；零阶树只带其中 9 个 = 214 项，11-07 口径）
 ```
 
 > 这些是**功能代码，不是示例**。原稿放在 `examples/training/` 名下不副实 —— 上游 `main` 根本没有 `examples/`，
@@ -776,26 +788,25 @@ max_tokens 8192），**同一个引擎、只换 adapter**，baseline 不挂 adap
 是把 LoRA 权重推出有效区间的典型配方；L1（最简单档）也掉 3 项，符合"通用能力被连带拖动"
 而不是"难题学不会"。
 
-**还缺什么（所以本 PR 不声称已定位）**：
+**2026-11-07 补证后，上面四行里前三行已闭合**（第四行仍缺，属护栏本身的观测面）：
 
-| 缺的 | 后果 |
+| 缺的 | 现在的状态 |
 |---|---|
-| bwd / dpo 两个 adapter 的 `lr` / `steps` / `rank` 未落盘 | 无法复现那次训练，无法证明是 lr 还是步数 |
-| 同一 adapter 重复评测两次的波动量级未测 | 3 项 = 1.26%，若评测自身波动就有 3 项，零阶/DPO 的 −3/−2 不能判为回退 |
-| 「未训练 adapter（B=0）」挂上去的对照未做 | 无法把"adapter 带来的扰动"与"训练造成的回退"分开 |
-| 能力门没有数学探针 | 护栏对这类回退是瞎的 |
+| `lr` / `steps` / `rank` 未落盘 | ✅ 已修：新增 `backward/run_meta.py`，**加载模型之前**写 `<out>.meta.json` 的 `phase=start`，结束合并 `phase=done`；`vars(args)` 全量入 meta（新增参数自动覆盖），附训练数据 sha256 / 行数、git HEAD、keep-best、能力门终评、峰值显存。`tests/test_run_meta.py` 8 项守着，写失败只警告不挂训练 |
+| 同一 adapter 重复评测两次的波动量级 | ✅ 已测：24 条净差 **2~5 条（8.3~20.8 pp）**，见 §5.6 |
+| 「未训练 adapter（B=0）」对照未做 | ✅ 已做：同规格 rank16 / 96 张量 / 25.51 MiB 零表，换另一 seed 漂移 +0.00001~+0.00020 ⇒ 挂表本身零扰动，见 §5.6 |
+| 能力门没有数学探针 | ❌ 仍未接进 `--probes`（§8 第 14 条）。数学回退改由**独立保持集评测**发现，不靠护栏 —— 这是刻意的选择：护栏是训练内 hard stop，评测是训练外判据，两者不互相替代 |
 
-**因此本 PR 的立场**：不把 −31 说成"反传这个方法不行"，也不把它说成"已修复"。
-它是**一次未记录超参的实验结果**，而暴露出来的是**验收方法的缺口**：用一个已饱和的评测集
-（baseline 100%）当唯一判据，且护栏的观测面不覆盖被训练的能力，任何路线都会"看起来在掉"。
+**因此本 PR 的立场（更新）**：−31 仍是**一次未记录超参的实验结果**，但不再用「归因未完成」搪塞 ——
+已确认它不是损失数学写错（§5.5 三条硬证据），判不了的原因是**验收方法**：饱和评测集 +
+未标定噪声 + 护栏看不见数学。本轮补齐可复现性、噪声底、B=0 对照三件事，并用当前默认参数
+重做一次（超参全部落盘），结论见 `RETENTION-EVAL.zh.md` §3.7。
+**不把 −31 说成"反传这个方法不行"，也不说成"已修复"；它不作为当前代码的证据。**
 
-补证需要的最小三件事（都在 `training/` 内，不动接口）：**① 落盘超参**（`sft.py` 已有完整参数
-可写进 json）；**② 评测复现性**（同 adapter 跑两遍，得到波动基线）；**③ 把 MATH-500 的
-子集接进 `--probes`**，让能力门对数学也生效。这三件做完才能回答"是 lr 还是别的"。
-
-> 口径：mezo adapter = `_run_hardmth/final.gguf`（500 步）；bwd / dpo 两个 adapter 只留产物与
-> 评测报告，训练超参未落盘（§8 第 3 条）。同一 adapter 自检 2/4、evalscope 3/4，差别在判定口径
-> （逐字 vs 数值等价），本文用 evalscope。`_evalscope/` 与训练日志均未随仓库提交（§8 第 12 条）。
+> 口径（历史，11-03）：mezo adapter = `_run_hardmth/final.gguf`（500 步）；bwd / dpo 两个 adapter
+> 只留产物与评测报告，训练超参未落盘（§8 第 3 条），**两个文件现已不在本地**。同一 adapter
+> 自检 2/4、evalscope 3/4，差别在判定口径（逐字 vs 数值等价），本文用 evalscope。
+> `_evalscope/` 与训练日志均未随仓库提交（§8 第 12 条）。
 
 ### 5.5 正确性对拍
 
@@ -803,9 +814,60 @@ max_tokens 8192），**同一个引擎、只换 adapter**，baseline 不挂 adap
 |---|---|
 | 引擎 score vs HF CE（同一 ids，8 token） | −56.6508 vs **−56.6433**，差 0.0075 nats |
 | `objectives.py` numpy vs torch | `test_objectives.py` 逐值对拍通过 |
-| 训练目录单测 | **271 项**（`python -m pytest training/tests -q`，22 s；Windows 上 269 过 + 2 项 watchdog 缺 triton，见 §7.1） |
+| 训练目录单测 | **359 项全过**（`python -m unittest discover -s training/tests -p "test_*.py"`，15 s；2026-11-07 Windows 实测） |
 | serve 全量 | 1,403 项（2026-11-03 实测：1,378 过 + 24 skip），仅 `test_winjob` 1 个既有环境性失败（干净 worktree 同样失败） |
 | 服务会话真机 | 会话期 chat 409 → close 后 200；客户端崩溃也会话正常关 |
+
+---
+
+### 5.6 训练是否影响已有任务（2026-11-07 补证）
+
+> 完整报告与逐条原始数字见 `training/RETENTION-EVAL.zh.md`、`training/EVAL-RESULTS.json`
+> （两者随本 PR 提交）；复现命令见该报告 §6。这里只写结论与口径。
+
+原判据的问题：§5.4 用的是 baseline 已 100% 饱和的 MATH-500 干净子集，且**没有测过
+"同一 adapter 重复评测两次"的波动量级**，所以 −3 / −2 判不了是不是真回退。本轮参考
+RaPO（arXiv 2605.09640v2）§4.1 的 Last Accuracy / Forgetting 与 §3.3 的轨迹级 log-ratio
+漂移，把判据拆成四维：**可塑性 / 保持 / 漂移 / 噪声与伪影**，并加三组对照 —— 同规格 B=0
+零表、同表重复、按 base 题级 acc 分层的「已有能力层」。`truncated` 必须单列（噪声臂自己
+就有 4 条 `False→True`），否则会把长度伪影读成能力变化。
+
+| 噪声底（2026-11-07 实测） | 值 | 用法 |
+|---|---|---|
+| 引擎 `SCORE` 长锚（≥300 token）同进程重复 | std **0.0012** nats/token | 阈值 0.005 ≈ 4σ |
+| 短锚（13/38 token）同进程重复 | std **0.114**、max **0.164** | **不可作结论**（同进程也抖，根因未定位，§8 第 5 条） |
+| 换表回 anchor 的长锚残差 | ≤0.0037 | 换表干净、无会话缓存污染 |
+| 生成层：同一 B=0 表、同题同 seed 连采两遍 | 24 条净差 **2~5 条（8.3~20.8 pp）** | **≤5 条的 acc 变化一律不判退步** |
+| 文本级：同表同题同 seed 身份 19 条 | 只有 **4 条逐字相同** | 二值判据零翻转 ⇒ 饱和判据会抹平噪声，不能判退步 |
+
+引擎侧两个硬约束（写进方法，不是绕过）：`LORA` 原地换表**不允许改 rank**（实测
+`layer 0 changed shape`），所以单进程多臂必须按 rank 分组、每组用自己的 B=0 表当 anchor，
+只比组内差分；`lora_to_gguf.py` 的 `B is zero: never trained` 导出过滤对训练结果正确、
+对零表对照不适用，造零表要复用其形状约定但去掉该过滤。
+
+结论：
+
+1. **旧 DPO 的退步是实现 bug，不是算法**：轨迹漂移 −0.079~−0.138 nats/token（噪声底 65~120×）、
+   AIMO3 已有能力层 8/8→1/8；三处修复（β 量纲 / epochs 折算 / 能力门 EOS 判据）+ on-policy
+   数据后为 −0.003~−0.008、8/8→7/8。
+2. **MeZO 零阶不构成退步来源**：漂移 ≤0.0006（噪声内）、数学保持集 0.750→0.750、身份层零翻转。
+   它的短板是「学不动」（单步 SNR ~1/√d），属**可塑性账**不是保持账。
+3. **正确实现但非 RL 的 DPO 可以零遗忘**：小数据集 DPO 在 15 条已有能力题上零遗忘、
+   保持集漂移 ≈0。RaPO 的实证是「RFT 比 SFT 抗遗忘但仍会忘」，决定因素是**更新幅度与
+   轨迹级漂移**，不是有没有 RL。
+4. **B=0 对照把「挂表扰动」与「训练回退」分开**：同规格零表换另一 seed 漂移
+   +0.00001~+0.00020 ⇒ 挂表本身零扰动，退步来自训练权重。
+5. 训练目标能否学会与已有能力是否保持是两笔账：`sft_cold`（4 步）是「只破坏不学会」
+   （目标 0/4→0/4、已有能力 8/8→4/8），`dpo_fixed` 是「学会 4 条、掉 1 条」。
+   全量 AIMO3 的 +4/−2（p=0.688）与 MATH 的 +9/−8（p=1.00）**仍在噪声内，不主张显著提升**。
+
+**反传 −31 项的处置**：那次训练超参未落盘、adapter 已不在本地，无法复现，本轮不复用该数字
+作为「当前代码」的证据。已补 `backward/run_meta.py` 让以后每次训练自动落盘完整参数与结果，
+并用当前默认参数重做一次可判定的实验，见 `RETENTION-EVAL.zh.md` §3.7 与本节 §5.4.1。
+
+**范围边界**：RaPO 的 Retention Reward / CTAN 与独立的 `--algo gspo` **不在本 PR**。
+本轮只借其度量方法（Last/Forgetting、轨迹级漂移），不改 `algos.ALGOS` 注册表；
+GSPO 的序列级 ratio 已在 `luspo` 中实现（`objectives.py`，LUSPO 相对它只多乘 `|y_i|`）。
 
 ---
 
@@ -828,7 +890,7 @@ python train.py --algo sft --method bogus               # 期望：invalid choic
 # V2 损失单一出处（无 GPU，35 项）
 python -m unittest test_objectives -v
 
-# V3 训练目录全量（无 GPU，271 项，~22 s；零阶树 144 项）
+# V3 训练目录全量（无 GPU，359 项，~15 s；零阶树 214 项，11-07 口径）
 python -m unittest discover -p "test_*.py"
 
 # V4 服务会话（无 GPU；必须在仓库根跑，测试按包相对导入，6 项 ~4 s）
@@ -862,16 +924,16 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 
 | 分支 | 切分提交 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
 |---|---|---|---|---|---|
-| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **144 全过**（把 `torch` 顶成 raise ImportError 的模块后同样 144 过） | ≈80 提交 / 102 文件 / ≈+18.0k −94 |
-| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | 271 项（269 过 + 2 项 watchdog 见下） | ≈90 提交 / 134 文件 / ≈+27.7k −94 |
-| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | 271 项（同上） | ≈120 提交 / 134 文件 / ≈+28k −94 |
+| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **214**（213 过 + 1 skipped；把 `torch` 顶成 raise ImportError 的模块后同样 214） | ≈90 提交 / 107 文件 / ≈+20k −94 |
+| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | **359 全过** | ≈100 提交 / 141 文件 / ≈+31k −94 |
+| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | **359 全过**（同上） | ≈130 提交 / 143 文件 / ≈+32k −94 |
 
 **如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
 
 | 只收 | 得到 | 失去 |
 |---|---|---|
-| `feat/train-mezo` | 零阶三算法全在（sft / dpo / grpo × 引擎前向）、`LORA` / `SCORE`、引擎侧改动、数学造数据与评测、**0 个新增 pip 包、训练路径零 torch**、144 项 | 只缺**反传那一层**：`backward/` 整层（`sft.py` / `grpo.py` / HF 加载栈）、`update_rules.py` / `ce.py` / `lora.py`、`backward/hf_ref.py`（score parity 对拍）、GRPO 的 TIS 重加权、6 个 torch bench、7 个 torch 测试，以及 `test_objectives.py` 的 numpy↔torch 逐值对拍。**DPO 与 `--init-adapter`（课程续训）两条线都有，不属于反传独有** |
-| `feat/train-backforward` | 上面全部 + 反传栈，268 项 | 无（严格超集）。代价是树里同时带着零阶，审核时看不出「哪半是这次要的」—— 除非按 §7.1 的文件清单读 |
+| `feat/train-mezo` | 零阶三算法全在（sft / dpo / grpo × 引擎前向）、`LORA` / `SCORE`、引擎侧改动、数学造数据与评测、**0 个新增 pip 包、训练路径零 torch**、214 项 | 只缺**反传那一层**：`backward/` 整层（`sft.py` / `grpo.py` / HF 加载栈）、`update_rules.py` / `ce.py` / `lora.py`、`backward/hf_ref.py`（score parity 对拍）、GRPO 的 TIS 重加权、6 个 torch bench、7 个 torch 测试，以及 `test_objectives.py` 的 numpy↔torch 逐值对拍。**DPO 与 `--init-adapter`（课程续训）两条线都有，不属于反传独有** |
+| `feat/train-backforward` | 上面全部 + 反传栈，359 项 | 无（严格超集）。代价是树里同时带着零阶，审核时看不出「哪半是这次要的」—— 除非按 §7.1 的文件清单读 |
 | `feat/train_support` | 两条线 + 这组文档（交付面） | — |
 
 一句话：**backforward 相对 mezo 的增量不是「训得更好」，而是「一套不同的执行栈 + 对拍证据」** ——
@@ -891,11 +953,11 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 - **反传线是叠在零阶线之上的，不是并列**：`comm -23`（mezo 有而 bwd 没有的文件）为空；
   bwd 比 mezo 只多 **32 个 `.py`**（30 个 torch 文件 + `bench/diag_frozen.py` / `bench/mtp_probe_tr.py`
   两个诊断脚本），共享的 62 个 `.py` 逐字一致（`git diff --quiet` 逐个核过）。
-  这是"官方只要一条线"能拆的前提：只要零阶交 mezo（102 文件、144 项、零 torch），
+  这是"官方只要一条线"能拆的前提：只要零阶交 mezo（**当前 107 文件、214 项**、零 torch），
   要两条交 support；bwd 自己也能独立用，但它交付的价值是"反传 + 对拍"，零阶是它的基础层。
 - **零阶线不带 torch 是判据，不是说法**：
   `git grep -nE '^(import|from) (torch|transformers|triton)' feat/train-mezo -- training/` 为空；
-  再把 `torch` 换成一个 raise ImportError 的模块顶掉跑 `pytest tests`，仍然 144 过。
+  再把 `torch` 换成一个 raise ImportError 的模块顶掉跑 `pytest tests`，仍然 **214（213 过 + 1 skipped）**。
   `train.py → mezo/mezo.py` 的 import 闭包只有 `objectives.py` / `mem_guard.py`。
   摘掉的那一层（`backward/` 全部、`ce.py` / `lora.py` / `update_rules.py`、`backward/hf_ref.py`、
   6 个 torch bench、7 个 torch 测试）在 bwd 上原样存在，`56c7eae0` 一次提交完成摘除。
@@ -924,9 +986,9 @@ Windows 轮子（要装第三方 `triton-windows`），本机测试环境里没�
 
 ```
 upstream/main ffa80d73（v0.2.10 一带，2026-11-03 已 merge 进三条分支）
-  └─ feat/train-mezo            零阶线（HEAD）  共用层 + 零阶 + 引擎（LORA / SCORE）；训练路径零 torch；144 项
+  └─ feat/train-mezo            零阶线（HEAD）  共用层 + 零阶 + 引擎（LORA / SCORE）；训练路径零 torch；214 项
        │   56c7eae0  摘掉 torch 层（213 → 134）；方法可用性改成看文件（algos.available）
-       └─ feat/train-backforward      反传线（HEAD）  以上全部 + torch 反传层（比 mezo 多 32 个 .py）；271 项
+       └─ feat/train-backforward      反传线（HEAD）  以上全部 + torch 反传层（比 mezo 多 32 个 .py）；359 项
             │   adfa53a7  摘 torch 时的合并点：反传侧保住整层
             └─ feat/train_support     交付面（HEAD）  两条线的并集 + 这组文档（.py 与 bwd 逐字相同）
 ```
@@ -949,7 +1011,7 @@ git diff --stat feat/train-backforward feat/train_support -- '*.py'    # 空 = �
 的树（`56c7eae0`，144 项全绿，无 torch），`feat/train-backforward` 用**同一份映射表**再迁移一遍、
 merge 零阶层、再叠 torch（`adfa53a7`，271 项），support 是两者合并的结果（`c9c0016f`）。判据如下：
 
-- **官方只要零阶** ⇒ 直接交付 `feat/train-mezo`（`56c7eae0`）：102 文件、144 项、训练路径零 torch。
+- **官方只要零阶** ⇒ 直接交付 `feat/train-mezo`（当前 107 文件、214 项、训练路径零 torch）。
   不需要 cherry-pick，也不需要再把目录搬一次 —— 这正是"迁移只做在交付面"那版的缺口：
   合并后的树能拆，但源分支拆不出来。
 - **只要反传**（不要引擎那套 `LORA`/`SCORE` 改动）⇒ 交付 `feat/train-backforward`（`adfa53a7`）：
@@ -1022,7 +1084,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
   含 `LORA` / `SCORE` / `--kv auto` / 适配器符号），所以不必"先合引擎"；若上游希望分开审，
   仍可按 Q9 拆成引擎 PR + 脚本 PR。
 - **反传那一层可以整层拆出 —— 已实测，而且现在是按文件拆**：拆出来的形态就是 `feat/train-mezo` 本身
-  （`56c7eae0`，144 项全绿、训练路径零 torch）。bwd 只比它多 32 个 `.py`，共用层与 `train.py` /
+  （`56c7eae0`，该提交时 144 项全绿；当前 214 项、训练路径零 torch）。bwd 只比它多 32 个 `.py`，共用层与 `train.py` /
   `algos.py` 两边逐字一致，所以"拆"既不用挑文件、也不用改代码分支：
   1. **拆之前先证明它能自己立住** —— 这一步实测出一个既存缺陷：旧 `sft_mezo.py` 的 score-parity
      版本（`a177ad4b`）落在反传层，而 `feat/train-mezo` 上还留着一份旧版，两边对不上，零阶分支上
@@ -1037,7 +1099,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
      退出并指路。「静默降级」与「明确没有」的区别，就是审核者能否一眼看出交的是哪一档。
   3. **零阶的损失数学不再借反传层的测试来守**：`test_objectives.py` 是 numpy↔torch 对拍，随 torch
      层一起走了；补了 `test_objectives_np.py`（numpy 路径 18 项：CE 掩码 / DPO 饱和与长度归一 /
-     组内优势 / GRPO 非对称裁剪 / DAPO vs seq），零阶 144 项里数学是有覆盖的。
+     组内优势 / GRPO 非对称裁剪 / DAPO vs seq），零阶 214 项里数学是有覆盖的。
   4. **耦合是层内的**：那 32 个文件 import 同目录的共用层（`objectives` / `mem_guard` /
      `update_rules` / `lora` / `ce`），而共用层在零阶树上；另有 `mezo.py` / `lora_to_gguf.py`
      横向 `sys.path.insert` 到仓库 `tools/` —— 训练目录不是自闭环。所以"拆"的正确含义是
@@ -1078,14 +1140,21 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 12. **原始日志未随仓库提交，部分已不可复原**：`logs/` 与 `_*` 是运行产物（`.gitignore` 挡掉），
     其中身份训练的 `gen` 原文、128K 三算法的逐步 rel、MATH-500 的 `_evalscope/` 报告都已不在本地。
     附录 A 逐行标了入库状态。受影响的是「原文级」证据；§5.3 / §5.4 的差值结论仍可用 §6 的命令重跑复现。
-13. **评测集的显著性没有标定**：MATH-500 干净子集上 baseline 是 **239/239 = 100%**，已饱和，
-    1 项 = 0.42 pp。目前**没有测过"同一 adapter 重复评测两次"的波动量级**，
-    所以零阶 −3、DPO −2 这两档**尚不能判定为真实回退**（若评测自身波动就有 3 项，它们落在噪声内）。
-    反传 −31 远超这个量级，不受此影响。
+13. **评测集的显著性已标定（2026-11-07）**：原来写「没有测过同一 adapter 重复评测两次的
+    波动量级」，现已补上 —— MATH-500 干净子集 baseline 仍是 239/239 = 100%（饱和，1 项 = 0.42 pp），
+    但同一张 B=0 表、同题同 seed 连采两遍 24 条就**净差 2~5 条（8.3~20.8 pp）**，
+    引擎 `SCORE` 长锚同进程重复 std 0.0012 nats/token、短锚 std 0.114。
+    ⇒ **零阶 −3、DPO −2 明确判为噪声内**；**≤5 条的 acc 变化一律不能判退步**。
+    判据与完整数字见 §5.6 与 `RETENTION-EVAL.zh.md`。反传 −31 属另一口径（未落盘、
+    不可复现），按 §5.4.1 处置，不拿这条噪声带去解释它。
 14. **防遗忘护栏的观测面不含数学**：`sft.py` 的能力门（`--eval-every 4` / `--cap-tol 0.5` /
     `--cap-stop 1.5`）跑的是 `prompts_holdout.jsonl`（身份与环境能力向），没有 MATH-500 探针。
     所以数学能力的回退可以从护栏眼皮底下发生而没有任何 hard stop（§5.4.1）。
     零阶侧（`mezo.py`）**完全没有接护栏**，`guard.py` 只在反传侧被调用。
+    **2026-11-07 补证**：这一条仍是限制，但已用**训练外的独立保持集评测**（§5.6）覆盖数学回退，
+    并补了 `run_meta.py` 的 `phase=done` 记录能力门终评（`cap_drift_final` / `best_step`），
+    让护栏的判据事后可查。**没有把 MATH 探针接进 `--probes`** —— 那会改变训练内行为，
+    超出本 PR 范围，留作后续。
 
 ---
 
@@ -1102,21 +1171,22 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | Q4 | `algos.py` 里 lr 按（算法×方法）硬编码，是否改为可覆盖配置（env / yaml）？ | 先硬编码，等有第二组工作点再说 |
 | Q5 | `/v1/training/*` 是否该从 `serve/server.py` 拆出成 `serve/training.py`？ | 本轮不拆（训练会话与闸门紧耦合于服务状态机）；若要拆，合并后单独做更安全 |
 | Q6 | 会话期推理返回 409 而非排队，可接受吗？ | 可接受（训练时推理语义不明确） |
-| Q7 | 测试够不够：训练目录 271 项 + serve 6 项，但没有端到端（真跑一步再断言 CE 下降） | 缺 e2e，值得补 1 项 |
+| Q7 | 测试够不够：训练目录 359 项 + serve 6 项，但没有端到端（真跑一步再断言 CE 下降） | **已补组件级 e2e**：`tests/test_run_meta.py::TrainStepE2E` 用项目自己的 `sft_loss` + `BackwardRule` 真跑一步断言 CE 下降；125B full e2e 仍需 GPU（§6 V5/V6） |
 | Q8 | `bench_*.json` 这类实测结果文件是否随 PR 提交，还是只留文档引用？ | 提交（它们是 §5 的原始数据） |
 | Q9 | **合并顺序怎么走**：零阶依赖的 `LORA`/`SCORE` 命令循环还在 `feat/train-mezo`，`upstream/main` 没有。是先单独提一个引擎 PR（我们自己的部分：`SCORE` + 换表 + 符号翻转；`lora.cu` 主体那 421 行属于 PR #3267，见 Q11），训练脚本排它后面？还是两个一起提？ | 先引擎、后脚本，各自可独立回滚 |
 | Q10 | README 里"engine side, all merged upstream"这句与事实不符（见 §2.5），本 PR 里一并改掉可以吗？ | 改（文档不能留着错的事实） |
 | Q11 | **LoRA kernel 主体是尚未合入的上游 PR #3267**（Alexey Rogov，`lora.cu` 421 行），本 PR 当只读依赖带着（三层归属见 §7.3）。如果 #3267 先被合入，要不要把本 PR 的那 421 行 rebase 掉、引擎面只留我们自己的 133 行符号翻转 + 换表 + SCORE？ | 倾向等 #3267；它合入后本 PR 的引擎面自动缩小，届时 rebase 一次即可 |
-| Q12 | **反传路线要不要一起收？** 它是独立一层：比零阶树只多 32 个 `.py`（`backward/` 10 个模块 + `ce.py`/`lora.py`/`update_rules.py` + `backward/hf_ref.py` + 6 个 torch bench + 7 个 torch 测试 + 2 个诊断脚本），全部在 `training/` 下，不动 `serve/` 与引擎；**只收零阶 = 直接交 `feat/train-mezo`（`56c7eae0`），已验证 144 项全绿且不需要 torch**；那棵树里 `--method backward` 会明确报「缺 backward/sft.py」并指路（不是旧版薄壳的静默降级）。需要反传能力才需要这一层 | 默认一起收；只要零阶就交那条分支，见 §7.4 |
+| Q12 | **反传路线要不要一起收？** 它是独立一层：比零阶树只多 32 个 `.py`（`backward/` 10 个模块 + `ce.py`/`lora.py`/`update_rules.py` + `backward/hf_ref.py` + 6 个 torch bench + 7 个 torch 测试 + 2 个诊断脚本），全部在 `training/` 下，不动 `serve/` 与引擎；**只收零阶 = 直接交 `feat/train-mezo`（`56c7eae0`），当前已验证 214 项（213 过 + 1 skipped）且不需要 torch**；那棵树里 `--method backward` 会明确报「缺 backward/sft.py」并指路（不是旧版薄壳的静默降级）。需要反传能力才需要这一层 | 默认一起收；只要零阶就交那条分支，见 §7.4 |
 
 ---
 
 ## 附录 A：证据出处
 
-> **入库说明（先看这条）**：随仓库提交的只有 `training/*.json` 这几份汇总表与代码本身；
-> `logs/`、`_*` 目录属运行产物，按 `.gitignore` 不提交，其中一部分原始日志已在本地清理、
-> **无法复原**。下表逐行标注了"已入库 / 未入库"：标"未入库"的数字只能靠重跑复现
-> （命令见 §6），不是"仓库里有文件可查"。
+> **入库说明（先看这条）**：随仓库提交的是 `training/*.json` 汇总表、代码本身，
+> **以及 2026-11-07 新增的 `training/RETENTION-EVAL.zh.md` + `training/EVAL-RESULTS.json`**
+> （§5.6 的证据）；`logs/`、`_*` 目录属运行产物，按 `.gitignore` 不提交，其中一部分原始日志
+> 已在本地清理、**无法复原**。下表逐行标注了"已入库 / 未入库"：标"未入库"的数字只能靠重跑
+> 复现（命令见 §6），不是"仓库里有文件可查"。
 
 | 数字 | 出处 | 入库 |
 |---|---|---|
@@ -1129,9 +1199,12 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 | 身份前后与 gen 原文 | `logs/accept_lr3e5_ce.log`、`accept_lr3e5_s900.log`、`accept_lr1e5_ce.log` | ❌ 未入库，**原文已不可得**（§8 第 12 条） |
 | 数学训练集前后 | `_run_hardmth_train.log` | ❌ 未入库 |
 | MATH-500 四次评测 | `_evalscope/{baseline,mezo_lora,bwd_lora,dpo_lora}/` | ❌ 未入库 |
-| 单测逐条 | `python -m pytest training/tests -q`（本版 271 项：269 过 + 2 项 watchdog 仅因 Windows 缺 triton，见 §7.1） | ✅ 可重跑 |
+| 单测逐条 | `python -m unittest discover -s training/tests -p "test_*.py"`（本版 359 项全过，2026-11-07 Windows 实测） | ✅ 可重跑 |
 | 依赖清单 | `requirements.txt`（零阶够用）、`.github/workflows/training-test.yml`（no-torch 合并门）、`training/README.md` §Windows environment notes（反传实测组合） | ✅ |
 | 平台支持矩阵 | `platform_check.py`（`SUPPORTED`、`preadv_shim.py`） | ✅ |
+| 保留能力评测：轨迹级漂移 / 噪声基线 / B=0 对照 / 分层 | `training/RETENTION-EVAL.zh.md` + `training/EVAL-RESULTS.json`（逐条原始结果在会话产物目录，按报告 §6 可重跑） | ✅ 报告与结构化结果 |
+| 每次反传训练的完整超参与运行结果 | `backward/run_meta.py` 自动写 `<--out>.meta.json`（`phase=start` 先落盘）；`tests/test_run_meta.py` 8 项 | ✅ 代码可跑 |
+| 训练一步闭环（§9 Q7） | `tests/test_run_meta.py::TrainStepE2E`（项目自己的 `sft_loss` + `BackwardRule` 真跑一步断言 CE 下降） | ✅ 代码可跑 |
 | MeZO 方法与官方仓库 | arXiv 2305.17333；<https://github.com/princeton-nlp/MeZO>（本 PR 未拷贝其代码，见 §2.6） | ✅ 外部 |
 
 ---
