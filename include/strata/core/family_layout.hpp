@@ -60,7 +60,16 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
     num("ssm.inner_size", g.ssm_value_dim);
     num("full_attention_interval", g.qsa_interval);
     g.head_dim = key_length;
-    if (family == strata::ModelFamily::Qwen35Moe) {
+    if (strata::model_family_dense_ffn(family)) {
+        // one dense MLP per layer: `feed_forward_length` is its width and the engine's shared-expert slot is that MLP
+        num("feed_forward_length", g.n_ff);
+        g.n_ff_shexp = g.n_ff;
+        g.n_expert = g.n_expert_used = 0;
+        top_k = 0;
+        num("nextn_predict_layers", g.n_mtp_layers);
+        g.hc = g.hc_lr = 0;                 // a plain pre-norm residual
+        g.idx_q_heads = g.idx_key_dim = 0;  // dense attention, no sparse indexer
+    } else if (family == strata::ModelFamily::Qwen35Moe) {
         num("nextn_predict_layers", g.n_mtp_layers);
         g.hc = g.hc_lr = 0;                 // a plain pre-norm residual
         g.idx_q_heads = g.idx_key_dim = 0;  // dense attention, no sparse indexer
@@ -81,9 +90,10 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
         err = buf;
         return false;
     };
-    if (g.n_layers <= 0 || g.n_embd <= 0 || g.n_head <= 0 || g.n_head_kv <= 0 || g.head_dim <= 0 || g.n_expert <= 0 ||
-        top_k <= 0 || top_k > g.n_expert || g.n_ff <= 0 || g.ssm_state_size <= 0 || g.ssm_k_heads <= 0 ||
-        g.ssm_v_heads <= 0 || g.ssm_d_conv <= 0 || g.qsa_interval < 2)
+    const bool dense = strata::model_family_dense_ffn(family);
+    if (g.n_layers <= 0 || g.n_embd <= 0 || g.n_head <= 0 || g.n_head_kv <= 0 || g.head_dim <= 0 ||
+        (!dense && (g.n_expert <= 0 || top_k <= 0 || top_k > g.n_expert)) || g.n_ff <= 0 || g.ssm_state_size <= 0 ||
+        g.ssm_k_heads <= 0 || g.ssm_v_heads <= 0 || g.ssm_d_conv <= 0 || g.qsa_interval < 2)
         return bad("a geometry key is zero or out of range");
     if (value_length >= 0 && value_length != key_length) return bad("attention.key_length != attention.value_length");
     if (g.ssm_value_dim != g.ssm_state_size * g.ssm_v_heads) return bad("ssm.inner_size != ssm.state_size * ssm.time_step_rank");
@@ -148,6 +158,7 @@ inline LayerKind layer_kind(const ModelGeometry& g, int64_t layer) {
 struct TensorWant {
     std::string name;
     std::vector<int64_t> shape;
+    bool optional = false;   ///< a dense file may tie its head (no `output.weight`; the loader uses token_embd)
 };
 
 /// Every tensor of layer `layer` (kind from `layer_kind`), by family.
@@ -156,15 +167,21 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
     const int64_t N = g.n_embd, NE = g.n_expert, FF = g.n_ff, FS = g.n_ff_shexp;
     std::vector<TensorWant> t;
     auto add = [&](const char* s, std::vector<int64_t> shape) { t.push_back({s, std::move(shape)}); };
-    // MoE, every layer (the MTP block's too)
-    add("ffn_gate_inp.weight", {N, NE});
-    add("ffn_gate_inp_shexp.weight", {N});
-    add("ffn_gate_shexp.weight", {N, FS});
-    add("ffn_up_shexp.weight", {N, FS});
-    add("ffn_down_shexp.weight", {FS, N});
-    add("ffn_gate_exps.weight", {N, FF, NE});
-    add("ffn_up_exps.weight", {N, FF, NE});
-    add("ffn_down_exps.weight", {FF, N, NE});
+    // the FFN: routed experts (MoE) or one dense MLP per layer (dense qwen35)
+    if (strata::model_family_dense_ffn(g.family)) {
+        add("ffn_gate.weight", {N, FF});
+        add("ffn_up.weight", {N, FF});
+        add("ffn_down.weight", {FF, N});
+    } else {
+        add("ffn_gate_inp.weight", {N, NE});
+        add("ffn_gate_inp_shexp.weight", {N});
+        add("ffn_gate_shexp.weight", {N, FS});
+        add("ffn_up_shexp.weight", {N, FS});
+        add("ffn_down_shexp.weight", {FS, N});
+        add("ffn_gate_exps.weight", {N, FF, NE});
+        add("ffn_up_exps.weight", {N, FF, NE});
+        add("ffn_down_exps.weight", {FF, N, NE});
+    }
     if (g.has_hyper_connections()) {
         // gated residual (Flash-Next): `gr_read` transposes, so the file's orientation is [hc_dim, hc_lr] / [hc_lr, hc_dim]
         const int64_t H = g.hc_dim();
@@ -222,7 +239,7 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
 inline std::vector<TensorWant> global_tensors(const ModelGeometry& g) {
     std::vector<TensorWant> t;
     t.push_back({"token_embd.weight", {g.n_embd, g.n_vocab}});
-    t.push_back({"output.weight", {g.n_embd, g.n_vocab}});
+    t.push_back({"output.weight", {g.n_embd, g.n_vocab}, strata::model_family_dense_ffn(g.family)});
     if (g.has_hyper_connections()) {
         t.push_back({"output_hc_down.weight", {g.hc_dim(), g.hc_lr}});
         t.push_back({"output_hc_up.weight", {g.hc_lr, g.hc_dim()}});
@@ -234,7 +251,9 @@ inline std::vector<TensorWant> global_tensors(const ModelGeometry& g) {
 }
 
 /// Whether the family's table names every blk.* tensor its files carry (then an unnamed one is an error).
-inline bool layout_table_complete(const ModelGeometry& g) { return g.family == strata::ModelFamily::Qwen35Moe; }
+inline bool layout_table_complete(const ModelGeometry& g) {
+    return g.family == strata::ModelFamily::Qwen35Moe || strata::model_family_dense_ffn(g.family);
+}
 
 /// Checks the model `m` (all shards) against the layout table of `g`.  `checked` counts the tensors found.
 inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g, std::string& err,
@@ -265,8 +284,13 @@ inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g
         ++n;
         return true;
     };
-    for (const TensorWant& w : global_tensors(g))
+    for (const TensorWant& w : global_tensors(g)) {
+        if (w.optional && m.find(w.name) == nullptr) {
+            named.insert(w.name);   // absent is allowed for this one (a tied head)
+            continue;
+        }
         if (!check(w.name, w.shape)) return false;
+    }
     for (int64_t l = 0; l < g.n_layers + g.n_mtp_layers; ++l)
         for (const TensorWant& w : layer_tensors(g, l))
             if (!check("blk." + std::to_string(l) + "." + w.name, w.shape)) return false;
