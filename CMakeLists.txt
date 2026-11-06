@@ -2133,6 +2133,7 @@ if(STRATA_NATIVE_EXPERTS)
   if(STRATA_CPU_X86)
     target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
                                              src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp
+                                             src/kernels/cpu/q2_lut.cpp src/kernels/cpu/q2_lut_avx1.cpp src/kernels/cpu/q2_lut_snb.cpp
                                              src/kernels/cpu/iq_avx1.cpp src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp
                                              src/kernels/cpu/tq_cpu.cpp src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)
   else()
@@ -2154,6 +2155,9 @@ if(STRATA_NATIVE_EXPERTS)
     # the older CPUs' Q2_0 rows and activation quantizer (q2_avx1.cpp, issue #1699): 128-bit integer lanes,
     # no FMA/F16C, its own #error guard; called only behind cpu_avx1_ok() && !cpu_avx2_ok()
     set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
+    # the table-lookup Q2_0 rows (STRATA_Q2_LUT=1): Ivy Bridge (F16C) and Sandy Bridge units, called behind CPUID
+    set_source_files_properties(src/kernels/cpu/q2_lut_avx1.cpp src/kernels/cpu/q2_lut_snb.cpp PROPERTIES
+                                COMPILE_OPTIONS "/arch:AVX")
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): 128-bit SSSE3/SSE2 integer, SSE2 float, no FMA/F16C
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
   else()
@@ -2172,6 +2176,12 @@ if(STRATA_NATIVE_EXPERTS)
     # runs on a Sandy Bridge Xeon
     set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS
                                 "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
+    # the table-lookup Q2_0 rows (STRATA_Q2_LUT=1, q2_lut.hpp): the Ivy Bridge unit with F16C, the Sandy Bridge one
+    # without; q2_lut.cpp calls the first only where CPUID has F16C
+    set_source_files_properties(src/kernels/cpu/q2_lut_avx1.cpp PROPERTIES COMPILE_OPTIONS
+                                "-msse4.2;-mavx;-mf16c;-mno-avx2;-mno-fma")
+    set_source_files_properties(src/kernels/cpu/q2_lut_snb.cpp PROPERTIES COMPILE_OPTIONS
+                                "-msse4.2;-mavx;-mno-f16c;-mno-avx2;-mno-fma")
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): SSE4.2 + AVX with AVX2/FMA/F16C explicitly off, so a
     # -march=native build host cannot leak AVX2 code into the file that runs on a Sandy Bridge Xeon
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS
@@ -2234,6 +2244,16 @@ if(STRATA_NATIVE_EXPERTS)
   # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
   add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
   target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
+  # a native pack's Q2_0 rows on the pool's path (q2_native_kernels -> q2_rows_any, any rung) against ggml-cpu's
+  # vec_dot, both against the exact dot: the check that q2_avx1.cpp is right where the pool now calls it
+  add_executable(q2_native_parity src/kernels/cpu/q2_native_parity.cpp)
+  target_link_libraries(q2_native_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME q2_native_parity COMMAND q2_native_parity)
+    # the same with the table-lookup rung forced on, so any AVX CI machine checks it (q2_lut.hpp)
+    add_test(NAME q2_native_parity_lut COMMAND q2_native_parity)
+    set_tests_properties(q2_native_parity_lut PROPERTIES ENVIRONMENT "STRATA_Q2_LUT=force")
+  endif()
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
     add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
