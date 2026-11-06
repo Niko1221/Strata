@@ -59,7 +59,13 @@ jobs:
                           '--report', str(report)], check=True)
           print(report.read_text())
           PY
-      - name: Run full server suite without terminal packages
+      - name: Run legacy parser suite with explicit strict-guard opt-out
         shell: bash
         run: |
-          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'
+          STRATA_TOOL_MASK_STRICT=0 "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'
+      - name: Verify automatic request constraints without mask environment
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -c 'from serve import constrain; assert constrain.available()'
+          env -u STRATA_TOOL_MASK -u STRATA_TOOL_NAME_ENUM -u STRATA_TOOL_MASK_STRICT \
+            "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest serve.test_tool_name_constraint serve.test_constrain serve.test_structured

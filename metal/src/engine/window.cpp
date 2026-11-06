@@ -24,6 +24,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/token_mask.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/sampler.hpp"
 namespace strata::gpu { void* host_view(const void* device_pointer); }
@@ -196,6 +197,11 @@ public:
     // history, Tn rows of hist_len tokens (the last penalty_last_n of a row count, -1 = unused), read when the window's rows are sampled.
     void set_sampling(const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len);
     bool sample_rows(int Tn, int32_t* out, std::string& err);
+    // The borrow lives through one synchronous verify window. No mask changes the existing path.
+    const uint32_t* token_mask = nullptr;
+    int64_t token_mask_words = 0;
+    int token_mask_rows = 0;
+    bool mask_head_rows(int Tn, int32_t* out, bool after_sampling, std::string& err);
     bool sample_slot_row(int row, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hist_len, int32_t* tok, std::string& err);   // one slot's row of a batch window, its own params
     bool sample_run(int row0, int n, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hl, std::string& err);   // after run(): replaces out[0..Tn) (and tokout_) by the sampled tokens
     bool copy_logits(int t, float* host) const;
@@ -3149,6 +3155,30 @@ bool Window::sample_rows(int Tn, int32_t* out, std::string& err) {
     return true;
 }
 
+bool Window::mask_head_rows(int Tn, int32_t* out, bool after_sampling, std::string& err) {
+    if (!token_mask) return true;
+    const int rows = std::min(token_mask_rows, Tn);
+    if (rows < 1 || token_mask_words < (n_vocab_ + 31) / 32) {
+        err = "metal token mask: invalid row count or vocabulary width";
+        return false;
+    }
+    for (int t = 0; t < rows; ++t) {
+        float* logits = lm_.as<float>() + (size_t) t * n_vocab_;
+        const uint32_t* words = token_mask + (int64_t) t * token_mask_words;
+        if (!after_sampling && strata::core::mask_apply_row(logits, n_vocab_, words, token_mask_words) == 0) {
+            err = "metal token mask: no allowed token";
+            return false;
+        }
+        // Greedy picks made inside run() predate the mask. Sampled picks are checked after the GPU sampler.
+        if ((!after_sampling && !samp_on_) ||
+            (after_sampling && !strata::core::mask_allows(words, token_mask_words, out[t]))) {
+            out[t] = strata::core::mask_argmax(logits, n_vocab_, words, token_mask_words);
+            tokout_.as<int32_t>()[t] = out[t];
+        }
+    }
+    return true;
+}
+
 bool Window::sample_slot_row(int row, const strata::kernels::SamplerParams& sp, const int32_t* hist, int hist_len, int32_t* tok, std::string& err) {
     if (row < 0 || row >= MAXT) return true;
     if (!sample_run(row, 1, sp, hist, hist_len, err)) return false;
@@ -3294,13 +3324,22 @@ bool window_sample_slot_row(void* w, int row, const strata::kernels::SamplerPara
 void window_set_sampling(void* w, const strata::kernels::SamplerParams* sp, const int32_t* hist, int hist_len) {
     ((Window*) w)->set_sampling(sp, hist, hist_len);
 }
+void window_set_token_mask(void* w, const uint32_t* words, int64_t n_words, int rows) {
+    Window* win = (Window*) w;
+    win->token_mask = words;
+    win->token_mask_words = n_words;
+    win->token_mask_rows = rows;
+}
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
     // STRATA_LOGPOS (the quant yardstick, the KL harness): every window's head logits are read, also the prompt's
     // windows that sample nothing (head_sampling off)
     static const bool logpos = std::getenv("STRATA_LOGPOS") != nullptr;
     Window* win = (Window*) w;
     if (!win->run(T, tokens, pos0, head || logpos, out, err)) return false;
-    return !head || win->sample_rows(T, out, err);   // a sampled / penalised / biased request: the head rows' tokens by the sampler chain (nothing to do for greedy)
+    if (!head) return true;
+    // run() waits for the GPU. lm_ is shared memory: mask before the next sampler dispatch, then check its picks.
+    return win->mask_head_rows(T, out, false, err) && win->sample_rows(T, out, err) &&
+           win->mask_head_rows(T, out, true, err);
 }
 void window_reset(const strata::core::SessionState* ss) {
     if (g_the_window == nullptr || !g_the_window->ready()) return;
