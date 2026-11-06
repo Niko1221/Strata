@@ -9660,10 +9660,14 @@ struct Model::Impl {
                                 ++st.store_zc;
                                 continue;
                             }
-                            if ((light && !in_ram(l, e)) || (rsk && r.w[t][i] < ram_skip_w * wsum) ||
-                                (rkr && best_rank[e] >= disk_skip_rank - 1 && !in_ram(l, e) &&
-                                 !(store && store->find(li, e) >= 0))) {
+                            const bool rank_tail = rkr && best_rank[e] >= disk_skip_rank - 1 && !in_ram(l, e) &&
+                                                   !(store && store->find(li, e) >= 0);
+                            if ((light && !in_ram(l, e)) || (rsk && r.w[t][i] < ram_skip_w * wsum) || rank_tail) {
                                 ++st.skipped;
+                                // (DISK_SKIP_RANK: read in behind the demand reads all the same, so the store learns the
+                                //  experts the answer uses; left unread, they stayed misses for good - on a GB10 server
+                                //  the CPU lane's share went from 5% of the experts to 20%)
+                                if (rank_tail && store) store->prefetch(li, e);
                                 continue;
                             }
                             if (aon && !light) {   // (cold: not in RAM now, or not when the lookahead asked for it)
