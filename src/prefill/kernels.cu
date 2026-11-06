@@ -2361,6 +2361,35 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
     bo[i] = make_float4(s.x + sh.x * g, s.y + sh.y * g, s.z + sh.z * g, s.w + sh.w * g);
 }
 
+// moe_combine4_kernel with the expert rows as FP16 (fused::dm_f16_used(): the down kernels wrote 2,560 halves a row): the same fmaf order, the rows
+// widened to FP32 first.  Half the bytes of the layer's rows, read once.  (Round 0215, from the Strix dm16 patch.)
+__global__ void moe_combine16_kernel(const uint16_t* __restrict__ Dm, const int32_t* __restrict__ slot,
+                                     const float* __restrict__ w, const float4* __restrict__ shared,
+                                     const float* __restrict__ sg, float4* __restrict__ bo, int64_t T) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // float4 index
+    if (i >= T * (N / 4)) return;
+    const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
+    uint2 raw[10];
+    float ww[10];
+#pragma unroll
+    for (int k = 0; k < 10; ++k) {
+        ww[k] = w[t * 10 + k];
+        const int64_t r = slot[t * 10 + k];
+        raw[k] = *reinterpret_cast<const uint2*>(Dm + r * N + d);
+    }
+    float4 s = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+#pragma unroll
+    for (int k = 0; k < 10; ++k) {
+        const float a = __half2float(__ushort_as_half((unsigned short) (raw[k].x & 0xffffu))), b = __half2float(__ushort_as_half((unsigned short) (raw[k].x >> 16)));
+        const float c = __half2float(__ushort_as_half((unsigned short) (raw[k].y & 0xffffu))), e = __half2float(__ushort_as_half((unsigned short) (raw[k].y >> 16)));
+        s.x = fmaf(ww[k], a, s.x); s.y = fmaf(ww[k], b, s.y);
+        s.z = fmaf(ww[k], c, s.z); s.w = fmaf(ww[k], e, s.w);
+    }
+    const float g = sigm(sg[t]);
+    const float4 sh = shared[i];
+    bo[i] = make_float4(s.x + sh.x * g, s.y + sh.y * g, s.z + sh.z * g, s.w + sh.w * g);
+}
+
 __global__ void moe_shared_init_kernel(const float* __restrict__ shared, const float* __restrict__ sg,
                                        float* __restrict__ acc, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -3333,6 +3362,13 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
 #endif
     moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, bo, T, row_sd);
     check("moe_combine");
+}
+void moe_combine16(const uint16_t* Dm16, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo, int64_t T,
+                   void* stream) {
+    if (T <= 0) return;
+    moe_combine16_kernel<<<blocks_for(T * (N / 4)), 256, 0, (cudaStream_t) stream>>>(
+        Dm16, slot, w, reinterpret_cast<const float4*>(shared), sg, reinterpret_cast<float4*>(bo), T);
+    check("moe_combine16");
 }
 void moe_shared_init(const float* shared, const float* sg, float* acc, int64_t T, void* stream) {
     if (T <= 0) return;

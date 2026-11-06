@@ -1721,6 +1721,12 @@ constexpr int64_t kVramSafeMib =
     512;
 #endif
 
+/// Round 0216 (STRIX-NEXT): true on an integrated GPU (a Strix Halo) whose expert complement is page-locked in RAM.  There the free figure the
+/// serve checks read counts that pinned memory about twice (the figure is the driver's hipMemGetInfo, src/core/device.cu only lowers it by the DXGI
+/// budget gap: 12,244 MiB after the cache, then 2.0 x the complement + 691 MiB less once it is pinned; RESULTS-STRIX2.md), so it reads 0 on a start
+/// that works and a larger --vram-reserve-mib only moves experts from the cache into the complement.  The checks say so instead of advising a reserve.
+std::atomic<bool> g_uma_pinned_complement{false};
+
 #if defined(_WIN32)
 // STRATA_STALL_STACKS=1: the call stack of every other thread, in the stall report.  The other threads are suspended while
 // their stacks are unwound with the unwind tables (RtlLookupFunctionEntry / RtlVirtualUnwind: no heap, no loader lock, no
@@ -10440,6 +10446,12 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
                 return 1;
             }
+            {
+                cudaDeviceProp ucp{};
+                int ucd = 0;
+                if (src.complement_pinned() && cudaGetDevice(&ucd) == cudaSuccess && cudaGetDeviceProperties(&ucp, ucd) == cudaSuccess && ucp.integrated)
+                    g_uma_pinned_complement.store(true);
+            }
             std::fprintf(stderr, "strata generate: resident RAM mode: %.2f GiB of experts in RAM (%s), %lld in the GPU "
                                  "cache; adaptive swaps %s\n",
                          (double) src.resident_bytes() / 1073741824.0,
@@ -13704,6 +13716,11 @@ int main(int argc, char** argv) {
                                      "only just fits the model (the VRAM reserve was lowered to %d MiB so the expert "
                                      "cache fits): requests may stall. Close other programs that use the GPU, or lower "
                                      "--max-context\n", (long long) free_mib, o.vram_reserve_mib);
+            } else if (g_uma_pinned_complement.load()) {
+                // Round 0216: said plainly, no reserve advice (a larger --vram-reserve-mib does not raise this figure here)
+                std::fprintf(stderr, "strata serve: %lld MiB of graphics memory reported free. On this PC the graphics chip shares the system "
+                                     "memory, so this figure reads low, and a larger --vram-reserve-mib won't raise it. If decode drops to a "
+                                     "few tok/s, lower --max-context.\n", (long long) free_mib);
             } else {
                 std::fprintf(stderr, "strata serve: %lld MiB of VRAM free with everything loaded - LOW: requests may stall;"
                                      " add --vram-reserve-mib %lld to the config's args (or lower --max-context)\n",
@@ -15342,6 +15359,16 @@ int main(int argc, char** argv) {
                     const int64_t vf = (int64_t) (vf_b >> 20);
                     g_req_vram_free_mib.store(vf);
                     static int64_t low_said_at = INT64_MAX;
+                    static bool uma_said = false;
+                    if (vf < kVramSafeMib && g_uma_pinned_complement.load()) {
+                        // Round 0216: a note, once, no reserve advice (see g_uma_pinned_complement)
+                        if (!uma_said) {
+                            uma_said = true;
+                            std::fprintf(stderr, "strata serve: Only %lld MiB of graphics memory reported free at the start of this request. "
+                                                 "On this PC the figure reads low because the graphics chip shares the system memory. "
+                                                 "If decode drops to a few tok/s, lower --max-context.\n", (long long) vf);
+                        }
+                    } else
                     if (vf < kVramSafeMib && vf + 128 <= low_said_at) {
                         low_said_at = vf;
                         std::fprintf(stderr, "strata serve: WARNING: only %lld MiB of VRAM free at the start of this request "

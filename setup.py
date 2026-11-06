@@ -11060,9 +11060,10 @@ def main() -> int:
                    f"so setup leaves {UNSLOTH_RAM_LEFT_GB} GB of the RAM for the OS and the desktop (#1715). "
                    "--expert-cache N in the config's args sets it")
             else:
-                warn(f"this GPU shares the RAM, and the {budget:g} GiB RAM budget leaves almost none for the expert "
-                     "cache: it stays on auto, which may take the room the OS needs (#1715). A smaller "
-                     "--resident-budget-gib leaves room")
+                # Round 0215 (owner 11-05): on a Windows Strix Halo the cache lives in the GPU's own pool (the BIOS carve-out + the shared memory), not in the RAM the OS
+                # needs, so the earlier "may take the room the OS needs" warning was misleading there; the cache stays on auto and this says where it is sized from.
+                carve = float(gpu.get("dedicated_gb") or 0.0)
+                ok(f"The expert cache is sized from the graphics memory ({f'{carve:g} GB ' if carve > 0 else ''}carve-out + shared), not from the RAM.")
     if vision != "none":
         args += ["--vision"]
         if VISION[vision]["reserve_mib"]:
