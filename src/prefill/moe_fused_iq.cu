@@ -87,22 +87,22 @@ constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_
               //   sum w x = d_x (d_w sum q a + m_w sum a):
               // the activation blocks carry sum a per 32 values in their eight spare bytes (quant_act_nat_kernel and
               // the H epilogue write it for every path; no other format reads it)
-              T_Q4_K = GGML_TYPE_Q4_K, T_Q5_K = GGML_TYPE_Q5_K, T_Q5_1 = GGML_TYPE_Q5_1, T_Q8_0 = GGML_TYPE_Q8_0;
+              T_Q4_K = GGML_TYPE_Q4_K, T_Q5_K = GGML_TYPE_Q5_K, T_Q5_0 = GGML_TYPE_Q5_0, T_Q5_1 = GGML_TYPE_Q5_1, T_Q8_0 = GGML_TYPE_Q8_0;
 static_assert(sizeof(block_iq2_xxs) == 66 && sizeof(block_iq2_xs) == 74 && sizeof(block_iq2_s) == 82 &&
               sizeof(block_iq3_xxs) == 98 && sizeof(block_iq3_s) == 110 && sizeof(block_iq4_xs) == 136 &&
               sizeof(block_iq4_nl) == 18 && sizeof(block_q2_0) == 18 && sizeof(block_q4_K) == 144 &&
-              sizeof(block_q5_K) == 176 && sizeof(block_q5_1) == 24 && sizeof(block_q8_0) == 34,
+              sizeof(block_q5_K) == 176 && sizeof(block_q5_0) == 22 && sizeof(block_q5_1) == 24 && sizeof(block_q8_0) == 34,
               "the block layouts this file decodes");
 
 // block bytes, scale per 16 values, codebook bytes in shared memory
 __host__ __device__ constexpr int block_bytes(int t) {
     return t == T_IQ2_XXS ? 66 : t == T_IQ2_XS ? 74 : t == T_IQ2_S ? 82 : t == T_IQ3_XXS ? 98 : t == T_IQ3_S ? 110
-         : t == T_IQ4_XS ? 136 : t == T_Q4_K ? 144 : t == T_Q5_K ? 176 : t == T_Q5_1 ? 24 : t == T_Q8_0 ? 34 : 18;
+         : t == T_IQ4_XS ? 136 : t == T_Q4_K ? 144 : t == T_Q5_K ? 176 : t == T_Q5_0 ? 22 : t == T_Q5_1 ? 24 : t == T_Q8_0 ? 34 : 18;
 }
 // the formats with a minimum (w = d q + m), and the raw words a sub-block's load stage holds
 __host__ __device__ constexpr bool has_min(int t) { return t == T_Q4_K || t == T_Q5_K || t == T_Q5_1; }
 __host__ __device__ constexpr int raw_words(int t) {
-    return t == T_Q4_K ? 10 : t == T_Q5_K ? 18 : t == T_Q5_1 ? 6 : t == T_Q8_0 ? 9 : 5;
+    return t == T_Q4_K ? 10 : t == T_Q5_K ? 18 : t == T_Q5_0 ? 6 : t == T_Q5_1 ? 6 : t == T_Q8_0 ? 9 : 5;
 }
 __host__ __device__ constexpr bool per16(int t) { return t == T_IQ2_XS || t == T_IQ2_S; }
 __host__ __device__ constexpr int grid_bytes(int t) {
@@ -349,6 +349,11 @@ template <int T, int NW> __device__ __forceinline__ void load_unit(const uint8_t
 #pragma unroll
             for (int k = 0; k < 8; ++k) w[10 + k] = ld32a(bp + 16 + 4 * k);   // qh
         }
+    } else if constexpr (T == T_Q5_0) {   // d, qh, qs[16] (22 bytes: 2-byte aligned only)
+#pragma unroll
+        for (int k = 0; k < 4; ++k) w[k] = ld32(bp + 6 + 4 * k);
+        w[4] = ld32(bp + 2);
+        w[5] = ld16(bp);
     } else if constexpr (T == T_Q5_1) {   // d, m, qh, qs[16]
 #pragma unroll
         for (int k = 0; k < 4; ++k) w[k] = ld32a(bp + 8 + 4 * k);
@@ -434,6 +439,16 @@ __device__ __forceinline__ void convert(const uint32_t (&w)[NW], const uint8_t* 
         }
         s0 = half_at(w[8]) * (float) sc;
         s1 = -(half_at(w[8] >> 16) * (float) mn);
+    } else if constexpr (T == T_Q5_0) {   // w = d (q - 16): the signed codes (like Q8_0's), no minimum
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const uint32_t lo = ((w[4] >> (4 * k)) & 0xF) * 0x00204081u, hi = ((w[4] >> (16 + 4 * k)) & 0xF) * 0x00204081u;
+            const uint32_t a = (w[k] & 0x0F0F0F0Fu) | ((lo & 0x01010101u) << 4);
+            const uint32_t b = ((w[k] >> 4) & 0x0F0F0F0Fu) | ((hi & 0x01010101u) << 4);
+            q[k] = ((a | 0x80808080u) - 0x10101010u) ^ 0x80808080u;       // a byte a in 0..31 -> the int8 a - 16
+            q[4 + k] = ((b | 0x80808080u) - 0x10101010u) ^ 0x80808080u;
+        }
+        s0 = s1 = half_at(w[5]);
     } else if constexpr (T == T_Q5_1) {
 #pragma unroll
         for (int k = 0; k < 4; ++k) {
@@ -1339,7 +1354,7 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
                                  : blob + geo.down_off + (size_t) (rbase + ur) * geo.d_row;
         auto unit = [&](int s) -> const uint8_t* {
             if (GU && WT != T_Q2_0) return wrow + (s >> 2) * BS;   // (Q2_0 gate/up: 64-value blocks, one a stage, like its down)
-            return (WT == T_IQ4_NL || WT == T_Q5_1 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
+            return (WT == T_IQ4_NL || WT == T_Q5_0 || WT == T_Q5_1 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
         };
         auto sub = [&](int s) { return GU && WT != T_Q2_0 ? 2 * (s & 3) + uj : uj; };
         auto put = [&](const uint32_t (&raw)[raw_words(WT)], int buf) {
@@ -1599,7 +1614,7 @@ native_f16_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
                              : blob + geo.down_off + (size_t) (fb * ROWS + ur) * geo.d_row;
     const auto unit = [&](int s) -> const uint8_t* {
         if (GU) return wrow + (s >> 2) * BS;
-        return (WT == T_IQ4_NL || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
+        return (WT == T_IQ4_NL || WT == T_Q5_0 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
     };
     const auto sub = [&](int s) { return GU ? 2 * (s & 3) + uj : uj; };
     uint32_t raw[RW];
@@ -1882,7 +1897,7 @@ bool kq_on() {
 bool f16_gu(int t) {
     return t == T_IQ2_XXS || t == T_IQ2_XS || t == T_IQ2_S || t == T_IQ3_XXS || t == T_IQ3_S || t == T_IQ4_XS;
 }
-bool f16_d(int t) { return t == T_Q2_0 || t == T_IQ4_NL || t == T_Q8_0; }
+bool f16_d(int t) { return t == T_Q2_0 || t == T_IQ4_NL || t == T_Q8_0 || t == T_Q5_0; }
 bool gu_covered(int t) {
     return t == T_IQ2_XXS || t == T_IQ2_XS || t == T_IQ2_S || t == T_IQ3_XXS || t == T_IQ3_S || t == T_IQ4_XS
 #if !defined(__HIPCC__)
@@ -1918,8 +1933,30 @@ bool q8d_f16_default(const DevInfo& d) {
     return false;
 #endif
 }
+// Q5_0 down (UD-IQ4_XS-v31: 33 of 48 layers, with IQ3_XXS or IQ4_XS gate/up).  Round 0217 (Strix Halo): on gfx1151 under Windows these layers take the F16
+// matrix-core kernel (native_f16_kernel, the K-quant experts' route: int8 codes q - 16 times the block scale, F16 products, FP16 down rows for the combine) instead
+// of leaving the fused path for gather + FP16 dequantize + hipBLASLt (RESULTS-STRIX2.md: 24-29% of the prompt).  It needs the F16 prompt set (STRATA_PF_F16, on by
+// default there), so with STRATA_PF_F16=0 the layers keep the earlier route.  STRATA_PF_FUSED_Q50=0 (or STRATA_GFX1151_DEFAULTS=0) turns it off; =1 turns it on
+// for any gfx1151 build (Linux: opt-in).  gfx12 (RDNA4) is not covered here: its WMMA layout keeps the int8 kernels (phaseA-tests/round0216/rdna4/q50-fused.patch).
+bool q50_on(const DevInfo& d) {
+#if defined(__HIPCC__)
+    if (d.w12 || !d.g1151) return false;
+    static const int env = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q50"); return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0); }();
+    if (env >= 0) return env == 1;
+#if defined(_WIN32)
+    const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
+    return !(off != nullptr && off[0] == '0');
+#else
+    return false;
+#endif
+#else
+    (void) d;
+    return false;
+#endif
+}
 bool d_covered_on(int t, const DevInfo& d) {
 #if defined(__HIPCC__)
+    if (t == T_Q5_0) return q50_on(d) && f16::requested();   // (no int8 kernel for Q5_0 down: the F16 prompt set must be on)
     if (t == T_Q8_0 && !d.w12 && (f16::requested() || q8d_f16_default(d))) return true;
 #endif
     (void) d;
@@ -2140,6 +2177,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         else if ((f16 && f16_d(g.d_type)) || f16_q8d) {
             if (g.d_type == T_Q2_0) STRATA_F16_LAUNCH(T_Q2_0, false, f16::D_NFB, ha8, nullptr, dm);
             else if (g.d_type == T_Q8_0) STRATA_F16_LAUNCH(T_Q8_0, false, f16::D_NFB, ha8, nullptr, dm);
+            else if (g.d_type == T_Q5_0) STRATA_F16_LAUNCH(T_Q5_0, false, f16::D_NFB, ha8, nullptr, dm);
             else STRATA_F16_LAUNCH(T_IQ4_NL, false, f16::D_NFB, ha8, nullptr, dm);
         }
         else if (g.d_type == T_Q2_0) STRATA_NW_D(T_Q2_0);
