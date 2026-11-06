@@ -1988,6 +1988,30 @@ def config_toolkit(cfg: dict) -> int:
     return 12 if cfg.get("cuda") == 12 or Path(str(cfg.get("exe", ""))).parent.name == ENGINE12_DIR else 13
 
 
+CAP_FRAC = 0.8   # hard cap: Strata's experts + headroom must fit in this share of the PC's total RAM/VRAM
+
+
+def usable_vram_gb(vram_total_gb, frac=CAP_FRAC) -> float:
+    r"""VRAM Strata may use under the cap: `frac` of the card's total."""
+    return vram_total_gb * (frac if frac is not None else 1.0)
+
+
+def vram_reserve_capped_mib(vram_total_gb, frac=CAP_FRAC) -> int:
+    r"""--vram-reserve-mib for the cap: the (1-frac) share left free.  12 GB at 0.8: 2458 MiB (vs 700 default)."""
+    return int(round((1.0 - (frac if frac is not None else 1.0)) * vram_total_gb * 1024))
+
+
+def low_ram_vram(g, cap: float | None = None) -> float:
+    """The GPU memory the low-RAM mode may count as room beside the RAM: a discrete card's VRAM; an APU's BIOS
+    carve-out only (its shared memory is the RAM itself). When capped (0 < cap <= 1.0 or g.get('vram_cap')), returns
+    the usable fractional VRAM."""
+    base = g.get("dedicated_gb", 0.0) if g.get("uma") else g["vram_gb"]
+    c = cap if cap is not None else g.get("vram_cap")
+    if c is not None and 0.0 < c <= 1.0:
+        return usable_vram_gb(base, c)
+    return base
+
+
 def gpu_problem(g, together=False):
     """Why Strata cannot use this card, in plain words (None: it can)."""
     if int(g["arch"]) < 75 and not (sm60_card(g["arch"]) and experimental_sm60()):
@@ -1995,8 +2019,9 @@ def gpu_problem(g, together=False):
                 "newer" + ("; experimental: choose it with --gpu " + str(g["index"]) + " (the CUDA 12 engine, "
                           "docs/OLDER_GPUS.md)" if sm60_card(g["arch"]) else
                           "; Maxwell only runs from a source build, docs/OLDER_GPUS.md" if maxwell_card(g["arch"]) else "") + ")")
-    if together and g["vram_gb"] < SPLIT_MIN_VRAM_GB - 0.5:
-        return (f"not supported together with other GPUs - {g['vram_gb']:.0f} GB of VRAM (a card sharing the model "
+    eff_vram = low_ram_vram(g)
+    if together and eff_vram < SPLIT_MIN_VRAM_GB - 0.5:
+        return (f"not supported together with other GPUs - {eff_vram:.1f} GB of VRAM (a card sharing the model "
                 f"needs {SPLIT_MIN_VRAM_GB} GB or more)")
     return None
 
@@ -2008,6 +2033,9 @@ def gpu_rank(g):
 
 
 def gpu_name(g) -> str:
+    cap = g.get("vram_cap")
+    if cap is not None and 0 < cap < 1.0:
+        return f"GPU {g['index']} ({g['name']}, {usable_vram_gb(g['vram_gb'], cap):.1f} GB of {g['vram_gb']:.0f} GB)"
     return f"GPU {g['index']} ({g['name']}, {g['vram_gb']:.0f} GB)"
 
 
@@ -2015,7 +2043,9 @@ def gpu_table(found) -> None:
     say("  Your NVIDIA GPUs:")
     for g in found:
         p = gpu_problem(g)
-        say(f"    GPU {g['index']}: {g['name']}, {g['vram_gb']:.0f} GB VRAM - " + ("can be used" if p is None else p))
+        cap = g.get("vram_cap")
+        mem_str = f"{usable_vram_gb(g['vram_gb'], cap):.1f} GB usable / {g['vram_gb']:.0f} GB VRAM" if cap is not None and 0 < cap < 1.0 else f"{g['vram_gb']:.0f} GB VRAM"
+        say(f"    GPU {g['index']}: {g['name']}, {mem_str} - " + ("can be used" if p is None else p))
 
 
 def together_ok(found) -> list:
@@ -4218,18 +4248,14 @@ def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dic
     return g
 
 
-def low_ram_vram(g) -> float:
-    """The GPU memory the low-RAM mode may count as room beside the RAM: a discrete card's VRAM; an APU's BIOS
-    carve-out only (its shared memory is the RAM itself)."""
-    return g.get("dedicated_gb", 0.0) if g.get("uma") else g["vram_gb"]
-
-
 def amd_mem_text(g) -> str:
     """How setup says a card's memory: "24 GB VRAM", or for an APU its unified memory."""
+    cap = g.get("vram_cap")
+    cap_note = f" ({usable_vram_gb(g['vram_gb'], cap):.1f} GB usable with --vram-cap {cap:g})" if cap is not None and 0 < cap < 1.0 else ""
     if g.get("uma"):
         return (f"unified memory: {g['dedicated_gb']:.1f} GB BIOS carve-out + {g['shared_gb']:.0f} GB shared with the "
-                f"RAM, {g['vram_gb']:.0f} GB usable by the GPU")
-    return f"{g['vram_gb']:.0f} GB VRAM"
+                f"RAM, {g['vram_gb']:.0f} GB usable by the GPU{cap_note}")
+    return f"{g['vram_gb']:.0f} GB VRAM{cap_note}"
 
 
 STRIX_HALO_FAMILY, STRIX_HALO_MODEL = "unsloth", "UD-IQ4_XS"    # the model docs/STRIX_HALO.md measures
@@ -6366,6 +6392,12 @@ RESIDENT_ENGINE = (0, 1, 30)   # the first engine with --resident-experts (the l
 RESIDENT_SPLIT_ENGINE = (0, 1, 40)   # #642: the first engine that runs it on a layer split
 
 
+def fits_ram_capped(model, ram_total_gb, frac=CAP_FRAC) -> bool:
+    r"""80% rule: the experts + headroom fit in `frac` of the PC's total RAM.  `ram_total_gb` is the total
+    (ram_gb()), not the free - free moves every second, total does not."""
+    return MODELS[model]["arena_gb"] + LOW_RAM_HEADROOM_GB <= ram_total_gb * frac
+
+
 def resident_split() -> bool:
     """#642: the engine setup requires runs the low-RAM mode's resident variant on a layer split - each card's cache
     holds the most-used experts of its own layers, and the RAM copy leaves out what any card holds.  Before it, a
@@ -6932,6 +6964,13 @@ def carry_over(old: dict, cfg: dict, explicit: list[str] | None = None) -> list[
             kept.append("vision mmproj")
     kept += carry_profile_args(old, cfg)
     kept += carry_user_args(old, cfg, explicit)
+    # A safety limit survives a rerun; an explicit --vram-cap 1 writes 1.0 and opts out instead.
+    oargs, nargs = old.get("args"), cfg.get("args")
+    if isinstance(oargs, list) and isinstance(nargs, list) and "--vram-frac" not in nargs:
+        frac = last_flag_value(oargs, "--vram-frac")
+        if frac is not None:
+            nargs += ["--vram-frac", frac]
+            kept.append("args --vram-frac")
     off = draft_layer.apply(cfg)                       # "mtp": false was the user's (a key setup does not write): the new args honour it
     if off:
         kept.append("mtp off (" + " ".join(off) + " left out of args)")
@@ -6960,9 +6999,15 @@ _SETUP_FLAGS = None
 
 
 def explicit_args(a) -> list[str]:
-    """The engine options this run's command line sets that the person keeps from now on (user_args): --vram-reserve-mib."""
+    """The engine options this run's command line sets that the person keeps from now on (user_args): --vram-reserve-mib, --vram-cap."""
+    ret = []
     n = getattr(a, "vram_reserve_mib", None)
-    return ["--vram-reserve-mib", str(n)] if n is not None else []
+    if n is not None:
+        ret += ["--vram-reserve-mib", str(n)]
+    cap = getattr(a, "vram_cap", None)
+    if cap is not None:
+        ret += ["--vram-frac", str(cap)]
+    return ret
 
 
 def carry_user_args(old: dict, cfg: dict, explicit: list[str] | None = None) -> list[str]:
@@ -7000,6 +7045,22 @@ def flag_value(args: list, flag: str):
         if a == flag:
             return str(args[i + 1])
     return None
+
+
+def last_flag_value(args: list, flag: str):
+    """The last value for a repeated flag, as the engine's option loop resolves it."""
+    for i in range(len(args) - 2, -1, -1):
+        if args[i] == flag:
+            return str(args[i + 1])
+    return None
+
+
+def set_vram_cap(args: list, fraction: float) -> None:
+    """Set a validated setup fraction once (including 1.0 to override an environment cap)."""
+    while "--vram-frac" in args:
+        i = args.index("--vram-frac")
+        del args[i:i + 2]
+    args += ["--vram-frac", str(fraction)]
 
 
 def carry_profile_args(old: dict, cfg: dict) -> list[str]:
@@ -7127,7 +7188,7 @@ def choices_from_config(cfg_path: Path) -> dict:
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
         return {"family": big, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
                 "vision": "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
-                "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None, "cuda": None, "vram_reserve_mib": None}
+                "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None, "cuda": None, "vram_reserve_mib": None, "vram_cap": float(last_flag_value(a, "--vram-frac")) if last_flag_value(a, "--vram-frac") is not None else None}
     own = next((f for f, d in OWN_PATH_FAMILIES.items() if tag.startswith(d["tag"])), None)
     if own is not None:                                # Qwen3.6: its own sizes; no KV / images / projection settings
         d = OWN_PATH_FAMILIES[own]
@@ -7138,7 +7199,7 @@ def choices_from_config(cfg_path: Path) -> dict:
         return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
                 "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
                 "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
-                "cuda": 12 if config_toolkit(cfg) == 12 else None, "vram_reserve_mib": None}
+                "cuda": 12 if config_toolkit(cfg) == 12 else None, "vram_reserve_mib": None, "vram_cap": float(last_flag_value(a, "--vram-frac")) if last_flag_value(a, "--vram-frac") is not None else None}
     family = next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
     model = (tag[len(FAMILIES[family]["tag"]):] if tag.startswith(FAMILIES[family]["tag"]) else tag).upper()
     model = next((m for m in MODELS if m.upper() == model), model)       # (the catalog's spelling: UD-IQ4_XS-v31 has a lower-case v)
@@ -7149,6 +7210,7 @@ def choices_from_config(cfg_path: Path) -> dict:
     vis = cfg.get("vision")
     esp = val("--control-vector-scaled")
     esp_path = esp.rsplit(":", 1)[0] if esp else None
+    cap_frac = last_flag_value(a, "--vram-frac")
     return {"family": family, "model": model if model in MODELS else None,
             "context": int(val("--max-context")) if val("--max-context") else None,
             "kv": val("--kv") if val("--kv") in ("int8", "q4_0") else None,
@@ -7156,6 +7218,7 @@ def choices_from_config(cfg_path: Path) -> dict:
             "esp": ("on" if Path(esp_path).name == ESP_VECTOR.name else esp_path) if esp_path else "off",
             "host": cfg.get("host"), "api_key": cfg.get("api_key"), "port": cfg.get("port"), "gpu": cfg.get("gpu"),
             "layer_split": cfg.get("layer_split"), "cuda": 12 if config_toolkit(cfg) == 12 else None,
+            "vram_cap": float(cap_frac) if cap_frac is not None else None,
             # #493: --vram-reserve-mib given at setup (images write the default 700 themselves)
             "vram_reserve_mib": int(val("--vram-reserve-mib")) if (val("--vram-reserve-mib") or "").isdigit() and (
                 vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None}
@@ -7579,6 +7642,11 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
             cfg[user_args.WRITTEN_KEY] = list(cfg["args"])
         write_config(cfg_path, cfg)
         ok(f"saved for this model: {reserve} MiB of VRAM kept free for other programs (--vram-reserve-mib)")
+    cap = keep.pop("vram_cap", None)
+    if cap is not None:
+        set_vram_cap(cfg["args"], cap)
+        write_config(cfg_path, cfg)
+        ok(f"saved for this model: VRAM cap {cap:g} of total (--vram-frac; 1 = cap off)")
     if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
         cfg.update(keep)
         write_config(cfg_path, cfg)
@@ -8466,7 +8534,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"context: {ctx} tokens")
     vision = own_path_vision(a, fam, gpu, hip)
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
-    vram_gb = float(gpu.get("vram_gb", 0.0))
+    vram_gb = float(low_ram_vram(gpu))
     par = getattr(a, "parallel", None)
     par_said = False
     if par is None and not a.yes:                      # offered, with its price; Enter keeps one at a time (never forced)
@@ -8545,7 +8613,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     step(7, "writing the start script")
     args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
     if a.vram_reserve_mib is not None:             # VRAM left free for other programs: the experts take that much less
-        vram = gpu.get("vram_gb", 0.0)
+        vram = low_ram_vram(gpu)
         if vram > 0:
             args += ["--expert-vram", f"{max(vram - 3.0 - a.vram_reserve_mib / 1024, 0):.1f}"]
         ok(f"VRAM kept free for other programs: about {a.vram_reserve_mib} MiB (the experts' share is set lower)")
@@ -10020,6 +10088,10 @@ def main() -> int:
     ap.add_argument("--vram-reserve-mib", type=int, metavar="N",
                     help="VRAM in MiB the engine leaves free for other programs (a game, another model; the engine's "
                          "default: 700); the expert cache takes that much less")
+    ap.add_argument("--vram-cap", type=float, metavar="F",
+                    help="optional fraction of total VRAM the engine may use, 0 < F <= 1 (0.8 = 80%%; default: cap off). "
+                         "Writes --vram-frac into the run config, shrinks auto or fixed expert caches; a larger "
+                         "--vram-reserve-mib still wins. Remembered for this model; 1 turns the cap off (CUDA/HIP)")
     ap.add_argument("--mtp", choices=["on", "off"],
                     help="the draft layer (MTP): off starts the model without it, which frees about 1 GB of graphics memory "
                          "for the expert cache and takes less RAM, at the price of speed; it is kept in the run config "
@@ -10062,6 +10134,10 @@ def main() -> int:
         if a.family in MULTI_FILE_FAMILIES:            # DeepSeek-V4.1-Flash: its own engine package, the generic DeepSeek install
             return mac_dsv41_setup(a)
         return mac_control_setup(a)
+    if a.vram_cap is not None and not 0 < a.vram_cap <= 1:
+        ap.error("--vram-cap takes a finite fraction, 0 < F <= 1, e.g. --vram-cap 0.8 (1 = cap off)")
+    if a.backend == "sycl" and a.vram_cap is not None:
+        ap.error("--vram-cap is available on the CUDA/HIP engine, not the separate SYCL engine")
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
@@ -10137,6 +10213,8 @@ def main() -> int:
                 a.port = a.port or ch["port"]
                 if a.vram_reserve_mib is None:          # #493: an explicit reserve set up before
                     a.vram_reserve_mib = ch.get("vram_reserve_mib")
+                if a.vram_cap is None:
+                    a.vram_cap = ch.get("vram_cap")
                 if a.cuda is None and ch.get("cuda") == 12:   # the experimental CUDA 12 engine, as before
                     a.cuda = "12"
                 if isinstance(ch.get("gpu"), list):     # a layer split: set up across the same cards again
@@ -10170,19 +10248,23 @@ def main() -> int:
             for i, c in enumerate(have, 1):
                 say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
             pick_cfg = have[int(ask("Tune which one?", [str(i) for i in range(1, len(have) + 1)], "1", a.yes)) - 1]
+        if a.vram_cap is not None:                    # tuning must not launch an uncapped engine first
+            cfg = json.loads(pick_cfg.read_text(encoding="utf-8-sig"))
+            set_vram_cap(cfg["args"], a.vram_cap)
+            write_config(pick_cfg, cfg)
         if not calibrate_config(pick_cfg):             # #447: said again where it is not lost above the start
             say()
             warn("this PC is NOT tuned: the tuning failed (the reason is above); the model "
                  + ("keeps" if a.no_start else "starts with") + " the default settings")
         return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "vram_cap": a.vram_cap, "open_browser": a.browser})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         engine_update_note()
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "vram_cap": a.vram_cap, "open_browser": a.browser})
         say()
         for i, c in enumerate(have, 1):
             say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
@@ -10191,7 +10273,7 @@ def main() -> int:
         if pick <= len(have):
             return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "vram_cap": a.vram_cap, "open_browser": a.browser})
         data, elsewhere = data_folder_for(a)      # "install another model": now the model files are gathered
         roots = [data, *elsewhere]
         if not models_dir_given:
@@ -10202,6 +10284,13 @@ def main() -> int:
     found = gpus()
     amd = amd_gpus()
     amd_ok = [g for g in amd if amd_problem(g) is None]
+    if a.vram_cap is not None:
+        for g in found:
+            g["vram_cap"] = a.vram_cap
+        for g in amd:
+            g["vram_cap"] = a.vram_cap
+        for g in amd_ok:
+            g["vram_cap"] = a.vram_cap
     # older NVIDIA GPUs (Pascal / Volta): the experimental CUDA 12 engine, when chosen (docs/OLDER_GPUS.md)
     OLD_GPUS = OLD_GPUS or old_gpus_opt_in(found, named_gpus(a.gpu, a.gpus), a.cuda,
                                            other=bool(amd_ok) or a.backend == "hip")
@@ -10283,7 +10372,12 @@ def main() -> int:
         a.gpu = gpu["index"] if len(amd) > 1 else a.gpu
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {amd_mem_text(gpu) if gpu.get('uma') else format(gpu['vram_gb'], '.1f') + ' GB VRAM'}, "
+        if a.vram_cap is not None:
+            gpu["vram_cap"] = a.vram_cap
+            for x in chosen:
+                x["vram_cap"] = a.vram_cap
+        cap_note = f" ({usable_vram_gb(gpu['vram_gb'], a.vram_cap):.1f} GB usable with --vram-cap {a.vram_cap:g})" if a.vram_cap is not None and 0 < a.vram_cap < 1.0 else ""
+        ok(f"GPU: {gpu['name']}, {amd_mem_text(gpu) if gpu.get('uma') else format(gpu['vram_gb'], '.1f') + ' GB VRAM' + cap_note}, "
            f"{gpu['arch']} (AMD: docs/{'STRIX_HALO' if is_strix_halo(gpu) else 'AMD_HIP'}.md)")
         if WIN and str(gpu.get("arch") or "").startswith("gfx12"):   # only a pointer; no default changes
             say("  If Windows resets the AMD driver (VIDEO_ENGINE_TIMEOUT_DETECTED, flicker, the engine dies mid-answer): "
@@ -10308,10 +10402,15 @@ def main() -> int:
         GPU_PICK = a.gpu
         gpu = gpu_info(a.gpu)
         chosen = [gpu_info(i) for i in sel]
+        if a.vram_cap is not None:
+            gpu["vram_cap"] = a.vram_cap
+            for x in chosen:
+                x["vram_cap"] = a.vram_cap
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, " + (f"unified memory ({gpu['vram_gb']:.0f} GB usable by the GPU)" if gpu.get("uma") else f"{gpu['vram_gb']:.1f} GB VRAM")
+        cap_note = f" ({usable_vram_gb(gpu['vram_gb'], a.vram_cap):.1f} GB usable with --vram-cap {a.vram_cap:g})" if a.vram_cap is not None and 0 < a.vram_cap < 1.0 else ""
+        ok(f"GPU: {gpu['name']}, " + (f"unified memory ({gpu['vram_gb']:.0f} GB usable by the GPU{cap_note})" if gpu.get("uma") else f"{gpu['vram_gb']:.1f} GB VRAM{cap_note}")
            + f", compute capability {cc(gpu)}, driver {gpu['driver']}")
         cuda_tk, why = cuda_choice(gpu["archs"], a.cuda, driver_major(gpu))   # one engine per model: its oldest card decides
         if why:
@@ -10325,9 +10424,14 @@ def main() -> int:
             cuda12_min_driver(feed=True)                   # the CUDA 12 package's driver floor: the installed package, else the signed feed (#4247)
             if note := cuda12_driver_warning(driver_major(gpu)):
                 warn(note)
-    if gpu["vram_gb"] < 11:
-        warn("less than 12 GB of " + ("GPU memory (this APU's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
-             + ": Strata will run, but most experts stay on the CPU and it will be slow")
+    effective_vram = low_ram_vram(gpu)
+    if effective_vram < 11:
+        if a.vram_cap is not None and 0 < a.vram_cap < 1.0:
+            warn(f"less than 12 GB of VRAM usable under the cap ({gpu['vram_gb']:.1f} GB capped to {effective_vram:.1f} GB): "
+                 "Strata will run, but most experts stay on the CPU and it will be slow")
+        else:
+            warn("less than 12 GB of " + ("GPU memory (this APU's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
+                 + ": Strata will run, but most experts stay on the CPU and it will be slow")
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
     need = min(d["ram_gb"] for d in MODELS.values() if not d.get("mem_total"))   # Gyro counts VRAM + RAM: not a RAM floor
@@ -10382,11 +10486,15 @@ def main() -> int:
     if a.check:
         say()
         any_fits = False
+        usable_v = low_ram_vram(gpu)
         for m, d in MODELS.items():
-            have_gb = mem_have(m, ram, gpu["vram_gb"])
+            have_gb = mem_have(m, ram, usable_v)
             verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
             if d.get("mem_total"):          # Gyro: VRAM + RAM together; the rest of the download is read from the SSD
-                verdict += f" ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM)"
+                if a.vram_cap is not None and 0 < a.vram_cap < 1.0:
+                    verdict += f" ({ram:.0f} GB RAM + {usable_v:.1f} GB VRAM [capped at {a.vram_cap:g}])"
+                else:
+                    verdict += f" ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM)"
             if d.get("budget") and not unsloth_budget(m, ram, gpu):     # Phase 2: all of them in RAM
                 verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
             elif d.get("budget"):
@@ -10396,9 +10504,9 @@ def main() -> int:
                            f"slow here: {resident_budget_gib(m, ram)} GiB of its "
                            f"{int(d['arena_gb'] / 1.073741824)} GiB of experts in RAM, the rest read from the SSD "
                            "(setup asks first)" if ram >= UNSLOTH_MIN_RAM_GB else "does not fit")
-            elif low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
-                verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}% "
-                           "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
+            elif low_ram_needed(m, ram) and low_ram_fits(m, ram, usable_v) and a.low_ram != "off":
+                verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, usable_v):.0f}% "
+                           "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, usable_v)
                                                  else "the rest is read from the SSD as needed)"))
             if d.get("budget") and hip and d.get("nvidia_only"):   # #429: not run on AMD yet
                 verdict += " - NVIDIA only so far, untested on AMD"
@@ -10410,6 +10518,8 @@ def main() -> int:
         try:                                           # DeepSeek-V4.1-Flash: a line, from the real numbers (strata_control/dsv41_fit.py)
             from strata_control import dsv41_fit
             cards_ok = amd_ok if hip else [g for g in found if gpu_problem(g) is None]
+            if a.vram_cap is not None and 0 < a.vram_cap <= 1.0:
+                cards_ok = [{**g, "vram_gb": usable_vram_gb(g["vram_gb"], a.vram_cap)} for g in cards_ok]
             for mname in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"):
                 ds = dsv41_fit.plan(cards_ok, ram, None, model=mname)
                 tail = {"fits": f"fits ({ds['experts_in_vram']:,} of {ds['experts_total']:,} experts in graphics memory, the rest on the CPU)",
@@ -10485,7 +10595,7 @@ def main() -> int:
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         if d.get("mem_total"):             # Gyro: the download includes the n-gram table, the memory figure does not
-            have_gb = mem_have(m, ram, gpu["vram_gb"])
+            have_gb = mem_have(m, ram, low_ram_vram(gpu))
             fit = "" if have_gb >= d["ram_gb"] else \
                 f"   <- needs {d['ram_gb']} GB of VRAM + RAM together, you have {have_gb:.0f}"
             say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.1f} GB "
@@ -10558,9 +10668,11 @@ def main() -> int:
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one
     # before RESIDENT_SPLIT_ENGINE, #642)
     if MODELS[model].get("mem_total"):
-        if mem_have(model, ram, gpu["vram_gb"]) < MODELS[model]["ram_gb"]:   # recommend, never force: a warning
+        usable_v = low_ram_vram(gpu)
+        if mem_have(model, ram, usable_v) < MODELS[model]["ram_gb"]:   # recommend, never force: a warning
+            cap_note = f" [capped at {a.vram_cap:g}]" if a.vram_cap is not None and 0 < a.vram_cap < 1.0 else ""
             warn(f"{model} needs {MODELS[model]['ram_gb']} GB of VRAM and RAM together; this PC has "
-                 f"{mem_have(model, ram, gpu['vram_gb']):.0f} GB ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM): it "
+                 f"{mem_have(model, ram, usable_v):.0f} GB ({ram:.0f} GB RAM + {usable_v:.1f} GB VRAM{cap_note}): it "
                  "may be slow, run out of memory or not start")
     elif not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
@@ -10572,8 +10684,10 @@ def main() -> int:
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
-    small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
-    rec_ctx = 131072                                   # 128K on every card (owner, 2026-11-01); a card it leaves little room on is warned about below, never lowered
+    small = min(low_ram_vram(x) for x in chosen)         # each card keeps its layers' KV of the whole context
+    rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
+    if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
+        rec_ctx = 8192 if small < 14 else 32768
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
     rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
     if a.context:
@@ -10641,7 +10755,7 @@ def main() -> int:
         vision = flash_vision_encoder(a.vision, gpu) if a.vision != "no" else "none"
         vision = "none" if vision in ("no", "none") else vision
     else:
-        small = 0 < float(gpu.get("vram_gb") or 0.0) < IMAGES_GPU_ENCODER_MIN_VRAM_GB
+        small = 0 < float(low_ram_vram(gpu)) < IMAGES_GPU_ENCODER_MIN_VRAM_GB
         say()
         say("  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB")
         if small:
@@ -10920,7 +11034,7 @@ def main() -> int:
         refresh_draft_vocab(rt, draft_vocab or "cjk")
         ok(f"MTP draft layer: {rt}")
     refresh_dflash2_vocab(data, draft_vocab or "cjk")        # an existing DFlash2 copy follows the choice too
-    for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
+    for line in draft_vocab_note(low_ram_vram(gpu), draft_vocab):   # #474: a recommendation, nothing changes
         say("  " + line)
 
     # ---- 7. the start script
@@ -11067,9 +11181,9 @@ def main() -> int:
         args += ["--vision"]
         if VISION[vision]["reserve_mib"]:
             args += ["--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
-        if vision == "gpu" and a.vram_reserve_mib is None and 0 < gpu.get("vram_gb", 0.0) <= 12.5:
+        if vision == "gpu" and a.vram_reserve_mib is None and 0 < low_ram_vram(gpu) <= 12.5:
             # a tip only (recommend, never force): on a 12 GB card the encoder's 700 MiB can leave ~200 MiB free
-            print(f"  tip: images on a {gpu['vram_gb']:.0f} GB card can leave little VRAM free; if a request stalls, "
+            print(f"  tip: images on a {low_ram_vram(gpu):.0f} GB card can leave little VRAM free; if a request stalls, "
                   f"run setup again with --vram-reserve-mib {VISION_GPU_SMALL_RESERVE_MIB}")
     if a.vram_reserve_mib is not None:                 # #493: VRAM left free for other programs (only when given)
         if "--vram-reserve-mib" in args:
@@ -11082,11 +11196,14 @@ def main() -> int:
             args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
            "that much less)")
-    if not multi and family == "unsloth" and 0 < gpu.get("vram_gb", 0.0) <= UD_FIT_CARD_GB:
+    if a.vram_cap is not None:
+        set_vram_cap(args, a.vram_cap)
+        ok(f"VRAM cap: {a.vram_cap:g} of total (--vram-frac; 1 = cap off; the larger reserve wins)")
+    if not multi and family == "unsloth" and 0 < low_ram_vram(gpu) <= UD_FIT_CARD_GB:
         # a card of about 8 GB: the config setup would write may not start (measured on an A750).  Pick the least
         # harmful one that fits and say so; what the user chose with --context / --kv / --vram-reserve-mib is kept
         res_arg = int(args[args.index("--vram-reserve-mib") + 1]) if "--vram-reserve-mib" in args[:-1] else None
-        vg = gpu["vram_gb"]
+        vg = low_ram_vram(gpu)
         rt_mib = unsloth_runtime_mib(gpu)
         fits = unsloth_vram_slack_mib(vg, ctx, kv, UD_FIT_ENGINE_RESERVE_MIB if res_arg is None else res_arg, True,
                                       rt_mib) >= UD_FIT_MIN_SLACK_MIB
@@ -11118,7 +11235,7 @@ def main() -> int:
                      "--vram-reserve-mib 0, which leaves nothing for other programs).")
         for line in unsloth_small_card_lines(model, vg, plan, fits):
             warn(line)
-    if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
+    if not multi and 0 < low_ram_vram(gpu) < SMALL_CARD_GB:
         # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
         # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.
         for line in small_card_note(ctx, draft_vocab):   # a recommendation: nothing changes
@@ -11256,7 +11373,7 @@ def main() -> int:
     if a.parallel is not None:
         if a.parallel >= 2:
             cfg["parallel"] = a.parallel
-            for i, line in enumerate(parallel_note(a.parallel, [g.get("vram_gb", 0.0) for g in chosen],
+            for i, line in enumerate(parallel_note(a.parallel, [low_ram_vram(g) for g in chosen],
                                                    MODELS[model]["arena_gb"], ctx, kv, streaming)):
                 (ok if i == 0 else warn)(line)
         else:
@@ -11321,7 +11438,7 @@ def main() -> int:
     if cfg.get("images"):
         say(f"  Image generation: POST http://127.0.0.1:{port}/v1/images/generations (OpenAI's images API)")
     if a.parallel is None:                             # #465: the opt-in, said once (nothing changes)
-        for line in parallel_note(None, [g.get("vram_gb", 0.0) for g in chosen], MODELS[model]["arena_gb"], ctx, kv,
+        for line in parallel_note(None, [low_ram_vram(g) for g in chosen], MODELS[model]["arena_gb"], ctx, kv,
                                   "--kv-resident" in cfg["args"]):
             say("  " + line)
     if tuned is False:                                 # #447: a failed tuning is repeated here, not only above

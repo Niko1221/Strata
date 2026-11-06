@@ -236,6 +236,11 @@ public:
 
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
+
+    /// An optional per-chunk admission guard, called at the top of every prompt chunk (once per `m.T`-sized
+    /// chunk, after the split): a false return ends the run with `err`.  The VRAM cap uses it so a long
+    /// prefill cannot step past the free-memory floor between its first and its last chunk.
+    std::function<bool(std::string& err)> chunk_guard;
     /// The first stage only, checked before every chunk but the first: true ends the run there as if the prompt
     /// ended there.  `run` returns true once every stage has read the tokens before that chunk, and `stopped_at()`
     /// says how many of the run's tokens that is (-1 when the run read them all).  A read beside the batch slots

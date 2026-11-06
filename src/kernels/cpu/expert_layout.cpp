@@ -432,12 +432,20 @@ void native_gu_rows_invariant(const NativeFmt&, const uint8_t*, const void* cons
 void native_down_rows_invariant(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 #endif
 
-bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err,
+                        int64_t n_embd, int64_t n_ff) {
     ExpertLayout L;
     L.n_layers = n_layers;
     L.n_expert = n_expert;
+    L.n_embd = n_embd;
+    L.n_ff = n_ff;
     std::ifstream in(pack_dir + "/native_experts.txt");
     if (!in) {
+        if (n_embd != H || n_ff != FF) {
+            err = "a model of n_embd " + std::to_string(n_embd) + " / expert width " + std::to_string(n_ff) +
+                  " needs a native pack (tools/iq_pack.py); the canonical Q2_0 layout is Flash-Next's";
+            return false;
+        }
         L.total = (uint64_t) n_layers * (uint64_t) n_expert * (uint64_t) BLOB;
         hadamard_set({});
         g_layout = L;
@@ -484,7 +492,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             return false;
         }
         NativeFmt f;
-        if (!native_fmt((int) gt, (int) dt, H, FF, f, err)) return false;
+        if (!native_fmt((int) gt, (int) dt, n_embd, n_ff, f, err)) return false;
         if (f.bytes != blob) {
             err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
                   " B but its formats make " + std::to_string(f.bytes);

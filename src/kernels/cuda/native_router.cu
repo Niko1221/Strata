@@ -306,7 +306,10 @@ __global__ void route_resident_k(const float* __restrict__ logits, int32_t* __re
         for (int r = 0; r < 10; ++r) m = fmaxf(m, l[my[r]]);
         float ex[10], sum = 0.0f;
         for (int r = 0; r < 10; ++r) { ex[r] = expf(l[my[r]] - m); sum += ex[r]; }
-        for (int r = 0; r < 10; ++r) weights[(size_t) t * 10 + r] = ex[r] / sum;
+        // the same 2**-14 lower clamp the default router's renormalisation uses, so a row of very small
+        // logits cannot divide by a zero/denormal sum
+        const float sc = fmaxf(sum, 6.103515625e-05f);
+        for (int r = 0; r < 10; ++r) weights[(size_t) t * 10 + r] = ex[r] / sc;
     }
     if (lane == 0) {
         for (int r = 0; r < 10; ++r) id[r] = my[r];

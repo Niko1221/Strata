@@ -3351,6 +3351,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     }
 #endif
     for (int64_t c0 = 0; c0 < n; c0 += C) {
+        if (chunk_guard && !chunk_guard(err)) return false;
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
         // waits for the later stages to read them)

@@ -6,6 +6,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/router_top10.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/vram_floor.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -1214,7 +1215,17 @@ float* gdn_chunk_scratch() {
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return nullptr; }
     if (bufs[dev] == nullptr) {
+        // The scratch is booked in the frozen cache budget at sizing time, but this first-use allocation is
+        // still a late one: check the cap floor minus these bytes before taking them.  A refusal prints the
+        // cap line and returns null, which becomes cudaErrorMemoryAllocation and makes the dispatcher pick
+        // the default recurrence, rather than allocating under the floor.  With the cap off this is a cheap
+        // no-op (one branch, no device call).
         const size_t n = (size_t) (GSB / GCH) * HV * (2 * GCH * GCH + GCH);
+        std::string floor_err;
+        if (!strata::core::vram_floor_allow("before the chunked-GDN scratch", floor_err, (uint64_t) n * sizeof(float))) {
+            std::fprintf(stderr, "strata generate: %s\n", floor_err.c_str());
+            return nullptr;
+        }
         if (cudaMalloc((void**) &bufs[dev], n * sizeof(float)) != cudaSuccess) {
             cudaGetLastError();
             bufs[dev] = nullptr;
@@ -1274,6 +1285,7 @@ cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, con
         gdn_chunk_prep_kernel<<<dim3((unsigned) nch, HK), 256, kChunkPrepSmem, s>>>(h, gate, beta, tm, pm, gm, t0, T);
         gdn_chunk_scan_kernel<<<dim3(HK, S / GDV), 128 * VPK, kChunkScanSmem, s>>>(state, h, beta, tm, pm, gm, y, t0, nch, T);
     }
+    strata::core::vram_floor_log_once("after first chunked-GDN launch");
     return cudaSuccess;   // launch errors surface at the caller's check; an error above means nothing ran
 }
 // STRATA_GDN_TC=1: gdn_rec_chunked with the scan on the tensor cores (gdn_tc_scan_kernel, gdn_tc.cuh) and the prep
