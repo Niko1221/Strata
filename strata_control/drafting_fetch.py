@@ -35,11 +35,12 @@ class OfflineError(DraftingError):
     """The download address did not answer (no internet, or a host that is down). Setup skips this one silently: the model keeps the MTP (strata-offline-users)."""
 
 
-def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, model_name: str | None = None, backend: str | None = None) -> dict:
+def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, model_name: str | None = None, backend: str | None = None, archs=None,
+         args: list | None = None, vram_mib: float | None = None) -> dict:
     """What fetching would do, in numbers and words. ``gb`` is 0 when the drafter is already here. ``engine``: the installed engine program (None: not known); ``vram_gb`` is
     the graphics memory DFlash2 alone takes on this computer (0.72 with the Q4_0 selector, which the engine reads and setup makes, else 0.89) and ``selq4`` says which.
     For a set with a tuned drafter (drafting.SET_DEFAULTS) the download is that 0.34 GB file, and it counts as missing until it is here."""
-    tuned = drafting.uses_tuned(backend, model_name)
+    tuned = drafting.tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib)
     ready = drafting.tuned_ok(data_dir) if tuned else drafting.pack_ready(data_dir)
     gb = 0.0 if ready else (drafting.TUNED_GB if tuned else drafting.DOWNLOAD_GB)
     if ready:
@@ -279,11 +280,12 @@ def ensure_tuned(data_dir: str | Path, *, progress: Progress | None = None, canc
 
 
 def ensure_for(data_dir: str | Path, *, model_name: str | None, backend: str | None, progress: Progress | None = None,
-               cancel: threading.Event | None = None, feed: str | None = None, throttle: bool = False) -> Path | None:
+               cancel: threading.Event | None = None, feed: str | None = None, throttle: bool = False, archs=None, args: list | None = None,
+               vram_mib: float | None = None) -> Path | None:
     """The drafter a set should start with, fetched if needed: the tuned pack where the set has one (drafting.SET_DEFAULTS), else, or when the tuned one cannot be had, the
     stock drafter (ensure). For such a set: None when nothing could be fetched because the network did not answer (the MTP runs: silent for the caller); DraftingError for a
     real fault (a safety check that failed, an interrupted download). A set with no tuned entry gets ensure() unchanged."""
-    if drafting.uses_tuned(backend, model_name):
+    if drafting.tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib):
         tuned_error: DraftingError | None = None
         try:
             got = ensure_tuned(data_dir, progress=progress, cancel=cancel, feed=feed, throttle=throttle, backend=backend)

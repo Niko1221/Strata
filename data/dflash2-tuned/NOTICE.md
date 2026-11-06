@@ -11,7 +11,7 @@ synthetic records; no user data), then packed into the engine's runtime format (
 `tools/dflash2_pack.py --q4_0-selector`). The pack is the same size as the unmodified one (339,694,592 bytes). The model code and the
 architecture are unchanged. The pack's SHA-256 is `4df2e5ab2b47c064afbe662e16e4f06569877125c2d0e2123a4ac755266c664c`.
 
-It is meant to run with `--draft-conf 0.7` (Strata sets that with it). It changes how many words are guessed right, never the words
+On Macs Strata runs it with `--draft-conf 0.7`; on CUDA (every expert resident) and on Strix Halo it runs at the confidence those platforms already use. It changes how many words are guessed right, never the words
 the model writes: the text is the target model's, checked word for word against the unmodified drafter on the measured sets.
 
 Training on the outputs of the Qwen3.8-Flash-Next quantizations: the owner of Strata confirmed on 2026-11-06 that the Qwen model terms allow

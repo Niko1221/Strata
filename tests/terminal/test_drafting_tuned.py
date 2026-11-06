@@ -176,16 +176,17 @@ class MetalPerSet(Base):
         self.assertEqual((d.drafter, flag(cfg["args"], "--draft-model")), ("dflash2", str(drafting.pack_path(self.data, old))))
         self.assertNotEqual(flag(cfg["args"], "--draft-model"), str(drafting.tuned_path(self.data)))
 
-    def test_other_backends_are_untouched(self):
+    def test_the_other_cards_keep_the_stock_pack_and_their_conf(self):
         self.put_tuned()
         self.put_stock()
-        for backend, archs in (("cuda", ["sm_120"]), ("hip", ["gfx1151"])):
+        for backend, archs, vram in (("sycl", ["arc_a"], None), ("hip", ["gfx1201"], 32768), ("cuda", ["sm_86"], 12288), ("hip", ["gfx1100"], 24576)):
             cfg = self.cfg(Q4)
-            drafting.apply(cfg, data_dir=self.data, backend=backend, archs=archs, engine=self.exe)
-            self.assertNotEqual(flag(cfg["args"], "--draft-model"), str(drafting.tuned_path(self.data)), backend)
-            self.assertNotEqual(flag(cfg["args"], "--draft-conf"), "0.7", backend)
+            drafting.apply(cfg, data_dir=self.data, backend=backend, archs=archs, engine=self.exe, vram_mib=vram)
+            self.assertNotEqual(flag(cfg["args"], "--draft-model"), str(drafting.tuned_path(self.data)), (backend, archs))
+            self.assertNotEqual(flag(cfg["args"], "--draft-conf"), "0.7", (backend, archs))
         self.assertIsNone(drafting.tuned_conf_for("cuda", Q4))
         self.assertEqual(drafting.tuned_conf_for("metal", Q4), 0.7)
+        self.assertIsNone(drafting.tuned_conf_for("cuda", IQ3S), "CUDA keeps its own conf: only the pack changes")
 
     def test_needs_tuned_and_needs_pack(self):
         kw = dict(model_name=Q4, backend="metal", archs=[], data_dir=self.data)
@@ -290,11 +291,11 @@ class Fetch(Base):
 
     def test_a_later_per_platform_switch_is_a_table_entry_and_a_feed_backend(self):
         feed = self.make_feed(sub="both", backends=("metal", "cuda"))
-        with mock.patch.dict(drafting.SET_DEFAULTS, {("cuda", "unsloth-ud-q4_k_xl"): drafting.SetDefault("dflash2", 0.35)}):
-            self.assertEqual(drafting.tuned_conf_for("cuda", Q4), 0.35)
-            self.assertEqual(drafting_fetch.ensure_for(self.data, model_name=Q4, backend="cuda", feed=str(feed)), drafting.tuned_path(self.data))
+        card = dict(archs=["sm_120"], args=["--max-context", "65536"], vram_mib=73728)
+        with mock.patch.dict(drafting.SET_DEFAULTS, {("cuda", "unsloth-ud-q4_k_xl"): drafting.SetDefault("dflash2", True, None, "resident")}):
+            self.assertEqual(drafting_fetch.ensure_for(self.data, model_name=Q4, backend="cuda", feed=str(feed), **card), drafting.tuned_path(self.data))
         self.put_stock()
-        self.assertEqual(drafting.tuned_conf_for("cuda", Q4), None, "without the entry CUDA is back to the stock pack")
+        self.assertFalse(drafting.tuned_applies("cuda", Q4, **card), "without the entry CUDA is back to the stock pack")
 
     def test_a_feed_that_does_not_list_it_or_lists_other_bytes_gives_nothing(self):
         empty = self.make_feed(listed=False)
@@ -425,21 +426,209 @@ class Fetch(Base):
             got = drafting_fetch.ensure_for(self.data, model_name=Q4, backend="metal")
         self.assertEqual(got, drafting.pack_path(self.data))
 
-    def test_cuda_and_hip_never_read_the_feed_for_a_drafter_and_keep_their_conf_steps(self):
-        for backend in ("cuda", "hip", "sycl"):
-            with mock.patch.object(drafting_fetch, "tuned_from_feed", side_effect=AssertionError("feed read")),                     mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")) as stock:
-                self.assertEqual(drafting_fetch.ensure_for(self.data, model_name=Q4, backend=backend), Path("/stock"), backend)
-                stock.assert_called_once()
-            self.assertFalse(drafting.needs_tuned("auto", model_name=Q4, backend=backend, archs=[], data_dir=self.data), backend)
-        self.assertEqual(drafting.CONF_STEPS, ((12000, 0.35), (7500, 0.5), (3000, 0.7), (0, 0.8)))
-        self.assertEqual(drafting.BACKEND_CONF, {"sycl": 0.6, "metal": 0.5})
-        self.assertEqual({k for k in drafting.SET_DEFAULTS}, {("metal", "unsloth-ud-q4_k_xl"), ("metal", "unsloth-ud-iq4_xs-v31"), ("metal", "iq3_s")})
-
     def test_a_set_without_a_tuned_entry_is_fetched_as_before(self):
         with mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")) as stock:
             self.assertEqual(drafting_fetch.ensure_for(self.data, model_name=IQ3S, backend="metal"), Path("/stock"))
-            self.assertEqual(drafting_fetch.ensure_for(self.data, model_name=Q4, backend="cuda"), Path("/stock"))
+            self.assertEqual(drafting_fetch.ensure_for(self.data, model_name=Q4, backend="cuda", archs=["sm_120"], vram_mib=73728), Path("/stock"))
         self.assertEqual(stock.call_count, 2)
+
+
+OLD_XS = "qwen3.8-flash-next-unsloth-ud-iq4_xs"
+GYRO = "qwen3.8-flash-next-gyro-gyro-s"
+#: (name, backend, archs, the one card's memory in MiB or None) of the boxes DF-VAL measured and of the ones it must not reach
+L620 = ("l620 RTX PRO 5000 72 GB", "cuda", ["sm_120"], 73728)
+SPARK = ("DGX Spark GB10", "cuda", ["sm_121"], None)
+STRIX = ("Strix Halo", "hip", ["gfx1151"], None)
+P2003 = ("RTX 3060 12 GB", "cuda", ["sm_86"], 12288)
+CARD24 = ("a 24 GB card", "cuda", ["sm_89"], 24576)
+R9700 = ("R9700 32 GB", "hip", ["gfx1201"], 32768)
+RX7900 = ("RX 7900 XTX", "hip", ["gfx1100"], 24576)
+ARC = ("Arc A750", "sycl", ["arc_a"], None)
+TWO_CARDS = ("two RTX PRO cards", "cuda", ["sm_120", "sm_120"], None)
+
+
+class CudaAndHip(Fetch):
+    """Owner 11-06 ~10:00: the tuned pack is the DFlash2 pack at each platform's CURRENT confidence, (a) on CUDA when every expert is resident (the CONF_STEPS first step, 0.35: l620, the Spark),
+    (b) on Strix Halo (gfx1151); for the sets DF-VAL measured there. Not a 12 GB or streaming card, not gfx1201, not SYCL, not several cards."""
+
+    def apply_on(self, hardware, name, **extra):
+        _label, backend, archs, vram = hardware
+        cfg = self.cfg(name, **extra)
+        decision = drafting.apply(cfg, data_dir=self.data, backend=backend, archs=archs, engine=self.exe, vram_mib=vram)
+        return decision, cfg["args"]
+
+    def drop_tuned(self):
+        (self.data / "dflash2" / drafting.TUNED_NAME).unlink(missing_ok=True)
+        (self.data / "dflash2" / (drafting.TUNED_NAME + ".ok")).unlink(missing_ok=True)
+
+    def test_the_measured_cells_get_the_tuned_pack_at_the_conf_the_backend_already_had(self):
+        self.put_tuned()
+        self.put_stock()
+        cells = ((L620, IQ3S), (SPARK, IQ3S), (SPARK, V31), (STRIX, IQ3S), (STRIX, Q4), (STRIX, OLD_XS))
+        for hardware, name in cells:
+            self.put_tuned()
+            d, args = self.apply_on(hardware, name)
+            where = (hardware[0], name)
+            self.assertEqual((d.drafter, d.note), ("dflash2", ""), where)
+            self.assertEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data)), where)
+            self.drop_tuned()                                  # the same start without the tuned file: the stock pack, everything else the same
+            d2, args2 = self.apply_on(hardware, name)
+            self.assertEqual(flag(args2, "--draft-model"), str(drafting.pack_path(self.data, self.exe)), where)
+            self.assertNotEqual(flag(args2, "--draft-model"), flag(args, "--draft-model"), where)
+            self.assertEqual(flag(args, "--draft-conf"), flag(args2, "--draft-conf"), f"only the pack changes, not the conf {where}")
+            self.assertEqual(flag(args, "--draft-conf"), "0.35", where)
+            self.assertEqual(flag(args, "--spec"), flag(args2, "--spec"), where)
+            strip = lambda a: [x for i, x in enumerate(a) if not (i and a[i - 1] == "--draft-model")]      # noqa: E731
+            self.assertEqual(strip(args), strip(args2), where)
+
+    def test_the_cells_nobody_measured_are_not_enabled(self):
+        self.put_tuned()
+        self.put_stock()
+        for hardware, name in ((L620, Q4), (L620, OLD_XS), (SPARK, Q4), (STRIX, V31), (L620, Q5), (STRIX, Q5), (L620, GYRO)):
+            d, args = self.apply_on(hardware, name)
+            self.assertNotEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data)), (hardware[0], name))
+            self.assertFalse(drafting.tuned_applies(hardware[1], name, hardware[2], args=[], vram_mib=hardware[3]), (hardware[0], name))
+
+    def test_a_12_gb_card_an_r9700_sycl_several_cards_and_other_amd_cards_never_get_it(self):
+        self.put_tuned()
+        self.put_stock()
+        for hardware in (P2003, CARD24, R9700, RX7900, ARC, TWO_CARDS):
+            for name in (IQ3S, Q4, V31, OLD_XS):
+                d, args = self.apply_on(hardware, name)
+                where = (hardware[0], name)
+                self.assertNotEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data)), where)
+                self.assertFalse(drafting.tuned_applies(hardware[1], name, hardware[2], args=self.args, vram_mib=hardware[3]), where)
+                self.assertFalse(drafting.needs_tuned("auto", model_name=name, backend=hardware[1], archs=hardware[2], data_dir=self.data, args=self.args, vram_mib=hardware[3]), where)
+
+    def test_a_sycl_start_with_the_tuned_file_present_is_exactly_what_it_is_today(self):
+        """The SYCL 0.2.11 engine reads bf16 selector codebooks only and refuses the Q4_0-selector pack (DF-VAL): SYCL must never see the tuned file. Arc, if it is enabled later, needs a
+        second, bf16-selector tuned pack with its own name, size and SHA-256 in the feed (not added now)."""
+        self.put_stock()
+        sycl_exe = self.root / "strata-sycl"
+        sycl_exe.write_bytes(b"--mtp-draft-vocab FILE (or --mtp DIR ... --draft-fallback")          # this build has no Q4_0-selector text
+        for name in (IQ3S, Q4, V31, OLD_XS):
+            runs = []
+            for tuned_here in (False, True):
+                if tuned_here:
+                    self.put_tuned()
+                cfg = self.cfg(name)
+                d = drafting.apply(cfg, data_dir=self.data, backend="sycl", archs=["arc_a"], engine=sycl_exe)
+                runs.append((d, cfg["args"]))
+            self.assertEqual(runs[0][1], runs[1][1], f"the tuned file changes nothing on SYCL ({name})")
+            self.assertEqual((runs[0][0].drafter, runs[0][0].note), (runs[1][0].drafter, runs[1][0].note))
+            self.assertEqual(flag(runs[1][1], "--draft-conf"), "0.6", "BACKEND_CONF['sycl']")
+            self.assertFalse(drafting.tuned_applies("sycl", name, ["arc_a"], args=self.args, vram_mib=None))
+            self.assertFalse(drafting.tuned_applies("sycl", name, ["arc_a"], args=self.args, vram_mib=8192))
+            self.drop_tuned()
+        self.assertNotIn("sycl", {b for e in drafting.SET_DEFAULTS for b in e[:1]})
+
+    def test_their_confidences_are_exactly_what_they_were(self):
+        """The conf of every box class, with the tuned file here and without it, against the numbers CONF_STEPS and BACKEND_CONF have always given."""
+        self.assertEqual(drafting.CONF_STEPS, ((12000, 0.35), (7500, 0.5), (3000, 0.7), (0, 0.8)))
+        self.assertEqual(drafting.BACKEND_CONF, {"sycl": 0.6, "metal": 0.5})
+        self.assertEqual((drafting.DRAFT_CONF, drafting.SPEC_WINDOW), (0.35, 6))
+        self.put_stock()
+        want = {L620[0]: "0.35", SPARK[0]: "0.35", STRIX[0]: "0.35", P2003[0]: "0.8", ARC[0]: "0.6"}
+        for hardware in (L620, SPARK, STRIX, P2003, ARC):
+            before = flag(self.apply_on(hardware, IQ3S)[1], "--draft-conf")
+            self.put_tuned()
+            after = flag(self.apply_on(hardware, IQ3S)[1], "--draft-conf")
+            self.drop_tuned()
+            self.assertEqual(before, after, hardware[0])
+            self.assertEqual(after, want[hardware[0]], hardware[0])
+        for hardware in (L620, SPARK, STRIX):
+            self.assertEqual(drafting.conf_for(hardware[1], drafting.slots_of(self.args, hardware[3])), 0.35, hardware[0])
+        cuda_hip = {k: v for k, v in drafting.SET_DEFAULTS.items() if k[0] in ("cuda", "hip")}
+        self.assertEqual({k: v.tuned_conf for k, v in cuda_hip.items()}, {k: None for k in cuda_hip}, "no CUDA / HIP entry names a conf")
+        self.assertEqual(set(cuda_hip), {("cuda", "iq3_s"), ("cuda", "unsloth-ud-iq4_xs-v31"), ("hip", "iq3_s"), ("hip", "unsloth-ud-q4_k_xl"), ("hip", "unsloth-ud-iq4_xs")})
+        self.assertEqual({k: v.where for k, v in cuda_hip.items() if k[0] == "cuda"}, {("cuda", "iq3_s"): "resident", ("cuda", "unsloth-ud-iq4_xs-v31"): "resident"})
+
+    def test_the_resident_rule_reads_the_signals_the_confidence_reads(self):
+        for given, qualifies in (("10000", True), ("9400", True), ("9000", False), ("3000", False), ("64", False)):       # an --expert-cache N is 1.3 slots per N; the first step is 12,000 slots
+            args = ["--max-context", "65536", "--expert-cache", given]
+            self.assertEqual(drafting.tuned_applies("cuda", IQ3S, ["sm_120"], args=args, vram_mib=12288), qualifies, given)
+            self.assertEqual(drafting.conf_for("cuda", drafting.slots_of(args, 12288)) == drafting.DRAFT_CONF, qualifies, "the same boundary as the 0.35 step")
+        for vram in (73728, 49152, 32768, 24576, 16384, 12288, 8192):
+            slots = drafting.slots_of(list(self.args), vram)
+            self.assertEqual(drafting.tuned_applies("cuda", IQ3S, ["sm_120"], args=list(self.args), vram_mib=vram), slots >= 12000, vram)
+            self.assertEqual(drafting.conf_for("cuda", slots) == 0.35, drafting.tuned_applies("cuda", IQ3S, ["sm_120"], args=list(self.args), vram_mib=vram), vram)
+        self.assertFalse(drafting.tuned_applies("cuda", IQ3S, ["sm_120"], args=list(self.args), vram_mib=None), "a card whose memory is not known is not resident")
+        self.assertTrue(drafting.tuned_applies("cuda", IQ3S, ["sm_121"], args=[], vram_mib=None), "the Spark: one pool of memory")
+        self.assertTrue(drafting.tuned_applies("hip", IQ3S, ["gfx1151"]))
+        self.assertFalse(drafting.tuned_applies("hip", IQ3S, ["gfx1150"]))
+        self.assertFalse(drafting.tuned_applies("hip", IQ3S, []), "an unknown AMD card")
+        self.assertFalse(drafting.tuned_applies("cuda", IQ3S, []), "an unknown NVIDIA card")
+
+    def test_fetch_follows_the_rule_and_reads_the_feed_only_when_it_applies(self):
+        feed = self.make_feed(sub="all", backends=("metal", "cuda", "hip"))
+        for hardware, name, fetched in ((L620, IQ3S, True), (SPARK, V31, True), (STRIX, Q4, True), (P2003, IQ3S, False), (R9700, IQ3S, False), (ARC, IQ3S, False),
+                                        (TWO_CARDS, IQ3S, False), (L620, Q4, False)):
+            (self.data / "dflash2").mkdir(parents=True, exist_ok=True)
+            for f in (self.data / "dflash2").glob("*strata1*"):
+                f.unlink()
+            _label, backend, archs, vram = hardware
+            where = (hardware[0], name)
+            self.assertEqual(drafting.needs_tuned("auto", model_name=name, backend=backend, archs=archs, data_dir=self.data, args=self.args, vram_mib=vram), fetched, where)
+            with mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")) as stock:
+                got = drafting_fetch.ensure_for(self.data, model_name=name, backend=backend, feed=str(feed), archs=archs, args=self.args, vram_mib=vram)
+            if fetched:
+                self.assertEqual(got, drafting.tuned_path(self.data), where)
+                stock.assert_not_called()
+            else:
+                self.assertEqual(got, Path("/stock"), where)
+                self.assertFalse(drafting.tuned_path(self.data).exists(), where)
+        for name in (IQ3S, Q4):                                    # the feed was never read for the ones that do not qualify
+            with mock.patch.object(drafting_fetch, "tuned_from_feed", side_effect=AssertionError("feed read")), mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")):
+                for hardware in (P2003, R9700, ARC, TWO_CARDS):
+                    drafting_fetch.ensure_for(self.data, model_name=name, backend=hardware[1], archs=hardware[2], args=self.args, vram_mib=hardware[3])
+
+    def test_a_feed_that_lists_only_metal_gives_cuda_and_hip_the_stock_drafter(self):
+        feed = self.make_feed(sub="mac-only", backends=("metal",))
+        for hardware, name in ((L620, IQ3S), (STRIX, Q4)):
+            with mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")) as stock:
+                got = drafting_fetch.ensure_for(self.data, model_name=name, backend=hardware[1], feed=str(feed), archs=hardware[2], args=self.args, vram_mib=hardware[3])
+            self.assertEqual(got, Path("/stock"), hardware[0])
+            stock.assert_called_once()
+
+    def test_the_fallback_order_is_tuned_then_stock_then_the_mtp_and_offline_is_silent(self):
+        said = []
+        with mock.patch.object(drafting_fetch, "ensure", side_effect=drafting_fetch.OfflineError("no internet")):
+            for hardware, name in ((L620, IQ3S), (SPARK, IQ3S), (STRIX, Q4)):
+                got = drafting_fetch.ensure_for(self.data, model_name=name, backend=hardware[1], archs=hardware[2], args=self.args, vram_mib=hardware[3],
+                                                feed=str(self.root / "no-feed-here"), progress=lambda *a: said.append(a))
+                self.assertIsNone(got, hardware[0])
+        self.assertEqual(said, [])
+        self.assertEqual(self.apply_on(L620, IQ3S)[0].drafter, "mtp", "nothing fetched: the MTP, exactly as before")
+        self.put_stock()
+        d, args = self.apply_on(L620, IQ3S)
+        self.assertEqual((d.drafter, flag(args, "--draft-model")), ("dflash2", str(drafting.pack_path(self.data, self.exe))), "the stock pack")
+
+    def test_the_plan_says_the_small_download_only_where_it_applies(self):
+        self.assertEqual(drafting_fetch.plan(self.data, model_name=IQ3S, backend="cuda", archs=["sm_121"], args=self.args)["gb"], drafting.TUNED_GB)
+        self.assertEqual(drafting_fetch.plan(self.data, model_name=Q4, backend="hip", archs=["gfx1151"], args=self.args)["gb"], drafting.TUNED_GB)
+        self.assertEqual(drafting_fetch.plan(self.data, model_name=IQ3S, backend="cuda", archs=["sm_86"], args=self.args, vram_mib=12288)["gb"], drafting.DOWNLOAD_GB)
+        self.assertEqual(drafting_fetch.plan(self.data, model_name=IQ3S, backend="hip", archs=["gfx1201"], args=self.args, vram_mib=32768)["gb"], drafting.DOWNLOAD_GB)
+
+    def test_the_card_memory_read(self):
+        class Reader:
+            def __init__(self, total):
+                self.total = total
+
+            def ok(self):
+                return self.total is not None
+
+            def read(self):
+                return {"mem_total": self.total}
+        gib = 1 << 30
+        with mock.patch("serve.telemetry.gpu_reader", lambda index, amd=False: Reader(72 * gib)):
+            self.assertEqual(drafting.card_vram_mib({"gpu": 0}, "cuda", ["sm_120"]), 72 * 1024)
+            self.assertEqual(drafting.card_vram_mib({}, "cuda", ["sm_120"]), 72 * 1024, "no card named: card 0, as the server asks")
+            self.assertIsNone(drafting.card_vram_mib({"gpu": [0, 1]}, "cuda", ["sm_120"]), "several cards")
+            self.assertIsNone(drafting.card_vram_mib({"gpu": "0,1"}, "cuda", ["sm_120"]))
+            self.assertIsNone(drafting.card_vram_mib({"gpu": 0}, "cuda", ["sm_121"]), "the Spark: one pool")
+            self.assertIsNone(drafting.card_vram_mib({"gpu": 0}, "hip", ["gfx1151"]), "Strix Halo")
+        with mock.patch("serve.telemetry.gpu_reader", lambda index, amd=False: Reader(None)):
+            self.assertIsNone(drafting.card_vram_mib({"gpu": 0}, "cuda", ["sm_120"]), "a driver that does not answer")
 
 
 class SetupOnAMac(Base):
