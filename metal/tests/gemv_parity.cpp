@@ -4,6 +4,7 @@
 //   gemv_parity                         parity: every format, n_in 2560/640/10240, 1..8 tokens
 //   gemv_parity --bench [--pack Q2_0|IQ3_XXS] [--ntok N] [--all]   speed on the pack's shapes (best tile per shape)
 //   gemv_parity --one TYPE NIN NOUT [--ntok N]                      sweep one shape
+//   GEMV_F16=1 gemv_parity --one TYPE NIN NOUT [--ntok N]           the fp16 tiles (STRATA_METAL_F16) against the fp32 gemv
 #include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
@@ -74,6 +75,7 @@ struct Shape { const char* name; int type, n_in, n_out, per_token; };   // per_t
 
 int main(int argc, char** argv) {
     bool bench = false, all = false;
+    double worst16 = -1;   // GEMV_F16: the worst tile
     int ntok = 1;
     std::string gguf_path;
     std::string pack = "Q2_0";
@@ -94,7 +96,7 @@ int main(int argc, char** argv) {
         } else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     mtl::Context cx;
-    const int lib = cx.compile({"quant.metal", "units.metal", "gemv.metal"});
+    const int lib = cx.compile({"quant.metal", "units.metal", "gemv.metal"}, std::getenv("GEMV_F16") ? "#define STRATA_METAL_F16 1\n" : "");
     std::printf("device %s\n", cx.device_name().c_str());
     const int MAXT = 8;
     mtl::Pipeline pprep = cx.pipeline(lib, "xprep");
@@ -284,7 +286,28 @@ int main(int argc, char** argv) {
         mtl::Buffer xp = cx.alloc(4 * (4 * s.n_in * MAXT + s.n_in / 16 * MAXT));
         cx.run({xprep_dispatch(pprep, x, xp, s.n_in, MAXT)});
         const size_t plane = (size_t)4 * s.n_in * MAXT;
+        // GEMV_F16=1: gemv16_* over the format's prepared plane converted to half; each tile's rel L2 against the fp32 gemv
+        const bool f16 = std::getenv("GEMV_F16") != nullptr;
+        mtl::Buffer xh, yr;
+        if (f16) { xh = cx.alloc(2 * (size_t)s.n_in * MAXT); yr = cx.alloc(4 * (size_t)s.n_out * MAXT); }
+        if (f16)   // the half plane from the raw x: the K-quants 2^-8 at odd positions, Q2_0 4^-(i % 4), the rest raw
+            for (size_t i = 0; i < (size_t)s.n_in * MAXT; ++i) {
+                const size_t k = i % (size_t)s.n_in;
+                const bool p2 = s.type == ref::Q3_K || s.type == ref::Q4_K || s.type == ref::Q5_K || s.type == ref::Q6_K;
+                const float f = p2 ? ((k & 1) ? 1.0f / 256 : 1.0f) : s.type == ref::Q2_0 ? 1.0f / float(1 << (2 * (k & 3))) : 1.0f;
+                xh.as<_Float16>()[i] = (_Float16)(xp.as<float>()[i] * f);
+            }
         for (int nt : ntoks) {
+            if (f16) {   // the fp32 reference of copy 0 with the default tile
+                mtl::Pipeline pr = cx.pipeline(lib, kname(s.type, Cfg{16, 1, 4, 1}), mtl::Constants().i(0, nt).i(9, 0));
+                GemvArgs a{(uint32_t)s.n_in, (uint32_t)s.n_out, (uint32_t)nt, (uint32_t)rb, (uint32_t)s.n_in, (uint32_t)s.n_out};
+                mtl::Dispatch d;
+                d.p = &pr;
+                d.args = {mtl::Arg::B(W), mtl::Arg::B(xp, plane * xkind(s.type)), mtl::Arg::B(xp, plane * 4), mtl::Arg::B(yr), mtl::Arg::V(a)};
+                d.grid[0] = (s.n_out + rows_per_tg(Cfg{16, 1, 4, 1}) - 1) / rows_per_tg(Cfg{16, 1, 4, 1});
+                d.tg[0] = 128;
+                cx.run({d});
+            }
             double best = 1e9;
             Cfg bc{};
             const bool gx = std::getenv("GEMV_X") != nullptr;   // gemvx_* (x staged in threadgroup memory)
@@ -296,9 +319,12 @@ int main(int argc, char** argv) {
                 if (!cfg_ok(c, s.type, s.n_in)) continue;
                 if (!all && !(c.K == 1 || s.n_in >= 6144)) continue;
                 if (gx && tgm > 32768) continue;
+                if (f16 && !(c.K == 1 || (c.L == 32 && c.S == 8 && c.K == 2) || (c.L == 16 && c.S == 8 && c.K == 4))) continue;
+                if (f16 && ((c.L == 32 && c.R == 1 && c.S == 4 && c.K == 4) || (c.L == 1 && c.R == 2) || (c.L == 1 && c.S == 2) ||
+                            (c.L == 4 && c.R == 4) || (c.L == 8 && c.S == 8))) continue;
                 const std::string kn = gx ? "gemvx_" + std::to_string(s.type) + "_" + std::to_string(c.L) + "_" + std::to_string(c.R) +
                                                  "_" + std::to_string(c.S)
-                                          : kname(s.type, c);
+                                          : f16 ? "gemv16" + kname(s.type, c).substr(4) : kname(s.type, c);
                 mtl::Pipeline p = cx.pipeline(lib, kn, mtl::Constants().i(0, nt).i(9, std::getenv("GEMV_PROBE") ? std::atoi(std::getenv("GEMV_PROBE")) : 0));
                 GemvArgs a{(uint32_t)s.n_in, (uint32_t)s.n_out, (uint32_t)nt, (uint32_t)rb, (uint32_t)s.n_in,
                            (uint32_t)s.n_out};
@@ -307,7 +333,7 @@ int main(int argc, char** argv) {
                 for (int k = 0; k < R; ++k) {
                     mtl::Dispatch d;
                     d.p = &p;
-                    d.args = {mtl::Arg::B(W, (size_t)(k % copies) * mb), mtl::Arg::B(xp, plane * xkind(s.type)),
+                    d.args = {mtl::Arg::B(W, (size_t)(k % copies) * mb), f16 ? mtl::Arg::B(xh) : mtl::Arg::B(xp, plane * xkind(s.type)),
                               mtl::Arg::B(xp, plane * 4), mtl::Arg::B(y), mtl::Arg::V(a)};
                     d.grid[0] = (s.n_out + rows_per_tg(c) - 1) / rows_per_tg(c);
                     d.tg[0] = c.S * 32;
@@ -318,7 +344,20 @@ int main(int argc, char** argv) {
                 std::vector<double> t;
                 for (int i = 0; i < 5; ++i) t.push_back(cx.run(ds) / R);
                 const double m = median(t);
-                if (one.size()) std::printf("   tile %2d,%d,%d,%d: %8.2f us  %6.1f GB/s\n", c.L, c.R, c.S, c.K, m * 1e6, mb / m / 1e9);
+                double rel = 0;
+                if (f16) {   // ds[0] reads copy 0: its output against the fp32 reference
+                    cx.run({ds[0]});
+                    double se = 0, sr = 0;
+                    for (size_t i = 0; i < (size_t)s.n_out * nt; ++i) {
+                        const double g = y.as<float>()[i], r0 = yr.as<float>()[i];
+                        se += (g - r0) * (g - r0);
+                        sr += r0 * r0;
+                    }
+                    rel = std::sqrt(se / sr);
+                    worst16 = std::max(worst16, rel);
+                }
+                if (one.size()) std::printf("   tile %2d,%d,%d,%d: %8.2f us  %6.1f GB/s%s\n", c.L, c.R, c.S, c.K, m * 1e6, mb / m / 1e9,
+                                            f16 ? (" rel L2 vs fp32 " + std::to_string(rel)).c_str() : "");
                 if (m < best) { best = m; bc = c; }
             }
             std::printf("%-20s %-7s %6d %7d %5d %9.2f %9.1f %8.2f  %d,%d,%d,%d\n", s.name, ref::type_name(s.type), s.n_in,
@@ -328,6 +367,12 @@ int main(int argc, char** argv) {
         cx.free(x);
         cx.free(y);
         cx.free(xp);
+        cx.free(xh);
+        cx.free(yr);
+    }
+    if (worst16 >= 0) {   // GEMV_F16: half products of 8, float scales - ~1e-3 of the fp32 output
+        std::printf("fp16: worst rel L2 vs fp32 %.2e  %s\n", worst16, worst16 < 4e-3 ? "PASS" : "FAIL");
+        return worst16 < 4e-3 ? 0 : 1;
     }
     return 0;
 }

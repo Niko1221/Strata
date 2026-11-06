@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Version 0.2.9, engine 0.1.55. The public model families are DeepSeekV4.1-Flash-1017,
+Version 0.2.11, engine 0.1.57. The public model families are DeepSeekV4.1-Flash-1017,
 Qwen3.8-Flash-Next and Qwen3.6-35B-A3B. DeepSeek V4.1-Flash runs in the app and in the Terminal
 (`strata launch --family deepseek41 --model ist-das-2.00bpw`; sets in
 [docs/MODELS.md](docs/MODELS.md#deepseek-v41-flash)). Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and

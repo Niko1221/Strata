@@ -1,4 +1,4 @@
-"""Unsloth's DeepSeek sets on a Mac: UD-IQ1_S runs on the Metal engine (IQ1_S kernels, run on an M5 Max) and is offered like the IST-DAS sets;
+"""Unsloth's DeepSeek sets on a Mac: UD-IQ1_S runs on the Metal engine (IQ1_S kernels, run on an M5 Max) and is offered like the ISTA-DAS sets;
 UD-IQ1_M was never run on a Mac, so it is not offered there (model list, `--model`, `--model-path`, the app's "I already have the model"
 check, setup), and the line says what does work.
 On every other computer nothing changes."""
@@ -254,7 +254,7 @@ class Setup(unittest.TestCase):
             exc, text = self.run_setup(model, "darwin")
             self.assertEqual(exc, "SystemExit", (model, text[-400:]))
             self.assertIn(LINE, text)
-            self.assertIn("IST-DAS-2.25bpw", text)
+            self.assertIn("ISTA-DAS-2.25bpw", text)   # the id as the screen spells it (the older spelling still works)
             self.assertIn("nothing has been downloaded", text)
 
 

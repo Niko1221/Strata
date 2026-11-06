@@ -68,13 +68,13 @@ def model_shard_names(model: str) -> list[str]:
     n = MAC_MODELS[model].get("shards", 2)
     if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
         return [S.model_file(S.FAMILIES["gyro"], model, 1)]
-    if MAC_MODELS[model].get("family") == "unsloth":
-        return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
+    if MAC_MODELS[model].get("family") == "unsloth":      # (setup.py's model_file: the v3.1 UD-IQ4_XS is named UD-IQ4_XS on the Hub)
+        return [S.model_file(S.FAMILIES["unsloth"], model, i) for i in range(1, n + 1)]
     return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
 
 
 def shard_sha(name: str):
-    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name)
+    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name) or getattr(S, "UNSLOTH_V31_SHARDS", {}).get(name)
 
 
 # ------------------------------------------------------------------------------------------------ the Mac
@@ -151,9 +151,10 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------ the config
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0) -> list[str]:
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
+                model: str = "") -> list[str]:
     """The Metal defaults (strata_control/mac_fit.py), with this checkout's expert profile."""
-    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin")
+    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin", model)
 
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
@@ -291,9 +292,14 @@ def repack_running(folder: Path) -> list[int]:
 
 
 def engine_pids(run=subprocess.run) -> list[int]:
-    """Pids of the running Metal engines (`strata`, the executable setup builds)."""
+    """Pids of the running Metal engines (`strata`, the executable setup builds) that belong to THIS user.  On a shared Mac
+    another person's engine is theirs to stop: `pgrep -x strata` alone saw it and sent setup away with "stop the server" for a
+    window the person could not close (M5 Max, 2026-10-31)."""
+    cmd = ["pgrep", "-x", "strata"]
+    if hasattr(os, "getuid"):
+        cmd[1:1] = ["-u", str(os.getuid())]
     try:
-        out = run(["pgrep", "-x", "strata"], capture_output=True, text=True, timeout=10).stdout
+        out = run(cmd, capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     return [int(x) for x in out.split() if x.isdigit() and int(x) != os.getpid()]
@@ -456,10 +462,12 @@ def main(argv=None) -> int:
         if s.exists() and S.done(s):
             S.ok(f"{s.name} already downloaded")
             continue
-        S.download(fam["hf"].format(q=model) + s.name, s)
+        S.download(S.model_hf(fam, model) + s.name, s)
     S.check_shards(files)
     for s in files:                                    # the Unsloth files: pinned sizes and SHA-256
-        if shard_sha(s.name):
+        if family == "unsloth" and s.name in fam.get("sha256", {}):       # the family's pins, and UD-Q4_K_XL's second layout by the size on the disk
+            S.verify_sha256(s, *S.fam_pin(fam, s), own=bool(a.gguf_dir))
+        elif shard_sha(s.name):
             S.verify_sha256(s, *shard_sha(s.name))
     S.ok("model files present")
 
@@ -542,8 +550,9 @@ def main(argv=None) -> int:
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
-    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"], model), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0",   # the engine follows setup's measured choice
+                  **_fit.engine_env(model, stream)}                # STRATA_METAL_F16=1 for a resident IQ3_S / Q2_0 (mac_fit.F16_MODELS)
     if vision == "yes":
         cfg["args"] += ["--vision"]
         cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": vision_gpu,

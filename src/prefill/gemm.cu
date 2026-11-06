@@ -56,6 +56,7 @@
 #endif
 #if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
 #include "rocblas_tuning.hpp"
+#include "strata/core/amd_community.hpp"
 #include <hip/hip_runtime_api.h>
 #include <rocblas/rocblas.h>
 #include <filesystem>
@@ -495,6 +496,12 @@ std::unique_ptr<RocBlasState> create_rocblas_state(void* stream) {
         std::string tag(version);
         while (!tag.empty() && tag.back() == '.') tag.pop_back();
         file /= arch + "-rocblas-" + tag + ".txt";
+    }
+    // The community-made tables (strata/core/amd_community.hpp) load only with STRATA_AMD_COMMUNITY_TUNING on (the default).
+    if (!strata::amd_community::rocblas_table_allowed(arch, version)) {
+        std::fprintf(stderr, "prefill gemm: the rocBLAS table for %s / %s is community-made and STRATA_AMD_COMMUNITY_TUNING=0; "
+                             "rocBLAS's default kernels run\n", arch.c_str(), version);
+        return nullptr;
     }
     std::string error;
     if (!state->table.load(file.string(), arch, version, error)) {
@@ -1394,10 +1401,34 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
 #endif
 #ifndef STRATA_USE_HIP
-    // STRATA_PF_W16_CACHE_MIB=N: the FP16 weight kept on the device after its first dequant (same values, same product)
+    // The FP16 weight kept on the device after its first dequant.  NOT bit-exact against the uncached sliced form on every
+    // card (see the default below): off unless STRATA_PF_W16_CACHE_MIB is set.  When on it is sized by the card, never by the user.  It takes only VRAM nobody else holds: a weight is
+    // cached while the card keeps kW16AutoReserve free afterwards (the MTP prompt capture, the batch windows and a long
+    // prompt's buffers are allocated later, out of that room; a replica with 309 MiB free ran out of memory at 14K tokens),
+    // so a card whose expert cache fills it caches nothing and a card with room (all experts resident) caches what the
+    // prompt path uses (~6 GB for Qwen3.8).  STRATA_PF_W16_CACHE_MIB=N is an explicit budget (2 GiB kept free, as before),
+    // =0 turns it off.
     if (w16_budget_ < 0) {
         const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
-        w16_budget_ = v ? (int64_t) std::atoll(v) * (1ll << 20) : 0;
+        if (v != nullptr && std::strcmp(v, "auto") == 0) {
+            // STRATA_PF_W16_CACHE_MIB=auto (tester switch, round0212 item 7): the automatic sizing - weights are cached while the card
+            // keeps kW16AutoReserve free afterwards, so a card whose expert cache fills it caches nothing.  Not bit-exact (see below),
+            // so it is not the default until the owner says yes.
+            w16_budget_ = 16ll << 30;
+            w16_reserve_ = kW16AutoReserve;
+        } else if (v != nullptr) {
+            w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
+            w16_reserve_ = 2ll << 30;
+        } else {
+            // INT3 turned the default off (11-01) because gemm_dequant_side_parity failed with it on sm_86 / sm_120 / sm_121.  That test builds its Gemm
+            // with a 10.5 M-element scratch, smaller than four of its weights, so uncached those take the sliced path (several GEMMs) and cached they
+            // take one full-N GEMM: not the engine.  The engine's scratch is GEMM_SCRATCH = 32 M elements and every dense projection of Qwen3.8
+            // (largest attn_q, 31.5 M) fits it, so cached and uncached are the same GEMM on the same FP16 values (gemm_w16_parity: the engine's scratch,
+            // shapes and types, bitwise).  Round0212 item 7: on when the engine says so (set_w16_auto_default: Linux CUDA with batch slots), else off
+            // as in v0.2.9.  It takes only VRAM beyond kW16AutoReserve, so a card whose expert cache fills it caches nothing.  =0 turns it off.
+            w16_budget_ = w16_auto_default_().load() ? (16ll << 30) : 0;
+            w16_reserve_ = kW16AutoReserve;
+        }
     }
     if (w16_budget_ > 0 && !side_scratch_) {
         const int64_t bytes = N * K * 2;
@@ -1406,7 +1437,7 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             if (e.p == W_blocks && e.type == ggml_type && e.n == N && e.k == K) { cw = e.d; break; }
         if (cw == nullptr && w16_used_ + bytes <= w16_budget_) {
             size_t fb = 0, tb = 0;
-            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (2ull << 30) &&
+            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (size_t) w16_reserve_ &&
                 cudaMalloc((void**) &cw, (size_t) bytes) == cudaSuccess) {
                 strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, cw, stream_);
                 w16_.push_back({W_blocks, ggml_type, N, K, cw});
@@ -1414,6 +1445,11 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             } else {
                 (void) cudaGetLastError();
                 cw = nullptr;
+                if (w16_budget_ > 0 && !w16_logged_) {
+                    w16_logged_ = true;
+                    std::fprintf(stderr, "strata prefill: FP16 weight cache %lld MiB (the card keeps %lld MiB free; STRATA_PF_W16_CACHE_MIB=0 turns it off)\n",
+                                 (long long) (w16_used_ >> 20), (long long) (w16_reserve_ >> 20));
+                }
                 w16_budget_ = w16_used_ > 0 ? w16_used_ : 0;   // out of room: stop trying
             }
         }
