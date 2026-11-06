@@ -7,9 +7,12 @@ argmax is not the forced token.  Nothing here depends on a drafter; it serves an
 
   force_check.py gen   CFG SET.json --corpus held.jsonl [--kinds code,json] [--per-kind 4] [--offset 8] [--new 300] [--env K=V ...]
         one engine with CFG's normal decode flags; greedy continuations of the corpus prompts (rows with "ids") -> SET.json
-  force_check.py score CFG SET.json OUT.tsv [--env K=V ...] [--arg "--flag v" ...]
-        one engine with the scorer flags (no drafter, no prompt cache, --short-read over the whole text): OUT.tsv = STRATA_LOGPOS rows (top-2),
-        OUT.tsv.meta.json = per item line ranges.  --env STRATA_FORCE_FAULT=7:0.3 is the test fault (adds 0.3 to every 7th token's logit).
+  force_check.py score CFG SET.json OUT.tsv [--path decode|prompt] [--env K=V ...] [--arg "--flag v" ...]
+        --path decode (default): one engine with CFG's own flags (drafter, spec windows, adaptive tiers ...), prompt cache off; every request decodes the
+        forced continuation: the verify windows take the forced token in place of the argmax (STRATA_FOLLOW), so drafts are accepted when they match it,
+        and the FP32 head logits of every valid row come out (STRATA_FOLLOW_LOGPOS, top-2).  --path prompt: the whole text is read as a prompt through the
+        windows (STRATA_LOGPOS, --short-read), no decode features.  OUT.tsv.meta.json = per item line ranges.
+        --env STRATA_FORCE_FAULT=7:0.3 is the test fault (adds 0.3 to every 7th token's logit in the scored rows).
   force_check.py check --stock A.tsv B.tsv [...] --cand C.tsv [--delta D] [--json out.json]
         the two rules of the paper against the stock arms (>= 2 stock arms: the noise): exit 0 pass, 1 reject, 2 inconclusive
   force_check.py selftest      the statistics on synthetic rows (no engine)
@@ -147,10 +150,25 @@ def cmd_score(a):
     if out.exists():
         out.unlink()
     env = kv_env(a.env)
-    env.update({"STRATA_LOGPOS": str(out), "STRATA_LOGPOS_TOPK": "2", "STRATA_ROUTE_TAIL_SKIP": env.get("STRATA_ROUTE_TAIL_SKIP", "0")})
+    extra = [x for s in (a.arg or []) for x in s.split()]
+    if a.path == "decode":
+        # the real decode/verify windows (drafter, spec windows, adaptive tiers, whatever the config has) with the forced continuation standing in
+        # for the argmax (STRATA_FOLLOW, one line per request in decode order); rows come from STRATA_FOLLOW_LOGPOS
+        follow = str(out) + ".follow.txt"
+        with open(follow, "w") as ff:
+            for it in items:
+                ff.write(",".join(map(str, it["cont"])) + chr(10))
+        env.update({"STRATA_FOLLOW": follow, "STRATA_FOLLOW_LOGPOS": str(out), "STRATA_LOGPOS_TOPK": "2"})
+        args = list(cfg["args"])
+        if "--prompt-cache" in args:
+            i = args.index("--prompt-cache")
+            del args[i:i + 2]
+        args += ["--prompt-cache", "0"] + extra
+    else:
+        env.update({"STRATA_LOGPOS": str(out), "STRATA_LOGPOS_TOPK": "2", "STRATA_ROUTE_TAIL_SKIP": env.get("STRATA_ROUTE_TAIL_SKIP", "0")})
+        args = scorer_args(cfg, total, extra)
     if mem_available_gb() < a.min_free_gb:
         raise SystemExit("only %.0f GB available (< %d): not starting an engine" % (mem_available_gb(), a.min_free_gb))
-    args = scorer_args(cfg, total, [x for s in (a.arg or []) for x in s.split()])
     eng = Engine(cfg, args, env, str(out) + ".engine.log")
 
     def nlines():
@@ -162,15 +180,21 @@ def cmd_score(a):
         for it in items:
             ids = it["prompt"] + it["cont"]
             n0 = nlines()
-            toks, f = eng.gen(ids, 1)
+            if a.path == "decode":
+                toks, f = eng.gen(it["prompt"], len(it["cont"]))
+                if toks != it["cont"]:
+                    print("%s: WARNING the engine emitted %d tokens, %d differ from the forced continuation" % (
+                        it["id"], len(toks), sum(1 for x, y in zip(toks, it["cont"]) if x != y) + abs(len(toks) - len(it["cont"]))), flush=True)
+            else:
+                toks, f = eng.gen(ids, 1)
             n1 = nlines()
-            if n1 - n0 < len(ids) // 2:
-                raise SystemExit("%s: only %d positions scored (the prompt took the batched path? raise --short-read)" % (it["id"], n1 - n0))
+            if n1 - n0 < len(it["cont"]) // 2:
+                raise SystemExit("%s: only %d positions scored (the prompt took the batched path? raise --short-read; decode path: STRATA_FOLLOW not in this build?)" % (it["id"], n1 - n0))
             meta.append({"id": it["id"], "kind": it["kind"], "first_line": n0, "end_line": n1, "prompt_len": len(it["prompt"]), "ids": ids})
             print("%s: %d positions" % (it["id"], n1 - n0), flush=True)
     finally:
         eng.close()
-    json.dump({"set": a.set, "config": a.config, "env": a.env or [], "args": args, "items": meta}, open(str(out) + ".meta.json", "w"))
+    json.dump({"set": a.set, "config": a.config, "path": a.path, "env": a.env or [], "args": args, "items": meta}, open(str(out) + ".meta.json", "w"))
     return 0
 
 
@@ -312,6 +336,7 @@ def main():
     g.add_argument("--kinds", default=""); g.add_argument("--per-kind", type=int, default=4); g.add_argument("--offset", type=int, default=8)
     g.add_argument("--new", type=int, default=300); g.add_argument("--env", action="append"); g.add_argument("--min-free-gb", type=int, default=20)
     s = sp.add_parser("score"); s.add_argument("config"); s.add_argument("set"); s.add_argument("out")
+    s.add_argument("--path", choices=["decode", "prompt"], default="decode", help="decode: the real verify windows with the forced tokens (STRATA_FOLLOW); prompt: the text read as a prompt (STRATA_LOGPOS)")
     s.add_argument("--env", action="append"); s.add_argument("--arg", action="append"); s.add_argument("--min-free-gb", type=int, default=20)
     c = sp.add_parser("check"); c.add_argument("--stock", nargs="+", required=True); c.add_argument("--cand", required=True)
     c.add_argument("--delta", type=float); c.add_argument("--json")
