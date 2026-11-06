@@ -84,6 +84,7 @@ EXPLAIN_LIMITS = "It downloads about 1.2 GB once, works with one graphics card a
 LINE_TESTED = "On graphics cards like yours, DFlash2 was faster than MTP on some kinds of text and slower on others in our tests."
 LINE_SLOWER = "On graphics cards like yours, DFlash2 was slower than MTP in our tests."
 LINE_UNTESTED = "DFlash2 has not been tested on your graphics card yet."
+LINE_AUTO_MTP = "DFlash2 is off by default on this graphics card for now; choose it in Drafting to use it."      # a card in AUTO_MTP: Auto starts the MTP
 LINE_METAL = "On your Mac, DFlash2 was faster than MTP on this model in our tests."      # a Mac and a set in SET_DEFAULTS whose default is DFlash2 (replaces "not tested" there)
 
 
@@ -176,6 +177,8 @@ def hardware_support(backend: str | None, archs: Any = None, model_name: str | N
         return Support(False, "none", "")
     first = ([archs] if isinstance(archs, str) else list(archs or []))
     arch = str(first[0]).strip().lower() if first else ""
+    if (make, arch) in AUTO_MTP:
+        return Support(True, "tested", LINE_AUTO_MTP)
     if make == "metal":
         entry = default_for(make, model_name)
         if entry is not None and entry.drafter == "dflash2":
@@ -298,6 +301,11 @@ SET_DEFAULTS = {
 }
 MODEL_PREFIX = "qwen3.8-flash-next-"
 
+#: Cards where Auto starts the MTP instead of DFlash2 (owner 11-06 ~10:30), keyed (engine family, first architecture); the value is why. ONE ENTRY, delete it to put Auto back.
+#: gfx1201 (RX 9070 / R9700 class): the open DFlash2 PROMPT STALL, 11 of 50 engines on 0.2.11 never got past the prompt, until PE-RDNA4's fix lands. Only Auto is affected: DFlash2 chosen
+#: by name (the Drafting step, the app's dropdown, `--drafting dflash2`, a saved "drafting": "dflash2") still starts DFlash2, and every other card and platform is unchanged.
+AUTO_MTP = {("hip", "gfx1201"): "the DFlash2 prompt stall (11 of 50 engines on 0.2.11); PE-RDNA4's fix is pending"}
+
 
 def set_of(model_name: str | None) -> str:
     """The set a run config's model_name names: ``qwen3.8-flash-next-unsloth-ud-q4_k_xl`` is ``unsloth-ud-q4_k_xl``."""
@@ -325,6 +333,11 @@ def tuned_conf_for(backend: str | None, model_name: str | None) -> float | None:
 def first_arch(archs: Any) -> str:
     first = [archs] if isinstance(archs, str) else list(archs or [])
     return str(first[0]).strip().lower() if first else ""
+
+
+def auto_mtp_only(backend: str | None, archs: Any = None) -> bool:
+    """Is this card one where Auto starts the MTP (AUTO_MTP)? Auto only: a DFlash2 asked for by name is not looked at here."""
+    return (str(backend or "").strip().lower(), first_arch(archs)) in AUTO_MTP
 
 
 def tuned_applies(backend: str | None, model_name: str | None, archs: Any = None, *, args: list[Any] | None = None, vram_mib: float | None = None) -> bool:
@@ -841,6 +854,8 @@ def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = 
     entry = default_for(backend, model_name)
     if asked == "auto" and entry is not None and entry.drafter == "mtp":
         return "mtp"                                          # a set whose measured default on this engine family is the MTP (SET_DEFAULTS)
+    if asked == "auto" and auto_mtp_only(backend, archs):
+        return "mtp"                                          # a card where Auto keeps the MTP for now (AUTO_MTP)
     return "dflash2" if can_run_dflash2(model_name, family, backend, archs) else "mtp"
 
 
@@ -855,7 +870,7 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
         return Decision(asked, "off")
     want = choice_of(asked, model_name=model_name, family=family, backend=backend, archs=archs)
     have_mtp = mtp_here is not False
-    runnable = can_run_dflash2(model_name, family, backend, archs)
+    runnable = can_run_dflash2(model_name, family, backend, archs) and not (asked == "auto" and auto_mtp_only(backend, archs))
 
     if want == "dflash2":
         reason = NOT_HERE if (blocked or not vocab_here) else NOT_DOWNLOADED if not drafter_ready(data_dir, model_name, backend) else ""

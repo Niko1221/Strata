@@ -211,6 +211,15 @@ add("On your Mac, DFlash2 was faster than MTP on this model in our tests.",
     "No seu Mac, nos nossos testes o DFlash2 foi mais rápido que o MTP com este modelo.",
     "고객님의 Mac에서 저희 테스트 결과 이 모델에서는 DFlash2가 MTP보다 빨랐습니다.",
     "Sur votre Mac, DFlash2 a été plus rapide que MTP avec ce modèle lors de nos tests.")
+add("DFlash2 is off by default on this graphics card for now; choose it in Drafting to use it.",
+    "目前在这张显卡上 DFlash2 默认关闭；如需使用，请在“预测草稿”中选择它。",
+    "現在、このグラフィックスカードでは DFlash2 は既定でオフです。使うには「先読み」で選んでください。",
+    "DFlash2 ist auf dieser Grafikkarte vorerst standardmäßig aus; wählen Sie es unter „Vorausraten“ aus, um es zu nutzen.",
+    "DFlash2 está desactivado de forma predeterminada en esta tarjeta gráfica por ahora; elíjalo en Predicción para usarlo.",
+    "На этой видеокарте DFlash2 пока выключен по умолчанию; чтобы использовать его, выберите его в разделе «Предсказание».",
+    "O DFlash2 está desligado por predefinição nesta placa de vídeo por agora; escolha-o em Previsão para o usar.",
+    "현재 이 그래픽 카드에서는 DFlash2가 기본적으로 꺼져 있습니다. 사용하려면 ‘초안 예측’에서 선택하세요.",
+    "DFlash2 est désactivé par défaut sur cette carte graphique pour le moment ; choisissez-le dans Anticipation pour l'utiliser.")
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 
