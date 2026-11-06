@@ -384,6 +384,11 @@ def open_feed(ctx: Context, state: State) -> feedmod.Feed:
         raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
     for line in loaded.skipped:                       # an entry from a newer release that this Control cannot use: said once, never an error
         ctx.say("feed", line)
+    try:                                              # the feed's model list, kept (signature and all) for a PC that is offline later; nothing when the feed has none
+        from strata_control import feed_models
+        feed_models.remember(loaded, state.path.parent.parent)
+    except Exception:                                 # noqa: BLE001 - never part of an update
+        pass
     info = state.section("feed")
     info.update({"sequence": loaded.sequence, "key_id": loaded.key_id, "source": ctx.source, "channel": loaded.channel,
                  "checked_at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()})

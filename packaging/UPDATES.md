@@ -61,6 +61,33 @@ The DeepSeek V4.1-Flash engine `strata-dsv41` reaches a PC in one of two ways. T
 `pack-engine --prefix strata-dsv41`. The separate package installs in `<data>/engine-dsv41/` beside the engine, never inside it
 (`strata_control/dsv41_engine.py`), and is fetched when DeepSeek is chosen. `STRATA_DSV41_EXE` points setup at a build of your own.
 
+The `models` member (optional) is the model list: a new model can ship as a signed feed update, with no Control package. Each entry is one model:
+
+```jsonc
+"models": {"packages": [{
+  "id": "qwen4-30b", "title": "Qwen4 30B", "by": "Qwen",  "about": "one plain sentence",
+  "licence": "Apache 2.0", "licence_url": "https://huggingface.co/Qwen/Qwen4-30B",     // the url must be https
+  "family": "qwen4exp",                     // the GGUF architecture the engine runs (`strata --families`): qwen4exp (the Flash-Next install path) or qwen35moe (the Qwen3.6 one)
+  "repo": "unsloth/Qwen4-30B-GGUF", "revision": "<40 hex>",                              // the pinned commit
+  "quants": [{"name": "Q4_K_M", "about": "4-bit", "ram_gb": 24, "arena_gb": 17.0,      // setup's recommendation for this size; arena_gb optional
+              "files": [{"name": "Qwen4-30B-Q4_K_M-00001-of-00002.gguf", "path": "Q4_K_M/Qwen4-30B-Q4_K_M-00001-of-00002.gguf", "size": 123, "sha256": "..."}]}],
+  "mmproj": {"name": "mmproj-F16.gguf", "size": 123, "sha256": "..."}, "pictures": true, // pictures need the mmproj
+  "drafter": "mtp",                         // mtp | none
+  "context": 131072,                        // the default context (informational)
+  "min_engine": "0.2.12",                   // the first engine that reads it; setup refuses an older one as for a built-in model
+  "kv_bytes_per_token": 90112, "mtp_drafts": 2, "state_gb": 0.07                         // qwen35moe only: the cache figures setup shows (kv_bytes_per_token is required there)
+}]}
+```
+
+Control keeps a model only if the whole entry is well-formed (ids, 40-hex revision, https licence url, plain `.gguf` file names, positive sizes, 64-hex SHA-256, no file reused by two sizes);
+a bad entry is left out with one log line and the rest of the feed and the other models work. A model is added to setup's own tables, so the menus list it after the built-in ones and
+the install is the built-in one: the revision and the file pins go where `download` looks them up, the SHA-256 is checked after the download and a wrong file is kept as `.bad`. A `qwen4exp`
+size is one `.gguf` or numbered parts `...-00001-of-0000N.gguf` (up to 9) of one folder; a `qwen35moe` size is one `.gguf`. A model whose family the installed engine does not run is listed as not
+available on this engine and never offered; a family this Control does not know is the same. The last verified feed's list is kept in `<components>/.updates/feed-models.json` (the signed
+feed and its signature, checked again when read), so an offline PC still sees it; a newer feed without the member withdraws the list, an older (replayed) feed is ignored. `STRATA_FEED_MODELS=0`
+turns the whole thing off. Build it with `feed_tool.py model-files FILE... [--repo-dir Q4_K_M]` (sizes and hashes of the real files) and `build-feed --models FOLDER` (the folder holds the
+`<id>.entry.json` files; a malformed one stops the build); `verify-feed` lists the models and exits 3 if Control would drop one. Older Controls (0.2.11 and before) ignore the member.
+
 The `drafters` member lists the tuned DFlash2 drafter (`strata_control/drafting.py` TUNED_NAME: Strata's fine-tuned copy of incoai/Qwen3.8-Flash-Next-DFlash2, Apache-2.0,
 modified by Strata). Control fetches it for the Mac sets that have a measured entry (`SET_DEFAULTS`: UD-Q4_K_XL and UD-IQ4_XS-v31) during setup, `strata launch` and
 `strata drafting fetch`: it reads this signed feed, takes the entry named TUNED_NAME that lists `metal`, and downloads `url` (resumable) into `<data>/dflash2/`. The size and SHA-256

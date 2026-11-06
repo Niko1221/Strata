@@ -542,6 +542,11 @@ class Strata:
                 if all(hasattr(mod, a) for a in ("MODELS", "FAMILIES", "CONTEXTS")):
                     mod.out = lambda cmd: run_quiet(cmd, 60)
                     self._setup = mod
+                    if hasattr(mod, "feed_models_setup"):
+                        try:                            # the signed feed's models (the last verified list; nothing is fetched here), after the built-in ones
+                            mod.feed_models_setup(fetch=False)
+                        except Exception as e:          # noqa: BLE001
+                            log(f"the feed's model list was not added: {e}")
             except (Exception, SystemExit) as e:        # noqa: BLE001 - any failure: the built-in tables
                 log(f"setup.py could not be imported ({e}); using the built-in model table")
         return self._setup
@@ -560,7 +565,7 @@ class Strata:
         out = {}
         for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
-                      "vision": bool(d.get("vision", True)), "own_path": True}
+                      "vision": bool(d.get("vision", True)), "own_path": True, **({"feed": True} if d.get("feed") else {})}
         for f, d in (getattr(s, "MULTI_FILE_FAMILIES", None) or {}).items():     # DeepSeek-V4.1-Flash: nine shards, its own engine
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
                       "vision": bool(d.get("vision", False)), "own_path": True, "multi_file": True}
@@ -1325,7 +1330,7 @@ class Strata:
         vram = max((g["vram_gb"] for g in usable), default=0.0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
-        for f, fd in families.items():
+        for f, fd in sorted(families.items(), key=lambda kv: bool(kv[1].get("feed"))):      # the signed feed's models after the built-in ones (False sorts first, the order is kept)
             sizes = []
             for m in self.sizes_of(models, f):
                 if f == "deepseek41" and self.dsv41_not_here(m):      # the Unsloth 1-bit sets on a DGX Spark: not offered until a Spark run passes
@@ -1383,6 +1388,9 @@ class Strata:
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
+        for fid, u in ((getattr(S, "FEED_UNAVAILABLE", None) or {}).items() if S else ()):   # a model of the signed feed that this engine does not run: no sizes, so no screen offers it
+            out.append({"family": fid, "title": u["title"], "about": u["reason"], "experimental": False, "images": False, "sizes": [],
+                        "available": False, "unavailable_reason": u["reason"]})
         return out
 
     @staticmethod
