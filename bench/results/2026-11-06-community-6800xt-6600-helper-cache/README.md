@@ -77,6 +77,14 @@ Cells are median (min-max) n=samples. Short is a prompt of about 80 tokens, so i
 cost and is not shown. Capped requests reached the 512-token cap (reasoning plus answer) and therefore
 have no first-answer time.
 
+### With `--remote-expert-opt`
+
+Adding the flag to this shape does not pay on this machine: the prompt is unchanged (629.3 and 762.2
+tok/s against 631.2 and 772.4), and decode drops to 38.4 / 35.8 / 34.7 tok/s (short / 4K / 16K) from
+52.6 / 43.5 / 38.7, because the flag switches `--pipeline-windows` off and the 6600 has to sum expert
+rows over a x4 link. The primary cache also shrinks slightly (3,940 slots against 3,983).
+([round 2 report](../2026-11-06-community-6800xt-6600-helper-cache-remote-opt/README.md))
+
 ## Against the layer split on the same cards, same day
 
 | Metric | Layer split (control) | 6600 as helper cache | Change |

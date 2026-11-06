@@ -136,6 +136,10 @@ chunk and the second cache rather than from link bandwidth, since the 6600 sits 
 returns its rows through pinned host memory at 28.2 GB/s. ([report](../bench/results/2026-11-06-community-6800xt-6600-helper-cache/README.md),
 [control](../bench/results/2026-11-06-community-6800xt-6600-layer-split-control/README.md))
 
+`--remote-expert-opt` does not change that on this path: with it the prompt stays where it was
+and decode falls to 38.4 / 35.8 / 34.7 tok/s (short / 4K / 16K) from 52.6 / 43.5 / 38.7, because the
+flag switches `--pipeline-windows` off ([round 2](../bench/results/2026-11-06-community-6800xt-6600-helper-cache-remote-opt/README.md)).
+
 ## History / older measurements
 
 Each row is one machine, reported by the author of the change or a community member.
