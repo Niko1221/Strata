@@ -24,6 +24,8 @@ import threading
 import time
 
 HISTORY = 60
+# the per-card series the Monitor draws as one chart or line per card (its tiles name each card)
+GPU_HISTORY = ("util", "power", "pcie_rx_mb", "temp")
 
 
 # ------------------------------------------------------------------------------------------------ NVML
@@ -548,6 +550,10 @@ class Telemetry:
         self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
+        # one history per card when the model is split over several (issue #112): the Monitor's tiles then
+        # draw a chart per card and name each one; a single card keeps only the shared series
+        self.gpu_hist = {i: {k: collections.deque(maxlen=HISTORY) for k in GPU_HISTORY} for i, _ in self.gpus} \
+            if len(self.gpus) > 1 else {}
         try:
             import psutil  # noqa: F401
             self.ps = sys.modules["psutil"]
@@ -621,7 +627,14 @@ class Telemetry:
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
                 s["gpus"] = [{"index": i, "name": reader.name(), "util": r.get("util"), "mem_used": r.get("mem_used"),
-                              "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
+                              "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power"),
+                              # every card carries its own cap: one card tuned down to 200 W beside another's
+                              # 450 W is what the person needs to see, not the sum of them
+                              "power_limit": r.get("power_limit"),
+                              # the card's own PCIe link and traffic: one card running in Gen1 beside a Gen5 card
+                              # is what the person needs to see, not the first card's link for all of them
+                              "pcie_rx_mb": r.get("pcie_rx_mb"), "pcie_gen": r.get("pcie_gen"),
+                              "pcie_gen_max": r.get("pcie_gen_max"), "pcie_width": r.get("pcie_width")}
                              for (i, r), (_, reader) in zip(reads, self.gpus)]
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
@@ -665,14 +678,27 @@ class Telemetry:
                 self._stop.wait(1.0)
                 continue
             with self.lock:
-                self.now = s
-                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
-                    v = s.get(k)
-                    self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
+                self._record(s)
             self._stop.wait(1.0)
+
+    def _record(self, s):
+        """One sample into the now-view and the histories; the caller holds the lock.  A separate method so a
+        test can record a known sample instead of waiting a second for the thread's next one."""
+        self.now = s
+        for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
+                  "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+            v = s.get(k)
+            self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
+        for g in s.get("gpus") or []:                     # the card's own series, keyed as in "gpus"
+            h = self.gpu_hist.get(g["index"])
+            if h:
+                for k in GPU_HISTORY:
+                    v = g.get(k)
+                    h[k].append(round(v, 2) if isinstance(v, float) else v)
 
     def snapshot(self):
         with self.lock:
-            return {"now": dict(self.now), "history": {k: list(v) for k, v in self.hist.items()},
-                    "static": dict(self.static)}
+            hist = {k: list(v) for k, v in self.hist.items()}
+            if self.gpu_hist:                             # per-card series by index, as "gpus" numbers the cards
+                hist["gpus"] = [{"index": i, **{k: list(d[k]) for k in GPU_HISTORY}} for i, d in self.gpu_hist.items()]
+            return {"now": dict(self.now), "history": hist, "static": dict(self.static)}
