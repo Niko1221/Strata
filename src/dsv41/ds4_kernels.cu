@@ -2354,6 +2354,29 @@ void moe_sort(const int* idx, int T, int k, const int* vs, int n_vs, int* bounds
     strata_ds4_launch(bounds_scan_kernel, 1, 32, 0, s, bounds, n_vs);
     strata_ds4_launch(moe_sort_kernel<true>, n_vs, kThreads, 0, s, idx, T, k, vs, bounds, row_tok, pos);
 }
+#if !defined(STRATA_METAL)
+__global__ void best_rank_kernel(const int* __restrict__ idx, int T, int k, int n_exp, int* best) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * k) return;
+    const int t = i / k, r = i % k;
+    const int e = idx[(size_t) t * kPicks + r];
+    if (e >= 0 && e < n_exp) atomicMin(best + e, r);
+}
+__global__ void zero_picks_kernel(const int* __restrict__ idx, float* w, int T, int k, const uint8_t* __restrict__ drop) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * k) return;
+    const int t = i / k, r = i % k;
+    const int e = idx[(size_t) t * kPicks + r];
+    if (e >= 0 && drop[e]) w[(size_t) t * kPicks + r] = 0.0f;
+}
+void best_rank(const int* idx, int T, int k, int n_exp, int* best, cudaStream_t s) {
+    cudaMemsetAsync(best, 0x7f, (size_t) n_exp * sizeof(int), s);   // (0x7f7f7f7f: past any pick index)
+    if (T > 0) strata_ds4_launch(best_rank_kernel, cdiv(T * k, kThreads), kThreads, 0, s, idx, T, k, n_exp, best);
+}
+void zero_picks(const int* idx, float* w, int T, int k, const uint8_t* drop, cudaStream_t s) {
+    if (T > 0) strata_ds4_launch(zero_picks_kernel, cdiv(T * k, kThreads), kThreads, 0, s, idx, w, T, k, drop);
+}
+#endif
 void moe_combine(float* acc, const float* y, const int* pos, const float* w, int T, int k, int r0, int r1, int dim,
                  cudaStream_t s) {
     if (r1 > r0 && T > 0) {

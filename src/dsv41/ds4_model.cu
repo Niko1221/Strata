@@ -777,12 +777,16 @@ struct Chunk {
     int bc_n = 0, bc_w = 0;                  // a batch's compacted bounds: bc_n regions of bc_w, by batch count
     int *bc_pin = nullptr, *bc_dev = nullptr;
     unsigned long long *pt_pin = nullptr, *pt_dev = nullptr;   // (flow_in_place) a batch's blob addresses, as the bounds
+    int *best_pin = nullptr, *best_dev = nullptr;   // (STRATA_DS4_PROMPT_SKIP_RANK) a layer's experts' best pick index
+    uint8_t *drop_pin = nullptr, *drop_dev = nullptr;   // ... the experts it leaves out, 1024 a layer
+    uint8_t* zero_dev = nullptr;             // ... a ring slot's bytes of zeros, the blob they run on (every type: 0s)
     uint64_t n_batch = 0;
     double wait_ms = 0;                      // the compute waiting for a read
     // (DS4_PROF: where copy_ahead's time goes - the host staging copy, the DMA issues, the waits for a slot)
     double dbg_stage_ms = 0, dbg_dma_ms = 0, dbg_evt_ms = 0;
     uint64_t it_file = 0, it_ram = 0, it_spec = 0, it_spec_unused = 0;
     uint64_t it_place = 0;                   // (flow_in_place) of it_ram, the store's experts read where they lie
+    uint64_t it_skip = 0;                    // (STRATA_DS4_PROMPT_SKIP_RANK) experts left out, not read
     uint64_t io_d0 = 0, io_b0 = 0;           // io's unbuffered / buffered bytes when the run started
     double io_busy0 = 0;                     // io's busy time when the run started (DS4_PROF)
     bool buffered = false;                   // the run's reads all through the page cache (a short run: run_dev_chunks)
@@ -1408,6 +1412,14 @@ struct Model::Impl {
     // weights +0.021, decode steps about 40% faster on that machine); measure the cost on yours.  Off by default.
     const int disk_skip_rank = [] {
         const char* v = std::getenv("STRATA_DS4_DISK_SKIP_RANK");
+        return v != nullptr ? std::max(0, std::atoi(v)) : 0;
+    }();
+    // STRATA_DS4_PROMPT_SKIP_RANK=R (experimental opt-in, CHANGES THE ANSWERS; 0 = off; CUDA, with flow_in_place): the same
+    // rule on the prompt path - an expert a chunk's routing picked, in neither the store nor the page cache, that no token of
+    // the chunk picked at rank R or better is not read from the SSD: its rows run on a blob of zeros instead and their
+    // route weights go to 0, so they add nothing (the batches and the sums' order stay; the read is not done)
+    const int prompt_skip_rank = [] {
+        const char* v = std::getenv("STRATA_DS4_PROMPT_SKIP_RANK");
         return v != nullptr ? std::max(0, std::atoi(v)) : 0;
     }();
     // STRATA_DS4_RAM_SKIP_W (experimental opt-in, CHANGES THE ANSWERS; 0 = off): the same rule for every routed expert
@@ -3758,6 +3770,14 @@ struct Model::Impl {
                         (!halloc(cp->pt_pin, (size_t) cp->bc_n * cp->bc_w, err) ||
                          !dalloc(devs[di], cp->pt_dev, (size_t) cp->bc_n * cp->bc_w, err)))
                         return false;
+#if !defined(STRATA_METAL)
+                    if (prompt_skip_rank > 0 &&   // (dalloc zeroes: zero_dev stays so)
+                        (!halloc(cp->best_pin, 1024, err) || !dalloc(devs[di], cp->best_dev, 1024, err) ||
+                         !halloc(cp->drop_pin, (size_t) L.size() * 1024, err) ||
+                         !dalloc(devs[di], cp->drop_dev, (size_t) L.size() * 1024, err) ||
+                         !dalloc(devs[di], cp->zero_dev, cp->ring_stride, err)))
+                        return false;
+#endif
                 }
                 // every device with layers on the flow: a prompt reads only the experts it picks, once, so a short one
                 // takes the chunked path too (one pass, where windows of 16 read the CPU lane's picks again for each
@@ -4616,7 +4636,8 @@ struct Model::Impl {
             if (member(L0, m).dev == c.dev) return m;
         return 0;
     }
-    void flow_push(Chunk& c, const Layer& l, int mi, int k, int e, int v) {
+    // (stand_in: STRATA_DS4_PROMPT_SKIP_RANK's left-out expert - its rows read that blob in place, their weights are 0)
+    void flow_push(Chunk& c, const Layer& l, int mi, int k, int e, int v, unsigned long long stand_in = 0) {
         c.items.emplace_back();
         Chunk::Item& it = c.items.back();
         it.il = l.il;
@@ -4624,6 +4645,11 @@ struct Model::Impl {
         it.k = k;
         it.e = e;
         it.v = v;
+        if (stand_in != 0) {
+            it.dev = stand_in;
+            ++c.it_skip;
+            return;
+        }
         bool in_ram = !l.ram.empty() && l.ram[(size_t) e] >= 0;
         const uint8_t* store_blob = nullptr;   // (the RAM store holds it: copied into staging like a RAM-tier slot, no read)
         if (!in_ram && store && l.nm == 1) {
@@ -4746,8 +4772,8 @@ struct Model::Impl {
         c.n_spec = (int) cand.size();
         c.it_spec += cand.size();
     }
-    // (chunk k, layer il) routed (bounds b by virtual slot): the rest of its picks after its likely ones
-    void flow_rest(Chunk& c, int k, int il, const std::vector<int>& b) {
+    // (chunk k, layer il) routed (bounds b by virtual slot, T rows): the rest of its picks after its likely ones
+    bool flow_rest(Chunk& c, int k, int il, const std::vector<int>& b, int T, std::string& err) {
         const Layer& l = L[(size_t) il];
         const int mi = flow_mi(c, l);
         const int* vs = member(l, mi).vs_pin;
@@ -4755,10 +4781,42 @@ struct Model::Impl {
             const int v = fit(c, i).v;
             if (b[(size_t) v + 1] == b[(size_t) v]) ++c.it_spec_unused;
         }
+#if !defined(STRATA_METAL)
+        // STRATA_DS4_PROMPT_SKIP_RANK: the experts left out run on a blob of zeros (their rows' outputs 0), weights 0
+        const bool psk = prompt_skip_rank > 0 && c.best_pin != nullptr && c.zero_dev != nullptr && flow_in_place && store &&
+                         l.nm == 1 && il < g.nl && l.n_exp <= 1024;
+        const unsigned long long stand_in = psk ? (unsigned long long) (uintptr_t) c.zero_dev : 0;
+        uint8_t* drop = psk ? c.drop_pin + (size_t) il * 1024 : nullptr;
+        if (drop != nullptr) std::memset(drop, 0, (size_t) l.n_exp);   // (its copy of the last chunk is done: the stream synced since)
+        bool any = false;
+#endif
         for (int e : l.host_list) {   // (index order: their virtual slots ascending)
             const int v = vs[e];
-            if (v >= l.pv_n + c.n_spec && b[(size_t) v + 1] > b[(size_t) v]) flow_push(c, l, mi, k, e, v);
+            if (v >= l.pv_n + c.n_spec && b[(size_t) v + 1] > b[(size_t) v]) {
+#if !defined(STRATA_METAL)
+                if (drop != nullptr && c.best_pin[e] >= prompt_skip_rank - 1 && store->find(il, e) < 0 && !in_ram(l, e)) {
+                    drop[e] = 1;
+                    any = true;
+                    flow_push(c, l, mi, k, e, v, stand_in);
+                    continue;
+                }
+#endif
+                flow_push(c, l, mi, k, e, v);
+            }
         }
+#if defined(STRATA_METAL)
+        (void) T;
+        (void) err;
+#else
+        if (any) {   // (before any of the layer's batches: the same stream, ahead of their combines)
+            Dev& d = devs[(size_t) c.dev];
+            cudaSetDevice(d.id);
+            uint8_t* dd = c.drop_dev + (size_t) il * 1024;
+            CK(cudaMemcpyAsync(dd, drop, (size_t) l.n_exp, cudaMemcpyHostToDevice, d.st));
+            zero_picks(c.ridx, c.rw, T, l.k_exp, dd, d.st);
+        }
+#endif
+        return true;
     }
     // the next (chunk, layer) of the device after (k, il) in the run's order that streams experts (false: none) - a
     // long prompt's skip leaves out its early chunks' layers from Run::yoco on (kv_only there: no experts)
@@ -4950,7 +5008,7 @@ struct Model::Impl {
             err = "the prompt path's expert stream is out of step (layer " + std::to_string(L0.il) + ")";
             return false;
         }
-        flow_rest(c, k, L0.il, b);
+        if (!flow_rest(c, k, L0.il, b, T, err)) return false;
         const size_t lb = c.spec_begin, le = c.base + c.items.size(), n_lay = le - lb;
         int k2 = 0, il2 = 0;
         if (flow_next(c, k, L0.il, k2, il2)) flow_spec(c, k2, il2, fl_rows(c, k2, il2));
@@ -11849,6 +11907,12 @@ struct Model::Impl {
         CK(cudaMemcpyAsync(l.vs_dev, l.vs_pin, (size_t) l.n_exp * 4, cudaMemcpyHostToDevice, s));   // (this member's)
         moe_sort(c.ridx, T, l.k_exp, l.vs_dev, n_vs, c.bounds, c.row_tok, c.pos, s);
         CK(cudaMemcpyAsync(c.bounds_pin, c.bounds, (size_t) (n_vs + 1) * 4, cudaMemcpyDeviceToHost, s));
+#if !defined(STRATA_METAL)
+        if (c.best_dev != nullptr && c.flow && l.n_exp <= 1024) {   // (STRATA_DS4_PROMPT_SKIP_RANK: read with the bounds)
+            best_rank(c.ridx, T, l.k_exp, l.n_exp, c.best_dev, s);
+            CK(cudaMemcpyAsync(c.best_pin, c.best_dev, (size_t) l.n_exp * 4, cudaMemcpyDeviceToHost, s));
+        }
+#endif
         prof_mark(d, 10);
         // the shared expert into acc while the host waits for the bounds
         if (!gemm(d, c, l.s1, c.x16, D, T, c.sg, FF, 0.0f, err) || !gemm(d, c, l.s3, c.x16, D, T, c.su, FF, 0.0f, err))
@@ -12232,7 +12296,7 @@ struct Model::Impl {
             c.fl_cut_r = run.cut_r;
             c.spec_k = c.spec_il = -1;
             c.wait_ms = 0;
-            c.it_file = c.it_ram = c.it_spec = c.it_spec_unused = c.it_lc = c.it_place = 0;
+            c.it_file = c.it_ram = c.it_spec = c.it_spec_unused = c.it_lc = c.it_place = c.it_skip = 0;
             c.lc_il = -1;
             c.lc_used = 0;
             c.lc_first = c.lc_chk = 0;
@@ -13331,9 +13395,12 @@ struct Model::Impl {
                 if (c.lm)
                     std::snprintf(lcs, sizeof lcs, ", %llu again from the layer cache (layer-major, %d chunks, %.1f GB "
                                   "of RAM)", (unsigned long long) c.it_lc, (int) run.T.size(), (double) c.lc_bytes / 1e9);
-                char places[64] = "";
+                char places[160] = "";
                 if (c.it_place > 0)
                     std::snprintf(places, sizeof places, ", %llu of them read where they lie", (unsigned long long) c.it_place);
+                if (c.it_skip > 0)
+                    std::snprintf(places + std::strlen(places), sizeof places - std::strlen(places),
+                                  "; %llu more left out, not read (STRATA_DS4_PROMPT_SKIP_RANK)", (unsigned long long) c.it_skip);
                 char dbgs[200] = "";
                 if (pm.on)
                     std::snprintf(dbgs, sizeof dbgs,
