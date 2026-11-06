@@ -1,4 +1,4 @@
-name: Minimal serving runtime
+name: Server regressions and minimal runtime
 
 on:
   push:
@@ -60,7 +60,7 @@ jobs:
                           '--report', str(report)], check=True)
           print(report.read_text())
           PY
-      - name: Run legacy parser suite with explicit strict-guard opt-out
+      - name: Run full server suite with explicit legacy-fixture opt-out
         shell: bash
         run: |
           STRATA_TOOL_MASK_STRICT=0 "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'
