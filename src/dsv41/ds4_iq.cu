@@ -1376,17 +1376,25 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     }
 #endif
 #if !defined(STRATA_METAL)   // (CUDA and HIP: Metal has its own GEMV, metal_host::iq_mv)
-    // DS4_MV_NR=auto (rows a warp by the rows' length: 4 up to 64 sub-blocks, 2 up to 128, else 1), or 1 / 2 / 4 for all: the
-    // kernel above (mv_kernel_nr, its 128-bit loads of Q4_K / Q5_K); unset: mv_kernel, as before.  The calls of one launch
-    // share a length class (their sub-blocks set the rows a warp).
-    static const int nr_env = [] {   // -1: unset (the kernel above), 0: auto, else rows a warp
+    // mv_kernel_nr (its 128-bit loads of Q4_K / Q5_K): a row a warp by default on CUDA - the same sums in the same order as
+    // mv_kernel's, so the same bits; on a GB10 q_b (Q5_K 1280 x 32768) 163 -> 148 us, wo_b (8192 x 5120) 175 -> 149, the shared
+    // expert's 55 -> 47 and 56 -> 45.  DS4_MV_NR=2 / 4: that many rows a warp (other sums: their own order); =auto: a row a warp
+    // up to 2 columns, else 2 for rows of up to 160 sub-blocks (measured better for the verify windows' 3-6 columns there);
+    // =0: mv_kernel (HIP's default: not measured there).
+    static const int nr_env = [] {   // -1: mv_kernel, 0: auto, else rows a warp
         const char* v = std::getenv("DS4_MV_NR");
+#if defined(STRATA_USE_HIP)
         if (v == nullptr) return -1;
-        return std::string(v) == "auto" ? 0 : std::max(1, std::atoi(v));
+#else
+        if (v == nullptr) return 1;
+#endif
+        if (std::string(v) == "auto") return 0;
+        const int n = std::atoi(v);
+        return n <= 0 ? -1 : n;
     }();
     int nsb_max = 0;
     for (int j = 0; j < nj; ++j) nsb_max = std::max(nsb_max, J.j[j].k / 32);
-    const int nr = nr_env > 0 ? nr_env : nr_env == 0 ? (nsb_max <= 64 ? 4 : nsb_max <= 128 ? 2 : 1) : -1;
+    const int nr = nr_env > 0 ? nr_env : nr_env == 0 ? (max_c <= 2 ? 1 : nsb_max <= 160 ? 2 : 1) : -1;
     if (nr == 1) {   // (the new kernel a row a warp: its 128-bit loads)
         if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 1>, grid, kThreads, 0, s, J);
         else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 1>, grid, kThreads, 0, s, J);
