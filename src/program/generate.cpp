@@ -11257,6 +11257,12 @@ int main(int argc, char** argv) {
         // K+1 while stage 1 still reads window K's hand-off.  With more stages every stage but the last is a "front"
         // stage: window K+1 follows window K through them one card behind, and only the last stage waits for K's verdict
         const bool pipe = o.pipeline_windows > 0 && n_stages >= 2 && !split_same && (int) stages.size() == n_stages - 1;
+        // Experimental: stage exact per-row histories before the last stage samples.
+        // Keep the serial fallback outside the two-stage, synchronous-adapt case.
+        const bool pipeline_penalties = pipe && n_stages == 2 && !o.adapt_async && [] {
+            const char* e = std::getenv("STRATA_PIPELINE_PENALTIES");
+            return e != nullptr && std::atoi(e) == 1;
+        }();
         strata::core::Verifier ver_b;
         SplitDrive split_drive_b;
         std::vector<cudaStream_t> pl_stream(pipe ? (size_t) n_stages : 0, nullptr);
@@ -17863,7 +17869,7 @@ int main(int argc, char** argv) {
             bool pl_ran = false;
             const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
             const char* pl_serial = !pl_want ? nullptr
-                                  : hist_n > 0 ? "repetition penalties (penalty_last_n)"
+                                  : hist_n > 0 && !pipeline_penalties ? "repetition penalties (penalty_last_n)"
                                   : mtp.coupled() ? "coupled draft sampling" : nullptr;
             if (pl_serial != nullptr) {   // said once per reason
                 static std::set<std::string> said;
@@ -18339,6 +18345,24 @@ int main(int argc, char** argv) {
                     if (A.finished && !A.s1) {
                         if (chain_kind == 1 && !B.ready) ++pl_late;   // stage 0 idles until the chain has B
                         if (ajob) a_gap(1);   // --adapt-async: stage 1 is idle until this launch
+                        if (pipeline_penalties && hist_n > 0) {
+                            // Only A reaches the head, after the preceding verdict.
+                            // B may run on the first card but never contributes to
+                            // consumed until accepted. Both last-stage parities
+                            // share this stream, so no sampler still reads d_hist.
+                            if ((int64_t) consumed.size() != A.p)
+                                return die("pipeline penalties: prefix position mismatch");
+                            strata::kernels::penalty_rows(consumed.data(), (int64_t) consumed.size(),
+                                                          A.tok, A.T, hist_n, hist_stage.data());
+                            const strata::core::OnDevice on_h(hist_dev);
+                            if (cudaMemcpyAsync(d_hist, hist_stage.data(), (size_t) A.T * (size_t) hist_n * sizeof(int32_t),
+                                                cudaMemcpyHostToDevice, V1(A).stream()) != cudaSuccess)
+                                return die("pipeline penalties: history upload failed");
+                            // Keep the pageable source valid until the copy lands;
+                            // also wait for the preceding parity's commit.
+                            if (cudaStreamSynchronize(V1(A).stream()) != cudaSuccess)
+                                return die("pipeline penalties: history staging failed");
+                        }
                         if (!V1(A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
                         A.s1 = true;
                         tre("L1", A.seq, A.T);

@@ -188,10 +188,22 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
   chain starts. `STRATA_MTP_STAGE0=0` keeps the old place.
 - **Off, with one log line saying why:** `--batch` slots, `--peer-device`, the helper caches (`--expert-cache-device1..3`, which
   `--remote-expert-opt` builds on), a split onto one GPU, no draft layer, and on three or more stages `--pipeline-windows 1` and
-  `--adapt-async 1`. A request with repetition penalties or coupled draft sampling decodes serially.
+  `--adapt-async 1`. A request with repetition penalties decodes serially unless the experimental option below applies.
+  Coupled draft sampling still decodes serially.
 - **Cost:** a second verify window on each card, 160 MiB less expert cache per card, plus two copies of the first card's
   recurrent state (about 3 MiB per GDN layer it runs).
 - **Config:** `"args": [ ..., "--pipeline-windows", "2" ]` with `"layer_split": "20"`.
+
+**Experimental penalty support (CUDA/HIP source path):** `STRATA_PIPELINE_PENALTIES=1` lets a request with repetition,
+frequency or presence penalties use `--pipeline-windows 2` on exactly two stages, with `--adapt-async` off. It preserves the
+requested penalties, including a presence penalty inherited from the model card. Just before the final stage samples a
+window, it receives one history row per token, built from the accepted prefix and that window. Rejected guesses do not enter
+the next window's history. A prefix-position mismatch or a failed history copy ends the engine with an error.
+
+This option is off by default and does not require `STRATA_PIPELINE_DEBUG`. With it unset, or with more than two stages or
+async adaptation, requests with penalties keep the serial path. It does not enable `--batch` with pipeline windows or change
+the coupled-draft restriction. SYCL has a separate driver and does not implement this option. This is an experimental source
+change; cross-backend execution, default-path output parity and quality equivalence still need validation.
 
 `--remote-expert-opt` does something only with a helper cache; on a plain layer split it is inert.
 The `STRATA_PIPELINE_*` tuning and test variables are read only with `STRATA_PIPELINE_DEBUG=1`.
