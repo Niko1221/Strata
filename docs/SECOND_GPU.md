@@ -118,6 +118,24 @@ The engine runs the model on the device the runtime numbers 0. Windows' HIP runt
 - A layer split is refused when this is set.
 - NVIDIA cards do not need it: `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER=PCI_BUS_ID` already reorders.
 
+## A helper cache instead of a split stage (AMD, 128k)
+
+On two RDNA2 cards the second one is worth more as an expert-cache helper than as a layer-split stage
+once the model does not fit on the primary alone. Measured on RX 6800 XT (16 GB) + RX 6600 (8 GB, x4
+slot), IQ3_XXS at 131,072 tokens, engine 0.1.57, Windows HIP. The split gives the 6800 XT layers 0-37
+and a 3,840-token prompt chunk, while the 6600 holds layers 38-47 and the head and has 2.23 GiB left
+for a 1,229-slot cache. The helper shape — `"gpu": [0]`, `HIP_VISIBLE_DEVICES=0,1` in the
+config's `env` block (one entry in `gpu` makes the server hide the second card), and
+`--expert-cache-device1 auto` — keeps the whole model on the 6800 XT with its 3,983-slot (6.49 GiB)
+cache and puts 4,097 experts (6.57 GiB) on the 6600; the prompt chunk doubles to 6,144 tokens.
+
+Same suite, same day, minutes apart: prompt 631 against 375 tok/s at 4K and 772 against 640 at 16K,
+short decode 52.6 against 42.8 tok/s, TTFT 6.5 against 10.9 s at 4K, total 18.1 against 24.6 s. Decode
+at 16K is flat (38.7 against 38.6 tok/s): the gain is on the prompt path, and it comes from the larger
+chunk and the second cache rather than from link bandwidth, since the 6600 sits in an x4 slot and
+returns its rows through pinned host memory at 28.2 GB/s. ([report](../bench/results/2026-11-06-community-6800xt-6600-helper-cache/README.md),
+[control](../bench/results/2026-11-06-community-6800xt-6600-layer-split-control/README.md))
+
 ## History / older measurements
 
 Each row is one machine, reported by the author of the change or a community member.
