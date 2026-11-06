@@ -520,7 +520,7 @@ class CudaAndHip(Fetch):
             self.assertFalse(drafting.tuned_applies("sycl", name, ["arc_a"], args=self.args, vram_mib=None))
             self.assertFalse(drafting.tuned_applies("sycl", name, ["arc_a"], args=self.args, vram_mib=8192))
             self.drop_tuned()
-        self.assertNotIn("sycl", {b for e in drafting.SET_DEFAULTS for b in e[:1]})
+        self.assertNotIn(("sycl", "iq3_s"), drafting.SET_DEFAULTS)
 
     def test_their_confidences_are_exactly_what_they_were(self):
         """The conf of every box class, with the tuned file here and without it, against the numbers CONF_STEPS and BACKEND_CONF have always given."""
@@ -629,6 +629,191 @@ class CudaAndHip(Fetch):
             self.assertIsNone(drafting.card_vram_mib({"gpu": 0}, "hip", ["gfx1151"]), "Strix Halo")
         with mock.patch("serve.telemetry.gpu_reader", lambda index, amd=False: Reader(None)):
             self.assertIsNone(drafting.card_vram_mib({"gpu": 0}, "cuda", ["sm_120"]), "a driver that does not answer")
+
+
+IQ3XXS = "qwen3.8-flash-next-iq3_xxs"
+BF16_BYTES = b"tuned-bf16sel-pack-" * 150_000                   # 2.85 MB, stands in for the 522 MB file
+
+
+class Arc(Fetch):
+    """Owner 11-06 ~11:30 "Yes for Arc": the SYCL 0.2.11 engine refuses the Q4_0-selector pack, so Arc gets its OWN tuned file (bf16 selector codebooks, 522,458,112 bytes) for IQ3_XXS, the set
+    DF-VAL measured on the A750, at Arc's current conf 0.6. Every other Arc set stays on the stock pack; CUDA / HIP / Metal never see the bf16sel file, SYCL never sees the selq4 one."""
+
+    def setUp(self):
+        super().setUp()
+        pins = mock.patch.multiple(drafting, TUNED_BF16_BYTES=len(BF16_BYTES), TUNED_BF16_SHA256=hashlib.sha256(BF16_BYTES).hexdigest())
+        pins.start()
+        self.addCleanup(pins.stop)
+        self.sycl_exe = self.root / "strata-sycl"
+        self.sycl_exe.write_bytes(b"--mtp-draft-vocab FILE (or --mtp DIR ... --draft-fallback")         # reads bf16 selector codebooks only
+
+    def put_bf16(self, content=BF16_BYTES):
+        (self.data / "dflash2" / drafting.TUNED_BF16_NAME).write_bytes(content)
+
+    def arc(self, name=IQ3XXS, **extra):
+        cfg = self.cfg(name, **extra)
+        decision = drafting.apply(cfg, data_dir=self.data, backend="sycl", archs=["arc_a"], engine=self.sycl_exe)
+        return decision, cfg["args"]
+
+    def two_entry_feed(self, sub="two", bf16_backends=("sycl",), selq4_backends=("metal", "cuda", "hip")):
+        out = self.root / sub
+        entries = self.root / (sub + "-entries")
+        out.mkdir(parents=True, exist_ok=True)
+        for name, content, backends in ((drafting.TUNED_NAME, TUNED_BYTES, selq4_backends), (drafting.TUNED_BF16_NAME, BF16_BYTES, bf16_backends)):
+            if not backends:
+                continue
+            (out / name).write_bytes(content)
+            ft.pack_drafter(out / name, entries, version="1", backends=list(backends))
+            (entries / name).unlink(missing_ok=True)
+        ft.build_feed(out, key=ft._load_key(self.keys / "feed-key.json"), sequence=1, drafters_dir=entries)
+        return out
+
+    def test_the_pins(self):
+        self.assertEqual(drafting.tuned_pack("bf16sel").name, "qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack")
+        self.assertNotEqual(drafting.tuned_pack("bf16sel").name, drafting.tuned_pack("selq4").name)
+        self.assertEqual(drafting.tuned_pack("selq4").name, drafting.TUNED_NAME)
+        self.assertEqual(drafting.tuned_pack(None), drafting.tuned_pack("selq4"))
+        self.assertTrue(drafting.tuned_pack("selq4").selector_q4 and not drafting.tuned_pack("bf16sel").selector_q4)
+
+    def test_the_real_pins(self):
+        with mock.patch.multiple(drafting, TUNED_BF16_BYTES=522458112, TUNED_BF16_SHA256="34ca17fee701ff088b6069acc35a26661d237953f5d114be0a3f7dae3ec5cda9"):
+            pin = drafting.tuned_pack("bf16sel")
+            self.assertEqual((pin.size, pin.sha256, pin.gb), (522458112, "34ca17fee701ff088b6069acc35a26661d237953f5d114be0a3f7dae3ec5cda9", 0.52))
+            self.assertEqual(pin.size, drafting.PACK_BYTES, "the same format and size as the stock Q4_0 pack (bf16 selector)")
+            self.assertNotEqual(pin.sha256, drafting.PACK_SHA256, "other weights: not the stock pack")
+            self.assertNotEqual(pin.sha256, drafting.tuned_pack("selq4").sha256)
+
+    def test_iq3_xxs_on_arc_uses_the_bf16sel_pack_at_arcs_own_conf(self):
+        self.put_stock()
+        self.put_bf16()
+        d, args = self.arc()
+        self.assertEqual((d.drafter, d.note), ("dflash2", ""))
+        self.assertEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data, "bf16sel")))
+        self.assertEqual((flag(args, "--draft-conf"), flag(args, "--spec")), ("0.6", "6"))
+        self.assertEqual(drafting.BACKEND_CONF["sycl"], 0.6)
+        (self.data / "dflash2" / drafting.TUNED_BF16_NAME).unlink()
+        (self.data / "dflash2" / (drafting.TUNED_BF16_NAME + ".ok")).unlink()
+        d2, args2 = self.arc()
+        self.assertEqual(flag(args2, "--draft-model"), str(self.data / "dflash2" / drafting.PACK_NAME), "without the file: the stock pack")
+        self.assertEqual(flag(args, "--draft-conf"), flag(args2, "--draft-conf"), "only the pack changes")
+        strip = lambda a: [x for i, x in enumerate(a) if not (i and a[i - 1] == "--draft-model")]      # noqa: E731
+        self.assertEqual(strip(args), strip(args2))
+
+    def test_no_other_arc_set_and_no_other_arc_class_gets_it(self):
+        self.put_stock()
+        self.put_bf16()
+        self.put_tuned()
+        for name in (IQ3S, Q4, V31, OLD_XS, Q5, GYRO, "qwen3.8-flash-next-q2_0"):
+            d, args = self.arc(name)
+            self.assertEqual(flag(args, "--draft-model"), str(self.data / "dflash2" / drafting.PACK_NAME), name)
+            self.assertFalse(drafting.tuned_applies("sycl", name, ["arc_a"]), name)
+        for arch in ("arc_b", "arc_a_pro", "intel_igpu", "", "sm_120"):
+            self.assertFalse(drafting.tuned_applies("sycl", IQ3XXS, [arch] if arch else []), arch)
+
+    def test_sycl_never_gets_the_selq4_file(self):
+        self.put_stock()
+        self.put_tuned()                                      # only the selq4 file is here
+        for name in (IQ3XXS, IQ3S, Q4, V31):
+            d, args = self.arc(name)
+            self.assertEqual(flag(args, "--draft-model"), str(self.data / "dflash2" / drafting.PACK_NAME), name)
+            self.assertNotEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data)), name)
+        self.put_bf16()                                       # both are here: the bf16sel one
+        d, args = self.arc()
+        self.assertEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data, "bf16sel")))
+        # even an engine that reads the Q4_0 selector gets the bf16sel pack on SYCL, never the other
+        cfg = self.cfg(IQ3XXS)
+        drafting.apply(cfg, data_dir=self.data, backend="sycl", archs=["arc_a"], engine=self.exe)
+        self.assertEqual(flag(cfg["args"], "--draft-model"), str(drafting.tuned_path(self.data, "bf16sel")))
+        self.assertEqual(drafting.tuned_variant("sycl", IQ3XXS), "bf16sel")
+
+    def test_cuda_hip_and_metal_never_get_the_bf16sel_file(self):
+        self.put_stock()
+        self.put_bf16()
+        bf16 = str(drafting.tuned_path(self.data, "bf16sel"))
+        for hardware, name in ((L620, IQ3S), (SPARK, V31), (STRIX, Q4), (P2003, IQ3S), (R9700, IQ3S), (L620, IQ3XXS), (STRIX, IQ3XXS), (SPARK, IQ3XXS)):
+            d, args = self.apply_on_hw(hardware, name)
+            self.assertNotEqual(flag(args, "--draft-model"), bf16, (hardware[0], name))
+            self.assertFalse(drafting.tuned_applies(hardware[1], name, hardware[2], args=self.args, vram_mib=hardware[3]) and drafting.tuned_variant(hardware[1], name) == "bf16sel")
+        cfg = self.cfg(Q4)
+        drafting.apply(cfg, data_dir=self.data, backend="metal", archs=[], engine=self.exe)
+        self.assertNotEqual(flag(cfg["args"], "--draft-model"), bf16)
+        self.assertEqual({k[0] for k, v in drafting.SET_DEFAULTS.items() if v.tuned and v.pack == "bf16sel"}, {"sycl"})
+        self.assertEqual({k[0] for k, v in drafting.SET_DEFAULTS.items() if v.tuned and v.pack == "selq4"}, {"metal", "cuda", "hip"})
+        # and pack_path itself never returns it for a selq4 entry, whatever the engine reads
+        self.put_tuned()
+        for backend, name in (("cuda", IQ3S), ("hip", Q4), ("metal", Q4)):
+            self.assertEqual(drafting.pack_path(self.data, self.exe, model_name=name, backend=backend, tuned=True), drafting.tuned_path(self.data), backend)
+
+    def apply_on_hw(self, hardware, name):
+        _label, backend, archs, vram = hardware
+        cfg = self.cfg(name)
+        d = drafting.apply(cfg, data_dir=self.data, backend=backend, archs=archs, engine=self.exe, vram_mib=vram)
+        return d, cfg["args"]
+
+    def test_the_fetch_for_arc(self):
+        feed = self.two_entry_feed()
+        (self.data / "dflash2").mkdir(parents=True, exist_ok=True)
+        self.assertTrue(drafting.needs_tuned("auto", model_name=IQ3XXS, backend="sycl", archs=["arc_a"], data_dir=self.data))
+        for name in (IQ3S, Q4, V31):
+            self.assertFalse(drafting.needs_tuned("auto", model_name=name, backend="sycl", archs=["arc_a"], data_dir=self.data), name)
+        seen = []
+        with mock.patch.object(drafting_fetch, "ensure", side_effect=AssertionError("stock fetched")):
+            got = drafting_fetch.ensure_for(self.data, model_name=IQ3XXS, backend="sycl", archs=["arc_a"], feed=str(feed), progress=lambda *a: seen.append(a))
+        self.assertEqual(got, drafting.tuned_path(self.data, "bf16sel"))
+        self.assertTrue(drafting.tuned_ok(self.data, "bf16sel"))
+        self.assertFalse(drafting.tuned_path(self.data).exists(), "the selq4 file was not fetched for SYCL")
+        self.assertEqual(got.read_bytes(), BF16_BYTES)
+        self.assertTrue((self.data / "dflash2" / "LICENSE-dflash2-tuned").is_file())
+        self.assertFalse(drafting.needs_tuned("auto", model_name=IQ3XXS, backend="sycl", archs=["arc_a"], data_dir=self.data))
+
+    def test_the_other_platforms_fetch_their_own_file_from_the_same_feed(self):
+        feed = self.two_entry_feed(sub="both")
+        for hardware, name in ((L620, IQ3S), (STRIX, Q4)):
+            for f in (self.data / "dflash2").glob("*strata1*"):
+                f.unlink()
+            got = drafting_fetch.ensure_for(self.data, model_name=name, backend=hardware[1], archs=hardware[2], args=self.args, vram_mib=hardware[3], feed=str(feed))
+            self.assertEqual(got, drafting.tuned_path(self.data), hardware[0])
+            self.assertFalse(drafting.tuned_path(self.data, "bf16sel").exists(), hardware[0])
+        for f in (self.data / "dflash2").glob("*strata1*"):
+            f.unlink()
+        mac = drafting_fetch.ensure_for(self.data, model_name=Q4, backend="metal", feed=str(feed))
+        self.assertEqual(mac, drafting.tuned_path(self.data))
+        self.assertFalse(drafting.tuned_path(self.data, "bf16sel").exists())
+
+    def test_a_feed_without_the_sycl_entry_gives_arc_the_stock_drafter(self):
+        feed = self.two_entry_feed(sub="no-sycl", bf16_backends=())
+        with mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")) as stock:
+            got = drafting_fetch.ensure_for(self.data, model_name=IQ3XXS, backend="sycl", archs=["arc_a"], feed=str(feed))
+        self.assertEqual(got, Path("/stock"))
+        stock.assert_called_once()
+        only_selq4_for_sycl = self.two_entry_feed(sub="wrong", bf16_backends=(), selq4_backends=("sycl",))
+        with mock.patch.object(drafting_fetch, "ensure", return_value=Path("/stock")):
+            got = drafting_fetch.ensure_for(self.data, model_name=IQ3XXS, backend="sycl", archs=["arc_a"], feed=str(only_selq4_for_sycl))
+        self.assertEqual(got, Path("/stock"), "a feed that (wrongly) lists the selq4 file for sycl is not what Arc asks for: it asks for the bf16sel name")
+        self.assertFalse(drafting.tuned_path(self.data).exists())
+
+    def test_a_wrong_bf16sel_file_is_not_used_and_a_bad_download_is_deleted(self):
+        self.put_stock()
+        self.put_bf16(b"x" * len(BF16_BYTES))
+        self.assertFalse(drafting.tuned_ok(self.data, "bf16sel"))
+        d, args = self.arc()
+        self.assertEqual(flag(args, "--draft-model"), str(self.data / "dflash2" / drafting.PACK_NAME))
+        (self.data / "dflash2" / drafting.TUNED_BF16_NAME).unlink()
+        feed = self.two_entry_feed(sub="bad")
+        (feed / drafting.TUNED_BF16_NAME).write_bytes(b"z" * len(BF16_BYTES))
+        with self.assertRaises(drafting_fetch.DraftingError) as caught:
+            drafting_fetch.ensure_tuned(self.data, feed=str(feed), backend="sycl", variant="bf16sel")
+        self.assertIn("safety check", str(caught.exception))
+        self.assertFalse(drafting.tuned_path(self.data, "bf16sel").exists())
+
+    def test_the_plan_says_0_52_gb_for_arc_and_the_conf_tables_are_unchanged(self):
+        self.assertEqual(drafting_fetch.plan(self.data, model_name=IQ3XXS, backend="sycl", archs=["arc_a"])["gb"], 0.52)
+        self.assertEqual(drafting_fetch.plan(self.data, model_name=IQ3S, backend="sycl", archs=["arc_a"])["gb"], drafting.DOWNLOAD_GB)
+        self.assertEqual(drafting_fetch.plan(self.data, model_name=IQ3S, backend="cuda", archs=["sm_121"])["gb"], 0.34)
+        self.assertEqual(drafting.CONF_STEPS, ((12000, 0.35), (7500, 0.5), (3000, 0.7), (0, 0.8)))
+        self.assertEqual(drafting.BACKEND_CONF, {"sycl": 0.6, "metal": 0.5})
+        self.assertEqual((drafting.DRAFT_CONF, drafting.SPEC_WINDOW), (0.35, 6))
+        self.assertIsNone(drafting.tuned_conf_for("sycl", IQ3XXS), "no conf of its own: Arc's 0.6 stays")
 
 
 class SetupOnAMac(Base):

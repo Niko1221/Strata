@@ -41,12 +41,14 @@ def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, 
     the graphics memory DFlash2 alone takes on this computer (0.72 with the Q4_0 selector, which the engine reads and setup makes, else 0.89) and ``selq4`` says which.
     For a set with a tuned drafter (drafting.SET_DEFAULTS) the download is that 0.34 GB file, and it counts as missing until it is here."""
     tuned = drafting.tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib)
-    ready = drafting.tuned_ok(data_dir) if tuned else drafting.pack_ready(data_dir)
-    gb = 0.0 if ready else (drafting.TUNED_GB if tuned else drafting.DOWNLOAD_GB)
+    variant = drafting.tuned_variant(backend, model_name)
+    pin = drafting.tuned_pack(variant)
+    ready = drafting.tuned_ok(data_dir, variant) if tuned else drafting.pack_ready(data_dir)
+    gb = 0.0 if ready else (pin.gb if tuned else drafting.DOWNLOAD_GB)
     if ready:
         text = "The DFlash2 drafter is already on this computer."
     elif tuned:
-        text = (f"The DFlash2 drafter is {drafting.TUNED_GB:.2f} GB to download, from Strata's signed update feed, Apache-2.0 (a copy of {drafting.REPO} that Strata tuned). "
+        text = (f"The DFlash2 drafter is {pin.gb:.2f} GB to download, from Strata's signed update feed, Apache-2.0 (a copy of {drafting.REPO} that Strata tuned). "
                 f"It needs about {drafting.vram_gb(data_dir, engine):.1f} GB of graphics memory, less than the MTP's layer, which is not loaded beside it.")
     else:
         text = (f"The DFlash2 drafter is {drafting.DOWNLOAD_GB:.1f} GB to download (it is packed to {drafting.PACK_GB:.2f} GB for the engine and the "
@@ -185,13 +187,16 @@ def _feed_source(feed: str | None = None) -> str:
     return os.environ.get(update_cmd.ENV_FEED) or update_cmd.default_feed()
 
 
-def tuned_from_feed(*, feed: str | None = None, backend: str | None = None, size: int | None = None, sha256: str | None = None) -> tuple[str, int, str] | None:
+def tuned_from_feed(*, feed: str | None = None, backend: str | None = None, size: int | None = None, sha256: str | None = None, name: str | None = None,
+                    variant: str | None = None) -> tuple[str, int, str] | None:
     """(address, size, sha256) of the tuned drafter as the signed feed lists it (member ``drafters``), or None: the feed cannot be read (offline, the host is down: silent), has no
     such entry for this engine family, or lists other bytes than the ones this Strata was measured with (pinned size and SHA-256: then it is another drafter, not ours).
     A feed that does not verify is DraftingError: a bad signature, an expired feed. A build that trusts no key (a source checkout from before the keys) is silent."""
     from strata_control import signing
-    want_size = drafting.TUNED_BYTES if size is None else size
-    want_sha = drafting.TUNED_SHA256 if sha256 is None else sha256
+    pin = drafting.tuned_pack(variant)
+    want_size = pin.size if size is None else size
+    want_sha = pin.sha256 if sha256 is None else sha256
+    want_name = name or pin.name
     source = _feed_source(feed)
     try:
         loaded = feedmod.fetch(source, signing.load_trusted_keys(), timeout=FEED_TIMEOUT, channel="stable")
@@ -200,7 +205,7 @@ def tuned_from_feed(*, feed: str | None = None, backend: str | None = None, size
             return None
         raise DraftingError(f"The update feed could not be trusted: {exc}") from None
     for entry in loaded.drafters:
-        if entry.name == drafting.TUNED_NAME and (backend or drafting.TUNED_BACKEND) in entry.backends:
+        if entry.name == want_name and (backend or drafting.TUNED_BACKEND) in entry.backends:
             if entry.size != want_size or entry.sha256 != want_sha:
                 return None
             return loaded.url(entry.url), entry.size, entry.sha256
@@ -228,16 +233,17 @@ def provide_licence(data_dir: str | Path) -> bool:
 
 
 def ensure_tuned(data_dir: str | Path, *, progress: Progress | None = None, cancel: threading.Event | None = None, url: str | None = None,
-                 size: int | None = None, sha256: str | None = None, name: str | None = None, feed: str | None = None, throttle: bool = False, backend: str | None = None) -> Path | None:
+                 size: int | None = None, sha256: str | None = None, name: str | None = None, feed: str | None = None, throttle: bool = False, backend: str | None = None, variant: str | None = None) -> Path | None:
     """Make the tuned drafter (drafting.TUNED_NAME, 340 MB) exist under ``data_dir`` and return its path. It is found in the signed feed (``feed``: a URL or folder; default
     STRATA_UPDATE_FEED or the project's release feed), unless ``url`` or STRATA_DFLASH2_TUNED_URL names the file directly. None when it cannot be had without anything being wrong:
     the feed or the address does not answer (no internet, the host is down), the feed does not list the file, or it answers with an error page. Resumable (transfer.download continues a kept partial file). A complete
     file that is not the pinned bytes is deleted and DraftingError says so; an interrupted download keeps its partial file and raises DraftingError. The licence text and the
     notice are copied beside it. The stock pack is never touched. The keyword arguments are for tests."""
     report = progress or (lambda *_: None)
-    want_size = drafting.TUNED_BYTES if size is None else size
-    want_sha = drafting.TUNED_SHA256 if sha256 is None else sha256
-    file_name = name or drafting.TUNED_NAME
+    pin = drafting.tuned_pack(variant)
+    want_size = pin.size if size is None else size
+    want_sha = pin.sha256 if sha256 is None else sha256
+    file_name = name or pin.name
     out = Path(data_dir) / drafting.FOLDER / file_name
     if drafting.converted_ok(data_dir, size=want_size, sha256=want_sha, name=file_name):
         provide_licence(data_dir)
@@ -250,7 +256,7 @@ def ensure_tuned(data_dir: str | Path, *, progress: Progress | None = None, canc
     else:                                                 # the normal way: the signed feed names the file; nothing answers offline
         if throttle and _recent_miss(data_dir):           # a launch asked a short while ago and got nothing: no wait, no second try
             return None
-        found = tuned_from_feed(feed=feed, backend=backend, size=want_size, sha256=want_sha)
+        found = tuned_from_feed(feed=feed, backend=backend, size=want_size, sha256=want_sha, name=file_name, variant=variant)
         _note_miss(data_dir, found is None)
         if found is None:
             return None
@@ -288,7 +294,7 @@ def ensure_for(data_dir: str | Path, *, model_name: str | None, backend: str | N
     if drafting.tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib):
         tuned_error: DraftingError | None = None
         try:
-            got = ensure_tuned(data_dir, progress=progress, cancel=cancel, feed=feed, throttle=throttle, backend=backend)
+            got = ensure_tuned(data_dir, progress=progress, cancel=cancel, feed=feed, throttle=throttle, backend=backend, variant=drafting.tuned_variant(backend, model_name))
         except DraftingError as exc:
             got, tuned_error = None, exc
         if got is not None:

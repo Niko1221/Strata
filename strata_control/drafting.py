@@ -229,6 +229,12 @@ TUNED_NAME = "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack"
 TUNED_BYTES = 339694592
 TUNED_SHA256 = "4df2e5ab2b47c064afbe662e16e4f06569877125c2d0e2123a4ac755266c664c"
 TUNED_GB = 0.34
+# The same tuned weights for an engine that reads only the bf16 selector codebooks (the SYCL 0.2.11 engine refuses the Q4_0-selector pack above): the Q4_0 pack of tools/dflash2_pack.py
+# --q4_0 (the tool reproduces the stock Arc pack cda40d62... exactly from the stock weights). Its own name, size and SHA-256; the feed lists it for ["sycl"] only.
+TUNED_BF16_NAME = "qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack"
+TUNED_BF16_BYTES = 522458112
+TUNED_BF16_SHA256 = "34ca17fee701ff088b6069acc35a26661d237953f5d114be0a3f7dae3ec5cda9"
+TUNED_BF16_GB = 0.52
 #: Where it is hosted (owner 11-06, recommendation of the coordinator): a GitHub release asset of Niko1221/Strata, listed in the signed feed (strata-feed.json, feed key 5d1bc23a) as a
 #: `drafters` entry (packaging/feed_tool.py pack-drafter, build-feed --drafters), so the app gets the feed's signature, offline handling and updates the same way as engine packages.
 #: The entry's url is relative to the feed (flat release assets); the size and SHA-256 above are pinned in the code as well, so the feed can move the file but never swap its bytes.
@@ -269,14 +275,34 @@ BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
 
 
 @dataclass(frozen=True)
+class TunedPack:
+    """One tuned file: ``key`` is what SetDefault.pack names (``selq4`` = Q4_0 selector codebooks, the CUDA / HIP / Metal engines; ``bf16sel`` = bf16 selector codebooks, the SYCL engine)."""
+    key: str
+    name: str
+    size: int
+    sha256: str
+    gb: float
+    selector_q4: bool
+
+
+def tuned_pack(variant: str | None = None) -> TunedPack:
+    """The pin of a tuned file, read from the module's constants at call time."""
+    if variant == "bf16sel":
+        return TunedPack("bf16sel", TUNED_BF16_NAME, TUNED_BF16_BYTES, TUNED_BF16_SHA256, TUNED_BF16_GB, False)
+    return TunedPack("selq4", TUNED_NAME, TUNED_BYTES, TUNED_SHA256, TUNED_GB, True)
+
+
+@dataclass(frozen=True)
 class SetDefault:
     """What Auto does for one model set on one engine family. ``drafter``: ``dflash2`` or ``mtp``. ``tuned``: DFlash2 starts with Strata's tuned pack (TUNED_NAME) where the pack is here and
     ``where`` holds. ``tuned_conf``: the ``--draft-conf`` that goes with the tuned pack, or None = the backend's OWN conf stays (CONF_STEPS / BACKEND_CONF: only the pack changes). ``where``:
-    "" always (Metal); "resident" CUDA with every expert resident = the card the first CONF_STEPS step (conf 0.35) is for, or a shared-memory chip (sm_121, the Spark class); "gfx1151" Strix Halo."""
+    "" always (Metal); "resident" CUDA with every expert resident = the card the first CONF_STEPS step (conf 0.35) is for, or a shared-memory chip (sm_121, the Spark class); "gfx1151" Strix Halo;
+    "arc_a" Intel Arc A-series (the class the A750 stands for). ``pack``: which tuned file (tuned_pack): ``selq4`` or, for the SYCL engine, ``bf16sel``."""
     drafter: str
     tuned: bool = False
     tuned_conf: float | None = None
     where: str = ""
+    pack: str = "selq4"
 
 
 #: Per (engine family, set) defaults, measured. THE ONE TABLE to switch a set either way. The set is the model_name without its "qwen3.8-flash-next-" prefix.
@@ -287,6 +313,9 @@ class SetDefault:
 #: Auto drafter, so only the pack changes and the conf stays what CONF_STEPS / the card class give): ONLY the cells that were measured are enabled:
 #:   cuda "resident" (conf 0.35): IQ3_S l620 (RTX PRO 5000) x1.021 (3/3 rounds) and DGX Spark x1.032 / x1.048 (3/3, two runs); UD-IQ4_XS-v31 DGX Spark x1.050 (3/3). CUDA ids identical.
 #:   hip gfx1151 (Strix Halo, conf 0.35): IQ3_S x1.037, UD-Q4_K_XL x1.043, UD-IQ4_XS x1.045 (3/3 each; the text differs by window length on HIP, as with any conf change).
+#: SYCL / Intel Arc (owner 11-06 ~11:30 "Yes for Arc"; DF-VAL, A750 8 GB on p1006, SYCL 0.2.11, IQ3_XXS, 3 rounds, against the stock pack at Arc's 0.6 = 18.8 tok/s): the bf16-selector tuned pack
+#: at 0.6 x1.054 (3/3 rounds), at 0.5 x1.063; MTP x0.995; the stock pack against itself x1.011. The SYCL engine refuses the selq4 pack, so Arc has its OWN file (``pack`` "bf16sel", TUNED_BF16_*)
+#: and keeps BACKEND_CONF["sycl"] = 0.6. ONLY IQ3_XXS, the measured set; every other Arc set stays on the stock pack until it is measured.
 #: NOT enabled: a 12 GB / streaming card (the CONF_STEPS 0.8 step: P2003 is still being measured), gfx1201 / R9700 (the DFlash2 prompt stall is open), SYCL / Arc (untested), several cards (not measured),
 #: and the sets nobody measured on that platform (CUDA UD-Q4_K_XL, CUDA UD-IQ4_XS, Strix UD-IQ4_XS-v31): each is one more line here once DF-VAL has the cell.
 SET_DEFAULTS = {
@@ -298,6 +327,7 @@ SET_DEFAULTS = {
     ("hip", "iq3_s"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-iq4_xs"): SetDefault("dflash2", True, None, "gfx1151"),
+    ("sycl", "iq3_xxs"): SetDefault("dflash2", True, None, "arc_a", "bf16sel"),
 }
 MODEL_PREFIX = "qwen3.8-flash-next-"
 
@@ -322,6 +352,12 @@ def tuned_entry(backend: str | None, model_name: str | None) -> SetDefault | Non
     """The table entry when this set on this engine family uses the tuned pack at all (whether THIS card qualifies is tuned_applies)."""
     entry = default_for(backend, model_name)
     return entry if entry is not None and entry.drafter == "dflash2" and entry.tuned else None
+
+
+def tuned_variant(backend: str | None, model_name: str | None) -> str | None:
+    """Which tuned file this set on this engine family uses (``selq4`` / ``bf16sel``), or None: no tuned entry."""
+    entry = tuned_entry(backend, model_name)
+    return entry.pack if entry is not None else None
 
 
 def tuned_conf_for(backend: str | None, model_name: str | None) -> float | None:
@@ -353,6 +389,8 @@ def tuned_applies(backend: str | None, model_name: str | None, archs: Any = None
     arch = first_arch(archs)
     if entry.where == "gfx1151":
         return arch == "gfx1151"
+    if entry.where == "arc_a":
+        return arch == "arc_a"
     if entry.where == "resident":
         if arch == "sm_121":
             return True
@@ -401,9 +439,9 @@ def converted_path(data_dir: str | Path) -> Path:
     return Path(data_dir) / FOLDER / CONVERTED_NAME
 
 
-def tuned_path(data_dir: str | Path) -> Path:
-    """Where the tuned drafter lives (next to the stock packs)."""
-    return Path(data_dir) / FOLDER / TUNED_NAME
+def tuned_path(data_dir: str | Path, variant: str | None = None) -> Path:
+    """Where the tuned drafter lives (next to the stock packs); ``variant``: selq4 (default) or bf16sel."""
+    return Path(data_dir) / FOLDER / tuned_pack(variant).name
 
 
 def sha256_of(path: Path) -> str:
@@ -445,10 +483,11 @@ def converted_ok(data_dir: str | Path | None, *, size: int | None = None, sha256
         return False
 
 
-def tuned_ok(data_dir: str | Path | None) -> bool:
+def tuned_ok(data_dir: str | Path | None, variant: str | None = None) -> bool:
     """Is the tuned drafter here and exactly the pinned bytes (size, then SHA-256 once; the answer is kept in a marker beside it, as for the converted pack)? A short,
-    changed or corrupt file is simply "no": the stock pack (or the MTP) is used."""
-    return converted_ok(data_dir, size=TUNED_BYTES, sha256=TUNED_SHA256, name=TUNED_NAME)
+    changed or corrupt file is simply "no": the stock pack (or the MTP) is used. ``variant``: selq4 (default) or bf16sel."""
+    pin = tuned_pack(variant)
+    return converted_ok(data_dir, size=pin.size, sha256=pin.sha256, name=pin.name)
 
 
 def uses_tuned(backend: str | None, model_name: str | None) -> bool:
@@ -520,7 +559,10 @@ def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None
     verified, and `engine` reads the Q4_0 selector (it is that format): the stock pack stays the fallback. `tuned`: whether this card qualifies (tuned_applies; None = the entry alone)."""
     if tuned is None:
         tuned = uses_tuned(backend, model_name)
-    if engine is not None and tuned and tuned_ok(data_dir) and engine_reads_selector_q4(engine):
+    variant = tuned_variant(backend, model_name) or "selq4"
+    if tuned and variant == "bf16sel" and tuned_ok(data_dir, variant):
+        return tuned_path(data_dir, variant)                       # the bf16-selector file: any engine that runs DFlash2 reads it
+    if engine is not None and tuned and variant == "selq4" and tuned_ok(data_dir) and engine_reads_selector_q4(engine):
         return tuned_path(data_dir)
     if engine is not None and converted_ok(data_dir) and engine_reads_selector_q4(engine):
         return converted_path(data_dir)
@@ -568,7 +610,7 @@ def card_vram_mib(cfg: dict[str, Any], backend: str | None, archs: Any = None) -
 def drafter_ready(data_dir: str | Path | None, model_name: str | None = None, backend: str | None = None) -> bool:
     """Is a drafter file for this start on the computer: a stock pack (pack_ready), or, where the set has a tuned entry, the verified tuned pack."""
     try:
-        return pack_ready(data_dir) or (bool(data_dir) and uses_tuned(backend, model_name) and tuned_ok(data_dir))
+        return pack_ready(data_dir) or (bool(data_dir) and uses_tuned(backend, model_name) and tuned_ok(data_dir, tuned_variant(backend, model_name)))
     except OSError:
         return False
 
@@ -918,7 +960,7 @@ def needs_tuned(mode: Any, *, klass: str = "other", model_name: str | None = Non
     """Would this choice use DFlash2 with the tuned drafter (this set has an entry in SET_DEFAULTS) and is that file not here yet? (Setup, Load and `strata drafting fetch`
     fetch it, once; offline they skip it and the stock pack or the MTP runs.)"""
     return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2"
-            and tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib) and bool(data_dir) and not tuned_ok(data_dir))
+            and tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib) and bool(data_dir) and not tuned_ok(data_dir, tuned_variant(backend, model_name)))
 
 
 def needs_mtp(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
@@ -1023,7 +1065,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     if decision.drafter == "dflash2":
         qualifies = tuned_applies(backend, cfg.get("model_name"), archs, args=strip_mtp_flags(strip_draft_flags(args)), vram_mib=vram_mib)
         pack = pack_path(data_dir, engine, model_name=cfg.get("model_name"), backend=backend, tuned=qualifies)
-        if Path(pack) != tuned_path(data_dir) and not pack_ready(data_dir):         # (only the tuned pack is here and this engine cannot read it: no drafter file for it)
+        if Path(pack) != tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name"))) and not pack_ready(data_dir):         # (only the tuned pack is here and this engine cannot read it: no drafter file for it)
             decision = Decision(decision.asked, "mtp", NOT_DOWNLOADED) if mtp_here is not False else Decision(decision.asked, "off", NONE_HERE)
     if decision.drafter == "off":
         cfg["args"] = strip_mtp_flags(strip_draft_flags(args))
@@ -1036,7 +1078,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
         base = strip_mtp_flags(strip_draft_flags(args))
         flags = list(engine_flags(pack, vocab, form))
         kept_conf = _flag_value(mine, "--draft-conf")
-        tuned_conf = tuned_conf_for(backend, cfg.get("model_name")) if Path(pack) == tuned_path(data_dir) else None     # Metal: the conf the tuned pack was measured with; CUDA / HIP: None, the backend's own conf stays
+        tuned_conf = tuned_conf_for(backend, cfg.get("model_name")) if Path(pack) == tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name"))) else None     # Metal: the conf the tuned pack was measured with; CUDA / HIP: None, the backend's own conf stays
         flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else conf_for(backend, slots_of(base, vram_mib)):g}"
         if _flag_value(mine, "--spec") is None:
             base = _without_flag(base, "--spec")              # the DFlash2 window; the person's own --spec stays

@@ -68,6 +68,10 @@ are pinned in the code too, so the feed can move the file but a feed that lists 
 model keeps the MTP. Make the entry with `feed_tool.py pack-drafter PACK --out RELEASE/drafters --version 1 --backends metal [--url-prefix ""]` (copies the file flat and writes
 `<name>.entry.json`) and pass the folder to `build-feed --drafters RELEASE/drafters`; upload the pack beside the feed in the same release. Older Controls ignore the member.
 
+The member holds two entries (one `pack-drafter` call each, both folders' `.entry.json` files in the same `--drafters` folder): `qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack` (339,694,592 bytes) with
+`--backends metal,cuda,hip`, and `qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack` (522,458,112 bytes, sha256 34ca17fe...) with `--backends sycl` for the Intel Arc engine, which reads only bf16
+selector codebooks. Control asks the feed for the file name its table entry (`SET_DEFAULTS`) names and for its own backend, so no platform fetches the other's file.
+
 `url` is relative to the feed's own location (or an absolute `https://` address; a loopback `http://` is allowed so a local test
 feed works; a local feed folder may only name files inside itself).
 For a GitHub release the assets are flat: pack with `--url-prefix ""` and upload every file beside the feed.

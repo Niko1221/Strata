@@ -1630,7 +1630,7 @@ class Runner:
             if want["data_dir"] is None or not (drafting.needs_pack(**want) or drafting.needs_tuned(**want, **sig)):
                 return
             tuned = drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig)
-            self.emit("model", f"Downloading the DFlash2 drafter ({drafting.TUNED_GB if tuned else drafting.DOWNLOAD_GB:g} GB, once)…", 0)
+            self.emit("model", f"Downloading the DFlash2 drafter ({drafting.tuned_pack(drafting.tuned_variant(want['backend'], want['model_name'])).gb if tuned else drafting.DOWNLOAD_GB:g} GB, once)…", 0)
 
             def show(step: str, done: int, total: int) -> None:
                 self.check_cancel()
@@ -2356,7 +2356,7 @@ class Runner:
             if drafting.needs_pack(**want):                   # chosen DFlash2 (or Auto picking it) and the drafter is not here: it is part of the download
                 sig = self.drafting_signals(_cfg or {}, want)
                 parts.append({"kind": "dflash2", "label": "the DFlash2 drafter",
-                              "gb": drafting.TUNED_GB if drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig) else drafting.DOWNLOAD_GB})
+                              "gb": drafting.tuned_pack(drafting.tuned_variant(want["backend"], want["model_name"])).gb if drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig) else drafting.DOWNLOAD_GB})
         except Exception:                                    # noqa: BLE001 - the plan still shows the rest
             pass
         gap = self.ready_pack_gap() if st.own_files else None

@@ -11,8 +11,10 @@ synthetic records; no user data), then packed into the engine's runtime format (
 `tools/dflash2_pack.py --q4_0-selector`). The pack is the same size as the unmodified one (339,694,592 bytes). The model code and the
 architecture are unchanged. The pack's SHA-256 is `4df2e5ab2b47c064afbe662e16e4f06569877125c2d0e2123a4ac755266c664c`.
 
-On Macs Strata runs it with `--draft-conf 0.7`; on CUDA (every expert resident) and on Strix Halo it runs at the confidence those platforms already use. It changes how many words are guessed right, never the words
-the model writes: the text is the target model's, checked word for word against the unmodified drafter on the measured sets.
+On Macs Strata runs it with `--draft-conf 0.7`; on CUDA (every expert resident) and on Strix Halo it runs at the confidence those platforms already use. It changes how many words are guessed right, not the model: every guess is checked by the target model (greedy output was identical to the unmodified drafter's on Metal and CUDA in the tests; on HIP the text can differ by window length, as with any confidence change).
+
+A second file, `qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack` (522,458,112 bytes, SHA-256 `34ca17fee701ff088b6069acc35a26661d237953f5d114be0a3f7dae3ec5cda9`), holds the same tuned weights packed with the bf16 selector tables
+(`tools/dflash2_pack.py --q4_0`) for the engines that read no other layout (Intel Arc, SYCL). Everything above applies to it too; Strata uses it on Arc at that card's usual confidence.
 
 Training on the outputs of the Qwen3.8-Flash-Next quantizations: the owner of Strata confirmed on 2026-11-06 that the Qwen model terms allow
 training on its outputs.
