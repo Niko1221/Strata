@@ -4792,13 +4792,12 @@ int main(int argc, char** argv) {
         }
         strata::kernels::cpu::cpu_require_expert_support();
     } else if (!strata::kernels::cpu::cpu_vnni_ok())
-        std::fprintf(stderr, "strata generate: this CPU lacks AVX-512-VNNI: the expert kernels run on %s "
-                             "(multi-token for the i-quant gate/up rows)\n",
+        std::fprintf(stderr, "strata generate: CPU expert kernels: %s\n",
                      !strata::kernels::cpu::cpu_avx2_ok()
                          ? (strata::kernels::cpu::cpu_avx1_ok() && std::getenv("STRATA_NO_IQ128") == nullptr
-                            ? "AVX1 128-bit (iq_avx1, the older-CPU build)"
-                            : "ggml-cpu vec_dot (no AVX2: the older-CPU build)")
-                     : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
+                            ? "AVX1 (older-CPU build)"
+                            : "ggml-cpu (older-CPU build)")
+                     : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu (STRATA_NO_IQ256 set)");
     // the compiled shape; a native model's file replaces it below with its own metadata (read_geometry), which a
     // pruned variant (GSQ-RCO Coder, fewer than 512 experts) differs from
     strata::core::ModelGeometry g;
