@@ -1673,7 +1673,19 @@ class SaveScreen(Base):
         lines = self.summary_lines()
         warnings = self.ctx.warnings()
         body_h = self.query_one("#body").size.height
-        full_need = 2 + len(lines) + len(warnings) + 3 + 3
+        summary = self.query_one("#summary", Static)
+        full = Text()
+        full.append("Save as preset, then launch\n", style=f"bold {ACCENT}")
+        full.append("  Name   ")
+        full.append("(type below)\n", style=MUTE)
+        for k, v in lines:
+            full.append(f"  {k:<10}{v}\n")
+        for n in warnings:
+            full.append(f"  ! {n}\n", style=WARN)
+        full.rstrip()
+        # Long storage paths and warnings can occupy several rendered rows.
+        width = max(1, summary.content_size.width or self.width())
+        full_need = len(full.wrap(self.app.console, width)) + 3 + 3
         compact = bool(body_h) and full_need > body_h
         name = self.query_one("#name", Input)
         name.set_class(compact, "slim")
@@ -1691,16 +1703,8 @@ class SaveScreen(Base):
                 t.append(f"  ! {warnings[0]}" + (f"  (+{len(warnings) - 1} more)" if len(warnings) > 1 else "") + "\n", style=WARN)
             t.rstrip()
         else:
-            t = Text()
-            t.append("Save as preset, then launch\n", style=f"bold {ACCENT}")
-            t.append("  Name   ")
-            t.append("(type below)\n", style=MUTE)
-            for k, v in lines:
-                t.append(f"  {k:<10}{v}\n")
-            for n in warnings:
-                t.append(f"  ! {n}\n", style=WARN)
-            t.rstrip()
-        self.query_one("#summary", Static).update(t)
+            t = full
+        summary.update(t)
         if getattr(self, "_compact", None) != compact:       # the body's height changes with it: look again once the layout has settled
             self._compact = compact
             self.call_after_refresh(self.paint)

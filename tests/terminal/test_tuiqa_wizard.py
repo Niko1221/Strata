@@ -42,6 +42,24 @@ class Base(unittest.TestCase):
 
 
 class SaveChoices(Base):
+    def test_long_storage_path_keeps_all_save_choices_visible(self):
+        ctx = make_ctx()
+        ctx.settings.family, ctx.settings.model = "qwen", "IQ3_S"
+        folder = self.home.base / ("nested-model-storage-" * 6) / "Strata-data"
+        folder.mkdir(parents=True)
+        ctx.settings.data_dir = str(folder)
+
+        async def case(app, pilot, ctx):
+            app.goto("save")
+            await pilot.pause(0.3)
+            shown = text_of(app)
+            for choice in ("Save as a preset and launch", "Launch without saving", "Save the preset and stop here"):
+                self.assertIn(choice, shown)
+            body, menu = app.screen.query_one("#body"), app.screen.menu()
+            self.assertLessEqual(menu.region.bottom, body.region.bottom)
+            self.assertGreaterEqual(menu.region.y, body.region.y)
+        self.run_app(case, ctx=ctx, size=(80, 24))
+
     def test_the_three_choices_and_the_name_are_on_screen_at_every_size(self):
         async def case(app, pilot, ctx):
             await press(pilot, *("enter",) * 7, "n", "enter")
