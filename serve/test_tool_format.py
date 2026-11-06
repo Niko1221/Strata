@@ -154,7 +154,9 @@ class UnknownPreTokenizerAtStart(unittest.TestCase):
                 server.main(["--engine", "mock", "--tokenizer", str(t), "--port", "0"])
             self.assertEqual(cm.exception.code, 2)
             self.assertIn("'qwen4'", err.getvalue())
-            self.assertIn("is not loaded", err.getvalue())
+            self.assertIn("so it isn't loaded", err.getvalue())
+            self.assertIn("Strata doesn't have yet ('qwen4')", err.getvalue())
+            self.assertIn("the model's tokenizer (", err.getvalue())
             self.assertNotIn("Traceback", err.getvalue())
 
 
