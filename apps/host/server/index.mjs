@@ -1119,6 +1119,11 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, withPictureAnswers(modelProviders.save(await readBody(req)))); }
     catch (err) { return error(res, 400, err.message); }
   }
+  const providerMetrics = /^\/api\/model-providers\/([a-zA-Z0-9-]+)\/metrics$/.exec(path);
+  if (providerMetrics && method === 'GET') {
+    try { return json(res, 200, await modelProviders.metrics(providerMetrics[1], AbortSignal.timeout(3000))); }
+    catch (err) { return error(res, err.name === 'TimeoutError' ? 504 : 502, err.message); }
+  }
   const providerMatch = /^\/api\/model-providers\/([a-zA-Z0-9-]+)$/.exec(path);
   if (providerMatch && method === 'DELETE') return json(res, 200, withPictureAnswers(modelProviders.remove(providerMatch[1])));
 

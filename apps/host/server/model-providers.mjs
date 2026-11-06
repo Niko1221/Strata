@@ -110,6 +110,14 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
       ...(connection.protocol === 'anthropic' ? { 'anthropic-version': '2023-06-01', ...(connection.apiKey ? { 'x-api-key': connection.apiKey } : {}) } : connection.apiKey ? { authorization: `Bearer ${connection.apiKey}` } : {}),
     };
   }
+  function metricsUrl(connection) {
+    const url = new URL(connection.baseUrl);
+    const path = url.pathname.replace(/\/+$/, '');
+    url.pathname = path.endsWith('/v1') ? `${path.slice(0, -3)}/metrics` : `${path}/metrics`;
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  }
   async function request(connection, path, { signal, ...options } = {}) {
     let res;
     try {
@@ -124,6 +132,32 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
       fail(res.status === 401 || res.status === 403 ? 'The model API rejected the credentials. Check the API key.' : res.status === 404 ? 'The model API could not find this endpoint or model. Check the base URL and model ID.' : res.status === 429 ? 'The model API is rate limited or out of credit. Try again later.' : `The model API returned HTTP ${res.status}. Check the connection and try again.`);
     }
     return res;
+  }
+  async function metrics(connectionId, signal) {
+    const connection = connections.find(c => c.id === connectionId);
+    if (!connection) fail('This model connection no longer exists.');
+    let response;
+    try {
+      response = await fetchImpl(metricsUrl(connection), {
+        method: 'GET', headers: headers(connection), redirect: 'error', signal,
+      });
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason;
+      fail('Could not reach the model metrics endpoint. Check the address and tunnel.');
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      fail(response.status === 401 || response.status === 403
+        ? 'The model metrics endpoint rejected the saved API key.'
+        : response.status === 404
+          ? 'This model server does not expose a /metrics endpoint.'
+          : `The model metrics endpoint returned HTTP ${response.status}.`);
+    }
+    try {
+      return await response.json();
+    } catch {
+      fail('The model metrics endpoint did not return JSON.');
+    }
   }
   async function discover(body, signal) {
     const connection = draft(body);
@@ -229,5 +263,5 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
   }
   /** Connections WITH their keys, for the host's own agent bridge only; never serialised to a client. */
   function withSecrets() { return connections.map(c => ({ ...c, models: c.models.map(m => ({ ...m })) })); }
-  return { list, save, remove, discover, resolve, stream, withSecrets };
+  return { list, save, remove, discover, resolve, stream, metrics, withSecrets };
 }
