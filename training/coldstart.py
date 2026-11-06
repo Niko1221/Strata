@@ -504,7 +504,9 @@ def write_plan(p: dict, out_dir) -> dict:
 
 def route_steps(p: dict, paths: dict, *, group: int = 4, python: str | None = None,
                 train_py: str | None = None, extra: list[str] | None = None,
-                max_context: int = 32768) -> list[dict]:
+                max_context: int = 32768, chain_adapters: str | None = None,
+                include_rl: bool = True, engine_targets: str = "",
+                dpo_steps: int | None = None) -> list[dict]:
     """把三档路由翻成 `bench/run_plan.py` 的 steps（**串行**，`on_fail: continue`）。
 
     顺序是**冷启在前、RL 在后**：冷启的任务是「造出正例」，它不先跑，RL 那一格
@@ -513,30 +515,71 @@ def route_steps(p: dict, paths: dict, *, group: int = 4, python: str | None = No
     为什么是 steps 而不是自己起进程：48 GB 卡放不下引擎+训练双驻留，并发起两个
     进程会把整机拖死（2026-11-05 实测过）。`run_plan.py` 本来就是串行 + 失败隔离，
     还带挂死重试，比新写一个调度器可靠。
+
+    `chain_adapters=<目录>`：把冷启两步串成一条链 —— SFT 存 `cold_sft.pt`，DPO
+    用 `--init-adapter` 从它起训再存 `cold_dpo.pt`。不传时保持旧行为（每步用各自
+    的默认 `--out`，三步互不相干），这是刻意的向后兼容。
+
+    `engine_targets="o_proj,out_proj"`：把 LoRA 落点限制到引擎 `--lora` 真能加载的
+    两类矩阵（`backward/lora_to_gguf.py` 的 MAP 只有这两项）。默认 `--targets` 是
+    12 类，训完再导出时另外 10 类会被静默丢掉 —— 于是评测的是「训练结果的一半」，
+    不是训练出来的东西。要拿 `.pt` 回灌引擎评测，这个参数必须给。
+
+    **不把 RL 接进这条链**：`mezo.py` 的 `theta` 由 `init_theta()` 重建，
+    `--init-adapter` 只把 GGUF 交给引擎加载、不回读 A/B，而 backward 存的是
+    `.pt`。跨这两条线需要显式的 theta 桥接，没做之前 RL 必须从自己的起点跑，
+    不能假装它继承了冷启权重。`include_rl=False` 用于只执行冷启的一轮。
     """
     import os
+    import pathlib
     import sys
     py = python or sys.executable
     train = train_py or os.path.join(os.path.dirname(os.path.abspath(__file__)), "train.py")
     # 上下文给足：`mezo.py` 现在遇到超长样本会直接停（不静默截断），所以计划里必须
     # 把上限带上去。32K 对数学 CoT 够用；AIME 那种 16k 的也在内。
     tail = list(extra or []) + ["--max-context", str(max_context)]
+    tgt = ["--targets", engine_targets] if engine_targets else []
+    d = pathlib.Path(chain_adapters) if chain_adapters else None
+    if d is not None:
+        d.mkdir(parents=True, exist_ok=True)
     steps = []
+    prev_adapter = ""
     if p["sft_items"]:
-        steps.append({"name": "cold_sft",
-                      "cmd": [py, train, "--algo", "sft", "--method", "backward",
-                              "--data", f"jsonl:{paths['sft']}"] + tail,
-                      "on_fail": "continue"})
+        # `--ckpt` 必须显式给：关 ckpt 时 mem_guard 会把「专家 refetch 暂存 26 GiB」
+        # 计进峰值（25.2 常驻 + 26 暂存 = 51.2 > 48 GB 卡的 45.6 预算），T=2048 都过不了
+        # 预检；开 ckpt 权重进图是另一套账。dpo 那条 train.py 已经自动加 --ckpt，这里补上。
+        cmd = [py, train, "--algo", "sft", "--method", "backward",
+               "--ckpt", "--data", f"jsonl:{paths['sft']}"] + tail + tgt
+        step = {"name": "cold_sft", "cmd": cmd, "on_fail": "continue"}
+        if d is not None:
+            prev_adapter = str(d / "cold_sft.pt")
+            cmd += ["--out", prev_adapter]
+            step["adapter_out"] = prev_adapter
+        steps.append(step)
     if p["dpo_pairs"]:
-        steps.append({"name": "cold_dpo",
-                      "cmd": [py, train, "--algo", "dpo", "--method", "backward",
-                              "--dpo-data", paths["dpo"]] + tail,
-                      "on_fail": "continue"})
-    if p["rl"]:
+        # `dpo_steps`：backward 侧的 dpo 轮次没扫过，train.py 的兜底是 --steps 40 ——
+        # 在「1 对偏好样本」上等于过 40 遍，lr 1e-4 早就越过能力门（2026-11-04 反证：
+        # 3e-5 × 50 步 margin 就到 +5.13）。给了这个值就按它走，并在计划里可查。
+        cmd = [py, train, "--algo", "dpo", "--method", "backward",
+               "--dpo-data", paths["dpo"]] + tail + tgt
+        if dpo_steps:
+            cmd += ["--steps", str(dpo_steps)]
+        step = {"name": "cold_dpo", "cmd": cmd, "on_fail": "continue"}
+        if d is not None:
+            if prev_adapter:
+                cmd += ["--init-adapter", prev_adapter]
+                step["adapter_init"] = prev_adapter
+            prev_adapter = str(d / "cold_dpo.pt")
+            cmd += ["--out", prev_adapter]
+            step["adapter_out"] = prev_adapter
+        steps.append(step)
+    if include_rl and p["rl"]:
         steps.append({"name": "rl_luspo",
                       "cmd": [py, train, "--algo", "luspo", "--method", "mezo",
                               "--rollouts", paths["rl"], "--group", str(group)] + tail,
-                      "on_fail": "continue"})
+                      "on_fail": "continue",
+                      "note": "RL 起点不与冷启 .pt 串接：mezo theta 由 init_theta() 重建，"
+                              "--init-adapter 只加载 GGUF 不回读 A/B。需要显式桥接后再跑。"})
     return steps
 
 
