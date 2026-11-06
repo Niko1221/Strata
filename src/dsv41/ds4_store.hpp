@@ -538,6 +538,22 @@ public:
         return done;
     }
     size_t shrunk() const { return shrunk_; }
+    /// Chunks the GPU maps grow back here, after shrink_chunks, never on the read path (registering a chunk may wait on the
+    /// GPU's work, and a kernel may be waiting on the CPU lane, the thread taking a slot): the RAM grow_some() needs free for
+    /// its next chunk (its bytes and the floor), 0 when the arena is whole; grow_some() adds that chunk to the class furthest
+    /// below its size, at the caller's safe point.
+    uint64_t regrow_need() {
+        std::lock_guard<std::mutex> lk(mu_);
+        const int k = regrow_class();
+        if (k < 0) return 0;
+        const Cls& c = cls_[(size_t) k];
+        return (uint64_t) (std::min(kChunk, c.nmax - c.nalloc) * c.slot_bytes) + cfg_.floor_bytes;
+    }
+    bool grow_some() {
+        std::lock_guard<std::mutex> lk(mu_);
+        const int k = regrow_class();
+        return k >= 0 && grow(k);
+    }
     /// An expert VRAM took over: no longer a visible slot
     void unmark(int layer, int e) {
         if (layer < 0 || layer >= (int) where_.size()) return;
@@ -684,6 +700,18 @@ private:
         }
         return plan;
     }
+    int regrow_class() const {   // the class furthest below its size, in bytes (-1: none).  mu_ held.
+        int best = -1;
+        size_t bb = 0;
+        for (size_t k = 0; k < cls_.size(); ++k) {
+            const size_t b = (cls_[k].nmax - cls_[k].nalloc) * cls_[k].slot_bytes;
+            if (b > bb) {
+                best = (int) k;
+                bb = b;
+            }
+        }
+        return best;
+    }
     // the slot to give up (or a free one): the policy's lowest among the unpinned, not visible, ready ones.  mu_ held.
     int take_slot(int ci, bool demand) {
         Cls& k = cls_[(size_t) ci];
@@ -692,7 +720,9 @@ private:
                 k.free_hint = j + 1;
                 return (int) (k.off + j);
             }
-        if (grow(ci)) return take_slot(ci, demand);
+        // (chunks the GPU maps grow back at the caller's safe point - grow_some: registering a chunk for the GPU while a decode
+        //  kernel waits on the CPU lane, the thread taking this slot, waited for good, as the pregrow above notes)
+        if (!cfg_.map_chunk && grow(ci)) return take_slot(ci, demand);
         int best = -1;
         double bv = 0;
         for (size_t j = 0; j < k.nalloc; ++j) {

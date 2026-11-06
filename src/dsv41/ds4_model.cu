@@ -8929,7 +8929,21 @@ struct Model::Impl {
         static int tick = 0;
         if (++tick % 16 != 0) return;
         const uint64_t avail = ram_avail();
-        if (avail == ~uint64_t{0} || avail >= (4ull << 30)) return;
+        if (avail == ~uint64_t{0}) return;
+        if (avail >= (4ull << 30)) {
+            // (chunks the GPU maps grow back here, the GPU's work done first - never on the read path, see regrow_need and
+            //  take_slot)
+            if (store->gpu_mapped()) {
+                const uint64_t need = store->regrow_need();
+                if (need > 0 && avail >= need) {
+                    cudaSetDevice(devs[0].id);
+                    if (cudaStreamSynchronize(devs[0].st) != cudaSuccess) (void) cudaGetLastError();
+                    if (store->grow_some())
+                        std::fprintf(stderr, "ds4: RAM store: %.1f GB free: a chunk back (%zu slots)\n", avail / 1e9, store->slots_allocated());
+                }
+            }
+            return;
+        }
         const size_t n = store_give_back(1 + (size_t) (((5ull << 30) - avail) / (700ull << 20)));
         if (n > 0) std::fprintf(stderr, "ds4: RAM store: %.1f GB free: gave back %zu chunks (%zu slots left)\n", avail / 1e9, n, store->slots_allocated());
     }
