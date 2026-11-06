@@ -66,6 +66,11 @@
 #include <linux/aio_abi.h>   // the kernel's own asynchronous reads (io_submit): no library, allowed by Docker's seccomp
 #include <sched.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
+#if __has_include(<linux/io_uring.h>) && defined(SYS_io_uring_setup) && defined(SYS_io_uring_register)
+#include <linux/io_uring.h>   // STRATA_ARENA_NUMA: long-term pins from the toucher threads (fixed buffers)
+#define STRATA_ARENA_NUMA_PREPIN_BUILT 1
+#endif
 #endif
 
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
@@ -5783,6 +5788,248 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
 
 ArenaExpertSource::~ArenaExpertSource() { close(); }
 
+#if defined(__linux__)
+namespace {
+// FOLL_LONGTERM pins of ranges [lo, hi) of `rs` from the calling thread, released at once: an io_uring fixed-buffer
+// registration.  A page in a CMA-type pageblock cannot stay under a long-term pin, so the kernel migrates it when one is
+// taken - to the page's node while that node has free memory, else elsewhere.  The registration of the arena takes them
+// all at once, late, from one thread: on a 2x Xeon E5-2696 v3 (Linux 7.0) 15-27% of the node-1 half moved to node 0 (7329 CMA
+// pageblocks, 14 GiB, on node 1).  Pinned here, chunk by chunk right after the touch, they move while the node has room.
+// Returns the ranges pinned, or < 0 (no io_uring, or RLIMIT_MEMLOCK: the caller goes on without).
+long numa_prepin(uint8_t* base, const std::vector<std::pair<uint64_t, uint64_t>>& rs, size_t lo, size_t hi) {
+#if !defined(STRATA_ARENA_NUMA_PREPIN_BUILT)
+    (void) base; (void) rs; (void) lo; (void) hi;
+    return -1;   // headers without io_uring: the touch runs without the pre-pin and says so
+#else
+    io_uring_params p;
+    std::memset(&p, 0, sizeof p);
+    const int fd = (int) syscall(SYS_io_uring_setup, 1, &p);
+    if (fd < 0) return -1;
+    std::vector<iovec> iv;
+    long n = 0;
+    for (size_t i = lo; i < hi; ++i) {
+        iv.push_back({base + rs[i].first, (size_t) (rs[i].second - rs[i].first)});
+        if (iv.size() == 16384 || i + 1 == hi) {
+            if (syscall(SYS_io_uring_register, fd, IORING_REGISTER_BUFFERS, iv.data(), (unsigned) iv.size()) != 0) {
+                ::close(fd);
+                return -2;
+            }
+            (void) syscall(SYS_io_uring_register, fd, IORING_UNREGISTER_BUFFERS, nullptr, 0);
+            n += (long) iv.size();
+            iv.clear();
+        }
+    }
+    ::close(fd);
+    return n;
+#endif
+}
+
+// STRATA_ARENA_NUMA=1 (opt-in): NUMA placement of the expert ARENA (the default source when the RAM holds every expert).
+// The pool's NUMA split (ExpertPool::numa_plan_phase, run_split_multi_native's phases 5 and 6) gives slice 0 the first half
+// of each role's rows of every expert and slice 1 the second half, slice k running on the k-th node in ascending order.  The
+// complement path places its pages to match (NumaComplementPlacement); the arena did not: PinnedArena's cudaHostRegister
+// faults the whole arena in from one thread, so nearly all of it lands on that thread's node and the other node's half of
+// the pool reads every row across the socket link.  Here each slice's pages (numa_slice_ranges) are first-touched, before the
+// registration, by threads bound to that slice's node (set_mempolicy MPOL_BIND on the touching thread only: the node's own
+// file cache is reclaimed instead of spilling to the other node).  Nothing the engine computes changes: only where the pages are.
+struct ArenaNumaPlace {
+    bool on = false;
+    int nodes[2] = {-1, -1};
+    std::vector<int> cpus[2];
+    std::string note;   // one line for the startup print: what was placed, or why not
+
+    static std::vector<int> parse_cpulist(const std::string& t) {
+        std::vector<int> out;
+        std::stringstream ss(t);
+        std::string part;
+        while (std::getline(ss, part, ',')) {
+            if (part.empty() || part == "\n") continue;
+            const size_t d = part.find('-');
+            const int a = std::atoi(part.c_str()), b = d == std::string::npos ? a : std::atoi(part.c_str() + d + 1);
+            for (int c = a; c <= b && c >= 0 && c < 4096; ++c) out.push_back(c);
+        }
+        return out;
+    }
+    static uint64_t node_kb(int n, const char* key) {
+        std::ifstream f("/sys/devices/system/node/node" + std::to_string(n) + "/meminfo");
+        std::string line;
+        while (std::getline(f, line)) {
+            std::istringstream ls(line);
+            std::string a, id, k;
+            uint64_t kb = 0;
+            if (ls >> a >> id >> k >> kb && k == std::string(key) + ":") return kb;
+        }
+        return 0;
+    }
+    // the nodes that have CPUs (ascending, as decide_real_numa_split orders the slices): exactly two, or off
+    void plan() {
+        std::vector<int> with_cpus;
+        for (int n = 0; n < 64; ++n) {
+            std::ifstream f("/sys/devices/system/node/node" + std::to_string(n) + "/cpulist");
+            if (!f) continue;
+            std::string t;
+            std::getline(f, t);
+            std::vector<int> c = parse_cpulist(t);
+            if (c.empty()) continue;
+            if (with_cpus.size() < 2) cpus[with_cpus.size()] = c;
+            with_cpus.push_back(n);
+        }
+        if (with_cpus.size() != 2) {
+            note = "STRATA_ARENA_NUMA: off (" + std::to_string(with_cpus.size()) + " NUMA nodes with CPUs; the split needs exactly 2)";
+            return;
+        }
+        nodes[0] = with_cpus[0];
+        nodes[1] = with_cpus[1];
+        on = true;
+    }
+    std::vector<void*> sample[2];   // pages of each slice, for where()
+    // % of slice k's sample pages on its node; `other` (optional) gets how many are elsewhere / not present
+    double where(int k, std::string* detail) {
+        if (sample[k].empty()) return -1.0;
+        std::vector<int> status(sample[k].size(), -1);
+        if (syscall(SYS_move_pages, 0, (unsigned long) sample[k].size(), sample[k].data(), nullptr, status.data(), 0) != 0) return -1.0;
+        size_t hit = 0, other = 0, absent = 0;
+        for (int st : status) {
+            if (st == nodes[k]) ++hit;
+            else if (st >= 0) ++other;
+            else ++absent;
+        }
+        if (detail) {
+            char b[96];
+            std::snprintf(b, sizeof b, "%zu/%zu on node %d, %zu on another node, %zu not present", hit, status.size(), nodes[k], other, absent);
+            *detail = b;
+        }
+        return 100.0 * (double) hit / (double) status.size();
+    }
+    void touch(uint8_t* base, uint64_t bytes, const strata::kernels::cpu::ExpertLayout& lay) {
+        using clock = std::chrono::steady_clock;
+        const auto t0 = clock::now();
+        // 4 KiB pages: a 2 MiB transparent huge page holds about four row halves of both slices, and its node is that of
+        // whichever toucher came first (reserve() asks for THP when free 2 MiB blocks are plentiful).  Measured on this
+        // arena: with THP the halves land ~50/50 on the two nodes; the huge pages themselves were worth ~1% (OPTLOG).
+        const bool no_thp = madvise(base, (size_t) bytes, MADV_NOHUGEPAGE) == 0;
+        // Lock the pages as they are faulted in (MLOCK_ONFAULT: one call, one VMA, nothing faulted by this thread).  Between
+        // the touch and the registration's pin a node that had to reclaim its file cache for its slice also swapped out
+        // some of the fresh zero pages (swappiness 60); the registration then faulted them back in from THIS thread, on its
+        // node (measured: 863-1112 of 4096 sampled slice-1 pages ended on node 0).  Needs RLIMIT_MEMLOCK for the arena
+        // (a systemd LimitMEMLOCK=infinity, or `ulimit -l unlimited`); without it the placement still runs, unprotected.
+#ifndef MLOCK_ONFAULT
+#define MLOCK_ONFAULT 0x01
+#endif
+#if defined(SYS_mlock2)
+        const bool locked = syscall(SYS_mlock2, base, (size_t) bytes, MLOCK_ONFAULT) == 0;
+#else
+        const bool locked = false;
+#endif
+        std::vector<std::pair<uint64_t, uint64_t>> ranges[2];
+        uint64_t slice_bytes[2] = {0, 0};
+        for (int64_t l = 0; l < lay.n_layers; ++l) {
+            const auto& f = lay.fmt[(size_t) l];
+            const uint64_t blob = lay.blob_bytes(l), end_d = f.tail_off ? f.tail_off : f.bytes;
+            if (f.up_off == 0 || f.down_off <= f.up_off || end_d <= f.down_off || blob < end_d) continue;   // (no role sizes)
+            const uint64_t rb[3] = {f.up_off, f.down_off - f.up_off, end_d - f.down_off};
+            for (int64_t e = 0; e < lay.n_expert; ++e) {
+                const uint64_t off = lay.blob_offset(l, e);
+                for (int k = 0; k < 2; ++k)
+                    for (const auto& r : strata::core::detail::numa_slice_ranges(off, rb, k))
+                        if (r.second > r.first && r.second <= bytes) {
+                            ranges[k].push_back(r);
+                            slice_bytes[k] += r.second - r.first;
+                        }
+            }
+        }
+        int per_node = 8;
+        if (const char* v = std::getenv("STRATA_ARENA_NUMA_THREADS"); v != nullptr && std::atoi(v) > 0) per_node = std::atoi(v);
+        // MPOL_BIND only when the node can take its slice from its free memory and its file cache (with 2 GiB to spare);
+        // otherwise MPOL_PREFERRED (the slice may spill, never an allocation failure)
+        int mode[2];
+        for (int k = 0; k < 2; ++k) {
+            const uint64_t room = (node_kb(nodes[k], "MemFree") + node_kb(nodes[k], "FilePages")) * 1024;
+            mode[k] = room > slice_bytes[k] + (2ull << 30) ? 2 /* MPOL_BIND */ : 1 /* MPOL_PREFERRED */;
+        }
+        std::atomic<int> pin_fail{0}, pol_fail{0}, prepin_fail{0};
+        std::atomic<long> prepinned{0};
+        const bool prepin = [] { const char* v = std::getenv("STRATA_ARENA_NUMA_PREPIN"); return v == nullptr || v[0] != '0'; }();
+        std::vector<std::thread> th;
+        for (int k = 0; k < 2; ++k) {
+            const int nt = (int) std::max<size_t>(1, std::min<size_t>((size_t) per_node, cpus[k].size()));
+            // contiguous shares of the slice's (sorted) ranges, balanced by bytes
+            std::vector<size_t> cut{0};
+            uint64_t acc = 0;
+            for (size_t i = 0; i < ranges[k].size(); ++i) {
+                acc += ranges[k][i].second - ranges[k][i].first;
+                if (acc * (uint64_t) nt >= slice_bytes[k] * (uint64_t) cut.size() && (int) cut.size() < nt) cut.push_back(i + 1);
+            }
+            while ((int) cut.size() <= nt) cut.push_back(ranges[k].size());
+            for (int t = 0; t < nt; ++t)
+                th.emplace_back([&, k, t, lo = cut[(size_t) t], hi = cut[(size_t) t + 1]] {
+                    cpu_set_t set;
+                    CPU_ZERO(&set);
+                    for (int c : cpus[k]) CPU_SET(c, &set);
+                    if (sched_setaffinity(0, sizeof set, &set) != 0) pin_fail.fetch_add(1);
+                    unsigned long mask[4] = {0, 0, 0, 0};
+                    mask[nodes[k] / 64] |= 1ul << (nodes[k] % 64);
+                    if (syscall(SYS_set_mempolicy, mode[k], mask, 256) != 0) pol_fail.fetch_add(1);
+                    constexpr size_t kChunk = 2048;   // ~0.9 GiB of ranges: touched, then pinned and released
+                    for (size_t c = lo; c < hi; c += kChunk) {
+                        const size_t e = std::min(hi, c + kChunk);
+                        for (size_t i = c; i < e; ++i)
+                            for (uint64_t at = ranges[k][i].first; at < ranges[k][i].second; at += 4096)
+                                ((volatile uint8_t*) base)[at] = 0;
+                        if (prepin && prepin_fail.load() == 0) {
+                            const long q = numa_prepin(base, ranges[k], c, e);
+                            if (q < 0) prepin_fail.fetch_add(1);
+                            else prepinned.fetch_add(q);
+                        }
+                    }
+                    (void) syscall(SYS_set_mempolicy, 0 /* MPOL_DEFAULT */, nullptr, 0);
+                    (void) t;
+                });
+        }
+        for (auto& x : th) x.join();
+        const double ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+        // a sample of each slice's pages, asked where they are (move_pages with no target nodes only reports)
+        double local[2] = {0, 0};
+        for (int k = 0; k < 2; ++k) {
+            sample[k].clear();
+            const size_t step = std::max<size_t>(1, ranges[k].size() / 4096);
+            for (size_t i = 0; i < ranges[k].size(); i += step) {   // a page inside the range, not only its first
+                const auto& r = ranges[k][i];
+                const uint64_t pages_in = (r.second - r.first) / 4096;
+                sample[k].push_back(base + r.first + (pages_in > 1 ? (i % pages_in) * 4096 : 0));
+            }
+            local[k] = where(k, nullptr);
+        }
+        // Keep them there.  Automatic NUMA balancing (kernel.numa_balancing=1, the distro default) samples the mapping while
+        // it is touched; the registration below then faults those pages in from THIS thread and the kernel migrates them to
+        // its node before the pin (measured: 863 of 4096 sampled slice-1 pages moved to node 0).  A VMA with an explicit
+        // policy and no MPOL_F_NUMA_BALANCING is skipped by the balancer and never migrated on a fault; MPOL_BIND to both
+        // nodes moves nothing already placed (no MPOL_MF_MOVE) and there is nothing left to allocate.  One call, one VMA.
+        unsigned long both[4] = {0, 0, 0, 0};
+        both[nodes[0] / 64] |= 1ul << (nodes[0] % 64);
+        both[nodes[1] / 64] |= 1ul << (nodes[1] % 64);
+        const bool held = syscall(SYS_mbind, base, (bytes + 4095) & ~(uint64_t) 4095, 2 /* MPOL_BIND */, both, 256, 0) == 0;
+        char buf[600];
+        std::snprintf(buf, sizeof buf,
+                      "STRATA_ARENA_NUMA: row halves placed before the registration: slice 0 -> node %d (%.2f GiB, %s, %.1f%% of "
+                      "sampled pages there), slice 1 -> node %d (%.2f GiB, %s, %.1f%%), %d threads per node, %.1f s, %s%s%s%s",
+                      nodes[0], (double) slice_bytes[0] / 1073741824.0, mode[0] == 2 ? "bind" : "preferred", local[0],
+                      nodes[1], (double) slice_bytes[1] / 1073741824.0, mode[1] == 2 ? "bind" : "preferred", local[1],
+                      per_node, ms / 1000.0,
+                      !no_thp ? "WARNING: MADV_NOHUGEPAGE refused"
+                      : locked ? (held ? "4 KiB pages, locked on fault (mlock2), bound (mbind)" : "4 KiB pages, locked on fault (mlock2); mbind refused")
+                               : (held ? "4 KiB pages, bound (mbind); NOT locked (RLIMIT_MEMLOCK): reclaim can move pages before the pin"
+                                       : "4 KiB pages; NOT locked (RLIMIT_MEMLOCK), mbind refused"),
+                      prepin ? (prepin_fail.load() ? "; long-term pre-pin unavailable (io_uring or RLIMIT_MEMLOCK)" : "; pre-pinned per chunk (io_uring)")
+                             : "; no pre-pin (STRATA_ARENA_NUMA_PREPIN=0)",
+                      pin_fail.load() ? "; WARNING: a toucher could not be pinned" : "",
+                      pol_fail.load() ? "; WARNING: set_mempolicy failed (first touch only)" : "");
+        note = buf;
+    }
+};
+}  // namespace
+#endif
+
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
                              std::string& err, uint64_t max_pinned_bytes,
                              const std::string& shared_arena_file) {
@@ -6045,11 +6292,32 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
 #else
     const bool deferred = false;
 #endif
+    // STRATA_ARENA_NUMA=1: each expert's row halves on the node of the pool slice that reads them (ArenaNumaPlace above)
+    std::function<void(uint8_t*, uint64_t)> arena_pretouch;
+    numa_note_.clear();
+#if defined(__linux__)
+    ArenaNumaPlace numa_place;
+    if (const char* v = std::getenv("STRATA_ARENA_NUMA"); v != nullptr && v[0] == '1') {
+        if (by_need || deferred || !shared_arena_file.empty() || !lay.native) {
+            numa_note_ = "STRATA_ARENA_NUMA: off (only for a private, whole-registered arena of a native pack)";
+        } else {
+            numa_place.plan();
+            numa_note_ = numa_place.note;
+            if (numa_place.on)
+                arena_pretouch = [&](uint8_t* b, uint64_t n) {
+                    numa_place.touch(b, n, lay);
+                    numa_note_ = numa_place.note;
+                    numa_nodes_[0] = numa_place.nodes[0];
+                    numa_nodes_[1] = numa_place.nodes[1];
+                };
+        }
+    }
+#endif
     PinnedArena* a = by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
                                                max_pinned_bytes, shared_arena_file, pack_hash)
                    : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
                               : new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes,
-                                                shared_arena_file, pack_hash);
+                                                shared_arena_file, pack_hash, arena_pretouch);
     if (!a->valid()) {
         const std::string why = a->note;
         delete a;
@@ -6150,6 +6418,14 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         return false;
     }
     if (arena_leader) arena_state->store(kArenaFilled, std::memory_order_release);   // the others may use (and skip reading) it
+#if defined(__linux__)
+    if (numa_nodes_[0] >= 0) {   // STRATA_ARENA_NUMA: where the sample pages are now, registered and filled
+        std::string d0, d1;
+        numa_place.where(0, &d0);
+        numa_place.where(1, &d1);
+        numa_note_ += "; after the registration and the load: slice 0 " + d0 + ", slice 1 " + d1;
+    }
+#endif
     if (std::getenv("STRATA_VERIFY_ARENA") != nullptr) {   // tests: the loaded arena's checksum, any loader
         std::fprintf(stderr, "strata generate: expert arena checksum %016llx (%.2f GiB)\n",
                      (unsigned long long) fnv1a64(a->data(), want), (double) want / (1ull << 30));
