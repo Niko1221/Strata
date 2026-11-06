@@ -77,6 +77,30 @@ class IntelCardsAreToldByName(unittest.TestCase):
             self.assertEqual(drafting.sycl_archs_present(), ["arc_a", "arc_b"])
 
 
+class ADriverThatIsNotReadyYet(unittest.TestCase):
+    """A service started at boot: `strata serve` looks at the card about 0.4 s after it starts. On Ubuntu with an RTX 4080 SUPER that was before the
+    NVIDIA driver answered (nvidia-smi exit 9, only the boot framebuffer in /sys/class/drm), and the start 12 s later chose the MTP with "DFlash2 isn't
+    available on this graphics card" on every boot; a restart of the service gave DFlash2."""
+
+    def probes(self, backend, archs):
+        from strata_control import engine_component
+        return mock.patch.multiple(engine_component, detect_backend=mock.Mock(return_value=(backend, "test")),
+                                   cuda_archs_present=mock.Mock(return_value=list(archs)), hip_archs_present=mock.Mock(return_value=[]))
+
+    def test_a_lookup_that_found_no_card_is_made_again(self):
+        with mock.patch.object(drafting, "_HARDWARE", []):
+            with self.probes(None, []):
+                self.assertEqual(drafting.detect_hardware(), (None, []))
+            with self.probes("cuda", ["sm_89"]):
+                self.assertEqual(drafting.detect_hardware(), ("cuda", ["sm_89"]))
+
+    def test_a_card_that_was_found_is_looked_up_once(self):
+        from strata_control import engine_component
+        with mock.patch.object(drafting, "_HARDWARE", []), self.probes("cuda", ["sm_89"]):
+            self.assertEqual([drafting.detect_hardware(), drafting.detect_hardware()], [("cuda", ["sm_89"])] * 2)
+            self.assertEqual(engine_component.detect_backend.call_count, 1)
+
+
 class WhereTheEngineCanRunIt(unittest.TestCase):
     """DFlash2 exists in the engines of drafting.DFLASH2_BACKENDS (CUDA, HIP, Metal; CMakeLists.txt STRATA_HAVE_DFLASH2): the choice is offered, and applied, only there."""
 
