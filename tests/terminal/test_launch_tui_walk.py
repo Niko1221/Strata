@@ -54,7 +54,10 @@ class Walk(unittest.TestCase):
         FakeRunner.behaviour = "ok"
         FakeRunner.download = 0.0
         for p in (mock.patch("strata_cli.launch.app.Runner", FakeRunner),
-                  mock.patch.object(access, "lan_ips", return_value=["192.168.1.5"])):
+                  mock.patch.object(access, "lan_ips", return_value=["192.168.1.5"]),
+                  mock.patch.object(access, "find_cloudflared", return_value=None),
+                  mock.patch.object(access, "tailscale_status", return_value={
+                      "installed": False, "running": False, "ip": None, "name": None})):
             p.start()
             self.addCleanup(p.stop)
 
