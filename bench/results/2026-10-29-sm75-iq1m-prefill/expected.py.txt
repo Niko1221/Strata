@@ -1,0 +1,124 @@
+"""Bounded branch snapshots; native Strata remains the authority on token reuse.
+
+Inspired by radix prefix caches in Rapid-MLX/SGLang and oMLX persistence.
+This indexes whole snapshots by hashed request-prefix chunks, NOT paged KV blocks.
+Use one process per directory and restart with its native upstream.
+"""
+import hashlib
+import json
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'swift-five-20261025'))
+from session_cache import SessionCache, handler
+
+
+def descriptor(body, scope):
+    # Put template-affecting metadata first. Never reorder messages or tool lists.
+    ignored = {'messages', 'stream', 'stream_options', 'max_tokens', 'max_completion_tokens',
+               'max_output_tokens', 'temperature', 'top_p', 'top_k', 'min_p', 'seed', 'frequency_penalty',
+               'presence_penalty', 'repetition_penalty', 'stop', 'strata_prefix'}
+    meta = {k: v for k, v in body.items() if k not in ignored}
+    raw = (json.dumps(meta, sort_keys=True, ensure_ascii=False) + '\n' +
+           json.dumps(body.get('messages', []), sort_keys=True, ensure_ascii=False)).encode()
+    return {'scope': hashlib.sha256(scope.encode()).hexdigest(),
+            'digest': hashlib.sha256(raw).hexdigest(), 'length': len(raw),
+            'meta': hashlib.sha256(json.dumps(meta, sort_keys=True).encode()).hexdigest(),
+            'messages': [hashlib.sha256(json.dumps(m, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                         for m in body.get('messages', [])],
+            'chunks': [hashlib.sha256(raw[i:i+2048]).hexdigest() for i in range(0, len(raw), 2048)]}
+
+
+def shared(a, b):
+    if not a or not b or a['scope'] != b['scope']:
+        return 0
+    if a['digest'] == b['digest']:
+        return a['length'] + 1  # exact match wins over partial final chunk
+    count = 0
+    for x, y in zip(a['chunks'], b['chunks']):
+        if x != y:
+            break
+        count += 2048
+    return count
+
+
+class BranchCache(SessionCache):
+    def __init__(self, *args, auto_pin=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.auto_pin = auto_pin
+        self.active_descriptor = None
+
+    def session_id(self, body, explicit=None):
+        if self.auto_pin and 'strata_prefix' not in body:
+            messages = body.get('messages', [])
+            # Complete text message boundary only; never guess inside code or edit content.
+            for i in range(len(messages)-2, -1, -1):
+                content = messages[i].get('content')
+                if isinstance(content, str) and len(content) >= 8192:
+                    body['strata_prefix'] = {'message': i, 'chars': len(content)}
+                    break
+        scope = super().session_id(body, explicit)
+        desc = descriptor(body, scope)
+        sid = desc['scope'] + ':' + desc['digest']
+        # Return request metadata in the ID, avoiding any concurrent shared pending map.
+        return sid, desc
+
+    def prepare(self, request):
+        sid, desc = request
+        key = self.key(sid)
+        if self.active == key:
+            return
+        candidates = [(shared(desc, row.get('prefix')), row.get('last_used', 0), k, row)
+                      for k, row in self.rows.items()
+                      if k not in self.dirty and (self.directory / row['filename']).is_file()]
+        best = max(candidates, default=(0, 0, '', {}))
+        live_score = shared(desc, self.active_descriptor)
+        # Keep equal-quality live state rather than paying a disk restore. Native RAM cache
+        # can still choose a better parked state and validates every actual token prefix.
+        if live_score >= best[0] or best[0] < 2048:
+            self.event('branch_live', matched_bytes=live_score)
+            return
+        _, _, chosen, row = best
+        start = time.monotonic()
+        try:
+            self.transport('/slots/0?action=restore', {'filename': row['filename']})
+        except Exception as exc:
+            self.dirty.add(chosen)
+            self.active = None
+            self.active_descriptor = None
+            self.event('restore_failed', key=chosen, error=str(exc))
+            return
+        self.active = chosen
+        self.active_descriptor = row['prefix']
+        row['last_used'] = time.time()
+        self.publish()
+        self.event('branch_restore', key=chosen, matched_bytes=best[0],
+                   seconds=time.monotonic()-start, bytes=row['bytes'])
+
+    def finish(self, request, tokens, success=True):
+        sid, desc = request
+        # Avoid a multi-GB save for each small appended tool/chat turn. Changed histories
+        # still get distinct snapshots even when their token counts have not grown.
+        if success and self.key(sid) not in self.rows:
+            for key, row in self.rows.items():
+                old = row.get('prefix', {})
+                messages = old.get('messages', [])
+                if (old.get('scope') == desc['scope'] and old.get('meta') == desc['meta']
+                    and messages and len(messages) < len(desc['messages'])
+                    and desc['messages'][:len(messages)] == messages
+                    and 0 <= tokens-row['tokens'] < self.min_gain
+                    and key not in self.dirty and (self.directory/row['filename']).is_file()):
+                    self.active = self.key(sid)
+                    self.active_descriptor = desc
+                    row['last_used'] = time.time()
+                    self.publish()
+                    self.event('branch_save_deferred', tokens_since_snapshot=tokens-row['tokens'])
+                    return
+        super().finish(sid, tokens, success)
+        self.active_descriptor = desc if success else None
+        key = self.key(sid)
+        if success and key in self.rows:
+            self.rows[key]['last_used'] = time.time()
+            self.rows[key]['prefix'] = desc
+            self.publish()
