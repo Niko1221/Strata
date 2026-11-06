@@ -779,6 +779,7 @@ FUNC_END = "</function>"
 # #3441: the opener a model writes when it drifts by a token inside the envelope the template documents:
 # `<=NAME>` (the word `function` dropped), `<function:NAME>`, `<function =NAME>`, or the bare `<NAME>`
 _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*>")
+_PREFIX_LOOKBACK = 256     # how far before a new delta a prefixed name or a misspelt opener can start (see OutputParser._prefixed)
 # #5409: `<function=tools actio>` / `<function=tools>`; the prefixes are the ones of #4751
 _PREFIX_SPACED = re.compile(r"(<function=\s*(?:tools|functions|default_api)[ \t]+)([^<>\s]+)\s*>")
 _PREFIX_PART = re.compile(r"<function=\s*(?:tools|functions|default_api)[ \t]+[^<>\s]{0,80}\s*$")
@@ -1245,13 +1246,14 @@ class OutputParser:
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._final = False          # #4701: the turn has ended: a call held for what might follow it is decided now
+        self._held = ""              # #5276/#5409: the end of a misspelt opener or a prefixed name still arriving (see _prefixed)
         self._reset_scan()
 
     @property
     def clean(self) -> bool:
         """Nothing is held back: a clean point to stop the thinking at (a parser that rewrites the model's text, as
         serve/dsml.py's does, also counts what it holds)."""
-        return not self.buf
+        return not self.buf and not self._held
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
@@ -1618,54 +1620,59 @@ class OutputParser:
                 start = text.find(tag[0], start + 1)
         return best
 
-    def _prefixed(self) -> str | None:
+    def _prefixed(self, fresh: int) -> str:
         """#5409: a call written `<function=tools NAME>` (a space for the dot of `tools.NAME`) is the call NAME, and one written
         `<function=tools>` (the bare prefix) is the one declared tool that takes the call's parameters.  Rewrites the complete
-        ones in self.buf to `<function=NAME>` and returns the tail of a call still arriving (held back by feed), else None.
-        Only a declared name is ever the result; with none, or with two that fit, the text is left as it was."""
-        held = self._opener()
-        buf = self.buf
-        if "<function=" not in buf:
-            return held
-        def spaced(m):
-            name = m.group(2).strip()
-            return f"<function={name}>" if name in self.schemas else m.group(0)
-        buf = _PREFIX_SPACED.sub(spaced, buf)
-        m = _PREFIX_PART.search(buf)
-        if m and held is None:
-            held, buf = buf[m.start():], buf[:m.start()]
-        if self.recover:
-            def bare(m):
-                body = m.group(3)
-                tool = None if m.group(2) in self.schemas else \
-                    self._tool_by_params(re.findall(r"<parameter=\s*([^<>\s]+?)\s*>", body))
-                return f"{m.group(1)}<function={tool}>{body}</function>" if tool else m.group(0)
-            buf = _PREFIX_BARE.sub(bare, buf)
-            m = _PREFIX_BARE_OPEN.search(buf)
-            if m and m.group(1) not in self.schemas and held is None and len(buf) - m.start() <= RCALL_MAX:
+        ones in self.buf to `<function=NAME>` and returns the tail of a call still arriving, which feed() holds back until the next
+        delta.  Only a declared name is ever the result; with none, or with two that fit, the text is left as it was.
+        `fresh`: the length of the text just added; only the end of the buffer (that and a little before it) can hold a new match,
+        so a long call is not scanned again with every token."""
+        held = self._opener(fresh)
+        start = max(0, len(self.buf) - fresh - _PREFIX_LOOKBACK)
+        buf = self.buf[start:]
+        if "<function=" in buf:
+            def spaced(m):
+                name = m.group(2).strip()
+                return f"<function={name}>" if name in self.schemas else m.group(0)
+            buf = _PREFIX_SPACED.sub(spaced, buf)
+            m = _PREFIX_PART.search(buf)
+            if m and not held:
                 held, buf = buf[m.start():], buf[:m.start()]
-        self.buf = buf
+            if self.recover:
+                def bare(m):
+                    body = m.group(3)
+                    names = re.findall(r"<parameter=\s*([^<>\s]+?)\s*>", body)
+                    tool = None if m.group(2) in self.schemas else self._tool_by_params(names)
+                    return f"{m.group(1)}<function={tool}>{body}</function>" if tool else m.group(0)
+                buf = _PREFIX_BARE.sub(bare, buf)
+                m = _PREFIX_BARE_OPEN.search(buf)
+                if m and m.group(1) not in self.schemas and not held and len(buf) - m.start() <= RCALL_MAX:
+                    held, buf = buf[m.start():], buf[:m.start()]
+            if buf != self.buf[start:]:
+                self.buf = self.buf[:start] + buf
         return held
 
-    def _opener(self) -> str | None:
+    def _opener(self, fresh: int) -> str:
         """#5276: `<toolcall>` / `<tool-call>` (the opener written as text, misspelled) followed by `<function=NAME>` of a declared
-        tool is `<tool_call>`, where a `<tool_call>` would open a call (start of a line, outside code).  Prose that names the
-        misspelled tag, or any other follower, is left as it was.  Returns the tail of an opener still arriving (held back)."""
+        tool is `<tool_call>`, where a `<tool_call>` would open a call (in the reasoning the start of a line, outside code; in the
+        answer outside code).  Prose that names the misspelled tag, or any other follower, is left as it was.  Returns the tail of
+        an opener still arriving (held back by feed)."""
+        start = max(0, len(self.buf) - fresh - _PREFIX_LOOKBACK)
+        if "<tool" not in self.buf[start:]:
+            return ""
         buf = self.buf
-        if "<tool" not in buf:
-            return None
-        pos, out = 0, []
-        for m in _MISSPELT_OPEN.finditer(buf):
+        pos, out = start, []
+        for m in _MISSPELT_OPEN.finditer(buf, start):
             name = m.group(2).strip()
             name = self.aliases.get(name, name)
             if name in self.schemas and self._opens_at(m.start()):
                 out.append(buf[pos:m.start()] + CALL_START + m.group(1) + FUNC_START + m.group(2) + ">")
                 pos = m.end()
-        buf = "".join(out) + buf[pos:]
-        held = None
-        m = _MISSPELT_PART.search(buf)
-        tail = buf[m.start():] if m else None
-        if tail is None:                                    # the opener itself still arriving: a prefix of `<toolcall>`
+        buf = buf[:start] + "".join(out) + buf[pos:] if out else buf
+        held = ""
+        m = _MISSPELT_PART.search(buf, start)
+        tail = buf[m.start():] if m else ""
+        if not tail:                                        # the opener itself still arriving: a prefix of `<toolcall>`
             for k in range(min(len(buf), 11), 5, -1):
                 if any(w.startswith(buf[-k:]) for w in ("<toolcall>", "<tool-call>")) and buf[-k:] != "<tool_":
                     tail = buf[-k:]
@@ -1686,12 +1693,12 @@ class OutputParser:
         return found[0] if len(found) == 1 else None
 
     def feed(self, delta: str) -> list[Event]:
+        if self._held:
+            delta, self._held = self._held + delta, ""
         self.buf += delta
-        held = self._prefixed() if self.schemas else None
-        out = self._feed()
-        if held:
-            self.buf += held
-        return out
+        if self.schemas and delta:
+            self._held = self._prefixed(len(delta))
+        return self._feed()
 
     def _feed(self) -> list[Event]:
         out: list[Event] = []
@@ -1987,6 +1994,8 @@ class OutputParser:
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
+        if self._held:
+            self.buf, self._held = self.buf + self._held, ""
         if self.buf and self.state in ("call", "rcall"):
             self._final = True                  # #4701: a call held after its closing tags (could a file's text go on?) is whole now
             out += self.feed("")
