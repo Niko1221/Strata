@@ -1012,6 +1012,73 @@ __global__ void __launch_bounds__(kThreads) mv_kernel_nr(const Jobs J) {
             if (live && sl == 0) b.y[c * b.ycs + row] = b.alpha * v + (b.bias != nullptr ? b.bias[row] : 0.0f);
         }
 }
+
+// mv_kernel_nr<T, NC, 1> for Q4_K / Q5_K with the row's weights staged (DS4_MV_STAGE=1): a warp loads the next 32
+// sub-blocks (4 blocks) of its row in coalesced words into registers while it computes the 32 it put in its shared stage
+// before - the Q8_0 GEMV's form (q8_mv_kernel), which kept its speed from 1 to 8 activations on a GB10 where mv_kernel_nr
+// lost 15-60% (its lanes each waiting on their own sub-block's loads).  Lane l still takes sub-blocks l, l + 32, ... in that
+// order, decoded by decode_v from the stage, and the same shuffles sum them: the same bits as mv_kernel_nr<T, NC, 1>.
+template <int T, int NC>
+__global__ void __launch_bounds__(kThreads) mv_kernel_kst(const Jobs J) {
+    static_assert(T == kQ4_K || T == kQ5_K, "the K-quants' 16-byte-aligned blocks");
+    constexpr int BB = Ty<T>::B, CW = 4 * BB / 4;   // a step's bytes in words (4 blocks: 32 sub-blocks)
+    constexpr int WL = (CW + 31) / 32;               // words a lane loads
+    __shared__ __align__(16) uint32_t stage[kWarps][CW];
+    const MvJob& b = J.j[blockIdx.y];
+    const int row = blockIdx.x * kWarps + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    if (row >= b.n) return;   // (the warp's own: no block-wide sync below)
+    const uint32_t* w = (const uint32_t*) (b.w + (size_t) row * b.ld);
+    const int nsb = b.k / 32;
+    uint32_t* st = stage[threadIdx.x >> 5];
+    float acc[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) acc[c] = 0.0f;
+    uint32_t r[WL];
+    int nw = min(32, nsb) / 8 * BB / 4;   // (a step's words: whole blocks)
+#pragma unroll
+    for (int j = 0; j < WL; ++j) {
+        const int i = lane + 32 * j;
+        r[j] = i < nw ? w[i] : 0u;
+    }
+    for (int s0 = 0; s0 < nsb; s0 += 32) {
+        __syncwarp();   // (the lanes are done with the step before)
+#pragma unroll
+        for (int j = 0; j < WL; ++j) {
+            const int i = lane + 32 * j;
+            if (i < nw) st[i] = r[j];
+        }
+        __syncwarp();
+        const int n = min(32, nsb - s0);
+        if (s0 + 32 < nsb) {   // (the next step's words in flight while this one computes)
+            nw = min(32, nsb - s0 - 32) / 8 * BB / 4;
+            const uint32_t* src = w + (size_t) (s0 + 32) / 8 * BB / 4;
+#pragma unroll
+            for (int j = 0; j < WL; ++j) {
+                const int i = lane + 32 * j;
+                r[j] = i < nw ? src[i] : 0u;
+            }
+        }
+        if (lane < n) {
+            const int kb = s0 + lane;
+            Sub s;
+            decode_v<T>((const uint8_t*) st, lane, nullptr, s);   // (block lane / 8 of the stage, sub-block lane % 8)
+#pragma unroll
+            for (int c = 0; c < NC; ++c)
+                if (c < b.ncol) {
+                    const int4* xp = (const int4*) (b.xq + (size_t) c * b.k + (size_t) kb * 32);
+                    acc[c] = fmaf(b.xd[(size_t) c * nsb + kb], sub_dot<T>(s, xp[0], xp[1]), acc[c]);
+                }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c)
+        if (c < b.ncol) {
+            float v = acc[c];
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+            if (lane == 0) b.y[c * b.ycs + row] = b.alpha * v + (b.bias != nullptr ? b.bias[row] : 0.0f);
+        }
+}
 #endif
 
 // ---------------------------------------------------------------- the prompt sets' light experts
@@ -1395,6 +1462,19 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     int nsb_max = 0;
     for (int j = 0; j < nj; ++j) nsb_max = std::max(nsb_max, J.j[j].k / 32);
     const int nr = nr_env > 0 ? nr_env : nr_env == 0 ? (max_c <= 2 ? 1 : nsb_max <= 160 ? 2 : 1) : -1;
+    if constexpr (T == kQ4_K || T == kQ5_K) {   // (DS4_MV_STAGE=1: the row's weights staged a step ahead, mv_kernel_kst)
+        static const bool kst = std::getenv("DS4_MV_STAGE") != nullptr && std::atoi(std::getenv("DS4_MV_STAGE")) != 0;
+        bool aligned = true;   // (whole 16-byte words: the jobs' rows and starts)
+        for (int j = 0; j < nj; ++j) aligned = aligned && ((uintptr_t) J.j[j].w & 15u) == 0 && J.j[j].ld % 16 == 0;
+        if (nr == 1 && kst && aligned) {
+            if (max_c <= 1) strata_ds4_launch(mv_kernel_kst<T, 1>, grid, kThreads, 0, s, J);
+            else if (max_c <= 4) strata_ds4_launch(mv_kernel_kst<T, 4>, grid, kThreads, 0, s, J);
+            else if (max_c <= 6) strata_ds4_launch(mv_kernel_kst<T, 6>, grid, kThreads, 0, s, J);
+            else if (max_c <= 8) strata_ds4_launch(mv_kernel_kst<T, 8>, grid, kThreads, 0, s, J);
+            else strata_ds4_launch(mv_kernel_kst<T, 16>, grid, kThreads, 0, s, J);
+            return;
+        }
+    }
     if (nr == 1) {   // (the new kernel a row a warp: its 128-bit loads)
         if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 1>, grid, kThreads, 0, s, J);
         else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 1>, grid, kThreads, 0, s, J);
