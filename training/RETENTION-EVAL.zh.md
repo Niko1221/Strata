@@ -1,11 +1,15 @@
 # 训练保留能力评测与退步归因（2026-11-07）
 
+
 > **入库说明（2026-11-07）**：本报告与 `EVAL-RESULTS.json` 随 PR 提交，是 §5.6 / §8-13 / §5.4.1
 > 的证据出处。复现脚本（`drift_eval.py` / `gen_eval.py` / `make_zero_adapter.py` /
-> `analyze.py`）留在 `.workbuddy/tmp/aimo3/retention/`：它们含本机绝对路径并依赖历史采样
-> 产物（`small/`、`chain/`、`luspo_math/`），不是可移植的训练代码，参数化之前不随 PR 入库。
-> 原始逐条结果 `drift.json` / `gen_identity.json` / `gen_math.json` 同目录，按 §6 命令可重跑。
-
+> `analyze.py` / `redo/run_redo.py` / `redo/plasticity.py` / `redo/add_section.py`）留在
+> `.workbuddy/tmp/aimo3/retention/`：它们含本机绝对路径并依赖历史采样产物
+> （`small/`、`chain/`、`luspo_math/`），不是可移植的训练代码，参数化之前不随 PR 入库。
+> 原始逐条结果 `drift.json` / `gen_identity.json` / `gen_math.json` 与 §3.7 重做的
+> `redo/gen_redo.json` / `redo/drift_redo.json` / `redo/drift_two_init.json` /
+> `redo/plasticity.json` 同目录，按 §6 命令可重跑；重训的完整超参与运行结果在
+> `redo/bwd_sft.pt.meta.json`（`phase=done`）。
 
 **交付物定位**：给 `REVIEW-REQUEST.zh.md` 补一组「训练是否影响已有任务」的可复现判据与实测数字。
 本文不改三份审核文档（它们由 `.workbuddy/tmp/gen_review.py` 从母本生成，手改会造成三树漂移），
@@ -28,7 +32,7 @@
 | **② MeZO 的问题？** | **不是** | MeZO 零阶臂（`lr 3e-6`，数学 36 题 300 步）在全部三组保持集上的漂移 **−0.0003 ~ −0.0006 nats/token**，落在长锚噪声内，是所有臂里最小的之一。MeZO 的真实短板是**学不动**（单步 SNR ~1/√d），不是**破坏已有能力**。 |
 | **③ 没有好的 RL 就会这样？** | **不成立** | 正确实现但**并非 RL** 的 DPO（8 对 × 24 步）漂移 ≈ 0、小数据集已有能力层 **15/15 零遗忘**；RaPO 的实证是「RFT 比 SFT 抗遗忘，但仍会忘」（SFT F=39.83、GRPO F=20.02），说明决定因素是**更新幅度与轨迹级漂移**，不是「有没有 RL」。 |
 
-三条可以直接写进审核结论的话：
+四条可以直接写进审核结论的话：
 
 1. **「退步」不是单一现象，要拆成两笔账**：`sft_cold`（4 步 / 2 条官方解）是**只破坏不学会**——训练目标题 0/4 → 0/4，已有能力层 8/8 → 4/8；旧 DPO 是**实现 bug 级崩坏**；修复后的 on-policy DPO 才是**学会 4 条、只掉 1 条**。
 2. **审核文档 §8 第 13 条的「显著性未标定」现在有数了**：本轮给出三个噪声底 ——
@@ -38,6 +42,12 @@
       身份 19 条里**只有 4 条逐字相同**。
    ⇒ **用「−2 / −3 项」判退步没有统计依据**；要么用连续漂移，要么把样本量开到噪声带之外。
 3. **§5.4.1 缺的 B=0 对照做出来了**：本轮生成同规格零表（rank16 / 96 张量 / 25.51 MiB，与训练表字节数一致）。换到另一随机 seed 的零表，漂移 +0.00001 ~ +0.00020 nats/token ⇒ **挂表本身零扰动**，退步确实来自训练权重。
+4. **反传 −31 有了可复核的替代证据（§3.7）**：当前默认参数重训（超参全量落盘）后，
+   36 条保持集 acc 0.722 → 0.611，但同表重复一遍就是 0.639，重训表 vs 噪声臂
+   McNemar **p=1.00** ⇒ 按已标定的噪声带**判不了遗忘**；长锚漂移 −0.012~−0.016
+   （约 10× 噪声底，比旧 DPO 崩坏小一个量级）证明 adapter 确实动了。同时查出并修复
+   「同 seed 两次训练权重不同」的根因（LoRA A 吃全局 RNG），两次不同初始化漂移差
+   ≤0.0015 nats/tok，结论对初始化稳健。**不主张「反传安全」，8 步之外未测**。
 
 ---
 
@@ -51,7 +61,7 @@
 | §8-13 评测集饱和、未测同 adapter 重复评测波动 | baseline 239 项已 100%，1 项 = 0.42 pp；−3 / −2 无法与噪声区分 | 加**连续漂移指标**（引擎 `SCORE`）+ 实测重复评测噪声 |
 | §5.4.1 未训练 adapter（B=0）对照未做 | 无法把「挂表扰动」与「训练回退」分开 | 造同规格零表 + 不同 seed 零表对照 |
 | §8-14 能力门探针不含数学、零阶侧完全没接护栏 | 数学退步可以从护栏眼皮底下发生 | 保持集直接用 MATH-500 L5 未见题 |
-| §5.4.1 bwd / dpo 的 lr / steps / rank 未落盘 | −31 项无法复现、无法归因 | 本轮所有臂都带落盘 adapter sha 与训练口径（见附录） |
+| §5.4.1 bwd / dpo 的 lr / steps / rank 未落盘 | −31 项无法复现、无法归因 | 新增 `backward/run_meta.py`（加载模型前 `phase=start`、收尾合并 `phase=done`，`vars(args)` 全量 + 数据指纹）；并用**当前默认参数**重做一次反传 SFT（§3.7） |
 
 还有一条本轮新发现的评测陷阱（`[实测]`）：**固定 `max-new` 下长度膨胀 = 答案行被切 = 判错**。
 11-06 的小数据集里 unseen 的 5 条「变差」有 4 条是 `truncated False→True`；本轮重分析确认
@@ -266,6 +276,83 @@ before = `aimo3_low_n10g2.corrected.jsonl`（20 条 / 10 组，acc **0.55**，�
 长锚则完全稳定。这与「短序列反例未定位、与 token 数不成比例」的历史观察一致，
 根因仍未定位（嫌疑：head 分块反量化 / prompt CPU share / 会话缓存），**不猜**。
 
+### 3.7 反传 −31 项的重做 `[实测]` —— 当前默认工作点下没有可判定的遗忘
+
+**为什么是「重做」不是「重跑」**：11-03 那次 −31/239 只留下 adapter 与评测数字，
+训练超参没落盘、两个 adapter 已不在本地，事后判不了是 lr、步数还是实现（§1 第 4 行）。
+「同配置再采一遍」没有意义 —— 配置本身就不可考。这里改成用**当前代码 + 当前默认参数**
+从取题到评测全链路落盘，产出一份可独立复核的新证据；旧的 −31 只保留为历史标签，
+不复用、也不替它翻案。
+
+**训练记录**（`redo/bwd_sft.pt.meta.json`，`phase=done`，由 `backward/run_meta.py` 自动写）：
+
+| 项 | 值 |
+|---|---|
+| 入口 / commit | `train.py --algo sft --method backward` / `f416e41d9b26d…` |
+| 超参 | `lr 1e-4`、`--epochs 2 × 4 条 = 8 步`、`rank 16 / alpha 32`、`targets o_proj,out_proj`、`seed 0`、`--ckpt`、`--select-thresh 1.0` |
+| 渲染契约 | `small/base_m500L5_g4.system_hint.txt`（sha16 `ab465f221063ec26`）+ `reasoning_effort=low` |
+| 数据 | 4 道 MATH-500 L5 纯数值题，`data_sha256 48dd5f7b…`、`data_rows 4` |
+| 运行结果 | `steps_done 8`、`best_step 8`、`train_secs 146.8`、峰值 `28.0 GiB`、`cap_drift_final −1.1588`、`id_delta_final +5.2045`、`gen_ok 2/2` |
+| 训练曲线 | token 选择后 247/1516 个答案 token 进 loss，`loss 4.1370 → 2.5015`（8 步），能力门 step 4 / step 8 均 accept、无回滚 |
+
+**训练题与保持集不重叠，按 uid 与题面双重核对**：训练 4 题 uid 为
+`test/algebra/{1837,2064,2176,2277}.json`；保持集 36 个 `(src_idx,k)` 来自 18 道 L5 题
+（`src_idx ∈ {0,1,2,9,14,17,20,22,25,30,31,32,33,34,38,46,66,68}`），uid 交集为空、
+题面子串交集为空。注意 `run_redo.py` 里 `HOLDOUT_SRC` 用的是「数值答案过滤后」的下标，
+与保持集的 `src_idx`（L5 全池下标）不是同一个索引空间，**排除逻辑本身不能当证明**，
+上面的 uid / 题面比对才算数。
+
+**四维判据的结果**：
+
+| 维度 | 数字 | 判定 |
+|---|---|---|
+| **可塑性** | 训练 loss 4.1370→2.5015；但 4 道训练题的生成 acc，B=0 表已是 **4/4**，重训表也 **4/4**（`plasticity.json`，两次初始化都 4/4） | **饱和，测不出「学会」**。基座本来就会做这 4 题，本次训练实质是在拟合官方解的**措辞/长度**（teacher-forced CE 从 4.14 降到 2.50），不是学新能力。所以本节只能判「保持」，不能判「学得更好」 |
+| **保持（生成层，n=36）** | B=0 anchor 0.722；同表重复 0.639（净 −3 条，p=0.508）；重训表 0.611（净 −4 条，p=0.424）；**重训表 vs 同表重复 5/6，McNemar p=1.00** | **不能判定为遗忘**：训练带来的额外退化只比「把同一张表重采一遍」多 1 条，落在 §3.6 标定的噪声带内 |
+| **漂移（长锚）`[实测]`** | `aimo_hold −0.01324` / `math_hold −0.01226` / `target_pair −0.01626` nats/tok；长锚同进程重复 std 0.001218、max 0.003679，回表残差 max 0.001766；9/10、9/10、4/4 为负 | 权重**确实动了**（约 10~13× 噪声底，是修复后 DPO 的 2~5 倍），但比旧 DPO 崩坏（−0.079~−0.138）**小一个量级**。所以「没测出 acc 退化」不是因为 adapter 是空表 |
+| **噪声 / 伪影** | 短锚（13/38 tok）重复 std 0.0165、回表残差 max 0.0698 —— **全部来自 2 条被排除的短锚**；`truncated 9→4`、无 `Answer:` 行 6→4、输出中位数 3176→2684 字符 | `truncated` 变少、Answer 行变多 ⇒ acc 变化**不是**「轨迹变长被切」的伪影；短锚残差不污染长锚结论（长锚 24 条残差 ≤0.0018） |
+
+**两次独立初始化的稳健性** `[实测]`：第一次重训与第二次同 seed、同数据、同代码，但
+LoRA A 初始化不同（见下方根因），权重 sha256 不同、相对 L2 差 **1.41**。把两份都导出
+成引擎表后在同一进程里对拍（`drift_two_init.json`）：
+
+| 组 | `bwd_redo` | `bwd_attempt1` | 差 |
+|---|---|---|---|
+| aimo_hold | −0.01347 | −0.01375 | 0.00028 |
+| math_hold | −0.01282 | −0.01277 | 0.00005 |
+| target_pair | −0.01580 | −0.01727 | 0.00147 |
+
+差值全部 ≤0.0015 nats/tok，落在该次长锚重复 std（0.001624）之内；4 道训练题的生成 acc
+两臂也都 4/4。⇒ **保持/漂移结论对 LoRA 初始化随机性稳健**，不是某一张表的运气。
+
+**顺带查出的一个真 bug（已治根修复）**：两次同 seed 重训权重不一致，不是 CUDA 舍入，
+根因是 `lora.py::LoRALinear` 用 `nn.init.kaiming_uniform_(self.A)` 吃 **torch 全局 RNG**，
+而训练入口只固定了数据顺序的那个 `torch.Generator()`，从没 `torch.manual_seed`；进程启动时
+全局 RNG 由系统熵播种 ⇒ 每次都是不同随机投影。CPU 小矩阵对拍验证：不设全局 seed 时两个
+独立进程的 A 不同，`torch.manual_seed(0)` 后逐位相同。修复落在源头：A 改由按
+`seed + 模块序号` 播种的**局部 Generator** 初始化（与 kaiming 闭式界
+`U(−1/√fan_in, +1/√fan_in)` 逐值等价），`inject_lora(..., seed=...)`，`backward/sft.py` /
+`hf_ref.py` 传 `--seed`；2 项单测守住同 seed 逐位一致 / 异 seed 必不同 / 分布对拍。
+**该修复在本节评测之后提交**，只改 A 的随机来源，不动损失、优化器与超参，所以
+上面的逐条数字属于 `f416e41d` 那次特定初始化；稳健性由上表的两初始化对拍覆盖。
+
+**结论**：
+
+1. **当前默认工作点（4 题 / 8 步 / lr 1e-4）没有复现 −31/239 那种崩坏**：保持集 acc
+   净 −4 条，同表重复就净 −3 条，训练额外只多 1 条，McNemar 对噪声臂 p=1.00。
+   按 §3.6 标定的「≤5 条不可判」口径，**不能判定为遗忘**。
+2. **但也不能宣称「反传安全」**：权重确实动了、输出变短了，8 步是很短的工作点；
+   更长训练 / 更高 lr 是否越过退化阈值，本轮**没测**。漂移 −0.012~−0.016 是灵敏的
+   早期信号，正好说明「用连续漂移盯住它」比等到 acc 掉了再看更有用。
+3. **历史 −31 的处置不变**：它是一次超参不可考的实验，不作为当前代码的证据；
+   本节是**替代它的新证据**，既不是证明「之前那次是 lr 问题」，也不是说「已修复」。
+
+**边界**：① 这不是 11-03 那次实验的复现 —— 训练题、步数、评测集（36 个 `(src,k)` vs
+239 项 evalscope）、判分器都不同，两边数字不可相减；② 训练题基座已 4/4 ⇒ 本轮是
+**风格拟合型 SFT**，塑性层饱和，不能推广到「学不会的题」；③ 生成层固定
+`max-new 2560 / temp 1.0 / topk 20`，anchor 是同规格 B=0 零表，单进程 `LORA` 换表、
+rank 组内只比差分；④ n=36 的噪声带是 ±3~5 条，要判「小幅遗忘」需 n≥4/题并开到不截断，
+本轮没做。
+
 ---
 
 ## 4. 归因：实现 / MeZO / 缺 RL，各占多少
@@ -345,6 +432,14 @@ python gen_eval.py --suite math --groups r16,r8 \
 
 # 4. 统一汇总（同时重分析 11-06 的 AIMO3 / 小数据集产物）
 python analyze.py                                 # -> EVAL-RESULTS.json
+
+# 5. §3.7 反传 SFT 重做（当前默认参数；~45 min，训练 15 min + 评测 30 min）
+cd redo
+PYTHONUTF8=1 PYTHONPATH= python run_redo.py --stage all   # -> bwd_sft.pt/.gguf + .meta.json
+                                                          # -> gen_redo.json / drift_redo.json
+PYTHONUTF8=0 PYTHONPATH= python plasticity.py             # -> plasticity.json（4 道训练题、两臂）
+PYTHONUTF8=0 PYTHONPATH= python ../drift_eval.py --limit 10 --groups r16 \
+  --arms bwd_redo,bwd_attempt1 --out drift_two_init.json  # 两次初始化的漂移对拍
 ```
 
 固定项：引擎 `build-mezo-engine/strata.exe`（sha16 `f20589841c97c21f`）、
@@ -362,10 +457,11 @@ pack `Strata-data/packs/swift-iq3_xxs`、render 从 `*.system_hint.txt` 逐字�
 4. **统计功效不足**：AIMO3 n=2/题，全量 +4/−2、+3/−5 的 p 都 > 0.68；
    数学保持集 n=24 的重复评测噪声就有 2~5 条。两者都只够判「崩没崩」，不够判「好不好」。
    要判提升需 AIMO3 n≥6/题（约 5 h 采样）或数学层 n≥4/题并把 `max-new` 开到不再截断。
-5. **本轮没有重新训练任何一个 adapter**，所有臂都是 11-06 及更早的产物；
-   §3.2 / §3.5 是重分析，§3.1 / §3.3 / §3.4 是本轮实测。
-6. **超参仍未完全落盘**：`sft_cold` / `dpo_*` 的 lr / steps / rank 只在当时的日志里，
-   审核 §5.4.1 第 1 项缺口未关闭；本轮只能按 adapter 产物反推训练口径。
+5. **除 §3.7 的两次重训（同一实验的两次独立 LoRA 初始化）外，本轮没有重新训练任何 adapter**：§2.3 的全部对照臂都是 11-06 及更早的产物；
+   §3.2 / §3.5 是重分析，§3.1 / §3.3 / §3.4 / §3.7 是本轮实测。
+6. **历史 adapter 的超参仍不可补记**：`sft_cold` / `dpo_*` 的 lr / steps / rank 只在当时的日志里，
+   只能按 adapter 产物反推训练口径。但**产生新实验时不再有这个缺口** —— `backward/run_meta.py`
+   已把完整参数与结果自动落盘（§5.4.1 第 1 项闭合），§3.7 的重做就是第一份带完整 meta 的证据。
 7. **未做**：RaPO 的 Retention Reward / CTAN 实现、GRPO/LUSPO 臂的保持评测、
    多 seed 的漂移分布、80 GiB 以上显存档、生成层更大 n 的噪声曲线。
 8. **视觉持续学习的定量结论不可直接迁移**：RaPO 的 F 数字来自 Qwen2-VL-2B / ImageNet-R，
@@ -380,7 +476,12 @@ pack `Strata-data/packs/swift-iq3_xxs`、render 从 `*.system_hint.txt` 逐字�
 | `make_zero_adapter.py` / `zero_r16.gguf` | 同规格 B=0 对照表及生成器 |
 | `drift_eval.py` / `drift.json` / `drift.{r16,r8}.engine.log` | 漂移层脚本、逐锚数字、引擎日志 |
 | `gen_eval.py` / `gen_identity.json` / `gen_math.json` | 生成层脚本与逐条原文 |
-| `analyze.py` / `EVAL-RESULTS.json` | 统一汇总（含历史重分析） |
+| `analyze.py` / `EVAL-RESULTS.json` | 统一汇总（含历史重分析与 §3.7 重做结果） |
+| `redo/run_redo.py` / `train4.jsonl` / `train4.meta.json` | §3.7 反传重做的驱动、4 道训练题与取题口径 |
+| `redo/bwd_sft.pt` / `bwd_sft.gguf` / `bwd_sft.pt.meta.json` | 重训权重、引擎可加载表、完整超参与运行结果（`phase=done`） |
+| `redo/bwd_sft.attempt1.pt` / `bwd_attempt1.gguf` / `attempt1.sha256` | 同 seed 同数据的第一次重训（不同 A 初始化），用于确定性/稳健性对拍 |
+| `redo/gen_redo.json` / `drift_redo.json` / `plasticity.json` | 重做的保持集 acc / 轨迹漂移 / 训练集塑性逐条结果 |
+| `redo/drift_two_init.json` / `plasticity.py` | 两次初始化的漂移对拍；4 道训练题的塑性评测驱动 |
 | `RETENTION-EVAL.zh.md` | 本文 |
 
 历史输入：`aimo3_low_n10g2.corrected.jsonl`、`after_sft_n10g2.corrected.jsonl`、

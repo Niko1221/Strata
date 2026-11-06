@@ -1261,6 +1261,380 @@
           "rank_group": "r8"
         }
       }
+    },
+    "backward_redo": {
+      "source": "measured_2026-11-07",
+      "purpose": "replace the unreproducible -31/239 backward SFT number with a fully recorded current-default rerun",
+      "report_section": "RETENTION-EVAL.zh.md §3.7",
+      "train": {
+        "git_head": "f416e41d9b26d24792132671e16b20721846750c",
+        "phase": "done",
+        "lr": 0.0001,
+        "steps": 8,
+        "epochs": 2.0,
+        "rank": 16,
+        "alpha": 32,
+        "targets": "o_proj,out_proj",
+        "seed": 0,
+        "select_thresh": 1.0,
+        "ckpt": true,
+        "data_sha256": "48dd5f7b4479a53e55ba3634febbcfc8d82c5f4376809684e9cf238e57b414a6",
+        "data_rows": 4,
+        "system_prompt": "Show the arithmetic one step at a time and keep the reasoning compact. Do not restate the problem and do not survey alternative approaches. Finish with a last line of the form 'Answer: N', where N is the final numeric answer written as a bare number, without units or currency signs.",
+        "reasoning_effort": "low",
+        "steps_done": 8,
+        "train_secs": 146.849,
+        "run_secs": 812.194,
+        "peak_gib": 28.032,
+        "best_step": 8,
+        "cap_drift_final": -1.158785,
+        "id_delta_final": 5.204468,
+        "gen_ok": 2,
+        "gen_n": 2,
+        "recorded_at": "2026-11-07T04:59:26"
+      },
+      "train_log": {
+        "loss_first": 4.137,
+        "loss_last": 2.5015,
+        "loss_tokens_selected": "247/1516",
+        "gate": "step4/step8 accept, no rollback"
+      },
+      "train_data": {
+        "created": "2026-11-07T04:44:25",
+        "pool": "D:\\Admin\\Documents\\GitHub\\Strata-data\\datasets\\MATH-500\\test.jsonl",
+        "filter": "level>=5 and numeric answer",
+        "holdout_src_excluded": [
+          0,
+          1,
+          2,
+          9,
+          14,
+          17,
+          20,
+          22,
+          25,
+          30,
+          31,
+          32
+        ],
+        "render": {
+          "system_hint_file": "D:\\Admin\\Documents\\GitHub\\Strata\\.workbuddy\\tmp\\aimo3\\small\\base_m500L5_g4.system_hint.txt",
+          "reasoning_effort": "low",
+          "hint_sha16": "ab465f221063ec26"
+        },
+        "items": [
+          {
+            "src_idx": 3,
+            "uid": "test/algebra/1837.json",
+            "gold": "5",
+            "answer_chars": 534
+          },
+          {
+            "src_idx": 4,
+            "uid": "test/algebra/2064.json",
+            "gold": "81",
+            "answer_chars": 684
+          },
+          {
+            "src_idx": 5,
+            "uid": "test/algebra/2176.json",
+            "gold": "3",
+            "answer_chars": 858
+          },
+          {
+            "src_idx": 6,
+            "uid": "test/algebra/2277.json",
+            "gold": "0",
+            "answer_chars": 1615
+          }
+        ]
+      },
+      "holdout_disjointness": {
+        "train_uids": [
+          "test/algebra/1837.json",
+          "test/algebra/2064.json",
+          "test/algebra/2176.json",
+          "test/algebra/2277.json"
+        ],
+        "n_holdout_keys": 36,
+        "holdout_src_idx": [
+          0,
+          1,
+          2,
+          9,
+          14,
+          17,
+          20,
+          22,
+          25,
+          30,
+          31,
+          32,
+          33,
+          34,
+          38,
+          46,
+          66,
+          68
+        ],
+        "uid_overlap": [],
+        "text_overlap": 0,
+        "note": "verified by uid and question text, not by the HOLDOUT_SRC index filter (different index spaces)"
+      },
+      "generation": {
+        "protocol": "retention-gen-v1 (paired by (src_idx,k) and seed; one engine per rank group)",
+        "suite": "math",
+        "n": 36,
+        "anchor": "zero_r16",
+        "budget": {
+          "max_new": 2560,
+          "max_context": 12288,
+          "temp": 1.0,
+          "topk": 20,
+          "seed": "1000*src_idx+k (math) / 7000+i (identity)"
+        },
+        "stats": [
+          {
+            "group": "r16",
+            "arm": "bwd_redo",
+            "n": 36,
+            "base_rate": 0.7222,
+            "arm_rate": 0.6111,
+            "base_ci": [
+              0.5601,
+              0.8415
+            ],
+            "arm_ci": [
+              0.4486,
+              0.7522
+            ],
+            "gain": 5,
+            "loss": 9,
+            "mcnemar_p": 0.424,
+            "trunc_base": 9,
+            "trunc_arm": 4,
+            "no_answer_arm": 4
+          },
+          {
+            "group": "r16",
+            "arm": "zero_r16_repeat",
+            "n": 36,
+            "base_rate": 0.7222,
+            "arm_rate": 0.6389,
+            "base_ci": [
+              0.5601,
+              0.8415
+            ],
+            "arm_ci": [
+              0.4757,
+              0.7752
+            ],
+            "gain": 3,
+            "loss": 6,
+            "mcnemar_p": 0.5078,
+            "trunc_base": 9,
+            "trunc_arm": 8,
+            "no_answer_arm": 8
+          }
+        ],
+        "repeat_vs_arm_mcnemar": {
+          "gain": 5,
+          "loss": 6,
+          "mcnemar_p": 1.0
+        },
+        "truncated": {
+          "anchor": 9,
+          "repeat": 8,
+          "arm": 4
+        },
+        "no_final_answer": {
+          "anchor": 6,
+          "repeat": 8,
+          "arm": 4
+        },
+        "median_chars": {
+          "anchor": 3176.0,
+          "repeat": 2874.0,
+          "arm": 2683.5
+        }
+      },
+      "drift": {
+        "summary": {
+          "aimo_hold": {
+            "n": 10,
+            "noise_abs_mean": 0.000933,
+            "bwd_redo": {
+              "drift_mean_nats_per_tok": -0.013241,
+              "drift_sd": 0.00777,
+              "abs_mean": 0.01333,
+              "rapo_one_sided": 4.4e-05,
+              "n_negative": 9,
+              "max_abs": 0.025367
+            }
+          },
+          "math_hold": {
+            "n": 10,
+            "noise_abs_mean": 0.000474,
+            "bwd_redo": {
+              "drift_mean_nats_per_tok": -0.012263,
+              "drift_sd": 0.009734,
+              "abs_mean": 0.012531,
+              "rapo_one_sided": 0.000134,
+              "n_negative": 9,
+              "max_abs": 0.035462
+            }
+          },
+          "target_pair": {
+            "n": 4,
+            "noise_abs_mean": 0.001311,
+            "bwd_redo": {
+              "drift_mean_nats_per_tok": -0.01626,
+              "drift_sd": 0.010473,
+              "abs_mean": 0.01626,
+              "rapo_one_sided": 0.0,
+              "n_negative": 4,
+              "max_abs": 0.033843
+            }
+          }
+        },
+        "noise_by_length": {
+          "short_lt200": {
+            "r16": {
+              "n": 2,
+              "repeat_std_nats_per_tok": 0.016504,
+              "repeat_max_abs": 0.026823
+            }
+          },
+          "long_ge200": {
+            "r16": {
+              "n": 24,
+              "repeat_std_nats_per_tok": 0.001218,
+              "repeat_max_abs": 0.003679
+            }
+          }
+        },
+        "runs": {
+          "r16": {
+            "arms": [
+              "zero_r16",
+              "bwd_redo"
+            ],
+            "load_s": 18.566940307617188,
+            "wall_s": 44.2,
+            "repeat_std_nats_per_tok": 0.005501,
+            "repeat_max_abs": 0.026823,
+            "return_to_anchor_max_abs": 0.069828
+          }
+        },
+        "long_anchor_return_resid_max": 0.001766,
+        "short_anchor_return_resid_max": 0.069828,
+        "short_anchor_excluded": true
+      },
+      "plasticity": {
+        "n": 4,
+        "note": "saturated: B=0 anchor already 4/4, so this run measures style-fitting, not learning new capability",
+        "stats": [
+          {
+            "group": "r16",
+            "arm": "bwd_attempt1",
+            "n": 4,
+            "base_rate": 1.0,
+            "arm_rate": 1.0,
+            "base_ci": [
+              0.5101,
+              1.0
+            ],
+            "arm_ci": [
+              0.5101,
+              1.0
+            ],
+            "gain": 0,
+            "loss": 0,
+            "mcnemar_p": 1.0,
+            "trunc_base": 0,
+            "trunc_arm": 0,
+            "no_answer_arm": 0
+          },
+          {
+            "group": "r16",
+            "arm": "bwd_redo",
+            "n": 4,
+            "base_rate": 1.0,
+            "arm_rate": 1.0,
+            "base_ci": [
+              0.5101,
+              1.0
+            ],
+            "arm_ci": [
+              0.5101,
+              1.0
+            ],
+            "gain": 0,
+            "loss": 0,
+            "mcnemar_p": 1.0,
+            "trunc_base": 0,
+            "trunc_arm": 0,
+            "no_answer_arm": 0
+          },
+          {
+            "group": "r16",
+            "arm": "zero_r16_repeat",
+            "n": 4,
+            "base_rate": 1.0,
+            "arm_rate": 1.0,
+            "base_ci": [
+              0.5101,
+              1.0
+            ],
+            "arm_ci": [
+              0.5101,
+              1.0
+            ],
+            "gain": 0,
+            "loss": 0,
+            "mcnemar_p": 1.0,
+            "trunc_base": 0,
+            "trunc_arm": 0,
+            "no_answer_arm": 0
+          }
+        ]
+      },
+      "determinism": {
+        "attempt1_sha256": "0d239e700e23bb1472cbb6b372863fa71e23f74342f65ac91813084ab928e2f1",
+        "attempt2_sha256": "3ad92323471285ee263b1198a9486ea2f8a37e12bfec2c15f3cecb3e91596c84",
+        "relative_L2": 1.41398,
+        "tensors_differ": "96/96",
+        "max_abs_diff": 0.026611,
+        "root_cause": "LoRALinear.A used nn.init.kaiming_uniform_ on torch global RNG; training entry only seeded the data-shuffle Generator",
+        "fix": "local Generator seeded by seed+module index in lora.py; backward/sft.py and hf_ref.py pass --seed; 2 new unit tests",
+        "two_init_drift": {
+          "aimo_hold": {
+            "bwd_redo": -0.013469,
+            "bwd_attempt1": -0.013747
+          },
+          "math_hold": {
+            "bwd_redo": -0.012825,
+            "bwd_attempt1": -0.012771
+          },
+          "target_pair": {
+            "bwd_redo": -0.015802,
+            "bwd_attempt1": -0.017272
+          }
+        },
+        "two_init_long_noise_std": 0.001624
+      },
+      "verdict": {
+        "reproduced_minus31": false,
+        "forgetting_detectable": false,
+        "adapter_inert": false,
+        "statement": "no statistically detectable holdout acc regression beyond the calibrated repeat noise (arm 0.611 vs repeat 0.639, McNemar p=1.00); long-anchor drift -0.012~-0.016 nats/tok is ~10x noise but an order of magnitude below the broken-DPO collapse",
+        "limits": [
+          "8 steps / 4 problems only; not a reproduction of the 11-03 experiment",
+          "training problems already solved by base (4/4) => plasticity saturated",
+          "n=36 has a 3-5 item noise band; small forgetting not detectable",
+          "evaluated adapter trained at f416e41d before the LoRA init determinism fix; robustness checked by two independent initializations"
+        ]
+      }
     }
   }
 }
