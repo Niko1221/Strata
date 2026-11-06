@@ -84,6 +84,7 @@ from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
+from serve import constrain  # noqa: E402   (constrained decoding: token masks, optional llguidance)
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
@@ -421,6 +422,10 @@ class MockEngine:
             else:
                 self.script = self.scripts[min(self.turns, len(self.scripts) - 1)]
             self.turns += 1
+        c = (sampling or {}).get(constrain.KEY) if getattr(self, "supports_mask", False) else None
+        if c is not None:                                   # tests: MockEngine.supports_mask = True
+            yield from c.mock_replay(self.script, max_new, cancel, self.delay)
+            return
         for t in self.script[:max_new]:
             if cancel.is_set():
                 return
@@ -1637,6 +1642,22 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    @property
+    def supports_mask(self) -> bool:
+        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py); not with batch slots.
+        token_mask=2 also means it can mask a whole MTP window (MQ with drafts -> MKN); the server answers both."""
+        return str((getattr(self, "info", None) or {}).get("token_mask", 0)) in ("1", "2") \
+            and not getattr(self, "batch", 0)
+    def _mask_reply(self, c, line="MQ"):
+        # "MQ d1 d2 ..." (token_mask=2): the drafts become the multi-row lookahead (serve/constrain.py 1-2);
+        # a bare "MQ" is answered as before, so an older engine never sees MKN.
+        drafts = [int(w) for w in line.split()[1:] if w.lstrip("-").isdigit()]
+        line = "MF" if c is None else c.reply(drafts=drafts or None)
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
     def pen_from_key(self, orig_len: int, prompt_len: int) -> str:
         """` pen_from=N` for a leg that continues a request (prompt + what it generated): where the reply began, Strata's penalty window start. The all-cards split engine
         (sFNX) counts its penalty window over the last penalty_last_n tokens of the whole context, so the continued prompt gives it the same window and the engine refuses the
@@ -1644,7 +1665,6 @@ class StrataEngine:
         if self.split_engine or prompt_len <= orig_len:
             return ""
         return f" pen_from={orig_len - 1}"
-
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
         keys = ""
@@ -2754,6 +2774,9 @@ class StrataEngine:
         rid_key = f" rid={rid}" if rid is not None else ""
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key}"
+        c = (sampling or {}).get(constrain.KEY) if self.supports_mask and not embeddings else None
+        if c is not None:
+            head += " mask=1"                               # the engine asks MQ before every window
         if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
             if embeddings or int(max_new) != 0:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
@@ -2811,13 +2834,21 @@ class StrataEngine:
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 beat = heard
+                
                 if stall_state:
                     stall_state.clear()
+                    
+                if line.startswith("MQ"):                           # serve/constrain.py: the mask for the next window
+                    self._mask_reply(c, line)
+                    continue
+
                 if line.startswith("T "):
                     allow = silence
                     if cancel.is_set():
                         return
                     t = int(line[2:])
+                    if c is not None:
+                        c.feed(t)
                     if want_lp:
                         # the engine writes the token and its `LP` line in one flush, so the line is
                         # here now; an engine without logprobs leaves the next line a normal one
@@ -2882,6 +2913,9 @@ class StrataEngine:
                     except queue.Empty:
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
+                    if line is not None and line.startswith("MQ"):   # stopped: it still waits for an answer
+                        self._mask_reply(None)
+                        continue
                     if line is None or line.startswith("ERR"):
                         break
                     if line.startswith("DONE"):
@@ -4880,6 +4914,32 @@ class Service:
             self.prompts = PromptEncoder(tokenizer, keep=slots) if slots is not None and slots > 0 \
                 else PromptEncoder(tokenizer)
 
+    def _with_constraint(self, sampling, tools, thinking):
+        """A JSON response format on an engine that takes token masks: the request's sampling with a fresh
+        serve/constrain.Constraint for this pass (the schema, and with tools also a tool call).  Anything else -
+        no format, an older engine, llguidance missing, a schema llguidance cannot compile - leaves it as it was:
+        the prompt directive and the validation after the turn."""
+        fmt = constrain.format_of(sampling) if isinstance(sampling, dict) else None
+        if fmt is None:
+            return sampling
+        if not getattr(self.engine, "supports_mask", False):
+            constrain.note_once("constrained decoding off: the engine does not take token masks (an engine with "
+                                "token_mask=1 or 2 in its INFO line is needed); JSON is validated after the turn")
+            return sampling
+        if not constrain.available():
+            constrain.note_once("constrained decoding off: python -m pip install llguidance to turn it on; JSON is "
+                                "validated after the turn")
+            return sampling
+        try:
+            vocab = self.__dict__.get("_llg_vocab")
+            if vocab is None:
+                vocab = self.__dict__.setdefault("_llg_vocab", constrain.Vocab(self.tok, self.stop_ids))
+            c = constrain.Constraint(vocab, constrain.grammar(fmt, bool(tools), vocab), armed=not thinking)
+        except Exception as e:                           # noqa: BLE001 - an unsupported schema keyword, a vocab problem
+            constrain.note_once(f"constrained decoding off for a request: {str(e).splitlines()[0][:200]}")
+            return sampling
+        constrain.note_once("constrained decoding on: JSON answers are masked token by token (llguidance)")
+        return {**sampling, constrain.KEY: c}
     def set_family(self, family: str | None) -> None:
         """A family whose text differs from the Qwen form this server was written for (DeepSeek-V4.1: its own end
         token, DSML tool calls, reasoning-effort words).  The others keep the defaults."""
@@ -5756,7 +5816,8 @@ class Service:
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
-                                  "constrained_decoding": False, "stream_buffered": True},
+                                  "constrained_decoding": bool(getattr(self.engine, "supports_mask", False) and constrain.available()),
+                                  "stream_buffered": True},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -6374,6 +6435,7 @@ class Service:
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     for ev in opening:
                         yield "event", ev
+                    sampling = self._with_constraint(sampling, tools, thinking)   # serve/constrain.py (or unchanged)
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
@@ -6557,6 +6619,8 @@ class Service:
                                     for ev in evs:
                                         yield "event", ev
                                 prompt = prompt + seg + extra
+                                if (sampling or {}).get(constrain.KEY) is not None:
+                                    sampling[constrain.KEY].observe(extra)
                                 finish = "length"
                                 continue
                         if not (wrap or opens) or cancel.is_set():
@@ -6590,6 +6654,8 @@ class Service:
                             finish = "stop"
                             break
                         prompt = prompt + seg + extra
+                        if (sampling or {}).get(constrain.KEY) is not None:
+                            sampling[constrain.KEY].observe(extra)       # the wrap-up ends in </think>: the answer is constrained
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
