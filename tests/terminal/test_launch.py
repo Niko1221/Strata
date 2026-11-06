@@ -296,13 +296,14 @@ class RunConfig(unittest.TestCase):
 
     def test_derive_applies_access_key_and_advanced(self):
         from strata_control import tune_knobs
-        s = S.LaunchSettings(access="lan", port=9001, api_key="sk-k", extra={"--prefill": "65536", "--kv-grow": "", "--kv-share-prefix": "", "STRATA_PIN_BY_NEED": "1"})
+        s = S.LaunchSettings(access="lan", port=9001, api_key="sk-k", extra={"--prefill": "65536", "--kv-grow": "", "--kv-share-prefix": "", "--kv-chunk-tokens": "1024", "STRATA_PIN_BY_NEED": "1"})
         cfg = derive_config(self.BASE, s, bool_flags=tune_knobs.BOOL_FLAGS)
         self.assertEqual((cfg["host"], cfg["port"], cfg["api_key"]), ("0.0.0.0", 9001, "sk-k"))
         args = cfg["args"]
         self.assertEqual(args[args.index("--prefill") + 1], "65536")
         self.assertIn("--kv-grow", args)
         self.assertIn("--kv-share-prefix", args)
+        self.assertEqual(args[args.index("--kv-chunk-tokens") + 1], "1024")
         self.assertEqual(cfg["env"], {"STRATA_PIN_BY_NEED": "1"})
         self.assertEqual(self.BASE["args"][-1], "auto")               # the installed config is never edited
 

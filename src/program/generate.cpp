@@ -674,6 +674,7 @@ struct Options {
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     int64_t kv_pool_tokens = 0;        ///< KV streaming: one host pool of this many cells for all sessions (0: each its own)
+    int64_t kv_chunk_tokens = strata::core::KvPool::kDefaultChunkTokens;
     bool kv_share_prefix = false;      ///< opt-in: completed host chunks shared by lanes and memory snapshots
     std::string dump_residual;
     /// The head input, `bb.mixed`.  It exists so the head can be SPLIT: steps 1-4 (the per-stream norm, the two
@@ -1061,11 +1062,13 @@ void usage() {
                  "                       allocated at start\n"
                  "  --kv-pool-tokens N   CUDA/HIP, with --kv-resident: the sessions (batch slots and the main one) share\n"
                  "                       one pinned K/V pool of N cells instead of each pinning the whole context;\n"
-                 "                       a conversation holds what it has reached, in steps of 4096 cells (across the\n"
-                 "                       stages of a layer split alike). N must hold one whole context. When it is\n"
+                 "                       a conversation takes chunks as it grows (across the stages of a layer split\n"
+                 "                       alike). N must hold one whole context. When it is\n"
                  "                       full an idle slot's cached conversation gives way, then a new request is\n"
                  "                       refused and a decoding\n"
                  "                       lane ends with finish \"pool\" (the server: \"length\", truncated)\n"
+                 "  --kv-chunk-tokens N  host pool chunk size, fixed at startup (default 4096). With --kv-pool-tokens;\n"
+                 "                       must be 4 times a power of two (4, 8, 16, ...). Shared prefixes and COW use it\n"
                  "  --kv-share-prefix    with --kv-pool-tokens and streaming, share completed host prefix chunks\n"
                  "                       across batch slots and RAM snapshots; private tails and copy-on-write.\n"
                  "                       VRAM, indexer, recurrent state and drafter state remain per session\n"
@@ -3502,6 +3505,7 @@ int main(int argc, char** argv) {
         else if (a == "--kv-grow") o.kv_grow = true;
         else if (a == "--no-kv-grow") o.kv_grow = false;
         else if (a == "--kv-pool-tokens") o.kv_pool_tokens = std::atoll(next("--kv-pool-tokens"));
+        else if (a == "--kv-chunk-tokens") o.kv_chunk_tokens = std::atoll(next("--kv-chunk-tokens"));
         else if (a == "--kv-share-prefix") o.kv_share_prefix = true;
         else if (a == "--stream-token") o.stream_token = true;
         else if (a == "--check-logits") o.check_logits = true;
@@ -6886,7 +6890,7 @@ int main(int argc, char** argv) {
         kv_pool.set_share_prefix(o.kv_share_prefix);
         std::vector<strata::core::KvPool::StageRef> refs{{&ss, primary_device}};
         for (const auto& st : stages) refs.push_back({&st->ss, st->dev});
-        bool ok = kv_pool.init(g, refs, o.kv_pool_tokens, err) && kv_pool.attach(ss, err);
+        bool ok = kv_pool.init(g, refs, o.kv_pool_tokens, err, o.kv_chunk_tokens) && kv_pool.attach(ss, err);
         for (size_t i = 0; ok && i < stages.size(); ++i) ok = kv_pool.attach_stage(ss, stages[i]->ss, i + 1, err);
         if (!ok) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -6894,9 +6898,10 @@ int main(int argc, char** argv) {
         }
         // outside --serve one sequence runs, from the prompt to the context's end
         if (!o.serve) (void) kv_pool.reserve(ss, o.max_context);
-        std::fprintf(stderr, "strata generate: KV pool: %lld cells shared by the sessions%s, %.2f GiB of pinned RAM\n",
+        std::fprintf(stderr, "strata generate: KV pool: %lld cells shared by the sessions%s, %lld-cell chunks, "
+                             "%.2f GiB of pinned RAM\n",
                      (long long) kv_pool.total_cells(), stages.empty() ? "" : " and the stages of the layer split",
-                     (double) kv_pool.pinned_bytes() / 1073741824.0);
+                     (long long) kv_pool.chunk_cells(), (double) kv_pool.pinned_bytes() / 1073741824.0);
     }
 
     // --batch: every stage carves o.batch more sessions like its own (same layer range and context), one per

@@ -8,20 +8,28 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 
 namespace strata::core {
 
-bool KvPool::init(const ModelGeometry& g, const std::vector<StageRef>& stages, int64_t tokens, std::string& error) {
+bool KvPool::init(const ModelGeometry& g, const std::vector<StageRef>& stages, int64_t tokens, std::string& error,
+                  int64_t chunk_tokens) {
     if (stages.empty() || stages[0].ss == nullptr) { error = "kv pool: no session to size the pool by"; return false; }
     page_size_ = strata::kernels::qsa_real_shapes().page_size;
+    if (chunk_tokens < page_size_ || chunk_tokens % page_size_ != 0 ||
+        !std::has_single_bit(static_cast<uint64_t>(chunk_tokens / page_size_))) {
+        error = "kv pool: --kv-chunk-tokens must be " + std::to_string(page_size_) + " times a power of two";
+        return false;
+    }
+    chunk_shift_ = std::countr_zero(static_cast<uint64_t>(chunk_tokens / page_size_));
     heads_ = g.n_head_kv;
     head_dim_ = g.head_dim;
     const int64_t chunk = chunk_cells();
     const int64_t n = (tokens + chunk - 1) / chunk;
     if (n <= 0) { error = "kv pool: no tokens"; return false; }
-    const int64_t pages = (n + 1) << kChunkShift;   // + the trash chunk
+    const int64_t pages = (n + 1) << chunk_shift_;   // + the trash chunk
     const uint64_t before = qsa_kv_host_bytes();
     stages_.clear();
     lanes_.clear();
@@ -63,7 +71,7 @@ const KvPool::Lane* KvPool::find(const SessionState& ss) const {
 bool KvPool::upload(const Lane& lane) {
     // From pageable memory the copy may still be landing when cudaMemcpy returns, and the kernels run on
     // non-blocking streams that do not wait for it: the table is complete before the next launch reads it.
-    // An upload is rare: once per chunk (4096 cells) a session grows by, and when it gives chunks back.
+    // An upload happens once per chunk a session grows by, and when it gives chunks back.
     const int32_t* table = map_.table(lane.id);
     const size_t bytes = (size_t) map_.logical(lane.id) * sizeof(int32_t);
     for (const Part& p : lane.parts) {
@@ -107,7 +115,7 @@ bool KvPool::bind(Lane& lane, SessionState& ss, size_t stage, std::string& error
         st.host = sl.layers[(size_t) j];
         st.host.chunk = part.dev;
         st.host.chunk_host = map_.table(lane.id);
-        st.host.chunk_shift = kChunkShift;
+        st.host.chunk_shift = chunk_shift_;
         st.prefix_pool = share_prefix_ ? this : nullptr;
     }
     lane.parts.push_back(part);

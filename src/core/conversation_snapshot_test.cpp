@@ -387,8 +387,8 @@ void full_session(int fmt, int mode, int experts) {
 }
 
 // Small geometry exercises production allocation/ownership without four model-sized contexts.
-void shared_pool_snapshot(int fmt) {
-    constexpr int64_t C=4096, cells=2*C+5, capacity=3*C;
+void shared_pool_snapshot(int fmt, int64_t C) {
+    const int64_t cells=2*C+5, capacity=3*C;
     std::array<std::unique_ptr<Fixture>,4> f;
     std::array<SessionState,4> sessions;
     for (size_t n=0;n<f.size();++n) {
@@ -399,7 +399,10 @@ void shared_pool_snapshot(int fmt) {
     KvPool pool;
     pool.set_share_prefix(true);
     std::string error;
-    check(pool.init(f[0]->g,{{&sessions[0],-1}},8*C,error),"initialize opt-in physical prefix pool");
+    check(C==4096 ? pool.init(f[0]->g,{{&sessions[0],-1}},8*C,error)
+                  : pool.init(f[0]->g,{{&sessions[0],-1}},8*C,error,C),
+          "initialize opt-in physical prefix pool");
+    check(pool.chunk_cells()==C,"snapshot pool uses the configured chunk size");
     for (size_t n=0;n<f.size();++n) {
         check(pool.attach(sessions[n],error),"attach physical prefix lane");
         auto& st=f[n]->state;
@@ -719,6 +722,7 @@ int main() {
     for (int fmt : {kKvF16,kKvInt8,kKvQ4}) for (int mode : {0,1}) for (int experts : {256,512})
         full_session(fmt,mode,experts);
     for (int experts : {256,512}) full_session(3,0,experts);
-    for (int fmt : {kKvF16,kKvInt8,kKvQ4,kKvHybrid}) shared_pool_snapshot(fmt);
+    for (int64_t cells : {1024,4096,8192})
+        for (int fmt : {kKvF16,kKvInt8,kKvQ4,kKvHybrid}) shared_pool_snapshot(fmt,cells);
     std::printf("conversation_snapshot_test: %d checks passed\n",checks);
 }

@@ -5,10 +5,10 @@
 // (N + 1) x the context's K/V although the conversations together rarely fill it. The pool pins `tokens` cells per
 // QSA layer once, and a session holds only the chunks its conversation has reached.
 //
-// A chunk is 1024 blocks (4096 cells). Chunk c of the pool is the same block range in every QSA layer's arrays,
-// so one table per session (logical chunk -> pool chunk, kv_stream.hpp's KvHostPools::chunk) serves all its
-// layers. Entries the session has not reserved point at a spare TRASH chunk: a write past the reservation lands
-// there instead of in another session's cells, and nothing reads it back.
+// A chunk holds --kv-chunk-tokens cells (4096 by default). Chunk c of the pool is the same block range in every
+// QSA layer's arrays, so one table per session (logical chunk -> pool chunk, kv_stream.hpp's KvHostPools::chunk)
+// serves all its layers. Entries the session has not reserved point at a spare TRASH chunk: a write past the
+// reservation lands there instead of in another session's cells, and nothing reads it back.
 //
 // A layer split (one session per stage, each on its own GPU, each with its own QSA layers) shares the same chunk
 // numbers: a LANE is the main session or one batch slot across every stage. Its chunk table is one list; each
@@ -32,7 +32,7 @@ namespace strata::core {
 
 class KvPool {
 public:
-    static constexpr int kChunkShift = 10;   ///< 1024 blocks per chunk
+    static constexpr int64_t kDefaultChunkTokens = 4096;
 
     /// A stage of the layer split: a session carved for the stage's layers and the GPU it runs on (-1: the current
     /// one). A single GPU is one stage.
@@ -43,7 +43,8 @@ public:
 
     /// Pins the pool for the streamed QSA layers of the stages' reference sessions (built with
     /// qsa_set_kv_shared_host): `tokens` cells per layer, rounded up to whole chunks, plus the trash chunk.
-    bool init(const ModelGeometry& g, const std::vector<StageRef>& stages, int64_t tokens, std::string& error);
+    bool init(const ModelGeometry& g, const std::vector<StageRef>& stages, int64_t tokens, std::string& error,
+              int64_t chunk_tokens = kDefaultChunkTokens);
     bool active() const { return map_.active(); }
     void set_share_prefix(bool enabled) { share_prefix_ = enabled; }
     bool sharing() const { return share_prefix_; }
@@ -91,7 +92,7 @@ public:
     int64_t reserved_cells(const SessionState& ss) const;
     int64_t free_cells() const { return map_.free_chunks() * chunk_cells(); }
     int64_t total_cells() const { return map_.n_chunks() * chunk_cells(); }
-    int64_t chunk_cells() const { return page_size_ << kChunkShift; }
+    int64_t chunk_cells() const { return page_size_ << chunk_shift_; }
     uint64_t pinned_bytes() const { return pinned_bytes_; }
     /// Counts the changes to the chunk tables (the server reports the pool when it changes).
     uint64_t version() const { return map_.version(); }
@@ -118,6 +119,7 @@ private:
 
     KvChunkMap map_;
     int64_t page_size_ = 0;
+    int chunk_shift_ = 0;
     uint64_t pinned_bytes_ = 0;
     bool share_prefix_ = false;
     int64_t heads_ = 0, head_dim_ = 0;

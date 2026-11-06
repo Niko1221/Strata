@@ -166,8 +166,11 @@ allocation for every session:
 ```
 
 The pool budget counts cells across all sessions. It must hold at least one `--max-context`.
-The pool is pinned at startup; sessions take chunks of 4,096 cells as they grow. A layer split uses the
-same chunk ownership across its stages.
+The pool is pinned at startup; sessions take chunks as they grow. `--kv-chunk-tokens N` sets the size at
+startup: 4 times a power of two, default 4,096 tokens. For example, `--kv-chunk-tokens 1024` uses smaller
+chunks for allocation, shared prefixes and copy-on-write. Smaller chunks reduce tail waste and copy
+size, but need larger tables and more frequent table updates. A layer split uses the same chunk size
+and ownership across its stages.
 
 Add `--kv-share-prefix` to share completed prompt-prefix chunks between compatible sessions and RAM
 conversation snapshots. The request still has to match the tokens, images and saved execution state.
@@ -179,7 +182,7 @@ space, a new request receives HTTP 503 with `Retry-After`; a running request tha
 `finish_reason: "length"` and `truncated: true`. The last `POOL` line is available as `live.kv_pool`
 in `/metrics`.
 
-Both options are off by default.
+The host pool and prefix sharing are both off by default.
 
 ## How the server uses the slots
 

@@ -240,11 +240,13 @@ bool run(int fmt) {
 
 // Shared and private lanes execute the same appends, resolves and attention calls. The shared side
 // exercises the production KvPool's pinned allocation, physical copies and fixed device-table uploads.
-bool shared_branches(int fmt) {
+bool shared_branches(int fmt, int64_t C, int chunk_shift) {
     using strata::core::KvChunkMap;
     using strata::core::KvPool;
-    constexpr int64_t C=4096, cells=2*C+5, logical=3, blocks=logical*1024, slots=1024, width=8;
-    auto s=k::qsa_real_shapes();
+    const auto s=k::qsa_real_shapes();
+    // The resolve window stays independent of the host chunk size.
+    constexpr int64_t slots=1024, width=8;
+    const int64_t cells=2*C+5, logical=std::max<int64_t>(3,3*slots*s.page_size/C), blocks=logical*C/s.page_size;
     strata::core::ModelGeometry g;
     g.n_head=s.n_head; g.n_head_kv=s.n_head_kv; g.head_dim=s.head_dim;
     std::array<strata::core::SessionState,4> sessions;
@@ -258,8 +260,11 @@ bool shared_branches(int fmt) {
     KvPool shared;
     shared.set_share_prefix(true);
     std::string error;
-    if (!shared.init(g,{{&sessions[0],-1}},14*C,error)) {
+    if (!shared.init(g,{{&sessions[0],-1}},14*C,error,C)) {
         std::fprintf(stderr,"shared branch pool init: %s\n",error.c_str()); return false;
+    }
+    if (shared.chunk_cells()!=C) {
+        std::fprintf(stderr,"shared branch pool did not use the configured chunk size\n"); return false;
     }
     std::array<const int32_t*,4> stable{},stable_device{};
     for (size_t n=0;n<4;++n) {
@@ -278,7 +283,7 @@ bool shared_branches(int fmt) {
     };
     Pools shared_host,private_host,shared_slots,private_slots;
     shared_host.p=states[0].host; // borrowed process-lifetime pinned storage; never free it as test memory
-    private_host.alloc(13*1024,s,fmt,true);
+    private_host.alloc(13*C/s.page_size,s,fmt,true);
     shared_slots.alloc(slots,s,fmt,false); private_slots.alloc(slots,s,fmt,false);
     auto arrays=[&](const Pools& p) {
         const size_t rows=C*s.n_head_kv, q4=rows*k::kv_q4_bytes_per_head((int)s.head_dim);
@@ -330,7 +335,7 @@ bool shared_branches(int fmt) {
     std::vector<float> hk(kv),hv(kv),hq(query,0.125f),a(query),b(query);
     ck(cudaMemcpy(q,hq.data(),query*4,cudaMemcpyHostToDevice),"branch queries");
     auto host=[&](const Pools& p,int32_t* table) {
-        auto h=p.p; h.chunk=table; h.chunk_shift=10; return h;
+        auto h=p.p; h.chunk=table; h.chunk_shift=chunk_shift; return h;
     };
     auto append_pair=[&](size_t lane,int64_t pos,int salt) {
         for (size_t j=0;j<kv;++j) {
@@ -398,7 +403,7 @@ bool shared_branches(int fmt) {
         const int32_t tail=states[n].host.chunk_host[2];
         ok=shared.prepare_write(sessions[n],C-2,C+7) && ok;
         ok=states[n].host.chunk_host[2]==tail && ok;
-        // Same rewind/speculative-window execution schedule; distinct branch candidates straddle 4096.
+        // Same rewind/speculative-window execution schedule; distinct candidates straddle a chunk boundary.
         k::kv_stream_reset(sm,nullptr); k::kv_stream_reset(pm,nullptr);
         for (int64_t pos=C-2;pos<C+7;++pos) append_pair(n,pos,int(n)+1);
         ck(cudaDeviceSynchronize(),"branch candidates");
@@ -418,7 +423,8 @@ bool shared_branches(int fmt) {
             if (attr.hostPointer) ck(cudaFreeHost(attr.hostPointer),"branch host free");
             else ck(cudaFree(ptr),"branch pool free");
         }
-    std::printf("  format %d four shared branches: %s\n",fmt,ok ? "bitwise identical" : "DIFFERS");
+    std::printf("  format %d, %lld-cell chunks, four shared branches: %s\n",
+                fmt,(long long)C,ok ? "bitwise identical" : "DIFFERS");
     return ok;
 }
 }  // namespace
@@ -427,8 +433,10 @@ int main() {
     std::printf("kv_stream_parity: streamed vs resident KV, bitwise\n");
     const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4), d = run(k::kKvHybrid);
     if (!a || !b || !c || !d) ++g_fail;
-    for (int fmt:{k::kKvF16,k::kKvInt8,k::kKvQ4,k::kKvHybrid})
-        if (!shared_branches(fmt)) ++g_fail;
+    for (const auto [cells,shift] : {std::pair<int64_t,int>{1024,8},{4096,10}})
+        for (int fmt:{k::kKvF16,k::kKvInt8,k::kKvQ4,k::kKvHybrid})
+            if (!shared_branches(fmt,cells,shift)) ++g_fail;
+    if (!shared_branches(k::kKvF16,8192,11)) ++g_fail;
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }
