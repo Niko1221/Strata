@@ -12,6 +12,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -534,11 +535,12 @@ class FakeEngineCase(unittest.TestCase):
         if getattr(self, "tmp", None):
             self.tmp.cleanup()
 
-    def chat(self, text, max_tokens=64):
-        body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, "reasoning_effort": "none"}
+    def chat(self, text, max_tokens=64, *, stop: str | None = None, timeout: float = 60):
+        body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens,
+                "reasoning_effort": "none", **({"stop": [stop]} if stop else {})}
         req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
 
     def message(self, text, max_tokens=64):
@@ -588,40 +590,22 @@ class BatchLegAccounting(FakeEngineCase):
     """The admission's DONE times one token; BDONE counts that token but times only the slot."""
 
     def queued_chats(self, texts=("first", "second"), max_tokens=10, stop=None):
-        replies, errors = {}, []
-
-        def request(text):
-            body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens,
-                    "reasoning_effort": "none", **({"stop": [stop]} if stop else {})}
-            req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json"})
-            try:
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    replies[text] = json.loads(response.read())
-            except Exception as error:
-                errors.append(repr(error))
-
-        workers = [threading.Thread(target=request, args=(text,)) for text in texts]
         # Both requests must be waiting before either takes control: the first cannot take the solo shortcut.
-        with self.engine.ctl:
-            for worker in workers:
-                worker.start()
+        with ThreadPoolExecutor(max_workers=2) as pool, self.engine.ctl:
+            pending = {text: pool.submit(self.chat, text, max_tokens, stop=stop, timeout=15) for text in texts}
             deadline = time.monotonic() + 3
             while self.engine.waiting < 2 and time.monotonic() < deadline:
                 time.sleep(0.01)
             self.assertEqual(self.engine.waiting, 2)
-        for worker in workers:
-            worker.join(15)
-            self.assertFalse(worker.is_alive())
-        self.assertEqual(errors, [])
-        self.assertEqual(len(replies), 2)
+        replies = {text: future.result() for text, future in pending.items()}
         self.assertEqual([line.split()[0] for line in self.log.read_text().splitlines()][:2], ["BGEN", "BGEN"])
         return replies
 
-    def test_eos_adds_admission_time_without_counting_its_token_twice(self):
+    def test_eos_and_length_count_admission_once(self):
         self.start(2)
         with mock.patch.object(server, "EOS_IDS", {257}):
-            replies = self.queued_chats()
+            replies = self.queued_chats(("first", "LONGREPLY"))
+        self.assertEqual({reply["choices"][0]["finish_reason"] for reply in replies.values()}, {"stop", "length"})
         for reply in replies.values():
             timings = reply["timings"]
             self.assertEqual((timings["predicted_n"], timings["predicted_ms"]), (10, 21.0))
@@ -630,11 +614,6 @@ class BatchLegAccounting(FakeEngineCase):
         self.assertEqual([(row["engine_generated"], row["decode_ms"]) for row in metrics["requests"]],
                          [(10, 21.0), (10, 21.0)])
         self.assertEqual(metrics["totals"]["decode_ms"], 42.0)
-
-    def test_length_finish_also_adds_admission_time(self):
-        self.start(2)
-        for reply in self.queued_chats(max_tokens=8).values():
-            self.assertEqual((reply["timings"]["predicted_n"], reply["timings"]["predicted_ms"]), (8, 21.0))
 
     def test_zero_slot_time_is_known_and_still_includes_admission(self):
         self.start(2, more=("--zero-bdone-ms",))
@@ -648,6 +627,7 @@ class BatchLegAccounting(FakeEngineCase):
         replies = self.queued_chats(stop=stop)
         for reply in replies.values():
             self.assertIsNone(reply["timings"]["predicted_ms"])
+            self.assertIsNone(reply["timings"]["predicted_per_token_ms"])
             self.assertIsNone(reply["timings"]["predicted_per_second"])
         for row in self.get("/metrics")["requests"]:
             self.assertIsNone(row["engine_generated"])

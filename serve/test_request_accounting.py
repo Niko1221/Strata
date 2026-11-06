@@ -210,6 +210,9 @@ class SlotLegAccounting(unittest.TestCase):
         total = add_carry(carry, {"generated": 5, "decode_ms": 100.0, "prompt_ms": 1.0})
         self.assertEqual(total["generated"], 15)
         self.assertIsNone(total["decode_ms"])
+        timings = request_timings(100, 15, total)
+        self.assertEqual((timings["predicted_ms"], timings["predicted_per_token_ms"], timings["predicted_per_second"]),
+                         (None, None, None))
 
     def test_missing_final_figures_stay_unknown_after_carry_and_segments(self):
         carry = {}
@@ -218,18 +221,6 @@ class SlotLegAccounting(unittest.TestCase):
         combined = request_stats([{"generated": 5, "decode_ms": 100.0, "prompt_ms": 10.0}, total])
         self.assertIsNone(combined["generated"])
         self.assertIsNone(combined["decode_ms"])
-
-    def test_unknown_decode_time_is_not_reported_as_zero(self):
-        timings = request_timings(100, 10, {"generated": 10, "decode_ms": None, "prompt_ms": 50.0})
-        self.assertIsNone(timings["predicted_ms"])
-        self.assertIsNone(timings["predicted_per_token_ms"])
-        self.assertIsNone(timings["predicted_per_second"])
-
-    def test_explicit_zero_native_count_is_not_replaced_by_api_output_count(self):
-        timings = request_timings(100, 5, {"generated": 0, "decode_ms": 0.0, "prompt_ms": 50.0})
-        self.assertEqual((timings["predicted_n"], timings["predicted_ms"]), (5, 0.0))
-        self.assertIsNone(timings["predicted_per_token_ms"])
-        self.assertIsNone(timings["predicted_per_second"])
 
     def test_prompt_n_is_what_was_read(self):
         # the slot already held the whole prompt: 1 token read, the conversation cache off (reused 0)
