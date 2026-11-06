@@ -99,7 +99,7 @@ def fresh_profile(cfg, args, tag):
     if not src or "--expert-profile" not in args:
         return args
     import shutil
-    dst = tag + ".profile.bin"
+    dst = os.path.abspath(tag) + ".profile.bin"
     shutil.copyfile(src, dst)
     args = list(args)
     args[args.index("--expert-profile") + 1] = dst
