@@ -542,15 +542,22 @@ class TestRouteStepsEngineContract(unittest.TestCase):
         self.assertIn("--ckpt", sft["cmd"])
         self.assertNotIn("--ckpt", dpo["cmd"])     # dpo 那条由 train.py 自带
 
-    def test_dpo_steps_pinned(self):
-        sft, dpo = self._steps(dpo_steps=7)
-        i = dpo["cmd"].index("--steps")
-        self.assertEqual(dpo["cmd"][i + 1], "7")
-        self.assertNotIn("--steps", sft["cmd"])    # sft 走 --epochs，别覆盖
+    def test_dpo_epochs_pinned(self):
+        """DPO 必须按**轮次**给：固定 `--steps` 在偏好对数量变化时口径会漂。
 
-    def test_dpo_steps_absent_by_default(self):
+        1 对 × 7 轮与 10 对 × 7 轮都该是 7 轮；写成 `--steps 7` 时后者连一轮都不到
+        （2026-11-06 修的：那轮 7 步其实等于同一对样本过 7 遍）。
+        """
+        sft, dpo = self._steps(dpo_epochs=7)
+        i = dpo["cmd"].index("--epochs")
+        self.assertEqual(dpo["cmd"][i + 1], "7")
+        self.assertNotIn("--steps", dpo["cmd"])    # 步数由 epochs × 条数算出
+        self.assertNotIn("--steps", sft["cmd"])
+
+    def test_dpo_epochs_absent_by_default(self):
         _, dpo = self._steps()
-        self.assertNotIn("--steps", dpo["cmd"])    # 默认交回 train.py 的兜底
+        self.assertNotIn("--epochs", dpo["cmd"])   # 默认交回 train.py 的轮次表
+        self.assertNotIn("--steps", dpo["cmd"])
 
 
 if __name__ == "__main__":
