@@ -6777,12 +6777,15 @@ int main(int argc, char** argv) {
         const char* ev = std::getenv("STRATA_DP_PREFILL");
         const char* kd = std::getenv("STRATA_KV_HOST_DMA");
         const bool asked = ev != nullptr && ev[0] == '1';
-        bool ok = asked && multi_gpu && stages.size() == 1 && o.batch == 0 && o.peer_device < 0 && !stage_trim &&
+        // A DP read runs every layer on both cards, so any trim of the stage weights keeps it off: asked for (stage_trim), or the
+        // layer split's spill walk (walk_trim, and trim_asked from its early step under --layer-split auto).
+        bool ok = asked && multi_gpu && stages.size() == 1 && o.batch == 0 && o.peer_device < 0 && !stage_trim && !trim_asked &&
+                  !walk_trim &&
                   kd != nullptr && kd[0] == '1' && g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1 &&
                   stages[0]->ss.qsa_states[stages[0]->ss.qsa_primary()].kv_mode == 1;
         if (asked && !ok)
             std::fprintf(stderr, "strata generate: STRATA_DP_PREFILL is off (two GPUs in a layer split, no --batch / "
-                                 "--peer-device / stage trim, streamed K/V and STRATA_KV_HOST_DMA=1)\n");
+                                 "--peer-device / stage trim (asked for or the spill walk's), streamed K/V and STRATA_KV_HOST_DMA=1)\n");
         // A DP read streams every expert of the other GPU's layers that this GPU does not cache, those the other GPU
         // caches included.  The expert arena holds every expert in RAM; --mmap-experts / --resident-experts keep in RAM
         // only what no GPU caches, and a file-backed arena (STRATA_ARENA_MMAP=1) hands the GPU-held ones back, so there
