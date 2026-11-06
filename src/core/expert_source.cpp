@@ -1159,6 +1159,7 @@ void FileExpertSource::warm_scored(int64_t layer, const int64_t* experts, const 
 
 void FileExpertSource::set_io_prefetch(bool on, int threads) {
     io_stop();
+    gate_on_ = false;   // the decode gate comes and goes with io prefetch
 #if defined(__linux__)
     if (!on) return;
     if (base_ == nullptr || paths_.empty() || !direct_.empty()) return;   // unbuffered readers batch their own reads
