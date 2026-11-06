@@ -57,6 +57,39 @@ def _save(model, path: str) -> None:
     torch.save(lora_state_dict(model), path)
 
 
+class InitDeterminism(unittest.TestCase):
+    """2026-11-07 真机重训复现：`--seed 0` + 同一数据 + 同一份代码，两次权重 sha256 不同、
+    相对 L2 差 1.41（跟权重本身同量级）。根因是 `LoRALinear.A` 用
+    `nn.init.kaiming_uniform_` 吃 **torch 全局 RNG**，而训练入口只固定了数据顺序那个
+    Generator；进程启动时全局 RNG 由系统熵播种，于是每次都是不同的随机投影。
+
+    这里守住两件事：同 seed 必须逐位相同、不同 seed 必须不同；以及换成局部生成器后
+    分布仍是 kaiming_uniform_(a=√5) 的闭式界 U(−1/√fan_in, +1/√fan_in)。
+    """
+
+    def test_same_seed_is_bit_identical_and_other_seed_differs(self):
+        a, b = build(), build()
+        self.assertTrue(torch.equal(a.o_proj.A, b.o_proj.A))
+        self.assertTrue(torch.equal(a.up_proj.A, b.up_proj.A))
+        m = Tiny(8)
+        inject_lora(m, targets=("o_proj",), r=4, alpha=8, seed=1)
+        self.assertFalse(torch.equal(a.o_proj.A, m.o_proj.A))
+        # 入口契约：backward/sft.py 必须把 --seed 传进来，否则 --seed 只管数据顺序，
+        # 初始 adapter 会永远是同一个（差距看不出来，但 A/B 多 seed 实验就失效）。
+        sft_py = os.path.join(os.path.dirname(HERE), "backward", "sft.py")
+        with open(sft_py, encoding="utf-8") as f:
+            self.assertIn("seed=args.seed", f.read())
+
+    def test_A_still_matches_kaiming_uniform_closed_form(self):
+        m = build()
+        bound = 1.0 / (8 ** 0.5)
+        g = torch.Generator().manual_seed(0)   # build() 里 o_proj 是第 0 个 ⇒ init_seed=0
+        ref = torch.empty(4, 8)
+        ref.uniform_(-bound, bound, generator=g)
+        self.assertTrue(torch.allclose(m.o_proj.A.detach(), ref))
+        self.assertLessEqual(float(m.o_proj.A.detach().abs().max()), bound + 1e-7)
+
+
 class RoundTrip(unittest.TestCase):
     def test_state_survives_save_and_load(self):
         src = build()
