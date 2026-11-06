@@ -754,6 +754,7 @@ struct Chunk {
         bool direct = false;                           // (Metal) read straight into its ring slot: no staging, no DMA
         const uint8_t* src[3] = {nullptr, nullptr, nullptr};   // where its gate / up / down (its parts) lie once read
         const uint8_t* ram = nullptr;                  // its RAM-tier blob, copied into staging (not pinned there)
+        unsigned long long dev = 0;                    // (flow_in_place) its blob where it lies in the RAM store: no read, no copy
         uint8_t* keep = nullptr;                       // (layer-major) its layer-cache slot: what is read kept there
         int64_t after = -1;                            // (layer-major) the items up to this one read first
         std::atomic<int> left{0};                      // parts still being read
@@ -775,11 +776,13 @@ struct Chunk {
     int fl_yoco = -1, fl_cut_k = 0, fl_cut_r = 0;   // Run::yoco / cut_k / cut_r: what a layer's chunk streams for
     int bc_n = 0, bc_w = 0;                  // a batch's compacted bounds: bc_n regions of bc_w, by batch count
     int *bc_pin = nullptr, *bc_dev = nullptr;
+    unsigned long long *pt_pin = nullptr, *pt_dev = nullptr;   // (flow_in_place) a batch's blob addresses, as the bounds
     uint64_t n_batch = 0;
     double wait_ms = 0;                      // the compute waiting for a read
     // (DS4_PROF: where copy_ahead's time goes - the host staging copy, the DMA issues, the waits for a slot)
     double dbg_stage_ms = 0, dbg_dma_ms = 0, dbg_evt_ms = 0;
     uint64_t it_file = 0, it_ram = 0, it_spec = 0, it_spec_unused = 0;
+    uint64_t it_place = 0;                   // (flow_in_place) of it_ram, the store's experts read where they lie
     uint64_t io_d0 = 0, io_b0 = 0;           // io's unbuffered / buffered bytes when the run started
     double io_busy0 = 0;                     // io's busy time when the run started (DS4_PROF)
     bool buffered = false;                   // the run's reads all through the page cache (a short run: run_dev_chunks)
@@ -1417,6 +1420,7 @@ struct Model::Impl {
     bool zc_copy = true;               // false: the expert kernels read the arena's slots where they lie (a GPU that shares the PC's
                                        // memory; DS4_STORE_STAGE=0/1 decides anywhere)
     bool zc_in_place = false;          // the store's slots read in place, by decode tokens and verify windows alike
+    bool flow_in_place = false;        // the prompt path reads the store's experts where they lie too (zc_in_place; CUDA)
     // DS4_UMA_TIER=1 on one GPU that shares the PC's memory (a DGX Spark's GB10): one expert tier instead of two. The
     // trunk's experts get no VRAM slots (on such a GPU those are the same RAM, copied there and kept apart from the CPU
     // lane's); the RAM store takes that memory, the GPU reads its slots in place for decode tokens and verify windows,
@@ -3734,6 +3738,13 @@ struct Model::Impl {
                     if (!halloc(cp->bc_pin, (size_t) cp->bc_n * cp->bc_w, err) ||
                         !dalloc(devs[di], cp->bc_dev, (size_t) cp->bc_n * cp->bc_w, err))
                         return false;
+                    // (the batches' pointer tables, small: flow_in_place is decided later, with the store, so they are
+                    //  made wherever the store may be read in place - DS4_UMA_TIER=1, DS4_STORE_ZC=1 - and nowhere else)
+                    const char* zv = std::getenv("DS4_STORE_ZC");
+                    if ((uma_tier() || (zv != nullptr && std::atoi(zv) != 0)) &&
+                        (!halloc(cp->pt_pin, (size_t) cp->bc_n * cp->bc_w, err) ||
+                         !dalloc(devs[di], cp->pt_dev, (size_t) cp->bc_n * cp->bc_w, err)))
+                        return false;
                 }
                 // every device with layers on the flow: a prompt reads only the experts it picks, once, so a short one
                 // takes the chunked path too (one pass, where windows of 16 read the CPU lane's picks again for each
@@ -4605,6 +4616,15 @@ struct Model::Impl {
         if (!in_ram && store && l.nm == 1) {
             const int ss = store->find(l.il, e);
             if (ss >= 0) {
+                // flow_in_place: the GPU reads it where it lies (the store is the GPU's memory too), as a decode window
+                // does - the batch's pointer table takes its address, its ring slot stays unused.  The slot outlives
+                // the run: nothing evicts during a prompt (no CPU lane, store_watch only after it, in cache_tick)
+                if (flow_in_place && l.lay.fmt == gg::kFmtMXFP4)
+                    if ((it.dev = store->dev_blob(ss)) != 0) {
+                        ++c.it_ram;
+                        ++c.it_place;
+                        return;
+                    }
                 store_blob = store->blob(ss);
                 in_ram = true;
             }
@@ -4886,9 +4906,9 @@ struct Model::Impl {
             const Layer& l = L[(size_t) it.il];
             uint8_t* dst = c.ring + r * c.ring_stride;
             const x3::ExpertLayout& lay = l.nm > 1 ? l.hlay : l.lay;
-            if (it.direct) {   // (already in the slot)
+            if (it.direct || it.dev != 0) {   // (already in the slot, or read where it lies)
                 CK(cudaEventRecord(c.ring_fill[r], c.cs));
-                c.stream_bytes += (double) unit(l);
+                if (it.direct) c.stream_bytes += (double) unit(l);
                 ++c.n_dma;
                 continue;
             }
@@ -4950,7 +4970,23 @@ struct Model::Impl {
             if (bc[n] > bc[0]) {
                 CK(cudaStreamWaitEvent(s, c.ring_fill[(i1 - 1) % R], 0));
                 CK(cudaMemcpyAsync(bcd, bc, (size_t) (n + 1) * 4, cudaMemcpyHostToDevice, s));
-                if (!run_set(d, c, L0, c.ring + (i0 % R) * c.ring_stride, 0, c.ring_stride, bcd, bc, 0, n, T, err))
+                // (flow_in_place: the batch's blobs by address, its ring slots' and the store's it reads in place)
+                unsigned long long *pt = nullptr, *ptd = nullptr;
+                if (c.pt_pin != nullptr)
+                    for (int m = 0; m < n && pt == nullptr; ++m)
+                        if (fit(c, i0 + (size_t) m).dev != 0) {
+                            pt = c.pt_pin + (size_t) ((c.n_batch - 1) % (uint64_t) c.bc_n) * c.bc_w;
+                            ptd = c.pt_dev + (size_t) ((c.n_batch - 1) % (uint64_t) c.bc_n) * c.bc_w;
+                        }
+                if (pt != nullptr) {
+                    for (int m = 0; m < n; ++m) {
+                        const Chunk::Item& it = fit(c, i0 + (size_t) m);
+                        pt[m] = it.dev != 0 ? it.dev
+                                            : (unsigned long long) (uintptr_t) (c.ring + ((i0 + (size_t) m) % R) * c.ring_stride);
+                    }
+                    CK(cudaMemcpyAsync(ptd, pt, (size_t) n * 8, cudaMemcpyHostToDevice, s));
+                }
+                if (!run_set(d, c, L0, c.ring + (i0 % R) * c.ring_stride, 0, c.ring_stride, bcd, bc, 0, n, T, err, ptd, pt))
                     return false;
             }
             for (size_t i = i0; i < i1; ++i) CK(cudaEventRecord(c.ring_free[i % R], s));
@@ -4979,8 +5015,10 @@ struct Model::Impl {
     }
     // the experts [i0, i1) of a sorted set (blobs at wbase + i * stride; bounds b on the host, d_bounds on the device)
     // over the chunk's rows, in pieces of at most C rows, each added into acc in pick order
+    // (wptr / hptr: the blobs by address instead, on the device / the host - the prompt path's in-place batches)
     bool run_set(Dev& d, Chunk& c, const Layer& l, const uint8_t* wbase, int wb0, size_t stride, const int* d_bounds,
-                 const int* b, int i0, int i1, int T, std::string& err) {
+                 const int* b, int i0, int i1, int T, std::string& err, const unsigned long long* wptr = nullptr,
+                 const unsigned long long* hptr = nullptr) {
         const int D = g.dim, FF = l.ffn;
         while (i0 < i1) {
             int j = i0 + 1;
@@ -4992,6 +5030,10 @@ struct Model::Impl {
                 x3::SetArgs sa;
                 sa.wbase = wbase + (size_t) (i0 - wb0) * stride;   // (wbase: set member wb0's blob)
                 sa.stride = stride;
+                sa.wptr = wptr != nullptr ? wptr + (i0 - wb0) : nullptr;
+                auto blob_of = [&](int i) {   // (expert i's blob, for the FP16 GEMMs' dequantisation)
+                    return hptr != nullptr ? (const uint8_t*) (uintptr_t) hptr[i - wb0] : wbase + (size_t) (i - wb0) * stride;
+                };
                 sa.lay = l.nm > 1 ? l.hlay : l.lay;
                 sa.n_exp = j - i0;
                 sa.bounds = d_bounds + i0;
@@ -5044,14 +5086,12 @@ struct Model::Impl {
                 if (sa.lay.fmt == gg::kFmtMXFP4) {
                     gg::set_gate_up(sa, c.x, D, c.row_tok + a, c.h16, FF, d.st);
                     for (const int i : fat)
-                        if (!fat_gate_up(c, sa, sa.wbase + (size_t) (i - i0) * stride, b[i], b[i + 1] - b[i], a, D, FF,
-                                         d.st, err))
+                        if (!fat_gate_up(c, sa, blob_of(i), b[i], b[i + 1] - b[i], a, D, FF, d.st, err))
                             return false;
                     if (ekp) cudaEventRecord(ek.e1, d.st);
                     gg::set_down(sa, c.h16, FF, c.y, D, d.st);
                     for (const int i : fat)
-                        if (!fat_down(c, sa, sa.wbase + (size_t) (i - i0) * stride, b[i] - a, b[i + 1] - b[i], D, FF,
-                                      d.st, err))
+                        if (!fat_down(c, sa, blob_of(i), b[i] - a, b[i + 1] - b[i], D, FF, d.st, err))
                             return false;
                 } else {
                     x3::set_gate_up(sa, c.x, D, c.row_tok + a, c.h16, FF, d.st);
@@ -6702,11 +6742,20 @@ struct Model::Impl {
             }
             const bool zc_on = std::any_of(L.begin(), L.end(), [](const Layer& l) { return l.zc_tab != nullptr; });
             zc_in_place = zc_on && !zc_copy;
-            std::fprintf(stderr, "ds4: RAM store: the GPU takes its slots %s, %zu slots kept evictable\n",
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_METAL)
+            // the prompt path the same way: its batches take the store's slots by address, where each of them was copied into
+            // pinned staging by an io thread and DMA'd into the ring - on a GB10 47.7 GB of copies for a 97-token prompt,
+            // 581 GB for 112K tokens, the RAM's bandwidth the GPU needs (DS4_FLOW_IN_PLACE=0: copied as before)
+            {
+                const char* fv = std::getenv("DS4_FLOW_IN_PLACE");
+                flow_in_place = zc_in_place && !copy_mode && !(fv != nullptr && std::atoi(fv) == 0);
+            }
+#endif
+            std::fprintf(stderr, "ds4: RAM store: the GPU takes its slots %s, %zu slots kept evictable%s\n",
                          !zc_on ? "over PCIe (off)"
                          : zc_copy ? "over PCIe (copied into a staging area at the PCIe rate first)"
                                    : "where they lie (its memory is the PC's: no copy)",
-                         cfg.reserve);
+                         cfg.reserve, flow_in_place ? "; prompts read them in place too" : "");
         }
     }
     // the profile's hottest experts (VRAM's left out) read into the store before the first token (DS4_STORE_PRELOAD=0: not)
@@ -12134,7 +12183,7 @@ struct Model::Impl {
             c.fl_cut_r = run.cut_r;
             c.spec_k = c.spec_il = -1;
             c.wait_ms = 0;
-            c.it_file = c.it_ram = c.it_spec = c.it_spec_unused = c.it_lc = 0;
+            c.it_file = c.it_ram = c.it_spec = c.it_spec_unused = c.it_lc = c.it_place = 0;
             c.lc_il = -1;
             c.lc_used = 0;
             c.lc_first = c.lc_chk = 0;
@@ -13219,6 +13268,9 @@ struct Model::Impl {
                 if (c.lm)
                     std::snprintf(lcs, sizeof lcs, ", %llu again from the layer cache (layer-major, %d chunks, %.1f GB "
                                   "of RAM)", (unsigned long long) c.it_lc, (int) run.T.size(), (double) c.lc_bytes / 1e9);
+                char places[64] = "";
+                if (c.it_place > 0)
+                    std::snprintf(places, sizeof places, ", %llu of them read where they lie", (unsigned long long) c.it_place);
                 char dbgs[200] = "";
                 if (pm.on)
                     std::snprintf(dbgs, sizeof dbgs,
@@ -13227,11 +13279,11 @@ struct Model::Impl {
                 std::fprintf(stderr,
                              "ds4 prompt stream, CUDA%d: %d tokens in %.0f ms; %llu experts streamed: %llu from the files "
                              "(%.1f GB, %.2f GB/s: %.1f GB from the disk unbuffered, %.1f GB through the page cache), %llu "
-                             "from RAM (%.1f GB)%s; %llu likely ones queued early, %llu of them unpicked; the compute waited "
+                             "from RAM (%.1f GB%s)%s; %llu likely ones queued early, %llu of them unpicked; the compute waited "
                              "%.0f ms for reads%s\n",
                              devs[di].id, n, ms, (unsigned long long) (c.it_file + c.it_ram + c.it_lc),
                              (unsigned long long) c.it_file, fb, fb / std::max(1e-3, ms / 1000.0), db, bb,
-                             (unsigned long long) c.it_ram, rb, lcs, (unsigned long long) c.it_spec,
+                             (unsigned long long) c.it_ram, rb, places, lcs, (unsigned long long) c.it_spec,
                              (unsigned long long) c.it_spec_unused, c.wait_ms, dbgs);
             }
         }
