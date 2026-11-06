@@ -4647,6 +4647,43 @@ class ForcedToolChoice(unittest.TestCase):
                 if not stream:
                     self.assertIn("<function=execute_gdscript>", b["choices"][0]["message"]["content"])   # the text is untouched
 
+    def test_undeclared_tool_calls_call_hands_the_call_to_the_client(self):
+        """#4622: "undeclared_tool_calls": "call" returns the well-formed call of an undeclared name as a tool call (the client has its
+        own policy for unknown names); the default ("text") is the test above, unchanged."""
+        self.says(self._undeclared_call_answer("execute_gdscript"))
+        self.svc.undeclared_tool_calls = "call"
+        try:
+            for stream in (False, True):
+                with self.subTest(stream=stream):
+                    code, b = self.openai(stream=stream)
+                    finish, calls, _ = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("tool_calls", [("execute_gdscript", {"q": "2+2"})]), b)
+                    self.assertIsNone(self._rejected_of(b, stream))
+            # prose that names the format is still text
+            self.says("Write <tool_call> and <function=x> to call a tool.")
+            code, b = self.openai(stream=False)
+            finish, calls, _ = self.call_of(code, b, False)
+            self.assertEqual((finish, calls), ("stop", []), b)
+        finally:
+            self.svc.undeclared_tool_calls = "text"
+
+    def test_undeclared_tool_calls_setting(self):
+        from serve.server import undeclared_tool_calls_setting
+        old = os.environ.pop("STRATA_UNDECLARED_TOOL_CALLS", None)
+        try:
+            self.assertEqual(undeclared_tool_calls_setting({}), "text")
+            self.assertEqual(undeclared_tool_calls_setting({"undeclared_tool_calls": "call"}), "call")
+            os.environ["STRATA_UNDECLARED_TOOL_CALLS"] = "call"
+            self.assertEqual(undeclared_tool_calls_setting({}), "call")
+            self.assertEqual(undeclared_tool_calls_setting({"undeclared_tool_calls": "text"}), "text")   # the config wins
+            for bad in ("yes", True, 1):
+                with self.assertRaises(SystemExit):
+                    undeclared_tool_calls_setting({"undeclared_tool_calls": bad})
+        finally:
+            os.environ.pop("STRATA_UNDECLARED_TOOL_CALLS", None)
+            if old is not None:
+                os.environ["STRATA_UNDECLARED_TOOL_CALLS"] = old
+
     def test_no_marker_when_nothing_was_rejected(self):
         """An ordinary answer and a declared call carry no extra field: the API is what it was."""
         from serve.frontend import CALL_END, CALL_START
