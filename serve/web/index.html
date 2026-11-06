@@ -73,6 +73,8 @@
             <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file" data-i18n-label="composer.attachLabel">
               <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
             <input type="file" id="file" multiple hidden>
+            <button type="button" class="st-btn st-btn--icon" id="compact-btn" title="Compact older turns into a summary" aria-label="Compact older turns">
+              <svg class="st-icon"><use href="web/sprite.svg#i-layers"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat" data-i18n-title="chat.new" data-i18n-label="chat.new">
               <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat" data-i18n-title="composer.save" data-i18n-label="composer.saveLabel">
@@ -80,6 +82,10 @@
             <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
               <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
               <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
+            <div class="st-ctx" id="ctx-pill" title="Context window in use" hidden>
+              <span class="st-ctx__bar"><span class="st-ctx__fill"></span></span>
+              <span class="st-ctx__text">&ndash;</span>
+            </div>
             <span class="spacer"></span>
             <span class="composer-hint" id="composer-hint"></span>
             <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
@@ -316,6 +322,8 @@
 <script src="web/history.js"></script>
 <script src="web/chatstore.js"></script>
 <script src="web/chats-ui.js"></script>
+<script src="web/compact-prompt.js"></script>
+<script src="web/compaction.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>

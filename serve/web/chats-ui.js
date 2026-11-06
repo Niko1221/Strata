@@ -36,6 +36,7 @@ const chatStore = StrataChatStore.createChatStore({
 
 // the open chat's messages are the page's `messages`; with the list on they are also the chat's, the same array
 function setMessages(next) {
+  if (next.some((m) => m.compacting)) next = next.filter((m) => !m.compacting);
   messages = next;
   if (chat) chat.messages = next;
 }
@@ -118,7 +119,7 @@ function renderSidebar() {
 
 function showChat(c) {
   clearUndo();
-  chat = c; chatId = c.id; messages = c.messages;
+  chat = c; chatId = c.id; setMessages(c.messages);
   store.set("chatId", chatId);
   chatStore.put(H.cleanChat(chat));       // renderChat renders the list, so the write here does not render it again
   renderChat();
@@ -159,7 +160,8 @@ function deleteChat(c) {
   toast("info", tr("chat.deleted", "Chat deleted"), H.chatTitle(c, untitled()), 6000, {label: tr("undo", "Undo"), run: () => {
     if (chats.includes(c)) return;                  // already put back
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
-    if (wasOpen) showChat(c); else { chatStore.put(H.cleanChat(c)); renderSidebar(); }
+    // Restoring a deleted chat must not replace the chat whose request is still running.
+    if (wasOpen && !busy) showChat(c); else { chatStore.put(H.cleanChat(c)); renderSidebar(); }
   }});
 }
 // rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
@@ -255,7 +257,7 @@ function undoHistory() {
 const hiddenText = (n) => tr("hist.hidden", {one: "{n} message hidden", other: "{n} messages hidden"}, {n});
 
 function msgActions(m, i) {
-  if (!settings.chatEdit) return null;
+  if (!settings.chatEdit || m.compacting) return null;
   if (busy && busy.msg === m) return null;              // the answer being written has no buttons until it is done
   const row = node("div", "history-actions");
   const lock = historyLocked();
@@ -264,6 +266,10 @@ function msgActions(m, i) {
     b.type = "button"; b.title = title; b.disabled = lock; b.onclick = run;
     row.appendChild(b);
   };
+  if (m.compact) {
+    add("Edit summary", "Edit this summary without removing messages.", () => editAnswerAt(i));
+    return row;
+  }
   const last = i === messages.length - 1;
   if (m.role === "assistant" || last) {
     add(tr("hist.regenerate", "Regenerate"), tr("hist.regenerateTitle", "Ask for a new answer to this question. Tools may run again."), () => regenerateAt(i));
@@ -311,21 +317,22 @@ function regenerateAt(i) {
   return generateReply();
 }
 
-// edit an answer: its text, in place. The old thinking and tool calls go, and so do the messages after it.
+// The editor handles both answers and summaries; saving a summary keeps its boundary and later messages.
 function editAnswerAt(i) {
   if (!historyReady() || !messages[i]) return false;
   const m = messages[i], el = $("chat").querySelector(`[data-i="${i}"]`);
+  const summary = !!m.compact;
   const later = messages.length - i - 1;
   const box = node("div", "history-editor");
   box.innerHTML = "<label></label><textarea class=\"st-input\" rows=\"6\"></textarea><p class=\"muted small\"></p>" +
     "<div class=\"history-editor__actions\"><button type=\"button\" class=\"st-btn st-btn--primary\" data-edit-save></button>" +
     "<button type=\"button\" class=\"st-btn st-btn--secondary\" data-edit-cancel></button></div>";
-  const label = tr("hist.editLabel", "Edit the answer");
+  const label = summary ? "Edit the conversation summary" : tr("hist.editLabel", "Edit the answer");
   box.querySelector("label").textContent = label;
   const input = box.querySelector("textarea");
   input.setAttribute("aria-label", label);
   input.value = m.text || "";
-  box.querySelector("p").textContent = (later ? tr("hist.editRemoves", {one: "Saving hides the {n} message after it. ", other: "Saving hides the {n} messages after it. "}, {n: later}) : "") +
+  box.querySelector("p").textContent = summary ? "Only the summary text changes. Other messages stay in the chat. No request is sent." : (later ? tr("hist.editRemoves", {one: "Saving hides the {n} message after it. ", other: "Saving hides the {n} messages after it. "}, {n: later}) : "") +
     tr("hist.editNote", "The answer's old thinking and tool calls are removed. No request is sent.");
   const save = box.querySelector("[data-edit-save]");
   save.textContent = tr("hist.save", "Save");
@@ -346,11 +353,12 @@ function editAnswerAt(i) {
 }
 function saveAnswerEdit(i, text) {
   if (busy || !panel || panel.kind !== "edit" || panel.index !== i) return false;
-  if (typeof text !== "string" || !text.trim()) { toast("warn", tr("hist.empty", "The answer is empty"), tr("hist.emptyText", "Write something before saving.")); return false; }
+  const summary = !!messages[i]?.compact;
+  if (typeof text !== "string" || !text.trim()) { toast("warn", summary ? "The summary is empty" : tr("hist.empty", "The answer is empty"), tr("hist.emptyText", "Write something before saving.")); return false; }
   const plan = H.editAnswer(messages, i, text, tr("hist.edited", "Edited"));
   if (!plan) return false;
   closePanel();
-  commit(plan.keep, plan.hidden ? tr("hist.editedHidden", {one: "Answer edited, {n} message hidden", other: "Answer edited, {n} messages hidden"}, {n: plan.hidden})
+  commit(plan.keep, summary ? "Summary edited" : plan.hidden ? tr("hist.editedHidden", {one: "Answer edited, {n} message hidden", other: "Answer edited, {n} messages hidden"}, {n: plan.hidden})
                                 : tr("hist.editedOnly", "Answer edited"));
   return true;
 }
