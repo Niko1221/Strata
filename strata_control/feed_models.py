@@ -169,6 +169,12 @@ def _engine_tuple(version: str) -> tuple | None:
     return key if key[3] else key[:3]
 
 
+def _endpoint(setup) -> str:
+    """The model host setup downloads from (a mirror when the person set one), read off setup's own url builder so this module names no host."""
+    repo = next(iter(setup.HF_REVISIONS))
+    return setup.hf(repo).split(f"/{repo}/resolve/")[0]
+
+
 def _urlbase(repo: str, revision: str, endpoint: str) -> str:
     return f"{endpoint}/{repo}/resolve/{revision}/"
 
@@ -258,7 +264,7 @@ def _pin_repo(setup, model, pins: dict) -> str:
     """Register the revision and the file pins where setup's download looks them up (file_pin: REV_PINS first), and return the download folder."""
     setup.REV_PINS.setdefault((model.repo, model.revision), {}).update(pins)
     setup.HF_REVISIONS.setdefault(model.repo, model.revision)
-    return _urlbase(model.repo, model.revision, setup.hf_endpoint())
+    return _urlbase(model.repo, model.revision, _endpoint(setup))
 
 
 def _licence(model) -> str:
