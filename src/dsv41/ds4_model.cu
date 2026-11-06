@@ -1673,7 +1673,8 @@ struct Model::Impl {
     std::vector<ProfMark> prof_marks;
     std::vector<std::vector<cudaEvent_t>> prof_pool;   // CUDA events belong to the device that created them
     bool prof_failed = false;
-    bool prof_window = false;   // (decode windows only: T == 1)
+    bool prof_window = false;   // (decode windows only: T == 1; DS4_PROF_WIN=1 the verify windows too, summed apart)
+    int prof_T = 0;             // the profiled window's tokens
     const bool prof_sync_on = std::getenv("DS4_PROF_SYNC") != nullptr;
     double prof_sync_t = 0;     // DS4_PROF_SYNC: the host clock at the last mark
     // ... and a run of chunks' (prof_chunk): a layer's start, after its attention, after the routing and the shared
@@ -1728,7 +1729,7 @@ struct Model::Impl {
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
             const double t = now_ms();
-            if (prof_sync_t > 0) st.prof_ms[stage] += t - prof_sync_t;
+            if (prof_sync_t > 0) (prof_T > 1 ? st.prof_win_ms : st.prof_ms)[stage] += t - prof_sync_t;
             prof_sync_t = now_ms();
             return;
         }
@@ -1774,7 +1775,11 @@ struct Model::Impl {
         if (prof_window && !prof_chunk && prof_sync_on) {
             std::lock_guard<std::mutex> lk(prof_mu);
             prof_sync_t = 0;
-            ++st.prof_tokens;
+            if (prof_T > 1) {   // (DS4_PROF_WIN: a verify window's, apart from the tokens')
+                ++st.prof_wins;
+                st.prof_win_rows += prof_T;
+            } else
+                ++st.prof_tokens;
             return;
         }
         std::lock_guard<std::mutex> lk(prof_mu);
@@ -1820,12 +1825,17 @@ struct Model::Impl {
             }
         }
         if (sample_ok) {
-            double* total = chunk_sample ? cprof_ms : st.prof_ms;
+            const bool win = !chunk_sample && prof_T > 1;   // (DS4_PROF_WIN: a verify window's, apart from the tokens')
+            double* total = chunk_sample ? cprof_ms : win ? st.prof_win_ms : st.prof_ms;
             const int stages = chunk_sample ? kSampleStages : (int) (sizeof st.prof_ms / sizeof st.prof_ms[0]);
             for (int i = 0; i < stages; ++i) total[i] += sample_ms[i];
             for (const ProfMark& m : prof_marks) prof_pool[(size_t) m.dev].push_back(m.ev);
             prof_marks.clear();
-            if (!chunk_sample) ++st.prof_tokens;
+            if (win) {
+                ++st.prof_wins;
+                st.prof_win_rows += prof_T;
+            } else if (!chunk_sample)
+                ++st.prof_tokens;
             return;
         }
         prof_failed = true;
@@ -13400,7 +13410,9 @@ struct Model::Impl {
             std::memcpy(h_emb + (size_t) t * D, emb_row(p0 + t, tk[t]), (size_t) D * 2);
         wplan.nrow = 0;
         plan_window(p0, T, wplan);
-        prof_window = prof_on && T == 1;
+        static const bool prof_win = std::getenv("DS4_PROF_WIN") != nullptr;   // (as DS4_PROF: ds4_dbg is Metal's only)
+        prof_window = prof_on && (T == 1 || (prof_win && spec_win));   // (DS4_PROF_WIN: verify windows only)
+        prof_T = T;
         n_logits = std::min(logits_rows, T);
         const double tl = now_ms();
         if (par) {

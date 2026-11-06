@@ -2859,6 +2859,17 @@ int main(int argc, char** argv) {
                      (s.prof_ms[2] - s0.prof_ms[2]) / pt, (s.prof_ms[3] - s0.prof_ms[3]) / pt,
                      (s.prof_ms[4] - s0.prof_ms[4]) / pt, (s.prof_ms[5] - s0.prof_ms[5]) / pt);
     }
+    if (s.prof_wins > s0.prof_wins) {   // DS4_PROF_WIN
+        const double pw = (double) (s.prof_wins - s0.prof_wins);
+        double sum = 0;
+        for (int i = 0; i < 6; ++i) sum += (s.prof_win_ms[i] - s0.prof_win_ms[i]) / pw;
+        std::fprintf(stderr, "GPU per verify window (DS4_PROF_WIN, %.0f windows of %.2f tokens): %.2f ms - between layers %.2f, "
+                             "attention %.2f, routing + shared expert %.2f, experts with the CPU lane's wait, down and post %.2f\n",
+                     pw, (double) (s.prof_win_rows - s0.prof_win_rows) / pw, sum, (s.prof_win_ms[0] - s0.prof_win_ms[0]) / pw,
+                     (s.prof_win_ms[1] - s0.prof_win_ms[1]) / pw, (s.prof_win_ms[2] - s0.prof_win_ms[2]) / pw,
+                     (s.prof_win_ms[3] + s.prof_win_ms[4] + s.prof_win_ms[5] - s0.prof_win_ms[3] - s0.prof_win_ms[4] -
+                      s0.prof_win_ms[5]) / pw);
+    }
     if (df != nullptr) std::fclose(df);
     m.save_profile();
     return 0;
