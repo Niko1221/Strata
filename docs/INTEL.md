@@ -514,6 +514,7 @@ a type pun the SYCL compiler does not honour. A prompt that borrowed cache slots
 Level Zero v2). An A750 prompt of 2,744 tokens hung (direct copy out of pageable memory; regression test
 `sycl/tools/test_prompt_deadlock.sh`). The first request after a start returned token 0 on `i915` when the spin bound was too short.
 An A770 JIT build misread memory past 4 GiB into an allocation. The xe driver aliased pages in a 22 GiB arena (NaN at layer 4).
+A run of `strata generate` at `--spec 4` with a reply of a few hundred tokens segfaulted after printing its whole summary (the draft layer's device buffers freed against a runtime already shutting down; regression test `sycl/tools/test_mtp_teardown.sh`).
 
 ### Mixed-IQ3 decode kernels for Battlemage (PR #4185)
 

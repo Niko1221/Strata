@@ -13880,6 +13880,12 @@ int main(int argc, char **argv) try {
     sycl::free(d_parts, dpct::get_in_order_queue());
     sycl::free(sbuf, dpct::get_in_order_queue());
     sycl::free(arena, dpct::get_in_order_queue());
+    // The draft layer is the last of this function's objects to go and the biggest holder of device memory, and a
+    // destructor that runs while the runtime is already shutting down faults in the driver - a SIGSEGV after every
+    // summary line printed, measured at --spec 4 with a reply of a few hundred tokens.  Same reason this function
+    // frees the buffers above by hand: give the gigabytes back while the device is plainly still there.
+    for (auto &s : slot_mtp) if (s) s->release();
+    mtp.release();
     return 0;
 }
 catch (sycl::exception const &exc) {
