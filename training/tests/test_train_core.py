@@ -616,12 +616,50 @@ class GuardGenSanity(unittest.TestCase):
     def test_normal_short_answer_passes(self):
         self.assertTrue(guard.gen_probe_ok([10, 11, 12, 13], eos_hit=True))
 
+    def test_thinking_model_hitting_the_window_is_not_a_failure(self):
+        """跑满窗口但没出 EOS 是 thinking 模型的常态，不能判失败。
+
+        2026-11-06 实测：12/12 探针 eos=0、d3=1.0，旧判据（EOS 是硬条件）因此让
+        `gen_ok` 恒 False、keep-best 从未 accept —— 能力门等于没有。
+        """
+        window = list(range(100, 100 + guard.GEN_MAX_NEW))
+        self.assertGreaterEqual(guard.distinct_n(window, 3), 0.5)
+        self.assertTrue(guard.gen_probe_ok(window, eos_hit=False))
+
+    def test_early_stop_without_eos_is_a_failure(self):
+        """提前停又不是收尾 ⇒ 落到异常 token 上，仍要判失败。"""
+        self.assertFalse(guard.gen_probe_ok([10, 11, 12, 13], eos_hit=False))
+
     def test_word_leak_is_content_failure_form_check_cannot_see(self):
         # v5-off 实测：'xiezhipeng-git xiezhip…' 形式全过（d3=0.8、有 EOS），内容在插名
         self.assertTrue(guard.gen_probe_ok([7, 8, 9, 10, 11], eos_hit=True))
         self.assertFalse(guard.no_word_leak("xiezhipeng-git xiezhip is a x", "xiezhipeng-git"))
         self.assertTrue(guard.no_word_leak("Soft, purring, warm.", "xiezhipeng-git"))
         self.assertTrue(guard.no_word_leak("Soft, purring, warm.", ""))
+
+
+class ResolveSteps(unittest.TestCase):
+    """`--epochs` 折算：行数必须取**真正进训练循环**的那份数据。
+
+    2026-11-06 实测踩到：冷启 DPO 传 `--epochs 7`，折算用了内置身份数据 12 条
+    ⇒ 打日志 `epochs 7 × 12 条 = 84 步`，而实际只有 1 对偏好样本，等于过 84 遍。
+    """
+
+    def test_dpo_uses_pair_count_not_sft_rows(self):
+        self.assertEqual(algos.resolve_steps(7, 1, 12), 7)
+        self.assertEqual(algos.resolve_steps(7, 10, 12), 70)
+
+    def test_sft_uses_row_count(self):
+        self.assertEqual(algos.resolve_steps(2, None, 2), 4)
+
+    def test_unset_means_no_override(self):
+        # 0/None ⇒ 返回 0，调用方保留 train.py 给的 --steps
+        self.assertEqual(algos.resolve_steps(None, 1, 12), 0)
+        self.assertEqual(algos.resolve_steps(0, 1, 12), 0)
+
+    def test_negative_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            algos.resolve_steps(-1, 1, 12)
 
 
 class HoldoutProbes(unittest.TestCase):

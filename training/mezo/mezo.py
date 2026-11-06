@@ -1142,7 +1142,11 @@ class DpoMezo(EngineMezo):
             pol_r = float(sum(sr[it["r_start"]:]))
             margin = objectives.dpo_margin(pol_c, pol_r, it["ref_c"], it["ref_r"],
                                            it["c_ntok"], it["r_ntok"])
-            losses.append(float(objectives.dpo_loss(margin, self.args.beta)))
+            # β 跟着归一化换算（objectives.dpo_beta_effective）：不换算则 KL 约束
+            # 强度被除以 n̄，长序列上等于消失 —— 零阶差分信号同样会被这个尺度淹没。
+            beta_eff = objectives.dpo_beta_effective(self.args.beta,
+                                                     it["c_ntok"], it["r_ntok"])
+            losses.append(float(objectives.dpo_loss(margin, beta_eff)))
         return float(np.mean(losses)) if losses else 0.0
 
 

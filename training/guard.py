@@ -116,12 +116,28 @@ def distinct_n(ids: list[int], n: int = 3) -> float:
 
 
 def gen_probe_ok(text_ids: list[int], eos_hit: bool,
-                 min_distinct3: float = GEN_MIN_DISTINCT3) -> bool:
-    """一条生成是否「形式上没退化」：命中 EOS 且 distinct-3gram 达标。
+                 min_distinct3: float = GEN_MIN_DISTINCT3,
+                 max_new: int = GEN_MAX_NEW) -> bool:
+    """一条生成是否「形式上没退化」。
 
-    复读环的形状是「distinct3 → 0 且永远不出 EOS」；正常短答案两个条件都松松满足。
+    判据分两档，因为「撞窗口」与「复读」是两件事：
+
+    * distinct-3gram 不达标 ⇒ 直接失败。这是复读环的直接指标，也是唯一能抓到
+      `We will write We will We need We We We will` 这类中后段崩坏的量。
+    * 命中 EOS ⇒ 通过（正常收尾）。
+    * 没命中 EOS 但**跑满了窗口** ⇒ 通过：thinking 模型的收尾段在几千 token 之外，
+      24 token 的探针永远到不了（2026-11-06 实测 12/12 探针 eos=0、d3=1.0）。
+      旧判据要求提前出 EOS，导致 `gen_ok` 恒 False、`gate_verdict` 永远 reject、
+      keep-best 从未 accept 过任何 checkpoint —— 崩了也没人回退，等于没有保护网。
+    * 没命中 EOS 且**没跑满窗口**（生成器提前停了）⇒ 失败：提前停又不是收尾，
+      说明落到了异常 token 上。
     """
-    return eos_hit and distinct_n(text_ids, 3) >= min_distinct3
+    d3 = distinct_n(text_ids, 3)
+    if d3 < min_distinct3:
+        return False
+    if eos_hit:
+        return True
+    return len(text_ids) >= max_new
 
 
 def no_word_leak(text: str, word: str) -> bool:
