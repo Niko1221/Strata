@@ -851,8 +851,10 @@ class BackwardArgvAcceptedByScript(unittest.TestCase):
 
         import train as train_mod
 
-        src = (Path(__file__).resolve().parents[1] / "backward" / "sft.py").read_text(
-            encoding="utf-8")
+        sft_py = Path(__file__).resolve().parents[1] / "backward" / "sft.py"
+        if not sft_py.is_file():
+            self.skipTest("backward/sft.py 不在这条分支上（零阶线只有 mezo/ + 共用 numpy 层）")
+        src = sft_py.read_text(encoding="utf-8")
         known = set(re.findall(r'add_argument\(\s*"(--[A-Za-z0-9-]+)"', src))
         self.assertIn("--dpo-data", known)
         self.assertIn("--init-adapter", known)
