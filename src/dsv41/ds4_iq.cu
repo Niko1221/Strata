@@ -1013,11 +1013,13 @@ __global__ void __launch_bounds__(kThreads) mv_kernel_nr(const Jobs J) {
         }
 }
 
-// mv_kernel_nr<T, NC, 1> for Q4_K / Q5_K with the row's weights staged (DS4_MV_STAGE=1): a warp loads the next 32
+// mv_kernel_nr<T, NC, 1> for Q4_K / Q5_K with the row's weights staged (the default; DS4_MV_STAGE=0: not): a warp loads the next 32
 // sub-blocks (4 blocks) of its row in coalesced words into registers while it computes the 32 it put in its shared stage
 // before - the Q8_0 GEMV's form (q8_mv_kernel), which kept its speed from 1 to 8 activations on a GB10 where mv_kernel_nr
 // lost 15-60% (its lanes each waiting on their own sub-block's loads).  Lane l still takes sub-blocks l, l + 32, ... in that
-// order, decoded by decode_v from the stage, and the same shuffles sum them: the same bits as mv_kernel_nr<T, NC, 1>.
+// order, decoded by decode_v from the stage, and the same shuffles sum them: the same bits as mv_kernel_nr<T, NC, 1>.  On a GB10
+// (dq_dense_test --path bench) Q5_K wo_b 8192 x 5120 146 -> 130 us at 1 activation, 161 -> 139 at 4; the shared expert's
+// 5120 x 2304 48 -> 40 and 61 -> 47; a verify window of 3.3 tokens 88.9 -> 85.6 ms (DS4_PROF_WIN).
 template <int T, int NC>
 __global__ void __launch_bounds__(kThreads) mv_kernel_kst(const Jobs J) {
     static_assert(T == kQ4_K || T == kQ5_K, "the K-quants' 16-byte-aligned blocks");
@@ -1225,11 +1227,13 @@ __global__ void __launch_bounds__(kThreads) light_kernel_rows(const SetArgs a, c
         }
 }
 
-// light_kernel_rows with the weights' rows staged a step ahead (DS4_LIGHT_STAGE=1): a step is 32 sub-blocks (4 blocks of a
+// light_kernel_rows with the weights' rows staged a step ahead (the default; DS4_LIGHT_STAGE=0: not): a step is 32 sub-blocks (4 blocks of a
 // 256-value type) of each row the warp reads - the gate's and the up's, or the down's - their words loaded in registers while
 // the warp computes the step it put in its shared stage before (mv_kernel_kst's form).  Lane l still takes sub-blocks l,
 // l + 32, ... in order, decoded by decode<T> from the stage, and the same sums: the same bits as light_kernel_rows.  A row that
-// starts 2 bytes past a word (the down's rows of 9 blocks) is staged from the word before it.
+// starts 2 bytes past a word (the down's rows of 9 blocks) is staged from the word before it.  On a GB10 (ds4_iq_test
+// --bench-light, 17 experts) IQ2_XXS 10 rows: gate / up 1431 -> 1027 us, down 796 -> 609; 16 rows 2337 -> 1470; an agent
+// turn's prompt (422 tokens) 1856 -> 1669 ms; ds4_iq_test --cmp against light_kernel_rows: 48 buffers, identical.
 template <int T, int NE, bool GATE_UP>
 __global__ void __launch_bounds__(kThreads) light_kernel_rows_st(const SetArgs a, const int8_t* __restrict__ xq,
                                                                  const float* __restrict__ xd) {
@@ -1470,8 +1474,8 @@ bool light_on() {   // STRATA_DS4_NO_LIGHT=1: every set through the GEMM tiles
 template <int T, bool GU>
 void launch_light(const SetArgs& a, const LightBuf& b, cudaStream_t s) {
     const int tiles = ((GU ? a.n_ff : a.n_embd) + kWarps - 1) / kWarps;
-    if constexpr (kQK<T> == 256) {   // DS4_LIGHT_STAGE=1: the rows' kernel with its weights staged a step ahead (same bits)
-        static const bool st = std::getenv("DS4_LIGHT_STAGE") != nullptr && std::atoi(std::getenv("DS4_LIGHT_STAGE")) != 0;
+    if constexpr (kQK<T> == 256) {   // the rows' kernel with its weights staged a step ahead (same bits; DS4_LIGHT_STAGE=0: not)
+        static const bool st = std::getenv("DS4_LIGHT_STAGE") == nullptr || std::atoi(std::getenv("DS4_LIGHT_STAGE")) != 0;
         if (st && (a.max_rows > 4 || !kPersist<T>)) {
             const dim3 grid((unsigned) tiles, (unsigned) a.n_exp);
             if (a.max_rows <= 4) strata_ds4_launch(light_kernel_rows_st<T, 4, GU>, grid, kThreads, 0, s, a, b.q, b.d);
@@ -1563,8 +1567,8 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     int nsb_max = 0;
     for (int j = 0; j < nj; ++j) nsb_max = std::max(nsb_max, J.j[j].k / 32);
     const int nr = nr_env > 0 ? nr_env : nr_env == 0 ? (max_c <= 2 ? 1 : nsb_max <= 160 ? 2 : 1) : -1;
-    if constexpr (T == kQ4_K || T == kQ5_K) {   // (DS4_MV_STAGE=1: the row's weights staged a step ahead, mv_kernel_kst)
-        static const bool kst = std::getenv("DS4_MV_STAGE") != nullptr && std::atoi(std::getenv("DS4_MV_STAGE")) != 0;
+    if constexpr (T == kQ4_K || T == kQ5_K) {   // (the row's weights staged a step ahead, mv_kernel_kst; DS4_MV_STAGE=0: not)
+        static const bool kst = std::getenv("DS4_MV_STAGE") == nullptr || std::atoi(std::getenv("DS4_MV_STAGE")) != 0;
         bool aligned = true;   // (whole 16-byte words: the jobs' rows and starts)
         for (int j = 0; j < nj; ++j) aligned = aligned && ((uintptr_t) J.j[j].w & 15u) == 0 && J.j[j].ld % 16 == 0;
         if (nr == 1 && kst && aligned) {
