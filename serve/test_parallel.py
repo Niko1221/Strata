@@ -12,6 +12,8 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -504,6 +506,15 @@ class PickSlot(unittest.TestCase):
         self.assertEqual(v[1], {"slot": 1, "state": "idle", "held_tokens": 2})
 
 
+def wait_until(cond, timeout=10.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return False
+
+
 class FakeEngineCase(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
@@ -696,85 +707,54 @@ class ParallelService(FakeEngineCase):
 
     def test_monitor_waiter_does_not_clear_or_borrow_the_readers_progress(self):
         self.start(2, prefill_gate=True)
-        gate = self.prefill_gate
         self.engine.YIELDS_MAX = 0
-        results = []
-        reader = threading.Thread(target=lambda: results.append(self.chat("METRICSHOLD " + "x" * 500)))
-        waiter = threading.Thread(target=lambda: results.append(self.chat("waiting request")))
-        reader.start()
-        try:
-            end = time.monotonic() + 5
-            while self.engine.progress is None and time.monotonic() < end:
-                time.sleep(0.01)
+        with ThreadPoolExecutor(max_workers=2) as pool, ExitStack() as cleanup:
+            cleanup.callback(self.prefill_gate.touch)
+            reader = pool.submit(self.chat, "METRICSHOLD " + "x" * 500)
+            self.assertTrue(wait_until(lambda: self.engine.progress, 5))
             before = self.engine.progress
-            self.assertIsNotNone(before, "fake reader did not reach its PP gate")
-            waiter.start()
-            end = time.monotonic() + 5
-            while self.engine.waiting == 0 and time.monotonic() < end:
-                time.sleep(0.01)
-            self.assertGreater(self.engine.waiting, 0)
-            after = self.engine.progress
+            waiter = pool.submit(self.chat, "waiting request")
+            self.assertTrue(wait_until(lambda: self.engine.waiting, 5))
+            self.assertEqual(self.engine.progress, before, "a control-line waiter cleared the active reader's PP")
             live = self.get("/metrics")["live"]
             with self.svc.status_lock:
                 reading_id = next(r["id"] for r in self.svc.terminal_requests.values() if r["state"] == "reading")
-        finally:
-            gate.touch()
-            reader.join(10)
-            if waiter.ident is not None:
-                waiter.join(10)
-        self.assertEqual(after, before, "a control-line waiter cleared the active reader's PP")
-        self.assertEqual(live["request_id"], reading_id)
-        self.assertEqual((live["prompt_read"], live["prompt_total"]), before)
-        self.assertEqual(live["prompt_tokens"], before[1])
-        self.assertEqual(len(results), 2)
+            self.assertEqual(live["request_id"], reading_id)
+            self.assertEqual((live["prompt_read"], live["prompt_total"]), before)
+            self.assertEqual(live["prompt_tokens"], before[1])
+            self.prefill_gate.touch()
+            reader.result(timeout=10)
+            waiter.result(timeout=10)
 
     def test_monitor_mixed_prefill_and_decode_keeps_aggregate_and_request_rates_separate(self):
         self.start(2, prefill_gate=True)
-        gate = self.prefill_gate
         self.engine.YIELDS_MAX = 0
         self.engine.SOLO_AGAIN_MAX = 0
-        results = []
-        decoder = threading.Thread(target=lambda: results.append(self.chat("LONGREPLY first")))
-        reader = threading.Thread(target=lambda: results.append(self.chat("METRICSHOLD LONGREPLY " + "x" * 1100)))
-        decoder.start()
-        try:
-            end = time.monotonic() + 5
-            while not self.svc._tok_s() and time.monotonic() < end:
-                time.sleep(0.01)
-            self.assertGreater(self.svc._tok_s(), 0)
-            reader.start()
-            end = time.monotonic() + 5
-            while time.monotonic() < end:
-                mixed = self.get("/metrics")["live"]
-                if (any(s["state"] == "reading" and s.get("prompt_read") for s in mixed.get("slots", []))
-                        and any(s["state"] == "decoding" and s.get("generated", 0) > 1 for s in mixed["slots"])):
-                    break
-                time.sleep(0.01)
-            self.assertEqual({s["state"] for s in mixed["slots"]}, {"reading", "decoding"}, mixed)
-            gate.touch()
-            end = time.monotonic() + 5
-            while time.monotonic() < end:
-                decoding = self.get("/metrics")["live"]
-                if all(s["state"] == "decoding" and s.get("generated", 0) > 2 for s in decoding["slots"]):
-                    break
-                time.sleep(0.01)
-            self.assertTrue(all(s["state"] == "decoding" for s in decoding["slots"]), decoding)
-        finally:
-            gate.touch()
-            decoder.join(10)
-            if reader.ident is not None:
-                reader.join(10)
-        self.assertEqual(mixed["state"], "reading")
-        self.assertIsNotNone(mixed["tok_s"], "decoding did not stop while another request read its prompt")
-        self.assertGreater(mixed["tok_s"], 0)
-        self.assertIsNone(mixed["request_tok_s"])
-        reading = next(s for s in mixed["slots"] if s["state"] == "reading")
-        self.assertEqual(mixed["request_id"], reading["request_id"])
-        self.assertEqual(mixed["prompt_total"], reading["prompt_tokens"])
-        self.assertGreater(decoding["request_tok_s"], 0)
-        self.assertGreater(decoding["tok_s"], decoding["request_tok_s"])
-        self.assertIn(decoding["request_id"], [s["request_id"] for s in decoding["slots"]])
-        self.assertEqual(len(results), 2)
+        with ThreadPoolExecutor(max_workers=2) as pool, ExitStack() as cleanup:
+            cleanup.callback(self.prefill_gate.touch)
+            decoder = pool.submit(self.chat, "LONGREPLY first")
+            self.assertTrue(wait_until(lambda: self.svc._tok_s() > 0, 5))
+            reader = pool.submit(self.chat, "METRICSHOLD LONGREPLY " + "x" * 1100)
+            self.assertTrue(wait_until(lambda: any(
+                s["state"] == "reading" and s.get("prompt_read") for s in self.engine.slots_view()) and any(
+                s["state"] == "decoding" and s.get("generated", 0) > 1 for s in self.engine.slots_view()), 5))
+            mixed = self.get("/metrics")["live"]
+            self.assertEqual(mixed["state"], "reading")
+            self.assertIsNotNone(mixed["tok_s"], "decoding did not stop while another request read its prompt")
+            self.assertGreater(mixed["tok_s"], 0)
+            self.assertIsNone(mixed["request_tok_s"])
+            reading = next(s for s in mixed["slots"] if s["state"] == "reading")
+            self.assertEqual(mixed["request_id"], reading["request_id"])
+            self.assertEqual(mixed["prompt_total"], reading["prompt_tokens"])
+            self.prefill_gate.touch()
+            self.assertTrue(wait_until(lambda: all(
+                s["state"] == "decoding" and s.get("generated", 0) > 2 for s in self.engine.slots_view()), 5))
+            decoding = self.get("/metrics")["live"]
+            self.assertGreater(decoding["request_tok_s"], 0)
+            self.assertGreater(decoding["tok_s"], decoding["request_tok_s"])
+            self.assertIn(decoding["request_id"], [s["request_id"] for s in decoding["slots"]])
+            decoder.result(timeout=10)
+            reader.result(timeout=10)
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
