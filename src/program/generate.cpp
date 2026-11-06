@@ -17547,7 +17547,8 @@ int main(int argc, char** argv) {
             ver.set_sampling(req_sp);
             if (pipe) ver_b.set_sampling(req_sp);   // (reaches the later stage's odd verifier)
             if (use_mtp) mtp.set_draft_sampling(req_sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
-            const bool gated_proposal = use_mtp && mtp.prob() && strata::core::spec_gate_pick() &&
+            const bool gated_proposal = strata::spec::mtp_window_invariant_applies(use_mtp, req_df2, use_mtp && mtp.prob()) &&
+                strata::core::spec_gate_pick() &&
                 gated_proposal_usable(o.pipeline_windows < 2 && o.batch == 0 && n_stages == 1 && !multi_gpu && drive.d.remote_count == 0,
                                       o.lookup_chain, o.adapt_swaps, req_pcie_frac != 0.0 || o.pcie_frac_auto, spec_cost || req_df2, S,
                                       req_spec_min_p);
@@ -18854,7 +18855,9 @@ int main(int argc, char** argv) {
                 // (never on a first window: a merged one holds prompt tokens, not drafts)
                 if (gated_proposal) ver.set_spec_proposal(proposal.n_q ? proposal.mu.data() : nullptr, proposal.n_q);
                 else if (strata::spec::mtp_q_applies(use_mtp, req_df2, use_mtp && mtp.prob(), from_sfx, first_window, T_mtp)) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);   // only candidates the MTP drew
-                const auto decode_pool_fn = use_mtp && mtp.prob() ? invariant_win_pool_fn : win_pool_fn;
+                const auto decode_pool_fn = strata::spec::mtp_window_invariant_applies(use_mtp, req_df2, use_mtp && mtp.prob())
+                    ? invariant_win_pool_fn
+                    : win_pool_fn;
                 exit_if_gpu_fatal("");   // (the test hook counts windows here)
                 if (!ver.run(T, window.data(), p, decode_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     exit_if_gpu_fatal(drive.d.failed && drive.d.fail ? drive.d.fail : err);
@@ -20644,7 +20647,9 @@ int main(int argc, char** argv) {
             // the MTP's q lists judge only candidates the MTP drew: DFlash2's are a deterministic pick (exact-match path)
             else if (strata::spec::mtp_q_applies(use_mtp, spec_uses_df2, use_mtp && mtp.prob(), from_sfx, first_window, T_mtp) && o.spec_corrupt <= 0)
                 ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
-            const auto decode_pool_fn = use_mtp && mtp.prob() ? &drive_pool_multi_invariant : &drive_pool_multi;
+            const auto decode_pool_fn = strata::spec::mtp_window_invariant_applies(use_mtp, spec_uses_df2, use_mtp && mtp.prob())
+                ? &drive_pool_multi_invariant
+                : &drive_pool_multi;
             if (!ver.run(T, window.data(), p, decode_pool_fn, &drive, outv.data(), err)) {
                 // The graph of a window size is captured the first time it is used, and the draft source took VRAM: when the capture runs
                 // out of memory the window gets one row narrower (the widths below it are already captured) instead of the run failing.
