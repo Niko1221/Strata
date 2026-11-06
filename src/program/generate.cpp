@@ -255,6 +255,40 @@ static void emit_lp_line(const strata::core::Verifier& ver, int t, int32_t token
     std::printf("\n");
 }
 
+// ---- the dual data-parallel prompt path (STRATA_DP_PREFILL=1; nicejunjie's design, nicejunjie/Strata-rdna3)
+namespace {
+// STRATA_DP_MIN: the tokens from which a prompt segment is read on both GPUs (default 8000; a segment must also
+// split into balanced chunks whose last one has kDpMinLast tokens, see dp_takes)
+int64_t dp_min_tokens() {
+    static const int64_t v = [] { const char* e = std::getenv("STRATA_DP_MIN"); return e ? std::max<int64_t>(4096, std::atoll(e)) : (int64_t) 8000; }();
+    return v;
+}
+// the DP plan's chunk for a segment of n tokens (Prefill::run_dp: an even number of balanced chunks, multiples of 256)
+int64_t dp_step_for(int64_t n, int64_t cap) {
+    int64_t k = std::max<int64_t>(2, (n + cap - 1) / cap);
+    if (k & 1) ++k;
+    return ((n + k - 1) / k + 255) / 256 * 256;
+}
+// the shortest last chunk Prefill::run_dp takes (it runs on the drafter's GPU, the last stage): 4096 + 128 positions.
+// Only that GPU's chunks reach the drafter (its on_chunk), so after a DP read the draft layer's cells of the other
+// GPU's chunks are not written; the drafts are verified (the tokens are the target's), only their acceptance can
+// change where --mtp-window reaches back past the last chunk.
+constexpr int64_t kDpMinLast = 4224;
+// a segment the DP plan takes: two or more balanced chunks, the last of at least kDpMinLast tokens (the last chunk is
+// what remains after the full steps: 8441 tokens would plan 4352 + 4089 - refused, the layer pipeline reads it)
+bool dp_takes(int64_t n, int64_t cap) {
+    if (n < dp_min_tokens()) return false;
+    const int64_t step = dp_step_for(n, cap);
+    const int64_t full = (n + step - 1) / step;
+    return full >= 2 && n - (full - 1) * step >= kDpMinLast;
+}
+// the head read_part reads on the layer pipeline before DP: up to the next K/V block boundary from a0
+int64_t dp_head(int64_t a0) {
+    const int64_t blk = strata::kernels::qsa_real_shapes().idx_block;
+    return (blk - a0 % blk) % blk;
+}
+}  // namespace
+
 namespace {
 namespace nib = strata::core::nibble;
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,
@@ -6732,6 +6766,119 @@ int main(int argc, char** argv) {
                      last ? " and the head" : "", (double) fb / 1073741824.0);
     }
 
+    // The dual data-parallel prompt path (STRATA_DP_PREFILL=1; nicejunjie's design, nicejunjie/Strata-rdna3): two GPUs, each
+    // also holds the state of the layers it does not own in decode (a "foreign" session), so both can read every layer on
+    // alternating chunks.  The streamed QSA layers' K/V host copy is the owner's (shared): both paths' appends land in it,
+    // so a foreign session pins no copy of its own.  The foreign session of the stage holds layer 1, so it gets its own
+    // PLE run (the stage's copy of the weights, its own buffers).
+    strata::core::SessionState dp_ss[2];
+    bool dp_on = false;
+    {
+        const char* ev = std::getenv("STRATA_DP_PREFILL");
+        const char* kd = std::getenv("STRATA_KV_HOST_DMA");
+        const bool asked = ev != nullptr && ev[0] == '1';
+        // A DP read runs every layer on both cards, so any trim of the stage weights keeps it off: asked for (stage_trim), or the
+        // layer split's spill walk (walk_trim, and trim_asked from its early step under --layer-split auto).
+        bool ok = asked && multi_gpu && stages.size() == 1 && o.batch == 0 && o.peer_device < 0 && !stage_trim && !trim_asked &&
+                  !walk_trim &&
+                  kd != nullptr && kd[0] == '1' && g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1 &&
+                  stages[0]->ss.qsa_states[stages[0]->ss.qsa_primary()].kv_mode == 1;
+        if (asked && !ok)
+            std::fprintf(stderr, "strata generate: STRATA_DP_PREFILL is off (two GPUs in a layer split, no --batch / "
+                                 "--peer-device / stage trim (asked for or the spill walk's), streamed K/V and STRATA_KV_HOST_DMA=1)\n");
+        // A DP read streams every expert of the other GPU's layers that this GPU does not cache, those the other GPU
+        // caches included.  The expert arena holds every expert in RAM; --mmap-experts / --resident-experts keep in RAM
+        // only what no GPU caches, and a file-backed arena (STRATA_ARENA_MMAP=1) hands the GPU-held ones back, so there
+        // those would be read from the model file on every DP prompt (#4875: a 16K prompt read 82 GB from storage and
+        // was slower than the layer pipeline).  There the layer pipeline reads every prompt.
+        const char* arena_mmap = std::getenv("STRATA_ARENA_MMAP");
+        const char* arena_release = std::getenv("STRATA_ARENA_RELEASE");
+        const bool held_in_ram = !o.mmap_experts && !(arena_mmap != nullptr && arena_mmap[0] == '1' &&
+                                                      !(arena_release != nullptr && arena_release[0] == '0'));
+        // --draft dflash2: the drafter's prompt taps are kept per stage (Prefill::reserve_taps sizes each card's staging for
+        // the tap layers of its own stage), while a DP read runs every layer on one card for its chunks - the last chunk's
+        // taps would be written for every tap layer into a staging sized for half of them.  The layer pipeline reads there.
+        if (ok && o.draft == "dflash2") {
+            std::fprintf(stderr, "strata generate: STRATA_DP_PREFILL is off with --draft dflash2 (the drafter's prompt taps are "
+                                 "kept per card; a DP read runs every layer on one card)\n");
+            ok = false;
+        }
+        if (ok && !held_in_ram) {
+            std::fprintf(stderr, "strata generate: STRATA_DP_PREFILL is off: a DP read streams the experts the other GPU "
+                                 "caches, and with --mmap-experts / --resident-experts (or a file-backed arena that hands "
+                                 "them back) they are not in RAM - the model file would be read on every long prompt\n");
+            ok = false;
+        }
+        for (int i = 0; ok && i < 2; ++i) {
+            GpuStage& st0 = *stages[0];
+            const int dev = i == 0 ? 0 : st0.dev;
+            const int64_t lo = i == 0 ? split_at[0] : 0, hi = i == 0 ? g.n_layers : split_at[0];
+            const strata::core::OnDevice on(dev);
+            void* buf = nullptr;
+            if (cudaMalloc(&buf, strata::core::session_bytes(g, o.max_context, K, lo, hi)) != cudaSuccess ||
+                strata::core::session_init(g, o.max_context, K, buf, dp_ss[i], lo, hi, /*kv_host=*/false) == 0) {
+                std::fprintf(stderr, "strata generate: DP prompt path: CUDA%d's session for layers [%lld, %lld) failed; "
+                                     "DP off\n", dev, (long long) lo, (long long) hi);
+                (void) cudaGetLastError();
+                ok = false;
+                break;
+            }
+            strata::core::SessionState& owner = i == 0 ? st0.ss : ss;
+            for (int64_t q = dp_ss[i].qsa_ord0; q < dp_ss[i].qsa_ord0 + dp_ss[i].qsa_alloc; ++q)
+                dp_ss[i].qsa_states[q].host = owner.qsa_states[q].host;
+            strata::core::session_zero(dp_ss[i], g, nullptr, i == 0 ? main_cs : st0.stream);
+        }
+        if (ok && ss.ple.ready()) {   // the stage's foreign session holds layer 1: its own PLE run
+            GpuStage& st0 = *stages[0];
+            const strata::core::OnDevice on(st0.dev);
+            strata::core::PleRun& P = dp_ss[1].ple;
+            P = ss.ple;   // the table, constants and host fields; the device parts below are the stage's
+            auto fw = [&](const char* name) { return st0.wt.find(name); };
+            const strata::core::WeightRef *wk = fw("blk.1.ple_key.weight"), *wv = fw("blk.1.ple_value.weight"),
+                                          *wnk = fw("blk.1.ple_norm_key.weight"), *wnq = fw("blk.1.ple_norm_query.weight"),
+                                          *wnc = fw("blk.1.ple_norm_conv.weight"), *wc = fw("blk.1.ple_conv1d.weight");
+            float* emb = nullptr;
+            float* scr = nullptr;
+            if (!wk || !wv || !wnk || !wnq || !wnc || !wc ||
+                cudaMalloc((void**) &emb, (size_t) strata::kernels::NG_N_EMBD * 4) != cudaSuccess ||
+                cudaMalloc((void**) &scr, strata::core::ple_run_scratch_bytes()) != cudaSuccess) {
+                std::fprintf(stderr, "strata generate: DP prompt path: the stage's PLE run failed; DP off\n");
+                (void) cudaGetLastError();
+                ok = false;
+            } else {
+                P.w = strata::kernels::PleWeights{};
+                if (!wk->quantized()) P.w.key_bf16 = (const uint16_t*) wk->data;
+                else if (wk->data != nullptr) {
+                    P.w.key_codes = (const uint8_t*) wk->data;
+                    P.w.key_scales = (const float*) ((const uint8_t*) wk->data + wk->codes_bytes);
+                }
+                if (ss.ple.w.key_native_data != nullptr && wk->quantized() && wk->native_data != nullptr) {
+                    P.w.key_native_data = wk->native_data;
+                    P.w.key_native_type = wk->native_type;
+                    P.w.key_native_q8_1 = wk->native_q8_1;
+                }
+                P.w.value_bf16 = (const uint16_t*) wv->data;
+                P.w.norm_key = (const float*) wnk->data;
+                P.w.norm_query = (const float*) wnq->data;
+                P.w.norm_conv = (const float*) wnc->data;
+                P.w.conv1d_f16 = (const uint16_t*) wc->data;
+                P.hist = dp_ss[1].ple_hist;
+                P.emb_dev = emb;
+                P.scratch = scr;
+                if (!P.ready()) {
+                    std::fprintf(stderr, "strata generate: DP prompt path: the stage's PLE run is not ready; DP off\n");
+                    ok = false;
+                }
+            }
+        }
+        dp_on = ok;
+        if (dp_on)
+            std::fprintf(stderr, "strata generate: DP prompt path on: CUDA0 also holds layers [%lld, %lld), CUDA%d layers "
+                                 "[0, %lld) (prompts of STRATA_DP_MIN tokens and more read both GPUs on alternating chunks); "
+                                 "the K/V still in %.2f GiB of pinned RAM (the extra sessions share the owners' copies)\n",
+                         (long long) split_at[0], (long long) g.n_layers, stages[0]->dev, (long long) split_at[0],
+                         (double) strata::core::qsa_kv_host_bytes() / 1073741824.0);
+    }
     // --batch: every stage carves o.batch more sessions like its own (same layer range and context), one per
     // slot of the batch windows.  Before the expert cache is sized, so `--expert-cache auto` leaves them room.
     // Recommend, never force: a count the engine cannot run is said and adjusted (or batching left off) - the
@@ -11132,6 +11279,19 @@ int main(int argc, char** argv) {
             return 1;
         }
         uma_refuse_chunk_if_full(o.prefill_chunk, borrow != nullptr, xcache.gib());
+        if (dp_on) {   // the DP prompt path's link (both paths run init above)
+            std::shared_ptr<strata::prefill::Prefill::DpLink> link =
+                strata::prefill::Prefill::make_dp_link((int) g.n_layers, 0, stages[0]->dev, err);
+            if (!link) {
+                std::fprintf(stderr, "strata serve: DP prompt path: %s - off\n", err.c_str());
+                dp_on = false;
+            } else {
+                sp.set_dp(&stages[0]->sp, &dp_ss[0], 0, split_at[0], link, 0);
+                stages[0]->sp.set_dp(&sp, &dp_ss[1], split_at[0], g.n_layers, link, 1);
+                std::fprintf(stderr, "strata serve: DP prompt path linked (chunk up to %lld tokens)\n",
+                             (long long) o.prefill_chunk);
+            }
+        }
         // The peer's streaming and a split's helpers live INSIDE the layout (`set_peer` / `set_stage_helper` build
         // them in the path's own Impl), so a path that is laid out again - the prompt room, below - has to be armed
         // again.  Both calls start by dropping what they built before, and both leave `err` clear on a decline.
@@ -16986,6 +17146,20 @@ int main(int argc, char** argv) {
                 };
                 bool conc_read = false;   // run_conc: the slots decode beside the read, so the share stays off for all of it
                 auto run = [&](int64_t q, int64_t r) -> bool {
+                    if (dp_on && !batch_on() && dp_takes(r - q - dp_head(q), o.prefill_chunk)) {
+                        // DP prompt path: both GPUs on alternating chunks while no slot decodes; a head to the next K/V
+                        // block boundary first (the pipeline), and the pipeline for a prompt the plan cannot take.
+                        // (run_dp bypasses the layer-major walk and forces its own chunk, so the plan's force_chunk
+                        // is left for the pipeline path below.)
+                        const int64_t head = dp_head(q);
+                        if (head > 0 && !sp.run(ids.data() + q, head, q, e)) return false;
+                        std::string de;
+                        if (strata::prefill::Prefill::run_dp(sp, stages[0]->sp, ids.data() + q + head, r - q - head, q + head,
+                                                             o.prefill_chunk, kDpMinLast, de))
+                            return true;
+                        if (de.rfind("prefill DP: the p", 0) != 0) { e = de; return false; }
+                        std::fprintf(stderr, "strata serve: %s - the layer pipeline reads it\n", de.c_str());
+                    }
                     if (planned) sp.force_chunk(plan.chunk, plan_single, plan.chunked);
                     if (!conc_read) share_gate();   // STRATA_PREFILL_CPU_SHARE_BATCH: re-decided for every run (a piece beside decoding slots too)
                     bool run_ok;
