@@ -3304,8 +3304,13 @@ __device__ uint32_t tp_select(const uint32_t* __restrict__ key, const int32_t* _
             const bool tail = hit && !unit && blk[i] == n_bid;
             const int d = (int) ((k >> shift) & 255u);
             const int g = hit && !tail ? d : 256;
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+            // no __match_any_sync on 6.x: one add per thread (integer atomics: the same sums, only more of them)
+            if (g < 256) atomicAdd(&hist[d], unit ? 1 : R);
+#else
             const unsigned grp = __match_any_sync(0xffffffffu, g);   // one add per digit and warp
             if (g < 256 && lane == __ffs(grp) - 1) atomicAdd(&hist[d], (unit ? 1 : R) * __popc(grp));
+#endif
             if (tail) atomicAdd(&hist[d], w_tail);
         }
         __syncthreads();
