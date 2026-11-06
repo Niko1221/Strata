@@ -91,9 +91,15 @@ def run_meta(args, **extra) -> dict:
     return rec
 
 
-def write_run_meta(out: str, args, **extra) -> str:
-    """合并写 `<out>.meta.json`。start 与 done 两次调用合并成一条记录，不互相覆盖。"""
-    path = pathlib.Path(str(out) + ".meta.json")
+def write_run_meta(out_path: str, args, **extra) -> str:
+    """合并写 `<--out>.meta.json`。start 与 done 两次调用合并成一条记录，不互相覆盖。
+
+    参数名刻意叫 `out_path` 而不是 `out`：调用方常常直接 `**` 展开一个包含 `out`
+    的 dict（例如把 `vars(args)` 派生出来的结果字典传进来），若这里也叫 `out`，
+    Python 在**函数调用时**就抛 `got multiple values for argument 'out'`，函数体
+    根本没机会做防御。2026-11-07 真机重训在最后一步踩到过，别改回去。
+    """
+    path = pathlib.Path(str(out_path) + ".meta.json")
     prev = {}
     if path.is_file():
         try:

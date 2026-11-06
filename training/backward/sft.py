@@ -1174,10 +1174,11 @@ def main() -> int:
         sd = {k: v.detach().cpu() for k, v in model.state_dict().items() if k.endswith(".A") or k.endswith(".B")}
     torch.save(sd, args.out)
     # 完成态：把实际步数、keep-best、能力门终评、耗时与峰值并进 start 那份，不另开文件。
+    # 注意不要往 extra 里放 `out`：它在 vars(args) 里已有；而且 write_run_meta 的
+    # 首参就叫 out_path，重复的 out 只会覆盖同一个值、没有信息量。
     done_extra = {"phase": "done", "steps_done": n_steps_done,
                   "train_secs": round(train_secs, 3), "run_secs": round(run_secs, 3),
-                  "peak_gib": round(float(torch.cuda.max_memory_allocated()) / 2**30, 3),
-                  "out": str(args.out)}
+                  "peak_gib": round(float(torch.cuda.max_memory_allocated()) / 2**30, 3)}
     if best is not None:
         done_extra["best_step"] = best["step"]
         done_extra["best_cap_drift"] = round(float(best["cap_drift"]), 6)
