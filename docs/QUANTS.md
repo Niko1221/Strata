@@ -30,8 +30,8 @@ IQ4_NL (26.8 GiB) in UD-IQ4_XS and UD-Q4_K_XL and Q8_0 (50.7 GiB) in UD-Q5_K_XL,
 the GPU reads once per verify window is about 4.8 GB in every file.
 
 Replacing `UD-IQ4_XS`'s 4-bit `token_embd.weight` with the checkpoint's exact BF16 table (`token-embd-bf16.gguf`,
-`1.21 GiB`, via `--embd-gguf` or by placing `token-embd-bf16.gguf` alongside the model shards where `NativeEmbed`
-auto-discovers it for any sub-8-bit `token_embd.weight`) costs **0 B of VRAM** (`+890 MiB` of pinned mapped host RAM
+`1.21 GiB`, via `--embd-gguf` or by placing `token-embd-bf16.gguf` alongside the model shards and setting `STRATA_AUTO_EMBD_BF16=1`, which makes
+`NativeEmbed` discover it for any sub-8-bit `token_embd.weight`) costs **0 B of VRAM** (`+890 MiB` of pinned mapped host RAM
 and `+3.76 KB/token` over PCIe, speed-neutral on decode) and flips **4.88% of greedy top-1 predictions (`95.12%` top-1
 agreement, mean `KL = 0.02602`)** across the 4,995 positions of `data/quant_quality/v1`, lowering teacher-forced
 perplexity on English prose (`4.2413 -> 4.2090`, `-0.76%`), multilingual (`2.6562 -> 2.6464`, `-0.37%`), and docs

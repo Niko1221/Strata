@@ -2944,6 +2944,7 @@ int main(int argc, char **argv) try {
         if (embd_gguf.empty()) {
             embd_gguf = strata::core::NativeEmbed::auto_bf16_sidecar(o.native_shards, g.n_embd, g.n_vocab,
                                                                      &replaced_embd_type);
+            o.embd_gguf = embd_gguf;
         }
         if (!native_embed.load(embd_gguf.empty() ? o.native_shards : std::vector<std::string>{embd_gguf}, g.n_embd,
                                g.n_vocab, err)) {

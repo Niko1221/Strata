@@ -290,40 +290,41 @@ std::string NativeEmbed::auto_bf16_sidecar(const std::vector<std::string>& shard
                                            int* replaced_type) {
     if (replaced_type) *replaced_type = -1;
     const char* env = std::getenv("STRATA_AUTO_EMBD_BF16");
-    if (env && env[0] == '0' && env[1] == '\0') return {};
+    if (!env || env[0] != '1' || env[1] != '\0') return {};
     if (shards.empty() || n_embd <= 0 || n_vocab <= 0) return {};
     try {
         const std::filesystem::path shard_dir = std::filesystem::path(shards[0]).parent_path();
+        const std::filesystem::path parent_dir = shard_dir / "..";
         const std::filesystem::path candidates[] = {
             shard_dir / "token-embd-bf16.gguf",
-            shard_dir.parent_path() / "token-embd-bf16.gguf",
-            shard_dir.parent_path() / "embd" / "token-embd-bf16.gguf",
+            parent_dir / "token-embd-bf16.gguf",
+            parent_dir / "embd" / "token-embd-bf16.gguf",
         };
-        std::filesystem::path found;
-        for (const auto& c : candidates) {
-            std::error_code ec;
-            if (!c.empty() && std::filesystem::is_regular_file(c, ec) && !ec) {
-                found = c;
-                break;
-            }
-        }
-        if (found.empty()) return {};
         const strata::GgufModel model(shards);
         const strata::TensorInfo* t = model.find("token_embd.weight");
         if (!t || t->type == 0 || t->type == 1 || t->type == 8 || t->type == 30) return {};
-        const strata::GgufModel sidecar({found.string()});
-        const strata::MetaValue* arch = sidecar.meta().get("general.architecture");
-        if (!arch || arch->s != "strata-embd") return {};
-        size_t at = 0;
-        const strata::TensorInfo* bt = sidecar.find("token_embd.weight", &at);
         const uint64_t want_bytes = (uint64_t) n_embd * (uint64_t) n_vocab * 2;
-        if (!bt || bt->type != 30 || bt->shape.size() != 2 ||
-            bt->shape[0] != (uint64_t) n_embd || bt->shape[1] != (uint64_t) n_vocab ||
-            !sidecar.in_bounds(*bt, at) || strata::tensor_payload_bytes(*bt) != want_bytes) {
-            return {};
+        for (const auto& c : candidates) {
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(c, ec) || ec) continue;
+            try {
+                const strata::GgufModel sidecar({c.string()});
+                const strata::MetaValue* arch = sidecar.meta().get("general.architecture");
+                if (!arch || arch->s != "strata-embd") continue;
+                size_t at = 0;
+                const strata::TensorInfo* bt = sidecar.find("token_embd.weight", &at);
+                if (!bt || bt->type != 30 || bt->shape.size() != 2 ||
+                    bt->shape[0] != (uint64_t) n_embd || bt->shape[1] != (uint64_t) n_vocab ||
+                    !sidecar.in_bounds(*bt, at) || strata::tensor_payload_bytes(*bt) != want_bytes) {
+                    continue;
+                }
+            } catch (...) {
+                continue;
+            }
+            if (replaced_type) *replaced_type = (int) t->type;
+            return c.string();
         }
-        if (replaced_type) *replaced_type = (int) t->type;
-        return found.string();
+        return {};
     } catch (...) {
         return {};
     }
