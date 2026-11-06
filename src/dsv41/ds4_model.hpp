@@ -97,9 +97,9 @@ struct Stats {
     int64_t skip_switches = 0;        // ... the times it switched
     double skip_cold = 0.0;           // ... the cold share over its window (while skipping)
     int64_t ram_experts = 0, ram_moves = 0;   // CPU-lane experts read from the RAM tier; experts moved into it
-    double prof_ms[6] = {};          // DS4_PROF: the GPU's time in decode by stage (between layers, attention, routing +
+    double prof_ms[12] = {};         // DS4_PROF: the GPU's time in decode by stage (between layers, attention, routing +
     int64_t prof_tokens = 0;         // shared expert, experts' gate / up, the wait for the CPU lane, down + post)
-    double prof_win_ms[6] = {};      // DS4_PROF_WIN: the same for the verify windows (T > 1: their experts' stages in one,
+    double prof_win_ms[12] = {};     // DS4_PROF_WIN: the same for the verify windows (T > 1: their experts' stages in one,
     int64_t prof_wins = 0, prof_win_rows = 0;   // the last), the windows and their tokens
     // lookahead (decode windows of one): the picks of layers guessed a layer before (the next layer's gate on this
     // layer's FFN input), of them in the guess's top k / in all its guesses / in the guess two layers before; the picks

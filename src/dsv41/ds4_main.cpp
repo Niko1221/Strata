@@ -2852,21 +2852,27 @@ int main(int argc, char** argv) {
     if (s.prof_tokens > s0.prof_tokens) {   // DS4_PROF
         const double pt = (double) (s.prof_tokens - s0.prof_tokens);
         double sum = 0;
-        for (int i = 0; i < 6; ++i) sum += (s.prof_ms[i] - s0.prof_ms[i]) / pt;
+        auto at = [&](int i) { return (s.prof_ms[i] - s0.prof_ms[i]) / pt; };
+        for (int i = 0; i < 11; ++i) sum += at(i);
+        const double attn = at(1) + at(6) + at(7) + at(8) + at(9) + at(10);
         std::fprintf(stderr, "GPU per token (DS4_PROF): %.2f ms - between layers %.2f, attention %.2f, routing + shared "
                              "expert %.2f, experts gate/up %.2f, waiting for the CPU lane %.2f, down + post %.2f\n", sum,
-                     (s.prof_ms[0] - s0.prof_ms[0]) / pt, (s.prof_ms[1] - s0.prof_ms[1]) / pt,
-                     (s.prof_ms[2] - s0.prof_ms[2]) / pt, (s.prof_ms[3] - s0.prof_ms[3]) / pt,
-                     (s.prof_ms[4] - s0.prof_ms[4]) / pt, (s.prof_ms[5] - s0.prof_ms[5]) / pt);
+                     at(0), attn, at(2), at(3), at(4), at(5));
+        std::fprintf(stderr, "GPU per token, the attention (DS4_PROF): mHC + norm %.2f, q_a / kv %.2f, q_b + rope %.2f, "
+                             "compressor + indexer + attention %.2f, wo_a + wo_b %.2f, post %.2f\n",
+                     at(10), at(6), at(7), at(8), at(9), at(1));
     }
     if (s.prof_wins > s0.prof_wins) {   // DS4_PROF_WIN
         const double pw = (double) (s.prof_wins - s0.prof_wins);
         double sum = 0;
-        for (int i = 0; i < 6; ++i) sum += (s.prof_win_ms[i] - s0.prof_win_ms[i]) / pw;
+        for (int i = 0; i < 11; ++i) sum += (s.prof_win_ms[i] - s0.prof_win_ms[i]) / pw;
         std::fprintf(stderr, "GPU per verify window (DS4_PROF_WIN, %.0f windows of %.2f tokens): %.2f ms - between layers %.2f, "
                              "attention %.2f, routing + shared expert %.2f, experts with the CPU lane's wait, down and post %.2f\n",
                      pw, (double) (s.prof_win_rows - s0.prof_win_rows) / pw, sum, (s.prof_win_ms[0] - s0.prof_win_ms[0]) / pw,
-                     (s.prof_win_ms[1] - s0.prof_win_ms[1]) / pw, (s.prof_win_ms[2] - s0.prof_win_ms[2]) / pw,
+                     (s.prof_win_ms[1] + s.prof_win_ms[6] + s.prof_win_ms[7] + s.prof_win_ms[8] + s.prof_win_ms[9] + s.prof_win_ms[10] -
+                      s0.prof_win_ms[1] - s0.prof_win_ms[6] - s0.prof_win_ms[7] - s0.prof_win_ms[8] - s0.prof_win_ms[9] -
+                      s0.prof_win_ms[10]) / pw,
+                     (s.prof_win_ms[2] - s0.prof_win_ms[2]) / pw,
                      (s.prof_win_ms[3] + s.prof_win_ms[4] + s.prof_win_ms[5] - s0.prof_win_ms[3] - s0.prof_win_ms[4] -
                       s0.prof_win_ms[5]) / pw);
     }

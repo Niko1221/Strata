@@ -1723,6 +1723,10 @@ struct Model::Impl {
             t_last = t;
             if (stage == 3) ++n;
         }
+        prof_event(d, stage);
+    }
+    // DS4_PROF's mark alone, unseen by DS4_TLOG's host phases: the decode attention's parts, a window's expert stages
+    void prof_event(const Dev& d, int stage) {
         if (!prof_window && !prof_chunk) return;
         if (prof_window && !prof_chunk && prof_sync_on) {   // decode: the stream drained at each mark, host clock (events hang the driver on gfx1151 Windows)
             std::lock_guard<std::mutex> lk(prof_mu);
@@ -1785,7 +1789,8 @@ struct Model::Impl {
         std::lock_guard<std::mutex> lk(prof_mu);
         const bool chunk_sample = prof_chunk;
         bool sample_ok = !prof_failed;
-        // a chunk's marks name its stages 0..10 (cprof_ms, the finer table), a decoded token's 0..5 (st.prof_ms)
+        // a chunk's marks name its stages 0..10 (cprof_ms, the finer table), a decode window's 0..10 too (st.prof_ms: 0-5,
+        // and the attention's parts 6-10)
         constexpr int kSampleStages = (int) (sizeof cprof_ms / sizeof cprof_ms[0]);
         double sample_ms[kSampleStages] = {};
         std::vector<std::pair<int, cudaEvent_t>> last;
@@ -1827,6 +1832,7 @@ struct Model::Impl {
         if (sample_ok) {
             const bool win = !chunk_sample && prof_T > 1;   // (DS4_PROF_WIN: a verify window's, apart from the tokens')
             double* total = chunk_sample ? cprof_ms : win ? st.prof_win_ms : st.prof_ms;
+            // (decode: 0-5, and the attention's parts 6-10)
             const int stages = chunk_sample ? kSampleStages : (int) (sizeof st.prof_ms / sizeof st.prof_ms[0]);
             for (int i = 0; i < stages; ++i) total[i] += sample_ms[i];
             for (const ProfMark& m : prof_marks) prof_pool[(size_t) m.dev].push_back(m.ev);
@@ -14062,6 +14068,7 @@ struct Model::Impl {
         hc_pre_norm(d.h, d.pre, l.attn_norm, D, H, T, g.eps, d.x, s);
         dump_sub(d, "pre_in", l.il, p0, T, d.pre, (size_t) T * 8 * 4);
         dump_sub(d, "attn_x", l.il, p0, T, d.x, (size_t) T * D * 4);
+        prof_event(d, 10);   // (DS4_PROF, the attention's parts: 10 its mHC and norm, 6 q_a / kv, 7 q_b and rope, 8 the core, 9 wo)
         {
             x3::MvJob j[4];
             int nj = 0;
@@ -14071,6 +14078,7 @@ struct Model::Impl {
             if (l.kv_src && l.ratio > 1) j[nj++] = job(l.c_wgate, d.x, d.cgr, T, D, HD);
             if (!mv_n(d, j, nj, err)) return false;
         }
+        prof_event(d, 6);
         dump_sub(d, "qr_raw", l.il, p0, T, d.qr, (size_t) T * g.q_lora * 4);
         dump_sub(d, "kvr_raw", l.il, p0, T, d.kvr, (size_t) T * HD * 4);
         Finish fq;
@@ -14093,6 +14101,7 @@ struct Model::Impl {
                 }
         }
         if (NHL > 0) dump_sub(d, "q", l.il, p0, T, d.q, (size_t) T * HQ * 4);
+        prof_event(d, 7);
         if (wp.nrow == 0) {
             if (!attn_core(l, mi, d, p0, T, 0, wp, attn_bound(l), err)) return false;
         } else {   // (--parallel: each row its own conversation's attention, then its new rows to the other groups -
@@ -14105,6 +14114,7 @@ struct Model::Impl {
             }
             if (!multi_put(l, mi, d, wp, err)) return false;
         }
+        prof_event(d, 8);
         if (NHL > 0) {
             x3::MvJob j[16];
             const int per = HQ / OG;
@@ -14113,6 +14123,7 @@ struct Model::Impl {
             if (!mv_n(d, j, OG, err)) return false;
             if (!mv(d, {job(l.wo_b, d.oa, d.ao, T, (size_t) OG * g.o_lora, D)}, err)) return false;
         } else CK(cudaMemsetAsync(d.ao, 0, (size_t) T * D * sizeof(*d.ao), s));   // (no heads: nothing to add)
+        prof_event(d, 9);
         dump_sub(d, "ao", l.il, p0, T, d.ao, (size_t) T * D * 4);
         if (nm > 1) allreduce(d.ao, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
         hc_post(d.ao, d.h, d.a_post, d.a_comb, D, H, T, d.h2, s);
