@@ -3709,8 +3709,7 @@ __global__ void __launch_bounds__(256) s26_gu_l_kernel(const unsigned long long*
                 for (int q = 0; q < RPW; ++q)
                     if (j / GRP_NC == q && c < n) (upq[q] ? up : gate)[(size_t) (e + c) * L.n_ff + rr[q]] = sum;
             }
-            continue;
-        }
+        } else {
 #pragma unroll
         for (int q = 0; q < RPW; ++q)
 #pragma unroll
@@ -3721,6 +3720,7 @@ __global__ void __launch_bounds__(256) s26_gu_l_kernel(const unsigned long long*
 #pragma unroll
             for (int c = 0; c < GRP_NC; ++c)
                 if (c < n && lane == c) (upq[q] ? up : gate)[(size_t) (e + c) * L.n_ff + rr[q]] = s[q][c];
+        }
     }
 }
 
@@ -3820,8 +3820,7 @@ __global__ void __launch_bounds__(256) s26_down_l_kernel(const unsigned long lon
             const int q = j / GRP_NC, c = j % GRP_NC;
             if (lane == s26ts::tsum_lane<P>(j) && j < RPW * GRP_NC && c < n)
                 out[(size_t) ent_dst[e + c] * L.n_embd + r0 + 8 * q] = sum;
-            continue;
-        }
+        } else {
 #pragma unroll
         for (int q = 0; q < RPW; ++q)
 #pragma unroll
@@ -3832,6 +3831,7 @@ __global__ void __launch_bounds__(256) s26_down_l_kernel(const unsigned long lon
 #pragma unroll
             for (int c = 0; c < GRP_NC; ++c)
                 if (c < n && lane == c) out[(size_t) ent_dst[e + c] * L.n_embd + r0 + 8 * q] = s[q][c];
+        }
     }
 }
 
@@ -3957,8 +3957,7 @@ __global__ void __launch_bounds__(256) s27_gu_kernel(const unsigned long long* _
                 for (int q = 0; q < RPW; ++q)
                     if (j / GRP_NC == q && c < n) (upq[q] ? up : gate)[(size_t) (e + c) * L.n_ff + rr[q]] = sum;
             }
-            continue;
-        }
+        } else {
 #pragma unroll
         for (int q = 0; q < RPW; ++q)
 #pragma unroll
@@ -3969,6 +3968,7 @@ __global__ void __launch_bounds__(256) s27_gu_kernel(const unsigned long long* _
 #pragma unroll
             for (int c = 0; c < GRP_NC; ++c)
                 if (c < n && lane == c) (upq[q] ? up : gate)[(size_t) (e + c) * L.n_ff + rr[q]] = s[q][c];
+        }
     }
 }
 
@@ -4038,8 +4038,7 @@ __global__ void __launch_bounds__(256) s27_down_kernel(const unsigned long long*
             const int q = j / GRP_NC, c = j % GRP_NC;
             if (lane == s26ts::tsum_lane<P>(j) && j < RPW * GRP_NC && c < n)
                 out[(size_t) ent_dst[e + c] * L.n_embd + r0 + 8 * q] = sum;
-            continue;
-        }
+        } else {
 #pragma unroll
         for (int q = 0; q < RPW; ++q)
 #pragma unroll
@@ -4050,6 +4049,7 @@ __global__ void __launch_bounds__(256) s27_down_kernel(const unsigned long long*
 #pragma unroll
             for (int c = 0; c < GRP_NC; ++c)
                 if (c < n && lane == c) out[(size_t) ent_dst[e + c] * L.n_embd + r0 + 8 * q] = s[q][c];
+        }
     }
 }
 
@@ -5966,8 +5966,7 @@ __global__ void __launch_bounds__(256) native_gu_lds_kernel(const unsigned long 
                     case 3: pass(std::integral_constant<int, 3>{}); break;
                     default: pass(std::integral_constant<int, 4>{}); break;
                 }
-                continue;
-            }
+            } else {
             for (int j = 0; j < cn; ++j) {
                 const block_q8_1* x = sx + (size_t) j * xb;
                 float s0 = 0.0f, s1 = 0.0f;
@@ -5982,6 +5981,7 @@ __global__ void __launch_bounds__(256) native_gu_lds_kernel(const unsigned long 
                 s0 = warp_sum(s0);
                 s1 = warp_sum(s1);
                 if (lane == 0) { put(row0, c0 + j, s0); if (two) put(row1, c0 + j, s1); }
+            }
             }
         }
     }
