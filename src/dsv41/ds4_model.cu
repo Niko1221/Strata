@@ -6592,6 +6592,31 @@ struct Model::Impl {
         cfg.ram_avail = [] { return ram_avail(); };
         cfg.reserve = (size_t) (std::getenv("DS4_STORE_RESERVE") ? std::atoi(std::getenv("DS4_STORE_RESERVE")) : 192);
         cfg.vis_percent = std::getenv("DS4_STORE_ZC_FRAC") ? std::atoi(std::getenv("DS4_STORE_ZC_FRAC")) : uma_tier() ? 100 : 50;
+        // slot classes (a slot a blob size): under the UMA tier, or DS4_STORE_CLASSES=1 - each layer's share of the budget is what
+        // the profile's hottest experts (by count a byte, as preload_store reads them) take of it, in their layers' own slot sizes
+        const char* sc = std::getenv("DS4_STORE_CLASSES");
+        if (sc != nullptr ? std::atoi(sc) != 0 : uma_tier()) {
+            std::vector<std::pair<double, int>> hot;   // (count a byte, layer)
+            for (const Layer& l : L) {
+                if (l.il >= g.nl) continue;
+                const uint32_t* pr = prof.data() + (size_t) l.il * g.n_exp;
+                for (int e = 0; e < l.n_exp; ++e)
+                    if (l.slot[(size_t) e] < 0 && pr[e] > 0) hot.push_back({(double) pr[e] / (double) l.blob, l.il});
+            }
+            std::stable_sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            cfg.layer_budget.assign((size_t) g.nl, 0);
+            auto slot_of = [](size_t blob) {
+                return (double) ((blob + 2 * ExpertStore::kSlack + os::kDirectAlign - 1) & ~(size_t) (os::kDirectAlign - 1));
+            };
+            const double room = (double) cfg.budget_bytes - (double) (cfg.reserve + 64) * slot_of(L[0].blob);
+            double used = 0;
+            for (const auto& h : hot) {
+                const Layer& l = L[(size_t) h.second];
+                if (used + slot_of(l.blob) > room) break;
+                used += slot_of(l.blob);
+                cfg.layer_budget[(size_t) l.il] += l.blob;
+            }
+        }
         // (the GPU computing the store's experts over PCIe is opt-in, DS4_STORE_ZC=1: measured slower than the CPU lane alone on a
         // 5070 / PCIe 5.0 - the staging copy sits in the layer's critical path - and its answers depend on the timing of which lane
         // took which expert, the CPU lane's are the mmap path's byte for byte)
@@ -6648,8 +6673,8 @@ struct Model::Impl {
         if (std::getenv("DS4_AHEAD") == nullptr) ahead_mode = 0;
         for (Layer& l : L)
             if (l.il < g.nl && want_zc) l.zc.assign((size_t) l.n_exp, 0);
-        std::fprintf(stderr, "ds4: RAM store: up to %zu slots of %.1f MB (%.1f GB), policy %d, %d reader threads, %s reads\n",
-                     store->slots_max(), store->slot_bytes() / 1e6, store->slots_max() * (double) store->slot_bytes() / 1e9,
+        std::fprintf(stderr, "ds4: RAM store: up to %zu slots (%s; %.1f GB), policy %d, %d reader threads, %s reads\n",
+                     store->slots_max(), store->classes_desc().c_str(), store->arena_total() / 1e9,
                      (int) cfg.policy, cfg.threads, direct ? "unbuffered" : "BUFFERED (no direct handle)");
         if (want_zc) {
             if (!store->gpu_mapped()) {
