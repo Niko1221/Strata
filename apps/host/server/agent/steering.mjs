@@ -2,9 +2,15 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
-export const SOFT_CUT_PATCH = 'strata-harness-soft-cut-v1';
+export const SOFT_CUT_PATCH = 'strata-harness-soft-cut-v2';
 
 export const STEERING_UNAVAILABLE = 'The parent agent is not accepting this steering instruction. Your correction is kept.';
+
+export function isSteeringDelivery(item, event, sessionId, requestId) {
+  return !!item && item.sessionId === sessionId && item.turnId === requestId
+    && Number.isSafeInteger(item.parentTurn) && event.type === 'user/message'
+    && event.data?.source?.rpcId === item.id && event.data.source.steeringTurn === item.parentTurn;
+}
 
 /** Fold only the parent session's durable lifecycle, including late follow snapshots. */
 export class ParentSteering {

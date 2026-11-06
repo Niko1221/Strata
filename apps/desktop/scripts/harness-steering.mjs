@@ -12,7 +12,10 @@ const definition = () => JSON.parse(readFileSync(join(directory, 'soft-cut.json'
 const patchFile = join(directory, 'soft-cut.patch');
 
 function checkSources(root, def, side) {
-  for (const file of def.sources) if (digest(readFileSync(join(root, file.path))) !== file[side]) throw new Error(`Unexpected Harness source: ${file.path} (${side}).`);
+  for (const file of def.sources) {
+    const path = join(root, file.path);
+    if (file[side] === null ? existsSync(path) : !existsSync(path) || digest(readFileSync(path)) !== file[side]) throw new Error(`Unexpected Harness source: ${file.path} (${side}).`);
+  }
 }
 
 export function applyHarnessSteeringSource(root) {
@@ -31,7 +34,7 @@ export function recordHarnessSteeringBuild(root) {
   checkSources(root, def, 'after');
   const artifacts = def.artifacts.map(file => ({ ...file, sha256: digest(readFileSync(join(root, file.source))) }));
   const validator = readFileSync(join(root, 'packages/api/session-controller/lib/typert.host.js'), 'utf8');
-  if (!validator.includes('soft-cut')) throw new Error('Build the updated Harness protocol validators before recording provenance.');
+  if (!validator.includes('soft-cut') || !validator.includes('expectedTurn')) throw new Error('Build the updated Harness protocol validators before recording provenance.');
   const record = { id: def.id, commit: def.commit, patchSha256: def.patchSha256, artifacts };
   writeFileSync(join(root, 'BUNDLE.json'), JSON.stringify({ component: 'deepseek-harness-source', commit: def.commit, patches: [record] }, null, 2));
   return record;

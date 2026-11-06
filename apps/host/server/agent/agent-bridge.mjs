@@ -20,7 +20,7 @@ import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
-import { SOFT_CUT_PATCH, SteeringStore, ParentSteering, STEERING_UNAVAILABLE } from './steering.mjs';
+import { SOFT_CUT_PATCH, SteeringStore, ParentSteering, STEERING_UNAVAILABLE, isSteeringDelivery } from './steering.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
 import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf, localOutputBudget, compactionHeadroom } from './profile.mjs';
@@ -602,7 +602,7 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
         const event = item.event;
         const id = event.type === 'user/message' ? event.data?.source?.rpcId : null;
         const instruction = id ? steering.get(chatId, id) : null;
-        if (instruction && instruction.sessionId === sessionId && instruction.turnId === requestId) {
+        if (isSteeringDelivery(instruction, event, sessionId, requestId)) {
           const delivered = steering.update(chatId, id, { state: 'delivered', accepted: true, error: null });
           emit({ type: 'steering', message: delivered });
         }
@@ -1262,10 +1262,11 @@ ${note.text}
       if (!await turn.admitted.promise || turn.finished || turn.stopping || chats.get(chatId)?.turn !== turn || rt !== runtime) throw new AgentUnavailable('The run ended before this instruction could be delivered.', 'steer-idle');
       if (steering.get(chatId, id)?.accepted) return steering.get(chatId, id);
       if (!turn.steeringSynced || turn.parentSteering.turn !== parentTurn) throw new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');
-      await runtime.gw.rpc('session/prompt', { request: { requestId: id, sessionId: turn.sessionId, mode: 'soft-cut', content: [{ type: 'text', text }] } }, { signal: AbortSignal.timeout(15000) });
+      const receipt = await runtime.gw.rpc('session/prompt', { request: { requestId: id, sessionId: turn.sessionId, mode: 'soft-cut', expectedTurn: parentTurn, content: [{ type: 'text', text }] } }, { signal: AbortSignal.timeout(15000) });
+      if (receipt?.accepted !== true || receipt.turn !== parentTurn) throw new AgentUnavailable('The agent did not confirm the expected parent turn. Your correction is kept.', 'steer-ack');
       return steering.update(chatId, id, { accepted: true, state: turn.finished ? 'failed' : 'pending', error: turn.finished ? 'Delivery was not confirmed before the run ended.' : null });
     }).catch(error => {
-      if (error.code === 'session/agent-busy' && /cannot soft-cut without an active turn/.test(String(error.details?.reason))) {
+      if (error.code === 'session/turn-mismatch' || error.code === 'session/agent-busy' && /cannot soft-cut (without an active turn|a different turn)/.test(String(error.details?.reason))) {
         turn.parentSteering.reject(parentTurn);
         turn.publishSteering();
         error = new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');

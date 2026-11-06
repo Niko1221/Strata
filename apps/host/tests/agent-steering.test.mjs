@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
-import { SOFT_CUT_PATCH, SteeringStore, ParentSteering } from '../server/agent/steering.mjs';
+import { SOFT_CUT_PATCH, SteeringStore, ParentSteering, isSteeringDelivery } from '../server/agent/steering.mjs';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -73,15 +73,17 @@ test('steering receipts survive restart, reject ID reuse, and cannot downgrade d
   assert.deepEqual(missing.list('chat'), [], 'a failed write publishes no accepted receipt');
 });
 
-async function rig(t, { tool = false, manual = false } = {}) {
+async function rig(t, { tool = false, manual = false, holdFuture = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-steer-agent-')), workspace = join(root, 'work'); mkdirSync(workspace);
   const frames = [], requests = [], held = [], prefix = deferred(), proposed = deferred(), delivered = deferred(); let released = false;
+  let requestArrived = deferred();
   const marker = join(workspace, 'operations'), began = join(workspace, 'began'), release = join(workspace, 'release');
   const server = createServer(async (req, res) => {
     if (req.url === '/v1/models') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'scripted-model' }] })); return; }
     if (!req.url.endsWith('/chat/completions')) { res.writeHead(404); res.end(); return; }
     let raw = ''; for await (const piece of req) raw += piece;
     const body = JSON.parse(raw); requests.push(body);
+    requestArrived.resolve(body); requestArrived = deferred();
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const delta = chunk => res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: chunk, finish_reason: null }] }) + '\n\n');
     const end = reason => { res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: reason }] }) + '\n\ndata: [DONE]\n\n'); res.end(); };
@@ -93,7 +95,8 @@ async function rig(t, { tool = false, manual = false } = {}) {
     if (requests.length === 1) {
       delta({ reasoning_content: 'Unfinished reasoning must not become history' });
       delta({ content: 'Preserved visible prefix' });
-      delta({ tool_calls: [{ index: 0, id: 'incomplete-call', type: 'function', function: { name: 'bash', arguments: '{"command":' } }] });
+      if (holdFuture) held.push(() => end('stop'));
+      else delta({ tool_calls: [{ index: 0, id: 'incomplete-call', type: 'function', function: { name: 'bash', arguments: '{"command":' } }] });
       return;
     }
     const finish = () => { if (!res.destroyed && !res.writableEnded) { delta({ content: 'Corrected answer' }); end('stop'); } };
@@ -115,7 +118,8 @@ async function rig(t, { tool = false, manual = false } = {}) {
     const watcher = watch(workspace, () => { if (existsSync(path)) { clearTimeout(timer); watcher.close(); resolve(); } });
   });
   return { bridge, frames, requests, done, prefix: prefix.promise, proposed: proposed.promise, delivered: delivered.promise, marker, began, release, waitFile,
-    releaseModel() { released = true; for (const finish of held) finish(); },
+    nextModel() { return requestArrived.promise; },
+    releaseModel() { released = !holdFuture; for (const finish of held.splice(0)) finish(); },
     async events() {
       const runtime = bridge._debug().rt, sessionId = bridge.sessionOf('chat-a');
       return new Promise((resolve, reject) => {
@@ -205,4 +209,60 @@ test('parent closure between admission and RPC keeps one failed recoverable rece
   const events = await r.events();
   assert.equal(events.filter(e => e.type === 'turn/start').length, 1);
   assert.equal(events.filter(e => e.type === 'user/message' && e.data.source?.rpcId === input.id).length, 0);
+});
+
+test('prepared steering for A cannot enter B after A closes before Gateway admission', { skip, timeout: 60000 }, async t => {
+  const r = await rig(t, { holdFuture: true }); await r.prefix;
+  const gw = r.bridge._debug().rt.gw, rpc = gw.rpc.bind(gw);
+  const prepared = deferred(), admit = deferred(); let preparedRequest;
+  gw.rpc = async (method, args, options) => {
+    if (method === 'session/prompt' && args.request.mode === 'soft-cut') {
+      preparedRequest = args.request; prepared.resolve(); await admit.promise;
+    }
+    return rpc(method, args, options);
+  };
+  const input = { chatId: 'chat-a', id: 'turn-a-only', text: 'A correction must never reach B' };
+  const rejected = assert.rejects(r.bridge.steer(input), /parent agent is not accepting/);
+  await prepared.promise;
+  assert.equal(preparedRequest.expectedTurn, 1);
+  r.releaseModel(); await r.done;
+  const bStarted = r.nextModel();
+  await rpc('session/prompt', { request: { requestId: 'parent-b', sessionId: preparedRequest.sessionId, mode: 'queue', content: [{ type: 'text', text: 'Parent B' }] } });
+  await bStarted;
+  admit.resolve(); await rejected;
+  const failed = r.bridge.steeringState('chat-a')[0];
+  assert.equal(failed.state, 'failed'); assert.equal(failed.accepted, false);
+  assert.equal(failed.parentTurn, 1); assert.equal(failed.text, input.text);
+  await assert.rejects(rpc('session/prompt', { request: preparedRequest }), /prompt rejected/);
+  const bCorrection = { requestId: 'b-correction', sessionId: preparedRequest.sessionId, mode: 'soft-cut', expectedTurn: 2, content: [{ type: 'text', text: 'B correction' }] };
+  const bContinued = r.nextModel();
+  assert.deepEqual(await rpc('session/prompt', { request: bCorrection }), { accepted: true, turn: 2 });
+  await bContinued;
+  assert.deepEqual(await rpc('session/prompt', { request: bCorrection }), { accepted: true, turn: 2 });
+  await assert.rejects(rpc('session/prompt', { request: { ...bCorrection, expectedTurn: 1 } }), /different parent turn/);
+  const events = await r.events();
+  assert.deepEqual(events.filter(e => e.type === 'turn/start').map(e => e.data.turn), [1, 2]);
+  assert.equal(events.filter(e => e.type === 'user/message' && e.data.source?.rpcId === input.id).length, 0);
+  const delivered = events.filter(e => e.type === 'user/message' && e.data.source?.rpcId === 'b-correction');
+  assert.equal(delivered.length, 1); assert.equal(delivered[0].data.source.steeringTurn, 2);
+  assert.ok(!JSON.stringify(r.requests.slice(1)).includes(input.text));
+  r.releaseModel();
+});
+
+test('delivery requires authoritative parent-turn provenance and acknowledgement', { skip, timeout: 60000 }, async t => {
+  const item = { sessionId: 'parent', turnId: 'host-run', parentTurn: 1, id: 'correction' };
+  const event = { type: 'user/message', data: { source: { rpcId: item.id, steeringTurn: 2 } } };
+  assert.equal(isSteeringDelivery(item, event, 'parent', 'host-run'), false);
+  delete event.data.source.steeringTurn;
+  assert.equal(isSteeringDelivery(item, event, 'parent', 'host-run'), false);
+  event.data.source.steeringTurn = 1;
+  assert.equal(isSteeringDelivery(item, event, 'child', 'host-run'), false);
+  assert.equal(isSteeringDelivery(item, event, 'parent', 'other-run'), false);
+  assert.equal(isSteeringDelivery(item, event, 'parent', 'host-run'), true);
+  const r = await rig(t, { holdFuture: true }); await r.prefix;
+  r.bridge._debug().rt.gw.rpc = async () => ({ accepted: true, turn: 2 });
+  await assert.rejects(r.bridge.steer({ chatId: 'chat-a', id: 'wrong-ack', text: 'Keep this correction' }), /did not confirm the expected parent turn/);
+  assert.equal(r.bridge.steeringState('chat-a')[0].accepted, false);
+  assert.equal(r.bridge.steeringState('chat-a')[0].state, 'failed');
+  r.releaseModel(); await r.done;
 });
