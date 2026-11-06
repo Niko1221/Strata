@@ -17768,6 +17768,8 @@ int main(int argc, char** argv) {
             std::vector<int32_t> drafts(DS, 0), window(WS), outv(WS);
             std::vector<float> dprob(DS, 0.0f);
             std::array<float, 8> dwin_s{};   // the probabilities the current window was chosen from (STRATA_SPEC_COST)
+            strata::spec::AdaptiveGate df2_gate;   // STRATA_DF2_GATE=1: this request's calibrated DFlash2 window (spec/window_rule.hpp)
+            df2_gate.row_ms = strata::spec::df2_gate_row_ms();
             // STRATA_SPEC_TRACE=<file> in serve (bench only, off by default): per round "R p T a sfx ms k match | probs | drafts | lookup draft | committed tokens"
             static std::FILE* const df2_trace = [] { const char* tf = std::getenv("STRATA_SPEC_TRACE"); return tf != nullptr && tf[0] != '\0' ? std::fopen(tf, "a") : nullptr; }();
             static const bool trace_nopick = std::getenv("STRATA_SPEC_TRACE_NOPICK") != nullptr;   // the lookup draft is logged but never taken
@@ -18606,6 +18608,7 @@ int main(int argc, char** argv) {
                         wr.chain_rows = chain_rows; wr.cap = S_mtp; wr.start = T; wr.spec_min_p = req_spec_min_p;
                         wr.draft_conf = o.draft_conf; wr.dprob = dprob.data();
                         T = strata::spec::choose_window(wr);
+                        if (req_df2 && draft_on && !first_window && strata::spec::df2_gate_on()) T = df2_gate.choose(dprob.data(), S_mtp);
                     }
                     if (first_window) T = merge_T > 0 ? merge_T : 1;
                     // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
@@ -19041,6 +19044,10 @@ int main(int argc, char** argv) {
                     tr_k = 0;
                 }
                 if (spec_cost && use_mtp && timed_round && !from_sfx) policy.observe_probs(dwin_s.data(), T_mtp - 1, a);
+                if (req_df2 && timed_round && strata::spec::df2_gate_on()) {   // STRATA_DF2_GATE=1: what this round showed about the survival of its drafts, and what a token cost
+                    if (!from_sfx) df2_gate.observe(dwin_s.data(), T, a);
+                    df2_gate.observe_round(std::chrono::duration<double, std::milli>(Clock::now() - round0).count(), a + 1);
+                }
                 if (timed_round && !eos && chain_n == 0)
                     policy.observe(from_sfx, T, a, sfx_match,
                                    std::chrono::duration<double, std::milli>(Clock::now() - round0).count());

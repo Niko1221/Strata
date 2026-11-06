@@ -234,7 +234,10 @@ MAX_SLOTS = 24576            # every (layer, expert) pair of Qwen3.8-Flash-Next
 # A backend whose card class was measured on its own has ONE value that replaces the slot steps (they were calibrated on CUDA cards with 300 to 9,300 slots):
 # Intel Arc (SYCL, A750 with 298 expert slots, IQ3_XXS, serve sweeps with suffix drafting on): 0.6 was the best of 0.35 / 0.6 / 0.8 and the other two lost 4 to 10%
 # (RESULTS-DF2SYCL.md sections 6-8).
-BACKEND_CONF = {"sycl": 0.6}
+# Metal (M5 Max 128 GB, UD-Q4_K_XL, all experts mapped: the expert-cache slot count the CUDA steps read means nothing there), greedy 300 tokens, serve path, fresh engine per run,
+# DFlash2 --spec 6 against MTP --spec 2, 3 interleaved rounds x 2 reps, six request kinds (phaseA-tests/round0215/RESULTS-MAC-OUT.md): conf 0.35 / 0.5 / 0.6 = +10.0 / +14.3 / +12.4% over all
+# six kinds (0.5 faster than MTP on every kind in 3 of 3 rounds; the slot rule would have written 0.8 for the Mac's --expert-cache 64).
+BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
 SLOT_MIB = 1.95              # one expert slot of Qwen3.8-Flash-Next IQ3_S: the engine's "46.84 GiB for 24576 slots" (l620) and 23.87 GiB for 12570 (R9700)
 SLOT_BASE_MIB = 3800         # dense weights and the engine's fixed buffers beyond vram_fit's own terms, from the R9700 start (128K context, 12570 slots on 32 GiB); it holds the draft layer's
                              # allowance, which is the DFlash2's own now that it is the only drafter (expected_slots takes nothing more off)
