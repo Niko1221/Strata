@@ -454,5 +454,104 @@ class TestThinkTail(unittest.TestCase):
         self.assertEqual(C.normalize_think_tail(t0, self.GOLD), targets[0])
 
 
+class TestRouteStepsChain(unittest.TestCase):
+    """冷启两步必须串成一个 adapter；默认行为保持向后兼容。
+
+    不串联时三步各写各的默认 --out，最终拿到三个互不相干的 LoRA，根本没法评估。
+    RL 不能假装接过冷启权重（mezo theta 不回读 GGUF 的 A/B）。
+    """
+
+    PLAN = {"sft_items": [1], "dpo_pairs": [1], "rl": [1, 2]}
+    PATHS = {"sft": "sft.jsonl", "dpo": "dpo.jsonl", "rl": "rl.jsonl"}
+
+    def test_default_has_no_chain_flags(self):
+        steps = C.route_steps(dict(self.PLAN), self.PATHS, group=2)
+        self.assertEqual([s["name"] for s in steps],
+                         ["cold_sft", "cold_dpo", "rl_luspo"])
+        self.assertTrue(all("--out" not in s["cmd"] and
+                            "--init-adapter" not in s["cmd"] for s in steps))
+
+    def test_chain_links_sft_into_dpo(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            steps = C.route_steps(dict(self.PLAN), self.PATHS, group=2,
+                                  chain_adapters=d, include_rl=False)
+        self.assertEqual([s["name"] for s in steps], ["cold_sft", "cold_dpo"])
+        sft, dpo = steps
+        self.assertEqual(sft["adapter_out"], os.path.join(d, "cold_sft.pt"))
+        self.assertEqual(sft["cmd"][-2:], ["--out", sft["adapter_out"]])
+        self.assertEqual(dpo["adapter_init"], sft["adapter_out"])
+        self.assertIn("--init-adapter", dpo["cmd"])
+        self.assertEqual(dpo["adapter_out"], os.path.join(d, "cold_dpo.pt"))
+        self.assertEqual(dpo["cmd"][-2:], ["--out", dpo["adapter_out"]])
+
+    def test_dpo_without_sft_does_not_point_at_missing_file(self):
+        import tempfile
+
+        p = {"sft_items": [], "dpo_pairs": [1], "rl": []}
+        with tempfile.TemporaryDirectory() as d:
+            steps = C.route_steps(p, self.PATHS, chain_adapters=d)
+        self.assertEqual(len(steps), 1)
+        self.assertNotIn("--init-adapter", steps[0]["cmd"])
+        self.assertIn("--out", steps[0]["cmd"])
+
+    def test_rl_step_is_explicitly_marked_unbridged(self):
+        steps = C.route_steps(dict(self.PLAN), self.PATHS, group=2)
+        self.assertIn("note", steps[-1])
+        self.assertIn("init_theta", steps[-1]["note"])
+
+
+class TestRouteStepsEngineContract(unittest.TestCase):
+    """回灌引擎的三个硬约束：落点、ckpt、DPO 步数。
+
+    2026-11-06 三个缺口（都会让「训练出的东西」和「评测的东西」不是一回事）：
+      1. 默认 --targets 是 12 类，而 lora_to_gguf 只写 o_proj/out_proj ⇒ 导出静默丢
+         10 类，评测的是训练结果的一小片；
+      2. 关 ckpt 时 mem_guard 把专家 refetch 暂存 26 GiB 计入峰值，48 GB 卡上 T=2048
+         都过不了预检（25.2 + 26 > 45.6）；
+      3. backward 的 dpo 轮次没扫过，train.py 兜底 --steps 40 —— 在 1 对样本上等于过
+         40 遍，lr 1e-4 早越过能力门。
+    """
+
+    PLAN = {"sft_items": [1], "dpo_pairs": [1], "rl": []}
+    PATHS = {"sft": "sft.jsonl", "dpo": "dpo.jsonl", "rl": "rl.jsonl"}
+
+    def _steps(self, **kw):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            return C.route_steps(dict(self.PLAN), self.PATHS, chain_adapters=d,
+                                 include_rl=False, **kw)
+
+    def test_engine_targets_narrow_both_steps(self):
+        sft, dpo = self._steps(engine_targets="o_proj,out_proj")
+        for s in (sft, dpo):
+            i = s["cmd"].index("--targets")
+            self.assertEqual(s["cmd"][i + 1], "o_proj,out_proj", s["name"])
+
+    def test_default_targets_untouched(self):
+        """不给 engine_targets 时不许偷偷改历史命令行。"""
+        sft, dpo = self._steps()
+        self.assertNotIn("--targets", sft["cmd"])
+        self.assertNotIn("--targets", dpo["cmd"])
+
+    def test_ckpt_on_sft_only(self):
+        sft, dpo = self._steps()
+        self.assertIn("--ckpt", sft["cmd"])
+        self.assertNotIn("--ckpt", dpo["cmd"])     # dpo 那条由 train.py 自带
+
+    def test_dpo_steps_pinned(self):
+        sft, dpo = self._steps(dpo_steps=7)
+        i = dpo["cmd"].index("--steps")
+        self.assertEqual(dpo["cmd"][i + 1], "7")
+        self.assertNotIn("--steps", sft["cmd"])    # sft 走 --epochs，别覆盖
+
+    def test_dpo_steps_absent_by_default(self):
+        _, dpo = self._steps()
+        self.assertNotIn("--steps", dpo["cmd"])    # 默认交回 train.py 的兜底
+
+
 if __name__ == "__main__":
     unittest.main()

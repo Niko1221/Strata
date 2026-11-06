@@ -814,5 +814,61 @@ class RenderContractForwarding(unittest.TestCase):
             self.assertNotIn(bad, f)
 
 
+class BackwardArgvAcceptedByScript(unittest.TestCase):
+    """backward 的命令行必须被 `backward/sft.py` 真的认。
+
+    2026-11-06 缺口：`build_argv` 给 sft.py 发了 `--objective dpo`，argparse 直接
+    `unrecognized arguments` —— 冷启第二步起来 14 秒就死，而前一步（SFT）是好的，
+    只看 SFT 日志完全看不出问题。目标由 `--dpo-data` 的有无决定，没有 `--objective`。
+
+    这里不硬编码「该有哪些参数」，而是拿 `sft.py --help` 的真实选项集合作白名单：
+    以后 train.py 再加任何 sft.py 不认的参数，这条测试都会红。
+    """
+
+    def _ns(self, **kw):
+        import argparse as _ap
+
+        base = dict(algo="dpo", dpo_data="/tmp/pairs.jsonl", dpo_beta=0.1, model="",
+                    pack="", tokenizer="", engine="", expert_profile="",
+                    engine_pack="", engine_api="", gguf=[], steps=5, lr=1e-4,
+                    out="o.pt", seed=0, rest=[], data="", word="W", rollouts="",
+                    prompts="", group=4, max_new=32, temperature=1.0,
+                    resample_every=1, clip=0.2, max_context=4096, probe="",
+                    seqlen=2048, epochs=None, system_prompt=None,
+                    reasoning_effort=None)
+        base.update(kw)
+        return _ap.Namespace(**base)
+
+    def test_every_flag_is_known_to_sft_py(self):
+        """白名单来自 sft.py 源码里的 `add_argument`（不拉起子进程）。
+
+        为什么不跑 `sft.py --help`：那条路要 import transformers，而本机
+        huggingface-hub 2.2.0 与 transformers 的版本门冲突，子进程在 import 阶段就
+        失败（父进程能过是环境变量的运气，不能拿来当测试前提）。参数集是纯静态的，
+        从源码取即可 —— 要抓的缺口就是「train.py 发了 sft.py 没定义的参数」。
+        """
+        import re
+
+        import train as train_mod
+
+        sft_py = Path(__file__).resolve().parents[1] / "backward" / "sft.py"
+        if not sft_py.is_file():
+            self.skipTest("backward/sft.py 不在这条分支上（零阶线只有 mezo/ + 共用 numpy 层）")
+        src = sft_py.read_text(encoding="utf-8")
+        known = set(re.findall(r'add_argument\(\s*"(--[A-Za-z0-9-]+)"', src))
+        self.assertIn("--dpo-data", known)
+        self.assertIn("--init-adapter", known)
+
+        a = self._ns()
+        argv = train_mod.build_argv(a, ["/tmp/s.gguf"], "/tmp/pack", "/tmp/tok")
+        flags = [t for t in argv if t.startswith("--")]
+        unknown = [f for f in flags if f not in known]
+        self.assertEqual(unknown, [], f"sft.py 不认这些参数：{unknown}")
+        # 目标靠 --dpo-data 判定，不许再发 --objective
+        self.assertNotIn("--objective", argv)
+        self.assertIn("--ckpt", argv)      # DPO 默认开梯度检查点
+
+
+
 if __name__ == "__main__":
     unittest.main()
