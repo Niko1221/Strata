@@ -90,6 +90,12 @@ class Detection(unittest.TestCase):
         self.assertEqual(toolformat.tool_format(""), "none")
         self.assertEqual(toolformat.tool_format(None), "none")
 
+    def test_the_real_qwen3_template_is_json(self):
+        # recorded from unsloth/Qwen3-0.6B-GGUF (Apache-2.0): the form this parser exists for
+        src = (FIXTURES / "qwen3-0.6b.chat_template.jinja").read_text(encoding="utf-8")
+        self.assertEqual(toolformat.tool_format(src), "json")
+        self.assertIs(parser_for_template(src), JsonOutputParser)
+
     def test_thinking_tags(self):
         t = toolformat.thinking_tags((ROOT / "serve" / "chat_template.jinja").read_text(encoding="utf-8"))
         self.assertTrue(t["has_think_tags"])
