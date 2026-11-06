@@ -1937,12 +1937,15 @@ bool q8d_f16_default(const DevInfo& d) {
 // matrix-core kernel (native_f16_kernel, the K-quant experts' route: int8 codes q - 16 times the block scale, F16 products, FP16 down rows for the combine) instead
 // of leaving the fused path for gather + FP16 dequantize + hipBLASLt (RESULTS-STRIX2.md: 24-29% of the prompt).  It needs the F16 prompt set (STRATA_PF_F16, on by
 // default there), so with STRATA_PF_F16=0 the layers keep the earlier route.  STRATA_PF_FUSED_Q50=0 (or STRATA_GFX1151_DEFAULTS=0) turns it off; =1 turns it on
-// for any gfx1151 build (Linux: opt-in).  gfx12 (RDNA4) is not covered here: its WMMA layout keeps the int8 kernels (phaseA-tests/round0216/rdna4/q50-fused.patch).
+// for any gfx1151 build (Linux: opt-in).  gfx12 (RDNA4) keeps its int8 kernel (native_w11_kernel, int8 codes q - 16: its WMMA layout), reached through the same
+// switch: STRATA_PF_FUSED_Q50=1 turns it on there (opt-in; it changes the arithmetic of those layers), =0 / unset leaves the layers on gather + FP16 dequantize + hipBLASLt
+// (phaseA-tests/round0216/rdna4/q50-fused.patch).  The switch means the same on both: 1 on, 0 off, unset = the platform's default.
 bool q50_on(const DevInfo& d) {
 #if defined(__HIPCC__)
-    if (d.w12 || !d.g1151) return false;
+    if (!d.w12 && !d.g1151) return false;
     static const int env = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q50"); return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0); }();
     if (env >= 0) return env == 1;
+    if (d.w12) return false;   // gfx12: opt-in (default off)
 #if defined(_WIN32)
     const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
     return !(off != nullptr && off[0] == '0');
@@ -1956,7 +1959,7 @@ bool q50_on(const DevInfo& d) {
 }
 bool d_covered_on(int t, const DevInfo& d) {
 #if defined(__HIPCC__)
-    if (t == T_Q5_0) return q50_on(d) && f16::requested();   // (no int8 kernel for Q5_0 down: the F16 prompt set must be on)
+    if (t == T_Q5_0) return d.w12 ? q50_on(d) : q50_on(d) && f16::requested();   // gfx1151 has no int8 kernel for Q5_0 down (the F16 prompt set must be on); gfx12 has only the int8 one
     if (t == T_Q8_0 && !d.w12 && (f16::requested() || q8d_f16_default(d))) return true;
 #endif
     (void) d;
@@ -2181,6 +2184,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
             else STRATA_F16_LAUNCH(T_IQ4_NL, false, f16::D_NFB, ha8, nullptr, dm);
         }
         else if (g.d_type == T_Q2_0) STRATA_NW_D(T_Q2_0);
+        else if (g.d_type == T_Q5_0) STRATA_NW_D(T_Q5_0);
         else if (g.d_type == T_Q5_1) STRATA_NW_D(T_Q5_1);
         else if (g.d_type == T_Q8_0) STRATA_NW_D(T_Q8_0);
         else STRATA_NW_D(T_IQ4_NL);
