@@ -36,6 +36,11 @@ inline bool mtp_q_applies(bool use_mtp, bool df2_active, bool mtp_prob, bool fro
     return use_mtp && !df2_active && mtp_prob && !from_lookup && !first_window && mtp_rows > 1;
 }
 
+/// Window-invariant CPU expert arithmetic (1-token reference kernels) is needed only when MTP probabilistic proposals are active.
+inline bool mtp_window_invariant_applies(bool use_mtp, bool df2_active, bool mtp_prob) {
+    return use_mtp && !df2_active && mtp_prob;
+}
+
 /// DFlash2 with a LONG suffix match: the lookup window is taken without a DFlash2 draft round.  The choice "lookup or DFlash2" needs the draft only to
 /// test that its first token agrees; when the match is long the lookup is the likelier winner and the draft (2.4 ms on Metal, 1.2 ms on the RTX PRO
 /// 5000) would be thrown away.  The round's draft is then DEFERRED to the start of the next iteration, where the policy decides (lookup: the committed
