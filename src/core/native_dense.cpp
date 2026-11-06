@@ -1,4 +1,5 @@
 #include "strata/core/native_dense.hpp"
+#include "strata/core/run_manifest.hpp"
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -424,7 +425,18 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                         return false;
                     }
                 }
+                if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: the dense formats as held, and the packed copies
+                    strata::core::manifest::instance().tensors("dense", strata::ggml_type_name((uint32_t) tensor.type), 1, bytes);
+                    if (packed) strata::core::manifest::instance().tensors("dense_packed_copy", "Q8_0", 1, bytes);
+                }
                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
+            }
+            if (strata::core::manifest::enabled()) {
+                const char* v = std::getenv("STRATA_HC_Q8");
+                strata::core::manifest::instance().path("dense", "hc_q8", hc_q8_env(),
+                    hc_q8_env() ? (v != nullptr && v[0] == '1' ? "STRATA_HC_Q8=1" : "architecture default (gfx12 / gfx1151 HIP)")
+                                : (v != nullptr && v[0] != '\0' && std::strcmp(v, "auto") != 0 ? "STRATA_HC_Q8 turned it off"
+                                                                                               : "off by default on this backend"));
             }
             if (hc_q8_env())
                 for (const auto& tensor : gguf.tensors()) {
@@ -451,6 +463,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     ref.hc_q8 = p;
                     weights_.push_back(p);
                     hc_q8_bytes += bytes;
+                    strata::core::manifest::instance().tensors("dense_hc_q8_copy", f32_inject ? "F32->Q8_0" : "Q8_0", 1, bytes);
                 }
         }
         if (hc_q8_env()) {

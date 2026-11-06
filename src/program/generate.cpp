@@ -25,6 +25,8 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/batch_telemetry.hpp"
 #include "strata/core/dma_batch.hpp"
+#include "strata/program/adaptive_range.hpp"
+#include "strata/core/run_manifest.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
@@ -13104,7 +13106,7 @@ int main(int argc, char** argv) {
         Clock::time_point a_t0;
         std::atomic<bool> a_err{false};
         double a_pick_ms = 0;             // the arena's inline choice, summed (the stats line)
-        size_t a_lo = 0, a_hi = 0, a_bi = 0;   // the batch being copied in (a_copy_in), and where the next one starts
+        strata::program::AdaptiveCopyRange a_rng;   // the batch being copied in (a_copy_in), and where the next one starts
         std::vector<AHome> ahomes;   // [0] = CUDA0's cache, [k] = layer split stage k's
         std::unique_ptr<JobThread> ajob;
         // the arena mode (srcp == &arena_src): every expert is in the arena already, so a round is a copy in only - no
@@ -13252,7 +13254,7 @@ int main(int argc, char** argv) {
         };
         auto a_copy_in = [&]() {   // step 2 on the job thread (the serial loop): each source read, then copied in
             std::vector<uint8_t> used(ahomes.size(), 0);
-            for (size_t i = a_lo; i < a_hi; ++i) {   // (the batch; all the round's swaps unless the arena caps it)
+            for (size_t i = a_rng.lo; i < a_rng.hi; ++i) {   // (the batch; all the round's swaps unless the arena caps it)
                 const ASwap& w = aswaps[i];
                 if (const uint8_t* b = a_from(w)) {
                     a_in_one(w, b);
@@ -13263,9 +13265,7 @@ int main(int argc, char** argv) {
                 if (used[hi]) a_mark(ahomes[hi]);
         };
         auto a_post_batch = [&]() {   // step 2: the next batch of copies in goes to the job thread (all of them but for the arena's cap)
-            a_lo = a_bi;
-            a_hi = a_batch > 0 ? std::min(aswaps.size(), a_bi + a_batch) : aswaps.size();
-            a_bi = a_hi;
+            a_rng.next_batch(aswaps.size(), a_batch);
             ajob->post(a_copy_in);
         };
         auto a_stage_in = [&]() {   // step 2's host part on the job thread (the pipelined loop: a_in queues the copies)
@@ -13385,10 +13385,13 @@ int main(int argc, char** argv) {
                     if (pl) {   // the copies in at each card's next gap: after this step, so fenced (see above)
                         a_res_dirty = true;
                         for (const ASwap& w : aswaps) a_in_due[(size_t) w.home] = 1;
+                        // the whole round is one batch: when the pipelined loop drains before step 3, the next tick
+                        // takes step 3 on the serial rule and marks [lo, hi), which an earlier round left otherwise
+                        a_rng.whole_round(aswaps.size());
                         ajob->post(a_stage_in);
                     } else {
                         res_upload();
-                        a_lo = a_hi = a_bi = 0;
+                        a_rng.clear();
                         a_post_batch();
                     }
                     astate = AState::SwapIn;
@@ -13399,15 +13402,15 @@ int main(int argc, char** argv) {
                     if (a_due(a_in_due)) return true;   // (pipelined) a card not seen idle since step 2
                     if (!a_ready(drain || a_wait)) return true;
                     if (a_err.load()) return false;
-                    for (size_t i = pl ? 0 : a_lo; i < (pl ? aswaps.size() : a_hi); ++i) {   // (the batch just landed)
+                    for (size_t i = a_rng.landed_begin(pl); i < a_rng.landed_end(pl, aswaps.size()); ++i) {   // (the batch just landed)
                         const ASwap& w = aswaps[i];
                         host_res[(size_t) w.layer * g.n_expert + w.in] = w.slot;
                         srcp->release(w.layer, w.in);
                     }
                     if (pl) a_res_dirty = true;
                     else res_upload();
-                    a_swapped += pl ? (int64_t) aswaps.size() : (int64_t) (a_hi - a_lo);
-                    if (!pl && a_bi < aswaps.size()) {   // the arena's cap: the next batch goes now
+                    a_swapped += (int64_t) (a_rng.landed_end(pl, aswaps.size()) - a_rng.landed_begin(pl));
+                    if (!pl && a_rng.more(aswaps.size())) {   // the arena's cap: the next batch goes now
                         for (AHome& h : ahomes) h.used = false;
                         a_post_batch();
                         if (!drain) return true;
@@ -13710,6 +13713,38 @@ int main(int argc, char** argv) {
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
+            if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: engine choice and budgets (a diagnostic; off by default)
+                auto& M = strata::core::manifest::instance();
+                M.engine("version", STRATA_VERSION);
+                M.engine("engine", stages.empty() ? "native-single-gpu" : "native-layer-split");
+                M.engine("stages", std::to_string(stages.size() + 1));
+                M.engine("kv_format", o.kv);
+                M.engine("drafter", !o.mtp.empty() ? "mtp" : "none-or-lookup");
+                M.engine("spec_window", std::to_string(o.spec));
+                M.engine("pipeline_windows", std::to_string(o.pipeline_windows));
+                M.engine("ple_io", o.ple_io);
+                M.engine("expert_cache_request", o.expert_cache < 0 ? "auto" : std::to_string(o.expert_cache));
+                M.budget("max_context", (int64_t) o.max_context);
+                M.budget("kv_resident_cells", (int64_t) o.kv_resident);
+                M.budget("expert_slots_all", slots_all);
+                M.budget("expert_cache_all_mib", mib_all);
+                M.budget("expert_slots_primary", slots_primary);
+                M.budget("expert_cache_primary_mib", mib_primary);
+                M.budget("vram_reserve_mib", (int64_t) o.vram_reserve_mib);
+                M.budget("prefill_chunk_cap", (int64_t) o.prefill_chunk);
+                M.budget("prefill_stages", (int64_t) sp.stage_count());
+                M.budget("pool_workers", (int64_t) pool.workers());
+                M.budget("memory_limit_mib", (int64_t) o.memory_limit_mib);
+                M.budget("resident_budget_bytes", (int64_t) o.resident_budget);
+                M.budget("batch_slots", (int64_t) o.batch);
+                M.budget("conversation_cache_mib", (int64_t) o.conversation_cache_mib);
+                M.path("decode", "route-tail-skip", std::getenv("STRATA_ROUTE_TAIL_SKIP") == nullptr || std::getenv("STRATA_ROUTE_TAIL_SKIP")[0] != '0',
+                       std::getenv("STRATA_ROUTE_TAIL_SKIP") == nullptr ? "STRATA_ROUTE_TAIL_SKIP not set: the engine default applies (it skips tails only where the configuration allows)"
+                                                                         : (std::string("STRATA_ROUTE_TAIL_SKIP=") + std::getenv("STRATA_ROUTE_TAIL_SKIP")));
+                M.path("transfer", "dma-batch", strata::core::dma_batch_mode() != 0,
+                       strata::core::dma_batch_mode() != 0 ? "STRATA_DMA_BATCH" : "mode 0: one copy per expert (the default loop)",
+                       std::string("mode ") + std::to_string(strata::core::dma_batch_mode()));
+            }
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
@@ -13773,6 +13808,7 @@ int main(int argc, char** argv) {
         }
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
+        strata::core::manifest::instance().write("ready");   // STRATA_MANIFEST (a no-op unless it is set)
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -15105,6 +15141,7 @@ int main(int argc, char** argv) {
         };
         for (;;) {
             line_drain_ms = 0.0;
+            strata::core::manifest::instance().flush_if_dirty("request");   // STRATA_MANIFEST: what the last request added (a no-op when off)
             if (batch_on() || (piped && pipe_inflight())) {
                 if (!try_next_line(line)) {
                     if (!(piped ? pump(true) : batch_step())) return 1;
@@ -16549,6 +16586,24 @@ int main(int argc, char** argv) {
                     e = why.empty() ? std::string("a pipelined prompt window failed") : why;
                     return false;
                 };
+                // The drafter's prefill blocks this thread until its stream is idle (on HIP, MtpDrafter::prefill syncs
+                // once per group whatever its `sync` says: prefill_per_group_sync, src/core/mtp.cpp).  With the drafter
+                // on the first card (mtp_first) a stage-0 window still in flight spins on that GPU for doorbells only
+                // this thread serves, so a prefill called beside it never returns: the prompt read stopped for good at
+                // its first window (0.1.56, gfx1201 + gfx1030, --pipeline-windows 2, issue #5147).  Serve stage 0 to its
+                // end first; the rest of the read keeps both stages overlapped.  The tokens are unchanged: the same
+                // windows, in the same order, only served a little earlier.
+                auto serve_stage0_to_end = [&]() -> bool {
+                    while (f0 < l0) {
+                        strata::core::Verifier& v0 = *PV[0][f0 & 1];
+                        if (v0.service(win_pool_fn, PSD[f0 & 1], e) < 0) return false;
+                        if (v0.done(e)) {
+                            if (!v0.pl_finish(nullptr, e)) return false;
+                            ++f0;
+                        } else if (!e.empty()) return false;
+                    }
+                    return true;
+                };
                 while (f1 < N) {
                     if (stop_req.load()) return fail("cancelled");
                     // stage 0: up to two windows queued; window K+2 (K's parity) only once stage 1 has finished window
@@ -16587,6 +16642,9 @@ int main(int argc, char** argv) {
                             if (nonfinite_hit(v, "prompt")) return fail("non-finite logits (#879)");
                             const Win& w = wins[f1];
                             for (int t = 0; t < w.T; ++t) nx[(size_t) t] = (int32_t) cur[(size_t) (w.q + t + 1)];
+                            // the drafter shares stage 0's card: no stage-0 window may still be in flight when its
+                            // prefill waits on the host (see serve_stage0_to_end)
+                            if (mtp_first && !serve_stage0_to_end()) return fail(e);
                             if (!mtp.prefill(v.final_R(0), nx.data(), w.T, w.q, e, false)) return fail(e);
                             {
                                 const strata::core::OnDevice on(mtp.device());

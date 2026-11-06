@@ -2,6 +2,10 @@
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/prefill/copy_events.hpp"
+#include "strata/prefill/timer_marks.hpp"
+#include "strata/prefill/mmq_ids_margin.hpp"
+#include "strata/core/run_manifest.hpp"
+#include "strata/artifact/gguf_reader.hpp"
 #include "strata/prefill/pf_fused_override.hpp"
 #if defined(STRATA_HAVE_DFLASH2)
 #include "strata/kernels/dflash2.hpp"
@@ -1420,6 +1424,16 @@ constexpr int MMQ_GROUP = 16;                  // experts per MMQ launch (the ga
 // product: 640 values).  Those bytes meet zero activations, which is harmless only if they decode to finite numbers -
 // llama.cpp zero-pads after every tensor, and so does a group buffer: this many zeroed bytes follow its last expert.
 constexpr size_t MMQ_TAIL = 4096;
+// The MMQ row table (`ids_identity`, T*K rows) is read past its end by llama.cpp's stream-k fixup, which loads a whole
+// J-column tile of ids before it compares the tile with the expert's rows (see mmq_ids_margin.hpp: the margin follows the
+// backend's tile bound).  An expert takes at most one row per token, so max_rows <= T.  Without the slack the table is an
+// exact-sized cudaMalloc that can end a 2 MiB page, and the over-read faults at the next one (Xid 31 FAULT_PDE, "prefill
+// copy_i32: an illegal memory access" on a long prompt).  The one size used by carve, bytes_needed_impl and the three
+// places that write the identity (bind_stage_helper, run_impl, lm_run).  0: the size overflows (carve fails).
+size_t mmq_ids_rows(size_t T) {
+    if (T > (size_t) INT64_MAX / (size_t) K) return 0;
+    return (size_t) mmq::mmq_ids_table_rows((uint64_t) (T * (size_t) K), (uint64_t) T);
+}
 struct MmqPlan {
     bool any = false, fallback = true;
     std::vector<char> layer;                   // per layer: MMQ
@@ -1470,6 +1484,11 @@ const MmqPlan& mmq_plan() {
         p.fo.assign(p.layer.size(), 0);
         p.wmma_only.assign(p.layer.size(), 0);
         p.fallback = !on || layers <= 0;
+        std::map<std::string, int64_t> mf_layers;   // STRATA_MANIFEST: "path|reason|formats" -> layers (filled only when it is on)
+        const bool mf = strata::core::manifest::enabled();
+        auto mf_note = [&](const char* path, const std::string& why, int gt, int dt) {
+            if (mf) ++mf_layers[std::string(path) + "|" + why + "|gate_up " + strata::ggml_type_name((uint32_t) gt) + ", down " + strata::ggml_type_name((uint32_t) dt)];
+        };
         for (int64_t l = 0; on && l < layers; ++l) {
             const int gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42, dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
             // #420: a tile on every GPU for these shapes (gate+up: 1280 rows, down: N rows), else the FP16 path
@@ -1481,17 +1500,40 @@ const MmqPlan& mmq_plan() {
                     p.any = true;
                     p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, 1280, N));
                     p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, 640));
+                    mf_note("mmq-grouping, FP16 WMMA tiles", "MMQ has no tile for these formats; STRATA_PF_WMMA=1 computes them on FP16 tensor cores", gt, dt);
                     continue;
                 }
                 p.fallback = true;
                 // the fused path's buffers (Xq, H) exist for it; a chunk it does not take (a small one) keeps the FP16 path
                 if (on && lay.native && fused::native_supported(gt, dt)) { p.fo[(size_t) l] = 1; p.any = true; }
+                if (mf) {
+                    const bool fo = p.fo[(size_t) l] != 0;
+                    const std::string why = std::string(!mmq::fits(gt, 1280) ? "no MMQ tile for the gate/up format on every visible GPU" : "no MMQ tile for the down format on every visible GPU") +
+                                            (fo ? "; the native fused kernels take it" : "; the dequantize + FP16 GEMM path takes it");
+                    mf_note(fo ? "fused-native" : "fp16-gemm", why, gt, dt);
+                }
                 continue;
             }
             p.layer[(size_t) l] = 1;
             p.any = true;
             p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, 1280, N));
             p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, 640));
+            mf_note("mmq", "an MMQ tile exists for both products on every visible GPU", gt, dt);
+        }
+        if (mf) {
+            if (!on) {
+                strata::core::manifest::instance().path("prefill", "experts", false,
+                    mmq::built() ? "STRATA_PREFILL_MMQ=0" : "this build has no MMQ (ggml sources were not available)",
+                    "the expert products take the FP16 path");
+            } else if (layers <= 0) {
+                strata::core::manifest::instance().path("prefill", "experts", false, "no expert layout loaded", "");
+            }
+            for (const auto& [k, n] : mf_layers) {
+                const size_t a = k.find('|'), b = k.find('|', a + 1);
+                const std::string kind = k.substr(0, a);
+                strata::core::manifest::instance().path("prefill", "experts: " + k.substr(b + 1), kind == "mmq" || kind[0] == 'm',
+                                                        k.substr(a + 1, b - a - 1), kind + ", " + std::to_string(n) + " layers");
+            }
         }
         // STRATA_MMQ_DIRECT=1: a native layer's resident experts are read in place when the pointer-table MMQ covers
         // both products, gate/up reads nothing past its matrix, the down over-read fits the slot guard, and the blob
@@ -1514,6 +1556,8 @@ const MmqPlan& mmq_plan() {
             }
             std::fprintf(stderr, "strata: prompt MMQ reads resident experts in place (STRATA_MMQ_DIRECT=1): %lld of %lld "
                                  "layers\n", (long long) nd, (long long) layers);
+            strata::core::manifest::instance().path("prefill", "mmq-direct", nd > 0, nd > 0 ? "STRATA_MMQ_DIRECT=1" : "STRATA_MMQ_DIRECT=1, but no layer is eligible",
+                                                    std::to_string(nd) + " of " + std::to_string(layers) + " layers read resident experts in place");
         }
         // the verdict depends only on the layer's formats and the visible GPUs: taken once here, not per chunk
         p.group_sort.assign(p.layer.size(), 0);
@@ -1527,6 +1571,8 @@ const MmqPlan& mmq_plan() {
             }
             std::fprintf(stderr, "strata: prompt MMQ sorts the full expert groups (STRATA_MMQ_GROUP_SORT=1): %lld of %lld "
                                  "layers\n", (long long) ns, (long long) layers);
+            strata::core::manifest::instance().path("prefill", "mmq-group-sort", ns > 0, ns > 0 ? "STRATA_MMQ_GROUP_SORT=1" : "STRATA_MMQ_GROUP_SORT=1, but whole tiles are not guaranteed on every GPU",
+                                                    std::to_string(ns) + " of " + std::to_string(layers) + " layers");
         }
         return p;
     }();
@@ -2019,7 +2065,9 @@ bool Prefill::carve(size_t T, void* alloc) {
     for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
-        m.ids_identity = o.take<int32_t>(T * K, ok);
+        const size_t ids_rows = mmq_ids_rows(T);
+        if (ids_rows == 0) ok = false;
+        m.ids_identity = o.take<int32_t>(ids_rows, ok);   // (its over-read slack: mmq_ids_rows)
         m.bounds_dev = o.take<int32_t>(bounds_ints(m.g->n_expert), ok);
         m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
@@ -2465,7 +2513,7 @@ bool Prefill::bind_stage_helper(int64_t T) {
             return false;
     }
     const core::OnDevice on(P.dev);
-    mmq::iota(P.ident, T * K, P.s);           // the helper's row table: a refill may have overwritten its slots
+    mmq::iota(P.ident, (int64_t) mmq_ids_rows((size_t) T), P.s);   // the helper's row table (h.T >= T): a refill may have overwritten its slots
     return true;
 }
 
@@ -2587,14 +2635,16 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
         pp->pair = (int32_t*) take((size_t) Rt * 4);
     }
     pp->src = (int32_t*) take((size_t) Rt * 4);
-    pp->ident = (int32_t*) take((size_t) Rt * 4);
+    const uint64_t ident_rows = mmq::mmq_ids_table_rows((uint64_t) Rt, (uint64_t) m.T_max);   // + the stream-k fixup's over-read
+    if (ident_rows == 0) ok = false;
+    pp->ident = (int32_t*) take((size_t) ident_rows * 4);
     pp->bounds = (int32_t*) take((size_t) (2 * (NE + NE / MMQ_GROUP + 2)) * 4);
     pp->grp_gu = (uint8_t*) take(MMQ_GROUP * mp.gu_max + MMQ_TAIL);
     pp->grp_d = (uint8_t*) take(MMQ_GROUP * mp.d_max + MMQ_TAIL);
     if (ok) {
         pp->ctx = std::make_unique<mmq::Context>();
         pp->run_ctx = pp->ctx.get();
-        mmq::iota(pp->ident, pp->cap_rows, pp->s);
+        mmq::iota(pp->ident, (int64_t) ident_rows, pp->s);
         peer_had_signs(*pp);   // APR: on the peer's device
         ok = cudaStreamSynchronize(pp->s) == cudaSuccess;
     }
@@ -2812,7 +2862,9 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
-        o.take<int32_t>(T * K, ok);
+        const size_t ids_rows = mmq_ids_rows(T);
+        if (ids_rows == 0) ok = false;
+        o.take<int32_t>(ids_rows, ok);   // ids_identity
         o.take<int32_t>(bounds_ints(g.n_expert), ok);
         o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
@@ -3002,6 +3054,11 @@ struct PfTimer {
     double ms[kPfCount] = {};
     void mark(int phase, cudaStream_t s) {
         if (!on) return;
+        // a mark in the phase already running adds nothing to the totals (the gaps are charged to the earlier mark's
+        // phase either way), but every event record is a submission of its own under WDDM (~80 us on a 6900 XT,
+        // Windows 11): compute() marks "dequant" once per expert, which put ~16 records per MMQ group on the stream
+        // and charged the launch gaps they made to "dequant".  The same totals, a fraction of the records.
+        if (strata::prefill::timer_mark_repeats(ph.data(), used, phase)) return;
         if (used == ev.size()) {
             cudaEvent_t e = nullptr;
             cudaEventCreate(&e);
@@ -3294,7 +3351,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const cudaStream_t cs = (cudaStream_t) m.cs;
     // the MMQ row table lives in the borrowed cache slots, which the refill after a prompt overwrites with experts:
     // write it again for every prompt (a layout is reused as long as the chunk and the slots are the same)
-    if (m.ids_identity != nullptr) mmq::iota(m.ids_identity, m.T * K, m.cs);
+    if (m.ids_identity != nullptr) mmq::iota(m.ids_identity, (int64_t) mmq_ids_rows((size_t) m.T), m.cs);
     // The PLE rows of a chunk are read from the model file on the host (an SSD read per missed row): the chunk
     // after this one is read on a thread while the GPU runs this one, into the other of two buffers.  The rows
     // depend only on the tokens (the two before a position name its n-grams), so this is the same data.
@@ -6658,7 +6715,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
     PfTimer pt;
     // the MMQ row table lives in the borrowed cache slots when the prompt path borrows: written for every prompt
     // (none without an MMQ layer: the FP16 path has no such table)
-    if (m.ids_identity) mmq::iota(m.ids_identity, m.T * K, m.cs);
+    if (m.ids_identity) mmq::iota(m.ids_identity, (int64_t) mmq_ids_rows((size_t) m.T), m.cs);
     // ---- the PLE rows, read per chunk on a thread as run_impl does (the same state machine, in chunk order)
     const bool ple_on = m.ss->ple.ready();
     const bool ple_batch_env = ple_batch_enabled();

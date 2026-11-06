@@ -779,5 +779,74 @@ class NoPeerAccess(unittest.TestCase):
         self.assertIn("github.com/johnfink8/sfnx", notice)
 
 
+class LaunchManifest(unittest.TestCase):
+    """P0.1 (lite): STRATA_MANIFEST=<file> records the engine choice and why in <file>.launch.json. Off unless set; the same launch gives the same text;
+    the AMD auto rule is recorded condition by condition, so a two- or three-card setup is not read as the four-card one."""
+
+    R9700 = dict(name="AMD Radeon AI PRO R9700", vram_mib=32624, cc=0, vendor="amd", arch="gfx1201")
+    IQ3S = dict(routed_types={"IQ2_S": 40, "IQ3_XXS": 34, "IQ3_S": 20, "IQ4_XS": 2, "IQ4_NL": 39, "Q2_0": 9}, routed_bytes=int(49 * GIB), embd_type="IQ4_XS",
+                shexp_types={"IQ4_XS": 60, "Q4_K": 40, "Q5_K": 20, "IQ4_NL": 24}, embd_ram_bytes=int(27.2 * GIB), layers=48, experts=512,
+                ple_type="IQ4_NL", output_type="Q6_K")
+
+    def decided(self, n, model=None, **card):
+        spec = dict(self.R9700)
+        spec.update(card)
+        return S.decide(enabled=True, system="linux", cards=cards(n, **spec), ram_total_gib=125, ram_available_gib=80,
+                        model=model or S.ModelFacts(**self.IQ3S), allow_untested=True)
+
+    def test_off_unless_the_variable_is_set(self):
+        import tempfile
+
+        d = self.decided(4)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(S.record_launch_manifest(d, "auto", environ={}))
+            self.assertFalse(S.record_launch_manifest(d, "auto", environ={"STRATA_MANIFEST": ""}))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_four_gfx1201_with_the_iq3_s_set_is_recognised(self):
+        import json
+        import tempfile
+
+        d = self.decided(4)
+        self.assertTrue(d.use_split, d.reasons)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "m.json")
+            self.assertTrue(S.record_launch_manifest(d, "auto", environ={"STRATA_MANIFEST": target}))
+            doc = json.loads(Path(target + ".launch.json").read_text(encoding="utf-8"))
+        launch = doc["launch"]
+        self.assertEqual((launch["engine"], launch["cards"], launch["card_arch"]), ("all-cards-split", 4, "gfx1201"))
+        self.assertEqual(launch["amd_auto_rule"], {"architecture": True, "card_count": True, "expert_types": True})
+        self.assertIn("IQ3_S", launch["routed_types"])
+
+    def test_two_and_three_cards_are_not_promoted_by_the_four_card_rule(self):
+        for n in (2, 3):
+            rule = S.auto_rule(self.decided(n))
+            self.assertEqual(rule, {"architecture": True, "card_count": False, "expert_types": True}, n)
+
+    def test_another_expert_type_or_an_nvidia_card_misses_a_condition(self):
+        ud = S.ModelFacts(**{**self.IQ3S, "routed_types": {"IQ3_S": 90, "Q3_K": 4}})
+        d = self.decided(4, model=ud)
+        self.assertFalse(d.use_split)                         # the loader reads no Q3_K experts: a plain refusal, with the reason recorded
+        self.assertTrue(any("Q3_K" in r for r in d.reasons), d.reasons)
+        self.assertEqual(S.auto_rule(d), {"architecture": True, "card_count": True, "expert_types": False})
+        nv = S.decide(enabled=True, system="linux", cards=cards(2), ram_total_gib=125, ram_available_gib=80, model=udq4())
+        self.assertIsNone(S.auto_rule(nv))
+
+    def test_matched_launches_give_the_same_text(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            texts = []
+            for name in ("a", "b"):
+                target = str(Path(tmp) / name)
+                S.record_launch_manifest(self.decided(4), "auto", environ={"STRATA_MANIFEST": target})
+                texts.append(Path(target + ".launch.json").read_text(encoding="utf-8"))
+            self.assertEqual(texts[0], texts[1])
+            self.assertFalse(list(Path(tmp).glob("*.tmp")))
+
+    def test_an_unwritable_target_never_stops_a_start(self):
+        self.assertFalse(S.record_launch_manifest(self.decided(4), "auto", environ={"STRATA_MANIFEST": "/no/such/dir/m.json"}))
+
+
 if __name__ == "__main__":
     unittest.main()
