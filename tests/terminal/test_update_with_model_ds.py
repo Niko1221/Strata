@@ -133,14 +133,21 @@ class DeepSeekWithAModel(Dsv41Engine):
         self.assertEqual(self.starts, [("launch-deepseek", self.old)], "started again, on the engine it had")
         self.assertIn("old engine is unchanged", self.script.asked[1][0])
 
-    @unittest.skipUnless(LINUX, "the stand-in model process is a copy of /bin/sleep")
+    @unittest.skipUnless(LINUX, "the stand-in model process is a copy of /bin/sh")
     def test_the_file_a_loaded_model_runs_from_is_never_touched(self):
         import shutil
-        shutil.copy("/bin/sleep", self.old)
+        shutil.copy("/bin/sh", self.old)
         self.old.chmod(0o755)
-        proc = subprocess.Popen([str(self.old), "300"])
-        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        # A shell builtin waits while this exact copied executable stays mapped.
+        # Renamed multi-call sleep binaries may exit before the update even starts.
+        proc = subprocess.Popen(["sh", "-c", "read value"], executable=str(self.old), stdin=subprocess.PIPE)
+        def cleanup():
+            proc.kill()
+            proc.wait()
+            proc.stdin.close()
+        self.addCleanup(cleanup)
         time.sleep(0.3)
+        self.assertIsNone(proc.poll(), "the stand-in must be running before the update")
         before = self.old.read_bytes()
         out = self.update(self.gate(nobody=True, allow_stop=True, start_again=True))         # (the stand-in is not stopped by the fake stop)
         self.assertEqual(out["exit_code"], 0, out)
