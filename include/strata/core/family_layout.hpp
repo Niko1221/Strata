@@ -182,12 +182,20 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
         add("post_attention_norm.weight", {N});
     }
     if (kind == LayerKind::Gdn) {
-        add("attn_qkv.weight", {N, g.ssm_conv_channels});
-        add("attn_gate.weight", {N, g.ssm_value_dim});
+        if (g.family == ModelFamily::Qwen3Next) {
+            // qwen3next ships the same GDN roles fused: ssm_in is qkv+gate in one matrix (one matmul IS the
+            // right shape - the fusion is on the output side, the GDN code reads the result's slices), and
+            // ssm_ba is beta+alpha.  Widths derived from the geometry, never stored.
+            add("ssm_in.weight", {N, g.ssm_conv_channels + g.ssm_value_dim});
+            add("ssm_ba.weight", {N, 2 * g.ssm_v_heads});
+        } else {
+            add("attn_qkv.weight", {N, g.ssm_conv_channels});
+            add("attn_gate.weight", {N, g.ssm_value_dim});
+            add("ssm_alpha.weight", {N, g.ssm_v_heads});
+            add("ssm_beta.weight", {N, g.ssm_v_heads});
+        }
         add("ssm_out.weight", {g.ssm_value_dim, N});
         add("ssm_conv1d.weight", {g.ssm_d_conv, g.ssm_conv_channels});
-        add("ssm_alpha.weight", {N, g.ssm_v_heads});
-        add("ssm_beta.weight", {N, g.ssm_v_heads});
         add("ssm_a", {g.ssm_v_heads});
         add("ssm_dt.bias", {g.ssm_v_heads});
         add("ssm_norm.weight", {g.ssm_state_size});
