@@ -18,6 +18,7 @@
 #include "ds4_model.hpp"
 #include "ds4_pick_rule.hpp"
 #include "ds4_experts_rule.hpp"
+#include "ds4_tp_plan.hpp"
 #include "ds4_engram_io.hpp"
 
 #include "ds4_gguf.cuh"
@@ -151,6 +152,20 @@ void split128(int whole, int np, int p, int& off, int& n, int rot = 0) {
     for (int i = 0; i < p; ++i) at += blocks(i);
     off = 128 * at;
     n = 128 * blocks(p);
+}
+
+// GGUF FFNs share whole quantization/alignment blocks. Extra blocks rotate from member rot;
+// offsets are prefix sums in physical member order, so routed and shared slices cover the FFN once.
+bool split_blocks(int whole, int np, int p, int block, int& off, int& n, int rot = 0) {
+    if (block <= 0 || np <= 0 || p < 0 || p >= np || whole % block != 0 || whole / block < np) return false;
+    const int b = whole / block, q = b / np, r = b % np;
+    rot = (rot % np + np) % np;
+    auto blocks = [&](int i) { return q + ((i - rot + np) % np < r ? 1 : 0); };
+    int at = 0;
+    for (int i = 0; i < p; ++i) at += blocks(i);
+    off = at * block;
+    n = blocks(p) * block;
+    return true;
 }
 
 std::string read_file(const std::string& p) {
@@ -843,7 +858,7 @@ struct Layer {
     std::vector<Layer> mates;
     x3::ExpertLayout hlay;
     size_t hblob = 0;
-    int ff0 = 0, ffn = 0;     // this member's FFN columns [ff0, ff0 + ffn) (split128 of n_ff; the whole one alone)
+    int ff0 = 0, ffn = 0;     // this member's actual FFN columns [ff0, ff0 + ffn); the whole FFN alone
     // this member's heads [ah0, ah0 + ahn) and wo_a groups [og0, og0 + ogn) - all of them alone; in a group of more
     // members than the heads split among evenly (head_members: 9, 7 or 6 over 64 heads), the first ones none: their
     // attention adds nothing to the sum
@@ -2055,7 +2070,7 @@ struct Model::Impl {
     }
     // a dense matrix in a ggml block type (x3::Mat fmt kFmtGG, row = k / 256 blocks): whole, or part of its rows / inputs
     bool mat_gg(Dev& d, const std::string& pre, const Tensor& t, int ggt, x3::Mat& m, std::string& err, size_t* acct, int part,
-                int np, bool cols) {
+                int np, bool cols, int slice0, int slicen) {
         if (t.shape.size() != 2 || t.shape[1] % 256 != 0) {
             err = pre + ": a " + t.dtype + " tensor that is not a matrix of whole blocks";
             return false;
@@ -2067,18 +2082,21 @@ struct Model::Impl {
             err = pre + ": read failed";
             return false;
         }
-        if (np > 1) {
-            const int whole = cols ? n : k, wd = whole / np;
-            if (whole % np != 0 || wd % (cols ? 1 : 256) != 0) {
-                err = pre + ": " + std::to_string(whole) + (cols ? " outputs" : " inputs") + " do not split in " + std::to_string(np) + " parts";
+        if (np > 1 || slice0 >= 0) {
+            const int whole = cols ? n : k, wd = slice0 >= 0 ? slicen : whole / np;
+            const int at = slice0 >= 0 ? slice0 : part * wd;
+            if ((slice0 < 0 && whole % np != 0) || at < 0 || wd <= 0 || at > whole - wd ||
+                at % (cols ? 1 : 256) != 0 || wd % (cols ? 1 : 256) != 0) {
+                err = pre + ": invalid " + t.dtype + (cols ? " output" : " input") + " slice [" +
+                      std::to_string(at) + ", " + std::to_string((int64_t) at + wd) + ") of " + std::to_string(whole);
                 return false;
             }
             std::vector<uint8_t> p;
             if (cols) {
-                p.assign(w.begin() + (long) ((size_t) part * wd * rb), w.begin() + (long) ((size_t) (part + 1) * wd * rb));
+                p.assign(w.begin() + (long) ((size_t) at * rb), w.begin() + (long) ((size_t) (at + wd) * rb));
                 n = wd;
             } else {
-                const size_t pb = (size_t) (wd / 256) * bb, off = (size_t) (part * wd / 256) * bb;
+                const size_t pb = (size_t) (wd / 256) * bb, off = (size_t) (at / 256) * bb;
                 p.resize((size_t) n * pb);
                 for (size_t r = 0; r < (size_t) n; ++r) std::memcpy(p.data() + r * pb, w.data() + r * rb + off, pb);
                 k = wd;
@@ -2102,11 +2120,11 @@ struct Model::Impl {
     // columns (outputs: a range of its rows) or of its rows (inputs: a range of each row, whole Q8_0 blocks) - a
     // standalone [n][k] matrix
     bool mat_bf16(Dev& d, const std::string& pre, const Tensor& t, x3::Mat& m, std::string& err, size_t* acct, int part,
-                  int np, bool cols) {
+                  int np, bool cols, int slice0, int slicen) {
         const bool q8 = t.dtype == "Q8_0";
         // a ggml K-quant dense matrix (Q4_K / Q5_K / Q6_K: 256 values a block; the GEMV path of ds4_iq)
         const int ggt = (t.dtype == "Q4_K" || t.dtype == "Q5_K" || t.dtype == "Q6_K") ? gg_type_of(t.dtype) : -1;
-        if (ggt > 0) return mat_gg(d, pre, t, ggt, m, err, acct, part, np, cols);
+        if (ggt > 0) return mat_gg(d, pre, t, ggt, m, err, acct, part, np, cols, slice0, slicen);
         if (t.shape.size() != 2 || (q8 && t.shape[1] % 32 != 0)) {
             err = pre + ": a " + t.dtype + " tensor that is not a matrix";
             return false;
@@ -2119,23 +2137,26 @@ struct Model::Impl {
             err = pre + ": read failed";
             return false;
         }
-        if (np > 1) {
-            const int whole = cols ? n : k, wd = whole / np;
-            if (whole % np != 0 || wd % (q8 ? 32 : 8) != 0) {
-                err = pre + ": " + std::to_string(whole) + (cols ? " outputs" : " inputs") + " do not split in " +
-                      std::to_string(np) + " parts";
+        if (np > 1 || slice0 >= 0) {
+            const int whole = cols ? n : k, wd = slice0 >= 0 ? slicen : whole / np;
+            const int at = slice0 >= 0 ? slice0 : part * wd;
+            const int block = q8 ? 32 : 8;
+            if ((slice0 < 0 && whole % np != 0) || at < 0 || wd <= 0 || at > whole - wd ||
+                at % block != 0 || wd % block != 0) {
+                err = pre + ": invalid " + t.dtype + (cols ? " output" : " input") + " slice [" +
+                      std::to_string(at) + ", " + std::to_string((int64_t) at + wd) + ") of " + std::to_string(whole);
                 return false;
             }
             const size_t rb = bytes_of((size_t) k);
             std::vector<uint8_t> p;
             if (cols) {
-                p.assign(w.begin() + (long) ((size_t) part * wd * rb), w.begin() + (long) ((size_t) (part + 1) * wd * rb));
+                p.assign(w.begin() + (long) ((size_t) at * rb), w.begin() + (long) ((size_t) (at + wd) * rb));
                 n = wd;
             } else {
                 const size_t pb = bytes_of((size_t) wd);
                 p.resize((size_t) n * pb);
                 for (size_t r = 0; r < (size_t) n; ++r)
-                    std::memcpy(p.data() + r * pb, w.data() + r * rb + bytes_of((size_t) part * wd), pb);
+                    std::memcpy(p.data() + r * pb, w.data() + r * rb + bytes_of((size_t) at), pb);
                 k = wd;
             }
             w.swap(p);
@@ -2162,14 +2183,19 @@ struct Model::Impl {
         }
         return v;
     }
+    // Dense GGUF matrices split output rows evenly; keep loading and vocabulary ranges on the same rule.
+    static bool dense_gguf_matrix(const Tensor* t) {
+        return t != nullptr && (t->dtype == "BF16" || t->dtype == "Q8_0" || t->dtype == "Q4_K" ||
+                                t->dtype == "Q5_K" || t->dtype == "Q6_K");
+    }
     // an EXL3 matrix onto the device: whole, or (np > 1) part `part` of its columns (cols) or of its rows - a standalone
     // matrix of its own (the rotations' 128-blocks stay whole)
-    // (rot: split128's - an EXL3 matrix's uneven 128-block shares going round the members; a GGUF's BF16 / Q8_0 matrix
-    // splits evenly, its groups only as wide as that goes)
+    // rot keeps EXL3's split128 behavior. Optional explicit slices are only for GGUF shared FFNs,
+    // whose offsets and widths must match the routed expert rather than be independently divided.
     bool mat(Dev& d, const std::string& pre, x3::Mat& m, std::string& err, size_t* acct, int part = 0, int np = 1,
-             bool cols = true, int rot = 0) {
-        if (const Tensor* tw = pk.get(pre + ".weight"); tw != nullptr && (tw->dtype == "BF16" || tw->dtype == "Q8_0" || tw->dtype == "Q4_K" || tw->dtype == "Q5_K" || tw->dtype == "Q6_K"))
-            return mat_bf16(d, pre, *tw, m, err, acct, part, np, cols);
+             bool cols = true, int rot = 0, int slice0 = -1, int slicen = 0) {
+        if (const Tensor* tw = pk.get(pre + ".weight"); dense_gguf_matrix(tw))
+            return mat_bf16(d, pre, *tw, m, err, acct, part, np, cols, slice0, slicen);
         const Tensor* tr = pk.get(pre + ".trellis");
         const Tensor* su = pk.get(pre + ".suh");
         const Tensor* sv = pk.get(pre + ".svh");
@@ -2517,8 +2543,8 @@ struct Model::Impl {
                 std::memcpy(ram_part[(size_t) s][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r], blob + l.lay.trellis[r] + (size_t) X * nb, nb);
         }
     }
-    // expert e (from the file) -> its blob; and member m of nm's part of a blob (gate / up rows [m n_ff / nm, ..), down
-    // inputs of the same range: in each row the blocks [m n_ff / nm / 32, ..)) and back
+    // expert e (from the file) -> its blob; and member m's gate / up rows and down input blocks
+    // [ff0, ff0 + ffn) of a blob, and back
     bool read_mx(const Layer& l, int e, uint8_t* blob) const {   // (from its RAM-tier slot or copy when it has one)
         if (!l.ram.empty() && l.ram[(size_t) e] >= 0) {
             if (copy_mode) ram_to_blob(l, l.ram[(size_t) e], blob);
@@ -2535,24 +2561,28 @@ struct Model::Impl {
         return true;
     }
     void mx_blob_to_half(const Layer& l, const uint8_t* blob, int m, uint8_t* dst) const {
-        const int ffh = g.ff / l.nm;
-        const size_t gr = gg::type_row_bytes(gg::expert_type(l.lay, 0), g.dim),
-                     dr = gg::type_row_bytes(gg::expert_type(l.lay, 2), g.ff),
-                     dh = gg::type_row_bytes(gg::expert_type(l.lay, 2), ffh);
-        for (int r = 0; r < 2; ++r)
-            std::memcpy(dst + l.hlay.trellis[r], blob + l.lay.trellis[r] + (size_t) m * ffh * gr, (size_t) ffh * gr);
+        const Layer& x = member(l, m);
+        const int t2 = gg::expert_type(l.lay, 2);
+        const size_t dr = gg::type_row_bytes(t2, g.ff), dh = gg::type_row_bytes(t2, x.ffn),
+                     d0 = gg::type_row_bytes(t2, x.ff0);
+        for (int r = 0; r < 2; ++r) {
+            const size_t gr = gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim);
+            std::memcpy(dst + x.hlay.trellis[r], blob + l.lay.trellis[r] + (size_t) x.ff0 * gr, (size_t) x.ffn * gr);
+        }
         for (size_t row = 0; row < (size_t) g.dim; ++row)
-            std::memcpy(dst + l.hlay.trellis[2] + row * dh, blob + l.lay.trellis[2] + row * dr + (size_t) m * dh, dh);
+            std::memcpy(dst + x.hlay.trellis[2] + row * dh, blob + l.lay.trellis[2] + row * dr + d0, dh);
     }
     void mx_half_to_blob(const Layer& l, const uint8_t* src, int m, uint8_t* blob) const {
-        const int ffh = g.ff / l.nm;
-        const size_t gr = gg::type_row_bytes(gg::expert_type(l.lay, 0), g.dim),
-                     dr = gg::type_row_bytes(gg::expert_type(l.lay, 2), g.ff),
-                     dh = gg::type_row_bytes(gg::expert_type(l.lay, 2), ffh);
-        for (int r = 0; r < 2; ++r)
-            std::memcpy(blob + l.lay.trellis[r] + (size_t) m * ffh * gr, src + l.hlay.trellis[r], (size_t) ffh * gr);
+        const Layer& x = member(l, m);
+        const int t2 = gg::expert_type(l.lay, 2);
+        const size_t dr = gg::type_row_bytes(t2, g.ff), dh = gg::type_row_bytes(t2, x.ffn),
+                     d0 = gg::type_row_bytes(t2, x.ff0);
+        for (int r = 0; r < 2; ++r) {
+            const size_t gr = gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim);
+            std::memcpy(blob + l.lay.trellis[r] + (size_t) x.ff0 * gr, src + x.hlay.trellis[r], (size_t) x.ffn * gr);
+        }
         for (size_t row = 0; row < (size_t) g.dim; ++row)
-            std::memcpy(blob + l.lay.trellis[2] + row * dr + (size_t) m * dh, src + l.hlay.trellis[2] + row * dh, dh);
+            std::memcpy(blob + l.lay.trellis[2] + row * dr + d0, src + x.hlay.trellis[2] + row * dh, dh);
     }
 
     bool expert_layout(Layer& l, std::string& err) {
@@ -2647,6 +2677,109 @@ struct Model::Impl {
         }
     }
 
+    // Estimate expert-room balances before any member layouts or dense weights are built. Common
+    // group costs cancel in absolute residual differences; these estimates are not allocation promises.
+    // place_experts still budgets every member from fresh cudaMemGetInfo after the real allocations.
+    std::vector<std::vector<int>> plan_tp_ffn_blocks(int block) const {
+        std::vector<std::vector<int>> planned(L.size());
+        const double fraction = o.vram_experts;
+        if (!pk.gguf || env_tri("DS4_TP_BALANCE") == 0 || !std::isfinite(fraction) || fraction <= 0.0 || block <= 0)
+            return planned;
+        for (size_t gi = 0; gi < groups.size(); ++gi) {
+            const Group& group = groups[gi];
+            const int nm = (int) group.mem.size();
+            if (nm <= 1 || g.ff % block != 0 || g.ff / block < nm) continue;
+            const int max_blocks = (g.ff / block + nm - 1) / nm;
+            std::vector<size_t> indices;
+            std::vector<TpBlockLayer> layers;
+            bool valid = true;
+            for (size_t il = 0; il < L.size(); ++il) {
+                const Layer& l = L[il];
+                if (l.grp != (int) gi || l.mtp) continue;
+                if (l.nm != nm || l.lay.fmt != gg::kFmtMXFP4) { valid = false; break; }
+                TpBlockLayer plan;
+                plan.blocks.resize((size_t) nm);
+                for (int m = 0; m < nm; ++m) {
+                    int at = 0, width = 0;
+                    if (!split_blocks(g.ff, nm, m, block, at, width, l.il % nm)) { valid = false; break; }
+                    plan.blocks[(size_t) m] = width / block;
+                }
+                double shared = 0.0;
+                for (const char* name : {"ffn.shared_experts.w1", "ffn.shared_experts.w2", "ffn.shared_experts.w3"})
+                    shared += (double) mat_bytes(l.name + name);
+                plan.bytes.assign((size_t) max_blocks + 1, 0.0);
+                for (int b = 1; valid && b <= max_blocks; ++b) {
+                    const int width = b * block;
+                    size_t slot = 0;
+                    for (int r = 0; r < 3; ++r) {
+                        const int ty = gg::expert_type(l.lay, r);
+                        const int k = r < 2 ? g.dim : width, n = r < 2 ? width : g.dim;
+                        const int quant_block = gg::type_block(ty);
+                        if (quant_block <= 0 || k % quant_block != 0) { valid = false; break; }
+                        slot += align256((size_t) n * gg::type_row_bytes(ty, k));
+                    }
+                    // Dense shared shards reduce the pre-fraction free-memory budget; routed
+                    // slots consume the resulting expert room directly (as in place_experts).
+                    plan.bytes[(size_t) b] = (l.cpu_only ? 0.0 : (double) slot * l.n_exp) +
+                                             shared * ((double) width / g.ff) * fraction;
+                }
+                if (!valid) break;
+                indices.push_back(il);
+                layers.push_back(std::move(plan));
+            }
+            if (!valid || layers.empty()) continue;
+            std::vector<double> capacity((size_t) nm);
+            for (int m = 0; m < nm; ++m) {
+                const int di = group.mem[(size_t) m];
+                double dense = 0.0, experts = 0.0;
+                for (const Layer& l : L) {
+                    if (l.grp != (int) gi || !l.mtp || l.dev != di) continue;
+                    dense += (double) l.dense_bytes;
+                    if (!l.cpu_only) experts += (double) l.blob * l.n_exp;
+                }
+                if (g.n_mtp > 0 && di == d_dev)
+                    dense += tensor_bytes("mtp.0.main_norm.weight");
+                if (di == head_dev) {
+                    // The head matrix itself is already sharded across its group. Only the
+                    // lead's full logits and additional drafter heads are asymmetric here.
+                    dense += (double) kWin * g.vocab * sizeof(float);
+                    if (g.n_mtp > 0) {
+                        const std::string pre = "mtp." + std::to_string(g.n_mtp - 1) + ".";
+                        dense += tensor_bytes(pre + "confidence_head.proj.weight");
+                        if (const Tensor* t = pk.get(pre + "markov_head.embed.weight")) dense += (double) t->bytes;
+                        if (const Tensor* t = pk.get(pre + "markov_head.head.weight"))
+                            dense += strata::ds4::markov_head_q8_default(defaults_026())
+                                         ? (double) g.vocab * ((g.d_rank + 31) / 32) * gg::kQ8Bytes
+                                         : (double) t->bytes;
+                        dense += (double) (2 * kWin + 64) * sizeof(int);
+                    }
+                }
+                // Do not clamp: common fixed costs cancel in residual differences, not in ratios
+                // or clamped capacities. The fresh placement budget remains the safety authority.
+                capacity[(size_t) m] = ((double) devs[(size_t) di].free0 -
+                                        (double) ((size_t) o.reserve_mib << 20) - dense) * fraction - experts;
+            }
+            const auto baseline = layers;
+            if (!rebalance_tp_blocks(layers, capacity)) continue;
+            long long moved = 0;
+            std::vector<double> totals((size_t) nm, 0.0);
+            for (size_t i = 0; i < layers.size(); ++i) {
+                planned[indices[i]] = layers[i].blocks;
+                for (int m = 0; m < nm; ++m) {
+                    moved += std::abs(layers[i].blocks[(size_t) m] - baseline[i].blocks[(size_t) m]);
+                    totals[(size_t) m] += layers[i].blocks[(size_t) m];
+                }
+            }
+            std::fprintf(stderr, "ds4: GGUF TP balance group %zu: moved %lld blocks (%d values), avg blocks/layer",
+                         gi, moved / 2, block);
+            for (int m = 0; m < nm; ++m)
+                std::fprintf(stderr, " CUDA%d=%.2f", devs[(size_t) group.mem[(size_t) m]].id,
+                             totals[(size_t) m] / layers.size());
+            std::fprintf(stderr, " (estimated expert room; DS4_TP_BALANCE=0 keeps rotation)\n");
+        }
+        return planned;
+    }
+
     // ---- loading
     bool load(const Options& opt, std::string& err) {
         o = opt;
@@ -2690,25 +2823,53 @@ struct Model::Impl {
             CK(cudaMemGetInfo(&d.free0, &d.total));
             d.free0 = uma_free(d.id, d.free0);
         }
-        // the groups' width: o.tp, less while the experts' blocks do not split in it (a member takes n_ff / tp of each
-        // expert: the down's inputs in whole blocks - a GGUF's 256-value types split n_ff 2304 in 1, 3 or 9 parts)
+        // DS4_TP_ALIGN is a hard alignment of FFN offsets and widths (default 128 values), combined
+        // with the kernels' 64-value tiles and all routed/shared down quantization blocks.
         int tp = o.tp;
+        int ff_block = 128;
         if (pk.gguf && tp > 1) {
-            int blk = 32;
+            int alignment = 128;
+            if (const char* v = std::getenv("DS4_TP_ALIGN")) {
+                char* end = nullptr;
+                const long long a = std::strtoll(v, &end, 10);
+                if (end == v || *end != '\0' || a <= 0 || a > INT_MAX) {
+                    err = "DS4_TP_ALIGN must be a positive integer number of FFN values";
+                    return false;
+                }
+                alignment = (int) a;
+            }
+            ff_block = 64;
+            auto combine_block = [&](int block) {
+                const int64_t unit = (int64_t) ff_block / std::gcd(ff_block, block) * block;
+                if (unit > INT_MAX) return false;
+                ff_block = (int) unit;
+                return true;
+            };
+            if (!combine_block(alignment)) {
+                err = "DS4_TP_ALIGN is too large to combine with the FFN kernel alignment";
+                return false;
+            }
             for (const auto& kv : pk.t) {
                 const std::string& n = kv.first;
-                if (n.find(".ffn.experts.") == std::string::npos || n.size() < 9 ||
+                if ((n.find(".ffn.experts.") == std::string::npos &&
+                     n.find(".ffn.shared_experts.") == std::string::npos) || n.size() < 9 ||
                     n.compare(n.size() - 9, 9, "w2.weight") != 0)
                     continue;
                 const int ty = gg_type_of(kv.second.dtype);
-                if (ty >= 0) blk = std::max(blk, gg::type_block(ty));
+                const int block = ty >= 0 ? gg::type_block(ty) : (kv.second.dtype == "Q8_0" ? 32 : 1);
+                if (!combine_block(std::max(1, block))) {
+                    err = "GGUF FFN quantization blocks and DS4_TP_ALIGN exceed the supported alignment";
+                    return false;
+                }
             }
-            while (tp > 1 && (g.ff % tp != 0 || (g.ff / tp) % blk != 0 || (g.ff / tp) % (std::getenv("DS4_TP_ALIGN") ? std::atoi(std::getenv("DS4_TP_ALIGN")) : 128) != 0 || g.heads % tp != 0 ||
+            int at = 0, width = 0;
+            while (tp > 1 && (!split_blocks(g.ff, tp, 0, ff_block, at, width) || g.heads % tp != 0 ||
                               g.o_groups % tp != 0))
                 --tp;
             if (tp != o.tp)
-                std::fprintf(stderr, "ds4: tensor parallel %d -> %d: the experts' %d-value blocks split n_ff %d no other way "
-                                     "(each GPU its own layers)\n", o.tp, tp, blk, g.ff);
+                std::fprintf(stderr, "ds4: tensor parallel %d -> %d: n_ff %d must split into nonempty %d-value blocks "
+                                     "(DS4_TP_ALIGN=%d); heads %d and output groups %d must divide evenly\n",
+                             o.tp, tp, g.ff, ff_block, alignment, g.heads, g.o_groups);
         }
         // the groups: runs of tp devices of one kind (their memory), a device unlike the next alone
         // - or, tp the number of GPUs, one group of all of them whatever their kind (its tightest member sets the
@@ -3104,6 +3265,7 @@ struct Model::Impl {
                                  "fit, but leave less than the %lld MiB reserve for the caches and scratch (--reserve-mib); the "
                                  "load goes on\n", d.id, (double) d.free0 / 1e9, need / 1e9, (long long) o.reserve_mib);
         }
+        const auto tp_blocks = plan_tp_ffn_blocks(ff_block);
         // the groups' members: copies of each layer's device state, a member's part of an expert
         for (Layer& l : L) {
             l.ff0 = 0;
@@ -3113,8 +3275,11 @@ struct Model::Impl {
             l.ogn = g.o_groups;
             if (l.nm == 1) continue;
             const int na = head_members(l.nm);
-            if (g.heads % na != 0 || g.o_groups % na != 0 || g.ff % 128 != 0 || g.ff / 128 < l.nm) {
-                err = "tensor parallel " + std::to_string(l.nm) + ": the heads, output groups or FFN do not split";
+            const bool gguf_x = l.lay.fmt == gg::kFmtMXFP4;
+            const int unit = gguf_x ? ff_block : 128;
+            if (g.heads % na != 0 || g.o_groups % na != 0 || g.ff % unit != 0 || g.ff / unit < l.nm) {
+                err = "tensor parallel " + std::to_string(l.nm) + ": heads/output groups must divide evenly and n_ff " +
+                      std::to_string(g.ff) + " must provide at least one " + std::to_string(unit) + "-value block per member";
                 return false;
             }
             for (int m = 1; m < l.nm; ++m) {
@@ -3124,10 +3289,9 @@ struct Model::Impl {
                 c.dev = groups[(size_t) l.grp].mem[(size_t) m];
                 l.mates.push_back(std::move(c));
             }
-            // each member's FFN columns and its part of an expert's layout: an EXL3 expert's in whole 128-blocks, as even
-            // as they go (split128, the odd blocks going round the members layer by layer); a GGUF's in even shares (its
-            // groups are only as wide as its experts' blocks split evenly: mx_blob_to_half's n_ff / nm)
-            const bool gguf_x = l.lay.fmt == gg::kFmtMXFP4;
+            // EXL3 retains its rotated 128-block shares. GGUF uses the capacity-aware plan,
+            // or its original rotation when no legal improvement exists; shared uses the same ranges.
+            int ff_at = 0;
             for (int m = 0; m < l.nm; ++m) {
                 Layer& x = member(l, m);
                 const int ha = m - (l.nm - na);   // (its place among the members with heads)
@@ -3135,22 +3299,25 @@ struct Model::Impl {
                 x.ah0 = ha < 0 ? 0 : ha * x.ahn;
                 x.ogn = ha < 0 ? 0 : g.o_groups / na;
                 x.og0 = ha < 0 ? 0 : ha * x.ogn;
-                if (gguf_x) {
-                    x.ffn = g.ff / l.nm;
-                    x.ff0 = m * x.ffn;
-                } else
+                if (gguf_x && !tp_blocks[(size_t) l.il].empty()) {
+                    x.ff0 = ff_at;
+                    x.ffn = tp_blocks[(size_t) l.il][(size_t) m] * ff_block;
+                    ff_at += x.ffn;
+                } else if (gguf_x)
+                    split_blocks(g.ff, l.nm, m, ff_block, x.ff0, x.ffn, l.il % l.nm);
+                else
                     split128(g.ff, l.nm, m, x.ff0, x.ffn, l.il % l.nm);   // (rot: the odd blocks go round the members)
                 size_t off = 0;
                 for (int r = 0; r < 3; ++r) {
                     const int k = r < 2 ? g.dim : x.ffn, n = r < 2 ? x.ffn : g.dim;
                     x.hlay.K[r] = l.lay.K[r];
-                    x.hlay.K[r] = l.lay.K[r];
                     x.hlay.trellis[r] = off;
                     if (gguf_x) {   // gate / up rows, down inputs: [n][k / block] blocks
                         const int ty = gg::expert_type(l.lay, r);
-                        if (k % gg::type_block(ty) != 0) {
-                            err = "tensor parallel " + std::to_string(l.nm) + ": the experts' " + gg::type_name(ty) +
-                                  " blocks do not split";
+                        if (k % gg::type_block(ty) != 0 || (r == 2 && x.ff0 % gg::type_block(ty) != 0)) {
+                            err = "tensor parallel " + std::to_string(l.nm) + " member " + std::to_string(m) +
+                                  ": FFN slice [" + std::to_string(x.ff0) + ", " + std::to_string(x.ff0 + x.ffn) +
+                                  ") is incompatible with the experts' " + gg::type_name(ty) + " blocks";
                             return false;
                         }
                         x.hlay.suh[r] = x.hlay.svh[r] = off;
@@ -3565,19 +3732,15 @@ struct Model::Impl {
             }
             if (chunk > 0 && aerr.empty()) err.clear();
         }
-        // the CPU lane's experts read in place (decided above): how much of them the load reads ahead, from what VRAM
-        // now leaves over
-        if (file_experts) {
-            double room = 0, all = 0;   // the VRAM place_experts will find for experts; every expert's bytes
-            for (Dev& d : devs) {
-                cudaSetDevice(d.id);
-                size_t fr = 0, tot = 0;
-                CK(cudaMemGetInfo(&fr, &tot));
-                fr = uma_free(d.id, fr);
-                room += std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
-            }
-            for (const Layer& l : L) all += (double) l.blob * l.n_exp;
-            const double need = std::max(0.0, all - room);
+        // Uneven GGUF members can leave room unused on narrower cards: summed free VRAM does not predict how
+        // many whole experts remain on the host.  Defer their warm budget until the shared slot count is known.
+        const bool uneven_gguf = std::any_of(L.begin(), L.end(), [](const Layer& l) {
+            if (l.lay.fmt != gg::kFmtMXFP4 || l.nm <= 1) return false;
+            for (int m = 1; m < l.nm; ++m)
+                if (unit(member(l, m)) != unit(l)) return true;
+            return false;
+        });
+        auto prepare_warm = [&](double need) {
             const uint64_t avail = ram_avail();
             warm_bytes = avail > kRamMargin ? std::min<uint64_t>(avail - kRamMargin, (uint64_t) need) : 0;
             if (avail == ~uint64_t{0}) warm_bytes = (uint64_t) need;
@@ -3588,6 +3751,19 @@ struct Model::Impl {
                          need / 1e9, o.mmap_experts > 0 ? " (--mmap-experts on)"
                                      : pk.gguf ? " (--mmap-experts off copies them into RAM)" : ", not copied into RAM",
                          avail == ~uint64_t{0} ? 0.0 : avail / 1e9, warm_bytes / 1e9, chunk);
+        };
+        // Preserve the existing estimate and timing for one GPU and uniform splits.
+        if (file_experts && !uneven_gguf) {
+            double room = 0, all = 0;
+            for (Dev& d : devs) {
+                cudaSetDevice(d.id);
+                size_t fr = 0, tot = 0;
+                CK(cudaMemGetInfo(&fr, &tot));
+                fr = uma_free(d.id, fr);
+                room += std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
+            }
+            for (const Layer& l : L) all += (double) l.blob * l.n_exp;
+            prepare_warm(std::max(0.0, all - room));
         }
         // the CPU lane: one pool of workers per NUMA node, each expert split in NH column parts (part X on node X); in
         // place, one part (the files' layout) and one pool over every node's cores (the pages lie where the cache put them)
@@ -3625,6 +3801,11 @@ struct Model::Impl {
         // the experts: VRAM slots in what each device has left (after the PCIe lane's staging slots), the rest on the host
         if (!lane_alloc(err)) return false;
         if (!place_experts(err)) return false;
+        if (file_experts && uneven_gguf) {
+            double need = 0;
+            for (const Layer& l : L) need += (double) l.blob * (l.n_exp - l.n_vram);
+            prepare_warm(need);
+        }
         if (!load_experts(err)) return false;
         if (pk.gguf) make_pools();
         if (chunk > 0) {
@@ -3686,9 +3867,11 @@ struct Model::Impl {
                             for (int m = 0; m < l.nm; ++m)
                                 if (member(l, m).dev == (int) di) {
                                     // (a group's members: each its share of the down's blocks in every row)
+                                    const Layer& x = member(l, m);
+                                    const int block = l.lay.fmt == gg::kFmtMXFP4
+                                                          ? std::max(1, gg::type_block(gg::expert_type(l.lay, 2))) : 1;
                                     fl = fl && l.lay.fmt == gg::kFmtMXFP4 &&
-                                         (l.nm == 1 || (flow_tp && (g.ff / l.nm) %
-                                                        std::max(1, gg::type_block(gg::expert_type(l.lay, 2))) == 0));
+                                         (l.nm == 1 || (flow_tp && x.ff0 % block == 0 && x.ffn % block == 0));
                                     n_exp_max = std::max(n_exp_max, l.n_exp);
                                 }
                     if (fl)   // (each part read unbuffered from its offset rounded down: a page more each)
@@ -4023,13 +4206,15 @@ struct Model::Impl {
         }
         return c0;
     }
-    // a device's chunk dimensions in a group of nm members: its heads' width, wo_a groups and FFN share (the widest
-    // member's: member 0 takes split128's odd blocks), the attention's and the indexer's slabs (the indexer's scores
-    // rows are the context wide - about 64 MB of them)
+    // A group's chunk scratch fits the widest actual FFN member over all its layers, including
+    // GGUF quantization-block shares and EXL3's rotated shares. Attention/indexer slabs stay unchanged.
     void chunk_dims(Chunk& c, int nm) const {
         const int NHL = g.heads / head_members(nm), HQ = NHL * g.hd, OG = g.o_groups / head_members(nm);
-        int FF = 0, ff0_ = 0;
-        split128(g.ff, nm, 0, ff0_, FF);
+        int FF = nm == 1 ? g.ff : 0;
+        for (const Layer& l : L)
+            if (l.nm == nm)
+                for (int m = 0; m < l.nm; ++m) FF = std::max(FF, member(l, m).ffn);
+        if (FF == 0) FF = g.ff;   // no layer in this group width: conservative sizing for estimates
         c.HQ = HQ, c.OG = OG, c.FF = FF;
         c.A = std::max(64, (int) (((size_t) 8 << 20) / (size_t) HQ) / 64 * 64);
         c.AI = std::max(32, std::min(128, (int) (((size_t) 64 << 20) / (((size_t) o.max_context + 64) * 4)) / 32 * 32));
@@ -4322,15 +4507,28 @@ struct Model::Impl {
                         ok = ok && cudaMemcpyAsync(dst + l.lay.trellis[r], mat_r(r), mx_part_bytes(l, r),
                                                    cudaMemcpyHostToDevice, cs) == cudaSuccess;
             } else {
-                const int ffh = g.ff / l.nm;
-                const size_t gr = gg::type_row_bytes(gg::expert_type(l.lay, 0), g.dim),
-                             dr = gg::type_row_bytes(gg::expert_type(l.lay, 2), g.ff),
-                             dh = gg::type_row_bytes(gg::expert_type(l.lay, 2), ffh);
-                for (int r = 0; r < 2; ++r)
-                    ok = ok && cudaMemcpyAsync(dst + l.hlay.trellis[r], mat_r(r) + (size_t) m * ffh * gr,
-                                               (size_t) ffh * gr, cudaMemcpyHostToDevice, cs) == cudaSuccess;
-                ok = ok && cudaMemcpy2DAsync(dst + l.hlay.trellis[2], dh, mat_r(2) + (size_t) m * dh, dr, dh,
-                                             (size_t) g.dim, cudaMemcpyHostToDevice, cs) == cudaSuccess;
+                const Layer& x = member(l, m);
+                const int t2 = gg::expert_type(l.lay, 2);
+                const size_t dr = gg::type_row_bytes(t2, g.ff), dh = gg::type_row_bytes(t2, x.ffn),
+                             d0 = gg::type_row_bytes(t2, x.ff0);
+                const bool copied = src == nullptr && copy_mode && !l.ram.empty() && l.ram[(size_t) e] >= 0;
+                const int np = copied ? NH : 1;
+                for (int X = 0; X < np; ++X) {
+                    for (int r = 0; r < 2; ++r) {
+                        const size_t gr = gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim);
+                        const int rows = g.ff / np, a = std::max(x.ff0, X * rows),
+                                  b = std::min(x.ff0 + x.ffn, (X + 1) * rows);
+                        if (a >= b) continue;
+                        const uint8_t* p = copied ? mx_part_ptr(l, e, r, X) : mat_r(r);
+                        ok = ok && cudaMemcpyAsync(dst + x.hlay.trellis[r] + (size_t) (a - x.ff0) * gr,
+                                                   p + (size_t) (a - X * rows) * gr, (size_t) (b - a) * gr,
+                                                   cudaMemcpyHostToDevice, cs) == cudaSuccess;
+                    }
+                    const int rows = g.dim / np;
+                    const uint8_t* p = copied ? mx_part_ptr(l, e, 2, X) : mat_r(2);
+                    ok = ok && cudaMemcpy2DAsync(dst + x.hlay.trellis[2] + (size_t) X * rows * dh, dh, p + d0, dr, dh,
+                                                 (size_t) rows, cudaMemcpyHostToDevice, cs) == cudaSuccess;
+                }
             }
             if (!ok) err = "streaming layer " + std::to_string(l.il) + " expert " + std::to_string(e) + " failed";
             return ok;
@@ -4558,15 +4756,15 @@ struct Model::Impl {
     }
     size_t flow_stride() const { return flow_region(0) + flow_region(1) + flow_region(2); }
     static Chunk::Item& fit(Chunk& c, size_t i) { return c.items[i - c.base]; }
-    // what member m of l's group reads of matrix r of an expert: gate / up its rows [m n_ff / nm, ..) - one run, from
-    // this offset in the matrix, this long; the down the whole matrix (its part, the blocks [m n_ff / nm / 32, ..) of
-    // every row, is DMA'd out of it row by row); alone (nm 1) every matrix whole
+    // what member m reads of matrix r: gate / up rows [ff0, ff0 + ffn) in one run;
+    // the whole down matrix is read, then its input blocks [ff0, ff0 + ffn) are DMA'd row by row.
+    // Alone (nm 1), every matrix is read whole.
     size_t mx_read_off(const Layer& l, int m, int r) const {
-        return r < 2 && l.nm > 1 ? (size_t) m * (size_t) (g.ff / l.nm) * gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim)
+        return r < 2 && l.nm > 1 ? (size_t) member(l, m).ff0 * gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim)
                                  : 0;
     }
-    size_t mx_read_len(const Layer& l, int r) const {
-        return r < 2 && l.nm > 1 ? (size_t) (g.ff / l.nm) * gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim)
+    size_t mx_read_len(const Layer& l, int m, int r) const {
+        return r < 2 && l.nm > 1 ? (size_t) member(l, m).ffn * gg::type_row_bytes(gg::expert_type(l.lay, r), g.dim)
                                  : mx_part_bytes(l, r);
     }
     // the device's member index in L0's group (0 alone)
@@ -4592,7 +4790,7 @@ struct Model::Impl {
                 in_ram = true;
             }
         }
-        if (in_ram && ram_pinned && store_blob == nullptr) {   // (DMA'd from where it lies)
+        if (in_ram && ram_pinned && store_blob == nullptr && !(l.nm > 1 && copy_mode && NH > 1)) {   // DMA from contiguous pinned rows
             const uint8_t* p = copy_mode ? ram_part[(size_t) l.ram[(size_t) e]][0]
                                          : ram_slots[(size_t) l.ram[(size_t) e]];
             for (int r = 0; r < 3; ++r)
@@ -4818,14 +5016,18 @@ struct Model::Impl {
                 for (int r = 0; r < 3; ++r) {
                     if (cs >= 0) {   // a copy: each matrix's NH parts of rows, side by side into staging
                         const size_t nb = (size_t) (mx_n(r) / NH) * mx_row_b(l, r);
+                        const size_t off = mx_read_off(l, it.mi, r), len = mx_read_len(l, it.mi, r);
                         for (int X = 0; X < NH; ++X) {
+                            const size_t a = std::max(off, (size_t) X * nb),
+                                         b = std::min(off + len, (size_t) (X + 1) * nb);
+                            if (a >= b) continue;
                             IoQueue::Job& j = jobs[nj++];
                             j = IoQueue::Job{};
-                            j.len = nb;
-                            j.dst = sb + (size_t) X * nb;
+                            j.len = b - a;
+                            j.dst = sb + (a - off);
                             j.left = &it.left;
                             j.bad = &it.bad;
-                            j.mem = ram_part[(size_t) cs][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r];
+                            j.mem = ram_part[(size_t) cs][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r] + (a - (size_t) X * nb);
                         }
                         sb += flow_region(r);
                         continue;
@@ -4835,7 +5037,7 @@ struct Model::Impl {
                     j.fd = pf != os::kBadFd ? pf : pk.fds[(size_t) l.mx_file[r]];
                     j.dfd = pk.dfds.empty() || c.buffered ? os::kBadFd : pk.dfds[(size_t) l.mx_file[r]];
                     j.off = l.mx_off[r] + (uint64_t) it.e * l.mx_stride[r] + mx_read_off(l, it.mi, r);
-                    j.len = mx_read_len(l, r);
+                    j.len = mx_read_len(l, it.mi, r);
                     j.dst = sb;
                     j.left = &it.left;
                     j.bad = &it.bad;
@@ -4844,6 +5046,7 @@ struct Model::Impl {
                     j.keep = it.keep != nullptr ? it.keep + l.lay.trellis[r] : nullptr;
                     sb += flow_region(r);
                 }
+                if (cs >= 0) it.left.store(nj, std::memory_order_relaxed);
                 c.io->push(jobs, nj);
             }
             ++c.n_read;
@@ -4868,25 +5071,27 @@ struct Model::Impl {
             if (c.n_dma >= R) CK(cudaStreamWaitEvent(c.cs, c.ring_free[r], 0));
             const Layer& l = L[(size_t) it.il];
             uint8_t* dst = c.ring + r * c.ring_stride;
-            const x3::ExpertLayout& lay = l.nm > 1 ? l.hlay : l.lay;
+            const Layer& x = member(l, it.mi);
+            const x3::ExpertLayout& lay = l.nm > 1 ? x.hlay : l.lay;
             if (it.direct) {   // (already in the slot)
                 CK(cudaEventRecord(c.ring_fill[r], c.cs));
-                c.stream_bytes += (double) unit(l);
+                c.stream_bytes += (double) unit(x);
                 ++c.n_dma;
                 continue;
             }
             for (int p = 0; p < 2; ++p)
-                CK(cudaMemcpyAsync(dst + lay.trellis[p], it.src[p], mx_read_len(l, p), cudaMemcpyHostToDevice, c.cs));
+                CK(cudaMemcpyAsync(dst + lay.trellis[p], it.src[p], mx_read_len(l, it.mi, p), cudaMemcpyHostToDevice, c.cs));
             if (l.nm > 1) {   // (the down's part: in each of its rows the member's blocks)
                 const int t2 = gg::expert_type(l.lay, 2);
-                const size_t dr = gg::type_row_bytes(t2, g.ff), dh = gg::type_row_bytes(t2, g.ff / l.nm);
-                CK(cudaMemcpy2DAsync(dst + lay.trellis[2], dh, it.src[2] + (size_t) it.mi * dh, dr, dh, (size_t) g.dim,
+                const size_t dr = gg::type_row_bytes(t2, g.ff), dh = gg::type_row_bytes(t2, x.ffn),
+                             d0 = gg::type_row_bytes(t2, x.ff0);
+                CK(cudaMemcpy2DAsync(dst + lay.trellis[2], dh, it.src[2] + d0, dr, dh, (size_t) g.dim,
                                      cudaMemcpyHostToDevice, c.cs));
             } else
                 CK(cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs));
             CK(cudaEventRecord(c.ring_fill[r], c.cs));
             if (it.stage >= 0) CK(cudaEventRecord(c.stage_ev[(size_t) it.stage], c.cs));
-            c.stream_bytes += (double) unit(l);
+            c.stream_bytes += (double) unit(x);
             ++c.n_dma;
         }
         return true;
@@ -4933,7 +5138,7 @@ struct Model::Impl {
             if (bc[n] > bc[0]) {
                 CK(cudaStreamWaitEvent(s, c.ring_fill[(i1 - 1) % R], 0));
                 CK(cudaMemcpyAsync(bcd, bc, (size_t) (n + 1) * 4, cudaMemcpyHostToDevice, s));
-                if (!run_set(d, c, L0, c.ring + (i0 % R) * c.ring_stride, 0, c.ring_stride, bcd, bc, 0, n, T, err))
+                if (!run_set(d, c, vx, c.ring + (i0 % R) * c.ring_stride, 0, c.ring_stride, bcd, bc, 0, n, T, err))
                     return false;
             }
             for (size_t i = i0; i < i1; ++i) CK(cudaEventRecord(c.ring_free[i % R], s));
@@ -4941,10 +5146,10 @@ struct Model::Impl {
             c.n_comp = i1;
             if (!flow_pump(c, err)) return false;
             const int v_to = (int) ((int64_t) L0.pv_n * (int64_t) (c.n_comp - lb) / (int64_t) std::max<size_t>(1, n_lay));
-            if (!run_vram(d, c, L0, L0, vx, b.data(), v_done, v_to, T, err)) return false;
+            if (!run_vram(d, c, L0, vx, vx, b.data(), v_done, v_to, T, err)) return false;
             v_done = v_to;
         }
-        if (!run_vram(d, c, L0, L0, vx, b.data(), v_done, L0.pv_n, T, err)) return false;
+        if (!run_vram(d, c, L0, vx, vx, b.data(), v_done, L0.pv_n, T, err)) return false;
         while (c.base < c.n_comp && c.items.size() > 4096) {   // (done with: read, copied and used)
             c.items.pop_front();
             ++c.base;
@@ -5081,6 +5286,8 @@ struct Model::Impl {
             // (a group's member: its share of the heads (wq_b columns, the sinks), of wo_a's groups and wo_b's rows,
             // of the shared expert's FFN; the rest whole)
             const int nm = l0.nm, na = g.heads / std::max(1, l.ahn), ha = l.ah0 / std::max(1, l.ahn);
+            const bool shared_slice = nm > 1 && l0.lay.fmt == gg::kFmtMXFP4;
+            const int sf0 = shared_slice ? l.ff0 : -1, sfn = shared_slice ? l.ffn : 0;
             const std::string& P = l.name;
             const std::string A = P + "attn.";
             bool ok = mat(d, A + "wq_a", l.wq_a, err, acct) &&
@@ -5100,9 +5307,9 @@ struct Model::Impl {
                       f32(d, P + "ffn.gate.bias", l.gate_bias, err, acct, (size_t) l.n_exp) &&
                       (l.mtp || img_tok < 0 || pk.get(P + "ffn.gate.bias_vl") == nullptr ||
                        f32(d, P + "ffn.gate.bias_vl", l.gate_bias_vl, err, acct, (size_t) l.n_exp)) &&
-                      mat(d, P + "ffn.shared_experts.w1", l.s1, err, acct, mi, nm, true, l.il % nm) &&
-                      mat(d, P + "ffn.shared_experts.w2", l.s2, err, acct, mi, nm, false, l.il % nm) &&
-                      mat(d, P + "ffn.shared_experts.w3", l.s3, err, acct, mi, nm, true, l.il % nm);
+                      mat(d, P + "ffn.shared_experts.w1", l.s1, err, acct, mi, nm, true, l.il % nm, sf0, sfn) &&
+                      mat(d, P + "ffn.shared_experts.w2", l.s2, err, acct, mi, nm, false, l.il % nm, sf0, sfn) &&
+                      mat(d, P + "ffn.shared_experts.w3", l.s3, err, acct, mi, nm, true, l.il % nm, sf0, sfn);
             if (!ok) return false;
             l.sink += (size_t) l.ah0;
             for (int gi = 0; gi < l.ogn; ++gi)
@@ -5154,6 +5361,13 @@ struct Model::Impl {
             const int hn = head_nm();
             if (!mat(d, "head", d.head, err, acct, d.mi, hn, true) || !f32(d, "norm.weight", d.norm_w, err, acct, (size_t) g.dim))
                 return false;
+            int v0 = 0, vn = 0;
+            head_cols(hn, d.mi, v0, vn);
+            if (d.head.n != vn) {
+                err = "head: member " + std::to_string(d.mi) + " loaded " + std::to_string(d.head.n) +
+                      " rows, expected vocabulary slice [" + std::to_string(v0) + ", " + std::to_string(v0 + vn) + ")";
+                return false;
+            }
             if (g.n_mtp > 0 && !f32(d, "mtp." + std::to_string(g.n_mtp - 1) + ".norm.weight", d.d_norm, err, acct, (size_t) g.dim))
                 return false;
             if (!dalloc(d, d.logits_part, (size_t) kWin * ((g.vocab / 128 + hn - 1) / hn * 128), err)) return false;
@@ -5395,9 +5609,7 @@ struct Model::Impl {
         for (const Dev& d : devs)
             if (commit_charged(d)) room = commit_room();
         const double room0 = room;
-        // per group: what its tightest member has left (each member holds its part of every VRAM expert of the
-        // group's layers, its unit bytes a slot - counted at the members' mean: an uneven split's odd blocks go round
-        // the members layer by layer, so each member's total comes to about the mean's)
+        // TP1 and EXL3 retain their per-group mean accounting. GGUF TP below keeps each member's actual balance.
         auto ucount = [](const Layer& l) {
             double s = 0;
             for (int m = 0; m < l.nm; ++m) s += (double) unit(member(l, m));
@@ -5406,6 +5618,8 @@ struct Model::Impl {
         for (size_t gi = 0; gi < groups.size(); ++gi) {
             double budget = 1e300;
             bool charged = false;
+            std::vector<double> member_budget;
+            std::vector<bool> member_charged;
             for (int m : groups[gi].mem) {
                 cudaSetDevice(devs[(size_t) m].id);
                 size_t fr = 0, tot = 0;
@@ -5420,11 +5634,13 @@ struct Model::Impl {
                     uma_extra = (4.0 + 2.0e-4 * std::max(0.0, (double) o.max_context - 16384.0)) * (double) (1ull << 30);
                     if (const char* v = std::getenv("DS4_UMA_GPU_RESERVE_GB")) uma_extra = std::atof(v) * (double) (1ull << 30);
                 }
-                budget = std::min(budget, std::max(0.0, ((double) fr - (double) ((size_t) o.reserve_mib << 20) - uma_extra)) *
-                                              o.vram_experts);
+                double available = std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20) - uma_extra) *
+                                   o.vram_experts;
+                budget = std::min(budget, available);
 #if defined(STRATA_METAL)
                 if (o.vram_experts_auto && std::getenv("DS4_NO_AUTO_VX") == nullptr) {
                     const double cap = metal_expert_cap();
+                    available = std::min(available, cap);
                     if (cap < budget) {
                         std::fprintf(stderr, "ds4: expert share: %.1f GB of VRAM experts (the RAM cap leaves %.1f GB; --vram-experts sets it)\n",
                                      cap / 1e9, cap / 1e9);
@@ -5432,12 +5648,83 @@ struct Model::Impl {
                     }
                 }
 #endif
-                charged = charged || commit_charged(devs[(size_t) m]);
+                member_budget.push_back(available);
+                member_charged.push_back(commit_charged(devs[(size_t) m]));
+                charged = charged || member_charged.back();
+            }
+            if (pk.gguf && groups[gi].mem.size() > 1) {
+                // One shared expert count, but a different cost on each member as the larger shards rotate.
+                // Plan once without the commit cap only when needed to report what Windows kept off the GPUs.
+                auto place_group = [&](bool limit_commit) {
+                    std::vector<double> left = member_budget;
+                    double commit_left = limit_commit ? room : 1e300, commit_used = 0;
+                    auto fit = [&](const Layer& l) {
+                        int n = l.n_exp;
+                        double commit_unit = 0;
+                        for (int m = 0; m < l.nm; ++m) {
+                            const double u = (double) unit(member(l, m));
+                            if (u > 0) n = (int) std::min((double) n, std::floor(std::max(0.0, left[(size_t) m]) / u));
+                            if (member_charged[(size_t) m]) commit_unit += u;
+                        }
+                        if (commit_unit > 0)
+                            n = (int) std::min((double) n, std::floor(std::max(0.0, commit_left) / commit_unit));
+                        return n;
+                    };
+                    auto take = [&](const Layer& l, int n) {
+                        n = std::min(n, fit(l));
+                        double charge = 0;
+                        for (int m = 0; m < l.nm; ++m) {
+                            const double bytes = (double) n * unit(member(l, m));
+                            left[(size_t) m] -= bytes;
+                            if (member_charged[(size_t) m]) charge += bytes;
+                        }
+                        commit_left -= charge;
+                        commit_used += charge;
+                        return n;
+                    };
+                    // The drafter is first and has only its actual owner, not every member of its group.
+                    for (Layer& l : L) {
+                        if (l.grp != (int) gi) continue;
+                        l.n_vram = l.mtp && !l.cpu_only ? take(l, l.n_exp) : 0;
+                    }
+                    std::vector<double> want(left.size(), 0.0);
+                    double commit_want = 0;
+                    for (const Layer& l : L) {
+                        if (l.grp != (int) gi || l.mtp || l.cpu_only) continue;
+                        for (int m = 0; m < l.nm; ++m) {
+                            const double bytes = (double) l.n_exp * unit(member(l, m));
+                            want[(size_t) m] += bytes;
+                            if (member_charged[(size_t) m]) commit_want += bytes;
+                        }
+                    }
+                    double frac = 1.0;
+                    for (size_t m = 0; m < want.size(); ++m)
+                        if (want[m] > 0) frac = std::min(frac, std::max(0.0, left[m]) / want[m]);
+                    if (commit_want > 0) frac = std::min(frac, std::max(0.0, commit_left) / commit_want);
+                    for (Layer& l : L)
+                        if (l.grp == (int) gi && !l.mtp && !l.cpu_only)
+                            l.n_vram = take(l, (int) std::floor(frac * l.n_exp));
+                    // Spend the rounded-down remainder in layer order, still checking every member for each addition.
+                    for (Layer& l : L)
+                        if (l.grp == (int) gi && !l.cpu_only)
+                            l.n_vram += take(l, l.n_exp - l.n_vram);
+                    return commit_used;
+                };
+                if (charged && room < 1e300) {
+                    const double uncapped = place_group(false);
+                    const double used = place_group(true);
+                    kept += std::max(0.0, uncapped - used);
+                    room = std::max(0.0, room - used);
+                } else {
+                    place_group(false);
+                }
+                continue;
             }
             if (charged && room < 1e300) {   // (each member's slots charged: the group's share of the room)
                 double all = 0;
                 for (const Layer& l : L)
-                    if (l.grp == (int) gi) all += (double) unit(l) * l.n_exp;
+                    if (l.grp == (int) gi)
+                        all += (l.lay.fmt == gg::kFmtMXFP4 ? ucount(l) : (double) unit(l)) * l.n_exp;
                 const double nm = (double) groups[gi].mem.size(), capped = std::min(budget, room / nm);
                 kept += std::max(0.0, std::min(budget, all) - std::min(capped, all)) * nm;
                 budget = capped;
@@ -5714,8 +6001,8 @@ struct Model::Impl {
                         const Layer& x = member(l, m);
                         cudaSetDevice(devs[(size_t) x.dev].id);
                         if (l.nm > 1) blob_to_half(l, stage, m, stage2);
-                        ok = cudaMemcpy(sat(l, x, l.slot[(size_t) e], unit(l)), l.nm > 1 ? stage2 : stage,
-                                        unit(l), cudaMemcpyHostToDevice) == cudaSuccess;
+                        ok = cudaMemcpy(sat(l, x, l.slot[(size_t) e], unit(x)), l.nm > 1 ? stage2 : stage,
+                                        unit(x), cudaMemcpyHostToDevice) == cudaSuccess;
                     }
                     if (!ok) {
                         std::lock_guard<std::mutex> lk(emu);
@@ -8637,7 +8924,7 @@ struct Model::Impl {
             cudaSetDevice(devs[(size_t) x.dev].id);
             cudaStream_t cs = copy_st[(size_t) x.dev];
             if (l.nm > 1) blob_to_half(l, sw_a, m, sw_h);
-            ok = cudaMemcpyAsync(sat(l, x, l.spare_vram, unit(l)), l.nm > 1 ? sw_h : sw_a, unit(l),
+            ok = cudaMemcpyAsync(sat(l, x, l.spare_vram, unit(x)), l.nm > 1 ? sw_h : sw_a, unit(x),
                                  cudaMemcpyHostToDevice, cs) == cudaSuccess &&
                  cudaStreamSynchronize(cs) == cudaSuccess;
         }
@@ -8647,8 +8934,8 @@ struct Model::Impl {
                 const Layer& x = member(l, m);
                 cudaSetDevice(devs[(size_t) x.dev].id);
                 cudaStream_t cs = copy_st[(size_t) x.dev];
-                got = cudaMemcpyAsync(l.nm > 1 ? sw_h : sw_b, sat(l, x, l.slot[(size_t) sw.out], unit(l)),
-                                      unit(l), cudaMemcpyDeviceToHost, cs) == cudaSuccess &&
+                got = cudaMemcpyAsync(l.nm > 1 ? sw_h : sw_b, sat(l, x, l.slot[(size_t) sw.out], unit(x)),
+                                      unit(x), cudaMemcpyDeviceToHost, cs) == cudaSuccess &&
                       cudaStreamSynchronize(cs) == cudaSuccess;
                 if (got && l.nm > 1) half_to_blob(l, sw_h, m, sw_b);
             }
@@ -8663,7 +8950,7 @@ struct Model::Impl {
                 cudaSetDevice(devs[(size_t) x.dev].id);
                 cudaStream_t cs = copy_st[(size_t) x.dev];
                 // (sat: a slot past the main arena lies in the lent tail region, where vram_base + slot * unit points past the allocation)
-                const bool got = cudaMemcpyAsync(dst, sat(l, x, l.slot[(size_t) sw.out], unit(l)), l.blob, cudaMemcpyDeviceToHost, cs) ==
+                const bool got = cudaMemcpyAsync(dst, sat(l, x, l.slot[(size_t) sw.out], unit(x)), l.blob, cudaMemcpyDeviceToHost, cs) ==
                                      cudaSuccess &&
                                  cudaStreamSynchronize(cs) == cudaSuccess;
                 store->put_done(l.il, sw.out, got);
@@ -8673,8 +8960,9 @@ struct Model::Impl {
             std::vector<uint8_t> dev(l.blob), h(unit(l)), file(l.blob);
             for (int m = 0; m < l.nm && ok; ++m) {
                 const Layer& x = member(l, m);
+                h.resize(unit(x));
                 cudaSetDevice(devs[(size_t) x.dev].id);
-                cudaMemcpy(l.nm > 1 ? h.data() : dev.data(), sat(l, x, l.spare_vram, unit(l)), unit(l),
+                cudaMemcpy(l.nm > 1 ? h.data() : dev.data(), sat(l, x, l.spare_vram, unit(x)), unit(x),
                            cudaMemcpyDeviceToHost);
                 if (l.nm > 1) half_to_blob(l, h.data(), m, dev.data());
             }
@@ -13261,11 +13549,11 @@ struct Model::Impl {
     }
 
     int head_nm() const { return (int) groups[(size_t) devs[(size_t) head_dev].grp].mem.size(); }
-    // the head's columns on member mi of its group of nm: an EXL3 head's split128 of the vocabulary (mat's), a GGUF's
-    // BF16 / Q8_0 head's even shares (mat_bf16's) - head_share's, its gather's and the markov steps' rows
+    // The head's columns on member mi: EXL3 uses mat's split128; all supported dense GGUF types
+    // use mat_bf16/mat_gg's even output-row shares, including the gather and markov head ranges.
     void head_cols(int nm, int mi, int& v0, int& vn) const {
         const Tensor* tw = pk.get("head.weight");
-        if (tw != nullptr && (tw->dtype == "BF16" || tw->dtype == "Q8_0")) {
+        if (dense_gguf_matrix(tw)) {
             vn = g.vocab / nm;
             v0 = mi * vn;
         } else

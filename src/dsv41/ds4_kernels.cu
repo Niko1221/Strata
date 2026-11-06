@@ -22,6 +22,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <tuple>
 #include <cstdio>
 
 namespace strata::ds4 {
@@ -2051,7 +2052,7 @@ int cdiv(int a, int b) { return (a + b - 1) / b; }
 
 namespace {
 
-// ---- the split-KV attention's scratch: a device allocation a (device, stream), made on first use and kept
+// ---- the split-KV attention's scratch: a device allocation a (device, stream, heads), made on first use and kept
 constexpr int kSplitG = 4, kSplitR = 40, kSplitCap = 24, kSplitMaxT = 5;
 bool split_enabled() {
     static const bool on = [] {
@@ -2120,11 +2121,11 @@ bool fast_attn_enabled() {
 }
 attnsplit::AttnSplitScratch split_scratch(cudaStream_t s, int heads) {
     static std::mutex mu;
-    static std::map<std::pair<int, cudaStream_t>, attnsplit::AttnSplitScratch> m;
+    static std::map<std::tuple<int, cudaStream_t, int>, attnsplit::AttnSplitScratch> m;
     int dev = 0;
     cudaGetDevice(&dev);
     std::lock_guard<std::mutex> lk(mu);
-    auto it = m.find({dev, s});
+    auto it = m.find({dev, s, heads});
     if (it != m.end()) return it->second;
     attnsplit::AttnSplitScratch sc;
     sc.nsplit = kSplitCap;
@@ -2136,7 +2137,7 @@ attnsplit::AttnSplitScratch split_scratch(cudaStream_t s, int heads) {
         if (sc.part != nullptr) cudaFree(sc.part);
         sc = attnsplit::AttnSplitScratch{};
     }
-    m[{dev, s}] = sc;
+    m[{dev, s, heads}] = sc;
     return sc;
 }
 }  // namespace

@@ -24,7 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
-#include <unordered_map>
+#include <map>
 
 namespace strata::ds4::gguf {
 namespace {
@@ -1105,11 +1105,17 @@ struct Scratch {
     float *xd = nullptr, *hd = nullptr, *md = nullptr;     // [kMaxMvJobs * kMaxMvCols] inputs; their scales
 };
 std::mutex g_mu;
-std::unordered_map<cudaStream_t, Scratch> g_scratch;
+std::map<std::pair<int, cudaStream_t>, Scratch> g_scratch;   // default stream handles are shared across devices
 
 Scratch* scratch(cudaStream_t s) {
     std::lock_guard<std::mutex> lk(g_mu);
-    auto it = g_scratch.find(s);
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) {
+        fail("scratch: cudaGetDevice failed");
+        return nullptr;
+    }
+    const std::pair<int, cudaStream_t> key{dev, s};
+    auto it = g_scratch.find(key);
     if (it != g_scratch.end()) return &it->second;
     Scratch sc;
     const size_t nx = (size_t) kMaxEnt * kMaxEmbd, nh = (size_t) kMaxEnt * 8 * kMaxEmbd,
@@ -1121,7 +1127,7 @@ Scratch* scratch(cudaStream_t s) {
         fail("scratch: cudaMalloc failed");
         return nullptr;
     }
-    return &g_scratch.emplace(s, sc).first->second;
+    return &g_scratch.emplace(key, sc).first->second;
 }
 
 bool mx_geometry(const char* who, int k, int n_embd, int n_ff) {
