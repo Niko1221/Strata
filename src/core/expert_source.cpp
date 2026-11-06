@@ -4961,6 +4961,21 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 ++d.tail_experts;
             }
         }
+        // STRATA_ROUTE_DUMP=<file> (bench only, off by default): one text line per layer-window, "layer n_tok nd nmiss | e:rows:res ..." in routing
+        // order (res 1 = resident in the GPU cache, 0 = a miss the CPU computes unless the PCIe share takes it, 2 = tail-skipped), for replaying placement
+        // policies offline on the routing the engine really produced (round 0216 P3.1).
+        static std::FILE* const route_dump = [] { const char* f = std::getenv("STRATA_ROUTE_DUMP"); return f != nullptr && f[0] != '\0' ? std::fopen(f, "a") : nullptr; }();
+        if (route_dump != nullptr) {
+            std::fprintf(route_dump, "%lld %lld %d %d |", (long long) d.layers, (long long) n_tok, nd, nmiss);
+            for (int q = 0; q < nd; ++q) {
+                const int32_t e = ids[distinct[q]];
+                int rows = 0;
+                for (int64_t i = 0; i < n; ++i) rows += first_of[i] == distinct[q];
+                const int res = skip_d[q] ? 2 : (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) ? 1 : 0;
+                std::fprintf(route_dump, " %d:%d:%d", (int) e, rows, res);
+            }
+            std::fputc(10, route_dump);
+        }
         // STRATA_PCIE_BALANCE (opt-in, #1548): the count comes from the measured CPU and GPU costs instead of the share
         const bool pcie_ok = (d.pcie_num > 0 || d.pcie_model.on) && d.src->pcie_layer(d.layers);
         int m = pcie_ok ? d.pcie_model.pick(nmiss, (nmiss * d.pcie_num) >> 8) : 0;
