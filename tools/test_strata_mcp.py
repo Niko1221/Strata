@@ -11,7 +11,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import socket
+import stat
 import subprocess
 import sys
 import shutil
@@ -1011,6 +1013,71 @@ class MixedGraphics(unittest.TestCase):
             self.assertFalse(by["AMD Radeon(TM) Graphics"]["usable"])
             rec = s.recommend({**hw, "ram_gb": 64.0})
             self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("hip", "AMD Radeon RX 9070 XT"))
+
+
+def _rmtree_any(path) -> None:
+    """Remove a test folder even when a case left read-only files or folders behind (Windows refuses to remove them)."""
+    for base, dirs, files in os.walk(path):
+        for name in dirs + files:
+            try:
+                os.chmod(os.path.join(base, name), stat.S_IWRITE)
+            except OSError:
+                pass
+        try:
+            os.chmod(base, stat.S_IWRITE)
+        except OSError:
+            pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
+class RemoveReadOnly(unittest.TestCase):
+    """#4089: Windows refuses to remove a folder or a file with FILE_ATTRIBUTE_READONLY, even when the folder is empty.
+    strata_remove() counted that as a failure and stopped part-way through the model's files, leaving most of the pack
+    on the disk."""
+
+    @unittest.skipUnless(M.WIN, "FILE_ATTRIBUTE_READONLY is a Windows rule")
+    def test_a_read_only_folder_and_file_do_not_stop_the_delete(self):
+        root = Path(tempfile.mkdtemp(prefix="strata-readonly-"))
+        self.addCleanup(_rmtree_any, root)
+        folder = root / "packs" / "iq2_xs" / "tokenizer"
+        folder.mkdir(parents=True)
+        keep = root / "mtp" / "rt"
+        keep.mkdir(parents=True)
+        (keep / "note.txt").write_text("x")
+        os.chmod(keep / "note.txt", stat.S_IREAD)           # a read-only file inside the folder...
+        os.chmod(keep, stat.S_IREAD)                        # ...and the folder itself, as the report found them
+        os.chmod(folder, stat.S_IREAD)
+        cfg = root / "strata-iq2_xs.json"
+        cfg.write_text("{}")
+        plan = {"model": "iq2_xs", "gb": 0.1,
+                "remove": [{"path": str(folder)}, {"path": str(keep)}, {"path": str(cfg)}]}
+
+        class S:
+            lock = threading.RLock()
+
+            def find_config(self, model):
+                return cfg
+
+            def removal_plan(self, config):
+                return plan
+
+            def install_job(self):
+                return None
+
+            def tracked_server(self):
+                return None
+
+            def model_paths(self, c):
+                return ([], [])
+
+            def read_config(self, c):
+                return {}
+
+        result = M.Tools(S()).strata_remove(model="iq2_xs", confirm=True)
+        self.assertEqual(result["failed"], [], result)
+        self.assertFalse(folder.exists())
+        self.assertFalse(keep.exists())
+        self.assertFalse(cfg.exists())
 
 
 if __name__ == "__main__":
