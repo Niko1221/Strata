@@ -395,6 +395,40 @@ int main() {
                 SessionKvSource none;
                 check(!conversation_kv_source(none,f.state,f.g,-1,index,err),"K/V source rejects an invalid extent");
             }
+            {
+                // streamed restore: the sink writes the exact bytes the source read, part by part,
+                // in <= 1 MiB chunks, and done() refreshes residency.
+                SessionKvSink sink;
+                check(conversation_kv_sink(sink,f.state,f.g,upto,index,err),"K/V sink for a streamed restore");
+                SessionKvSink none_sink;
+                check(!conversation_kv_sink(none_sink,f.state,f.g,-1,index,err),"K/V sink rejects an invalid extent");
+                for (size_t p=0;p<5;++p) {
+                    const size_t n=sink.sizes[p];
+                    std::vector<uint8_t> src(n);
+                    for (size_t i=0;i<n;++i) src[i]=uint8_t((p*31+i)*13u+7);
+                    check(!sink.write(p,n+1,src.data(),1),"sink write past the part end is refused");
+                    check(!sink.write(5,0,src.data(),1),"sink write of an unknown part is refused");
+                    for (size_t at=0;at<n;at+=(1u<<20)) {
+                        const size_t c=std::min<size_t>(1u<<20,n-at);
+                        check(sink.write(p,at,src.data()+at,c),"sink write");
+                    }
+                }
+                check(sink.done(),"sink done (residency refresh)");
+                if (f.state.kv_mode==0) {   // whole pools are the device allocation: read back and compare
+                    for (size_t p=0;p<5;++p) {
+                        std::vector<uint8_t> back(sink.sizes[p]);
+                        check(back.empty() || cudaMemcpy(back.data(),f.sources[p],back.size(),cudaMemcpyDefault)==cudaSuccess,
+                              "read the pool back");
+                        bool exact=true;
+                        for (size_t i=0;i<back.size();++i)
+                            if (back[i]!=uint8_t((p*31+i)*13u+7)) { exact=false; break; }
+                        check(exact,"sink wrote the exact bytes");
+                    }
+                }
+                cuda_check(cudaDeviceSynchronize());
+                // the checks below expect A in the authoritative pools again
+                check(conversation_kv_restore(a,f.state,f.g,upto,index,err),"restore A after the sink case");
+            }
             if (mode==1) {
                 std::vector<int32_t> table((size_t)f.state.n_pages);
                 cuda_check(cudaMemcpy(table.data(),f.state.page_table,table.size()*4,cudaMemcpyDeviceToHost));

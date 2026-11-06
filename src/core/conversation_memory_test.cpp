@@ -48,7 +48,21 @@ int main() {
     check(conversation_memory_admit(std::numeric_limits<uint64_t>::max(),
                                    std::numeric_limits<uint64_t>::max(), 0), "maximal exact bound");
     check(!conversation_memory_admit(std::numeric_limits<uint64_t>::max(),
-                                    std::numeric_limits<uint64_t>::max(), 1), "maximal sum overflow rejected");
+                                     std::numeric_limits<uint64_t>::max(), 1), "maximal sum overflow rejected");
+    const auto MiB = [](uint64_t n) { return n << 20; };
+    // A disk cache keeps only the disk margin free, park and restore alike, not the full
+    // --conversation-cache-min-free-mib: the 2560 floor's rationale was the full-file parse,
+    // which the streaming restore removed.  The restore's state sizes come from the field log; the
+    // ~235 MiB transient is arithmetic on those sizes (the design doc's table), not itself a measurement.
+    check(disk_cache_floor_mib(2560) == DISK_CACHE_MIN_FREE_MIB, "the default 2560 floor caps to the disk margin");
+    check(DISK_CACHE_MIN_FREE_MIB == 512, "the disk margin is 512 MiB");
+    check(disk_cache_floor_mib(256) == 256, "a floor below the margin is honored");
+    check(disk_cache_floor_mib(0) == 0, "a zero floor leaves no margin");
+    check(!conversation_memory_admit(MiB(1803), MiB(355), MiB((uint64_t) 2560)), "field case: the 2560 floor refused it");
+    check(conversation_memory_admit(MiB(1803), MiB(235), MiB((uint64_t) disk_cache_floor_mib(2560))),
+          "field restore case: the margin admits the ~235 MiB transient");
+    check(!conversation_memory_admit(MiB(700), MiB(235), MiB((uint64_t) disk_cache_floor_mib(2560))),
+          "field restore case: under need plus margin, refused");
     // #3493: the budget used when --conversation-cache-mib is not given
     const auto GiB = [](uint64_t n) { return n << 30; };
     check(auto_conversation_cache_mib({}, 2560) == 0, "unknown telemetry: no cache");

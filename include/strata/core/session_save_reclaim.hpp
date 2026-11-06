@@ -30,14 +30,17 @@ SessionSaveReclaimed session_save_reclaim(std::vector<ConversationCheckpoint>& c
         room = available();
         if (done()) return out;
     }
-    while (true) {
-        const size_t before = cache.bytes();
-        if (!cache.evict_oldest()) break; // pinned conversations stay parked
-        ++out.parked;
-        out.bytes += before - cache.bytes();
-        room = available();
-        if (done()) return out;
-    }
+    // a disk-mode entry is a slim meta plus a file: evicting it unlinks the file and frees almost no RAM,
+    // so reclaim (which frees RAM) leaves disk-mode entries alone
+    if (!cache.disk())
+        while (true) {
+            const size_t before = cache.bytes();
+            if (!cache.evict_oldest()) break; // pinned conversations stay parked
+            ++out.parked;
+            out.bytes += before - cache.bytes();
+            room = available();
+            if (done()) return out;
+        }
     size_t keep = selected ? size_t(selected - chain.data()) : chain.size();
     // Erase from the back to preserve order, ties and the selected checkpoint's storage.
     for (size_t i = chain.size(); i-- > 0;) {
