@@ -10492,6 +10492,21 @@ int main(int argc, char** argv) {
             const bool ub = src.recheck_unbuffered(why);
             std::fprintf(stderr, "strata generate: the file tier reads %s%s (%s)\n",
                          ub ? "unbuffered" : "through the file cache", ub == was ? "" : " (changed)", why.c_str());
+            if (ub != was) {
+                // the plain line (owner 11-06): printed once, when the mode changes to the file cache; the RAM figures are the ones the rule
+                // used (the group's own limit and room, no operator cap).  STRATA_TRACE keeps the long technical line.
+                constexpr double GiB = 1073741824.0;
+                if (const auto mem = strata::core::sample_host_memory(strata::core::MemoryProbePaths{}, 0)) {
+                    if (!ub)
+                        std::fprintf(stderr, "strata: expert reads now go through the file cache (%.1f GiB of RAM free for them, %.1f GiB limit)\n",
+                                     (double) mem->available / GiB, (double) mem->limit / GiB);
+                    if (std::getenv("STRATA_TRACE") != nullptr)
+                        std::fprintf(stderr, "strata trace: the file tier changed: RAM at the re-check: limit %.1f GiB (source: %s), current %.1f GiB, "
+                                             "reclaimable cache credited %.1f GiB; available %.1f GiB (MemAvailable %.1f GiB)\n",
+                                     (double) mem->limit / GiB, strata::core::memory_source_name(mem->source), (double) mem->current / GiB,
+                                     (double) mem->credit / GiB, (double) mem->available / GiB, (double) mem->mem_available / GiB);
+                }
+            }
             // MODEL-UPDATE round 2 (opt-in STRATA_PROMPT_DIRECT=1): the prompt path's batched reads unbuffered while
             // decode keeps the file cache (z440, UD-Q4_K_XL, 39 GiB budget: all-unbuffered doubled the 6K prompt but
             // cost decode 9-13%).  The same bytes either way.
