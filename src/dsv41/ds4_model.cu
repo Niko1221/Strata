@@ -1414,6 +1414,13 @@ struct Model::Impl {
         const char* v = std::getenv("STRATA_DS4_DISK_SKIP_RANK");
         return v != nullptr ? std::max(0, std::atoi(v)) : 0;
     }();
+    // STRATA_DS4_SKIP_PREFETCH_RANK=N: of the experts DISK_SKIP_RANK leaves out, only those some token picked at pick index
+    // below N are read in behind (default: all of them).  On a GB10 server 74% of those reads went unused before their
+    // slots were taken again, ~100 MB of SSD reads a token beside the CPU lane's own demand reads
+    const int skip_prefetch_rank = [] {
+        const char* v = std::getenv("STRATA_DS4_SKIP_PREFETCH_RANK");
+        return v != nullptr ? std::max(0, std::atoi(v)) : 127;
+    }();
     // STRATA_DS4_PROMPT_SKIP_RANK=R (experimental opt-in, CHANGES THE ANSWERS; 0 = off; CUDA, with flow_in_place): the same
     // rule on the prompt path - an expert a chunk's routing picked, in neither the store nor the page cache, that no token of
     // the chunk picked at rank R or better is not read from the SSD: its rows run on a blob of zeros instead and their
@@ -9725,7 +9732,7 @@ struct Model::Impl {
                                 // (DISK_SKIP_RANK: read in behind the demand reads all the same, so the store learns the
                                 //  experts the answer uses; left unread, they stayed misses for good - on a GB10 server
                                 //  the CPU lane's share went from 5% of the experts to 20%)
-                                if (rank_tail && store) store->prefetch(li, e);
+                                if (rank_tail && store && best_rank[e] < skip_prefetch_rank) store->prefetch(li, e);
                                 continue;
                             }
                             if (aon && !light) {   // (cold: not in RAM now, or not when the lookahead asked for it)
