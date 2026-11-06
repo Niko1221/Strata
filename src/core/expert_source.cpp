@@ -1572,7 +1572,12 @@ void FileExpertSource::close() {
     io_stop();
     inputs_.clear();
     if (complement_arena_ != nullptr) {
-        if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
+        if (complement_pinned_arena_ != nullptr) {   // STRATA_RESIDENT_PIN_MODE=register: the PinnedArena owns it
+            delete (strata::core::PinnedArena*) complement_pinned_arena_;
+            complement_pinned_arena_ = nullptr;
+            comp_slice_start_.clear();
+            comp_slice_dev_.clear();
+        } else if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
         else {
             if (complement_registered_) (void) cudaHostUnregister(complement_arena_);
             if (complement_locked_ > 0)
@@ -3740,7 +3745,14 @@ bool FileExpertSource::pin_cache_complement(
 #endif
     auto release = [&]() {
         if (arena == nullptr) return;
-        if (pinned_ok) (void) cudaFreeHost(arena);
+        if (complement_pinned_arena_ != nullptr) {
+            // STRATA_RESIDENT_PIN_MODE=register: the PinnedArena owns the VirtualAlloc/mmap, its unregistration
+            // and its working-set lock - delete, do not cudaFreeHost/std::free.
+            delete (strata::core::PinnedArena*) complement_pinned_arena_;
+            complement_pinned_arena_ = nullptr;
+            comp_slice_start_.clear();
+            comp_slice_dev_.clear();
+        } else if (pinned_ok) (void) cudaFreeHost(arena);
         else {
             if (partial_pin > 0) (void) cudaHostUnregister(arena);
             if (locked > 0) strata::platform::unlock_resident((uint8_t*) arena + lock_off, locked);
@@ -3833,7 +3845,62 @@ bool FileExpertSource::pin_cache_complement(
                                  "nothing placed\n");
         }
 #endif
-        if (pin && !paced) {
+        // STRATA_RESIDENT_PIN_MODE=register (opt-in): reserve the complement as anonymous memory and register it
+        // with cudaHostRegister slice by slice, the arena's mechanism (pinned.cu).  A single cudaHostAlloc(Mapped|
+        // Portable) of the whole complement is refused on WDDM once the card's shared (non-local) segment is tight
+        // (vision elastic + the KV host copy charge it too); sliced registration is what lets the arena pin tens
+        // of GiB on the same PC, and small DMA copies from registered memory measured ~1.5x the rate of copies
+        // from cudaHostAlloc(Mapped|Portable) memory.  Slice bounds are the complement segments of each layer
+        // (the plan lays blobs out in index order), so no blob straddles a registration boundary.  STRATA_ARENA_
+        // PIN_GIB caps/auto the registration as for the arena.  Failure falls through to every existing arm.
+        static const bool pin_register_mode = [] {
+            const char* v = std::getenv("STRATA_RESIDENT_PIN_MODE");
+            return v != nullptr && std::string(v) == "register";
+        }();
+        if (pin && !paced && pin_register_mode) {
+            std::vector<uint64_t> bounds;
+            for (int64_t l = 0; l < n_layers_; ++l)
+                for (int64_t e = 0; e < n_expert_; ++e) {
+                    const uint64_t o = offsets[(size_t) l * (size_t) n_expert_ + (size_t) e];
+                    if (o != kNoComplement) { bounds.push_back(o); break; }   // the layer's first complement blob
+                }
+            bounds.push_back(bytes);
+            uint64_t cap = 0;
+            const int cap_gib = strata::core::arena_pin_cap_gib();   // STRATA_ARENA_PIN_GIB: N caps, auto = the DXGI budget inside PinnedArena
+            if (cap_gib > 0) cap = (uint64_t) cap_gib << 30;
+            strata::core::PinnedArena* a = new strata::core::PinnedArena(bytes, bounds, cap);
+            if (a->valid()) {
+                arena = a->base;
+                complement_pinned_arena_ = a;
+                partial_pin = a->registered_bytes;                 // the contiguous registered prefix
+                if (a->registered_bytes > 0 && a->slice_starts.empty()) {
+                    // the whole complement registered in one call: one alias for the base (pinned.cu:447 arm)
+                    void* d = nullptr;
+                    if (cudaHostGetDevicePointer(&d, a->base, 0) == cudaSuccess && d != nullptr) {
+                        comp_slice_start_.push_back(0);
+                        comp_slice_dev_.push_back((const uint8_t*) d);
+                    } else (void) cudaGetLastError();
+                }
+                for (uint64_t off : a->slice_starts) {
+                    void* d = nullptr;
+                    if (cudaHostGetDevicePointer(&d, (uint8_t*) a->base + off, 0) != cudaSuccess) {
+                        (void) cudaGetLastError();
+                        comp_slice_start_.clear();
+                        comp_slice_dev_.clear();
+                        break;
+                    }
+                    comp_slice_start_.push_back(off);
+                    comp_slice_dev_.push_back((const uint8_t*) d);
+                }
+                if (!comp_slice_start_.empty()) device = comp_slice_dev_.front();
+                locked = 0; lock_off = bytes;                      // PinnedArena keeps the unregistered tail resident itself
+                note = "complement registered slice by slice (STRATA_RESIDENT_PIN_MODE=register): " + a->note;
+            } else {
+                note = "register mode: " + a->note;
+                delete a;
+            }
+        }
+        if (pin && !paced && arena == nullptr) {
             const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
                                                          cudaHostAllocMapped | cudaHostAllocPortable);
             if (allocated == cudaSuccess) {
@@ -4172,8 +4239,9 @@ bool FileExpertSource::pin_cache_complement(
     complement_pinned_ = (pinned_ok || partial_pin > 0) && bytes > 0;
     complement_pin_limit_ = pinned_ok ? bytes : partial_pin;
     complement_registered_ = !pinned_ok && partial_pin > 0;
-    // a paced registration that covers the whole arena is as good as a cudaHostAlloc'd one
-    complement_partial_ = complement_registered_ && !(paced && partial_pin >= bytes);
+    // a registration that covers the whole arena (paced steps or STRATA_RESIDENT_PIN_MODE=register slices) is as
+    // good as a cudaHostAlloc'd one; only a prefix (STRATA_PARTIAL_PIN, or a refusal mid-way) is partial.
+    complement_partial_ = complement_registered_ && (partial_pin < bytes);
     complement_locked_ = locked;
     complement_lock_off_ = lock_off;
     complement_lent_slots_ = lend ? n_slots - keep_from : budget_lent;   // a budget keeps its own tail of the region
@@ -4704,6 +4772,15 @@ const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) con
     if (!soft_in_.empty() && soft_in_[index] != SIZE_MAX)   // soft_commit_exchanges: out is read from its exchange buffer
         return override_.empty() || override_[index] == nullptr || xstage_dev_ == nullptr
                    ? nullptr : xstage_dev_ + (size_t) (override_[index] - xstage_);
+    if (!comp_slice_start_.empty()) {   // STRATA_RESIDENT_PIN_MODE=register: the blob's own slice alias
+        const uint64_t off = complement_offsets_[index];
+        const auto it = std::upper_bound(comp_slice_start_.begin(), comp_slice_start_.end(), off);
+        if (it == comp_slice_start_.begin()) return nullptr;
+        const size_t i = (size_t) (it - comp_slice_start_.begin()) - 1;
+        const uint64_t end = i + 1 < comp_slice_start_.size() ? comp_slice_start_[i + 1] : complement_bytes_;
+        const uint64_t b = layer_blob_bytes_[(size_t) layer];
+        return off + b <= end ? comp_slice_dev_[i] + (off - comp_slice_start_[i]) : nullptr;
+    }
     return complement_device_ + (size_t) complement_offsets_[index];
 }
 
