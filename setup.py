@@ -3351,6 +3351,7 @@ def download(url, dst: Path, what=None):
         try:
             if shutil.disk_usage(dst.parent).free < total + (1 << 30):
                 bad.unlink()                           # no room for the new copy beside the kept one
+                say(f"  Not enough free space for a new copy of {dst.name} beside the kept one ({bad.name}): the kept file was removed.")
         except OSError:
             pass
     conns = dl_connections()
@@ -3579,9 +3580,11 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
         fail(f"{s.name} is {have:,} bytes, not {size:,}", "delete it and run setup again (the download restarts)")
     say(f"  checking {s.name} (SHA-256, {size / 1e9:.1f} GB) ...")
     digest = _hash_file(s, size)
+    server_same = False                                # the repair read the whole file from the server and found no block that differs
     if digest != sha and repair is not None and not own:
         say(f"  Some parts of {s.name} were damaged; downloading only those parts again.")
         res = repair()
+        server_same = res is not None and res[0] == 0
         if res is not None:
             say(f"  {res[0]} of {res[1]} parts were different and have been written again; checking the whole file again ...")
             digest = _hash_file(s, size)
@@ -3601,8 +3604,12 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
                  "it may be damaged or another version; your file was left as it is. Copy the whole published file into the folder")
         keep_bad(s)                                    # kept as <name>.bad, not thrown away (see keep_bad)
         m.unlink(missing_ok=True)
-        fail(f"{s.name} has the wrong SHA-256 ({digest}, expected {sha}): deleted",
-             "run setup again to download it again")
+        if server_same:
+            hint = ("the server sends exactly the bytes you have (every block was compared), so the file there is not the version this Strata pins: "
+                    "update Strata. Run setup again to check the kept file once more")
+        else:
+            hint = "run setup again: the kept file is checked once more, and if it still differs it is downloaded again and the kept one is removed"
+        fail(f"{s.name} does not match the pinned SHA-256 (it is {digest}, Strata expects {sha}); the file was kept as {s.name}.bad", hint)
     mark(s, f"sha256 {sha}")
 
 

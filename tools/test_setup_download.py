@@ -411,7 +411,9 @@ class Failures(unittest.TestCase):
         with small_pieces(), Server(data=other) as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d)
             self.assertEqual(code, 1)
-            self.assertIn("wrong SHA-256", out)
+            self.assertIn("does not match the pinned SHA-256", out)
+            self.assertIn(NAME + ".bad", out)
+            self.assertIn("the server sends exactly the bytes you have", out)      # the repair compared every block: the server's file is this one
             self.assertEqual(files(d), [NAME + ".bad"])
 
     def test_a_kept_bad_file_is_taken_back_when_it_matches_the_pin_now(self):
