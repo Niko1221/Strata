@@ -1,7 +1,13 @@
 import { workspaceIdForSession } from './session-workspace';
+import { shortTitle } from './title-text';
+import { DEFAULT_CONTENT_FS, DEFAULT_UI_SCALE, SIZE_DEFAULTS_VERSION, savedSizes } from './default-sizes';
+import { detectLanguage } from './language-detect';
+import { validWhileBusy, type WhileBusy } from './while-busy';
+import { addToQuotes, type Quote } from './quotes';
+import { readAsk, type AgentAnswer, type AgentAsk } from './agent-ask';
 import { plainFailure, plainFailureText } from './plain-errors';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
-import { updateAgent } from './agents';
+import { settleAgents, updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
 import { LoopScheduler } from './loop-runner';
 import { applyStatusFrame, clearStatus } from './live-status';
@@ -21,7 +27,9 @@ import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
-import { createSessionWriter } from './session-persist';
+import { createSessionWriter, exportSessions, readBrowserSessions, HOST_FLAG_KEY, PENDING_KEY, type SaveResult, type StorageLike } from './session-persist';
+import { createHttpTransport, hydrateChats, keepLastMomentCopy, WINDOW_ID } from './chat-sync';
+import { copyText } from './clipboard';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
@@ -31,7 +39,7 @@ import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n
  * arrive on the event stream. No state library, no dependencies.
  */
 import { useSyncExternalStore } from 'react';
-import { api, onEvent, streamPost, type StreamEvent } from './client';
+import { api, ApiError, onEvent, streamPost, type StreamEvent } from './client';
 import type {
   Workspace,
   ChatMessage,
@@ -51,6 +59,7 @@ import type {
   SetupState,
   Skill,
   WorkspaceFile,
+  ToolDraft,
 } from './types';
 import { navigate, type Route } from './router';
 import { estimate, execution, contextTokens } from './experience';
@@ -61,6 +70,8 @@ export interface Toast {
   title: string;
   body?: string;
   leaving?: boolean;
+  /** A button under the text. A toast with one stays until it is dismissed. */
+  action?: { label: string; run: () => void };
 }
 
 export interface AppState {
@@ -90,6 +101,8 @@ export interface AppState {
   doneSound: boolean;
   /** Opt-in: a desktop notification when Manual mode waits for an approval (#3477). */
   approvalNotify: boolean;
+  /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
+  whileBusy: WhileBusy;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -117,6 +130,12 @@ export interface AppState {
   sessions: Session[];
   activeSession: string | null;
   streaming: boolean;
+  /** Messages the person sent while an answer was being written, waiting to go when it ends (Send after, Interrupt), by chat (#4783). */
+  parked: Record<string, string[]>;
+  /** The passages quoted into the message being written, by chat, in the order they were quoted (#4785). */
+  quotes: Record<string, Quote[]>;
+  /** The questions the agent asked the person and is waiting for, by chat (#4244). */
+  agentAsks: Record<string, AgentAsk[]>;
   /** Chats with a turn in flight. `streaming` is about the open chat; this is about all of them. */
   liveChats: number;
   toasts: Toast[];
@@ -127,9 +146,12 @@ export interface AppState {
    *  with should not. */
   actionError: { message: string; label: string; retry: () => void } | null;
   busy: Record<string, boolean>;
+  /** Set while the host cannot write some chats (disk full, no permission); null when every chat is saved (#5192).
+   *  The chats stay whole in memory and are tried again at every save; `unsavedSessionsJson()` gives them as text.
+   *  A host that does not answer is not this: those saves are simply retried. */
+  sessionSave: { failedIds: string[]; reason: 'disk-full' | 'permission' | 'other' } | null;
 }
 
-const SESSION_KEY = 'strata.sessions.v1';
 const PREFS_KEY = 'strata.prefs.v2';
 /** What the model has been allowed to read, kept across restarts. */
 const TOUCHED_KEY = 'strata.touched.v1';
@@ -140,6 +162,8 @@ const CONTENT_FS_MIN = 10;
 const CONTENT_FS_MAX = 22;
 
 export interface Prefs {
+  /** Which default sizes this save was made with (see SIZE_DEFAULTS_VERSION). */
+  sizeDefaults?: number;
   language: Language;
   fontFamily: string;
   theme: 'dark' | 'light' | 'system';
@@ -155,6 +179,8 @@ export interface Prefs {
   electricityCurrency: string;
   doneSound: boolean;
   approvalNotify: boolean;
+  /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
+  whileBusy: WhileBusy;
   /** Governs anonymous usage reporting. Nothing is sent in this build; the
    *  choice is recorded so a version that does offer it starts from it. */
   shareTelemetry: boolean;
@@ -167,15 +193,16 @@ const PREFS_DEFAULTS: Prefs = {
   contrast: 'standard',
   rail: false,
   focus: false,
-  contentFontSize: 14,
+  contentFontSize: DEFAULT_CONTENT_FS,
   density: 'comfortable',
   motion: 'system',
   transparency: 'translucent',
-  uiScale: 1,
+  uiScale: DEFAULT_UI_SCALE,
   electricityPrice: 0,
   electricityCurrency: '',
   doneSound: false,
   approvalNotify: false,
+  whileBusy: 'wait',
   shareTelemetry: false,
 };
 
@@ -183,20 +210,37 @@ function uid(prefix = 'id'): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 }
 
+/** localStorage, looked up at each call (it may not exist when this file is loaded outside a browser). */
+const browserStorage: StorageLike = {
+  getItem: key => localStorage.getItem(key),
+  setItem: (key, value) => localStorage.setItem(key, value),
+  removeItem: key => localStorage.removeItem(key),
+  key: index => localStorage.key(index),
+  get length() { return localStorage.length; },
+};
+/** A chat as the page works with it: a reply that was streaming when the page went away is marked interrupted, not left running. */
+function fixSession(session: Session): Session {
+  return {
+    ...session,
+    ...(session.showcase && !session.showcaseAgentStates ? {agents:SHOWCASE_AGENTS,showcaseAgentStates:true}:{}),
+    ...(!session.showcase && session.agents ? { agents: settleAgents(session.agents) } : {}),
+    messages: (session.messages ?? []).map(message => message.streaming ? {
+      ...message,
+      streaming: false,
+      error: message.error ?? 'Response interrupted. Ask again to retry; the partial answer is kept.',
+    } : message),
+  };
+}
+
+/**
+ * The chats shown before the host has answered. Once the browser's chats were handed to the host (the flag) the host's files are the only
+ * truth and the page starts empty until it has read them (the boot screen is up until then); before that, and when the host cannot be
+ * asked, the browser's old copy is shown. It is only ever read.
+ */
 function loadSessions(): Session[] {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as Session[];
-    return Array.isArray(parsed) ? parsed.map(session => ({
-      ...session,
-      ...(session.showcase && !session.showcaseAgentStates ? {agents:SHOWCASE_AGENTS,showcaseAgentStates:true}:{}),
-      messages: session.messages.map(message => message.streaming ? {
-        ...message,
-        streaming: false,
-        error: message.error ?? 'Response interrupted. Ask again to retry; the partial answer is kept.',
-      } : message),
-    })) : [];
+    if (browserStorage.getItem(HOST_FLAG_KEY) === '1') return [];
+    return readBrowserSessions(browserStorage).sessions.map(fixSession);
   } catch {
     return [];
   }
@@ -218,18 +262,21 @@ function loadPrefs(): Prefs {
         ...parsed,
         language: validLanguage(parsed.language) ? parsed.language : 'en',
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily.slice(0,128).replace(/[\x00-\x1f]/g,'') : '',
-        contentFontSize: Math.min(CONTENT_FS_MAX, Math.max(CONTENT_FS_MIN, Number(parsed.contentFontSize) || 14)),
-        uiScale: [0.9, 1, 1.1, 1.25, 1.5, 1.75, 2].includes(Number(parsed.uiScale)) ? Number(parsed.uiScale) : 1,
+        ...savedSizes(parsed, CONTENT_FS_MIN, CONTENT_FS_MAX),
+        sizeDefaults: SIZE_DEFAULTS_VERSION,
         electricityPrice: Number.isFinite(Number(parsed.electricityPrice)) && Number(parsed.electricityPrice) > 0 && Number(parsed.electricityPrice) < 1000 ? Number(parsed.electricityPrice) : 0,
         electricityCurrency: typeof parsed.electricityCurrency === 'string' && /^[A-Za-z]{3}$/.test(parsed.electricityCurrency) ? parsed.electricityCurrency.toUpperCase() : '',
         doneSound: parsed.doneSound === true,
         approvalNotify: parsed.approvalNotify === true,
+        whileBusy: validWhileBusy(parsed.whileBusy) ? parsed.whileBusy : 'wait',
       };
     } catch {
       /* fall through to the next key */
     }
   }
-  return { ...PREFS_DEFAULTS };
+  // Nothing saved: a first start. It opens in the language of the computer; a choice made on the first screen is saved like any other.
+  const tags = typeof navigator === 'undefined' ? [] : navigator.languages?.length ? navigator.languages : [navigator.language];
+  return { ...PREFS_DEFAULTS, language: detectLanguage(tags) ?? 'en' };
 }
 
 const prefs = loadPrefs();
@@ -260,6 +307,10 @@ let state: AppState = {
   electricityCurrency: prefs.electricityCurrency,
   doneSound: prefs.doneSound,
   approvalNotify: prefs.approvalNotify,
+  whileBusy: prefs.whileBusy,
+  parked: {},
+  quotes: {},
+  agentAsks: {},
   paletteOpen: false,
   shortcutsOpen: false,
   settingsSection: 'Appearance',
@@ -281,6 +332,7 @@ let state: AppState = {
   activeWorkspace: null,
   setupOpen: false,
   sessions: loadSessions(),
+  sessionSave: null,
   activeSession: null,
   streaming: false,
   liveChats: 0,
@@ -390,11 +442,11 @@ export function useStore<T>(selector: (s: AppState) => T): T {
 const toastTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const TOAST_MS = 5200;
 
-export function pushToast(tone: Toast['tone'], title: string, body?: string) {
+export function pushToast(tone: Toast['tone'], title: string, body?: string, action?: Toast['action']): string {
   const id = uid('toast');
   // Cap the stack: past three, the oldest collapses rather than pushing the
   // rest off-screen. A toast nobody can read is not a notification.
-  const next = [...state.toasts, { id, tone, title, body }];
+  const next = [...state.toasts, { id, tone, title, body, ...(action ? { action } : {}) }];
   const overflow = next.length > 3 ? next.slice(0, next.length - 3) : [];
   for (const gone of overflow) {
     const t = toastTimers.get(gone.id);
@@ -403,7 +455,8 @@ export function pushToast(tone: Toast['tone'], title: string, body?: string) {
   }
   const kept = overflow.length ? next.slice(-3) : next;
   set({ toasts: kept });
-  toastTimers.set(id, setTimeout(() => dismissToast(id), TOAST_MS));
+  if (!action) toastTimers.set(id, setTimeout(() => dismissToast(id), TOAST_MS));
+  return id;
 }
 
 /**
@@ -471,6 +524,7 @@ function applyPrefs() {
 
 function savePrefs() {
   const snapshot: Prefs = {
+    sizeDefaults: SIZE_DEFAULTS_VERSION,
     language: state.language,
     fontFamily: state.fontFamily,
     theme: state.theme,
@@ -486,6 +540,7 @@ function savePrefs() {
     electricityCurrency: state.electricityCurrency,
     doneSound: state.doneSound,
     approvalNotify: state.approvalNotify,
+    whileBusy: state.whileBusy,
     shareTelemetry: state.shareTelemetry,
   };
   try {
@@ -593,6 +648,70 @@ export function setElectricity(price: number, currency: string) {
   const ok = Number.isFinite(price) && price > 0 && price < 1000;
   set({ electricityPrice: ok ? Math.round(price * 10000) / 10000 : 0, electricityCurrency: /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : '' });
   savePrefs();
+}
+
+export function setWhileBusy(whileBusy: WhileBusy) {
+  if (!validWhileBusy(whileBusy)) return;
+  set({ whileBusy });
+  savePrefs();
+}
+
+/** A message sent while an answer is being written waits here; the chat sends it when the answer is done (it is also where Interrupt leaves it). */
+export function parkMessage(sessionId: string, text: string) {
+  const clean = text.trim();
+  if (!clean) return;
+  set({ parked: { ...state.parked, [sessionId]: [...(state.parked[sessionId] ?? []), clean] } });
+}
+function setAsks(sessionId: string, list: AgentAsk[]) {
+  const next = { ...state.agentAsks };
+  if (list.length) next[sessionId] = list; else delete next[sessionId];
+  set({ agentAsks: next });
+}
+/** The agent asked the person something (a frame of the host), or the question ended without an answer. */
+export function addAgentAsk(sessionId: string, frame: { callId?: unknown; questions?: unknown }) {
+  const ask = readAsk(frame);
+  // A /loop runs without anyone there: the question is skipped at once, so the loop never waits for an answer.
+  if (ask && loopScheduler.isRunning(sessionId)) { void answerAgentAsk(sessionId, ask.callId, null).catch(() => {}); return; }
+  if (ask) setAsks(sessionId, [...(state.agentAsks[sessionId] ?? []).filter(a => a.callId !== ask.callId), ask]);
+}
+export function removeAgentAsk(sessionId: string, callId?: string) {
+  const rest = callId === undefined ? [] : (state.agentAsks[sessionId] ?? []).filter(a => a.callId !== callId);
+  if ((state.agentAsks[sessionId]?.length ?? 0) !== rest.length) setAsks(sessionId, rest);
+}
+/** Sends the person's answer to the agent, or a skip (answers null). A refusal comes back as an error for the card to say in words. */
+export async function answerAgentAsk(sessionId: string, callId: string, answers: AgentAnswer[] | null) {
+  await api.post('/api/chat/answer', { sessionId, callId, ...(answers ? { answers } : { skip: true }) });
+  removeAgentAsk(sessionId, callId);
+}
+
+/** Puts a turn or a selected passage above the message box. */
+export function addQuote(sessionId: string, text: string, messageId: string, role: 'user' | 'assistant') {
+  const list = state.quotes[sessionId] ?? [];
+  const next = addToQuotes(list, { text, messageId, role });
+  if (next.length !== list.length) set({ quotes: { ...state.quotes, [sessionId]: next } });
+}
+export function removeQuote(sessionId: string, id: string) {
+  const rest = (state.quotes[sessionId] ?? []).filter(q => q.id !== id);
+  const next = { ...state.quotes };
+  if (rest.length) next[sessionId] = rest; else delete next[sessionId];
+  set({ quotes: next });
+}
+export function clearQuotes(sessionId: string) {
+  if (!state.quotes[sessionId]) return;
+  const next = { ...state.quotes };
+  delete next[sessionId];
+  set({ quotes: next });
+}
+
+/** The first parked message of a chat, taken out of the list (to send it, or to give it back to the box). */
+export function takeParked(sessionId: string, index = 0): string | undefined {
+  const list = state.parked[sessionId] ?? [];
+  if (index < 0 || index >= list.length) return undefined;
+  const rest = list.filter((_, i) => i !== index);
+  const next = { ...state.parked };
+  if (rest.length) next[sessionId] = rest; else delete next[sessionId];
+  set({ parked: next });
+  return list[index];
 }
 
 export function setDoneSound(doneSound: boolean) {
@@ -745,6 +864,10 @@ function applyEvent(e: StreamEvent) {
       else if (t.status === 'done') { pushToast('success', 'Task finished', String(t.title ?? '')); workFinished(state.doneSound, Infinity); }
       break;
     }
+    case 'chats':
+      // Another window saved or removed a chat (this window's own saves carry its name and are ignored).
+      if (typeof data.id === 'string' && data.from !== WINDOW_ID) void applyChatChange(data.id, typeof data.rev === 'number' ? data.rev : null, data.deleted === true);
+      break;
     case 'agent':
       if (typeof data.sessionId === 'string') patchSession(data.sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], data.agent) }));
       break;
@@ -753,40 +876,73 @@ function applyEvent(e: StreamEvent) {
   }
 }
 
+/** QAGUI 0213: how long one start-up GET may take, how often it is tried, and the pause between tries (a test may shorten them). */
+export const bootstrapTiming = { timeoutMs: 8000, tries: 3, backoffMs: 400 };
+
+/** One GET with a time limit, tried again after a timeout, a lost connection or a host error. A refusal (4xx) is final. */
+export async function getWithRetry<T>(path: string): Promise<T> {
+  const { timeoutMs, tries, backoffMs } = bootstrapTiming;
+  let last: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, backoffMs * 2 ** (attempt - 1)));
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        api.get<T>(path, abort.signal),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error(`No answer from ${path}`)); }, timeoutMs); }),
+      ]);
+    } catch (err) {
+      last = err;
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) throw err;
+    } finally { clearTimeout(timer); }
+  }
+  throw last;
+}
+
 let closeEvents: (() => void) | null = null;
 export async function bootstrap() {
   applyPrefs();
   try {
-    const [setup, hardware, library, engine, serving, monitor, skills, providers, imageModels, runtime] = await Promise.all([
-      api.get<SetupState>('/api/setup'),
-      api.get<Hardware>('/api/hardware'),
-      api.get<ModelLibrary>('/api/models'),
-      api.get<EngineConfig>('/api/engine'),
-      api.get<ServingState>('/api/serving'),
-      api.get<MonitorState>('/api/monitor'),
-      api.get<Skill[]>('/api/skills'),
-      api.get<ModelProviders>('/api/model-providers'),
-      api.get<ImageModelLibrary>('/api/image-models'),
-      api.get<RuntimeModels>('/api/runtime'),
+    let chatsTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      loadChatsFromHost(),
+      new Promise<never>((_, reject) => { chatsTimer = setTimeout(() => reject(new Error('The chats did not load in time')), bootstrapTiming.timeoutMs); }),
+    ]).catch(() => { sessionWriter.enable(); }).finally(() => clearTimeout(chatsTimer));
+    // Only what the first screen cannot do without holds up 'live'; the rest is read at the same time and fills in when it arrives.
+    const soft = <T,>(path: string) => getWithRetry<T>(path).catch(() => null);
+    const late = {
+      hardware: soft<Hardware>('/api/hardware'),
+      monitor: soft<MonitorState>('/api/monitor'),
+      skills: soft<Skill[]>('/api/skills'),
+      providers: soft<ModelProviders>('/api/model-providers'),
+      imageModels: soft<ImageModelLibrary>('/api/image-models'),
+      runtime: soft<RuntimeModels>('/api/runtime'),
+    };
+    const [setup, library, engine, serving, workspaceState] = await Promise.all([
+      getWithRetry<SetupState>('/api/setup'),
+      getWithRetry<ModelLibrary>('/api/models'),
+      getWithRetry<EngineConfig>('/api/engine'),
+      getWithRetry<ServingState>('/api/serving'),
+      getWithRetry<{ workspaces: Workspace[] }>('/api/workspaces'),
     ]);
-    const workspaceState = await api.get<{ workspaces: Workspace[] }>('/api/workspaces');
     set({
       ready: true,
       setup,
-      hardware,
       library: libraryResponse(library),
-      imageModels,
-      runtime,
       engine,
       serving: newestServingState(state.serving, serving),
-      monitor,
-      skills,
       workspacePath: workspaceState.workspaces[0]?.path ?? '',
       workspaces: workspaceState.workspaces,
       activeWorkspace: workspaceState.workspaces.some(w => w.id === state.activeWorkspace) ? state.activeWorkspace : workspaceIdForSession(workspaceState.workspaces, state.sessions.find(s => s.id === state.activeSession)) ?? workspaceState.workspaces[0]?.id ?? null,
       connection: 'live',
     });
-    applyProviders(providers);
+    void late.hardware.then(hardware => { if (hardware) set({ hardware }); });
+    void late.monitor.then(monitor => { if (monitor) set({ monitor }); });
+    void late.skills.then(skills => { if (skills) set({ skills }); });
+    void late.providers.then(providers => { if (providers) applyProviders(providers); });
+    void late.imageModels.then(imageModels => { if (imageModels) set({ imageModels }); });
+    void late.runtime.then(runtime => { if (runtime) set({ runtime }); });
     if (!shellAnnounced) { shellAnnounced = true; void announcePortNotice(); rememberShellLanguage(state.language); }
     closeEvents?.();
     let reconnect = false;
@@ -1072,33 +1228,125 @@ export async function scopeSkill(id: string, workspaceId: string | null) {
 
 /* ---------------------------------------------------------------- sessions */
 
+const chatTransport = createHttpTransport();
+let saveToast: string | null = null;
+
 const sessionWriter = createSessionWriter({
-  write: (json) => {
-    try {
-      localStorage.setItem(SESSION_KEY, json);
-    } catch {
-      /* quota — sessions are a cache, not the source of truth */
+  transport: chatTransport,
+  enabled: false,   // on once the host's chats have been read (loadChatsFromHost), so an older copy here never replaces a newer file
+  // Nothing is trimmed to fit (#5192). A chat the host cannot write keeps its last file and stays whole here; it is reported and
+  // tried again. A host that does not answer is retried quietly: that is the app being down, not a full disk.
+  onResult: (result: SaveResult) => {
+    if (result.ok) {
+      try { browserStorage.removeItem(PENDING_KEY); } catch { /* removed at the next start */ }
+      if (state.sessionSave) set({ sessionSave: null });
+      if (saveToast) { dismissToast(saveToast); saveToast = null; }
+      return;
+    }
+    const real = result.failed.filter(f => f.reason !== 'offline');
+    if (!real.length) return;
+    const failedIds = sessionWriter.unsaved().map(s => s.id);
+    const reason = real[0].reason === 'offline' ? 'other' : real[0].reason;
+    const was = state.sessionSave;
+    if (!was || was.reason !== reason || was.failedIds.join() !== failedIds.join()) set({ sessionSave: { failedIds, reason } });
+    if (!was && !saveToast) {
+      saveToast = pushToast('error', 'Some chats could not be saved', tr("Strata's chat storage is full, so the newest changes to {0} chat(s) are only in this window. Delete old chats to make room; they then save by themselves.", [failedIds.length]), {
+        label: 'Copy unsaved chats',
+        run: () => { const text = unsavedSessionsJson(); if (text) void copyText(text, '', { toast: (tone, title, body) => { pushToast(tone, title, body || undefined); } }); },
+      });
     }
   },
 });
 
+/** The chats the host could not write, as one JSON text (to keep a copy by hand), or null when all are saved. */
+export function unsavedSessionsJson(): string | null {
+  const unsaved = sessionWriter.unsaved();
+  return unsaved.length ? exportSessions(unsaved) : null;
+}
+
 /**
- * Save the chat list. A one-off change (new, rename, delete, pin) is written now; `soon` is for the streaming
+ * Save the chat list. A one-off change (new, rename, delete, pin) is sent now; `soon` is for the streaming
  * path, where a write per token grew the renderer to gigabytes (#3604, #3603): those are coalesced to one a second.
  */
 function persistSessions(sessions: Session[], soon = false) {
   sessionWriter.schedule(sessions);
-  if (!soon) sessionWriter.flush();
+  if (!soon) void sessionWriter.flush();
 }
 
-/** Write the newest chat list now: a turn ended, or the page is going away. */
-export function flushSessions() {
-  sessionWriter.flush();
+/** Send the newest chat list now: a turn ended, or the page is going away. */
+export function flushSessions(): Promise<SaveResult> {
+  return sessionWriter.flush();
+}
+
+/** The page is going away: send what can still be sent, and keep a last-moment copy of what the host has not confirmed (taken back at the next start). */
+function leavingPage() {
+  void sessionWriter.flush();
+  const unconfirmed = sessionWriter.notOnHost();
+  if (unconfirmed.length) keepLastMomentCopy(browserStorage, unconfirmed);
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined' && window.addEventListener) {
-  window.addEventListener('pagehide', flushSessions);
-  document.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSessions(); });
+  window.addEventListener('pagehide', leavingPage);
+  document.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'hidden') leavingPage(); });
+}
+
+let chatsRead = false;
+/**
+ * The first read of the chats at start, and again after the host came back: the host's files become the chats shown (the browser's
+ * old chats are handed over first, once), then saving starts. A host that does not answer leaves the page as it is.
+ */
+export async function loadChatsFromHost() {
+  if (chatsRead) { await syncChatsFromHost(); return; }
+  const result = await hydrateChats({
+    transport: chatTransport, browser: browserStorage, current: state.sessions,
+    isLive: id => liveTurns.has(id),
+  });
+  if (result.offline) {
+    // Show the browser's old copy so the person can still read; saves are retried until the host answers.
+    if (!state.sessions.length) { try { set({ sessions: readBrowserSessions(browserStorage).sessions.map(fixSession) }); } catch { /* none */ } }
+    for (const s of state.sessions) sessionWriter.adopt(s, null);
+    sessionWriter.enable();
+    return;
+  }
+  chatsRead = true;
+  const sessions = result.sessions.map(fixSession);
+  for (const s of sessions) { const rev = result.revs.get(s.id); if (rev !== undefined && !result.recovered.includes(s.id)) sessionWriter.adopt(s, rev); }
+  set({ sessions });
+  // Whatever the host does not have yet (a chat it refused during the move, a last-moment copy) is sent now; a refusal raises the notice.
+  sessionWriter.schedule(sessions);
+  sessionWriter.enable();
+  void resumeSessions();
+}
+
+/** One chat that another window saved or removed: taken over unless this window is working in it. */
+export async function applyChatChange(id: string, rev: number | null, deleted: boolean) {
+  const here = state.sessions.find(s => s.id === id);
+  if (deleted) {
+    if (here && !liveTurns.has(id) && !sessionWriter.dirty(here)) {
+      sessionWriter.forget(id);
+      set({ sessions: state.sessions.filter(s => s.id !== id), ...(state.activeSession === id ? { activeSession: null } : {}) });
+    }
+    return;
+  }
+  if (rev !== null && sessionWriter.rev(id) >= rev) return;
+  if (here && (liveTurns.has(id) || sessionWriter.dirty(here))) return;   // this window's own work wins; its next save keeps the displaced version on the host
+  const got = await chatTransport.get(id).catch(() => null);
+  if (!got) return;
+  const fresh = state.sessions.find(s => s.id === id);
+  if (fresh && (liveTurns.has(id) || sessionWriter.dirty(fresh))) return;
+  sessionWriter.adopt(got.session, got.rev);
+  const next = fresh ? state.sessions.map(s => (s.id === id ? got.session : s)) : [...state.sessions, got.session].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  set({ sessions: next });
+}
+
+/** After the host was away: take over what other windows saved or removed meanwhile. */
+async function syncChatsFromHost() {
+  const list = await chatTransport.list().catch(() => null);
+  if (!list) return;
+  const onHost = new Set(list.chats.map(c => c.id));
+  for (const entry of list.chats) await applyChatChange(entry.id, entry.rev, false);
+  for (const s of state.sessions) if (!onHost.has(s.id) && sessionWriter.rev(s.id) > 0) await applyChatChange(s.id, null, true);
+  sessionWriter.enable();
 }
 
 export function newSession(): Session {
@@ -1304,7 +1552,7 @@ async function startTimeSkipReal(prompt: string) {
   const at = new Date().toISOString();
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
-    title: s.messages.length ? s.title : prompt.length > 48 ? prompt.slice(0, 47).trimEnd() + '…' : prompt, updatedAt: at,
+    title: s.messages.length ? s.title : shortTitle(prompt), updatedAt: at,
     // The comparison sidebar opens only when there is an update to compare (when the job ends with changed files), never while it works.
     timeSkips: [...(s.timeSkips ?? []), run],
     messages: [...s.messages,
@@ -1397,7 +1645,7 @@ function startTimeSkipDemo(prompt: string) {
   const at = new Date().toISOString();
   patchSession(sessionId, s => ({ ...s,
     defaultTitle: false,
-    title: s.messages.length ? s.title : prompt.length>48?prompt.slice(0,47).trimEnd()+'…':prompt, updatedAt: at,
+    title: s.messages.length ? s.title : shortTitle(prompt), updatedAt: at,
     timeSkips: [...(s.timeSkips ?? []), run], previewOpen: timeSkipTabId(run.id),
     messages: [...s.messages,
       { id: uid('m'), role: 'user', at, content: `/time-skip ${prompt}`, timeSkipId: run.id },
@@ -1602,7 +1850,7 @@ const lastAnswer = (sessionId: string) => [...(state.sessions.find(s => s.id ===
 const loopScheduler = new LoopScheduler({
   async send(sessionId, { text, shown }) {
     const before = lastAnswer(sessionId)?.id;
-    await sendMessage(text, { fromLoop: true, shown, title: shown.length > 48 ? shown.slice(0, 47).trimEnd() + '…' : shown });
+    await sendMessage(text, { fromLoop: true, shown, title: shortTitle(shown) });
     const answer = lastAnswer(sessionId);
     if (!answer || answer.id === before || answer.streaming) return { answered: false, text: '', failed: false };
     return { answered: true, text: answer.content ?? '', failed: !!answer.error };
@@ -1686,8 +1934,10 @@ export async function approvePlan(sessionId: string, planId: string) {
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
 export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean } = {}) {
-  if (state.streaming) {
+export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean; reattach?: string; requestId?: string } = {}) {
+  // `reattach`: a turn the host is still running for this chat (or finished while the page was away) is taken over again after a reload, not started.
+  const reattach = options.reattach;
+  if (state.streaming && !reattach) {
     // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
     const waiting = state.activeSession, line = text.trim();
     if (waiting && line && !options.planId && !options.goalAction) {
@@ -1698,9 +1948,9 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   }
   const resume = options.goalAction === 'resume';
   const planStart = options.planId;
-  const loopCommand = options.fromLoop || resume || planStart ? null : parseLoop(text.trim());
+  const loopCommand = options.fromLoop || resume || planStart || reattach ? null : parseLoop(text.trim());
   if (loopCommand) { await runLoopCommand(loopCommand); return; }
-  const demoPrompt = resume || planStart ? null : timeSkipPrompt(text.trim());
+  const demoPrompt = resume || planStart || reattach ? null : timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
     if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else if (state.connection === 'live' && demoPrompt) pushToast('info', 'Load a model first', 'Time-skip works on a loaded model. Choose one on the Models tab, then try again.');
     else if (state.connection === 'connecting' && demoPrompt) pushToast('info', 'Still starting up', 'Time-skip needs the app to finish starting. Try again in a moment.');
@@ -1708,23 +1958,26 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     return;
   }
   // Whatever sent this (the box, a loop, a plan): with no model to answer, say so in plain words and start nothing.
-  if (state.connection === 'live') {
+  if (state.connection === 'live' && !reattach) {
     // The first read of the engine's state has not come back yet: do not say "no model" about something not known yet, and do not send.
     if (!nativeState() && !state.remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return; }
     const why = noModelNotice(nativeState(), { remote: !!state.remoteModel, libraryLoaded: !!state.library?.loaded });
     if (why) { pushToast('info', why.title, why.message); return; }
   }
   const pictureCheck=pictureStatus(nativeState(),state.remoteModel,state.providers);
-  if(pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}
-  const pictures=takeChatPhotos(state.activeSession);
+  if(!reattach&&pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}
+  const pictures=reattach?[]:takeChatPhotos(state.activeSession);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
-  if(!body&&!resume&&!planStart)return;
+  if(!body&&!resume&&!planStart&&!reattach)return;
 
-  let sessionId = state.activeSession;
+  let sessionId = reattach ?? state.activeSession;
   if (!sessionId) sessionId = newSession().id;
 
   const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}),...(options.markdown?{markdown:true}:{}) };
-  let assistantId = uid('m');
+  // A taken-over turn goes on in the reply the page already has (the last one, if it is the assistant's).
+  const lastReply = reattach ? [...(state.sessions.find(s => s.id === sessionId)?.messages ?? [])].reverse()[0] : undefined;
+  const resumedReply = lastReply?.role === 'assistant' ? lastReply : undefined;
+  let assistantId = resumedReply?.id ?? uid('m');
   const assistantMsg: ChatMessage = {
     id: assistantId,
     role: 'assistant',
@@ -1752,10 +2005,15 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     // Bounded so a long conversation cannot send an unbounded body.
     .slice(-40);
 
-  patchSession(sessionId, (s) => ({
+  patchSession(sessionId, (s) => reattach ? ({
+    ...s,
+    messages: resumedReply
+      ? s.messages.map(m => m.id === resumedReply.id ? { ...m, streaming: true } : m)
+      : [...s.messages, assistantMsg],
+  }) : ({
     ...s,
     defaultTitle: false,
-    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (body.length>48?body.slice(0,47).trimEnd()+'…':body)) : s.title,
+    title: s.messages.length === 0 && !resume && !planStart ? (options.title ?? (shortTitle(body))) : s.title,
     updatedAt: new Date().toISOString(),
     messages: [...s.messages, ...(resume || planStart ? [] : [userMsg]), assistantMsg],
   }));
@@ -1775,10 +2033,27 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   const started = performance.now();
 
   const imageSlots=photoHistorySlots(prior,pictures.length);
+  /* Text and reasoning arrive token by token (90 a second or more). Drawing the whole answer again for each one made the page do more work for every
+     word the longer the answer grew (measured: 15.7 s of main-thread time for 24 s of a 40,000-token answer), until the page stopped answering
+     and ran out of memory. The pieces are gathered and applied together about ten times a second; any other frame, the end and a failure
+     apply what is waiting first, so the order the person sees is the order it was written. */
+  const waiting: ['reasoning' | 'delta', string][] = [];
+  let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  const applyReasoning = (text: string) => patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + text, reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
+  const applyDelta = (text: string) => patchAssistant((m) => { const content=tidyAnswer(m.content+text); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,text)}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+  const flushWaiting = () => {
+    if (waitingTimer !== null) { clearTimeout(waitingTimer); waitingTimer = null; }
+    for (const [kind, text] of waiting.splice(0)) if (kind === 'delta') applyDelta(text); else applyReasoning(text);
+  };
+  const queueText = (kind: 'reasoning' | 'delta', text: string) => {
+    const last = waiting[waiting.length - 1];
+    if (last && last[0] === kind) last[1] += text; else waiting.push([kind, text]);
+    waitingTimer ??= setTimeout(flushWaiting, 90);
+  };
   try {
     await streamPost(
-      planStart ? '/api/plan/start-goal' : '/api/chat/stream',
-      {
+      reattach ? '/api/chat/attach' : planStart ? '/api/plan/start-goal' : '/api/chat/stream',
+      reattach ? { sessionId, ...(options.requestId ? { requestId: options.requestId } : {}) } : {
         sessionId,
         ...(planStart ? { planId: planStart } : {}),
         ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
@@ -1801,11 +2076,24 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         // A line from the app itself carries `key` (the English sentence): shown in the person's language.
         if (frame.type === 'delta' && typeof frame.key === 'string') frame = { ...frame, text: tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) };
         const type = frame.type as string;
+        if (type === 'delta' || type === 'reasoning') { queueText(type, String(frame.text ?? '')); return; }
+        flushWaiting();
         if (type === 'start' && frame.agent === true) { const turn = liveTurns.get(sessionId); if (turn) turn.agent = true; }
+        // The host has a turn to take over: the failure the page wrote when it lost the stream no longer applies.
+        if (type === 'start' && frame.resumed === true) patchAssistant(m => ({ ...m, error: undefined, errorCode: undefined }));
         if (type === 'queued') {
           patchAssistant(m => ({ ...m, requestId: String(frame.requestId) }));
         } else if (type === 'start') {
           patchAssistant((m) => ({ ...m, demo: frame.demo === true, remoteModel: frame.remoteModel === true, requestId: typeof frame.requestId === 'string' ? frame.requestId : m.requestId, model: String(frame.model), contextMax: Number(frame.contextMax), skillsUsed: Array.isArray(frame.skills) ? frame.skills.map(String) : [] }));
+        } else if (type === 'resync') {
+          // A taken-over turn: what was said while no page was here. The reply continues from what the page had; where the two disagree the host's text stands.
+          const said = String(frame.content ?? ''), thought = String(frame.reasoning ?? '');
+          patchAssistant(m => {
+            let next = m;
+            if (said) next = said.startsWith(next.content) ? { ...next, content: tidyAnswer(said), ...(next.blocks && said.length > next.content.length ? { blocks: appendText(next.blocks, said.slice(next.content.length)) } : {}) } : { ...next, content: tidyAnswer(said), blocks: undefined };
+            if (thought && thought.length >= (next.reasoning ?? '').length) next = { ...next, reasoning: thought, reasoningStartedAt: next.reasoningStartedAt ?? Date.now() };
+            return next;
+          });
         } else if (type === 'status') {
           applyStatusFrame(sessionId, frame as Record<string, unknown>);
           // Manual mode waits for the person: a notification when they have opted in and Strata is in the background (#3477), once per question.
@@ -1837,11 +2125,25 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'plan-step') {
           /* the whole plan follows in a plan frame; the live status already says which step is running */
         } else if (type === 'reasoning') {
-          patchAssistant((m) => ({ ...m, reasoning: (m.reasoning ?? '') + String(frame.text ?? ''), reasoningStartedAt: m.reasoningStartedAt ?? Date.now() }));
+          /* applied through queueText above */
         } else if (type === 'notice') {
           // The host says why this chat is not using the agent. One toast per reason per page load.
           const code = String(frame.code ?? 'notice');
           if (!noticed.has(code)) { noticed.add(code); pushToast('info', 'Agent', plainFailureText(String(frame.message ?? '')).message); }
+        } else if (type === 'agent-question') {
+          addAgentAsk(sessionId, frame as { callId?: unknown; questions?: unknown });
+        } else if (type === 'agent-question-end') {
+          removeAgentAsk(sessionId, String(frame.callId ?? ''));
+        } else if (type === 'agent-tool-draft') {
+          // A tool call (a whole file, say) is being written: keep its name, size and the tail of its text on the reply until the call is whole or lost.
+          const d = frame.draft as (ToolDraft & { done?: boolean }) | undefined;
+          if (d && typeof d.id === 'string') {
+            const { done, ...view } = d;
+            patchAssistant(m => {
+              const rest = (m.drafts ?? []).filter(x => x.id !== d.id);
+              return { ...m, drafts: done ? (rest.length ? rest : undefined) : [...rest, view] };
+            });
+          }
         } else if (type === 'agent-tool') {
           const tool = frame.tool as ToolCall;
           patchAssistant(m => {
@@ -1852,7 +2154,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         } else if (type === 'agent') {
           patchSession(sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], frame.agent) }));
         } else if (type === 'delta') {
-          patchAssistant((m) => { const content=tidyAnswer(m.content+String(frame.text??'')); if (m.reasoningStartedAt && m.reasoningMs === undefined) m = { ...m, reasoningMs: Date.now() - m.reasoningStartedAt }; const count=Math.max(1,Math.ceil((content.length+(m.reasoning?.length??0))/4)); return {...m,content,...(m.blocks?{blocks:appendText(m.blocks,String(frame.text??''))}:{}),tokens:m.usageSource==='estimated'&&m.tps?m.tokens:count,inputTokens:m.inputTokens??Math.ceil((body.length+prior.reduce((n,p)=>n+p.content.length,0))/4),usageSource:'estimated'}; });
+          /* applied through queueText above */
         } else if (type === 'deliverable') {
           const file = readDeliverable(frame);
           if (file) patchAssistant(m => ({ ...m, deliverables: mergeDeliverable(m.deliverables, file) }));
@@ -1885,7 +2187,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           clearStatus(sessionId);
           // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.
           const said = typeof frame.key === 'string' ? tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) : plainFailure(String(frame.message ?? 'Engine error')).message;
-          patchAssistant((m) => ({ ...m, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
+          patchAssistant((m) => ({ ...m, drafts: undefined, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
         } else if (type === 'done') {
           clearStatus(sessionId);
           workFinished(state.doneSound, Number(frame.durationMs ?? performance.now() - started));
@@ -1898,6 +2200,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           patchAssistant((m) => ({
             ...m,
             streaming: false,
+            drafts: undefined,
             durationMs: Number(frame.durationMs ?? performance.now() - started),
             tokens: typeof frame.tokensOut === 'number' ? frame.tokensOut : undefined,
             ttftMs: typeof frame.ttftMs === 'number' ? frame.ttftMs : undefined,
@@ -1914,7 +2217,11 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
       turnAbort.signal,
     );
   } catch (err) {
-    if ((err as Error).name !== 'AbortError') {
+    flushWaiting();
+    if (reattach && (err as { status?: number } | null)?.status === 404) {
+      // Nothing to take over (the turn ended and the host no longer holds it): the reply stays as the page had it.
+      patchAssistant((m) => ({ ...m, streaming: false }));
+    } else if ((err as Error).name !== 'AbortError') {
       patchAssistant((m) => ({
         ...m,
         streaming: false,
@@ -1925,10 +2232,12 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
       patchAssistant((m) => ({ ...m, streaming: false }));
     }
   } finally {
+    flushWaiting();
     // A cancelled or failed turn is still worth keeping.
     flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
+    removeAgentAsk(sessionId);
     const next = releasedMessages.get(sessionId)?.shift();
     if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
   }
@@ -2006,6 +2315,18 @@ export function go(route: Route, param?: string) {
 export function bootOnce() {
   if ((globalThis as { __strataBooted?: boolean }).__strataBooted) return;
   (globalThis as { __strataBooted?: boolean }).__strataBooted = true;
+  void bootstrap();
+}
+
+let sessionsResumed = false;
+/**
+ * Once, after the chats were first read from the host: what a chat can still have going on. Time-skip runs are followed again, a loop the last
+ * window left "running" has ended, a turn the host is still running is taken over (or one that ended while the page was away is shown whole),
+ * and tool cards the browser remembers as waiting for a turn that no longer exists are marked interrupted.
+ */
+async function resumeSessions() {
+  if (sessionsResumed) return;
+  sessionsResumed = true;
   for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) { markTurn(session.id, { abort: new AbortController(), agent: false }); void followTimeSkip(session.id, run.id); } }
   // A loop lives in the window: one the last window left "running" has ended, and the board says so.
   if (state.sessions.some(s => s.loop?.state === 'running')) {
@@ -2013,8 +2334,26 @@ export function bootOnce() {
     persistSessions(sessions);
     set({ sessions });
   }
-  void bootstrap();
+  await takeOverTurns();
   void reconcileAgentTools();
+}
+
+/**
+ * A reload does not stop an agent turn: the host keeps it going. The page asks which chats have a turn running and takes each one over again
+ * (the catch-up, then the rest as it is written, the Stop button and the approvals waiting). A chat whose last reply was cut off by the page
+ * going away is asked about too: if its turn ended meanwhile, the host still holds the end of it and shows it whole; if not, nothing changes.
+ */
+async function takeOverTurns() {
+  let running: { chatId: string }[] = [];
+  try { running = (await api.get<{ turns: { chatId: string }[] }>('/api/chat/active')).turns; } catch { /* an older host, or none reachable: nothing to take over */ }
+  const live = new Set(running.map(t => t.chatId));
+  for (const id of live) if (state.sessions.some(s => s.id === id) && !liveTurns.has(id)) void sendMessage('', { reattach: id });
+  // Cut-off replies of chats with no turn running: the most recent few, asked once each.
+  const cut = state.sessions.filter(s => !live.has(s.id) && !liveTurns.has(s.id)).slice().sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 12).flatMap(s => {
+    const last = s.messages[s.messages.length - 1];
+    return last?.role === 'assistant' && last.requestId && last.usageSource === undefined && !last.local ? [{ id: s.id, requestId: last.requestId }] : [];
+  });
+  await Promise.allSettled(cut.map(c => sendMessage('', { reattach: c.id, requestId: c.requestId })));
 }
 
 /**
@@ -2025,6 +2364,7 @@ export function bootOnce() {
 async function reconcileAgentTools() {
   const open = (t: ToolCall) => t.live && (t.state === 'proposed' || t.state === 'running');
   for (const session of state.sessions) {
+    if (liveTurns.has(session.id)) continue;   // a turn taken over again reports its own cards
     if (!session.messages.some(m => m.tools?.some(open))) continue;
     let waiting = new Set<string>();
     try {

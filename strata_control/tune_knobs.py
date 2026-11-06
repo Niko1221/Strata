@@ -50,6 +50,10 @@ BOOL_FLAGS = frozenset({"--kv-grow", "--trim-stage-weights", "--no-host-worker",
                         "--resident-experts", "--prompt-cache-tail", "--vram-elastic", "--split-skip-if-fits",
                         "--resident-cpu-experts", "--no-hit-poke", "--expert-cache-per-layer", "--batch-mtp"})
 
+#: Flags of BOOL_FLAGS that strata-dsv41 (DeepSeek) reads with a word: ``--mmap-experts on|off|auto`` (src/dsv41/ds4_main.cpp). A bare one there takes the
+#: next argument as its word, or stops the engine ("--mmap-experts needs a value") when it is last. Qwen's engine takes it as a bare switch (#5027).
+DSV41_WORD_FLAGS = frozenset({"--mmap-experts"})
+
 
 # --------------------------------------------------------------------------- the arms
 
@@ -84,7 +88,7 @@ ARMS: tuple[Arm, ...] = (
         classes=("A", "B", "C"), backends=("cuda", "hip"), needs=("ctx_ge_128k",)),
     # --- prompt speed: the chunk size is exact (10/10) and costs no decode speed on a card with VRAM to spare ------------------
     Arm("prefill_32k", "Larger prompt chunks (faster very long prompts)", "exact", {"--prefill": "auto:32768"},
-        classes=("B",), goals=("coding", "chat"), ram_delta_mib=4096, needs=("vram_ge_24g", "long_prompts"), metric="prompt"),
+        classes=("B",), goals=("coding", "chat"), ram_delta_mib=4096, needs=("vram_ge_24g", "long_prompts", "discrete_gpu"), metric="prompt"),
     # --- class A: RAM-bound resident mode (RTX 3060 / 46 GB): the one measured gain is adapt-async, behind its own switch ------
     Arm("adapt_async", "Learn which experts to keep while you chat, in the background", "nonrepeatable",
         {"--adapt-async": 1}, backends=("cuda",), classes=("A",), needs=("resident_ram", "one_gpu")),
@@ -220,6 +224,7 @@ def condition_holds(name: str, ctx: Context) -> bool:
         "hybrid_cpu": ctx.hybrid_cpu,
         "hybrid_experts": bool(f.get("hybrid_experts")),
         "vram_ge_24g": ctx.vram_mib >= 24000,
+        "discrete_gpu": not (ctx.arch and ctx.arch.split(":")[0] in ("gfx1151", "gfx1150", "gfx1103")),   # an APU's pool is shared with the expert cache
         "vram_le_8g": 0 < ctx.vram_mib <= 8400,
         "gfx12": bool(ctx.arch and ctx.arch.startswith("gfx12")),
         "windows_amd_kv_stream": ctx.backend == "hip" and sys.platform == "win32" and "--kv-resident" in ctx.base_args,
@@ -480,11 +485,11 @@ def _current(argv: Sequence[str], flag: str) -> str | None:
     return None
 
 
-def _value_count(argv: Sequence[str], i: int) -> int:
+def _value_count(argv: Sequence[str], i: int, bool_flags: frozenset[str] = BOOL_FLAGS) -> int:
     """How many entries after the flag at ``argv[i]`` are its values: none for a bool flag, as many as the option takes
     (``--control-vector-layer-range 4 44`` is two) up to the next ``--option``."""
     flag = argv[i]
-    if flag in BOOL_FLAGS:
+    if flag in bool_flags:
         return 0
     n = 0
     while n < user_args.MULTI_VALUE_FLAGS.get(flag, 1) and i + 1 + n < len(argv) and not str(argv[i + 1 + n]).startswith("--"):
@@ -497,19 +502,20 @@ def signature(args: dict[str, Any], env: dict[str, str | None] | None = None) ->
     return "|".join(parts)
 
 
-def apply_to_argv(argv: Sequence[str], args: dict[str, Any]) -> list[str]:
-    """The user's argv with the candidate's settings put on top (Rule 3: a boolean is present or absent)."""
+def apply_to_argv(argv: Sequence[str], args: dict[str, Any], bool_flags: frozenset[str] = BOOL_FLAGS) -> list[str]:
+    """The user's argv with the candidate's settings put on top (Rule 3: a boolean is present or absent).
+    `bool_flags`: the engine's flags that take no value (strata-dsv41 gives --mmap-experts a word, see DSV41_WORD_FLAGS)."""
     out = list(argv)
     for flag, value in args.items():
         i = 0
         while i < len(out):
             if out[i] == flag:
-                del out[i:i + 1 + _value_count(out, i)]
+                del out[i:i + 1 + _value_count(out, i, bool_flags)]
             else:
                 i += 1
         if value is None or value is False:
             continue
-        if value is True or flag in BOOL_FLAGS:
+        if value is True or flag in bool_flags:
             out.append(flag)
         else:
             out.extend([flag, *user_args.value_tokens(flag, value)])

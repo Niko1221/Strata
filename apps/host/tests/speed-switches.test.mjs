@@ -13,19 +13,19 @@ import { nativeFixture } from './helpers/native-fixture.mjs';
 const read = rel => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
 const ENV = {      // what each switch writes outside its default
   faster_long_prompts: { STRATA_KVA: '1' },
-  faster_12gb_nvidia: { STRATA_ROUTE_PRIOR: '0' },
+  faster_12gb_nvidia: { STRATA_ROUTE_PRIOR: '1.5' },
   faster_radeon_9000: { STRATA_PCIE_FRAC_DEFAULT: 'old' },
   deepseek_speedups: { DS4_DEFAULTS: '026', DS4_FAST_ATTN: '0', DS4_ATTN_SLAB: '0', DS4_COPY_PIN: '0', DS4_COPY_HUGETLB: '0', DS4_STORE_SPARE: '0', DS4_STORE_PUT: '0' },
 };
 const SIX = ['DS4_FAST_ATTN', 'DS4_ATTN_SLAB', 'DS4_COPY_PIN', 'DS4_COPY_HUGETLB', 'DS4_STORE_SPARE', 'DS4_STORE_PUT'];
-const DEFAULT = { faster_long_prompts: 'off', faster_12gb_nvidia: 'on', faster_radeon_9000: 'on', deepseek_speedups: 'on' };
+const DEFAULT = { faster_long_prompts: 'off', faster_12gb_nvidia: 'off', faster_radeon_9000: 'on', deepseek_speedups: 'on' };
 const RTX3060 = { index: 0, name: 'NVIDIA GeForce RTX 3060', vendor: 'nvidia', arch: '86', vram_gb: 12 };
 const R9700 = { index: 0, name: 'AMD Radeon AI PRO R9700', vendor: 'amd', arch: 'gfx1201', vram_gb: 32 };
 const RX7900 = { index: 0, name: 'AMD Radeon RX 7900 XTX', vendor: 'amd', arch: 'gfx1100', vram_gb: 24 };
 const RTX = { index: 0, name: 'NVIDIA GeForce RTX 4090', vendor: 'nvidia', arch: '89', vram_gb: 24 };
 const STRIX = { index: 0, name: 'AMD Radeon 8060S', vendor: 'amd', arch: 'gfx1151', vram_gb: 96, uma: true };
 
-test('there are exactly four switches in the app (the Terminal has one more); each writes the engine names of the contract and has its default (KVA off, the others on)', () => {
+test('there are exactly four switches in the app (the Terminal has one more); each writes the engine names of the contract and has its default (KVA and the 12 GB routing off, the other two on)', () => {
   assert.deepEqual(SPEED_SWITCHES.map(s => s.id), Object.keys(ENV));
   for (const sw of SPEED_SWITCHES) {
     assert.deepEqual(sw.env, ENV[sw.id], sw.id);
@@ -38,7 +38,7 @@ test('the Terminal\'s Qwen "0.2.6 behaviour" switch is not in the app', () => {
   assert.ok(!Object.values(SPEED_SWITCHES.flatMap(s => Object.keys(s.env))).includes('STRATA_DEFAULTS'));
 });
 
-test('Faster answers on 12 GB NVIDIA cards: only for Qwen on a discrete CUDA card of 13 GiB or less; Off writes STRATA_ROUTE_PRIOR=0', () => {
+test('Faster answers on 12 GB NVIDIA cards: only for Qwen on a discrete CUDA card of 13 GiB or less; off by default since 0.2.8 (#4402), On writes STRATA_ROUTE_PRIOR=1.5', () => {
   const ids = context => speedSwitchRows({}, context).map(r => r.id);
   assert.deepEqual(ids({ backend: 'cuda', gpus: [RTX3060] }), ['faster_long_prompts', 'faster_12gb_nvidia']);
   assert.deepEqual(ids({ backend: 'cuda', gpus: [{ ...RTX3060, vram_gb: 13 }] }), ['faster_long_prompts', 'faster_12gb_nvidia'], '13 GiB counts');
@@ -55,12 +55,24 @@ test('Faster answers on 12 GB NVIDIA cards: only for Qwen on a discrete CUDA car
   assert.deepEqual(ids({ backend: 'sycl', gpus: [RTX3060] }), [], 'not a CUDA build');
   assert.deepEqual(ids({ backend: 'cuda', gpus: [RTX3060], arch: 'qwen35moe' }), [], 'Qwen3.6-35B-A3B: the routing needs 512 experts');
   assert.deepEqual(ids({ deepseek: true, backend: 'cuda', gpus: [RTX3060] }), ['deepseek_speedups']);
-  const off = setSpeedSwitch({ PATH: '/bin' }, 'faster_12gb_nvidia', false);
-  assert.deepEqual(off, { PATH: '/bin', STRATA_ROUTE_PRIOR: '0' });
-  assert.equal(speedSwitchIsOn(off, 'faster_12gb_nvidia'), false);
-  assert.equal(speedSwitchIsOn({}, 'faster_12gb_nvidia'), true);
-  assert.deepEqual(setSpeedSwitch(off, 'faster_12gb_nvidia', true), { PATH: '/bin' });
-  assert.equal(speedSwitchIsOn({ STRATA_ROUTE_PRIOR: '2.0' }, 'faster_12gb_nvidia'), true, 'any other value is the user\'s own and reads as the default');
+  // a default launch carries nothing: the engine then runs as 0.2.6 did (STRATA_ROUTE_PRIOR unset = 0)
+  assert.equal(speedSwitchIsOn({}, 'faster_12gb_nvidia'), false);
+  assert.equal(speedSwitchRows({}, { backend: 'cuda', gpus: [RTX3060] }).find(r => r.id === 'faster_12gb_nvidia').on, false);
+  assert.deepEqual(setSpeedSwitch({ PATH: '/bin' }, 'faster_12gb_nvidia', false), { PATH: '/bin' }, 'Off is the default: it writes nothing');
+  // the explicit opt-in the row writes
+  const on = setSpeedSwitch({ PATH: '/bin' }, 'faster_12gb_nvidia', true);
+  assert.deepEqual(on, { PATH: '/bin', STRATA_ROUTE_PRIOR: '1.5' });
+  assert.equal(speedSwitchIsOn(on, 'faster_12gb_nvidia'), true);
+  assert.deepEqual(setSpeedSwitch(on, 'faster_12gb_nvidia', false), { PATH: '/bin' }, 'back to Off removes the entry');
+  // the 0.2.7 "Off" wrote STRATA_ROUTE_PRIOR=0: that file is in the default state now, and On replaces it with 1.5
+  assert.equal(speedSwitchIsOn({ STRATA_ROUTE_PRIOR: '0' }, 'faster_12gb_nvidia'), false);
+  assert.deepEqual(setSpeedSwitch({ STRATA_ROUTE_PRIOR: '0' }, 'faster_12gb_nvidia', true), { STRATA_ROUTE_PRIOR: '1.5' });
+  assert.deepEqual(setSpeedSwitch({ STRATA_ROUTE_PRIOR: '0' }, 'faster_12gb_nvidia', false), {}, 'and Off clears it');
+  // the words say both sides
+  const hint = SPEED_SWITCHES.find(s => s.id === 'faster_12gb_nvidia').hint;
+  assert.match(hint, /faster on 12 GB cards/);
+  assert.match(hint, /Off by default/);
+  assert.match(hint, /long agent sessions it can repeat itself/);
 });
 
 test('DeepSeek speed-ups Off writes DS4_DEFAULTS=026 and the six; On removes all seven; the six alone (an earlier test build) still read as Off', () => {

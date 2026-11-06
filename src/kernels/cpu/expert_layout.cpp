@@ -390,7 +390,10 @@ void cpu_require_expert_support() {
     if (f.usable()) return;
     std::fprintf(stderr,
                  "strata: this CPU cannot run the expert kernel: %s.\n"
-                 "        The engine needs AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
+                 "        The pack in --pack is the AVX-512 Q2_0 pack (its folder has no native_experts.txt): its CPU kernel needs\n"
+                 "        AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
+                 "        An i-quant (IQ3_XXS, IQ3_S, ...), NVFP4 or Unsloth pack has native_experts.txt in its folder and runs on an\n"
+                 "        AVX2 CPU as well: build that pack (setup does it on a CPU without AVX-512) and give its folder as --pack.\n"
                  "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
                  f.reason());
     std::exit(1);

@@ -88,6 +88,10 @@ struct Window {
     bool had_on_ = false;
     bool layout_k4 = false;
     gguf::Tensor gate;
+    int nexp_ = 512;   // routed experts per layer (window.cpp:476); the fixture runs no routers
+    bool mtp_on_ = true;   // production pc_setup runs after the MTP load (window.cpp:3146)
+    bool mtp_ovl_ = true;
+    static bool gdn_fused_inputs(const std::string&) { return false; }   // window.cpp:88, an M5 check
     // Metadata-only fixtures; no M5 kernels or Gyro model are executed.
     bool coop_k4() { return layout_k4; }
     const gguf::Tensor& T(const std::string&) const { return gate; }
@@ -124,8 +128,13 @@ bool scenario(mtl::Context& cx, bool had, bool k4, int type) {
     if (!setup(w, 64)) return false;
     std::vector<mtl::Buffer*> buffers;
     bool allocated = true;
+    static const char* member_names[] = {@NAMES@};
+    size_t mi = 0;
     for (auto* buffer : all) {
+        size_t here = mi++;
         @OPTIONAL_MIXR@
+        @OPTIONAL_FUSED@
+        if (!buffer->handle) std::printf("unallocated: %s\n", member_names[here]);
         allocated = allocated && buffer->handle != nullptr;
         buffers.push_back(buffer);
     }
@@ -211,8 +220,11 @@ int main() {
         "@BUFFERS@": buffers, "@SETUP@": setup,
         "@COUNT@": str(len(names)),
         "@REFERENCES@": ", ".join("&w.pb_." + name for name in names),
+        "@NAMES@": ", ".join('"' + n + '"' for n in names),
         "@DRAIN@": "true" if args.drain_allocation_pools else "false",
         "@OPTIONAL_MIXR@": "if (!had && buffer == &w.pb_.mixr) continue;" if "mixr" in names else "",
+        "@OPTIONAL_FUSED@": ("if (!w.pb_.fused && (buffer == &w.pb_.yf || buffer == &w.pb_.Wcat)) continue;"
+                             if "yf" in names else ""),
         "@LAYOUT_CHECK@": layout_check,
     }
     for marker, value in replacements.items():

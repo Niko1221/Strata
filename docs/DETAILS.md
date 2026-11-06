@@ -764,6 +764,25 @@ Building from git, trying a pull request, the monitor from a checkout: [INSTALL.
   streaming (`--kv-resident`) is off and the KV cache stays in VRAM, and the experts are copied to the GPU from
   unpinned RAM (slower prompts than native Linux).
 
+### Downloading the model files yourself
+
+Setup downloads the model files over 16 connections (`STRATA_DL_CONNECTIONS` 1 to 32), resumes a stopped download, and checks every file's SHA-256 against the
+pinned value. Measured from two computers (a home PC and a server in China), anonymous downloads from Hugging Face ran at 16 to 19 MB/s whatever the connection count (one
+stream 7 MB/s, 16 connections 17, 32 connections 19). Hugging Face's own `hf` command with its Xet backend gave 16 to 24 MB/s anonymously in the same test, so it is
+not faster by itself. Hugging Face limits anonymous requests per IP address and says a login (a token of your own account) raises the limits, so if the download is slow
+you can fetch the file with the `hf` command, optionally after `hf auth login`, and give the folder to setup:
+
+```bash
+uvx hf auth login            # optional: your own Hugging Face account; Strata does not read or send this token
+uvx hf download agentionai/Qwen3.8-Flash-Next-Gyro-GGUF Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf \
+    --revision 1ada08422e404aca51ab9df665f089f34c419c6b --local-dir /data/gyro-s
+./setup.sh --gguf-dir /data/gyro-s       # Windows: SETUP.bat --gguf-dir D:\gyro-s
+```
+
+Use the file names and the revision setup shows for your model (the revision above is the one this version pins for Gyro-S: another version of Strata may pin another).
+Keep the file's original name. Setup finds the files in `--gguf-dir`, checks their SHA-256 and does not download them again; a file that does not match the published one is
+reported and, for files in your own folder, never deleted. Without `uvx`, `pip install -U huggingface_hub` gives the same `hf` command.
+
 ---
 
 ## Sharing the GPU with other programs (optional)
@@ -1072,13 +1091,31 @@ print(r.choices[0].message.content)
   for Codex's compaction requests). A call whose envelope drifted by a token, `<=NAME>`, `<function:NAME>` or `<NAME>`
   instead of `<function=NAME>`, is read as the call when NAME is a declared tool. A `<tool_call>` block that still
   does not read as a call is counted in the server window.
-- **Tool calls in other forms (opt-in).** `"tool_call_recovery": true` in `strata-<model>.json` reads a call of a
+- **What the parser repairs, and what it leaves.** A string argument that quotes a whole tool call, or repeats its own
+  `</parameter><parameter=NAME>`, stays exact (#4078). A call whose `</function>` was left out is read as the call (#4427), in the
+  answer and inside the thinking. An argument the tool declares as an array or an object, or declares nothing for, is read as
+  written when it has a slip in it: a trailing or doubled comma, single quotes or `True`/`False`/`None`, a bare string between two
+  members of an object (`"status": "pending", "in_progress", "pending": false`), brackets left open at the end. The server window
+  says `N tool call argument(s) repaired` and `/metrics/prometheus` counts them in `strata:tool_args_repaired_total`. Text that
+  is not an array or an object, a string cut short and a string-typed parameter are never touched. After the thinking has ended at
+  a closing think tag, a second one at the start of a line in the answer is dropped (the model quoted the tag while thinking, #4077):
+  the call that follows is kept. The reasoning between the two went out as the answer already, because a stream cannot take text
+  back.
+- **Tool calls in other forms (on by default since 0.2.8).** `"tool_call_recovery": true` in `strata-<model>.json` reads a call of a
   tool the request declared also when the model writes it as `<parameter=NAME>` instead of `<function=NAME>`, as JSON
   (`{"name": ..., "arguments": ...}`) inside `<tool_call>`, as a `<function=NAME>` block at the start of a line
   without `<tool_call>` (outside code), or as a second call inside the same `<tool_call>` (without the switch the
   second call's parameters merge into the first). Anything else in those forms stays the text it is. Measured on
   1,462 agent turns (Qwen3.8 under Claude Code, from signalnine/q27's drift corpus): 98.3% read as intended with it,
-  92.9% without. Off by default, so what a client gets back is unchanged unless you turn it on.
+  92.9% without; the 49 specimens of the test corpus read the same with it on or off. Only a declared tool's
+  call is ever recovered; anything else stays text. On by default since 0.2.8 (off in 0.2.7 and before);
+  `"tool_call_recovery": false` turns it off.
+- **Anthropic's tool search on `/v1/messages` (#4663).** A tool with `"defer_loading": true` is declared but not listed in the
+  prompt; a `tool_reference` block in a `tool_result` (a tool search's result) puts that tool's definition into the prompt where it
+  stands, in the form the tool list uses, so loading a tool leaves the prompt's start, and the prompt cache, unchanged. Any other
+  reference is left out, as before (a tool whose MCP server is gone must not fail the session). A request with a deferred tool holds back more tools than
+  it declares (Claude Code declares ToolSearch and a `DeferredToolPlaceholder` and names its MCP tools in the conversation), so
+  there a call for an undeclared name is returned as a `tool_use`: Claude Code runs it, where text ended the turn.
 - **opencode's environment block in the user turn (opt-in).** opencode writes an `<env>` block (working directory,
   today's date) near the start of its system message, ahead of ~40K characters of instructions and tool definitions that
   are the same in every session. The prefix cache only reuses a prompt's start, so every new folder and every new day
@@ -1258,6 +1295,40 @@ it decodes when the conversation never left (`tools/parking_test.py`). FP16,
 INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.
+
+**When the arena does not fit in the RAM that is free (#4051).** The engine checks the RAM before it reads the experts into the
+arena. A memory limit below the arena (a container) stops the start with the numbers. Less free RAM than the arena (an engine
+that was still exiting, another program) is waited for up to 20 s, and the log says so (`STRATA_ARENA_RAM_WAIT_S` changes the
+seconds, `0` loads at once); if it is still short the load goes on with a warning that says how much, never a refusal. Below half
+of the arena the warning adds that the whole PC can stall in memory reclaim, and that a systemd `MemoryHigh=` below the RAM keeps
+one program from taking all of it. The server, before it starts an engine, ends one that an earlier run left behind and now waits up
+to 120 s for it to be gone (it used to wait 10 s): an engine with tens of GB of pinned memory needs longer to give it back, and the
+next one started beside it ran the PC out of RAM (#4051).
+
+**When it is still short after the wait: the RAM copy, and `--ram-keep-gib` (R5070).** The arena is used only when it fits. When it does
+not (#4846), the engine does not read every expert through the file any more: with a static expert profile it keeps the hottest experts
+in a RAM copy, as much as the RAM available at the start allows after a headroom, and reads the rest from the model files (the
+`--resident-budget-gib` form). On a 12 GB card with a 63 GB PC and 44.6 GiB available this took IQ3_S at 128K from 9.4 to 25-28 tok/s.
+
+- `--ram-keep-gib W` (default 0; `STRATA_RAM_KEEP_GIB` is the same for a program that cannot pass the flag) is the RAM you want left free
+  for your own work. It covers both decisions: the arena is used only if W GiB are still available after it, and the RAM copy that
+  replaces it leaves `max(W, the safety headroom)` free. The arena needs `arena + one blob + W` available; the log says so
+  ("the expert arena needs ... with the W GiB --ram-keep-gib asks to leave free").
+- The safety headroom is 8 GiB on Windows and 4 GiB elsewhere. It is not a preference: on Windows the copy is read through a mapped view
+  whose pages count against the process until the engine gives them back (every 4 layers), and with less than 8 GiB of room available RAM
+  fell to 0.9 GiB during the copy. `STRATA_RESIDENT_HEADROOM_GIB`, when set, decides the headroom instead of both (testers).
+- With W = 0 nothing about the fallback changes: the full system is used, the arena whenever it fits, with no margin, and the copy leaves
+  the safety headroom. The explicit modes (`--resident-budget-gib N`, `--resident-experts`) leave `max(W, their own 4 GiB)`.
+- The app's "Leave 20% for my work" passes W = clamp(ceil(0.2 x RAM in GB), 5, 8) as `STRATA_RAM_KEEP_GIB` in the run config's env (not as the flag, so an older engine chosen in the Engine tab, which ignores an env variable, still starts); `strata serve` and full performance pass nothing.
+- `STRATA_ARENA_FALLBACK_RESIDENT=0` keeps the plain file source for the fallback (testers).
+
+Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. They add host RAM, not VRAM. Oldest parked entries
+are evicted first. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
+restores that prefix and leaves the parked conversation in place (the log says "borrowed"). Oversized snapshots or host
+allocation failures fall back to ordinary prompt processing. With `--layer-split` a parked conversation holds one image per
+stage. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
+retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
+prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
 
 `--conversation-cache-min-tokens 2048` keeps a short side request from taking a whole slot from a long conversation
 (a parked conversation costs a slot whatever its length, `wants()` in `conv_cache.hpp`). The shape this cache is for
@@ -1616,14 +1687,17 @@ the config's `sampling` block, the card. Greedy is only for who asks for it: `te
 (before 0.1.45 a config without a block ran greedy, and greedy decoding is what makes small local models loop; #2685). The web page sends no sampling of its own until you change its Sampling settings (it showed and sent 0.6 before); an old stored 0.6 with the default top_p and top_k counts as not set. The penalties (`presence_penalty`, `frequency_penalty`,
 `repetition_penalty`, with `penalty_last_n` capping how many recent tokens they count over, default 64 when any
 penalty is set; llama.cpp's names `repeat_penalty` and `repeat_last_n` work too, in the config's `sampling` block and in a request, #1819) ride the same path; they count the tokens the request has consumed, so a repetition penalty
-suppresses what the model itself just said, not the prompt alone. Since engine 0.1.19 they apply to every token
+suppresses what the model itself just said, not the prompt alone: the prompt, including earlier assistant turns in it, is not
+counted, so the numbers or a quoted earlier answer in a new task are not penalised (this holds for the Qwen3.8 and
+Qwen3.6-35B-A3B engines on CUDA, HIP, Metal and SYCL; `STRATA_PENALTY_PROMPT=1` counts the last `penalty_last_n`
+tokens of prompt and answer together, the old window). Since engine 0.1.19 they apply to every token
 the speculative decoding checks at once, exactly as if it decoded one token at a time (before, only the first of
 each batch got them). That makes requests with penalties 1-11% slower than in 0.1.18: the draft layer guesses
 without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
 
 **Batch MTP on a layer split (`--batch-mtp`).** Our measurement on 2x R9700 with all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM (docs/BATCHING.md).
 
-**Token biases (opt-in).** The chat API supports request-scoped `logit_bias` objects and token/bias pair lists on supporting CUDA/HIP engines without continuous batching. A value of -100 (or `false` in a pair list) excludes a token. Unsupported engines return an error. See [LOGIT_BIAS.md](LOGIT_BIAS.md) for formats, limits and validation.
+**Token biases (opt-in).** The chat API supports request-scoped `logit_bias` objects and token/bias pair lists on supporting CUDA, HIP and Metal engines, also with continuous batching (`--batch` / `--parallel`: each slot keeps its own bias). A value of -100 (or `false` in a pair list) excludes a token. Unsupported engines return an error. See [LOGIT_BIAS.md](LOGIT_BIAS.md) for formats, limits and validation.
 
 **Sampled drafting (opt-in, 0.1.40.2).** With temperature above 0 the engine keeps a draft only when it equals the token the model sampled for that position, and the draft layer proposes its best guess. Two opt-in switches change how the draft layer drafts a sampled request; greedy requests (temperature 0) are never touched and stay byte-identical. `STRATA_SPEC_COUPLED=1` (or `--coupled-draft`) drafts by sampling with the request's own settings and the random number the checking row will use; the text for a seed does not change. `STRATA_SPEC_PROB=1` is speculative rejection sampling: the draft layer samples its guess from its own distribution q, the check accepts it with probability min(1, p/q) (p is the model's distribution after penalties, top_k, top_p, min_p and temperature) and otherwise samples the replacement from the leftover distribution, so every token is distributed exactly as without drafts (the text for a seed then depends on the drafts, so it is reproducible only for the same engine, flags and prompt). Guesses without a distribution (prompt lookup, suffix drafts) keep the exact-match rule, which is already exact. Neither is faster in a way that holds up: on an RTX 3060 (IQ3_XXS, 200-token story and code answers, 10 interleaved pairs) the default's median output speed was 42.4 / 43.2 / 43.3 tok/s at temperature 0.3 / 0.7 / 1.0, coupled drafting 40.6 / 42.4 / 43.3 and rejection sampling 41.0 / 42.6 / 42.6, with run-to-run differences of up to 5% between repeats; drafts kept per round fell at 0.3 and rose by about 5 points at 1.0, which the cost of the longer sampled windows ate. `STRATA_SPEC_DEPTH=1` prints the acceptance by draft depth for each request; `STRATA_SPEC_MIN_TEMP=0.9` limits sampled drafting to hotter requests. Proof that the rejection rule keeps the distribution: `spec_prob_test` (chi-square, 2 million trials per case) and `spec_verify_parity` (GPU against the host reference).
 
@@ -1822,7 +1896,7 @@ starts the CPU reader by itself and prints one line ([AMD_HIP.md](AMD_HIP.md)).
 
 | Encoder on | Time per picture | Cost |
 | --- | --- | --- |
-| **GPU** (the default from 24 GB) | **0.1-0.5 s** (up to 1,024 image tokens) | ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |
+| **GPU** (the default from 24 GB) | **0.1-0.5 s** per picture (up to 1,024 image tokens) once it runs, 1.2-1.4 s more for the first picture after a stop | On NVIDIA (one GPU) the reader is started by the first picture and stopped 120 s without one; it holds about 1.3 GB of VRAM only while pictures are being read, and a start with no room is read on the CPU. On AMD, Intel and a Mac the reader stays on the card: ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |
 | CPU (the default under 24 GB) | about 3 s at 300 image tokens on 8 cores (6-13 s on 4 threads); more tokens take longer, in proportion (#767, #625) | nothing on the GPU |
 
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
@@ -1850,6 +1924,15 @@ Accuracy against BF16, per image token: the cosine of the embeddings is 0.997-0.
 a community Q8_0 file, at 300, 768 and 1,024 tokens), and 0.9988 and 0.9987 on two pictures with the file made by
 the command above (300 tokens; the worst single token 0.94-0.96). Encode time above 768 tokens is the same as BF16's
 within about 3%. Numbers on more pictures (charts, small text) are welcome in #625.
+
+| Setting | Effect |
+| --- | --- |
+| `--vision-tokens N` at setup, or `"max_tokens"` | The most tokens a picture becomes. More keep more detail (small text, charts) and take longer, on the CPU most of all. A setup run again keeps the value. |
+| `"min_tokens": N` | Scales a small picture up to at least N tokens (passed to the encoder as `--min-tokens`). Qwen-VL grounding tasks want at least 1,024. A larger minimum changes image answers and costs encode time. |
+| `"mmproj"` | Points to another mmproj file of this model, for example a Q8_0 one (`llama-quantize mmproj-Qwen3.8-Flash-Next-BF16.gguf mmproj-Qwen3.8-Flash-Next-Q8_0.gguf Q8_0`): 590 MiB against 865 MiB, about 280 MiB less encoder RAM, and it can encode faster on the CPU. **Recommended for `--vision cpu`.** Embedding cosine against BF16 is 0.997-0.999. Setup downloads the BF16 file and keeps a file of your own that still exists. |
+| `"cuda_device": N` | Runs the encoder on a spare card (numbered like `nvidia-smi`). Lower `--vram-reserve-mib` in `"args"` to 700 as well. The card needs code in the ready-made encoder (RTX 20/30/40/50). |
+| `"elastic": false` | Keeps the GPU encoder on the card from the start (the NVIDIA one-GPU default is to start it with the first picture and stop it after `"elastic_idle_s"`, default 120, without one). `"elastic": true` asks for the on-demand start on any card; with `"vram_elastic": true` too the expert cache gives the room (`"elastic_mib"`, default 2048), which turns `--kv-grow` off ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand)). |
+| `--flash-attn on\|off\|auto` (`strata-vision`) | Flash attention is turned off on the CPU when ggml has AVX-512 (a build from source), because ggml's fallback kernel is several times slower and accumulates in FP16. Release builds use AVX2 and leave it on. |
 
 **Flash attention on the CPU (#660):** ggml's fast CPU kernel for flash attention needs the encoder's head size (72)
 to be a multiple of the vector width: 8 floats with AVX2, which the release builds use, but 16 with AVX-512, which a
@@ -1881,7 +1964,7 @@ after `"elastic_idle_s"` (default 120) without a picture it stops and the cache 
 32 GB (gfx1201, Linux, UD-IQ4_XS, the BF16 encoder at up to 1,024 tokens, #2189 for HIP's virtual memory): the encoder
 took 1,339 MiB and started in 4.7 s (2.7 s the next time); a request with one picture took 8.6 s with the start and
 5.0 s on a later cold start, and 2 / 5 / 10 pictures with the encoder running took 3.8 / 5.6 / 9.0 s (~0.45 s to encode
-each, the same as on a second card). Without the key nothing changes.
+each, the same as on a second card). Without the key nothing changes on AMD; on NVIDIA with one GPU, 0.2.11 made the on-demand start the default there (the encoder starts with the first picture and stops after `"elastic_idle_s"` without one; `"elastic": false` is what keeps it on the card).
 
 ### Sending a picture
 
@@ -1961,6 +2044,22 @@ test images.
 
 ## Short prompts: the CPU shares the experts (on by default on one NVIDIA GPU, `STRATA_PREFILL_CPU_SHARE`)
 
+| Setting | Applies to | Off switch | What it does |
+| --- | --- | --- | --- |
+| `STRATA_PREFILL_CPU_SHARE` (`auto`, cap `STRATA_PREFILL_CPU_SHARE_MAX=1024`) | CUDA, one GPU, no `--batch`, prompt chunks under 1,024 tokens | `STRATA_PREFILL_CPU_SHARE=0` | The CPU pool computes the experts few of the chunk's tokens route to, while the GPU works on the rest. `auto` measures per layer how long each side takes and checks that sharing pays. Skipped with one log line when RAM or commit is short. Output changes in the last bits. Layer split, batch slots and HIP keep it off unless you set it. |
+| `STRATA_ROUTE_TAIL_SKIP` (7) | CUDA, and HIP gfx1200/gfx1201; one GPU or a layer split | `STRATA_ROUTE_TAIL_SKIP=0` | A missed expert that every token of a verify window routes at rank 7 or lower is neither copied nor computed. Not applied when every expert is in VRAM, with `--batch` slots, with a peer tier or helper GPU, on other HIP and SYCL, or when 90% or more of the experts are cached (`STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves that line; it is 60% on an AMD layer split). Answers differ slightly from a run without it. |
+| PCIe share from the CPU's speed | CUDA, one GPU or a layer split, no `--pcie-frac` | `--pcie-frac N` always wins; `STRATA_PCIE_FRAC_DEFAULT=old` keeps the probe-only rule; `STRATA_PCIE_AUTO_SPLIT=0` keeps the fixed probe share on a CUDA layer split; `STRATA_PCIE_K_RULE=0` and `STRATA_PCIE_SHARE_MAX=0.60` keep the 0.2.10 rule | The share starts at the probe's value and is refined in the first decode windows from the CPU pool's time per missed expert: `L / (L + k R)`, rounded to 0.05 and kept between 0.10 and 0.95, changed at most three times. k is 1.85 from a pool rate R of 30 GB/s of expert bytes and falls linearly to 0.8 at 12 GB/s (a weak pool is compute-bound), so a strong pool gets exactly the 0.2.10 shares (below 0.60) and a weak one up to 0.95. A CUDA layer split refines each stage by its own probed link. Integrated GPUs (Strix Halo and the other APUs) and `STRATA_DEFAULTS=026` keep k 1.85 and 0.60; on HIP the layer-split refinement stays opt-in (`STRATA_PCIE_AUTO_SPLIT=1`). Each change prints a `PCIe share:` line. On HIP it is the default for gfx1200/gfx1201; `STRATA_PCIE_FRAC_DEFAULT=auto` turns it on for other HIP parts. Measured on an RTX PRO 6000 (12 GB free): 2 x 12 GB layer split +12% decode; one card with 4 pool workers 56 -> 79 tok/s, 2 workers 31 -> 63, 32 workers unchanged. Output changes in the last bits (first-window KL 0.03 on the decode-window yardstick, the same as the single-card rule). |
+| Chunk follows the host's memory | Linux file tier | `STRATA_PREFILL_HOST_PLAN=0` | See [Linux file tier](#linux-file-tier). |
+| Fused int8 prompt experts | gfx12 (R9700): IQ3_S and IQ3_XXS packs. 12.0 NVIDIA cards with 80 or more SMs: IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS gate/up | `STRATA_PF_FUSED=0` | Replaces the MMQ prompt kernels. `STRATA_PF_FUSED=1` opts in every covered format on other cards (on HIP gfx11 and gfx1200/gfx1201 too; see [AMD_HIP.md](AMD_HIP.md)). |
+| Bare `--prefill auto` takes 32768-token chunks (16384 up to 0.2.10) | gfx12, Linux, one card | `STRATA_GFX12_CHUNK=0` (8192) or `=16` (16384), or `STRATA_GFX12_DEFAULTS=0` | An explicit `--prefill N`, `auto:N` or `STRATA_PREFILL_AUTO_MAX` is untouched. A 20K prompt is one chunk instead of 16384 + a tail (R9700, IQ3_S: 20K +12%, 32K +1.3%, 64K +2.6%; UD-Q4_K_XL 20K +26%); first-token KL against 16384 is at most 5e-5. The loan of cache slots is taken only for what a prompt needs; when the RAM left does not cover it the ceiling steps down to 16384, then 8192. |
+| K-quant experts read the prompt on MMQ | gfx12, Linux: UD-Q4/Q5/Q6_K_XL files (Q4_K, Q5_K, Q5_1, Q6_K experts) | `STRATA_MMQ_KQ=0` or `STRATA_GFX12_DEFAULTS=0` | Instead of dequantizing the experts to FP16 for hipBLASLt (R9700, UD-Q4_K_XL: prompt 4K +10%, 8K +14%, 32K +17%). It rounds differently: first-token KL against the FP16 path about 0.03. Models without K-quant experts never read it. |
+| gfx12 prompt staging ring | gfx12, Linux | `STRATA_GFX12_RING=0` or `STRATA_PREFILL_RING=96` | 256 slots below ~6K-token chunks, 192 up to 12K, 96 above (was 96): prompt 4K +16%, 2K +2%, 8K +3% on an R9700; bit-identical. |
+| Per-architecture bitwise sets | sm_86, sm_60, sm_120 | See [below](#rtx-30-series-sm_86-and-tesla-p100-sm_60-bitwise-decode-switches-on-by-default) | |
+| `STRATA_ADAPT_CALLBACK_WARMUP` | Linux | `=0` | Starts the GPU host-callback thread before the CPU pool pins the host thread. |
+| `STRATA_ADAPT_SIGNAL` | CUDA | `host` / `copy` | The overlap's per-layer "landed" signal is a stream-ordered copy into pinned memory on Linux and a host function on Windows. |
+| `--ple-io direct` | all | `--ple-io ram` or `mmap` | The n-gram table is read unbuffered from the SSD. A startup probe warns when direct reads are slow (under 15K rows/s) but never switches by itself. `STRATA_PLE_AUTO_MMAP=1` brings back the automatic switch to `mmap`. On a rotational disk setup adds `--ple-io ram` when the RAM holds the table. |
+| `STRATA_STAGER_SSD` | Linux | `STRATA_STAGER_SSD=1`/`0` forces a profile | A GGUF read in place copies experts with 4 threads when its pages are in the page cache (checked with `mincore` at the first prompt) and with 32 threads and a 128-deep ring when they are on an SSD. `STRATA_STAGER_THREADS` wins. |
+
 A prompt chunk of a few thousand tokens (an agent's tool result, a test's output, a short follow-up) streams every routed
 expert that is not in VRAM over PCIe, while the CPU pool that decodes sits idle and RAM already holds those experts.
 `STRATA_PREFILL_CPU_SHARE=auto` hands the pool the experts few of the chunk's tokens route to, measures per layer how
@@ -1984,6 +2083,34 @@ read the same either way. `auto` picks the share from wall-clock timings, so the
 differently - and answer differently - from one run to the next (a resumed conversation's re-read differed in 31 of
 1,536 teacher-forced argmax tokens, #1684); a fixed share repeats, `0` gives the exact bytes of a run without it.
 
+| Switch | Applies to | What it does | Verdict |
+| --- | --- | --- | --- |
+| `STRATA_ADAPT_OVERLAP=1` | One GPU, the whole arena in RAM, no `--adapt-async`, `--pipeline-windows`, `STRATA_ADAPT_LAG`, `STRATA_ADAPT_NOWAIT`, `STRATA_DMA_BATCH`; never on a layer split | The adaptive tier's copies land while the next window runs, with the same tokens. The startup log names the state and why it cannot run. | Gains on RTX A4000 and Tesla P100 (+4 to +8%), loses on an RTX 5070 under Windows and an RTX 5090 Laptop. Opt-in on every backend. With the per-card defaults set `STRATA_ADAPT_LAG=1 STRATA_ADAPT_NOWAIT=0` beside it. |
+| `STRATA_ADAPT_LAG=2` | CUDA | The window takes the adaptive tier's swaps once they are two windows old. | Gains on a Tesla P100; on by default on sm_86 and sm_60. |
+| `STRATA_STAGE_PIN=1` | GGUF read in place | Page-locks the stage buffers the cache fill copies from. Unset, it stays off: with it on, IQ3_S decode was corrupted after a 4096-token prompt in an earlier release gate. | Keep off until that is fixed. |
+| `STRATA_PCIE_BALANCE=1` | CUDA, one GPU, no `--batch`, no `--pcie-frac` | Each verify layer reads over PCIe the number of its missed experts that balances the two sides. | Helps an RTX A4000 arena (+5.6%), hurts others slightly. |
+| `STRATA_GDN_CHUNKED=1` | CUDA, 128 or more SMs by itself (`=2` forces it); HIP gfx1100-gfx1102, gfx1150, gfx1151 | The DeltaNet recurrence of the prompt in chunks of 32 tokens (CUDA) or 16-token WMMA chunks (HIP). Changes rounding. | 1.8x on the recurrence on an RTX 5090; slower on smaller cards. See [AMD_HIP.md](AMD_HIP.md#opt-in-chunked-prompt-gdn-on-gfx11). |
+| `STRATA_FS_SLOTS=N` | CUDA | Foresight swap space: N VRAM slots per layer refilled with missed and predicted experts. | The smaller cache cost more than the slots returned in every box measured. Left off. |
+| `STRATA_MMQ_DIRECT=1` | CUDA, native packs; needs a build with `-DSTRATA_MMQ_TAB=ON` (off by default because it costs 36-38 MiB of VRAM per GPU) | The prompt's MMQ reads resident experts in their cache slots instead of copying them. Same bits. | Faster "read in" time with every expert resident. |
+| `--prefill-head-alias` | `--serve`, one GPU | The output head's VRAM holds the prompt buffers while a prompt is read ([PREFILL_HEAD_ALIAS.md](PREFILL_HEAD_ALIAS.md)). | For 8 GB cards. |
+| `STRATA_EMB_REUSE_ACCOUNT=1` | CUDA | The planner counts the VRAM saved because the half-output buffer `bo` reuses the embedding buffer `emb`, so the auto chunk can grow. Changes prompt rounding. | Prompt about +3.9% on an RTX 3060, no KL measurement yet. |
+| `STRATA_VERIFY_ASYNC_LAUNCH=1` | CUDA, single-request verifier | Runs the CUDA graph launch of a verify window on a separate host thread so the caller keeps serving CPU expert doorbells. A diagnostic for Compute Sanitizer runs. | |
+| `STRATA_CPU_IQ_ALL_EXACT1=1` | AVX2 CPUs without AVX-512 | Strata's AVX-2 decode for one-token i-quant gate/up rows, with ggml's float order, so the output does not change. On by default on sm_86. | End to end +0.4 to +2.5%, so left off elsewhere. |
+| `STRATA_Q2_BITPLANE=1` | AVX2 CPUs without AVX-512 | A bit-plane row kernel for Q2_0. Changes the last bits. | |
+| `STRATA_NO_AVXVNNI=1` | CPUs with AVX-VNNI | Turns the AVX-VNNI row forms off (they give the same bits, 4-25% faster rows). | A diagnostic. |
+| `STRATA_PREFILL_EQUAL=1` | CUDA | A prompt segment is read in chunks of equal size, not full chunks and a short last one. Changes rounding. | |
+| `STRATA_OWNED_PRICE=exact` | CUDA | The cache sizing prices the prompt path's own buffers by their real allocation. | |
+| `--lookup-max-t N` (up to 16), `--lookup-sizes A,B` | CUDA, one conversation on one GPU (a layer split, batch and pipelined windows stay at 8) | Prompt-lookup windows up to N tokens while the MTP keeps `--spec`. A window past 8 tokens runs as two groups of 8; each size is a CUDA graph of its own (about 20-35 MiB), a size that finds no VRAM is dropped. Same answers on file rewrites. On by default at 12 in the serve engine of the 8-row CUDA build on one GPU (no batch, DFlash2 or layer split); `--lookup-max-t 0` or `STRATA_LOOKUP_MAX_T=0` turns it off. | File rewrites and the edit turns of an agent loop decode +11 to +14% (RTX A6000 IQ3_S, greedy and sampled), +13 to +18% on a Tesla P100 IQ3_XXS; ordinary prose and code are within 1% at 12. 16 gains 1-3 points more on rewrites and costs 3-4% on some prose. A wide-window build (`-DSTRATA_WINDOW_MAX_T=12` or 16) gains less (+7 to +9%) and is not needed. |
+| `STRATA_PF_GROUP_SCRATCH=1`, `STRATA_PF_HC_REGION=1` | CUDA, prompt path on MMQ (not the fused int8 experts) | The prompt path's gate/up output, SwiGLU and q8_1 copy hold one expert group's rows, and the hyper-connection read's scratch shares the attention/MoE region. Same bits at an equal chunk. A line at start says when they took effect or why GROUP_SCRATCH is ignored. | Frees 0.3-0.5 GiB of borrowed cache slots so `--prefill auto` can pick a bigger chunk; the speed gain showed only with `STRATA_PREFILL_CPU_SHARE=0` (+7 to +11% on an emulated 8 GB card), because the bigger chunk leaves the CPU-share range. |
+| `STRATA_PW_WITH_BATCH=1` | CUDA/HIP layer split with `--pipeline-windows 2` and `--batch` slots | A request that is alone keeps the pipelined windows beside the batch slots; batch windows run without them. | 2x RTX A6000 IQ3_S: lone request +14% on code, +9% on a file rewrite, +3% on a long decode; two requests at once not slower. The second verifier takes about 270 MiB of the first card. |
+| `STRATA_MTP_ROOM_MIN=TOKENS` | CUDA, `--serve` with `--mtp`, no `--batch` | A request that reads at least TOKENS prompt tokens uses the draft layer's 512 decode-only experts (about 675 MiB) as extra ring slots while it is read, then gets them back. | The author measured +17 to +23% prompt on an 8 GB RTX 2060 SUPER; on a P100 limited to 8 GB (ring 8 to 311 slots) it gave +0.5% (CPU share off) and nothing with defaults. Off by default. |
+| `STRATA_IQ_MT_MIN=1`, `STRATA_IQ3S_MT1=1` | CPU | See [Draft layer](#draft-layer) (reproducible output; the second gives IQ3_S the multi-token kernel for one token on Alder Lake and later without AVX-512). | |
+| `STRATA_ROUTE_PRIOR`, `STRATA_ROUTE_RESIDENT`, `STRATA_ROUTE_RESIDENT_MTP` | CUDA | Routing changes that add speed and also add KL. | Off by default. `STRATA_ROUTE_PRIOR=1.5` makes the router prefer experts that are already on the card; it is the one worth trying, on a discrete NVIDIA card of 13 GiB or less (an RTX 3060 12 GB, IQ3_XXS: story +15%, code +37% decode against off). It is an opt-in because it can repeat itself and give weaker results in long agent sessions (#4402; our own check on that card: out of 10 agent tasks 4.5 passed on average over 4 runs at 1.5, against 5.6 over 7 runs with the prior off, where the off runs alone ranged from 4 to 6; a stronger setting, 2.0, showed copy and code defects). Recommended for a 12 GB card used mostly for chat and short answers, not for long agent runs. 0.2.7 turned 1.5 on by itself on those cards and 0.2.8 took that back (owner decision of 2026-10-29): with nothing set, the engine routes exactly as 0.2.6 did (the same as `STRATA_ROUTE_PRIOR=0` and as `STRATA_DEFAULTS=026`). Turn it on: the Expert-settings row "Faster answers on 12 GB NVIDIA cards" (it writes `STRATA_ROUTE_PRIOR=1.5`; shown only for a discrete NVIDIA card of 13 GiB or less), `strata launch --set STRATA_ROUTE_PRIOR=1.5`, or the variable itself. Any value you set wins on every card; it is never on by itself. |
+| `STRATA_HOST_CORE=last\|sibling` (or `--host-core`) | Windows | `last` puts the host thread on the last physical core, away from the core that gets the GPU's interrupts. `sibling` keeps it on the first core's other hardware thread, so the workers keep every core. The default `first` leaves a hybrid CPU as it is. | One layer-split box went from a ±6% swing to steady and 8% faster. |
+| `--pool-affinity measure` | Hybrid CPUs, native packs | Times the `all` and `p-cores` layouts at start (about a second) and takes the faster. The measurement is taken once; where the E-cores' speed changes while the engine runs, `--pool-affinity p-cores` is the steady choice. | |
+| `STRATA_KEEP_EMPTY_TURNS=1`, `STRATA_TOPK_STREAM=0` | | See [TROUBLESHOOTING.md](TROUBLESHOOTING.md). | |
+| HIP `STRATA_DENSE_MMQ=1`, `STRATA_HIP_ADAPT_KERNEL_COPY=1` | HIP | See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration). | |
+
 Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 1500`):
 
 | machine | 512 tokens | 1,000 tokens | 2K / 4K / 16K |
@@ -2003,6 +2130,22 @@ expert here: none was page-locked):
 
 A coding agent's recorded conversation on the two cards (a 100K-token start, then 8 turns of 1-5K tokens of code, 128
 tokens written a turn, the same tokens read by both): 137.4 s off, 130.6 s auto (reading 121.1 -> 114.3 s).
+
+`STRATA_PREFILL_ROUTED_STREAM=1` (opt-in; the streamed prompt walk of a chunk of 1,024 tokens or more, one GPU, the
+issuer thread): the issuer keeps at most `STRATA_PREFILL_ROUTED_STREAM_DEPTH` copies (default 16) queued ahead of the
+PCIe link, each layer's routing is handed to it as soon as the layer's router has run, and an expert not yet copied that
+no token of the chunk routes to is not copied at all. The routed experts go into the same ring slots as without the
+switch, so the prompt's results are the same bits, and the slots the prompt borrowed are refilled from RAM as before.
+With `STRATA_TRACE=1` each chunk prints how many ring entries it copied and how many it dropped. With
+`STRATA_PREFILL_COPY_EVENT_EVERY` above 1 or `STRATA_PREFILL_COPY_WAIT_DEDUPE=1` the switch stays off: those keep the
+default issuer, whose copy records the routed walk does not write. When the switch is set but a streamed chunk keeps the
+default walk (these two, `STRATA_PREFILL_ISSUER=0` or the peer prompt ring), the engine prints the reason once. On an
+RTX 3090 (PCIe 3.0 x16, 250 W) with the Swift IQ3_XXS pack at the v0.2.6 release defaults, 23% fewer experts were
+streamed for a 2K prompt and 4% fewer at 32K (8,192-token chunks); a 1,790-token follow-up read on an 18.8K-token
+conversation took 18% less time and fresh 2K, 4K and 32K reads ran 20%, 8% and 5% faster (4 pairs), with byte-identical
+replies in a deterministic lane at 1K to 32K.
+
+### RTX 20 (Turing, sm_75) kernels (opt-in)
 
 ## Missed experts in a verify window: the tail is skipped (on by default on CUDA, `STRATA_ROUTE_TAIL_SKIP`)
 
@@ -2070,7 +2213,7 @@ already times: the wall time of the CPU pool per missed expert. With `R` = exper
 `L / (L + 1.85 R)`, rounded to 0.05 and kept between 0.10 and 0.60; it is changed at most three times (after 48, 96 and 96 more windows, about 10 s of
 decoding), and only by a full step. Each change prints one `PCIe share:` line. A request that sets its own `pcie_frac` is left alone.
 **`--pcie-frac N` always wins; `STRATA_PCIE_FRAC_DEFAULT=old` keeps the 0.1.41 rule.** Not used with a layer split, `--batch`, a peer GPU, when every
-expert is in VRAM, or on SYCL or on HIP other than gfx1200 / gfx1201 (RDNA4, where the measured share is the default since 0.1.43; `STRATA_PCIE_FRAC_DEFAULT=old` opts out; on the other HIP parts `STRATA_PCIE_FRAC_DEFAULT=auto` turns it on: an RX 7900 XTX showed no regression, no gain was claimed, #2224). The canonical Q2_0 pack uses it on CUDA since 0.1.43, on Linux by default and on Windows with `STRATA_PCIE_AUTO_CANON=1` (an RTX 5070 there: code +2.5%, a short answer -3.3%). The constant 1.85 is a fit to three machines, so it lands within a step of each machine's best, not on it. On HIP, `STRATA_PCIE_AUTO_SPLIT=1` (opt-in, 0.1.43) also refines a two-stage layer split: the pool speed is read once and each stage takes the share its own probed link gives (2x R9700 at 16 GB-eq, tail skip on: Q2_0 story +4.5%, code +9.9%, 4K +8.8%; IQ3_S story -2.1%, code +8.0%, 4K +23.3%; with three or more stages the pipelined loop does not run it).
+expert is in VRAM, or on SYCL or on HIP other than gfx1200 / gfx1201 (RDNA4, where the measured share is the default since 0.1.43; `STRATA_PCIE_FRAC_DEFAULT=old` opts out; on the other HIP parts `STRATA_PCIE_FRAC_DEFAULT=auto` turns it on: an RX 7900 XTX showed no regression, no gain was claimed, #2224). The canonical Q2_0 pack uses it on CUDA since 0.1.43, on Linux by default and on Windows with `STRATA_PCIE_AUTO_CANON=1` (an RTX 5070 there: code +2.5%, a short answer -3.3%). The constant 1.85 is a fit to three machines, so it lands within a step of each machine's best, not on it. On HIP, `STRATA_PCIE_AUTO_SPLIT=1` (opt-in, 0.1.43) also refines a two-stage layer split: the pool speed is read once and each stage takes the share its own probed link gives (2x R9700 at 16 GB-eq, tail skip on: Q2_0 story +4.5%, code +9.9%, 4K +8.8%; IQ3_S story -2.1%, code +8.0%, 4K +23.3%; with three or more stages the pipelined loop does not run it). **0.2.11:** on CUDA a layer split now takes the same refinement by default (`STRATA_PCIE_AUTO_SPLIT=0` keeps the fixed probe share there), the cap is 0.95 instead of 0.60 and `k` is no longer fixed: it is 1.85 from a pool rate R of 30 GB/s of expert bytes and falls linearly to 0.8 at 12 GB/s (a weak pool is compute-bound), so a strong pool gets exactly the 0.2.10 shares (below 0.60) and a weak one up to 0.95; `STRATA_PCIE_K_RULE=0` and `STRATA_PCIE_SHARE_MAX=0.60` keep the 0.2.10 rule.
 
 Measured (interleaved pairs of whole engine runs, new default against `STRATA_PCIE_FRAC_DEFAULT=old`, medians, route tail skip on):
 
@@ -2481,8 +2624,13 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
   dequantizers transcribed in `src/kernels/cuda/iq_kernels.cu`, the CPU backend linked for the i-quant experts, the
   `mtmd` library behind the image encoder (`tools/vision/`), and `gguf-py` used by the tools. See
   `third_party/ggml/LICENSE`.
+- [antirez/ds4](https://github.com/antirez/ds4) (MIT, commit 890898cf): the Metal vision-tower kernels of the Mac DeepSeek engine (`metal/src/engine/msl/ds4_vision.metal`, `ds4_vision_metal.cpp`) follow its `metal/deepseek4_vision.metal` and the tower's host code. See `third_party/antirez-ds4/NOTICE.md`.
 - Ideas from [Splash](https://github.com/incoai/splash), [ninfer](https://github.com/Neroued/ninfer) and
   [HyperQwen](https://github.com/syv-ai/HyperQwen); references in the paper.
+- The DFlash2 drafter's Q4_0 selector (174 MiB less graphics memory, same drafts and same text) is nazeshinjite's idea:
+  [nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF](https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF) (Apache-2.0) stores the drafter's
+  two selector tables as Q4_0; Strata converts the checked pack on your computer (`tools/dflash2_pack.py --convert-selector`) and checks the bytes
+  against the same pin.
 - The web app's font: [Outfit](https://github.com/Outfitio/Outfit-Fonts) (SIL Open Font License 1.1, see
   `serve/web/fonts/OFL.txt`). Its Monitor tab started from @code-martin's dashboard idea (PR #22).
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0,
@@ -2552,7 +2700,7 @@ The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, whi
 
 **Fused int8 prompt experts on gfx12 (RDNA4, R9700): on by default for IQ3_S and IQ3_XXS packs.** `STRATA_PF_FUSED=0` turns them off (back to the MMQ prompt kernels, the previous bits). R9700, 1 card: prompt 4K +15.7%, 16K +13..+17%, 32K +19..+20%, a 96K prompt +16% (answers identical text); first-token KL against the FP16 prompt path over 96 prompts is equal to MMQ within noise (IQ3_XXS 0.00613 against 0.00683, IQ3_S 0.00416 against 0.00372). Other quants and other GPUs are unchanged; `STRATA_PF_FUSED=1` still opts in every covered format.
 
-**gfx12 (Linux): a bare `--prefill auto` may take 16384-token chunks.** Explicit `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are untouched; `STRATA_GFX12_CHUNK=0` or `STRATA_GFX12_DEFAULTS=0` keeps 8192.
+**gfx12 (Linux): a bare `--prefill auto` may take 16384-token chunks.** Explicit `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are untouched; `STRATA_GFX12_CHUNK=0` or `STRATA_GFX12_DEFAULTS=0` keeps 8192. Since 0.2.11 the bare-auto ceiling is 32768 (16384 up to 0.2.10): a 20K prompt is one chunk instead of 16384 + a tail (R9700, IQ3_S: 20K +12%, 32K +1.3%, 64K +2.6%; UD-Q4_K_XL 20K +26%); first-token KL against 16384 is at most 5e-5. The loan of cache slots is taken only for what a prompt needs; when the RAM left does not cover it the ceiling steps down to 16384, then 8192; `STRATA_GFX12_CHUNK=16` keeps 16384.
 
 ### CUDA diagnostics: a host thread for the verify-window launch
 
@@ -2604,10 +2752,10 @@ interleaved pairs of fresh engines, the same number of expert-cache slots in eve
 Two things looked at and **not changed**. A prompt chunk above 8192 (`--prefill auto:16384` or `auto:32768`) changes prompt speed by -3% to +8%
 on 12-16 GB cards at 20K tokens (at 16384 / 32768: RTX 3060 +4.5% / +4.5%, Tesla P100 +3.1% / +7.7%, RTX A4000 -3.4% / +6.0%), but it is not bit-exact on
 CUDA (the residual dump differs on the P100 and the A4000; 32768 also changed the output tokens on the P100), so the default
-stays 8192 on NVIDIA. It is exact on gfx12, where 16384 is the default. And `STRATA_ROUTE_PRIOR=0.5` stays opt-in: on an RTX 3060
+stayed 8192 on NVIDIA through 0.2.10. It is exact on gfx12, where 16384 is the default. And `STRATA_ROUTE_PRIOR=0.5` stays opt-in: on an RTX 3060
 (IQ3_XXS) its teacher-forced KL is 0.0126 against a run-to-run floor of 0.0012 (top-1 agreement 96.6% against 99.1%); on an RTX A4000
 HumanEval scored 154/164 against 157 and 159 for the default twice, and reasoning 25/30 against 24 and 26 (agent 6/6, needles 3/3, CJK
-8/8 and tool calls 5/5 for all), which is inside the run-to-run spread.
+8/8 and tool calls 5/5 for all), which is inside the run-to-run spread. **0.2.11 changed the CUDA verdict:** the rounding turns out to change only slightly (first-token KL against 8192 about 1e-4 on plain prompts, UD-Q4_K_XL on an A6000), and a bare `--prefill auto` now takes a 32768-token ceiling on one NVIDIA card of compute capability 8.0 or up (an A6000 that streams half of UD-Q4_K_XL's experts: 20K prompt +43%, 32K +22%, 64K +21%; a card that holds every expert: flat); the expert cache still lends the prompt only what it can spare, the RAM guard steps the ceiling 32768 -> 16384 -> 8192 when the RAM available does not cover the extra loan, and a layer split keeps 8192; `STRATA_NV_CHUNK=0` or `STRATA_DEFAULTS=026` keep 8192 (`STRATA_NV_CHUNK=16` keeps 16384), and `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are never changed. And 0.2.7 made `STRATA_ROUTE_PRIOR=1.5` a default on a discrete NVIDIA card of 13 GiB or less; 0.2.8 took that back (repetition loops and weaker results in long agent sessions, #4402).
 
 ## Compute capability 12.0 cards: faster decode (bitwise) and fused prompt experts by default
 

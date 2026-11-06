@@ -189,6 +189,33 @@ class SubreaperOrphans(unittest.TestCase):
             self.assertEqual(procs.end_one(record, grace=5), "ended")
         self.assertGreaterEqual(same.call_count, 1)
 
+    def slow_exit(self, exits_after, **kw):
+        """end_one of a process that is still there `exits_after` virtual seconds after the kill (a fake clock)."""
+        record = {"pid": 4243, "token": "t1", "cmd": ["engine", "--serve"]}
+        now = [0.0]
+        said = []
+
+        def sleep(s):
+            now[0] += s
+
+        def token(pid):
+            return "t1" if now[0] < exits_after else None
+        with mock.patch.object(procs, "WINDOWS", False), mock.patch.object(procs, "is_same", side_effect=lambda *a: token(0) is not None), \
+                mock.patch.object(procs, "_signal_verified"), mock.patch.object(procs, "start_token", side_effect=token), \
+                mock.patch.object(procs, "drop_record"), mock.patch.object(procs.signal, "SIGKILL", 9, create=True), \
+                mock.patch.object(procs.time, "sleep", side_effect=sleep), \
+                mock.patch.object(procs.time, "monotonic", side_effect=lambda: now[0]):
+            return procs.end_one(record, say=said.append, **kw), said
+
+    def test_an_engine_that_needs_longer_than_ten_seconds_to_give_its_memory_back_is_waited_for(self):
+        # #4051: 50 GiB of pinned memory is released by the kernel after the signal; the next engine started beside it
+        outcome, _ = self.slow_exit(25.0)                              # the old limit: 8 s grace + 10 s
+        self.assertEqual(outcome, "stuck")
+        outcome, said = self.slow_exit(40.0, settle=120.0)
+        self.assertEqual(outcome, "ended")
+        self.assertTrue(said and "still waiting for process 4243" in said[0], said)
+        self.assertEqual(self.slow_exit(40.0, settle=10.0)[0], "stuck")
+
 
 if __name__ == "__main__":
     unittest.main()

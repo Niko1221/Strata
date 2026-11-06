@@ -6,9 +6,11 @@
 // rounded to BF16, which is also what llama.cpp's batched CUDA path does.  Tensor-core GEMM through cuBLAS.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::prefill {
 
@@ -92,6 +94,22 @@ private:
     void* side_ready_[2] = {};
     void* side_free_[2] = {};
     int side_cur_ = 0;
+    // STRATA_PF_W16_CACHE_MIB=N (CUDA, opt-in): native() keeps the FP16 dequantization of up to N MiB of weights, so a
+    // repeat product skips the dequant kernel; the FP16 values and the product are the uncached form's, bit for bit.
+    // A weight is keyed by its device pointer and shape (the engine's dense weights never move).
+    struct W16Entry { const void* p; int type; int64_t n, k; uint16_t* d; };
+    std::vector<W16Entry> w16_;
+    int64_t w16_budget_ = -1;   // bytes; -1: env not read yet, 0: off
+    int64_t w16_used_ = 0;
+    int64_t w16_reserve_ = 2ll << 30;   // VRAM kept free after a cached weight
+    bool w16_logged_ = false;
+    static constexpr int64_t kW16AutoReserve = 3ll << 30;
+public:
+    /// The engine's own default for the FP16 weight cache when STRATA_PF_W16_CACHE_MIB is not set: true -> sized by the card (weights are cached while
+    /// kW16AutoReserve stays free).  generate.cpp sets it on Linux CUDA when the engine runs batch slots (round0212 item 7).  =0 in the environment wins.
+    static void set_w16_auto_default(bool on) { w16_auto_default_().store(on); }
+private:
+    static std::atomic<bool>& w16_auto_default_() { static std::atomic<bool> v{false}; return v; }
     void* hipblaslt_state_ = nullptr;
     void* rocblas_state_ = nullptr;   // HIP: the rocBLAS solution table of f16_inplace (STRATA_ROCBLAS_TUNING)
     bool f16_io_ = false;

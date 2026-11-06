@@ -65,7 +65,7 @@ What the first run does (each step is skipped when it is already done):
 6. **Prepares the model:** the pack (seconds), and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that streams: the experts' copy instead of the draft layer (about 3 minutes on the M4, checked byte for byte against the model file).
 7. **Writes `strata-<model>.json` and `run-<model>.sh`, then starts the server.**
 
-The config uses the Mac defaults: `--spec 2` and the Q8_0 hyper-connection read (below). After that, `./setup.sh` or `./run-q2_0.sh` starts the model directly. The server is the same as on a PC:
+The config uses the Mac defaults: `--spec 2` with MTP, or `--spec 3 --spec-min-p 0.5` for the IQ3_S, Q2_0 and Coder sets (M5 Max, 5 interleaved pairs, same tokens, over `--spec 2`: IQ3_S story -0.9%, code +2.5%, JSON +16.7%, agent turn +4.9%; Q2_0 story +0.4%, code +11.5%, JSON +6.3%, agent turn +1.9%; Coder story -2.5%, code +7.1%, JSON +9.3%, agent turn +12.5%; the other sets are not measured),, and the Q8_0 hyper-connection read (below). After that, `./setup.sh` or `./run-q2_0.sh` starts the model directly. The server is the same as on a PC:
 - the OpenAI-compatible API on `http://127.0.0.1:8080/v1`;
 - the Anthropic API on `/v1/messages`;
 - the chat page on `http://127.0.0.1:8080/`.
@@ -292,6 +292,7 @@ logits, with top_k, top_p, min_p, penalties and a logit_bias. With temperature 0
   queue, one at a time, as before.
   `tools/metal_batch_try.sh` compares solo against batched on your Mac (same prompts; add `--keys
   "temperature=0.7 seed=7"` for the sampled rows): numbers on M1 Max in BATCHING.md's "On Apple Silicon" section.
+- **Several requests at once.** `--parallel N` keeps N sequences side by side in the engine, each with its own running state and K/V (0.65 GB each at a 36,864-token context). Measured on an M5 Max with IQ3_S, the MTP draft layer and `--spec 2`, N requests of 150 tokens sent at the same time, tokens a second over all of them: 1 request 85, 2 requests 95 to 102, 3 requests 115, 4 requests 119 to 125. One request alone decodes at 96 to 100; with 2, 3 and 4 at once each decodes at 53 to 61, 41 to 48 and 32 to 40. The engine uses 8.3, 12.0, 14.0 and 16.0 GB for 1 to 4.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
 - **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Setup repacks Unsloth's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
@@ -318,6 +319,7 @@ logits, with top_k, top_p, min_p, penalties and a logit_bias. With temperature 0
 | `STRATA_METAL_PROMPT_MOE=mpp` | Streaming prompt experts: each batch's experts are decoded to fp16 slabs once per chunk, and gate/up and down are single dynamic-K matmuls over them (the matrix units run at 6.2 TFLOP/s against the K-loop's 2.9). M1 Max, IQ3_S/IQ4_NL, interleaved with same-session anchors: a 4096-token chunk's GPU time 12243 -> 8818 ms (-28%), warm 4096 prefill 225.9 -> 256.6 tok/s (+13.6%). A short chunk loses a little (356 tokens 60.0 -> 55.8 tok/s): the decode pays whole experts, and a long chunk is where the saved dequantizing wins |
 | `STRATA_METAL_PROMPT_MOE_BATCH=N` | mpp: experts per slab batch, so the fp16 copy of the weights kept in the arena region (default 64 = 5.1 GB of buffers; 128 = 5.8). Untouched experts are never decoded, so a short chunk decodes only what it routes to |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2-3 GB) instead of giving them back to macOS. A given-back copy is never read by the Metal window: a write to it is dropped and the state fingerprint skips it (2026-10-21: reading one with `STRATA_STATE_HASH=1` aborted a serving engine on its first cached request) |
+| `STRATA_METAL_F16=1` / `=0` | Decode windows of a resident model: the GEMVs of Q2_0, Q3_K-Q6_K and IQ4_XS and the Q2_0 routed experts in fp16. On in the config setup writes for a resident IQ3_S or Q2_0 pack (M5 Max: decode +9 to +15%, top-1 96-97% and mean KL 0.009-0.016 against fp32; the 61-task quality suite passes the same tasks as with it off); `=0` in the config's `env` turns it off. Other sets: off unless set. M1 Max: a 2-token window's GPU time 56-60 -> 40-41 ms, mean KL 0.009 against fp32 |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
 
 **Two opt-ins an M1 Max cannot run (measured on an M1 Max, macOS 26.6.2, Q2_0):** `STRATA_METAL_PROMPT_EXPERTS=v3` - the

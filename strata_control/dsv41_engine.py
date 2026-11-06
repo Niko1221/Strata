@@ -15,6 +15,38 @@ from typing import Callable
 NAME = "strata-dsv41"
 DIR = "engine-dsv41"
 
+#: A Mac engine that carries DeepSeek's picture tower on Metal has this text in its program (the same way drafting.engine_reads_selector_q4 reads its mark).  Pictures for
+#: DeepSeek on a Mac are on exactly when the installed strata-dsv41 has it: capability, not a switch.
+MARK_MAC_VISION = b"STRATA_DS4_METAL_VISION_V1"
+MAC_TEXT_LINE = "DeepSeek on a Mac reads text only with this engine (its picture reader needs an engine update)."
+_macvis: dict = {}
+
+
+def reads_mac_vision(exe) -> bool:
+    """Does the strata-dsv41 program at `exe` contain MARK_MAC_VISION?  Read from the file (never started), once per path, size and time; False when it cannot be read."""
+    import mmap
+    try:
+        path = Path(exe)
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+    except (OSError, ValueError, TypeError):
+        return False
+    if key not in _macvis:
+        try:
+            with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                _macvis[key] = data.find(MARK_MAC_VISION) >= 0
+        except (OSError, ValueError):
+            _macvis[key] = False
+    return _macvis[key]
+
+
+def mac_vision_state(exe) -> str:
+    """"yes" (the engine has the marker), "no" (an engine is there without it: text only) or "unknown" (no engine installed yet: the first start fetches the newest, and
+    setup looks again once it is there)."""
+    if not exe or not Path(str(exe)).is_file():
+        return "unknown"
+    return "yes" if reads_mac_vision(exe) else "no"
+
 
 def exe_name() -> str:
     return NAME + (".exe" if os.name == "nt" else "")
@@ -27,12 +59,73 @@ def version_key(folder_name: str) -> tuple:
 
 
 def find(dest: Path) -> Path | None:
-    """The newest installed package's strata-dsv41 in `dest` (engine-dsv41/), or None."""
+    """The strata-dsv41 a start uses from `dest` (engine-dsv41/): the package the person chose in Settings > Engine (the `.chosen` file), else the newest
+    installed one.  None when there is none."""
+    try:
+        pin = (Path(dest) / ".chosen").read_text(encoding="utf-8-sig").strip()
+        if pin and "/" not in pin and "\\" not in pin and (Path(dest) / pin / exe_name()).is_file():
+            return Path(dest) / pin / exe_name()
+    except OSError:
+        pass
     try:
         folders = sorted((d for d in Path(dest).iterdir() if d.is_dir() and (d / exe_name()).is_file()), key=lambda d: (version_key(d.name), d.name))
     except OSError:
         return None
     return folders[-1] / exe_name() if folders else None
+
+
+def cards_words(archs) -> str:
+    """The cards a package holds code for, in the words of the box they came in ("RX 9070 and R9700 (gfx1200/1201)")."""
+    from strata_control import engine_component as ec
+    archs = sorted(str(a) for a in archs or () if str(a).startswith("gfx"))
+    names = {"gfx1200": "RX 9060", "gfx1201": "RX 9070 and R9700"}
+    named = [names[a] for a in archs if a in names]
+    who = ", ".join(dict.fromkeys(named)) if named and len(named) == len(archs) else " and ".join(sorted({ec.hip_family(a) for a in archs})) or "other"
+    short = "/".join(archs[:1] + [a[3:] for a in archs[1:]]) if archs else ""
+    return f"{who} ({short})" if short else who
+
+
+def card_unknown_line(archs) -> str:
+    """The one plain line when an AMD package is installed although no probe could name this PC's graphics card."""
+    return (f"This DeepSeek engine runs on {cards_words(archs)}; your graphics card wasn't recognised, so Strata installs it anyway "
+            "and it will say if the card is not one of those.")
+
+
+def card_mismatch_line(archs, here) -> str:
+    """The one plain line when an AMD package has no code for the card(s) this PC has."""
+    from strata_control import engine_component as ec
+    have = " and ".join(sorted({ec.hip_family(a) for a in here}))
+    return (f"This DeepSeek engine runs on {cards_words(archs)}; this computer has an AMD {have} card ({', '.join(sorted(set(here)))}), "
+            "which this release holds no DeepSeek engine code for, so DeepSeek cannot start on it yet.")
+
+
+def package_archs(exe: str | os.PathLike) -> tuple[str, ...]:
+    """The AMD architectures an installed or hand-made package holds code for: its manifest's list, else BUILD.json's "archs" beside the
+    program (a package made by hand). Empty when the package names none (a build of the person's own)."""
+    folder = Path(exe).parent
+    try:
+        from strata_control import engine_component as ec
+        if (folder / ec.MANIFEST).is_file():
+            found = tuple(a for a in ec.read_manifest(folder).hip_archs if str(a).startswith("gfx"))
+            if found:
+                return found
+    except Exception:                                      # noqa: BLE001 - a package that cannot be read names nothing
+        pass
+    try:
+        import json
+        data = json.loads((folder / "BUILD.json").read_text(encoding="utf-8-sig"))
+        return tuple(str(a) for a in data.get("archs") or () if str(a).startswith("gfx"))
+    except (OSError, ValueError, AttributeError):
+        return ()
+
+
+def card_problem(archs, here) -> str | None:
+    """The plain line when `archs` (the package's) is known, `here` (this PC's cards) is known and no card of this PC is among the package's
+    code; None when it fits, or when either side is unknown (an empty list is never a refusal: the caller says the card is unknown)."""
+    from strata_control import feed as feedmod
+    if not archs or not here or feedmod.gfx_covers(archs, list(here)):
+        return None
+    return card_mismatch_line(archs, here)
 
 
 ARCHIVE_SUFFIXES = (".tar.gz", ".tar.xz", ".zip")
@@ -69,6 +162,14 @@ def pending(dest: Path) -> list[Path]:
     except OSError:
         return []
     return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+def _remove_older(dest: Path, keep: str) -> None:
+    """Remove the other package folders in `dest`, except any a running engine uses: removing those would take the files from under a loaded model."""
+    from strata_control import dsv41_paths
+    for old in Path(dest).iterdir():
+        if old.is_dir() and old.name != keep and not dsv41_paths.in_use(old):
+            shutil.rmtree(old, ignore_errors=True)
 
 
 def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[str], None] = print) -> Path | None:
@@ -110,6 +211,15 @@ def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[s
         if component.platform != host_platform():
             emit(f"{src.name} is for {component.platform}, and this computer is {host_platform()}. Download the one for your system.")
             return None
+        if component.backend == "hip":                          # a package for other cards than this PC's can only fail at its first kernel
+            from strata_control import updater as _updater
+            here = _updater.detect_hardware().get("gfx") or []
+            problem = card_problem(tuple(a for a in component.archs if str(a).startswith("gfx")), here)
+            if problem:
+                emit(problem + " Nothing was installed.")
+                return None
+            if not here:
+                emit(card_unknown_line(component.archs))
         outer = ec._verifier
         signing.install_component_verifier(signing.load_trusted_keys())
         try:
@@ -127,9 +237,7 @@ def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[s
         shutil.move(str(root), str(target))
         if os.name != "nt":
             (target / exe_name()).chmod(0o755)
-        for old in dest.iterdir():
-            if old.is_dir() and old.name != target.name:
-                shutil.rmtree(old, ignore_errors=True)
+        _remove_older(dest, target.name)
         emit(f"DeepSeek engine {component.version} ({component.backend}) checked (signed, every file matches) and installed: {target}")
         return target / exe_name()
     except (updater.UpdateError, ec.ComponentProblem, OSError) as exc:
@@ -156,9 +264,13 @@ def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Call
         feed = updater.open_feed(ctx, state)
         pkg, reasons = feedmod.select_engine(list(feed.dsv41), hw)
         if pkg is None:
-            emit("There is no DeepSeek engine package for this computer in the update feed"
-                 + (": " + "; ".join(reasons[:2]) if reasons else "") + ".")
+            hip = [p for p in feed.dsv41 if p.backend == "hip" and p.platform == hw.get("platform")]
+            line = card_problem(tuple(sorted({a for p in hip for a in p.archs if str(a).startswith("gfx")})), hw.get("gfx") or []) if hw.get("backend") == "hip" else None
+            emit(line or ("There is no DeepSeek engine package for this computer in the update feed"
+                          + (": " + "; ".join(reasons[:2]) if reasons else "") + "."))
             return None
+        if pkg.backend == "hip" and not hw.get("gfx"):
+            emit(card_unknown_line(pkg.archs))                 # (feed.gfx_covers lets an unknown card through; say so, once)
         archive = updater._download(ctx, "dsv41", pkg.url, pkg.size, pkg.sha256, "the DeepSeek engine", feed)
         stage_root, component = updater.stage_engine(ctx, feed, pkg, archive)
         try:
@@ -171,9 +283,7 @@ def install(dest: Path, source: str, *, hardware: dict | None = None, emit: Call
             shutil.rmtree(stage_root, ignore_errors=True)
         if os.name != "nt":
             (target / exe_name()).chmod(0o755)
-        for old in dest.iterdir():                              # one generation: the older folders of this engine go
-            if old.is_dir() and old.name != target.name:
-                shutil.rmtree(old, ignore_errors=True)
+        _remove_older(dest, target.name)                        # one generation: the older folders of this engine go (never one a running engine uses)
         emit(f"DeepSeek engine {pkg.version} installed: {target}")
         shutil.rmtree(work, ignore_errors=True)               # (on a failure the partial download stays in `work`: the next try resumes it)
         return target / exe_name()
@@ -213,7 +323,7 @@ def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
     The package's own folders go on the library path first: a Windows HIP package carries the ROCm runtime it loads in rocm/bin."""
     import subprocess
     try:
-        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=timeout, cwd=str(Path(exe).parent),
+        done = subprocess.run([str(exe), "--version"], capture_output=True, text=True, errors="replace", timeout=timeout, cwd=str(Path(exe).parent),
                               env=start_env(exe))
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"it could not be started ({exc})"
@@ -227,16 +337,18 @@ def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
 def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware: dict | None = None,
             emit: Callable[[str], None] = print, cancel=None) -> Path | None:
     """The installed DeepSeek engine package in `dest` (engine-dsv41/) is older than the signed feed's `dsv41` member for this PC: fetch the newer one,
-    check it as `install` does (signature, hashes, every file), put it NEXT TO the old one, start it once (`--version`), and only then remove the older
-    folders (one generation).  Returns the new strata-dsv41, or None: nothing newer, the feed cannot be read (silent: a launch never waits on the
+    check it as `install` does (signature, hashes, every file), put it NEXT TO the old one, start it once (`--version`), and only then use it (the older
+    packages are kept).  Returns the new strata-dsv41, or None: nothing newer, the feed cannot be read (silent: a launch never waits on the
     network), or the newer one could not be installed (one plain line, the installed engine keeps running).  Versions compare numerically
-    (0.1.49 < 0.1.49.1).  The caller does not call this for a --dsv41-package or a STRATA_DSV41_EXE."""
+    (0.1.49 < 0.1.49.1). Older packages stay installed until the person deletes them (Settings > Engine).  The caller does not call this for a --dsv41-package or a STRATA_DSV41_EXE."""
     from strata_control import feed as feedmod, signing, transfer, updater
 
     dest = Path(dest)
     current = installed or find(dest)
     if current is None:
         return None
+    if (Path(dest) / ".chosen").is_file() and find(dest) == current:
+        return None                                               # the person chose this package in Settings > Engine: a launch does not replace it
     have_name = Path(current).parent.name
     have = version_key(have_name)
     shown = have_name.split("-")[0]
@@ -280,9 +392,6 @@ def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware:
                 shutil.rmtree(target, ignore_errors=True)         # (never the installed one)
             emit(f"A newer DeepSeek engine is available but could not be installed: {str(exc).rstrip('.')}; still using {shown}.")
             return None
-        for old in dest.iterdir():                                # switched: the older generations go
-            if old.is_dir() and old.name != target.name and version_key(old.name) < version_key(target.name):
-                shutil.rmtree(old, ignore_errors=True)
         emit(f"DeepSeek engine updated from {shown} to {pkg.version}.")
         shutil.rmtree(work, ignore_errors=True)
         return target / exe_name()

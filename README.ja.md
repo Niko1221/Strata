@@ -17,6 +17,7 @@
 <p align="center">
   <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Strata をダウンロード"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT ライセンス"></a>
+  <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff" alt="GitHub Sponsors で Strata を支援する"></a>
   <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Buy Me a Coffee で Strata を支援する"></a>
 </p>
 
@@ -56,7 +57,7 @@
 
 **デスクトップアプリ**と**ターミナル**で使えます。メモリに収まらない分は SSD から読み込むため、空きディスク容量がたくさん必要です。
 
-| セット（IST-DAS） | ダウンロード | 必要な空き容量 |
+| セット（ISTA-DAS） | ダウンロード | 必要な空き容量 |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | 約245 GB |
 | 2.00 bpw | 257 GB | 約265 GB |
@@ -95,7 +96,7 @@ Strata 0.2.5 で 2.00 bpw のセットを使って測定しました。「出力
 
 アプリをインストールし、モデルを選んで、チャットを始めましょう。インストーラーはシステムごとに1つです。初回起動時に、アプリがお使いのグラフィックスカード用のエンジンをダウンロードします。[インストーラーのヘルプ](docs/INSTALL.md#the-app)。
 
-<sub>ファイル: `Strata-0.2.7-windows-x64-setup.exe` · `Strata-0.2.7-linux-x86_64.AppImage` · `Strata-0.2.7-macos-arm64.dmg`</sub>
+<sub>ファイル: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="チャットとライブのコードプレビューを並べて表示した Strata デスクトップアプリ">
@@ -175,9 +176,18 @@ strata launch
 
 ## Strata を支援する
 
-**ローカル AI をみんなに開かれたものに。** コーヒー1杯が、開発と、より多くのハードウェアでのテストの支えになります。
+**ローカル AI をみんなに開かれたものに。** GitHub でのスポンサーやコーヒー1杯が、開発と、より多くのハードウェアでのテストの支えになります。
 
+<a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors: Strata を支援する" height="48"></a>
 <a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee: Strata を支援する" height="48"></a>
+
+### いつも支えてくださる方々
+
+Strata を支えてくださるすべての方に感謝します。
+
+<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
+<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
+<!-- supporters:end -->
 
 [MIT ライセンス](LICENSE) · [クレジットとモデルのライセンス](docs/HOW_IT_WORKS.md#credits) · [プライバシー](docs/SAFETY.md)
 

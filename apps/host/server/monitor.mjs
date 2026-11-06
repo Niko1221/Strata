@@ -4,7 +4,7 @@ import { detect, cachedHardware } from './hardware.mjs';
 import { readGpuTelemetry, gpuMemoryTotals } from './device-probes.mjs';
 import { createSystemSampler } from './system-telemetry.mjs';
 import { sensorPace, WATCH_MS } from './sensor-pace.mjs';
-import { readTemperatures } from './temperature-telemetry.mjs';
+import { readTemperatures, stopTemperatures } from './temperature-telemetry.mjs';
 import { addEnergy, energyWh } from './energy-meter.mjs';
 import { state as servingState } from './serving.mjs';
 import { originalDashboard } from './monitor-dashboard.mjs';
@@ -62,7 +62,12 @@ let ticker = null;
 let memoryWarningShown = false;
 let sensorsPending = false, sensorsAt = 0;
 /* The Monitor screen asks (GET /api/monitor) every few seconds while it is open; a model that is loaded counts as live (#4066). */
-let watchedUntil = 0, liveProbe = () => false;
+let watchedUntil = 0, drivesUntil = 0, liveProbe = () => false;
+const hostStartedAt = Date.now();
+/** The drive-temperature reader is not started in the first minute of the host: the app's own start-up traffic is not a person looking at the Monitor (#4661). */
+export const DRIVES_AFTER_MS = 60000;
+/** Only the Monitor screen's own ask (GET /api/monitor?drives=1) wants drive temperatures; the start-up fetch and the Models page do not show them. */
+export function watchDrives() { drivesUntil = Date.now() + WATCH_MS; }
 export function watch() {
   const wasIdle = Date.now() >= watchedUntil;
   watchedUntil = Date.now() + WATCH_MS;
@@ -127,11 +132,14 @@ function tick() {
   if(!sensorsPending&&Date.now()-sensorsAt>=pace.intervalMs){
     sensorsPending=true;sensorsAt=Date.now();
     const hardware=cachedHardware()??hwCache;
-    void Promise.all([readGpuTelemetry(hardware?.gpus??[],{transfer:pace.transfer}),sampleSystem(hardware?.processors??[]),(process.env.STRATA_REAL_ENGINE==='1'?readTemperatures():Promise.resolve(temperatures)).catch(()=>({cpuTempC:null,ssdTempC:null}))])
+    void Promise.all([readGpuTelemetry(hardware?.gpus??[],{transfer:pace.transfer}),sampleSystem(hardware?.processors??[]),(process.env.STRATA_REAL_ENGINE==='1'&&Date.now()<drivesUntil&&Date.now()-hostStartedAt>DRIVES_AFTER_MS?readTemperatures():Promise.resolve(temperatures)).catch(()=>({cpuTempC:null,ssdTempC:null}))])
       .then(([readings,system,temps])=>{state.hardware.gpus=readings;systemReading=system;temperatures=temps;})
       .catch(()=>{state.hardware.gpus=[];systemReading=null;})
       .finally(()=>{sensorsPending=false;});
   }
+  /* #4661: the drive-temperature reader asks every physical drive for its temperature. Only while the Monitor is looked at, never from the first second of the app
+     (on some PCs the storage queries stall the whole system); it ends a couple of minutes after the Monitor was last seen. */
+  if(Date.now()>drivesUntil+120000)stopTemperatures();
   addEnergy(hardwareSnapshot().powerW,Date.now());
   const hw = state.hardware;
   const busy = state.phase === 'generating' || state.phase === 'reading' || state.phase === 'thinking';

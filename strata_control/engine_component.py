@@ -205,24 +205,50 @@ def cached_notice(root: Path | None = None) -> str | None:
 
     The notice belongs to the versions the check was made for: it is dropped when Control or the installed engine is not the one
     recorded then (an app install, an update, a rollback), and an engine that is not newer than the installed one is never offered."""
+    offers = cached_offers(root)
+    parts = ([f"engine {offers['engine']}"] if offers.get("engine") else []) + ([f"DeepSeek engine {offers['dsv41']}"] if offers.get("dsv41") else []) \
+        + ([f"app {offers['app']}"] if offers.get("app") else [])
+    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+
+
+def _installed_dsv41_version(profile_configs=None) -> str | None:
+    """The newest DeepSeek engine package the saved profiles name (a local read), or None."""
+    from strata_control import dsv41_paths
+    newest = None
+    for r in dsv41_paths.roots_of(profile_configs if profile_configs is not None else dsv41_paths.saved_configs()):
+        for exe in dsv41_paths.installed(r):
+            v = exe.parent.name.split("-")[0]
+            if newest is None or _version_key(v) > _version_key(newest):
+                newest = v
+    return newest
+
+
+def cached_offers(root: Path | None = None) -> dict:
+    """What the last explicit check found newer, as {"engine": version|None, "dsv41": version|None, "app": version|None}; local reads only (the cached
+    check, the installed packages), never the network.  The same rules as `cached_notice`: it belongs to the Control and the packages it was made for,
+    and a package that is not newer than the installed one is never offered."""
     base = root or components_dir()
+    none = {"engine": None, "dsv41": None, "app": None}
     try:
         last = (json.loads((base / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
     except (OSError, ValueError, AttributeError):
-        return None
+        return none
     if not isinstance(last, dict):
-        return None
+        return none
     control = runtime_version()
     if "control" in last and last["control"] != control:
-        return None
-    engine, app = last.get("engine"), last.get("app")
+        return none
+    engine, app, dsv41 = last.get("engine"), last.get("app"), last.get("dsv41")
     installed = newest_installed_version(base)
     if "engine_installed" in last and last["engine_installed"] != installed:
         engine = None
     if engine and installed and _version_key(str(engine)) <= _version_key(installed):
         engine = None
-    parts = ([f"engine {engine}"] if engine else []) + ([f"app {app}"] if app else [])
-    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+    if dsv41:
+        have = _installed_dsv41_version()
+        if have is None or "dsv41_installed" in last and last["dsv41_installed"] != have or _version_key(str(dsv41)) <= _version_key(have):
+            dsv41 = None
+    return {"engine": engine or None, "dsv41": dsv41 or None, "app": app or None}
 
 
 def previous_folder(root: Path | None = None) -> str | None:
@@ -445,6 +471,46 @@ def split_backend(value) -> tuple[str, str]:
     return name, ""
 
 
+BACKEND_ALIASES = {"nvidia": "cuda", "amd": "hip", "intel": "sycl", "arc": "sycl"}
+SAVED_KEY = "engine_backend"
+
+
+def clean_backend_name(value) -> str:
+    """What the person typed for --backend, as an engine family name: 'intel' -> 'sycl', 'NVIDIA' -> 'cuda'; '' when it names none."""
+    name = str(value or "").strip().lower()
+    name = BACKEND_ALIASES.get(name, name)
+    return name if name in ("cuda", "hip", "sycl") else ""
+
+
+def saved_backend(environ=None) -> str | None:
+    """The engine family the person chose with `strata launch --backend` (kept in the settings file), or None. It is ignored when this PC
+    has no card of that make (the choice was made on other hardware): the PC's own detection then decides again."""
+    try:
+        from strata_control import discovery
+        value = clean_backend_name(discovery._read_json(discovery.own_settings_file(environ)).get(SAVED_KEY))        # noqa: SLF001
+    except Exception:                                    # noqa: BLE001 - a settings file that cannot be read is no choice
+        return None
+    if not value:
+        return None
+    here = gpu_makes_present()
+    return value if (not here or value in here) else None
+
+
+def save_backend(value, environ=None) -> Path | None:
+    """Keep (or, with a falsy value, forget) the person's engine family choice in the settings file, leaving every other key as it is."""
+    from strata_control import discovery
+    path = discovery.own_settings_file(environ)
+    data = discovery._read_json(path)                    # noqa: SLF001
+    name = clean_backend_name(value)
+    if name:
+        data[SAVED_KEY] = name
+    else:
+        data.pop(SAVED_KEY, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return path
+
+
 def detect_backend(environ=None) -> tuple[str | None, str]:
     """(backend, how) for this machine: the engine family its GPU needs. Bounded, read-only probes of tools that are
     already installed; ``STRATA_ENGINE_BACKEND`` overrides (the tests and the support desk use it)."""
@@ -454,6 +520,9 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
         if forced not in BACKEND_MATRIX:
             raise ComponentProblem(f"{ENV_BACKEND}={forced!r} is not one of {', '.join(sorted(BACKEND_MATRIX))}")
         return forced, "environment"
+    chosen = saved_backend(environ)
+    if chosen:
+        return chosen, "saved choice"
     if host_platform().startswith("macos"):
         return "metal", "platform"
     # Windows: the display adapters are the machine's own statement about which cards it has, so they decide first. A leftover
@@ -475,11 +544,11 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
         if not tool:
             continue
         try:
-            done = subprocess.run([tool, *command[1:]], capture_output=True, timeout=8, text=True,
+            done = subprocess.run([tool, *command[1:]], capture_output=True, timeout=8, text=True, errors="replace",
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except (OSError, subprocess.SubprocessError):
             continue
-        if done.returncode == 0 and done.stdout.strip():
+        if done.returncode == 0 and (done.stdout or "").strip():
             if backend == "hip" and "gfx" not in done.stdout:
                 continue
             if backend == "sycl" and "level_zero" not in done.stdout.lower() and "gpu" not in done.stdout.lower():
@@ -549,27 +618,48 @@ def wsl_amd_note(backend: str | None, dev_root: str = "/dev", wsl: bool | None =
             "would hang at its first step. Use the Strata app or Terminal for Windows, which run the AMD engine directly.")
 
 
+#: The most own memory an integrated GPU reports: its BIOS carve-out (a Raphael iGPU reported 512 MiB, #4971). A card below this is not the one this
+#: PC's engine is chosen for while another card is present. A card that reports no size (NVIDIA and Intel write no such file) is never called integrated
+#: by its missing file; a large unified-memory APU (a Strix Halo with a 32 GiB carve-out) reports a large size and counts as a card.
+INTEGRATED_MAX_VRAM_MIB = 2048
+
+
+def _own_vram(card: Path) -> bool | None:
+    """Whether a display adapter has its own memory above `INTEGRATED_MAX_VRAM_MIB`; None when it reports no size. Read-only sysfs."""
+    try:
+        total = int((card / "device" / "mem_info_vram_total").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return total > INTEGRATED_MAX_VRAM_MIB * 1024 * 1024
+
+
 def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     """Linux without the vendor tools on PATH (a HIP box that runs ROCm from Python wheels has no rocminfo): the PCI
     vendor of the display adapters decides. NVIDIA 0x10de -> cuda, AMD 0x1002 -> hip, Intel 0x8086 -> sycl, in that
-    order. Read-only sysfs, nothing is run."""
+    order. An integrated GPU does not decide while another make has a card that is not integrated (#4971: a 512 MiB
+    Radeon APU made the whole PC an AMD machine beside the user's Intel Arc); when every card is integrated the old
+    order stands. Read-only sysfs, nothing is run."""
     if not os.path.isdir(root):
         return None
-    vendors = set()
+    cards: dict[str, list[bool | None]] = {}
     try:
         for card in sorted(Path(root).glob("card[0-9]*")):
             if "-" in card.name:
                 continue
             try:
-                vendors.add((card / "device" / "vendor").read_text().strip().lower())
+                vendor = (card / "device" / "vendor").read_text().strip().lower()
             except OSError:
                 continue
+            cards.setdefault(vendor, []).append(_own_vram(card))
     except OSError:
         return None
-    for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl")):
-        if vendor in vendors:
-            return backend
-    return None
+    order = (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl"))
+    if not any(v in cards for v, _ in order):
+        return None
+    # a make whose every card is positively integrated (a small own-memory reading) is skipped while another make has a card that is not
+    decisive = [v for v, _ in order if any(flag is not False for flag in cards.get(v, []))]
+    chosen = decisive[0] if decisive else next(v for v, _ in order if v in cards)
+    return dict(order)[chosen]
 
 
 #: Windows AMD cards by PCI device id (VEN_1002), the same table as setup.py's _WIN_AMD_DID (tests/terminal/test_engine_component.py
@@ -620,7 +710,25 @@ def gfx_from_name(name: str) -> str:
     return ""
 
 
+_CIM_CACHE: dict = {}
+CIM_CACHE_SECONDS = 120.0        # one answer (a failed or timed-out one too) serves every caller of this process for this long
+
+
 def _windows_adapters_cim() -> list[dict]:
+    """The CIM query below, asked once per process and 2 minutes: one `strata launch --plan` asked it 18 times (17 s on a healthy PC) and, with the WMI
+    service stuck, 18 times its 15 s timeout, far beyond the 60 s the app waits for Control (#4975). The adapters do not change inside a command."""
+    if os.name != "nt":
+        return []
+    now = time.monotonic()
+    hit = _CIM_CACHE.get("adapters")
+    if hit is not None and now - hit[0] < CIM_CACHE_SECONDS:
+        return [dict(a) for a in hit[1]]
+    found = _windows_adapters_cim_query()
+    _CIM_CACHE["adapters"] = (now, found)
+    return [dict(a) for a in found]
+
+
+def _windows_adapters_cim_query() -> list[dict]:
     """Second source when the registry key lists nothing: PowerShell's Win32_VideoController (PNPDeviceID has VEN_/DEV_). It can fail for
     a limited account, so every failure is an empty answer."""
     if os.name != "nt":
@@ -630,13 +738,13 @@ def _windows_adapters_cim() -> list[dict]:
         return []
     try:
         done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
-                               "Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
-                              capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                               "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
+                              capture_output=True, text=True, errors="replace", timeout=15, stdin=subprocess.DEVNULL,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
     found = []
-    for line in done.stdout.splitlines():
+    for line in (done.stdout or "").splitlines():
         match = re.search(r"VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", line, re.I)
         if not match:
             continue
@@ -767,16 +875,66 @@ def hip_archs_present(kfd_root: str | None = None) -> list[str]:
     return found
 
 
+def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> list[str]:
+    """Linux, third probe for the AMD architectures when the kernel driver's topology (hip_archs_present) and rocminfo said nothing (no
+    /sys/class/kfd access in an AppImage or a container, no ROCm tools installed): the PCI ids of the AMD display devices, in sysfs
+    (``card0/device/{vendor,device}``) and then ``lspci -nn`` (``[1002:744c]``), mapped through the same tables the Windows probe uses.
+    An integrated Radeon and an id the tables do not know give nothing. Read-only; empty when it cannot say."""
+    ids: list[int] = []
+    try:
+        for card in sorted(Path(drm_root).glob("card[0-9]*")):
+            if "-" in card.name:                                            # card0-DP-1 and the like are connectors
+                continue
+            try:
+                vendor = (card / "device" / "vendor").read_text().strip().lower()
+                device = (card / "device" / "device").read_text().strip().lower()
+            except OSError:
+                continue
+            if vendor == "0x1002" and device.startswith("0x"):
+                ids.append(int(device, 16))
+    except OSError:
+        pass
+    if not ids and lspci and os.name != "nt":
+        tool = shutil.which("lspci")
+        if tool:
+            try:
+                done = subprocess.run([tool, "-nn"], capture_output=True, text=True, errors="replace", timeout=10)
+                for line in (done.stdout or "").splitlines():
+                    if re.search(r"VGA|Display|3D", line):
+                        found = re.search(r"\[1002:([0-9a-f]{4})\]", line, re.I)
+                        if found:
+                            ids.append(int(found.group(1), 16))
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
+
+
+_SMI_CACHE: dict = {}
+SMI_CACHE_SECONDS = 30.0         # a card's capability and the driver version do not change inside one command
+
+
 def _smi_query(field_name: str) -> list[str]:
+    """nvidia-smi for one field, asked once per process and 30 s: one `strata launch --plan` on Windows with an engine installed started it 19 times (10 for the
+    compute capability, 9 for the driver version), and a stuck driver would have cost its 8 s timeout each time. A failed answer is kept for the same time."""
+    now = time.monotonic()
+    hit = _SMI_CACHE.get(field_name)
+    if hit is not None and now - hit[0] < SMI_CACHE_SECONDS:
+        return list(hit[1])
+    found = _smi_query_now(field_name)
+    _SMI_CACHE[field_name] = (now, found)
+    return list(found)
+
+
+def _smi_query_now(field_name: str) -> list[str]:
     tool = shutil.which("nvidia-smi")
     if not tool:
         return []
     try:
         done = subprocess.run([tool, f"--query-gpu={field_name}", "--format=csv,noheader"], capture_output=True,
-                              timeout=8, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                              timeout=8, text=True, errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
-    return [line.strip() for line in done.stdout.splitlines() if line.strip()] if done.returncode == 0 else []
+    return [line.strip() for line in (done.stdout or "").splitlines() if line.strip()] if done.returncode == 0 and done.stdout else []
 
 
 def nvidia_driver_version() -> str | None:
@@ -1028,7 +1186,8 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
               "backend": backend or detected, "backend_source": "requested" if backend else how,
               "installed": [item.to_dict() for item in found], "problems": problems,
               "engine": None, "usable": False, "notice": None, "acquires": False,
-              "pinned": pinned_folder(base), "previous": previous_folder(base), "update_notice": cached_notice(base)}
+              "pinned": pinned_folder(base), "previous": previous_folder(base), "update_notice": cached_notice(base),
+              "update_available": cached_offers(base)}
     try:
         chosen = resolve(base, backend=backend, full=full)
         report["engine"] = chosen.to_dict()

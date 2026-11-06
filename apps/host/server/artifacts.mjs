@@ -7,6 +7,16 @@ const run=(command,args)=>promisify(execFile)(command,args,{env:externalEnvironm
 const extensions=new Set(['.md','.txt','.pdf','.html','.htm','.png','.jpg','.jpeg','.webp','.gif','.svg','.csv','.ts','.tsx','.js','.jsx','.py','.json','.css','.rs','.go','.sh','.mp4','.webm']);
 export async function openArtifact(body,{examplesDir,previewsDir,platform=process.platform,launch=run}) {
   if(!['open','reveal'].includes(body.action))throw new Error('Choose Open or Show in file explorer.');
+  if(typeof body.url==='string') {
+    // #4721: a web address goes to the person's default browser (the app window drops window.open: WebView2 has no new-window handler). http and https only, no shell.
+    if(body.action!=='open')throw new Error('A web address can only be opened.');
+    let address;try{address=new URL(body.url);}catch{throw new Error('This is not a web address.');}
+    if(!['http:','https:'].includes(address.protocol)||body.url.length>4096)throw new Error('Only http and https addresses can be opened.');
+    if(platform==='darwin')await launch('open',[address.href]);
+    else if(platform==='win32')await launch('rundll32.exe',['url.dll,FileProtocolHandler',address.href]);
+    else await launch('xdg-open',[address.href]);
+    return {ok:true};
+  }
   let file;
   if(typeof body.path==='string') {
     // Only public example assets can be addressed by path. Never accept host paths.

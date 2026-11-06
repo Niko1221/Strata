@@ -111,6 +111,7 @@ class Entrypoint(unittest.TestCase):
         self.log.unlink()
         p = self.start(STUB_PRESET="1", STUB_TUNED="tuned x", TUNE="quick", RETUNE="1")
         self.assertIn("--tune quick", self.launch_line(self.wait_for("--show-key")))
+        self.assertIn("--retune", self.launch_line(self.wait_for("--show-key")))      # #4779: the launcher needs the flag itself
         self.stop(p)
 
     def test_no_settings_asks_for_the_recommended_model_and_warns(self):
