@@ -1225,6 +1225,97 @@ __global__ void __launch_bounds__(kThreads) light_kernel_rows(const SetArgs a, c
         }
 }
 
+// light_kernel_rows with the weights' rows staged a step ahead (DS4_LIGHT_STAGE=1): a step is 32 sub-blocks (4 blocks of a
+// 256-value type) of each row the warp reads - the gate's and the up's, or the down's - their words loaded in registers while
+// the warp computes the step it put in its shared stage before (mv_kernel_kst's form).  Lane l still takes sub-blocks l,
+// l + 32, ... in order, decoded by decode<T> from the stage, and the same sums: the same bits as light_kernel_rows.  A row that
+// starts 2 bytes past a word (the down's rows of 9 blocks) is staged from the word before it.
+template <int T, int NE, bool GATE_UP>
+__global__ void __launch_bounds__(kThreads) light_kernel_rows_st(const SetArgs a, const int8_t* __restrict__ xq,
+                                                                 const float* __restrict__ xd) {
+    static_assert(kQK<T> == 256, "256-value blocks: 8 sub-blocks a block, 4 blocks a step");
+    constexpr int BB = Ty<T>::B, NR = GATE_UP ? 2 : 1;
+    constexpr int CW = (4 * BB + 3 + 3) / 4;   // a step's words, its row starting 0-3 bytes past a word
+    constexpr int WL = (CW + 31) / 32;         // words a lane loads a row
+    __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
+    __shared__ __align__(16) uint32_t stage[kWarps][NR][CW];
+    const int e = blockIdx.y;
+    const int lo = a.bounds[e] - a.row0, ne = a.bounds[e + 1] - a.bounds[e];
+    if (ne <= 0 || ne > NE) return;   // (uniform: the tiles take an expert of more rows)
+    load_tab<T>(tab);
+    __syncthreads();
+    const int K = GATE_UP ? a.n_embd : a.n_ff, N = GATE_UP ? a.n_ff : a.n_embd, nsb = K / 32, nblk = nsb / 8;
+    const int warp = threadIdx.x >> 5, row = blockIdx.x * kWarps + warp, lane = threadIdx.x & 31;
+    if (row >= N) return;   // (the warp's own: only warp syncs below)
+    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const size_t rb = row_bytes_t<T>(K);
+    const uint8_t* wr[2] = {blob + a.tr[GATE_UP ? 0 : 2] + (size_t) row * rb, blob + a.tr[1] + (size_t) row * rb};
+    const uint32_t* src[NR];
+    int sh[NR];
+#pragma unroll
+    for (int r = 0; r < NR; ++r) {
+        sh[r] = (int) ((uintptr_t) wr[r] & 3u);
+        src[r] = (const uint32_t*) (wr[r] - sh[r]);
+    }
+    const size_t q0 = (size_t) e * kLightRows;
+    float a0[NE], a1[NE];
+#pragma unroll
+    for (int i = 0; i < NE; ++i) a0[i] = a1[i] = 0.0f;
+    uint32_t rg[NR][WL];
+    auto load = [&](int blk0) {   // the words of blocks [blk0, blk0 + 4) of each row (4 blocks: a whole number of words)
+        const int nb = min(4, nblk - blk0);
+#pragma unroll
+        for (int r = 0; r < NR; ++r) {
+            const int nw = (sh[r] + nb * BB + 3) / 4;
+            const uint32_t* s = src[r] + (size_t) (blk0 / 4) * BB;
+#pragma unroll
+            for (int j = 0; j < WL; ++j) {
+                const int i = lane + 32 * j;
+                rg[r][j] = i < nw ? s[i] : 0u;
+            }
+        }
+    };
+    load(0);
+    for (int blk0 = 0; blk0 < nblk; blk0 += 4) {
+        __syncwarp();   // (the lanes are done with the step before)
+#pragma unroll
+        for (int r = 0; r < NR; ++r)
+#pragma unroll
+            for (int j = 0; j < WL; ++j) {
+                const int i = lane + 32 * j;
+                if (i < CW) stage[warp][r][i] = rg[r][j];
+            }
+        __syncwarp();
+        if (blk0 + 4 < nblk) load(blk0 + 4);   // (the next step's words in flight while this one computes)
+        const int kb = blk0 * 8 + lane;
+        if (kb < nsb) {
+            Sub s0, s1;
+            decode<T>((const uint8_t*) stage[warp][0] + sh[0], lane, tab, s0);
+            if (GATE_UP) decode<T>((const uint8_t*) stage[warp][NR - 1] + sh[NR - 1], lane, tab, s1);
+#pragma unroll
+            for (int i = 0; i < NE; ++i)
+                if (i < ne) {
+                    const int4* xp = (const int4*) (xq + (q0 + i) * K + (size_t) kb * 32);
+                    const int4 xa = xp[0], xb = xp[1];
+                    const float dx = xd[(q0 + i) * nsb + kb];
+                    a0[i] = fmaf(dx, sub_dot<T>(s0, xa, xb), a0[i]);
+                    if (GATE_UP) a1[i] = fmaf(dx, sub_dot<T>(s1, xa, xb), a1[i]);
+                }
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < NE; ++i)
+        if (i < ne) {
+            const float v0 = warp_sum(a0[i]);
+            const float v1 = GATE_UP ? warp_sum(a1[i]) : 0.0f;
+            if (lane == 0) {
+                const size_t lr = (size_t) (lo + i);
+                if (GATE_UP) a.h[lr * a.ldo + row] = __half_as_ushort(__float2half_rn(swiglu(v0, v1, a.limit)));
+                else a.y[lr * a.ldo + row] = v0;
+            }
+        }
+}
+
 bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps the F32 kernel
 #if defined(STRATA_USE_HIP)
     return false;
@@ -1379,6 +1470,16 @@ bool light_on() {   // STRATA_DS4_NO_LIGHT=1: every set through the GEMM tiles
 template <int T, bool GU>
 void launch_light(const SetArgs& a, const LightBuf& b, cudaStream_t s) {
     const int tiles = ((GU ? a.n_ff : a.n_embd) + kWarps - 1) / kWarps;
+    if constexpr (kQK<T> == 256) {   // DS4_LIGHT_STAGE=1: the rows' kernel with its weights staged a step ahead (same bits)
+        static const bool st = std::getenv("DS4_LIGHT_STAGE") != nullptr && std::atoi(std::getenv("DS4_LIGHT_STAGE")) != 0;
+        if (st && (a.max_rows > 4 || !kPersist<T>)) {
+            const dim3 grid((unsigned) tiles, (unsigned) a.n_exp);
+            if (a.max_rows <= 4) strata_ds4_launch(light_kernel_rows_st<T, 4, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+            else if (a.max_rows <= 8) strata_ds4_launch(light_kernel_rows_st<T, 8, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+            else strata_ds4_launch(light_kernel_rows_st<T, kLightRows, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+            return;
+        }
+    }
     if (a.max_rows <= 4) {   // few rows: work items round a persistent grid (the codebook per block is then the cost)
         if constexpr (kPersist<T>)
             strata_ds4_launch(light_kernel<T, 4, GU>, items_grid<T>(a.n_exp * tiles, resident_ctas<light_kernel<T, 4, GU>>()), kThreads, 0, s, a, b.q, b.d);
