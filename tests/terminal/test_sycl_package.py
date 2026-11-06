@@ -56,7 +56,17 @@ class ArcChoice(unittest.TestCase):
                     mock.patch.object(ec, "host_platform", return_value=platform), \
                     mock.patch.object(updater, "host_platform", return_value=platform), \
                     mock.patch.object(ec, "_drm_vendor_backend", lambda: real(drm)), \
-                    mock.patch.object(ec, "windows_display_adapters", return_value=[]),                     mock.patch.object(ec, "_windows_vendor_backend", lambda: real(drm)):      # the test PC may be Windows: either probe answers
+                    mock.patch.object(ec, "windows_display_adapters", return_value=[]), \
+                    mock.patch.object(ec, "_windows_vendor_backend", lambda: real(drm)), \
+                    mock.patch.object(ec, "gpu_makes_present", return_value={
+                        backend for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl"))
+                        if vendor in vendors}), \
+                    mock.patch.object(ec, "nvidia_driver_version", return_value=None), \
+                    mock.patch.object(ec, "cuda_archs_present", return_value=[]), \
+                    mock.patch.object(updater, "_gfx_names", return_value=[]), \
+                    mock.patch.object(updater, "_amd_card_names", return_value=[]):
+                # The fixture has vendor IDs only, no installed tools or architecture data.
+                # Secondary probes must not mix the runner's real card into that fake PC.
                 return updater.detect_hardware(environ or {})
 
     def pick(self, hardware):
