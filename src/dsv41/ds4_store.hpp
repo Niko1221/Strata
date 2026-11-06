@@ -18,6 +18,7 @@
 
 #include "ds4_os.hpp"
 #include "ds4_pool.hpp"
+#include "ds4_store_pages.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -66,6 +67,7 @@ public:
         // a new chunk of the arena for the GPU to read in place: returns the device address of `host` (null: not visible)
         std::function<void*(void* host, size_t bytes)> map_chunk;
         std::function<void(void* host)> unmap_chunk;
+        bool huge_pages = false;          // opt-in Linux CUDA: aligned, prefaulted chunks before GPU registration
         size_t reserve = 192;              // slots kept evictable (not visible) for the window's demand and guesses
         int vis_percent = 100;             // the share of experts the GPU may take (by a fixed hash): the rest stay the CPU lane's, so both lanes work
     };
@@ -81,9 +83,27 @@ public:
         slot_bytes_ = (blob + 2 * kSlack + os::kDirectAlign - 1) & ~(size_t) (os::kDirectAlign - 1);
         if (blob == 0 || c.budget_bytes < slot_bytes_) return false;
         nmax_ = c.budget_bytes / slot_bytes_;
-        // one reserved range for the whole arena (chunks committed as they are needed), 64 KB aligned chunks
-        arena_bytes_ = ((nmax_ + kChunk - 1) / kChunk) * kChunk * slot_bytes_;
-        arena_ = (uint8_t*) os::range_reserve(arena_bytes_);
+        if (c.huge_pages && c.map_chunk) {
+            store_pages::Layout layout;
+            if (!store_pages::layout(slot_bytes_, chunk_slots_, c.budget_bytes, layout)) return false;
+            arena_ = (uint8_t*) store_pages::reserve(layout.arena_bytes);
+            if (arena_) {
+                huge_pages_ = true;
+                chunk_slots_ = layout.chunk_slots;
+                chunk_bytes_ = layout.chunk_bytes;
+                nmax_ = layout.slots;
+                arena_bytes_ = layout.arena_bytes;
+                std::fprintf(stderr, "ds4: RAM store: 2 MiB-aligned chunks, up to %zu MiB per registration; THP requested, backing depends on the OS\n",
+                             chunk_bytes_ >> 20);
+            } else {
+                std::fprintf(stderr, "ds4: RAM store: aligned reservation failed; keeping the original allocator\n");
+            }
+        }
+        if (!arena_) {
+            // The default layout and lazy commitment stay unchanged.
+            arena_bytes_ = ((nmax_ + chunk_slots_ - 1) / chunk_slots_) * chunk_slots_ * slot_bytes_;
+            arena_ = (uint8_t*) os::range_reserve(arena_bytes_);
+        }
         if (arena_ == nullptr) return false;
         slots_.reset(new Slot[nmax_]);
         where_.resize(geo_.size());
@@ -135,7 +155,7 @@ public:
     const uint8_t* blob(int slot) const { return slots_[(size_t) slot].base; }
     /// The device address of the slot's blob (0: the arena is not mapped for the GPU)
     unsigned long long dev_blob(int slot) const {
-        const size_t c = (size_t) slot / kChunk;
+        const size_t c = (size_t) slot / chunk_slots_;
         if (c >= chunk_dev_.size() || chunk_dev_[c] == nullptr) return 0;
         return (unsigned long long) ((uint8_t*) chunk_dev_[c] + (slots_[(size_t) slot].base - (uint8_t*) chunks_[c].first));
     }
@@ -382,7 +402,7 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         size_t done = 0;
         while (done < want && !chunks_.empty()) {
-            const size_t c = chunks_.size() - 1, first = c * kChunk;
+            const size_t c = chunks_.size() - 1, first = c * chunk_slots_;
             bool busy = false;
             for (size_t i = first; i < nalloc_ && !busy; ++i) {
                 Slot& sp = slots_[i];
@@ -437,7 +457,7 @@ private:
         const long v = e ? std::atol(e) : 0;
         return v >= 8 && v <= 4096 ? (size_t) v : 64;
     }
-    const size_t kChunk = chunk_slots();
+    size_t chunk_slots_ = chunk_slots();
     struct Slot {
         uint8_t* base = nullptr;   // the blob's first byte
         int layer = -1, expert = -1, pin = 0;
@@ -526,12 +546,14 @@ private:
     }
     bool grow() {
         if (nalloc_ >= nmax_) return false;
-        const size_t n = std::min(kChunk, nmax_ - nalloc_);
-        const size_t bytes = n * slot_bytes_;
+        const size_t n = std::min(chunk_slots_, nmax_ - nalloc_);
+        const size_t bytes = huge_pages_ ? store_pages::rounded(n * slot_bytes_) : n * slot_bytes_;
         const uint64_t avail = cfg_.ram_avail ? cfg_.ram_avail() : ~uint64_t{0};
         if (avail != ~uint64_t{0} && avail < bytes + cfg_.floor_bytes) return false;
-        void* p = arena_ + nalloc_ * slot_bytes_;
+        void* p = arena_ + (huge_pages_ ? chunks_.size() * chunk_bytes_ : nalloc_ * slot_bytes_);
         if (!os::range_commit(p, bytes)) return false;
+        if (huge_pages_ && !store_pages::prefault(p, bytes))
+            std::fprintf(stderr, "ds4: RAM store: THP advice unavailable; registering the existing page backing\n");
         chunks_.push_back({p, bytes});
         void* dev = cfg_.map_chunk ? cfg_.map_chunk(p, bytes) : nullptr;
         chunk_dev_.push_back(dev);
@@ -575,6 +597,8 @@ private:
     std::vector<LayerGeo> geo_;
     std::vector<os::fd_t> dfds_, pfds_;
     size_t slot_bytes_ = 0, nmax_ = 0, nalloc_ = 0, free_hint_ = 0, arena_bytes_ = 0;
+    size_t chunk_bytes_ = 0;
+    bool huge_pages_ = false;
     uint8_t* arena_ = nullptr;
     size_t shrunk_ = 0;
     std::unique_ptr<Slot[]> slots_;

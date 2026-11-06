@@ -1,0 +1,316 @@
+{
+  "date": "2026-10-21",
+  "scope": "Historical H2D-only experiment with a separate DeepSeek engine; not a measurement of this PR or an inference benchmark.",
+  "hardware": {
+    "cpu": "Intel Core i7-14700KF",
+    "ram": "192 GB DDR5-4800",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 96 GB",
+    "driver": "595.104.02",
+    "cuda": "13.2",
+    "kernel": "Linux 6.8.0-138",
+    "active_pcie_samples": {
+      "count": 258,
+      "generation": 5,
+      "width": 16,
+      "interval_seconds": 0.5
+    }
+  },
+  "model": "DeepSeek-V4.1-Flash-1017-UD-IQ3_XXS, seven GGUF shards",
+  "payload_bytes_per_pass": 156662231040,
+  "arena_bytes": 156711780352,
+  "cold_experts": 10715,
+  "frozen_hot_experts": 4645,
+  "segmented_registration": {
+    "count": 40,
+    "max_bytes": 3927965696,
+    "layout": "Forty balanced ranges in one contiguous arena; no expert crosses a range."
+  },
+  "transfer": {
+    "stream_count": 1,
+    "gpu_ring_slots": 8,
+    "gpu_slot_bytes": 16777216,
+    "warmup_full_passes_per_process": 1,
+    "timed_full_passes_per_process": 3,
+    "quiet_seconds_before_warmup": 2,
+    "statistic": "Mean of the two process medians, each over three full-pass wall-clock rates; decimal GB/s."
+  },
+  "run_order": [
+    "D1",
+    "C1",
+    "A1",
+    "B1",
+    "B2",
+    "A2",
+    "C2",
+    "D2"
+  ],
+  "hashes": {
+    "source_manifest_sha256": "51965f44027fe14f0b0cef6e108fd0be4d57f73342477df3e5f55a18208d95e7",
+    "hot_ids_sha256": "8a6ba575897602bf132a4ad47cd691d43951d9cdb901f8d243dc04a90f0a3b38",
+    "transfer_source_sha256": "dc3d885a50607050469bc7dab2cd21b0587c0faf2d5b2297f93a83acbfe244c0",
+    "model_library_sha256": "057a20bb76bd37b9dbe6a3538555c8ef2f0e96bc79d8c0729532b376fed8a95f",
+    "binary_sha256": "8eeefc20111b132e21cf7a3dd56ac8d44b846377a0803f018074d2d465bc18d5"
+  },
+  "published_files_sha256": {
+    "measurements.csv": "22a178dd85102f81ffca6b1803989564db387e30e8dd77c0ba425ee18641ec4f",
+    "historical_transfer.cpp": "dc3d885a50607050469bc7dab2cd21b0587c0faf2d5b2297f93a83acbfe244c0"
+  },
+  "runs": {
+    "D1": {
+      "registration_count": 40,
+      "registration_ms": 1945.187031,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        }
+      ],
+      "raw_log_sha256": "d3b8c8a289964f0731ed4cbd7d353a0ffd2ba9b75ef2f17e598c413dd3e563f6",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    },
+    "C1": {
+      "registration_count": 1,
+      "registration_ms": 1649.091756,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        }
+      ],
+      "raw_log_sha256": "0c24dd0ea5b1a7267f31bfc8bdb5cac1ca0fe39e5753bc0b411e8bed45497ad3",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    },
+    "A1": {
+      "registration_count": 1,
+      "registration_ms": 2878.363519,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        }
+      ],
+      "raw_log_sha256": "a3a6789113eb4dd9e44a5348c05f70c60d70bb31edd001a4f00f53e9e27e0226",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    },
+    "B1": {
+      "registration_count": 40,
+      "registration_ms": 2785.610314,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        }
+      ],
+      "raw_log_sha256": "fb101c56ab982df52abe9df9cc4189f03d8571bef97d44d8225d6dd0ac53a058",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    },
+    "B2": {
+      "registration_count": 40,
+      "registration_ms": 2822.005792,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        }
+      ],
+      "raw_log_sha256": "a8a5311741466117067bc981a2ddd492005c273c17f0376dec9cc8e021fc9dcd",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    },
+    "A2": {
+      "registration_count": 1,
+      "registration_ms": 2873.175349,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 0
+        }
+      ],
+      "raw_log_sha256": "d914c0ee04d5a1b5cb9dc90bc6b23dd4c7f805b1b59ce0607864ca846fcc1877",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    },
+    "C2": {
+      "registration_count": 1,
+      "registration_ms": 1640.638229,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        }
+      ],
+      "raw_log_sha256": "b71d6eaf86fb6a29756c8287e76ff7484a5cba02cc632c1493f0b42dbec93028",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    },
+    "D2": {
+      "registration_count": 40,
+      "registration_ms": 1435.949515,
+      "coverage": [
+        {
+          "phase": "after_allocation",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "before_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_register",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        },
+        {
+          "phase": "after_measurement",
+          "bytes": 156711780352,
+          "anon_huge_bytes": 156711780352
+        }
+      ],
+      "raw_log_sha256": "4cc6c88a37b3ee4ee998c96043a4d6d3e54dcb461f8870c3f63a28548149b7bc",
+      "source_layout_sha256": "b9f6895f9e7d758e0fa19728b2b79ed9f0512a2747fa0fd52a3a6b41116cda89",
+      "byte_validation_performed": false,
+      "compute_empty_before_after": true
+    }
+  },
+  "limitations": [
+    "Telemetry includes only samples within each timed window, not continuous event coverage.",
+    "Some timed samples include background swap-in/disk I/O; none of the inner sample deltas show swap-out.",
+    "D1/C1 were preserved across a preflight-policy change and service load/unload interval; benchmark binary/layout/timing code stayed identical.",
+    "No inference, byte validation, or GPU/IOMMU page-table capture was performed.",
+    "An earlier integrity-enabled run failed a byte comparison; root cause remains unresolved. These later bandwidth-only runs did not retest integrity.",
+    "The benchmark used an uncommitted experimental source snapshot, identified by manifest and binary hashes, not this PR revision.",
+    "No GPU/IOMMU page-table mapping was captured. CPU AnonHugePages coverage does not prove a particular GPU mapping size.",
+    "The model-loader snapshot, weights and frozen hot-ID file are not part of this small public evidence bundle. It supports recomputing these statistics, not a turnkey replay."
+  ],
+  "byte_validation_performed": false,
+  "strict_zero_background_io": false,
+  "largest_sampled_disk_read_MBps": 45.37987074660675,
+  "preflight_policy_changed_after_C1": true,
+  "original_measurements_csv_sha256": "851837c38927e0938eb459932520ff97274d2b316e3b6af5b41f9f3af2082b5a",
+  "published_csv_change": "CRLF line endings normalized to LF; all fields and rows unchanged."
+}
