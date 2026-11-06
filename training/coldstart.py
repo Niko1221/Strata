@@ -506,7 +506,7 @@ def route_steps(p: dict, paths: dict, *, group: int = 4, python: str | None = No
                 train_py: str | None = None, extra: list[str] | None = None,
                 max_context: int = 32768, chain_adapters: str | None = None,
                 include_rl: bool = True, engine_targets: str = "",
-                dpo_steps: int | None = None) -> list[dict]:
+                dpo_epochs: float | None = None) -> list[dict]:
     """把三档路由翻成 `bench/run_plan.py` 的 steps（**串行**，`on_fail: continue`）。
 
     顺序是**冷启在前、RL 在后**：冷启的任务是「造出正例」，它不先跑，RL 那一格
@@ -557,13 +557,14 @@ def route_steps(p: dict, paths: dict, *, group: int = 4, python: str | None = No
             step["adapter_out"] = prev_adapter
         steps.append(step)
     if p["dpo_pairs"]:
-        # `dpo_steps`：backward 侧的 dpo 轮次没扫过，train.py 的兜底是 --steps 40 ——
-        # 在「1 对偏好样本」上等于过 40 遍，lr 1e-4 早就越过能力门（2026-11-04 反证：
-        # 3e-5 × 50 步 margin 就到 +5.13）。给了这个值就按它走，并在计划里可查。
+        # `dpo_epochs`：**必须传轮次，不能传步数**。train.py 的兜底是 `--steps 40`，
+        # 那在「1 对偏好样本」上等于过 40 遍；而一旦偏好对涨到 10 对，固定步数又变成
+        # 「连 1 轮都不到」。sft.py 的 `--epochs` 是 steps = epochs × 条数（581-584），
+        # 数据量变了轮次不变 —— 跨配置可比的唯一口径。
         cmd = [py, train, "--algo", "dpo", "--method", "backward",
                "--dpo-data", paths["dpo"]] + tail + tgt
-        if dpo_steps:
-            cmd += ["--steps", str(dpo_steps)]
+        if dpo_epochs:
+            cmd += ["--epochs", str(dpo_epochs)]
         step = {"name": "cold_dpo", "cmd": cmd, "on_fail": "continue"}
         if d is not None:
             if prev_adapter:

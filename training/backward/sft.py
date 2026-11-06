@@ -778,6 +778,21 @@ def main() -> int:
         mem_guard.require_budget_frozen(pl, tl, rows=(2 if dpo_enc is not None else 1),
                                         moe_staging=mem_guard.MOE_STAGING_GIB if args.gguf else 0.0,
                                         log=print)
+    else:
+        # 预检（加载 125B 权重之前）只能用 `--seqlen` 占位，那时数据还没编码；它只是
+        # `--pretrain-data` 的块长，默认 2048，跟真实序列长度无关。低估不会报错 ——
+        # 它把 OOM 从预检挪到步内。2026-11-06 的 DPO 对：prompt 399 + rejected 3373
+        # = 3772 tok，按 2048 估成 34.0 GiB，实测峰值 38.2 GiB，中间这 3.5 GiB 就是
+        # 低估的量。编码完成后按真实最长序列再查一次，超了就重算。
+        real_t = (max(max(len(fc), len(fj)) for (fc, _), (fj, _) in dpo_enc)
+                  if dpo_enc is not None else max(len(full) for full, _ in enc))
+        if real_t > args.seqlen:
+            print(f"实际最长序列 {real_t} tok > 预检占位 --seqlen {args.seqlen}"
+                  f"（预检按占位算，这里按真实长度重查）", flush=True)
+            mem_guard.require_budget(real_t, rows=(2 if dpo_enc is not None else 1),
+                                     mode="bwd", ckpt=args.ckpt,
+                                     moe_staging=(0.0 if args.ckpt else mem_guard.MOE_STAGING_GIB),
+                                     log=print)
 
     # ---- 护栏 1：token 选择（excess）。参照策略 = 训练起点（此刻 B=0 / UniLoRA 初始扰动）。----
     # 训练三判据（决定「哪些 token 配拿到梯度」，越靠前是越硬的前提）：
