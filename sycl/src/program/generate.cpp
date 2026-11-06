@@ -2939,16 +2939,26 @@ int main(int argc, char **argv) try {
             return 2;
         }
         const auto embed_t0 = std::chrono::steady_clock::now();
-        if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g.n_embd,
+        int replaced_embd_type = -1;
+        std::string embd_gguf = o.embd_gguf;
+        if (embd_gguf.empty()) {
+            embd_gguf = strata::core::NativeEmbed::auto_bf16_sidecar(o.native_shards, g.n_embd, g.n_vocab,
+                                                                     &replaced_embd_type);
+        }
+        if (!native_embed.load(embd_gguf.empty() ? o.native_shards : std::vector<std::string>{embd_gguf}, g.n_embd,
                                g.n_vocab, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
         strata::core::set_native_embed(&native_embed);
+        const std::string embd_type_desc = replaced_embd_type >= 0
+            ? std::string(strata::ggml_type_name((uint32_t) native_embed.type())) + " (token-embd-bf16.gguf, replacing " +
+              strata::ggml_type_name((uint32_t) replaced_embd_type) + ")"
+            : std::string(strata::ggml_type_name((uint32_t) native_embed.type()));
         std::fprintf(stderr, "strata generate: native pack: %s experts (largest blob %.2f MB), token embedding "
                              "%s in mapped host memory (%.0f MiB, %.1f s)\n",
                      o.pack.c_str(), (double) strata::kernels::cpu::expert_layout().max_blob / 1e6,
-                     strata::ggml_type_name((uint32_t) native_embed.type()), (double) native_embed.bytes() / 1048576.0,
+                     embd_type_desc.c_str(), (double) native_embed.bytes() / 1048576.0,
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - embed_t0).count());
     }
     // Plan v0.3 P1: tensors served in native form are not also loaded in canonical form (~2.7 GB of VRAM back

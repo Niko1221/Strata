@@ -28,8 +28,10 @@
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/core/native_dense.hpp"
+#include "strata/core/native_head.hpp"
 #include "strata/core/expert_source.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -744,6 +746,52 @@ int check_bf16_embd(cudaStream_t s) {
     std::printf("bf16 embedding: %lld gathered rows, %zu differ; dequant of %lld values, %zu differ in any bit\n",
                 (long long) NT, rows_differ, (long long) (V * H), values_differ);
     if (rows_differ || values_differ) ++failures;
+    {   // auto_bf16_sidecar: sub-8-bit (IQ4_XS=23) upgrades to sibling token-embd-bf16.gguf; Q8_0 (8) and STRATA_AUTO_EMBD_BF16=0 stay unchanged
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / "strata_auto_bf16_embd_test";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        auto write_one_embd_gguf = [&](const fs::path& p, const char* arch, uint32_t gtype, size_t row_bytes) {
+            std::ofstream f(p, std::ios::binary);
+            auto u32 = [&](uint32_t v) { f.write((const char*) &v, 4); };
+            auto u64 = [&](uint64_t v) { f.write((const char*) &v, 8); };
+            auto str = [&](const std::string& s) { u64(s.size()); f.write(s.data(), (std::streamsize) s.size()); };
+            f.write("GGUF", 4); u32(3); u64(1); u64(1);
+            str("general.architecture"); u32(8); str(arch);
+            str("token_embd.weight"); u32(2); u64((uint64_t) H); u64((uint64_t) V); u32(gtype); u64(0);
+            const size_t pos = (size_t) f.tellp();
+            const size_t pad = (32 - (pos % 32)) % 32;
+            for (size_t i = 0; i < pad; ++i) f.put('\0');
+            std::vector<char> zeros(row_bytes * (size_t) V, 0);
+            f.write(zeros.data(), (std::streamsize) zeros.size());
+        };
+        const fs::path iq4_model = dir / "model-iq4xs.gguf";
+        const fs::path q8_model = dir / "model-q8_0.gguf";
+        const fs::path sidecar = dir / "token-embd-bf16.gguf";
+        write_one_embd_gguf(iq4_model, "qwen3_5_moe", 23, strata::kernels::iq_row_bytes(23, H));
+        write_one_embd_gguf(q8_model, "qwen3_5_moe", 8, strata::kernels::iq_row_bytes(8, H));
+        write_one_embd_gguf(sidecar, "strata-embd", 30, (size_t) H * 2);
+        int rep = -1;
+        const std::string got_iq4 = strata::core::NativeEmbed::auto_bf16_sidecar({iq4_model.string()}, H, V, &rep);
+        int rep_q8 = -1;
+        const std::string got_q8 = strata::core::NativeEmbed::auto_bf16_sidecar({q8_model.string()}, H, V, &rep_q8);
+#ifdef _WIN32
+        _putenv_s("STRATA_AUTO_EMBD_BF16", "0");
+#else
+        setenv("STRATA_AUTO_EMBD_BF16", "0", 1);
+#endif
+        const std::string got_off = strata::core::NativeEmbed::auto_bf16_sidecar({iq4_model.string()}, H, V, nullptr);
+#ifdef _WIN32
+        _putenv_s("STRATA_AUTO_EMBD_BF16", "");
+#else
+        unsetenv("STRATA_AUTO_EMBD_BF16");
+#endif
+        fs::remove_all(dir, ec);
+        const bool sidecar_ok = (got_iq4 == sidecar.string() && rep == 23 && got_q8.empty() && rep_q8 == -1 && got_off.empty());
+        std::printf("bf16 sidecar auto-discovery: %s\n", sidecar_ok ? "ok" : "FAIL");
+        if (!sidecar_ok) ++failures;
+    }
     return failures;
 }
 

@@ -21,11 +21,21 @@ The routed experts (gate, up, down; 512 per layer, 10 used per token) are where 
 | UD-Q6_K_XL | 169.2 GB | Q6_K (Q8_0 in layer 2) | Q8_0 | 101.7 GiB | 2.13 GB |
 | Q8_0 | 188.2 GB | Q8_0 | Q8_0 | 119.5 GiB | 2.51 GB |
 
-Everything else is the same in all five: the attention, SSM, hyper-connection and shared-expert projections, the
-PLE key/value and the token embedding are Q8_0 (the small vectors, norms and the router F32; the QSA indexer BF16),
-the output head is Q8_0 (Q6_K in UD-IQ4_XS). The PLE table (`per_layer_token_embd`) is IQ4_NL (26.8 GiB) in UD-IQ4_XS
-and UD-Q4_K_XL and Q8_0 (50.7 GiB) in UD-Q5_K_XL, UD-Q6_K_XL and Q8_0. The dense side the GPU reads once per verify
-window is about 4.8 GB in every file.
+Everything else is the same in UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL and Q8_0: the attention, SSM, hyper-connection and
+shared-expert projections, the PLE key/value and the token embedding are Q8_0 (the small vectors, norms and the router
+F32; the QSA indexer BF16), and the output head is Q8_0. In **UD-IQ4_XS** (both the three-shard and v3.1 four-shard
+releases), the output head is Q6_K and **`token_embd.weight` (`[2560, 248320]`) is quantized to `IQ4_XS` (`322 MiB`,
+`4.25 bpw`, `8.07%` relative L2 error vs the BF16 checkpoint embedding)**. The PLE table (`per_layer_token_embd`) is
+IQ4_NL (26.8 GiB) in UD-IQ4_XS and UD-Q4_K_XL and Q8_0 (50.7 GiB) in UD-Q5_K_XL, UD-Q6_K_XL and Q8_0. The dense side
+the GPU reads once per verify window is about 4.8 GB in every file.
+
+Replacing `UD-IQ4_XS`'s 4-bit `token_embd.weight` with the checkpoint's exact BF16 table (`token-embd-bf16.gguf`,
+`1.21 GiB`, via `--embd-gguf` or by placing `token-embd-bf16.gguf` alongside the model shards where `NativeEmbed`
+auto-discovers it for any sub-8-bit `token_embd.weight`) costs **0 B of VRAM** (`+890 MiB` of pinned mapped host RAM
+and `+3.76 KB/token` over PCIe, speed-neutral on decode) and flips **4.88% of greedy top-1 predictions (`95.12%` top-1
+agreement, mean `KL = 0.02602`)** across the 4,995 positions of `data/quant_quality/v1`, lowering teacher-forced
+perplexity on English prose (`4.2413 -> 4.2090`, `-0.76%`), multilingual (`2.6562 -> 2.6464`, `-0.37%`), and docs
+(`9.5298 -> 9.5213`, `-0.09%`).
 
 UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 share their shards 2 (the output head) and 3 (the PLE table) byte for byte (the same
 SHA-256), so a PC that has one of them can link those two shards instead of downloading them again.

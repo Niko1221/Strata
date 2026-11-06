@@ -57,6 +57,11 @@ public:
     NativeEmbed(const NativeEmbed&) = delete;
     NativeEmbed& operator=(const NativeEmbed&) = delete;
     bool load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err);
+    /// If `STRATA_AUTO_EMBD_BF16` is not "0", `shards` holds a sub-8-bit `token_embd.weight` (not F32/F16/Q8_0/BF16),
+    /// and a valid `[n_embd, n_vocab]` BF16 `token-embd-bf16.gguf` sits next to `shards[0]` (or in its parent / `embd/`),
+    /// returns that sidecar path and sets `*replaced_type` to the shard's original GGML type.
+    static std::string auto_bf16_sidecar(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab,
+                                         int* replaced_type = nullptr);
     /// Rows for device token ids.
     void gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const;
     /// One row for a host token id.
