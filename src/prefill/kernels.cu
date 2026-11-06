@@ -1306,12 +1306,17 @@ struct GdnTcNorm {
     int64_t ld16;
 };
 cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T,
-                       cudaStream_t s, bool split = false, int np = 3, const GdnTcNorm* nm = nullptr, int tiles = 1) {
+                       cudaStream_t s, bool split = false, int np = 3, const GdnTcNorm* nm = nullptr, int tiles = 1,
+                       bool turing = true) {
     if (T <= 0) return cudaSuccess;
+    // sm_75: the one-buffer plan (kTcScanSmemOne); the split variants are not supported there.  turing = false (the
+    // dispatch with STRATA_GDN_TC=1) leaves sm_75 on the kernels it had
+    bool one = false;
     {
-        int dev = 0, major = 0, sms = 0, smem = 0;
+        int dev = 0, major = 0, minor = 0, sms = 0, smem = 0;
         if (cudaGetDevice(&dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) != cudaSuccess) {
             cudaGetLastError();
@@ -1319,20 +1324,26 @@ cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const fl
         }
         const GdnProbe* pr = gdn_probe_get();   // tests only: fewer SMs than value heads run the 48 blocks in several waves
         const bool any_sms = pr != nullptr && pr->any_sms;
-        if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HV) ||
+        one = strata::cc_major_of(major) == 7 && strata::cc_minor_of(minor) >= 5;
+        if (one) {
+            if (!turing || split || (!any_sms && sms < HV) || (size_t) strata::smem_optin_of(smem) < kTcScanSmemOne)
+                return cudaErrorNotSupported;
+        } else if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HV) ||
             (size_t) strata::smem_optin_of(smem) < (split ? (nm ? kTcScanSmemSplitNorm : kTcScanSmemSplit) : kTcScanSmem<false>))
             return cudaErrorNotSupported;
     }
     const GtcScratch sc = gdn_tc_scratch();
     if (sc.ti == nullptr) return cudaErrorMemoryAllocation;
     {   // once a device
-        static bool attrs[3][64] = {};
-        const int ai = nm && split ? 2 : (split ? 1 : 0);
+        static bool attrs[4][64] = {};
+        const int ai = one ? 3 : (nm && split ? 2 : (split ? 1 : 0));
         int dev = 0;
         cudaGetDevice(&dev);
         if (dev >= 0 && dev < 64 && !attrs[ai][dev]) {
             if (split) cudaFuncSetAttribute(gdn_tc_scan_kernel<false, true, 3, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplit);
-            if (ai == 2) {
+            if (ai == 3) {
+                cudaFuncSetAttribute(gdn_tc_scan_kernel<false, true, 3, 1, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemOne);
+            } else if (ai == 2) {
                 cudaFuncSetAttribute(gdn_tc_scan_kernel<true, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplitNorm);
                 cudaFuncSetAttribute(gdn_tc_scan_kernel<true, true, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplitNorm);
                 cudaFuncSetAttribute(gdn_tc_scan_kernel<true, true, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplitNorm);
@@ -1348,7 +1359,9 @@ cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const fl
     for (int64_t t0 = 0; t0 < T; t0 += GSB) {
         const int nch = (int) ((std::min<int64_t>(GSB, T - t0) + GCH - 1) / GCH);
         gdn_tc_prep_kernel<<<dim3((unsigned) nch, HK), 256, kTcPrepSmem, s>>>(h, gate, beta, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, t0, T);
-        if (tiles == 2 && split && !nm && np == 3) {
+        if (one) {
+            gdn_tc_scan_kernel<false, true, 3, 1, true><<<HV, GTC_CW * 32, kTcScanSmemOne, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T);
+        } else if (tiles == 2 && split && !nm && np == 3) {
             gdn_tc_scan_kernel<false, true, 3, 2><<<HV * 2, GTC_CW * 16, kTcScanSmemSplit, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T);
         } else if (nm && split) {
 #define STRATA_TCN(NPV) gdn_tc_scan_kernel<true, true, NPV><<<HV, GTC_CW * 32, kTcScanSmemSplitNorm, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T, nm->z, nm->gamma, nm->eps, nm->y16, nm->ld16)
@@ -3036,8 +3049,10 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
         static const bool chunked = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) != 0; }();
         // STRATA_GDN_TC=1 (opt-in): the chunked recurrence with the scan on the tensor cores (gdn_tc.cuh) for prompt
         // chunks of kGdnTcMin+ tokens: within 1e-4 of the kernels below (gdn_rec_parity), 3.75x gdn_rec_kh_kernel on a
-        // CMP 170HX; a shorter chunk, a card it does not fit or a failed scratch allocation takes the kernels below
-        static const bool tc = [] { const char* v = std::getenv("STRATA_GDN_TC"); return v != nullptr && std::atoi(v) != 0; }();
+        // CMP 170HX; a shorter chunk, a card it does not fit or a failed scratch allocation takes the kernels below.
+        // STRATA_GDN_TC=2 runs it on sm_75 too (the one-buffer plan; not qualified there, so =1 leaves sm_75 as it was)
+        static const int tc_mode = [] { const char* v = std::getenv("STRATA_GDN_TC"); return v != nullptr ? std::atoi(v) : 0; }();
+        static const bool tc = tc_mode != 0;
         // A test's probe (gdn_probe.hpp) reads back the path that ran and may force one; without a probe this is the
         // dispatch it was.  A forced path that cannot run launches nothing (selected = none, reason says why).
         GdnProbe* pr = gdn_probe_get();
@@ -3077,7 +3092,7 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
         } else {
             if (tc && T >= kGdnTcMin) {
                 wanted = kGdnTc;
-                cudaError_t e = gdn_rec_tc(state, h, gate, beta, y, T, cs);
+                cudaError_t e = gdn_rec_tc(state, h, gate, beta, y, T, cs, false, 3, nullptr, 1, tc_mode >= 2);
                 if (e == cudaSuccess) sel = kGdnTc;
                 else {   // the 99-KB cards (sm_86 / 89 / 120): the single-buffered v / T / P plan
                     if (pr) why = gdn_chunk_why(true, e, false);
