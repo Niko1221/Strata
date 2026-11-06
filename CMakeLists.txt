@@ -644,6 +644,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME qsa_select_bench COMMAND qsa_select_bench 32768 256 3 262144)
     add_test(NAME qsa_select_bench_fp32_tiled COMMAND qsa_select_bench 131072 256 3 262144)
     set_tests_properties(qsa_select_bench_fp32_tiled PROPERTIES ENVIRONMENT "STRATA_QSA_WARP=1;STRATA_SELECT_SIMT=1")
+    # the FP16 tensor-core scorer (STRATA_SELECT_F16=1, sm_80+; below sm_80 the switch is ignored and the test repeats the
+    # default): the FP64 gate and the selections against the warp kernel at 131K
+    add_test(NAME qsa_select_bench_f16 COMMAND qsa_select_bench 131072 256 3 262144)
+    set_tests_properties(qsa_select_bench_f16 PROPERTIES ENVIRONMENT "STRATA_SELECT_F16=1")
   endif()
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)   # the prompt attention on a recorded selection (STRATA_QSA_DUMP)
     add_executable(pa_bench tests/cuda/pa_bench.cpp)

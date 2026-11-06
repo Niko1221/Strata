@@ -1,0 +1,71 @@
+# qsa_select_bench matrix, default; switches: none
+
+### qsa_select_bench 40000 256 10
+top-k 0.092 -> 0.036 ms (2.6x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 226): warp kernel max err 2.09e-05, fast scorer max err 0.000382 (1.7e-06 of scale)
+ctx 40000, 256 queries x 10001 blocks: scores 0.523 -> 0.134 ms (3.9x), top-k 0.092 ms; score rel diff mean 1.5e-06 max 1.5; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 131072 256 10
+top-k 0.318 -> 0.172 ms (1.8x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 302): warp kernel max err 2.36e-05, fast scorer max err 0.000488 (1.6e-06 of scale)
+ctx 131072, 256 queries x 32769 blocks: scores 1.640 -> 0.407 ms (4.0x), top-k 0.318 ms; score rel diff mean 1.7e-06 max 6.1; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 262144 256 10
+top-k 0.828 -> 0.213 ms (3.9x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 323): warp kernel max err 2.86e-05, fast scorer max err 0.000552 (1.7e-06 of scale)
+ctx 262144, 256 queries x 65537 blocks: scores 3.252 -> 0.855 ms (3.8x), top-k 0.828 ms; score rel diff mean 1e-06 max 0.48; selections identical 255/256, cells differing 0.0004%
+
+### qsa_select_bench 524284 256 10
+top-k 2.752 -> 0.453 ms (6.1x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 225): warp kernel max err 2.12e-05, fast scorer max err 0.000392 (1.7e-06 of scale)
+ctx 524284, 256 queries x 131072 blocks: scores 6.450 -> 1.629 ms (4.0x), top-k 2.752 ms; score rel diff mean 1.1e-06 max 0.95; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 524288 256 10
+top-k 2.783 -> 0.432 ms (6.4x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 272): warp kernel max err 2.26e-05, fast scorer max err 0.000382 (1.4e-06 of scale)
+ctx 524288, 256 queries x 131073 blocks: scores 6.111 -> 1.592 ms (3.8x), top-k 2.783 ms; score rel diff mean 1.1e-06 max 1.6; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 600000 256 10
+top-k 3.593 -> 0.583 ms (6.2x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 235): warp kernel max err 2.08e-05, fast scorer max err 0.000374 (1.6e-06 of scale)
+ctx 600000, 256 queries x 150001 blocks: scores 8.521 -> 1.929 ms (4.4x), top-k 3.593 ms; score rel diff mean 1.2e-06 max 3.3; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 700000 256 10
+top-k 4.083 -> 0.849 ms (4.8x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 248): warp kernel max err 2.31e-05, fast scorer max err 0.000368 (1.5e-06 of scale)
+ctx 700000, 256 queries x 175001 blocks: scores 24.584 -> 2.143 ms (11.5x), top-k 4.083 ms; score rel diff mean 1.1e-06 max 2.4; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 1000000 256 10
+top-k 6.287 -> 1.601 ms (3.9x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 243): warp kernel max err 2.28e-05, fast scorer max err 0.00038 (1.6e-06 of scale)
+ctx 1000000, 256 queries x 250001 blocks: scores 35.226 -> 3.059 ms (11.5x), top-k 6.287 ms; score rel diff mean 1.1e-06 max 2.4; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 1000000 1 10
+top-k 0.864 -> 0.290 ms (3.0x), register top-k identical to the reference 1/1
+PASS accuracy vs FP64 (score scale 205): warp kernel max err 1.49e-05, fast scorer max err 0.000299 (1.5e-06 of scale)
+ctx 1000000, 1 queries x 250001 blocks: scores 0.140 -> 0.194 ms (0.7x), top-k 0.864 ms; score rel diff mean 8.3e-07 max 0.0039; selections identical 1/1, cells differing 0.0000%
+
+### qsa_select_bench 1000000 8 10
+top-k 0.875 -> 0.296 ms (3.0x), register top-k identical to the reference 8/8
+PASS accuracy vs FP64 (score scale 208): warp kernel max err 1.84e-05, fast scorer max err 0.000369 (1.8e-06 of scale)
+ctx 1000000, 8 queries x 250001 blocks: scores 1.102 -> 0.197 ms (5.6x), top-k 0.875 ms; score rel diff mean 9.3e-07 max 0.06; selections identical 8/8, cells differing 0.0000%
+
+### qsa_select_bench 1000000 255 10
+top-k 6.168 -> 1.595 ms (3.9x), register top-k identical to the reference 255/255
+PASS accuracy vs FP64 (score scale 243): warp kernel max err 2.07e-05, fast scorer max err 0.000419 (1.7e-06 of scale)
+ctx 1000000, 255 queries x 250001 blocks: scores 35.135 -> 3.063 ms (11.5x), top-k 6.168 ms; score rel diff mean 1.1e-06 max 2.4; selections identical 255/255, cells differing 0.0000%
+
+### qsa_select_bench 1000000 257 10
+top-k 6.895 -> 1.791 ms (3.8x), register top-k identical to the reference 257/257
+PASS accuracy vs FP64 (score scale 243): warp kernel max err 2.28e-05, fast scorer max err 0.00038 (1.6e-06 of scale)
+ctx 1000000, 257 queries x 250001 blocks: scores 35.405 -> 3.244 ms (10.9x), top-k 6.895 ms; score rel diff mean 1.1e-06 max 2.4; selections identical 257/257, cells differing 0.0000%
+
+### qsa_select_bench 1000000 1024 10
+top-k 25.087 -> 6.087 ms (4.1x), register top-k identical to the reference 1024/1024
+PASS accuracy vs FP64 (score scale 279): warp kernel max err 2.32e-05, fast scorer max err 0.000416 (1.5e-06 of scale)
+ctx 1000000, 1024 queries x 250001 blocks: scores 141.194 -> 12.375 ms (11.4x), top-k 25.087 ms; score rel diff mean 1.1e-06 max 2.4; selections identical 1023/1024, cells differing 0.0001%
+
+### qsa_select_bench 1000000 4096 10
+top-k 95.991 -> 23.599 ms (4.1x), register top-k identical to the reference 4096/4096
+PASS accuracy vs FP64 (score scale 236): warp kernel max err 2.09e-05, fast scorer max err 0.000334 (1.4e-06 of scale)
+ctx 1000000, 4096 queries x 250001 blocks: scores 562.624 -> 50.341 ms (11.2x), top-k 95.991 ms; score rel diff mean 1.1e-06 max 4.7; selections identical 4092/4096, cells differing 0.0001%

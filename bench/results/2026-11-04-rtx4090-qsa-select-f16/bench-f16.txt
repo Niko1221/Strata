@@ -1,0 +1,85 @@
+# qsa_select_bench matrix, switches; switches: STRATA_SELECT_F16=1
+
+### qsa_select_bench 40000 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 0.085 -> 0.033 ms (2.6x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 226): warp kernel max err 2.09e-05, fast scorer max err 0.000305 (1.4e-06 of scale)
+ctx 40000, 256 queries x 10001 blocks: scores 0.482 -> 0.092 ms (5.3x), top-k 0.085 ms; score rel diff mean 7.1e-07 max 0.45; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 131072 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 0.293 -> 0.159 ms (1.9x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 302): warp kernel max err 2.36e-05, fast scorer max err 0.000365 (1.2e-06 of scale)
+ctx 131072, 256 queries x 32769 blocks: scores 1.522 -> 0.180 ms (8.5x), top-k 0.293 ms; score rel diff mean 9.4e-07 max 3; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 262144 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 0.762 -> 0.201 ms (3.8x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 323): warp kernel max err 2.86e-05, fast scorer max err 0.0004 (1.2e-06 of scale)
+ctx 262144, 256 queries x 65537 blocks: scores 3.041 -> 0.353 ms (8.6x), top-k 0.762 ms; score rel diff mean 5.9e-07 max 0.16; selections identical 255/256, cells differing 0.0004%
+
+### qsa_select_bench 524284 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 2.772 -> 0.451 ms (6.1x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 225): warp kernel max err 2.12e-05, fast scorer max err 0.000277 (1.2e-06 of scale)
+ctx 524284, 256 queries x 131072 blocks: scores 6.119 -> 0.777 ms (7.9x), top-k 2.772 ms; score rel diff mean 6.2e-07 max 0.56; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 524288 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 2.782 -> 0.443 ms (6.3x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 272): warp kernel max err 2.26e-05, fast scorer max err 0.000321 (1.2e-06 of scale)
+ctx 524288, 256 queries x 131073 blocks: scores 6.044 -> 0.746 ms (8.1x), top-k 2.782 ms; score rel diff mean 6.7e-07 max 0.76; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 600000 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 3.593 -> 0.575 ms (6.2x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 235): warp kernel max err 2.08e-05, fast scorer max err 0.000291 (1.2e-06 of scale)
+ctx 600000, 256 queries x 150001 blocks: scores 8.536 -> 0.934 ms (9.1x), top-k 3.593 ms; score rel diff mean 7.2e-07 max 2.1; selections identical 255/256, cells differing 0.0008%
+
+### qsa_select_bench 700000 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 4.078 -> 0.843 ms (4.8x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 248): warp kernel max err 2.31e-05, fast scorer max err 0.000277 (1.1e-06 of scale)
+ctx 700000, 256 queries x 175001 blocks: scores 24.648 -> 1.048 ms (23.5x), top-k 4.078 ms; score rel diff mean 6.9e-07 max 1.9; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 1000000 256 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 6.285 -> 1.600 ms (3.9x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 243): warp kernel max err 2.28e-05, fast scorer max err 0.000282 (1.2e-06 of scale)
+ctx 1000000, 256 queries x 250001 blocks: scores 35.267 -> 1.490 ms (23.7x), top-k 6.285 ms; score rel diff mean 6.5e-07 max 1.1; selections identical 256/256, cells differing 0.0000%
+
+### qsa_select_bench 1000000 1 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 0.865 -> 0.291 ms (3.0x), register top-k identical to the reference 1/1
+PASS accuracy vs FP64 (score scale 205): warp kernel max err 1.49e-05, fast scorer max err 0.000207 (1e-06 of scale)
+ctx 1000000, 1 queries x 250001 blocks: scores 0.140 -> 0.187 ms (0.8x), top-k 0.865 ms; score rel diff mean 5e-07 max 0.0042; selections identical 1/1, cells differing 0.0000%
+
+### qsa_select_bench 1000000 8 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 0.876 -> 0.296 ms (3.0x), register top-k identical to the reference 8/8
+PASS accuracy vs FP64 (score scale 208): warp kernel max err 1.84e-05, fast scorer max err 0.000292 (1.4e-06 of scale)
+ctx 1000000, 8 queries x 250001 blocks: scores 1.151 -> 0.190 ms (6.1x), top-k 0.876 ms; score rel diff mean 5.4e-07 max 0.019; selections identical 8/8, cells differing 0.0000%
+
+### qsa_select_bench 1000000 255 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 6.186 -> 1.603 ms (3.9x), register top-k identical to the reference 255/255
+PASS accuracy vs FP64 (score scale 243): warp kernel max err 2.07e-05, fast scorer max err 0.000297 (1.2e-06 of scale)
+ctx 1000000, 255 queries x 250001 blocks: scores 35.079 -> 1.487 ms (23.6x), top-k 6.186 ms; score rel diff mean 6.5e-07 max 1.1; selections identical 255/255, cells differing 0.0000%
+
+### qsa_select_bench 1000000 257 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 6.889 -> 1.787 ms (3.9x), register top-k identical to the reference 257/257
+PASS accuracy vs FP64 (score scale 243): warp kernel max err 2.28e-05, fast scorer max err 0.000282 (1.2e-06 of scale)
+ctx 1000000, 257 queries x 250001 blocks: scores 35.355 -> 1.654 ms (21.4x), top-k 6.889 ms; score rel diff mean 6.5e-07 max 1.1; selections identical 257/257, cells differing 0.0000%
+
+### qsa_select_bench 1000000 1024 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 25.174 -> 6.092 ms (4.1x), register top-k identical to the reference 1024/1024
+PASS accuracy vs FP64 (score scale 279): warp kernel max err 2.32e-05, fast scorer max err 0.000355 (1.3e-06 of scale)
+ctx 1000000, 1024 queries x 250001 blocks: scores 140.856 -> 5.783 ms (24.4x), top-k 25.174 ms; score rel diff mean 6.4e-07 max 1.2; selections identical 1023/1024, cells differing 0.0001%
+
+### qsa_select_bench 1000000 4096 10
+qsa select: FP16 tensor-core scorer (STRATA_SELECT_F16=1, hi.hi + hi.lo + lo.hi) for prompt calls of 8192 blocks or more
+top-k 95.892 -> 23.622 ms (4.1x), register top-k identical to the reference 4096/4096
+PASS accuracy vs FP64 (score scale 236): warp kernel max err 2.09e-05, fast scorer max err 0.000259 (1.1e-06 of scale)
+ctx 1000000, 4096 queries x 250001 blocks: scores 563.169 -> 23.185 ms (24.3x), top-k 95.892 ms; score rel diff mean 6.5e-07 max 3.3; selections identical 4092/4096, cells differing 0.0002%
