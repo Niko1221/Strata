@@ -964,11 +964,71 @@ std::vector<int> parse_list(const char* s) {
 
 }  // namespace
 
+#if defined(DQ_TEST_GGUF)
+// --path bench: gg::mv's time (the engine's entry point: BF16, Q8_0 and the ggml types through ds4_iq) on the decode's dense
+// shapes - DeepSeek-V4.1's wq_b 1280x32768, wo_a 4096x1024, wo_b 8192x5120, the shared expert 5120x2304 / 2304x5120, wq_a
+// 5120x1280, wkv 5120x512, the router 5120x384 (--shape KxN,... instead) - for 1, 2, 4 and 6 activations.  Copies of the
+// matrix (256 MB of them) take turns, so the cache holds none of it, as no layer's weights stay there between tokens.
+void run_bench(const TypeInfo& ty) {
+    if (!ty.dense) return;
+    std::vector<std::pair<int, int>> shapes = {{1280, 32768}, {4096, 1024}, {8192, 5120}, {5120, 2304}, {2304, 5120},
+                                               {5120, 1280}, {5120, 512}, {5120, 384}};
+    if (!g_rep_shapes.empty()) shapes = g_rep_shapes;
+    std::mt19937_64 xr(5);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    hipEvent_t e0, e1;   // (once: the shim has no destroy)
+    CK(hipEventCreate(&e0));
+    CK(hipEventCreate(&e1));
+    for (const auto& sh : shapes) {
+        const int k = sh.first, n = sh.second;
+        if (ty.id != kBF16 && ty.id != kQ8_0 && k % 256) continue;
+        std::mt19937_64 rng((uint64_t) ty.id * 31 + (uint64_t) k + (uint64_t) n * 7);
+        auto raw = make_bytes(ty.id, (size_t) n * (k / ty.bv), rng);
+        const int copies = (int) std::max<size_t>(2, ((size_t) 256 << 20) / std::max<size_t>(1, raw.size()) + 1);
+        std::vector<uint8_t*> d_raw((size_t) copies);
+        std::vector<x3::Mat> mats((size_t) copies);
+        for (int c = 0; c < copies; ++c) {
+            d_raw[(size_t) c] = up(raw);
+            mats[(size_t) c] = make_mat(ty, d_raw[(size_t) c], k, n);
+        }
+        for (int nc : {1, 2, 4, 6}) {
+            std::vector<float> x((size_t) nc * k);
+            for (auto& v : x) v = nd(xr);
+            float* d_x = up(x);
+            float* d_y;
+            CK(hipMalloc(&d_y, (size_t) nc * n * 4));
+            x3::MvJob j{};
+            j.xf = d_x; j.xf_cs = (size_t) k; j.y = d_y; j.y_cs = (size_t) n; j.alpha = 1.0f; j.ncol = nc;
+            auto call = [&](int c) {
+                j.m = &mats[(size_t) (c % copies)];
+                if (!gg::mv(&j, 1, 0)) { std::printf("bench %s k=%d n=%d ncol=%d: refused\n", ty.name, k, n, nc); bail(1); }
+            };
+            for (int w = 0; w < copies; ++w) call(w);
+            CK(hipDeviceSynchronize());
+            const int reps = std::max(20, 2 * copies);
+            CK(hipEventRecord(e0, 0));
+            for (int r = 0; r < reps; ++r) call(r);
+            CK(hipEventRecord(e1, 0));
+            CK(hipEventSynchronize(e1));
+            float ms = 0;
+            CK(hipEventElapsedTime(&ms, e0, e1));
+            const double us = 1000.0 * ms / reps;
+            std::printf("BENCH %-5s mv k=%5d n=%5d ncol=%d: %8.1f us  %6.1f GB/s (%.2f MB)\n", ty.name, k, n, nc, us,
+                        (double) raw.size() / 1e3 / us, (double) raw.size() / 1e6);
+            std::fflush(stdout);
+            CK(hipFree(d_x));
+            CK(hipFree(d_y));
+        }
+        for (uint8_t* d : d_raw) CK(hipFree(d));
+    }
+}
+#endif
+
 int main(int argc, char** argv) {
     int dev = 0;
     bool quick = false;
     std::vector<int> types;
-    std::string kernel = "all", paths = "rows,mv,f16,gguf,gemm"   /* repeat is on request: --path repeat */;
+    std::string kernel = "all", paths = "rows,mv,f16,gguf,gemm"   /* repeat and bench on request: --path repeat / bench */;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--device" && i + 1 < argc) dev = std::atoi(argv[++i]);
@@ -1010,6 +1070,9 @@ int main(int argc, char** argv) {
 #endif
         }
         if (want("mv")) run_mv(*ty, quick);
+#if defined(DQ_TEST_GGUF)
+        if (want("bench")) run_bench(*ty);
+#endif
         if (want("f16")) run_f16(*ty);
     }
     bail(g_fails ? 1 : 0);
