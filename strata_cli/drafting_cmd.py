@@ -104,15 +104,15 @@ def run(a) -> int:
     want = _inputs(a)
     folder = want["data_dir"]
     sig = _signals(a, want)
-    needed = drafting.needs_pack(**want) or drafting.needs_tuned(**want, **sig)       # (the tuned drafter is a download of its own, where the set and the card use it)
-    mtp_needed = drafting.needs_mtp(**want)
+    needed = drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig)       # (the tuned drafter is a download of its own, where the set and the card use it)
+    mtp_needed = drafting.needs_mtp(**want, **sig)
     if a.drafting_command == "plan":
-        decision = drafting.decide(**want)
+        decision = drafting.decide(**want, **sig)
         support = drafting.hardware_support(want["backend"], want["archs"], want["model_name"])
         # serves: this computer's engine can run DFlash2 (the build has the code and the card is one it is made for); the app offers the choice only then
         result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe(), model_name=want["model_name"], backend=want["backend"], archs=want["archs"], **sig), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
                   "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
-                  "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
+                  "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"], **sig),
                   "split": bool(getattr(a, "_split", False)), "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
         if result["split"]:                                # the Terminal's words for the same plan (runner.drafting_plan_line)
             from strata_control import split_engine as SE

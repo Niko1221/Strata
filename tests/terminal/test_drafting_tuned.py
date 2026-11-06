@@ -494,6 +494,8 @@ class CudaAndHip(Fetch):
         self.put_stock()
         for hardware in (P2003, CARD24, R9700, RX7900, ARC, TWO_CARDS):
             for name in (IQ3S, Q4, V31, OLD_XS):
+                if hardware is P2003 and name == V31:
+                    continue                                    # the 12 GB class has its own entry for v31 (test_drafting_streaming_class.py)
                 d, args = self.apply_on(hardware, name)
                 where = (hardware[0], name)
                 self.assertNotEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data)), where)
@@ -530,9 +532,10 @@ class CudaAndHip(Fetch):
         self.put_stock()
         want = {L620[0]: "0.35", SPARK[0]: "0.35", STRIX[0]: "0.35", P2003[0]: "0.8", ARC[0]: "0.6"}
         for hardware in (L620, SPARK, STRIX, P2003, ARC):
-            before = flag(self.apply_on(hardware, IQ3S)[1], "--draft-conf")
+            name = V31 if hardware is P2003 else IQ3S           # (IQ3S on the 12 GB class is the MTP now: no DFlash2 conf to compare)
+            before = flag(self.apply_on(hardware, name)[1], "--draft-conf")
             self.put_tuned()
-            after = flag(self.apply_on(hardware, IQ3S)[1], "--draft-conf")
+            after = flag(self.apply_on(hardware, name)[1], "--draft-conf")
             self.drop_tuned()
             self.assertEqual(before, after, hardware[0])
             self.assertEqual(after, want[hardware[0]], hardware[0])

@@ -185,6 +185,8 @@ def hardware_support(backend: str | None, archs: Any = None, model_name: str | N
             return Support(True, "tested", LINE_METAL)
     if (make, arch) in _TESTED:
         return Support(True, "tested", LINE_TESTED)
+    if (make, arch) in _SLOWER and any(k[0] == make and k[1] == set_of(model_name) and v.drafter == "dflash2" for k, v in CLASS_DEFAULTS.items()):
+        return Support(True, "tested", LINE_TESTED)               # a set whose default on this class of card is DFlash2 (CLASS_DEFAULTS): faster on some kinds of text, slower on others
     if (make, arch) in _SLOWER:
         return Support(True, "slower", LINE_SLOWER)
     return Support(True, "untested", LINE_UNTESTED)
@@ -330,6 +332,17 @@ SET_DEFAULTS = {
     ("hip", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, None, "gfx1151"),
     ("sycl", "iq3_xxs"): SetDefault("dflash2", True, None, "arc_a", "bf16sel"),
 }
+#: Per (engine family, set, card class) defaults for a class of CARD, read from the same slot count the confidence reads (owner 11-06 ~15:30 "1 yes"). Today one class: "streaming" = a CUDA card whose
+#: engine slots are under the last-but-one CONF_STEPS step (3000), i.e. the step that gives conf 0.8: the 12 GB class (P2003, RTX 3060), where the experts stream and IQ3_S runs from the file cache.
+#: A class entry beats the (backend, set) entry above for the cards of its class and changes nothing for any other card; ONE REMOVABLE ENTRY PER SET:
+#:   IQ3_S -> Auto is the MTP: on the 12 GB card with the file cache the MTP beats DFlash2 by 12-44% (RTX2 t4b), DF-VAL saw up to 3.1x.
+#:   UD-IQ4_XS-v31 -> Auto is DFlash2 with the tuned selq4 pack at the class's CURRENT conf (0.8, unchanged): with RTX2's file-tier fix (unbuffered reads) DFlash2 beats the MTP by about 6.5% (t8, 3 starts:
+#:   agent +14.2%, code +12.9%, chat +7.3%, tool +2.1%, json -3.5%); DF-VAL, forced-fast: tuned at 0.8 x1.037 against the stock pack. THIS ENTRY DEPENDS ON RTX2's FILE-TIER FIX BEING IN THE SAME RELEASE.
+#: Other sets on that class: unchanged (the general rule). Anything chosen by name (a saved "drafting", `--drafting`, the app's dropdown) wins over both.
+CLASS_DEFAULTS = {
+    ("cuda", "iq3_s", "streaming"): SetDefault("mtp", where="streaming"),
+    ("cuda", "unsloth-ud-iq4_xs-v31", "streaming"): SetDefault("dflash2", True, None, "streaming"),
+}
 MODEL_PREFIX = "qwen3.8-flash-next-"
 
 #: Cards where Auto starts the MTP instead of DFlash2 (owner 11-06 ~10:30), keyed (engine family, first architecture); the value is why. ONE ENTRY, delete it to put Auto back.
@@ -372,6 +385,24 @@ def first_arch(archs: Any) -> str:
     return str(first[0]).strip().lower() if first else ""
 
 
+def streaming_class(backend: str | None, archs: Any = None, *, args: list[Any] | None = None, vram_mib: float | None = None) -> bool:
+    """Is this a CUDA card of the 12 GB / streaming class: the one card's memory is known (or the person gave an --expert-cache) and slots_of() is under the last-but-one CONF_STEPS step, so the
+    confidence is the last step's (0.8)? The Spark (one memory pool) and several cards are not."""
+    if str(backend or "").strip().lower() != "cuda" or first_arch(archs) == "sm_121":
+        return False
+    slots = slots_of(list(args or []), vram_mib)
+    return slots is not None and slots < CONF_STEPS[-2][0]
+
+
+def class_entry(backend: str | None, model_name: str | None, archs: Any = None, *, args: list[Any] | None = None, vram_mib: float | None = None) -> SetDefault | None:
+    """The CLASS_DEFAULTS entry that holds for this start (the set on this engine family and the card's class), or None."""
+    key = (str(backend or "").strip().lower(), set_of(model_name), "streaming")
+    entry = CLASS_DEFAULTS.get(key)
+    if entry is not None and streaming_class(backend, archs, args=args, vram_mib=vram_mib):
+        return entry
+    return None
+
+
 def auto_mtp_only(backend: str | None, archs: Any = None) -> bool:
     """Is this card one where Auto starts the MTP (AUTO_MTP)? Auto only: a DFlash2 asked for by name is not looked at here."""
     return (str(backend or "").strip().lower(), first_arch(archs)) in AUTO_MTP
@@ -382,6 +413,9 @@ def tuned_applies(backend: str | None, model_name: str | None, archs: Any = None
     slots_of() (the person's --expert-cache, else the one card's memory ``vram_mib``) reach the first CONF_STEPS step (the step that gives 0.35), or the chip is the Spark (sm_121: one
     pool of memory, vram_mib is None by design); "gfx1151" = the first architecture is Strix Halo. A card whose memory is not known (several cards, a driver that does not answer) is not
     resident. Nothing here looks at the disk or the network."""
+    klass = class_entry(backend, model_name, archs, args=args, vram_mib=vram_mib)
+    if klass is not None:
+        return klass.drafter == "dflash2" and klass.tuned          # the card class has its own rule for this set
     entry = tuned_entry(backend, model_name)
     if entry is None:
         return False
@@ -885,7 +919,8 @@ def can_run_dflash2(model_name: str | None, family: str | None, backend: str | N
     return bool(supported_model(model_name, family) and ENGINE_SERVES_DFLASH2 and backend is not None and hardware_support(backend, archs).can_run)
 
 
-def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None) -> str:
+def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None,
+              args: list[Any] | None = None, vram_mib: float | None = None) -> str:
     """The drafter the choice means for this model on this computer, before anything is looked up on disk: ``dflash2``, ``mtp`` or ``off``. Auto is DFlash2 wherever
     the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else and for a set whose entry in SET_DEFAULTS says MTP; DFlash2 asked for by name
     where it cannot run is MTP."""
@@ -899,11 +934,15 @@ def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = 
         return "mtp"                                          # a set whose measured default on this engine family is the MTP (SET_DEFAULTS)
     if asked == "auto" and auto_mtp_only(backend, archs):
         return "mtp"                                          # a card where Auto keeps the MTP for now (AUTO_MTP)
+    klass = class_entry(backend, model_name, archs, args=args, vram_mib=vram_mib)
+    if asked == "auto" and klass is not None and klass.drafter == "mtp":
+        return "mtp"                                          # this set on this class of card (CLASS_DEFAULTS)
     return "dflash2" if can_run_dflash2(model_name, family, backend, archs) else "mtp"
 
 
 def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
-           backend: str | None = None, archs: Any = None, mtp_here: bool | None = None, blocked: bool = False, vocab_here: bool = True) -> Decision:
+           backend: str | None = None, archs: Any = None, mtp_here: bool | None = None, blocked: bool = False, vocab_here: bool = True,
+           args: list[Any] | None = None, vram_mib: float | None = None) -> Decision:
     """The drafter a start uses. Never raises. One drafter, never two. A choice that cannot be applied becomes the other drafter when that one is on this computer,
     else none, with a note in plain words. ``mtp_here`` says whether the MTP layer is on disk (None: not known, taken as there), ``blocked`` that this start is a layer
     split or has several requests at once (see blocked_by), ``vocab_here`` that the draft vocabulary DFlash2 needs is there. ``klass`` is not used any more (Auto
@@ -911,9 +950,10 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
     asked = normalize(mode)
     if asked == "off":
         return Decision(asked, "off")
-    want = choice_of(asked, model_name=model_name, family=family, backend=backend, archs=archs)
+    want = choice_of(asked, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib)
     have_mtp = mtp_here is not False
-    runnable = can_run_dflash2(model_name, family, backend, archs) and not (asked == "auto" and auto_mtp_only(backend, archs))
+    runnable = can_run_dflash2(model_name, family, backend, archs) and not (asked == "auto" and (auto_mtp_only(backend, archs) or want == "mtp" and class_entry(
+        backend, model_name, archs, args=args, vram_mib=vram_mib) is not None))
 
     if want == "dflash2":
         reason = NOT_HERE if (blocked or not vocab_here) else NOT_DOWNLOADED if not drafter_ready(data_dir, model_name, backend) else ""
@@ -936,39 +976,39 @@ ONE_REQUEST_NOTE = "DFlash2 answers one request at a time, so Strata set this mo
 
 
 def wants_one_request(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
-                      archs: Any = None, **_ignored: Any) -> bool:
+                      archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """The choice means DFlash2 on this model and computer (named, or Auto where the engine has it): the model then starts with one request at a time, because the
     engine's request slots (``--batch``, which Strata fills in by itself on a card with room) are not filled in beside it. A number of requests the person chose stays as
     they chose it: with DFlash2 named the start runs DFlash2 with that many (a drafter per request), with Auto it loads the MTP and says so; the callers check that."""
-    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2"
+    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2"
 
 
 def needs_conversion(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
-                     backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
+                     backend: str | None = None, archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """Would this choice use DFlash2, is the Q4_0 pack here, and is the converted pack (Q4_0 selector) not made yet? (Then setup / Load makes it, locally, once.)"""
-    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and bool(data_dir)
+    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2" and bool(data_dir)
             and _here(Path(data_dir) / FOLDER / PACK_NAME) and not converted_ok(data_dir))
 
 
 def needs_pack(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
-               backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
+               backend: str | None = None, archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """Would this choice use the DFlash2 drafter if its file were here, and is it not here yet? (Then it is fetched before the start, once.)"""
-    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and not drafter_ready(data_dir, model_name, backend)
+    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2" and not drafter_ready(data_dir, model_name, backend)
 
 
 def needs_tuned(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
                 backend: str | None = None, archs: Any = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """Would this choice use DFlash2 with the tuned drafter (this set has an entry in SET_DEFAULTS) and is that file not here yet? (Setup, Load and `strata drafting fetch`
     fetch it, once; offline they skip it and the stock pack or the MTP runs.)"""
-    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2"
+    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "dflash2"
             and tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib) and bool(data_dir) and not tuned_ok(data_dir, tuned_variant(backend, model_name)))
 
 
 def needs_mtp(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
-              archs: Any = None, mtp_here: bool | None = None, **_ignored: Any) -> bool:
+              archs: Any = None, mtp_here: bool | None = None, args: list[Any] | None = None, vram_mib: float | None = None, **_ignored: Any) -> bool:
     """Would this choice use the MTP layer, and is it not on this computer yet? (A new install fetches only the drafter it will use; this is what a later switch
     to the MTP fetches, once.)"""
-    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "mtp" and mtp_here is False
+    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs, args=args, vram_mib=vram_mib) == "mtp" and mtp_here is False
 
 
 #: The engine options of the DFlash2 drafter; none of them goes with the MTP.
@@ -1060,7 +1100,8 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     if cfg.get("mtp") is False and normalize(mode) == "auto":
         mode = "off"                                          # "Draft layer (MTP)" turned off by the person, and no drafter chosen since: no drafter
     decision = decide(mode, model_name=cfg.get("model_name"), family=family, data_dir=data_dir, backend=backend, archs=archs,
-                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots, named=normalize(mode) == "dflash2", backend=backend) or form == FORM_NONE, vocab_here=vocab is not None)
+                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots, named=normalize(mode) == "dflash2", backend=backend) or form == FORM_NONE, vocab_here=vocab is not None,
+                      args=strip_mtp_flags(strip_draft_flags(args)), vram_mib=vram_mib)
     mine = cfg.get("user_args") or []
     pack = None
     if decision.drafter == "dflash2":

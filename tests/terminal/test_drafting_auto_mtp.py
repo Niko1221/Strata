@@ -113,7 +113,8 @@ class Gfx1201(Base):
 
 class EverythingElseIsUnchanged(Base):
     def test_gfx1151_cuda_other_amd_metal_and_sycl_still_start_dflash2_under_auto(self):
-        for hardware in (("hip", ["gfx1151"], None), ("hip", ["gfx1100"], 24576), ("hip", ["gfx1200"], 16384), ("cuda", ["sm_120"], 73728), ("cuda", ["sm_86"], 12288),
+        for hardware in (("hip", ["gfx1151"], None), ("hip", ["gfx1100"], 24576), ("hip", ["gfx1200"], 16384), ("cuda", ["sm_120"], 73728), ("cuda", ["sm_86"], 49152),      # (a 12 GB card has its own entry: test_drafting_streaming_class.py)
+                         
                          ("cuda", ["sm_121"], None), ("sycl", ["arc_a"], None)):
             d, args = self.apply(IQ3S, hardware)
             self.assertEqual((d.drafter, flag(args, "--draft")), ("dflash2", "dflash2"), hardware)

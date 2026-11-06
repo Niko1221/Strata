@@ -1606,8 +1606,10 @@ class Runner:
         """DFlash2 chosen on purpose and the person gave no number of requests: one at a time, said once (drafting.wants_one_request)."""
         try:
             from strata_control import drafting
-            want = self.drafting_inputs(read_config(config))
-            if not drafting.wants_one_request(**want) or not drafting.drafter_ready(want["data_dir"], want["model_name"], want["backend"]):
+            cfg = read_config(config)
+            want = self.drafting_inputs(cfg)
+            sig = self.drafting_signals(cfg, want)
+            if not drafting.wants_one_request(**want, **sig) or not drafting.drafter_ready(want["data_dir"], want["model_name"], want["backend"]):
                 return False                                 # (no drafter file after all, e.g. no internet: the MTP runs and the slots stay)
         except Exception:                                    # noqa: BLE001 - a note is never a reason to stop a launch
             return False
@@ -1627,7 +1629,7 @@ class Runner:
             sig = self.drafting_signals(cfg, want)
             if want["data_dir"] is not None and drafting.needs_conversion(**want) and drafting.engine_has_selector_q4():
                 drafting_fetch.convert_selector(want["data_dir"])        # Load, not a start: the smaller selector (174 MiB), made here from the checked pack, no network
-            if want["data_dir"] is None or not (drafting.needs_pack(**want) or drafting.needs_tuned(**want, **sig)):
+            if want["data_dir"] is None or not (drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig)):
                 return
             tuned = drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig)
             self.emit("model", f"Downloading the DFlash2 drafter ({drafting.tuned_pack(drafting.tuned_variant(want['backend'], want['model_name'])).gb if tuned else drafting.DOWNLOAD_GB:g} GB, once)…", 0)
@@ -2353,8 +2355,8 @@ class Runner:
             _b, _cfg = self.installed_state()
             want = self.drafting_inputs(_cfg or {})
             want["data_dir"] = want["data_dir"] or self.existing_data_dir() or self.catalog.data_dir()
-            if drafting.needs_pack(**want):                   # chosen DFlash2 (or Auto picking it) and the drafter is not here: it is part of the download
-                sig = self.drafting_signals(_cfg or {}, want)
+            sig = self.drafting_signals(_cfg or {}, want)
+            if drafting.needs_pack(**want, **sig):            # chosen DFlash2 (or Auto picking it) and the drafter is not here: it is part of the download
                 parts.append({"kind": "dflash2", "label": "the DFlash2 drafter",
                               "gb": drafting.tuned_pack(drafting.tuned_variant(want["backend"], want["model_name"])).gb if drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig) else drafting.DOWNLOAD_GB})
         except Exception:                                    # noqa: BLE001 - the plan still shows the rest
@@ -2560,9 +2562,10 @@ class Runner:
                 from strata_control.discovery import MTP_FETCH_GB
                 from strata_control import split_engine as SE
                 return SE.split_plan_line(MTP_FETCH_GB)
-            if drafting.needs_pack(**want):                   # the launch fetches the drafter first (ensure_drafter), so that is what will run
+            sig = self.drafting_signals(cfg or {}, want)
+            if drafting.needs_pack(**want, **sig):            # the launch fetches the drafter first (ensure_drafter), so that is what will run
                 return "Drafting: DFlash2 (its drafter is downloaded first)"
-            return drafting.summary_line(drafting.decide(**want))
+            return drafting.summary_line(drafting.decide(**want, **sig))
         except Exception:                                    # noqa: BLE001
             return ""
 
