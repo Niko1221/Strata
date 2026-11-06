@@ -329,23 +329,24 @@ test('#4749 the helper strings are translated', async () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------- #4783
-test('#4783 the three choices while an answer is written, as the web chat page has them, and only those three are valid', async () => {
+test('#4783 busy choices retain the three modes and distinguish same-turn steering', async () => {
   const { busyPlan, validWhileBusy, WHILE_BUSY } = await load('lib/while-busy.ts');
-  assert.deepEqual([...WHILE_BUSY], ['wait', 'queue', 'interject']);
+  assert.deepEqual([...WHILE_BUSY], ['wait', 'queue', 'interject', 'steer']);
   assert.equal(busyPlan('wait'), 'refuse');
   assert.equal(busyPlan('queue'), 'goal', 'a running goal has its own queue in the host; with none, the message is parked');
   assert.equal(busyPlan('interject'), 'interrupt');
+  assert.equal(busyPlan('steer'), 'steer');
   assert.equal(validWhileBusy('queue'), true);
-  for (const bad of ['', 'steer', 'QUEUE', null, undefined, 3]) assert.equal(validWhileBusy(bad), false, String(bad));
+  for (const bad of ['', 'QUEUE', null, undefined, 3]) assert.equal(validWhileBusy(bad), false, String(bad));
 });
 
 test('#4783 the composer acts on the choice, the default keeps today\'s behaviour, and the parked message is sent when the chat is quiet', () => {
   const chat = src('screens/Chat.tsx');
-  assert.match(chat, /if \(plan === 'interrupt'\) \{\s*updateDraft\(''\);\s*clearQuotes\(session\.id\);\s*parkMessage\(session\.id, out\);\s*stopStreaming\(\);\s*return;\s*\}/);
-  assert.match(chat, /if \(plan === 'goal'\) \{ clearQuotes\(session\.id\); parkMessage\(session\.id, out\); return; \}/);
-  assert.match(chat, /pushToast\('info', tr\('The assistant is still answering'\)/, 'Wait still says so');
-  assert.match(chat, /if \(!session \|\| streaming \|\| !parked\?\.length\)\s*return;\s*const next = takeParked\(session\.id\);/);
+  assert.match(chat, /const out = quotedMessage\(quotes, text\)/);
+  assert.match(chat, /submitWhileBusy\(out, id\)/, 'all modes share the store delivery path with quoted text');
   const store = src('lib/store.ts');
+  assert.match(store, /pushToast\('info', 'The assistant is still answering'/, 'Wait still says so');
+  assert.match(store, /!pending && finished && !turn\.stop \? takeParked\(sessionId\)/, 'the backlog waits for successful stream completion');
   assert.match(store, /whileBusy: validWhileBusy\(parsed\.whileBusy\) \? parsed\.whileBusy : 'wait'/, 'an old or invalid saved value reads as Wait');
   assert.match(store, /\n  whileBusy: 'wait',\n/);
   assert.match(src('screens/Settings.tsx'), /setWhileBusy\(value as typeof prefs\.whileBusy\)/);

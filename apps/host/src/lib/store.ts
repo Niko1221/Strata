@@ -20,7 +20,7 @@ import { forkFields, isForkJob, TIME_SKIP_DURATION, timeSkipPrompt, timeSkipTabI
 import { PREVIEW_EXAMPLES, type PreviewArtifact } from './artifacts';
 import { lifecyclePolicy } from './lifecycle';
 import { newestServingState } from './serving-state';
-import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos } from './chat-photos';
+import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, takeChatPhotos, type ChatPhoto } from './chat-photos';
 import { applyNativeEvent, nativeState } from './native';
 import { pictureStatus } from './pictures';
 import { noModelNotice } from './no-model';
@@ -75,6 +75,9 @@ export interface Toast {
 }
 
 export interface AppState {
+  pendingMessages: Record<string, PendingMessage>;
+  steeringMessages: Record<string, SteeringMessage[]>;
+  steeringAvailable: Record<string, boolean>;
   language: Language;
   fontFamily: string;
   configDraft: string | null;
@@ -287,6 +290,9 @@ setTranslationLanguage(prefs.language);
 let lastApprovalNotice = '';
 
 let state: AppState = {
+  pendingMessages: loadPendingMessages(),
+  steeringMessages: loadSavedSteering(),
+  steeringAvailable: {},
   language: prefs.language,
   fontFamily: prefs.fontFamily,
   configDraft: (() => { try { return sessionStorage.getItem('strata.config-draft.v1'); } catch { return null; } })(),
@@ -351,7 +357,27 @@ let state: AppState = {
 const listeners = new Set<() => void>();
 
 /** Chats with a turn in flight: the abort handle, and whether the host is running it as an agent turn. */
-const liveTurns = new Map<string, { abort: AbortController; agent: boolean }>();
+export interface PendingMessage { text: string; photos: ChatPhoto[]; mode: 'queue' | 'interject' }
+export interface SteeringMessage { id: string; text: string; state: 'pending' | 'delivered' | 'failed'; error?: string | null; revision?: number }
+interface LiveTurn { abort: AbortController; agent: boolean; stop?: Promise<boolean>; interrupted?: boolean }
+const liveTurns = new Map<string, LiveTurn>();
+
+function loadSavedSteering(): Record<string, SteeringMessage[]> {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('strata.chat-steering.v1') ?? '{}');
+    return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, SteeringMessage[]] => Array.isArray(entry[1]) && entry[1].every(m => m && typeof m.id === 'string' && typeof m.text === 'string' && ['pending', 'delivered', 'failed'].includes(m.state))));
+  } catch { return {}; }
+}
+
+function loadPendingMessages(): Record<string, PendingMessage> {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('strata.chat-pending.v1') ?? '{}');
+    return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, PendingMessage] => {
+      const p = entry[1] as PendingMessage | null;
+      return !!p && typeof p.text === 'string' && (p.mode === 'queue' || p.mode === 'interject') && Array.isArray(p.photos) && p.photos.every(photo => photo && typeof photo.id === 'string' && typeof photo.name === 'string');
+    }));
+  } catch { return {}; }
+}
 
 function set(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
   const before = state.activeSession;
@@ -724,6 +750,118 @@ export function setApprovalNotify(approvalNotify: boolean) {
   savePrefs();
 }
 
+function applySteeringMessages(chatId: string, raw: unknown) {
+  if (!Array.isArray(raw)) return;
+  const messages = [...(state.steeringMessages[chatId] ?? [])];
+  for (const value of raw) {
+    if (!value || typeof value.id !== 'string' || typeof value.text !== 'string' || !['pending', 'delivered', 'failed'].includes(value.state)) continue;
+    const index = messages.findIndex(m => m.id === value.id);
+    const revision = Number.isSafeInteger(value.revision) ? value.revision : undefined;
+    if (index >= 0 && revision !== undefined && messages[index].revision !== undefined && revision <= messages[index].revision!) continue;
+    const message: SteeringMessage = { id: value.id, text: value.text, state: value.state, error: typeof value.error === 'string' ? value.error : null, revision: revision ?? messages[index]?.revision };
+    if (index < 0) messages.push(message);
+    else if (messages[index].state !== 'delivered') messages[index] = message;
+  }
+  const steeringMessages = { ...state.steeringMessages, [chatId]: messages };
+  try { sessionStorage.setItem('strata.chat-steering.v1', JSON.stringify(steeringMessages)); } catch { /* The host retains accepted instructions. */ }
+  set({ steeringMessages });
+}
+
+export async function loadSteeringMessages(chatId: string) {
+  try { applySteeringMessages(chatId, (await api.get<{ messages: unknown }>(`/api/chat/steering?sessionId=${encodeURIComponent(chatId)}`)).messages); }
+  catch { /* An unavailable host cannot confirm pending delivery. */ }
+}
+
+const steeringRequests = new Map<string, Promise<void>>();
+
+/** Retry the same identity after an uncertain response; never convert steering to a new chat turn. */
+export async function retrySteeringMessage(chatId: string, id: string) {
+  const message = state.steeringMessages[chatId]?.find(m => m.id === id);
+  if (!message || message.state === 'delivered') return;
+  applySteeringMessages(chatId, [{ id, text: message.text, state: 'pending', error: null }]);
+  const before = steeringRequests.get(chatId) ?? Promise.resolve();
+  const call = before.catch(() => {}).then(async () => {
+    try {
+      const result = await api.post<{ message: unknown }>('/api/chat/steer', { sessionId: chatId, id, message: message.text }, AbortSignal.timeout(15000));
+      applySteeringMessages(chatId, [result.message]);
+    } catch (error) {
+      applySteeringMessages(chatId, [{ id, text: message.text, state: 'failed', error: plainFailureText(error instanceof Error ? error.message : String(error)).message }]);
+      void loadSteeringMessages(chatId);
+    }
+  });
+  steeringRequests.set(chatId, call);
+  try { await call; } finally { if (steeringRequests.get(chatId) === call) steeringRequests.delete(chatId); }
+}
+
+function setPendingMessage(chatId: string, message?: PendingMessage) {
+  const pendingMessages = { ...state.pendingMessages };
+  if (message) pendingMessages[chatId] = message; else delete pendingMessages[chatId];
+  try { sessionStorage.setItem('strata.chat-pending.v1', JSON.stringify(pendingMessages)); } catch { /* Keep the in-memory draft if storage is full. */ }
+  set({ pendingMessages });
+}
+
+/** Take back a locally parked message. Host goal queues keep their existing cancel path. */
+export function takePendingMessage(chatId: string) {
+  const pending = state.pendingMessages[chatId];
+  setPendingMessage(chatId);
+  return pending;
+}
+
+/** Like the web chat, park one message; a running goal still owns its between-step queue. */
+export async function submitWhileBusy(text: string, chatId = state.activeSession): Promise<boolean> {
+  const turn = chatId ? liveTurns.get(chatId) : undefined;
+  if (!chatId || !turn) return false;
+  const mode = state.whileBusy;
+  const photos = pendingChatPhotos(chatId);
+  if (mode === 'steer') {
+    if (!state.steeringAvailable[chatId]) {
+      pushToast('info', 'Steering is unavailable', 'The parent agent is not accepting steering right now. Your correction is kept.');
+      return false;
+    }
+    if (!turn.agent || turn.stop || !text.trim() || photos.length) {
+      pushToast('info', 'Steering needs a running coding agent and a text message', 'Pictures can be sent with a later message.');
+      return false;
+    }
+    const id = crypto.randomUUID();
+    applySteeringMessages(chatId, [{ id, text: text.trim(), state: 'pending' }]);
+    void retrySteeringMessage(chatId, id);
+    return true;
+  }
+  if (!text.trim() && (mode === 'wait' || !photos.length)) return false;
+  if (mode === 'wait' || (mode === 'queue' && !photos.length)) {
+    try {
+      if (await queueMessage(chatId, text)) return true;
+      if (mode === 'wait') { pushToast('info', 'The assistant is still answering', 'Send your message when it has finished.'); return false; }
+    } catch (e) {
+      pushToast('error', 'The message was not queued', plainFailureText(e instanceof Error ? e.message : String(e)).message);
+      return false;
+    }
+  }
+  if (state.pendingMessages[chatId]) {
+    if (!photos.length) { parkMessage(chatId, text); return true; }
+    pushToast('info', 'A message is already waiting', 'Take it back or wait until it is sent.');
+    return false;
+  }
+  const pending: PendingMessage = { text, photos: photos.length ? takeChatPhotos(chatId) : [], mode };
+  setPendingMessage(chatId, pending);
+  if (liveTurns.get(chatId) !== turn) {
+    if (!liveTurns.has(chatId)) void sendPendingMessage(chatId);
+  } else if (mode === 'interject') {
+    turn.interrupted = true;
+    void stopChat(chatId);
+  }
+  return true;
+}
+
+export async function sendPendingMessage(chatId: string) {
+  const pending = state.pendingMessages[chatId];
+  if (!pending || liveTurns.has(chatId)) return;
+  setPendingMessage(chatId);
+  const sent = await sendMessage(pending.text, { sessionId: chatId, photos: pending.photos });
+  // A refused or failed send stays recoverable under the conversation.
+  if (!sent && !state.pendingMessages[chatId]) setPendingMessage(chatId, pending);
+}
+
 export const UI_SCALES = [0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
 
 export function setUiScale(uiScale: number) {
@@ -843,6 +981,9 @@ function applyEvent(e: StreamEvent) {
       break;
     case 'queue':
       if (typeof data.chatId === 'string') applyQueueFrame(data.chatId, data.queue);
+      break;
+    case 'steering':
+      if (typeof data.chatId === 'string') applySteeringMessages(data.chatId, data.messages);
       break;
     case 'timeskip':
       applyTimeSkipEvent(data);
@@ -1656,7 +1797,8 @@ function startTimeSkipDemo(prompt: string) {
   go('chat', sessionId);
 }
 
-function markTurn(sessionId: string, turn: { abort: AbortController; agent: boolean } | null) {
+function markTurn(sessionId: string, turn: LiveTurn | null) {
+  set({ steeringAvailable: { ...state.steeringAvailable, [sessionId]: false } });
   if (turn) liveTurns.set(sessionId, turn); else liveTurns.delete(sessionId);
   set({ streaming: !!state.activeSession && liveTurns.has(state.activeSession), liveChats: liveTurns.size });
   document.documentElement.dataset.streaming = liveTurns.size ? 'true' : 'false';
@@ -1668,18 +1810,7 @@ function markTurn(sessionId: string, turn: { abort: AbortController; agent: bool
  * what was produced. For any other turn the host reports nothing to stop and the request is aborted.
  */
 export function stopStreaming() {
-  const id = state.activeSession;
-  const turn = id ? liveTurns.get(id) : undefined;
-  if (!id || !turn) return;
-  const abort = () => { turn.abort.abort(); };
-  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
-    result => {
-      if (!result.stopped) abort();
-      // An agent turn that was told to stop but is slow to end must not leave the chat stuck.
-      else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000);
-    },
-    abort,
-  );
+  if (state.activeSession) void stopChat(state.activeSession);
 }
 
 /**
@@ -1876,11 +2007,17 @@ export function loopChatIds(): string[] { return loopScheduler.ids(); }
 export function stopChat(id: string) {
   const turn = liveTurns.get(id);
   if (!turn) return;
-  const abort = () => { turn.abort.abort(); };
-  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
-    result => { if (!result.stopped) abort(); else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000); },
-    abort,
+  if (turn.stop) return turn.stop;
+  turn.stop = api.post<{ stopped: boolean; pending?: boolean }>('/api/chat/stop', { sessionId: id }).then(
+    result => {
+      if (!result.stopped) turn.abort.abort();
+      else setTimeout(() => { if (liveTurns.get(id) === turn) turn.abort.abort(); }, 30000);
+      // A timed-out agent cancellation is not permission to start another turn.
+      return !result.pending;
+    },
+    () => { turn.abort.abort(); return false; },
   );
+  return turn.stop;
 }
 
 /** Stop a chat's loop from the board. The chat gets the same line /loop stop writes. */
@@ -1934,23 +2071,21 @@ export async function approvePlan(sessionId: string, planId: string) {
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
 export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
 
-export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean; reattach?: string; requestId?: string } = {}) {
-  // `reattach`: a turn the host is still running for this chat (or finished while the page was away) is taken over again after a reload, not started.
+export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean; sessionId?: string; photos?: ChatPhoto[]; reattach?: string; requestId?: string } = {}): Promise<boolean | void> {
+  // A reattached stream takes over the host's existing run; it must bypass the ordinary busy-message path.
   const reattach = options.reattach;
-  if (state.streaming && !reattach) {
-    // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
-    const waiting = state.activeSession, line = text.trim();
-    if (waiting && line && !options.planId && !options.goalAction) {
-      try { if (!(await queueMessage(waiting, line))) pushToast('info', 'The assistant is still answering', 'Send your message when it has finished.'); }
-      catch (e) { pushToast('error', 'The message was not queued', plainFailureText(e instanceof Error ? e.message : String(e)).message); }
-    }
-    return;
+  const target = options.sessionId ?? reattach ?? state.activeSession;
+  if ((options.sessionId || reattach) && !state.sessions.some(s => s.id === target)) return false;
+  if (target && liveTurns.has(target) && !reattach) {
+    if (text.trim() && !options.planId && !options.goalAction) return submitWhileBusy(text.trim(), target);
+    return false;
   }
+  const remoteModel = options.sessionId || reattach ? state.sessions.find(s => s.id === target)?.preferences?.remoteModel ?? null : state.remoteModel;
   const resume = options.goalAction === 'resume';
   const planStart = options.planId;
-  const loopCommand = options.fromLoop || resume || planStart || reattach ? null : parseLoop(text.trim());
+  const loopCommand = options.sessionId || reattach || options.fromLoop || resume || planStart ? null : parseLoop(text.trim());
   if (loopCommand) { await runLoopCommand(loopCommand); return; }
-  const demoPrompt = resume || planStart || reattach ? null : timeSkipPrompt(text.trim());
+  const demoPrompt = options.sessionId || reattach || resume || planStart ? null : timeSkipPrompt(text.trim());
   if (demoPrompt !== null) {
     if (demoPrompt && (state.remoteModel || nativeState()?.instances.some(i => i.status === 'ready'))) void startTimeSkipReal(demoPrompt); else if (state.connection === 'live' && demoPrompt) pushToast('info', 'Load a model first', 'Time-skip works on a loaded model. Choose one on the Models tab, then try again.');
     else if (state.connection === 'connecting' && demoPrompt) pushToast('info', 'Still starting up', 'Time-skip needs the app to finish starting. Try again in a moment.');
@@ -1960,17 +2095,18 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   // Whatever sent this (the box, a loop, a plan): with no model to answer, say so in plain words and start nothing.
   if (state.connection === 'live' && !reattach) {
     // The first read of the engine's state has not come back yet: do not say "no model" about something not known yet, and do not send.
-    if (!nativeState() && !state.remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return; }
-    const why = noModelNotice(nativeState(), { remote: !!state.remoteModel, libraryLoaded: !!state.library?.loaded });
+    if (!nativeState() && !remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return; }
+    const why = noModelNotice(nativeState(), { remote: !!remoteModel, libraryLoaded: !!state.library?.loaded });
     if (why) { pushToast('info', why.title, why.message); return; }
   }
-  const pictureCheck=pictureStatus(nativeState(),state.remoteModel,state.providers);
-  if(!reattach&&pendingChatPhotos(state.activeSession).length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}
-  const pictures=reattach?[]:takeChatPhotos(state.activeSession);
+  const pictureCheck=pictureStatus(nativeState(),remoteModel,state.providers);
+  const queuedPhotos = reattach ? [] : options.photos ?? pendingChatPhotos(target);
+  if(queuedPhotos.length&&!pictureCheck.ok){pushToast('error','This model cannot read pictures',tr(pictureCheck.message));return;}
+  const pictures = reattach ? [] : options.photos ?? takeChatPhotos(target);
   const body=text.trim()||(pictures.length?'Describe this picture.':'');
   if(!body&&!resume&&!planStart&&!reattach)return;
 
-  let sessionId = reattach ?? state.activeSession;
+  let sessionId = reattach ?? target;
   if (!sessionId) sessionId = newSession().id;
 
   const userMsg: ChatMessage = { id: uid('m'), role: 'user', content: options.shown ?? body, at: new Date().toISOString(),...(pictures.length?{photos:pictures}:{}),...(options.markdown?{markdown:true}:{}) };
@@ -2019,7 +2155,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   }));
 
   const turnAbort = new AbortController();
-  markTurn(sessionId, { abort: turnAbort, agent: false });
+  const turn: LiveTurn = { abort: turnAbort, agent: false };
+  markTurn(sessionId, turn);
   // Read by the router to skip view transitions mid-stream, and by CSS to keep
   // the transcript still while tokens arrive.
 
@@ -2031,6 +2168,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     }));
 
   const started = performance.now();
+  let finished = false;
+  let failed = false;
 
   const imageSlots=photoHistorySlots(prior,pictures.length);
   /* Text and reasoning arrive token by token (90 a second or more). Drawing the whole answer again for each one made the page do more work for every
@@ -2059,7 +2198,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
         ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
         history:await Promise.all(prior.map(async(m,index)=>{const included=pictureCheck.ok?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
         model: state.library?.loaded ?? state.library?.current ?? null,
-        remoteModel: state.remoteModel,
+        remoteModel,
         nativeModelId:nativeState()?.instances.length?nativeState()?.defaultId:undefined,
         ...(pictures.length ? { imageIds: await uploadChatPhotos(pictures, sessionId) } : {}),
         useTools:state.sessions.find(s=>s.id===sessionId)?.preferences?.useTools===true,
@@ -2109,6 +2248,17 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // A proposed plan is shown as the plan card in place of this turn's closing text (that text is the plan in prose).
           const planned = frame.plan as { id?: unknown } | null;
           if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
+        } else if (type === 'steering-availability') {
+          set({ steeringAvailable: { ...state.steeringAvailable, [sessionId]: frame.available === true } });
+        } else if (type === 'steering-cut') {
+          patchAssistant(m => ({ ...m, drafts: undefined, reasoning: undefined, reasoningStartedAt: undefined, reasoningMs: undefined }));
+        } else if (type === 'steering') {
+          const message = frame.message as SteeringMessage;
+          applySteeringMessages(sessionId, [message]);
+          if (message?.state === 'delivered' && typeof message.id === 'string' && typeof message.text === 'string' && !state.sessions.find(s => s.id === sessionId)?.messages.some(m => m.id === `steer_${message.id}`)) {
+            const before = assistantId; assistantId = uid('m');
+            patchSession(sessionId, sess => ({ ...sess, messages: [...sess.messages.map(m => m.id === before ? { ...m, streaming: false } : m).filter(m => m.id !== before || m.content || m.tools?.length || m.reasoning), { id: `steer_${message.id}`, role: 'user', content: message.text, at: new Date().toISOString() }, { id: assistantId, role: 'assistant', content: '', at: new Date().toISOString(), streaming: true }] }));
+          }
         } else if (type === 'queued-message') {
           applyQueueFrame(sessionId, frame.queue);
           const sent = frame.message as { text?: unknown } | undefined;
@@ -2184,11 +2334,14 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           const used = Number(frame.contextTokens), max = Number(frame.contextMax);
           if (Number.isFinite(used) && used > 0) patchAssistant((m) => ({ ...m, contextUsed: used, ...(Number.isFinite(max) && max > 0 ? { contextMax: max } : {}) }));
         } else if (type === 'error') {
+          failed = true;
+          finished = false;
           clearStatus(sessionId);
           // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.
           const said = typeof frame.key === 'string' ? tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) : plainFailure(String(frame.message ?? 'Engine error')).message;
           patchAssistant((m) => ({ ...m, drafts: undefined, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
         } else if (type === 'done') {
+          finished = !failed;
           clearStatus(sessionId);
           workFinished(state.doneSound, Number(frame.durationMs ?? performance.now() - started));
           patchSession(sessionId, (sess) => ({
@@ -2218,6 +2371,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     );
   } catch (err) {
     flushWaiting();
+    finished = false;
     if (reattach && (err as { status?: number } | null)?.status === 404) {
       // Nothing to take over (the turn ended and the host no longer holds it): the reply stays as the page had it.
       patchAssistant((m) => ({ ...m, streaming: false }));
@@ -2233,14 +2387,29 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     }
   } finally {
     flushWaiting();
+    const stopped = turn.stop ? await turn.stop : false;
+    patchAssistant(m => ({ ...m, streaming: false, ...(turn.interrupted ? { error: m.error ?? tr('Response interrupted. Ask again to retry; the partial answer is kept.') } : {}) }));
     // A cancelled or failed turn is still worth keeping.
     flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
     removeAgentAsk(sessionId);
-    const next = releasedMessages.get(sessionId)?.shift();
-    if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
+    const pending = state.pendingMessages[sessionId];
+    if (pending && (pending.mode === 'interject' ? turn.interrupted && stopped : finished && !turn.stop)) void sendPendingMessage(sessionId);
+    else {
+      // Additional Send after/Interrupt messages use upstream's backlog, after the first parked correction succeeds.
+      const parked = !pending && finished && !turn.stop ? takeParked(sessionId) : undefined;
+      if (parked !== undefined) {
+        setPendingMessage(sessionId, { text: parked, photos: [], mode: 'queue' });
+        void sendPendingMessage(sessionId);
+      }
+      else {
+        const next = releasedMessages.get(sessionId)?.shift();
+        if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); void sendMessage(next, { sessionId, photos: [] }); }
+      }
+    }
   }
+  return finished || !!turn.stop;
 }
 
 /** Messages the host handed back when a goal ended with some still waiting; sent one after another. */

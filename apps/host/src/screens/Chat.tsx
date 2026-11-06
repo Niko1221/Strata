@@ -30,14 +30,13 @@ import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
 import { DropZone, DROP_EVENT, pastedFiles } from '../components/DropZone';
 import { ActivityLine, DraftLines, EditedFiles, FileCard, FilesSummary, SkillsUsed } from '../components/Deliverables';
-import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
+import { usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
 import { useLiveStatus } from '../lib/live-status';
 import { ApprovalDock, SCOPE } from '../components/ApprovalCard';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
 import { openExternal } from '../lib/open-external';
-import { busyPlan } from '../lib/while-busy';
 import { composeQuoted, parseQuoted, type Quote } from '../lib/quotes';
 /** Chat — talk to the one loaded model. */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -45,7 +44,7 @@ import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { addQuote, clearQuotes, removeQuote, createSubagentExample, parkMessage, takeParked, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { addQuote, clearQuotes, removeQuote, createSubagentExample, getState, takeParked, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, submitWhileBusy, useStore, } from '../lib/store';
 import { CopyBtn, CopyMenuItem, MenuCloseContext } from '../components/CopyBtn';
 import { KEYS_UP, PILL_DISTANCE, distanceFromBottom, followAfterScroll, wheelLeavesBottom } from '../lib/follow-scroll';
 import { getSlashCommands } from '../lib/commands';
@@ -58,7 +57,6 @@ export function ChatScreen() {
     const activeId = useStore((s) => s.activeSession);
     const library = useStore((s) => s.library);
     const streaming = useStore((s) => s.streaming);
-    const whileBusy = useStore(s => s.whileBusy);
     const setup = useStore(s => s.setup);
     const setupFlag = useStore(s => s.setupOpen);
     const setupVisible = location.route === 'setup' || setupFlag || !!setup && !setup.complete && !setup.dismissed;
@@ -75,7 +73,6 @@ export function ChatScreen() {
             markRead(session.id);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [session?.id, messageCount, streaming]);
-    const parked = useStore(s => (session ? s.parked[session.id] : undefined));
     const quotes = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
     // Selecting words in a message offers to quote just them (#4785).
     const [selection, setSelection] = useState<{ text: string; messageId: string; role: 'user' | 'assistant'; x: number; y: number } | null>(null);
@@ -95,14 +92,6 @@ export function ChatScreen() {
         document.addEventListener('selectionchange', read);
         return () => document.removeEventListener('selectionchange', read);
     }, [session?.id]);
-    // Messages parked while an answer was written (Send after, Interrupt) go one by one, each when the chat is quiet again.
-    useEffect(() => {
-        if (!session || streaming || !parked?.length)
-            return;
-        const next = takeParked(session.id);
-        if (next !== undefined)
-            void sendMessage(next);
-    }, [streaming, parked?.length, session?.id]);
     const [draft, setDraft] = useState('');
     const draftKey = `strata.chat-draft.${session?.id ?? 'new'}`;
     useEffect(() => {
@@ -444,21 +433,18 @@ export function ChatScreen() {
         if (!text && !queuedPhotos.length)
             return;
         if (streaming) {
-            // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
-            if (!text || !session)
+            if (!session)
                 return;
-            const plan = busyPlan(whileBusy);
+            const id = session.id, key = draftKey;
             const out = quotedMessage(quotes, text);
-            // Interrupt: the answer stops where it is (what is written stays) and the message goes as soon as it has stopped (the effect below sends it).
-            if (plan === 'interrupt') {
-                updateDraft('');
-                clearQuotes(session.id);
-                parkMessage(session.id, out);
-                stopStreaming();
-                return;
-            }
+            const restore = () => {
+                const current = sessionStorage.getItem(key) ?? '';
+                const value = current ? `${text}\n\n${current}` : text;
+                sessionStorage.setItem(key, value);
+                if (getState().activeSession === id) setDraft(value);
+            };
             updateDraft('');
-            void queueMessage(session.id, out).then(ok => { if (ok) { clearQuotes(session.id); return; } if (!ok) { if (plan === 'goal') { clearQuotes(session.id); parkMessage(session.id, out); return; } updateDraft(text); pushToast('info', tr('The assistant is still answering'), tr('Send your message when it has finished.')); } }, e => { updateDraft(text); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
+            void submitWhileBusy(out, id).then(ok => { if (ok) clearQuotes(id); else restore(); }, e => { restore(); pushToast('error', tr('The message was not queued'), plainFailureText(e instanceof Error ? e.message : String(e)).message); });
             return;
         }
         const timeSkip = timeSkipPrompt(text);
@@ -528,7 +514,7 @@ export function ChatScreen() {
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={messageHandlers.onEditPrompt} onPreview={messageHandlers.onPreview} onClosePreview={messageHandlers.onClosePreview} onOpenTimeSkip={messageHandlers.onOpenTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={messageHandlers.onOpenLink}/>))))}
-              <QueuedMessages chatId={session.id}/>
+              <QueuedMessages chatId={session.id} onTakeBack={text => updateDraft(`${text}${draft ? `\n\n${draft}` : ''}`)}/>
             </div>
           </div>
           <div className="jumplatest-row">{tr(awayFromBottom ? (<button type="button" className="jumplatest" data-finished={justFinished || undefined} aria-label={tr("Scroll to the latest message")} title={tr("Scroll to the latest message")} onClick={() => scrollToLatest()}>
@@ -611,6 +597,8 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const photos = useChatPhotos(session?.id), native = useNative();
     const canChat = loaded || native?.instances.some(i => i.status === 'ready');
     const whileBusy = useStore(s => s.whileBusy), parkedList = useStore(s => (session ? s.parked[session.id] : undefined)) ?? NO_PARKED;
+    const steeringAvailable = useStore(s => !!session && s.steeringAvailable[session.id] === true);
+    const steeringBlocked = streaming && whileBusy === 'steer' && !steeringAvailable;
     const quoteList = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
     const commands = useSlashCommands(clearDraft, setDraft);
     const [cursor, setCursor] = useState(0);
@@ -645,7 +633,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           <FolderChip chatId={session?.id} disabled={streaming}/>
           <GoalBar chatId={session?.id}/>
           {tr(quoteList.length ? <div className="quotes">{tr(quoteList.map(q => <div className="quote" key={q.id}><button type="button" className="quote__body" title={tr("Go to the quoted message")} onClick={() => document.querySelector(`[data-message-id="${CSS.escape(q.messageId)}"]`)?.scrollIntoView({ block: 'center', behavior: scrollBehavior() })}><span className="xs muted">{tr(q.role === 'user' ? "Quoting you" : "Quoting the assistant")}</span><span className="quote__text">{q.text}</span></button><IconBtn name="x" size={14} title={tr("Remove this quote")} onClick={() => removeQuote(session!.id, q.id)}/></div>))}</div> : null)}
-          {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
+          {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined) setDraft(`${back}${draft ? `\n\n${draft}` : ''}`); }}/></div>))}</div> : null)}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
           <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onBlur={() => ime.current.reset()} onCompositionStart={() => ime.current.compositionStart()} onCompositionEnd={(e) => ime.current.compositionEnd(e.timeStamp)} onPaste={(e) => {
@@ -694,10 +682,11 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         }}/>
           <div className="st-composer__bar">
             <ComposerControls draft={draft} onDraft={setDraft} session={session} onPreview={onPreview} streaming={streaming} onSlash={() => { setSlashDismissed(false); setSlashOpen(true); requestAnimationFrame(() => textareaRef.current?.focus()); }} onError={setFileError} onAttach={(name, text) => { setDraft(`${draft}${draft ? '\n\n' : ''}Attached ${name}\n\n${text}`); requestAnimationFrame(() => textareaRef.current?.focus()); }}/>
-            {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
+            {streaming && <Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr('Stop')}</Btn>}
+            {(!streaming || whileBusy !== 'wait') && <Btn variant="primary" size="sm" icon="send" disabled={steeringBlocked || (!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr(steeringBlocked ? 'Steering unavailable' : streaming ? whileBusy === 'queue' ? 'Send after' : whileBusy === 'steer' ? 'Steer current run' : 'Interrupt' : 'Send')}</Btn>}
           </div>
         </div>
-        {tr(streaming && draft.trim() && whileBusy !== 'wait' ? <p className="xs muted composer__busy-hint" role="status">{tr(whileBusy === 'queue' ? "Enter sends it when the answer is done." : "Enter stops the answer here and sends it now.")}</p> : null)}
+        {tr(streaming && draft.trim() && whileBusy !== 'wait' ? <p className="xs muted composer__busy-hint" role="status">{tr(steeringBlocked ? "The parent agent is not accepting steering right now. Your correction is kept." : whileBusy === 'steer' ? "Enter steers the current run at a safe point." : whileBusy === 'queue' ? "Enter sends it when the answer is done." : "Enter stops the answer here and sends it now.")}</p> : null)}
         <ChatTelemetry session={session}/>
         </div>
       </div>

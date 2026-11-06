@@ -207,6 +207,7 @@ const agent = createAgentBridge({
   engineProgress: instanceId => engineProgressMark(native.readyInstances().find(i => i.id === instanceId)),
   onPlan: (chatId, event, plan) => hub.send('plan', { chatId, event, plan }),
   onQueue: (chatId, queue) => hub.send('queue', { chatId, queue }),
+  onSteering: (chatId, messages) => hub.send('steering', { chatId, messages }),
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
   // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
@@ -1967,6 +1968,12 @@ async function api(req, res, path, method, url) {
     catch (e) { return error(res, e.code === 'plan-gone' || e.code === 'plan-used' ? 409 : 400, e.message); }
   }
   // Messages typed while a goal runs: queued (shown as queued), taken back, or listed.
+  if (path === '/api/chat/steering' && method === 'GET') return json(res, 200, { messages: agent.steeringState(url.searchParams.get('sessionId') ?? '') });
+  if (path === '/api/chat/steer' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, { message: await agent.steer({ chatId: String(body.sessionId ?? ''), id: body.id, text: body.message }) }); }
+    catch (e) { return error(res, e.code === 'steer-invalid' ? 400 : e.code === 'steer-unsupported' ? 501 : 409, e.message); }
+  }
   if (path === '/api/chat/queue' && method === 'GET') return json(res, 200, agent.takeQueue(url.searchParams.get('sessionId') ?? '', { release: url.searchParams.get('release') === '1' }));
   if (path === '/api/chat/queue' && method === 'POST') {
     const body = await readBody(req);

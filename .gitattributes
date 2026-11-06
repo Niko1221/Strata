@@ -28,3 +28,6 @@ docker/compose/* text eol=lf
 
 # vendored KaTeX (serve/web/vendor): the files are hashed byte for byte (PROVENANCE.json), never convert their line endings.
 serve/web/vendor/** -text
+
+# Source patches are hashed byte for byte; blank context lines contain the diff prefix.
+packaging/harness/*.patch -text whitespace=-blank-at-eol
