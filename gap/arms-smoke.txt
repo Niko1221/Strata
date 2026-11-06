@@ -1,0 +1,2 @@
+# smoke: prove stop -> bench -> restore works; one short run on the fork binary
+S_smoke|/Users/pc/src/Strata-fork/build-metal/strata||t357.txt|32|262144|

@@ -322,6 +322,10 @@ STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "
 # Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
+# Hot kernel reload (development): the longest wait between `RELOAD` and its RELOADED/KERR answer.  The Metal
+# engine recompiles every kernel library from source (~40k lines of MSL across ~8 libraries); on a slow Mac
+# that is minutes of legitimate silence, so this is its own bound rather than engine_silence_s.
+RELOAD_WAIT_S = 600.0
 # ... except while a prompt is read: a PP line comes once per chunk (up to 32768 tokens with --prefill auto, issue
 # #282), and the slowest PCs read ~100 tok/s, so a first chunk can take minutes before the first line.  Until the first
 # PP the wait adds the chunk's tokens at PP_FLOOR_TOK_S; after one, a chunk may take PP_SLACK x the last one's time.
@@ -489,6 +493,11 @@ class SessionRefused(ValueError):
     @property
     def status(self) -> int:
         return self.STATUS[self.kind]
+
+
+class KernelReloadFailed(RuntimeError):
+    """Hot kernel reload (development): the engine could not recompile its MSL sources and kept the kernels it
+    had (`KERR <reason>`).  The engine is still in step; nothing needs a restart, fix the source and reload."""
 
 
 class EngineStuck(RuntimeError):
@@ -878,6 +887,9 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    PRESSURE_SKIP = re.compile(r"conversation cache: skip parking \(physical RAM admission;.*; "
+                               r"evicted \d+, (\d+) still parked\)")
+    MINIMUM_SKIP = re.compile(r"conversation cache: skip parking \(\d+ tokens, below the \d+ minimum; parked=(\d+)\)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -931,6 +943,24 @@ class ConvCacheLog:
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                self.state["bytes"] = None             # retained K/V can remain even when no entries do
+                continue
+            m = self.MINIMUM_SKIP.search(line)
+            if m:
+                self.state["parked"] = int(m.group(1))
+                self.state["bytes"] = None
+                continue                               # this refusal precedes make_room(): no evictions
+            if ("conversation cache: skip parking (" in line or
+                    "conversation cache: allocation failed; skip parking" in line):
+                # make_room() may have evicted entries before a later refusal, without a park/restore summary.
+                # The pressure line gives the remaining count, but its "evicted N" is only that gate's delta,
+                # not the cumulative total (the budget gate may already have evicted others). Don't guess it.
+                m = self.PRESSURE_SKIP.search(line)
+                remaining = int(m.group(1)) if m else None
+                self.state["parked"] = remaining
+                # The pressure gate runs after take_reuse(), so an empty cache there has no retained K/V.
+                self.state["bytes"] = 0 if remaining == 0 else None
+                self.state["evictions"] = None
         return dict(self.state)
 
 
@@ -3075,6 +3105,58 @@ class StrataEngine:
                 continue
             raise out_of_step(line)
 
+    def reload_kernels(self) -> dict:
+        """Development: hot kernel reload (`RELOAD` between requests; the caller holds the service FIFO).  The
+        Metal engine recompiles every .metal source and rebuilds its pipeline caches -> {"ms": <float>}.  A
+        ValueError when the engine predates the command (its usual `ERR expected: GEN` answer: both sides stay
+        in step, the kernels just stay as they are); KernelReloadFailed when the recompile failed (`KERR
+        <reason>`: the engine kept its kernels, nothing needs a restart); EngineDied when it ended (during the
+        recompile, or answering a line this exchange does not allow); EngineSilent when it said nothing for
+        RELOAD_WAIT_S.  INFO/WARN log lines may interleave; they are not answers."""
+        try:
+            self.proc.stdin.write("RELOAD\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + RELOAD_WAIT_S
+
+        def died(line: str) -> EngineDied:
+            self.ended = True                               # not alive from now: the next request restarts it
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=20)
+            except (OSError, AttributeError, subprocess.TimeoutExpired):
+                pass
+            return EngineDied(f"the engine answered RELOAD with {line.strip()[:200]!r}; the server ended the engine")
+
+        while True:
+            left = deadline - time.monotonic()
+            try:
+                line = self.lines.get(timeout=left if left > 0 else 0.001)
+            except queue.Empty:
+                raise self._silent(f"the engine said nothing for {RELOAD_WAIT_S:.0f} s during a kernel reload") from None
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            f = line.split()
+            head = f[0] if f else ""
+            if head in ("INFO", "WARN"):
+                continue
+            if head == "RELOADED":
+                try:
+                    if len(f) != 2:
+                        raise ValueError
+                    ms = float(f[1])
+                    if not math.isfinite(ms) or ms < 0:
+                        raise ValueError
+                except ValueError:
+                    raise died(line) from None
+                return {"ms": ms}
+            if head == "KERR":
+                raise KernelReloadFailed(line.rstrip("\r\n")[4:].strip() or "the engine did not say why")
+            if head == "ERR":                               # an engine from before RELOAD: in step, just unsure
+                raise ValueError(f"this engine does not understand RELOAD (it answered {line.strip()[:120]!r})")
+            raise died(line)
+
     def close(self):
         """End the engine process: STOP + QUIT first (the engine frees its memory itself - unpinning tens of GB can take
         a while; ENGINE_QUIT_WAIT_S), then terminate (ENGINE_TERM_WAIT_S), then kill (ENGINE_KILL_WAIT_S).  Raises
@@ -4780,6 +4862,10 @@ class Service:
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.auto_session = None                      # "auto_session": live conversation saved to this file (None = off)
+        self.sess_saved_at = 0.0                      # when that file last held what the engine holds
+        self.sess_started_at = time.time()            # the engine's current start; a turn before it is not in the file
+        self.sess_needs_restore = False               # a new engine start still awaits the file read-back
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -4997,6 +5083,114 @@ class Service:
             cancel.set()
         return len(active)
 
+    # ---- automatic session file ("auto_session": true or a file name; off without it) ----
+    AUTO_SESSION_QUIET_S = 10.0        # how long the engine must sit idle after a request before it saves
+
+    def auto_session_setup(self, value) -> None:
+        """Turn the automatic session file on: True saves the engine's live conversation to the file
+        \"auto-session\" under slot_save_path; a string names the file instead. The file is written once the
+        engine has idled after a request and read back whenever the engine (re)starts, so the conversation the
+        parking holds comes back across a server restart. Needs a serial engine (not \"parallel\" / --batch)."""
+        if value is None or value is False:
+            return
+        if value is True:
+            value = "auto-session"
+        why = slot_filename_problem(value) if isinstance(value, str) else "not true or a file name"
+        if why:
+            raise SystemExit(f"[strata] \"auto_session\" must be true or a safe file name, not {value!r} ({why})")
+        if not self.slot_save_path:
+            raise SystemExit("[strata] \"auto_session\" needs a slot_save_path (or --slot-save-path DIR)")
+        if getattr(self.engine, "batch", 0) or not hasattr(self.engine, "session_file"):
+            print("[strata] \"auto_session\" stays off: the session file is not available with parallel requests "
+                  "or with an engine that has no SAVE/RESTORE", flush=True)
+            return
+        self.auto_session = value
+        self.sess_needs_restore = True                 # read the file back as soon as the engine sits ready and idle
+        if self.loaded():                              # an engine started at boot, before this wiring: read back now
+            if self.fifo.acquire(timeout=60):
+                try:
+                    self.auto_session_restore()
+                finally:
+                    self.fifo.release()
+        threading.Thread(target=self._auto_session_loop, daemon=True).start()
+        print(f"[strata] automatic session file on: {value} in {self.slot_save_path} (written "
+              f"{self.AUTO_SESSION_QUIET_S:g} s after a request settles, read back when the engine starts)",
+              flush=True)
+
+    def auto_session_path(self) -> str:
+        return os.path.join(self.slot_save_path, self.auto_session)
+
+    def auto_session_restore(self) -> None:
+        """Read the automatic session file back after an engine start (the caller holds self.fifo). A file that no
+        longer fits (another model, a truncated write) is refused; the first request then reads from 0 as before."""
+        if not self.sess_needs_restore:
+            return
+        self.sess_needs_restore = False
+        if (self.last_request_at or 0.0) > self.sess_started_at:
+            return            # a request already ran since this start: the engine holds something newer than the file
+        path = self.auto_session_path()
+        try:
+            os.lstat(path)
+        except OSError:
+            return
+        try:
+            r = self.engine.session_file("restore", path)
+            self.sess_saved_at = time.time()          # the engine now holds exactly what the file holds
+            print(f"[strata] auto-session: restored {r['tokens']} tokens from {self.auto_session} in "
+                  f"{r['ms']:.0f} ms", flush=True)
+        except SessionRefused as e:
+            print(f"[strata] auto-session: the file was refused ({e}); requests read from 0 as before", flush=True)
+        except EngineDied as e:
+            print(f"[strata] auto-session: the restore ended the engine ({e}); the next request starts it again",
+                  flush=True)
+
+    def auto_session_save(self, why: str = "") -> bool:
+        """Save the engine's live conversation to the automatic session file, when the engine sits idle between
+        requests (the FIFO is taken without waiting, so a running or queued request always wins). -> True when the
+        file was written."""
+        if not self.auto_session or not self.loaded():
+            return False
+        if not self.fifo.acquire(blocking=False):
+            return False                              # something is running or queued; the next idle round saves
+        try:
+            r = self.engine.session_file("save", self.auto_session_path())
+            self.sess_saved_at = time.time()
+            print(f"[strata] auto-session: saved {r['tokens']} tokens, {max(1, r['bytes'] >> 20)} MB in "
+                  f"{r['ms']:.0f} ms{f' ({why})' if why else ''}", flush=True)
+            return True
+        except SessionRefused as e:
+            print(f"[strata] auto-session: the save was refused ({e}); trying again when the engine next idles",
+                  flush=True)
+        except EngineDied as e:
+            print(f"[strata] auto-session: the save ended the engine ({e}); the next request starts it again",
+                  flush=True)
+        finally:
+            self.fifo.release()
+        return False
+
+    def _auto_session_loop(self) -> None:
+        while True:
+            time.sleep(1.0)
+            try:
+                with self.status_lock:
+                    busy = self.status.get("busy") or self.status.get("queued")
+                if busy or not self.auto_session:
+                    continue
+                if self.sess_needs_restore and self.loaded():
+                    if self.fifo.acquire(timeout=5):
+                        try:
+                            self.auto_session_restore()
+                        finally:
+                            self.fifo.release()
+                    continue                            # the idle saves only start after the read-back settled
+                if time.time() - (self.last_request_at or self.started_at) < self.AUTO_SESSION_QUIET_S:
+                    continue
+                if (self.last_request_at or self.started_at) <= max(self.sess_saved_at, self.sess_started_at):
+                    continue                          # nothing new since the file was written, or the engine restarted
+                self.auto_session_save("idle")
+            except Exception as e:  # noqa: BLE001 - the saver must never stop the server
+                print(f"[strata] auto-session: {e}", flush=True)
+
     def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
         to or from a file in slot_save_path.  -> (HTTP status, body)."""
@@ -5064,6 +5258,37 @@ class Service:
                          "timings": {"save_ms": r["ms"]}}
         return 200, {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
                      "timings": {"restore_ms": r["ms"]}}
+
+    def reload_kernels(self) -> tuple[int, dict]:
+        """Development: hot kernel reload, the engine's MSL recompiled from the sources on disk.  Between
+        requests, holding the service FIFO (as the session files do).  -> (HTTP status, body): 501 when this
+        engine or transport does not know the command, 500 with the compiler's reason when the recompile
+        failed (the engine kept its kernels), 200 with the time when the new kernels are live."""
+        def error(code, message):
+            return code, {"error": {"code": code, "message": message,
+                                    "type": "invalid_request_error" if code < 500 else "server_error"}}
+        if not hasattr(self.engine, "reload_kernels"):
+            return error(501, "this server's engine transport does not support kernel reload")
+        if getattr(self.engine, "batch", 0):
+            return error(501, "kernel reload is not available with parallel requests (\"parallel\" / --batch)")
+        self.last_request_at = time.time()
+        with self.fifo:
+            if not self.loaded():
+                return error(503, "the model is not loaded")
+            with self.status_lock:
+                self.status.update(busy=True, phase="recompiling the kernels", started=time.time(),
+                                   first_token=None, prompt_tokens=None, generated=None, max_tokens=None)
+            try:
+                r = self.engine.reload_kernels()
+            except KernelReloadFailed as e:
+                return error(500, f"the recompile failed; the old kernels are still in use: {e}")
+            except ValueError as e:                         # the engine predates RELOAD: it stayed in step
+                return error(501, str(e))
+            finally:
+                with self.status_lock:
+                    self.status["busy"] = False
+                self.last_request_at = time.time()
+        return 200, {"status": "reloaded", "timings": {"reload_ms": r["ms"]}}
 
     def set_aliases(self, aliases) -> None:
         """#297: the config's `aliases` - a list of names (or one comma-separated string), like llama-server's --alias.
@@ -5365,6 +5590,10 @@ class Service:
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
+        if self.auto_session:                          # the parked conversation comes back across a restart too
+            self.sess_started_at = time.time()
+            self.sess_needs_restore = True
+            self.auto_session_restore()
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
             try:
                 self.engine.vram(self.vram_reserve)
@@ -5419,6 +5648,9 @@ class Service:
         # a request is on its way: the idle thread must not unload between this and the request's own start
         self.last_request_at = time.time()
         if self.loaded() and not self._vision_down():
+            if self.sess_needs_restore:                # boot engine idle: read the conversation back before this request
+                with self.fifo:
+                    self.auto_session_restore()
             return
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
@@ -6208,16 +6440,16 @@ class Service:
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
             # the answer its quarter of the cap (the budget's wrap-up: a short closing sentence, </think>, the answer).
-            # A request with a budget of its own, or max_tokens below ANSWER_ROOM_MIN_CAP, is left as it was.
+            # A request with a budget of its own is left as it was; below the floor the next branch answers.
             budget = max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
             if max_new <= 32768: print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                   "(\"answer_room\": false in the config turns this off)", flush=True)
-        if (thinking and not budget and self.answer_room and self.family == "deepseek41"
-                and max_new and DS41_SMALL_CAP_MIN <= max_new < ANSWER_ROOM_MIN_CAP):
-            # DeepSeek-V4.1 only: a short max_tokens (/v1/messages and /v1/chat/completions with 200-600) was spent
-            # entirely on the thinking, so no text block ever arrived.  With no budget of the client's own, the thinking
-            # is capped at half of max_tokens; then the wrap-up, </think> and the answer follow in the other half.
-            budget = max_new // 2
+        if thinking and not budget and self.answer_room and max_new and 0 < max_new < ANSWER_ROOM_MIN_CAP:
+            # 2026-10-21: the omp sub-agent harness caps replies at max_tokens 400 and the model's thinking spent
+            # the whole cap: (length) with no text and no tool call, so the client's length-recovery gave up after
+            # 3 tries.  Below the 1024 floor the answer keeps the same proportional share (the #984 reserve, so
+            # 400 leaves 200 for thinking and 200 for the reply).  "answer_room": false leaves it as it was.
+            budget = max(1, max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2))
             print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                   "(\"answer_room\": false in the config turns this off)", flush=True)
         if budget and max_new and max_new > 0:
@@ -6395,6 +6627,9 @@ class Service:
                                     last_out = time.perf_counter()
                                     yield "ping", None
                                     continue
+                                if t == 2147483647:           # the sampler's argmax sentinel: a non-finite logits
+                                    raise EngineNonFinite(    # row (#879); engines whose window graphs lack the
+                                        "the engine emitted its argmax sentinel (#879)")   # device guard show it here
                                 n += 1
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
@@ -8173,10 +8408,11 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
-            if path in ("/unload", "/load") and not self._control_body():
+            if path in ("/unload", "/load", "/reload_kernels") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
-            if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
+            if path in ("/unload", "/load", "/reload_kernels") and not self._own_page(
+                    "the model can be loaded, unloaded, or its kernels reloaded"):
                 return
             # the same for the slot files: else any site could overwrite a saved conversation or replace the live one
             if path.startswith("/slots/") and not self._own_page("conversations can be saved or restored"):
@@ -8199,6 +8435,14 @@ def make_handler(svc: Service):
                     ra = getattr(e, "retry_after", None)
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                                headers={"Retry-After": int(ra)} if ra else None)
+                return
+            if path == "/reload_kernels":                  # development: recompile the MSL, keep the conversation
+                try:
+                    code, body = svc.reload_kernels()
+                except EngineDied as e:                     # EngineSilent included: the engine was ended
+                    code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
+                                                 "the engine again", "type": "server_error"}}
+                self._json(code, body)
                 return
             reserved = False
             try:
@@ -9938,6 +10182,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                          "\"min_free_vram_mib\" in the config; default: always load)")
     ap.add_argument("--before-load", help="a command run before the model is loaded again (e.g. to unload another "
                                           "server's model; also \"before_load\" in the config, a string or a list)")
+    ap.add_argument("--auto-session", default=None, metavar="NAME", nargs="?", const="auto-session",
+                    help="keep the conversation the engine holds in NAME (default \"auto-session\") under the slot "
+                         "save path: written when the engine idles after a request, read back when the engine "
+                         "starts, so parking survives a server restart (also \"auto_session\": true in the config); "
+                         "needs --slot-save-path or slot_save_path")
     ap.add_argument("--slot-save-path", default=None, metavar="DIR",
                     help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
@@ -10315,6 +10564,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             raise SystemExit(f"[strata] {e}")
         print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
               "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
+    autos = a.auto_session if a.auto_session is not None else cfg.get("auto_session")
+    if autos is not None and autos is not False:
+        if isinstance(autos, str) and not autos.strip():
+            autos = "auto-session"
+        svc.auto_session_setup(autos)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
@@ -10456,6 +10710,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                 print(f"[strata] drain deadline expired; cancelling {cancelled} owned request(s) ...", flush=True)
                 svc.wait_for_drain(5)
                 drained = False
+        if getattr(svc, "auto_session", None):
+            try:
+                svc.auto_session_save("on stop")
+            except Exception as e:  # noqa: BLE001 - a stuck saver must not hold the exit
+                print(f"[strata] auto-session: the save on stop was skipped ({e})", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
                    hub.close if hub is not None else None]
         try:

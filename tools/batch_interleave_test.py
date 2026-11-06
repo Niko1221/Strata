@@ -86,6 +86,14 @@ def main():
     def chat(q):
         return tok.encode(f"<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
                           parse_special=True)
+
+    def diff_note(got, ref, d):
+        """the decoded text at a divergence, so a DIFFERS line shows whether both sides stay coherent"""
+        if d is None:
+            return f" (lengths differ: {len(got)} vs {len(ref)})"
+        return (f" | solo there: {tok.decode(ref[d:d + 14])!r}"
+                f" | slot there: {tok.decode(got[d:d + 14])!r}")
+
     body = LONG * (a.long // max(1, len(tok.encode(LONG))) + 1)
     A = chat("Write a Python function that merges overlapping intervals, then explain it.")
     B = chat("Compare TCP and QUIC: handshake, congestion control, multiplexing.")
@@ -150,7 +158,7 @@ def main():
         ok &= same
         d = next((k for k in range(min(len(got[s]), len(ref))) if got[s][k] != ref[k]), None)
         print(f"slot {s} ({name}): {len(got[s])} tokens, solo {len(ref)}: "
-              f"{'IDENTICAL' if same else f'DIFFERS at {d}'}", flush=True)
+              f"{'IDENTICAL' if same else f'DIFFERS at {d}' + diff_note(got[s], ref, d)}", flush=True)
 
     # 3. A's next turn from slot 0 (the engine's log says "slot 0 gave back ...")
     first, cont = run(eng, out, f"BGEN 0 {M} {ids(A2)}", slot=0)
@@ -166,7 +174,7 @@ def main():
     ok &= same
     d = next((k for k in range(min(len(got2), len(sA2))) if got2[k] != sA2[k]), None)
     print(f"A's next turn from its slot: {len(got2)} tokens, solo {len(sA2)}: "
-          f"{'IDENTICAL' if same else f'DIFFERS at {d}'}", flush=True)
+          f"{'IDENTICAL' if same else f'DIFFERS at {d}' + diff_note(got2, sA2, d)}", flush=True)
     # 4. a long prompt D gives way (BYIELD) to a short E at its first chunk boundary, then goes on from its slot.
     # On a pipelined batch (a layer split with more than one group) a read never gives way (generate.cpp: the BYIELD
     # is dropped): D is then admitted whole into slot 2 and E goes into the free slot 1 while D decodes - both must
@@ -223,7 +231,7 @@ def main():
         ok &= same
         d = next((k for k in range(min(len(got4[s]), len(ref))) if got4[s][k] != ref[k]), None)
         print(f"slot {s} {name}: {len(got4[s])} tokens, solo {len(ref)}: "
-              f"{'IDENTICAL' if same else f'DIFFERS at {d}'}", flush=True)
+              f"{'IDENTICAL' if same else f'DIFFERS at {d}' + diff_note(got4[s], ref, d)}", flush=True)
     # 6. back to the solo path (what the server does with a request left alone in a slot): A in slot 1, BSTOP after
     # 50 tokens, then GEN of A + what it produced - the engine continues from the slot with MTP drafts again
     first, cont = run(eng, out, f"BGEN 1 {M} {ids(A)}", slot=1)
@@ -243,7 +251,7 @@ def main():
     both = got6 + tail6
     d = next((k for k in range(min(len(both), len(sA))) if both[k] != sA[k]), None)
     print(f"A in a slot, then solo again after {len(got6)} tokens: {len(both)} tokens, solo {len(sA)}: "
-          f"{'IDENTICAL' if same else f'DIFFERS at {d}'}", flush=True)
+          f"{'IDENTICAL' if same else f'DIFFERS at {d}' + diff_note(both, sA, d)}", flush=True)
 
     # 5. (a measurement, not a check) a SOLO next turn continued from slot 0: its tokens are exact either way, but the
     # draft layer's own K/V was built for another conversation, so fewer drafts may be accepted than in a solo next
@@ -272,7 +280,7 @@ def main():
     ok &= same
     d = next((k for k in range(min(len(got7), len(sF))) if got7[k] != sF[k]), None)
     print(f"F (A's history without the reply's thinking) in slot 2: {len(got7)} tokens, solo "
-          f"{len(sF)}: {'IDENTICAL' if same else f'DIFFERS at {d}'}", flush=True)
+          f"{len(sF)}: {'IDENTICAL' if same else f'DIFFERS at {d}' + diff_note(got7, sF, d)}", flush=True)
     # 7b. step 7 where only a SLOT can give the start: after step 6 the solo path took slot 1's contents back, so the
     # live chain (or the prompt cache) held A's start in step 7 and F came from there.  Here A runs to its end in
     # slot 1, then --flush unrelated solo GENs push A out of the live session and the prompt cache's checkpoints; F2
@@ -290,8 +298,9 @@ def main():
                 break
         same = gotA == sA
         ok &= same
-        print(f"7b: A in slot 1 to its end: {len(gotA)} tokens, solo {len(sA)}: {'IDENTICAL' if same else 'DIFFERS'}",
-              flush=True)
+        dA = next((k for k in range(min(len(gotA), len(sA))) if gotA[k] != sA[k]), None)
+        print(f"7b: A in slot 1 to its end: {len(gotA)} tokens, solo {len(sA)}: "
+              f"{'IDENTICAL' if same else f'DIFFERS at {dA}' + diff_note(gotA, sA, dA)}", flush=True)
         for k in range(a.flush):
             run(eng, out, f"GEN 8 {ids(chat(f'Unrelated question {k}: name one prime number above {100 * k}.'))}")
         eng.log.flush()
@@ -310,7 +319,7 @@ def main():
         ok &= same
         d = next((k for k in range(min(len(got7b), len(sF2))) if got7b[k] != sF2[k]), None)
         print(f"7b: F2 after {a.flush} unrelated GENs, from slot 1: {len(got7b)} tokens, solo {len(sF2)}: "
-              f"{'IDENTICAL' if same else f'DIFFERS at {d}'}", flush=True)
+              f"{'IDENTICAL' if same else f'DIFFERS at {d}' + diff_note(got7b, sF2, d)}", flush=True)
         for l in src:
             print("  7b log:", l.split("strata ")[-1][:160], flush=True)
     if a.dump:

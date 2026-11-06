@@ -1,0 +1,7 @@
+# final verification: fork defaults (overlap now on by default on Metal), no opt-in envs
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+V_pp|/Users/pc/src/Strata-fork/build-metal/strata||t2048.txt|2|262144|
+V_tg|/Users/pc/src/Strata-fork/build-metal/strata||t357.txt|128|40960|
+V_pp2|/Users/pc/src/Strata-fork/build-metal/strata||t2048.txt|2|262144|
+V_tg2|/Users/pc/src/Strata-fork/build-metal/strata||t357.txt|128|40960|
+V_tgB|/Users/pc/src/Strata-fork/build-metal/strata||t357.txt|128|262144|

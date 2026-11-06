@@ -1,0 +1,2 @@
+round-3 start 01:38:25; slot pre-mtp-ab3 saved
+final: config restored, host UP, slot restored 02:00:41

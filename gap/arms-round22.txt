@@ -1,0 +1,10 @@
+# round 22: confirm the shipped default. The engine (build 13:25) now defaults the big-expert read-ahead to 12
+# (stream.cpp, round-21 evidence: -5.8 ms T2 window, +6.9% tok/s). Arms: new default vs the old value 6
+# explicitly, pinned arena, 4-way sandwich - expect the D arms to print "read-ahead top 12" and land ~83 ms.
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round22.txt 2>&1 | tee /tmp/round22.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+N_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+O_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=6|t357.txt|128|40960|
+N_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+O_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=6|t357.txt|128|40960|
+N_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

@@ -1,0 +1,11 @@
+# round 4: prefill expert-tile sweep (v2 TM=32) + v3-on-M1 check + decode GEMV NR
+# name|binary|extra-env|tokens|maxnew|ctx|extra-args
+R_f_anchor|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_STREAM_FAKE=1|t2048.txt|2|40960|
+R_f_tm32|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_STREAM_FAKE=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_32_2|t2048.txt|2|40960|
+R_f_tm32s4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_STREAM_FAKE=1 STRATA_METAL_PROMPT_GU2_TILE=32_64_32_4|t2048.txt|2|40960|
+R_f_v3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_STREAM_FAKE=1 STRATA_METAL_PROMPT_EXPERTS=v3|t2048.txt|2|40960|
+B_anchor262|/Users/pc/src/Strata-fork/build-metal/strata||t2048.txt|2|262144|
+B_tm32_262|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROMPT_GU2_TILE=32_64_32_2|t2048.txt|2|262144|
+D_ov|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
+D_ov_nr2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_GEMV_NR=2|t357.txt|128|40960|
+D_ov_nr4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_GEMV_NR=4|t357.txt|128|40960|

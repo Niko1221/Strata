@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
                 d.p = &step;
                 d.args = {mtl::Arg::B(stA), mtl::Arg::B(hA), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be), mtl::Arg::B(z),
                           mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa), mtl::Arg::B(gam), mtl::Arg::B(yA), mtl::Arg::V(da),
-                          mtl::Arg::B(hA2)};
+                          mtl::Arg::B(hA2), mtl::Arg::B(yA)};
                 d.grid[0] = HV;
                 d.tg[0] = 512;
                 cx.run({d});
@@ -146,7 +146,8 @@ int main(int argc, char** argv) {
     mtl::Dispatch d;
     d.p = &step;
     d.args = {mtl::Arg::B(stA), mtl::Arg::B(hA), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be), mtl::Arg::B(z),
-              mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa), mtl::Arg::B(gam), mtl::Arg::B(yA), mtl::Arg::V(da), mtl::Arg::B(hA2)};
+              mtl::Arg::B(cw), mtl::Arg::B(dt), mtl::Arg::B(sa), mtl::Arg::B(gam), mtl::Arg::B(yA), mtl::Arg::V(da), mtl::Arg::B(hA2),
+              mtl::Arg::B(yA)};
     d.grid[0] = HV;
     d.tg[0] = 512;
     auto timeit = [&](const std::vector<mtl::Dispatch>& ds) {

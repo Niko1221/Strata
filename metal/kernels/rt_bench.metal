@@ -43,6 +43,28 @@ kernel void k_read_chunk(device const uint4* src [[buffer(0)]], device uint* out
     out[gid] = a.x ^ a.y ^ a.z ^ a.w;
 }
 
+// Slot-scattered chunk per threadgroup (how the MoE kernel reads arena expert slots): threadgroup g reads
+// `chunk` uint4 starting at a hashed slot's offset inside `slot`-sized slots, nslots slots in the buffer.
+// slot == 0: contiguous, `seed` is this dispatch's base; else hashed inside `nslots` slots of `slot` uint4.
+kernel void k_read_slots(device const uint4* src [[buffer(0)]], device uint* out [[buffer(1)]],
+                         constant uint& chunk [[buffer(2)]], constant uint& slot [[buffer(3)]],
+                         constant uint& nslots [[buffer(4)]], constant uint& seed [[buffer(5)]],
+                         uint tid [[thread_position_in_threadgroup]], uint tgs [[threads_per_threadgroup]],
+                         uint g [[threadgroup_position_in_grid]], uint gid [[thread_position_in_grid]]) {
+    uint4 a = 0, b = 0;
+    const uint hg = (g + seed * 977u) * 2654435761u;
+    const uint base = slot == 0 ? seed + g * chunk
+                                : ((hg >> 3) % nslots) * slot + ((hg >> 8) % (slot - chunk));
+    uint i = tid;
+    for (; i + tgs < chunk; i += 2 * tgs) {
+        a += src[base + i];
+        b += src[base + i + tgs];
+    }
+    for (; i < chunk; i += tgs) a += src[base + i];
+    a += b;
+    out[gid] = a.x ^ a.y ^ a.z ^ a.w;
+}
+
 // Read + write (a state update): dst[i] = src[i] * 1.0001 for float4.
 kernel void k_copy(device const float4* src [[buffer(0)]], device float4* dst [[buffer(1)]],
                    constant uint& n [[buffer(2)]],

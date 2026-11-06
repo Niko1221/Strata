@@ -1,0 +1,9 @@
+# attribution window: where do pp2048 and tg128 ms actually go?
+# fake = pure GPU ms for one chunk (no SSD); PROFILE = time breakdown; KPROF=T = per-kernel
+K_fake_v2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_STREAM_FAKE=1|t2048.txt|2|40960|
+K_fake_mpp|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_STREAM_FAKE=1 STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|2|40960|
+K_prof_pp|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t2048.txt|2|262144|
+K_prof_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|262144|
+K_kprof_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_KPROF=T|t357.txt|64|262144|
+K_tg_16k|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t16384.txt|128|262144|
+K_tg_nospec|/Users/pc/src/Strata-fork/build-metal/strata||t357.txt|128|262144|--spec 0

@@ -1,0 +1,15 @@
+# round 13: is decode GPU-bound or dispatch-bound? PROFILE split (host / run_graph / GPU / patch) per window
+# size, class marginals with the same split, and the two tile retunes the isolated bench says are 40-60% faster
+# (IQ4_XS 2560x10240: 16,1,4,1 202 GB/s -> 8,2,4,1 289 GB/s; Q6_K 6144x2560: 32,1,8,2 184 -> 8,1,4,1 288).
+# Run: nohup ./gap/measure.sh gap/arms-round13.txt > /tmp/round13.log 2>&1 &   (it stops the server, measures, restarts it)
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+BENCH|/tmp/benchall.sh||t357.txt|1|40960|
+D_A|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
+P_tg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P_tg_skipgemv|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_SKIP=gemv|t357.txt|128|40960|
+P_tg_skipgr|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_SKIP=gr_|t357.txt|128|40960|
+P_tg_skipmoe|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_SKIP=moe_|t357.txt|128|40960|
+P_tg_nospec|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|--spec 0
+Z_q2560|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_GEMV_TILE=2560,2560,8,2,4,1|t357.txt|128|40960|
+Z_q6144|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_GEMV_TILE=6144,6144,8,1,4,1|t357.txt|128|40960|
+D_A2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|

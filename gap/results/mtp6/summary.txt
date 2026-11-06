@@ -1,0 +1,11 @@
+round-6 chat start 11:58:09; prompt ~86569 est tokens
+N0: ctx 115136 reused 115118 prefill 30.0 tok/s | decode 494 tok 22.8s 21.7 tok/s | drafts 2/3
+S2: ctx 115136 reused 115117 prefill 29.5 tok/s | decode 494 tok 22.4s 22.1 tok/s | drafts 184/311
+pass 1 done 12:20:57
+S2: ctx 115136 reused 115117 prefill 32.9 tok/s | decode 494 tok 22.0s 22.5 tok/s | drafts 192/303
+N0: ctx 115136 reused 115118 prefill 25.8 tok/s | decode 494 tok 21.7s 22.8 tok/s | drafts 3/3
+pass 2 done 12:38:04
+final: config restored, host UP, slot restored 12:38:14
+== decode tok/s at ~100K context ==
+N0: 21.7, 22.8 | avg 22.2
+S2: 22.1, 22.5 | avg 22.3

@@ -3526,6 +3526,19 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
     kept = mark_text(s)
     if kept is not None and any(f"sha256 {x}" in kept for x in (sha, *also)):
         return
+    if os.environ.get("STRATA_ALLOW_UNPINNED_MODEL"):
+        # opt-in (the person asks for it): accept a same-named file the pinned table does not cover - e.g. a
+        # requantized variant of a model (Huihui's UD-Q4_K_XL-V2).  The file is never hashed and never deleted;
+        # the size is reported so a cut-short file is at least visible, and the finish mark keeps setup from
+        # re-downloading the published file over it.
+        have = s.stat().st_size if s.exists() else -1
+        if have != size:
+            say(f"  {s.name}: {have:,} bytes (the published file is {size:,}); accepted unpinned "
+                f"(STRATA_ALLOW_UNPINNED_MODEL)")
+        else:
+            say(f"  {s.name}: pinned checksum skipped (STRATA_ALLOW_UNPINNED_MODEL), {have:,} bytes")
+        mark(s, f"accepted unpinned {have} bytes")
+        return
     have = s.stat().st_size if s.exists() else -1
     if own and have > 0 and have != size and own_gguf_is_whole(s):
         # a fine-tune or another build with the layout of the published file (#3777: 96 bytes apart): recommend, never refuse

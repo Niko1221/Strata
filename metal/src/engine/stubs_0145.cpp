@@ -123,8 +123,6 @@ namespace strata::metal_engine { void missing(const char* name); }
 
 namespace strata::kernels { void copy_rows_from_mapped_after(unsigned int const* p0, unsigned int p1, float* p2, float const* p3, long long p4, long long p5, int const* p6, int const* p7, void* p8) { strata::metal_engine::missing("strata::kernels::copy_rows_from_mapped_after"); } }
 namespace strata::kernels::cpu { void iq256_gu_rows_exact_one(int p0, unsigned char const* p1, unsigned long p2, unsigned long p3, int p4, void const* p5, float* p6, int p7, int p8) { strata::metal_engine::missing("strata::kernels::cpu::iq256_gu_rows_exact_one"); } }
-namespace strata::kernels { void fused_gr_persist_init() {  } }
-namespace strata::kernels { bool fused_gr_read_persist(strata::kernels::FusedGrArgs const* p0, int p1, void* p2) {  return false; } }
 namespace strata::kernels { void gdn_step_norm_groups(strata::kernels::GdnGroups const& p0, float const* p1, int p2, float const* p3, float const* p4, float const* p5, float const* p6, float p7, float* p8, int p9, int p10, bool p11, void* p12) { strata::metal_engine::missing("strata::kernels::gdn_step_norm_groups"); } }
 namespace strata::kernels { void handoff_publish(float* p0, float const* p1, long long p2, float const* p3, long long p4, float const* p5, long long p6, unsigned int* p7, unsigned int* p8, void* p9, unsigned int const* p10) { strata::metal_engine::missing("strata::kernels::handoff_publish"); } }
 namespace strata::kernels { void hc_q8_to_bf16(void const* p0, float const* p1, unsigned short* p2, long long p3, void* p4) { strata::metal_engine::missing("strata::kernels::hc_q8_to_bf16"); } }

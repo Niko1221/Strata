@@ -69,6 +69,7 @@ build-vision-cuda12.bat
 
 # local Windows HIP packaging output
 dist-hip/
+gap/.server
 
 # Terminal / Desktop split: local venvs, build output and archives never enter git
 .terminal-venv/
@@ -89,6 +90,8 @@ node_modules/
 # screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
 /apps/host/docs/evidence/
 /apps/host/docs/checkpoints/
+# ref-backup bundles taken before a fork refresh (git bundle files, tens of MB)
+/_backup/
 
 # DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
 /out-spark/

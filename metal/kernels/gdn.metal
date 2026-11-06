@@ -62,6 +62,7 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
                      device float* y [[buffer(10)]], constant GdnArgs& a [[buffer(11)]],
                      device float* hist_out [[buffer(12)]],
                      device const uint* rinfo [[buffer(13), function_constant(gdn_rows)]],
+                     device float* ysums [[buffer(14)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     constexpr int S = 128;
@@ -192,7 +193,7 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
         if (a.plane && ib == 0 && (j & 15) == 0) {
             float s0 = 0.0f, s1 = 0.0f;
             for (int k = 0; k < 16; k += 2) { s0 += ys[j + k]; s1 += ys[j + k + 1]; }
-            y[4 * a.plane + tr * (hv * S / 16) + (h * S + j) / 16] = s0 + s1;
+            ysums[tr * (hv * S / 16) + (h * S + j) / 16] = s0 + s1;
         }
     }
 }

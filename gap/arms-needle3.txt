@@ -1,0 +1,2 @@
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+B05|/Users/pc/src/Strata-fork/build-metal/strata||b05.txt|24|262144|

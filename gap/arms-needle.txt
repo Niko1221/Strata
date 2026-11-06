@@ -1,0 +1,5 @@
+# needle battery @140k context, new-default binary; recall = code ids 48 12 22 22 18 16 in output
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+N10|/Users/pc/src/Strata-fork/build-metal/strata||n10.txt|10|262144|
+N50|/Users/pc/src/Strata-fork/build-metal/strata||n50.txt|10|262144|
+N90|/Users/pc/src/Strata-fork/build-metal/strata||n90.txt|10|262144|

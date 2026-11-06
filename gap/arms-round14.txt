@@ -1,0 +1,13 @@
+# round 14: why is the real T=2 window 91.6 ms GPU when kprof says classes sum 48.6 ms warm?
+# Three discriminators, each against same-env PROFILE baselines (all arms carry PROFILE so the
+# comparison is GPU ms per window, not tok/s): NOBARRIER (barrier serialization), expert-cache 512
+# (SSD streaming stall; last --expert-cache flag wins over gap.sh's fixed 64), HC_Q8=0 (bytes x1.85:
+# if decode is byte-bound the slowdown tracks the added 578 MB/token).
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round14.txt 2>&1 | tee /tmp/round14.log
+# (server is stopped for the window - this agent has no inference until it is restored)
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+N_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_NOBARRIER=1|t357.txt|128|40960|
+E_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|--expert-cache 512
+H_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_HC_Q8=0|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

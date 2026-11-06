@@ -1,0 +1,14 @@
+round-5 regime start 10:58:19; prompt ~86557 est tokens
+N0: ctx 114691 reused 114673 prefill 28.0 tok/s | decode 232 tok 10.9s 21.3 tok/s | drafts 0/0
+S2: ctx 114691 reused 114672 prefill 28.3 tok/s | decode 232 tok 10.3s 22.6 tok/s | drafts 103/128
+pass 1 done 11:19:19
+S2: ctx 114691 reused 114672 prefill 28.2 tok/s | decode 232 tok 10.1s 23.0 tok/s | drafts 103/128
+N0: ctx 114691 reused 114673 prefill 29.8 tok/s | decode 232 tok 10.3s 22.5 tok/s | drafts 45/56
+pass 2 done 11:35:08
+N0: ctx 114691 reused 114673 prefill 30.8 tok/s | decode 232 tok 10.7s 21.6 tok/s | drafts 0/3
+S2: ctx 114691 reused 114672 prefill 29.4 tok/s | decode 232 tok 10.0s 23.2 tok/s | drafts 103/128
+pass 3 done 11:50:57
+final: config restored, host UP, slot restored 11:51:07
+== decode tok/s at ~100K context ==
+N0: 21.3, 22.5, 21.6 | avg 21.8
+S2: 22.6, 23.0, 23.2 | avg 22.9
