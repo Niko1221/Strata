@@ -10,6 +10,7 @@ import { Icon } from './ui';
  */
 export function FamilySwitch({ families, selected, onPick }: { families: CatalogModel[]; selected?: string; onPick: (family: CatalogModel) => void }) {
   const shown = families.filter(f => f.sizes.length);
+  const missing = families.filter(f => !f.sizes.length && f.available === false);      // a model of the update feed this engine does not run: said, never offered
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   if (!shown.length) return null;
@@ -24,6 +25,7 @@ export function FamilySwitch({ families, selected, onPick }: { families: Catalog
           <Icon name="models" size={18}/><span><strong>{tr(f.title)}</strong>{f.experimental ? <small>{tr("Experimental")}</small> : null}</span>
           {f.family === current.family ? <Icon name="check" size={16} className="family-menu__check"/> : null}
         </button>)}
+        {missing.map(f => <div key={f.family} className="family-menu__item" role="note" aria-disabled="true"><Icon name="models" size={18}/><span><strong>{f.title}</strong><small>{f.unavailable_reason}</small></span></div>)}
       </div>
     </FloatingMenu> : null)}
   </>;

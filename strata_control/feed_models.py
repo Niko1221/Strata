@@ -38,6 +38,12 @@ UNAVAILABLE_ENGINE = "not available on this engine (it needs the {family} model 
 UNAVAILABLE_UNKNOWN = "not available on this engine (this Strata does not know the {family} model family; update Strata)"
 
 
+#: What happens to a model whose family the installed engine does not run (the owner decides; a one-line switch):
+#:   "not_offered": it is listed as not available and never offered to install;
+#:   "warn_allow":  it is offered like any other model with the same sentence as a warning, and the install goes on (a family this Control does not know is still not offered).
+UNAVAILABLE_POLICY = "not_offered"
+
+
 def unavailable_reason(family: str) -> str:
     return (UNAVAILABLE_ENGINE if family in feedmod.MODEL_FAMILIES_INSTALLABLE else UNAVAILABLE_UNKNOWN).format(family=family)
 
@@ -208,13 +214,16 @@ def apply(setup, models, engine_families=None) -> Applied:
         if any(t.startswith(tag) or tag.startswith(t) for t in _taken_tags(setup)):
             _skip(result, model, "its name would be mistaken for a built-in model's files")
             continue
-        runs = model.family in feedmod.MODEL_FAMILIES_INSTALLABLE and (engine_families is None or model.family in engine_families)
+        known = model.family in feedmod.MODEL_FAMILIES_INSTALLABLE
+        runs = known and (engine_families is None or model.family in engine_families)
         if not runs:
+            allowed = known and UNAVAILABLE_POLICY == "warn_allow"
             reason = unavailable_reason(model.family)
-            setup.FEED_UNAVAILABLE[model.id] = {"title": model.title, "by": model.by, "family": model.family, "reason": reason}
+            setup.FEED_UNAVAILABLE[model.id] = {"title": model.title, "by": model.by, "family": model.family, "reason": reason, "allowed": allowed}
             result.unavailable[model.id] = setup.FEED_UNAVAILABLE[model.id]
-            done_before[model.id] = model
-            continue
+            if not allowed:
+                done_before[model.id] = model
+                continue
         try:
             (_own_path if model.family == "qwen35moe" else _flash_next)(setup, model)
         except _Unsupported as exc:
@@ -298,6 +307,23 @@ def _flash_next(setup, model) -> None:
             entry["engine"] = engine
         setup.MODELS[keys[q.name]] = entry
     setup.FAMILIES[model.id] = fam
+    _mac_entries(model, keys)
+
+
+def _mac_entries(model, keys: dict) -> None:
+    """The Mac (Metal) tables: a size of one or two files is offered like the Qwen GSQ-RCO sizes (no repack), "not measured on a Mac". More files: not offered on a Mac."""
+    try:
+        from strata_control import mac_fit
+    except Exception:                                    # noqa: BLE001
+        return
+    if any(len(q.files) > 2 for q in model.quants):
+        return
+    for q in model.quants:
+        key = keys[q.name]
+        mac_fit.MAC_MODELS[key] = {"shard1_gb": round(q.download_bytes / 1e9, 1), "tested": False, "family": model.id, "shards": len(q.files)}
+        mac_fit.MAC_ABOUT[key] = q.about or f"{q.name} quantization"
+    if model.id not in mac_fit.FEED_FAMILIES:
+        mac_fit.FEED_FAMILIES.append(model.id)
 
 
 def _own_path(setup, model) -> None:

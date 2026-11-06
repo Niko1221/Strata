@@ -95,6 +95,16 @@ class Base(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         os.environ.pop("STRATA_FEED_MODELS", None)
+        from strata_control import mac_fit             # the Mac tables are module globals: each test gets them back as they were
+        saved = (dict(mac_fit.MAC_MODELS), dict(mac_fit.MAC_ABOUT), list(mac_fit.FEED_FAMILIES))
+
+        def restore_mac():
+            mac_fit.MAC_MODELS.clear()
+            mac_fit.MAC_MODELS.update(saved[0])
+            mac_fit.MAC_ABOUT.clear()
+            mac_fit.MAC_ABOUT.update(saved[1])
+            mac_fit.FEED_FAMILIES[:] = saved[2]
+        self.addCleanup(restore_mac)
         self.setup = fresh_setup()
 
     def signed_feed(self, name="feed", sequence=1, models=None) -> str:
@@ -383,6 +393,130 @@ class TerminalAndApp(Base):
         plan, args = M.Tools(s).install_plan("qwen4-test", "Q4_K_M", 65536, "no", None, None, None, None, "auto", None, None)
         self.assertEqual(args[args.index("--family") + 1:args.index("--family") + 4:2], ["qwen4-test", "Q4_K_M"])        # the install runs setup with the feed model's names
         self.assertEqual(plan["download_gb"], 0.0)
+
+
+class OwnerRule(Base):
+    """feed_models.UNAVAILABLE_POLICY: one line decides whether a model the engine does not run is only said ("not_offered") or warned about and allowed ("warn_allow")."""
+
+    def test_warn_allow_registers_a_known_family_and_keeps_the_sentence(self):
+        with mock.patch.object(feed_models, "UNAVAILABLE_POLICY", "warn_allow"):
+            result = feed_models.apply(self.setup, parsed(own_path(), flash_next(id="later-one", family="qwen5new")), {"qwen4exp"})
+        self.assertEqual(result.registered, ["qwen35-test"])
+        self.assertIn("qwen35-test", self.setup.OWN_PATH_FAMILIES)
+        self.assertTrue(self.setup.FEED_UNAVAILABLE["qwen35-test"]["allowed"])
+        self.assertNotIn("later-one", self.setup.FAMILIES)                              # a family this Control does not know is never installable
+        self.assertFalse(self.setup.FEED_UNAVAILABLE["later-one"]["allowed"])
+
+    def test_warn_allow_install_warns_and_goes_on(self):
+        with mock.patch.object(feed_models, "UNAVAILABLE_POLICY", "warn_allow"):
+            feed_models.apply(self.setup, parsed(own_path()), {"qwen4exp"})
+        s = self.setup
+        eng = self.root / "engine"
+        eng.mkdir()
+        calls = []
+        patches = [mock.patch.object(s, "download", lambda url, dst, what=None: calls.append(("get", dst.name))),
+                   mock.patch.object(s, "verify_sha256", lambda p, size, sha, own=False: None), mock.patch.object(s, "free_gb", lambda p: 500.0),
+                   mock.patch.object(s, "pip_install", lambda *a, **k: None),
+                   mock.patch.object(s, "engine_step", lambda a, gpu, hip, amd, tk, v: (self.root / "llama", eng, {"version": "0.2.12"}, [], gpu, "none")),
+                   mock.patch.object(s, "engine_families", lambda e: {"qwen4exp"}), mock.patch.object(s, "run", lambda cmd, **k: None),
+                   mock.patch.object(s, "data_folder", lambda d, *a, **k: (self.root / "data", [])),
+                   mock.patch.object(s, "write_setup_config", lambda *a, **k: calls.append(("config",))),
+                   mock.patch.object(s, "write_run_script", lambda tag, p, port, o=True: self.root / "run.sh"),
+                   mock.patch.object(s, "recommend_pool_workers", lambda a: a), mock.patch.object(s, "ROOT", self.root)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        a = argparse.Namespace(family="qwen35-test", model="UD-Q4", check=False, yes=True, vision="no", models_dir=str(self.root / "models"), gguf_dir=None,
+                               context=None, rope_scaling=None, rope_scale=None, kv=None, resident_budget_gib=None, low_ram="auto", vram_reserve_mib=None,
+                               host=None, api_key=None, browser=None, no_start=True, data_dir=None, gpu=None)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = s.install_own_path(a, "qwen35-test", {"index": 0, "count": 1, "vram_gb": 16.0, "name": "T"}, False, [], 13, [], 8080, 64.0, None)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn(feed_models.UNAVAILABLE_ENGINE.format(family="qwen35moe"), out.getvalue())
+        self.assertIn(("get", "Q4-model.gguf"), calls)
+
+    def test_the_default_is_not_offered(self):
+        self.assertEqual(feed_models.UNAVAILABLE_POLICY, "not_offered")
+
+
+class MacTables(Base):
+    """The Mac (Metal) tables take the feed's models too: strata_control/mac_fit.py, metal/setup_mac.py and the app's Mac table."""
+
+    def setUp(self):
+        super().setUp()
+        from strata_control import mac_fit
+        self.mf = mac_fit
+        saved = (dict(mac_fit.MAC_MODELS), dict(mac_fit.MAC_ABOUT), list(mac_fit.FEED_FAMILIES))
+
+        def restore():
+            mac_fit.MAC_MODELS.clear()
+            mac_fit.MAC_MODELS.update(saved[0])
+            mac_fit.MAC_ABOUT.clear()
+            mac_fit.MAC_ABOUT.update(saved[1])
+            mac_fit.FEED_FAMILIES[:] = saved[2]
+        self.addCleanup(restore)
+
+    def test_nothing_changes_without_feed_models(self):
+        self.assertEqual(self.mf.all_families(), self.mf.APP_FAMILIES)
+        feed_models.apply(self.setup, (), None)
+        self.assertEqual(self.mf.all_families(), ("qwen", "unsloth", "gyro"))
+
+    def test_a_feed_model_of_one_or_two_files_is_a_mac_size(self):
+        feed_models.apply(self.setup, parsed(flash_next()), None)
+        self.assertEqual(self.mf.all_families(), ("qwen", "unsloth", "gyro", "qwen4-test"))
+        self.assertEqual(self.mf.app_sizes("qwen4-test"), ["Q4_K_M"])
+        d = self.mf.MAC_MODELS["Q4_K_M"]
+        self.assertEqual((d["family"], d["shards"], d["tested"]), ("qwen4-test", 2, False))
+        self.assertIn("has not been measured on a Mac", " ".join(self.mf.model_note("Q4_K_M", 64.0)))
+        self.assertEqual(self.mf.repacked_gb("Q4_K_M"), 0.0)
+
+    def test_a_model_of_more_than_two_files_is_not_offered_on_a_mac(self):
+        big = flash_next(id="big-one")
+        big["quants"][0]["files"] = [{**file_entry("a-00001-of-00002.gguf"), "name": f"b-0000{i}-of-00003.gguf", "path": f"Q4_K_M/b-0000{i}-of-00003.gguf"} for i in (1, 2, 3)]
+        result = feed_models.apply(self.setup, parsed(big), None)
+        self.assertEqual(result.registered, ["big-one"])
+        self.assertEqual(self.mf.app_sizes("big-one"), [])
+        self.assertNotIn("big-one", self.mf.FEED_FAMILIES)
+
+    def test_the_mac_table_lists_it_after_the_built_in_sizes(self):
+        feed_models.load(self.signed_feed("f", 7, [flash_next()]), trusted={self.key["key_id"]: base64.b64decode(self.key["public"])})
+        import strata_mcp as M
+        rows = M.Strata(ROOT).model_table({"ram_gb": 64.0, "gpus": [], "mac": {"chip": "M4", "unified_gb": 64}})
+        by = {r["family"]: r for r in rows}
+        self.assertTrue(by["qwen4-test"]["feed"])
+        self.assertEqual([x["model"] for x in by["qwen4-test"]["sizes"]], ["Q4_K_M"])
+        self.assertNotIn("feed", by["qwen"])
+
+    def test_the_terminal_setup_reads_the_feed_for_a_name_it_does_not_know(self):
+        sys.path.insert(0, str(ROOT / "metal"))
+        import setup as global_setup
+        import setup_mac
+        saved = {k: copy.deepcopy(getattr(global_setup, k)) for k in ("MODELS", "FAMILIES", "HF_REVISIONS", "REV_PINS", "FEED_MODELS", "FEED_UNAVAILABLE")}
+
+        def restore():
+            for k, v in saved.items():
+                if isinstance(v, dict) and k in ("MODELS", "FAMILIES", "HF_REVISIONS", "REV_PINS"):
+                    getattr(global_setup, k).clear()
+                    getattr(global_setup, k).update(v)
+                else:
+                    setattr(global_setup, k, v)
+        self.addCleanup(restore)
+        feed = self.signed_feed("f", 7, [flash_next()])
+        setup_mac._feed_models(["--family", "qwen4-test", "--feed", feed], False)
+        self.assertIn("qwen4-test", global_setup.FAMILIES)
+        self.assertEqual(setup_mac.model_shard_names("Q4_K_M"), ["a-00001-of-00002.gguf", "a-00002-of-00002.gguf"])
+        self.assertEqual(setup_mac.model_shard_names("Q2_0"), [global_setup.model_file(global_setup.FAMILIES["qwen"], "Q2_0", i) for i in (1, 2)])
+
+
+class TerminalRow(Base):
+    def test_the_terminal_names_what_this_engine_does_not_run(self):
+        from strata_cli.launch.catalog import Catalog
+        feed_models.load(self.signed_feed("f", 7, [flash_next(id="later-one", family="qwen5new")]), trusted={self.key["key_id"]: base64.b64decode(self.key["public"])})
+        hw = {"ram_gb": 64.0, "gpus": [], "disk_free_gb": 500.0}
+        cat = Catalog(src=ROOT, root=self.root / "inst", hardware=hw)
+        self.assertEqual(cat.unavailable(hw), [("Qwen4 Test", feed_models.UNAVAILABLE_UNKNOWN.format(family="qwen5new"))])
+        self.assertNotIn("later-one", [r.family for r in cat.rows(hw)])
 
 
 if __name__ == "__main__":

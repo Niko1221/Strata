@@ -186,6 +186,13 @@ def gpu_budget_gb(ram_gb: float) -> float:
 # The families the Mac app (setup.py's mac_control_setup and the app's model list) installs: the GSQ-RCO Qwen files, Unsloth's sets (several shards:
 # metal/tools/metal_repack.py writes one GGUF for the GPU) and Gyro.  A set with "missing" is left out (METAL_Q5_0_DOWN above).
 APP_FAMILIES = ("qwen", "unsloth", "gyro")
+#: the signed feed's models that run on a Mac (strata_control/feed_models.py adds them; empty without a feed list)
+FEED_FAMILIES: list = []
+
+
+def all_families() -> tuple:
+    """The families the Mac app and Terminal offer: the built-in ones, then the signed feed's."""
+    return (*APP_FAMILIES, *FEED_FAMILIES)
 # What the repack and the pack work in beside the shards (the Mac install path counts it; the repacked file is MAC_MODELS' shard1_gb).
 REPACK_WORK_GB = 6.0
 

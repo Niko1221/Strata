@@ -1158,7 +1158,7 @@ class Strata:
         ram = float(hw.get("ram_gb") or 0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
-        for family in (self.mac().APP_FAMILIES if self.mac() else ("qwen", "gyro")):      # Qwen, Unsloth's sets, then Gyro: never the default
+        for family in (self.mac().all_families() if self.mac() else ("qwen", "gyro")):      # Qwen, Unsloth's sets, then Gyro: never the default
             fd = families.get(family)
             if fd is None:
                 continue
@@ -1177,7 +1177,7 @@ class Strata:
         ds = self._mac_deepseek(hw, have)                # DeepSeek-V4.1-Flash on the Mac (0.2.7.1): after Qwen, never the default
         if ds is not None:
             out.append(ds)
-        return out
+        return self._feed_rows(out, self.setup_module())
 
     def dsv41_engine_exe(self) -> Path | None:
         """The installed strata-dsv41 (STRATA_DSV41_EXE, else the newest package in the engine-dsv41 folders of this install), None when there is none; only looked at, never started."""
@@ -1388,9 +1388,21 @@ class Strata:
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
-        for fid, u in ((getattr(S, "FEED_UNAVAILABLE", None) or {}).items() if S else ()):   # a model of the signed feed that this engine does not run: no sizes, so no screen offers it
-            out.append({"family": fid, "title": u["title"], "about": u["reason"], "experimental": False, "images": False, "sizes": [],
-                        "available": False, "unavailable_reason": u["reason"]})
+        return self._feed_rows(out, S)
+
+    def _feed_rows(self, out: list, S) -> list:
+        """The signed feed's models in a model table: their family rows carry `feed: true`; a model this engine does not run has `available: false` and the reason
+        (`sizes` empty when it is not offered, kept when the owner's rule allows the install: feed_models.UNAVAILABLE_POLICY)."""
+        unavailable = (getattr(S, "FEED_UNAVAILABLE", None) or {}) if S else {}
+        for row in out:
+            if (getattr(S, "FEED_MODELS", None) or {}).get(row["family"]):
+                row["feed"] = True
+                if row["family"] in unavailable:
+                    row["available"], row["unavailable_reason"] = False, unavailable[row["family"]]["reason"]
+        for fid, u in unavailable.items():
+            if not any(r["family"] == fid for r in out):
+                out.append({"family": fid, "title": u["title"], "about": u["reason"], "experimental": False, "images": False, "sizes": [], "feed": True,
+                            "available": False, "unavailable_reason": u["reason"]})
         return out
 
     @staticmethod
