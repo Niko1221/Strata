@@ -267,6 +267,11 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
             std::fprintf(stderr, "strata: gfx12 (RDNA4): the matrix-core QSA block scorer is on once a prompt is past 28,672 tokens (+5.7%% prompt speed at 98K on an R9700, shorter prompts unchanged; "
                                  "the first-token KL against the warp kernel is 0.002 on average above 30K; STRATA_SELECT_WMMA=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
     }
+    if (strata::kernels::gfx_arch_is_gfx12(gcn_arch) && std::getenv("STRATA_GDN_CHUNKED") == nullptr) {   // the length-gated chunked GDN scan (prefill/kernels.cu: gdn_chunked_auto)
+        const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
+        if (!(off12 != nullptr && off12[0] == '0'))
+            std::fprintf(stderr, "strata: RDNA4 (gfx12): prompt chunks of 30,000+ tokens use the chunked GDN scan (STRATA_GDN_CHUNKED=0 turns it off)\n");
+    }
     if (!set.empty()) {
         const bool g12 = strata::kernels::gfx_arch_is_gfx12(gcn_arch);
         std::fprintf(stderr, "strata: %s: %zu exact speed switches on by default (%s=0 turns "

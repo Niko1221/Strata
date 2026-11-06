@@ -1835,7 +1835,8 @@ inline int gdn_chunked_env() {   // -1 unset, else the number
 }
 inline bool gdn_chunked_auto(int64_t T) {   // unset: only on gfx12, only for long chunks (the caller has checked the device)
     static const int64_t lo = [] { const char* e = std::getenv("STRATA_GDN_CHUNKED_MIN"); return e != nullptr && e[0] != '\0' ? (int64_t) std::atoll(e) : (int64_t) 30000; }();
-    return gdn_chunked_env() < 0 && T >= lo;
+    static const bool gfx12_defaults = [] { const char* e = std::getenv("STRATA_GFX12_DEFAULTS"); return !(e != nullptr && e[0] == '0'); }();   // (the gfx12 defaults' one off switch)
+    return gdn_chunked_env() < 0 && gfx12_defaults && T >= lo;
 }
 typedef _Float16 gw_h16 __attribute__((ext_vector_type(16)));
 typedef _Float16 gw_h8 __attribute__((ext_vector_type(8)));
