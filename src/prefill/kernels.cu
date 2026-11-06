@@ -6,6 +6,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/router_top10.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -27,6 +28,12 @@ constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCo
 constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
 constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width: 640 for Flash-Next
 constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
+// attention widths and the GDN value width, derived for the same reason; HCX keeps array sizes legal for a
+// family without hyper-connections (qwen3next) - its GR kernels are never launched when HC == 0.
+constexpr int NH = (int) strata::core::kCompiledGeometry.n_head, HD = (int) strata::core::kCompiledGeometry.head_dim,
+              NKV = (int) strata::core::kCompiledGeometry.n_head_kv;
+constexpr int64_t ZV = strata::core::kCompiledGeometry.ssm_value_dim;
+constexpr int HCX = HC > 0 ? HC : 1;
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
@@ -2515,16 +2522,16 @@ __global__ void __launch_bounds__(256) rms_rope_rows_kernel(const float* in, int
 }
 __global__ void split_q_kernel(const float* __restrict__ qf, float* __restrict__ q, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    q[i] = qf[t * 24 * 512 + h * 512 + d];
+    if (i >= T * NH * HD) return;
+    const int64_t t = i / ((int64_t) NH * HD), h = (i / HD) % NH, d = i % HD;
+    q[i] = qf[t * (int64_t) NH * 2 * HD + h * 2 * HD + d];
 }
 __global__ void gate_attn_kernel(const float* __restrict__ a, const float* __restrict__ qf, uint16_t* __restrict__ o16,
                                  int64_t T, int64_t ld16) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    o16[t * ld16 + h * 256 + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * 24 * 512 + h * 512 + 256 + d]))));
+    if (i >= T * NH * HD) return;
+    const int64_t t = i / ((int64_t) NH * HD), h = (i / HD) % NH, d = i % HD;
+    o16[t * ld16 + h * HD + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * (int64_t) NH * 2 * HD + h * 2 * HD + HD + d]))));
 }
 
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
@@ -2537,7 +2544,7 @@ __global__ void kv_append_kernel(const float* __restrict__ K, const float* __res
     const int kvh = blockIdx.y, g = blockIdx.z >> 1;
     const bool is_v = (blockIdx.z & 1) != 0;
     const int d = g * 64 + threadIdx.x;
-    const float x = (is_v ? V : K)[t * 512 + kvh * 256 + d];
+    const float x = (is_v ? V : K)[t * (int64_t) NKV * HD + kvh * HD + d];
     const int64_t pos = pos0 + t;
     const int64_t page = table[pos / page_size];
     const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
@@ -2703,7 +2710,7 @@ __global__ void __launch_bounds__(256, 2) gr_upmix_cuda_kernel(const uint16_t* _
                                                               int64_t T) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     __shared__ __align__(16) uint16_t sA[2][UC_BM][UC_LD];
-    __shared__ __align__(16) uint16_t sB[2][HC * UC_BD][UC_LD];
+    __shared__ __align__(16) uint16_t sB[2][HCX * UC_BD][UC_LD];
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, wm = warp >> 1, wn = warp & 1;
     // blocks column-tile fastest: the blocks in flight share a token tile (its lo16 rows stay in L2, the epilogue's R
     // reads run along rows)
@@ -2726,7 +2733,7 @@ __global__ void __launch_bounds__(256, 2) gr_upmix_cuda_kernel(const uint16_t* _
         }
         asm volatile("cp.async.commit_group;\n" ::);
     };
-    float acc[2][HC][2][4];
+    float acc[2][HCX][2][4];
 #pragma unroll
     for (int mt = 0; mt < 2; ++mt)
 #pragma unroll
@@ -2802,7 +2809,7 @@ void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const in
                uint16_t* k_pool, uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
                void* stream, const strata::kernels::KvHostPools* host, const strata::kernels::KvHostPools* stage) {
     if (T <= 0) return;
-    kv_append_kernel<<<dim3((unsigned) T, 2, 8), 64, 0, (cudaStream_t) stream>>>(
+    kv_append_kernel<<<dim3((unsigned) T, (unsigned) NKV, (unsigned) (2 * (HD / 64))), 64, 0, (cudaStream_t) stream>>>(
         K, V, pos0, page_table, page_size, k_pool, v_pool, k_q, v_q, k_scale, v_scale,
         host ? *host : strata::kernels::KvHostPools{}, stage ? *stage : strata::kernels::KvHostPools{});
     check("kv_append");
@@ -3454,12 +3461,36 @@ void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, in
     check("rms_rope_rows");
 }
 void split_q(const float* q_full, float* q, int64_t T, void* stream) {
-    split_q_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
+    split_q_kernel<<<blocks_for(T * (int64_t) NH * HD), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
     check("split_q");
 }
+// Fused GDN inputs (qwen3next): ssm_in is qkv|z as ONE matrix and ssm_ba is beta|alpha. The projection writes
+// the fused rows; these split them into the strided buffers every GDN kernel already reads. A copy of a few
+// MB per layer-chunk against a GEMM of the same rows - the zero-copy alternative threads a stride through
+// every GDN kernel, which is the shape change the upstream review should decide.
+__global__ void split_qkvz_kernel(const float* __restrict__ qkvz, float* __restrict__ qkv, float* __restrict__ z, int64_t T) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * (int64_t) (C + ZV)) return;
+    const int64_t t = i / (C + ZV), c = i % (C + ZV);
+    if (c < C) qkv[t * C + c] = qkvz[i]; else z[t * ZV + (c - C)] = qkvz[i];
+}
+__global__ void split_ba_kernel(const float* __restrict__ ba, float* __restrict__ ab, int64_t T) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * 2 * HV) return;
+    const int64_t t = i / (2 * HV), c = i % (2 * HV);
+    ab[t * 2 * HV + c] = ba[t * 2 * HV + (c < HV ? HV + c : c - HV)];   // fused is beta|alpha; ab is alpha|beta
+}
+void split_qkvz(const float* qkvz, float* qkv, float* z, int64_t T, void* stream) {
+    split_qkvz_kernel<<<blocks_for(T * (int64_t) (C + ZV)), 256, 0, (cudaStream_t) stream>>>(qkvz, qkv, z, T);
+    check("split_qkvz");
+}
+void split_ba(const float* ba, float* ab, int64_t T, void* stream) {
+    split_ba_kernel<<<blocks_for(T * 2 * (int64_t) HV), 256, 0, (cudaStream_t) stream>>>(ba, ab, T);
+    check("split_ba");
+}
 void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16) {
-    gate_attn_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
-                                                                                ld16 > 0 ? ld16 : 24 * 256);
+    gate_attn_kernel<<<blocks_for(T * (int64_t) NH * HD), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
+                                                                                ld16 > 0 ? ld16 : (int64_t) NH * HD);
     check("gate_attn");
 }
 

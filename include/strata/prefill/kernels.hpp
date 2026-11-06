@@ -158,6 +158,10 @@ void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, in
                    void* stream);
 /// q_full [T, 24, 512] (q | gate per head) -> q [T, 24, 256]
 void split_q(const float* q_full, float* q, int64_t T, void* stream);
+// Fused GDN inputs (qwen3next): split a projected ssm_in (qkv|z) / ssm_ba (beta|alpha) into the strided
+// buffers the GDN kernels read (qkv / z / ab-as-alpha|beta).
+void split_qkvz(const float* qkvz, float* qkv, float* z, int64_t T, void* stream);
+void split_ba(const float* ba, float* ab, int64_t T, void* stream);
 /// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized)
 void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16 = 0);
 
