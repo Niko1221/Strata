@@ -526,6 +526,7 @@ bool ConversationDiskTier::spill(const SavedConversation& image, uint64_t& id, s
         return fail(error, SessionError::io);
     }
     bytes_ += e.bytes;
+    bytes_written_ += e.bytes;
     id = e.id;
     entries_.push_back(std::move(e));
     ++writes_;
@@ -596,6 +597,7 @@ bool ConversationDiskTier::load(uint64_t id, const std::vector<SessionReadLimits
     image.disk_id = id;
     out = std::move(image);
     e->used = ++clock_;
+    bytes_read_ += e->bytes;
     std::string ignored;
     (void) write_index(*e, ignored);   // the new LRU stamp; a failure only loses the order after a restart
     // keep entries_ least recently used first

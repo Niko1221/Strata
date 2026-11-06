@@ -12211,6 +12211,9 @@ int main(int argc, char** argv) {
         // is written straight to the disk tier instead of being dropped: the next turn reads it back in seconds
         // rather than reading the whole prompt again.  Set below once the disk tier is open.
         std::function<uint64_t(const strata::core::SavedConversation&, const char*)> disk_spill_direct;
+        // --conversation-cache-dir: the RAM floor of an image held only for one disk write or one disk read (the parking
+        // floor is for images kept in RAM); min(--conversation-cache-min-free-mib, this)
+        constexpr int64_t kDiskFloorMib = 512;
         // STRATA_PARK_ASYNC: set by the request around its park - the live checkpoints it drops right after (they move
         // into the parked image instead of being copied); a background allocation then refills STRATA_CKPT_POOL
         std::function<bool(const ConvCheckpoint&)> park_drops;
@@ -12381,6 +12384,21 @@ int main(int argc, char** argv) {
                     ++evicted;
                     fits = admit();
                 }
+                // --conversation-cache-dir: physical RAM is short for parking (often with nothing parked left to
+                // evict), but the snapshot can still go to disk: it is held only for the write, so it needs only the
+                // floor a disk read gets (kDiskFloorMib), not the parking floor
+                if (!fits && !disk_only && disk_spill_direct) {
+                    const int64_t disk_floor_mib = std::min<int64_t>(o.conversation_cache_min_free_mib, kDiskFloorMib);
+                    mem = strata::core::sample_host_memory();
+                    if (strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
+                                                                additional, (uint64_t) disk_floor_mib << 20)) {
+                        disk_only = fits = true;
+                        std::fprintf(stderr, "strata serve: conversation cache: physical RAM short for parking (need %zu MiB "
+                                             "plus %lld MiB floor, %s; evicted %zu); writing it to disk\n",
+                                     additional >> 20, (long long) o.conversation_cache_min_free_mib,
+                                     ram_note(mem).c_str(), evicted);
+                    }
+                }
                 if (!fits) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
@@ -12432,6 +12450,15 @@ int main(int argc, char** argv) {
                 const auto mem_after = strata::core::sample_host_memory();
                 if (!disk_only && !strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
+                    if (disk_spill_direct) {   // --conversation-cache-dir: the image exists already; write it, then free it
+                        const uint64_t id = disk_spill_direct(image, "direct");
+                        std::fprintf(stderr, "strata serve: conversation cache: RAM floor after capture (%lld MiB needed, %s): "
+                                             "%s %zu tokens%s to disk in %.1f ms (not parked in RAM)\n",
+                                     (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str(),
+                                     id != 0 ? "wrote" : "could not write", src.ids.size(), src.what.c_str(),
+                                     std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                        return true;
+                    }
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
                     return true;
@@ -12481,7 +12508,8 @@ int main(int argc, char** argv) {
         // runs on this thread: between requests (the idle writer, below in next_line) or inside a request (an
         // eviction that has to keep its conversation, a restore), never beside a running window.
         strata::core::ConversationDiskTier conv_disk;
-        std::function<bool()> conv_disk_idle;   // writes one parked conversation the tier lacks; false: none left
+        // writes one parked conversation the tier lacks (`why`: idle, stop); false: none left
+        std::function<bool(const char*)> conv_disk_persist;
         auto disk_spill = [&](const strata::core::SavedConversation& image, const char* why) -> uint64_t {
             if (!conv_disk.enabled() || !conversations.wants((int64_t) image.live.ids.size())) return 0;
             // STRATA_PARK_ASYNC / STRATA_CKPT_ASYNC (0.2.x): a parked image may still be filled by a background copy;
@@ -12516,9 +12544,10 @@ int main(int argc, char** argv) {
             const auto* entry = conv_disk.find(id);
             const uint64_t b = entry != nullptr ? entry->bytes : 0;
             std::fprintf(stderr, "strata serve: conversation disk: wrote %zu tokens (%s) in %.1f ms, %.2f GB/s; "
-                                 "entries=%zu bytes=%llu evictions=%zu\n", image.live.ids.size(), why, ms,
-                         ms > 0 ? (double) b / ms / 1e6 : 0.0, conv_disk.size(), (unsigned long long) conv_disk.bytes(),
-                         conv_disk.evictions());
+                                 "entries=%zu bytes=%llu evictions=%zu written_total=%llu read_total=%llu\n",
+                         image.live.ids.size(), why, ms, ms > 0 ? (double) b / ms / 1e6 : 0.0, conv_disk.size(),
+                         (unsigned long long) conv_disk.bytes(), conv_disk.evictions(),
+                         (unsigned long long) conv_disk.bytes_written(), (unsigned long long) conv_disk.bytes_read());
             return id;
         };
         if (!o.conversation_cache_dir.empty() && o.serve) {
@@ -12555,28 +12584,27 @@ int main(int argc, char** argv) {
                 conversations.on_evict([&](const strata::core::SavedConversation& image) {
                     (void) disk_spill(image, "evicted");   // spill finds a copy it already holds (holding): no rewrite
                 });
-                if (o.conversation_cache_disk_idle_s > 0)
-                    conv_disk_idle = [&]() -> bool {
-                        const size_t i = conversations.unpersisted(o.conversation_cache_min_tokens);
-                        if (i == SIZE_MAX) return false;
-                        const uint64_t id = disk_spill(conversations.at(i), "idle");
-                        conversations.mark_persisted(i, id != 0 ? id : UINT64_MAX);   // a failure is not retried idle
-                        return true;
-                    };
+                // the idle writer (only with --conversation-cache-disk-idle-s above 0) and the write at a graceful stop
+                conv_disk_persist = [&](const char* why) -> bool {
+                    const size_t i = conversations.unpersisted(o.conversation_cache_min_tokens);
+                    if (i == SIZE_MAX) return false;
+                    const uint64_t id = disk_spill(conversations.at(i), why);
+                    conversations.mark_persisted(i, id != 0 ? id : UINT64_MAX);   // a failure is not retried
+                    return true;
+                };
             }
         }
         // The read limits of each stage's file: what this runtime can ever restore (conversation_session_read_limits),
         // the RAM preflight above the parking floor.  A stage without the drafter's K/V is bounded with the drafter's
         // sizes too (one K/V layer more is allowed, never required: the validation below is exact).  When the
         // drafter's state cannot give sizes (no --mtp), the stage's file is bounded by its recorded size instead.
-        constexpr int64_t kDiskReadFloorMib = 512;
         auto disk_read_limits = [&](uint64_t id, std::vector<strata::core::SessionReadLimits>& out, std::string& e) -> bool {
             const auto* entry = conv_disk.find(id);
             if (entry == nullptr) { e = "gone"; return false; }
             out.assign(1 + stages.size(), strata::core::SessionReadLimits{});
             // the image read here is held only until it is restored to the GPUs, and the alternative is reading the
             // whole prompt again (minutes): a smaller floor than parking's, which keeps its image for good
-            const int64_t floor_mib = std::min<int64_t>(o.conversation_cache_min_free_mib, kDiskReadFloorMib);
+            const int64_t floor_mib = std::min<int64_t>(o.conversation_cache_min_free_mib, kDiskFloorMib);
             const uint64_t floor = (uint64_t) floor_mib << 20;
             for (size_t k = 0; k < out.size(); ++k) {
                 auto& l = out[k];
@@ -14061,9 +14089,10 @@ int main(int argc, char** argv) {
             // --conversation-cache-disk-idle-s: no request for that long - write the parked conversations the disk
             // tier lacks, one at a time, waiting that long again between them (a request that comes meanwhile waits
             // for at most one write, about a second per 2-3 GB on an NVMe drive)
-            while (conv_disk_idle && !in_cv.wait_for(lk, std::chrono::seconds(o.conversation_cache_disk_idle_s), ready)) {
+            while (conv_disk_persist && o.conversation_cache_disk_idle_s > 0 &&
+                   !in_cv.wait_for(lk, std::chrono::seconds(o.conversation_cache_disk_idle_s), ready)) {
                 lk.unlock();
-                const bool more = conv_disk_idle();
+                const bool more = conv_disk_persist("idle");
                 lk.lock();
                 if (!more) break;
             }
@@ -16561,10 +16590,12 @@ int main(int argc, char** argv) {
                     if (ok) {
                         const size_t b = image.bytes();
                         std::fprintf(stderr, "strata serve: conversation disk: read %zu tokens (%lld reused, %s) in "
-                                             "%.1f ms, %.2f GB/s; entries=%zu bytes=%llu\n", image.live.ids.size(),
+                                             "%.1f ms, %.2f GB/s; entries=%zu bytes=%llu written_total=%llu "
+                                             "read_total=%llu\n", image.live.ids.size(),
                                      (long long) dm.tokens, dm.live ? "live" : "checkpoint", ms,
                                      ms > 0 ? (double) b / ms / 1e6 : 0.0, conv_disk.size(),
-                                     (unsigned long long) conv_disk.bytes());
+                                     (unsigned long long) conv_disk.bytes(), (unsigned long long) conv_disk.bytes_written(),
+                                     (unsigned long long) conv_disk.bytes_read());
                         incoming.emplace(std::move(image));
                         disk_source = dm.id;
                         parked = {SIZE_MAX, dm.tokens, dm.live, 0};
@@ -20306,6 +20337,18 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
+        // --conversation-cache-dir: a graceful stop writes the parked conversations the tier does not hold yet (the idle
+        // writer's walk without its wait), so they come back after a restart.  Bounded by kDiskStopWriteS: the server
+        // waits ENGINE_QUIT_WAIT_S (20 s) for the engine to end.  The live conversation (not parked) is not written.
+        if (conv_disk_persist) {
+            constexpr double kDiskStopWriteS = 12.0;
+            const auto ts = Clock::now();
+            size_t n = 0;
+            while (std::chrono::duration<double>(Clock::now() - ts).count() < kDiskStopWriteS && conv_disk_persist("stop")) ++n;
+            if (n > 0)
+                std::fprintf(stderr, "strata serve: conversation disk: %zu parked conversation%s written at stop in %.1f s\n",
+                             n, n == 1 ? "" : "s", std::chrono::duration<double>(Clock::now() - ts).count());
+        }
 #if defined(STRATA_GPU_METAL)
         // the stdin reader (detached above) may still take in_mu when the server closes the pipe after QUIT; on macOS
         // locking that mutex once this scope has destroyed it throws (the engine ended with an abort): end here

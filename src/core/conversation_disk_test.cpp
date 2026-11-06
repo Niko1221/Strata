@@ -120,7 +120,9 @@ int main() {
 
         // load: stage images back in stage order, the same bytes
         SavedConversation back;
+        const uint64_t read_before = t.bytes_read();
         check(t.load(ida, {}, back, error), "load");
+        check(t.bytes_read() == read_before + t.find(ida)->bytes, "a load counts the bytes it read");
         check(back.disk_id == ida && back.stage_images.size() == 1, "loaded with its stage image and its disk id");
         check(back.live.ids == a.live.ids && back.layer_hi == 19 && back.stage_images[0].layer_lo == 19,
               "each stage's own layer range");
@@ -174,6 +176,7 @@ int main() {
         check(t.open(small, id, split_layout(), error), "open with a small budget");
         uint64_t x = 0, y = 0;
         check(t.spill(a, x, error) && t.spill(b, y, error), "two spills");
+        check(t.bytes_written() >= t.bytes() && t.bytes_written() > 0, "spills count the bytes they wrote");
         check(t.size() == 1 && t.contains(y) && t.evictions() == 1, "the older one was evicted for room");
         check(t.clear() == 1 && t.size() == 0 && t.bytes() == 0, "clear");
     }

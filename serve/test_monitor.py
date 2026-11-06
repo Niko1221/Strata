@@ -234,12 +234,14 @@ class ConversationCacheCard(unittest.TestCase):
             log = Path(d) / "strata.log"
             log.write_text(
                 "strata serve: conversation disk: wrote 80000 tokens (evicted) in 900.0 ms, 2.30 GB/s; "
-                "entries=3 bytes=6000000000 evictions=0\n"
+                "entries=3 bytes=6000000000 evictions=0 written_total=2000000000 read_total=0\n"
                 "strata serve: conversation disk: read 80000 tokens (79000 reused, live) in 800.0 ms, 2.60 GB/s; "
-                "entries=3 bytes=6000000000\n" + self.RESTORE, encoding="utf-8")
+                "entries=3 bytes=6000000000 written_total=2000000000 read_total=2000000000\n" + self.RESTORE,
+                encoding="utf-8")
             st = ConvCacheLog().poll(str(log), 0)
             self.assertEqual((st["disk_writes"], st["disk_reads"], st["disk_entries"], st["disk_bytes"]),
                              (1, 1, 3, 6000000000))
+            self.assertEqual((st["disk_bytes_written"], st["disk_bytes_read"]), (2000000000, 2000000000))
             self.assertEqual((st["restores"], st["parks"]), (1, 0))
 
     def test_metrics(self):

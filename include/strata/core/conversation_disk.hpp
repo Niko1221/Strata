@@ -89,6 +89,10 @@ public:
     size_t writes() const { return writes_; }
     size_t reads() const { return reads_; }
     size_t evictions() const { return evictions_; }
+    /// Bytes this run wrote to and read from the tier's files (a write the tier skips because it holds the
+    /// conversation already is not counted): the transfer, beside bytes(), which is what the tier holds now.
+    uint64_t bytes_written() const { return bytes_written_; }
+    uint64_t bytes_read() const { return bytes_read_; }
     bool contains(uint64_t id) const { return find(id) != nullptr; }
     const Entry* find(uint64_t id) const;
 
@@ -142,7 +146,7 @@ private:
     ConversationDiskLayout layout_;
     std::string folder_;
     std::vector<Entry> entries_;
-    uint64_t bytes_ = 0, clock_ = 0, loading_ = 0;
+    uint64_t bytes_ = 0, clock_ = 0, loading_ = 0, bytes_written_ = 0, bytes_read_ = 0;
     size_t writes_ = 0, reads_ = 0, evictions_ = 0;
 };
 

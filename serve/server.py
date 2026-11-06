@@ -882,6 +882,7 @@ class ConvCacheLog:
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
     # --conversation-cache-dir: "conversation disk: wrote|read N tokens ...; entries=E bytes=B"
     DISK = re.compile(r"conversation disk: (wrote|read) (\d+) tokens.*?entries=(\d+) bytes=(\d+)")
+    DISK_TOTALS = re.compile(r"written_total=(\d+) read_total=(\d+)")   # bytes moved this run (engine 0.2.13+ lines)
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -892,7 +893,8 @@ class ConvCacheLog:
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
                       "last_tokens": None, "last_at": None,
-                      "disk_entries": 0, "disk_bytes": 0, "disk_writes": 0, "disk_reads": 0}
+                      "disk_entries": 0, "disk_bytes": 0, "disk_writes": 0, "disk_reads": 0,
+                      "disk_bytes_written": 0, "disk_bytes_read": 0}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it.  One poll at a
@@ -927,6 +929,9 @@ class ConvCacheLog:
                     st = self.state
                     st["disk_writes" if m.group(1) == "wrote" else "disk_reads"] += 1
                     st["disk_entries"], st["disk_bytes"] = int(m.group(3)), int(m.group(4))
+                    t = self.DISK_TOTALS.search(line)
+                    if t:
+                        st["disk_bytes_written"], st["disk_bytes_read"] = int(t.group(1)), int(t.group(2))
                 continue
             if "conversation cache:" not in line:
                 continue

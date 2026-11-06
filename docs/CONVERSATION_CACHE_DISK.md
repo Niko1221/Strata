@@ -1,6 +1,7 @@
 # Conversation cache on disk (`--conversation-cache-dir`)
 
-Status: **draft, not built or measured yet.** The code is in `include/strata/core/conversation_disk.hpp`,
+Status: **built and measured on Linux (CUDA, a two-GPU layer split); not built or run on Windows, HIP, SYCL or
+Metal, and not run with batch slots (`"parallel"`).** Measurements are in the pull request. The code is in `include/strata/core/conversation_disk.hpp`,
 `src/core/conversation_disk.cpp`, the hooks in `include/strata/core/conversation_cache.hpp` and the
 `--serve` loop of `src/program/generate.cpp`; tests in `src/core/conversation_disk_test.cpp`.
 
@@ -104,6 +105,17 @@ the next park. Disk matches are never borrows: the files stay on disk and are no
   tier does not hold yet, marks it (`SavedConversation::disk_id`) and waits again. This is what makes
   conversations survive a restart, and it moves the write cost out of the next switch. A request that
   arrives during a write waits for that one write (about a second for 2-3 GB). `0` writes on eviction only.
+- **Straight to disk.** A snapshot that cannot be parked in RAM is written to the tier and freed instead of
+  being dropped: when it is larger than the RAM budget (`make_room` fails), when physical RAM is short at the
+  admission check even after evicting what can go (often with nothing parked left to evict), and when the RAM
+  floor fails after the capture. Such an image is held only for the write, so its admission uses the floor of
+  a disk read (below), not the parking floor. Log: `... writing it to disk` / `wrote N tokens (direct)`.
+- **At a graceful stop.** After `QUIT` (or the server closing stdin) the engine writes the parked
+  conversations the tier does not hold yet, for at most 12 s (the server waits 20 s for the engine to end).
+  The live conversation, which is not parked, is not written. A kill (`SIGKILL`, a crash, a power loss)
+  writes nothing: what was only in RAM is lost. **Under systemd set `KillMode=mixed`** in the unit that runs
+  `serve/server.py`: with the default `control-group`, `systemctl stop` sends SIGTERM to the engine too, and it
+  ends before it reads `QUIT` (no stop-time write, and no `expert profile saved ... (exit)` either).
 - **No duplicate writes.** `holding()` recognizes an image identical to a kept conversation (same points,
   same mode); `drop_superseded()` removes the copies a newer turn of the same conversation replaces
   (the rule of `ConversationCache::drop_superseded`). So a conversation alternating with others costs
@@ -132,8 +144,27 @@ never the victim. After non-finite logits (#879) every conversation on disk is r
 
 RAM then only needs the active conversation(s): e.g. `--conversation-cache-mib 3072
 --conversation-cache-slots 1` keeps one parked image in RAM (the one most likely to come back next) and
-everything else on disk. A read needs the image's size in RAM above `--conversation-cache-min-free-mib`;
-the read's RAM preflight evicts RAM-parked conversations (to disk) first when it has to.
+everything else on disk. A read needs the image's size in RAM above `min(--conversation-cache-min-free-mib,
+512 MiB)`: the image is held only until it is restored to the GPUs, and the alternative is reading the whole
+prompt again. The floor is checked for each read at the moment it starts; requests are served one at a time,
+so two conversations coming back after a restart are read one after the other, each against the RAM free
+then. The read's RAM preflight evicts RAM-parked conversations (to disk) first when it has to. The same
+512 MiB floor admits an image on its way straight to disk.
+
+### Which conversations survive a restart
+
+A conversation is on disk, and so comes back after a restart, once one of these has happened: it was evicted
+from RAM, it stayed parked for `--conversation-cache-disk-idle-s` seconds without a request (default 20), it
+went straight to disk (above), or the engine stopped gracefully while it was parked. Not written: a
+conversation shorter than `--conversation-cache-min-tokens`, the live conversation at a stop, and anything
+that was only in RAM when the process was killed. With `--conversation-cache-disk-idle-s 0` only evicted,
+direct and stop-time writes happen.
+
+### After a restore from disk
+
+A restored conversation is exact: the same tokens, K/V and running state as when it was parked. A drafter
+that keeps its own history (DFlash2's context window) has no record of a conversation that comes back from
+disk, the same as for a session file; it drafts poorly for the first rounds and the answers do not change.
 
 ## Flags
 
@@ -153,13 +184,16 @@ empty folder.
 
 ```
 strata serve: conversation disk: <folder>: N conversations kept from earlier runs, X of Y GiB; ...
-strata serve: conversation disk: wrote N tokens (evicted|idle) in T ms, R GB/s; entries=E bytes=B evictions=V
-strata serve: conversation disk: read N tokens (M reused, live|checkpoint) in T ms, R GB/s; entries=E bytes=B
+strata serve: conversation disk: wrote N tokens (evicted|idle|direct|stop) in T ms, R GB/s; entries=E bytes=B evictions=V written_total=W read_total=R
+strata serve: conversation disk: read N tokens (M reused, live|checkpoint) in T ms, R GB/s; entries=E bytes=B written_total=W read_total=R
+strata serve: conversation disk: N parked conversations written at stop in T s
 strata serve: conversation disk: not written (...) / cannot read a conversation (...)
 ```
 
-The server's Monitor (`ConvCacheLog`) counts them as `disk_writes`, `disk_reads`, `disk_entries`,
-`disk_bytes`.
+`bytes` is what the tier holds now; `written_total` and `read_total` are the bytes this run moved to and
+from the files (a write skipped because the tier already holds the conversation is not counted), so the
+write rate of a workload is their change over time. The server's Monitor (`ConvCacheLog`) counts them as
+`disk_writes`, `disk_reads`, `disk_entries`, `disk_bytes`, `disk_bytes_written`, `disk_bytes_read`.
 
 ## Open points
 
@@ -167,6 +201,9 @@ The server's Monitor (`ConvCacheLog`) counts them as `disk_writes`, `disk_reads`
   host-to-device restore. Overlapping the file read with the upload (pinned double buffer per stage)
   would hide most of the restore time; not done in this draft.
 - The idle writer copies nothing but holds the engine thread for one write; a request arriving then waits.
+  A read also runs on the engine thread: with batch slots the other slots would wait for it (not run).
+- There is no cap on the write rate (GB per hour); `written_total` shows it, `--conversation-cache-park-gain`
+  and the idle period are the levers today.
 - The manual SAVE/RESTORE still refuses a layer split; it could reuse the per-stage file set.
 - The idle writer writes whole conversations; a conversation that grows by a few hundred tokens per turn
   is rewritten whole each idle period (there is no delta format).
