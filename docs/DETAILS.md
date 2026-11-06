@@ -520,6 +520,9 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   guessed: `bash` is not `shell`, and a reordered name (`server1_label_values` for `label_values_mcp_server1`) is not the declared one.
   A call whose envelope drifted by a token (`<=NAME>`,
   `<function:NAME>` or `<NAME>` instead of `<function=NAME>`) is read as the call when NAME is a declared tool.
+- The persistent tool-name mask accepts Responses namespaces as exact qualified names (`namespace.member`).
+  A dot separates non-empty ASCII name segments; it is escaped in grammar regexes and cannot match another
+  character. Namespace and member are returned separately in Responses tool-call items, as before.
 - **What the parser repairs, and what it leaves.** A string argument that quotes a whole tool call, or repeats its own
   `</parameter><parameter=NAME>`, stays exact (#4078). A call whose `</function>` was left out is read as the call (#4427), in the
   answer and inside the thinking. An argument the tool declares as an array or an object, or declares nothing for, is read as

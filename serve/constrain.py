@@ -169,13 +169,15 @@ def format_of(sampling: dict):
     return rf
 
 
-_NAME_SAFE = re.compile(r"[A-Za-z0-9_-]+")    # a tool name safe to put in a grammar regex literal
+# Responses namespaces are flattened internally as namespace.member. Match
+# qualified ASCII segments; grammar regexes must escape the literal dots.
+_NAME_SAFE = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
 
 
 def safe_tool_names(tools) -> list[str]:
     """The declared tool names a grammar can enumerate: the request's tools array (template form {name, ...} or
     OpenAI form {type: function, function: {name, ...}} - the same array the route built from its own
-    template_tools()/openai_tools() call), filtered to [A-Za-z0-9_-]+. The server's persistent guard rejects
+    template_tools()/openai_tools() call), filtered to qualified ASCII identifiers. The server's persistent guard rejects
     the request if any name is filtered out; direct grammar callers choose their own invalid-name policy."""
     out = []
     for t in tools or []:
@@ -252,7 +254,7 @@ def grammar(rf: dict | None, with_tools: bool, vocab: Vocab, tool_names=None) ->
                  "answer: calls | PROSE",
                  "PROSE: /[^<][\\s\\S]*/"]
         if names:
-            alt = "|".join(sorted(names, key=lambda n: (-len(n), n)))
+            alt = "|".join(re.escape(n) for n in sorted(names, key=lambda n: (-len(n), n)))
             lines += [f'calls: {vocab.literal(TOOL_CALL)} WS? NAME REST',
                       f"NAME: /(?:{alt})[\\s<]/",
                       "REST: /[\\s\\S]*/"]
@@ -310,9 +312,9 @@ def grammar(rf: dict | None, with_tools: bool, vocab: Vocab, tool_names=None) ->
             # (?![\w-]) is replaced by a mandatory delimiter class [\s<] after the alternation (measured in
             # scratch/t3v_corr.py: with a prefix pair like exec/exec_command the grammar stays on the longer
             # branch after 'exec', pinning the longest name).  Longest-first ordering keeps that pinning for
-            # llguidance's prioritized alternation.  Names are pre-filtered to [A-Za-z0-9_-]+ by _NAME_SAFE,
-            # so no regex metacharacter can enter the literal (no re.escape needed).
-            alt = "|".join(sorted(names, key=lambda n: (-len(n), n)))
+            # llguidance's prioritized alternation. Qualified names contain dots:
+            # escape each name so the separator cannot match an arbitrary byte.
+            alt = "|".join(re.escape(n) for n in sorted(names, key=lambda n: (-len(n), n)))
             lines += [f'calls: {vocab.literal(TOOL_CALL)} WS? NAME REST',
                       f"NAME: /(?:{alt})[\\s<]/",
                       "REST: /[\\s\\S]*/"]
@@ -554,7 +556,7 @@ class Constraint:
 
 
 class ToolNameConstraint:
-    """Opt-in, persistent Qwen XML name mask, including thinking and every call.
+    """Persistent Qwen XML name mask, including thinking and every call.
 
     Unlike the original answer|calls grammar, prose and the end of a name never
     release this guard. It is a byte automaton over the tokenizer's real pieces,

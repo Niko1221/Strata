@@ -1,11 +1,16 @@
 """Names must stay constrained across prose, thinking, multiple calls and MTP windows."""
 import base64
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
 import os
 import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from serve import responses as R
 from serve import constrain as C
 from serve.server import Service, ByteTokenizer
 
@@ -98,6 +103,70 @@ class ToolNameConstraintTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True), patch.object(C, 'available', return_value=False):
             with self.assertRaisesRegex(ValueError, 'llguidance'):
                 self.app()._with_constraint({}, [{'name': 'sql_query'}], False)
+
+    def test_responses_namespace_names_activate_exact_guard(self):
+        req = {'tools': [{'type': 'namespace', 'name': 'diagnostic', 'tools': [
+            {'type': 'function', 'name': 'ping', 'parameters': {'type': 'object'}}]}]}
+        tools, names, _ = R.request_tools(req)
+        self.assertEqual(names['diagnostic.ping'], ('diagnostic', 'ping', 'function'))
+        with patch.dict(os.environ, {}, clear=True):
+            guard = self.app()._with_constraint({}, tools, False)[C.KEY]
+        self.feed(guard, '<function=diagnostic')
+        self.assertTrue(C.Constraint.allowed(guard.mask(), ord('.')))
+        self.assertFalse(C.Constraint.allowed(guard.mask(), ord('X')))
+        self.feed(guard, '.ping')
+        self.assertTrue(C.Constraint.allowed(guard.mask(), ord('>')))
+        self.assertFalse(C.Constraint.allowed(guard.mask(), ord('_')))
+
+    def test_namespace_lookahead_keeps_unknown_members_blocked(self):
+        guard = C.ToolNameConstraint(self.vocab, ['diagnostic.ping'])
+        self.feed(guard, '<function=diagnostic')
+        before = guard.mask()
+        reply = guard.reply(list(b'.pingX')).split()
+        self.assertEqual(reply[:2], ['MKN', '6'])
+        last = base64.b64decode(reply[-1])
+        self.assertTrue(C.Constraint.allowed(last, ord('>')))
+        self.assertFalse(C.Constraint.allowed(last, ord('X')))
+        self.assertEqual(guard.mask(), before)
+
+    def test_qualified_names_reject_empty_segments_and_metacharacters(self):
+        for name in ['.ping', 'diagnostic.', 'diagnostic..ping', 'a.*', 'a|b',
+                     'a/b', 'a\\b', 'a>ping', 'a ping', 'a.ä']:
+            with self.subTest(name=name):
+                self.assertEqual(C.safe_tool_names([{'name': name}]), [])
+                with self.assertRaises(ValueError):
+                    C.ToolNameConstraint(self.vocab, [name])
+        self.assertEqual(C.safe_tool_names([{'name': 'a-b.c_d'}, {'name': 'a.b.c'}]),
+                         ['a-b.c_d', 'a.b.c'])
+
+    def test_namespace_dots_are_literal_in_both_legacy_grammar_paths(self):
+        for fmt in [None, {'type': 'json_object'}]:
+            for name in ['diagnostic.ping', 'diag-nostic.pi_ng']:
+                with self.subTest(format=fmt, name=name):
+                    c = C.Constraint(self.vocab, C.grammar(fmt, True, self.vocab,
+                                     tool_names=[name]), armed=True)
+                    # Bypass legacy release-at-delimiter logic; inspect the matcher.
+                    prefix = '<tool_call>' + name.split('.')[0]
+                    for token in self.tok.encode(prefix, parse_special=True):
+                        self.assertTrue(c.m.consume_token(token))
+                    mask = c.m.compute_bitmask()
+                    self.assertTrue(C.Constraint.allowed(mask, ord('.')))
+                    self.assertFalse(C.Constraint.allowed(mask, ord('X')))
+
+    def test_custom_call_grammar_accepts_literal_qualified_name(self):
+        fmt = {'type': 'custom_calls', 'entries': [
+            {'name': 'diagnostic.ping', 'definition': '[a-z]+'}]}
+        c = C.Constraint(self.vocab, C.grammar(fmt, False, self.vocab), armed=True)
+        for token in self.tok.encode('<tool_call>\n<function=diagnostic', parse_special=True):
+            self.assertTrue(c.m.consume_token(token))
+        mask = c.m.compute_bitmask()
+        self.assertTrue(C.Constraint.allowed(mask, ord('.')))
+        self.assertFalse(C.Constraint.allowed(mask, ord('X')))
+
+    def test_duplicate_qualified_names_still_fail_closed(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, 'unique ASCII'):
+                self.app()._with_constraint({}, [{'name': 'diagnostic.ping'}] * 2, False)
 
     def guard(self):
         return C.ToolNameConstraint(self.vocab, ['sql_query', 'exec', 'exec_command'])
@@ -222,6 +291,58 @@ class ToolNameConstraintTests(unittest.TestCase):
         with patch.dict(os.environ, {'STRATA_TOOL_MASK_STRICT': '1'}):
             with self.assertRaises(ValueError):
                 app._with_constraint({}, [{'name': 'sql_query'}], thinking=False)
+
+
+@unittest.skipUnless(C.available(), 'llguidance required')
+class NamespaceResponsesTests(unittest.TestCase):
+    def test_namespace_call_and_result_round_trip_with_json_and_streaming(self):
+        from serve.server import MockEngine, serve
+        from serve.frontend import ChatTemplate
+        call = ('<tool_call>\n<function=diagnostic.ping>\n<parameter=value>\n7\n'
+                '</parameter>\n</function>\n</tool_call>')
+        for stream in [False, True]:
+            with self.subTest(stream=stream), patch.dict(os.environ, {}, clear=True):
+                tok = ByteTokenizer()
+                engine = MockEngine(tok, [call, '{"result":7}'], max_context=16384)
+                engine.supports_mask = True
+                svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / 'chat_template.jinja'))
+                httpd = serve(svc, port=0)
+                self.addCleanup(httpd.server_close)
+                self.addCleanup(httpd.shutdown)
+                body = {'input': [{'role': 'user', 'content': 'Call diagnostic.ping with value 7.'}],
+                        'tools': [{'type': 'namespace', 'name': 'diagnostic', 'tools': [
+                            {'type': 'function', 'name': 'ping', 'parameters': {'type': 'object',
+                             'properties': {'value': {'type': 'integer'}}, 'required': ['value']}}]}],
+                        'reasoning': {'effort': 'none'}, 'store': False, 'stream': stream,
+                        'max_output_tokens': 256, 'text': {'format': {'type': 'json_schema',
+                         'name': 'answer', 'strict': True, 'schema': {'type': 'object',
+                         'properties': {'result': {'type': 'integer'}}, 'required': ['result'],
+                         'additionalProperties': False}}}}
+                def post():
+                    request = urllib.request.Request('http://127.0.0.1:' + str(httpd.server_port) +
+                        '/v1/responses', data=json.dumps(body).encode(),
+                        headers={'Content-Type': 'application/json'})
+                    try:
+                        response = urllib.request.urlopen(request, timeout=10)
+                    except urllib.error.HTTPError as error:
+                        self.fail('HTTP ' + str(error.code) + ': ' + error.read().decode())
+                    with response:
+                        text = response.read().decode()
+                    if not stream:
+                        return json.loads(text)
+                    events = [json.loads(line[6:]) for line in text.splitlines()
+                              if line.startswith('data: {')]
+                    return next(e['response'] for e in events if e['type'] == 'response.completed')
+                first = post()
+                calls = [x for x in first['output'] if x['type'] == 'function_call']
+                self.assertEqual(len(calls), 1)
+                self.assertEqual((calls[0]['namespace'], calls[0]['name']), ('diagnostic', 'ping'))
+                self.assertEqual(json.loads(calls[0]['arguments']), {'value': 7})
+                body['input'] += [calls[0], {'type': 'function_call_output',
+                                            'call_id': calls[0]['call_id'], 'output': '7'}]
+                second = post()
+                answer = next(x for x in second['output'] if x['type'] == 'message')
+                self.assertEqual(json.loads(answer['content'][0]['text']), {'result': 7})
 
 
 if __name__ == '__main__':
