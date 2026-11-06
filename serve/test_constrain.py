@@ -21,6 +21,7 @@ import urllib.request
 from pathlib import Path
 
 from serve import constrain as C
+from serve import structured
 from serve import frontend as FE
 from serve import responses as R
 from serve.frontend import ChatTemplate
@@ -322,10 +323,14 @@ class MockUnderMask(Http):
         with urllib.request.urlopen(self.base + "/v1/status", timeout=10) as s:
             self.assertTrue(json.loads(s.read())["structured_output"]["constrained_decoding"])
 
-    def test_without_the_mask_the_same_script_is_a_502(self):
+    def test_without_the_mask_matches_available_postvalidator(self):
         self.engine.supports_mask = False
         code, r = self.chat()
-        self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
+        if structured.jsonschema_modules() is None:
+            self.assertEqual(code, 200, r)
+            self.assertEqual(json.loads(r["choices"][0]["message"]["content"]), {"n": "7"})
+        else:
+            self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
 
     def test_thinking_stays_free(self):
         self.engine.scripts = [self.tok.encode('Plan {x}.</think>\n\nSure {"n": 1}<|im_end|>', parse_special=True)]
@@ -533,7 +538,11 @@ class FakeEngine(Http):
         self.start(StrataEngine(str(self.exe), ["--max-context", "8192", "--no-mask"]))
         self.assertFalse(self.engine.supports_mask)
         code, r = self.chat()
-        self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
+        if structured.jsonschema_modules() is None:
+            self.assertEqual(code, 200, r)
+            self.assertEqual(json.loads(r["choices"][0]["message"]["content"]), {"n": "7"})
+        else:
+            self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
         self.assertFalse(self.log.exists())
 
     def test_a_stop_while_the_engine_waits_for_a_mask(self):

@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   fake-engine:
-    name: Linux / runtime requirements only
+    name: Linux / minimal runtime and JSON validation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -41,6 +41,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install only pinned runtime requirements
+        id: runtime
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/strata-runtime-venv"
@@ -64,8 +65,15 @@ jobs:
         run: |
           STRATA_TOOL_MASK_STRICT=0 "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'
       - name: Verify automatic request constraints without mask environment
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
         shell: bash
         run: |
           "$RUNNER_TEMP/strata-runtime-venv/bin/python" -c 'from serve import constrain; assert constrain.available()'
           env -u STRATA_TOOL_MASK -u STRATA_TOOL_NAME_ENUM -u STRATA_TOOL_MASK_STRICT \
             "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest serve.test_tool_name_constraint serve.test_constrain serve.test_structured
+      - name: Verify optional JSON Schema postvalidation
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m pip install 'jsonschema==4.26.0'
+          STRATA_TOOL_MASK_STRICT=0 "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest serve.test_constrain serve.test_structured
