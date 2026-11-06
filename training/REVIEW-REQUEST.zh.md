@@ -1,6 +1,6 @@
 # 审核请求：训练功能（sft / dpo / grpo / luspo × 零阶 / 反传）
 
-**交付分支**：`feat/train_support`（下划线）。三条分支都已推到 `origin`（`feat/train-mezo` / `feat/train-backforward` / `feat/train_support`），远端与本地 HEAD 一致，可直接开 PR；只收零阶就用第一条，要对比反传增量看第二条
+**交付分支**：`feat/train_support`（下划线）。三条分支都已推到 `origin`（`feat/train-mezo` / `feat/train-backforward` / `feat/train_support`）；2026-11-07 的补证与评测提交目前仍是**本地提交**，开 PR 前先把三条分支 `git push` 一次使远端与本地 HEAD 一致；只收零阶就用第一条，要对比反传增量看第二条
 
 > **▸ 本文所在树 = 交付面**（三条交付形态里的第 3 条）：`feat/train-mezo` ∪ `feat/train-backforward`
 > 加这组审核文档。代码与 `feat/train-backforward` **逐字相同**（`git diff -- '*.py'` 为空），只有文档不同，
