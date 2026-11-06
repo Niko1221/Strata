@@ -1281,6 +1281,8 @@ struct Model::Impl {
     struct SeqState {
         int64_t pos = 0;
         std::vector<int32_t> toks, ctoks;
+        std::vector<ImageSpan> spans;
+        std::vector<Image> imgs;
         Check ck[3];
         std::vector<Check> mk;                       // (the restore points a request asked for, A0)
         uint64_t mark_clock = 0;
@@ -7062,6 +7064,10 @@ struct Model::Impl {
         q.pos = pos;
         q.toks = std::move(toks);
         q.ctoks = std::move(ctoks);
+        q.spans = std::move(spans);
+        q.imgs = std::move(imgs);
+        spans.clear();
+        imgs.clear();
         for (int i = 0; i < 3; ++i) q.ck[i] = std::move(ck[i]);
         q.mk = std::move(mk);
         q.mark_clock = mark_clock;
@@ -7075,6 +7081,10 @@ struct Model::Impl {
         pos = q.pos;
         toks = std::move(q.toks);
         ctoks = std::move(q.ctoks);
+        spans = std::move(q.spans);
+        imgs = std::move(q.imgs);
+        q.spans.clear();
+        q.imgs.clear();
         for (int i = 0; i < 3; ++i) ck[i] = std::move(q.ck[i]);
         mk = std::move(q.mk);
         mark_clock = q.mark_clock;
@@ -7117,6 +7127,8 @@ struct Model::Impl {
         pos = 0;
         toks.clear();
         ctoks.clear();
+        spans.clear();
+        imgs.clear();
         slot_held = false;
         for (Check& c0 : ck) c0.pos = -1;
         mk.clear();
@@ -7205,7 +7217,10 @@ struct Model::Impl {
     // the checkpoint or mark at or before position limit (the state's tokens agree with a new prompt up to there), or -1
     int best_check(int64_t limit) const {
         std::vector<int64_t> at(3 + mk.size());
-        for (size_t i = 0; i < at.size(); ++i) at[i] = check_at((int) i).pos;
+        for (size_t i = 0; i < at.size(); ++i) {
+            const int64_t cp = check_at((int) i).pos;
+            at[i] = cp >= 0 && image_prefix(spans, spans, cp) == cp ? cp : -1;
+        }
         return latest_point(at, limit, pos);
     }
     int64_t restorable(int64_t limit) const {
@@ -7232,7 +7247,8 @@ struct Model::Impl {
         std::vector<int> v, m;
         for (int i = 0; i < 3 + (int) mk.size(); ++i) {
             const Check& c = check_at(i);
-            if (c.pos > 0 && c.pos <= upto && c.win.size() == L.size()) (i < 3 ? v : m).push_back(i);
+            if (c.pos > 0 && c.pos <= upto && c.win.size() == L.size() &&
+                image_prefix(spans, spans, c.pos) == c.pos) (i < 3 ? v : m).push_back(i);
         }
         std::stable_sort(m.begin(), m.end(), [this](int a, int b) { return check_at(a).used < check_at(b).used; });
         v.insert(v.end(), m.begin(), m.end());
@@ -7248,6 +7264,7 @@ struct Model::Impl {
         const int b = best_check(limit);
         if (b < 0) return false;
         const Check& c = check_at(b);
+        if (image_prefix(spans, spans, c.pos) != c.pos) return false;
         for (size_t i = 0; i < L.size(); ++i)
             for (int m = 0; m < L[i].nm; ++m) {   // (a group's members hold the same state: the lead's copy)
                 Layer& l = member(L[i], m);
@@ -7267,6 +7284,10 @@ struct Model::Impl {
         pos = c.pos;
         toks.resize((size_t) pos);
         ctoks.resize((size_t) pos);
+        spans.erase(std::remove_if(spans.begin(), spans.end(), [this](const ImageSpan& s) {
+            return s.start >= pos;
+        }), spans.end());
+        imgs.clear();
         slot_held = false;
         for (Check& o2 : ck)   // a later checkpoint saw tokens the state no longer has
             if (o2.pos > pos) o2.pos = -1;
@@ -7282,9 +7303,8 @@ struct Model::Impl {
     // every window ring (the DSpark blocks' included), the compressors' partial groups and each KV source's compressed
     // KV and index keys up to it (rows 0 .. pos / ratio, the groups its position completed; one the prompt has not
     // completed yet lives in the compressor's partial group).  A tensor parallel group's members hold the same state,
-    // so one member's ring is saved and written back into all of them.  Text only: a conversation that holds pictures
-    // is not a slot (the Engram history's rows are the tokens' again, no -1 among them).
-    static constexpr uint64_t kSlotMagic = 0x31544f4c53345344ull;   // "DS4SLOT1" (little endian)
+    // so one member's ring is saved and written back into all of them. Image identities survive without embeddings.
+    static constexpr uint64_t kSlotMagic = 0x32544f4c53345344ull;   // "DS4SLOT2" (little endian)
 
     int64_t src_rows(const Src& s, int64_t at = -1) const { return (at < 0 ? pos : at) / std::max(1, s.ratio); }
 
@@ -7292,6 +7312,8 @@ struct Model::Impl {
     size_t slot_bytes(int64_t at = -1) const {
         const int64_t ep = at < 0 ? pos : at;
         size_t n = 8 + 8 + slot_identity().size() + 8 + (size_t) ep * 4;
+        n += 8;
+        for (const ImageSpan& s : spans) if (s.start < ep) n += 24;
         for (const Layer& l : L) n += 8 + (size_t) g.win * win_rb() + 8 + (l.c_kv ? 2 * (size_t) l.ratio * g.hd * 4 : 0);
         for (const Src& s : srcs) n += 8 + (size_t) src_rows(s, ep) * (ckv_rb() + ik_rb());
         n += 8 + slot_checks(ep).size() * check_bytes();   // (the checkpoints: what the slot can be taken back at)
@@ -7326,9 +7348,27 @@ struct Model::Impl {
             err = "the state's tokens do not match its position";
             return 0;
         }
-        if (!imgs.empty()) {
-            err = "it holds pictures";
+        std::vector<ImageSpan> saved_spans;
+        for (const ImageSpan& s : spans) if (s.start < ep) saved_spans.push_back(s);
+        if (!image_spans_valid(saved_spans, ep)) {
+            err = "the state's image spans are invalid or incomplete";
             return 0;
+        }
+        for (const ImageSpan& s : saved_spans)
+            for (int64_t p = s.start; p < s.start + s.len; ++p)
+                if (img_tok < 0 || toks[(size_t) p] != img_tok) {
+                    err = "the state's image spans do not match its tokens";
+                    return 0;
+                }
+        // Embeddings before the saved end must have persistent identity; future images are irrelevant.
+        for (const Image& im : imgs) if (im.start < ep) {
+            const auto it = std::find_if(saved_spans.begin(), saved_spans.end(), [&](const ImageSpan& s) {
+                return s.start == im.start && im.rows && im.rows->size() == (size_t) s.len * g.dim;
+            });
+            if (it == saved_spans.end()) {
+                err = "an image has no complete persistent span";
+                return 0;
+            }
         }
         const std::string id = slot_identity();
         out.assign(slot_bytes(at), 0);
@@ -7344,6 +7384,13 @@ struct Model::Impl {
         put(id.data(), (size_t) il);
         put(&n, 8);
         put(toks.data(), (size_t) n * 4);
+        const uint64_t ns = saved_spans.size();
+        put(&ns, 8);
+        for (const ImageSpan& s : saved_spans) {
+            put(&s.start, 8);
+            put(&s.len, 8);
+            put(&s.hash, 8);
+        }
         for (Dev& d : devs) {   // (the devices' work ends before their state is read)
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
@@ -7471,6 +7518,78 @@ struct Model::Impl {
         std::vector<int32_t> toks_in((size_t) n);
         std::memcpy(toks_in.data(), data + off, (size_t) n * 4);
         off += (size_t) n * 4;
+        for (int32_t tk : toks_in) if (tk < 0 || tk >= g.vocab) {
+            err = "the slot's tokens are out of range";
+            return false;
+        }
+        uint64_t ns = 0;
+        if (!room(8)) { err = "the slot is cut short"; return false; }
+        std::memcpy(&ns, data + off, 8);
+        off += 8;
+        if (ns > n || ns > (bytes - off) / 24) {
+            err = "the slot's image span count is invalid";
+            return false;
+        }
+        std::vector<ImageSpan> spans_in((size_t) ns);
+        for (ImageSpan& s : spans_in) {
+            std::memcpy(&s.start, data + off, 8);
+            std::memcpy(&s.len, data + off + 8, 8);
+            std::memcpy(&s.hash, data + off + 16, 8);
+            off += 24;
+        }
+        if (!image_spans_valid(spans_in, n_pos)) {
+            err = "the slot's image spans are invalid or incomplete";
+            return false;
+        }
+        for (const ImageSpan& s : spans_in)
+            for (int64_t p = s.start; p < s.start + s.len; ++p)
+                if (img_tok < 0 || toks_in[(size_t) p] != img_tok) {
+                    err = "the slot's image spans do not match its tokens";
+                    return false;
+                }
+        // Preflight every remaining length, checkpoint and trailer before overwriting any live state.
+        const size_t state_off = off;
+        const auto take64 = [&](uint64_t& v) {
+            if (!room(8)) return false;
+            std::memcpy(&v, data + off, 8);
+            off += 8;
+            return true;
+        };
+        const auto skip = [&](size_t b) {
+            if (!room(b)) return false;
+            off += b;
+            return true;
+        };
+        const auto preflight = [&]() {
+            uint64_t v = 0;
+            for (const Layer& l : L) {
+                if (!take64(v) || v != (uint64_t) g.win * win_rb() || !skip((size_t) v)) return false;
+                if (!take64(v) || v != (l.c_kv ? (uint64_t) l.ratio * g.hd : 0) || !skip((size_t) v * 8)) return false;
+            }
+            for (const Src& s : srcs) {
+                if (!take64(v) || v != (uint64_t) src_rows(s, n_pos)) return false;
+                if (!skip((size_t) v * (ckv_rb() + ik_rb()))) return false;
+            }
+            uint64_t nc = 0;
+            if (!take64(nc) || nc > 3 + (uint64_t) kMarksMax) return false;
+            bool roles[3] = {};
+            size_t marks = 0;
+            for (uint64_t k = 0; k < nc; ++k) {
+                uint64_t role = 0, cp = 0;
+                if (!take64(role) || !take64(cp) || role > 4 || cp == 0 || cp > n) return false;
+                if (role < 3) {
+                    if (roles[role]) return false;
+                    roles[role] = true;
+                } else if (++marks > (size_t) kMarksMax) return false;
+                if (image_prefix(spans_in, spans_in, (int64_t) cp) != (int64_t) cp || !skip(check_bytes() - 16)) return false;
+            }
+            return take64(v) && v == kSlotMagic && off == bytes;
+        };
+        if (!preflight()) {
+            err = "the slot's state lengths, checkpoints or trailer are damaged";
+            return false;
+        }
+        off = state_off;
         for (Dev& d : devs) {   // (their work ends before the state is written over)
             cudaSetDevice(d.id);
             cudaStreamSynchronize(d.st);
@@ -7617,15 +7736,17 @@ struct Model::Impl {
         }
         std::memcpy(&end, data + off, 8);
         off += 8;
-        if (end != kSlotMagic) {
+        if (end != kSlotMagic || off != bytes) {
             err = "the slot does not end where it should";
             return false;
         }
         pos = n_pos;
         toks.swap(toks_in);
+        spans = std::move(spans_in);
+        imgs.clear();
         ctoks.resize((size_t) pos);
         for (size_t i = 0; i < (size_t) pos; ++i)
-            ctoks[i] = toks[i] < pk.eg_vocab ? pk.eg_map[(size_t) toks[i]] : 0;
+            ctoks[i] = ctok((int64_t) i, toks[i]);
         for (int k = 0; k < 3; ++k) ck[k] = std::move(got[k]);   // (the slot's own; the old ones held the state
                                                                // this one replaced)
         mk = std::move(got_mk);
@@ -7647,7 +7768,7 @@ struct Model::Impl {
             return ec ? 0ull : (unsigned long long) s;
         };
         std::ostringstream id;
-        id << "strata-ds4-session-4 engine=" << STRATA_VERSION << " mtp=" << g.n_mtp << " dim=" << g.dim << " hd=" << g.hd
+        id << "strata-ds4-session-5 engine=" << STRATA_VERSION << " mtp=" << g.n_mtp << " dim=" << g.dim << " hd=" << g.hd
            << " win=" << g.win << " ratios=";
         for (int r : g.ratios) id << r << ",";
         id << " kv=";
@@ -7677,6 +7798,7 @@ struct Model::Impl {
     std::string vision_err;              // why the tower did not load (pictures off), or empty
     std::vector<uint16_t> img_mark[3];   // image_start, image_newline, image_end: BF16 [dim]
     std::vector<Image> imgs;             // the pictures of the prompt being fed, by start
+    std::vector<ImageSpan> spans;        // persistent request identity, even after embedding rows are released
     // a BF16 (or, rounded to nearest even, F32) tensor of n values into dst
     bool read_bf16(const Tensor& t, size_t n, void* dst) {
         if (t.dtype == "BF16") return t.bytes == n * 2 && pk.read(t, dst);
@@ -7791,15 +7913,21 @@ struct Model::Impl {
         const uint16_t* r = tk == img_tok ? image_row(p) : nullptr;
         return r != nullptr ? r : embed_pinned + (size_t) tk * g.dim;
     }
-    bool in_image(int64_t p) const { return img_tok >= 0 && toks[(size_t) p] == img_tok && image_row(p) != nullptr; }
+    static bool span_contains(const std::vector<ImageSpan>& ss, int64_t p) {
+        const auto it = std::upper_bound(ss.begin(), ss.end(), p, [](int64_t v, const ImageSpan& s) { return v < s.start; });
+        return it != ss.begin() && p - (it - 1)->start < (it - 1)->len;
+    }
+    bool in_image(int64_t p) const {
+        return img_tok >= 0 && (span_contains(spans, p) || image_row(p) != nullptr);
+    }
     // the Engram's compressed id of token tk at p (-1: a picture's, which no n-gram spans)
     int32_t ctok(int64_t p, int tk) const {
-        if (tk == img_tok && image_row(p) != nullptr) return -1;
+        if (tk == img_tok && in_image(p)) return -1;
         return tk < pk.eg_vocab ? pk.eg_map[(size_t) tk] : 0;
     }
     // a chunk's image rows (route()'s bits); false: none
     bool vl_bits(int64_t p0, int T, VlBits& b) const {
-        if (imgs.empty()) return false;
+        if (spans.empty() && imgs.empty()) return false;
         std::memset(&b, 0, sizeof b);
         bool any = false;
         for (int t = 0; t < T && t < kVlRows; ++t)
@@ -13233,8 +13361,11 @@ struct Model::Impl {
         //  host-routed path's sums for them were not its own decode's; Project Maya #611)
         wp.async = par || (!sync_decode && (T <= async_max_t || wp.nrow > 0));
         wp.vl = 0;
-        for (int t = 0; t < T && !imgs.empty() && wp.nrow == 0; ++t)
-            if (in_image(p0 + t)) wp.vl |= 1u << t;
+        for (int t = 0; t < T; ++t) {
+            const bool image = wp.nrow > 0
+                ? span_contains(sqs[(size_t) wp.rseq[t]].spans, wp.rpos[t]) : in_image(p0 + t);
+            if (image) wp.vl |= 1u << t;
+        }
         for (int il = 0; il < g.nl; ++il) {
             const Layer& l = L[(size_t) il];
             if (l.ratio > 0) {
@@ -14534,6 +14665,19 @@ struct Model::Impl {
                 err = "the context is full";
                 return false;
             }
+            const auto& ss = sv[i] == sq_bound ? spans : sqs[(size_t) sv[i]].spans;
+            const auto& images = sv[i] == sq_bound ? imgs : sqs[(size_t) sv[i]].imgs;
+            for (int j = 0; j < lens[i]; ++j) {
+                const int64_t p = seq_pos(sv[i]) + j;
+                if (!span_contains(ss, p)) continue;
+                const bool have_row = std::any_of(images.begin(), images.end(), [&](const Image& im) {
+                    return p >= im.start && im.rows && (uint64_t) (p - im.start) < im.rows->size() / (size_t) g.dim;
+                });
+                if (toks[i][j] != img_tok || !have_row || spec) {
+                    err = "a multi step's image needs its owning sequence's embedding rows and cannot be speculative";
+                    return false;
+                }
+            }
         }
         seq_park();   // (every conversation's host state in sqs while the rows run)
         WinPlan& wp = wplan;
@@ -14554,7 +14698,8 @@ struct Model::Impl {
                 wp.rseq[t] = sv[i];
                 wp.rpos[t] = q.pos + j;
                 q.toks.push_back(toks[i][j]);
-                q.ctoks.push_back(toks[i][j] < pk.eg_vocab ? pk.eg_map[(size_t) toks[i][j]] : 0);   // (no picture's)
+                q.ctoks.push_back(toks[i][j] == img_tok && span_contains(q.spans, q.pos + j) ? -1 :
+                                 toks[i][j] < pk.eg_vocab ? pk.eg_map[(size_t) toks[i][j]] : 0);
             }
         }
         bool ok = true;
@@ -14567,8 +14712,20 @@ struct Model::Impl {
         }
         st.engram_ms += now_ms() - te;
         const int D = g.dim;
-        for (int t = 0; t < T; ++t)
-            std::memcpy(h_emb + (size_t) t * D, embed_pinned + (size_t) tk[t] * D, (size_t) D * 2);
+        for (int t = 0; t < T; ++t) {
+            const SeqState& q = sqs[(size_t) wp.rseq[t]];
+            const uint16_t* row = embed_pinned + (size_t) tk[t] * D;
+            if (tk[t] == img_tok) {
+                for (const Image& im : q.imgs) {
+                    const int64_t r = wp.rpos[t] - im.start;
+                    if (r >= 0 && im.rows && (uint64_t) r < im.rows->size() / (size_t) D) {
+                        row = im.rows->data() + (size_t) r * D;
+                        break;
+                    }
+                }
+            }
+            std::memcpy(h_emb + (size_t) t * D, row, (size_t) D * 2);
+        }
         plan_window(0, T, wp);
         prof_window = false;
         n_logits = T;
@@ -14965,6 +15122,17 @@ bool Model::vision_lazy() const { return p_->vt.lazy(); }
 void Model::set_images(std::vector<Image> images) {
     std::sort(images.begin(), images.end(), [](const Image& a, const Image& b) { return a.start < b.start; });
     p_->imgs = std::move(images);
+}
+void Model::set_image_spans(const std::vector<ImageSpan>& spans) { p_->spans = spans; }
+const std::vector<ImageSpan>& Model::image_spans() const { return p_->spans; }
+int64_t Model::image_span_length(int width, int height) const {
+    const auto& v = p_->vg;
+    if (p_->img_tok < 0 || width <= 0 || height <= 0 || v.patch <= 0 || v.merge <= 0 ||
+        width % v.patch != 0 || height % v.patch != 0) return 0;
+    const int64_t gh = height / v.patch, gw = width / v.patch;
+    const int64_t nh = (gh + v.merge - 1) / v.merge, nw = (gw + v.merge - 1) / v.merge;
+    const int64_t len = nh * (nw + 1) + 2;
+    return gh * gw <= p_->vt.max_patches() && len <= v.max_tokens ? len : 0;
 }
 int Model::draft_block() const { return p_->g.n_mtp > 0 ? p_->g.d_block : 0; }
 bool Model::gpus_are_gfx12() const { return p_->rdna4(); }

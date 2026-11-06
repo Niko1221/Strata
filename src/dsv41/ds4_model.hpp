@@ -12,6 +12,7 @@
 // model altogether (another chat answered in between) is a slot: slot_save / slot_load take the same state - the
 // compressed KV and index keys included, which a checkpoint leaves in place - through a file or a host buffer.
 #pragma once
+#include "ds4_images.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -254,8 +255,8 @@ public:
 
     /// The conversation in the model into `out` (slot_save): its position, its tokens, every window ring (the DSpark
     /// blocks' included), the compressors' partial groups and each KV source's compressed KV and index keys up to it,
-    /// the pieces the state a prompt continues is made of.  0 and err: nothing was set aside (it holds pictures, there
-    /// is no conversation, or the conversation is already set aside - unchanged since).
+    /// the pieces the state a prompt continues is made of, including persistent image spans.  0 and err: nothing
+    /// was set aside (invalid spans, no conversation, or already set aside unchanged).
     /// `at` >= 0: the conversation as it stood at its restore point `at` (a mark kept by mark()), though it was read on past it.
     uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1);
     /// `data` (a slot's bytes) back into the model: the state at the slot's position n_pos, as slot_save took it -
@@ -271,9 +272,14 @@ public:
     /// rows of its span, BF16 [n_h * (n_w + 1) + 2][dim]: image_start, n_h rows of (n_w aligner rows, image_newline),
     /// image_end.
     bool encode_image(const uint8_t* rgb, int width, int height, std::vector<uint16_t>& span, std::string& err);
+    /// Expected span rows without encoding (0: invalid geometry or unavailable vision).
+    int64_t image_span_length(int width, int height) const;
     /// The pictures of the prompt about to be fed ({}: none): positions inside a span read its rows (and route with
     /// the image bias, and take no part in the Engram n-grams); the rest the embedding table's.
     void set_images(std::vector<Image> images);
+    /// Persistent request identity, independent of transient embedding rows. Set after selecting/restoring a cache.
+    void set_image_spans(const std::vector<ImageSpan>& spans);
+    const std::vector<ImageSpan>& image_spans() const;
     /// The picture turn is over: a tower that lives in host memory between turns gives its graphics memory back (no-op otherwise).
     void vision_idle();
     /// True when the tower holds no graphics memory between picture turns.
