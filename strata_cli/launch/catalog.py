@@ -256,6 +256,31 @@ def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
     return cards
 
 
+def _nearby_folders(models: Path, name: str) -> list[str]:
+    """The folder names under `models` that look most like `name` (closest first; names only): the "nothing found" line of
+    `strata models explain`. Never raises: a folder that cannot be listed has no neighbours."""
+    import difflib
+    try:
+        names = sorted(entry.name for entry in models.iterdir() if entry.is_dir())
+    except OSError:
+        return []
+    closest = sorted(names, key=lambda n: (-difflib.SequenceMatcher(None, name.lower(), n.lower()).ratio(), n.lower()))
+    return closest[:8]
+
+
+def _pick_model_folder(models: Path, own: Path, lower: Path) -> tuple[Path, str, Path | None]:
+    """(the folder the launch uses, why, a folder that differs only in case) from setup's own spelling and the run-config tag (#3996)."""
+    if own.is_dir():
+        return own, "exact spelling", None
+    if lower.is_dir():
+        return lower, "lower-case tag", None
+    try:
+        match = next((entry for entry in models.iterdir() if entry.name.lower() == lower.name and entry.is_dir()), None)
+    except OSError:
+        match = None
+    return (match, "case-insensitive match", match) if match is not None else (own, "fallback", None)
+
+
 class Catalog:
     """setup.py's tables through strata_mcp's `Strata` object (the app's own catalog code)."""
 
@@ -467,17 +492,42 @@ class Catalog:
         _m, families, _c, _s = self.tables()
         models = Path(base) / "models"
         own = models / (families[family].get("tag", "") + model)
+        return _pick_model_folder(models, own, models / self.tag_of(family, model))[0]
+
+    def model_folder_chain(self, base: Path, family: str, model: str) -> dict[str, Any]:
+        """The folders model_folder() tries, in the order it tries them, whether each exists, and the one it takes and why: the report
+        `strata models explain` prints. model_folder() walks this same rule, so the report cannot disagree with the launch lookup."""
+        _m, families, _c, _s = self.tables()
+        models = Path(base) / "models"
+        own = models / (families[family].get("tag", "") + model)
         lower = models / self.tag_of(family, model)
-        for candidate in (own, lower):
-            if candidate.is_dir():
-                return candidate
-        try:
-            for entry in models.iterdir():
-                if entry.name.lower() == lower.name and entry.is_dir():
-                    return entry
-        except OSError:
-            pass
-        return own
+        folder, reason, match = _pick_model_folder(models, own, lower)
+        candidates = [{"path": str(own), "spelling": "setup's spelling", "exists": own.is_dir()},
+                      {"path": str(lower), "spelling": "the run-config tag (lower case)", "exists": lower.is_dir()}]
+        if match is not None:
+            candidates.append({"path": str(match), "spelling": "a folder differing only in letter case", "exists": True})
+        return {"candidates": candidates, "folder": str(folder), "reason": reason}
+
+    def explain_model(self, base: Path | str, family: str, model: str) -> dict[str, Any]:
+        """`strata models explain <model>`: the folder chain, the folder the launch would use and why, the .gguf files in it and, when it
+        is missing, the folders that are there instead. Read-only: it lists the data folder and reads file sizes."""
+        base = Path(base)
+        chain = self.model_folder_chain(base, family, model)
+        folder = Path(chain["folder"])
+        found = folder.is_dir()
+        shards = total = 0
+        if found:
+            try:
+                files = [p for p in folder.glob("*.gguf") if p.is_file()]
+                shards, total = len(files), sum(p.stat().st_size for p in files)
+            except OSError:
+                pass
+        return {"family": family, "model": model, "tag": self.tag_of(family, model),
+                "data_dir": str(base), "models_dir": str(base / "models"),
+                "candidates": chain["candidates"],
+                "chosen": {"path": chain["folder"], "exists": found, "reason": chain["reason"]},
+                "found": found, "gguf": {"shard_count": shards, "bytes": total},
+                "nearby_folders": [] if found else _nearby_folders(base / "models", folder.name)}
 
     def kv_gb(self, tokens: int, kv: str = "int8") -> float:
         """The conversation memory for this many tokens, in GB (setup.py's UD_FIT_KV_BYTES: 13 attention layers)."""
@@ -576,11 +626,12 @@ class Catalog:
                 return p
         return None
 
-    def data_dir_choice(self) -> tuple[Path, str]:
+    def data_dir_choice(self, sync: bool = True) -> tuple[Path, str]:
         """(the data folder, where it came from): the person's own setting, the desktop app's folder, a Documents/Strata that holds models,
-        else the default beside the install. The same rule for every command."""
+        else the default beside the install. The same rule for every command. `sync=False` never rewrites the other settings file
+        (a read-only caller)."""
         from strata_control import discovery
-        return discovery.data_dir(Path(self._mcp_data_dir()))
+        return discovery.data_dir(Path(self._mcp_data_dir()), sync=sync)
 
     def data_dir(self) -> Path:
         return self.data_dir_choice()[0]

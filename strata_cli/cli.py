@@ -169,6 +169,15 @@ def parser() -> argparse.ArgumentParser:
     models_move.add_argument("--plan", action="store_true", help="say what would happen and change nothing")
     models_move.add_argument("--cancel-file", metavar="PATH", help="stop (safely) when this file appears")
     models_move.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
+    models_explain = models_sp.add_parser(
+        "explain", help="show why a model's folder is or is not found under models/ (read-only)")
+    models_explain.add_argument("model", metavar="NAME",
+                                help="the model size, e.g. IQ3_S (any case); FAMILY/NAME also works")
+    models_explain.add_argument("--family", metavar="NAME",
+                                help="the model family when a size is offered by several (qwen, swift, coder, ...)")
+    models_explain.add_argument("--data-dir", metavar="DIR",
+                                help="the folder holding models/ (default: Strata's data folder)")
+    models_explain.add_argument("--output", choices=("human", "json"), default="human")
     from strata_cli import drafting_cmd
     drafting_cmd.add_parser(sp)
     from strata_cli import split_cmd
@@ -509,7 +518,7 @@ def parser() -> argparse.ArgumentParser:
     code_sessions.add_argument("--output", choices=("human", "json"), default="human")
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
-                     components_verify, models_list, models_inspect, models_import, models_move, calibrate,
+                     components_verify, models_list, models_inspect, models_import, models_move, models_explain, calibrate,
                      runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_cleanup, runtime_restart,
                      *ops_items, bench_run, bench_report, bench_compare, code_sessions, *update_parsers):
         one_shot.add_argument("--json", action="store_true", help="alias for --output json")
@@ -563,6 +572,8 @@ def _models(a: argparse.Namespace) -> int:
         return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
     if a.models_command == "move":
         return _models_move(a)
+    if a.models_command == "explain":
+        return _models_explain(a)
     if a.models_command == "list":
         if a.served:
             if a.install_dir:
@@ -603,6 +614,51 @@ def _models(a: argparse.Namespace) -> int:
                     f"Config: {item['source_config']}\n"
                     f"Components: {len(result['components']['components'])}, "
                     f"issues: {len(result['components']['issues'])}")
+
+
+_FOLDER_REASONS = {
+    "exact spelling": "the exact (setup) spelling",
+    "lower-case tag": "the lower-case run-config tag",
+    "case-insensitive match": "a folder that differs only in letter case",
+    "fallback": "fallback: nothing found, so setup's spelling (where a download would go)",
+}
+
+
+def _explain_words(report: dict) -> str:
+    """`strata models explain` in plain lines: each folder tried, the one the launch uses and why, the files in it."""
+    lines = [f"{report['family']} {report['model']} (folder tag: {report['tag']})",
+             f"Data folder: {report['data_dir']}"]
+    for candidate in report["candidates"]:
+        lines.append(f"  {candidate['path']}  exists: {'yes' if candidate['exists'] else 'no'}"
+                     f"  ({candidate['spelling']})")
+    chosen, gguf = report["chosen"], report["gguf"]
+    lines.append(f"Chosen: {chosen['path']} ({_FOLDER_REASONS[chosen['reason']]})")
+    lines.append(f"{gguf['shard_count']} .gguf file(s), {gguf['bytes']:,} bytes in total")
+    if not report["found"]:
+        nearby = report["nearby_folders"]
+        lines.append("No model folder found. Closest folders under models/: " + ", ".join(nearby) if nearby
+                     else "No model folder found, and no other folders under models/.")
+    return "\n".join(lines)
+
+
+def _models_explain(a: argparse.Namespace) -> int:
+    """`strata models explain NAME`: the folder chain behind Catalog.model_folder() for the launch lookup (#3996). Read-only."""
+    from strata_cli.launch.catalog import Catalog, CatalogUnavailable
+    machine = a.output == "json"
+    try:
+        catalog = Catalog()
+    except CatalogUnavailable as exc:
+        return _error(str(exc), 5, machine)
+    name, family = a.model, a.family
+    if not family and "/" in name:
+        family, name = name.split("/", 1)
+    try:
+        family, model = catalog.resolve(name, family)
+    except ValueError as exc:
+        return _error(str(exc), 2, machine)
+    base = Path(a.data_dir).expanduser() if a.data_dir else catalog.data_dir_choice(sync=False)[0]
+    report = catalog.explain_model(base, family, model)
+    return _success(report, machine=machine, human=_explain_words(report))
 
 
 def _import_problem(plan: dict) -> str:

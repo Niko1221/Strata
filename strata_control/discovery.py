@@ -275,10 +275,13 @@ def data_dir_choices(*, environ=None, windows: bool | None = None, home: Path | 
     return out
 
 
-def data_dir(default: Path, *, environ=None, windows: bool | None = None, home: Path | None = None) -> tuple[Path, str]:
+def data_dir(default: Path, *, environ=None, windows: bool | None = None, home: Path | None = None,
+             sync: bool = True) -> tuple[Path, str]:
     """(the data folder, source). Of the Terminal's own setting and the app's folder the one changed last wins (the other file is brought up
-    to date); then a ``Documents/Strata`` that holds models; else `default`."""
-    sync_data_dir(environ=environ, windows=windows, home=home)
+    to date); then a ``Documents/Strata`` that holds models; else `default`. `sync=False` reads the setting without updating the other
+    settings file (a strictly read-only caller)."""
+    if sync:
+        sync_data_dir(environ=environ, windows=windows, home=home)
     choices = data_dir_choices(environ=environ, windows=windows, home=home)
     for path, source in choices:
         if source == "settings":
