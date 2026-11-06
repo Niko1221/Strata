@@ -16,6 +16,14 @@ bool native_router_enabled();
 void native_router_top10(const float* logits, int32_t* ids, float* weights, void* stream);
 /// n_tok rows at once (logits [n,512], ids/weights [n,10]); each row exactly as the single call.
 void native_router_top10_multi(const float* logits, int32_t* ids, float* weights, int n_tok, void* stream);
+/// STRATA_ROUTE_PUBLISH: native_router_top10_multi then doorbell_publish_res(x, ids, d_res, ...) in one launch (1..8
+/// rows).  `d_res` is nullptr or this layer's residency table; the rows are copied when any id misses it.
+void native_router_top10_publish_res(const float* logits, int32_t* ids, float* weights, int n_tok, const float* x,
+                                     const int32_t* d_res, int n_expert, int64_t n, float* x_out, int32_t* ids_out,
+                                     uint32_t* seq, void* stream);
+/// ... and doorbell_publish (x, ids and weights) in one launch (1..8 rows).
+void native_router_top10_publish(const float* logits, int32_t* ids, float* weights, int n_tok, const float* x, int64_t n,
+                                 float* x_out, int32_t* ids_out, float* w_out, uint32_t* seq, void* stream);
 /// The same contract for a model family's (experts, top-k): 512 / 10 (Flash-Next: the two calls above, unchanged) and
 /// 256 / 8 (Qwen3.6-35B-A3B).  logits [n_tok, n_expert], ids / weights [n_tok, k].  CUDA / HIP.
 bool native_router_topk_supported(int n_expert, int k);

@@ -71,9 +71,17 @@ constexpr int kFusedGrMaxT = 8;
 /// A window of more than kFusedGrMaxT tokens is read in slices of at most kFusedGrMaxT (every token's outputs are
 /// strictly its own, so the slices are bitwise the one read); `a` and `xn_scratch` hold up to kFusedGrWideT tokens.
 constexpr int kFusedGrWideT = kWindowMaxT;
+
 /// Returns true when it also wrote the q8_1 images (every token's q8_mixed set and this read supports it).
 bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
                          unsigned long long* stamp_buf = nullptr, int stamp_i0 = 0);
+
+/// Opt-in STRATA_GR_RDNA=1 (gfx1100): the same read as two launches (split-K down over 8 half-stream slices, then the
+/// up projection folding the partials) instead of six, another summation order (not bitwise).  `scratch` is the
+/// caller's xn scratch (n_tok * hc * n_embd floats; the read needs far less).
+bool rdna_gr_enabled();
+void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
+                        unsigned long long* stamp_buf = nullptr, int stamp_i0 = 0);
 
 /// The bench only: the AMD latency-hidden kernels on (1) or off (0); -1 = STRATA_GR_FAST.
 void fused_gr_set_fast(int on);

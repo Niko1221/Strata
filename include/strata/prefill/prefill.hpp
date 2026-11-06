@@ -29,6 +29,10 @@ namespace strata::kernels::cpu { class ExpertPool; }
 
 namespace strata::prefill {
 
+/// Flight recorder for the KV staging path (no synchronisation: it only records which step the prompt path is in).
+/// The stall report prints it, so a hang names its step without changing its timing.
+const char* kv_phase_text();
+
 struct PrefillStats {
     int64_t tokens = 0;
     int64_t chunks = 0;

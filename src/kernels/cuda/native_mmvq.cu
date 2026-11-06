@@ -54,6 +54,10 @@
 #include <vector>
 
 namespace strata::kernels {
+// src/kernels/cuda/rdna_mmvq.cu - gfx1100 multi-column GEMV, one wave per output row (STRATA_RDNA_Q6K=1, opt-in)
+bool rdna_q6k_enabled();
+bool rdna_q6k_mmvq(const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
+bool rdna_kq_mmvq(int type, const void* w, const void* xq, float* y, int n_in, int n_out, int ncols, void* stream);
 namespace {
 
 constexpr int QK = 256;
@@ -1364,6 +1368,29 @@ int dev_class() {   // 1 = gfx12, 2 = sm_86, 0 = the rest; per device
     }
     return cls[dev] - 1;
 }
+// gfx1100 (RX 7900 XTX), the missing row for the table above: q8_gemv_bench at 6 columns (the verify window),
+// 3 passes x 300 iterations, one row beats two on every shape measured -- qkv 2560->10240 598 -> 647 GB/s,
+// gate 2560->6144 500 -> 603, out 6144->2560 638 -> 674, q 2560->12288 619 -> 663, k/v 2560->512 247 -> 298,
+// HC down 10240->320 397 -> 548, shared gate/up 2560->640 301 -> 353 (HC up 320->10240 and shared down
+// 640->2560 have fewer than BPI k-blocks and never reach this path). The head (2560->248320) is the one loss:
+// 721 -> 693 GB/s at 6 columns, hence the n_out cap. Same bits: a row's partial sums and their reduction do
+// not depend on ROWS. End to end on the engine: ms/forward 23.355 -> 23.15, identical sha_set.
+bool q8_0_rows1_gfx1100() {
+    static const bool v = [] {
+#if defined(__HIPCC__)
+        int dev = 0;
+        cudaDeviceProp p;
+        if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) return false;
+        return strata::kernels::gfx_arch_is(p.gcnArchName, "gfx1100") ||
+               strata::kernels::gfx_arch_is(p.gcnArchName, "gfx1101") ||
+               strata::kernels::gfx_arch_is(p.gcnArchName, "gfx1102");
+#else
+        return false;
+#endif
+    }();
+    return v;
+}
+
 template<typename F>
 bool q8_0_rows1(int n_in, int n_out) {
     if constexpr (!std::is_same_v<F, SmallTraits<Q80Block, 8>>) {
@@ -1375,6 +1402,7 @@ bool q8_0_rows1(int n_in, int n_out) {
             return v == nullptr || v[0] == '\0' ? -1 : v[0] != '0';
         }();
         if (env == 0) return false;
+        if (q8_0_rows1_gfx1100() && n_out <= 65536) return true;   // measured; the head is over the cap
         const int c = dev_class();
         return (c == 1 && n_in <= 4096 && n_out >= 4096) || (c == 2 && n_out >= 2048);
     }
@@ -1543,6 +1571,21 @@ bool b6_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in
     }
 }
 
+// S27 (gfx1100): 1 or 2 warps per block for a row that one 4-warp iteration cannot fill. 0 = the default block.
+template <typename F>
+int mmvq_smallk_nw(int n_in) {
+    if constexpr (!std::is_same_v<F, SmallTraits<Q80Block, 8>>) {
+        (void) n_in;
+        return 0;
+    } else {
+        static const int nw = [] {
+            const char* v = std::getenv("STRATA_MMVQ_SMALLK_NW");
+            return v != nullptr ? std::atoi(v) : 0;   // opt-in: HCs up 182 -> 345 GB/s at 6 cols, but not bitwise
+        }();
+        return (nw == 1 || nw == 2) && n_in / F::DIV < F::BPI ? nw : 0;
+    }
+}
+
 template<typename F, int NCOLS>
 void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, cudaStream_t s) {
     const auto* w = static_cast<const typename F::Block*>(weights);
@@ -1559,6 +1602,17 @@ void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in,
     // the PAIR arguments, unused here (launch_pdl passes every parameter)
     const typename F::Block* const no_w2 = nullptr;
     float* const no_y2 = nullptr;
+    // S27: a row with fewer k-blocks than one iteration covers (n_in < 1024 for Q8_0) leaves most of the block
+    // idle, because lanes are indexed by k-block and not by row (n_in=320: 10 of 32 block slots used). A narrower
+    // block covers 8 or 16 blocks per iteration and keeps more lanes busy. Not bitwise the 4-warp block (the
+    // cross-warp reduction is gone), so it stays behind STRATA_MMVQ_SMALLK_NW=1|2.
+    if (const int nw = mmvq_smallk_nw<F>(n_in)) {
+        if (nw == 1)
+            launch_pdl(native_mmvq_multi_kernel<F, NCOLS, 1, 1, false, false>, dim3(unsigned(n_out)), dim3(WARP, 1), 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
+        else
+            launch_pdl(native_mmvq_multi_kernel<F, NCOLS, 2, 1, false, false>, dim3(unsigned(n_out)), dim3(WARP, 2), 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
+        return;
+    }
     // #783 PR-h (stuchapin909): two rows per block for every K, not only small K - each row keeps its own partial sums and
     // reduction, so a row's result does not depend on its neighbour; STRATA_NO_MMVQ_ROWS2=1 keeps one row for large K
     static const bool rows1 = [] {
@@ -3574,10 +3628,18 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     case 8: native_q8_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 20: native_iq4_nl_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 11: native_q3_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
-    case 12: native_q4_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
-    case 13: native_q5_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
-    case 14: native_q6_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
-    case 23: native_iq4_xs_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
+    case 12:
+        if (rdna_q6k_enabled() && rdna_kq_mmvq(12, weights, x_q8_1, y, n_in, n_out, ncols, stream)) break;
+        native_q4_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
+    case 13:
+        if (rdna_q6k_enabled() && rdna_kq_mmvq(13, weights, x_q8_1, y, n_in, n_out, ncols, stream)) break;
+        native_q5_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
+    case 14:
+        if (rdna_q6k_enabled() && rdna_q6k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) break;
+        native_q6_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
+    case 23:
+        if (rdna_q6k_enabled() && rdna_kq_mmvq(23, weights, x_q8_1, y, n_in, n_out, ncols, stream)) break;
+        native_iq4_xs_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 42: native_q2_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 16: case 17: case 18: case 21: case 22: case 29:
         iq_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream); break;

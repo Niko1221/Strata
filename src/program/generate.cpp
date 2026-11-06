@@ -74,6 +74,7 @@
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_octave.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/spill_gate.hpp"
@@ -257,6 +258,18 @@ static void emit_lp_line(const strata::core::Verifier& ver, int t, int32_t token
 
 namespace {
 namespace nib = strata::core::nibble;
+// STRATA_SPEC_CUM=P (opt-in; unset, empty or 0 = off; ported from nicejunjie/Strata-rdna3, itself from
+// android-imdad/Strata-7900xtx): a speculative window also ends where the product of the draft's own probabilities up
+// to that draft (the chance that every draft so far holds) falls below P, beside --spec-min-p's per-draft floor.  It
+// only chooses which drafts are verified - a shorter window is a valid window, and the sample is unchanged.
+double spec_cum_floor() {
+    static const double v = [] {
+        const char* e = std::getenv("STRATA_SPEC_CUM");
+        const double p = e != nullptr ? std::atof(e) : 0.0;
+        return p > 0.0 && p <= 1.0 ? p : 0.0;
+    }();
+    return v;
+}
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,
 // pinning a large arena into two CUDA contexts leaves WDDM refusing every later allocation (the 5080 + 3090 rig);
 // a Linux driver has no such limit (#253: the 8 GiB cap cost a 4090 + 3060 split 3x of its prompt speed).
@@ -1045,6 +1058,10 @@ void usage() {
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
                  "                       (vs int8's 1,056); streams with --kv-resident too\n"
+                 "  --kv oct3            3-bit Lloyd-Max codes, 448 B/cell (55%% of k8v4, 78%% of q4_0), with an\n"
+                 "                       fp16 window (4 sinks + 1024 tail cells per layer by default, STRATA_KV_WINDOW,\n"
+                 "                       STRATA_KV_WINDOW_SINKS/TAIL). Experimental; gather path only (no fused decode\n"
+                 "                       kernel). Measured on gfx1100: docs/OCT3.md\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
                  "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. 0 (default):\n"
                  "                       all of it in VRAM. A context of N cells or fewer is not streamed\n"
@@ -1852,7 +1869,7 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
     }
 #if defined(_WIN32)
     if (want_stacks) stall_stacks::print(f);
-#endif
+#endif    std::fprintf(f, "  prefill kv phase: %s\n", strata::prefill::kv_phase_text());
     for (int pass = 0; pass < 2; ++pass) {
         if (pass == 1) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -4256,19 +4273,33 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4" && o.kv != "oct3") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, k8v4 or oct3\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
-    strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    // STRATA_KV_OCT=1: 3-bit Lloyd-Max K/V (kv_octave.hpp), 448 B per cell, reads through the gather path (there is
+    // no fused decode-attention variant yet). The fp16 exact window (4 sinks + 1024 tail cells per layer) is on by
+    // default; STRATA_KV_WINDOW=0 turns it off, STRATA_KV_WINDOW_SINKS/TAIL size it.
+    const char* kv_oct_env = std::getenv("STRATA_KV_OCT");
+    const bool kv_oct_env_on = kv_oct_env != nullptr && kv_oct_env[0] == '1';
+    const bool kv_oct_on = o.kv == "oct3" || kv_oct_env_on;
+    strata::core::qsa_set_kv_oct(kv_oct_on);
+    if (kv_oct_on) {
+        int ws = 0, wt = 0;
+        strata::core::qsa_window_sizes(ws, wt);
+        std::fprintf(stderr, "strata generate: %s: 3-bit Lloyd-Max K/V (448 B/cell, gather path; an fp16 window of %d "
+                             "sinks + %d tail cells per layer)\n",
+                     o.kv == "oct3" ? "--kv oct3" : "STRATA_KV_OCT=1", ws, wt);
+    }
+    strata::core::qsa_set_kv_q4(o.kv == "q4_0" && !kv_oct_on);   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");
     strata::core::qsa_set_kv_int8_rotate(kv_rot != nullptr && kv_rot[0] == '1');
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
-    strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
+    strata::core::qsa_set_kv_hybrid(o.kv == "k8v4" && !kv_oct_on);   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
         return 2;
@@ -6688,6 +6719,17 @@ int main(int argc, char** argv) {
                                  "%.2f GiB of pinned RAM\n",
                          (long long) (ss.qsa_states[ss.qsa_primary()].n_slots * 4),
                          (long long) o.max_context, (double) strata::core::qsa_kv_host_bytes() / 1073741824.0);
+        {   // --kv oct3: the exact window this session actually sized (kv_exact_window.hpp), so the log says whether
+            // the recent cells are served in fp16 or only as 3-bit codes
+            int ws = 0, wt = 0;
+            strata::core::qsa_window_sizes(ws, wt);
+            if (ws + wt > 0)
+                std::fprintf(stderr, "strata generate: KV window: the first %d and the newest %d cells of every QSA layer "
+                                     "in fp16 (%.1f MiB over %d layers)\n", ws, wt,
+                             (double) strata::kernels::kv_exact_window_bytes_per_layer(
+                                 strata::core::qsa_shapes(g), ws, wt) * (double) g.n_qsa_layers() / 1048576.0,
+                             (int) g.n_qsa_layers());
+        }
         // the PLE block above built everything but the history, which session_init has just carved
         ss.ple.hist = ss.ple_hist;
         // (#167) generate mode starts from an empty sequence, and nothing else zeroes this state before the prompt
@@ -11637,6 +11679,7 @@ int main(int argc, char** argv) {
             if (st > 0) {
                 stage_ver(st).set_split(o.spec_split);
                 stage_ver(st).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+                stage_ver(st).set_pcie_share(o.pcie_frac > 0.0 || o.pcie_frac_auto);
             }
         }
         if (pipe) {   // the odd windows' pool routing: the same as the even ones', with their plans
@@ -11645,6 +11688,7 @@ int main(int argc, char** argv) {
                 split_drive_b.plan[st] = stage_ver_p(st, 1).plan_sink();
                 stage_ver_p(st, 1).set_split(o.spec_split);
                 stage_ver_p(st, 1).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+                stage_ver_p(st, 1).set_pcie_share(o.pcie_frac > 0.0 || o.pcie_frac_auto);
             }
         }
         // the pool the verify windows call: with a layer split, the wrapper that routes each layer to its stage
@@ -11658,6 +11702,7 @@ int main(int argc, char** argv) {
         // issue #31's thread dumps show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy
         // kernel needs no host CUDA call there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+        ver.set_pcie_share(o.pcie_frac > 0.0 || o.pcie_frac_auto);
         // --pipeline-windows 2: stage 0's GDN state before a speculative commit, restored when the guess was wrong.
         // Window W reads the state its snapshot must hold and no window writes it (only commits do), so it is copied
         // on a side stream while W runs, into the buffer of W's parity, and only W's speculative commit waits for it
@@ -11878,6 +11923,7 @@ int main(int argc, char** argv) {
                 c.backend = "cuda";
 #endif
                 c.kv = o.kv;
+                if (const char* oct = std::getenv("STRATA_KV_OCT"); oct != nullptr && oct[0] == 49) c.kv += "+oct3";
                 c.max_context = o.max_context;
                 c.kv_resident = o.kv_resident;
                 c.mtp_window = o.mtp.empty() ? -1 : o.mtp_window;
@@ -17988,7 +18034,12 @@ int main(int argc, char** argv) {
                     int T = S_mtp;
                     if (req_spec_min_p > 0.0) {
                         T = 1;
-                        while (T < S_mtp && from + T - 1 < avail && pr[from + T - 1] >= (float) req_spec_min_p) ++T;
+                        double cum = 1.0;   // STRATA_SPEC_CUM: the chance that every draft so far holds
+                        while (T < S_mtp && from + T - 1 < avail && pr[from + T - 1] >= (float) req_spec_min_p) {
+                            cum *= (double) pr[from + T - 1];
+                            if (spec_cum_floor() > 0.0 && cum < spec_cum_floor()) break;
+                            ++T;
+                        }
                     }
                     return std::max(1, std::min(T, 1 + avail - from));
                 };
@@ -18606,6 +18657,15 @@ int main(int argc, char** argv) {
                         wr.chain_rows = chain_rows; wr.cap = S_mtp; wr.start = T; wr.spec_min_p = req_spec_min_p;
                         wr.draft_conf = o.draft_conf; wr.dprob = dprob.data();
                         T = strata::spec::choose_window(wr);
+                    // STRATA_SPEC_CUM (local): the MTP's window also ends where the chance that every draft so far holds
+                    // falls below the floor.  Only which drafts are verified; the sample is unchanged.
+                    if (use_mtp && !req_df2 && req_spec_min_p > 0.0 && !(spec_cost && !first_window) &&
+                        spec_cum_floor() > 0.0 && T > 1) {
+                        double cum = 1.0;
+                        int t = 0;
+                        while (t < T) { cum *= (double) dprob[(size_t) t]; if (cum < spec_cum_floor()) break; ++t; }
+                        T = std::max(1, t);
+                    }
                     }
                     if (first_window) T = merge_T > 0 ? merge_T : 1;
                     // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
@@ -19210,7 +19270,10 @@ int main(int argc, char** argv) {
                 auto kv_arrays = [&](const strata::core::QsaState& st) {
                     const bool h = st.kv_mode != 0;
                     std::vector<std::pair<const void*, int64_t>> a;
-                    if (st.kv_q4) {
+                    if (st.kv_oct) {
+                        const int64_t ob = (int64_t) strata::kernels::kv_oct_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_q4 : st.k_q4, ob}, {h ? st.host.v_q4 : st.v_q4, ob}};
+                    } else if (st.kv_q4) {
                         const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
                     } else if (st.kv_hybrid) {
@@ -20136,6 +20199,7 @@ int main(int argc, char** argv) {
         // issue #31's thread dumps show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy
         // kernel needs no host CUDA call there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+        ver.set_pcie_share(o.pcie_frac > 0.0 || o.pcie_frac_auto);
         drive.d.plan = ver.plan_sink();
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
         if (drive.d.pcie_num < 0) drive.d.pcie_num = 0;

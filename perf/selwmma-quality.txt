@@ -1,0 +1,2 @@
+run                                      segment         pos    top1       KL   KL p99     PPL PPL ref
+qqk6-sel.tsv                             all           29995 100.00%  0.00000   0.0000   3.586   3.586

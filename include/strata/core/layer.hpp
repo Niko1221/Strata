@@ -36,6 +36,7 @@
 #include "strata/core/weights.hpp"
 
 #include "strata/kernels/gr.hpp"
+#include "strata/kernels/kv_exact_window.hpp"
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/ple.hpp"
@@ -223,6 +224,13 @@ struct QsaState {
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
     bool kv_hybrid = false;
+    /// 3-bit Lloyd-Max K and V after the same Hadamard rotation (kv_octave.hpp): 448 B per cell, the format the
+    /// exact window is meant for. Reads through the gather path (no fused decode-attention variant yet).
+    bool kv_oct = false;
+    /// THE EXACT WINDOW (`--kv oct3`): the first `sinks` and the newest `tail` cells of this layer kept in fp16 as
+    /// well (kv_exact_window.hpp), so the tokens that carry most of the attention mass are never read from 3-bit
+    /// codes.  One layer per state, so the kernels always read it as layer 0.  Empty unless `kv_oct` is on.
+    strata::kernels::KvExactWindow win;
     /// K and V go through kv_q4.hpp's Walsh-Hadamard rotation before they are stored, the queries too, the output
     /// back: always for Q4_0, for INT8 by qsa_set_kv_int8_rotate (spreads outlier channels over the scale groups)
     bool kv_rot = false;
@@ -315,11 +323,18 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// 3-bit Lloyd-Max K/V (kv_octave.hpp): set before sizing and initializing the session.
+void qsa_set_kv_oct(bool enabled);
+bool qsa_kv_oct();
+/// The exact window (`--kv oct3`) as it is actually sized for one QSA layer: `sinks` and `tail` cell counts, both 0
+/// when the window is off (STRATA_KV_WINDOW=0, another KV format, or a draft ring).  For the startup log.
+void qsa_window_sizes(int& sinks, int& tail);
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
 /// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
 inline int qsa_kv_format(const QsaState& st) {
+    if (st.kv_oct) return strata::kernels::kKvOct3;        // two byte runs, 14-byte blocks (kv_stream.cu)
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
@@ -332,6 +347,9 @@ void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* i
 /// Zeroes the pools AND the indexer, so a fresh sequence matches the reference's own `zeros()`.  The KV pool
 /// matters even for cells that are never attended, because `kv_gather` reads whatever the selection names.
 void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream);
+/// Marks every exact-window row empty, so no reader is served a value the sequence it now holds never wrote.  A
+/// restored (parked) or copied state's K/V may be another sequence's; its window must not answer for it.
+void qsa_window_invalidate(const QsaState& st, void* stream);
 
 // ================================ PER-STAGE TIMING, DEBUG ONLY ================================
 //

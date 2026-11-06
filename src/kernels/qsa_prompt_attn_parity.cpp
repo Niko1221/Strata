@@ -1,7 +1,8 @@
 // src/kernels/qsa_prompt_attn_parity.cpp - perf-review D-1: the tensor-core prompt attention (qsa_prompt_attn.hpp)
 // against the FP32 kernel it replaces (`qsa_decode_attn_batch`) and an FP64 host reference (GPU, synthetic, no model).
 //
-// Int8, FP16 and Q4_0 pools with random codes, scales and queries; selections shaped like the prompt path's (the 2,051
+// Int8, FP16, Q4_0, oct3 and oct3 + the exact fp16 window pools with random codes, scales and queries; selections
+// shaped like the prompt path's (the 2,051
 // widest, a recent window plus older cells that drift slowly from one query to the next, so neighbours share most
 // of them as they do in a real prompt; short contexts take every cell). Checks:
 //   1. against FP64, the new kernel's error is no larger than a small multiple of the old kernel's (both FP32 math);
@@ -13,6 +14,7 @@
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_octave.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -63,8 +65,9 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     // pools; page table a shuffled permutation (the readers must follow it)
     std::vector<int8_t> kq, vq;
     std::vector<uint16_t> ks, vs, kh, vh;
-    std::vector<uint8_t> k4, v4;   // q4_0: 8 blocks of {fp16 d, 16 code bytes} per row (kv_q4.hpp)
+    std::vector<uint8_t> k4, v4;   // q4_0: 8 blocks of {fp16 d, 16 code bytes} per row (kv_q4.hpp); oct3: 14-byte blocks
     constexpr int64_t B4 = 18, ROW4 = 8 * B4;
+    const int64_t B3 = 14, ROW3 = (HD / 32) * B3;
     if (fmt == 2) {
         std::uniform_int_distribution<int> byte(0, 255);
         // the scales as a q4_0 pool holds them: signed (ggml's d = max / -8) and spread over two decades, so a chunk's
@@ -77,6 +80,15 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 const uint16_t d = f2h(sc4(rng));
                 std::memcpy(pool->data() + b * B4, &d, 2);
                 for (int j = 0; j < 16; ++j) (*pool)[b * B4 + 2 + j] = (uint8_t) byte(rng);
+            }
+    } else if (fmt == 3 || fmt == 4) {   // oct3: 14-byte blocks of {fp16 d, 12 code bytes} (kv_octave.hpp)
+        std::uniform_int_distribution<int> byte(0, 255);
+        k4.resize(rows * ROW3); v4.resize(rows * ROW3);
+        for (auto* pool : {&k4, &v4})
+            for (int64_t b = 0; b < rows * (HD / 32); ++b) {
+                const uint16_t d = f2h(sc(rng));
+                std::memcpy(pool->data() + b * B3, &d, 2);
+                for (int j = 0; j < 12; ++j) (*pool)[b * B3 + 2 + j] = (uint8_t) byte(rng);
             }
     } else if (fmt == 1) {
         kq.resize(rows * HD); vq.resize(rows * HD); ks.resize(rows * 4); vs.resize(rows * 4);
@@ -182,9 +194,68 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         }
     }
     k::QsaAttnPools pl;
-    if (fmt == 2) { pl.k_q4 = up(k4); pl.v_q4 = up(v4); }
+    if (fmt == 2 || fmt == 3 || fmt == 4) { pl.k_q4 = up(k4); pl.v_q4 = up(v4); pl.oct3 = fmt != 2; }
     else if (fmt == 1) { pl.k_q = up(kq); pl.v_q = up(vq); pl.k_scale = up(ks); pl.v_scale = up(vs); }
     else { pl.k_pool = up(kh); pl.v_pool = up(vh); }
+    // fmt 4: oct3 plus the exact fp16 window (kv_exact_window.hpp) - what the prompt path is handed in a session
+    // without --kv-resident.  The first `sinks` and the newest `tail` positions are held in fp16 with their tag; every
+    // other row's tag stays -1, which is a miss (the reader must fall back to the codes).
+    const int wsin = std::getenv("PA_WIN_SINKS") ? std::atoi(std::getenv("PA_WIN_SINKS")) : 4;
+    const int wtail = std::getenv("PA_WIN_TAIL") ? std::atoi(std::getenv("PA_WIN_TAIL")) : 1024;
+    const int wrows = wsin + wtail;
+    k::KvExactWindow win;
+    std::vector<uint16_t> wkh, wvh;
+    std::vector<int32_t> wtag;
+    win.sinks = wsin;
+    win.tail = wtail;
+    win.n_head_kv = (int) NKV;
+    win.head_dim = (int) HD;
+    win.layers = 1;
+    if (fmt == 4) {
+        wkh.resize((size_t) wrows * NKV * HD);
+        wvh.resize(wkh.size());
+        wtag.assign((size_t) wrows, -1);
+        for (size_t i = 0; i < wkh.size(); ++i) { wkh[i] = f2h(nd(rng) * 1.5f); wvh[i] = f2h(nd(rng)); }
+        if (!std::getenv("PA_WIN_OFF"))   // a probe: the same pools with every tag a miss
+        for (int64_t pos = 0; pos < ctx; ++pos) {
+            if (pos >= wsin && pos < ctx - wtail) continue;   // never in the window
+            wtag[(size_t) k::kv_window_row(win, pos)] = (int32_t) pos;
+        }
+    }
+    // the window row a cell is read from, or -1 (the tag must still name that cell)
+    auto win_row = [&](int64_t cell) -> int {
+        if (fmt != 4) return -1;
+        const int wr = k::kv_window_row(win, cell);
+        return wr >= 0 && wtag[(size_t) wr] == (int32_t) cell ? wr : -1;
+    };
+    auto win_v = [&](bool value, int wr, int64_t kvh, int64_t d) {
+        return h2f((value ? wvh : wkh)[(size_t) wr * (size_t) (NKV * HD) + (size_t) kvh * HD + (size_t) d]);
+    };
+    // an oct3 value: block d / 32 of the row, element j = d % 32, the code from three bit-planes, the level scaled by
+    // the block's d and the codebook's 1/32 (kv_octave.hpp)
+    auto octv = [&](const std::vector<uint8_t>& pool, int64_t row, int64_t d) {
+        const uint8_t* blk = pool.data() + row * ROW3 + (d / 32) * B3;
+        uint16_t s;
+        std::memcpy(&s, blk, 2);
+        const int j = (int) (d % 32), by = j >> 3, bi = j & 7;
+        const int code = ((blk[2 + by] >> bi) & 1) | (((blk[6 + by] >> bi) & 1) << 1) | (((blk[10 + by] >> bi) & 1) << 2);
+        return (double) k::kOctLevel[code] * (1.0 / 32.0) * h2f(s);
+    };
+    // PA_WIN_EQ=1 (probe): the window holds the values the codes decode to, so a reader that picks the wrong row,
+    // dim or head shows up as a difference and a hit set that differs between the two kernels cancels out
+    if (fmt == 4 && std::getenv("PA_WIN_EQ")) {
+        for (int64_t pos = 0; pos < ctx; ++pos) {
+            const int wr = k::kv_window_row(win, pos);
+            if (wr < 0 || wtag[(size_t) wr] != (int32_t) pos) continue;
+            for (int64_t kvh2 = 0; kvh2 < NKV; ++kvh2) {
+                const int64_t row = ((int64_t) table[pos / PS] * NKV + kvh2) * PS + pos % PS;
+                for (int64_t d = 0; d < HD; ++d) {
+                    wkh[(size_t) wr * NKV * HD + (size_t) kvh2 * HD + d] = f2h((float) octv(k4, row, d));
+                    wvh[(size_t) wr * NKV * HD + (size_t) kvh2 * HD + d] = f2h((float) octv(v4, row, d));
+                }
+            }
+        }
+    }
     // a q4_0 value: block d / 32 of the row, element j = d % 32 in the low nibble of byte j (j < 16), else the high
     // nibble of byte j - 16, minus 8, times the block's scale
     auto q4v = [&](const std::vector<uint8_t>& pool, int64_t row, int64_t d) {
@@ -195,6 +266,12 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         const int code = j < 16 ? (blk[2 + j] & 0x0F) : (blk[2 + j - 16] >> 4);
         return (double) (code - 8) * h2f(sc);
     };
+    if (fmt == 4) {
+        win.k = up(wkh);
+        win.v = up(wvh);
+        win.tag = up(wtag);
+        pl.win = win;
+    }
     pl.page_table = up(table);
     const int32_t* d_ids = up(ids);
     const int32_t* d_steps = up(steps);
@@ -249,9 +326,12 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             double mx = -1e300;
             for (int64_t c = 0; c < w; ++c) {
                 const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
+                const int wre = win_row(cell);
                 double a = 0;
                 for (int64_t d = 0; d < HD; ++d) {
-                    const double kv = fmt == 2 ? q4v(k4, row, d)
+                    const double kv = wre >= 0 ? win_v(false, wre, kvh, d)
+                                      : fmt >= 3 ? octv(k4, row, d)
+                                      : fmt == 2 ? q4v(k4, row, d)
                                       : fmt == 1 ? (double) kq[row * HD + d] * h2f(ks[row * 4 + d / 64]) : h2f(kh[row * HD + d]);
                     a += (double) q[(i * NH + h) * HD + d] * kv;
                 }
@@ -264,7 +344,10 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 double a = 0;
                 for (int64_t c = 0; c < w; ++c) {
                     const int64_t cell = sel[c], row = ((int64_t) table[cell / PS] * NKV + kvh) * PS + cell % PS;
-                    const double vv = fmt == 2 ? q4v(v4, row, d)
+                    const int wre = win_row(cell);
+                    const double vv = wre >= 0 ? win_v(true, wre, kvh, d)
+                                      : fmt >= 3 ? octv(v4, row, d)
+                                      : fmt == 2 ? q4v(v4, row, d)
                                       : fmt == 1 ? (double) vq[row * HD + d] * h2f(vs[row * 4 + d / 64]) : h2f(vh[row * HD + d]);
                     a += sco[c] * vv;
                 }
@@ -279,9 +362,22 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     }
     // 2. new vs old everywhere
     double diff = 0, scale = 0;
+    int shown = 0;
     for (size_t i = 0; i < o.size(); ++i) {
         diff = std::max(diff, (double) std::fabs(o[i] - nw[i]));
         scale = std::max(scale, (double) std::fabs(o[i]));
+        if (std::getenv("PA_SHOW") && std::fabs(o[i] - nw[i]) > 5e-5 && shown < 6) {
+            ++shown;
+            const int64_t qi = (int64_t) i / (NH * HD), rem = (int64_t) i % (NH * HD);
+            std::printf("  DIFF q=%lld h=%lld d=%lld old=%.6g new=%.6g (n=%d) wincells=%d\n", (long long) qi,
+                        (long long) (rem / HD), (long long) (rem % HD), o[i], nw[i],
+                        steps[(size_t) (qi * k::kStepCount + k::kStepWidth)], [&] {
+                            int c = 0;
+                            for (int64_t j = 0; j < steps[(size_t) (qi * k::kStepCount + k::kStepWidth)]; ++j)
+                                c += win_row(ids[(size_t) (qi * cap + j)]) >= 0;
+                            return c;
+                        }());
+        }
     }
     // 3. speed
     cudaEvent_t e0, e1;
@@ -332,13 +428,14 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     }
     std::printf("%s %s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
                 "scale); %.3f -> %.3f ms per chunk (%.2fx); new output checksum %016llx\n",
-                ok1 && ok2 ? "PASS" : "FAIL", fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, err_old,
+                ok1 && ok2 ? "PASS" : "FAIL", fmt == 4 ? "oct3+win" : fmt == 3 ? "oct3" : fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", (long long) ctx, (long long) nq, err_old,
                 err_new, ref_scale, diff, diff / scale, ms_old / reps, ms_new / reps, ms_old / ms_new, (unsigned long long) sum);
     cudaFree((void*) d_ids); cudaFree((void*) d_steps); cudaFree((void*) d_q); cudaFree(d_old); cudaFree(d_new);
     cudaFree(scratch);
     cudaFree((void*) pl.k_q); cudaFree((void*) pl.v_q); cudaFree((void*) pl.k_scale); cudaFree((void*) pl.v_scale);
     cudaFree((void*) pl.k_pool); cudaFree((void*) pl.v_pool); cudaFree((void*) pl.page_table);
     cudaFree((void*) pl.k_q4); cudaFree((void*) pl.v_q4);
+    cudaFree((void*) pl.win.k); cudaFree((void*) pl.win.v); cudaFree((void*) pl.win.tag);
     return ok1 && ok2 ? 0 : 1;
 }
 }  // namespace
@@ -356,8 +453,10 @@ int main(int argc, char** argv) {
         }
 #if defined(_WIN32)
         _putenv_s("STRATA_HIP_WMMA", "1");
+        _putenv_s("STRATA_PA_OCT", "1");   // the oct3 arm of the matrix-core kernel (opt-in in the engine)
 #else
         setenv("STRATA_HIP_WMMA", "1", 1);
+        setenv("STRATA_PA_OCT", "1", 1);
 #endif
     }
 #endif
@@ -366,13 +465,20 @@ int main(int argc, char** argv) {
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
     int fails = 0;
     fails += run(1, ctx, nq, reps);
-#if !defined(__HIP_PLATFORM_AMD__)
+#if defined(__HIP_PLATFORM_AMD__)
+    fails += run(3, ctx, nq, reps);   // oct3 KV on the matrix cores: the reference is the FP32 mode-4 chunk kernel
+#else
     fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
     fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
     fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
 #endif
     fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
     fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge
+    fails += run(3, 1500, std::min<int64_t>(nq, 1500), reps);   // oct3 at a short context
+    fails += run(3, 2100, std::min<int64_t>(nq, 256), reps);
+    fails += run(4, ctx, nq, reps);                             // oct3 + the exact fp16 window (mixed tiles)
+    fails += run(4, 2100, std::min<int64_t>(nq, 256), reps);    // every cell in the window (w <= tail)
+    fails += run(4, 1500, std::min<int64_t>(nq, 1500), reps);
     std::printf("FAILURES: %d\n", fails);
     return fails;
 }
