@@ -58,6 +58,7 @@ async function start(h, text = 'First question') {
   const next = h.nextRequest(), done = h.sendMessage(text);
   const request = await next;
   request.frame({ type: 'start', model: 'fixture', contextMax: 32000 });
+  request.frame({ type: 'steering-availability', available: true });
   return { id, request, done };
 }
 const finish = request => { request.frame({ type: 'done', tokensOut: 1 }); request.end(); };
@@ -118,6 +119,24 @@ test('uncertain steering stays recoverable and retries the same ID; delivery can
   assert.equal(h.requests.length, 1);
   assert.equal(h.stops.length, 0);
   finish(first.request); await first.done;
+});
+
+test('helper activity cannot enable steering; parent availability stays with its chat and clears on completion', async () => {
+  const h = open(); h.setWhileBusy('steer'); const first = await start(h);
+  first.request.frame({ type: 'start', agent: true });
+  first.request.frame({ type: 'steering-availability', available: false });
+  first.request.frame({ type: 'agent', agent: { id: 'helper', status: 'working' } }); await tick();
+  assert.equal(h.getState().streaming, true);
+  assert.equal(await h.submitWhileBusy('Keep my correction'), false);
+  assert.equal(h.steers.length, 0); assert.equal(h.pending(first.id), undefined);
+  first.request.frame({ type: 'steering-availability', available: true }); await tick();
+  const other = h.newSession();
+  assert.equal(h.getState().steeringAvailable[other.id], undefined);
+  assert.equal(h.getState().steeringAvailable[first.id], true);
+  assert.equal(await h.submitWhileBusy('Keep my correction', first.id), true); await tick();
+  assert.equal(h.steers.length, 1); assert.equal(h.requests.length, 1); assert.equal(h.stops.length, 0);
+  finish(first.request); await first.done;
+  assert.equal(h.getState().steeringAvailable[first.id], false);
 });
 
 test('a stale reconnect snapshot cannot hide a newer failed steering receipt', async () => {

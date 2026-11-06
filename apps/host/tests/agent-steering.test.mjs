@@ -7,12 +7,46 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
-import { SOFT_CUT_PATCH, SteeringStore } from '../server/agent/steering.mjs';
+import { SOFT_CUT_PATCH, SteeringStore, ParentSteering } from '../server/agent/steering.mjs';
+import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const harness = process.env.STRATA_HARNESS_DIR;
 const supported = (() => { try { return JSON.parse(readFileSync(join(harness, 'BUNDLE.json'), 'utf8')).patches?.some(p => p.id === SOFT_CUT_PATCH); } catch { return false; } })();
 const skip = !supported && 'STRATA_HARNESS_DIR must point to a source-built soft-cut Harness';
+const waitFor = async predicate => {
+  const until = Date.now() + 15000;
+  while (!predicate()) { if (Date.now() > until) throw new Error('Expected lifecycle transition did not arrive'); await new Promise(r => setTimeout(r, 10)); }
+};
+
+test('parent lifecycle recovers late attachment and rejects stale steps and non-lifecycle activity', () => {
+  const parent = new ParentSteering();
+  const event = (seq, type, turn) => parent.observe({ seq, type, data: { turn } });
+  event(10, 'step/start', 3); assert.equal(parent.turn, 3);
+  event(11, 'turn/end', 3); assert.equal(parent.turn, null);
+  event(9, 'turn/start', 3); event(12, 'step/start', 3);
+  event(13, 'subagent/catalog', 4); event(14, 'user/message', 4);
+  assert.equal(parent.turn, null);
+  event(15, 'turn/start', 4); assert.equal(parent.turn, 4);
+  parent.reject(4); event(16, 'step/start', 4); assert.equal(parent.turn, null);
+  event(17, 'turn/start', 5); assert.equal(parent.turn, 5);
+});
+
+test('a closed parent with a working helper rejects steering, then publishes parent resumption', { skip, timeout: 60000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'strata-steering-helper-'));
+  const worker = await startScriptedWorker({});
+  const bridge = createAgentBridge({ dataDir: root, localInstances: () => [{ id: 'local', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768 }], connections: () => [], env: process.env });
+  t.after(async () => { await bridge.close(); await worker.close(); rmSync(root, { recursive: true, force: true }); });
+  const frames = [];
+  const done = bridge.runTurn({ chatId: 'helpers', workspacePath: root, message: 'SCRIPT:spawn 1 slow 70', mode: 'bypass', onFrame: f => frames.push(f) });
+  await waitFor(() => frames.some(f => f.type === 'agent' && f.agent.status === 'working') && frames.filter(f => f.type === 'steering-availability').length >= 3 && frames.filter(f => f.type === 'steering-availability').at(-1).available === false);
+  assert.equal(bridge.isRunning('helpers'), true);
+  await assert.rejects(bridge.steer({ chatId: 'helpers', id: 'closed-parent', text: 'Keep this correction' }), /parent agent is not accepting/);
+  assert.deepEqual(bridge.steeringState('helpers'), []);
+  await done;
+  const eligibility = frames.filter(f => f.type === 'steering-availability').map(f => f.available);
+  assert.deepEqual(eligibility.slice(0, 5), [false, true, false, true, false]);
+});
 
 test('an old or missing Harness rejects true steering without starting a replacement run', async t => {
   const root = mkdtempSync(join(tmpdir(), 'strata-steering-unsupported-'));
@@ -98,6 +132,7 @@ test('generation is soft-cut in the same turn; ordered duplicate-safe input surv
   const r = await rig(t); await r.prefix;
   const sessionId = r.bridge.sessionOf('chat-a');
   nextSocket = deferred(); sockets.at(-1).close(); await nextSocket.promise;
+  await waitFor(() => r.frames.filter(f => f.type === 'steering-availability').length >= 4 && r.frames.filter(f => f.type === 'steering-availability').at(-1).available);
   const first = { chatId: 'chat-a', id: 'first', text: 'STEER: use another folder' }, second = { chatId: 'chat-a', id: 'second', text: 'STEER: preserve file names' };
   await Promise.all([r.bridge.steer(first), r.bridge.steer(first), r.bridge.steer(second)]);
   await r.delivered;
@@ -151,4 +186,23 @@ test('a concurrent full Stop and steering never wake a replacement turn', { skip
   assert.equal(events.filter(e => e.type === 'turn/start').length, 1);
   assert.equal(events.filter(e => e.type === 'turn/end').at(-1).data.reason.kind, 'aborted');
   assert.ok(events.filter(e => e.type === 'user/message' && e.data.source?.rpcId === 'stop-race').length <= 1);
+});
+
+test('parent closure between admission and RPC keeps one failed recoverable receipt and starts no turn', { skip, timeout: 60000 }, async t => {
+  const r = await rig(t); await r.prefix;
+  const gw = r.bridge._debug().rt.gw, rpc = gw.rpc.bind(gw);
+  gw.rpc = async (method, args, options) => {
+    if (method === 'session/prompt' && args.request.mode === 'soft-cut') await rpc('session/cancel', { request: { sessionId: args.request.sessionId } });
+    return rpc(method, args, options);
+  };
+  const input = { chatId: 'chat-a', id: 'closed-race', text: 'Preserve this correction' };
+  await assert.rejects(r.bridge.steer(input), /parent agent is not accepting/);
+  await r.done;
+  const receipts = r.bridge.steeringState('chat-a');
+  assert.equal(receipts.length, 1); assert.equal(receipts[0].id, input.id);
+  assert.equal(receipts[0].text, input.text); assert.equal(receipts[0].state, 'failed');
+  await assert.rejects(r.bridge.steer(input));
+  const events = await r.events();
+  assert.equal(events.filter(e => e.type === 'turn/start').length, 1);
+  assert.equal(events.filter(e => e.type === 'user/message' && e.data.source?.rpcId === input.id).length, 0);
 });

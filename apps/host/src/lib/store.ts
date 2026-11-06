@@ -72,6 +72,7 @@ export interface Toast {
 export interface AppState {
   pendingMessages: Record<string, PendingMessage>;
   steeringMessages: Record<string, SteeringMessage[]>;
+  steeringAvailable: Record<string, boolean>;
   language: Language;
   fontFamily: string;
   configDraft: string | null;
@@ -267,6 +268,7 @@ let lastApprovalNotice = '';
 let state: AppState = {
   pendingMessages: loadPendingMessages(),
   steeringMessages: loadSavedSteering(),
+  steeringAvailable: {},
   language: prefs.language,
   fontFamily: prefs.fontFamily,
   configDraft: (() => { try { return sessionStorage.getItem('strata.config-draft.v1'); } catch { return null; } })(),
@@ -786,6 +788,10 @@ export async function submitWhileBusy(text: string, chatId = state.activeSession
   const mode = state.whileBusy;
   const photos = pendingChatPhotos(chatId);
   if (mode === 'steer') {
+    if (!state.steeringAvailable[chatId]) {
+      pushToast('info', 'Steering is unavailable', 'The parent agent is not accepting steering right now. Your correction is kept.');
+      return false;
+    }
     if (!turn.agent || turn.stop || !text.trim() || photos.length) {
       pushToast('info', 'Steering needs a running coding agent and a text message', 'Pictures can be sent with a later message.');
       return false;
@@ -1637,6 +1643,7 @@ function startTimeSkipDemo(prompt: string) {
 }
 
 function markTurn(sessionId: string, turn: LiveTurn | null) {
+  set({ steeringAvailable: { ...state.steeringAvailable, [sessionId]: false } });
   if (turn) liveTurns.set(sessionId, turn); else liveTurns.delete(sessionId);
   set({ streaming: !!state.activeSession && liveTurns.has(state.activeSession), liveChats: liveTurns.size });
   document.documentElement.dataset.streaming = liveTurns.size ? 'true' : 'false';
@@ -2064,6 +2071,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // A proposed plan is shown as the plan card in place of this turn's closing text (that text is the plan in prose).
           const planned = frame.plan as { id?: unknown } | null;
           if (frame.event === 'proposed' && planned && typeof planned.id === 'string') { const pid = planned.id; patchAssistant(m => ({ ...m, planId: pid })); }
+        } else if (type === 'steering-availability') {
+          set({ steeringAvailable: { ...state.steeringAvailable, [sessionId]: frame.available === true } });
         } else if (type === 'steering-cut') {
           patchAssistant(m => ({ ...m, drafts: undefined, reasoning: undefined, reasoningStartedAt: undefined, reasoningMs: undefined }));
         } else if (type === 'steering') {

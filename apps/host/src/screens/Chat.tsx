@@ -590,6 +590,8 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const photos = useChatPhotos(session?.id), native = useNative();
     const canChat = loaded || native?.instances.some(i => i.status === 'ready');
     const whileBusy = useStore(s => s.whileBusy), parkedList = useStore(s => (session ? s.parked[session.id] : undefined)) ?? NO_PARKED;
+    const steeringAvailable = useStore(s => !!session && s.steeringAvailable[session.id] === true);
+    const steeringBlocked = streaming && whileBusy === 'steer' && !steeringAvailable;
     const quoteList = useStore(s => (session ? s.quotes[session.id] : undefined)) ?? NO_QUOTES;
     const commands = useSlashCommands(clearDraft, setDraft);
     const [cursor, setCursor] = useState(0);
@@ -670,10 +672,10 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           <div className="st-composer__bar">
             <ComposerControls draft={draft} onDraft={setDraft} session={session} onPreview={onPreview} streaming={streaming} onSlash={() => { setSlashDismissed(false); setSlashOpen(true); requestAnimationFrame(() => textareaRef.current?.focus()); }} onError={setFileError} onAttach={(name, text) => { setDraft(`${draft}${draft ? '\n\n' : ''}Attached ${name}\n\n${text}`); requestAnimationFrame(() => textareaRef.current?.focus()); }}/>
             {streaming && <Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr('Stop')}</Btn>}
-            {(!streaming || whileBusy !== 'wait') && <Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr(streaming ? whileBusy === 'queue' ? 'Send after' : whileBusy === 'steer' ? 'Steer current run' : 'Interrupt' : 'Send')}</Btn>}
+            {(!streaming || whileBusy !== 'wait') && <Btn variant="primary" size="sm" icon="send" disabled={steeringBlocked || (!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr(steeringBlocked ? 'Steering unavailable' : streaming ? whileBusy === 'queue' ? 'Send after' : whileBusy === 'steer' ? 'Steer current run' : 'Interrupt' : 'Send')}</Btn>}
           </div>
         </div>
-        {tr(streaming && draft.trim() && whileBusy !== 'wait' ? <p className="xs muted composer__busy-hint" role="status">{tr(whileBusy === 'steer' ? "Enter steers the current run at a safe point." : whileBusy === 'queue' ? "Enter sends it when the answer is done." : "Enter stops the answer here and sends it now.")}</p> : null)}
+        {tr(streaming && draft.trim() && whileBusy !== 'wait' ? <p className="xs muted composer__busy-hint" role="status">{tr(steeringBlocked ? "The parent agent is not accepting steering right now. Your correction is kept." : whileBusy === 'steer' ? "Enter steers the current run at a safe point." : whileBusy === 'queue' ? "Enter sends it when the answer is done." : "Enter stops the answer here and sends it now.")}</p> : null)}
         <ChatTelemetry session={session}/>
         </div>
       </div>

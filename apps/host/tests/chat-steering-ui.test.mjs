@@ -45,6 +45,7 @@ test('desktop settings and composer expose all four modes, retain drafts on fail
         init.signal.addEventListener('abort', () => controller.error(new DOMException('Stopped', 'AbortError')), {once:true});
         requests.push(request);
         request.frame({type:'start',model:'fixture',contextMax:32000,agent:true});
+        request.frame({type:'steering-availability',available:true});
         request.frame({type:'delta',text:'Partial fixture answer '+requests.length});
         return new Response(body);
       }
@@ -107,6 +108,13 @@ test('desktop settings and composer expose all four modes, retain drafts on fail
   assert.ok(await page.evaluate(() => window.fixture.requests[2].body.history.some(m => m.content === 'Partial fixture answer 2')));
   await page.getByRole('button', { name: 'Stop', exact: true }).waitFor();
   await choose('Steer current run');
+  await page.evaluate(() => window.fixture.requests.at(-1).frame({type:'steering-availability',available:false}));
+  await input.fill('Keep while helpers work');
+  assert.equal(await page.getByRole('button', { name: 'Steering unavailable', exact: true }).isDisabled(), true);
+  await input.press('Enter');
+  assert.equal(await input.inputValue(), 'Keep while helpers work');
+  assert.equal(await page.evaluate(() => window.fixture.steers.length), 0);
+  await page.evaluate(() => window.fixture.requests.at(-1).frame({type:'steering-availability',available:true}));
   await page.evaluate(() => window.fixture.app.addQuote(window.fixture.app.getState().activeSession, 'Keep the upstream quote', 'fixture-source', 'assistant'));
   await input.fill('Correct the current run');
   await page.getByRole('button', { name: 'Steer current run', exact: true }).click();

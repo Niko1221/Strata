@@ -20,7 +20,7 @@ import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
-import { SOFT_CUT_PATCH, SteeringStore } from './steering.mjs';
+import { SOFT_CUT_PATCH, SteeringStore, ParentSteering, STEERING_UNAVAILABLE } from './steering.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
 import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf, localOutputBudget, compactionHeadroom } from './profile.mjs';
@@ -464,6 +464,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
+      parentSteering: new ParentSteering(), steeringSynced: false, softCutSupported: canSteer(),
       ended: deferred(), admitted: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
       abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
@@ -472,6 +473,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null,
     };
     c.turn = turn;
+    turn.publishSteering = () => {
+      const available = turn.softCutSupported && turn.live && turn.steeringSynced && turn.parentSteering.turn !== null && !turn.finished && !turn.stopping;
+      if (available !== turn.steeringPublished) { turn.steeringPublished = available; emit({ type: 'steering-availability', available }); }
+    };
+    turn.publishSteering();
     /**
      * A turn must always end. If the Harness sends nothing at all for a while (a tool that never returns, a model server that went
      * quiet, a lost event) the turn is stopped and ended with a plain message instead of showing "thinking" forever. A running tool gets
@@ -500,6 +506,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     async function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
+      turn.publishSteering();
       turn.admitted.resolve(false);
       for (const item of steering.list(chatId)) if (item.turnId === requestId && item.state !== 'delivered') steering.update(chatId, item.id, { state: 'failed', error: 'Delivery was not confirmed before the run ended.' });
       for (const [k, v] of questions) if (v.sessionId === turn.sessionId) questions.delete(k);
@@ -551,13 +558,17 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
     turn.follow = runtime.gw.openStream('session/follow', { request: { address: { kind: 'session', sessionId }, assistantStream: true } }, {
       onItem: item => {
         if (item.type === 'snapshot') {
+          for (const r of item.records ?? []) if (r.type === 'event') turn.parentSteering.observe(r.event);
+          turn.steeringSynced = true;
           if (turn.lastSeq < 0) turn.lastSeq = item.cursor;
           else for (const r of item.records ?? []) if (r.type === 'event' && r.event.seq > turn.lastSeq) handle({ type: 'event', event: r.event });
           turn.snapshot.resolve();
+          turn.publishSteering();
           return;
         }
         handle(item);
       },
+      onDisconnect: () => { turn.steeringSynced = false; turn.publishSteering(); },
       onError: e => finishTurn(`The agent lost the session stream: ${e.message}`),
     });
 
@@ -577,13 +588,16 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
         const e = item.event;
         if (e.seq <= turn.lastSeq) return;
         turn.lastSeq = e.seq;
+        turn.parentSteering.observe(e);
         // The turn is ours from the user message that carries our request id. Until then an older,
         // detached turn on the same session may still be finishing; its events are not ours.
         if (!turn.live) {
           if (e.type === 'user/message' && e.data?.source?.rpcId === requestId) turn.live = true;
+          turn.publishSteering();
           return;
         }
       } else if (!turn.live) return;
+      if (item.type === 'event') turn.publishSteering();
       if (item.type === 'event') {
         const event = item.event;
         const id = event.type === 'user/message' ? event.data?.source?.rpcId : null;
@@ -1240,15 +1254,23 @@ ${note.text}
     const turn = chats.get(chatId)?.turn;
     if (!rt || !turn || turn.finished || turn.stopping || previous && previous.turnId !== turn.requestId) throw new AgentUnavailable('There is no active agent run to steer in this chat.', 'steer-idle');
     const runtime = rt;
-    steering.add({ chatId, sessionId: turn.sessionId, turnId: turn.requestId, id, text });
+    const parentTurn = turn.parentSteering.turn;
+    if (!turn.live || !turn.steeringSynced || parentTurn === null || previous && previous.parentTurn !== parentTurn) throw new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');
+    steering.add({ chatId, sessionId: turn.sessionId, turnId: turn.requestId, parentTurn, id, text });
     const before = steeringCalls.get(chatId) ?? Promise.resolve();
     const call = before.catch(() => {}).then(async () => {
       if (!await turn.admitted.promise || turn.finished || turn.stopping || chats.get(chatId)?.turn !== turn || rt !== runtime) throw new AgentUnavailable('The run ended before this instruction could be delivered.', 'steer-idle');
       if (steering.get(chatId, id)?.accepted) return steering.get(chatId, id);
+      if (!turn.steeringSynced || turn.parentSteering.turn !== parentTurn) throw new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');
       await runtime.gw.rpc('session/prompt', { request: { requestId: id, sessionId: turn.sessionId, mode: 'soft-cut', content: [{ type: 'text', text }] } }, { signal: AbortSignal.timeout(15000) });
       return steering.update(chatId, id, { accepted: true, state: turn.finished ? 'failed' : 'pending', error: turn.finished ? 'Delivery was not confirmed before the run ended.' : null });
     }).catch(error => {
-      steering.update(chatId, id, { state: 'failed', error: 'Delivery could not be confirmed. Retry uses the same message ID.' });
+      if (error.code === 'session/agent-busy' && /cannot soft-cut without an active turn/.test(String(error.details?.reason))) {
+        turn.parentSteering.reject(parentTurn);
+        turn.publishSteering();
+        error = new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');
+      }
+      steering.update(chatId, id, { state: 'failed', error: error.code === 'steer-idle' ? error.message : 'Delivery could not be confirmed. Retry uses the same message ID.' });
       throw error;
     });
     steeringCalls.set(chatId, call);
@@ -1443,6 +1465,7 @@ ${note.text}
       if (early) return { stopped: true, ended: early.reason?.kind ?? 'aborted', ms: Date.now() - t0 };
     }
     turn.stopping = true;
+    turn.publishSteering();
     await pauseGoal(rt, turn.sessionId, chatId);
     // Helpers first: a helper still working would otherwise report back and wake the parent again.
     await Promise.allSettled([...turn.children.values()].filter(h => !h.done).map(h => rt.gw.rpc('subagents/interruptByParent', { childSessionId: h.id, parentSessionId: turn.sessionId, mode: 'continuable' })));
