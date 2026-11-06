@@ -357,9 +357,9 @@ struct Up {
                                  [&](int a, int b) { return (*arena_score)[(size_t) a] < (*arena_score)[(size_t) b]; });
             for (int s = ec.s0[p]; s < (int) owner.size(); ++s) slot_of[(size_t) owner[(size_t) s]] = s;
             ec.n[p] = (int) owner.size() - ec.s0[p];
-            if (ec.n[p] < 2 * MAXT * TOPK)
+            if (ec.n[p] < EXPERT_WINDOW_SLOTS)
                 throw std::runtime_error("expert cache: pool " + std::to_string(p) + " has " + std::to_string(ec.n[p]) + " slots, a window needs " +
-                                         std::to_string(2 * MAXT * TOPK) + " (fewer experts in RAM)");
+                                         std::to_string(EXPERT_WINDOW_SLOTS) + " (fewer experts in RAM)");
             ec.dn_off[p] = sizes[(size_t) p].first;
             ec.slot_bytes[p] = sizes[(size_t) p].first + sizes[(size_t) p].second;
             if (p == ec.arena_pool) continue;
@@ -1515,7 +1515,7 @@ void Model::choose_residency() {
                 score[i] = (cnt[i] / std::max(1.0, td) + cnt[(size_t) NL * NEXP + i] / std::max(1.0, tp)) / bytes[(size_t) l];
             }
         }
-        auto plan = expert_residency(sizes, score, NEXP, 2 * MAXT * TOPK, want, ram_extra);
+        auto plan = expert_residency(sizes, score, NEXP, EXPERT_WINDOW_SLOTS, want, ram_extra);
         resident = std::move(plan.resident);
         std::fprintf(stderr, "fnx: %d of %d routed experts (%.1f GiB) in RAM, ranked by %s%s\n", plan.count, NL * NEXP, plan.moved / (1ull << 30), prof,
                      ram_extra ? (" (" + std::to_string(ram_extra) + " of them because VRAM was short)").c_str() : "");
