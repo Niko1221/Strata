@@ -1138,7 +1138,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     }
     prof_on_ = std::getenv("STRATA_VERIFY_PROFILE") != nullptr;
     if (const char* rs = std::getenv("STRATA_ROUTE_STATS"); rs != nullptr && rs[0] == '1') {
-        const size_t nrs = (size_t) 9 * (size_t) g.n_layers * 8;
+        const size_t nrs = (size_t) 17 * (size_t) g.n_layers * 16;   // [T 0..16][layer][row 0..15]
         if (cudaMalloc((void**) &rs_dev_, nrs * 8) == cudaSuccess) {
             cudaMemset(rs_dev_, 0, nrs * 8);
             rs_on_ = true;
@@ -2238,8 +2238,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                       rr_stats_ != nullptr ? rr_stats_ + (n <= 8 ? 4 : 0) : nullptr, cs);
             } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
-        if (rs_on_ && G == 1 && n <= 8 && T <= 8)
-            strata::kernels::route_marginal_stats(ids_ + tb * K, n, (int) K, rs_dev_ + ((size_t) T * (size_t) g.n_layers + (size_t) l) * 8, cs);
+        if (rs_on_ && G == 1 && n <= 16 && T <= 16)
+            strata::kernels::route_marginal_stats(ids_ + tb * K, n, (int) K, rs_dev_ + ((size_t) T * (size_t) g.n_layers + (size_t) l) * 16, cs);
         if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
@@ -2649,7 +2649,7 @@ std::string Verifier::profile_by_t_report() {
                                           "(gap)", "head", "hc0 norm", "hc0 down", "hc0 up", "hc1 norm", "hc1 down", "hc1 up"};
     std::string out;
     char b[96];
-    for (int T = 1; T <= 8; ++T) {
+    for (int T = 1; T <= 16; ++T) {
         if (prof_t_win_[T] == 0) continue;
         double total = 0;
         std::snprintf(b, sizeof b, "T%d (n=%lld):", T, (long long) prof_t_win_[T]);
@@ -2675,15 +2675,15 @@ std::string Verifier::profile_by_t_report() {
 std::string Verifier::route_stats_report() {
     if (!rs_on_ || rs_dev_ == nullptr || g_ == nullptr) return std::string();
     const int64_t L = g_->n_layers;
-    std::vector<unsigned long long> h((size_t) 9 * (size_t) L * 8);
+    std::vector<unsigned long long> h((size_t) 17 * (size_t) L * 16);
     cudaMemcpy(h.data(), rs_dev_, h.size() * 8, cudaMemcpyDeviceToHost);
     std::string out;
     char b[160];
-    for (int T = 1; T <= 8; ++T) {
+    for (int T = 1; T <= 16; ++T) {
         if (rs_win_[T] == 0) continue;
-        double row[8] = {};
+        double row[16] = {};
         for (int64_t l = 0; l < L; ++l)
-            for (int r = 0; r < 8; ++r) row[r] += (double) h[((size_t) T * (size_t) L + (size_t) l) * 8 + (size_t) r];
+            for (int r = 0; r < 16; ++r) row[r] += (double) h[((size_t) T * (size_t) L + (size_t) l) * 16 + (size_t) r];
         const double denom = (double) rs_win_[T] * (double) L;
         double sum = 0;
         for (int r = 0; r < T; ++r) sum += row[r] / denom;
@@ -3074,7 +3074,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     std::atomic_thread_fence(std::memory_order_seq_cst);
     strata_store_fence();
     last_t_ = T;
-    if (rs_on_ && T >= 1 && T <= 8) ++rs_win_[T];
+    if (rs_on_ && T >= 1 && T <= 16) ++rs_win_[T];
     last_pos0_ = pos0;
     for (int t = 0; t < T; ++t) last_tokens_[t] = tokens[t];
     staged_ = true;
@@ -3089,7 +3089,7 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
     double before[2][kProfPer];
     std::memcpy(before, prof_sum_, sizeof before);
     accumulate_profile_inner(stamps);
-    if (last_t_ >= 1 && last_t_ <= 8) {
+    if (last_t_ >= 1 && last_t_ <= 16) {
         for (int k = 0; k < 2; ++k)
             for (int i = 0; i < kProfPer; ++i) prof_t_sum_[last_t_][k][i] += prof_sum_[k][i] - before[k][i];
         ++prof_t_win_[last_t_];
