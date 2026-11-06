@@ -9997,7 +9997,8 @@ def main() -> int:
     _peek = lambda flag: next((v.split("=", 1)[1] if v.startswith(flag + "=") else sys.argv[i + 2] if i + 2 < len(sys.argv) else None   # noqa: E731
                                for i, v in enumerate(sys.argv[1:]) if v == flag or v.startswith(flag + "=")), None)
     if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **MULTI_FILE_FAMILIES}) \
-            or (_peek("--model") and not _peek("--family") and _peek("--model") not in MODELS and not any(_peek("--model") in f["models"] for f in OWN_PATH_FAMILIES.values())):
+            or (_peek("--model") and not _peek("--family") and model_alias(_peek("--model")) not in MODELS
+                and not any(model_alias(_peek("--model")) in f["models"] for f in (*OWN_PATH_FAMILIES.values(), *MULTI_FILE_FAMILIES.values()))):
         feed_models_setup(_peek("--feed"))             # a name the built-in tables do not know may be a model of the signed feed
         if _peek("--family") in FEED_UNAVAILABLE:
             fail(f"{FEED_UNAVAILABLE[_peek('--family')]['title']} is {FEED_UNAVAILABLE[_peek('--family')]['reason']}")
