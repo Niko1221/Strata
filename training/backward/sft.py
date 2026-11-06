@@ -57,6 +57,7 @@ import platform_check
 import whoami
 import guard
 import dpo
+import algos
 
 platform_check.require(platform_only=True)   # 模块级只查平台：CI 的 CPU torch 档也要能 import
 
@@ -576,13 +577,6 @@ def main() -> int:
     args.word, src = whoami.source(args.word)
     print(f"identity: {args.word}   ({src})", flush=True)
     data = read_sft_rows(args.data, args.word) if args.data else builtin_data(args.word)
-    # 轮次优先（与 mezo 同一口径）：一轮 = 过一遍数据。实测 identity 的收益在第 2 轮吃满
-    # （24 步，idΔ +45.7 / capΔ −0.04），第 3 轮起能力门开始拒 —— 见 algos.py 的 backward 表。
-    if args.epochs:
-        if args.epochs <= 0:
-            raise SystemExit(f"--epochs 必须为正，收到 {args.epochs}")
-        args.steps = max(1, int(round(args.epochs * len(data))))
-        print(f"epochs {args.epochs:g} × {len(data)} 条 = {args.steps} 步", flush=True)
     # DPO 模式：偏好对数据。校验在训练循环之前 —— rejected 是显式的反面教材，
     # 一行写反训练就在系统性地学「错的那个」，且 loss 曲线看起来完全正常。
     dpo_rows: list[dict] | None = None
@@ -594,6 +588,14 @@ def main() -> int:
             dpo.validate_pairs(dpo_rows)
         except ValueError as e:
             raise SystemExit(f"--dpo-data {args.dpo_data}: {e}")
+    # 轮次优先（与 mezo 同一口径）：一轮 = 过一遍数据。实测 identity 的收益在第 2 轮吃满
+    # （24 步，idΔ +45.7 / capΔ −0.04），第 3 轮起能力门开始拒 —— 见 algos.py 的 backward 表。
+    if args.epochs:
+        n_rows = len(dpo_rows) if dpo_rows is not None else len(data)
+        args.steps = algos.resolve_steps(
+            args.epochs, len(dpo_rows) if dpo_rows is not None else None, len(data))
+        print(f"epochs {args.epochs:g} × {n_rows} 条"
+              f"{'（偏好对）' if dpo_rows is not None else ''} = {args.steps} 步", flush=True)
 
     from transformers import AutoTokenizer
 
@@ -939,10 +941,14 @@ def main() -> int:
                     lj = policy_logprob_sum(body, head, fj, pj)
                 # margin 按答案 token 归一（与引擎侧 mezo 的 DpoMezo 同一语义，objectives
                 # 唯一出处）：量级与序列长度无关，lr 不用随长度重标定。
-                margin = objectives.dpo_margin(lc, lj, rc, rj,
-                                               int(len(fc) - pc), int(len(fj) - pj))
-                # margin loss 走 objectives（softplus 形式：β·margin 很大时 log(1) 的梯度是 0/0）
-                loss = objectives.dpo_loss(margin, args.dpo_beta) / args.accum
+                nc_tok, nr_tok = int(len(fc) - pc), int(len(fj) - pj)
+                margin = objectives.dpo_margin(lc, lj, rc, rj, nc_tok, nr_tok)
+                # β 必须跟着归一化换算，否则 KL 约束被除以 n̄（长度越长越松，
+                # 见 objectives.dpo_beta_effective）：这是 2026-11-06 冷启 DPO 崩坏
+                # 的根因，不是 lr 或能力门的问题。
+                loss = objectives.dpo_loss(
+                    margin, objectives.dpo_beta_effective(args.dpo_beta, nc_tok, nr_tok)
+                ) / args.accum
                 tot += rule.backward(loss) * args.accum
                 margins.append(float(margin))
                 n_ans += (len(fc) - pc) + (len(fj) - pj)

@@ -131,6 +131,34 @@ def dpo_loss(margin, beta: float = 0.1):
     return (x + ax) / 2.0 + _xp(margin).log1p(_xp(margin).exp(-ax))
 
 
+def dpo_beta_effective(beta: float, c_ntok: int = 0, r_ntok: int = 0) -> float:
+    """把 β 从「序列级 logp」口径换算到 `dpo_margin` 的「每 token 优势」口径。
+
+    `dpo_margin` 在两侧 token 数都 > 0 时各除以自己的长度：Δ(序列) → Δ/n(每 token)，
+    margin 量级缩小约 `n̄ = (nc + nr) / 2`。β 的物理含义是「单位 nats 奖励的逆温度」，
+    作用对象是**序列级** logp（DPO 的隐式奖励 r = β·log(π/π_ref)）。不跟着换算，
+    等于把 KL 约束强度除以 n̄：`β_eff = β / n̄`。
+
+    这个错误随长度线性放大，所以短数据上看不出来、长推理上必崩：
+
+    * identity（n̄≈15）：β_eff≈0.0067，约束偏松但还能跑；
+    * 2026-11-06 那对长解（n̄≈2522）：β_eff≈4e-5，KL 项实际上消失，DPO
+      退化成「无限拉开 chosen/rejected 的似然比」。7 步 lr 1e-4 就把每 token 优势
+      从 0 推到 +0.648（序列级 ≈ +1635 nats，是正常目标量级的几百倍），而
+      β·margin 全程 ≤0.065 ⇒ σ 一直在线性区 ⇒ 梯度恒定 0.48、从不衰减、没有自限。
+
+    换算后 `β_eff·margin_norm` 与原口径的 `β·Δ` 同量级，σ 才会在正常位置饱和、
+    梯度随 margin 增长自然衰减 —— 这是 DPO 的 KL 约束本身，不是调参。
+
+    两侧长度相近时 Δ ≈ n̄·margin，换算严格成立；长度差很大时它把「每 token 优势」
+    折回序列量纲，仍是唯一有物理依据的缩放（长度偏好已被 `dpo_margin` 的归一化
+    移除，这里只还原尺度，不还原偏好）。
+    """
+    if c_ntok > 0 and r_ntok > 0:
+        return beta * (c_ntok + r_ntok) / 2.0
+    return beta
+
+
 def dpo_margin(pol_c, pol_r, ref_c, ref_r, c_ntok: int = 0, r_ntok: int = 0):
     """偏好对的两侧差值：margin = Δc − Δr，Δ = 策略 − ref 的 answer 段 logp 和。
 

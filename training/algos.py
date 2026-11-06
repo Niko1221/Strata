@@ -318,6 +318,22 @@ def default_epochs(algo: str, method: str | None) -> float | None:
     return m.epochs.get(algo)
 
 
+def resolve_steps(epochs: float | None, n_dpo: int | None, n_data: int) -> int:
+    """`--epochs` 折算成优化步数：行数必须取**真正进训练循环**的那份数据。
+
+    DPO 模式下 backward 的 `data`（内置身份 12 条 / --data 的 SFT 行）根本不参与训练，
+    循环取的是偏好对。用 `len(data)` 折算会把「7 轮」放大成 84 步 —— 2026-11-06 实测
+    踩到：`epochs 7 × 12 条 = 84 步`，而实际只有 1 对样本，等于把同一对过 84 遍。
+    mezo 侧早有 `steps_per_epoch()` 统一这个口径，backward 这边此前各算各的。
+    """
+    if not epochs:
+        return 0
+    if epochs <= 0:
+        raise SystemExit(f"--epochs 必须为正，收到 {epochs}")
+    n_rows = n_dpo if n_dpo is not None else n_data
+    return max(1, int(round(epochs * n_rows)))
+
+
 def names() -> list[str]:
     """--algo 的取值。`auto` 在这里（用户要能选它），但不在 ALGOS 里（它没有 objective）。"""
     return list(ALGOS) + [AUTO]
