@@ -1398,6 +1398,9 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     if (nr == 1) {   // (the new kernel a row a warp: its 128-bit loads)
         if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 1>, grid, kThreads, 0, s, J);
         else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 1>, grid, kThreads, 0, s, J);
+        // (5-6 activations - a verify window past 4 drafts' worth, the drafter's block of 5: 8 columns' registers
+        //  measured 16-29% slower than 4 on a GB10's dense shapes; a column's sums are its own whatever NC)
+        else if (max_c <= 6) strata_ds4_launch(mv_kernel_nr<T, 6, 1>, grid, kThreads, 0, s, J);
         else if (max_c <= 8) strata_ds4_launch(mv_kernel_nr<T, 8, 1>, grid, kThreads, 0, s, J);
         else strata_ds4_launch(mv_kernel_nr<T, 16, 1>, grid, kThreads, 0, s, J);
         return;

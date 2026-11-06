@@ -967,7 +967,7 @@ std::vector<int> parse_list(const char* s) {
 #if defined(DQ_TEST_GGUF)
 // --path bench: gg::mv's time (the engine's entry point: BF16, Q8_0 and the ggml types through ds4_iq) on the decode's dense
 // shapes - DeepSeek-V4.1's wq_b 1280x32768, wo_a 4096x1024, wo_b 8192x5120, the shared expert 5120x2304 / 2304x5120, wq_a
-// 5120x1280, wkv 5120x512, the router 5120x384 (--shape KxN,... instead) - for 1, 2, 4 and 6 activations.  Copies of the
+// 5120x1280, wkv 5120x512, the router 5120x384 (--shape KxN,... instead) - for 1, 2, 4, 5, 6 and 8 activations.  Copies of the
 // matrix (256 MB of them) take turns, so the cache holds none of it, as no layer's weights stay there between tokens.
 void run_bench(const TypeInfo& ty) {
     if (!ty.dense) return;
@@ -991,7 +991,7 @@ void run_bench(const TypeInfo& ty) {
             d_raw[(size_t) c] = up(raw);
             mats[(size_t) c] = make_mat(ty, d_raw[(size_t) c], k, n);
         }
-        for (int nc : {1, 2, 4, 6}) {
+        for (int nc : {1, 2, 4, 5, 6, 8}) {
             std::vector<float> x((size_t) nc * k);
             for (auto& v : x) v = nd(xr);
             float* d_x = up(x);
