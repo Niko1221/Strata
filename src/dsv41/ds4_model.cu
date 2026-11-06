@@ -8930,7 +8930,13 @@ struct Model::Impl {
         if (++tick % 16 != 0) return;
         const uint64_t avail = ram_avail();
         if (avail == ~uint64_t{0} || avail >= (4ull << 30)) return;
-        const size_t chunks = 1 + (size_t) (((5ull << 30) - avail) / (700ull << 20));
+        const size_t n = store_give_back(1 + (size_t) (((5ull << 30) - avail) / (700ull << 20)));
+        if (n > 0) std::fprintf(stderr, "ds4: RAM store: %.1f GB free: gave back %zu chunks (%zu slots left)\n", avail / 1e9, n, store->slots_allocated());
+    }
+    // the store gives back up to `chunks` whole chunks from its arenas' ends (their experts forgotten; it grows again on
+    // demand): the chunks given back
+    size_t store_give_back(size_t chunks) {
+        if (!store || chunks == 0) return 0;
         size_t want = chunks;
         if (store->gpu_mapped()) {   // (the GPU reads slots in place: off its tables, and its work done, before any chunk goes)
             std::vector<ExpertStore::Vis> ev;
@@ -8942,8 +8948,7 @@ struct Model::Impl {
                 if (cudaStreamSynchronize(devs[0].st) != cudaSuccess) (void) cudaGetLastError();
             }
         }
-        const size_t n = want > 0 ? store->shrink_chunks(want) : 0;
-        if (n > 0) std::fprintf(stderr, "ds4: RAM store: %.1f GB free: gave back %zu chunks (%zu slots left)\n", avail / 1e9, n, store->slots_allocated());
+        return want > 0 ? store->shrink_chunks(want) : 0;
     }
     void cache_tick_swaps(int T) {
         if (!o.expert_cache || cache_ths.empty()) return;
@@ -12696,6 +12701,20 @@ struct Model::Impl {
         const size_t hb = chunk_hand_bytes(), state_b = run.T.size() * hb;
         const double moved = 2.0 * (double) rows * ((double) hb / (double) chunk) * (double) g.nl;
         if (need == 0 || (double) (run.T.size() - 1) * file_b <= moved) return false;
+        // (the UMA tier's store, sized past the room DS4_UMA_CTX_GB keeps for this: it gives back what the run's states and
+        //  the whole layer cache need beside kRamMargin first - its tail's chunks, their experts forgotten for a prompt this
+        //  long. Without the tier the layer cache takes what RAM is free, as it did)
+        if (store && uma_tier() && std::getenv("DS4_LAYER_CACHE_MB") == nullptr) {
+            const uint64_t want = kRamMargin + state_b + need;
+            for (int i = 0; i < 64; ++i) {
+                const uint64_t avail = ram_avail();
+                if (avail == ~uint64_t{0} || avail >= want) break;
+                const size_t n = store_give_back(1 + (size_t) ((want - avail) / (700ull << 20)));
+                if (n == 0) break;
+                std::fprintf(stderr, "ds4: RAM store: gave back %zu chunks for a %lld-token run's layer-major buffers (%zu slots left)\n",
+                             n, (long long) rows, store->slots_allocated());
+            }
+        }
         size_t lc_bytes = need;
         if (const char* mb = std::getenv("DS4_LAYER_CACHE_MB")) lc_bytes = std::min(need, (size_t) std::atoll(mb) << 20);
         else {
