@@ -92,6 +92,20 @@ const cases = {
     const all = tie.messages.map((m) => m.text).join("\n");
     for (const part of ["compare:", "fast", "safe", "A is faster."]) assert.ok(all.includes(part), `kept: ${part}`);
   },
+  import_keeps_details_that_are_not_the_export() {
+    // the export writes thinking and tool calls as <details> blocks; those are dropped because the store keeps none of
+    // it. A <details> a message wrote itself is content: an HTML sample in a fenced block, an answer explaining the tag.
+    const sample = "## You\n\nhow do I fold this?\n\n## Model\n\nLike this:\n\n```html\n<details><summary>More</summary>\n\nhidden\n\n</details>\n```\n\nDone.\n";
+    const a = H.parseChatMarkdown(sample, 1, 0.5);
+    assert.ok(a.messages[1].text.includes("<details><summary>More</summary>"), "the answer's own HTML sample stays");
+    const own = "## You\n\nq\n\n## Model\n\n<details><summary>Notes</summary>\n\nkeep me\n\n</details>\n\ndone\n";
+    const b = H.parseChatMarkdown(own, 1, 0.5);
+    assert.ok(b.messages[1].text.includes("keep me"), "an answer's own details block stays");
+    // and the export's own blocks are still dropped, even with thinking that mentions the tag
+    const exportrd = "## You\n\nq\n\n## Model\n\n<details><summary>Thinking</summary>\n\nuse <details> here\n\n</details>\n\nanswer\n";
+    const c = H.parseChatMarkdown(exportrd, 1, 0.5);
+    assert.equal(c.messages[1].text, "answer", "thinking is still dropped");
+  },
   rewind_a_question() {
     const m = convo();
     const plan = H.rewind(m, 2);
